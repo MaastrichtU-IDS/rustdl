@@ -856,6 +856,23 @@ fn fold_build_reasons(
         return verdict;
     }
     match verdict {
+        // The single most safety-critical arm in this file: this is what
+        // stops the CLI reporting `Verified` (exit 0) over a model
+        // `build_model` has already admitted it could not fully close. An
+        // accidental `verdict` pass-through here would be a false all-clear
+        // reaching a user — exactly the failure direction this whole crate
+        // exists to prevent — and it would be silent, since a `Verified`
+        // check result with non-empty build reasons is a real, reachable
+        // combination: `crates/owl-dl-verify/tests/fixtures/
+        // markerresidue.ofn` produces it (a Tseitin-marker-targeted
+        // `LabelNotClosed` residue that `build_model` cannot inject away,
+        // paired with a model that still satisfies every WRITTEN axiom), and
+        // `crates/owl-dl-cli/tests/verify_el.rs`'s
+        // `build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_
+        // three` runs it through this exact function via the real binary and
+        // asserts exit 3, not 0. See `crates/owl-dl-verify/tests/model.rs`'s
+        // `verified_check_can_still_carry_nonempty_build_reasons` for the
+        // library-level trace of why the combination arises.
         Verdict::Verified { domain_size, .. } => Verdict::Unresolved {
             domain_size,
             reasons: build_reasons,

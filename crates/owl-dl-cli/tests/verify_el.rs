@@ -62,6 +62,23 @@ fn cascade_fixture() -> &'static str {
     )
 }
 
+/// A fixture built for Task 13's fix round 1 (review finding): non-empty
+/// `build_model` reasons (a Tseitin-marker-targeted `LabelNotClosed` residue
+/// that can never be injected away — see
+/// `crates/owl-dl-verify/tests/model.rs`'s
+/// `verified_check_can_still_carry_nonempty_build_reasons` for the full
+/// trace) paired with a model that still satisfies every WRITTEN axiom, i.e.
+/// a `Verified` CHECK result. This is the ONLY fixture in this suite that
+/// exercises `fold_build_reasons`'s `Verified -> Unresolved` downgrade arm —
+/// the single most safety-critical line in `main.rs`, since an accidental
+/// pass-through there would report exit 0 over an admitted, unclosed gap.
+fn marker_residue_fixture() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../owl-dl-verify/tests/fixtures/markerresidue.ofn"
+    )
+}
+
 /// `ontologies/real/pizza.ofn` is part of the gitignored corpus
 /// (`./scripts/fetch-real-ontologies.sh` pulls it on demand) — present in
 /// this sandbox, but a fresh clone or CI checkout may not have it. Every
@@ -279,4 +296,62 @@ fn json_violated_has_the_expected_shape() {
     assert!(!v["violations"].as_array().unwrap().is_empty());
     assert!(v["unresolved"].is_array());
     assert!(v["dropped"].is_object());
+}
+
+/// Exercises `fold_build_reasons`'s `Verified -> Unresolved` downgrade arm
+/// through the ACTUAL BINARY, end to end: `markerresidue.ofn`'s check
+/// verdict is `Verified` (every written axiom holds), but `build_model`
+/// admits, in its own `reasons`, that it could not close a Tseitin marker's
+/// label. Without the downgrade, the CLI would report exit 0 here — a false
+/// all-clear over an admitted gap. With it, this must be exit 3, and the
+/// build reason must be visible on both the text and `--json` surfaces, not
+/// swallowed.
+#[test]
+fn build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_three() {
+    let out = rustdl()
+        .arg("verify-el")
+        .arg(marker_residue_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a Verified check paired with non-empty build_model reasons must be \
+         downgraded to Unresolved (exit 3), never reported as exit 0 \
+         (Verified) or exit 2 (Violated) — stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("unresolved:"),
+        "expected an unresolved: line, got {stdout:?}"
+    );
+    assert!(
+        stdout.contains("LabelNotClosed"),
+        "the build-time reason must be surfaced on the text path, not \
+         swallowed by the downgrade: {stdout:?}"
+    );
+
+    let json_out = rustdl()
+        .arg("verify-el")
+        .arg("--json")
+        .arg(marker_residue_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(json_out.status.code(), Some(3));
+    let v: serde_json::Value = serde_json::from_slice(&json_out.stdout).expect("valid JSON");
+    assert_eq!(v["verdict"], "unresolved");
+    assert_eq!(v["axioms_checked"], 0);
+    let unresolved = v["unresolved"].as_array().expect("unresolved array");
+    assert!(
+        !unresolved.is_empty(),
+        "the build reason must be surfaced on the --json path too: {v:?}"
+    );
+    assert!(
+        unresolved
+            .iter()
+            .any(|r| r.as_str().unwrap_or("").contains("LabelNotClosed")),
+        "expected a LabelNotClosed entry in unresolved: {unresolved:?}"
+    );
 }

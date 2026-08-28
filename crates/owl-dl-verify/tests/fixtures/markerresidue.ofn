@@ -1,0 +1,9 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/markerresidue>
+Declaration(Class(:A)) Declaration(Class(:Y)) Declaration(Class(:F)) Declaration(Class(:G)) Declaration(Class(:W))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:u)) Declaration(ObjectProperty(:v))
+ObjectPropertyRange(:r :F)
+ObjectPropertyRange(:u :G)
+SubClassOf(:A ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :Y)))
+SubClassOf(ObjectIntersectionOf(ObjectSomeValuesFrom(:s :Y) :F) ObjectSomeValuesFrom(:u ObjectSomeValuesFrom(:v :W)))
+)

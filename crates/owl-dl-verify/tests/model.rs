@@ -842,6 +842,21 @@ fn conjunctive_trigger_needs_full_injection_and_verifies() {
 // direct evidence that this fixture's `Verified` result above is genuinely
 // produced by the SECOND round's injected lookup, not by some other path
 // that would have closed it in round 1 regardless.
+//
+// MEASURED (Task 13, fix round 1): this test isolates the OUTER
+// `build_model` loop MORE CLEANLY than `label-closure-range-sub.ofn`'s
+// equivalent test does. At `max_rounds: 1`, `label-closure-range-sub.ofn`
+// trips `BoundTripped{max_rounds}` TWICE — once from `build_model`'s own
+// loop and once from `expand_from_axioms`'s internal round counter, which
+// shares the same `bounds.max_rounds` value (see `model.rs`'s comment above
+// `one_round_is_insufficient_for_label_closure_range_sub`). `conjtrigger.ofn`
+// trips it only ONCE here: `expand_from_axioms`'s own loop reaches `!grew`
+// (nothing new to materialise on this fixture, since the `t`-witness is
+// already interned by the FACT-driven `expand()` before `expand_from_axioms`
+// runs) and returns before its internal round counter ever reaches the
+// shared bound, so only the outer loop's `BoundTripped` fires. Confirmed by
+// directly counting `reasons`' `BoundTripped` entries for both fixtures
+// side by side (one vs. two).
 #[test]
 fn conjunctive_trigger_is_insufficient_at_one_round() {
     let ofn = std::fs::read_to_string("tests/fixtures/conjtrigger.ofn").expect("fixture");
@@ -861,5 +876,75 @@ fn conjunctive_trigger_is_insufficient_at_one_round() {
         )),
         "one round must be insufficient — Y ⊓ F ⊑ H only becomes reachable once \
          Q is injected and re-saturated, starting round 2: {reasons:?}"
+    );
+}
+
+// --- Task 13, fix round 1: `Verified` + non-empty build-time `reasons` ------
+//
+// Found by review: `owl-dl-cli`'s `fold_build_reasons` has an arm that
+// downgrades a `Verified` CHECK result to `Unresolved` whenever
+// `build_model`'s own BUILD-time `reasons` are non-empty (never letting the
+// CLI report `Verified`/exit 0 over an admitted, unclosed gap) — and nothing
+// in the fixture set exercised that combination: `cascade.ofn` pairs
+// non-empty build reasons with a `Violated` check (a genuine, unrelated
+// defect), and the two `Bounds`-tripping tests above pair non-empty reasons
+// with a model `build_model` returns EARLY, before `verify` ever runs on it
+// in this suite. This fixture produces the missing combination directly:
+// `Verified` check, non-empty build `reasons`.
+//
+// `markerresidue.ofn` is `cascade.ofn`'s own first two `SubClassOf` axioms
+// (`A ⊑ ∃r.∃s.Y`, `∃s.Y ⊓ F ⊑ ∃u.∃v.W`) plus BOTH range axioms
+// (`Range(r,F)`, `Range(u,G)`), with cascade's THIRD axiom (`∃v.W ⊓ G ⊑ Z`)
+// dropped. That third axiom is what causes cascade's real defect (`Z` never
+// reaching the `∃v.W`-successor's label) — found by direct experiment
+// (probing `build_model`+`verify` on cascade trimmed to various prefixes):
+// with the third axiom present, the SAME marker residue below appears
+// alongside a `Violated` verdict (cascade's own genuine detection); dropping
+// it removes what nothing here checks against, leaving `Verified` with the
+// marker residue intact. The residue itself comes from `expand`'s
+// FACT-driven path: `saturate_with_exists_facts` targets the compound
+// existential body `∃u.∃v.W` at its own Tseitin marker (an empty-subsumer-set
+// synthetic class, per `expand`'s doc), and `Range(u,G)` makes that marker's
+// own target label unclosable — but a marker has no IRI to key an injected
+// `Q` on, so `build_model` deliberately excludes it from the injection
+// worklist (`pending`) and reports it in `reasons` on every convergent
+// return instead of looping forever (see `build_model`'s own doc comment on
+// this exact mechanism, and `cascade_converges_in_one_round_with_residual_
+// marker_targeted_reports` above). Since nothing in `markerresidue.ofn`
+// checks the marker's own label, the model still satisfies every WRITTEN
+// axiom — hence `Verified` — while `build_model` has admitted, three times
+// over (once per element visiting the gap), that it could not close a label.
+//
+// See `crates/owl-dl-cli/tests/verify_el.rs`'s
+// `build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_three` for
+// the end-to-end pin through the actual CLI binary — THIS test is what
+// establishes the combination exists at all; that one is what proves the
+// CLI's `fold_build_reasons` arm actually acts on it.
+#[test]
+fn verified_check_can_still_carry_nonempty_build_reasons() {
+    let ofn = std::fs::read_to_string("tests/fixtures/markerresidue.ofn").expect("fixture");
+    let internal = load(&ofn);
+    let (m, build_reasons) =
+        owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    assert!(
+        !build_reasons.is_empty(),
+        "markerresidue.ofn must produce a residual marker-targeted LabelNotClosed \
+         from build_model — the whole point of this fixture is to pair that with \
+         a Verified check result: {build_reasons:?}"
+    );
+    assert!(
+        build_reasons
+            .iter()
+            .all(|r| matches!(r, UnresolvedReason::LabelNotClosed { .. })),
+        "expected only LabelNotClosed (marker-targeted) reasons on this fixture, \
+         got: {build_reasons:?}"
+    );
+    let (verdict, _verified_model) = owl_dl_verify::verify(m, &internal, None);
+    assert!(
+        matches!(verdict, Verdict::Verified { .. }),
+        "every WRITTEN axiom in markerresidue.ofn holds in the model as built — \
+         nothing checks the unclosed marker's own label — so the CHECK result \
+         must be Verified even though build_model's own reasons are non-empty: \
+         {verdict:?}"
     );
 }

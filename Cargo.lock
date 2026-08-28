@@ -1146,6 +1146,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "owl-dl-verify"
+version = "0.4.23"
+dependencies = [
+ "hashbrown 0.15.5",
+ "horned-owl",
+ "owl-dl-core",
+ "owl-dl-saturation",
+]
+
+[[package]]
 name = "oxilangtag"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

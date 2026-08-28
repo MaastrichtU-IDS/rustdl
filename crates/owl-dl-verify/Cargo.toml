@@ -1,0 +1,19 @@
+[package]
+name = "owl-dl-verify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+owl-dl-core = { workspace = true }
+owl-dl-saturation = { workspace = true }
+hashbrown = { workspace = true }
+
+[dev-dependencies]
+horned-owl = { workspace = true }
+
+[lints]
+workspace = true

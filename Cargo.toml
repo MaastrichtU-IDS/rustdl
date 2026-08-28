@@ -6,6 +6,7 @@ members = [
     "crates/owl-dl-tableau",
     "crates/owl-dl-datatypes",
     "crates/owl-dl-cb",
+    "crates/owl-dl-verify",
     "crates/owl-dl-reasoner",
     "crates/owl-dl-cli",
     "crates/owl-dl-bench",
@@ -18,6 +19,7 @@ default-members = [
     "crates/owl-dl-tableau",
     "crates/owl-dl-datatypes",
     "crates/owl-dl-cb",
+    "crates/owl-dl-verify",
     "crates/owl-dl-reasoner",
     "crates/owl-dl-cli",
     "crates/owl-dl-bench",
@@ -41,6 +43,7 @@ owl-dl-saturation = { path = "crates/owl-dl-saturation", version = "0.4.5" }
 owl-dl-tableau = { path = "crates/owl-dl-tableau", version = "0.4.5" }
 owl-dl-datatypes = { path = "crates/owl-dl-datatypes", version = "0.4.5" }
 owl-dl-cb = { path = "crates/owl-dl-cb", version = "0.4.5" }
+owl-dl-verify = { path = "crates/owl-dl-verify", version = "0.4.5" }
 owl-dl-reasoner = { path = "crates/owl-dl-reasoner", version = "0.4.5" }
 
 horned-owl = { version = "1.4", default-features = false }

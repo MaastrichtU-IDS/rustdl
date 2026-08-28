@@ -8,7 +8,7 @@
 //! `Unresolved`, never a skip: otherwise "accept" can mean "ignored every form
 //! I did not recognise".
 
-use owl_dl_core::{Axiom, ConceptExpr as CE, ConceptId, ConceptPool, Role};
+use owl_dl_core::{Axiom, ConceptExpr as CE, ConceptId, ConceptPool, Role, SubRolePath};
 
 use crate::UnresolvedReason;
 use crate::interp::{Element, Interpretation};
@@ -237,12 +237,46 @@ fn unresolved_or_holds(axiom_index: usize, ambiguous: Option<&'static str>) -> A
 ///
 /// All 25 `Axiom` variants are listed explicitly (spec §8's count, verified
 /// against `crates/owl-dl-core/src/ontology.rs`), so that a 26th variant
-/// breaks the build rather than silently becoming a skip. This task covers 8
-/// of them (3 vacuous declarations, `SubClassOf`, `EquivalentClasses`,
-/// `DisjointClasses`, `ObjectPropertyDomain`, `ObjectPropertyRange`); a later
-/// task upgrades 5 more (the role-shaped variants) from the placeholder
-/// `unhandled` arm to a real check. The remaining 12 have no evaluator planned
-/// at all and stay `unhandled` permanently.
+/// breaks the build rather than silently becoming a skip. 13 are checked (3
+/// vacuous declarations, `SubClassOf`, `EquivalentClasses`, `DisjointClasses`,
+/// `ObjectPropertyDomain`, `ObjectPropertyRange`, `SubObjectPropertyOf` [both
+/// `Role` and `Chain` arms], `EquivalentObjectProperties`, `TransitiveRole`,
+/// `SymmetricRole`, `InverseObjectProperties`). The remaining 12 have no
+/// evaluator planned at all and stay `unhandled` permanently.
+///
+/// # Why `SubObjectPropertyOf(Role)` and `EquivalentObjectProperties` cannot
+/// be sabotaged by deleting a model edge
+///
+/// Both are checked the obvious way: for every edge under one role, require
+/// `interp.has_edge` on the other. But `interp`'s `has_edge`/`edges`
+/// (`Interpretation`'s contract) are themselves sub-role-UNIONING — and the
+/// model's `RoleHierarchy` that union walks was built by `build_role_hierarchy`
+/// reading exactly these two axiom shapes (see `model.rs`). So whenever the
+/// axiom under test says `sub ⊑ sup` (or `p ≡ q`), the model's hierarchy
+/// already has `sub` (or `q`) registered as a sub-role of `sup` (or `p`)
+/// BEFORE this function ever runs — the very union `has_edge` performs to
+/// answer the consequent is built from the identical relation the antecedent
+/// scan (`interp.edges(sub)`) also draws from. Any edge deleted from whatever
+/// bucket backs the antecedent disappears from the antecedent too, so the
+/// check reads vacuously `Holds` either way: there is no edge-level mutation
+/// that can sever "true under `sub`" from "true under `sup`" while a
+/// consistently-built hierarchy still reflects the relation. This is a
+/// structural fact about the model, not a gap in this function — see
+/// `tests/evaluator.rs`'s
+/// `subobjectpropertyof_role_edge_deletion_is_structurally_a_no_op` and its
+/// `EquivalentObjectProperties` counterpart, which delete the edge and
+/// confirm the verdict does NOT move. The sabotage matrix for these two arms
+/// therefore instead passes `check_axiom` a MISMATCHED axiom value (asserting
+/// a relation the model's hierarchy does not have) — a legitimate exercise of
+/// this function's own logic, just not an edit to the model.
+///
+/// `SubObjectPropertyOf(Chain)` and `TransitiveRole` do not have this
+/// problem: the composed edge they require lives ONLY in the target role's
+/// own bucket (`close_chains_and_transitivity` writes it there, and
+/// `build_role_hierarchy` never processes `Chain` or `TransitiveRole` axioms
+/// at all), so deleting exactly that composed edge — leaving the two leg
+/// edges the antecedent scan draws from untouched — is a genuine, targeted
+/// sabotage.
 pub fn check_axiom<I: Interpretation>(
     pool: &ConceptPool,
     interp: &I,
@@ -376,12 +410,147 @@ pub fn check_axiom<I: Interpretation>(
             unresolved_or_holds(index, ambiguous)
         }
 
-        // The 5 role-shaped variants a later task upgrades to real checks.
-        Axiom::SubObjectPropertyOf { .. } => unhandled(index, "SubObjectPropertyOf"),
-        Axiom::EquivalentObjectProperties(_) => unhandled(index, "EquivalentObjectProperties"),
-        Axiom::TransitiveRole(_) => unhandled(index, "TransitiveRole"),
-        Axiom::SymmetricRole(_) => unhandled(index, "SymmetricRole"),
-        Axiom::InverseObjectProperties(_, _) => unhandled(index, "InverseObjectProperties"),
+        // The 5 role-shaped variants. See this function's doc for why the
+        // `Role` and `EquivalentObjectProperties` arms are checked but
+        // structurally un-sabotageable by edge deletion.
+        Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Role(sub_role),
+            sup,
+        } => {
+            if sub_role.is_inverse() || sup.is_inverse() {
+                return unhandled(index, "SubObjectPropertyOf(Role, Inverse)");
+            }
+            for (from, to) in interp.edges(sub_role.role_id()) {
+                if !interp.has_edge(from, sup.role_id(), to) {
+                    return AxiomVerdict::Fails {
+                        witness: vec![from, to],
+                        note: format!(
+                            "SubObjectPropertyOf (axiom {index}): edge {from:?} -> {to:?} \
+                             holds under the sub-role but not under the super-role"
+                        ),
+                    };
+                }
+            }
+            AxiomVerdict::Holds
+        }
+
+        Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Chain(parts),
+            sup,
+        } => {
+            let [a, b] = parts.as_slice() else {
+                return unhandled(index, "SubObjectPropertyOf(Chain, len != 2)");
+            };
+            if a.is_inverse() || b.is_inverse() || sup.is_inverse() {
+                return unhandled(index, "SubObjectPropertyOf(Chain, Inverse)");
+            }
+            for (x, y) in interp.edges(a.role_id()) {
+                for (y2, z) in interp.edges(b.role_id()) {
+                    if y != y2 {
+                        continue;
+                    }
+                    if !interp.has_edge(x, sup.role_id(), z) {
+                        return AxiomVerdict::Fails {
+                            witness: vec![x, y, z],
+                            note: format!(
+                                "SubObjectPropertyOf/Chain (axiom {index}): the composed \
+                                 edge {x:?} -> {y:?} -> {z:?} has no edge under the chain's \
+                                 super-role"
+                            ),
+                        };
+                    }
+                }
+            }
+            AxiomVerdict::Holds
+        }
+
+        Axiom::EquivalentObjectProperties(members) => {
+            if members.iter().any(|m| m.is_inverse()) {
+                return unhandled(index, "EquivalentObjectProperties(Inverse)");
+            }
+            for m1 in members {
+                for m2 in members {
+                    if m1 == m2 {
+                        continue;
+                    }
+                    for (from, to) in interp.edges(m1.role_id()) {
+                        if !interp.has_edge(from, m2.role_id(), to) {
+                            return AxiomVerdict::Fails {
+                                witness: vec![from, to],
+                                note: format!(
+                                    "EquivalentObjectProperties (axiom {index}): edge \
+                                     {from:?} -> {to:?} holds under one member but not \
+                                     under another"
+                                ),
+                            };
+                        }
+                    }
+                }
+            }
+            AxiomVerdict::Holds
+        }
+
+        Axiom::TransitiveRole(r) => {
+            if r.is_inverse() {
+                return unhandled(index, "TransitiveRole(Inverse)");
+            }
+            let rid = r.role_id();
+            for (x, y) in interp.edges(rid) {
+                for (y2, z) in interp.edges(rid) {
+                    if y != y2 {
+                        continue;
+                    }
+                    if !interp.has_edge(x, rid, z) {
+                        return AxiomVerdict::Fails {
+                            witness: vec![x, y, z],
+                            note: format!(
+                                "TransitiveRole (axiom {index}): the composed edge {x:?} \
+                                 -> {y:?} -> {z:?} has no direct edge"
+                            ),
+                        };
+                    }
+                }
+            }
+            AxiomVerdict::Holds
+        }
+
+        // GUARDED: the reasoner's fragment gate admits this axiom only when a
+        // whole-ontology observability analysis proves the role unread, so it
+        // is expected to carry NO edges — verified rather than assumed. A
+        // non-empty extension indicts that gate, not this closure, hence
+        // `Unresolved`, never `Fails`.
+        Axiom::SymmetricRole(r) => {
+            if r.is_inverse() {
+                return unhandled(index, "SymmetricRole(Inverse)");
+            }
+            if interp.edges(r.role_id()).is_empty() {
+                AxiomVerdict::Holds
+            } else {
+                AxiomVerdict::Unresolved(UnresolvedReason::GuardedRoleHasEdges {
+                    role: r.role_id(),
+                })
+            }
+        }
+
+        // GUARDED, and BOTH roles must be checked: the gate requires both `p`
+        // and `q` unread, so a check that only looked at one would accept a
+        // model where the other has edges.
+        Axiom::InverseObjectProperties(p, q) => {
+            if p.is_inverse() || q.is_inverse() {
+                return unhandled(index, "InverseObjectProperties(Inverse)");
+            }
+            if !interp.edges(p.role_id()).is_empty() {
+                return AxiomVerdict::Unresolved(UnresolvedReason::GuardedRoleHasEdges {
+                    role: p.role_id(),
+                });
+            }
+            if !interp.edges(q.role_id()).is_empty() {
+                return AxiomVerdict::Unresolved(UnresolvedReason::GuardedRoleHasEdges {
+                    role: q.role_id(),
+                });
+            }
+            AxiomVerdict::Holds
+        }
 
         // The 12 variants with no evaluator planned at all.
         Axiom::DisjointUnion { .. } => unhandled(index, "DisjointUnion"),

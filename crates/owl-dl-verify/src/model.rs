@@ -231,6 +231,34 @@ impl FiniteModel {
         }
     }
 
+    /// Test-only mutation: removes the edge `(from, to)` from role `r`'s OWN
+    /// declared bucket in place (never a sub-role's bucket — the caller picks
+    /// which one).
+    ///
+    /// Exists for the same reason as `test_only_remove_from_label` (see its
+    /// doc): the `RBox` sabotage matrix (`tests/evaluator.rs`) needs to
+    /// manufacture a specific, pinned edge-level violation without going
+    /// through the builder. Gated identically.
+    ///
+    /// This can only ever break a check that reads role `r`'s bucket WITHOUT
+    /// that same read also being how the check's own antecedent was
+    /// populated — e.g. a chain- or transitivity-COMPOSED edge, which lives
+    /// solely in the composed role's bucket, distinct from the leg roles'
+    /// buckets the antecedent scan reads. It is a deliberate no-op for
+    /// `SubObjectPropertyOf(Role)` / `EquivalentObjectProperties`: there, the
+    /// target role's `has_edge` already unions in the very sub-role bucket
+    /// the antecedent iterates (that union is exactly what
+    /// `build_role_hierarchy` built FROM the axiom under test), so deleting
+    /// the edge from either bucket removes the antecedent along with it and
+    /// the check reads vacuously `Holds` either way — see `eval.rs`'s doc on
+    /// those two arms for the full argument.
+    #[cfg(any(test, feature = "test-mutations"))]
+    pub fn test_only_remove_edge(&mut self, r: RoleId, from: Element, to: Element) {
+        if let Some(bucket) = self.edges.get_mut(r.index() as usize) {
+            bucket.retain(|&(f, t)| (f, t) != (from, to));
+        }
+    }
+
     /// Attaches the role hierarchy, which `successors`/`has_edge`/`edges` need
     /// to answer sub-role inclusion on demand.
     #[must_use]

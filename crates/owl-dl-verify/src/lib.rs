@@ -94,9 +94,9 @@ pub fn build_model(
     loop {
         let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&working);
         let h = model::build_role_hierarchy(&working);
-        // Task 6 inserts the ChainRangeOutOfProfile check HERE. Do not add it in
-        // this task: `chain_range_out_of_profile` does not exist yet and Task 5
-        // must compile and pass on its own.
+        if let Some(chain_super) = model::chain_range_out_of_profile(&working, &h) {
+            return Err(UnresolvedReason::ChainRangeOutOfProfile { chain_super });
+        }
         let eff = model::effective_ranges(&working, &h);
         let mut m = FiniteModel::seed(&working, &subs, &facts).with_hierarchy(h);
         let mut step = m.expand(&working, &subs, &facts, &eff, bounds);
@@ -104,6 +104,9 @@ pub fn build_model(
         // existential witness (the saturator emits no inner fact and gives the
         // marker an empty subsumer set), which is why Task 4b exists.
         step.extend(m.expand_from_axioms(&working, &subs, &eff, bounds));
+        // Chain/transitive edges are materialised AFTER both expansion paths so
+        // the composed pairs have real endpoints to compose from.
+        step.extend(m.close_chains_and_transitivity(&working, bounds));
 
         // Only a LabelNotClosed naming a REAL class is injectable. `expand`'s
         // fact-driven path can also report one whose `class` is a Tseitin

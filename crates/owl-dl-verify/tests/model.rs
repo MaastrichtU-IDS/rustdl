@@ -1,5 +1,7 @@
 use owl_dl_core::convert_ontology;
-use owl_dl_verify::model::{FiniteModel, build_role_hierarchy, effective_ranges};
+use owl_dl_verify::model::{
+    FiniteModel, build_role_hierarchy, chain_range_out_of_profile, effective_ranges,
+};
 use owl_dl_verify::{Bounds, Interpretation, UnresolvedReason};
 
 fn load(ofn: &str) -> owl_dl_core::InternalOntology {
@@ -680,4 +682,51 @@ fn injected_q_unsatisfiable_reports_run_delta_not_label_not_closed() {
          ALSO still be reported as an unresolved (not-yet-injected) LabelNotClosed: \
          {reasons:?}"
     );
+}
+
+#[test]
+fn chain_edges_are_materialised_onto_the_declared_super_role() {
+    let ofn = std::fs::read_to_string("tests/fixtures/chainpoison.ofn").expect("fixture");
+    let internal = load(&ofn);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let r = internal.vocabulary.role_id("http://ex.org/r").expect("r");
+    assert!(
+        !m.edges(r).is_empty(),
+        "Chain(t,u) ⊑ r must materialise an r-edge"
+    );
+}
+
+#[test]
+fn transitivity_with_a_range_is_not_refused() {
+    // A materialised transitive edge's target was already an edge-target of the
+    // same or a sub-role, so it already carries eff_ranges(r). Refusing would be
+    // pure coverage loss over the dominant wild combination.
+    let ofn = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/tr>
+Declaration(Class(:F)) Declaration(ObjectProperty(:r))
+TransitiveObjectProperty(:r)
+ObjectPropertyRange(:r :F)
+)
+";
+    let internal = load(ofn);
+    let h = build_role_hierarchy(&internal);
+    assert!(
+        chain_range_out_of_profile(&internal, &h).is_none(),
+        "TransitiveRole is exempt by construction"
+    );
+}
+
+#[test]
+fn a_chain_whose_head_range_is_not_covered_by_the_second_leg_is_refused() {
+    let ofn = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/cr>
+Declaration(Class(:F))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u))
+SubObjectPropertyOf(ObjectPropertyChain(:t :u) :r)
+ObjectPropertyRange(:r :F)
+)
+";
+    let internal = load(ofn);
+    let h = build_role_hierarchy(&internal);
+    assert!(chain_range_out_of_profile(&internal, &h).is_some());
 }

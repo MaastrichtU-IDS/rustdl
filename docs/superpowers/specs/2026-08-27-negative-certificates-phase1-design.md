@@ -171,8 +171,14 @@ entailments the EL closure legitimately never had.
    `aug` is empty in the common case — the saturator already range-wraps *outer* RHS existentials —
    so this fires only for **nested** markers and the `∃r.⊤` top-witness.
 
-   **ITERATE TO A FIXPOINT — two runs are NOT enough.** `cascade.ofn` needs three, and an
-   `n`-deep nesting needs `n+1`. The pair `(M_{∃v.W}, {G})` is undiscoverable in pass 1 because its
+   **ITERATE TO A FIXPOINT.** **CORRECTED 2026-08-28 (measured during implementation):** this
+   originally read "two runs are NOT enough — `cascade.ofn` needs three, and an `n`-deep nesting
+   needs `n+1`". That analysis described the FACT-driven path only. Task 4b's axiom-driven expansion
+   walks the axioms directly, removing the anchor-class limitation, and `cascade.ofn` measurably
+   converges in **ONE** round at any `max_rounds >= 1` — it has no injectable gap. The fixpoint
+   remains required in principle (an injection can expose new `(target, aug)` pairs) but **no fixture
+   exercises more than one round**, so the loop past round 1 is untested machinery. The original
+   reasoning is retained below because it still explains why the FACT path cannot stand alone. The pair `(M_{∃v.W}, {G})` is undiscoverable in pass 1 because its
    only incoming fact is the conclusion of a conjunctive `ConceptRule` whose trigger fires for no
    run-1 class; conditional `∃`-RHS have no anchor class, unlike told/Tseitin existentials (which
    are anchored because `WorklistEngine::seed` seeds every class reflexively — that reflexive

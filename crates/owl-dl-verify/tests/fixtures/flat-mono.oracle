@@ -1,0 +1,6 @@
+# Healthy control. C ⊑ ∃u.A, A ⊑ F, ∃u.F ⊑ D entails C ⊑ D by plain FLAT
+# (non-nested) monotonicity — the sibling of nested-mono.ofn's #80 defect
+# with the ∃t.∃u wrapper removed. rustdl's saturator handles the flat case
+# correctly; only nesting trips it. Basic EL entailment, uncontested.
+provenance: structural   # basic EL entailment, uncontested; rustdl gets this right
+subclass: C D

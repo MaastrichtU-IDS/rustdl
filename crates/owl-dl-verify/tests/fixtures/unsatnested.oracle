@@ -1,0 +1,6 @@
+# issue #81 (unsat-shaped variant). X ⊑ ∃r.∃s.Y, Range(r,F), DisjointClasses(F,W),
+# ∃s.Y ⊑ W: the r-successor must be F (range) and, once it also witnesses
+# ∃s.Y, W (via the second axiom) — F and W are disjoint, so X is unsatisfiable.
+# unsatconj.ofn is the FLAT (non-nested) sibling that rustdl gets right.
+provenance: hermit
+unsatisfiable: X

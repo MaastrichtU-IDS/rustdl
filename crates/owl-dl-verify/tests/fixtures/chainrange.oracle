@@ -1,0 +1,14 @@
+# C ⊑ D via Chain(t,u) ⊑ r + Range(r,F): the chain-materialised r-edge's
+# target must be F, and C already has ∃t.∃u.F ⊑ D, so C ⊑ D. HermiT confirms
+# this pair; Konclude under-reports it (a further under-report instance, not
+# a disagreement between the two peers).
+#
+# NOTE: this crate's own `build_model` REFUSES this fixture outright
+# (Err(ChainRangeOutOfProfile) — see §4 of the design spec: a chain-implied
+# super-role paired with a range is out of this instrument's profile), so the
+# acceptance invariant holds here trivially regardless of this oracle's
+# content. Recorded anyway per the "one oracle per fixture" contract, and
+# because Phase 2's chain/range fold is expected to make this fixture
+# buildable — at which point this oracle becomes load-bearing.
+provenance: hermit   # Konclude also under-reports this pair
+subclass: C D

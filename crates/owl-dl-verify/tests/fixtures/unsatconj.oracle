@@ -1,0 +1,8 @@
+# Healthy control. X ⊑ ∃r.Y, Range(r,F), DisjointClasses(Y,F): X's r-successor
+# must be both Y and F, which are disjoint, so X is unsatisfiable — the FLAT
+# (non-nested) sibling of unsatnested.ofn's defect, which the EL saturator
+# gets right on its own. Not a contested entailment (basic disjointness +
+# range interaction), so no external peer run was needed to adjudicate it;
+# rustdl's own classify_internal already reports X unsatisfiable.
+provenance: structural   # basic EL entailment, uncontested; rustdl gets this right
+unsatisfiable: X

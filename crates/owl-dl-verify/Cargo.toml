@@ -14,6 +14,11 @@ hashbrown = { workspace = true }
 
 [dev-dependencies]
 horned-owl = { workspace = true }
+# Only for tests (comparing rustdl's own classification against the committed
+# oracles in `tests/acceptance.rs`) — NOT a `[dependencies]` entry, so this
+# creates no cycle: `owl-dl-reasoner` does not depend on `owl-dl-verify`, and
+# `src/` still never imports it (see `src/eval.rs`'s independence contract).
+owl-dl-reasoner = { workspace = true }
 # Self-dependency trick: requests this crate's own `test-mutations` feature
 # for the INTEGRATION test binaries under `tests/`. A plain `#[cfg(test)]`
 # on `FiniteModel::test_only_remove_from_label` is invisible there — that

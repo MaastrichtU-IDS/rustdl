@@ -1,0 +1,5 @@
+# issue #82 (domain half). Chain(t,u) ⊑ r, ObjectPropertyDomain(r, owl:Nothing):
+# anything with a chain-materialised r-edge is forced into an empty domain, so
+# C (which requires exactly that edge) must be unsatisfiable.
+provenance: konclude-v0.7.0-1138
+unsatisfiable: C

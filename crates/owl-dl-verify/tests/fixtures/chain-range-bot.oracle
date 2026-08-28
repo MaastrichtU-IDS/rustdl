@@ -4,5 +4,11 @@
 # Konclude reports this — the claim rests on hand-derivation alone, not on
 # peer agreement. See docs/superpowers/specs/2026-08-27-negative-certificates-
 # phase1-design.md and issue #82.
-provenance: derivation-only   # BOTH rustdl and Konclude miss this; see issue #82
+# CONTROLLER-VERIFIED 2026-08-28: HermiT (robot v1.9.6 via the harness wrapper)
+# was also run on this fixture and reported 0 non-trivial rows, so ALL THREE of
+# rustdl, Konclude and HermiT fail to confirm it. That is NOT strong evidence
+# against the derivation, however: robot's default axiom generators may not emit
+# unsatisfiable classes at all, so HermiT's silence here may be an output-format
+# limitation rather than a verdict. Treated as unconfirmed either way.
+provenance: derivation-only   # rustdl, Konclude AND HermiT all fail to confirm; see issue #82
 unsatisfiable: C

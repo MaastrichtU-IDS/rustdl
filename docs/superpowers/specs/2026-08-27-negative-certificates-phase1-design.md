@@ -374,7 +374,14 @@ is indistinguishable from a working one.
 | A3 | `cascade.ofn` | `Violated` — Konclude-confirmed `A ⊑ FINAL`, rustdl emits 0 rows |
 | A4 | `unsatnested.ofn` | `Violated` or `RunDelta` — HermiT-confirmed `X ≡ ⊥` |
 | A5 | `chainrange.ofn` | `Unresolved { ChainRangeOutOfProfile }` under §4; `Violated` once Phase 2 folds |
-| A6 | `unsatconj.ofn`, `chainrange_ctl.ofn` | `Verified` — discriminating healthy controls |
+| A6 | `unsatconj.ofn`, `flat-mono.ofn`, `label-closure-range-sub.ofn` | `Verified` — discriminating healthy controls |
+| A7 | `nested-mono.ofn` | `Violated` — issue #80's three-axiom minimal case |
+
+**MEASURED 2026-08-28:** `chainrange_ctl.ofn` is **REFUSED** (`ChainRangeOutOfProfile`), so it is
+neither a control nor a detection — it is a coverage loss Phase 2's fold would recover. And
+`cascade.ofn` builds but carries 3 `LabelNotClosed`, so A3 will likely land on `Unresolved` rather
+than `Violated`: honest, but weaker than a detection on the instrument's sharpest prey. Record which
+acceptance fixtures land on `Unresolved`; do not count them as detections.
 
 **ACCEPTANCE TESTS MUST NOT ASSERT `Violated` DIRECTLY — they would break when the engine is
 fixed.** A1–A5 are now filed as issues #80/#81/#82, so the engine defects they detect are expected

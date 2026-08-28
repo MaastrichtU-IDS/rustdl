@@ -1910,10 +1910,24 @@ fn instrument_never_verifies_a_classification_that_disagrees_with_the_oracle() {
 }
 ```
 
-Cases: `chainpoison.ofn`, `chain-range-bot.ofn`, `cascade.ofn`, `unsatnested.ofn`,
-`chainrange.ofn`, `nested-mono.ofn`, plus the healthy controls `unsatconj.ofn`,
-`chainrange_ctl.ofn`, `flat-mono.ofn`, `label-closure-range-sub.ofn` — which must come back
-`Verified`.
+**Cases — MEASURED 2026-08-28 by running `build_model` on every committed fixture, so these
+buckets are observed, not predicted:**
+
+| bucket | fixtures | expectation |
+|---|---|---|
+| detections (buildable, rustdl disagrees with oracle) | `chainpoison.ofn` (domain 4), `chain-range-bot.ofn` (domain 4), `unsatnested.ofn`, `nested-mono.ofn` (domain 6 — issue #80's three-axiom minimal case) | not `Verified` |
+| detection, but likely WEAKER | `cascade.ofn` — builds, yet carries **3 `LabelNotClosed`**, so it will probably land on `Unresolved` rather than `Violated` | not `Verified`; log which |
+| REFUSED, so neither control nor detection | `chainrange.ofn`, `chainrange_ctl.ofn` — both return `Err(ChainRangeOutOfProfile)` | `Unresolved`; a known coverage loss Phase 2's fold would recover |
+| healthy controls | `unsatconj.ofn`, `flat-mono.ofn`, `label-closure-range-sub.ofn` | **`Verified`** |
+
+Two corrections embedded above, both from measurement:
+
+* **`chainrange_ctl.ofn` is REFUSED**, so it cannot be a control. An earlier draft listed it as one,
+  which was already wrong on separate evidence (rustdl misses `C ⊑ D` on it and Konclude reports it —
+  issue #80's second instance), and the refusal makes it wrong a second time over.
+* **`chainpoison.ofn` and `chain-range-bot.ofn` are both BUILT, not refused.** The second is safe
+  specifically because `Range(r, owl:Nothing)` is a `Bot` filler that `effective_ranges` skips, so a
+  range-keyed refusal cannot fire on it. Both crown jewels are reachable.
 
 - [ ] **Step 3: Log the weaker outcome.** When the verdict is `Unresolved` rather than `Violated`
   the invariant still holds but coverage is weaker; `eprintln!` which fixtures land there so the

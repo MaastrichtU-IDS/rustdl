@@ -1254,8 +1254,13 @@ pub fn build_model(
         // this task: `chain_range_out_of_profile` does not exist yet and Task 5
         // must compile and pass on its own.
         let eff = model::effective_ranges(&working, &h);
-        let mut m = FiniteModel::seed(&working, &subs, &facts);
-        let step = m.expand(&subs, &facts, &eff, bounds);
+        let mut m = FiniteModel::seed(&working, &subs, &facts)
+            .with_hierarchy(model::build_role_hierarchy(&working));
+        let mut step = m.expand(&subs, &facts, &eff, bounds);
+        // BOTH expansion paths run. The fact path alone cannot reach a nested
+        // existential witness (the saturator emits no inner fact and gives the
+        // marker an empty subsumer set), which is why Task 4b exists.
+        step.extend(m.expand_from_axioms(&working, &subs, &eff, bounds));
 
         let pending: Vec<(ClassId, RoleId)> = step
             .iter()
@@ -1354,6 +1359,20 @@ class is genuinely unsatisfiable, so push `UnresolvedReason::RunDelta { class: y
 caller treat it as a defect signal.
 
 - [ ] **Step 4: Run both tests** → PASS.
+
+- [ ] **Step 4b: SETTLE the deferred `#[ignore]`.** Task 4b re-measured the two ignored tests and
+  reported that one of them *"would actually pass if wired to `expand_from_axioms`"*, deferring the
+  wiring to this task — which the step above performs. Run:
+
+```bash
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify --test model -- --ignored
+```
+
+  For each test that now passes, **delete the `#[ignore]` and its reason**. For any that still fails,
+  keep it ignored but replace the reason with what you measured here. Do not leave a test ignored on
+  the strength of a previous task's note: a test whose green is withheld by scope choice rather than
+  by a real gap is exactly the stale-sentinel hazard
+  (`docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`). Report which you un-ignored.
 
 - [ ] **Step 5: Commit**
 

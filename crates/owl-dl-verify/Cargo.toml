@@ -14,6 +14,20 @@ hashbrown = { workspace = true }
 
 [dev-dependencies]
 horned-owl = { workspace = true }
+# Self-dependency trick: requests this crate's own `test-mutations` feature
+# for the INTEGRATION test binaries under `tests/`. A plain `#[cfg(test)]`
+# on `FiniteModel::test_only_remove_from_label` is invisible there — that
+# cfg is true only while compiling the crate's OWN unit tests, and
+# `tests/*.rs` link against `owl-dl-verify` as an external dependency. This
+# entry makes cargo build the library with the feature on for test targets
+# specifically, while a plain `cargo build -p owl-dl-verify` (no dev-deps)
+# never enables it, so the mutator stays unreachable from production code.
+owl-dl-verify = { path = ".", features = ["test-mutations"] }
+
+[features]
+# Gates `FiniteModel::test_only_remove_from_label` for integration tests.
+# See the dev-dependency comment above for why this exists.
+test-mutations = []
 
 [lints]
 workspace = true

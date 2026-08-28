@@ -207,6 +207,30 @@ impl FiniteModel {
         model
     }
 
+    /// Test-only mutation: removes `c` from element `e`'s label in place.
+    ///
+    /// Exists so the sabotage matrix (`tests/evaluator.rs`) can manufacture a
+    /// specific, pinned violation without going through the builder —
+    /// production code must never mutate a model after construction, hence
+    /// the cfg gate. `#[cfg(test)]` alone would not reach the separate
+    /// `tests/` integration crates, so `Cargo.toml` also requests this
+    /// crate's own `test-mutations` feature as a dev-dependency; see that
+    /// entry's comment.
+    ///
+    /// Deliberately does not touch `label_ix`: the reverse lookup for the
+    /// PRE-mutation label becomes stale, but nothing re-interns through it
+    /// for this element after the mutation, and leaving it stale (rather
+    /// than trying to keep it consistent) is what keeps this a one-line,
+    /// obviously-correct test seam.
+    #[cfg(any(test, feature = "test-mutations"))]
+    pub fn test_only_remove_from_label(&mut self, e: Element, c: ClassId) {
+        if let Some(slot) = self.labels.get_mut(e.index() as usize) {
+            let mut retained: Vec<ClassId> = slot.iter().copied().filter(|&x| x != c).collect();
+            retained.sort_unstable_by_key(|k| k.index());
+            *slot = retained.into_boxed_slice();
+        }
+    }
+
     /// Attaches the role hierarchy, which `successors`/`has_edge`/`edges` need
     /// to answer sub-role inclusion on demand.
     #[must_use]

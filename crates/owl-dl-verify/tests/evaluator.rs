@@ -6,9 +6,9 @@
 
 use std::collections::HashSet;
 
-use owl_dl_core::{ClassId, ConceptPool, RoleId};
-use owl_dl_verify::eval::{Judgement, eval_concept};
-use owl_dl_verify::{Element, Interpretation};
+use owl_dl_core::{Axiom, ClassId, ConceptPool, InternalOntology, RoleId};
+use owl_dl_verify::eval::{AxiomVerdict, Judgement, check_axiom, eval_concept};
+use owl_dl_verify::{Bounds, Element, Interpretation};
 
 mod common;
 
@@ -247,4 +247,334 @@ SubClassOf(:A :B)
         Judgement::True,
         "A ⊑ B, so B must be told-derivable in the label FiniteModel seeded"
     );
+}
+
+// --- check_axiom: the 8 class-shaped variants + a 5-variant sabotage matrix ---
+//
+// Everything below drives `FiniteModel` via `build_model`, not the hand-built
+// `StubModel` above: these tests are about `check_axiom` finding (or missing)
+// a violation in a REAL model, not about `eval_concept`'s own three-valued
+// logic in isolation (that is what the tests above already cover).
+
+/// First axiom in `internal.axioms` matching `pred`, or panics — a fixture
+/// missing the axiom it was written to exercise is a test-authoring bug, not
+/// something to silently tolerate.
+fn axiom_index(internal: &InternalOntology, pred: impl Fn(&Axiom) -> bool) -> usize {
+    internal
+        .axioms
+        .iter()
+        .position(pred)
+        .expect("fixture must contain the axiom this test exercises")
+}
+
+const DECLARATIONS_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/decl>
+Declaration(Class(:A))
+Declaration(ObjectProperty(:p))
+Declaration(NamedIndividual(:x))
+)
+";
+
+const SUBCLASS_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/sc>
+Declaration(Class(:A)) Declaration(Class(:B))
+SubClassOf(:A :B)
+)
+";
+
+const EQUIV_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/eq>
+Declaration(Class(:A)) Declaration(Class(:B))
+EquivalentClasses(:A :B)
+)
+";
+
+const DISJOINT_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/dj>
+Declaration(Class(:A)) Declaration(Class(:B))
+DisjointClasses(:A :B)
+)
+";
+
+// `SubClassOf(:C :D)` makes the domain constraint hold BY CONSTRUCTION,
+// decoupling this fixture from whether the saturator's own domain-propagation
+// rule fires — that rule's correctness is not this test's concern, only
+// `check_axiom`'s independent re-check of it is.
+const DOMAIN_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/dom>
+Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))
+Declaration(ObjectProperty(:p))
+ObjectPropertyDomain(:p :D)
+SubClassOf(:C :D)
+SubClassOf(:C ObjectSomeValuesFrom(:p :E))
+)
+";
+
+// E and F are deliberately UNRELATED: the range-fold + injection machinery
+// (`build_model` §5) must close F into the witness's label on its own.
+const RANGE_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/rng>
+Declaration(Class(:C)) Declaration(Class(:E)) Declaration(Class(:F))
+Declaration(ObjectProperty(:p))
+ObjectPropertyRange(:p :F)
+SubClassOf(:C ObjectSomeValuesFrom(:p :E))
+)
+";
+
+#[test]
+fn declare_class_axiom_is_vacuously_holds() {
+    let internal = common::load(DECLARATIONS_FIXTURE);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::DeclareClass(_)));
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+}
+
+#[test]
+fn declare_object_property_axiom_is_vacuously_holds() {
+    let internal = common::load(DECLARATIONS_FIXTURE);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| {
+        matches!(ax, Axiom::DeclareObjectProperty(_))
+    });
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+}
+
+#[test]
+fn declare_named_individual_axiom_is_vacuously_holds() {
+    let internal = common::load(DECLARATIONS_FIXTURE);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| {
+        matches!(ax, Axiom::DeclareNamedIndividual(_))
+    });
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+}
+
+#[test]
+fn subclassof_holds_on_a_healthy_ontology() {
+    let internal = common::load(SUBCLASS_FIXTURE);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::SubClassOf { .. }));
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+}
+
+#[test]
+fn equivalent_classes_holds_on_a_healthy_ontology() {
+    let internal = common::load(EQUIV_FIXTURE);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::EquivalentClasses(_)));
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+}
+
+#[test]
+fn disjoint_classes_holds_on_a_healthy_ontology() {
+    let internal = common::load(DISJOINT_FIXTURE);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::DisjointClasses(_)));
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+}
+
+#[test]
+fn object_property_domain_holds_on_a_healthy_ontology() {
+    let internal = common::load(DOMAIN_FIXTURE);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| {
+        matches!(ax, Axiom::ObjectPropertyDomain { .. })
+    });
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+}
+
+#[test]
+fn object_property_range_holds_on_a_healthy_ontology() {
+    let internal = common::load(RANGE_FIXTURE);
+    let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| {
+        matches!(ax, Axiom::ObjectPropertyRange { .. })
+    });
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+}
+
+#[test]
+fn sabotage_subclassof_a_deleted_label_entry_must_be_caught_with_index_and_witness() {
+    let internal = common::load(SUBCLASS_FIXTURE);
+    let (mut m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::SubClassOf { .. }));
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let b = internal.vocabulary.class_id("http://ex.org/B").expect("B");
+    let elem_a = m.element_of_class(a).expect("A is satisfiable");
+    m.test_only_remove_from_label(elem_a, b);
+
+    match check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]) {
+        AxiomVerdict::Fails { witness, .. } => {
+            assert_eq!(
+                witness,
+                vec![elem_a],
+                "witness must be pinned to A's element"
+            );
+        }
+        other => panic!("mutation must be caught, got {other:?}"),
+    }
+}
+
+#[test]
+fn sabotage_equivalent_classes_a_deleted_label_entry_must_be_caught_with_index_and_witness() {
+    let internal = common::load(EQUIV_FIXTURE);
+    let (mut m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::EquivalentClasses(_)));
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let b = internal.vocabulary.class_id("http://ex.org/B").expect("B");
+    // A and B are equivalent, so they share ONE element.
+    let elem = m.element_of_class(a).expect("A is satisfiable");
+    assert_eq!(elem, m.element_of_class(b).expect("B is satisfiable"));
+    m.test_only_remove_from_label(elem, b);
+
+    match check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]) {
+        AxiomVerdict::Fails { witness, .. } => {
+            assert_eq!(
+                witness,
+                vec![elem],
+                "witness must be pinned to the shared element"
+            );
+        }
+        other => panic!("mutation must be caught, got {other:?}"),
+    }
+}
+
+#[test]
+fn sabotage_disjoint_classes_two_true_members_must_be_caught_with_index_and_witness() {
+    let internal = common::load(DISJOINT_FIXTURE);
+    let (mut m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::DisjointClasses(_)));
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+
+    // `test_only_remove_from_label` can only turn a `True` into a `False` —
+    // it is monotonically truth-DECREASING, so no removal can ever
+    // manufacture the two-members-true violation `DisjointClasses` forbids.
+    // `intern` is already unconditionally public production API (the
+    // builder itself uses it throughout), so it is used here to add the one
+    // element neither the healthy ontology nor `test_only_remove_from_label`
+    // can produce, without introducing any new test-only surface.
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let b = internal.vocabulary.class_id("http://ex.org/B").expect("B");
+    let mut label = vec![a, b];
+    label.sort_unstable_by_key(|c| c.index());
+    let culprit = m.intern(label);
+
+    match check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]) {
+        AxiomVerdict::Fails { witness, .. } => {
+            assert_eq!(
+                witness,
+                vec![culprit],
+                "witness must be pinned to the manufactured element"
+            );
+        }
+        other => panic!("mutation must be caught, got {other:?}"),
+    }
+}
+
+#[test]
+fn sabotage_domain_a_deleted_label_entry_must_be_caught_with_index_and_witness() {
+    let internal = common::load(DOMAIN_FIXTURE);
+    let (mut m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| {
+        matches!(ax, Axiom::ObjectPropertyDomain { .. })
+    });
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+
+    let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
+    let d = internal.vocabulary.class_id("http://ex.org/D").expect("D");
+    let p = internal.vocabulary.role_id("http://ex.org/p").expect("p");
+    let elem_c = m.element_of_class(c).expect("C is satisfiable");
+    assert!(
+        !m.successors(elem_c, p).is_empty(),
+        "C must have gained a p-edge from its own axiom"
+    );
+    m.test_only_remove_from_label(elem_c, d);
+
+    match check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]) {
+        AxiomVerdict::Fails { witness, .. } => {
+            assert_eq!(
+                witness,
+                vec![elem_c],
+                "witness must be pinned to the edge SOURCE"
+            );
+        }
+        other => panic!("mutation must be caught, got {other:?}"),
+    }
+}
+
+#[test]
+fn sabotage_range_a_deleted_label_entry_must_be_caught_with_index_and_witness() {
+    let internal = common::load(RANGE_FIXTURE);
+    let (mut m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| {
+        matches!(ax, Axiom::ObjectPropertyRange { .. })
+    });
+    assert!(matches!(
+        check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]),
+        AxiomVerdict::Holds
+    ));
+
+    let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
+    let f = internal.vocabulary.class_id("http://ex.org/F").expect("F");
+    let p = internal.vocabulary.role_id("http://ex.org/p").expect("p");
+    let elem_c = m.element_of_class(c).expect("C is satisfiable");
+    let succs = m.successors(elem_c, p);
+    assert!(!succs.is_empty(), "the p-edge must exist");
+    let target = succs[0];
+    assert!(
+        m.in_concept(target, f),
+        "Range(p,F) must be closed into the witness's label before the mutation"
+    );
+    m.test_only_remove_from_label(target, f);
+
+    match check_axiom(&internal.concepts, &m, idx, &internal.axioms[idx]) {
+        AxiomVerdict::Fails { witness, .. } => {
+            assert_eq!(
+                witness,
+                vec![target],
+                "witness must be pinned to the edge TARGET"
+            );
+        }
+        other => panic!("mutation must be caught, got {other:?}"),
+    }
 }

@@ -1153,6 +1153,7 @@ dependencies = [
  "horned-owl",
  "owl-dl-core",
  "owl-dl-saturation",
+ "owl-dl-verify",
 ]
 
 [[package]]

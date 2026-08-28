@@ -11,6 +11,57 @@ use owl_dl_core::{
 };
 use owl_dl_saturation::Subsumers;
 
+/// The deterministic IRI an injected `(y, r)` conjunction class is interned
+/// under. Shared by `inject_conjunction` (which creates the class) and
+/// `materialise_exists` (which looks it up on a later round, once the
+/// ontology carrying it has been re-saturated) so the two can never drift
+/// onto different naming schemes.
+fn injected_class_iri(y: ClassId, r: RoleId) -> String {
+    format!(
+        "{}verify-aug:{}:{}",
+        owl_dl_core::residual_absorbability::SYNTHETIC_CLASS_IRI_PREFIX,
+        y.index(),
+        r.index()
+    )
+}
+
+/// Adds `Q ≡ Y ⊓ ⨅aug` to `working`, with an IRI carrying
+/// `SYNTHETIC_CLASS_IRI_PREFIX` so reporting filters it.
+///
+/// A fresh defined class is a conservative extension in the SEMANTIC sense: it
+/// cannot make a non-entailment entailed. It is NOT observationally inert on
+/// derived output when the engine is incomplete — that is what `RunDelta`
+/// records.
+pub fn inject_conjunction(
+    working: &mut InternalOntology,
+    subs: &Subsumers,
+    eff: &HashMap<RoleId, Vec<ClassId>>,
+    y: ClassId,
+    r: RoleId,
+) {
+    let base = subs.subsumers_of(y);
+    let Some(ranges) = eff.get(&r) else { return };
+    let mut operands: Vec<ConceptId> = vec![working.concepts.atomic(y)];
+    for c in ranges {
+        if base
+            .binary_search_by_key(&c.index(), |k| k.index())
+            .is_err()
+        {
+            operands.push(working.concepts.atomic(*c));
+        }
+    }
+    if operands.len() < 2 {
+        return;
+    }
+    let iri = injected_class_iri(y, r);
+    let q = working.vocabulary.intern_class(&iri);
+    let q_expr = working.concepts.atomic(q);
+    let conj = working.concepts.and(operands);
+    working
+        .axioms
+        .push(Axiom::EquivalentClasses(vec![q_expr, conj]));
+}
+
 use crate::interp::{Element, Interpretation};
 use crate::{Bounds, UnresolvedReason};
 
@@ -316,7 +367,7 @@ impl FiniteModel {
                         continue;
                     }
                     if self.materialise_exists(
-                        &internal.concepts,
+                        internal,
                         subs,
                         eff,
                         bounds,
@@ -348,7 +399,7 @@ impl FiniteModel {
     #[allow(clippy::too_many_arguments)]
     fn materialise_exists(
         &mut self,
-        pool: &ConceptPool,
+        internal: &InternalOntology,
         subs: &Subsumers,
         eff: &HashMap<RoleId, Vec<ClassId>>,
         bounds: &Bounds,
@@ -357,10 +408,11 @@ impl FiniteModel {
         reasons: &mut Vec<UnresolvedReason>,
         grew: &mut bool,
     ) -> bool {
+        let pool = &internal.concepts;
         match pool.get(ce) {
             ConceptExpr::And(ops) => {
                 for op in ops {
-                    if self.materialise_exists(pool, subs, eff, bounds, e, *op, reasons, grew) {
+                    if self.materialise_exists(internal, subs, eff, bounds, e, *op, reasons, grew) {
                         return true;
                     }
                 }
@@ -379,16 +431,38 @@ impl FiniteModel {
                 let mut label: Vec<ClassId> = Vec::new();
                 let mut unclosed = false;
                 for a in &atoms {
-                    if let Ok(l) = Self::target_label(subs, eff, r, *a) {
-                        label.extend(l);
-                    } else {
-                        // The range augmentation is unclosed and stays
-                        // reported below, but the atom's own base closure is
-                        // entailed unconditionally by the axiom (the witness
-                        // IS an `a`) — dropping it too would be strictly more
-                        // lossy than the report requires.
-                        label.extend(subs.subsumers_of(*a));
-                        unclosed = true;
+                    match Self::target_label(subs, eff, r, *a) {
+                        Ok(l) => label.extend(l),
+                        Err(_aug) => {
+                            // A prior round may have injected `Q ≡ a ⊓ aug` for
+                            // exactly this (class, role) pair — look it up by
+                            // its deterministic IRI. If it is there and
+                            // satisfiable, its OWN closure (re-saturated) is
+                            // the correctly-closed label; that is the whole
+                            // point of injection. If it went unsatisfiable,
+                            // `a` itself is genuinely unsatisfiable under the
+                            // augmented TBox — a defect signal, not a report
+                            // of this local rule's own limits.
+                            match internal.vocabulary.class_id(&injected_class_iri(*a, r)) {
+                                Some(q) if !subs.is_unsatisfiable(q) => {
+                                    label.extend(subs.subsumers_of(q));
+                                }
+                                Some(_) => {
+                                    reasons.push(UnresolvedReason::RunDelta { class: *a });
+                                    label.extend(subs.subsumers_of(*a));
+                                }
+                                None => {
+                                    // The range augmentation is unclosed and
+                                    // stays reported below, but the atom's own
+                                    // base closure is entailed unconditionally
+                                    // by the axiom (the witness IS an `a`) —
+                                    // dropping it too would be strictly more
+                                    // lossy than the report requires.
+                                    label.extend(subs.subsumers_of(*a));
+                                    unclosed = true;
+                                }
+                            }
+                        }
                     }
                 }
                 if unclosed {
@@ -426,7 +500,7 @@ impl FiniteModel {
                 }
                 // Recurse INTO the body at the new witness: this is the hop the
                 // fact list omits.
-                self.materialise_exists(pool, subs, eff, bounds, w, *body, reasons, grew)
+                self.materialise_exists(internal, subs, eff, bounds, w, *body, reasons, grew)
             }
             ConceptExpr::Top
             | ConceptExpr::Bot

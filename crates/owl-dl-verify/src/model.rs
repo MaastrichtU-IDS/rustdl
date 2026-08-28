@@ -104,6 +104,26 @@ pub fn inject_conjunction(
 use crate::interp::{Element, Interpretation};
 use crate::{Bounds, UnresolvedReason};
 
+/// Outcome of [`FiniteModel::push_edge`]. Distinguishing every no-op case
+/// from a real append is what lets `close_chains_and_transitivity`'s fixpoint
+/// loop terminate correctly: setting its `changed` flag on anything other
+/// than `Appended` would risk looping forever on a no-op that never stops
+/// being reported as "something changed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushOutcome {
+    /// The edge was newly appended.
+    Appended,
+    /// The edge was already present; no-op.
+    AlreadyPresent,
+    /// `r` is out of range for this model — a caller precondition violation.
+    /// Neither in-tree call site can trigger this today (see `push_edge`'s
+    /// doc), but a future caller passing a `RoleHierarchy`/`InternalOntology`
+    /// pair inconsistent with the one the model was seeded from could.
+    NoBucket,
+    /// `bounds.max_edges` tripped; a `BoundTripped` reason was already pushed.
+    BoundTripped,
+}
+
 #[derive(Debug, Default)]
 pub struct FiniteModel {
     labels: Vec<Box<[ClassId]>>,
@@ -244,8 +264,15 @@ impl FiniteModel {
     /// that appended edges without this check would silently exceed a bound
     /// the other path honours.
     ///
-    /// Returns `true` iff `max_edges` tripped (a `BoundTripped` reason was
-    /// pushed and the caller must stop).
+    /// Returns a [`PushOutcome`] rather than a bare `bool` so a caller that
+    /// runs its own fixpoint (`close_chains_and_transitivity`) can tell a real
+    /// append apart from every kind of no-op — including `NoBucket`, which
+    /// fires only if `r` is out of range for this model (a caller precondition
+    /// violation, not something either in-tree call site can trigger today).
+    /// Folding `NoBucket` into `AlreadyPresent`-style silence, as the `bool`
+    /// version did, is exactly what let a future out-of-range `r` turn a
+    /// fixpoint loop into an infinite one: `changed` would be set on a no-op
+    /// forever instead of on nothing.
     fn push_edge(
         &mut self,
         r: RoleId,
@@ -253,12 +280,12 @@ impl FiniteModel {
         to: Element,
         bounds: &Bounds,
         reasons: &mut Vec<UnresolvedReason>,
-    ) -> bool {
+    ) -> PushOutcome {
         let Some(bucket) = self.edges.get_mut(r.index() as usize) else {
-            return false;
+            return PushOutcome::NoBucket;
         };
         if bucket.contains(&(from, to)) {
-            return false;
+            return PushOutcome::AlreadyPresent;
         }
         bucket.push((from, to));
         self.edge_count += 1;
@@ -267,9 +294,9 @@ impl FiniteModel {
                 bound: "max_edges",
                 limit: Some(bounds.max_edges),
             });
-            return true;
+            return PushOutcome::BoundTripped;
         }
-        false
+        PushOutcome::Appended
     }
 
     /// Expands seeded elements into a graph: every existential fact `(x, r, y)`
@@ -325,7 +352,7 @@ impl FiniteModel {
                         });
                         return reasons;
                     }
-                    if self.push_edge(r, e, t, bounds, &mut reasons) {
+                    if self.push_edge(r, e, t, bounds, &mut reasons) == PushOutcome::BoundTripped {
                         return reasons;
                     }
                     if self.labels.len() > before {
@@ -538,7 +565,7 @@ impl FiniteModel {
                 if self.labels.len() > before {
                     *grew = true;
                 }
-                if self.push_edge(r, e, w, bounds, reasons) {
+                if self.push_edge(r, e, w, bounds, reasons) == PushOutcome::BoundTripped {
                     return true;
                 }
                 // Recurse INTO the body at the new witness: this is the hop the
@@ -563,6 +590,29 @@ impl FiniteModel {
     ///
     /// Sub-role inclusion itself is never materialised: it is a lookup, whereas
     /// chains and transitivity generate NEW pairs.
+    ///
+    /// # Soundness
+    ///
+    /// This closure is label-blind by construction: it only composes edges
+    /// between elements that already exist and never allocates a label. That
+    /// is sound because `effective_ranges` is super-role-closed, so `s ⊑ b`
+    /// implies `eff_ranges(s) ⊇ eff_ranges(b)`; every edge under `s` was
+    /// created after checking `eff_ranges(s)` against the target's label; and
+    /// `chain_range_out_of_profile` guarantees `eff_ranges(v) ⊆ eff_ranges(u)`
+    /// before any `Chain(t,u) ⊑ v` materialisation is permitted here (and the
+    /// `TransitiveRole` rule composes `v` with itself, so the same containment
+    /// holds trivially). So a composed target already satisfies whatever `v`
+    /// would require of it.
+    ///
+    /// # Panics / termination precondition
+    ///
+    /// Termination of the `while changed` loop below relies on `push_edge`
+    /// reporting `Appended` only for a genuine append (see `PushOutcome`'s
+    /// doc) — a caller passing an `internal` inconsistent with the one this
+    /// model was `seed`ed from could in principle name a `RoleId` this
+    /// model's `edges` vector has no bucket for, which `push_edge` reports as
+    /// `NoBucket` rather than `Appended`, so it can never spuriously keep
+    /// `changed` true.
     pub fn close_chains_and_transitivity(
         &mut self,
         internal: &InternalOntology,
@@ -598,10 +648,11 @@ impl FiniteModel {
                         if y != y2 || self.has_edge(x, v, z) {
                             continue;
                         }
-                        if self.push_edge(v, x, z, bounds, &mut reasons) {
-                            return reasons;
+                        match self.push_edge(v, x, z, bounds, &mut reasons) {
+                            PushOutcome::BoundTripped => return reasons,
+                            PushOutcome::Appended => changed = true,
+                            PushOutcome::AlreadyPresent | PushOutcome::NoBucket => {}
                         }
-                        changed = true;
                     }
                 }
             }
@@ -745,8 +796,14 @@ pub fn effective_ranges(
 /// is a false `Verified` (the evaluator reads ranges per declared-role edge
 /// vector), not a false `Violated`.
 ///
-/// `TransitiveRole` and the self-chain spelling `Chain(r r) ⊑ r` are exempt: the
-/// `⊆ eff_ranges(u)` test passes for them by construction.
+/// `TransitiveRole` is exempt for a DIFFERENT reason than the `⊆` test:
+/// `TransitiveObjectProperty` lowers to `Axiom::TransitiveRole`, a distinct
+/// variant this loop never matches at all — it is exempt by never being
+/// inspected here, not because the containment check passes on it.
+///
+/// The self-chain spelling `Chain(r,r) ⊑ r`, by contrast, IS inspected, and is
+/// the case the `⊆ eff_ranges(u)` test actually exempts by construction
+/// (`u == sup == r`, so `head == second` trivially).
 #[must_use]
 pub fn chain_range_out_of_profile(
     internal: &InternalOntology,

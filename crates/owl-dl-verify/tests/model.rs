@@ -1,7 +1,7 @@
 use owl_dl_verify::model::{
     FiniteModel, build_role_hierarchy, chain_range_out_of_profile, effective_ranges,
 };
-use owl_dl_verify::{Bounds, Interpretation, UnresolvedReason};
+use owl_dl_verify::{Bounds, Interpretation, UnresolvedReason, Verdict};
 
 mod common;
 use common::load;
@@ -719,4 +719,147 @@ ObjectPropertyRange(:r :F)
     let internal = load(ofn);
     let h = build_role_hierarchy(&internal);
     assert!(chain_range_out_of_profile(&internal, &h).is_some());
+}
+
+// --- Task 13: the two count-based `Bounds` fields, isolated ---------------
+//
+// `max_rounds` (the outer `build_model` loop) and the checking-time
+// `deadline` were already pinned by `one_round_is_insufficient_for_label_
+// closure_range_sub` (above) and `verify_honours_an_already_elapsed_deadline_
+// and_reports_it_as_a_deadline_not_a_count` (`tests/evaluator.rs`). These two
+// close the remaining pair: `max_elements` and `max_edges`, both checked
+// inside `FiniteModel::expand`/`push_edge`. `cascade.ofn` is reused rather
+// than a fresh fixture because it is already established (Task 5) to
+// materialise multiple genuinely NEW elements and edges beyond its seed
+// population — exactly what a bound of `1` needs in order to be tripped by
+// something other than the seed step itself (`FiniteModel::seed` never
+// checks a bound at all; only `expand`'s own `intern`/`push_edge` calls do).
+
+#[test]
+fn max_elements_one_trips_bound_tripped_naming_the_bound() {
+    let ofn = std::fs::read_to_string("tests/fixtures/cascade.ofn").expect("fixture");
+    let internal = load(&ofn);
+    let bounds = Bounds {
+        max_elements: 1,
+        ..Bounds::default()
+    };
+    let (_m, reasons) = owl_dl_verify::build_model(&internal, &bounds).expect("builds");
+    assert!(
+        reasons.iter().any(|r| matches!(
+            r,
+            UnresolvedReason::BoundTripped {
+                bound: "max_elements",
+                limit: Some(1),
+            }
+        )),
+        "cascade.ofn materialises new elements beyond its seed population, so \
+         max_elements: 1 must trip BoundTripped naming \"max_elements\" with \
+         limit Some(1) — a builder that silently truncated at the bound and \
+         returned an empty reason list would pass everything else in this \
+         suite while never surfacing that it had done so: {reasons:?}"
+    );
+}
+
+#[test]
+fn max_edges_one_trips_bound_tripped_naming_the_bound() {
+    let ofn = std::fs::read_to_string("tests/fixtures/cascade.ofn").expect("fixture");
+    let internal = load(&ofn);
+    let bounds = Bounds {
+        max_edges: 1,
+        ..Bounds::default()
+    };
+    let (_m, reasons) = owl_dl_verify::build_model(&internal, &bounds).expect("builds");
+    assert!(
+        reasons.iter().any(|r| matches!(
+            r,
+            UnresolvedReason::BoundTripped {
+                bound: "max_edges",
+                limit: Some(1),
+            }
+        )),
+        "cascade.ofn's existential cascade materialises more than one edge, so \
+         max_edges: 1 must trip BoundTripped naming \"max_edges\" with \
+         limit Some(1): {reasons:?}"
+    );
+}
+
+// --- Task 13: a genuine conjunctive trigger that ONLY full injection closes -
+//
+// `conjtrigger.ofn`: `C ⊑ ∃t.Y`, `Range(t,F)`, `Y ⊓ F ⊑ H`. Round 1 cannot
+// close the `t`-successor's label — `target_label` finds `Y`'s own subsumer
+// set does not already contain the range class `F` (`aug = [F]`), and no `Q`
+// has been injected yet, so it reports `LabelNotClosed{class: Y, role: t}`.
+// The injected `Q ≡ Y ⊓ F` is what makes `Y ⊓ F ⊑ H` fire AT ALL: the EL
+// saturator's conjunction-introduction rule only ever matches a class whose
+// OWN told-subsumer set contains both `Y` and `F` simultaneously, and that
+// relationship exists only for the synthetic `Q` `inject_conjunction`
+// creates — never for `Y` itself (`aug` is built as exactly the classes `y`
+// does NOT already subsume, so `y ⊓ aug` can never independently satisfy the
+// rule; see `inject_conjunction`'s doc and the `RUN_DELTA_FIXTURE` comment
+// above, which makes the identical argument for why `run_deltas` can't fire
+// on `y`).
+//
+// This is the fixture Step 5 of Task 13's brief asks for: a case a "cheap
+// closure-union" shortcut (append `aug`'s atoms to the target label directly,
+// without creating `Q` and re-saturating) would NOT close. Such a shortcut
+// would produce a label containing `Y` and `F` but never `H` (nothing runs
+// the `Y ⊓ F ⊑ H` rule over a label that is not itself a real class's
+// told-subsumer set) — and checking the ORIGINAL axiom `SubClassOf(Y⊓F, H)`
+// against that element would find the antecedent holding and the consequent
+// absent, i.e. `Violated`, not `Verified`. Contrast with
+// `label-closure-range-sub.ofn` (already in this suite, from Task 5): there
+// the injected class's OWN closure is all that is needed (`F ⊑ G` is a plain
+// subsumer fold, matching regardless of what else is in `F`'s subsumer set),
+// so a cheap closure-union would have sufficed there too — it is the "one
+// where the cheap closure-union would suffice" half of Step 5, already
+// covered by `one_round_is_insufficient_for_label_closure_range_sub` /
+// `two_rounds_suffice_for_label_closure_range_sub` above. This fixture is the
+// other half.
+#[test]
+fn conjunctive_trigger_needs_full_injection_and_verifies() {
+    let ofn = std::fs::read_to_string("tests/fixtures/conjtrigger.ofn").expect("fixture");
+    let internal = load(&ofn);
+    let (m, build_reasons) =
+        owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    assert!(
+        build_reasons.is_empty(),
+        "full injection should close conjtrigger.ofn's only gap with no residual \
+         reports: {build_reasons:?}"
+    );
+    let (verdict, _verified_model) = owl_dl_verify::verify(m, &internal, None);
+    assert!(
+        matches!(verdict, Verdict::Verified { .. }),
+        "injecting Q ≡ Y ⊓ F and re-saturating must make Y ⊓ F ⊑ H hold on the \
+         t-successor's label — a cheap closure-union shortcut would leave H \
+         out of that label and this would report Violated instead: {verdict:?}"
+    );
+}
+
+// Sabotage via an existing knob rather than editing source: at `max_rounds:
+// 1`, injection is discovered but never actually takes effect (the loop
+// returns at the bound before a second round can consult it) — the same
+// "one round is not enough" shape as `label-closure-range-sub.ofn`, and
+// direct evidence that this fixture's `Verified` result above is genuinely
+// produced by the SECOND round's injected lookup, not by some other path
+// that would have closed it in round 1 regardless.
+#[test]
+fn conjunctive_trigger_is_insufficient_at_one_round() {
+    let ofn = std::fs::read_to_string("tests/fixtures/conjtrigger.ofn").expect("fixture");
+    let internal = load(&ofn);
+    let bounds = Bounds {
+        max_rounds: 1,
+        ..Bounds::default()
+    };
+    let (_m, reasons) = owl_dl_verify::build_model(&internal, &bounds).expect("builds");
+    assert!(
+        reasons.iter().any(|r| matches!(
+            r,
+            UnresolvedReason::BoundTripped {
+                bound: "max_rounds",
+                ..
+            }
+        )),
+        "one round must be insufficient — Y ⊓ F ⊑ H only becomes reachable once \
+         Q is injected and re-saturated, starting round 2: {reasons:?}"
+    );
 }

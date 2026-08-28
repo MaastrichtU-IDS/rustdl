@@ -1,0 +1,8 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/conjtrigger>
+Declaration(Class(:C)) Declaration(Class(:Y)) Declaration(Class(:F)) Declaration(Class(:H))
+Declaration(ObjectProperty(:t))
+ObjectPropertyRange(:t :F)
+SubClassOf(:C ObjectSomeValuesFrom(:t :Y))
+SubClassOf(ObjectIntersectionOf(:Y :F) :H)
+)

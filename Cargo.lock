@@ -1053,6 +1053,7 @@ dependencies = [
  "horned-owl",
  "owl-dl-core",
  "owl-dl-reasoner",
+ "owl-dl-verify",
  "serde",
  "serde_json",
  "tracing",

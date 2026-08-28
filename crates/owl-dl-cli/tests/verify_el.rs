@@ -1,0 +1,282 @@
+//! End-to-end tests for `rustdl verify-el` — the `owl-dl-verify` instrument
+//! wired up as a CLI subcommand.
+//!
+//! Exit codes are the load-bearing contract here (a corpus sweep buckets
+//! outcomes from the exit code alone, without parsing stdout): **0**
+//! `Verified`, **2** `Violated`, **3** `Unresolved`, **1** I/O/parse errors.
+//! Fixtures are reused directly from `crates/owl-dl-verify/tests/fixtures/`
+//! (their verdicts are already established and reasoned through by that
+//! crate's own test suite — see `.superpowers/sdd/2026-08-28-negative-
+//! certificates-phase1/task-12-report.md`'s coverage table) rather than
+//! duplicated here.
+
+#![allow(clippy::unwrap_used)]
+
+use std::process::Command;
+
+fn rustdl() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_rustdl"))
+}
+
+/// A fixture already established (by `owl-dl-verify`'s own test suite) to
+/// converge to `Verified`: `unsatconj.ofn` — `X ⊑ ∃r.Y`, `Range(r,F)`,
+/// `DisjointClasses(Y,F)`, so `X` is unsatisfiable and gets no element; the
+/// three written axioms all hold vacuously or directly over the resulting
+/// model.
+fn verified_fixture() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../owl-dl-verify/tests/fixtures/unsatconj.ofn"
+    )
+}
+
+/// A fixture already established to land on `Violated`: `chainpoison.ofn`
+/// (one of the acceptance suite's five real, still-open rustdl completeness
+/// defects — see `owl-dl-verify/tests/acceptance.rs`'s module doc for why
+/// these are phrased as detections rather than as permanent fixtures of
+/// broken behaviour).
+fn violated_fixture() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../owl-dl-verify/tests/fixtures/chainpoison.ofn"
+    )
+}
+
+/// A fixture `build_model` REFUSES outright (`Err(ChainRangeOutOfProfile)`),
+/// never reaching `verify`'s check loop at all — the other, harder-to-reach
+/// way to land on `Unresolved` besides the fragment gate.
+fn build_refused_fixture() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../owl-dl-verify/tests/fixtures/chainrange.ofn"
+    )
+}
+
+/// A fixture with build-time `LabelNotClosed` residue ALONGSIDE a `Violated`
+/// check verdict (`cascade.ofn`) — used for the determinism check because it
+/// exercises both output channels (`violations` and `unresolved`) at once.
+fn cascade_fixture() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../owl-dl-verify/tests/fixtures/cascade.ofn"
+    )
+}
+
+/// `ontologies/real/pizza.ofn` is part of the gitignored corpus
+/// (`./scripts/fetch-real-ontologies.sh` pulls it on demand) — present in
+/// this sandbox, but a fresh clone or CI checkout may not have it. Every
+/// test that depends on it skips (rather than fails) when it is absent,
+/// following the established in-tree convention (e.g.
+/// `crates/owl-dl-reasoner/tests/data_properties.rs`).
+fn pizza_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../ontologies/real/pizza.ofn"
+    ))
+}
+
+#[test]
+fn verified_exits_zero() {
+    let out = rustdl()
+        .arg("verify-el")
+        .arg(verified_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("verified:"),
+        "expected a verified: line, got {stdout:?}"
+    );
+}
+
+#[test]
+fn violated_exits_two() {
+    let out = rustdl()
+        .arg("verify-el")
+        .arg(violated_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("violated:"),
+        "expected a violated: line, got {stdout:?}"
+    );
+}
+
+#[test]
+fn build_refusal_is_unresolved_and_exits_three() {
+    let out = rustdl()
+        .arg("verify-el")
+        .arg(build_refused_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("unresolved:"),
+        "expected an unresolved: line, got {stdout:?}"
+    );
+    assert!(
+        stdout.contains("ChainRangeOutOfProfile"),
+        "the build-time refusal reason must be surfaced, not swallowed: {stdout:?}"
+    );
+}
+
+/// `verify-el ontologies/real/pizza.ofn` must be `Unresolved` (exit 3):
+/// pizza is a SROIQ ontology (nominals, cardinality, disjunction), so
+/// `analyze_fragment` reads `OutOfFragment`, and the CLI must refuse it
+/// BEFORE ever calling `build_model` — never `Verified` (this checker has
+/// no basis at all for a verdict on an out-of-fragment ontology) and never
+/// silently falling through to some other exit code.
+#[test]
+fn out_of_fragment_ontology_is_unresolved_and_exits_three() {
+    let path = pizza_path();
+    if !path.exists() {
+        eprintln!("SKIP: missing corpus fixture {}", path.display());
+        return;
+    }
+    let out = rustdl().arg("verify-el").arg(&path).output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("unresolved:"),
+        "expected an unresolved: line, got {stdout:?}"
+    );
+    assert!(
+        stdout.contains("not pure-EL"),
+        "the fragment-gate reason must be surfaced: {stdout:?}"
+    );
+}
+
+#[test]
+fn missing_file_is_an_io_error_and_exits_one() {
+    let out = rustdl()
+        .arg("verify-el")
+        .arg("/does/not/exist/nowhere.ofn")
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        !out.stderr.is_empty(),
+        "an I/O error must be reported on stderr"
+    );
+}
+
+#[test]
+fn malformed_ontology_is_a_parse_error_and_exits_one() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("verify-el-malformed-{}.ofn", std::process::id()));
+    std::fs::write(&path, b"this is not valid OWL functional syntax (((").unwrap();
+    let out = rustdl().arg("verify-el").arg(&path).output().unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        !out.stderr.is_empty(),
+        "a parse error must be reported on stderr"
+    );
+}
+
+/// The determinism requirement: rustdl shipped exactly this bug before in
+/// `justify`/`report` (issue #59) because `FiniteModel` (like the structures
+/// behind those commands) is built over hash maps whose iteration order is
+/// not guaranteed stable across separate process invocations. Runs the
+/// command as two entirely separate child processes (not two calls within
+/// one process) — that is the case issue #59 actually hit, since each
+/// invocation of the binary seeds its own `RandomState`.
+#[test]
+fn json_output_is_byte_identical_across_two_separate_process_runs() {
+    let run = || -> Vec<u8> {
+        rustdl()
+            .arg("verify-el")
+            .arg("--json")
+            .arg(cascade_fixture())
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let first = run();
+    let second = run();
+    assert!(!first.is_empty(), "expected non-empty --json output");
+    assert_eq!(
+        first, second,
+        "verify-el --json must be byte-identical across separate process runs \
+         on the same input — see issue #59"
+    );
+}
+
+/// Same determinism requirement, on the plain-text (non-`--json`) output
+/// mode too — `print_verify_el_text` shares the same sorting helpers as the
+/// `--json` builder, and this pins that they agree.
+#[test]
+fn text_output_is_byte_identical_across_two_separate_process_runs() {
+    let run = || -> Vec<u8> {
+        rustdl()
+            .arg("verify-el")
+            .arg(cascade_fixture())
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let first = run();
+    let second = run();
+    assert!(!first.is_empty(), "expected non-empty text output");
+    assert_eq!(
+        first, second,
+        "verify-el's plain-text output must be byte-identical across separate \
+         process runs on the same input"
+    );
+}
+
+/// `--json` on the `Violated` fixture: schema shape + exit code together,
+/// and that `unresolved`/`violations` are present as arrays (not e.g.
+/// silently omitted when empty, which would make an automated consumer's
+/// life harder).
+#[test]
+fn json_violated_has_the_expected_shape() {
+    let out = rustdl()
+        .arg("verify-el")
+        .arg("--json")
+        .arg(violated_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["verdict"], "violated");
+    assert!(v["violations"].is_array());
+    assert!(!v["violations"].as_array().unwrap().is_empty());
+    assert!(v["unresolved"].is_array());
+    assert!(v["dropped"].is_object());
+}

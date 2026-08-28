@@ -486,6 +486,34 @@ enum Command {
         #[arg(long)]
         dump_subsumptions: bool,
     },
+    /// Build an independent canonical model for a pure-EL ontology
+    /// (`owl-dl-verify`) and check every axiom against it directly, without
+    /// going through the saturator/wedge/tableau this crate's own answers
+    /// come from. A negative-certificate instrument, not a reasoner: it
+    /// never CONFIRMS a rustdl verdict, only ever catches a rustdl DEFECT
+    /// (the fragment gate certifies completeness, the model built
+    /// independently disagrees). Gated on
+    /// `owl_dl_reasoner::analyze_fragment(&internal) ==
+    /// FragmentClassification::PureEl` — anything else is `Unresolved`
+    /// (out of scope, not a verdict about the ontology).
+    ///
+    /// Exit codes are distinct so a corpus sweep can bucket outcomes
+    /// without parsing stdout: **0** `Verified` (the model satisfies every
+    /// axiom rustdl's classification is checked against; no defect found),
+    /// **2** `Violated` (the model built independently contradicts an
+    /// axiom — a genuine detection), **3** `Unresolved` (out of fragment, a
+    /// bound was tripped, or an axiom/concept shape this checker does not
+    /// yet handle — never treated as `Verified`), **1** I/O or parse
+    /// errors.
+    VerifyEl {
+        /// Path to an OWL ontology (.ofn / .owx / .owl / .rdf / .omn —
+        /// format auto-detected from the extension).
+        file: PathBuf,
+        /// Emit a single machine-readable JSON object on stdout (schema v1);
+        /// diagnostics stay on stderr.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The ontology serializations the CLI can read.
@@ -757,6 +785,174 @@ fn warn_if_dropped(dropped: &std::collections::BTreeMap<String, u64>) {
          under-approximation",
         kinds.join(", ")
     );
+}
+
+/// Renders every `owl_dl_verify::UnresolvedReason` (or `Violation`) in `it`
+/// via `Debug`, then SORTS the result.
+///
+/// This is the byte-identity fix for `verify-el --json`/text run twice on
+/// the same file: several of `owl_dl_verify::UnresolvedReason`'s producers
+/// (`expand`/`expand_from_axioms`/`close_chains_and_transitivity` inside
+/// `build_model`) walk data derived from `owl_dl_saturation`'s internal hash
+/// maps, whose iteration order is not guaranteed stable ACROSS PROCESSES —
+/// rustdl shipped exactly this class of bug before (`justify`/`report`,
+/// issue #59: `SetOntology` is hash-backed and std seeds `RandomState` per
+/// process, so five runs of one binary produced five different reports).
+/// `UnresolvedReason` has no derived `Ord` (it is not meant to be a sorted
+/// domain type), so the SET is rendered to its `Debug` string first and
+/// sorted lexicographically — a canonical order that does not depend on
+/// which internal structure happened to discover which reason first.
+fn sorted_debug_strings<T: std::fmt::Debug>(it: impl Iterator<Item = T>) -> Vec<String> {
+    let mut v: Vec<String> = it.map(|r| format!("{r:?}")).collect();
+    v.sort();
+    v
+}
+
+/// Sorts `verify-el`'s violations by `(axiom_index, note)` — belt-and-braces
+/// determinism alongside `sorted_debug_strings`: `verify`'s own check loop
+/// already visits `internal.axioms` in a plain `Vec`'s deterministic order
+/// (never a hash map), so `violations` should already arrive in ascending
+/// `axiom_index` order, but sorting explicitly costs nothing and removes the
+/// need to trust that invariant across a future refactor of `verify`.
+fn sorted_verify_el_violations(
+    violations: &[owl_dl_verify::Violation],
+) -> Vec<json_out::VerifyElViolationJson> {
+    let mut rows: Vec<(usize, String)> = violations
+        .iter()
+        .map(|v| (v.axiom_index, v.note.clone()))
+        .collect();
+    rows.sort();
+    rows.into_iter()
+        .map(|(axiom_index, note)| json_out::VerifyElViolationJson { axiom_index, note })
+        .collect()
+}
+
+/// Folds `build_model`'s own BUILD-TIME unresolved reasons into `verify`'s
+/// CHECK-TIME verdict.
+///
+/// `verify`'s `Violated`/`Unresolved` variants only ever carry reasons
+/// `check_axiom` itself produced — `build_model`'s own `Vec<UnresolvedReason>`
+/// (returned alongside a successfully built model, e.g. a bound tripped
+/// mid-construction, or a marker-targeted `LabelNotClosed` that survives
+/// convergence) is a SEPARATE channel a caller who only looked at `verdict`
+/// could otherwise miss entirely.
+///
+/// A `Verified` check result with non-empty build reasons is downgraded to
+/// `Unresolved`: `owl_dl_verify::UnresolvedReason` is documented as "NEVER
+/// treated as `Verified`", and a model built with an admitted gap is not
+/// evidence of anything — reporting `Verified` over it would be exactly that.
+/// A `Violated`/`Unresolved` check result keeps its own verdict (this mirrors
+/// `owl-dl-verify`'s own acceptance suite, which logs both channels rather
+/// than letting one hide the other — see `cascade.ofn` there: `Violated`
+/// plus 3 build-time `LabelNotClosed` reports on the very node the violation
+/// names) but still folds the build reasons in so nothing is dropped on the
+/// floor.
+fn fold_build_reasons(
+    verdict: owl_dl_verify::Verdict,
+    mut build_reasons: Vec<owl_dl_verify::UnresolvedReason>,
+) -> owl_dl_verify::Verdict {
+    use owl_dl_verify::Verdict;
+    if build_reasons.is_empty() {
+        return verdict;
+    }
+    match verdict {
+        Verdict::Verified { domain_size, .. } => Verdict::Unresolved {
+            domain_size,
+            reasons: build_reasons,
+        },
+        Verdict::Violated {
+            domain_size,
+            violations,
+            mut unresolved,
+        } => {
+            unresolved.append(&mut build_reasons);
+            Verdict::Violated {
+                domain_size,
+                violations,
+                unresolved,
+            }
+        }
+        Verdict::Unresolved {
+            domain_size,
+            mut reasons,
+        } => {
+            reasons.append(&mut build_reasons);
+            Verdict::Unresolved {
+                domain_size,
+                reasons,
+            }
+        }
+    }
+}
+
+/// Process exit code for a `verify-el` verdict — distinct per variant so a
+/// corpus sweep can bucket outcomes from the exit code alone, without
+/// parsing stdout: **0** `Verified`, **2** `Violated`, **3** `Unresolved`.
+/// (**1**, for I/O/parse errors, is `anyhow`'s ordinary default and is never
+/// produced here — this function only ever sees a verdict that was
+/// successfully computed.)
+fn verify_el_exit_code(verdict: &owl_dl_verify::Verdict) -> i32 {
+    match verdict {
+        owl_dl_verify::Verdict::Verified { .. } => 0,
+        owl_dl_verify::Verdict::Violated { .. } => 2,
+        owl_dl_verify::Verdict::Unresolved { .. } => 3,
+    }
+}
+
+fn verify_el_verdict_str(verdict: &owl_dl_verify::Verdict) -> &'static str {
+    match verdict {
+        owl_dl_verify::Verdict::Verified { .. } => "verified",
+        owl_dl_verify::Verdict::Violated { .. } => "violated",
+        owl_dl_verify::Verdict::Unresolved { .. } => "unresolved",
+    }
+}
+
+/// Text-mode rendering of a `verify-el` verdict. Sorted via
+/// `sorted_debug_strings`/`sorted_verify_el_violations` for the same
+/// byte-identity reason `--json` is sorted — see those functions' docs.
+fn print_verify_el_text(verdict: &owl_dl_verify::Verdict) {
+    use owl_dl_verify::Verdict;
+    match verdict {
+        Verdict::Verified {
+            axioms_checked,
+            domain_size,
+        } => {
+            println!(
+                "verified: {axioms_checked} axiom(s) checked over a domain of \
+                 {domain_size} element(s)"
+            );
+        }
+        Verdict::Violated {
+            domain_size,
+            violations,
+            unresolved,
+        } => {
+            println!(
+                "violated: {} violation(s) over a domain of {domain_size} element(s) \
+                 ({} unresolved)",
+                violations.len(),
+                unresolved.len()
+            );
+            for row in sorted_verify_el_violations(violations) {
+                println!("  [axiom {}] {}", row.axiom_index, row.note);
+            }
+            for r in sorted_debug_strings(unresolved.iter()) {
+                println!("  unresolved: {r}");
+            }
+        }
+        Verdict::Unresolved {
+            domain_size,
+            reasons,
+        } => {
+            println!(
+                "unresolved: {} reason(s) over a domain of {domain_size} element(s)",
+                reasons.len()
+            );
+            for r in sorted_debug_strings(reasons.iter()) {
+                println!("  {r}");
+            }
+        }
+    }
 }
 
 fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::Result<()> {
@@ -2216,6 +2412,90 @@ fn main() -> Result<()> {
                 stats.largest_component as f64 / stats.num_classes as f64
             };
             println!("# dominance:  {:.1}%", dominance * 100.0);
+        }
+        Command::VerifyEl { file, json } => {
+            let onto = parse_ofn(&file)?;
+            let dropped = json_out::dropped_block(&onto);
+            warn_if_dropped(&dropped);
+            let internal =
+                owl_dl_core::convert::convert_ontology(&onto).context("convert_ontology")?;
+            let fragment = owl_dl_reasoner::analyze_fragment(&internal);
+            if fragment != owl_dl_reasoner::FragmentClassification::PureEl {
+                let reason = format!(
+                    "out of scope for this checker: not pure-EL (analyze_fragment = {fragment:?})"
+                );
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json_out::build_verify_el_json(
+                            "unresolved",
+                            0,
+                            0,
+                            Vec::new(),
+                            vec![reason],
+                            dropped,
+                        ))?
+                    );
+                } else {
+                    println!("unresolved: {reason}");
+                }
+                std::io::stdout().flush().ok();
+                std::process::exit(3);
+            }
+            let bounds = owl_dl_verify::Bounds::default();
+            let verdict = match owl_dl_verify::build_model(&internal, &bounds) {
+                Err(reason) => owl_dl_verify::Verdict::Unresolved {
+                    domain_size: 0,
+                    reasons: vec![reason],
+                },
+                Ok((model, build_reasons)) => {
+                    let (verdict, _verified_model) = owl_dl_verify::verify(model, &internal, None);
+                    fold_build_reasons(verdict, build_reasons)
+                }
+            };
+            let code = verify_el_exit_code(&verdict);
+            if json {
+                let (violations, unresolved, axioms_checked, domain_size) = match &verdict {
+                    owl_dl_verify::Verdict::Verified {
+                        axioms_checked,
+                        domain_size,
+                    } => (Vec::new(), Vec::new(), *axioms_checked, *domain_size),
+                    owl_dl_verify::Verdict::Violated {
+                        domain_size,
+                        violations,
+                        unresolved,
+                    } => (
+                        sorted_verify_el_violations(violations),
+                        sorted_debug_strings(unresolved.iter()),
+                        0,
+                        *domain_size,
+                    ),
+                    owl_dl_verify::Verdict::Unresolved {
+                        domain_size,
+                        reasons,
+                    } => (
+                        Vec::new(),
+                        sorted_debug_strings(reasons.iter()),
+                        0,
+                        *domain_size,
+                    ),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_verify_el_json(
+                        verify_el_verdict_str(&verdict),
+                        domain_size,
+                        axioms_checked,
+                        violations,
+                        unresolved,
+                        dropped,
+                    ))?
+                );
+            } else {
+                print_verify_el_text(&verdict);
+            }
+            std::io::stdout().flush().ok();
+            std::process::exit(code);
         }
     }
     Ok(())

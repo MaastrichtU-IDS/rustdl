@@ -804,7 +804,7 @@ Store the hierarchy on the model. **Do NOT change `seed`'s signature** — Task 
     /// to answer sub-role inclusion on demand.
     #[must_use]
     pub fn with_hierarchy(mut self, h: RoleHierarchy) -> Self {
-        self.hierarchy = h;
+        self.hierarchy = Some(h);
         self
     }
 
@@ -812,17 +812,28 @@ Store the hierarchy on the model. **Do NOT change `seed`'s signature** — Task 
     ///
     /// `RoleHierarchy::sub_roles` PANICS out of range, and "the edit introduces a
     /// role" is the normal case for `still_holds_after`, so an unknown role must
-    /// read as an empty extension rather than crashing.
+    /// read as an empty extension rather than crashing. A model with no
+    /// hierarchy attached yet behaves the same way.
     fn hierarchy_sub_roles(&self, r: RoleId) -> &[RoleId] {
-        if (r.index() as usize) < self.hierarchy.num_roles() {
-            self.hierarchy.sub_roles(r)
-        } else {
-            &[]
+        match &self.hierarchy {
+            Some(h) if (r.index() as usize) < h.num_roles() => h.sub_roles(r),
+            _ => &[],
         }
     }
 ```
 
-with `hierarchy: RoleHierarchy` added to the struct (it is `Default`), and callers writing
+**The field is `Option<RoleHierarchy>`, and that is forced, not stylistic.** `RoleHierarchy` derives
+only `Debug, Clone` — **not `Default`** (`crates/owl-dl-core/src/role_hierarchy.rs:132`) — while
+`FiniteModel` derives `Default` and `seed` builds itself with `..Self::default()`. A bare
+`hierarchy: RoleHierarchy` field therefore breaks both the derive and `seed`. Wrapping in `Option`
+keeps them and composes with the rule above: no hierarchy attached reads as an empty extension,
+exactly like an out-of-range role. So:
+
+```rust
+    hierarchy: Option<RoleHierarchy>,
+```
+
+with `with_hierarchy` storing `Some(h)`, and callers writing
 `FiniteModel::seed(..).with_hierarchy(h)`.
 
 - [ ] **Step 5: Run the Probe B test** → PASS.

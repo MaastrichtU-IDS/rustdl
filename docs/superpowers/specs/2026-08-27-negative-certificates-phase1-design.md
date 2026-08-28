@@ -316,8 +316,18 @@ crates/owl-dl-verify/
   src/lib.rs     — Verdict, build_model, verify
 ```
 
-Deps: `owl-dl-core`, `owl-dl-saturation`; **not** `owl-dl-reasoner` (cycle; the CLI wires them).
-Dev-deps: `horned-owl` for fixture parsing.
+Deps: `owl-dl-core`, `owl-dl-saturation`; **not a RUNTIME dependency on** `owl-dl-reasoner` (the
+CLI wires them). Dev-deps: `horned-owl` for fixture parsing.
+
+**AMENDED (Task 14, 2026-08-28):** Task 12 added `owl-dl-reasoner` under `[dev-dependencies]` so
+`tests/acceptance.rs` can run the real hybrid classifier and compare against it, rather than the
+acceptance suite grading its own homework against nothing. This is not the "never depend on
+`owl-dl-reasoner`" the line above originally said — reworded above to say what actually matters:
+not a **runtime** dependency (`[dependencies]`, i.e. `src/`), which stays untouched (`src/eval.rs`
+still resolves concepts only via `ConceptPool`, guarded by `tests/independence.rs`). The property
+this section exists to protect is the absence of a **cycle**, and that still holds: nothing in
+`owl-dl-reasoner`'s manifest names `owl-dl-verify`, in any dependency section, so a dev-only edge
+in the other direction creates no cycle for cargo to reject.
 
 **The load-bearing rule:** `eval.rs` is generic over `Interpretation` and resolves concepts only via
 `ConceptPool` — *data*, not saturation logic — so it **cannot reach the engine it checks**. Using

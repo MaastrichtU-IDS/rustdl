@@ -79,6 +79,17 @@ pub enum UnresolvedReason {
 /// answer what an `Element` even means is consumed by `verify` before a
 /// caller ever sees a `Violation`, so `witness` alone would otherwise be
 /// uninterpretable.
+///
+/// This doc is written from `verify`'s perspective, but `Violation` is not
+/// exclusive to it: [`VerifiedModel::still_holds_after`] produces `Violation`s
+/// too, via a `&self` **borrow** of the existing model rather than consuming
+/// it, and checking only the freshly-`added` axioms rather than the whole
+/// ontology. On a `Violation` that came from `still_holds_after`, `axiom_index`
+/// indexes into the `added` slice passed to that call — **not** into
+/// `internal.axioms`, which is what it indexes into on a `Violation` from
+/// `verify`. The two call sites cannot be told apart from a bare `Violation`
+/// value; a caller that stores both kinds needs to remember which produced
+/// which.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Violation {
     pub axiom_index: usize,

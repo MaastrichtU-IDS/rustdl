@@ -72,9 +72,11 @@ depending on them may be missed, never falsely asserted.
 
 `owl-dl-core` (IR + normalization), `owl-dl-saturation` (EL closure),
 `owl-dl-tableau` (SROIQ tableau + hypertableau wedge), `owl-dl-datatypes`
-(concrete domains), `owl-dl-reasoner` (orchestrator + public API), `owl-dl-cli`
-(`rustdl` binary), `owl-dl-bench` (corpus/benchmark harness), `owl-dl-py` (Python
-bindings). `xtask` holds build automation.
+(concrete domains), `owl-dl-reasoner` (orchestrator + public API), `owl-dl-verify`
+(diagnostic-only: an independent finite-model check of the EL closure, pure-EL
+only, not wired into any reasoning path), `owl-dl-cli` (`rustdl` binary),
+`owl-dl-bench` (corpus/benchmark harness), `owl-dl-py` (Python bindings).
+`xtask` holds build automation.
 
 ## Quickstart
 
@@ -184,7 +186,17 @@ rustdl prove     ontology.ofn <sub> <sup>   # step-level DL proof tree
 rustdl diagnose  ontology.ofn               # root vs derived unsatisfiable classes (where to start fixing)
 rustdl report    ontology.ofn -o report.html # self-contained HTML debugging report
 rustdl explain   ontology.ofn <sub> <sup>   # which engine answered (saturation vs tableau)
+rustdl verify-el ontology.ofn [--json]      # diagnostic: build a finite model from the EL closure and
+                                             # check every axiom against it independently of the saturator
 ```
+
+**`verify-el`** is a diagnostic, not a reasoning path — it is not wired into `classify`,
+`consistent`, or `realize`. It only runs on ontologies in the pure-EL fragment (exits **3**,
+`Unresolved`, on anything else) and exits **0** (`Verified`) when the model built from rustdl's
+own EL saturation closure satisfies every axiom, **2** (`Violated`) when it finds an axiom the
+closure's own model does not satisfy — direct evidence the saturator dropped an entailment — or
+**3** when the model builder itself had to refuse (a bound tripped, or a construct outside the
+checker's covered fragment) and **1** on an I/O/parse error.
 
 **Bounded classification** — sound under-approximation (every reported subsumption
 still holds; pairs not decided in time default to "not subsumed", never a false

@@ -614,6 +614,18 @@ impl FiniteModel {
                     // Opaque body (e.g. a nested `∃`): the witness carries only
                     // the role's effective ranges, and its content comes from
                     // the edges built below.
+                    //
+                    // KNOWN LIMITATION: `eff.get(&r)` is frequently EMPTY, while
+                    // `expand`'s fact path labels this same logical witness from
+                    // `subsumers_of(Tseitin Q)` (never empty — it contains at
+                    // least `{Q}`). Because `intern` dedups purely by label
+                    // CONTENT, the two paths can allocate two different
+                    // `Element`s for one nested-existential witness — one
+                    // under-labelled here, one correctly labelled by `expand`.
+                    // Not shown unsound (an extra edge-less element satisfies no
+                    // check this crate currently runs), but untested against a
+                    // future concept-level check. See
+                    // `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`.
                     if let Some(rs) = eff.get(&r) {
                         for c in rs {
                             label.extend(subs.subsumers_of(*c));

@@ -370,6 +370,28 @@ is indistinguishable from a working one.
 | A5 | `chainrange.ofn` | `Unresolved { ChainRangeOutOfProfile }` under §4; `Violated` once Phase 2 folds |
 | A6 | `unsatconj.ofn`, `chainrange_ctl.ofn` | `Verified` — discriminating healthy controls |
 
+**ACCEPTANCE TESTS MUST NOT ASSERT `Violated` DIRECTLY — they would break when the engine is
+fixed.** A1–A5 are now filed as issues #80/#81/#82, so the engine defects they detect are expected
+to be repaired, and a test asserting `Violated` would then fail *because the codebase improved* —
+the `#[ignore]`d-sentinel trap in reverse (a test whose green depends on a bug persisting).
+
+Phrase each acceptance test as the **stable invariant** instead:
+
+> On fixture `F` with committed oracle verdict `O`, the instrument must **not** return `Verified`
+> whenever rustdl's own classification disagrees with `O`.
+
+That holds in both engine states: while the defect is live the instrument must report `Violated`
+(or `Unresolved`, which is honest but weaker — log which); once the defect is fixed rustdl agrees
+with `O`, the antecedent is false, and the test passes without modification. Commit each oracle
+verdict beside its fixture (`<fixture>.oracle`) with its provenance — **Konclude-confirmed** for
+#80, #81 and #82-domain, **derivation-only** for #82-range, where both reasoners miss it. A test
+whose oracle is derivation-only must say so in its failure message, so nobody later mistakes it for
+peer-confirmed.
+
+Corollary for sequencing: **fixing #80/#81 removes two of this instrument's six live prey**, but the
+tests survive the fix by construction, and the residual value is unchanged — the instrument exists
+to catch the *next* instance, not these five.
+
 A2 is the **second crown jewel**, not a refusal test: `Bot` is skipped from `eff_ranges` (§5 step 3)
 so the refusal cannot fire, and the case has perfect discrimination — a complete engine leaves `C`
 unsatisfiable, hence unseeded, hence no chain edge, hence the range passes vacuously (`Verified`),

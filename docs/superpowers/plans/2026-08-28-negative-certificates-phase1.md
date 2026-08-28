@@ -869,6 +869,310 @@ git add crates/owl-dl-verify && git commit -m "feat(verify): fixpoint expansion 
 
 ---
 
+### Task 4b: AXIOM-DRIVEN expansion (inserted mid-flight — see ruling)
+
+**Why this task exists.** Task 4 expands from the saturator's fact list. A controller probe of
+`saturate_with_exists_facts` showed that is not enough, and the numbers are stark:
+
+```text
+flat    C ⊑ ∃u.A  +  Range(u,F):   facts: C--u-->T#3   subsumers(T#3) = [A, F, T#3]
+nested  C ⊑ ∃t.∃u.A            :   facts: C--t-->T#3   subsumers(T#3) = [T#3]
+```
+
+A **flat** existential yields a properly range-folded successor — exactly as §6 of the spec
+predicted. A **nested** one yields an **opaque, empty-labelled** element with **no outgoing fact**.
+So a fact-driven model is shallower than the ontology, `eval(∃t.∃u.F, x_C)` is vacuously false, and
+the instrument would MISS issues #80 and #81 — its own headline prey. (The probe also located the
+root cause of #80 and is posted there.)
+
+**The fix is additive and improves independence:** derive existential structure from the AXIOMS via
+`ConceptPool`, not only from engine facts.
+
+**Files:**
+- Modify: `crates/owl-dl-verify/src/model.rs`
+- Test: `crates/owl-dl-verify/tests/model.rs`
+
+**Interfaces:**
+- Consumes: `target_label`, `intern`, `edges`, `Bounds`, `UnresolvedReason` (Task 4);
+  `effective_ranges` (Task 3).
+- Produces: `FiniteModel::expand_from_axioms(&mut self, internal: &InternalOntology, subs: &Subsumers, eff: &HashMap<RoleId, Vec<ClassId>>, bounds: &Bounds) -> Vec<UnresolvedReason>`.
+  Task 5's `build_model` calls it immediately after `expand`.
+
+- [ ] **Step 1: Write the failing test — the #80 shape must become detectable**
+
+```rust
+const NESTED_MONO: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/nm>
+Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:F))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u))
+SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))
+SubClassOf(:A :F)
+SubClassOf(ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :F)) :D)
+)
+";
+
+#[test]
+fn axiom_driven_expansion_materialises_the_nested_chain() {
+    let internal = load(NESTED_MONO);
+    let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+    let hier = build_role_hierarchy(&internal);
+    let eff = effective_ranges(&internal, &hier);
+    let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(hier);
+    let bounds = Bounds::default();
+    let _ = model.expand(&subs, &facts, &eff, &bounds);
+    let _ = model.expand_from_axioms(&internal, &subs, &eff, &bounds);
+
+    let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let f = internal.vocabulary.class_id("http://ex.org/F").expect("F");
+    let t = internal.vocabulary.role_id("http://ex.org/t").expect("t");
+    let u = internal.vocabulary.role_id("http://ex.org/u").expect("u");
+    let x_c = model.element_of_class(c).expect("C is satisfiable");
+
+    // EXISTENTIAL at each hop: a zero-successor model passes a forall phrasing vacuously.
+    let mid = model.successors(x_c, t);
+    assert!(!mid.is_empty(), "C must gain a t-successor from its own axiom");
+    let leaf: Vec<_> = mid.iter().flat_map(|m| model.successors(*m, u)).collect();
+    assert!(!leaf.is_empty(), "the NESTED u-successor is what the fact list omits");
+    let w = leaf[0];
+    assert!(model.in_concept(w, a), "the leaf must satisfy the body class A");
+    assert!(
+        model.in_concept(w, f),
+        "and A ⊑ F must be closed INTO the leaf label — this is what makes the #80 shape detectable"
+    );
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+export PATH="/home/dumontier/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH"
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify --test model axiom_driven
+```
+Expected: FAIL — `expand_from_axioms` does not exist. (Before implementing, confirm it also fails
+for the RIGHT reason once the method exists but does nothing: no `u`-successor.)
+
+- [ ] **Step 3: Implement**
+
+```rust
+impl FiniteModel {
+    /// The atomic classes a concept expression directly requires of an element,
+    /// or `None` if the expression is not a shape we can label from.
+    ///
+    /// `Some(..)` bodies contribute NO classes of their own — an element standing
+    /// for `∃u.A` is opaque as a class, and its content is carried by the edge
+    /// this function's caller materialises, not by its label.
+    fn required_atoms(pool: &ConceptPool, ce: ConceptId, out: &mut Vec<ClassId>) {
+        match pool.get(ce) {
+            ConceptExpr::Atomic(c) => out.push(*c),
+            ConceptExpr::And(ops) => {
+                for op in ops.iter() {
+                    Self::required_atoms(pool, *op, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Materialises the existential structure of axiom superclass positions.
+    ///
+    /// The saturator emits no fact for a NESTED existential body and gives its
+    /// Tseitin marker an empty subsumer set, so a fact-driven model has no
+    /// element for the nested witness at all. This walks the axioms instead:
+    /// wherever an element satisfies an axiom's antecedent atoms, the axiom's
+    /// consequent existential chain is built out, one element per body.
+    ///
+    /// Labels reuse `target_label`, so the TBox-closure gap is reported as
+    /// `LabelNotClosed` here exactly as it is on the fact path — this task adds
+    /// reach, not a second labelling policy.
+    pub fn expand_from_axioms(
+        &mut self,
+        internal: &InternalOntology,
+        subs: &Subsumers,
+        eff: &HashMap<RoleId, Vec<ClassId>>,
+        bounds: &Bounds,
+    ) -> Vec<UnresolvedReason> {
+        // (antecedent atoms, consequent concept) pairs, from both axiom shapes.
+        let mut rules: Vec<(Vec<ClassId>, ConceptId)> = Vec::new();
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::SubClassOf { sub, sup } => {
+                    let mut ante = Vec::new();
+                    Self::required_atoms(&internal.concepts, *sub, &mut ante);
+                    if !ante.is_empty() {
+                        rules.push((ante, *sup));
+                    }
+                }
+                Axiom::EquivalentClasses(members) => {
+                    for lhs in members {
+                        for rhs in members {
+                            if lhs == rhs {
+                                continue;
+                            }
+                            let mut ante = Vec::new();
+                            Self::required_atoms(&internal.concepts, *lhs, &mut ante);
+                            if !ante.is_empty() {
+                                rules.push((ante, *rhs));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut reasons = Vec::new();
+        let mut round = 0usize;
+        loop {
+            let mut grew = false;
+            let elems: Vec<Element> = self.elements().collect();
+            for e in elems {
+                for (ante, sup) in &rules {
+                    if !ante.iter().all(|c| self.in_concept(e, *c)) {
+                        continue;
+                    }
+                    if self.materialise_exists(&internal.concepts, subs, eff, bounds, e, *sup, &mut reasons, &mut grew) {
+                        return reasons; // a bound tripped
+                    }
+                }
+            }
+            round += 1;
+            if !grew {
+                return reasons;
+            }
+            if round >= bounds.max_rounds {
+                reasons.push(UnresolvedReason::BoundTripped {
+                    bound: "max_rounds",
+                    limit: Some(bounds.max_rounds),
+                });
+                return reasons;
+            }
+        }
+    }
+
+    /// Builds out every positive `∃` in `ce` starting at `e`. Returns true iff a
+    /// bound tripped and the caller must stop.
+    #[allow(clippy::too_many_arguments)]
+    fn materialise_exists(
+        &mut self,
+        pool: &ConceptPool,
+        subs: &Subsumers,
+        eff: &HashMap<RoleId, Vec<ClassId>>,
+        bounds: &Bounds,
+        e: Element,
+        ce: ConceptId,
+        reasons: &mut Vec<UnresolvedReason>,
+        grew: &mut bool,
+    ) -> bool {
+        match pool.get(ce) {
+            ConceptExpr::And(ops) => {
+                for op in ops.iter() {
+                    if self.materialise_exists(pool, subs, eff, bounds, e, *op, reasons, grew) {
+                        return true;
+                    }
+                }
+                false
+            }
+            ConceptExpr::Some(role, body) => {
+                if role.is_inverse() {
+                    return false;
+                }
+                let r = role.role_id();
+                // Label the witness from the body's own required atoms, closed
+                // through `target_label` so the range union and the closure
+                // report are identical to the fact path.
+                let mut atoms = Vec::new();
+                Self::required_atoms(pool, *body, &mut atoms);
+                let mut label: Vec<ClassId> = Vec::new();
+                let mut unclosed = false;
+                for a in &atoms {
+                    match Self::target_label(subs, eff, r, *a) {
+                        Ok(l) => label.extend(l),
+                        Err(_) => unclosed = true,
+                    }
+                }
+                if unclosed {
+                    reasons.push(UnresolvedReason::LabelNotClosed {
+                        class: *atoms.first().unwrap_or(&ClassId::new(0)),
+                        role: r,
+                    });
+                }
+                if atoms.is_empty() {
+                    // Opaque body (e.g. a nested `∃`): the witness carries only
+                    // the role's effective ranges, and its content comes from
+                    // the edges built below.
+                    if let Some(rs) = eff.get(&r) {
+                        for c in rs {
+                            label.extend(subs.subsumers_of(*c));
+                        }
+                    }
+                }
+                label.sort_unstable_by_key(|c| c.index());
+                label.dedup();
+                let before = self.labels.len();
+                let w = self.intern(label);
+                if self.labels.len() > bounds.max_elements {
+                    reasons.push(UnresolvedReason::BoundTripped {
+                        bound: "max_elements",
+                        limit: Some(bounds.max_elements),
+                    });
+                    return true;
+                }
+                if self.labels.len() > before {
+                    *grew = true;
+                }
+                if self.push_edge(r, e, w, bounds, reasons) {
+                    return true;
+                }
+                // Recurse INTO the body at the new witness: this is the hop the
+                // fact list omits.
+                self.materialise_exists(pool, subs, eff, bounds, w, *body, reasons, grew)
+            }
+            ConceptExpr::Top
+            | ConceptExpr::Bot
+            | ConceptExpr::Atomic(_)
+            | ConceptExpr::Nominal(_)
+            | ConceptExpr::SelfRestriction(_)
+            | ConceptExpr::Not(_)
+            | ConceptExpr::Or(_)
+            | ConceptExpr::All(_, _)
+            | ConceptExpr::Min(_, _, _)
+            | ConceptExpr::Max(_, _, _) => false,
+        }
+    }
+}
+```
+
+Extract the edge-append-with-bound-check from Task 4's `expand` into
+`fn push_edge(&mut self, r: RoleId, from: Element, to: Element, bounds: &Bounds, reasons: &mut Vec<UnresolvedReason>) -> bool`
+(returns true iff `max_edges` tripped) and use it from both call sites, so the two expansion paths
+cannot drift on bound handling.
+
+- [ ] **Step 4: Run the test** → PASS.
+
+- [ ] **Step 5: Un-ignore what is now satisfiable**
+
+Task 4 `#[ignore]`d two tests because the fact list could not reach nested structure. Re-run them
+with `--ignored` and, for each that now passes, **remove the `#[ignore]` and its stale reason**. For
+any that still fails, leave it ignored but REPLACE the reason with what you measured — a stale
+`#[ignore]` reason is an unchecked claim about the engine, and this repo has a documented history of
+exactly that going unnoticed for weeks.
+
+```bash
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify --test model -- --ignored
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+RUSTUP_TOOLCHAIN=stable cargo fmt -p owl-dl-verify -- --check
+RUSTUP_TOOLCHAIN=stable cargo clippy -p owl-dl-verify --all-targets -- -D warnings
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify
+git add crates/owl-dl-verify && git commit -m "feat(verify): axiom-driven expansion reaches nested existential witnesses"
+```
+
+---
+
 ### Task 5: Injection to a fixpoint, and building from the FINAL run
 
 **Files:**

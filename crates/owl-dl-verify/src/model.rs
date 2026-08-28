@@ -379,9 +379,16 @@ impl FiniteModel {
                 let mut label: Vec<ClassId> = Vec::new();
                 let mut unclosed = false;
                 for a in &atoms {
-                    match Self::target_label(subs, eff, r, *a) {
-                        Ok(l) => label.extend(l),
-                        Err(_) => unclosed = true,
+                    if let Ok(l) = Self::target_label(subs, eff, r, *a) {
+                        label.extend(l);
+                    } else {
+                        // The range augmentation is unclosed and stays
+                        // reported below, but the atom's own base closure is
+                        // entailed unconditionally by the axiom (the witness
+                        // IS an `a`) — dropping it too would be strictly more
+                        // lossy than the report requires.
+                        label.extend(subs.subsumers_of(*a));
+                        unclosed = true;
                     }
                 }
                 if unclosed {

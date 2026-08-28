@@ -407,3 +407,69 @@ fn axiom_driven_expansion_materialises_the_nested_chain() {
         "and A ⊑ F must be closed INTO the leaf label — this is what makes the #80 shape detectable"
     );
 }
+
+// --- Review fix: base closure must survive an unclosable range augmentation -
+//
+// Fix-round-1 finding: `materialise_exists`'s `Some` arm looked up each
+// required atom individually via `target_label`, and on `Err` (an unclosable
+// range augmentation) dropped the atom's OWN base closure too, not just the
+// disputed range classes. `C ⊑ ∃t.∃u.A` + `Range(u,X)` with no `A ⊑ X` is the
+// reviewer's exact reproducer: the leaf witness's label came back completely
+// EMPTY, so `in_concept(leaf, A)` was `false` even though the axiom trivially
+// entails the witness is an `A`. Fixed by extending `label` with
+// `subs.subsumers_of(*a)` on the `Err` arm too, while still reporting
+// `LabelNotClosed` for the augmentation that could not be closed.
+const NESTED_UNCLOSED_RANGE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/nur>
+Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:X))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u))
+SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))
+ObjectPropertyRange(:u :X)
+)
+";
+
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn axiom_driven_expansion_keeps_base_closure_when_the_range_augmentation_is_unclosable() {
+    let internal = load(NESTED_UNCLOSED_RANGE);
+    let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+    let hier = build_role_hierarchy(&internal);
+    let eff = effective_ranges(&internal, &hier);
+    let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(hier);
+    let bounds = Bounds::default();
+    let mut reasons = model.expand(&subs, &facts, &eff, &bounds);
+    reasons.extend(model.expand_from_axioms(&internal, &subs, &eff, &bounds));
+
+    let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let x = internal.vocabulary.class_id("http://ex.org/X").expect("X");
+    let t = internal.vocabulary.role_id("http://ex.org/t").expect("t");
+    let u = internal.vocabulary.role_id("http://ex.org/u").expect("u");
+    let x_c = model.element_of_class(c).expect("C is satisfiable");
+
+    let mid = model.successors(x_c, t);
+    assert!(
+        !mid.is_empty(),
+        "C must gain a t-successor from its own axiom"
+    );
+    let leaf: Vec<_> = mid.iter().flat_map(|m| model.successors(*m, u)).collect();
+    assert!(!leaf.is_empty(), "the u-successor must still be built out");
+    let w = leaf[0];
+
+    assert!(
+        model.in_concept(w, a),
+        "the atom's own base closure (A) is entailed unconditionally and must \
+         survive even though the range augmentation (X) could not be closed"
+    );
+    assert!(
+        !model.in_concept(w, x),
+        "the unclosable range class X must NOT be force-added — that would be \
+         inventing an entailment, not recovering a real one"
+    );
+    assert!(
+        reasons
+            .iter()
+            .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { role, .. } if *role == u)),
+        "the unclosed range augmentation must still be reported: {reasons:?}"
+    );
+}

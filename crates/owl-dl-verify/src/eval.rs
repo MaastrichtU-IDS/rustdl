@@ -277,6 +277,11 @@ fn unresolved_or_holds(axiom_index: usize, ambiguous: Option<&'static str>) -> A
 /// at all), so deleting exactly that composed edge — leaving the two leg
 /// edges the antecedent scan draws from untouched — is a genuine, targeted
 /// sabotage.
+///
+/// This "true by construction" argument is SCOPED to checking a freshly
+/// built model against its own ontology. See `verify`'s doc (`lib.rs`) for
+/// why it does not carry over to `still_holds_after` — do not delete either
+/// of these two arms as dead weight on the strength of this comment alone.
 pub fn check_axiom<I: Interpretation>(
     pool: &ConceptPool,
     interp: &I,

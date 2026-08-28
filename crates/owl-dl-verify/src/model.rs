@@ -124,6 +124,23 @@ enum PushOutcome {
     BoundTripped,
 }
 
+/// # `still_holds_after` belongs on `VerifiedModel`, never here
+///
+/// Task 11 adds `still_holds_after`. It must land on `VerifiedModel`
+/// (`lib.rs`) — the type-state that proves a model was actually checked
+/// against its own ontology — never on `FiniteModel` itself, or a caller
+/// could ask the soundness question of a model nobody ever verified. This
+/// doctest is a real compile check of that absence, not a string scan: it
+/// is expected to FAIL to compile today, and must keep failing until (and
+/// unless) this crate legitimately adds the method to `FiniteModel` — which
+/// it should not.
+///
+/// ```compile_fail
+/// use owl_dl_verify::model::FiniteModel;
+///
+/// let m = FiniteModel::default();
+/// m.still_holds_after();
+/// ```
 #[derive(Debug, Default)]
 pub struct FiniteModel {
     labels: Vec<Box<[ClassId]>>,

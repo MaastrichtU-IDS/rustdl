@@ -1464,26 +1464,15 @@ fn violation_witness_containing_a_tseitin_shaped_class_id_renders_without_panick
 // --- Type-state structural checks (no `trybuild` dependency; see this
 // task's brief) -------------------------------------------------------------
 //
-// A genuine compile-fail test (`FiniteModel::still_holds_after` does not
-// exist) is out of reach without a new dev-dependency, which the brief
-// forbids adding for this. `tests/independence.rs` already establishes the
-// house idiom for exactly this situation — assert the invariant by scanning
-// the source text — so these two follow it rather than inventing a second
-// mechanism.
-
-#[test]
-fn finite_model_does_not_expose_still_holds_after() {
-    // Task 11 adds `still_holds_after`, and it must land on `VerifiedModel`
-    // (in `lib.rs`), never on `FiniteModel` (in `model.rs`) — see
-    // `VerifiedModel`'s doc comment for why: a caller must not be able to
-    // ask the soundness question of a model that was never checked.
-    let model_src = include_str!("../src/model.rs");
-    assert!(
-        !model_src.contains("fn still_holds_after"),
-        "FiniteModel must never gain a `still_holds_after` method — that \
-         belongs on VerifiedModel only"
-    );
-}
+// The "FiniteModel has no still_holds_after" property now has a REAL
+// compile check — `src/model.rs`'s `compile_fail` doctest on `FiniteModel`
+// — rather than a source scan; run it with the doctests
+// (`cargo test -p owl-dl-verify`, "Doc-tests owl_dl_verify" section). The
+// two checks below cover what a doctest can't: field privacy (a private
+// field is enforced by the compiler on every build, but pinning that it
+// STAYS private is still worth a named test) and a temporal marker for
+// Task 11, split into its own test rather than folded into the field-
+// privacy one so its lifecycle is unambiguous.
 
 #[test]
 fn verified_model_does_not_expose_its_inner_finite_model_mutably() {
@@ -1491,9 +1480,10 @@ fn verified_model_does_not_expose_its_inner_finite_model_mutably() {
     // field being PRIVATE: a `pub struct VerifiedModel(pub FiniteModel)`
     // would let any caller reconstruct one by hand — bypassing `verify`'s
     // checking loop entirely — or reach the wrapped model mutably through
-    // it. Neither `pub` spelling (`pub FiniteModel` immediately inside the
-    // parens, or a later `pub fn` returning `&mut FiniteModel` / owned
-    // `FiniteModel` from an `impl VerifiedModel` block) may appear.
+    // it. This is a permanent invariant, NOT something Task 11 should touch:
+    // `still_holds_after` must be added as a method that takes `&self`, and
+    // doing so does not require (and must not motivate) making the field
+    // `pub` or adding an `into_inner`/`&mut` accessor.
     let lib_src = include_str!("../src/lib.rs");
     assert!(
         lib_src.contains("struct VerifiedModel("),
@@ -1504,10 +1494,65 @@ fn verified_model_does_not_expose_its_inner_finite_model_mutably() {
         "VerifiedModel's tuple field must stay private, or any caller could \
          construct one without going through verify()'s checking loop"
     );
+}
+
+// DELETE THIS ENTIRE TEST once Task 11 lands `still_holds_after` on
+// `VerifiedModel`. It exists only to pin "this task (10) does not implement
+// it yet" — once Task 11 legitimately adds `fn still_holds_after` to
+// `lib.rs`, this assertion is EXPECTED to fail, and the fix is to remove
+// the test, not to weaken the assertion. (Contrast with the sibling doctest
+// on `FiniteModel` in `model.rs`, which stays valid forever: Task 11 adds
+// the method to `VerifiedModel`, not to `FiniteModel`, so that check is
+// permanent and untouched by this note.)
+#[test]
+fn still_holds_after_does_not_exist_yet_task_10_scope_marker() {
+    let lib_src = include_str!("../src/lib.rs");
     assert!(
         !lib_src.contains("fn still_holds_after"),
-        "this task does not implement still_holds_after; Task 11 must add \
-         it to VerifiedModel, and when it does, it must not expose &mut \
-         FiniteModel or an owned FiniteModel to get there"
+        "this task (10) does not implement still_holds_after — Task 11 adds \
+         it to VerifiedModel. If it now exists, DELETE THIS TEST rather than \
+         editing the assertion."
+    );
+}
+
+#[test]
+fn verify_honours_an_already_elapsed_deadline_and_reports_it_as_a_deadline_not_a_count() {
+    // Requirement: `limit: None` is what distinguishes a deadline-based
+    // `BoundTripped` from a count-based one (e.g. `max_rounds`,
+    // `max_elements`). A refactor could swap the bound name or the `None`
+    // for `Some(0)` without any other test noticing, since every other
+    // `verify` test in this file passes `None` for `deadline`.
+    let internal = common::load(SUBCLASS_FIXTURE);
+    let (m, build_reasons) =
+        owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    assert!(build_reasons.is_empty(), "{build_reasons:?}");
+    let expected_domain = m.domain_size();
+
+    // Already in the past: `verify` must trip on the very first axiom.
+    let elapsed = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now);
+    let (verdict, model_out) = verify(m, &internal, Some(elapsed));
+    match verdict {
+        Verdict::Unresolved {
+            domain_size,
+            reasons,
+        } => {
+            assert_eq!(domain_size, expected_domain);
+            assert!(
+                reasons.contains(&UnresolvedReason::BoundTripped {
+                    bound: "deadline",
+                    limit: None,
+                }),
+                "an elapsed deadline must report BoundTripped{{bound: \
+                 \"deadline\", limit: None}}, not a count-shaped variant: \
+                 {reasons:?}"
+            );
+        }
+        other => panic!("an already-elapsed deadline must yield Unresolved: {other:?}"),
+    }
+    assert!(
+        model_out.is_none(),
+        "a deadline-truncated run must never hand back a VerifiedModel"
     );
 }

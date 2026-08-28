@@ -119,8 +119,14 @@ pub enum Verdict {
 ///
 /// The inner `FiniteModel` is a PRIVATE tuple field, so nothing outside this
 /// module can construct a `VerifiedModel` other than by going through
-/// `verify`'s checking loop, and nothing — inside or outside this crate —
-/// can reach the model mutably through this type at all. Task 11 adds
+/// `verify`'s checking loop. Today, nothing can reach the model mutably
+/// through this type at all either — but that is because this module
+/// defines no accessor at all yet, not because the language forbids adding
+/// one: `verified_model_does_not_expose_its_inner_finite_model_mutably`
+/// (`tests/evaluator.rs`) checks the field stays un-`pub`, but nothing here
+/// stops a future `impl VerifiedModel` from adding an `into_inner` or
+/// `&mut FiniteModel` accessor that would reopen this hole — that is a
+/// review discipline, not something this test can enforce. Task 11 adds
 /// `still_holds_after` as a method ON `VerifiedModel`, never on
 /// `FiniteModel` itself: `FiniteModel::still_holds_after` must not exist,
 /// because that would let a caller ask the question of a model that was

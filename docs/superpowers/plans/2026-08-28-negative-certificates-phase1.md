@@ -19,6 +19,14 @@ before Task 1; this plan argues from it and does not restate its reasoning.
 
 ## Global Constraints
 
+**Key-extractor closures, not function items.** `sort_unstable_by_key` and
+`binary_search_by_key` pass the key extractor a REFERENCE (`for<'a> fn(&'a ClassId) -> _`), so
+`ClassId::index` — whose signature is `fn(self) -> u32` — does **not** compile (E0631, verified).
+Every key extractor in this plan is written as a closure (`|c| c.index()`) for that reason. Do not
+"tidy" them back into function items.
+
+
+
 - Rust edition **2024**, `rust-version` **1.88**; build with `RUSTUP_TOOLCHAIN=stable cargo …`
   (the pinned 1.95.0 toolchain often lacks `cargo`; a failed build **silently reuses a stale
   binary**).
@@ -360,7 +368,7 @@ impl FiniteModel {
             population.push(sub);
             population.push(target);
         }
-        population.sort_unstable_by_key(ClassId::index);
+        population.sort_unstable_by_key(|c| c.index());
         population.dedup();
 
         for c in population {
@@ -383,7 +391,7 @@ impl Interpretation for FiniteModel {
         (0..u32::try_from(self.labels.len()).unwrap_or(u32::MAX)).map(Element::new)
     }
     fn in_concept(&self, e: Element, c: ClassId) -> bool {
-        self.label(e).binary_search_by_key(&c.index(), ClassId::index).is_ok()
+        self.label(e).binary_search_by_key(&c.index(), |k| k.index()).is_ok()
     }
     fn successors(&self, _e: Element, _r: RoleId) -> Vec<Element> {
         Vec::new() // edges arrive in Task 4
@@ -551,7 +559,7 @@ pub fn effective_ranges(
                 acc.extend_from_slice(cs);
             }
         }
-        acc.sort_unstable_by_key(ClassId::index);
+        acc.sort_unstable_by_key(|c| c.index());
         acc.dedup();
         if !acc.is_empty() {
             out.insert(rid, acc);
@@ -691,7 +699,7 @@ impl FiniteModel {
         let aug: Vec<ClassId> = ranges
             .iter()
             .copied()
-            .filter(|c| base.binary_search_by_key(&c.index(), ClassId::index).is_err())
+            .filter(|c| base.binary_search_by_key(&c.index(), |k| k.index()).is_err())
             .collect();
         if aug.is_empty() { Ok(base) } else { Err(aug) }
     }
@@ -764,7 +772,7 @@ Replace the three placeholder `Interpretation` methods with:
                 out.extend(bucket.iter().filter(|(f, _)| *f == e).map(|(_, t)| *t));
             }
         }
-        out.sort_unstable_by_key(Element::index);
+        out.sort_unstable_by_key(|e| e.index());
         out.dedup();
         out
     }
@@ -1003,7 +1011,7 @@ pub fn inject_conjunction(
     let Some(ranges) = eff.get(&r) else { return };
     let mut operands: Vec<ConceptId> = vec![working.concepts.atomic(y)];
     for c in ranges {
-        if base.binary_search_by_key(&c.index(), ClassId::index).is_err() {
+        if base.binary_search_by_key(&c.index(), |k| k.index()).is_err() {
             operands.push(working.concepts.atomic(*c));
         }
     }

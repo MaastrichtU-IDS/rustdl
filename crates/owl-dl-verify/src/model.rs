@@ -5,7 +5,10 @@
 //! derived-equivalent classes.
 
 use hashbrown::HashMap;
-use owl_dl_core::{ClassId, InternalOntology, RoleId};
+use owl_dl_core::{
+    Axiom, ClassId, ConceptExpr, InternalOntology, RoleHierarchy, RoleHierarchyBuilder, RoleId,
+    SubRolePath,
+};
 use owl_dl_saturation::Subsumers;
 
 use crate::interp::{Element, Interpretation};
@@ -110,4 +113,78 @@ impl Interpretation for FiniteModel {
     fn num_roles(&self) -> usize {
         self.edges.len()
     }
+}
+
+/// Builds the named-role hierarchy from the lowered axioms.
+///
+/// `is_pure_el` admits no inverse-role USE, so inverse canonicalization (which
+/// the reasoner's private builder performs) is deliberately not replicated: any
+/// inverse occurrence puts the ontology out of fragment.
+#[must_use]
+pub fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
+    let n = u32::try_from(internal.vocabulary.num_roles()).unwrap_or(u32::MAX);
+    let mut b = RoleHierarchyBuilder::with_roles(n);
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Role(r),
+                sup,
+            } if !r.is_inverse() && !sup.is_inverse() => {
+                b.add_sub_role(r.role_id(), sup.role_id());
+            }
+            Axiom::EquivalentObjectProperties(roles) => {
+                for a in roles {
+                    for c in roles {
+                        if !a.is_inverse() && !c.is_inverse() {
+                            b.add_sub_role(a.role_id(), c.role_id());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    b.build()
+}
+
+/// `eff_ranges(r) = ⋃ { ranges(s) : s ∈ super_roles(r) }`.
+///
+/// SUPER-roles, because `r ⊑ s` makes an `r`-edge an `s`-edge, so `Range(s)`
+/// constrains `r`-successors. `super_roles` is reflexive.
+///
+/// `Top` fillers are skipped (trivial). `Bot` fillers are skipped too: a label
+/// cannot carry `⊥`, and the axiom check is its home — which is exactly what
+/// makes the `Range(r,⊥)` case a DETECTION rather than a refusal.
+#[must_use]
+pub fn effective_ranges(
+    internal: &InternalOntology,
+    h: &RoleHierarchy,
+) -> HashMap<RoleId, Vec<ClassId>> {
+    let mut declared: HashMap<RoleId, Vec<ClassId>> = HashMap::new();
+    for ax in &internal.axioms {
+        if let Axiom::ObjectPropertyRange { role, range } = ax {
+            if role.is_inverse() {
+                continue;
+            }
+            if let ConceptExpr::Atomic(c) = internal.concepts.get(*range) {
+                declared.entry(role.role_id()).or_default().push(*c);
+            }
+        }
+    }
+    let mut out: HashMap<RoleId, Vec<ClassId>> = HashMap::new();
+    for r in 0..u32::try_from(h.num_roles()).unwrap_or(u32::MAX) {
+        let rid = RoleId::new(r);
+        let mut acc: Vec<ClassId> = Vec::new();
+        for s in h.super_roles(rid) {
+            if let Some(cs) = declared.get(s) {
+                acc.extend_from_slice(cs);
+            }
+        }
+        acc.sort_unstable_by_key(|c| c.index());
+        acc.dedup();
+        if !acc.is_empty() {
+            out.insert(rid, acc);
+        }
+    }
+    out
 }

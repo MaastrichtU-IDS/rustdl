@@ -1,6 +1,6 @@
 use owl_dl_core::convert_ontology;
 use owl_dl_verify::Interpretation;
-use owl_dl_verify::model::FiniteModel;
+use owl_dl_verify::model::{FiniteModel, build_role_hierarchy, effective_ranges};
 
 fn load(ofn: &str) -> owl_dl_core::InternalOntology {
     let (onto, _): (
@@ -74,5 +74,42 @@ fn subsumers_of_is_reflexive_which_interning_and_the_witness_argument_both_need(
     assert!(
         subs.subsumers_of(a).contains(&a),
         "spec §3 and the label-interning argument both consume reflexivity"
+    );
+}
+
+const RANGES: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/r>
+Declaration(Class(:F)) Declaration(Class(:G))
+Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))
+SubObjectPropertyOf(:p :q)
+ObjectPropertyRange(:q :F)
+ObjectPropertyRange(:p :G)
+)
+";
+
+#[test]
+fn effective_ranges_unions_over_super_roles() {
+    let internal = load(RANGES);
+    let hier = build_role_hierarchy(&internal);
+    let er = effective_ranges(&internal, &hier);
+    let p = internal.vocabulary.role_id("http://ex.org/p").expect("p");
+    let q = internal.vocabulary.role_id("http://ex.org/q").expect("q");
+    let f = internal.vocabulary.class_id("http://ex.org/F").expect("F");
+    let g = internal.vocabulary.class_id("http://ex.org/G").expect("G");
+
+    let pr = er.get(&p).cloned().unwrap_or_default();
+    assert!(
+        pr.contains(&f),
+        "p ⊑ q, so Range(q,F) constrains p-successors"
+    );
+    assert!(
+        pr.contains(&g),
+        "p's own range must be included (super_roles is reflexive)"
+    );
+    let qr = er.get(&q).cloned().unwrap_or_default();
+    assert!(qr.contains(&f));
+    assert!(
+        !qr.contains(&g),
+        "a SUB-role's range must NOT leak upward to q"
     );
 }

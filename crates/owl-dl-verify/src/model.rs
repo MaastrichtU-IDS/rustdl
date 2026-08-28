@@ -25,6 +25,45 @@ fn injected_class_iri(y: ClassId, r: RoleId) -> String {
     )
 }
 
+/// What a prior round's injection did for gap `(a, r)`, looked up by the
+/// deterministic IRI `inject_conjunction` interns under.
+///
+/// Shared by `expand` and `materialise_exists`'s `Err` arms so the two paths
+/// cannot disagree about whether a gap is already closed. Review finding
+/// (Task 5, round 1): `expand`'s fact-driven path never learned this lookup
+/// when it was first added only inside `materialise_exists`, so on any
+/// fixture where the FACT path (not the axiom path) hits the closure gap,
+/// `expand` re-reported `LabelNotClosed` every round forever — `pending`
+/// never emptied, and `inject_conjunction` kept re-pushing an equivalent
+/// axiom for the same already-injected `Q`. Fails safe (`BoundTripped`, never
+/// a false `Verified`) but defeats convergence. `AND_WRAPPED_NESTED_RANGE`
+/// (`tests/model.rs`) is the fixture that exposed it: `expand` alone reaches
+/// this gap via the fact path, and no test previously drove `build_model`
+/// (as opposed to bare `expand`) on it.
+enum InjectedLookup {
+    /// No `Q` has been injected for this pair (yet, or ever).
+    NotFound,
+    /// `Q` was injected and is satisfiable — its own subsumer row is the
+    /// correctly-closed label.
+    Closed(Vec<ClassId>),
+    /// `Q` was injected but turned out unsatisfiable: `a` itself is
+    /// genuinely unsatisfiable under the augmented `TBox`.
+    RunDelta,
+}
+
+fn lookup_injected(
+    internal: &InternalOntology,
+    subs: &Subsumers,
+    a: ClassId,
+    r: RoleId,
+) -> InjectedLookup {
+    match internal.vocabulary.class_id(&injected_class_iri(a, r)) {
+        Some(q) if !subs.is_unsatisfiable(q) => InjectedLookup::Closed(subs.subsumers_of(q)),
+        Some(_) => InjectedLookup::RunDelta,
+        None => InjectedLookup::NotFound,
+    }
+}
+
 /// Adds `Q ≡ Y ⊓ ⨅aug` to `working`, with an IRI carrying
 /// `SYNTHETIC_CLASS_IRI_PREFIX` so reporting filters it.
 ///
@@ -237,11 +276,13 @@ impl FiniteModel {
     /// on a labelled element becomes an `r`-edge to the interned target label,
     /// iterated to a fixpoint (or a tripped bound).
     ///
-    /// Report-only for now: a fact whose target label would need `TBox` closure
-    /// (`target_label` returning `Err`) is reported as `LabelNotClosed` rather
-    /// than approximated, per the module doc above.
+    /// A fact whose target label would need `TBox` closure (`target_label`
+    /// returning `Err`) first checks `lookup_injected` for a prior round's
+    /// injected `Q` (shared with `materialise_exists` — see its doc) before
+    /// falling back to reporting `LabelNotClosed`.
     pub fn expand(
         &mut self,
+        internal: &InternalOntology,
         subs: &Subsumers,
         facts: &[(ClassId, RoleId, ClassId)],
         eff: &HashMap<RoleId, Vec<ClassId>>,
@@ -260,27 +301,35 @@ impl FiniteModel {
                     continue;
                 };
                 for (r, y) in outs {
-                    match Self::target_label(subs, eff, r, y) {
-                        Ok(label) => {
-                            let before = self.labels.len();
-                            let t = self.intern(label);
-                            if self.labels.len() > bounds.max_elements {
-                                reasons.push(UnresolvedReason::BoundTripped {
-                                    bound: "max_elements",
-                                    limit: Some(bounds.max_elements),
-                                });
-                                return reasons;
+                    let label = match Self::target_label(subs, eff, r, y) {
+                        Ok(label) => label,
+                        Err(_aug) => match lookup_injected(internal, subs, y, r) {
+                            InjectedLookup::Closed(label) => label,
+                            InjectedLookup::RunDelta => {
+                                reasons.push(UnresolvedReason::RunDelta { class: y });
+                                subs.subsumers_of(y)
                             }
-                            if self.push_edge(r, e, t, bounds, &mut reasons) {
-                                return reasons;
+                            InjectedLookup::NotFound => {
+                                reasons
+                                    .push(UnresolvedReason::LabelNotClosed { class: y, role: r });
+                                continue;
                             }
-                            if self.labels.len() > before {
-                                queue.push(t);
-                            }
-                        }
-                        Err(_aug) => {
-                            reasons.push(UnresolvedReason::LabelNotClosed { class: y, role: r });
-                        }
+                        },
+                    };
+                    let before = self.labels.len();
+                    let t = self.intern(label);
+                    if self.labels.len() > bounds.max_elements {
+                        reasons.push(UnresolvedReason::BoundTripped {
+                            bound: "max_elements",
+                            limit: Some(bounds.max_elements),
+                        });
+                        return reasons;
+                    }
+                    if self.push_edge(r, e, t, bounds, &mut reasons) {
+                        return reasons;
+                    }
+                    if self.labels.len() > before {
+                        queue.push(t);
                     }
                 }
             }
@@ -435,23 +484,17 @@ impl FiniteModel {
                         Ok(l) => label.extend(l),
                         Err(_aug) => {
                             // A prior round may have injected `Q ≡ a ⊓ aug` for
-                            // exactly this (class, role) pair — look it up by
-                            // its deterministic IRI. If it is there and
-                            // satisfiable, its OWN closure (re-saturated) is
-                            // the correctly-closed label; that is the whole
-                            // point of injection. If it went unsatisfiable,
-                            // `a` itself is genuinely unsatisfiable under the
-                            // augmented TBox — a defect signal, not a report
-                            // of this local rule's own limits.
-                            match internal.vocabulary.class_id(&injected_class_iri(*a, r)) {
-                                Some(q) if !subs.is_unsatisfiable(q) => {
-                                    label.extend(subs.subsumers_of(q));
-                                }
-                                Some(_) => {
+                            // exactly this (class, role) pair. `lookup_injected`
+                            // is shared with `expand`'s Err arm so the two
+                            // paths cannot disagree about whether the gap is
+                            // already closed.
+                            match lookup_injected(internal, subs, *a, r) {
+                                InjectedLookup::Closed(l) => label.extend(l),
+                                InjectedLookup::RunDelta => {
                                     reasons.push(UnresolvedReason::RunDelta { class: *a });
                                     label.extend(subs.subsumers_of(*a));
                                 }
-                                None => {
+                                InjectedLookup::NotFound => {
                                     // The range augmentation is unclosed and
                                     // stays reported below, but the atom's own
                                     // base closure is entailed unconditionally

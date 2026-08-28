@@ -99,7 +99,7 @@ pub fn build_model(
         // must compile and pass on its own.
         let eff = model::effective_ranges(&working, &h);
         let mut m = FiniteModel::seed(&working, &subs, &facts).with_hierarchy(h);
-        let mut step = m.expand(&subs, &facts, &eff, bounds);
+        let mut step = m.expand(&working, &subs, &facts, &eff, bounds);
         // BOTH expansion paths run. The fact path alone cannot reach a nested
         // existential witness (the saturator emits no inner fact and gives the
         // marker an empty subsumer set), which is why Task 4b exists.
@@ -136,6 +136,10 @@ pub fn build_model(
                 _ => None,
             })
             .collect();
+        // Dedup: the same (class, role) pair can be reported once per
+        // matching element (multiple elements can independently hit the same
+        // unclosed gap), and injecting it twice would push a second,
+        // redundant EquivalentClasses axiom for the same already-interned Q.
         pending.sort_unstable();
         pending.dedup();
 
@@ -164,9 +168,43 @@ pub fn build_model(
 }
 
 /// Reports every ORIGINAL class whose satisfiability changed between the first
-/// and final saturation. Measured on `unsatnested.ofn`: injection flips `X` from
-/// satisfiable to unsatisfiable, and `HermiT` agrees `X` is unsat — so this is a
-/// defect signal, not noise.
+/// and final saturation.
+///
+/// The conceptual point stands regardless of whether it has ever fired: if an
+/// original class's satisfiability differs between what the user's run
+/// reported (`first`) and what the fully-injected final run computed
+/// (`final_`), that is direct evidence of engine incompleteness on the
+/// user's actual classification, not an artifact of this crate's own model
+/// construction (injection is a sound monotone extension — see
+/// `inject_conjunction`'s doc).
+///
+/// CORRECTION (Task 5 review, round 1): this comment previously claimed
+/// "measured on `unsatnested.ofn`: injection flips `X` from satisfiable to
+/// unsatisfiable, and `HermiT` agrees `X` is unsat." That does NOT reproduce —
+/// re-measured, `build_model` on `unsatnested.ofn` finds no `LabelNotClosed`
+/// at all (the automatic `aug`-driven injection never fires on that
+/// fixture), so no injection happens and `first == final_` trivially. The
+/// original claim came from a separate, MANUAL experiment (a hand-written
+/// `Q ≡ ∃s.Y ⊓ F` added directly to the ontology by an investigator, not
+/// something this function's automatic mechanism ever constructs) and was
+/// wrongly attributed to this code path.
+///
+/// I looked for a fixture where THIS function's comparison (as opposed to
+/// the sibling per-atom check inside `expand`/`materialise_exists`, which
+/// DOES have a firing test — see `injected_q_unsatisfiable_reports_run_
+/// delta_not_label_not_closed` in `tests/model.rs`) genuinely fires, and
+/// could not construct one: `inject_conjunction` builds `aug` as exactly the
+/// range classes `y` does not already subsume, so the EL saturator's own
+/// conjunction-introduction rule for `y ⊓ aug ⊑ Q` can never independently
+/// fire on `y` alone — only the synthetic `Q` ever satisfies both sides at
+/// once — so injecting `Q` has no path back to changing `y`'s (or any other
+/// original class's) own `is_unsatisfiable` verdict under the current
+/// mechanism. This function is therefore currently unexercised by a
+/// positive case in this crate's test suite; every existing test compares
+/// and finds no delta, never compares and finds one. Kept as a safety net
+/// for a mechanism this function does not itself have to predict (e.g. a
+/// future injection shape, or an unexpected saturator interaction) — not
+/// weakened or removed for being currently unreachable.
 fn run_deltas(
     internal: &InternalOntology,
     first: &Subsumers,

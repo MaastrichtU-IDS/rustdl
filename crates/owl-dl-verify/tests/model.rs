@@ -143,7 +143,7 @@ fn a_as_a_class_and_a_as_a_u_successor_are_distinct_elements() {
     let h = build_role_hierarchy(&internal);
     let eff = effective_ranges(&internal, &h);
     let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(h);
-    let reasons = model.expand(&subs, &facts, &eff, &Bounds::default());
+    let reasons = model.expand(&internal, &subs, &facts, &eff, &Bounds::default());
     assert!(
         reasons.is_empty(),
         "the flat existential's target is already range-folded by the saturator, \
@@ -213,13 +213,38 @@ fn and_wrapped_nested_existential_reports_label_not_closed() {
     let eff = effective_ranges(&internal, &h);
     let u = internal.vocabulary.role_id("http://ex.org/u").expect("u");
     let mut model = FiniteModel::seed(&internal, &subs, &facts);
-    let reasons = model.expand(&subs, &facts, &eff, &Bounds::default());
+    let reasons = model.expand(&internal, &subs, &facts, &eff, &Bounds::default());
     assert!(
         reasons
             .iter()
             .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { role, .. } if *role == u)),
         "the inner ∃u.A target is not range-folded by this Tseitin path either, so \
          expand must report rather than truncate: got {reasons:?}"
+    );
+}
+
+// --- Review finding 1 (Task 5, round 1): build_model must actually CONVERGE
+// on this fixture, not just report LabelNotClosed once from bare expand().
+//
+// `expand()`'s Err arm did not originally know how to look up an injected
+// `Q` (that lookup was added only inside `materialise_exists`), so
+// `build_model` on this exact fixture re-reported the same `(A, u)` gap every
+// round forever: `pending` never emptied, and `inject_conjunction` kept
+// re-pushing an equivalent axiom for the same already-injected `Q`. It
+// failed SAFE (`BoundTripped`, never a false `Verified`), but it defeated
+// convergence on a shape this file already exercises via bare `expand()`.
+// Fixed by factoring the injected-`Q` lookup into `lookup_injected`, shared
+// by both `expand`'s and `materialise_exists`'s `Err` arms.
+#[test]
+fn build_model_converges_on_and_wrapped_nested_range() {
+    let internal = load(AND_WRAPPED_NESTED_RANGE);
+    let (_m, reasons) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    assert!(
+        !reasons
+            .iter()
+            .any(|r| matches!(r, UnresolvedReason::BoundTripped { .. })),
+        "build_model must converge once expand()'s Err arm can see the round-1 \
+         injected Q, not spin forever re-reporting the same closed gap: {reasons:?}"
     );
 }
 
@@ -288,7 +313,7 @@ fn nested_existential_range_gap_probe_b() {
     let h = build_role_hierarchy(&internal);
     let eff = effective_ranges(&internal, &h);
     let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(h);
-    let _ = model.expand(&subs, &facts, &eff, &Bounds::default());
+    let _ = model.expand(&internal, &subs, &facts, &eff, &Bounds::default());
 
     let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
     let f = internal.vocabulary.class_id("http://ex.org/F").expect("F");
@@ -336,7 +361,7 @@ fn label_closure_case_reports_label_not_closed_rather_than_a_wrong_label() {
     let h = build_role_hierarchy(&internal);
     let eff = effective_ranges(&internal, &h);
     let mut model = FiniteModel::seed(&internal, &subs, &facts);
-    let reasons = model.expand(&subs, &facts, &eff, &Bounds::default());
+    let reasons = model.expand(&internal, &subs, &facts, &eff, &Bounds::default());
     assert!(
         reasons
             .iter()
@@ -373,7 +398,7 @@ fn axiom_driven_expansion_materialises_the_nested_chain() {
     let eff = effective_ranges(&internal, &hier);
     let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(hier);
     let bounds = Bounds::default();
-    let _ = model.expand(&subs, &facts, &eff, &bounds);
+    let _ = model.expand(&internal, &subs, &facts, &eff, &bounds);
     let _ = model.expand_from_axioms(&internal, &subs, &eff, &bounds);
 
     let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
@@ -434,7 +459,7 @@ fn axiom_driven_expansion_keeps_base_closure_when_the_range_augmentation_is_uncl
     let eff = effective_ranges(&internal, &hier);
     let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(hier);
     let bounds = Bounds::default();
-    let mut reasons = model.expand(&subs, &facts, &eff, &bounds);
+    let mut reasons = model.expand(&internal, &subs, &facts, &eff, &bounds);
     reasons.extend(model.expand_from_axioms(&internal, &subs, &eff, &bounds));
 
     let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
@@ -592,5 +617,67 @@ fn cascade_converges_in_one_round_with_residual_marker_targeted_reports() {
             .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { .. })),
         "the residual gap is real (a Tseitin-marker target the fact-driven path \
          cannot close) and must still be reported, not silently dropped: {reasons:?}"
+    );
+}
+
+// --- Review finding 3 (Task 5, round 1): a genuine positive RunDelta fixture -
+//
+// Constructed (not lifted from the design spec, since Finding 2 established
+// `unsatnested.ofn` does not exercise the AUTOMATIC injection path): `C ⊑
+// ∃t.∃u.A`, `Range(u,F)`, `DisjointClasses(A,F)`. Round 1 reports
+// `LabelNotClosed{A,u}` (aug=[F]) exactly like `label-closure-range-sub.ofn`.
+// Round 1's injection adds `Q ≡ A ⊓ F` — but here `A` and `F` are told-disjoint,
+// so `Q` re-saturates UNSATISFIABLE. Round 2's `lookup_injected` finds `Q`,
+// sees it is unsatisfiable, and both `expand` and `expand_from_axioms` push
+// `RunDelta { class: A }` instead of `LabelNotClosed` — this is a genuine,
+// reproducible firing of the injected-Q-unsatisfiable branch inside
+// `materialise_exists`/`expand` (via the shared `lookup_injected` helper).
+//
+// This does NOT exercise `run_deltas` (the SEPARATE, top-level function in
+// `lib.rs` comparing `first_subs`/`final_subs` over every ORIGINAL class):
+// checked directly (`first_subs.is_unsatisfiable(a)` vs the round-2 `subs.
+// is_unsatisfiable(a)`, and likewise for `C`) — neither flips. This matches
+// the architecture: `aug` is constructed (in `inject_conjunction`) to be
+// exactly the range classes `y` does NOT already subsume, so the EL
+// saturator's own conjunction-introduction rule (`y ⊓ aug ⊑ Q`) can never
+// fire on `y` alone — only the synthetic witness `Q` ever satisfies both
+// sides at once. I could not find, after this attempt plus reasoning through
+// why it can't work, a fixture where injecting `Q` changes an ORIGINAL
+// class's own `is_unsatisfiable` verdict under the current mechanism.
+// `run_deltas`'s top-level comparison therefore has NO known-firing fixture;
+// it is exercised on every existing test only in the sense of "compared and
+// found no delta," never "compared and found one." Documented here rather
+// than left silently looking covered.
+const RUN_DELTA_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/rd>
+Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:F))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u))
+SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))
+ObjectPropertyRange(:u :F)
+DisjointClasses(:A :F)
+)
+";
+
+#[test]
+fn injected_q_unsatisfiable_reports_run_delta_not_label_not_closed() {
+    let internal = load(RUN_DELTA_FIXTURE);
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let (_m, reasons) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    assert!(
+        reasons
+            .iter()
+            .any(|r| matches!(r, UnresolvedReason::RunDelta { class } if *class == a)),
+        "the injected Q ≡ A ⊓ F is unsatisfiable (A, F told-disjoint), so this must \
+         be reported as RunDelta, not silently dropped or reported as LabelNotClosed \
+         (which would wrongly imply a plain reporting limitation, not a defect): \
+         {reasons:?}"
+    );
+    assert!(
+        !reasons
+            .iter()
+            .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { .. })),
+        "once the injected Q's unsatisfiability is known, this specific gap must not \
+         ALSO still be reported as an unresolved (not-yet-injected) LabelNotClosed: \
+         {reasons:?}"
     );
 }

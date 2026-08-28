@@ -12,6 +12,7 @@ use owl_dl_core::{
 use owl_dl_saturation::Subsumers;
 
 use crate::interp::{Element, Interpretation};
+use crate::{Bounds, UnresolvedReason};
 
 #[derive(Debug, Default)]
 pub struct FiniteModel {
@@ -21,6 +22,11 @@ pub struct FiniteModel {
     /// inclusion is answered on demand so that closure is never materialised.
     edges: Vec<Vec<(Element, Element)>>,
     class_of: HashMap<ClassId, Element>,
+    /// `RoleHierarchy` derives only `Debug + Clone`, not `Default`, so this
+    /// must stay optional to keep `FiniteModel`'s derived `Default` (which
+    /// `seed` builds on via `..Self::default()`) working. Absent reads the
+    /// same as an out-of-range role: an empty sub-role extension.
+    hierarchy: Option<RoleHierarchy>,
 }
 
 impl FiniteModel {
@@ -87,6 +93,121 @@ impl FiniteModel {
         }
         model
     }
+
+    /// Attaches the role hierarchy, which `successors`/`has_edge`/`edges` need
+    /// to answer sub-role inclusion on demand.
+    #[must_use]
+    pub fn with_hierarchy(mut self, h: RoleHierarchy) -> Self {
+        self.hierarchy = Some(h);
+        self
+    }
+
+    /// Sub-roles of `r`, or `&[]` for a role outside the hierarchy.
+    ///
+    /// `RoleHierarchy::sub_roles` PANICS out of range, and "the edit introduces a
+    /// role" is the normal case for `still_holds_after`, so an unknown role must
+    /// read as an empty extension rather than crashing. A model with no
+    /// hierarchy attached yet behaves the same way.
+    fn hierarchy_sub_roles(&self, r: RoleId) -> &[RoleId] {
+        match &self.hierarchy {
+            Some(h) if (r.index() as usize) < h.num_roles() => h.sub_roles(r),
+            _ => &[],
+        }
+    }
+
+    /// Target label for a fact `(_, r, y)`.
+    ///
+    /// Returns `Err(aug)` when the label would need `TBox` closure this local rule
+    /// cannot supply. Task 5 replaces that with injection; until then the caller
+    /// reports `LabelNotClosed`, because a plain union is a FALSE-`Violated`
+    /// generator: with `Range(u,F)` and `F ⊑ G` it yields `{A,F}`, missing `G`,
+    /// so `SubClassOf(F,G)` reads violated on a HEALTHY ontology.
+    fn target_label(
+        subs: &Subsumers,
+        eff: &HashMap<RoleId, Vec<ClassId>>,
+        r: RoleId,
+        y: ClassId,
+    ) -> Result<Vec<ClassId>, Vec<ClassId>> {
+        let base = subs.subsumers_of(y);
+        let Some(ranges) = eff.get(&r) else {
+            return Ok(base);
+        };
+        let aug: Vec<ClassId> = ranges
+            .iter()
+            .copied()
+            .filter(|c| {
+                base.binary_search_by_key(&c.index(), |k| k.index())
+                    .is_err()
+            })
+            .collect();
+        if aug.is_empty() { Ok(base) } else { Err(aug) }
+    }
+
+    /// Expands seeded elements into a graph: every existential fact `(x, r, y)`
+    /// on a labelled element becomes an `r`-edge to the interned target label,
+    /// iterated to a fixpoint (or a tripped bound).
+    ///
+    /// Report-only for now: a fact whose target label would need `TBox` closure
+    /// (`target_label` returning `Err`) is reported as `LabelNotClosed` rather
+    /// than approximated, per the module doc above.
+    pub fn expand(
+        &mut self,
+        subs: &Subsumers,
+        facts: &[(ClassId, RoleId, ClassId)],
+        eff: &HashMap<RoleId, Vec<ClassId>>,
+        bounds: &Bounds,
+    ) -> Vec<UnresolvedReason> {
+        let mut by_sub: HashMap<ClassId, Vec<(RoleId, ClassId)>> = HashMap::new();
+        for &(s, r, t) in facts {
+            by_sub.entry(s).or_default().push((r, t));
+        }
+        let mut reasons = Vec::new();
+        let mut queue: Vec<Element> = self.elements().collect();
+        let mut edge_count = 0usize;
+        while let Some(e) = queue.pop() {
+            let classes: Vec<ClassId> = self.label(e).to_vec();
+            for x in classes {
+                let Some(outs) = by_sub.get(&x).cloned() else {
+                    continue;
+                };
+                for (r, y) in outs {
+                    match Self::target_label(subs, eff, r, y) {
+                        Ok(label) => {
+                            let before = self.labels.len();
+                            let t = self.intern(label);
+                            if self.labels.len() > bounds.max_elements {
+                                reasons.push(UnresolvedReason::BoundTripped {
+                                    bound: "max_elements",
+                                    limit: Some(bounds.max_elements),
+                                });
+                                return reasons;
+                            }
+                            if let Some(bucket) = self.edges.get_mut(r.index() as usize)
+                                && !bucket.contains(&(e, t))
+                            {
+                                bucket.push((e, t));
+                                edge_count += 1;
+                            }
+                            if edge_count > bounds.max_edges {
+                                reasons.push(UnresolvedReason::BoundTripped {
+                                    bound: "max_edges",
+                                    limit: Some(bounds.max_edges),
+                                });
+                                return reasons;
+                            }
+                            if self.labels.len() > before {
+                                queue.push(t);
+                            }
+                        }
+                        Err(_aug) => {
+                            reasons.push(UnresolvedReason::LabelNotClosed { class: y, role: r });
+                        }
+                    }
+                }
+            }
+        }
+        reasons
+    }
 }
 
 impl Interpretation for FiniteModel {
@@ -101,14 +222,34 @@ impl Interpretation for FiniteModel {
             .binary_search_by_key(&c.index(), |cid| cid.index())
             .is_ok()
     }
-    fn successors(&self, _e: Element, _r: RoleId) -> Vec<Element> {
-        Vec::new() // edges arrive in Task 4
+    fn successors(&self, e: Element, r: RoleId) -> Vec<Element> {
+        let mut out = Vec::new();
+        for s in self.hierarchy_sub_roles(r) {
+            if let Some(bucket) = self.edges.get(s.index() as usize) {
+                out.extend(bucket.iter().filter(|(f, _)| *f == e).map(|(_, t)| *t));
+            }
+        }
+        out.sort_unstable_by_key(|e| e.index());
+        out.dedup();
+        out
     }
-    fn has_edge(&self, _from: Element, _r: RoleId, _to: Element) -> bool {
-        false
+    fn has_edge(&self, from: Element, r: RoleId, to: Element) -> bool {
+        self.hierarchy_sub_roles(r).iter().any(|s| {
+            self.edges
+                .get(s.index() as usize)
+                .is_some_and(|b| b.contains(&(from, to)))
+        })
     }
-    fn edges(&self, _r: RoleId) -> Vec<(Element, Element)> {
-        Vec::new()
+    fn edges(&self, r: RoleId) -> Vec<(Element, Element)> {
+        let mut out = Vec::new();
+        for s in self.hierarchy_sub_roles(r) {
+            if let Some(bucket) = self.edges.get(s.index() as usize) {
+                out.extend_from_slice(bucket);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
     fn num_roles(&self) -> usize {
         self.edges.len()

@@ -2008,7 +2008,33 @@ RUSTUP_TOOLCHAIN=stable cargo test --workspace
 ./scripts/run-soundness-diff.sh   # must stay FP=0; this crate touches no reasoning path
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Record what execution discovered.** These are carried forward from task reviews and
+  would otherwise survive only in scratch files:
+
+  1. **`docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`** — the two expansion
+     paths label the same nested-existential witness DIFFERENTLY (the axiom path from `eff_ranges`
+     only, often empty; the fact path from `subsumers_of(Tseitin Q)`, non-empty), and `intern` dedups
+     purely by LABEL CONTENT, so **one logical witness becomes two elements**. That contradicts the
+     spec's own "one canonical interpretation" framing. Not shown unsound — an extra edge-less element
+     contributes to no composed pair — but whether a future concept-level check could read a WEAKER
+     answer at the under-labelled witness is untested. Add a matching comment on
+     `materialise_exists`'s opaque-body branch, because this currently survives only in a task report
+     and test comments that a future `model.rs` reader will miss.
+  2. **`Violation`'s struct doc** is written entirely from `verify`'s perspective. Note that
+     `still_holds_after` also produces `Violation`s — via a borrow rather than a consume — and that
+     its `axiom_index` indexes into `added`, NOT `internal.axioms`.
+  3. **Amend spec §7**: it says the crate must never depend on `owl-dl-reasoner`. Task 12 added it as
+     a **dev**-dependency so the acceptance suite runs the real hybrid classifier instead of grading
+     its own homework. Reword to "not a RUNTIME dependency"; the property that matters is the absence
+     of a cycle, which holds (nothing in `owl-dl-reasoner`'s manifest names `owl-dl-verify`).
+  4. **Record the measured coverage** in the `CLAUDE.md` paragraph, in these words or closer:
+     inertness established on **16 of 20** banner-selected pure-EL ORE ontologies (4 unmeasured —
+     exit-124 timeouts at 300 s, NOT passes); **5 detections** on committed fixtures tracking issues
+     #80/#81/#82, with 2 fixtures REFUSED by the chain-range profile guard; and the injection fixpoint
+     **past round 1 is untested machinery** (injection is corpus-rare: 0 injections across 6 real
+     pure-EL ontologies, and `cascade.ofn` converges in one round).
+
+- [ ] **Step 6: Commit**
 
 ---
 

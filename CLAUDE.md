@@ -1442,6 +1442,65 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   paths can label one logical nested-existential witness differently and get deduped into two
   separate elements — not shown unsound, but untested against a future concept-level check).
 
+> **RANGE FOLDING INTO NESTED EXISTENTIAL WITNESSES (2026-08-29, #81, unflagged) — AND FIVE
+> TESTS THAT WERE PINNING THE BUG.** Two lowering sites in `owl-dl-saturation` dropped a role's
+> `ObjectPropertyRange` when building an existential witness, so `cascade.ofn` returned **ZERO
+> rows with `incomplete: false`** while Konclude derives `A ⊑ FINAL` — the D10 shape.
+> (1) `lower_sub_class_of`'s **`And`-LHS arm** lowered its existential head with
+> `atomic_or_tseitin_body` (no extras), while the `Atomic`-LHS arm used `atomic_existential_rhs`
+> (which reads `effective_ranges`). (2) `atomic_or_tseitin_body_with_extras` **never received
+> `effective_ranges` at all**, so an *inner* nested role's range was dropped too. Both now route
+> through one entry point, with the four marker sites sharing a `range_extras` helper.
+> **Sound and completeness-preserving by construction:** given `Range(R)`, `∃R.B` and
+> `∃R.(B ⊓ Range(R))` are the SAME class, so the fold is a logical identity.
+>
+> **Three new entailments, each Konclude-confirmed:** cascade `A ⊑ FINAL`; an inner-range variant
+> `X ⊑ FINAL`; and range-plus-disjointness making `C` **unsatisfiable** (`Nothing ≡ C`) where the
+> pre-fix engine reported no unsat at all.
+>
+> **THE LESSON IS THE TEST SUITE, NOT THE FIX. Five `owl-dl-verify` tests failed when the defect
+> closed, because the defect WAS their vehicle** — one's own message read *"the inner `∃u.A`
+> target is not range-folded by this Tseitin path either"*. A test written to characterise an
+> instrument against a buggy engine becomes a bug-pin, and there is no signal until someone fixes
+> the bug. This is the sibling of [[sabotage-your-own-guard-tests]] and of the stale-`#[ignore]`
+> entry above: **when picking a fixture, ask whether its behaviour is a DEFECT or a documented
+> DESIGN DECISION.** The replacement, `topwitness.ofn`, is the latter — `∃u.⊤` lowers to a
+> deliberately subsumer-less ⊤-witness, so folding `Range(u)` into it would destroy the
+> `domain(R)` inference that witness exists for. Durability was **demonstrated, not asserted**:
+> with the engine fix reverted, all 12 CLI `verify_el` tests still pass on it while 5 verify and
+> 3 reasoner tests correctly fail. A precedent already existed one commit earlier
+> (`chain_edges_are_materialised_onto_the_declared_super_role`, repointed during #80 with the
+> comment *"Do not repoint this at another engine-defect fixture"*) and was not generalised.
+>
+> **A FIXTURE CAN GO FROM DETECTION TO VACUOUS PASS WITH THE SUITE STILL GREEN.**
+> `instrument_never_verifies_a_classification_that_disagrees_with_the_oracle` asserts NOTHING
+> when rustdl agrees with the oracle. The fix made rustdl agree on `cascade.ofn`, so it silently
+> stopped testing anything — while the instrument still reports `Violated` on it, now a **false
+> positive** of the documented F1 mechanism. Two guards added:
+> `the_detection_set_has_not_silently_gone_vacuous` (the detection set must be non-empty) and
+> `cascade_now_agrees_with_its_oracle_and_its_violated_is_a_known_f1_false_positive`.
+>
+> **`chainrange.ofn` is NOT this mechanism and is NOT fixed** — the #81 comment claiming it
+> "needs a range folded into a nested witness, exactly as `cascade` does" is wrong; it did not
+> move. It needs a range to reach a **chain-derived** edge between **generated** witnesses, and
+> folding into `effective_ranges[u]` would be **unsound** (a bare `u`-successor with no
+> `t`-predecessor is not an `r`-successor). **Konclude misses it too**, so the adjudication went
+> to HermiT, which confirms `C ⊑ D`; on one probe Konclude answers `consistent` where HermiT AND
+> rustdl answer `inconsistent`, which is a stronger claim than the four previously recorded
+> Konclude under-reports. rustdl gets the ABox form right (`abox_saturation` materialises chains
+> and applies ranges) and misses only TBox classification. Ladder, controls and the
+> `grep -o … | head || echo` exit-status trap that nearly fabricated a verdict:
+> `docs/benchmarks/2026-08-29-chain-induced-range-adjudication.md`.
+>
+> **EVIDENCE, with its limits.** FP=0 net **11 VERIFIED, every closure exact** (galen 27997,
+> notgalen 32739, sio 8904, wine 653, ore-10908 6001, pizza 499, alehif 247, ro 158,
+> ore-15672 142, sulo 51, bibtex 16). **That net is INERT for this shape**, so it shows
+> non-regression only — the real evidence is the canaries plus the Konclude/HermiT adjudication.
+> Sabotages: **4 run, 4 caught**. Canaries
+> `crates/owl-dl-reasoner/tests/conjunctive_lhs_range_folding.rs` (4, incl. an atomic-LHS control
+> that must keep passing).
+
+
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**
   (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`compare-whelk`).
   `xtask/` holds build automation (corpus fetch, license inventory).

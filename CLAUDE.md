@@ -1834,6 +1834,69 @@ current engine state, characterized MISSED, open levers, and dead-ends;
 `docs/model-caching-plan.md` / `docs/moms-plan.md` explain why model caching is
 a deliberately un-integrated Phase-1 stub.
 
+## State of play — v0.4.24 (2026-08-29) (read this first)
+
+**Released v0.4.24: two soundness fixes, one completeness fix, all five gates green.** MISSED
+net **2843 → 2777 (−2.32%)** with **FP 0**, 1,920-ontology two-arm sweep **0 answer changes /
+0 genuine `ok → dnf`**, corpus verdict gate 0 flips / 0 lost. **#66 is CLOSED** — fixed at root
+by #78/#83 (a one-line clause-anchoring fix), verified on the issue's own reproducer, and its
+secondary pizza-unsat observation is resolved too. Contents: #76 (`≤n` merge-pair FP), #78/#83,
+#70 (`∃R.{a}` absorption), #72 (`rdf:langString`), #80/#82, #49, and the new `owl-dl-verify`
+crate. See `docs/releases/v0.4.24.md`.
+
+### A CROSS-HOST BASELINE MAKES THE CORPUS GATE REPORT A FALSE FAIL
+
+The gate's `lost_ontologies` clause asks whether an ontology finished **inside the cap**, which
+the MACHINE decides as much as the binary. Against a v0.4.23 baseline measured on faster
+hardware, a good v0.4.24 build reported **2 lost, FAIL**. Re-measuring the **same v0.4.23
+binary** on the candidate's own host moved the **median 0.21 s → 0.53 s (2.5×, across all
+424)** — a reasoner change cannot slow a median 2.5×, which is the tell. Host-matched:
+**PASS, 0 lost, and the candidate classifies one MORE (415 vs 414).**
+
+**Do not swap baselines to turn a FAIL into a PASS.** That is legitimate ONLY after
+establishing independently that the arms are indistinguishable on the disputed ontologies —
+here, 3 runs each with alternating arm order, walls within 1 s and row counts identical
+(`ore_ont_7192` ~49 s, `ore_ont_7204` ~59 s, both cap-borderline). Absent that evidence it is
+the same rationalization the harness's own confirmation pass made when it relabelled a total
+measurement failure "CAP-BORDERLINE, gate PASSES".
+
+`release-corpus-report.py` now records `host` and warns on cross-host or hostless baselines.
+**Re-baseline on the machine you are gating on** — it costs one run (~6 min for 424).
+
+### PARALLEL SWEEP CONTENTION MANUFACTURES `ok → dnf`
+
+A 6-way-parallel 1,920 sweep reported **3 regressions**. Sequential on an idle host, alternating
+arm order, 3 runs each: **all 3 complete in BOTH arms** with identical rows —
+`ore_ont_8429` (998), `ore_ont_9429` (2,706), `ore_ont_9674` (981,144), walls within noise.
+`ore_ont_9429` goes ~28 s idle → DNF at 60 s under contention. The harness `run` has no
+`--jobs`; chunking it across cores buys wall time at the cost of exactly this artifact.
+**Adjudicate every reported loss sequentially before believing it.**
+
+### THE HARNESS `compare` CANNOT SEE THROUGH A WRAPPER
+
+It hashes `--reasoner`, which for rustdl is `wrappers/run-rustdl-json.sh` — the **same file**
+for both arms — so it printed `!! IDENTICAL binaries: any difference below is noise` and
+**skipped its own answer-identity check** (`identical 0  DIFFERENT 0`, which reads as "nothing
+changed"). The binaries differed (`69e4dba1` vs `c9fd80bb`); computing identity directly from
+`out_sha256` gives the real answer: **1,772 both-ok, 1,772 identical, 0 different.** A `0 / 0`
+from that tool means *not compared*, not *no change*.
+
+### PEER ORACLES OFF-CLUSTER: TWO TRAPS
+
+`FMT_SUFFIX` expects **`hermit: ".owx"`** even though HermiT via robot's CommandLine writes
+**functional syntax**. Naming its output `.ofn` (the honest extension) made the analyser find
+nothing: 322 real oracle files invisible, `hermit: NO_OUTPUT` on 344 of 389, and the union
+oracle silently degraded to **Konclude-only** — which under-reports, so MISSED would have been
+understated with no error anywhere. Fixed, and with both peers the oracle is
+**both 319 / konclude-only 69 / hermit-only 3, and the peers never disagree (0 differing)**.
+Second trap: Konclude's Linux static build needs **`libpcre.so.3`** (PCRE1, gone from modern
+Ubuntu). Fetch the real `libpcre3` `.deb`; do **not** symlink PCRE2 into place — an ABI
+mismatch could corrupt oracle output, which is worse than no oracle. Validate any fresh peer
+build against a known answer before trusting it (Linux Konclude reproduced the OSX closure on
+`ore_ont_778` exactly, 630 = 630).
+
+---
+
 ## State of play — 2026-08-22 (read this first)
 
 **A real O(n²) shipped in the front end, and the tail now partitions by MECHANISM rather than by

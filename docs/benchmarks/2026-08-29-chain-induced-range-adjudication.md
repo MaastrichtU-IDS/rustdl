@@ -1,5 +1,7 @@
 # `chainrange` adjudicated: a real gap, and Konclude misses it too
 
+**Tracked as #84** (split out of #81, whose other reproducer shipped in `5a22ccf`).
+
 **Question.** Issue #81's reproducer `chainrange.ofn` (`Chain(t,u) ⊑ r`, `Range(r,F)`, `F ⊑ G`,
 `C ⊑ ∃t.∃u.A`, `∃t.∃u.F ⊑ D` ⊨ `C ⊑ D`) survived the #81 fix unchanged. Is it the same
 mechanism as `cascade.ofn`, and is the entailment even real?

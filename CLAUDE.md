@@ -1480,7 +1480,7 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > `the_detection_set_has_not_silently_gone_vacuous` (the detection set must be non-empty) and
 > `cascade_now_agrees_with_its_oracle_and_its_violated_is_a_known_f1_false_positive`.
 >
-> **`chainrange.ofn` is NOT this mechanism and is NOT fixed** — the #81 comment claiming it
+> **`chainrange.ofn` is NOT this mechanism and is NOT fixed (split out as #84)** — the #81 comment claiming it
 > "needs a range folded into a nested witness, exactly as `cascade` does" is wrong; it did not
 > move. It needs a range to reach a **chain-derived** edge between **generated** witnesses, and
 > folding into `effective_ranges[u]` would be **unsound** (a bare `u`-successor with no

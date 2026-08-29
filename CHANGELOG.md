@@ -48,6 +48,61 @@ search input in a canonical, content-derived order, making `justify`,
 `justify --all`, `repair`, `report` and the Python surface byte-reproducible.
 Selection and ordering only — the axiom *sets* are unchanged.
 
+## [0.4.24] — 2026-08-29
+
+> **Changelog gap:** versions 0.4.18–0.4.23 shipped without entries here; their notes live in
+> `docs/releases/` and the git log. The `[Unreleased]` block above predates 0.4.18.
+
+### Fixed — `≤n` merge-pair choice was deterministic (a real false positive) (#76, #77)
+
+The SROIQ `≤`-rule is don't-know nondeterministic over *which* pair to merge, but `apply_max`
+took the first non-distinct pair and never reconsidered. When that choice clashed the branch
+died and a satisfiable concept was reported unsatisfiable — a spurious subsumption.
+Reproduced on **pizza** (`Margherita ⊑ InterestingPizza`). Candidate merges are now tried
+behind a checkpoint and rolled back on an immediate clash.
+
+### Fixed — negated-disjunct naming clause was unanchored (#78, #83), closing #66
+
+`head_atom_for`'s `Not` arm emitted the fresh-`Q` naming clause on `var` (the successor
+variable) when the clause states a *universal* property of `Q`. On `var` it carried neither an
+`X` atom nor a `Role` atom, so it was unmatchable and never fired, and the wedge returned `Sat`
+on genuinely subsumed pairs. One line: `var` → `X`. Closes #66, where `classify` omitted a
+subsumption rustdl's own `subclass` proved.
+
+### Fixed — `∃R.{a}` antecedents now absorb (#70, #71)
+
+A two-axiom ontology ran for hours: the residual's `Q` disjunct is generating, and
+`is_blocked_anywhere` refuses to block a nominal node, so nothing ever blocked (0 blocks in
+127,708 calls). `RUSTDL_NOMINAL_EXISTS_ABSORPTION`, default ON.
+
+### Fixed — `rdf:langString` values reached the reasoner for the first time (#72, #75)
+
+Previously dropped at conversion, making a language-tagged value unconfirmable by any route.
+Keyed on the **pair** (lexical form, language tag) in its own DKey bucket. Also:
+`inferred_data_property_values` dropped `lang` *then* deduped, losing whole assertions.
+
+### Fixed — `ObjectPropertyRange` folds into nested existential witnesses (#81)
+
+Two lowering sites dropped the role's range, so `∃u.W` under `Range(u,G)` built a witness
+carrying `W` but not `G` and downstream `W ⊓ G` triggers never fired; the reproducer
+returned zero rows with `incomplete: false`. Unflagged — given `Range(R)`, `∃R.B` and
+`∃R.(B ⊓ Range(R))` are the same class, so the fold is a logical identity. Two-arm
+1,920-ontology sweep: 0 regressions, 0 answer changes.
+
+### Fixed — two-way marker for nested existential / min RHS bodies (#80, #82)
+
+### Added — `owl-dl-verify` and `verify-el`
+
+Phase 1 negative-certificate verifier: a verified canonical model plus an independent
+evaluator. Plus `RUSTDL_NOMINAL_COUNTING_VERIFY` (#49), which declines to trust a wedge `Sat`
+over a nominal-bounded filler.
+
+### Gates
+
+Full sweep (1,920 × 2 arms): **0 answer changes**, 0 genuine `ok → dnf`. MISSED net vs
+Konclude ∪ HermiT: **2843 → 2777 (−2.32%)**, **FP 0**, 3 ontologies improved, 0 regressed.
+Corpus verdict gate: 0 flips, 0 lost. See `docs/releases/v0.4.24.md`.
+
 ## [0.4.17] - 2026-08-10
 
 ### Fixed — `classify` reported `consistent: true` on inconsistent ontologies

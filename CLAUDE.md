@@ -1345,6 +1345,54 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).
   Tests are `#[ignore]`d; invoke with `cargo test ... -- --ignored`.
 
+- **`crates/owl-dl-verify`** (2026-08-28, negative-certificates Phase 1) — an independent,
+  **diagnostic-only** cross-check of `owl-dl-saturation`'s output, scoped to `is_pure_el`
+  ontologies only. `build_model` constructs a finite model straight from the EL saturation
+  closure (`FiniteModel`/`VerifiedModel` in `src/model.rs`); `eval.rs`'s evaluator is generic over
+  an `Interpretation` trait and resolves concepts only via `ConceptPool` — data, never saturation
+  logic — so it structurally cannot reach the engine it is checking. A `Verdict::Violated` means
+  the model built from the reported closure fails an axiom. *Given a faithful builder*, that
+  means the closure is incomplete — the D10 bug class this file documents repeatedly elsewhere.
+  **The builder itself is an under-approximation in places, and every known imprecision points
+  toward a SPURIOUS violation, never toward a false all-clear** — see the three reproduced
+  false-`Violated` cases (F1/F2/F3) in
+  `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`. Empirically: zero
+  spurious violations across 16 pure-EL ORE ontologies and 3 healthy controls, and each of the 5
+  committed detections below was adjudicated individually. **A `Violated` is a strong lead
+  requiring adjudication, not a proof** — the design spec's own hedge (`docs/superpowers/specs/
+  2026-08-27-negative-certificates-phase1-design.md:461`: "a violation carries no information
+  until spurious violations are zero") applies to every verdict this instrument produces, not
+  just a caveat that failed to propagate once.
+  Nothing here is wired into `classify`, `consistent`, or `realize`; it is reached only via
+  `rustdl verify-el <file> [--json]` (exit 0 `Verified` / 2 `Violated` / 3 `Unresolved` — off-fragment
+  or a build-time refusal — / 1 I/O/parse error). `[dependencies]` is `owl-dl-core` +
+  `owl-dl-saturation` only; `owl-dl-reasoner` is a **dev**-dependency (Task 12) so the acceptance
+  suite runs the real hybrid classifier rather than grading its own homework — that is not a
+  runtime dependency and creates no cycle (nothing in `owl-dl-reasoner`'s manifest names
+  `owl-dl-verify`).
+
+  **Measured coverage, stated as measured, not rounded up.** Inertness (no spurious `Violated` on
+  ontologies rustdl is believed complete on) is established on **16 of 20** banner-selected
+  pure-EL ORE ontologies; the other **4 are UNMEASURED**, not passing — they hit `timeout`'s
+  exit 124 at a 300 s cap, which means "no verdict was reached," distinct from an actual exit-3
+  `Unresolved` verdict. On committed fixtures, the checker produces **5 detections** tracking
+  issues #80/#81/#82, of which **4 are peer-confirmed** real engine gaps the saturator is
+  expected to have fixed once those land; the 5th, `chain-range-bot`, is NOT — its own oracle
+  records `provenance: derivation-only` ("rustdl, Konclude AND HermiT all fail to confirm it …
+  Treated as unconfirmed either way"), so count it as a detection of the instrument firing, not
+  as a 5th confirmed engine gap,
+  with **2 further fixtures REFUSED** by the chain-range profile guard (`ChainRangeOutOfProfile`)
+  rather than checked — a coverage loss a future Phase 2 chain/range fold is expected to recover,
+  not evidence against those 2 fixtures' entailments. The injection fixpoint's behaviour **past
+  round 1 is untested machinery**: injection (`inject_conjunction`, closing a gap a cheap
+  closure-union would miss) is corpus-rare — **0 injections across 6 real pure-EL ontologies** —
+  and the one committed fixture that exercises it, `cascade.ofn`, converges in a single round, so
+  nothing currently in the suite drives the fixpoint two-plus rounds deep. See
+  `docs/superpowers/specs/2026-08-27-negative-certificates-phase1-design.md` and
+  `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md` (the two model-expansion
+  paths can label one logical nested-existential witness differently and get deduped into two
+  separate elements — not shown unsound, but untested against a future concept-level check).
+
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**
   (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`compare-whelk`).
   `xtask/` holds build automation (corpus fetch, license inventory).

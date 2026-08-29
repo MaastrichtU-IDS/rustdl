@@ -1053,6 +1053,7 @@ dependencies = [
  "horned-owl",
  "owl-dl-core",
  "owl-dl-reasoner",
+ "owl-dl-verify",
  "serde",
  "serde_json",
  "tracing",
@@ -1143,6 +1144,18 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "owl-dl-verify"
+version = "0.4.23"
+dependencies = [
+ "hashbrown 0.15.5",
+ "horned-owl",
+ "owl-dl-core",
+ "owl-dl-reasoner",
+ "owl-dl-saturation",
+ "owl-dl-verify",
 ]
 
 [[package]]

@@ -59,6 +59,32 @@ pub(crate) struct ConsistentJson {
     pub(crate) dropped: BTreeMap<String, u64>,
 }
 
+/// One entry of `VerifyElJson::violations`.
+#[derive(Serialize)]
+pub(crate) struct VerifyElViolationJson {
+    pub(crate) axiom_index: usize,
+    pub(crate) note: String,
+}
+
+/// `--json` output for `verify-el`. `verdict` is one of `"verified"` /
+/// `"violated"` / `"unresolved"` (never inferred from the other fields, to
+/// keep a machine reader from having to reconstruct it) — see
+/// `main.rs::verify_el_verdict_str`. `unresolved` carries the `Debug`
+/// rendering of every [`owl_dl_verify::UnresolvedReason`], SORTED before this
+/// struct is built (never in whatever order the model builder happened to
+/// discover them in) — the CLI-level half of the byte-identity guarantee
+/// `--json` run twice must satisfy; see `main.rs::sorted_debug_strings`.
+#[derive(Serialize)]
+pub(crate) struct VerifyElJson {
+    pub(crate) schema_version: u32,
+    pub(crate) verdict: &'static str,
+    pub(crate) domain_size: usize,
+    pub(crate) axioms_checked: usize,
+    pub(crate) violations: Vec<VerifyElViolationJson>,
+    pub(crate) unresolved: Vec<String>,
+    pub(crate) dropped: BTreeMap<String, u64>,
+}
+
 #[derive(Serialize)]
 pub(crate) struct IndividualTypesJson {
     pub(crate) iri: String,
@@ -222,6 +248,32 @@ pub(crate) fn build_consistent_json(
     ConsistentJson {
         schema_version: SCHEMA_VERSION,
         consistent,
+        dropped,
+    }
+}
+
+/// Builds `verify-el --json`'s output from already-computed, already-SORTED
+/// pieces — this function does no sorting of its own; that discipline lives
+/// with the caller (`main.rs`), which is where the raw, possibly
+/// non-deterministically-ordered `owl_dl_verify::Verdict` is unpacked. Taking
+/// plain primitives here (rather than the `Verdict` type itself) keeps this
+/// module from needing to know that type's shape or its ordering hazards.
+#[must_use]
+pub(crate) fn build_verify_el_json(
+    verdict: &'static str,
+    domain_size: usize,
+    axioms_checked: usize,
+    violations: Vec<VerifyElViolationJson>,
+    unresolved: Vec<String>,
+    dropped: BTreeMap<String, u64>,
+) -> VerifyElJson {
+    VerifyElJson {
+        schema_version: SCHEMA_VERSION,
+        verdict,
+        domain_size,
+        axioms_checked,
+        violations,
+        unresolved,
         dropped,
     }
 }

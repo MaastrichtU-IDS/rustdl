@@ -1,0 +1,13 @@
+# issue #80's second instance. This fixture was originally handed over as a
+# "healthy control" for chainrange.ofn; re-deriving the entailment showed
+# Konclude reports C ⊑ D (via A ⊑ F, the same nested-existential monotonicity
+# as nested-mono.ofn) and rustdl misses it — and that the chain and the range
+# are BOTH irrelevant to the entailment, which is what led to filing #80 in
+# the first place. So it is not a control at all.
+#
+# NOTE: this crate's own `build_model` REFUSES this fixture outright
+# (Err(ChainRangeOutOfProfile)), so the acceptance invariant holds here
+# trivially regardless of this oracle's content — recorded per the "one
+# oracle per fixture" contract; see chainrange.oracle for the same caveat.
+provenance: konclude-v0.7.0-1138
+subclass: C D

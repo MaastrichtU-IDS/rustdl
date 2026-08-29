@@ -171,8 +171,14 @@ entailments the EL closure legitimately never had.
    `aug` is empty in the common case — the saturator already range-wraps *outer* RHS existentials —
    so this fires only for **nested** markers and the `∃r.⊤` top-witness.
 
-   **ITERATE TO A FIXPOINT — two runs are NOT enough.** `cascade.ofn` needs three, and an
-   `n`-deep nesting needs `n+1`. The pair `(M_{∃v.W}, {G})` is undiscoverable in pass 1 because its
+   **ITERATE TO A FIXPOINT.** **CORRECTED 2026-08-28 (measured during implementation):** this
+   originally read "two runs are NOT enough — `cascade.ofn` needs three, and an `n`-deep nesting
+   needs `n+1`". That analysis described the FACT-driven path only. Task 4b's axiom-driven expansion
+   walks the axioms directly, removing the anchor-class limitation, and `cascade.ofn` measurably
+   converges in **ONE** round at any `max_rounds >= 1` — it has no injectable gap. The fixpoint
+   remains required in principle (an injection can expose new `(target, aug)` pairs) but **no fixture
+   exercises more than one round**, so the loop past round 1 is untested machinery. The original
+   reasoning is retained below because it still explains why the FACT path cannot stand alone. The pair `(M_{∃v.W}, {G})` is undiscoverable in pass 1 because its
    only incoming fact is the conclusion of a conjunctive `ConceptRule` whose trigger fires for no
    run-1 class; conditional `∃`-RHS have no anchor class, unlike told/Tseitin existentials (which
    are anchored because `WorklistEngine::seed` seeds every class reflexively — that reflexive
@@ -310,8 +316,18 @@ crates/owl-dl-verify/
   src/lib.rs     — Verdict, build_model, verify
 ```
 
-Deps: `owl-dl-core`, `owl-dl-saturation`; **not** `owl-dl-reasoner` (cycle; the CLI wires them).
-Dev-deps: `horned-owl` for fixture parsing.
+Deps: `owl-dl-core`, `owl-dl-saturation`; **not a RUNTIME dependency on** `owl-dl-reasoner` (the
+CLI wires them). Dev-deps: `horned-owl` for fixture parsing.
+
+**AMENDED (Task 14, 2026-08-28):** Task 12 added `owl-dl-reasoner` under `[dev-dependencies]` so
+`tests/acceptance.rs` can run the real hybrid classifier and compare against it, rather than the
+acceptance suite grading its own homework against nothing. This is not the "never depend on
+`owl-dl-reasoner`" the line above originally said — reworded above to say what actually matters:
+not a **runtime** dependency (`[dependencies]`, i.e. `src/`), which stays untouched (`src/eval.rs`
+still resolves concepts only via `ConceptPool`, guarded by `tests/independence.rs`). The property
+this section exists to protect is the absence of a **cycle**, and that still holds: nothing in
+`owl-dl-reasoner`'s manifest names `owl-dl-verify`, in any dependency section, so a dev-only edge
+in the other direction creates no cycle for cargo to reject.
 
 **The load-bearing rule:** `eval.rs` is generic over `Interpretation` and resolves concepts only via
 `ConceptPool` — *data*, not saturation logic — so it **cannot reach the engine it checks**. Using
@@ -368,7 +384,14 @@ is indistinguishable from a working one.
 | A3 | `cascade.ofn` | `Violated` — Konclude-confirmed `A ⊑ FINAL`, rustdl emits 0 rows |
 | A4 | `unsatnested.ofn` | `Violated` or `RunDelta` — HermiT-confirmed `X ≡ ⊥` |
 | A5 | `chainrange.ofn` | `Unresolved { ChainRangeOutOfProfile }` under §4; `Violated` once Phase 2 folds |
-| A6 | `unsatconj.ofn`, `chainrange_ctl.ofn` | `Verified` — discriminating healthy controls |
+| A6 | `unsatconj.ofn`, `flat-mono.ofn`, `label-closure-range-sub.ofn` | `Verified` — discriminating healthy controls |
+| A7 | `nested-mono.ofn` | `Violated` — issue #80's three-axiom minimal case |
+
+**MEASURED 2026-08-28:** `chainrange_ctl.ofn` is **REFUSED** (`ChainRangeOutOfProfile`), so it is
+neither a control nor a detection — it is a coverage loss Phase 2's fold would recover. And
+`cascade.ofn` builds but carries 3 `LabelNotClosed`, so A3 will likely land on `Unresolved` rather
+than `Violated`: honest, but weaker than a detection on the instrument's sharpest prey. Record which
+acceptance fixtures land on `Unresolved`; do not count them as detections.
 
 **ACCEPTANCE TESTS MUST NOT ASSERT `Violated` DIRECTLY — they would break when the engine is
 fixed.** A1–A5 are now filed as issues #80/#81/#82, so the engine defects they detect are expected

@@ -19,6 +19,14 @@ before Task 1; this plan argues from it and does not restate its reasoning.
 
 ## Global Constraints
 
+**Key-extractor closures, not function items.** `sort_unstable_by_key` and
+`binary_search_by_key` pass the key extractor a REFERENCE (`for<'a> fn(&'a ClassId) -> _`), so
+`ClassId::index` — whose signature is `fn(self) -> u32` — does **not** compile (E0631, verified).
+Every key extractor in this plan is written as a closure (`|c| c.index()`) for that reason. Do not
+"tidy" them back into function items.
+
+
+
 - Rust edition **2024**, `rust-version` **1.88**; build with `RUSTUP_TOOLCHAIN=stable cargo …`
   (the pinned 1.95.0 toolchain often lacks `cargo`; a failed build **silently reuses a stale
   binary**).
@@ -360,7 +368,7 @@ impl FiniteModel {
             population.push(sub);
             population.push(target);
         }
-        population.sort_unstable_by_key(ClassId::index);
+        population.sort_unstable_by_key(|c| c.index());
         population.dedup();
 
         for c in population {
@@ -383,7 +391,7 @@ impl Interpretation for FiniteModel {
         (0..u32::try_from(self.labels.len()).unwrap_or(u32::MAX)).map(Element::new)
     }
     fn in_concept(&self, e: Element, c: ClassId) -> bool {
-        self.label(e).binary_search_by_key(&c.index(), ClassId::index).is_ok()
+        self.label(e).binary_search_by_key(&c.index(), |k| k.index()).is_ok()
     }
     fn successors(&self, _e: Element, _r: RoleId) -> Vec<Element> {
         Vec::new() // edges arrive in Task 4
@@ -551,7 +559,7 @@ pub fn effective_ranges(
                 acc.extend_from_slice(cs);
             }
         }
-        acc.sort_unstable_by_key(ClassId::index);
+        acc.sort_unstable_by_key(|c| c.index());
         acc.dedup();
         if !acc.is_empty() {
             out.insert(rid, acc);
@@ -691,7 +699,7 @@ impl FiniteModel {
         let aug: Vec<ClassId> = ranges
             .iter()
             .copied()
-            .filter(|c| base.binary_search_by_key(&c.index(), ClassId::index).is_err())
+            .filter(|c| base.binary_search_by_key(&c.index(), |k| k.index()).is_err())
             .collect();
         if aug.is_empty() { Ok(base) } else { Err(aug) }
     }
@@ -764,7 +772,7 @@ Replace the three placeholder `Interpretation` methods with:
                 out.extend(bucket.iter().filter(|(f, _)| *f == e).map(|(_, t)| *t));
             }
         }
-        out.sort_unstable_by_key(Element::index);
+        out.sort_unstable_by_key(|e| e.index());
         out.dedup();
         out
     }
@@ -796,7 +804,7 @@ Store the hierarchy on the model. **Do NOT change `seed`'s signature** — Task 
     /// to answer sub-role inclusion on demand.
     #[must_use]
     pub fn with_hierarchy(mut self, h: RoleHierarchy) -> Self {
-        self.hierarchy = h;
+        self.hierarchy = Some(h);
         self
     }
 
@@ -804,17 +812,28 @@ Store the hierarchy on the model. **Do NOT change `seed`'s signature** — Task 
     ///
     /// `RoleHierarchy::sub_roles` PANICS out of range, and "the edit introduces a
     /// role" is the normal case for `still_holds_after`, so an unknown role must
-    /// read as an empty extension rather than crashing.
+    /// read as an empty extension rather than crashing. A model with no
+    /// hierarchy attached yet behaves the same way.
     fn hierarchy_sub_roles(&self, r: RoleId) -> &[RoleId] {
-        if (r.index() as usize) < self.hierarchy.num_roles() {
-            self.hierarchy.sub_roles(r)
-        } else {
-            &[]
+        match &self.hierarchy {
+            Some(h) if (r.index() as usize) < h.num_roles() => h.sub_roles(r),
+            _ => &[],
         }
     }
 ```
 
-with `hierarchy: RoleHierarchy` added to the struct (it is `Default`), and callers writing
+**The field is `Option<RoleHierarchy>`, and that is forced, not stylistic.** `RoleHierarchy` derives
+only `Debug, Clone` — **not `Default`** (`crates/owl-dl-core/src/role_hierarchy.rs:132`) — while
+`FiniteModel` derives `Default` and `seed` builds itself with `..Self::default()`. A bare
+`hierarchy: RoleHierarchy` field therefore breaks both the derive and `seed`. Wrapping in `Option`
+keeps them and composes with the rule above: no hierarchy attached reads as an empty extension,
+exactly like an out-of-range role. So:
+
+```rust
+    hierarchy: Option<RoleHierarchy>,
+```
+
+with `with_hierarchy` storing `Some(h)`, and callers writing
 `FiniteModel::seed(..).with_hierarchy(h)`.
 
 - [ ] **Step 5: Run the Probe B test** → PASS.
@@ -846,6 +865,310 @@ fn label_closure_case_reports_LabelNotClosed_rather_than_a_wrong_label() {
 RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify
 RUSTUP_TOOLCHAIN=stable cargo clippy -p owl-dl-verify --all-targets -- -D warnings
 git add crates/owl-dl-verify && git commit -m "feat(verify): fixpoint expansion with report-only LabelNotClosed"
+```
+
+---
+
+### Task 4b: AXIOM-DRIVEN expansion (inserted mid-flight — see ruling)
+
+**Why this task exists.** Task 4 expands from the saturator's fact list. A controller probe of
+`saturate_with_exists_facts` showed that is not enough, and the numbers are stark:
+
+```text
+flat    C ⊑ ∃u.A  +  Range(u,F):   facts: C--u-->T#3   subsumers(T#3) = [A, F, T#3]
+nested  C ⊑ ∃t.∃u.A            :   facts: C--t-->T#3   subsumers(T#3) = [T#3]
+```
+
+A **flat** existential yields a properly range-folded successor — exactly as §6 of the spec
+predicted. A **nested** one yields an **opaque, empty-labelled** element with **no outgoing fact**.
+So a fact-driven model is shallower than the ontology, `eval(∃t.∃u.F, x_C)` is vacuously false, and
+the instrument would MISS issues #80 and #81 — its own headline prey. (The probe also located the
+root cause of #80 and is posted there.)
+
+**The fix is additive and improves independence:** derive existential structure from the AXIOMS via
+`ConceptPool`, not only from engine facts.
+
+**Files:**
+- Modify: `crates/owl-dl-verify/src/model.rs`
+- Test: `crates/owl-dl-verify/tests/model.rs`
+
+**Interfaces:**
+- Consumes: `target_label`, `intern`, `edges`, `Bounds`, `UnresolvedReason` (Task 4);
+  `effective_ranges` (Task 3).
+- Produces: `FiniteModel::expand_from_axioms(&mut self, internal: &InternalOntology, subs: &Subsumers, eff: &HashMap<RoleId, Vec<ClassId>>, bounds: &Bounds) -> Vec<UnresolvedReason>`.
+  Task 5's `build_model` calls it immediately after `expand`.
+
+- [ ] **Step 1: Write the failing test — the #80 shape must become detectable**
+
+```rust
+const NESTED_MONO: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/nm>
+Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:F))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u))
+SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))
+SubClassOf(:A :F)
+SubClassOf(ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :F)) :D)
+)
+";
+
+#[test]
+fn axiom_driven_expansion_materialises_the_nested_chain() {
+    let internal = load(NESTED_MONO);
+    let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+    let hier = build_role_hierarchy(&internal);
+    let eff = effective_ranges(&internal, &hier);
+    let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(hier);
+    let bounds = Bounds::default();
+    let _ = model.expand(&subs, &facts, &eff, &bounds);
+    let _ = model.expand_from_axioms(&internal, &subs, &eff, &bounds);
+
+    let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let f = internal.vocabulary.class_id("http://ex.org/F").expect("F");
+    let t = internal.vocabulary.role_id("http://ex.org/t").expect("t");
+    let u = internal.vocabulary.role_id("http://ex.org/u").expect("u");
+    let x_c = model.element_of_class(c).expect("C is satisfiable");
+
+    // EXISTENTIAL at each hop: a zero-successor model passes a forall phrasing vacuously.
+    let mid = model.successors(x_c, t);
+    assert!(!mid.is_empty(), "C must gain a t-successor from its own axiom");
+    let leaf: Vec<_> = mid.iter().flat_map(|m| model.successors(*m, u)).collect();
+    assert!(!leaf.is_empty(), "the NESTED u-successor is what the fact list omits");
+    let w = leaf[0];
+    assert!(model.in_concept(w, a), "the leaf must satisfy the body class A");
+    assert!(
+        model.in_concept(w, f),
+        "and A ⊑ F must be closed INTO the leaf label — this is what makes the #80 shape detectable"
+    );
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+export PATH="/home/dumontier/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH"
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify --test model axiom_driven
+```
+Expected: FAIL — `expand_from_axioms` does not exist. (Before implementing, confirm it also fails
+for the RIGHT reason once the method exists but does nothing: no `u`-successor.)
+
+- [ ] **Step 3: Implement**
+
+```rust
+impl FiniteModel {
+    /// The atomic classes a concept expression directly requires of an element,
+    /// or `None` if the expression is not a shape we can label from.
+    ///
+    /// `Some(..)` bodies contribute NO classes of their own — an element standing
+    /// for `∃u.A` is opaque as a class, and its content is carried by the edge
+    /// this function's caller materialises, not by its label.
+    fn required_atoms(pool: &ConceptPool, ce: ConceptId, out: &mut Vec<ClassId>) {
+        match pool.get(ce) {
+            ConceptExpr::Atomic(c) => out.push(*c),
+            ConceptExpr::And(ops) => {
+                for op in ops.iter() {
+                    Self::required_atoms(pool, *op, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Materialises the existential structure of axiom superclass positions.
+    ///
+    /// The saturator emits no fact for a NESTED existential body and gives its
+    /// Tseitin marker an empty subsumer set, so a fact-driven model has no
+    /// element for the nested witness at all. This walks the axioms instead:
+    /// wherever an element satisfies an axiom's antecedent atoms, the axiom's
+    /// consequent existential chain is built out, one element per body.
+    ///
+    /// Labels reuse `target_label`, so the TBox-closure gap is reported as
+    /// `LabelNotClosed` here exactly as it is on the fact path — this task adds
+    /// reach, not a second labelling policy.
+    pub fn expand_from_axioms(
+        &mut self,
+        internal: &InternalOntology,
+        subs: &Subsumers,
+        eff: &HashMap<RoleId, Vec<ClassId>>,
+        bounds: &Bounds,
+    ) -> Vec<UnresolvedReason> {
+        // (antecedent atoms, consequent concept) pairs, from both axiom shapes.
+        let mut rules: Vec<(Vec<ClassId>, ConceptId)> = Vec::new();
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::SubClassOf { sub, sup } => {
+                    let mut ante = Vec::new();
+                    Self::required_atoms(&internal.concepts, *sub, &mut ante);
+                    if !ante.is_empty() {
+                        rules.push((ante, *sup));
+                    }
+                }
+                Axiom::EquivalentClasses(members) => {
+                    for lhs in members {
+                        for rhs in members {
+                            if lhs == rhs {
+                                continue;
+                            }
+                            let mut ante = Vec::new();
+                            Self::required_atoms(&internal.concepts, *lhs, &mut ante);
+                            if !ante.is_empty() {
+                                rules.push((ante, *rhs));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut reasons = Vec::new();
+        let mut round = 0usize;
+        loop {
+            let mut grew = false;
+            let elems: Vec<Element> = self.elements().collect();
+            for e in elems {
+                for (ante, sup) in &rules {
+                    if !ante.iter().all(|c| self.in_concept(e, *c)) {
+                        continue;
+                    }
+                    if self.materialise_exists(&internal.concepts, subs, eff, bounds, e, *sup, &mut reasons, &mut grew) {
+                        return reasons; // a bound tripped
+                    }
+                }
+            }
+            round += 1;
+            if !grew {
+                return reasons;
+            }
+            if round >= bounds.max_rounds {
+                reasons.push(UnresolvedReason::BoundTripped {
+                    bound: "max_rounds",
+                    limit: Some(bounds.max_rounds),
+                });
+                return reasons;
+            }
+        }
+    }
+
+    /// Builds out every positive `∃` in `ce` starting at `e`. Returns true iff a
+    /// bound tripped and the caller must stop.
+    #[allow(clippy::too_many_arguments)]
+    fn materialise_exists(
+        &mut self,
+        pool: &ConceptPool,
+        subs: &Subsumers,
+        eff: &HashMap<RoleId, Vec<ClassId>>,
+        bounds: &Bounds,
+        e: Element,
+        ce: ConceptId,
+        reasons: &mut Vec<UnresolvedReason>,
+        grew: &mut bool,
+    ) -> bool {
+        match pool.get(ce) {
+            ConceptExpr::And(ops) => {
+                for op in ops.iter() {
+                    if self.materialise_exists(pool, subs, eff, bounds, e, *op, reasons, grew) {
+                        return true;
+                    }
+                }
+                false
+            }
+            ConceptExpr::Some(role, body) => {
+                if role.is_inverse() {
+                    return false;
+                }
+                let r = role.role_id();
+                // Label the witness from the body's own required atoms, closed
+                // through `target_label` so the range union and the closure
+                // report are identical to the fact path.
+                let mut atoms = Vec::new();
+                Self::required_atoms(pool, *body, &mut atoms);
+                let mut label: Vec<ClassId> = Vec::new();
+                let mut unclosed = false;
+                for a in &atoms {
+                    match Self::target_label(subs, eff, r, *a) {
+                        Ok(l) => label.extend(l),
+                        Err(_) => unclosed = true,
+                    }
+                }
+                if unclosed {
+                    reasons.push(UnresolvedReason::LabelNotClosed {
+                        class: *atoms.first().unwrap_or(&ClassId::new(0)),
+                        role: r,
+                    });
+                }
+                if atoms.is_empty() {
+                    // Opaque body (e.g. a nested `∃`): the witness carries only
+                    // the role's effective ranges, and its content comes from
+                    // the edges built below.
+                    if let Some(rs) = eff.get(&r) {
+                        for c in rs {
+                            label.extend(subs.subsumers_of(*c));
+                        }
+                    }
+                }
+                label.sort_unstable_by_key(|c| c.index());
+                label.dedup();
+                let before = self.labels.len();
+                let w = self.intern(label);
+                if self.labels.len() > bounds.max_elements {
+                    reasons.push(UnresolvedReason::BoundTripped {
+                        bound: "max_elements",
+                        limit: Some(bounds.max_elements),
+                    });
+                    return true;
+                }
+                if self.labels.len() > before {
+                    *grew = true;
+                }
+                if self.push_edge(r, e, w, bounds, reasons) {
+                    return true;
+                }
+                // Recurse INTO the body at the new witness: this is the hop the
+                // fact list omits.
+                self.materialise_exists(pool, subs, eff, bounds, w, *body, reasons, grew)
+            }
+            ConceptExpr::Top
+            | ConceptExpr::Bot
+            | ConceptExpr::Atomic(_)
+            | ConceptExpr::Nominal(_)
+            | ConceptExpr::SelfRestriction(_)
+            | ConceptExpr::Not(_)
+            | ConceptExpr::Or(_)
+            | ConceptExpr::All(_, _)
+            | ConceptExpr::Min(_, _, _)
+            | ConceptExpr::Max(_, _, _) => false,
+        }
+    }
+}
+```
+
+Extract the edge-append-with-bound-check from Task 4's `expand` into
+`fn push_edge(&mut self, r: RoleId, from: Element, to: Element, bounds: &Bounds, reasons: &mut Vec<UnresolvedReason>) -> bool`
+(returns true iff `max_edges` tripped) and use it from both call sites, so the two expansion paths
+cannot drift on bound handling.
+
+- [ ] **Step 4: Run the test** → PASS.
+
+- [ ] **Step 5: Un-ignore what is now satisfiable**
+
+Task 4 `#[ignore]`d two tests because the fact list could not reach nested structure. Re-run them
+with `--ignored` and, for each that now passes, **remove the `#[ignore]` and its stale reason**. For
+any that still fails, leave it ignored but REPLACE the reason with what you measured — a stale
+`#[ignore]` reason is an unchecked claim about the engine, and this repo has a documented history of
+exactly that going unnoticed for weeks.
+
+```bash
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify --test model -- --ignored
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+RUSTUP_TOOLCHAIN=stable cargo fmt -p owl-dl-verify -- --check
+RUSTUP_TOOLCHAIN=stable cargo clippy -p owl-dl-verify --all-targets -- -D warnings
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify
+git add crates/owl-dl-verify && git commit -m "feat(verify): axiom-driven expansion reaches nested existential witnesses"
 ```
 
 ---
@@ -931,8 +1254,13 @@ pub fn build_model(
         // this task: `chain_range_out_of_profile` does not exist yet and Task 5
         // must compile and pass on its own.
         let eff = model::effective_ranges(&working, &h);
-        let mut m = FiniteModel::seed(&working, &subs, &facts);
-        let step = m.expand(&subs, &facts, &eff, bounds);
+        let mut m = FiniteModel::seed(&working, &subs, &facts)
+            .with_hierarchy(model::build_role_hierarchy(&working));
+        let mut step = m.expand(&subs, &facts, &eff, bounds);
+        // BOTH expansion paths run. The fact path alone cannot reach a nested
+        // existential witness (the saturator emits no inner fact and gives the
+        // marker an empty subsumer set), which is why Task 4b exists.
+        step.extend(m.expand_from_axioms(&working, &subs, &eff, bounds));
 
         let pending: Vec<(ClassId, RoleId)> = step
             .iter()
@@ -1003,7 +1331,7 @@ pub fn inject_conjunction(
     let Some(ranges) = eff.get(&r) else { return };
     let mut operands: Vec<ConceptId> = vec![working.concepts.atomic(y)];
     for c in ranges {
-        if base.binary_search_by_key(&c.index(), ClassId::index).is_err() {
+        if base.binary_search_by_key(&c.index(), |k| k.index()).is_err() {
             operands.push(working.concepts.atomic(*c));
         }
     }
@@ -1031,6 +1359,20 @@ class is genuinely unsatisfiable, so push `UnresolvedReason::RunDelta { class: y
 caller treat it as a defect signal.
 
 - [ ] **Step 4: Run both tests** → PASS.
+
+- [ ] **Step 4b: SETTLE the deferred `#[ignore]`.** Task 4b re-measured the two ignored tests and
+  reported that one of them *"would actually pass if wired to `expand_from_axioms`"*, deferring the
+  wiring to this task — which the step above performs. Run:
+
+```bash
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-verify --test model -- --ignored
+```
+
+  For each test that now passes, **delete the `#[ignore]` and its reason**. For any that still fails,
+  keep it ignored but replace the reason with what you measured here. Do not leave a test ignored on
+  the strength of a previous task's note: a test whose green is withheld by scope choice rather than
+  by a real gap is exactly the stale-sentinel hazard
+  (`docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`). Report which you un-ignored.
 
 - [ ] **Step 5: Commit**
 
@@ -1568,10 +1910,24 @@ fn instrument_never_verifies_a_classification_that_disagrees_with_the_oracle() {
 }
 ```
 
-Cases: `chainpoison.ofn`, `chain-range-bot.ofn`, `cascade.ofn`, `unsatnested.ofn`,
-`chainrange.ofn`, `nested-mono.ofn`, plus the healthy controls `unsatconj.ofn`,
-`chainrange_ctl.ofn`, `flat-mono.ofn`, `label-closure-range-sub.ofn` — which must come back
-`Verified`.
+**Cases — MEASURED 2026-08-28 by running `build_model` on every committed fixture, so these
+buckets are observed, not predicted:**
+
+| bucket | fixtures | expectation |
+|---|---|---|
+| detections (buildable, rustdl disagrees with oracle) | `chainpoison.ofn` (domain 4), `chain-range-bot.ofn` (domain 4), `unsatnested.ofn`, `nested-mono.ofn` (domain 6 — issue #80's three-axiom minimal case) | not `Verified` |
+| detection, but likely WEAKER | `cascade.ofn` — builds, yet carries **3 `LabelNotClosed`**, so it will probably land on `Unresolved` rather than `Violated` | not `Verified`; log which |
+| REFUSED, so neither control nor detection | `chainrange.ofn`, `chainrange_ctl.ofn` — both return `Err(ChainRangeOutOfProfile)` | `Unresolved`; a known coverage loss Phase 2's fold would recover |
+| healthy controls | `unsatconj.ofn`, `flat-mono.ofn`, `label-closure-range-sub.ofn` | **`Verified`** |
+
+Two corrections embedded above, both from measurement:
+
+* **`chainrange_ctl.ofn` is REFUSED**, so it cannot be a control. An earlier draft listed it as one,
+  which was already wrong on separate evidence (rustdl misses `C ⊑ D` on it and Konclude reports it —
+  issue #80's second instance), and the refusal makes it wrong a second time over.
+* **`chainpoison.ofn` and `chain-range-bot.ofn` are both BUILT, not refused.** The second is safe
+  specifically because `Range(r, owl:Nothing)` is a `Bot` filler that `effective_ranges` skips, so a
+  range-keyed refusal cannot fire on it. Both crown jewels are reachable.
 
 - [ ] **Step 3: Log the weaker outcome.** When the verdict is `Unresolved` rather than `Violated`
   the invariant still holds but coverage is weaker; `eprintln!` which fixtures land there so the
@@ -1652,7 +2008,33 @@ RUSTUP_TOOLCHAIN=stable cargo test --workspace
 ./scripts/run-soundness-diff.sh   # must stay FP=0; this crate touches no reasoning path
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Record what execution discovered.** These are carried forward from task reviews and
+  would otherwise survive only in scratch files:
+
+  1. **`docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`** — the two expansion
+     paths label the same nested-existential witness DIFFERENTLY (the axiom path from `eff_ranges`
+     only, often empty; the fact path from `subsumers_of(Tseitin Q)`, non-empty), and `intern` dedups
+     purely by LABEL CONTENT, so **one logical witness becomes two elements**. That contradicts the
+     spec's own "one canonical interpretation" framing. Not shown unsound — an extra edge-less element
+     contributes to no composed pair — but whether a future concept-level check could read a WEAKER
+     answer at the under-labelled witness is untested. Add a matching comment on
+     `materialise_exists`'s opaque-body branch, because this currently survives only in a task report
+     and test comments that a future `model.rs` reader will miss.
+  2. **`Violation`'s struct doc** is written entirely from `verify`'s perspective. Note that
+     `still_holds_after` also produces `Violation`s — via a borrow rather than a consume — and that
+     its `axiom_index` indexes into `added`, NOT `internal.axioms`.
+  3. **Amend spec §7**: it says the crate must never depend on `owl-dl-reasoner`. Task 12 added it as
+     a **dev**-dependency so the acceptance suite runs the real hybrid classifier instead of grading
+     its own homework. Reword to "not a RUNTIME dependency"; the property that matters is the absence
+     of a cycle, which holds (nothing in `owl-dl-reasoner`'s manifest names `owl-dl-verify`).
+  4. **Record the measured coverage** in the `CLAUDE.md` paragraph, in these words or closer:
+     inertness established on **16 of 20** banner-selected pure-EL ORE ontologies (4 unmeasured —
+     exit-124 timeouts at 300 s, NOT passes); **5 detections** on committed fixtures tracking issues
+     #80/#81/#82, with 2 fixtures REFUSED by the chain-range profile guard; and the injection fixpoint
+     **past round 1 is untested machinery** (injection is corpus-rare: 0 injections across 6 real
+     pure-EL ontologies, and `cascade.ofn` converges in one round).
+
+- [ ] **Step 6: Commit**
 
 ---
 

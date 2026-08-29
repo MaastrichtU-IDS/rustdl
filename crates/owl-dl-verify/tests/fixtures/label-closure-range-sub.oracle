@@ -1,0 +1,8 @@
+# Healthy control exercising this crate's own label-closure machinery
+# (Range(u,F) + F ⊑ G must close into the u-successor's label — see
+# tests/model.rs). F ⊑ G is asserted directly, so it holds regardless of
+# engine; the point of this fixture in the acceptance suite is that
+# `build_model`/`verify` must not report a spurious violation while closing
+# that label.
+provenance: structural   # asserted directly; confirms the checker itself stays quiet here
+subclass: F G

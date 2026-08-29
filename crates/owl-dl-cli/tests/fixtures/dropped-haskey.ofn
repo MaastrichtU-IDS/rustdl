@@ -1,0 +1,7 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/dropped>
+Declaration(Class(:A)) Declaration(Class(:B))
+Declaration(ObjectProperty(:p))
+HasKey(:A (:p) ())
+SubClassOf(:A :B)
+)

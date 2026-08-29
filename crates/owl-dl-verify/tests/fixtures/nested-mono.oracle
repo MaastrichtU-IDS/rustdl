@@ -1,0 +1,6 @@
+# issue #80 (nested existential monotonicity), the three-axiom minimal case:
+# C ⊑ ∃t.∃u.A, A ⊑ F, ∃t.∃u.F ⊑ D entails C ⊑ D by plain monotonicity. Konclude
+# reports both (A,F) and (C,D); rustdl reports only (A,F). flat-mono.ofn is the
+# NON-nested sibling rustdl gets right — nesting alone is the trigger.
+provenance: konclude-v0.7.0-1138
+subclass: C D

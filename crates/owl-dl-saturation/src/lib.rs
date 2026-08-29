@@ -100,7 +100,7 @@ fn enqueue_dedup_enabled() -> bool {
 }
 
 /// Lower a **provably-empty existential filler** (`⊥` under an `∃`/`≥n`) instead of
-/// dropping the axiom. Default **OFF**; `RUSTDL_EL_BOT_FILLER=1` opts in.
+/// dropping the axiom. Default **ON**; `RUSTDL_EL_BOT_FILLER=0` opts out.
 ///
 /// # The D10 bug this closes
 ///

@@ -717,7 +717,20 @@ fn injected_q_unsatisfiable_reports_run_delta_not_label_not_closed() {
 
 #[test]
 fn chain_edges_are_materialised_onto_the_declared_super_role() {
-    let ofn = std::fs::read_to_string("tests/fixtures/chainpoison.ofn").expect("fixture");
+    // This used to read `chainpoison.ofn`, which paired the same
+    // `Chain(t,u) ⊑ r` shape with `ObjectPropertyDomain(r, owl:Nothing)` so `C`
+    // (the only class requiring the chain-materialised edge) was poisoned into
+    // unsatisfiability. Issue #80/#82's saturator fix (the `Some`/`Min`
+    // one-way-marker bug in `atomic_or_tseitin_body_with_extras`) closed that
+    // poisoning gap, so `C` is now correctly reported unsatisfiable, gets no
+    // model element at all, and this test's own `!m.edges(r).is_empty()`
+    // assertion started failing — for the RIGHT reason (the model got more
+    // correct), not a regression. Repointed at `chain-ok.ofn`: the identical
+    // chain shape with the domain poison removed, so `C` stays satisfiable and
+    // the materialised edge is not a function of any engine completeness fix.
+    // Do not repoint this at another engine-defect fixture — that is exactly
+    // what broke it here.
+    let ofn = std::fs::read_to_string("tests/fixtures/chain-ok.ofn").expect("fixture");
     let internal = load(&ofn);
     let (m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
     let r = internal.vocabulary.role_id("http://ex.org/r").expect("r");

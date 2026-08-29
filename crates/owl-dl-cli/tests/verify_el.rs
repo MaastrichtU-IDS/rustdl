@@ -30,15 +30,25 @@ fn verified_fixture() -> &'static str {
     )
 }
 
-/// A fixture already established to land on `Violated`: `chainpoison.ofn`
-/// (one of the acceptance suite's five real, still-open rustdl completeness
-/// defects — see `owl-dl-verify/tests/acceptance.rs`'s module doc for why
-/// these are phrased as detections rather than as permanent fixtures of
-/// broken behaviour).
+/// A fixture that lands on `Violated` for a `owl-dl-verify` BUILDER reason
+/// (`known_limitations.rs`'s F1: a conjunctive `∃`-body plus a GCI over that
+/// conjunction — the witness label is never closed under `A ⊓ B ⊑ C`), NOT an
+/// rustdl engine defect.
+///
+/// This used to be `chainpoison.ofn`, one of the acceptance suite's real,
+/// still-open rustdl *engine* completeness defects — but that defect is
+/// exactly the one issue #80/#82's saturator fix (the `Some`/`Min` one-way-
+/// marker bug in `atomic_or_tseitin_body_with_extras`) closed, so
+/// `chainpoison.ofn` now verifies cleanly and no longer exercises this exit
+/// path. Do NOT repoint this at another rustdl-engine-defect fixture
+/// (`chain-range-bot.ofn`, `unsatnested.ofn`, …) — those are exactly the kind
+/// of thing future engine fixes keep closing, which is what broke this test
+/// in the first place. A builder-defect fixture is stable under engine
+/// changes because the two are different crates' code.
 fn violated_fixture() -> &'static str {
     concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../owl-dl-verify/tests/fixtures/chainpoison.ofn"
+        "/../owl-dl-verify/tests/fixtures/conjexists-builder-gap.ofn"
     )
 }
 

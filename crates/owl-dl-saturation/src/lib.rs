@@ -4474,18 +4474,40 @@ fn atomic_or_tseitin_body_with_extras(
             atomic_classes_with_existential_markers(operands, pool, rules, tseitin)?
         }
         ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
-            // Top-level nested existential as the outer body:
-            // `∃R.∃S.X` style. Introduce a marker for the inner
-            // existential and use it as the single-class body.
+            // Top-level nested existential as the outer body: `∃R.∃S.X`.
+            //
+            // The marker must be the EQUIVALENT (two-way) flavour, not the one-way
+            // one. This is an RHS *body* position: the witness of the outer R-edge
+            // genuinely satisfies `∃S.X`, so it genuinely has an S-edge to an X, and
+            // the fact `(marker, S, X)` is the definition restated. Without that
+            // self-fact the marker is an opaque atom whose only subsumer is itself,
+            // so nothing about `X` propagates through it and EL monotonicity is
+            // lost: `A ⊑ F` failed to yield `∃t.∃u.A ⊑ ∃t.∃u.F` (issue #80).
+            //
+            // The one-way `introduce_existential_marker` is for LHS-TRIGGER sites,
+            // where "X has an R-edge to a B" is the sufficient reading and the
+            // converse is not needed. The sibling
+            // `atomic_classes_with_existential_markers` — the same shape, but inside
+            // an `And` — has always used the equivalent flavour here.
             let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
-            let marker = tseitin.introduce_existential_marker(role.role_id(), inner_id, rules);
+            let marker =
+                tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
             vec![marker]
         }
         ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
-            // `≥n R.X` as a nested body — sound underapproximation
-            // to ∃R.X (same lowering as `atomic_existential_rhs`).
+            // `≥n R.X` as a nested body — sound underapproximation to ∃R.X (same
+            // lowering as `atomic_existential_rhs`).
+            //
+            // Same bug, same fix as the `Some` arm immediately above: this is an
+            // RHS body position, so the marker must be the EQUIVALENT (two-way)
+            // flavour, not the one-way one — otherwise `X` doesn't propagate
+            // through the marker and EL monotonicity is lost for a `≥n` nested
+            // body exactly as it was for `∃` (issue #80). The sibling
+            // `atomic_classes_with_existential_markers`'s own `Min` arm already
+            // uses the equivalent flavour here.
             let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
-            let marker = tseitin.introduce_existential_marker(role.role_id(), inner_id, rules);
+            let marker =
+                tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
             vec![marker]
         }
         _ => return None,

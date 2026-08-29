@@ -1,0 +1,7 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/cok>
+Declaration(Class(:C)) Declaration(Class(:A))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u)) Declaration(ObjectProperty(:r))
+SubObjectPropertyOf(ObjectPropertyChain(:t :u) :r)
+SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))
+)

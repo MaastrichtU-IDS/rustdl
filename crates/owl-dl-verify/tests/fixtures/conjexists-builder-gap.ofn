@@ -1,0 +1,7 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/f1>
+Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+Declaration(ObjectProperty(:r))
+SubClassOf(:X ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A :B)))
+SubClassOf(ObjectIntersectionOf(:A :B) :C)
+)

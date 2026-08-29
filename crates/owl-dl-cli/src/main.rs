@@ -870,10 +870,11 @@ fn fold_build_reasons(
         // reaching a user — exactly the failure direction this whole crate
         // exists to prevent — and it would be silent, since a `Verified`
         // check result with non-empty build reasons is a real, reachable
-        // combination: `crates/owl-dl-verify/tests/fixtures/
-        // markerresidue.ofn` produces it (a Tseitin-marker-targeted
-        // `LabelNotClosed` residue that `build_model` cannot inject away,
-        // paired with a model that still satisfies every WRITTEN axiom), and
+        // combination: `crates/owl-dl-verify/tests/fixtures/topwitness.ofn`
+        // produces it (`∃u.⊤` lowers to a deliberately subsumer-less
+        // ⊤-witness, so `Range(u)` cannot be folded into it and
+        // `build_model` cannot inject the gap away, while the model still
+        // satisfies every WRITTEN axiom), and
         // `crates/owl-dl-cli/tests/verify_el.rs`'s
         // `build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_
         // three` runs it through this exact function via the real binary and

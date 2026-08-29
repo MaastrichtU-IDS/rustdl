@@ -72,20 +72,26 @@ fn cascade_fixture() -> &'static str {
     )
 }
 
-/// A fixture built for Task 13's fix round 1 (review finding): non-empty
-/// `build_model` reasons (a Tseitin-marker-targeted `LabelNotClosed` residue
-/// that can never be injected away — see
+/// Non-empty `build_model` reasons paired with a model that still satisfies
+/// every WRITTEN axiom, i.e. a `Verified` CHECK result. This is the ONLY
+/// fixture in this suite that exercises `fold_build_reasons`'s
+/// `Verified -> Unresolved` downgrade arm — the single most safety-critical
+/// line in `main.rs`, since an accidental pass-through there would report
+/// exit 0 over an admitted, unclosed gap.
+///
+/// WAS `markerresidue.ofn`, whose residue was a SATURATOR DEFECT (nested
+/// existential bodies lowered without folding `ObjectPropertyRange`). Issue
+/// #81 fixed it and this test failed — correctly, and loudly. `topwitness.ofn`
+/// is durable instead: `A ⊑ ∃u.⊤` lowers to a deliberately subsumer-less
+/// ⊤-witness, so `Range(u)` cannot be folded into it WITHOUT breaking the
+/// domain inference that witness exists for. That gap is a documented design
+/// decision, not a bug waiting to be closed. See
 /// `crates/owl-dl-verify/tests/model.rs`'s
-/// `verified_check_can_still_carry_nonempty_build_reasons` for the full
-/// trace) paired with a model that still satisfies every WRITTEN axiom, i.e.
-/// a `Verified` CHECK result. This is the ONLY fixture in this suite that
-/// exercises `fold_build_reasons`'s `Verified -> Unresolved` downgrade arm —
-/// the single most safety-critical line in `main.rs`, since an accidental
-/// pass-through there would report exit 0 over an admitted, unclosed gap.
-fn marker_residue_fixture() -> &'static str {
+/// `verified_check_can_still_carry_nonempty_build_reasons`.
+fn residue_fixture() -> &'static str {
     concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../owl-dl-verify/tests/fixtures/markerresidue.ofn"
+        "/../owl-dl-verify/tests/fixtures/topwitness.ofn"
     )
 }
 
@@ -380,10 +386,9 @@ fn json_violated_has_the_expected_shape() {
 }
 
 /// Exercises `fold_build_reasons`'s `Verified -> Unresolved` downgrade arm
-/// through the ACTUAL BINARY, end to end: `markerresidue.ofn`'s check
-/// verdict is `Verified` (every written axiom holds), but `build_model`
-/// admits, in its own `reasons`, that it could not close a Tseitin marker's
-/// label. Without the downgrade, the CLI would report exit 0 here — a false
+/// through the ACTUAL BINARY, end to end: `topwitness.ofn`'s check verdict is
+/// `Verified` (every written axiom holds), but `build_model` admits, in its
+/// own `reasons`, that it could not close the ⊤-witness's label. Without the downgrade, the CLI would report exit 0 here — a false
 /// all-clear over an admitted gap. With it, this must be exit 3, and the
 /// build reason must be visible on both the text and `--json` surfaces, not
 /// swallowed.
@@ -391,7 +396,7 @@ fn json_violated_has_the_expected_shape() {
 fn build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_three() {
     let out = rustdl()
         .arg("verify-el")
-        .arg(marker_residue_fixture())
+        .arg(residue_fixture())
         .output()
         .unwrap();
     assert_eq!(
@@ -417,7 +422,7 @@ fn build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_three() {
     let json_out = rustdl()
         .arg("verify-el")
         .arg("--json")
-        .arg(marker_residue_fixture())
+        .arg(residue_fixture())
         .output()
         .unwrap();
     assert_eq!(json_out.status.code(), Some(3));

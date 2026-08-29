@@ -26,6 +26,26 @@ observation — "an extra, edge-poor element can only make MORE axioms fail to b
 fewer" — is not a safety argument here; "more axioms fail" is precisely a spurious `Violated`.
 F1/F2/F3 below are that mechanism family, confirmed rather than hypothetical.
 
+## `cascade.ofn` joined F1 on 2026-08-29 — and it moved WITHOUT a test failing
+
+Recorded because the transition is the instructive part. Before issue #81, `cascade.ofn` was a
+genuine DETECTION: rustdl emitted zero rows, disagreeing with its Konclude oracle, and the
+instrument's `Violated` correctly refused to vouch for that. Issue #81's nested-existential range
+fold made rustdl derive `A ⊑ FINAL` — the oracle's only non-trivial row, re-confirmed against
+Konclude v0.7.0-1138. **rustdl is now right and the instrument still says `Violated`,** so cascade
+is a false positive of F1 below: its `SubClassOf(ObjectIntersectionOf(∃v.W, G), Z)` is a GCI over
+a conjunction, and `materialise_exists` labels that witness by plain union without closing it
+under the GCI. The reported element is `Element(3)={G}`.
+
+**The acceptance suite did not notice**, because
+`instrument_never_verifies_a_classification_that_disagrees_with_the_oracle` asserts nothing at all
+when rustdl agrees — so cascade degraded from a detection to a vacuous pass and the suite stayed
+green. Two guards were added in the same change:
+`the_detection_set_has_not_silently_gone_vacuous` (the detection set must be non-empty) and
+`cascade_now_agrees_with_its_oracle_and_its_violated_is_a_known_f1_false_positive` (both halves
+pinned, so either moving is loud). If F1 is ever fixed, that second test is the one that will
+fail — update it and this page together.
+
 ## F1 — conjunctive `∃`-body plus a GCI over the conjunction
 
 **Reproducer:** `crates/owl-dl-verify/tests/known_limitations.rs::f1_conjunctive_exists_body_gci_is_a_false_violated`

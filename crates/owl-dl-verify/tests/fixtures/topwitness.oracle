@@ -1,0 +1,16 @@
+# The report-only vehicle. `A ⊑ ∃u.⊤` with `Range(u,G)`: the saturator lowers
+# `∃u.⊤` to a deliberately SUBSUMER-LESS top witness (see
+# `atomic_existential_rhs`: "the witness has no subsumers (⊤-equivalent), so it
+# only ever triggers domain(R)"), so `Range(u)=G` is the one existential target
+# that is NOT range-folded — and folding it would break the domain inference
+# that witness exists for. `target_label` therefore returns `Err`, the witness
+# has no IRI to key an injected `Q` on, and `build_model` reports
+# `LabelNotClosed` while every WRITTEN axiom still holds.
+#
+# Chosen for DURABILITY. The fixtures this replaced (markerresidue.ofn and
+# friends) were vehicles built on ENGINE DEFECTS, and issue #81's fix closed
+# them, which broke five tests at once. This one is not a defect: it is a
+# deliberate, documented under-approximation with a stated reason.
+#
+# Konclude agrees there is nothing non-trivial to derive here.
+provenance: konclude-v0.7.0-1138

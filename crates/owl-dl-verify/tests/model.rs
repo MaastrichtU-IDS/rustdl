@@ -218,17 +218,24 @@ fn a_as_a_class_and_a_as_a_u_successor_are_distinct_elements() {
     );
 }
 
-// --- LabelNotClosed, positive case (report-only path actually reports) ------
+// --- The range IS folded through the And-wrapped Tseitin path (issue #81) ---
 //
-// `∃u.A` nested inside an `ObjectIntersectionOf` on the RHS of `∃t.(...)` DOES
-// reach `target_label` for role `u` (via `introduce_equivalent_existential_marker`,
-// a two-way Tseitin marker that DOES push its own existential fact) — unlike the
-// bare `∃t.∃u.A` shape below, whose one-way marker never does. `A`'s target is
-// NOT range-folded by this path either, so `aug = [F]` is non-empty and `expand`
-// must report `LabelNotClosed` rather than guess. This is the positive
-// counterpart to `nested_existential_range_gap_*`: it demonstrates the
-// report-only contract actually firing on a real ontology, not just on the
-// pre-supplied fixture that (per the report) never reaches `target_label` at all.
+// `∃u.A` nested inside an `ObjectIntersectionOf` on the RHS of `∃t.(...)`
+// reaches `target_label` for role `u` via
+// `introduce_equivalent_existential_marker`, a two-way Tseitin marker that
+// pushes its own existential fact.
+//
+// This test used to assert the OPPOSITE — that `A`'s target is "NOT
+// range-folded by this path either", so `aug = [F]` stayed non-empty and
+// `expand` had to report `LabelNotClosed`. That was a BUG being pinned, not a
+// contract: `atomic_classes_with_existential_markers` lowered the inner body
+// with `atomic_or_tseitin_body`, which never received `effective_ranges`.
+// Issue #81 threads them through, so the witness now carries `Range(u) = F`
+// and the gap is closed rather than merely reported.
+//
+// The report-only contract now lives on `topwitness.ofn`, whose gap is a
+// documented design decision instead of a defect — see
+// `verified_check_can_still_carry_nonempty_build_reasons`.
 const AND_WRAPPED_NESTED_RANGE: &str = r"Prefix(:=<http://ex.org/>)
 Ontology(<http://ex.org/andwrapped>
 Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:F))
@@ -239,20 +246,37 @@ ObjectPropertyRange(:u :F)
 ";
 
 #[test]
-fn and_wrapped_nested_existential_reports_label_not_closed() {
+#[allow(clippy::many_single_char_names)]
+fn and_wrapped_nested_existential_range_is_folded() {
     let internal = load(AND_WRAPPED_NESTED_RANGE);
     let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
     let h = build_role_hierarchy(&internal);
     let eff = effective_ranges(&internal, &h);
     let u = internal.vocabulary.role_id("http://ex.org/u").expect("u");
-    let mut model = FiniteModel::seed(&internal, &subs, &facts);
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let f = internal.vocabulary.class_id("http://ex.org/F").expect("F");
+    let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(h);
     let reasons = model.expand(&internal, &subs, &facts, &eff, &Bounds::default());
     assert!(
-        reasons
+        !reasons
             .iter()
             .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { role, .. } if *role == u)),
-        "the inner ∃u.A target is not range-folded by this Tseitin path either, so \
-         expand must report rather than truncate: got {reasons:?}"
+        "issue #81 folds Range(u) into the And-wrapped nested witness, so there \
+         is nothing left for expand to report here: {reasons:?}"
+    );
+    let w = model
+        .elements()
+        .flat_map(|e| model.successors(e, u))
+        .next()
+        .expect("the inner ∃u.A must produce a u-successor");
+    assert!(
+        model.in_concept(w, a),
+        "the witness must satisfy the body A"
+    );
+    assert!(
+        model.in_concept(w, f),
+        "and must carry Range(u) = F — this is the #81 fold, and the assertion \
+         this test used to make in reverse"
     );
 }
 
@@ -463,17 +487,24 @@ fn axiom_driven_expansion_materialises_the_nested_chain() {
     );
 }
 
-// --- Review fix: base closure must survive an unclosable range augmentation -
+// --- Base closure survives, AND the range augmentation is now closed --------
 //
-// Fix-round-1 finding: `materialise_exists`'s `Some` arm looked up each
-// required atom individually via `target_label`, and on `Err` (an unclosable
-// range augmentation) dropped the atom's OWN base closure too, not just the
-// disputed range classes. `C ⊑ ∃t.∃u.A` + `Range(u,X)` with no `A ⊑ X` is the
-// reviewer's exact reproducer: the leaf witness's label came back completely
-// EMPTY, so `in_concept(leaf, A)` was `false` even though the axiom trivially
-// entails the witness is an `A`. Fixed by extending `label` with
-// `subs.subsumers_of(*a)` on the `Err` arm too, while still reporting
-// `LabelNotClosed` for the augmentation that could not be closed.
+// Fix-round-1 finding (still pinned below): `materialise_exists`'s `Some` arm
+// looked up each required atom individually via `target_label`, and on `Err`
+// dropped the atom's OWN base closure too, not just the disputed range
+// classes — the leaf witness's label came back completely EMPTY, so
+// `in_concept(leaf, A)` was `false` even though the axiom trivially entails
+// the witness is an `A`.
+//
+// The SECOND half of this test used to assert `!in_concept(w, X)` — "the
+// unclosable range class X must NOT be force-added — that would be inventing
+// an entailment". Issue #81 shows that assertion had a false premise: `X` is
+// not invented, it is ENTAILED by `Range(u,X)`, and the only reason the leaf
+// lacked it was that the saturator did not fold ranges into nested
+// existential witnesses. Now that it does, this fixture's leaf legitimately
+// carries both `A` and `X`, and the evaluator agrees. The assertion is
+// inverted rather than deleted: it now pins the fold, so a regression that
+// re-drops the range fails here.
 const NESTED_UNCLOSED_RANGE: &str = r"Prefix(:=<http://ex.org/>)
 Ontology(<http://ex.org/nur>
 Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:X))
@@ -485,7 +516,7 @@ ObjectPropertyRange(:u :X)
 
 #[test]
 #[allow(clippy::many_single_char_names)]
-fn axiom_driven_expansion_keeps_base_closure_when_the_range_augmentation_is_unclosable() {
+fn axiom_driven_expansion_keeps_base_closure_and_folds_the_range() {
     let internal = load(NESTED_UNCLOSED_RANGE);
     let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
     let hier = build_role_hierarchy(&internal);
@@ -514,18 +545,13 @@ fn axiom_driven_expansion_keeps_base_closure_when_the_range_augmentation_is_uncl
     assert!(
         model.in_concept(w, a),
         "the atom's own base closure (A) is entailed unconditionally and must \
-         survive even though the range augmentation (X) could not be closed"
+         survive"
     );
     assert!(
-        !model.in_concept(w, x),
-        "the unclosable range class X must NOT be force-added — that would be \
-         inventing an entailment, not recovering a real one"
-    );
-    assert!(
-        reasons
-            .iter()
-            .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { role, .. } if *role == u)),
-        "the unclosed range augmentation must still be reported: {reasons:?}"
+        model.in_concept(w, x),
+        "Range(u,X) entails every u-successor is an X, and issue #81 folds that \
+         into the nested witness — this used to assert the OPPOSITE, on the \
+         mistaken premise that adding X would be inventing an entailment"
     );
 }
 
@@ -597,34 +623,31 @@ fn two_rounds_suffice_for_label_closure_range_sub() {
     );
 }
 
-// --- cascade.ofn: MEASURED CORRECTION of a design-doc prediction ----------
+// --- cascade.ofn converges in one round, and now with NO residual ----------
 //
-// The design spec (`docs/superpowers/specs/2026-08-27-negative-certificates-
-// phase1-design.md`) states as fact that "cascade.ofn needs three [rounds]"
-// and this task's own brief repeated that claim verbatim in this test's
-// original form (asserting `BoundTripped` at `max_rounds: 1`). MEASURED
-// against this implementation, that is wrong on this fixture: `build_model`
-// converges in round 1, at ANY `max_rounds >= 1`.
+// Two corrections live here, both MEASURED against this implementation.
 //
-// Root cause, confirmed by calling `expand`/`expand_from_axioms` separately
-// (see the task-5 report): `expand_from_axioms` alone reports ZERO
-// `LabelNotClosed` on this fixture's first round — there is no injectable
-// gap for `inject_conjunction` to close at all. The ONLY `LabelNotClosed`
-// entries come from `expand`'s fact-driven path, and they name a Tseitin
-// MARKER (`saturate_with_exists_facts` targets a nested-existential fact at
-// its marker), not a real class. A marker has no IRI to key an injected `Q`
-// on, and — because injecting a class shifts `working.vocabulary.
-// num_classes()`, which is where `TseitinAllocator` bases the NEXT round's
-// marker ids — the same marker-targeted gap would get a DIFFERENT class id
-// every round even if injection were attempted, so it could never converge
-// via this mechanism. `build_model` therefore excludes marker-targeted
-// `LabelNotClosed` from `pending` (so it cannot block convergence) while
-// still surfacing it in the returned `reasons` (so it is not silently
-// dropped — a marker-targeted report is genuine evidence that the
-// fact-driven path could not close something, even though nothing here
-// blocks the model from being built).
+// (1) The design spec (`docs/superpowers/specs/2026-08-27-negative-
+// certificates-phase1-design.md`) states as fact that "cascade.ofn needs three
+// [rounds]", and this test's original form asserted `BoundTripped` at
+// `max_rounds: 1`. That is wrong on this fixture: `build_model` converges in
+// round 1, at ANY `max_rounds >= 1`, because there is no injectable gap for
+// `inject_conjunction` to close.
+//
+// (2) This test also used to require a RESIDUAL marker-targeted
+// `LabelNotClosed` — the fact-driven path targeting a nested existential at a
+// Tseitin marker whose `Range(u)` could not be folded in. Issue #81 fixed that
+// in the saturator, so the residual is gone and cascade converges CLEANLY.
+// That is the engine getting more correct, not this fixture getting weaker:
+// rustdl now derives `A ⊑ FINAL` on cascade.ofn, which is exactly Konclude's
+// only non-trivial row and which the pre-fix engine missed entirely.
+//
+// The report-only contract — that a genuine unclosable gap is surfaced rather
+// than silently dropped — is pinned on `topwitness.ofn` instead, whose gap is
+// a documented design decision rather than a defect. See
+// `verified_check_can_still_carry_nonempty_build_reasons`.
 #[test]
-fn cascade_converges_in_one_round_with_residual_marker_targeted_reports() {
+fn cascade_converges_in_one_round_with_no_residual() {
     let ofn = std::fs::read_to_string("tests/fixtures/cascade.ofn").expect("fixture");
     let internal = load(&ofn);
     let bounds = Bounds {
@@ -645,42 +668,35 @@ fn cascade_converges_in_one_round_with_residual_marker_targeted_reports() {
          rounds\" prediction: {reasons:?}"
     );
     assert!(
-        reasons
+        !reasons
             .iter()
             .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { .. })),
-        "the residual gap is real (a Tseitin-marker target the fact-driven path \
-         cannot close) and must still be reported, not silently dropped: {reasons:?}"
+        "issue #81 folded ObjectPropertyRange into nested existential witnesses, \
+         so cascade.ofn's marker-targeted residue is CLOSED, not merely \
+         unreported: {reasons:?}"
     );
 }
 
-// --- Review finding 3 (Task 5, round 1): a genuine positive RunDelta fixture -
+// --- The `RunDelta` automatic-injection path lost its fixture to a FIX -------
 //
-// Constructed (not lifted from the design spec, since Finding 2 established
-// `unsatnested.ofn` does not exercise the AUTOMATIC injection path): `C ⊑
-// ∃t.∃u.A`, `Range(u,F)`, `DisjointClasses(A,F)`. Round 1 reports
-// `LabelNotClosed{A,u}` (aug=[F]) exactly like `label-closure-range-sub.ofn`.
-// Round 1's injection adds `Q ≡ A ⊓ F` — but here `A` and `F` are told-disjoint,
-// so `Q` re-saturates UNSATISFIABLE. Round 2's `lookup_injected` finds `Q`,
-// sees it is unsatisfiable, and both `expand` and `expand_from_axioms` push
-// `RunDelta { class: A }` instead of `LabelNotClosed` — this is a genuine,
-// reproducible firing of the injected-Q-unsatisfiable branch inside
-// `materialise_exists`/`expand` (via the shared `lookup_injected` helper).
+// This slot held `injected_q_unsatisfiable_reports_run_delta_not_label_not_
+// closed`, on `C ⊑ ∃t.∃u.A` + `Range(u,F)` + `DisjointClasses(A,F)`. It worked
+// only because the saturator did NOT fold `Range(u)` into the nested `∃u.A`
+// witness: `C` stayed satisfiable, round 1 injected `Q ≡ A ⊓ F`, `Q`
+// re-saturated unsatisfiable, and round 2 reported `RunDelta`.
 //
-// This does NOT exercise `run_deltas` (the SEPARATE, top-level function in
-// `lib.rs` comparing `first_subs`/`final_subs` over every ORIGINAL class):
-// checked directly (`first_subs.is_unsatisfiable(a)` vs the round-2 `subs.
-// is_unsatisfiable(a)`, and likewise for `C`) — neither flips. This matches
-// the architecture: `aug` is constructed (in `inject_conjunction`) to be
-// exactly the range classes `y` does NOT already subsume, so the EL
-// saturator's own conjunction-introduction rule (`y ⊓ aug ⊑ Q`) can never
-// fire on `y` alone — only the synthetic witness `Q` ever satisfies both
-// sides at once. I could not find, after this attempt plus reasoning through
-// why it can't work, a fixture where injecting `Q` changes an ORIGINAL
-// class's own `is_unsatisfiable` verdict under the current mechanism.
-// `run_deltas`'s top-level comparison therefore has NO known-firing fixture;
-// it is exercised on every existing test only in the sense of "compared and
-// found no delta," never "compared and found one." Documented here rather
-// than left silently looking covered.
+// Issue #81 folded that range. The witness is now `A ⊓ F`, which IS `⊥`, so
+// `C` is unsatisfiable outright — Konclude agrees (`EquivalentClasses(Nothing,
+// C)`), and the pre-fix engine reported no unsat at all. `C` therefore gets no
+// model element, `expand_from_axioms` never builds the witness, and
+// `build_model` returns ZERO reasons. The test did not detect a regression; its
+// premise was a missing entailment.
+//
+// The test below pins what is now TRUE on that fixture. The `RunDelta`
+// automatic path is left with NO known-firing fixture, recorded here rather
+// than papered over with a bug-shaped vehicle: closing the gap that fed it is
+// what removed it, and any replacement built on another unfolded-range shape
+// would die the same way the moment that shape is fixed too.
 const RUN_DELTA_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
 Ontology(<http://ex.org/rd>
 Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:F))
@@ -692,26 +708,22 @@ DisjointClasses(:A :F)
 ";
 
 #[test]
-fn injected_q_unsatisfiable_reports_run_delta_not_label_not_closed() {
+fn range_folded_nested_witness_makes_the_subject_unsatisfiable() {
     let internal = load(RUN_DELTA_FIXTURE);
-    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
+    let (subs, _facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+    assert!(
+        subs.is_unsatisfiable(c),
+        "Range(u,F) folded into the nested ∃u.A witness gives A ⊓ F = ⊥, so no \
+         u-successor can exist and C is unsatisfiable — Konclude reports \
+         EquivalentClasses(Nothing, C) on this exact fixture"
+    );
     let (_m, reasons) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
     assert!(
-        reasons
-            .iter()
-            .any(|r| matches!(r, UnresolvedReason::RunDelta { class } if *class == a)),
-        "the injected Q ≡ A ⊓ F is unsatisfiable (A, F told-disjoint), so this must \
-         be reported as RunDelta, not silently dropped or reported as LabelNotClosed \
-         (which would wrongly imply a plain reporting limitation, not a defect): \
-         {reasons:?}"
-    );
-    assert!(
-        !reasons
-            .iter()
-            .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { .. })),
-        "once the injected Q's unsatisfiability is known, this specific gap must not \
-         ALSO still be reported as an unresolved (not-yet-injected) LabelNotClosed: \
-         {reasons:?}"
+        reasons.is_empty(),
+        "with C unsatisfiable there is no element to expand and hence no gap to \
+         report — a non-empty reasons list here would mean the builder is \
+         inventing work on an empty class: {reasons:?}"
     );
 }
 
@@ -933,72 +945,59 @@ fn conjunctive_trigger_is_insufficient_at_one_round() {
     );
 }
 
-// --- Task 13, fix round 1: `Verified` + non-empty build-time `reasons` ------
+// --- `Verified` check + non-empty build-time `reasons` ---------------------
 //
-// Found by review: `owl-dl-cli`'s `fold_build_reasons` has an arm that
-// downgrades a `Verified` CHECK result to `Unresolved` whenever
-// `build_model`'s own BUILD-time `reasons` are non-empty (never letting the
-// CLI report `Verified`/exit 0 over an admitted, unclosed gap) — and nothing
-// in the fixture set exercised that combination: `cascade.ofn` pairs
-// non-empty build reasons with a `Violated` check (a genuine, unrelated
-// defect), and the two `Bounds`-tripping tests above pair non-empty reasons
-// with a model `build_model` returns EARLY, before `verify` ever runs on it
-// in this suite. This fixture produces the missing combination directly:
-// `Verified` check, non-empty build `reasons`.
+// `owl-dl-cli`'s `fold_build_reasons` downgrades a `Verified` CHECK result to
+// `Unresolved` whenever `build_model`'s own BUILD-time `reasons` are non-empty,
+// so the CLI never reports exit 0 over an admitted, unclosed gap. This test is
+// what establishes that combination is REACHABLE at all; `crates/owl-dl-cli/
+// tests/verify_el.rs`'s `build_reasons_downgrade_a_verified_check_to_unresolved_
+// and_exit_three` is what proves the CLI acts on it.
 //
-// `markerresidue.ofn` is `cascade.ofn`'s own first two `SubClassOf` axioms
-// (`A ⊑ ∃r.∃s.Y`, `∃s.Y ⊓ F ⊑ ∃u.∃v.W`) plus BOTH range axioms
-// (`Range(r,F)`, `Range(u,G)`), with cascade's THIRD axiom (`∃v.W ⊓ G ⊑ Z`)
-// dropped. That third axiom is what causes cascade's real defect (`Z` never
-// reaching the `∃v.W`-successor's label) — found by direct experiment
-// (probing `build_model`+`verify` on cascade trimmed to various prefixes):
-// with the third axiom present, the SAME marker residue below appears
-// alongside a `Violated` verdict (cascade's own genuine detection); dropping
-// it removes what nothing here checks against, leaving `Verified` with the
-// marker residue intact. The residue itself comes from `expand`'s
-// FACT-driven path: `saturate_with_exists_facts` targets the compound
-// existential body `∃u.∃v.W` at its own Tseitin marker (an empty-subsumer-set
-// synthetic class, per `expand`'s doc), and `Range(u,G)` makes that marker's
-// own target label unclosable — but a marker has no IRI to key an injected
-// `Q` on, so `build_model` deliberately excludes it from the injection
-// worklist (`pending`) and reports it in `reasons` on every convergent
-// return instead of looping forever (see `build_model`'s own doc comment on
-// this exact mechanism, and `cascade_converges_in_one_round_with_residual_
-// marker_targeted_reports` above). Since nothing in `markerresidue.ofn`
-// checks the marker's own label, the model still satisfies every WRITTEN
-// axiom — hence `Verified` — while `build_model` has admitted, three times
-// over (once per element visiting the gap), that it could not close a label.
+// THE VEHICLE WAS REPLACED, AND WHY MATTERS MORE THAN WHAT.
+// This used to read `markerresidue.ofn`, whose residue came from a SATURATOR
+// DEFECT: nested existential bodies were lowered without folding the role's
+// `ObjectPropertyRange`, so a fact targeted a bare Tseitin marker whose label
+// `target_label` could not close. Issue #81 fixed that defect, the residue
+// vanished, and FIVE tests in this file broke at once — every one of them
+// built on the same bug. An `#[ignore]`d or bug-pinned test is a claim about
+// the engine that goes stale silently; these at least failed loudly.
 //
-// See `crates/owl-dl-cli/tests/verify_el.rs`'s
-// `build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_three` for
-// the end-to-end pin through the actual CLI binary — THIS test is what
-// establishes the combination exists at all; that one is what proves the
-// CLI's `fold_build_reasons` arm actually acts on it.
+// `topwitness.ofn` is durable for a reason no engine fix can erase:
+// `A ⊑ ∃u.⊤` lowers via `atomic_existential_rhs`'s `Top` arm to a
+// DELIBERATELY subsumer-less witness ("the witness has no subsumers
+// (⊤-equivalent), so it only ever triggers domain(R)"). Folding `Range(u)`
+// into it would destroy the domain inference that arm exists for, so the
+// unclosable augmentation is a documented design decision, not a defect.
+// Nothing in the fixture checks the witness's own label, so every WRITTEN
+// axiom holds and the CHECK verdict is `Verified` regardless.
+//
+// Do not repoint this at a fixture whose residue is an engine defect — that
+// is exactly what broke its predecessor.
 #[test]
 fn verified_check_can_still_carry_nonempty_build_reasons() {
-    let ofn = std::fs::read_to_string("tests/fixtures/markerresidue.ofn").expect("fixture");
+    let ofn = std::fs::read_to_string("tests/fixtures/topwitness.ofn").expect("fixture");
     let internal = load(&ofn);
     let (m, build_reasons) =
         owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
     assert!(
         !build_reasons.is_empty(),
-        "markerresidue.ofn must produce a residual marker-targeted LabelNotClosed \
-         from build_model — the whole point of this fixture is to pair that with \
-         a Verified check result: {build_reasons:?}"
+        "topwitness.ofn must produce a residual LabelNotClosed from build_model \
+         (the ⊤-witness is subsumer-less by design, so Range(u) cannot be folded \
+         into it) — pairing that with a Verified check is the whole point of this \
+         fixture: {build_reasons:?}"
     );
     assert!(
         build_reasons
             .iter()
             .all(|r| matches!(r, UnresolvedReason::LabelNotClosed { .. })),
-        "expected only LabelNotClosed (marker-targeted) reasons on this fixture, \
-         got: {build_reasons:?}"
+        "expected only LabelNotClosed reasons on this fixture, got: {build_reasons:?}"
     );
     let (verdict, _verified_model) = owl_dl_verify::verify(m, &internal, None);
     assert!(
         matches!(verdict, Verdict::Verified { .. }),
-        "every WRITTEN axiom in markerresidue.ofn holds in the model as built — \
-         nothing checks the unclosed marker's own label — so the CHECK result \
-         must be Verified even though build_model's own reasons are non-empty: \
-         {verdict:?}"
+        "every WRITTEN axiom in topwitness.ofn holds in the model as built — \
+         nothing checks the ⊤-witness's own label — so the CHECK result must be \
+         Verified even though build_model's own reasons are non-empty: {verdict:?}"
     );
 }

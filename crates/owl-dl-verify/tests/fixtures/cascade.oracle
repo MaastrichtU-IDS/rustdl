@@ -1,6 +1,10 @@
 # issue #81 (ranges not folded into nested existential witnesses). Eight
 # classes, a range-driven cascade through nested existentials; A ⊑ FINAL is
 # entailed by a seven-step derivation and is Konclude's only non-trivial row.
-# rustdl emits ZERO rows on this fixture.
+# rustdl emitted ZERO rows on this fixture BEFORE issue #81; since the
+# nested-existential range fold it derives A ⊑ FINAL and matches this oracle
+# exactly. The instrument still reports Violated on it — a known F1 false
+# positive, pinned by acceptance.rs's
+# `cascade_now_agrees_with_its_oracle_and_its_violated_is_a_known_f1_false_positive`.
 provenance: konclude-v0.7.0-1138
 subclass: A FINAL

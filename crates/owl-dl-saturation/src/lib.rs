@@ -3951,9 +3951,13 @@ fn lower_sub_class_of(
                 match pool.get(op) {
                     ConceptExpr::Atomic(id) => bodies.push(*id),
                     ConceptExpr::Some(role, body) if !role.is_inverse() => {
-                        let Some(body_ids) =
-                            existential_body_alternatives(*body, pool, rules, tseitin)
-                        else {
+                        let Some(body_ids) = existential_body_alternatives(
+                            *body,
+                            pool,
+                            rules,
+                            tseitin,
+                            effective_ranges,
+                        ) else {
                             salvageable = false;
                             break;
                         };
@@ -4049,20 +4053,26 @@ fn lower_sub_class_of(
             // the chain `Y ⊑ {bodies} → Y ⊑ marker → ... → Y has R-witness`
             // requires the marker to emit the fact (M, R, body).
             // See docs/phase2b-trace2.md for the diagnostic.
+            //
+            // Issue #81: lower the head through `atomic_existential_rhs`, the
+            // SAME entry point the `Atomic` LHS arm above uses. Lowering the
+            // body directly with `atomic_or_tseitin_body` skipped
+            // `effective_ranges`, so `And(..) ⊑ ∃u.W` under `Range(u,G)` built
+            // a witness carrying `W` but not `G` and any downstream `W ⊓ G`
+            // trigger never fired — a silent MISS certified `incomplete:
+            // false`. Sharing the entry point also stops the two arms drifting
+            // apart again, and picks up the `≥n R.C` (n ≥ 1) head, the nominal
+            // body and the `∃R.⊤` filler that arm already handles.
             let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
-                ConceptExpr::Some(role, body) if !role.is_inverse() => {
-                    atomic_or_tseitin_body(*body, pool, rules, tseitin)
-                        .map(|body_id| vec![(role.role_id(), body_id)])
+                ConceptExpr::Some(_, _) | ConceptExpr::Min(_, _, _) => {
+                    atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges)
+                        .map(|pair| vec![pair])
                         .unwrap_or_default()
                 }
                 ConceptExpr::And(operands) => operands
                     .iter()
-                    .filter_map(|&op| match pool.get(op) {
-                        ConceptExpr::Some(role, body) if !role.is_inverse() => {
-                            atomic_or_tseitin_body(*body, pool, rules, tseitin)
-                                .map(|body_id| (role.role_id(), body_id))
-                        }
-                        _ => None,
+                    .filter_map(|&op| {
+                        atomic_existential_rhs(op, pool, rules, tseitin, effective_ranges)
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -4139,7 +4149,8 @@ fn lower_sub_class_of(
             // only C's that genuinely derive `∃r.A` (entailed by the KB) gain M and are
             // marked unsat; A itself and classes with unrelated existentials are unaffected.
             if matches!(pool.get(sup), ConceptExpr::Bot) {
-                let Some(body_ids) = existential_body_alternatives(*body, pool, rules, tseitin)
+                let Some(body_ids) =
+                    existential_body_alternatives(*body, pool, rules, tseitin, effective_ranges)
                 else {
                     return;
                 };
@@ -4150,7 +4161,9 @@ fn lower_sub_class_of(
                 }
                 return;
             }
-            let Some(body_ids) = existential_body_alternatives(*body, pool, rules, tseitin) else {
+            let Some(body_ids) =
+                existential_body_alternatives(*body, pool, rules, tseitin, effective_ranges)
+            else {
                 return;
             };
             for head in atomic_operands_on_right(sup, pool) {
@@ -4177,7 +4190,7 @@ fn lower_sub_class_of(
             // entailed `∃r.B ⊑ ∃s.D` (negative control test guards over-firing).
             let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
                 ConceptExpr::Some(s_role, s_body) if !s_role.is_inverse() => {
-                    atomic_or_tseitin_body(*s_body, pool, rules, tseitin)
+                    atomic_or_tseitin_body(*s_body, pool, rules, tseitin, effective_ranges)
                         .map(|b| vec![(s_role.role_id(), b)])
                         .unwrap_or_default()
                 }
@@ -4185,7 +4198,7 @@ fn lower_sub_class_of(
                     .iter()
                     .filter_map(|&op| match pool.get(op) {
                         ConceptExpr::Some(s_role, s_body) if !s_role.is_inverse() => {
-                            atomic_or_tseitin_body(*s_body, pool, rules, tseitin)
+                            atomic_or_tseitin_body(*s_body, pool, rules, tseitin, effective_ranges)
                                 .map(|b| (s_role.role_id(), b))
                         }
                         _ => None,
@@ -4284,8 +4297,21 @@ fn atomic_existential_rhs(
     let extras = effective_ranges
         .get(&role.role_id())
         .map_or(&[][..], Vec::as_slice);
-    let body_id = atomic_or_tseitin_body_with_extras(*body, extras, pool, rules, tseitin)?;
+    let body_id =
+        atomic_or_tseitin_body_with_extras(*body, extras, pool, rules, tseitin, effective_ranges)?;
     Some((role.role_id(), body_id))
+}
+
+/// `effective_ranges[r]`, or an empty slice for a role with no range.
+///
+/// Issue #81: every site that builds an existential witness must fold the
+/// role's own range into that witness — `Range(R)` makes `∃R.B` and
+/// `∃R.(B ⊓ Range(R))` the SAME class, so folding is a logical identity, and
+/// the folded form is what lets a downstream `B ⊓ Range(R) ⊑ …` trigger fire.
+/// Reading the map through one helper is what keeps the four marker sites
+/// from drifting apart again.
+fn range_extras(effective_ranges: &HashMap<RoleId, Vec<ClassId>>, role: RoleId) -> &[ClassId] {
+    effective_ranges.get(&role).map_or(&[][..], Vec::as_slice)
 }
 
 /// Lower a concept used as an existential's body to a single atomic
@@ -4297,8 +4323,9 @@ fn atomic_or_tseitin_body(
     pool: &ConceptPool,
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) -> Option<ClassId> {
-    atomic_or_tseitin_body_with_extras(body, &[], pool, rules, tseitin)
+    atomic_or_tseitin_body_with_extras(body, &[], pool, rules, tseitin, effective_ranges)
 }
 
 /// Populate [`ElRules::abox_nominal_reach`]: for each **transitive**
@@ -4399,17 +4426,20 @@ fn existential_body_alternatives(
     pool: &ConceptPool,
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) -> Option<Vec<ClassId>> {
     match pool.get(body) {
         ConceptExpr::Or(operands) => {
             let mut out = Vec::with_capacity(operands.len());
             for &op in operands {
-                let id = atomic_or_tseitin_body(op, pool, rules, tseitin)?;
+                let id = atomic_or_tseitin_body(op, pool, rules, tseitin, effective_ranges)?;
                 out.push(id);
             }
             Some(out)
         }
-        _ => atomic_or_tseitin_body(body, pool, rules, tseitin).map(|id| vec![id]),
+        _ => {
+            atomic_or_tseitin_body(body, pool, rules, tseitin, effective_ranges).map(|id| vec![id])
+        }
     }
 }
 
@@ -4450,8 +4480,9 @@ fn atomic_or_tseitin_body_with_extras(
     pool: &ConceptPool,
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) -> Option<ClassId> {
-    // `RUSTDL_EL_BOT_FILLER` (default OFF): a filler that provably denotes `⊥`
+    // `RUSTDL_EL_BOT_FILLER` (default ON, `=0` opts out): a filler that provably denotes `⊥`
     // lowers to the opaque, seeded-unsat bot key instead of returning `None` and
     // dropping the axiom. Checked FIRST so it also pre-empts the `And` / `Some` /
     // `Min` arms below, which would otherwise build a marker or synthetic that
@@ -4470,9 +4501,13 @@ fn atomic_or_tseitin_body_with_extras(
         // singleton/cardinality semantics of `{a}` are deliberately
         // not modeled (under-approximation — the tableau handles those).
         ConceptExpr::Nominal(ind) => vec![tseitin.introduce_nominal(*ind)],
-        ConceptExpr::And(operands) => {
-            atomic_classes_with_existential_markers(operands, pool, rules, tseitin)?
-        }
+        ConceptExpr::And(operands) => atomic_classes_with_existential_markers(
+            operands,
+            pool,
+            rules,
+            tseitin,
+            effective_ranges,
+        )?,
         ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
             // Top-level nested existential as the outer body: `∃R.∃S.X`.
             //
@@ -4489,7 +4524,14 @@ fn atomic_or_tseitin_body_with_extras(
             // converse is not needed. The sibling
             // `atomic_classes_with_existential_markers` — the same shape, but inside
             // an `And` — has always used the equivalent flavour here.
-            let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
+            let inner_id = atomic_or_tseitin_body_with_extras(
+                *inner_body,
+                range_extras(effective_ranges, role.role_id()),
+                pool,
+                rules,
+                tseitin,
+                effective_ranges,
+            )?;
             let marker =
                 tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
             vec![marker]
@@ -4505,7 +4547,14 @@ fn atomic_or_tseitin_body_with_extras(
             // body exactly as it was for `∃` (issue #80). The sibling
             // `atomic_classes_with_existential_markers`'s own `Min` arm already
             // uses the equivalent flavour here.
-            let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
+            let inner_id = atomic_or_tseitin_body_with_extras(
+                *inner_body,
+                range_extras(effective_ranges, role.role_id()),
+                pool,
+                rules,
+                tseitin,
+                effective_ranges,
+            )?;
             let marker =
                 tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
             vec![marker]
@@ -4535,13 +4584,21 @@ fn atomic_classes_with_existential_markers(
     pool: &ConceptPool,
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) -> Option<Vec<ClassId>> {
     let mut out = Vec::with_capacity(ids.len());
     for &c in ids {
         match pool.get(c) {
             ConceptExpr::Atomic(id) => out.push(*id),
             ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
-                let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
+                let inner_id = atomic_or_tseitin_body_with_extras(
+                    *inner_body,
+                    range_extras(effective_ranges, role.role_id()),
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                )?;
                 let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),
                     inner_id,
@@ -4550,7 +4607,14 @@ fn atomic_classes_with_existential_markers(
                 out.push(marker);
             }
             ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
-                let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
+                let inner_id = atomic_or_tseitin_body_with_extras(
+                    *inner_body,
+                    range_extras(effective_ranges, role.role_id()),
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                )?;
                 let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),
                     inner_id,

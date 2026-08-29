@@ -331,3 +331,91 @@ fn parse_oracle_reads_provenance_and_claims_not_just_the_file_existing() {
         vec![Claim::Unsatisfiable("C".to_string())]
     );
 }
+
+/// THE INVARIANT ABOVE CAN GO VACUOUS WITHOUT ANYTHING TURNING RED.
+///
+/// `instrument_never_verifies_a_classification_that_disagrees_with_the_oracle`
+/// asserts nothing at all when `rustdl_agrees` — so every time an engine fix
+/// closes a fixture's gap, that fixture silently stops testing the instrument
+/// and the suite still reports green. Issue #81 did exactly that to
+/// `cascade.ofn`: it went from a genuine DETECTION (rustdl emitted zero rows,
+/// the instrument correctly refused to say `Verified`) to a fixture rustdl
+/// classifies correctly, in one commit, with no test failing.
+///
+/// This is the stale-sentinel pattern pointed the other way: not "an
+/// `#[ignore]`d test that starts passing", but "a live test whose premise
+/// evaporates". The cheap guard is to require the detection set to be
+/// NON-EMPTY, so the suite cannot quietly become an all-vacuous green.
+#[test]
+fn the_detection_set_has_not_silently_gone_vacuous() {
+    let fixtures = [
+        "chainpoison",
+        "chain-range-bot",
+        "unsatnested",
+        "nested-mono",
+        "cascade",
+        "chainrange",
+        "chainrange_ctl",
+        "unsatconj",
+        "flat-mono",
+        "label-closure-range-sub",
+    ];
+
+    let disagreeing: Vec<&str> = fixtures
+        .iter()
+        .copied()
+        .filter(|f| {
+            let internal = load_fixture(f);
+            let oracle = load_oracle(f);
+            !classification_matches_oracle(&internal, &oracle)
+        })
+        .collect();
+
+    assert!(
+        !disagreeing.is_empty(),
+        "NO fixture in the acceptance set still disagrees with its oracle, so \
+         `instrument_never_verifies_a_classification_that_disagrees_with_the_\
+         oracle` now asserts NOTHING on any of them and passes vacuously. Either \
+         the engine closed every gap this set was built from — in which case add \
+         a new detection fixture rather than leaving a green suite that tests \
+         nothing — or `classification_matches_oracle` has broken in the \
+         always-true direction."
+    );
+}
+
+/// `cascade.ofn` is the worked example of the paragraph above, pinned so its
+/// role change is explicit rather than inferred from a passing suite.
+///
+/// BEFORE issue #81 rustdl emitted zero rows here and the instrument's
+/// `Violated` was a true detection. The fix made rustdl derive `A ⊑ FINAL` —
+/// Konclude's only non-trivial row, confirmed against Konclude v0.7.0-1138 —
+/// so rustdl now AGREES with the oracle. The instrument still says `Violated`,
+/// which makes it a **false positive** of the documented F1 mechanism
+/// (`docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`):
+/// cascade's `SubClassOf(ObjectIntersectionOf(∃v.W, G), Z)` is a GCI over a
+/// conjunction, and `materialise_exists` labels that witness by plain union
+/// without closing it under the GCI.
+///
+/// Fails loudly if either half moves: if rustdl stops agreeing (a completeness
+/// regression) or if the false `Violated` clears (F1 fixed — update this test
+/// and the known-limitations page together).
+#[test]
+fn cascade_now_agrees_with_its_oracle_and_its_violated_is_a_known_f1_false_positive() {
+    let internal = load_fixture("cascade");
+    let oracle = load_oracle("cascade");
+    assert!(
+        classification_matches_oracle(&internal, &oracle),
+        "issue #81 made rustdl derive cascade's A ⊑ FINAL; losing it again is a \
+         completeness regression in the nested-existential range fold"
+    );
+    let (verdict, refused, _reasons) = verify_fixture(&internal);
+    assert!(!refused, "cascade must still be buildable: {verdict:?}");
+    assert!(
+        matches!(verdict, Verdict::Violated { .. }),
+        "cascade's Violated is a KNOWN F1 false positive (GCI over a conjunctive \
+         ∃-body, labelled by plain union). If this is no longer Violated, F1 has \
+         been fixed — update docs/known-limitations/\
+         verify-two-expansion-paths-split-a-witness.md in the same change. Got \
+         {verdict:?}"
+    );
+}

@@ -1499,6 +1499,24 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > Sabotages: **4 run, 4 caught**. Canaries
 > `crates/owl-dl-reasoner/tests/conjunctive_lhs_range_folding.rs` (4, incl. an atomic-LHS control
 > that must keep passing).
+>
+> **FULL TWO-ARM ORE SWEEP (2026-08-29): 1,920 ontologies, 0 regressions, 0 answer changes.**
+> Pinned binaries, 60 s cap, single-thread, and — unlike the #80 leg —
+> `SWEEP_EXTRA=--digest-strip-comments`, so **answer identity is measured, not assumed**:
+> **1,777 of 1,778 both-completed ontologies strictly IDENTICAL**. Both flagged rows adjudicate
+> clean and in both the change is **provably INERT**. `ore_ont_12698` (DIFFER) is truncation
+> noise — the same binary varies 6 rows over 3 runs against a 9-row arm difference, one "lost"
+> pair is absent from all 6 repeats, and at `--pair-timeout-ms 1000` (`incomplete:false` both)
+> the arms are **identical at 21,313 rows**. `ore_ont_7204` (ok→dnf) is a 60 s cap flip: **zero**
+> `ObjectPropertyRange` / `ObjectMinCardinality` / nominals / `owl:Thing`, so no modified path is
+> reachable; 10/10 interleaved runs complete on an idle host and output is **byte-identical
+> across arms on all 5 paired runs**. `verify-el` inertness re-run on both arms is
+> per-ontology IDENTICAL (16 Verified / 4 timeout), so the fix does NOT raise the instrument's
+> false-`Violated` rate and that recorded figure is re-verified rather than stale.
+> **THE HEADLINE IS THAT ALMOST NOTHING MOVED** — 1 of 1,920 showed any difference and it was
+> noise. The range-plus-nested-existential shape is essentially absent from ORE, which is exactly
+> why the corpus could not have validated this fix. See
+> `docs/benchmarks/2026-08-29-nested-existential-range-fold-sweep.md`.
 
 
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**

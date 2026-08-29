@@ -737,10 +737,32 @@ impl Clausifier {
                 // ¬A as a disjunct: name it with a fresh class Q
                 // and the auxiliary clause Q ⊓ A → ⊥, i.e. Q means
                 // "¬A". (H1 treats Q as the negative literal.)
+                //
+                // The auxiliary clause is emitted on `X`, NOT on `var`
+                // (issue #78). It states a UNIVERSAL property of the fresh
+                // `Q` — `∀z. ¬(Q(z) ∧ A(z))` — so `X` is both correct and
+                // the only matchable choice. On `var` it was a soundness-
+                // preserving but INERT clause whenever `var != X`: with the
+                // disjunct inside a `∀` body, `var` is the successor `y`, so
+                // the clause had NO `X` atom and NO `Role` atom, leaving the
+                // matcher nothing to anchor it to and no join to bind `y`
+                // through. It could therefore never fire, and a branch whose
+                // only route to closure was this clash stayed open — the
+                // wedge reported `Sat` for a subsumed pair.
+                //
+                // Only reachable for `var != X` via a DISJUNCTIVE `∀` body:
+                // a single-literal `∀p.¬A` goes through `emit_head`'s `Not`
+                // arm instead, which appends to the enclosing body (already
+                // carrying `Class(C,X)` and `Role(p,X,y)`) and so was always
+                // anchored. That is exactly why the defect needed BOTH a
+                // disjunction and a negated atomic to appear.
+                //
+                // The returned head atom stays on `var` — that one really is
+                // about this node.
                 if let Some(a) = self.class_id_of(inner) {
                     let q = self.fresh_class();
                     self.clauses.push(DlClause {
-                        body: vec![Atom::Class(q, var), Atom::Class(a, var)],
+                        body: vec![Atom::Class(q, X), Atom::Class(a, X)],
                         head: Vec::new(),
                     });
                     Some(Atom::Class(q, var))

@@ -1001,6 +1001,55 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   merge; and `search.rs:161` invokes the choose rule with an EMPTY `DepSet` where the
   disjunction path threads `or_deps`.
 
+  **Negated-disjunct naming clause was UNANCHORED (2026-08-29, #78) — a wedge
+  INCOMPLETENESS, one line, unflagged.** `clause.rs`'s `head_atom_for` names a `¬A`
+  appearing as a DISJUNCT with a fresh `Q` plus `Q ⊓ A → ⊥`. That clause states a
+  UNIVERSAL property of `Q` (`∀z. ¬(Q(z) ∧ A(z))`) but was emitted on the LOCAL
+  variable. Inside a `∀` body the local variable is the successor `y`, so the clause
+  had **no `X` atom and no `Role` atom** — nothing for the matcher to anchor it to,
+  no join to bind `y` through — and could never fire. A branch whose only route to
+  closure was that clash stayed open, and the wedge returned **`Sat` for a subsumed
+  pair**. Fixed by emitting it on `X`; the returned head atom stays on `var`.
+  **Why it needed BOTH a disjunction and a negated atomic** (the bisection that found
+  it): a single-literal `∀p.¬A` goes through `emit_head`'s `Not` arm, which appends to
+  the enclosing body already carrying `Class(C,X)` + `Role(p,X,y)` — always anchored.
+  Only the disjunct path is unanchored. `∀p.(V ⊔ Z)` (no negation) and `∀p.¬R` (no
+  disjunction) were both fine; `∀p.(V ⊔ ¬R)` was not.
+  **This is the engine cause of #66** — `classify` omitting subsumptions `subclass`
+  proves. Its fixture now classifies correctly and the wedge verdict on the pair goes
+  `Sat, restores=0` → `Unsat, branches=5, restores=5`. The `restores=0` was the tell:
+  a search reporting branches but never restoring had not explored alternatives.
+  **THE CURATED CORPUS IS INERT FOR THIS** — FP=0 net 11 fixtures, closures EXACT and
+  unchanged. A green net here is non-regression only; the evidence is 5 canaries
+  (2 bug + 3 controls + a negative control), Konclude confirming all four
+  subsumptions, and one real ORE gain.
+  **Full 1,920-ontology two-arm sweep: exactly ONE real difference, and it is a pure
+  gain.** 1,796 IDENTICAL / 120 BOTH_FAIL / wall **+0.32%** (order split +2.61% /
+  −1.11%), 0 rows >1 s more than 1.5× slower. `ore_ont_778` closure **575 → 627,
+  gained 52, lost 0, FP 0** — 47 pairs directly confirmed by Konclude, the rest
+  asserted equivalences; it also derives `OmnivoreAnimal` EQUIVALENT to the four
+  `AnimalBy*Partition` classes (a 5-member group where there were 4). **Cost: that
+  ontology goes 0.88 s → 26.8 s (30×)**, and at `--pair-timeout-ms 1000` the OLD arm
+  completes while the fixed one does not — the price of the wedge no longer giving up.
+  The other three flagged rows are all noise: `ore_ont_1508` (BEFORE varies 92967 /
+  92971 / 92967, AFTER stable), and `ore_ont_10568` / `ore_ont_16462` which at a 240 s
+  cap are 72 vs 73 s and 55 vs 56 s with IDENTICAL rows — **so the sweep's one
+  "REGRESSED" and one "RECOVERED" are both 60 s cap-boundary artifacts, not effects.**
+  **METHOD WARNING — a transitive-closure script that memoises `anc(x)` under a
+  cycle-detection stack is WRONG on cyclic graphs, and equivalence groups ARE cycles.**
+  Mine reported "3 lost" then "4 lost" entailments on `ore_ont_778`; a correct
+  per-node BFS gives **lost = 0**. That is the exact shape of finding that should block
+  a merge, so verify the instrument before believing it. Use `scratchpad/closure.py`'s
+  BFS form, not a memoised recursion.
+  Canaries `crates/owl-dl-reasoner/tests/wedge_neg_disjunct_anchor.rs`; sabotage
+  (reverting `X` to `var`) fails exactly the 2 bug tests and no control.
+  **Known sibling, NOT fixed and NOT demonstrated:** the same function emits
+  `Q ∧ R(var,var) → ⊥` for `¬∃R.Self` on the local variable. It carries a `Role` atom
+  so it may be matchable, but I did not test it. Separately, `fresh_class_id`
+  (`owl-dl-reasoner/src/lib.rs`) scans `Atom::Class` and `Atom::Exists` but NOT
+  `Atom::AtMost(_, Some(c), _, _)`, so an ontology whose largest class id occurs only
+  in an `AtMost` qualifier would seed the H3b encoder too low and alias real classes.
+
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners (`card_sat`,
   interval/finite-set value ranges). **Wired into reasoning** (via the DKey
   side-map + the tableau `concrete_domain_clash`), and as of 2026-06-18 data

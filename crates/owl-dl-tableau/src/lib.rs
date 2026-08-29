@@ -2303,6 +2303,29 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
 /// pair blocking. Read ONCE per [`TableauContext`] at construction and cached
 /// in the `anywhere_blocking` field; the hot `is_blocked` path never re-reads
 /// the environment. The reasoner crate carries a mirror `*_enabled()` for
+/// `RUSTDL_MAX_TRIAL_MERGE` — **default ON**; `=0` reverts.
+///
+/// Issue #76 (SOUNDNESS). The SROIQ `≤`-rule is don't-know nondeterministic
+/// over WHICH pair of witnesses to merge. `apply_max` runs in the
+/// deterministic saturation pass and used to commit to the first pair not
+/// marked distinct; when that pair was the one inconsistent combination its
+/// clash propagated as `Unsat`, yielding a FALSE-POSITIVE subsumption.
+///
+/// With this on, each candidate pair is merged behind a checkpoint and kept
+/// only if the survivor is clash-free, rolling back otherwise. If no pair
+/// survives, the pre-existing `Bot` arm still fires — sound, since satisfying
+/// `≤n` requires SOME merge and every candidate is immediately contradictory.
+///
+/// PARTIAL by construction: a pair that clashes only deeper is still committed
+/// to without a choice point. The complete fix is a backtrackable choice point
+/// over merge pairs in `search.rs`, which branches over CONCEPTS today and so
+/// needs a new branching primitive.
+#[must_use]
+pub fn max_trial_merge_enabled() -> bool {
+    // Default-ON idiom: an EMPTY value enables.
+    std::env::var_os("RUSTDL_MAX_TRIAL_MERGE").is_none_or(|v| v != "0")
+}
+
 /// discoverability alongside the other gate fns.
 #[must_use]
 pub fn anywhere_blocking_enabled() -> bool {

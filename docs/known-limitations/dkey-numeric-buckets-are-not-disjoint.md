@@ -1,0 +1,97 @@
+# The numeric DKey buckets are non-comparable but not DISJOINT — rustdl misses the clash
+
+**Status: live on v0.4.24. Sound (a MISS, never an FP). Root-caused to a 2-axiom
+reproducer, adjudicated by Konclude AND HermiT with a discriminating control.**
+
+## The 2-axiom reproducer
+
+```
+DataPropertyRange(:p xsd:double)
+DataPropertyAssertion(:p :a "1.0"^^xsd:float)
+```
+
+`xsd:float` and `xsd:double` have disjoint value spaces in OWL 2, so the asserted value
+cannot lie in the declared range and the KB is **inconsistent**.
+
+| | float/double | float/float (control) |
+|---|---|---|
+| HermiT | `owl:Thing is not satisfiable` | satisfiable |
+| Konclude | `false` | `true` |
+| **rustdl** | **`consistent`** ✗ | `consistent` ✓ |
+
+The control is what makes this a finding rather than a disagreement: all three agree on
+float/float, so rustdl is wrong specifically on the cross-datatype case. Nothing is
+dropped (`dropped: {}`), so this is not the graceful-degradation path.
+
+## Root cause
+
+`seed_dkey_subsumptions` buckets DKeys by datatype and seeds subsumption edges **only
+within a bucket**. That is correct and deliberate — it is precisely what fixed the
+v0.4.6–v0.4.9 false positive where `xsd:float` and `xsd:double` were folded into one
+f64-keyed bucket and reported EQUIVALENT.
+
+D11b then seeds `DisjointClasses(DKey(ra), DKey(rb))` for provably-disjoint pairs, also
+**only within a bucket**. So two DKeys in different buckets are neither subsumption-related
+nor disjoint, and `∃p.DKey(f:1.0)` never clashes with an `xsd:double` range.
+
+**The v0.4.9 fix removed the false equivalence and never added the disjointness.** This
+defect is its dual, and has been latent since.
+
+## The exact scope, measured
+
+Cross-*family* disjointness already works; only the numeric split is missing.
+
+| range | asserted | Konclude | rustdl | |
+|---|---|---|---|---|
+| `double` | `float` | inconsistent | consistent | **MISS** |
+| `decimal` | `float` | inconsistent | consistent | **MISS** |
+| `integer` | `float` | inconsistent | consistent | **MISS** |
+| `float` | `double` | inconsistent | consistent | **MISS** |
+| `integer` | `decimal` | **consistent** | consistent | agree |
+| `decimal` | `integer` | **consistent** | consistent | agree |
+| `string` | `integer` | inconsistent | **inconsistent** | agree |
+
+## THE TRAP ANY FIX MUST AVOID
+
+**`xsd:integer ⊂ xsd:decimal` — they are NOT disjoint**, and Konclude confirms it in both
+directions above. A fix that simply declares "different numeric bucket ⇒ disjoint" would
+emit a false `DisjointClasses` and turn a MISS into a **false positive** — in the one
+subsystem this repo documents as having already shipped an FP for months.
+
+The correct table is:
+
+* `float` ⊥ `double`, `decimal`, `integer`
+* `double` ⊥ `decimal`, `integer`
+* `integer` / `decimal` — **NOT disjoint** (subset)
+
+**Direction of risk is inverted here.** Emitting more disjointness risks FPs, so a fix
+needs canaries first, a Konclude ∪ HermiT adjudication, and a corpus sweep — the curated
+corpus is inert for DKey work by `datatype_value_membership.rs`'s own admission, so a green
+FP=0 net would show non-regression only.
+
+## Corpus reach — measured, and it explains most of the unsat misses
+
+A census over all 1,920 ORE ontologies for `DataPropertyRange(p, D1)` +
+`DataPropertyAssertion(p, _, "v"^^D2)` with `D1`, `D2` in different disjoint families finds
+**7 ontologies**. All 7 are inconsistent per Konclude. rustdl misses **3**
+(`ore_ont_16321`, `ore_ont_4198`, `ore_ont_5014`), detects 2 by other routes, and 2 time out
+in conversion (`ore_ont_4141`, `ore_ont_8445` — the known DKey conversion-bound pair).
+
+`ore_ont_16321` and `ore_ont_4198` are the two ontologies where rustdl reports
+`consistent: true` against **both** Konclude and KM
+(`missed-inconsistency-ore-16321-4198.md`). Between them they account for **82 of the 89**
+corpus-wide missed-unsat classes in the 391-ontology MISSED-net sample — as ONE defect each,
+not 41 apiece, since all 41 follow from the KB being inconsistent.
+
+**So this single 2-axiom defect is the largest identified contributor to rustdl's measured
+unsat-completeness gap.**
+
+Note the census over-attributes: `ore_ont_6446` carries the shape but its inconsistency comes
+from elsewhere (rustdl already detects it, and the isolated `anyURI`/`string` probe is
+consistent for both reasoners once the unsupported `anyURI` range is dropped).
+
+## Severity
+
+Sound — rustdl under-reports, never over-reports. But **silent**: a consumer reading
+`consistent: true` gets no signal, and every downstream entailment rests on a KB with no
+model.

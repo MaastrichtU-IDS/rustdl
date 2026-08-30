@@ -45,21 +45,56 @@ could no longer cross-subsume. Splitting made it sound. Nothing then made the sp
 is called once per DATATYPE bucket, so no cross-datatype pair is constructible" — which is exactly
 why the clash is missed.
 
-## Scope: broader than float/double, and rustdl is NOT blind to range violations
+## Scope, measured with SUPPORTED datatype spellings and an empty `dropped`
 
-| probe | range | asserted value | Konclude | rustdl |
+The first version of this matrix used `xsd:int`, which rustdl reports as
+`DataPropertyRange: unsupported data range` — so those rows measured "the range never lowered",
+not the disjointness gap. Re-probed with `xsd:integer`, `dropped` empty throughout, and with
+**both** oracles (HermiT IS reachable on these two-axiom files even though it returns `NO_OUTPUT`
+on the full ontologies — which is what upgrades this from the Konclude+KM evidence the earlier
+record had to the repo's Konclude ∪ HermiT standard):
+
+| range | asserted value | Konclude | HermiT | rustdl |
 |---|---|---|---|---|
-| A | `xsd:double` | `"1.0"^^xsd:float` | INCONSISTENT | **consistent** ✗ |
-| B | `xsd:double` | `"1.0"^^xsd:double` | consistent | consistent ✓ |
-| C | `xsd:float` | `"1.0"^^xsd:float` | consistent | consistent ✓ |
-| D | `xsd:int` | `"abc"^^xsd:string` | INCONSISTENT | inconsistent ✓ |
-| E | `xsd:int` | `"1.5"^^xsd:double` | INCONSISTENT | **consistent** ✗ |
-| F | `xsd:string` | `"1"^^xsd:int` | INCONSISTENT | inconsistent ✓ |
+| `xsd:double` | `"1.0"^^xsd:float` | INCONSISTENT | INCONSISTENT | **consistent** ✗ |
+| `xsd:integer` | `"1.0"^^xsd:float` | INCONSISTENT | INCONSISTENT | **consistent** ✗ |
+| `xsd:integer` | `"1.5"^^xsd:double` | INCONSISTENT | INCONSISTENT | **consistent** ✗ |
+| `xsd:double` | `"1.0"^^xsd:double` | consistent | consistent | consistent ✓ |
+| `xsd:float` | `"1.0"^^xsd:float` | consistent | consistent | consistent ✓ |
+| `xsd:decimal` | `"1"^^xsd:integer` | consistent | consistent | consistent ✓ |
 
-So the gap is **numeric-vs-numeric**; string-vs-numeric is already caught (by a different route —
-those two report `dropped` entries, and the range is not fully lowered). Soundness is intact: the
-assertion ALONE is `consistent` in both reasoners, so D and F are not reaching `inconsistent`
-through a false positive.
+**rustdl is NOT blind to range violations.** A full 7×7 range×value matrix shows its existing
+mechanism works at a COARSE-GROUP granularity — `{numerics}`, `{string}`, `{date,dateTime}` clash
+ACROSS groups and never WITHIN:
+
+```
+range\val  integer decimal double  float   string  date    dateTime
+integer     con     con     con     con     INC     INC     INC
+decimal     con     con     con     con     INC     INC     INC
+double      con     con     con     con     INC     INC     INC
+float       con     con     con     con     INC     INC     INC
+string      INC     INC     INC     INC     con     INC     INC
+date        INC     INC     INC     INC     INC     con     con
+dateTime    INC     INC     INC     INC     INC     con     con
+```
+
+So the gap is exactly the **numeric block's interior**.
+
+**TWO ASSUMPTIONS WERE REFUTED BY MEASURING, AND BOTH WOULD HAVE CAUSED FALSE POSITIVES.**
+
+1. **`date` vs `dateTime` must NOT be made disjoint.** They look like a second gap in the matrix
+   above, but `xsd:date` is **not in the OWL 2 datatype map** — HermiT refuses the probe outright
+   with `UnsupportedDatatypeException`, and Konclude reports `consistent`. No peer supports the
+   entailment, so seeding it would manufacture an FP.
+2. **`integer` × `"1.5"^^xsd:decimal` IS inconsistent (both oracles) but is NOT a family
+   question.** `integer` and `decimal` are the same family (`owl:real`), and the reverse direction
+   `decimal` × `"1"^^xsd:integer` is correctly consistent. That asymmetry is VALUE membership
+   (`1.5 ∉ integer`), a separate gap needing the integer range to reject a non-integral value —
+   recorded here so it is not conflated with, or silently folded into, the family fix.
+
+**Fix scope is therefore THREE families and THREE disjoint pairs:** `real = {integer, decimal}`,
+`double`, `float`, pairwise disjoint. Nothing temporal, nothing involving `string` (already
+caught).
 
 ## Fix sketch, and the trap in it
 
@@ -73,10 +108,12 @@ Feasibility measured, not assumed: disjointness propagates through subsumption i
 (`A ⊑ M1`, `B ⊑ M2`, `Disjoint(M1,M2)` ⟹ `A ⊓ B` unsat), **and** through the `∃p.KA ⊓ ∀p.KB`
 shape the DKey lowering actually builds. Both verified.
 
-**THE TRAP: `int` and `decimal` are separate BUCKETS but the same FAMILY.** `xsd:int ⊆ xsd:integer
-⊆ xsd:decimal ⊆ owl:real`, so a naive "different bucket ⇒ disjoint" rule manufactures false
-positives. The families are `{int, decimal}` (one family, NOT self-disjoint), and `double`,
-`float`, `string`, `date`, `dateTime`, `langString` as separate pairwise-disjoint families.
+**THE TRAP: `integer` and `decimal` are separate BUCKETS but the same FAMILY.** `xsd:integer ⊆
+xsd:decimal ⊆ owl:real`, so a naive "different bucket ⇒ disjoint" rule manufactures false
+positives — and the oracles confirm it, since `decimal` range with an `integer` value is
+CONSISTENT in both. The seeded families are exactly `real = {integer, decimal}`, `double` and
+`float`: three families, three disjoint pairs. Nothing temporal (refuted above), nothing involving
+`string` (already caught by the existing coarse-group mechanism).
 
 **Direction of risk is INVERTED for this fix:** it emits MORE disjointness, so the failure mode is
 a FALSE POSITIVE, not a miss. Per this repo's own record the curated corpus is INERT for the DKey

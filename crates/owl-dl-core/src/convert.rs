@@ -3379,15 +3379,37 @@ fn seed_dkey_family_disjointness(
     if !dkey_family_disjoint_enabled() {
         return;
     }
-    let marker = |out: &mut InternalOntology, fam: &str| {
-        out.vocabulary
-            .intern_class(&format!("{DFAM_IRI_PREFIX}{fam}"))
-    };
-    let m_real = marker(out, DFAM_REAL);
-    let m_double = marker(out, DFAM_DOUBLE);
-    let m_float = marker(out, DFAM_FLOAT);
-    for (groups, m) in [(real, m_real), (double, m_double), (float, m_float)] {
-        for keys in groups {
+    // INERT UNLESS IT CAN FIRE. A first cut interned all three markers and
+    // emitted all three `DisjointClasses` unconditionally, adding 3 classes and
+    // 3 axioms to EVERY ontology — including the great majority of ORE with no
+    // numeric datatype at all — which perturbed class ids corpus-wide. A
+    // two-arm sweep caught it as walls moving on ontologies containing ZERO
+    // `xsd:double`/`float`/`integer`/`decimal` (`ore_ont_1016` 0.24 s →
+    // 18.77 s). A family with no keys now gets no marker, and a pair is emitted
+    // only when BOTH its families are populated, so an ontology that cannot
+    // produce the clash is untouched.
+    let populated = |groups: &[&[ClassId]]| groups.iter().any(|k| !k.is_empty());
+    let fams: [(&[&[ClassId]], &str); 3] = [
+        (real, DFAM_REAL),
+        (double, DFAM_DOUBLE),
+        (float, DFAM_FLOAT),
+    ];
+    let live: Vec<(&[&[ClassId]], &str)> = fams
+        .into_iter()
+        .filter(|(groups, _)| populated(groups))
+        .collect();
+    if live.len() < 2 {
+        // Fewer than two populated families ⟹ no cross-family pair exists ⟹
+        // nothing to seed, and no marker should be interned.
+        return;
+    }
+    let mut markers: Vec<ClassId> = Vec::with_capacity(live.len());
+    for (groups, fam) in &live {
+        let m = out
+            .vocabulary
+            .intern_class(&format!("{DFAM_IRI_PREFIX}{fam}"));
+        markers.push(m);
+        for keys in *groups {
             for &k in *keys {
                 let sub = out.concepts.atomic(k);
                 let sup = out.concepts.atomic(m);
@@ -3395,12 +3417,14 @@ fn seed_dkey_family_disjointness(
             }
         }
     }
-    // Exactly three pairs. `real` is ONE family spanning two buckets, so no
-    // integer/decimal pair is ever emitted.
-    for (a, b) in [(m_real, m_double), (m_real, m_float), (m_double, m_float)] {
-        let a = out.concepts.atomic(a);
-        let b = out.concepts.atomic(b);
-        out.axioms.push(Axiom::DisjointClasses(vec![a, b]));
+    // `real` is ONE family spanning the integer AND decimal buckets, so no
+    // integer/decimal pair is constructible here — that is the FP trap.
+    for i in 0..markers.len() {
+        for j in (i + 1)..markers.len() {
+            let a = out.concepts.atomic(markers[i]);
+            let b = out.concepts.atomic(markers[j]);
+            out.axioms.push(Axiom::DisjointClasses(vec![a, b]));
+        }
     }
 }
 

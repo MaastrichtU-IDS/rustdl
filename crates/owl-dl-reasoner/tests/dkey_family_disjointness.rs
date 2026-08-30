@@ -207,3 +207,84 @@ fn family_markers_never_surface_as_user_classes() {
         "only :A and :B are user classes; the lever must not change the reported count"
     );
 }
+
+// ---- Inertness: the lever must not touch what it cannot fire on --------------
+
+/// Count the interned family-marker classes after conversion. Inspecting the
+/// VOCABULARY, not `classify` output — a marker is filtered from reporting, so a
+/// spuriously interned one is INVISIBLE there. An earlier version of these two
+/// tests compared classify rows and a sabotage of the guard SURVIVED them.
+fn marker_count(flag: &str, body: &str) -> usize {
+    let src = format!(
+        "Prefix(:=<http://ex.org/>)\n\
+         Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+         Ontology(<http://ex.org/inert>\n{body}\n)\n"
+    );
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).unwrap();
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = SetEnvGuard::set("RUSTDL_DKEY_FAMILY_DISJOINT", flag);
+    let internal = owl_dl_core::convert_ontology(&onto).unwrap();
+    internal
+        .vocabulary
+        .classes()
+        .filter(|(_, iri)| owl_dl_core::is_dfam_iri(iri))
+        .count()
+}
+
+/// REGRESSION GUARD for a defect a two-arm ORE sweep caught. The first cut
+/// interned all three markers and emitted all three `DisjointClasses`
+/// UNCONDITIONALLY, so every ontology gained 3 classes and 3 axioms — including
+/// the great majority of ORE containing no numeric datatype at all. Class ids
+/// shifted corpus-wide and walls moved on ontologies the lever cannot possibly
+/// affect (`ore_ont_1016` 0.24 s → 18.77 s, with ZERO
+/// `xsd:double`/`float`/`integer`/`decimal` in it).
+#[test]
+fn an_ontology_with_no_numeric_data_is_completely_inert() {
+    let body = "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+                SubClassOf(:A :B)\n\
+                SubClassOf(:B :C)";
+    assert_eq!(marker_count("0", body), 0);
+    assert_eq!(
+        marker_count("1", body),
+        0,
+        "no DKeys at all ⟹ the lever must intern NO marker class; interning them \
+         unconditionally shifted class ids corpus-wide"
+    );
+}
+
+/// A single populated family has no cross-family partner, so nothing should be
+/// seeded and no marker interned. Pins the `live.len() < 2` early return.
+#[test]
+fn a_single_numeric_family_alone_seeds_nothing() {
+    let body = "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(DataProperty(:p))\n\
+                SubClassOf(:A :B)\n\
+                SubClassOf(:A DataSomeValuesFrom(:p xsd:double))\n\
+                SubClassOf(:B DataSomeValuesFrom(:p xsd:double))";
+    assert_eq!(marker_count("0", body), 0);
+    assert_eq!(
+        marker_count("1", body),
+        0,
+        "one family alone cannot form a disjoint pair — interning a marker for it \
+         is dead weight that perturbs class ids for nothing"
+    );
+}
+
+/// The positive control for [`marker_count`]: with TWO populated families the
+/// markers ARE interned. Without this, a `marker_count` that always returned 0
+/// would make both inertness tests pass vacuously.
+#[test]
+fn two_populated_families_do_intern_their_markers() {
+    let body = "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(DataProperty(:p))\n\
+                SubClassOf(:A DataSomeValuesFrom(:p xsd:double))\n\
+                SubClassOf(:B DataSomeValuesFrom(:p xsd:integer))";
+    assert_eq!(marker_count("0", body), 0, "lever off ⟹ never interned");
+    assert_eq!(
+        marker_count("1", body),
+        2,
+        "double and real are both populated here, so exactly those two markers \
+         are interned — and float, which is absent, is not"
+    );
+}

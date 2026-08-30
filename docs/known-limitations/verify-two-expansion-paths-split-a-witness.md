@@ -46,6 +46,33 @@ green. Two guards were added in the same change:
 pinned, so either moving is loud). If F1 is ever fixed, that second test is the one that will
 fail — update it and this page together.
 
+## F4 — `SubClassOf(owl:Thing, C)` is never applied to model elements
+
+**Found:** 2026-08-30, by the corpus-wide hunt (`docs/benchmarks/2026-08-30-corpus-wide-d10-hunt.md`).
+**Confirmed** on `ore_ont_11522`, `ore_ont_14128`, `ore_ont_14826`, `ore_ont_7270`.
+
+`⊤ ⊑ C` requires every element to be a `C`. The builder never propagates it, so the checker
+reports the very axiom that should have closed the label. The violation count equals the
+ontology's `owl:Thing`-LHS axiom count **exactly** (2/2, 2/2, 8/8, 19/19), and the reported
+element is a Tseitin synthetic carrying only itself (`Element(79)={<synthetic#80>}`).
+
+The engine is right: `rustdl subclass-expr <ont> "owl:Thing" "<C>"` returns `yes` on every probed
+pair. rustdl merely omits `owl:Thing` from classification OUTPUT — a reporting convention.
+
+## F5 — `BoundTripped` produces `Violated` instead of `Unresolved`
+
+**Found:** 2026-08-30, same sweep. **Confirmed** on `ore_ont_12317`, `ore_ont_13220`,
+`ore_ont_15249`, `ore_ont_283` — all 50k–60k classes, all exceeding
+`Bounds::max_elements = 50_000`, all reporting violations on the order of the domain size
+(25,369 / 20,292 / 54,304 / 92,573) with `BoundTripped` in their own reasons.
+
+A truncated model cannot witness most axioms, so the violations are artifacts of the cut. This is
+an asymmetry in `owl-dl-cli`'s `fold_build_reasons`: its `Verified` arm downgrades to
+`Unresolved` whenever build reasons are non-empty (the arm that stops a false all-clear), while
+its `Violated` arm appends the reasons and KEEPS the verdict. Correct for a complete model with a
+minor residual; wrong for `BoundTripped`, where the model is known-incomplete by construction. A
+truncated model should exit 3, not 2.
+
 ## F1 — conjunctive `∃`-body plus a GCI over the conjunction
 
 **Reproducer:** `crates/owl-dl-verify/tests/known_limitations.rs::f1_conjunctive_exists_body_gci_is_a_false_violated`

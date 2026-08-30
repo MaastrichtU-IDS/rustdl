@@ -46,7 +46,8 @@ type PairResult = (usize, usize, bool, bool, bool);
 ///
 /// The reported vector excludes the synthetic `DKey(range)` filler classes
 /// introduced by the integer-facet data lowering
-/// ([`owl_dl_core::DKEY_IRI_PREFIX`]): they participate in the internal
+/// ([`owl_dl_core::DKEY_IRI_PREFIX`]) and the per-datatype-family marker
+/// classes ([`owl_dl_core::DFAM_IRI_PREFIX`]): they participate in the internal
 /// saturation/tableau reasoning (their told-subsumptions relay datatype
 /// containment through the existential machinery) but are NOT user
 /// classes, so they must never appear in the classified hierarchy, the
@@ -93,7 +94,14 @@ impl ReportedClasses {
         for i in 0..num_class_ids {
             let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class count fits in u32"));
             let iri = internal.vocabulary.class_iri(id);
-            if iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX) {
+            // `DFAM_IRI_PREFIX` joins the exclusion for the same reason as
+            // `DKEY_IRI_PREFIX`: the per-datatype-FAMILY marker classes seeded by
+            // `RUSTDL_DKEY_FAMILY_DISJOINT` are internal machinery, not user
+            // classes. Without this the flag turned a 2-class ontology into a
+            // reported 5.
+            if iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)
+                || iri.starts_with(owl_dl_core::DFAM_IRI_PREFIX)
+            {
                 pos_of_id.push(None);
                 continue;
             }

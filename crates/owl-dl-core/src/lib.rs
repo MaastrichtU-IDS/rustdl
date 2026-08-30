@@ -31,12 +31,12 @@ pub mod vocab;
 
 pub use absorb::{AbsorbedTBox, ConceptRule, NominalRule, RoleRule, absorb, absorb_roles};
 pub use convert::{
-    ConversionError, DKEY_IRI_PREFIX, convert_class_expression, convert_component,
+    ConversionError, DFAM_IRI_PREFIX, DKEY_IRI_PREFIX, convert_class_expression, convert_component,
     convert_individual, convert_object_property, convert_ontology, decode_date_dkey,
     decode_date_oneof_dkey, decode_datetime_dkey, decode_datetime_oneof_dkey, decode_decimal_dkey,
     decode_decimal_oneof_dkey, decode_double_dkey, decode_double_oneof_dkey, decode_float_dkey,
     decode_float_oneof_dkey, decode_int_oneof_dkey, decode_integer_dkey, decode_string_dkey,
-    is_dkey_iri,
+    is_dfam_iri, is_dkey_iri,
 };
 pub use convert_back::{axiom_to_component, concept_to_class_expression, convert_back};
 pub use data_axioms::{

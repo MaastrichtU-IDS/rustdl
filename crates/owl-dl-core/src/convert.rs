@@ -3109,6 +3109,22 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint, comp);
     seed_disjoint_bucket(out, &lang_dkeys, LangSet::disjoint, comp);
+    // Issue: the two-peer-confirmed missed inconsistency on `ore_ont_16321` /
+    // `ore_ont_4198`. Every call above is WITHIN one bucket, so nothing has ever
+    // made two buckets from DIFFERENT OWL 2 datatype families disjoint. Opt-in.
+    fn ids<R>(v: &[(ClassId, R)]) -> Vec<ClassId> {
+        v.iter().map(|(c, _)| *c).collect()
+    }
+    let (i_d, dec_d) = (ids(&int_dkeys), ids(&dec_dkeys));
+    let (io_d, deco_d) = (ids(&int_oneof_dkeys), ids(&dec_oneof_dkeys));
+    let (f_d, fo_d) = (ids(&float_dkeys), ids(&float_oneof_dkeys));
+    let (db_d, dbo_d) = (ids(&double_dkeys), ids(&double_oneof_dkeys));
+    seed_dkey_family_disjointness(
+        out,
+        &[&i_d, &dec_d, &io_d, &deco_d],
+        &[&db_d, &dbo_d],
+        &[&f_d, &fo_d],
+    );
     // Numeric-oneof disjointness. FP-CRITICAL DIRECTION: emitting a
     // `DisjointClasses` ADDS clashes, so a wrong "disjoint" is a false UNSAT,
     // not a miss. `BTreeSet::is_disjoint` is exact here because every bucket's
@@ -3309,6 +3325,90 @@ fn dkey_merging_gate_enabled() -> bool {
 /// See `docs/2026-08-03-dkey-volume-scan.md`.
 fn dkey_emit_order_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_EMIT_ORDER").is_none_or(|v| v != "0")
+}
+
+/// IRI prefix for the synthetic per-datatype-FAMILY marker classes seeded by
+/// [`seed_dkey_family_disjointness`]. Deliberately NOT under
+/// [`DKEY_IRI_PREFIX`]: every `DKey` decoder strips that prefix first, so a
+/// distinct one is rejected by all of them automatically and cannot perturb
+/// the parser mutual-exclusivity matrices. `classify`'s `ReportedClasses`
+/// excludes it so a marker never surfaces as a user class.
+pub const DFAM_IRI_PREFIX: &str = "urn:rustdl-dfam:";
+
+/// The three numeric datatype FAMILIES whose OWL 2 value spaces are pairwise
+/// disjoint (§4.1). `real` covers BOTH the integer and decimal buckets, which
+/// is the whole subtlety: `xsd:integer ⊆ xsd:decimal ⊆ owl:real`, so those two
+/// buckets share one family and must never be seeded disjoint from each other.
+const DFAM_REAL: &str = "real";
+const DFAM_DOUBLE: &str = "double";
+const DFAM_FLOAT: &str = "float";
+
+/// True for a family-marker IRI.
+#[must_use]
+pub fn is_dfam_iri(iri: &str) -> bool {
+    iri.starts_with(DFAM_IRI_PREFIX)
+}
+
+/// Seed cross-datatype-FAMILY `DKey` disjointness. **Default OFF**;
+/// `RUSTDL_DKEY_FAMILY_DISJOINT=1` enables.
+///
+/// `seed_disjoint_bucket` runs once per BUCKET, so disjointness is only ever
+/// seeded WITHIN a bucket and no cross-bucket pair is constructible — which the
+/// numeric-oneof comment above relies on for FP-safety and which is exactly why
+/// `DataPropertyRange(p, xsd:double)` plus `DataPropertyAssertion(p, a,
+/// "1.0"^^xsd:float)` is MISSED. That two-axiom ontology is inconsistent
+/// (Konclude AND `HermiT` agree) and is the minimal core of both `ore_ont_16321`
+/// and `ore_ont_4198`.
+///
+/// Rather than the O(k²) cross-bucket pairing this subsystem has exploded on
+/// before (`ore_ont_9347`: 49.5 M concept rules), this is O(#DKeys): one
+/// synthetic marker class per family, one `DKey ⊑ marker` per key, and a
+/// CONSTANT three `DisjointClasses` between the markers. Disjointness reaching
+/// the keys through those subsumptions is measured, not assumed — see the
+/// canaries in `crates/owl-dl-reasoner/tests/dkey_family_disjointness.rs`.
+///
+/// FP DIRECTION: this ADDS disjointness, so a wrong family assignment is a
+/// false UNSAT, not a miss. Only the three numeric families are seeded, and
+/// `real` deliberately spans the integer AND decimal buckets.
+fn seed_dkey_family_disjointness(
+    out: &mut InternalOntology,
+    real: &[&[ClassId]],
+    double: &[&[ClassId]],
+    float: &[&[ClassId]],
+) {
+    if !dkey_family_disjoint_enabled() {
+        return;
+    }
+    let marker = |out: &mut InternalOntology, fam: &str| {
+        out.vocabulary
+            .intern_class(&format!("{DFAM_IRI_PREFIX}{fam}"))
+    };
+    let m_real = marker(out, DFAM_REAL);
+    let m_double = marker(out, DFAM_DOUBLE);
+    let m_float = marker(out, DFAM_FLOAT);
+    for (groups, m) in [(real, m_real), (double, m_double), (float, m_float)] {
+        for keys in groups {
+            for &k in *keys {
+                let sub = out.concepts.atomic(k);
+                let sup = out.concepts.atomic(m);
+                out.axioms.push(Axiom::SubClassOf { sub, sup });
+            }
+        }
+    }
+    // Exactly three pairs. `real` is ONE family spanning two buckets, so no
+    // integer/decimal pair is ever emitted.
+    for (a, b) in [(m_real, m_double), (m_real, m_float), (m_double, m_float)] {
+        let a = out.concepts.atomic(a);
+        let b = out.concepts.atomic(b);
+        out.axioms.push(Axiom::DisjointClasses(vec![a, b]));
+    }
+}
+
+/// Cross-datatype-family `DKey` disjointness. **Default OFF** — it emits MORE
+/// disjointness, so the risk direction is a FALSE POSITIVE and the flip should
+/// ride on a corpus sweep. `=1` enables. See [`seed_dkey_family_disjointness`].
+fn dkey_family_disjoint_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_FAMILY_DISJOINT").is_some_and(|v| v == "1")
 }
 
 /// See a role restriction that only exists **after NNF** when classifying roles for

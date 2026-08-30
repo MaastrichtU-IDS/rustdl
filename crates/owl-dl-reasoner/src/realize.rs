@@ -783,7 +783,10 @@ pub fn realize_saturation_only_internal(
         // `direct_types`. Filtering HERE (after `enumerate`) keeps the index a genuine
         // `ClassId`, which is the aliasing bug #68 fixed; filtering `class_iris` itself
         // would reintroduce it.
-        .filter(|(_, iri)| !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX))
+        .filter(|(_, iri)| {
+            !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)
+                && !iri.starts_with(owl_dl_core::DFAM_IRI_PREFIX)
+        })
         .filter(|(_, iri)| !unsat.contains(iri.as_str()))
         .map(|(i, iri)| (i, iri.as_str()))
         .collect();
@@ -1003,7 +1006,10 @@ pub(crate) fn realize_via_saturation_internal(
                     // Synthetic DKey filler classes are inside the class vocabulary,
                     // so the bound above does not exclude them — see the note at the
                     // `satisfiable` builders.
-                    .filter(|iri| !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX))
+                    .filter(|iri| {
+                        !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)
+                            && !iri.starts_with(owl_dl_core::DFAM_IRI_PREFIX)
+                    })
                     .filter(|iri| !unsat.contains(iri.as_str()))
                     .collect()
             })
@@ -1152,7 +1158,10 @@ pub(crate) fn realize_tableau_internal(
         // `direct_types`. Filtering HERE (after `enumerate`) keeps the index a genuine
         // `ClassId`, which is the aliasing bug #68 fixed; filtering `class_iris` itself
         // would reintroduce it.
-        .filter(|(_, iri)| !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX))
+        .filter(|(_, iri)| {
+            !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)
+                && !iri.starts_with(owl_dl_core::DFAM_IRI_PREFIX)
+        })
         .filter(|(_, iri)| !unsat.contains(iri.as_str()))
         .map(|(i, iri)| (i, iri.as_str()))
         .collect();

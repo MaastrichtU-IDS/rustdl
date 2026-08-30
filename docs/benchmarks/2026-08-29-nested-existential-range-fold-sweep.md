@@ -116,3 +116,32 @@ does not rise on this population, and the crate's recorded "16 of 20" inertness 
 **re-verified against the post-fix engine** rather than left stale. The 4 remaining are `timeout`
 exit 124 at a 300 s cap — **UNMEASURED, not passing**, the same distinction the crate's own
 coverage note draws.
+
+## Follow-up: `ore_ont_9429`, #80's un-root-caused +27%
+
+#80's sweep left one regression recorded as **cause unknown** (`55.5 s → 70.7 s`), explicitly
+refusing a plausible-sounding attribution. Two things are now settled about it.
+
+**#81 is inert there.** Both arms are DNF at the 60 s cap with identical peak RSS, and a
+single-thread run of each pin produces **identical output (2,706 rows), identical subsumption
+counts (`saturation=28267 tableau=0`), and identical phases**:
+
+| phase | BEFORE (ms) | AFTER (ms) |
+|---|---|---|
+| `label_cache_build` | 36,240 | 36,041 |
+| `tier_walk` | 18,837 | 18,455 |
+| `sweeps` | 14,852 | 14,692 |
+| everything else | <200 | <200 |
+
+**Its cost is 51% `label_cache_build`.** That is the phase `CLAUDE.md` partitions as
+DEADLINE-BOUND — `wall = #units × deadline`, so a faster engine performs more work per unit and
+the wall does not move. `ore_ont_9429` is therefore not a promising optimisation target, whatever
+caused its step at #80.
+
+**What is still NOT established:** which phase grew at #80. That needs the pre-#80 binary
+(`4d6612a`), which is no longer pinned. The tempting story — #80's two-way markers create more
+Tseitin synthetics, so the label cache has more to build — is consistent with the profile above
+but is **not measured**, and is recorded here as a hypothesis rather than a cause, for the same
+reason #80's own report declined to guess. Walls in this table were taken under contention with
+another sweep and are not comparable across arms; only the phase PROPORTIONS and the byte-identical
+output are being read from them.

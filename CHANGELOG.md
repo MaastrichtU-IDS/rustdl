@@ -50,9 +50,6 @@ Selection and ordering only — the axiom *sets* are unchanged.
 
 ## [0.4.24] — 2026-08-29
 
-> **Changelog gap:** versions 0.4.18–0.4.23 shipped without entries here; their notes live in
-> `docs/releases/` and the git log. The `[Unreleased]` block above predates 0.4.18.
-
 ### Fixed — `≤n` merge-pair choice was deterministic (a real false positive) (#76, #77)
 
 The SROIQ `≤`-rule is don't-know nondeterministic over *which* pair to merge, but `apply_max`
@@ -102,6 +99,117 @@ over a nominal-bounded filler.
 Full sweep (1,920 × 2 arms): **0 answer changes**, 0 genuine `ok → dnf`. MISSED net vs
 Konclude ∪ HermiT: **2843 → 2777 (−2.32%)**, **FP 0**, 3 ontologies improved, 0 regressed.
 Corpus verdict gate: 0 flips, 0 lost. See `docs/releases/v0.4.24.md`.
+
+## [0.4.23] — 2026-08-22
+
+Changes what three surfaces emit (unlike 0.4.22, which was byte-identical).
+
+### Fixed — `realize` emitted synthetic DKey classes as real types
+
+`urn:rustdl-dkey:` filler classes live INSIDE the class vocabulary, so the
+`< num_user_classes` bound did not exclude them and neither did the unsat filter. On
+`ore_ont_16372`, `realize` reported a DKey IRI for 23 individuals — 23 of 23 type pairs,
+100% of that ontology's output — in both `types` and `direct_types`. Now 0. Closes the
+hazard #68 documented but could not reproduce; the reproducer came from grepping ~1,250
+realize outputs already on disk. The guard is applied AFTER `.enumerate()` at all three
+sites, since filtering the id space before it would reintroduce the aliasing bug #68 fixed.
+
+### Fixed — classify DKey id-aliasing false positive (#67, #68)
+
+Validated across 663/663 data-property-bearing ORE ontologies: 0 DIFFER / 0 REGRESSION /
+0 RECOVERY.
+
+### Added — `realize --json` `witness_prune_active`
+
+The pseudo-model prune could discard an entailed type **silently** — `incomplete` stays
+`false`, because no probe is cut and the prune never asks. Additive, so `schema_version`
+stays 1, matching the convention used when `incomplete` was added.
+
+### Changed — `RUSTDL_INVERSE_FUNC_MAX` OFF → ON (`=0` reverts)
+
+What unblocked a flip that was measured-and-**rejected** on 2026-08-18 was a *consumability
+gate*, not more budget. The three blocking ontologies carry 8 `InverseFunctionalObjectProperty`
+each and **zero** `ObjectPropertyAssertion`, so the GCI put an `at_most` on eight inverse roles
+across 288–484 existentials for a merge that could never fire (19×/47×/31×). Emitting only for
+roles that appear in an `ObjectPropertyAssertion` removes all three (1.00× each).
+
+Framed honestly as a correctness fix with **zero measured corpus benefit and zero measured
+cost** — the same basis as its functional sibling — and explicitly *not* a corpus win. The
+gate's forgone gain (`ore_ont_13859`) is recorded too, so the trade is not written down in
+only one direction.
+
+### Performance
+
+Told tables are shared between the two conversion passes when the first is inert.
+`ore_ont_3524` conversion 19,656 → 16,528 ms (1.19×), classify 22.20 → 19.19 s. Narrow by
+construction.
+
+## [0.4.22] — 2026-08-22
+
+**No output-visible change.** Pure performance: no flag added, flipped or removed. Output
+byte-identical across 1,780 completing ORE ontologies and every curated fixture.
+
+### Fixed — `build_told_tables` was O(n²) in memset traffic
+
+The told-subsumption closure runs a BFS per class and allocated a fresh `vec![false; n]`
+**every iteration** — n allocations of n bytes, so the build cost O(n²) in *zeroing alone*
+regardless of graph sparsity (~963 GB of memset on a 981,148-class ontology). `perf` on
+`tbox-stats` (parse+convert, no reasoning) put **69.74%** of self-time in
+`__memset_avx2_unaligned_erms`. Confirmed by FIT rather than inspection: `convert_ms / n²`
+is constant to within 3.6% across six ontologies. Measured: conversion 5.0–6.2×, classify
+330 → 176 s (1.87×).
+
+## [0.4.21] — 2026-08-21
+
+### Changed — two DKey seeding levers default ON (`=0` reverts)
+
+Two O(k²) DKey seeding loops dominated conversion on data-property-heavy ontologies.
+`RUSTDL_DKEY_STR_SIZE_INDEX` and `RUSTDL_DKEY_GROUP_SKIP` are now default ON; both are
+**exact, not approximations**. `ore_ont_10929` (12 classes, 110,802 `DataPropertyAssertion`
+over 60,323 distinct literals) spent 96 s of a 97.6 s run in conversion and now classifies
+in 4.89 s; `ore_ont_15635` and `ore_ont_10517` likewise recover from DNF. DNF tail 143 → 140.
+
+Gates: FP=0 net PASS (12 fixtures, every closure exact); corpus report + verdict gate PASS
+(424 ontologies, 0 verdict flips, 0 lost); two-arm coverage over all 1,920 via two disjoint
+frames (651 bearing: 0 `ok→DNF`, 0 answer changes; 1,269 non-bearing: 0 real differences);
+suite 1685/0/78.
+
+## [0.4.20] — 2026-08-20
+
+**Packaging only — the reasoner is unchanged.** Protégé plugin loads again.
+
+Cut from the **v0.4.19 tag** with the single plugin commit cherry-picked on top, *not* from
+`main`: `main` carried ~70 unreleased commits and 13,829 insertions of reasoner work,
+including a shipped default flip (`RUSTDL_PREP_DEADLINE` ON) and completeness-affecting
+changes to realize/classify/justify. Releasing from `main` would have put all of that on
+PyPI irreversibly behind a packaging fix. The complete diff against v0.4.19 is
+`protege/pom.xml`, `Cargo.toml`, `Cargo.lock`, `CHANGELOG.md` and `docs/releases/v0.4.20.md`
+— no `crates/**`.
+
+## [0.4.19] — 2026-08-15
+
+### Changed — two COUPLED defaults: `--pair-timeout-ms` 1000 → 5, and `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE` OFF → ON
+
+**Do not flip one without the other.** A 5 ms budget times out the per-class unsat probes,
+each of which then defaults to SATISFIABLE (sound for subsumption) — which empties
+`unsatisfiable_idxs`, the classify inconsistency detector's admission signal. Ship the budget
+alone and `ore_ont_16372` reports `consistent=true` on an ontology Konclude, HermiT and
+rustdl's own `consistent` all call inconsistent. The second flag restores it for +0.2 s.
+
+Only `classify` moved; `disjoint`/`individuals`/`property-values` keep their 1000 ms
+defaults, because the sweep measured classify and flipping the others would be unmeasured.
+
+16 ORE recoveries, 0 regressions, −15.9% wall, FP=0.
+
+## [0.4.18] — 2026-08-14
+
+11 ORE recoveries, 0 regressions, −16% corpus wall, 0 unexplained output changes.
+
+1,920-ontology two-arm sweep (v0.4.17 tag vs HEAD, 60 s cap, 1 thread, sequential, pins
+verified distinguishable at 314 vs 188 pizza rows): `ok → dnf` **0**; `dnf → ok` **11**;
+byte-identical output bodies 1,702 of 1,752 both-arm completers; differ only by permitted
+removals 50; **unexplained differences 0**; total wall 3,655 → 3,068 s (−16.05%); max peak
+RSS unchanged at 7.6 GB.
 
 ## [0.4.17] - 2026-08-10
 

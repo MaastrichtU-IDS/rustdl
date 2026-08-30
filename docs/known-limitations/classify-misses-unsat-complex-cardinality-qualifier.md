@@ -65,8 +65,33 @@ Adding `AtMost`/`AtLeast` to the scan would be harmless but buys nothing. The
 fixture written to demonstrate the aliasing FP produced no FP; it produced this
 MISS instead.
 
-## Severity
+## Severity — corpus impact MEASURED: zero observed
 
-Completeness, not soundness, and silent. Unmeasured corpus impact: qualified
-cardinality with a complex filler is not rare, so unlike the `Self` finding this
-one may have real reach — worth a corpus probe before deciding priority.
+Completeness, not soundness, and silent.
+
+**Corpus probe (2026-08-30).** I expected real reach here and was wrong.
+
+* Shape census over all **1,920** ORE ontologies: only **5** carry a qualified
+  cardinality whose filler is a constructor rather than a named class
+  (`ore_ont_11647`, `15514`, `668`, `9012`, `9540`) — 0.26%.
+* Measured, not grepped (this repo's "grep ≠ gate" rule): **all 5 show zero unsat
+  disagreement** against a Konclude oracle. `ore_ont_9012` carries the shape with
+  `MISSED=0`. `ore_ont_11647` has `MISSED=80` but `unsat_disagreement=0`, so its
+  misses are not unsat misses and are not this defect.
+* `ore_ont_668` first read as `323 vs 322` — a **false alarm in my own
+  instrument**: the one "missing class" was `owl:Thing`, which Konclude lists among
+  unsat classes on an inconsistent KB while rustdl signals the same thing through
+  `consistent: false` (it does report `false` there). The harness's
+  `aligned_closures` excludes `Thing`/`Nothing` for exactly this reason; my ad-hoc
+  comparison did not. **Exclude `owl:Thing` before comparing unsat sets.**
+
+**Pre-existing, not a v0.4.24 regression:** identical on the pinned v0.4.23
+control and the v0.4.24 candidate.
+
+Wider context from the same probe: across the 391 scored ontologies rustdl misses
+**89 unsat classes in 8 ontologies, with 0 in the FP direction** — soundness
+intact. **82 of those 89 rest on a Konclude-only oracle** (HermiT returned
+NO_OUTPUT on `ore_ont_16321`/`ore_ont_4198`), so they are single-peer and
+unconfirmed; `ore_ont_6951`'s 2 are peer-agreed. Those misses are a separate,
+deeper gap — on `ore_ont_16321` rustdl's own per-pair `sat` also answers `sat`, so
+classify and the per-pair surface AGREE there and it is not this family.

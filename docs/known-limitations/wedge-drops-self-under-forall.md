@@ -65,9 +65,18 @@ rustdl subclass f.ofn 'http://ex#T' 'http://ex#S'   # yes
 RUSTDL_HYPERTABLEAU_TRUST_SAT=0 rustdl classify --json f.ofn   # T ⊑ S present
 ```
 
-## Severity
+## Severity — corpus impact MEASURED: zero
 
 Completeness, not soundness — a dropped subsumption, never an invented one. But
-it is **silent**: `incomplete` stays `false`. The corpus impact is unmeasured;
-`ObjectHasSelf` is rare in ORE, so this is likely near-zero in practice and was
-found by probing a recorded suspicion rather than by a corpus signal.
+it is **silent**: `incomplete` stays `false`.
+
+**Corpus probe (2026-08-30, all 1,920 ORE ontologies, nesting-aware scan):**
+`ObjectHasSelf` occurs in **9** ontologies, and in **0** of them does it occur
+under an `ObjectAllValuesFrom`. So the trigger shape has **no corpus presence at
+all** and this defect is unobservable on ORE.
+
+**Pre-existing, not a v0.4.24 regression:** the fixture behaves identically on the
+pinned v0.4.23 control and the v0.4.24 candidate.
+
+Priority is therefore low on evidence, not on assumption. Worth fixing for
+correctness, not for measured reach.

@@ -15,6 +15,27 @@
 //! It is OFF by default: a two-arm sweep of all 1,920 ORE ontologies found
 //! **zero** entailments recovered corpus-wide against +21.6% wall, so the
 //! pattern is real but does not occur in real ontologies.
+//!
+//! ## #66 IS CLOSED, AND NOT BY THIS FLAG (2026-08-30)
+//!
+//! #78/#83 fixed the underlying wedge incompleteness at ROOT: `head_atom_for`
+//! emitted the fresh-`Q` naming clause on the successor variable when the clause
+//! states a UNIVERSAL property, leaving it with no `X` atom and no `Role` atom —
+//! unmatchable, never fired, so the wedge returned `Sat` on genuinely subsumed
+//! pairs. `Cap ⊑ VE` is therefore now found **at the default**, flag or no flag.
+//!
+//! Two tests in this file asserted the OPPOSITE and failed the moment the branch
+//! was rebased onto that fix — `flag_off_reproduces_the_defect` and the
+//! behavioural half of `default_is_off`. They were correct when written and are
+//! kept here, inverted, because the flip is the evidence that #66 is closed by a
+//! mechanism rather than by assertion. Both now pin the fixed behaviour.
+//!
+//! **What the flag is still FOR.** Not completeness — that is settled. It is the
+//! only in-tree way to route `classify` through the per-pair tableau, which is
+//! what makes per-pair false positives visible to an oracle diff. It is the
+//! instrument that found #76, and
+//! `crates/owl-dl-reasoner/tests/per_pair_fp_gate.rs` is the standing gate built
+//! on it. Keep the flag even though its original rationale has evaporated.
 #![allow(clippy::unwrap_used)]
 
 use horned_owl::io::ParserConfiguration;
@@ -103,26 +124,36 @@ fn flag_on_classify_agrees_with_subclass() {
     );
 }
 
-/// NEGATIVE CONTROL — the flag is LOAD-BEARING. Off (the default), the
-/// subsumption is still missing. Without this, the test above could pass for
-/// some unrelated reason and the flag would be doing nothing.
+/// WAS a negative control asserting the flag was load-bearing for #66; it
+/// asserted `!is_subclass(CAP, VE)` with the flag OFF and **failed on rebase**,
+/// exactly as its own message instructed ("if this now passes, the defect was
+/// closed elsewhere"). It was: #78/#83 fixed the wedge at root. Inverted, it now
+/// pins that the fix is real and independent of this flag — which is also what
+/// makes the flag safe to keep purely as an FP instrument.
 #[test]
-fn flag_off_reproduces_the_defect() {
+fn sixty_six_is_closed_at_the_default_without_this_flag() {
     let _l = ENV
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = set_flag(Some("0"));
     let c = owl_dl_reasoner::classify(&onto(MIN66)).unwrap();
     assert!(
-        !c.is_subclass(CAP, VE),
-        "flag OFF must reproduce issue #66 — if this now passes, the defect \
-         was closed elsewhere and this flag's rationale needs re-checking"
+        c.is_subclass(CAP, VE),
+        "issue #66 must stay closed at the DEFAULT — #78/#83 fixed the wedge \
+         clause anchoring at root, so `Cap ⊑ VE` must be found with \
+         RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=0. A failure here means that root \
+         fix regressed, NOT that this flag is needed again."
     );
 }
 
-/// The default is OFF, so the shipped behaviour is unchanged. Pinned here as
-/// well as in `flag_defaults.rs` because the DEFAULT is the whole reason this
-/// is safe to merge without a corpus flip.
+/// The default is OFF. Pinned here as well as in `flag_defaults.rs` because the
+/// default is the whole reason the flag is safe to carry: enabling it costs
+/// +21.6% wall corpus-wide and recovers nothing.
+///
+/// The second assertion USED to read `!c.is_subclass(CAP, VE)` ("default must be
+/// unchanged") and failed on rebase. That was not a regression: #78/#83 closed
+/// #66 at root, so the unflagged default now finds the subsumption. Asserting
+/// the live behaviour keeps this a real check rather than a stale one.
 #[test]
 fn default_is_off() {
     let _l = ENV
@@ -131,7 +162,10 @@ fn default_is_off() {
     let _g = set_flag(None);
     assert!(!owl_dl_reasoner::classify_verify_refutations_enabled());
     let c = owl_dl_reasoner::classify(&onto(MIN66)).unwrap();
-    assert!(!c.is_subclass(CAP, VE), "default must be unchanged");
+    assert!(
+        c.is_subclass(CAP, VE),
+        "unset must behave as `0`, and at `0` #66 is closed by #78/#83"
+    );
 }
 
 /// The flag must NOT invent subsumptions. It makes classify do MORE tableau

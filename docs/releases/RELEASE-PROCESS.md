@@ -19,9 +19,27 @@ Cross-references name the incident.
 | **corpus report + verdict gate** | `owl-reasoner-harness/scripts/release-corpus-report.sh <version> <binary> <prev-baseline.json>` | **answer changes**, wall/RSS drift | ~20 min |
 | **two-arm full sweep** | harness `run` over all 1,920, previous release vs candidate | `ok → dnf` regressions | ~4 h/arm |
 | **MISSED net** (when trading completeness) | `missed-net.sh sweep/net` | ΔMISSED vs Konclude ∪ HermiT | ~10 min/arm |
+| **per-pair FP gate** | `cargo test -p owl-dl-reasoner --test per_pair_fp_gate -- --ignored` | false positives on `subclass`/`is_subclass_of`, which the FP=0 net **cannot see** | seconds |
 
 `owl-dl-py` is excluded from tests only because pyo3 cannot link libpython in this
 environment — a pre-existing environment issue, not a skip.
+
+### The FP=0 net does not cover the per-pair query surface
+
+`konclude_closure_diff.rs` diffs **`classify`** closures. #76 — a real false
+positive — lived on the `subclass`/`explain`/`is_subclass_of` path, which
+`classify` never consults while `trust_sat` is on, so the net was *structurally
+blind* to it and it shipped for months on `pizza`, a fixture the net checks every
+run and reported `FP=0 MISSED=0 VERIFIED` for throughout.
+
+`per_pair_fp_gate.rs` closes that. It runs the same oracle diff under
+`RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1`, which withdraws the wedge `Sat`-trust so
+refuted pairs reach the tableau the per-pair surface uses.
+
+**Demonstrated, not argued.** Under the same sabotage (`RUSTDL_MAX_TRIAL_MERGE=0`,
+reverting #76): the classify-only net reports `pizza 499=499 FP=0 VERIFIED`, while
+the per-pair gate reports `501 vs 499, FP=2` and fails. Re-run that sabotage after
+touching either flag — a gate that cannot be made to fail is not a gate.
 
 ## 2. The three gates are not substitutes for each other
 

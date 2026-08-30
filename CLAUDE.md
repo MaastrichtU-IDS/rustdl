@@ -1043,12 +1043,34 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   BFS form, not a memoised recursion.
   Canaries `crates/owl-dl-reasoner/tests/wedge_neg_disjunct_anchor.rs`; sabotage
   (reverting `X` to `var`) fails exactly the 2 bug tests and no control.
-  **Known sibling, NOT fixed and NOT demonstrated:** the same function emits
-  `Q ∧ R(var,var) → ⊥` for `¬∃R.Self` on the local variable. It carries a `Role` atom
-  so it may be matchable, but I did not test it. Separately, `fresh_class_id`
-  (`owl-dl-reasoner/src/lib.rs`) scans `Atom::Class` and `Atom::Exists` but NOT
-  `Atom::AtMost(_, Some(c), _, _)`, so an ontology whose largest class id occurs only
-  in an `AtMost` qualifier would seed the H3b encoder too low and alias real classes.
+  **BOTH RECORDED SIBLINGS HAVE NOW BEEN TESTED (2026-08-30), AND BOTH WERE WRONG AS
+  FRAMED.** They are worth reading as a pair: one suspicion was too narrow and hid a
+  REAL bug, the other was a hazard that does not exist.
+  * **`¬∃R.Self` — the framing was wrong, but there IS a live bug underneath.** The
+    entry guessed the fault was the naming clause emitted on the local variable, and
+    that it "may be matchable" because it carries a `Role` atom. Measured: the defect
+    is neither negation-specific (a **positive** `∀p.(∃r.Self ⊔ ¬Z)` fails identically,
+    never reaching the `Not` arm) nor disjunction-specific (the **single-literal**
+    `∀p.¬∃r.Self` fails, where #78 provably required both). Anchoring that clause on
+    `X` exactly as #78 was fixed **changed nothing**, which is what rules the line out;
+    the patch was discarded rather than kept as a plausible no-op. What IS true:
+    `classify` drops `T ⊑ S` whenever `ObjectHasSelf` sits under a `∀`, in either
+    polarity, while `subclass`, Konclude and HermiT all confirm it and
+    `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` recovers it — the #66 signature, still live after
+    #78/#83. `Self` OUTSIDE a `∀` is fine. See
+    `docs/known-limitations/wedge-drops-self-under-forall.md`.
+  * **`fresh_class_id` cannot alias a real class — REFUTED, do not spend time on it.**
+    Every call site clamps `fresh_class_id(&base).index().max(num_classes)` and real
+    ids are all `< num_classes`; and a qualifier that is not a named class goes through
+    `atomic_name_of`, which emits `Q(x) → filler(x)`, so the synthetic id appears in a
+    `Class` atom and IS scanned. Adding `AtMost`/`AtLeast` to the scan is harmless but
+    buys nothing. The fixture built to demonstrate that FP produced **no FP** — it
+    produced an unrelated MISS: `classify` reports `unsatisfiable=[]` for
+    `A ⊑ ≤1 r.(B⊓C)` + `A ⊑ ≥2 r.(B⊓C)` where both oracles and rustdl's own `sat` say
+    unsat, while the ATOMIC-filler control is correct. **No flag recovers that one**
+    (`TRUST_SAT=0`, `CLASSIFY_VERIFY_REFUTATIONS=1`, `SPIKE_CARD_ATOM=1` all `[]`), so
+    it is a DIFFERENT mechanism from the `trust_sat` family. See
+    `docs/known-limitations/classify-misses-unsat-complex-cardinality-qualifier.md`.
 
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners (`card_sat`,
   interval/finite-set value ranges). **Wired into reasoning** (via the DKey

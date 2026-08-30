@@ -1,7 +1,25 @@
 # The numeric DKey buckets are non-comparable but not DISJOINT — rustdl misses the clash
 
-**Status: live on v0.4.24. Sound (a MISS, never an FP). Root-caused to a 2-axiom
-reproducer, adjudicated by Konclude AND HermiT with a discriminating control.**
+**Status: FIXED on the `is_consistent` surface (`RUSTDL_DKEY_CROSS_BUCKET_DISJOINT`,
+default ON, `=0` reverts). `classify` STILL MISSES IT — see the residual below.**
+
+Was: live on v0.4.24, sound (a MISS, never an FP), root-caused to a 2-axiom reproducer
+adjudicated by Konclude AND HermiT with a discriminating control.
+
+## Residual: `classify` and `consistent` still disagree here
+
+`rustdl consistent ore_ont_16321` now correctly reports **inconsistent**; `classify --json`
+on the same file still reports `consistent: true, unsatisfiable: []`.
+
+The clash is ABox-level — an individual's data value violating a declared range — so no
+*named class* becomes unsatisfiable, and classify's inconsistency pre-check
+(`saturator globally_inconsistent`/`top_is_unsat` plus `abox_saturation`) cannot see it:
+`abox_saturation` propagates over NAMED individuals with no witness generation, and the
+clash lives at the data successor. Closing it needs either DKey-aware ABox saturation or a
+consistency probe on the classify path — different machinery, not this change.
+
+This is the documented classify-vs-`consistent` under-approximation, now with a concrete
+instance.
 
 ## The 2-axiom reproducer
 

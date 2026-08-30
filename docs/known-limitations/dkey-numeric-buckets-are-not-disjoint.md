@@ -113,3 +113,45 @@ consistent for both reasoners once the unsupported `anyURI` range is dropped).
 Sound — rustdl under-reports, never over-reports. But **silent**: a consumer reading
 `consistent: true` gets no signal, and every downstream entailment rests on a KB with no
 model.
+
+
+---
+
+## Gates run on the fix (2026-08-30)
+
+| gate | result |
+|---|---|
+| canaries (`dkey_cross_bucket_disjointness.rs`) | 9/9, incl. 3 FP guards |
+| suite | 1856 passed / 0 failed |
+| clippy / fmt | clean |
+| FP=0 net | 20 VERIFIED, every closure exact and **unchanged** |
+| two-arm classify sweep, 637 data-property-bearing ORE | 603 both-ok, **603 identical, 0 DIFFER, 0 `ok→dnf`** |
+| two-arm **consistency** sweep, 268 ORE with ≥2 numeric datatypes | **3 changed, all correct; 0 wrong-direction** |
+| conversion volume, 3 worst DKey ontologies | **identical both arms** (`ore_ont_5368` 18,620,251 rules / 18,608,050 disjoint pairs) |
+
+The classify sweep shows **non-regression, not benefit** — classify's output is unchanged
+precisely because the fix lands on the `consistent` surface (see the residual above). The
+consistency sweep is where the benefit shows: the only three verdict changes across 268
+ontologies are `ore_ont_16321`, `ore_ont_4198` and `ore_ont_5014`, all going
+consistent → inconsistent, and all three confirmed inconsistent by Konclude (the first two
+by KM as well).
+
+**The FP=0 net's green is non-regression only** — `datatype_value_membership.rs` states the
+curated corpus is inert for DKey work. The positive evidence is the canaries plus the
+Konclude ∪ HermiT adjudication, done on each fixture individually including the two
+inverted tests.
+
+### Two pre-existing tests asserted the wrong answer
+
+Both were adjudicated on their **exact** fixtures before being touched, because a failing
+test is usually the codebase reporting a defect in the change, not the reverse:
+
+* `float_value_vs_double_range_no_cross_bucket_clash` reasoned from the implementation
+  ("the float assertion simply drops into the float bucket, which has no range constraint")
+  to a semantic conclusion. Konclude `false`; HermiT `owl:Thing is not satisfiable`.
+* `forall_cross_datatype_no_clash` described itself as a "sound under-approx" — which it
+  was, and this is the fix for that MISS. Konclude `C is UNSATISFIABLE`; HermiT lists `C`
+  alongside `owl:Nothing`.
+
+The half of the first test's rationale that stands — cross-bucket **subsumption** must never
+be seeded — is untouched by this change and is preserved in the inverted test's docstring.

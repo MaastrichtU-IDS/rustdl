@@ -902,16 +902,25 @@ fn forall_string_value_inside_enum_satisfiable() {
     );
 }
 
+/// INVERTED 2026-08-30 (#86). This asserted "no clash" and described itself as a
+/// "sound under-approx" — which it was, and #86 is the fix for exactly that MISS.
+/// Cross-bucket DISJOINTNESS is now seeded for provably-disjoint datatype pairs
+/// (cross-bucket SUBSUMPTION still is not, and must not be).
+///
+/// Adjudicated on this exact shape:
+///   Konclude → `C is UNSATISFIABLE`
+///   `HermiT` → lists `<http://ex#C>` alongside `owl:Nothing`
 #[test]
-fn forall_cross_datatype_no_clash() {
-    // ∃h.{5-int} ⊓ ∀h.[0.0,3.0]-double — different buckets never seed
-    // disjointness, so NO clash (sound under-approx, not a wrong ⊥).
+fn forall_cross_datatype_clashes() {
+    // ∃h.{5^^integer} ⊓ ∀h.[0.0,3.0]^^double: the successor would have to be the
+    // integer 5 AND a double in [0,3]. Those value spaces are disjoint, so no
+    // value satisfies both and C is unsatisfiable.
     assert!(
-        !forall_clash_unsat(
+        forall_clash_unsat(
             r#""5"^^xsd:integer"#,
             r#"DatatypeRestriction(xsd:double xsd:minInclusive "0.0"^^xsd:double xsd:maxInclusive "3.0"^^xsd:double)"#
         ),
-        "int value vs double range: cross-datatype, no clash"
+        "int value vs double range: disjoint value spaces ⇒ C unsatisfiable (#86)"
     );
 }
 

@@ -866,16 +866,27 @@ fn float_distinct_f32_values_functional_inconsistent() {
     ));
 }
 
-/// NEGATIVE: cross-datatype no-clash — xsd:float and xsd:double are in
-/// SEPARATE DKey buckets; a float value vs a double range MUST NOT cross-
-/// subsume. Asserted float value does NOT violate the double-typed range
-/// (the float assertion simply drops into the float bucket, which has no
-/// range constraint, so no inconsistency fires).
+/// INVERTED 2026-08-30 (#86) — this asserted `consistent` and was WRONG.
+///
+/// The half of its rationale that stands: `xsd:float` and `xsd:double` are in
+/// SEPARATE DKey buckets and must never cross-SUBSUME. That is untouched — #86
+/// adds cross-bucket DISJOINTNESS, not subsumption.
+///
+/// The half that was wrong: it concluded that a float value therefore "does NOT
+/// violate the double-typed range", reasoning from the implementation ("the float
+/// assertion simply drops into the float bucket, which has no range constraint")
+/// rather than from OWL 2. Disjoint value spaces mean the asserted value cannot
+/// lie in the declared range, so the KB IS inconsistent.
+///
+/// Adjudicated on THIS EXACT FIXTURE, not on a similar one:
+///   Konclude `consistency` → `false`
+///   HermiT  `--consistency` → `owl:Thing is not satisfiable`
+/// Both agree the ontology is inconsistent; rustdl now does too.
 #[test]
-fn float_value_vs_double_range_no_cross_bucket_clash() {
-    // Float value "2.0" and double range [0.0, 1.0] are in disjoint buckets
-    // → the float assertion does not violate the double range → CONSISTENT.
-    assert!(consistent(
+fn float_value_vs_double_range_clashes_across_buckets() {
+    // Float value "2.0" against a double range: the value spaces of xsd:float and
+    // xsd:double are disjoint, so this violates the range regardless of the facet.
+    assert!(!consistent(
         r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
     DataPropertyRange(:p DatatypeRestriction(xsd:double xsd:minInclusive "0.0"^^xsd:double xsd:maxInclusive "1.0"^^xsd:double))
     DataPropertyAssertion(:p :a "2.0"^^xsd:float)"#

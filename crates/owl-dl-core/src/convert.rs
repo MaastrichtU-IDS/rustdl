@@ -3109,6 +3109,36 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint, comp);
     seed_disjoint_bucket(out, &lang_dkeys, LangSet::disjoint, comp);
+
+    // #86 — CROSS-BUCKET disjointness. Within-bucket disjointness (above) has
+    // always been seeded; cross-bucket never was, so a value of one numeric
+    // datatype asserted against a range of another never clashed:
+    // `DataPropertyRange(p, xsd:double)` + `DataPropertyAssertion(p, a,
+    // "1.0"^^xsd:float)` is INCONSISTENT per Konclude AND HermiT, and rustdl
+    // reported it consistent. That is the dual of the v0.4.6-v0.4.9 FP: folding
+    // float and double into one bucket made them EQUIVALENT, and splitting the
+    // buckets removed the false equivalence without adding the disjointness the
+    // split implies.
+    //
+    // ONLY GENUINELY DISJOINT PAIRS BELONG HERE. `xsd:integer` is a SUBSET of
+    // `xsd:decimal` (Konclude reports both directions CONSISTENT), so that pair
+    // is deliberately absent — seeding it would emit a false `DisjointClasses`
+    // and turn this MISS into a false UNSAT, in the one subsystem that has
+    // already shipped an FP for months. Guarded by
+    // `integer_value_in_decimal_range_is_consistent`.
+    if dkey_cross_bucket_disjoint_enabled() {
+        let ints: Vec<ClassId> = int_dkeys.iter().map(|(c, _)| *c).collect();
+        let floats: Vec<ClassId> = float_dkeys.iter().map(|(c, _)| *c).collect();
+        let doubles: Vec<ClassId> = double_dkeys.iter().map(|(c, _)| *c).collect();
+        let decs: Vec<ClassId> = dec_dkeys.iter().map(|(c, _)| *c).collect();
+        // IEEE floats are disjoint from each other and from the exact numerics.
+        seed_cross_bucket_disjoint(out, &floats, &doubles, comp);
+        seed_cross_bucket_disjoint(out, &floats, &decs, comp);
+        seed_cross_bucket_disjoint(out, &floats, &ints, comp);
+        seed_cross_bucket_disjoint(out, &doubles, &decs, comp);
+        seed_cross_bucket_disjoint(out, &doubles, &ints, comp);
+        // NOT (ints, decs) — xsd:integer ⊂ xsd:decimal.
+    }
     // Numeric-oneof disjointness. FP-CRITICAL DIRECTION: emitting a
     // `DisjointClasses` ADDS clashes, so a wrong "disjoint" is a false UNSAT,
     // not a miss. `BTreeSet::is_disjoint` is exact here because every bucket's
@@ -3309,6 +3339,28 @@ fn dkey_merging_gate_enabled() -> bool {
 /// See `docs/2026-08-03-dkey-volume-scan.md`.
 fn dkey_emit_order_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_EMIT_ORDER").is_none_or(|v| v != "0")
+}
+
+/// `RUSTDL_DKEY_CROSS_BUCKET_DISJOINT` — **default ON**, `=0` reverts (#86).
+///
+/// Seeds `DisjointClasses(DKey_a, DKey_b)` across datatype buckets whose VALUE
+/// SPACES are disjoint. Within-bucket disjointness (D11b) has always been seeded;
+/// cross-bucket never was, so `DataPropertyRange(p, xsd:double)` +
+/// `DataPropertyAssertion(p, a, "1.0"^^xsd:float)` — inconsistent per Konclude AND
+/// `HermiT` — was reported CONSISTENT.
+///
+/// This is the dual of the v0.4.6–v0.4.9 fix. That FP came from folding
+/// `xsd:float` and `xsd:double` into ONE f64 bucket, making them EQUIVALENT; the
+/// fix split the buckets, which removed the false equivalence but never added the
+/// disjointness the split implies.
+///
+/// **FP-CRITICAL, and the guard is a NEGATIVE:** `xsd:integer` is a SUBSET of
+/// `xsd:decimal`, so that pair is deliberately NOT seeded. Declaring "different
+/// numeric bucket ⇒ disjoint" would turn a MISS into a false UNSAT. See
+/// `integer_value_in_decimal_range_is_consistent` in
+/// `crates/owl-dl-reasoner/tests/dkey_cross_bucket_disjointness.rs`.
+fn dkey_cross_bucket_disjoint_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_CROSS_BUCKET_DISJOINT").is_none_or(|v| v != "0")
 }
 
 /// See a role restriction that only exists **after NNF** when classifying roles for
@@ -3867,6 +3919,89 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
 /// O(k²) walk still stalls), so cost is `O(Σ_component` values²). The
 /// per-pair `disjoint` range check is kept in both paths (FP-safety: the
 /// bounded set is a subset of the sound all-pairs set by construction).
+/// Cross-bucket sibling of [`seed_disjoint_bucket`] (#86). Every `a × b` pair is
+/// disjoint UNCONDITIONALLY — the two buckets' datatypes have disjoint value
+/// spaces, so no per-pair range test applies and none is taken.
+///
+/// Uses the same merge-aware component gating: a `DisjointClasses` is only ever
+/// CONSUMED when both `DKey`s can land in one node label, which needs their data
+/// roles connected through a merge-inducing super-role. Cross-component pairs
+/// provably never share a label, so skipping them drops zero consumable clash and
+/// keeps the volume in the same class as the within-bucket seeding.
+///
+/// The caller is responsible for passing only genuinely disjoint bucket pairs.
+/// Two pairs that look like gaps and are NOT:
+///
+/// * **`xsd:integer` / `xsd:decimal`** — `integer ⊆ decimal`, so they overlap.
+///   `DataPropertyRange(p, xsd:integer)` + `"1.5"^^xsd:decimal` IS inconsistent,
+///   but by VALUE MEMBERSHIP (`1.5 ∉ integer`), not by datatype disjointness;
+///   rustdl misses it and no rule here can close it. Seeding this pair to catch
+///   the `1.5` case would make `"1"^^xsd:integer` in a decimal range a false
+///   UNSAT.
+/// * **`date:` / `dt:`** — rustdl has both buckets, which makes them inviting.
+///   Measured: Konclude reports `date` × `dateTime` CONSISTENT in both
+///   directions, and `HermiT` refuses the input entirely with
+///   `UnsupportedDatatypeException` because `xsd:date` is not in the OWL 2
+///   datatype map (it accepts `dateTime` × `dateTime`, which is what isolates
+///   the cause). No peer supports the entailment, so seeding it would
+///   manufacture a false positive.
+fn seed_cross_bucket_disjoint(
+    out: &mut InternalOntology,
+    a_keys: &[ClassId],
+    b_keys: &[ClassId],
+    components: Option<&DkeyComponents>,
+) {
+    let emit = |out: &mut InternalOntology, a: ClassId, b: ClassId| {
+        let ca = out.concepts.atomic(a);
+        let cb = out.concepts.atomic(b);
+        out.axioms.push(Axiom::DisjointClasses(vec![ca, cb]));
+    };
+    let Some(comp) = components else {
+        for a in a_keys {
+            for b in b_keys {
+                emit(out, *a, *b);
+            }
+        }
+        return;
+    };
+    // `reach(k)` = the components k participates in, or None when k is
+    // unanchored (pairs with everything). A key that is neither anchored nor
+    // unanchored appears under no role restriction, can never reach a node
+    // label, and is skipped — same rule as `seed_disjoint_bucket`.
+    let reach = |k: &ClassId| -> Option<Option<&Vec<usize>>> {
+        if comp.unanchored.contains(k) {
+            return Some(None);
+        }
+        comp.components.get(k).map(Some)
+    };
+    let mut emitted: std::collections::HashSet<(ClassId, ClassId)> =
+        std::collections::HashSet::new();
+    for a in a_keys {
+        let Some(ra) = reach(a) else { continue };
+        for b in b_keys {
+            let Some(rb) = reach(b) else { continue };
+            let shares = match (ra, rb) {
+                // an unanchored key pairs with every key in the other bucket
+                (None, _) | (_, None) => true,
+                // component lists are short (a key sits in few components), so a
+                // nested scan beats building a set per pair
+                (Some(sa), Some(sb)) => sa.iter().any(|c| sb.contains(c)),
+            };
+            if !shares {
+                continue;
+            }
+            let pair = if a.index() <= b.index() {
+                (*a, *b)
+            } else {
+                (*b, *a)
+            };
+            if emitted.insert(pair) {
+                emit(out, *a, *b);
+            }
+        }
+    }
+}
+
 fn seed_disjoint_bucket<R>(
     out: &mut InternalOntology,
     keys: &[(ClassId, R)],

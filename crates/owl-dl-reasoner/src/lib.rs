@@ -1964,6 +1964,51 @@ pub fn hyper_sat_seed_enabled() -> bool {
 /// (`process_fact` range propagation, fixed in f71a012), not a
 /// wedge bug. Disable with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`. Off ⇒
 /// `Sat` verdicts are treated as `Unknown` (older H4 behaviour, falls
+/// `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS` — **default OFF**, `=1` opts in.
+///
+/// When ON, `classify` stops trusting the wedge's `Sat` verdict on ontologies
+/// OUTSIDE the fragment where that verdict is complete by construction, and
+/// falls through to the tableau instead. This closes issue #66, where
+/// `classify` omitted `Cap ⊑ VE` while `rustdl subclass` on the SAME binary
+/// proved it — the wedge is incomplete on that ALC pattern (`∀p.(A ⊔ ¬R)`
+/// with `A ⊑ V`, `V ⊑ R`, `Disjoint(Pizza, R)`) and `trust_sat` believed it.
+/// `incomplete` stayed `false` throughout, so a consumer could not tell; a
+/// migration tool diffing two hierarchies read the absences as real and
+/// reported ~46% spurious "lost" subsumptions.
+///
+/// **Not cheaper than `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` in practice — measured,
+/// after an earlier draft of this comment claimed it was.** The gate is keyed on
+/// the exact condition that makes the trust unsound-for-completeness, so in
+/// principle it spares `PureEl`/`Horn` inputs a pointless verification. In
+/// practice those take the saturation fast path and never reach the pair loop,
+/// so essentially everything reaching this gate is ALREADY out-of-fragment.
+/// Head to head on the two most expensive cases from the sweep: `ore_ont_7011`
+/// 1.49 s default / 23.68 s `TRUST_SAT=0` / **23.59 s** here, and `ore_ont_5964`
+/// 26.75 s / **26.75 s** — identical, and all five worst slowdown cases are
+/// out-of-EL. What it offers is PRECISION OF MEANING, not speed: "verify where
+/// verification is needed" rather than "switch off an optimisation", and it
+/// cannot regress an in-fragment input if the fast path ever stops covering one.
+///
+/// **OFF by default because the measured benefit on real ontologies is zero.**
+/// A two-arm sweep of all 1,920 ORE ontologies (default vs `TRUST_SAT=0`, one
+/// pinned binary, env var the only difference) found **1,700 IDENTICAL, 91
+/// DIFFER of which 89 are the `incomplete` flag alone**; both count-differing
+/// cases cleared on adjudication (`ore_ont_16420` budget noise, re-run identical
+/// with closure 183363 both; `ore_ont_6485`'s extra pair found by BOTH arms at
+/// `--pair-timeout-ms 1000`). So **zero entailments recovered corpus-wide**,
+/// against **+21.6% wall** (1611 s → 1959 s over the 1,700 completing in both),
+/// 20 ontologies >2× slower, and 5 that stop completing at all.
+///
+/// #66 is real and reproducible on its 6-axiom fixture but does not occur in
+/// 1,920 real ontologies, so exactness is offered rather than imposed. The
+/// sweep's censoring runs one way — 123 `BOTH_FAIL` + 5 `REGRESSED` are ontologies
+/// where the verifying arm never finished and so COULD NOT report a gain; zero
+/// is a lower bound.
+#[must_use]
+pub fn classify_verify_refutations_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_VERIFY_REFUTATIONS").is_some_and(|v| v == "1")
+}
+
 /// through to the tableau).
 #[must_use]
 pub fn hyper_trust_sat_enabled() -> bool {

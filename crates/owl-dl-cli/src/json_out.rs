@@ -41,11 +41,58 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
         .unwrap_or_default()
 }
 
+/// Pairs whose "not subsumed" came from the wedge's `Sat` verdict on an
+/// ontology outside the fragment where that verdict is complete by
+/// construction (issue #66).
+///
+/// **This is an EXPOSURE count, not a defect count, and the difference is
+/// measured.** It reads 58 on `ro`, 163 on `sio` and 102 on `pizza` — all
+/// three of which are MISSED=0 against the Konclude oracle in the FP=0 net.
+/// So a non-zero value says these pairs were decided WITHOUT the tableau, not
+/// that any of them is wrong. It is emitted as a diagnostic for exactly that
+/// reason; an earlier revision raised a stderr WARNING here and was withdrawn
+/// once those three numbers were measured, because a warning that fires on
+/// three verifiably-correct flagship fixtures trains users to ignore the
+/// channel.
+///
+/// What it IS good for: a consumer that needs exactness (the issue-#66
+/// reporter was diffing two `classify` hierarchies) can see that the
+/// hierarchy contains un-tableau-verified refutations and re-run with
+/// `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`, or ask `subclass` per pair.
+///
+/// `PureEl` and `Horn` return 0: `trust_sat` is complete by construction there
+/// (the saturator carries `PureEl`, the Horn fixpoint carries `Horn`), so
+/// there is no exposure to report.
+pub(crate) fn trusted_sat_risk(stats: &owl_dl_reasoner::ClassificationStats) -> usize {
+    if matches!(
+        stats.fragment,
+        owl_dl_reasoner::FragmentClassification::OutOfFragment
+    ) {
+        stats.hyper_refuted_pairs
+    } else {
+        0
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct ClassifyJson {
     pub(crate) schema_version: u32,
     pub(crate) consistent: bool,
+    /// A class pair hit a DEADLINE and was recorded as not-subsumed. Reports
+    /// only that; it does NOT cover the `trust_sat` risk below.
     pub(crate) incomplete: bool,
+    /// Issue #66: pairs concluded NOT SUBSUMED from the wedge's own `Sat`
+    /// verdict, on an ontology OUTSIDE the fragment where that verdict is
+    /// complete by construction — so this hierarchy CAN disagree with
+    /// `rustdl subclass` on the same binary and the same pair while
+    /// `incomplete` stays `false`. An EXPOSURE count, not a defect count:
+    /// see [`trusted_sat_risk`] for the measured false-alarm rate.
+    ///
+    /// Deliberately a SEPARATE field rather than folded into `incomplete`:
+    /// that flag means "a deadline fired", and overloading it would destroy a
+    /// distinction callers already depend on. Same reasoning as
+    /// `Realization::witness_prune_active`.
+    pub(crate) trusted_sat_refutations: usize,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
@@ -233,6 +280,7 @@ pub(crate) fn build_classify_json(
         schema_version: SCHEMA_VERSION,
         consistent: !stats.inconsistent,
         incomplete: stats.timed_out_pairs > 0,
+        trusted_sat_refutations: trusted_sat_risk(&stats),
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,

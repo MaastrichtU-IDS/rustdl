@@ -983,6 +983,22 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   MASKING this: it was found only by running the FP=0 net with the #66 prototype
   (`RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1`) forcing classify to tableau-adjudicate, where
   pizza went 499 → **501, FP=2**.
+  **THAT GAP IS NOW GATED (2026-08-30) — `crates/owl-dl-reasoner/tests/per_pair_fp_gate.rs`.**
+  The instrument that found #76 was never in `main`; it lived only on the superseded
+  `fix/classify-verify-refutations-66` branch, so once #66 was fixed at root by #78/#83 the
+  per-pair surface went back to being ungated. `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS` is now
+  in-tree (still **default OFF** — its completeness benefit measured ZERO corpus-wide against
+  +21.6% wall, so it is an instrument, not a policy), and one `#[ignore]`d test runs the
+  oracle diff under it over pizza/ro/sulo — the out-of-EL fixtures, since the flag is gated on
+  `OutOfFragment` and is INERT on `PureEl`/`Horn` (bibtex is Horn and is deliberately excluded:
+  a fixture where the flag cannot engage would pad the gate without testing it).
+  **The control is what licenses the gate, not the pass.** Same sabotage
+  (`RUSTDL_MAX_TRIAL_MERGE=0`, reverting #76), two nets: the classify-only net reports
+  `pizza 499=499 FP=0 MISSED=0 VERIFIED` — **blind, passing on a live FP** — while the new gate
+  reports **501 vs 499, FP=2**, naming `Margherita`/`QuattroFormaggi ⊑ InterestingPizza` and
+  failing. So the months-long invisibility of #76 is now reproducible on demand rather than
+  argued. Re-run that sabotage after touching either flag; a gate that cannot be made to fail
+  is not a gate.
   **Evidence:** full 1,920-ontology two-arm sweep (`=0` vs default, one pinned binary, env
   var the only difference, arm order alternated): **1,774 IDENTICAL / 24 DIFFER / 121
   BOTH_FAIL / 0 REGRESSED / 1 RECOVERED** (`ore_ont_1938` DNF → 40.9 s). All 24 DIFFERs

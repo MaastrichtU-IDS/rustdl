@@ -288,3 +288,40 @@ fn two_populated_families_do_intern_their_markers() {
          are interned — and float, which is absent, is not"
     );
 }
+
+// ---- SCOPE: which surface the lever actually reaches --------------------------
+
+/// PINS A KNOWN LIMITATION so the lever is not mistaken for a full fix.
+///
+/// The clash needs `∃p.DKey(float) ⊓ ∀p.DKey(double)` to meet on a GENERATED
+/// successor, which the hybrid consistency path derives and `classify`'s
+/// inconsistency detection does not: the latter is pre-check-only
+/// (`top_is_unsat` + `abox_saturation`, both over NAMED individuals), and a data
+/// value is not a named individual. So with the lever ON, `is_consistent` is
+/// correct while `classify` still reports `consistent: true`.
+///
+/// That is a DISAGREEMENT between two surfaces — the class of bug
+/// `RUSTDL_CLASSIFY_INCONSISTENCY` was introduced to fix for `family.ofn` — and
+/// it is the reason this lever stays default OFF pending a classify-path fix.
+/// If someone closes that gap, THIS test fails, which is the intent.
+#[test]
+fn the_lever_reaches_is_consistent_but_not_classify() {
+    let onto = probe("xsd:double", "\"1.0\"^^xsd:float");
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = SetEnvGuard::set("RUSTDL_DKEY_FAMILY_DISJOINT", "1");
+    assert!(
+        !owl_dl_reasoner::is_consistent(&onto).unwrap(),
+        "is_consistent runs the hybrid path and MUST see the clash"
+    );
+    let c = owl_dl_reasoner::classify(&onto).unwrap();
+    assert!(
+        c.unsatisfiable_classes().is_empty(),
+        "KNOWN LIMITATION, pinned deliberately: classify's inconsistency detection \
+         is pre-check-only and does not see this clash. If this assertion starts \
+         failing the classify path has been extended — delete this test, update \
+         docs/known-limitations/dkey-cross-family-disjointness-missing.md, and \
+         reconsider the default."
+    );
+}

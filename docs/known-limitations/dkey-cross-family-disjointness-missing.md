@@ -119,3 +119,51 @@ CONSISTENT in both. The seeded families are exactly `real = {integer, decimal}`,
 a FALSE POSITIVE, not a miss. Per this repo's own record the curated corpus is INERT for the DKey
 area, so a green FP=0 net would demonstrate non-regression only — negatives-first canaries plus a
 Konclude ∪ HermiT adjudication are the evidence that would count.
+
+
+## FIXED — partially. `RUSTDL_DKEY_FAMILY_DISJOINT` (default OFF), 2026-08-31
+
+Implemented as family markers: one synthetic class per datatype family, one
+`DKey ⊑ marker` edge per key, and a constant three `DisjointClasses` between markers —
+O(#DKeys), not the O(k²) cross-bucket pairing this subsystem has exploded on before.
+Three families: `real = {integer, decimal}`, `double`, `float`.
+
+**IT REACHES `is_consistent` AND NOT `classify`, AND THAT IS THE REASON IT SHIPS OFF.**
+
+| surface | lever OFF | lever ON |
+|---|---|---|
+| `rustdl consistent` / `is_consistent` | consistent ✗ | **inconsistent ✓** |
+| `classify --json` `"consistent"` | true ✗ | true ✗ (**still wrong**) |
+
+The clash needs `∃p.DKey(float) ⊓ ∀p.DKey(double)` to meet on a GENERATED successor.
+The hybrid consistency path derives that; `classify`'s inconsistency detection is
+**pre-check only** (`top_is_unsat` + `abox_saturation`, both over NAMED individuals),
+and a data value is not a named individual. So enabling the lever makes the two
+surfaces DISAGREE — the class of bug `RUSTDL_CLASSIFY_INCONSISTENCY` was introduced to
+fix for `family.ofn`. Pinned by `the_lever_reaches_is_consistent_but_not_classify`,
+which FAILS the moment someone closes the classify gap.
+
+**Corpus evidence.** Two-arm ORE sweep, 1,920 ontologies, one pinned binary with the
+env var as the only difference: **1,777 identical, 1 differ, 2 `ok→dnf`** — and every
+flagged row is adjudicated inert, because all four contain **ZERO**
+`xsd:double`/`float`/`integer`/`decimal`, so the lever provably cannot fire on them.
+`ore_ont_2574` (59.2 s → 60.1 s) and `ore_ont_7204` (59.5 s → 60.0 s) straddle the 60 s
+cap by under a second and are **byte-identical** ON vs OFF at a generous cap;
+`ore_ont_12698` is the documented run-to-run nondeterministic case.
+
+**A FIRST CUT SHIPPED A REAL DEFECT THAT THE CANARIES COULD NOT SEE.** It interned all
+three markers and emitted all three `DisjointClasses` UNCONDITIONALLY, so every
+ontology gained 3 classes and 3 axioms and class ids shifted corpus-wide — walls moved
+on ontologies with no numeric data at all (`ore_ont_1016` 0.24 s → 18.77 s). Only the
+sweep caught it. The fix: a family with no keys gets no marker, and a pair is emitted
+only when BOTH families are populated.
+
+**And the first inertness canaries did not guard.** They compared `classify` OUTPUT,
+where a spuriously interned marker is invisible because reporting filters it — a
+sabotage of the guard SURVIVED them. They now inspect the converted VOCABULARY, with a
+positive control so a broken counter cannot make them pass vacuously. Sabotages: 5 run,
+5 caught.
+
+**Still open after this change:** the classify-path gap above, and the separate
+`integer` × `"1.5"^^xsd:decimal` VALUE-membership gap (same family, so no family rule
+can close it).

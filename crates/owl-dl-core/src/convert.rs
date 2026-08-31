@@ -3929,8 +3929,22 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
 /// provably never share a label, so skipping them drops zero consumable clash and
 /// keeps the volume in the same class as the within-bucket seeding.
 ///
-/// The caller is responsible for passing only genuinely disjoint bucket pairs —
-/// `xsd:integer`/`xsd:decimal` must NOT be passed here.
+/// The caller is responsible for passing only genuinely disjoint bucket pairs.
+/// Two pairs that look like gaps and are NOT:
+///
+/// * **`xsd:integer` / `xsd:decimal`** — `integer ⊆ decimal`, so they overlap.
+///   `DataPropertyRange(p, xsd:integer)` + `"1.5"^^xsd:decimal` IS inconsistent,
+///   but by VALUE MEMBERSHIP (`1.5 ∉ integer`), not by datatype disjointness;
+///   rustdl misses it and no rule here can close it. Seeding this pair to catch
+///   the `1.5` case would make `"1"^^xsd:integer` in a decimal range a false
+///   UNSAT.
+/// * **`date:` / `dt:`** — rustdl has both buckets, which makes them inviting.
+///   Measured: Konclude reports `date` × `dateTime` CONSISTENT in both
+///   directions, and `HermiT` refuses the input entirely with
+///   `UnsupportedDatatypeException` because `xsd:date` is not in the OWL 2
+///   datatype map (it accepts `dateTime` × `dateTime`, which is what isolates
+///   the cause). No peer supports the entailment, so seeding it would
+///   manufacture a false positive.
 fn seed_cross_bucket_disjoint(
     out: &mut InternalOntology,
     a_keys: &[ClassId],

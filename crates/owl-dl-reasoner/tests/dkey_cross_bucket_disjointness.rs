@@ -63,9 +63,27 @@ fn integer_value_in_decimal_range_is_consistent() {
     );
 }
 
-/// The other direction. A decimal value need not be an integer, so this is a
-/// range VIOLATION in general — but it is not a datatype-disjointness one, and
-/// both oracles report consistent.
+/// The other direction, with an INTEGRAL decimal value. Both oracles report
+/// consistent.
+///
+/// ## Do not "complete the matrix" from the `1.5` case
+///
+/// `DataPropertyRange(p, xsd:integer)` + `"1.5"^^xsd:decimal` IS inconsistent
+/// (Konclude and HermiT agree), and rustdl misses it. That is tempting to read as
+/// "so integer and decimal are disjoint after all" — they are not. The direction
+/// is VALUE-dependent, not datatype-dependent:
+///
+/// | range | value | oracles |
+/// |---|---|---|
+/// | `xsd:decimal` | `"1"^^xsd:integer` | consistent |
+/// | `xsd:integer` | `"1"^^xsd:decimal` | consistent |
+/// | `xsd:integer` | `"1.5"^^xsd:decimal` | **inconsistent** |
+///
+/// `xsd:integer ⊆ xsd:decimal`, so no bucket-disjointness rule can close the
+/// `1.5` row — it needs VALUE MEMBERSHIP (`1.5 ∉ integer`), which is different
+/// machinery. Adding `int × dec` to `seed_cross_bucket_disjoint` would fail THIS
+/// test and `integer_value_in_decimal_range_is_consistent`, which is the point of
+/// both.
 #[test]
 fn decimal_value_in_integer_range_is_consistent() {
     assert!(

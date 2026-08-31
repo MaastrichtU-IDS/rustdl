@@ -69,6 +69,49 @@ Cross-*family* disjointness already works; only the numeric split is missing.
 | `decimal` | `integer` | **consistent** | consistent | agree |
 | `string` | `integer` | inconsistent | **inconsistent** | agree |
 
+## Two adjacent cases that are NOT gaps (verified 2026-08-31)
+
+Both look like the fix is incomplete. Neither is.
+
+### `xsd:integer` / `xsd:decimal` — a residual no bucket rule can reach
+
+| range | value | Konclude | HermiT | rustdl |
+|---|---|---|---|---|
+| `xsd:decimal` | `"1"^^xsd:integer` | consistent | consistent | consistent ✓ |
+| `xsd:integer` | `"1"^^xsd:decimal` | consistent | consistent | consistent ✓ |
+| `xsd:integer` | `"1.5"^^xsd:decimal` | **inconsistent** | **inconsistent** | **consistent** ✗ |
+
+The `1.5` row is a genuine rustdl MISS, and it is **value-dependent, not
+datatype-dependent**. `xsd:integer ⊆ xsd:decimal`, so the buckets genuinely overlap and
+no disjointness rule can close it — it needs VALUE MEMBERSHIP (`1.5 ∉ integer`), which is
+different machinery.
+
+**Do not "complete the matrix" from it.** Seeding `int × dec` to catch `1.5` makes
+`"1"^^xsd:integer` in a decimal range a false UNSAT. The canaries
+`integer_value_in_decimal_range_is_consistent` and
+`decimal_value_in_integer_range_is_consistent` both fail if anyone tries, and the second
+one's docstring explains why.
+
+This is also distinct from the classify-surface residual above — that one is about which
+*surface* reports the clash; this one is about a clash rustdl cannot derive at all.
+
+### `date` / `dateTime` — no peer supports the entailment
+
+rustdl has a `date:` and a `dt:` bucket, which makes them an inviting-looking pair for
+anyone extending `seed_cross_bucket_disjoint`. Measured:
+
+| range | value | Konclude | HermiT |
+|---|---|---|---|
+| `date` | `dateTime` | consistent | `UnsupportedDatatypeException` |
+| `dateTime` | `date` | consistent | `UnsupportedDatatypeException` |
+| `date` | `date` | consistent | `UnsupportedDatatypeException` |
+| **`dateTime`** | **`dateTime`** | consistent | **is satisfiable** |
+
+The last row is the discriminator: HermiT handles `dateTime` fine, so the exception is
+specifically that **`xsd:date` is not in the OWL 2 datatype map** — not an artefact of the
+test shape. Konclude reports consistent in both directions. Seeding `date ⊥ dateTime`
+would manufacture a false positive no peer supports.
+
 ## THE TRAP ANY FIX MUST AVOID
 
 **`xsd:integer ⊂ xsd:decimal` — they are NOT disjoint**, and Konclude confirms it in both

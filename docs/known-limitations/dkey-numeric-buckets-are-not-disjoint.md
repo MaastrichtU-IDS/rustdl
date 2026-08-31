@@ -69,6 +69,41 @@ Cross-*family* disjointness already works; only the numeric split is missing.
 | `decimal` | `integer` | **consistent** | consistent | agree |
 | `string` | `integer` | inconsistent | **inconsistent** | agree |
 
+## Why pairwise seeding, not marker classes — measured
+
+A reviewer built a duplicate fix using per-family MARKER classes (`DKey ⊑ marker`, markers
+pairwise disjoint) to get O(#DKeys) instead of pairwise seeding, and hit an
+**8.7×–78× slowdown on ontologies with ZERO numeric datatypes** (`ore_ont_1016`). Their
+diagnosis was that interning markers shifted class ids corpus-wide. **That is not the
+mechanism** — measured on `ore_ont_1016` (3,087 classes, no numeric datatypes at all):
+
+| variant | wall | mode |
+|---|---|---|
+| baseline | 0.12 s | `pure EL (saturation-only)` |
+| +3 classes, prepended (shifts every id) | 0.11 s | `pure EL` |
+| +3 classes, appended | 0.11 s | `pure EL` |
+| **+3 classes AND 3 `DisjointClasses`** | **1.04 s** | **`hybrid`** |
+
+The id shift costs nothing. **The `DisjointClasses` axioms are what bite**, and the route
+is `saturator_complete_fragment`'s `disjoint_ok` gate: disjointness is admitted only when
+no functional or inverse-functional role is present, because the disjoint×functional-merge
+interaction is unproven. `ore_ont_1016` is galen-derived — 150 `FunctionalObjectProperty`,
+0 `DisjointClasses` — i.e. exactly the "functional, no disjoint" profile that gate's own
+comment names as staying on the fast path. Injecting any disjointness flips
+`has_cardinality_role`-bearing ontologies off saturation-only into the hybrid path.
+
+**The design constraint, for anyone adding disjointness anywhere:** an *unconditional*
+`DisjointClasses` injection knocks EVERY functional-role-bearing pure-EL ontology off the
+fast path. That population is large (the galen family is well represented in ORE), and the
+cost is invisible to canaries — it is a wall change on ontologies the feature does not
+touch at all, so only a two-arm sweep sees it.
+
+`seed_cross_bucket_disjoint` is immune **by construction**, not by luck: it emits only
+between actual DKeys inside merge-inducing role components, so an ontology with no numeric
+DKeys receives nothing and its mode is unchanged. Verified — `ore_ont_1016` still reports
+`# mode: pure EL` with this PR applied, and the 637-ontology two-arm classify sweep found
+0 differences.
+
 ## Two adjacent cases that are NOT gaps (verified 2026-08-31)
 
 Both look like the fix is incomplete. Neither is.

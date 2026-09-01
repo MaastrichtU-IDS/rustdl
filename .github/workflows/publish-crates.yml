@@ -5,10 +5,14 @@ name: Publish crates
 # channel must not block the others. All three fire on the same v*.*.* tag.
 #
 # PUBLISHING IS UNATTENDED BY CHOICE (2026-09-01). The `crates-io` environment
-# exists but is deliberately configured with NO protection rules, so a v*.*.* tag
-# publishes without an approval pause. `cargo publish` is nevertheless
-# IRREVERSIBLE — a version can be yanked but never unpublished, and a version
-# number can never be reused.
+# carries NO required reviewers, so a v*.*.* tag publishes without an approval
+# pause. `cargo publish` is nevertheless IRREVERSIBLE — a version can be yanked
+# but never unpublished, and a version number can never be reused.
+#
+# It DOES carry a ref policy (`branch_policy`): deployments to `crates-io` are
+# restricted to the `main` branch and `v*` tags. So a `workflow_dispatch` from a
+# feature branch, or a tag not starting with `v`, cannot publish — the publish
+# job is refused at the environment, before any credential is minted.
 #
 # CONSEQUENCE: `preflight` is the ONLY guard. Nothing reads its summary before
 # the publish job starts, so every check there must FAIL the job rather than
@@ -97,9 +101,10 @@ jobs:
     name: Publish to crates.io
     needs: preflight
     runs-on: ubuntu-latest
-    # Intentionally UNGATED: `crates-io` carries no protection rules, so this runs
-    # straight after preflight. Attach required reviewers to that environment to
-    # turn it into an approval gate without touching this file.
+    # No approval gate: `crates-io` has no required reviewers, so this runs straight
+    # after preflight. It IS ref-restricted to `main` + `v*` tags by that
+    # environment's branch policy. Attach required reviewers there to add an
+    # approval pause — neither change touches this file.
     environment:
       name: crates-io
       url: https://crates.io/crates/owl-dl-reasoner

@@ -22,13 +22,6 @@
 
 use owl_dl_reasoner::realize;
 use std::fmt::Write as _;
-use std::sync::Mutex;
-
-/// Serialises the two tests below. They share `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, and
-/// cargo runs tests in one binary CONCURRENTLY — without this the truncation test sets
-/// the var to 1 ms while the control is mid-realize, and the control fails with
-/// "nothing was cut" pointing at the wrong thing entirely. Cost one debugging cycle.
-static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 fn parse(src: &str) -> horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr> {
     horned_owl::io::ofn::reader::read(
@@ -64,15 +57,50 @@ fn disjunctive_memberships(k: usize) -> String {
     s
 }
 
-/// At the DEFAULT per-pair budget every probe concludes, so nothing is cut and the flag
-/// must be clear — and all `k` memberships must still be found. Without this control the
-/// flag could be hard-wired true, or the fixture could be silently unsolvable.
+/// Fixture size for the control leg: small enough that every probe concludes
+/// inside the 750 ms default.
+const CONTROL_K: usize = 60;
+
+/// Fixture size for the truncation leg: large enough that at least one probe is
+/// cut at 1 ms with probability ~1 - 1e-6. See the comment at its use.
+const TRUNCATE_K: usize = 240;
+
+/// Control and experiment in ONE test, deliberately.
+///
+/// These were two `#[test]`s sharing `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` through an
+/// `ENV_MUTEX`. That mutex serialises the critical sections, but `set_var` /
+/// `remove_var` mutate PROCESS-GLOBAL state that threads outside the section can
+/// still observe, and cargo runs a binary's tests concurrently. The result was a
+/// flake in `truncated_probes_are_reported`: it failed roughly a third of the
+/// time.
+///
+/// Measured, which is what identified the condition — 10 runs each:
+///
+/// | configuration | result |
+/// |---|---|
+/// | truncation test alone | 10/10 pass |
+/// | both tests, `--test-threads=1` | 10/10 pass |
+/// | both tests, default concurrency | ~1 in 3 FAIL |
+///
+/// So it was never host speed in the ordinary sense: alone, a 1 ms budget cuts a
+/// probe every time (the CLI does too, 8/8). It was the concurrency between these
+/// two. Merging them removes the race BY CONSTRUCTION rather than by widening a
+/// budget until the symptom hides, and no coverage is lost — both assertions
+/// still run, now in a guaranteed order.
+///
+/// A flaky gate is worse than a missing one: this one manufactured a false causal
+/// story, appearing to blame an unrelated change that merely ran alongside it.
 #[test]
-fn a_decidable_realization_is_not_flagged_incomplete() {
-    let _lock = ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let onto = parse(&disjunctive_memberships(60));
+fn incomplete_flag_tracks_whether_probes_were_cut() {
+    // ── control: at the DEFAULT budget every probe concludes, so nothing is cut
+    // and all `k` memberships are still found. Without this the flag could be
+    // hard-wired true, or the fixture could be silently unsolvable.
+    // THE TWO LEGS NEED DIFFERENT FIXTURE SIZES, and that is not arbitrary: the
+    // control needs k SMALL enough that nothing is cut at the 750 ms default,
+    // while the experiment needs k LARGE enough that something is reliably cut at
+    // 1 ms. Measured — at k=240 the CONTROL fails 30/30, because some probe there
+    // exceeds even 750 ms.
+    let onto = parse(&disjunctive_memberships(CONTROL_K));
     let r = realize(&onto).expect("realize at the default budget");
     assert!(
         !r.incomplete(),
@@ -80,33 +108,40 @@ fn a_decidable_realization_is_not_flagged_incomplete() {
     );
     let types = r.entailed_types("http://t/a").len();
     assert!(
-        types >= 60,
-        "the case-analysis memberships must be found at the default budget (got {types});          if not, this fixture is not exercising what the test claims"
+        types >= CONTROL_K,
+        "the case-analysis memberships must be found at the default budget (got {types}); \
+         if not, this fixture is not exercising what the test claims"
     );
-}
 
-/// With the per-pair budget squeezed to 1 ms the probes are cut, and the flag must fire.
-/// This is precisely the state a consumer could not detect before this field existed:
-/// the type set silently shrinks and nothing says so.
-#[test]
-fn truncated_probes_are_reported() {
-    let _lock = ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: this test owns the variable; no other test in this file reads it.
+    // ── experiment: squeeze the per-pair budget to 1 ms and the probes are cut,
+    // so the flag must fire. This is precisely the state a consumer could not
+    // detect before this field existed: the type set silently shrinks and nothing
+    // says so.
+    //
+    // SAFETY: this binary now contains ONE test, so no other thread can observe
+    // the process-global variable while it is set. That is the whole reason the
+    // two tests were merged.
     #[allow(unsafe_code)]
     unsafe {
         std::env::set_var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "1");
     }
-    let onto = parse(&disjunctive_memberships(60));
-    let r = realize(&onto);
+    // k is a RELIABILITY PARAMETER here. The deadline is PER PAIR, so each of the
+    // k probes independently either beats 1 ms or is cut, and the test fails only
+    // when NONE is cut. Measured at k=60 that happened ~1 run in 30, implying
+    // ~5.6% per probe, so P(none cut) = 0.944^k and k=240 puts it near 1e-6.
+    // Raising k is the honest fix; widening the budget would hide the symptom
+    // without making truncation deterministic.
+    let dense = parse(&disjunctive_memberships(TRUNCATE_K));
+    let cut = realize(&dense);
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS");
     }
-    let r = r.expect("realize under a 1 ms per-pair budget");
+    let cut = cut.expect("realize under a 1 ms per-pair budget");
     assert!(
-        r.incomplete(),
-        "a 1 ms per-pair budget must cut at least one case-analysis probe; if this fires,          either the fixture became decidable without probing or the truncation is being          discarded again — the exact defect this field was added for"
+        cut.incomplete(),
+        "a 1 ms per-pair budget must cut at least one case-analysis probe; if this fires, \
+         either the fixture became decidable without probing or the truncation is being \
+         discarded again — the exact defect this field was added for"
     );
 }

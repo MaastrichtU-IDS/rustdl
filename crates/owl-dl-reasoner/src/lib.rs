@@ -5859,6 +5859,103 @@ pub fn is_consistent_with_stats<A: ForIRI>(
     is_consistent_internal_full(internal)
 }
 
+/// Deadline-bearing [`is_consistent`] (#74). `Ok(None)` means the budget expired
+/// without a verdict — the shape [`is_class_satisfiable_with_timeout`] already has.
+///
+/// # Why not just use satisfiability of `⊤`
+///
+/// Two reasons, of unequal strength — stated separately because #74 conflates them.
+///
+/// **Demonstrated:** `is_class_satisfiable_with_timeout` requires `owl:Thing` to be
+/// DECLARED in the ontology and returns `Err(UnknownClass)` otherwise, so it cannot
+/// even be called on most inputs. This function has no such precondition.
+///
+/// **Structural, NOT demonstrated:** #74 argues the substitute is unsafe because it
+/// short-circuits on `is_pure_el` before consulting the `ABox`, so an `ABox`-only clash
+/// would be missed. That reading of the source is right, but no divergent case has
+/// been produced — the issue's author measured the two agreeing on every fixture
+/// they had, and four further shapes (ABox-only disjointness, functional-role merge,
+/// role-chain-induced range, inverse-materialised domain) also agree, because
+/// `saturate` derives the clash and the `is_unsatisfiable` short-circuit fires
+/// first. Do not cite this as a known divergence. See
+/// `tests/bounded_consistency.rs::the_substitute_agrees_on_every_shape_tried`.
+///
+/// This function keeps the `abox_saturation` pre-check regardless, since dropping it
+/// under time pressure would create the hazard rather than merely fail to disprove it.
+///
+/// # What the three outcomes mean
+///
+/// * `Ok(Some(false))` — a clash was WITNESSED (saturation, `abox_check`, the
+///   wedge, or the tableau). Sound: an inconsistency is never invented.
+/// * `Ok(Some(true))` — consistent at the same trust level as [`is_consistent`],
+///   i.e. including the wedge's trusted `Sat`.
+/// * `Ok(None)` — gave up inside the budget. Note the UNBOUNDED
+///   [`is_consistent`] reports `true` in the corresponding internal-timeout case,
+///   which is a sound under-approximation but an invisible one; that silence is
+///   what this function exists to remove.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_consistent_with_timeout<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    deadline: std::time::Duration,
+) -> Result<Option<bool>, ReasonError> {
+    let start = std::time::Instant::now();
+    let internal = convert_ontology(ontology)?;
+    is_consistent_internal_bounded(internal, start + deadline)
+}
+
+/// Internal entry point for [`is_consistent_with_timeout`], taking an absolute
+/// deadline so conversion time is already charged against the caller's budget.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_consistent_internal_bounded(
+    internal: InternalOntology,
+    deadline: std::time::Instant,
+) -> Result<Option<bool>, ReasonError> {
+    // The ABox-saturation pre-check runs FIRST and unbounded, exactly as the
+    // unbounded path does. It is the step whose omission makes satisfiability an
+    // unsafe substitute (#74), so skipping it under time pressure would rebuild
+    // the very hazard this function exists to avoid. It is also budget-bounded in
+    // practice on the classify path via RUSTDL_CLASSIFY_INCONSISTENCY_MS; here the
+    // caller asked for a consistency verdict, so the pre-check is the cheapest
+    // route to one.
+    if abox_saturation_inconsistent(&internal) {
+        return Ok(Some(false));
+    }
+    if std::time::Instant::now() >= deadline {
+        return Ok(None);
+    }
+    let prepared = PreparedOntology::from_internal(internal)?;
+    if let abox_check::AboxVerdict::Inconsistent { .. } = prepared.abox_verdict() {
+        return Ok(Some(false));
+    }
+    if std::time::Instant::now() >= deadline {
+        return Ok(None);
+    }
+    // Wedge route, capped by whichever comes first: the caller's deadline or the
+    // configured fallback. `Unsat` is a witnessed clash; `Sat` is trusted exactly
+    // as the unbounded path trusts it.
+    let wedge_cap =
+        std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
+    let wedge_deadline = wedge_cap.min(deadline);
+    match prepared.consistency_wedge(Some(wedge_deadline)) {
+        Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return Ok(Some(false)),
+        Some(owl_dl_tableau::hyper::HyperResult::Sat) => return Ok(Some(true)),
+        Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
+    }
+    if std::time::Instant::now() >= deadline {
+        return Ok(None);
+    }
+    // Main tableau, bounded by the caller's deadline. THE DIVERGENCE FROM THE
+    // UNBOUNDED PATH IS HERE: that one reports `true` when its internal budget
+    // elapses; this one reports `None`, because the caller asked to be told.
+    prepared.decide_with_deadline(deadline, owl_dl_core::ConceptPool::top)
+}
+
 fn is_consistent_internal_full(
     internal: InternalOntology,
 ) -> Result<(bool, QueryStats), ReasonError> {

@@ -4,10 +4,16 @@ name: Publish crates
 # reason they are standalone from each other: a failure in one distribution
 # channel must not block the others. All three fire on the same v*.*.* tag.
 #
-# WHY A MANUAL GATE. `cargo publish` is IRREVERSIBLE — a version can be yanked
-# but never unpublished, and a version number can never be reused. So the actual
-# publish sits behind the `crates-io` environment (required reviewers), and the
-# `preflight` job exists to give that reviewer the facts before approving.
+# PUBLISHING IS UNATTENDED BY CHOICE (2026-09-01). The `crates-io` environment
+# exists but is deliberately configured with NO protection rules, so a v*.*.* tag
+# publishes without an approval pause. `cargo publish` is nevertheless
+# IRREVERSIBLE — a version can be yanked but never unpublished, and a version
+# number can never be reused.
+#
+# CONSEQUENCE: `preflight` is the ONLY guard. Nothing reads its summary before
+# the publish job starts, so every check there must FAIL the job rather than
+# merely report. Keep it that way. To add an approval pause later, attach
+# required reviewers to the `crates-io` environment — no workflow change needed.
 #
 # WHAT GETS PUBLISHED. `--workspace` publishes every member WITHOUT
 # `publish = false`, in dependency order, waiting for index propagation between
@@ -60,17 +66,26 @@ jobs:
       # has no --skip-existing, so an already-published version FAILS the publish
       # job; surfacing it here means that is found before approval rather than
       # halfway through an irreversible run.
-      - name: Report what would be published
+      # FAILS the job on an already-published version. `cargo publish` has no
+      # --skip-existing, so it would error anyway — failing here means a clear
+      # message before anything is attempted, instead of an opaque registry error
+      # part-way through an irreversible multi-crate run.
+      - name: Publish plan (fails if a version is already on crates.io)
         run: |
           ver=$($VER_CMD | python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='owl-dl-core'))")
           crates=$($VER_CMD | python3 -c "import json,sys;print('\n'.join(sorted(p['name'] for p in json.load(sys.stdin)['packages'] if p.get('publish') is None)))")
+          dupes=""
           { echo "### Publish plan for \`$ver\`"; echo; echo "| crate | on crates.io | action |"; echo "|---|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
           for c in $crates; do
             have=$(curl -sS --max-time 20 -H 'User-Agent: rustdl-release-ci' "https://crates.io/api/v1/crates/$c" | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('crate') or {}).get('max_version','none'))" 2>/dev/null || echo unknown)
-            if test "$have" = "$ver"; then act='**ALREADY PUBLISHED - publish job will FAIL**'; else act="publish $ver"; fi
+            if test "$have" = "$ver"; then act='**ALREADY PUBLISHED**'; dupes="$dupes $c"; else act="publish $ver"; fi
             echo "| \`$c\` | $have | $act |" >> "$GITHUB_STEP_SUMMARY"
           done
           cat "$GITHUB_STEP_SUMMARY"
+          test -z "${dupes# }" || {
+            echo "::error::already on crates.io at $ver:${dupes}. cargo publish has no --skip-existing, so a --workspace run would fail. If this is recovery from a PARTIAL publish, publish the remaining crates individually with 'cargo publish -p <crate>' in dependency order; otherwise bump the version."
+            exit 1
+          }
 
       # Builds each packaged crate STANDALONE, i.e. with [patch.crates-io] NOT
       # applied - which is the whole point. This is what catches a fork-only
@@ -82,8 +97,9 @@ jobs:
     name: Publish to crates.io
     needs: preflight
     runs-on: ubuntu-latest
-    # Gated: configure `crates-io` with required reviewers so publishing takes a
-    # human approval. This is the only guard against an irreversible mistake.
+    # Intentionally UNGATED: `crates-io` carries no protection rules, so this runs
+    # straight after preflight. Attach required reviewers to that environment to
+    # turn it into an approval gate without touching this file.
     environment:
       name: crates-io
       url: https://crates.io/crates/owl-dl-reasoner

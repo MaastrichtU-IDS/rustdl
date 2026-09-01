@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+# Never published, and not publishable as written (no `description`, which
+# crates.io requires). Nothing in the workspace depends on it: the CB engine
+# ships as dead code behind `RUSTDL_CB_ELI_PROBE` (gate + census only, arc
+# DEFERRED at a 16-ontology market). Publishing would commit a permanent
+# crates.io name and version series to code the design record calls deferred.
+publish = false
 
 [dependencies]
 owl-dl-core = { workspace = true }

@@ -94,6 +94,13 @@ jobs:
       # Builds each packaged crate STANDALONE, i.e. with [patch.crates-io] NOT
       # applied - which is the whole point. This is what catches a fork-only
       # dependency before it can reach the registry.
+      #
+      # VERIFIED LOCALLY 2026-09-01 (rc=0): packages exactly the five publishable
+      # crates in dependency order - core, datatypes, saturation, tableau,
+      # reasoner - and resolves the sibling 0.4.24 requirements from the local
+      # workspace even though no 0.4.x is on the registry yet. So --workspace
+      # handles the first-publish chicken-and-egg; it does not need the deps to
+      # exist upstream first.
       - name: cargo publish --dry-run --workspace
         run: cargo publish --dry-run --workspace --locked
 

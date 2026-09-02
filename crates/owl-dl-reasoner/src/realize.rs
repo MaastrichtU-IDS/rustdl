@@ -72,7 +72,7 @@ const DEFAULT_PSEUDO_MODEL_WITNESS_MS: u64 = 1000;
 /// `realize` call, under a bounded deadline
 /// (`RUSTDL_PSEUDO_MODEL_WITNESS_MS`, default
 /// [`DEFAULT_PSEUDO_MODEL_WITNESS_MS`]), and threads each individual's
-/// witness type set into [`instance_check_with_closure`] as a subtractive
+/// witness type set into [`instance_check_reporting`] as a subtractive
 /// prune: `class ∉ witness_types(individual) ⇒ Ok(false)`, skipping the
 /// per-pair `{a} ⊓ ¬C` tableau probe entirely. The prune only ever returns
 /// `Ok(false)` and only fires AFTER the told-closure `Ok(true)` fast path, so
@@ -198,6 +198,25 @@ pub fn is_instance_of<A: ForIRI>(
     is_instance_of_internal(&internal, class_iri, individual_iri)
 }
 
+/// [`is_instance_of`] plus the truncation flag (#73): `(is_instance, incomplete)`.
+///
+/// A bare [`is_instance_of`] returning `false` cannot be distinguished from a
+/// probe that was CUT, so a slow query silently becomes a negative answer. See
+/// [`is_instance_of_reporting_internal`] for what the flag does and does not
+/// claim.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_instance_of_reporting<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    class_iri: &str,
+    individual_iri: &str,
+) -> Result<(bool, bool), ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    is_instance_of_reporting_internal(&internal, class_iri, individual_iri)
+}
+
 /// Internal entry point.
 ///
 /// # Errors
@@ -208,6 +227,35 @@ pub fn is_instance_of_internal(
     class_iri: &str,
     individual_iri: &str,
 ) -> Result<bool, ReasonError> {
+    is_instance_of_reporting_internal(internal, class_iri, individual_iri)
+        .map(|(is_inst, _)| is_inst)
+}
+
+/// Truncation-reporting form of [`is_instance_of`] (#73). Returns
+/// `(is_instance, incomplete)`.
+///
+/// `incomplete == true` means the probe was CUT — a deadline expiry, a
+/// `RUSTDL_MAX_NODES` trip or a depth bail — rather than refuted. Without it a
+/// caller cannot distinguish "not an instance" from "gave up", and a slow query
+/// silently becomes a negative answer.
+///
+/// Note `(true, true)` is possible and is still a sound positive: the membership
+/// was proved even though some other part of the check was cut. Only a `false`
+/// answer is called into question by the flag, which is why this returns a pair
+/// rather than an `Option<bool>` — collapsing them would discard a verdict that
+/// is known good.
+///
+/// The value has always been computed one call down in `instance_check_reporting`;
+/// [`is_instance_of`] simply discarded it.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_instance_of_reporting_internal(
+    internal: &InternalOntology,
+    class_iri: &str,
+    individual_iri: &str,
+) -> Result<(bool, bool), ReasonError> {
     let class_id = internal
         .vocabulary
         .class_id(class_iri)
@@ -220,10 +268,15 @@ pub fn is_instance_of_internal(
     // saturation — `a : C` iff `C` subsumes `a`'s nominal class. Avoids the
     // `{a} ⊓ ¬C` tableau probe that explodes on issue-#35-style inputs.
     if realize_saturation_eligible(internal) {
+        // Complete and terminating on this fragment, with no tableau probe, so
+        // nothing can be cut: `incomplete` is false by construction here.
         let (subsumers, nominal_by_ind) = saturate_for_realize(internal);
-        return Ok(nominal_by_ind
-            .get(&individual_id)
-            .is_some_and(|&nom| subsumers.contains(nom, class_id)));
+        return Ok((
+            nominal_by_ind
+                .get(&individual_id)
+                .is_some_and(|&nom| subsumers.contains(nom, class_id)),
+            false,
+        ));
     }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
@@ -232,7 +285,7 @@ pub fn is_instance_of_internal(
     // Single-pair path — the witness is a realize-loop optimization (one
     // witness amortized across the whole per-individual, per-class loop);
     // it isn't worth building for a lone instance check.
-    instance_check_with_closure(
+    instance_check_reporting(
         internal,
         &closure,
         &prepared,
@@ -304,6 +357,15 @@ pub fn is_instance_of_saturation_only_internal(
 ///    — `a` is in `Rng` via the property range axiom, transitively
 ///    via the role hierarchy.
 ///
+/// `(is_instance, truncated)` — the instance check, plus WHETHER a negative answer
+/// came from a real refutation or from a cut probe.
+///
+/// This is now the ONLY instance-check entry point. It previously had a
+/// `instance_check_with_closure` wrapper whose whole body was
+/// `.map(|(is_instance, _truncated)| is_instance)`; both callers
+/// (`is_instance_of_internal`, `instances_of_internal`) went through it and so
+/// threw the flag away, which is precisely what #73 reported. The wrapper is gone
+/// rather than left as a trap.
 /// Falls through to the `{a} ⊓ ¬C` satisfiability reduction otherwise.
 ///
 /// `base_types`, when `Some`, is one `ABox` witness model's COMPLETE type set
@@ -316,29 +378,7 @@ pub fn is_instance_of_saturation_only_internal(
 /// returned `true` above, so it is never pruned; a class the individual
 /// genuinely has is always present in a real witness model's label). `None`
 /// (no witness available) takes the unchanged normal path.
-fn instance_check_with_closure(
-    internal: &InternalOntology,
-    closure: &Subsumers,
-    prepared: &PreparedOntology,
-    class_id: ClassId,
-    individual_id: IndividualId,
-    pair_deadline: Option<std::time::Instant>,
-    base_types: Option<&HashSet<ClassId>>,
-) -> Result<bool, ReasonError> {
-    instance_check_reporting(
-        internal,
-        closure,
-        prepared,
-        class_id,
-        individual_id,
-        pair_deadline,
-        base_types,
-    )
-    .map(|(is_instance, _truncated)| is_instance)
-}
-
-/// `(is_instance, truncated)` — [`instance_check_with_closure`] plus WHETHER the
-/// negative answer came from a real refutation or from a cut probe.
+///
 ///
 /// **Why this exists.** A deadline expiry, a `RUSTDL_MAX_NODES` trip and a
 /// depth-limit bail all collapse to `Ok(false)` = "not an instance". That is a sound
@@ -401,7 +441,7 @@ fn instance_check_reporting(
     }
 }
 
-/// Saturation-only counterpart to [`instance_check_with_closure`].
+/// Saturation-only counterpart to [`instance_check_reporting`].
 /// Reports `true` iff a told class of `individual_id` already has
 /// `class_id` in its EL-closure subsumer set. Skips the
 /// `{a} ⊓ ¬C` tableau probe entirely — sound under-approximation
@@ -505,6 +545,22 @@ pub fn instances_of<A: ForIRI>(
     instances_of_internal(&internal, class_iri)
 }
 
+/// [`instances_of`] plus the truncation flag (#73): `(instances, incomplete)`.
+///
+/// `incomplete == true` means at least one per-individual probe was cut, so the
+/// set may be MISSING members. The members present are still sound.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn instances_of_reporting<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    class_iri: &str,
+) -> Result<(Vec<String>, bool), ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    instances_of_reporting_internal(&internal, class_iri)
+}
+
 /// Internal entry point.
 ///
 /// # Errors
@@ -514,6 +570,24 @@ pub fn instances_of_internal(
     internal: &InternalOntology,
     class_iri: &str,
 ) -> Result<Vec<String>, ReasonError> {
+    instances_of_reporting_internal(internal, class_iri).map(|(v, _)| v)
+}
+
+/// Truncation-reporting form of [`instances_of`] (#73). Returns
+/// `(instances, incomplete)`.
+///
+/// `incomplete == true` means at least one per-individual probe was CUT, so the
+/// returned set may be MISSING members. The set itself stays sound — every
+/// individual in it was proved — so this is an under-approximation the caller can
+/// now detect instead of mistaking for the complete answer.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn instances_of_reporting_internal(
+    internal: &InternalOntology,
+    class_iri: &str,
+) -> Result<(Vec<String>, bool), ReasonError> {
     let class_id = internal
         .vocabulary
         .class_id(class_iri)
@@ -535,12 +609,15 @@ pub fn instances_of_internal(
                 }
             }
         }
-        return Ok(out);
+        // Complete and terminating on this fragment: nothing can be cut.
+        return Ok((out, false));
     }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
     let pair_deadline_ms: Option<u64> = realize_pair_timeout_ms_from_env();
     let mut out = Vec::new();
+    // Sticky across the loop: ANY cut probe means the returned SET may be short.
+    let mut incomplete = false;
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
@@ -548,7 +625,7 @@ pub fn instances_of_internal(
             .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
         // Single-pair-per-individual path — same rationale as
         // `is_instance_of_internal`: no shared witness to amortize here.
-        if instance_check_with_closure(
+        let (is_inst, cut) = instance_check_reporting(
             internal,
             &closure,
             &prepared,
@@ -556,14 +633,16 @@ pub fn instances_of_internal(
             individual_id,
             pair_deadline,
             None,
-        )? {
+        )?;
+        incomplete |= cut;
+        if is_inst {
             let iri = internal.vocabulary.individual_iri(individual_id);
             if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
                 out.push(iri.to_owned());
             }
         }
     }
-    Ok(out)
+    Ok((out, incomplete))
 }
 
 /// Saturation-only counterpart of [`instances_of`]. Returns the
@@ -1414,7 +1493,7 @@ Ontology(<http://rustdl.test/test>\n\
     }
 
     /// White-box canary (Task 3, RED before `base_types` exists — this test
-    /// only compiles once `instance_check_with_closure` gains the param):
+    /// only compiles once `instance_check_reporting` gains the param):
     /// the `base_types` prune is a genuine short-circuit that takes
     /// precedence over the `{a} ⊓ ¬C` tableau probe, not a no-op parameter.
     ///
@@ -1428,7 +1507,7 @@ Ontology(<http://rustdl.test/test>\n\
     /// must flip the answer to `Ok(false)` — proving the prune is consulted
     /// and dominates. (Production callers only ever pass a genuine witness
     /// model's type set, which — per the soundness note on
-    /// `instance_check_with_closure` — never excludes a genuinely-entailed
+    /// `instance_check_reporting` — never excludes a genuinely-entailed
     /// class; this test isolates the mechanism with a synthetic input.)
     #[test]
     fn pseudo_model_prune_short_circuits_before_tableau_probe() {
@@ -1457,8 +1536,9 @@ Ontology(<http://rustdl.test/test>\n\
         // Baseline: no witness ⇒ the tableau probe alone correctly derives
         // a:E via the disjunctive case split.
         assert!(
-            instance_check_with_closure(&internal, &closure, &prepared, e_id, a_id, None, None)
-                .expect("verdict"),
+            instance_check_reporting(&internal, &closure, &prepared, e_id, a_id, None, None)
+                .expect("verdict")
+                .0,
             "a:E must be entailed via case-split tableau reasoning",
         );
 
@@ -1467,7 +1547,7 @@ Ontology(<http://rustdl.test/test>\n\
         // answer — proof the prune actually fires.
         let empty: HashSet<ClassId> = HashSet::new();
         assert!(
-            !instance_check_with_closure(
+            !instance_check_reporting(
                 &internal,
                 &closure,
                 &prepared,
@@ -1476,7 +1556,8 @@ Ontology(<http://rustdl.test/test>\n\
                 None,
                 Some(&empty),
             )
-            .expect("verdict"),
+            .expect("verdict")
+            .0,
             "base_types excluding E must short-circuit to Ok(false)",
         );
 
@@ -1484,7 +1565,7 @@ Ontology(<http://rustdl.test/test>\n\
         // gives the correct answer.
         let with_e: HashSet<ClassId> = HashSet::from([e_id]);
         assert!(
-            instance_check_with_closure(
+            instance_check_reporting(
                 &internal,
                 &closure,
                 &prepared,
@@ -1493,7 +1574,8 @@ Ontology(<http://rustdl.test/test>\n\
                 None,
                 Some(&with_e),
             )
-            .expect("verdict"),
+            .expect("verdict")
+            .0,
             "base_types containing E must not block the correct Ok(true)",
         );
     }
@@ -1528,7 +1610,7 @@ Ontology(<http://rustdl.test/test>\n\
 
         let empty: HashSet<ClassId> = HashSet::new();
         assert!(
-            instance_check_with_closure(
+            instance_check_reporting(
                 &internal,
                 &closure,
                 &prepared,
@@ -1537,7 +1619,8 @@ Ontology(<http://rustdl.test/test>\n\
                 None,
                 Some(&empty),
             )
-            .expect("verdict"),
+            .expect("verdict")
+            .0,
             "told/derived membership must win before base_types is consulted",
         );
     }

@@ -1,0 +1,137 @@
+name: Publish crates
+
+# Standalone from release-cli.yml and release-python.yml on purpose, for the same
+# reason they are standalone from each other: a failure in one distribution
+# channel must not block the others. All three fire on the same v*.*.* tag.
+#
+# PUBLISHING IS UNATTENDED BY CHOICE (2026-09-01). The `crates-io` environment
+# carries NO required reviewers, so a v*.*.* tag publishes without an approval
+# pause. `cargo publish` is nevertheless IRREVERSIBLE — a version can be yanked
+# but never unpublished, and a version number can never be reused.
+#
+# It DOES carry a ref policy (`branch_policy`): deployments to `crates-io` are
+# restricted to the `main` branch and `v*` tags. So a `workflow_dispatch` from a
+# feature branch, or a tag not starting with `v`, cannot publish — the publish
+# job is refused at the environment, before any credential is minted.
+#
+# CONSEQUENCE: `preflight` is the ONLY guard. Nothing reads its summary before
+# the publish job starts, so every check there must FAIL the job rather than
+# merely report. Keep it that way. To add an approval pause later, attach
+# required reviewers to the `crates-io` environment — no workflow change needed.
+#
+# WHAT GETS PUBLISHED. `--workspace` publishes every member WITHOUT
+# `publish = false`, in dependency order, waiting for index propagation between
+# crates. As of v0.4.24 that is exactly five: owl-dl-core, owl-dl-datatypes,
+# owl-dl-saturation, owl-dl-tableau, owl-dl-reasoner. Deliberately excluded:
+#   owl-dl-cli     - uses `horned_owl::io::omn`, which exists only in the
+#                    `[patch.crates-io]` fork rev. `[patch]` is NOT carried in a
+#                    published manifest, so a consumer resolves upstream 1.4 and
+#                    the crate fails to compile (E0432) while building green
+#                    locally. Distributed as GitHub Release binaries instead.
+#   owl-dl-cb      - no dependents; deferred dead code.
+#   owl-dl-verify  - no publishable dependent; diagnostic-only.
+#   owl-dl-py      - published to PyPI by release-python.yml.
+#   owl-dl-bench   - internal dev tool, git-only dep.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Publish on stable regardless of rust-toolchain.toml's 1.95.0 lint pin,
+  # matching release-cli.yml / release-python.yml.
+  RUSTUP_TOOLCHAIN: stable
+  # Single source of truth for the version, read from the workspace not the tag.
+  VER_CMD: "cargo metadata --no-deps --format-version 1"
+
+jobs:
+  preflight:
+    name: Pre-flight (no credentials)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+
+      # FOOTGUN GUARD: the tag does not set the version, Cargo.toml does. Tagging
+      # v0.4.25 while [workspace.package] still says 0.4.24 would silently publish
+      # 0.4.24 and burn the tag. Refuse rather than publish the wrong number.
+      - name: Tag must match the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          ws=$($VER_CMD | python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='owl-dl-core'))")
+          echo "tag=$tag workspace=$ws"
+          test "$tag" = "$ws" || { echo "::error::tag v$tag does not match workspace version $ws"; exit 1; }
+
+      # Tells the approving reviewer exactly what this run would do. `cargo publish`
+      # has no --skip-existing, so an already-published version FAILS the publish
+      # job; surfacing it here means that is found before approval rather than
+      # halfway through an irreversible run.
+      # FAILS the job on an already-published version. `cargo publish` has no
+      # --skip-existing, so it would error anyway — failing here means a clear
+      # message before anything is attempted, instead of an opaque registry error
+      # part-way through an irreversible multi-crate run.
+      - name: Publish plan (fails if a version is already on crates.io)
+        run: |
+          ver=$($VER_CMD | python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='owl-dl-core'))")
+          crates=$($VER_CMD | python3 -c "import json,sys;print('\n'.join(sorted(p['name'] for p in json.load(sys.stdin)['packages'] if p.get('publish') is None)))")
+          dupes=""
+          { echo "### Publish plan for \`$ver\`"; echo; echo "| crate | on crates.io | action |"; echo "|---|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+          for c in $crates; do
+            have=$(curl -sS --max-time 20 -H 'User-Agent: rustdl-release-ci' "https://crates.io/api/v1/crates/$c" | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('crate') or {}).get('max_version','none'))" 2>/dev/null || echo unknown)
+            if test "$have" = "$ver"; then act='**ALREADY PUBLISHED**'; dupes="$dupes $c"; else act="publish $ver"; fi
+            echo "| \`$c\` | $have | $act |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          cat "$GITHUB_STEP_SUMMARY"
+          test -z "${dupes# }" || {
+            echo "::error::already on crates.io at $ver:${dupes}. cargo publish has no --skip-existing, so a --workspace run would fail. If this is recovery from a PARTIAL publish, publish the remaining crates individually with 'cargo publish -p <crate>' in dependency order; otherwise bump the version."
+            exit 1
+          }
+
+      # Builds each packaged crate STANDALONE, i.e. with [patch.crates-io] NOT
+      # applied - which is the whole point. This is what catches a fork-only
+      # dependency before it can reach the registry.
+      #
+      # VERIFIED LOCALLY 2026-09-01 (rc=0): packages exactly the five publishable
+      # crates in dependency order - core, datatypes, saturation, tableau,
+      # reasoner - and resolves the sibling 0.4.24 requirements from the local
+      # workspace even though no 0.4.x is on the registry yet. So --workspace
+      # handles the first-publish chicken-and-egg; it does not need the deps to
+      # exist upstream first.
+      - name: cargo publish --dry-run --workspace
+        run: cargo publish --dry-run --workspace --locked
+
+  publish:
+    name: Publish to crates.io
+    needs: preflight
+    runs-on: ubuntu-latest
+    # No approval gate: `crates-io` has no required reviewers, so this runs straight
+    # after preflight. It IS ref-restricted to `main` + `v*` tags by that
+    # environment's branch policy. Attach required reviewers there to add an
+    # approval pause — neither change touches this file.
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/owl-dl-reasoner
+    permissions:
+      id-token: write   # required for the crates.io trusted-publisher OIDC exchange
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Trusted publishing: mints a short-lived registry token from this
+      # workflow's OIDC identity, mirroring what publish-pypi already does for
+      # PyPI. No stored CARGO_REGISTRY_TOKEN secret, so nothing to rotate.
+      # Requires a Trusted Publisher configured per-crate on crates.io.
+      # Pinned by SHA (= v1.0.5), matching how release-cli.yml pins
+      # dtolnay/rust-toolchain. NB there is NO floating `v1` tag on this action —
+      # only v1.0.x — so `@v1` does not resolve and fails the job.
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+
+      - name: cargo publish --workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --workspace --locked

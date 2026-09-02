@@ -122,15 +122,23 @@ successors, `justify`/`repair` — in the end-to-end
 ### Rust
 
 ```sh
-cargo add owl-dl-reasoner horned-owl   # in-process library — no JVM, no subprocess
+cargo add rustdl   # in-process library — no JVM, no subprocess
 ```
 
+> The `rustdl` crate is an umbrella that re-exports `owl-dl-reasoner`'s API *and* the
+> exact `horned-owl` it is built against, so one dependency suffices. Depending on
+> `owl-dl-reasoner` directly also works, but then pin `horned-owl@1.4` explicitly: it
+> requires `^1.4`, while a bare `cargo add horned-owl` resolves the latest major
+> (3.x), which Cargo installs *alongside* 1.4 — and the `SetOntology<RcStr>` built
+> with 3.x is a different type from the one `classify` accepts, so the example below
+> fails with a type mismatch.
+
 ```rust
-use horned_owl::io::ParserConfiguration;
-use horned_owl::io::ofn::reader::read as read_ofn;
-use horned_owl::model::RcStr;
-use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::classify;
+use rustdl::classify;
+use rustdl::horned_owl::io::ParserConfiguration;
+use rustdl::horned_owl::io::ofn::reader::read as read_ofn;
+use rustdl::horned_owl::model::RcStr;
+use rustdl::horned_owl::ontology::set::SetOntology;
 
 let src = std::fs::read_to_string("ontology.ofn")?;
 let (onto, _): (SetOntology<RcStr>, _) =
@@ -160,8 +168,21 @@ cargo test --workspace
 
 ## CLI
 
+Prebuilt binaries for Linux (x86-64/aarch64, musl-static), macOS (aarch64) and
+Windows (x86-64) are attached to every
+[release](https://github.com/MaastrichtU-IDS/rustdl/releases/latest) — that is the
+supported way to get `rustdl`.
+
+> **Do not `cargo install owl-dl-cli`.** That crate is deliberately not published
+> (it needs a Manchester-syntax reader that is not yet in upstream `horned-owl`, so
+> a crates.io build of it would not compile). crates.io still serves the old
+> `0.3.0` from 2026-06-05, so `cargo install owl-dl-cli` silently gives you a
+> months-old binary. The five *library* crates ARE published and current.
+
+To build from source instead:
+
 ```sh
-cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli   # install the `rustdl` binary
+cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli   # builds the `rustdl` binary
 
 rustdl classify  ontology.ofn               # full class hierarchy (default)
 rustdl classify  ontology.ofn --pair-timeout-ms 25 --global-timeout-ms 60000  # bounded run

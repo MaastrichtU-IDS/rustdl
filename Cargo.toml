@@ -8,6 +8,7 @@ members = [
     "crates/owl-dl-cb",
     "crates/owl-dl-verify",
     "crates/owl-dl-reasoner",
+    "crates/rustdl",
     "crates/owl-dl-cli",
     "crates/owl-dl-bench",
     "crates/owl-dl-py",
@@ -21,6 +22,7 @@ default-members = [
     "crates/owl-dl-cb",
     "crates/owl-dl-verify",
     "crates/owl-dl-reasoner",
+    "crates/rustdl",
     "crates/owl-dl-cli",
     "crates/owl-dl-bench",
 ]
@@ -38,13 +40,14 @@ keywords = ["owl", "ontology", "reasoner", "description-logic", "semantic-web"]
 categories = ["science", "data-structures"]
 
 [workspace.dependencies]
-owl-dl-core = { path = "crates/owl-dl-core", version = "0.4.5" }
-owl-dl-saturation = { path = "crates/owl-dl-saturation", version = "0.4.5" }
-owl-dl-tableau = { path = "crates/owl-dl-tableau", version = "0.4.5" }
-owl-dl-datatypes = { path = "crates/owl-dl-datatypes", version = "0.4.5" }
-owl-dl-cb = { path = "crates/owl-dl-cb", version = "0.4.5" }
-owl-dl-verify = { path = "crates/owl-dl-verify", version = "0.4.5" }
-owl-dl-reasoner = { path = "crates/owl-dl-reasoner", version = "0.4.5" }
+owl-dl-core = { path = "crates/owl-dl-core", version = "0.4.24" }
+owl-dl-saturation = { path = "crates/owl-dl-saturation", version = "0.4.24" }
+owl-dl-tableau = { path = "crates/owl-dl-tableau", version = "0.4.24" }
+owl-dl-datatypes = { path = "crates/owl-dl-datatypes", version = "0.4.24" }
+owl-dl-cb = { path = "crates/owl-dl-cb", version = "0.4.24" }
+owl-dl-verify = { path = "crates/owl-dl-verify", version = "0.4.24" }
+owl-dl-reasoner = { path = "crates/owl-dl-reasoner", version = "0.4.24" }
+rustdl = { path = "crates/rustdl", version = "0.4.24" }
 
 horned-owl = { version = "1.4", default-features = false }
 

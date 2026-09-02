@@ -6,6 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+# Never published, and not publishable as written (no `description`, which
+# crates.io requires). Its only dependent is owl-dl-cli, itself
+# `publish = false` (fork-only `horned_owl::io::omn`), so nothing publishable
+# consumes it. It is also diagnostic-only: a `Violated` verdict is documented
+# as a lead requiring adjudication, not a proof — easy for an external consumer
+# to misread. Revisit if it gains a published consumer.
+publish = false
 
 [dependencies]
 owl-dl-core = { workspace = true }

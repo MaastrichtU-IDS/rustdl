@@ -10,6 +10,15 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
+# Uses `horned_owl::io::omn` (Manchester reader/writer), which exists only in the
+# `[patch.crates-io]` fork rev, NOT in upstream horned-owl 1.4 on crates.io.
+# `[patch]` is not carried in a published manifest, so a consumer resolves
+# upstream and this crate FAILS TO COMPILE for them (measured: E0432
+# `unresolved import horned_owl::io::omn`) — while building green here, because
+# the patch applies locally. Distribution is the GitHub Release binaries built
+# by .github/workflows/release-cli.yml. Flip back to publishable once upstream
+# PR phillord/horned-owl#176 lands and the patch is dropped.
+publish = false
 
 [[bin]]
 name = "rustdl"

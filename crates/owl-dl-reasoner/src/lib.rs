@@ -5894,6 +5894,14 @@ pub fn is_consistent_with_stats<A: ForIRI>(
 ///   which is a sound under-approximation but an invisible one; that silence is
 ///   what this function exists to remove.
 ///
+/// # The budget is honoured end to end
+///
+/// Every stage is deadline-capable, including the `ABox`-saturation pre-check.
+/// Getting that wrong is easy: a first cut left the pre-check unbounded "because
+/// it is cheap", and `family.ofn` overran a 500 ms budget by 2.3x. Overshoot is
+/// still possible in principle — a single indivisible step can run past its
+/// deadline — but no stage is now unbounded by construction.
+///
 /// # Errors
 ///
 /// See [`ReasonError`].
@@ -5916,14 +5924,20 @@ pub fn is_consistent_internal_bounded(
     internal: InternalOntology,
     deadline: std::time::Instant,
 ) -> Result<Option<bool>, ReasonError> {
-    // The ABox-saturation pre-check runs FIRST and unbounded, exactly as the
-    // unbounded path does. It is the step whose omission makes satisfiability an
-    // unsafe substitute (#74), so skipping it under time pressure would rebuild
-    // the very hazard this function exists to avoid. It is also budget-bounded in
-    // practice on the classify path via RUSTDL_CLASSIFY_INCONSISTENCY_MS; here the
-    // caller asked for a consistency verdict, so the pre-check is the cheapest
-    // route to one.
-    if abox_saturation_inconsistent(&internal) {
+    // The ABox-saturation pre-check runs FIRST — it is the step whose omission
+    // makes satisfiability an unsafe substitute (#74), so skipping it would
+    // rebuild the hazard this function exists to avoid.
+    //
+    // IT MUST BE BOUNDED BY THE CALLER'S DEADLINE. A first cut called the
+    // unbounded `abox_saturation_inconsistent` here, and `family.ofn` then took
+    // 1.17 s against a 500 ms budget — a 2.3x overrun. A deadline-bearing API that
+    // overruns its deadline is a weak contract, and this is the only step that can
+    // do it: everything below is already deadline-capable. A timeout here yields
+    // `false` ("no clash found in budget"), a sound under-approximation, and the
+    // deadline check immediately after converts that into `None` rather than a
+    // guess.
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if abox_saturation_inconsistent_bounded(&internal, Some(remaining)) {
         return Ok(Some(false));
     }
     if std::time::Instant::now() >= deadline {

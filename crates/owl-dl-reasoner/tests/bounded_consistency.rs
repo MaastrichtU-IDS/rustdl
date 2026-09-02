@@ -26,6 +26,7 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
+use std::fmt::Write as _;
 use std::io::Cursor;
 use std::time::Duration;
 
@@ -136,6 +137,60 @@ fn the_substitute_needs_owl_thing_declared() {
         owl_dl_reasoner::is_consistent_with_timeout(&o, GENEROUS).unwrap(),
         Some(false),
         "the real check has no such precondition"
+    );
+}
+
+/// The budget must bound the ABox-saturation pre-check too, not just the stages
+/// after it.
+///
+/// A first cut left that pre-check unbounded on the reasoning that it is cheap. It
+/// is not always: `family.ofn` overran a 500 ms budget by **2.3x** (1.17 s).
+/// Bounded, the same input measures 1.03x at 100 ms and 1.02x at 500 ms.
+///
+/// ## The fixture is sized from a measured sabotage, not guessed
+///
+/// A first version of this canary used 400 individuals with no transitive role and
+/// **failed to catch the regression** — restoring the unbounded call left it green,
+/// because that shape costs milliseconds either way. What makes the pre-check
+/// expensive is the ROLE-CHAIN CLOSURE, which is also what makes `family` slow. A
+/// transitive role over a chain of 800 individuals gives an O(n²) closure and this
+/// measured separation:
+///
+/// | n | bounded | unbounded |
+/// |---|---|---|
+/// | 200 | 447 µs | 63 ms |
+/// | 400 | 284 µs | 380 ms |
+/// | **800** | **557 µs** | **4 s** |
+///
+/// The 2 s threshold sits ~3500x above the passing cost and ~2x below the failing
+/// one, so it is not the host-speed knife-edge that #92 documents.
+#[test]
+fn the_budget_bounds_the_abox_pre_check() {
+    const N: usize = 800;
+    let mut body = String::from(
+        "Declaration(Class(:A)) Declaration(ObjectProperty(:r))\nTransitiveObjectProperty(:r)\n",
+    );
+    for i in 0..N {
+        let _ = write!(
+            body,
+            "Declaration(NamedIndividual(:i{i}))\nClassAssertion(:A :i{i})\n"
+        );
+        if i > 0 {
+            let _ = writeln!(body, "ObjectPropertyAssertion(:r :i{} :i{i})", i - 1);
+        }
+    }
+    let o = onto(&body);
+    let start = std::time::Instant::now();
+    let verdict = owl_dl_reasoner::is_consistent_with_timeout(&o, Duration::from_nanos(1)).unwrap();
+    let elapsed = start.elapsed();
+    assert_eq!(
+        verdict, None,
+        "a 1 ns budget cannot be met, so the answer must be None"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the ABox pre-check must respect the deadline; {elapsed:?} means it ran \
+         unbounded (measured: ~557 us bounded vs ~4 s unbounded on this fixture)"
     );
 }
 

@@ -122,21 +122,23 @@ successors, `justify`/`repair` — in the end-to-end
 ### Rust
 
 ```sh
-cargo add owl-dl-reasoner horned-owl@1.4   # in-process library — no JVM, no subprocess
+cargo add rustdl   # in-process library — no JVM, no subprocess
 ```
 
-> Pin `horned-owl@1.4`. `owl-dl-reasoner` requires `^1.4`, and a bare
-> `cargo add horned-owl` resolves the latest major (3.x), which Cargo will happily
-> install *alongside* 1.4. The `SetOntology<RcStr>` you build with 3.x is then a
-> different type from the one `classify` accepts, and the example below fails to
-> compile with a type mismatch.
+> The `rustdl` crate is an umbrella that re-exports `owl-dl-reasoner`'s API *and* the
+> exact `horned-owl` it is built against, so one dependency suffices. Depending on
+> `owl-dl-reasoner` directly also works, but then pin `horned-owl@1.4` explicitly: it
+> requires `^1.4`, while a bare `cargo add horned-owl` resolves the latest major
+> (3.x), which Cargo installs *alongside* 1.4 — and the `SetOntology<RcStr>` built
+> with 3.x is a different type from the one `classify` accepts, so the example below
+> fails with a type mismatch.
 
 ```rust
-use horned_owl::io::ParserConfiguration;
-use horned_owl::io::ofn::reader::read as read_ofn;
-use horned_owl::model::RcStr;
-use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::classify;
+use rustdl::classify;
+use rustdl::horned_owl::io::ParserConfiguration;
+use rustdl::horned_owl::io::ofn::reader::read as read_ofn;
+use rustdl::horned_owl::model::RcStr;
+use rustdl::horned_owl::ontology::set::SetOntology;
 
 let src = std::fs::read_to_string("ontology.ofn")?;
 let (onto, _): (SetOntology<RcStr>, _) =

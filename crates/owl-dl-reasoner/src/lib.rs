@@ -2876,6 +2876,62 @@ pub(crate) fn classify_inconsistency_precheck(
                 ms => Some(std::time::Duration::from_millis(ms)),
             },
         )
+        || classify_wedge_inconsistent(internal)
+}
+
+/// `RUSTDL_CLASSIFY_WEDGE_INCONSISTENCY` — **default ON**, `=0` reverts (#89).
+///
+/// Adds the ABox-seeded WEDGE consistency route to classify's pre-check. Without
+/// it `classify` reported `consistent: true` on ontologies `rustdl consistent`,
+/// Konclude AND Kobayashi-MaRust all call inconsistent (`ore_ont_16321`,
+/// `ore_ont_4198`).
+///
+/// # Why the wedge specifically
+///
+/// Traced on both reproducers, the verdict comes from `consistency: wedge Unsat`
+/// — not from the saturator and not from `abox_saturation`, the two signals
+/// classify already had. `abox_saturation` propagates over NAMED individuals with
+/// no witness generation, so a clash at a data successor (a `DataPropertyRange`
+/// violated by an assertion) is out of its reach by construction.
+///
+/// #89 framed the fix as needing `DKey`-aware `ABox` saturation or a `decide(Top)`
+/// probe. Neither is required. Note also that the design record calls a
+/// `decide(Top)` probe here "a measured dead-end (hangs on consistent
+/// alehif/pizza)" — that is about an UNBOUNDED probe; the wedge route is bounded
+/// and measures 2.34 ms on pizza.
+///
+/// # Cost
+///
+/// Gated on `internal_has_abox`, so `ABox`-free inputs (galen and most of ORE) pay
+/// NOTHING and the reduced-input fast path is untouched. For ABox-bearing inputs
+/// it is one `ConsistencyCache::build` plus a bounded `decide`, reusing the same
+/// budget as the `ABox` pre-check.
+fn classify_wedge_inconsistency_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_WEDGE_INCONSISTENCY").is_none_or(|v| v != "0")
+}
+
+/// The wedge half of [`classify_inconsistency_precheck`]. `true` only on a
+/// witnessed `Unsat`: `Sat` and `Stalled` both mean "no clash seen here", which is
+/// the same sound under-approximation classify already made.
+fn classify_wedge_inconsistent(internal: &InternalOntology) -> bool {
+    if !classify_wedge_inconsistency_enabled()
+        || !wedge_consistency_enabled()
+        || !internal_has_abox(internal)
+    {
+        return false;
+    }
+    let budget = match classify_inconsistency_budget_ms(internal) {
+        0 => None,
+        ms => Some(std::time::Instant::now() + std::time::Duration::from_millis(ms)),
+    };
+    let unsat = matches!(
+        ConsistencyCache::build(internal).decide(budget),
+        owl_dl_tableau::hyper::HyperResult::Unsat
+    );
+    if unsat && std::env::var_os("RUSTDL_TRACE").is_some() {
+        eprintln!("classify: KB inconsistent (wedge Unsat)");
+    }
+    unsat
 }
 
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache

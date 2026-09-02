@@ -122,8 +122,14 @@ successors, `justify`/`repair` — in the end-to-end
 ### Rust
 
 ```sh
-cargo add owl-dl-reasoner horned-owl   # in-process library — no JVM, no subprocess
+cargo add owl-dl-reasoner horned-owl@1.4   # in-process library — no JVM, no subprocess
 ```
+
+> Pin `horned-owl@1.4`. `owl-dl-reasoner` requires `^1.4`, and a bare
+> `cargo add horned-owl` resolves the latest major (3.x), which Cargo will happily
+> install *alongside* 1.4. The `SetOntology<RcStr>` you build with 3.x is then a
+> different type from the one `classify` accepts, and the example below fails to
+> compile with a type mismatch.
 
 ```rust
 use horned_owl::io::ParserConfiguration;
@@ -160,8 +166,21 @@ cargo test --workspace
 
 ## CLI
 
+Prebuilt binaries for Linux (x86-64/aarch64, musl-static), macOS (aarch64) and
+Windows (x86-64) are attached to every
+[release](https://github.com/MaastrichtU-IDS/rustdl/releases/latest) — that is the
+supported way to get `rustdl`.
+
+> **Do not `cargo install owl-dl-cli`.** That crate is deliberately not published
+> (it needs a Manchester-syntax reader that is not yet in upstream `horned-owl`, so
+> a crates.io build of it would not compile). crates.io still serves the old
+> `0.3.0` from 2026-06-05, so `cargo install owl-dl-cli` silently gives you a
+> months-old binary. The five *library* crates ARE published and current.
+
+To build from source instead:
+
 ```sh
-cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli   # install the `rustdl` binary
+cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli   # builds the `rustdl` binary
 
 rustdl classify  ontology.ofn               # full class hierarchy (default)
 rustdl classify  ontology.ofn --pair-timeout-ms 25 --global-timeout-ms 60000  # bounded run

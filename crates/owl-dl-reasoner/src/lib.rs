@@ -85,10 +85,12 @@ pub use property_values::{
     inferred_object_property_values,
 };
 pub use realize::{
-    Realization, instances_of, instances_of_internal, instances_of_saturation_only,
+    Realization, instances_of, instances_of_internal, instances_of_reporting,
+    instances_of_reporting_internal, instances_of_saturation_only,
     instances_of_saturation_only_internal, is_instance_of, is_instance_of_internal,
-    is_instance_of_saturation_only, is_instance_of_saturation_only_internal, realize,
-    realize_internal, realize_saturation_only, realize_saturation_only_internal,
+    is_instance_of_reporting, is_instance_of_reporting_internal, is_instance_of_saturation_only,
+    is_instance_of_saturation_only_internal, realize, realize_internal, realize_saturation_only,
+    realize_saturation_only_internal,
 };
 pub use repair::{Repair, Repairs, find_repairs, find_repairs_prepared};
 

@@ -188,6 +188,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_COMPLEX_QUALIFIER_VERIFY",
+            owl_dl_reasoner::complex_qualifier_verify_enabled,
+            true,
+        ),
+        (
             "RUSTDL_HORN_SHORTCIRCUIT",
             owl_dl_reasoner::horn_shortcircuit_enabled,
             true,

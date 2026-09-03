@@ -6848,7 +6848,7 @@ fn concept_has_complex_qualifier_counting(pool: &ConceptPool, c: ConceptId) -> b
 /// qualified cardinality whose filler is not a named class, and
 /// `complex_qualifier_counting_classes` is EMPTY for every other input, so the
 /// clause short-circuits before touching the closure.
-fn complex_qualifier_verify_enabled() -> bool {
+pub fn complex_qualifier_verify_enabled() -> bool {
     std::env::var_os("RUSTDL_COMPLEX_QUALIFIER_VERIFY").is_none_or(|v| v != "0")
 }
 

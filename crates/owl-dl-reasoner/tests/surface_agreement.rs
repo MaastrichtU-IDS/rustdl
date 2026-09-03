@@ -184,26 +184,56 @@ fn classify_agrees_with_the_per_query_surfaces() {
     );
 }
 
+/// Shapes that USED to diverge and now must agree. A row arrives here when
+/// `the_gate_detects_the_known_divergences` fails because the defect was fixed —
+/// so the same fixture keeps working, on the other side of the ledger.
+#[test]
+fn previously_divergent_shapes_now_agree() {
+    // #89 — classify reported `consistent: true` on a KB `rustdl consistent`,
+    // Konclude and Kobayashi-MaRust all call inconsistent. Fixed by consulting the
+    // wedge consistency route in classify's pre-check.
+    let body = r#"Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+                  DataPropertyRange(:p xsd:double)
+                  DataPropertyAssertion(:p :a "1.0"^^xsd:float)"#;
+    let src = format!(
+        "Prefix(:=<http://ex#>)\n\
+         Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+         Ontology(\n{body}\n)"
+    );
+    let mut reader = Cursor::new(src);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).unwrap();
+    let (d, _skipped, compared) = divergences(&onto, "#89", true);
+    assert!(
+        compared > 0,
+        "no comparison made — a green result would be vacuous"
+    );
+    assert!(
+        d.is_empty(),
+        "#89 regressed: classify and the per-query surfaces disagree again:\n{}",
+        d.join("\n")
+    );
+}
+
 /// The gate must DETECT divergence, not merely fail to find it. Each case below
 /// is a known live defect, one per leg, so all three legs are proven to fire.
 ///
 /// **This test asserts the CURRENT (broken) state deliberately.** When one of
 /// these is fixed it will FAIL, which is the signal to delete that row and — if
-/// the fixture is cheap — move it into the passing gate above. That is the
+/// the fixture is cheap — move it into the passing gate above.
+///
+/// **That has already happened once, within a day.** #89 was fixed by the wedge
+/// consistency route, and this test failed in CI with
+/// `the gate did NOT detect ["#89"]`. Its fixture now lives in
+/// `previously_divergent_shapes_now_agree`, where it guards against regression
+/// instead. An `#[ignore]`d sentinel would have gone on passing silently. That is the
 /// opposite of an `#[ignore]`d sentinel, which goes stale silently: a fix here is
 /// loud. See `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md` for the
 /// failure mode this avoids.
 #[test]
 fn the_gate_detects_the_known_divergences() {
     // (issue, leg exercised, ontology body)
-    let cases: [(&str, &str, &str); 3] = [
-        (
-            "#89",
-            "consistency",
-            r#"Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
-               DataPropertyRange(:p xsd:double)
-               DataPropertyAssertion(:p :a "1.0"^^xsd:float)"#,
-        ),
+    let cases: [(&str, &str, &str); 2] = [
         (
             "#91",
             "satisfiability",

@@ -975,6 +975,14 @@ struct ClauseMatchPlan {
     other_classes: SmallVec<[(ClassId, Var); 4]>,
     /// Topological evaluation order over `role_atoms` (from `eval_order`).
     order: SmallVec<[usize; 8]>,
+    /// Indices into `role_atoms` of atoms that are FILTERS rather than tree
+    /// edges: both endpoints are already bound by the time they are reached, so
+    /// there is nothing to enumerate — the atom is a check that the edge exists.
+    /// A self-loop `R(y,y)` is the degenerate case (#90), and a join
+    /// (`R(X,y) ∧ S(X,y)`) or a cycle-closing leg is the general one. Before
+    /// this existed `eval_order` refused such a body outright and the clause got
+    /// NO match plan, so it never fired and its constraint was silently ignored.
+    filters: SmallVec<[usize; 2]>,
 }
 
 /// Precompute one clause's [`ClauseMatchPlan`], or `None` if its body shape is
@@ -995,8 +1003,8 @@ fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
             _ => return None,
         }
     }
-    let order = match eval_order(&role_atoms) {
-        Ok(order) => {
+    let (order, filters) = match eval_order(&role_atoms) {
+        Ok((order, filters)) => {
             if trace_body_vars() {
                 let vars = distinct_body_vars(&role_atoms);
                 if vars > MAX_BODY_VARS {
@@ -1007,7 +1015,7 @@ fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
                     );
                 }
             }
-            order
+            (order, filters)
         }
         Err(reject) => {
             if trace_body_vars() {
@@ -1026,6 +1034,7 @@ fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
         role_atoms,
         other_classes,
         order,
+        filters,
     })
 }
 
@@ -4162,6 +4171,7 @@ impl<'c> HyperEngine<'c> {
             role_atoms: plan.role_atoms.as_slice(),
             order: plan.order.as_slice(),
             other_classes: plan.other_classes.as_slice(),
+            filters: plan.filters.as_slice(),
         };
 
         let mut out = Vec::new();
@@ -4184,6 +4194,15 @@ impl<'c> HyperEngine<'c> {
         if i == plan.order.len() {
             let ok = plan.other_classes.iter().all(|(c, v)| {
                 resolve_var(*v, node, binding).is_some_and(|m| self.nodes[m.index()].has(*c))
+            }) && plan.filters.iter().all(|&fi| {
+                let (role, u, v) = plan.role_atoms[fi];
+                match (resolve_var(u, node, binding), resolve_var(v, node, binding)) {
+                    (Some(su), Some(tv)) => self.role_atom_holds(role, su, tv),
+                    // An unbound endpoint cannot be checked; refuse the match
+                    // rather than treat the atom as satisfied — an unenforced
+                    // body atom is what this whole change exists to remove.
+                    _ => false,
+                }
             });
             if ok {
                 let mut b = binding.clone();
@@ -4249,6 +4268,30 @@ impl<'c> HyperEngine<'c> {
             self.enumerate_matches(node, plan, i + 1, binding, out);
             binding.pop();
         }
+    }
+
+    /// Does the role atom `role(src, tgt)` hold between two ALREADY-BOUND
+    /// nodes? Used for `MatchPlan::filters` (#90).
+    ///
+    /// Deliberately mirrors `enumerate_matches`' own target collection —
+    /// forward `edges` first, then `preds` with `er.flip()` for inverse/
+    /// symmetric traversal, both under the same resolve-on-read gate — so a
+    /// filter accepts exactly the pairs enumeration would have bound. Any
+    /// divergence between the two would be a completeness or FP bug depending
+    /// on its direction, so they must stay in step.
+    fn role_atom_holds(&self, role: Role, src: HNode, tgt: HNode) -> bool {
+        let hier = self.sub_roles.as_ref();
+        let resolve_reads = self.inverse_func_merge;
+        let read = |n: HNode| if resolve_reads { self.resolve(n) } else { n };
+        let src_data = &self.nodes[src.index()];
+        src_data
+            .edges
+            .iter()
+            .any(|(er, t)| role_matches(*er, role, hier) && read(*t) == tgt)
+            || src_data
+                .preds
+                .iter()
+                .any(|(er, sp)| role_matches(er.flip(), role, hier) && read(*sp) == tgt)
     }
 
     /// Assert the (single, Horn) head atom. `binding` maps the body's
@@ -4723,20 +4766,26 @@ struct MatchPlan<'p> {
     role_atoms: &'p [(Role, Var, Var)],
     order: &'p [usize],
     other_classes: &'p [(ClassId, Var)],
+    /// See [`ClauseMatchPlan::filters`] — role atoms checked at the leaf.
+    filters: &'p [usize],
 }
 
-/// Why [`eval_order`] refused a body. Only [`OrderReject::VarCap`] is the
-/// variable cap; the other two are genuine shape restrictions that raising
-/// the cap cannot reach. Keeping them apart is what lets
+/// Why [`eval_order`] refused a body. [`OrderReject::VarCap`] is the variable
+/// cap; [`OrderReject::Disconnected`] is a genuine shape restriction that
+/// raising the cap cannot reach. Keeping them apart is what lets
 /// `RUSTDL_TRACE_BODY_VARS=1` attribute a never-firing clause.
+///
+/// A third variant, `NotTree`, was removed in the #90 fix: a body whose role
+/// atom targets an already-bound variable — a self-loop `R(y,y)`, a join
+/// `R(X,y) ∧ S(X,y)`, a cycle-closing leg — is no longer refused. Such an atom
+/// is a FILTER (see [`ClauseMatchPlan::filters`]), and refusing it discarded the
+/// whole clause, leaving its constraint silently unenforced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OrderReject {
     /// The body's variable count exceeded [`max_body_vars`]. `vars` is the
     /// count at the moment of refusal (i.e. `cap + 1`), not the body's full
     /// requirement — see [`distinct_body_vars`] for that.
     VarCap { vars: usize, cap: usize },
-    /// Two role atoms target the same variable, or the atoms form a cycle.
-    NotTree,
     /// Some role atom's source variable is unreachable from `X`.
     Disconnected,
 }
@@ -4762,7 +4811,9 @@ fn distinct_body_vars(role_atoms: &[(Role, Var, Var)]) -> usize {
 /// at `X` (unbindable source, duplicate target, or more than
 /// [`max_body_vars`] vars) — an unsupported shape. The caller turns any
 /// `Err` into the `None` that makes `match_body` skip the clause.
-fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Result<SmallVec<[usize; 8]>, OrderReject> {
+type EvalOrder = (SmallVec<[usize; 8]>, SmallVec<[usize; 2]>);
+
+fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Result<EvalOrder, OrderReject> {
     eval_order_with_cap(role_atoms, max_body_vars())
 }
 
@@ -4773,23 +4824,32 @@ fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Result<SmallVec<[usize; 8]>, O
 fn eval_order_with_cap(
     role_atoms: &[(Role, Var, Var)],
     cap: usize,
-) -> Result<SmallVec<[usize; 8]>, OrderReject> {
+) -> Result<EvalOrder, OrderReject> {
     // The scratch buffers stay inline for the ordinary 1–3-var body and spill
     // to the heap above that (`SmallVec` grows; it is not a fixed array), so a
     // raised `cap` costs an allocation, never correctness.
     let mut bound: SmallVec<[Var; 8]> = smallvec![X];
     let mut order: SmallVec<[usize; 8]> = SmallVec::with_capacity(role_atoms.len());
     let mut used: SmallVec<[bool; 8]> = SmallVec::from_elem(false, role_atoms.len());
-    while order.len() < role_atoms.len() {
+    let mut filters: SmallVec<[usize; 2]> = SmallVec::new();
+    while order.len() + filters.len() < role_atoms.len() {
         let mut progressed = false;
         for (i, (_, u, v)) in role_atoms.iter().enumerate() {
             if used[i] || !bound.contains(u) {
                 continue;
             }
             if bound.contains(v) {
-                // `v` already bound ⇒ not a tree (two role atoms
-                // target the same var, or a cycle). Unsupported.
-                return Err(OrderReject::NotTree);
+                // Both endpoints bound ⇒ nothing to enumerate: this atom is a
+                // CHECK that the edge exists, not a tree edge. It used to be
+                // `Err(NotTree)`, which threw away the WHOLE clause — so a
+                // self-loop `R(y,y)` (#90), a join `R(X,y) ∧ S(X,y)` and a
+                // cycle-closing leg were all silently unenforced rather than
+                // refused loudly. `enumerate_matches` evaluates these at the
+                // leaf, beside `other_classes`.
+                used[i] = true;
+                filters.push(i);
+                progressed = true;
+                continue;
             }
             used[i] = true;
             bound.push(*v);
@@ -4808,7 +4868,7 @@ fn eval_order_with_cap(
             return Err(OrderReject::Disconnected);
         }
     }
-    Ok(order)
+    Ok((order, filters))
 }
 
 /// Resolve a clause variable to a graph node: `X` is the match root
@@ -4904,8 +4964,13 @@ mod tests {
         // `bound` starts holding `X`, so `n` successors means `n + 1` vars: the
         // largest accepted star has `MAX_BODY_VARS - 1` role atoms.
         let widest_ok = u32::try_from(MAX_BODY_VARS - 1).expect("cap fits u32");
-        let order = eval_order(&star_body(widest_ok)).expect("at-cap body must be accepted");
+        let (order, filters) =
+            eval_order(&star_body(widest_ok)).expect("at-cap body must be accepted");
         assert_eq!(order.len(), widest_ok as usize);
+        assert!(
+            filters.is_empty(),
+            "a star body has no already-bound targets"
+        );
         assert_var_cap_refusal(widest_ok + 1);
     }
 
@@ -4926,7 +4991,12 @@ mod tests {
             .map(|i| (Role::Named(RoleId::new(i)), i, i + 1))
             .collect();
         reversed.reverse();
-        let order = eval_order_with_cap(&reversed, 64).expect("well-formed 41-var chain");
+        let (order, filters) =
+            eval_order_with_cap(&reversed, 64).expect("well-formed 41-var chain");
+        assert!(
+            filters.is_empty(),
+            "a chain body has no already-bound targets"
+        );
         // `reversed[k]` is atom `n-1-k`, so a correct BFS from `X` emits
         // indices n-1, n-2, …, 0.
         let expect: Vec<usize> = (0..n as usize).rev().collect();
@@ -4942,6 +5012,7 @@ mod tests {
         assert_eq!(
             eval_order_with_cap(&wide_star, 64)
                 .expect("well-formed 41-var star")
+                .0
                 .to_vec(),
             (0..n as usize).collect::<Vec<_>>()
         );
@@ -4976,20 +5047,39 @@ mod tests {
         assert_eq!(distinct_body_vars(&chain), 12);
     }
 
-    /// The other two refusal branches must stay distinguishable from the cap —
-    /// raising the cap cannot reach either, so conflating them would make the
-    /// lever look applicable where it is not.
+    /// The remaining shape refusal must stay distinguishable from the cap —
+    /// raising the cap cannot reach it, so conflating them would make the lever
+    /// look applicable where it is not.
     #[test]
     fn shape_refusals_are_not_reported_as_the_cap() {
         let r = Role::Named(RoleId::new(0));
-        let s = Role::Named(RoleId::new(1));
-        // Two atoms targeting the same var: not a tree.
-        assert_eq!(
-            eval_order(&[(r, X, 1), (s, X, 1)]),
-            Err(OrderReject::NotTree)
-        );
-        // A source unreachable from X.
+        // A source unreachable from X: still refused, and NOT as the cap.
         assert_eq!(eval_order(&[(r, 7, 8)]), Err(OrderReject::Disconnected));
+    }
+
+    /// A role atom whose target is ALREADY BOUND is a filter, not a refusal
+    /// (#90). This test previously asserted `Err(NotTree)` for the join below —
+    /// it was pinning the defect, since refusing the body threw the clause away
+    /// and left its constraint unenforced.
+    #[test]
+    fn an_already_bound_target_becomes_a_filter_not_a_refusal() {
+        let r = Role::Named(RoleId::new(0));
+        let s = Role::Named(RoleId::new(1));
+        // Join: `R(X,1) ∧ S(X,1)` — the second atom checks the edge.
+        let (order, filters) = eval_order(&[(r, X, 1), (s, X, 1)]).expect("join is supported");
+        assert_eq!(order.as_slice(), &[0], "only the first atom binds `1`");
+        assert_eq!(filters.as_slice(), &[1], "the second atom is a filter");
+
+        // Self-loop on the root: `R(X,X)` — the #90 shape outside any `∀`.
+        let (order, filters) = eval_order(&[(r, X, X)]).expect("self-loop is supported");
+        assert!(order.is_empty(), "a self-loop binds nothing");
+        assert_eq!(filters.as_slice(), &[0]);
+
+        // Self-loop on a successor: `P(X,y) ∧ R(y,y)` — the #90 shape under `∀`.
+        let (order, filters) =
+            eval_order(&[(r, X, 1), (s, 1, 1)]).expect("successor self-loop is supported");
+        assert_eq!(order.as_slice(), &[0]);
+        assert_eq!(filters.as_slice(), &[1]);
     }
 
     /// Assert that the sparse per-pair delta for `extra` (appended after

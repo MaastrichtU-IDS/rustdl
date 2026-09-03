@@ -798,7 +798,20 @@ impl Clausifier {
                     let role = self.canon_role(role);
                     let q = self.fresh_class();
                     self.clauses.push(DlClause {
-                        body: vec![Atom::Class(q, var), Atom::Role(role, var, var)],
+                        // ANCHORED ON `X`, not `var` (#90). This states a
+                        // UNIVERSAL property of `Q` — no `Q`-node carries an
+                        // `R`-self-loop — so it must be emitted on the clause
+                        // root, exactly as #78 established for the atomic
+                        // sibling above. Emitted on `var` it named a successor
+                        // variable that no other atom binds, and `eval_order`
+                        // rejected the body as `Disconnected`: the clause got no
+                        // match plan and the constraint was silently unenforced.
+                        //
+                        // Anchoring alone is NOT sufficient — on `X` the body
+                        // becomes the self-loop `R(X,X)`, which `eval_order`
+                        // used to reject as `NotTree`. Both had to be fixed, and
+                        // that is why anchoring was measured as a no-op before.
+                        body: vec![Atom::Class(q, X), Atom::Role(role, X, X)],
                         head: Vec::new(),
                     });
                     Some(Atom::Class(q, var))

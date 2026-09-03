@@ -25,7 +25,7 @@
 //! `RUSTDL_TRACE_BODY_VARS=1` the default build prints
 //! `refused body: vars=12 role_atoms=11 cap=8 reason=VarCap { vars: 9, cap: 8 }`
 //! — the `> MAX_BODY_VARS` branch specifically, not one of `eval_order`'s
-//! other refusals (`NotTree` / `Disconnected`), which raising the cap could
+//! other refusal (`Disconnected`), which raising the cap could
 //! never reach.
 //!
 //! `X ⊑ C` is adjudicated: **both Konclude v0.7.0 and `HermiT` 1.4.3 derive it**

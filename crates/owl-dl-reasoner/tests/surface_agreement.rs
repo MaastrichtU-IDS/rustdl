@@ -32,6 +32,7 @@
 //! that was going unnoticed.
 
 #![allow(clippy::unwrap_used)]
+#![allow(unsafe_code)]
 #![allow(clippy::doc_markdown)]
 
 use horned_owl::io::ParserConfiguration;
@@ -64,6 +65,39 @@ fn load(path: &Path) -> SetOntology<RcStr> {
 
 /// Every disagreement found on one ontology, plus how many checks were skipped
 /// because a probe timed out.
+/// Serialises the tests that set a process-global `RUSTDL_*` flag against those
+/// whose fixtures would observe it.
+static FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Set an env var for the duration of a scope and restore it on drop. Mirrors
+/// `tests/adaptive_budget.rs`'s guard.
+struct SetEnvGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl SetEnvGuard {
+    fn set(key: &'static str, val: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        // SAFETY: callers hold `FLAG_LOCK`, so no other test in this binary is
+        // reading or writing the environment concurrently.
+        unsafe { std::env::set_var(key, val) };
+        Self { key, prev }
+    }
+}
+
+impl Drop for SetEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: as in `set`.
+        unsafe {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 fn divergences(
     onto: &SetOntology<RcStr>,
     label: &str,
@@ -189,6 +223,9 @@ fn classify_agrees_with_the_per_query_surfaces() {
 /// so the same fixture keeps working, on the other side of the ledger.
 #[test]
 fn previously_divergent_shapes_now_agree() {
+    let _lock = FLAG_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // #89 — classify reported `consistent: true` on a KB `rustdl consistent`,
     // Konclude and Kobayashi-MaRust all call inconsistent. Fixed by consulting the
     // wedge consistency route in classify's pre-check.
@@ -238,35 +275,76 @@ fn previously_divergent_shapes_now_agree() {
         "#91 regressed: classify and the per-query surfaces disagree again:\n{}",
         d91.join("\n")
     );
-}
 
-/// The gate must DETECT divergence, not merely fail to find it. Each case below
-/// is a known live defect, one per leg, so all three legs are proven to fire.
-///
-/// **This test asserts the CURRENT (broken) state deliberately.** When one of
-/// these is fixed it will FAIL, which is the signal to delete that row and — if
-/// the fixture is cheap — move it into the passing gate above.
-///
-/// **That has now happened TWICE, on consecutive days.** #89 was fixed by the wedge
-/// consistency route, and this test failed in CI with
-/// `the gate did NOT detect ["#89"]`. Its fixture now lives in
-/// `previously_divergent_shapes_now_agree`, where it guards against regression
-/// instead. An `#[ignore]`d sentinel would have gone on passing silently. That is the
-/// opposite of an `#[ignore]`d sentinel, which goes stale silently: a fix here is
-/// loud. See `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md` for the
-/// failure mode this avoids.
-#[test]
-fn the_gate_detects_the_known_divergences() {
-    // (issue, leg exercised, ontology body)
-    let cases: [(&str, &str, &str); 1] = [(
-        "#90",
-        "subsumption",
-        r"Declaration(Class(:S)) Declaration(Class(:T)) Declaration(Class(:Z))
+    // #90 — classify dropped `T ⊑ S` whenever `ObjectHasSelf` appeared in the
+    // filler, in either polarity. Fixed by teaching `eval_order` that a role atom
+    // targeting an already-bound variable is a FILTER rather than an unsupported
+    // shape: refusing it discarded the whole clause, so the constraint went
+    // silently unenforced. The disjunctive filler below is the row this gate used
+    // to carry as a live defect.
+    let body90 = r"Declaration(Class(:S)) Declaration(Class(:T)) Declaration(Class(:Z))
               Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:r))
               EquivalentClasses(:S ObjectAllValuesFrom(:p ObjectUnionOf(ObjectComplementOf(ObjectHasSelf(:r)) ObjectComplementOf(:Z))))
-              SubClassOf(:T ObjectAllValuesFrom(:p ObjectUnionOf(ObjectComplementOf(ObjectHasSelf(:r)) ObjectComplementOf(:Z))))",
+              SubClassOf(:T ObjectAllValuesFrom(:p ObjectUnionOf(ObjectComplementOf(ObjectHasSelf(:r)) ObjectComplementOf(:Z))))";
+    let src90 = format!("Prefix(:=<http://ex#>)\nOntology(\n{body90}\n)");
+    let mut r90 = Cursor::new(src90);
+    let (onto90, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut r90, ParserConfiguration::default()).unwrap();
+    let (d90, _s90, c90) = divergences(&onto90, "#90", true);
+    assert!(
+        c90 > 0,
+        "no comparison made — a green result would be vacuous"
+    );
+    assert!(
+        d90.is_empty(),
+        "#90 regressed: classify and the per-query surfaces disagree again:\n{}",
+        d90.join("\n")
+    );
+}
+
+/// The gate must DETECT divergence, not merely fail to find it — otherwise the
+/// passing gate above is vacuous and nobody can tell.
+///
+/// **This happened THREE times, on consecutive days: #89, #91, then #90.** Each
+/// fix made this test fail with `the gate did NOT detect [...]`, and each fixture
+/// moved into `previously_divergent_shapes_now_agree`. An `#[ignore]`d sentinel
+/// would have gone on passing silently; see
+/// `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
+///
+/// **#90's fix emptied the roster, and an empty roster passes VACUOUSLY** — the
+/// `undetected` list would be empty because there was nothing to look for. So this
+/// no longer depends on a live defect at all: it MANUFACTURES one by reverting a
+/// shipped fix through its own flag (`RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` restores
+/// #91), which proves the detection leg fires and keeps proving it after every
+/// future fix. `assert!(!cases.is_empty())` guards the roster itself.
+///
+/// The flag is process-global and `previously_divergent_shapes_now_agree` runs
+/// #91's fixture, so both take [`FLAG_LOCK`]. Every other fixture in this file is
+/// inert for that flag (none carries a cardinality over a non-named filler).
+#[test]
+fn the_gate_detects_the_known_divergences() {
+    let _lock = FLAG_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: single-threaded within this lock; every other test in this binary
+    // that could observe the flag takes the same lock, and the guard restores it.
+    let _flag = SetEnvGuard::set("RUSTDL_COMPLEX_QUALIFIER_VERIFY", "0");
+    // (issue, leg exercised, ontology body). MANUFACTURED, not live: the flag set
+    // above reverts #91, so classify misses the unsatisfiable class while the
+    // per-pair surface still finds it — the divergence this gate must see.
+    let cases: [(&str, &str, &str); 1] = [(
+        "#91 (manufactured via RUSTDL_COMPLEX_QUALIFIER_VERIFY=0)",
+        "unsatisfiability",
+        r"Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+              Declaration(ObjectProperty(:r))
+              SubClassOf(:A ObjectMaxCardinality(1 :r ObjectIntersectionOf(:B :C)))
+              SubClassOf(:A ObjectMinCardinality(2 :r ObjectIntersectionOf(:B :C)))",
     )];
     let mut undetected: Vec<&str> = Vec::new();
+    // Non-vacuity is counted, not asserted on the array literal: an empty roster
+    // (or a roster whose fixtures compare nothing) would otherwise leave
+    // `undetected` empty and pass without looking for anything.
+    let mut total_compared = 0usize;
     for (issue, leg, body) in cases {
         let src = format!(
             "Prefix(:=<http://ex#>)\n\
@@ -284,10 +362,15 @@ fn the_gate_detects_the_known_divergences() {
         for line in &d {
             eprintln!("[agree]   {line}");
         }
+        total_compared += compared;
         if d.is_empty() {
             undetected.push(issue);
         }
     }
+    assert!(
+        total_compared > 0,
+        "the detection roster compared nothing, so a green result would be vacuous"
+    );
     assert!(
         undetected.is_empty(),
         "[agree] the gate did NOT detect {undetected:?}. Either those defects were fixed — \

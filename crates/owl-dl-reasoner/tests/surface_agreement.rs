@@ -258,7 +258,7 @@ fn previously_divergent_shapes_now_agree() {
 #[test]
 fn the_gate_detects_the_known_divergences() {
     // (issue, leg exercised, ontology body)
-    let cases: [(&str, &str, &str); 1] = [(
+    const CASES: [(&str, &str, &str); 1] = [(
         "#90",
         "subsumption",
         r"Declaration(Class(:S)) Declaration(Class(:T)) Declaration(Class(:Z))
@@ -277,14 +277,19 @@ fn the_gate_detects_the_known_divergences() {
     // `classify_agrees_with_the_per_query_surfaces`, which are the standing
     // regression guards. Do NOT just let it pass empty. The in-tree precedent is
     // `the_detection_set_has_not_silently_gone_vacuous` in the owl-dl-verify suite.
-    assert!(
-        !cases.is_empty(),
-        "[agree] the known-divergence list is EMPTY, so this test asserts nothing. \
-         If the last defect was fixed, delete this test and rely on \
-         `previously_divergent_shapes_now_agree`; do not leave it passing vacuously."
-    );
+    // Compile-time, because `cases` is a fixed-size array and its length is known
+    // statically -- so emptying the list is a BUILD failure, not a test failure.
+    // That is strictly better: it cannot be missed, skipped or flaked past.
+    const {
+        assert!(
+            !CASES.is_empty(),
+            "the known-divergence list is EMPTY, so the test asserts nothing. If the \
+             last defect was fixed, DELETE this test and rely on \
+             previously_divergent_shapes_now_agree; do not leave it passing vacuously."
+        );
+    }
     let mut undetected: Vec<&str> = Vec::new();
-    for (issue, leg, body) in cases {
+    for (issue, leg, body) in CASES {
         let src = format!(
             "Prefix(:=<http://ex#>)\n\
              Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\

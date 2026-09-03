@@ -10,18 +10,6 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-# TEMPORARY, for the 0.4.25 release ONLY. crates.io cannot configure a trusted
-# publisher for a crate that does not exist yet -- its docs: "Your crate must
-# already be published to crates.io (initial publish requires an API token)" --
-# and there is no PyPI-style pending publisher. A trusted-publishing token is
-# scoped to crates that HAVE a publisher, so leaving this publishable would make
-# `cargo publish --workspace` publish the other five, then fail here, with the
-# five irreversibly out and preflight blocking a re-run.
-#
-# So: tag 0.4.25 (five crates, pure OIDC) -> `cargo publish -p rustdl` by hand
-# with a token -> add its trusted publisher -> DELETE THESE LINES. The full
-# sequence is in .github/workflows/publish-crates.yml's header.
-publish = false
 
 [dependencies]
 owl-dl-reasoner.workspace = true

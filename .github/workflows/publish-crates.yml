@@ -28,8 +28,8 @@ name: Publish crates
 #                    published manifest, so a consumer resolves upstream 1.4 and
 #                    the crate fails to compile (E0432) while building green
 #                    locally. Distributed as GitHub Release binaries instead.
-#   rustdl         - TEMPORARILY excluded for the FIRST 0.4.25 release only; see
-#                    the sequence below. Flip back to publishable afterwards.
+#   (rustdl was temporarily excluded for the 0.4.25 tag under the sequence below and
+#    is publishable again as of the manual first publish.)
 #   owl-dl-cb      - no dependents; deferred dead code.
 #   owl-dl-verify  - no publishable dependent; diagnostic-only.
 #   owl-dl-py      - published to PyPI by release-python.yml.
@@ -43,14 +43,19 @@ name: Publish crates
 # `--workspace` would publish the others, then fail on the new name, leaving those
 # irreversibly published and the preflight blocking a re-run. Hence:
 #   1. keep the new crate `publish = false`
-#   2. tag -> this workflow publishes the rest, purely via OIDC
-#   3. `cargo publish -p <newcrate>` by hand, with an API token (needs step 2 first,
-#      since it depends on the just-published sibling versions)
-#   4. crates.io -> that crate -> Settings -> Trusted Publishing -> Add
+#   2. tag -> this workflow publishes the rest, purely via OIDC. The exclusion only
+#      has to hold at the TAGGED COMMIT; the tag is immutable, so main can move on.
+#   3. REMOVE `publish = false` -- `cargo publish -p <crate>` refuses outright while
+#      it is set ("package.publish must be set to true ... to publish"), so the flip
+#      MUST precede the manual publish. An earlier version of this list had it as
+#      step 5 and the manual publish therefore failed.
+#   4. `cargo publish -p <newcrate>` by hand, with an API token. Needs step 2 first,
+#      since it depends on the just-published sibling versions.
+#   5. crates.io -> that crate -> Settings -> Trusted Publishing -> Add
 #      (owner MaastrichtU-IDS, repo rustdl, workflow publish-crates.yml,
 #       environment crates-io -- the environment name is part of the OIDC claim and
 #       must match exactly)
-#   5. flip it back to publishable; every later release covers it via OIDC
+#   Every later release then covers it via OIDC with no further manifest change.
 # Token and OIDC never coexist in one run under this sequence.
 on:
   push:

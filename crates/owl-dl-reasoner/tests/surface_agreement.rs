@@ -266,6 +266,23 @@ fn the_gate_detects_the_known_divergences() {
               EquivalentClasses(:S ObjectAllValuesFrom(:p ObjectUnionOf(ObjectComplementOf(ObjectHasSelf(:r)) ObjectComplementOf(:Z))))
               SubClassOf(:T ObjectAllValuesFrom(:p ObjectUnionOf(ObjectComplementOf(ObjectHasSelf(:r)) ObjectComplementOf(:Z))))",
     )];
+    // THE LIST MUST NOT SILENTLY EMPTY OUT. Retiring the last row would leave the
+    // loop below with nothing to do and the assertion trivially true — a vacuous
+    // pass indistinguishable from a real one, which is the failure mode this whole
+    // file exists to prevent. The list went 3 -> 2 (#89) -> 1 (#91) on consecutive
+    // days, so this is one fix away, and #90 is being worked on now.
+    //
+    // WHEN YOU RETIRE THE LAST ROW: delete this test entirely and keep
+    // `previously_divergent_shapes_now_agree` plus
+    // `classify_agrees_with_the_per_query_surfaces`, which are the standing
+    // regression guards. Do NOT just let it pass empty. The in-tree precedent is
+    // `the_detection_set_has_not_silently_gone_vacuous` in the owl-dl-verify suite.
+    assert!(
+        !cases.is_empty(),
+        "[agree] the known-divergence list is EMPTY, so this test asserts nothing. \
+         If the last defect was fixed, delete this test and rely on \
+         `previously_divergent_shapes_now_agree`; do not leave it passing vacuously."
+    );
     let mut undetected: Vec<&str> = Vec::new();
     for (issue, leg, body) in cases {
         let src = format!(

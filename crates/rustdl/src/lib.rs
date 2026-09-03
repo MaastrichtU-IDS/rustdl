@@ -49,8 +49,10 @@
 //! The upstream reader has in fact landed — `io::omn` ships in released
 //! `horned-owl` 2.0.0+ — so what keeps the CLI unpublished is that this workspace
 //! pins `horned-owl` 1.4, plus one per-item rendering trait (`AsManchester`) that
-//! did not go upstream. Once that is resolved a `[[bin]]` can be added here and
-//! `cargo install rustdl` will start working.
+//! did not go upstream (tracked in
+//! [issue #99](https://github.com/MaastrichtU-IDS/rustdl/issues/99)). Once that is
+//! resolved a `[[bin]]` can be added here and `cargo install rustdl` will start
+//! working.
 //!
 //! # Soundness
 //!

@@ -118,7 +118,7 @@ debug = "line-tables-only"
 # pins 1.4 (omn landed in 2.0), and because the fork's per-item `AsManchester`
 # rendering trait did NOT land upstream -- upstream ships only a whole-ontology
 # `writer::write`, which cannot render a single axiom. Dropping the patch is a
-# horned-owl MAJOR upgrade plus replacing that trait; see the tracking issue.
+# horned-owl MAJOR upgrade plus replacing that trait; tracked in #99.
 # Pinned
 # to a rev on the `manchester-io-rebased` branch of the fork — rebased onto
 # upstream/main (1.4.0) and conformance-complete (PR micheldumontier/horned-owl →

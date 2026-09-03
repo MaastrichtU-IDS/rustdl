@@ -1,15 +1,35 @@
 # The numeric DKey buckets are non-comparable but not DISJOINT — rustdl misses the clash
 
-**Status: FIXED on the `is_consistent` surface (`RUSTDL_DKEY_CROSS_BUCKET_DISJOINT`,
-default ON, `=0` reverts). `classify` STILL MISSES IT — see the residual below.**
+**Status: FIXED on BOTH surfaces.** `is_consistent` by
+`RUSTDL_DKEY_CROSS_BUCKET_DISJOINT` (default ON, `=0` reverts); `classify` by **#97**
+(2026-09-03), which consults the wedge consistency route in classify's inconsistency
+pre-check. The classify residual this page recorded is CLOSED — re-verified, both
+`ore_ont_16321` and `ore_ont_4198` now report `consistent: false` with 40 unsatisfiable
+classes from `classify --json`, agreeing with `rustdl consistent`, Konclude and KM.
+A DIFFERENT residual remains open — `xsd:integer` vs a non-integral `xsd:decimal`, below.
 
 Was: live on v0.4.24, sound (a MISS, never an FP), root-caused to a 2-axiom reproducer
 adjudicated by Konclude AND HermiT with a discriminating control.
 
-## Residual: `classify` and `consistent` still disagree here
+## CLOSED by #97: `classify` and `consistent` agreed here from 2026-09-03
 
-`rustdl consistent ore_ont_16321` now correctly reports **inconsistent**; `classify --json`
-on the same file still reports `consistent: true, unsatisfiable: []`.
+**Kept for the mechanism, not as an open item.** Re-measured on the merged binary:
+`classify --json` reports `consistent: false` / 40 unsatisfiable on both `ore_ont_16321`
+and `ore_ont_4198`, matching `rustdl consistent`. Do not plan against the text below as a
+live gap — this page said "classify STILL MISSES IT" after it had been fixed, which is the
+pessimistic form of the design-record drift `CLAUDE.md` records as this repo's dominant
+failure mode, and the more expensive form: it invites work on a closed problem.
+
+**#97's fix was also smaller than this page's analysis implied.** The paragraph below
+correctly identifies why `abox_saturation` cannot reach a data-successor clash — but the
+conclusion drawn from it (that closing this needed DKey-aware ABox saturation or a
+`decide(Top)` probe) was wrong. The verdict already existed as `consistency: wedge Unsat`
+and simply was not consulted from classify. The recorded dead-end for `decide(Top)`
+("hangs on consistent alehif/pizza") is about an UNBOUNDED probe; the wedge route is
+bounded and measures 2.34 ms on pizza. Checking the recorded dead-end rather than
+inheriting it is what made the cheap fix visible.
+
+*Historical description of the mechanism follows.*
 
 The clash is ABox-level — an individual's data value violating a declared range — so no
 *named class* becomes unsatisfiable, and classify's inconsistency pre-check
@@ -191,6 +211,11 @@ consistent for both reasoners once the unsupported `anyURI` range is dropped).
 Sound — rustdl under-reports, never over-reports. But **silent**: a consumer reading
 `consistent: true` gets no signal, and every downstream entailment rests on a KB with no
 model.
+
+**As of #97 that silence is gone for the two corpus instances**; it persists only for the
+still-open `xsd:integer` vs non-integral-`xsd:decimal` residual, re-verified 2026-09-03
+(rustdl `consistent`, Konclude `false`), which no bucket-disjointness rule can reach
+because `integer ⊂ decimal` — it needs value-membership checking.
 
 
 ---

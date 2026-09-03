@@ -61,10 +61,25 @@ if grep -qF "\"$old\"" Cargo.toml; then
   exit 1
 fi
 
-# Prove it to cargo, not just to grep.
-got=$(cargo metadata --no-deps --format-version 1 \
+# REFRESH THE LOCK. Cargo.lock records every workspace member's version, so a bump
+# leaves it stale — and publish-crates.yml runs `cargo publish --workspace --locked`
+# in BOTH the preflight and the publish, which then dies with "cannot update the lock
+# file because --locked was passed". A bump without this breaks the release it exists
+# to enable. `--offline` because a version bump needs no network.
+cargo update --workspace --offline >/dev/null
+
+# Prove it to cargo, not just to grep — and with FULL resolution plus --locked, so
+# the check actually depends on the lock. The first version of this script verified
+# with `cargo metadata --no-deps`, which does not resolve: it PASSED while the lock
+# was stale and `cargo publish --locked` was already broken. A check that cannot
+# observe the artifact it is vouching for is not a check.
+got=$(cargo metadata --format-version 1 --locked \
       | python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='owl-dl-core'))")
 [ "$got" = "$new" ] || { echo "cargo reports $got, expected $new" >&2; exit 1; }
+
+# The lock must actually carry the new version for every workspace member.
+stale=$(grep -cF "\"$old\"" Cargo.lock || true)
+[ "$stale" = "0" ] || { echo "Cargo.lock still has $stale reference(s) to $old" >&2; exit 1; }
 
 trap - EXIT
 rm -f "$backup" "$lockbackup"

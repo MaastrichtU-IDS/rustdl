@@ -6,6 +6,79 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.25] — 2026-09-03
+
+### Added — `is_consistent_with_timeout`, a deadline-bearing consistency check (#95)
+
+Every other reasoner entry point had a bounded form; `is_consistent` had none, so a
+consistency check could neither be bounded nor report that it gave up. Returns
+`Ok(Some(false))` when a clash was WITNESSED, `Ok(Some(true))` for consistent at
+`is_consistent`'s trust level, and `Ok(None)` when the budget was exhausted.
+
+The unbounded path already timed out internally and reported `true` — a sound
+under-approximation, but an invisible one, so the caller could not distinguish a real
+verdict from a spent budget. `None` is the point. The budget is honoured end to end:
+a first cut left the ABox-saturation pre-check unbounded on the grounds it was cheap,
+and `family.ofn` then overran a 500 ms budget by 2.3× (1.17 s); it now receives the
+caller's REMAINING budget rather than being skipped.
+
+### Added — `is_instance_of` / `instances_of` report truncation (#96)
+
+Both point queries discarded a truncation flag `instance_check_reporting` already
+computed one call down, so a caller got `Ok(false)` with no way to tell a refutation
+from a timeout and a slow query silently became a negative answer. The only workaround
+was running all of `realize` to read `incomplete()`. Adds `is_instance_of_reporting`
+and `instances_of_reporting`, and makes the reporting forms THE implementation so the
+originals are thin wrappers — one code path, not two.
+
+A PAIR rather than `Option<bool>` deliberately: `(true, true)` is possible and is still
+a SOUND positive, since the membership was proved even though something else was cut.
+Only a `false` answer is called into question. For `instances_of` the flag is sticky
+across the loop — any cut probe means the SET may be short, though every member present
+is sound. The saturation fast path returns `incomplete = false` by construction.
+
+### Fixed — `classify` reported `consistent: true` on inconsistent KBs (#97)
+
+`classify --json` reported `"consistent": true` on ontologies that `rustdl consistent`,
+Konclude AND Kobayashi-MaRust all call inconsistent (`ore_ont_16321`, `ore_ont_4198`) —
+two surfaces of one binary giving opposite answers, in the worst form of that shape,
+since a consumer reading `consistent: true` builds every downstream entailment on a KB
+with no models. Both now report `consistent: false` with 40 unsatisfiable classes.
+
+The clash sits at a DATA SUCCESSOR (a `DataPropertyRange` violated by an assertion), so
+`abox_saturation` — which propagates over NAMED individuals with no witness generation —
+cannot reach it by construction rather than by budget. **The fix was much smaller than
+predicted:** the verdict already existed as `consistency: wedge Unsat` and simply was not
+consulted from classify. The design record called a `decide(Top)` probe here a measured
+dead-end, but that applies to an UNBOUNDED probe; the wedge route is bounded and measures
+2.34 ms on pizza. This also closes the classify-surface residual recorded in
+`docs/known-limitations/dkey-numeric-buckets-are-not-disjoint.md`.
+
+### Added — the `rustdl` umbrella crate, and crates.io publishing on tag
+
+`rustdl` is a new published crate re-exporting `owl-dl-reasoner`'s API **and** the exact
+`horned-owl` it is built against, so `cargo add rustdl` is one dependency. That fixes a
+live documentation bug: `owl-dl-reasoner` takes `horned-owl` types in its signatures
+without re-exporting the crate, and `cargo add horned-owl` resolves 3.x against its
+`^1.4`, so the README's own example failed with a type mismatch. It has no `[[bin]]` —
+`owl-dl-cli` stays unpublished because it needs a Manchester reader absent from upstream
+`horned-owl`, so the CLI comes from the release binaries.
+
+`.github/workflows/publish-crates.yml` publishes six crates on a `v*.*.*` tag via
+crates.io trusted publishing (OIDC, no stored token), ref-restricted to `main` and `v*`
+tags, with a preflight that fails on a tag/version mismatch or an already-published
+version. Publishing had lapsed after 0.3.0 while tags ran to v0.4.24.
+`scripts/bump-version.sh` bumps the version across all nine places it is written and
+refreshes `Cargo.lock`, which `--locked` publishing requires.
+
+## [0.4.24] — 2026-08-29
+
+> The three entries below were left in `[Unreleased]` when v0.4.24 shipped and were
+> moved here on 2026-09-03. They are in v0.4.24: `canonical_order` (df6c754,
+> 2026-08-17) and `find_repairs_prepared` (3160a1e, 2026-08-18) are both ancestors of
+> the v0.4.24 tag. Listing them under 0.4.25 would have credited already-released work
+> to a later version.
+
 ### Changed — repair/laconic reuse the prepared justification state
 
 `find_repairs` derived the logical-axiom split **twice** per call (once inside
@@ -48,7 +121,6 @@ search input in a canonical, content-derived order, making `justify`,
 `justify --all`, `repair`, `report` and the Python surface byte-reproducible.
 Selection and ordering only — the axiom *sets* are unchanged.
 
-## [0.4.24] — 2026-08-29
 
 ### Fixed — `≤n` merge-pair choice was deterministic (a real false positive) (#76, #77)
 

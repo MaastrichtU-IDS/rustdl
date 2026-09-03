@@ -6507,6 +6507,12 @@ pub(crate) struct PreparedOntology {
     /// `build_data_counting_classes`). The classify unsat-probe
     /// main-tableau-verifies these instead of trusting the wedge's `Sat`.
     pub(crate) data_counting_classes: std::collections::HashSet<owl_dl_core::ir::ClassId>,
+    /// Classes carrying a `Min`/`Max` over a COMPLEX qualifier (#91). Consumed by
+    /// classify's unsat probe exactly as `data_counting_classes` is. Empty unless
+    /// the ontology authors a qualified cardinality whose filler is not a named
+    /// class, so the overwhelming majority of inputs pay nothing.
+    pub(crate) complex_qualifier_counting_classes:
+        std::collections::HashSet<owl_dl_core::ir::ClassId>,
 
     /// Classes the wedge cannot decide for lack of nominal counting (see
     /// `build_nominal_counting_classes`). Consumed by classify's unsat probe the same way
@@ -6783,6 +6789,100 @@ fn concept_has_nominal_counting(
     }
 }
 
+/// Does `c` carry a `Min`/`Max` whose QUALIFIER is a complex concept rather than a
+/// named class or `⊤`? Mirrors [`concept_has_nominal_counting`]'s walk.
+///
+/// `≤1 r.(B ⊓ C)` is the shape. `cardinality_qualifier` Tseitin-names a complex
+/// filler, and the wedge counts occurrences of that synthetic name rather than
+/// relating it to the members, so it cannot see that the `≤` and `≥` constraints
+/// are over the SAME set. With a named filler it can, which is exactly why the
+/// atomic control decides correctly.
+fn concept_has_complex_qualifier_counting(pool: &ConceptPool, c: ConceptId) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Min(_, _, inner) | ConceptExpr::Max(_, _, inner) => {
+            if !matches!(
+                pool.get(*inner),
+                ConceptExpr::Atomic(_) | ConceptExpr::Top | ConceptExpr::Bot
+            ) {
+                return true;
+            }
+            concept_has_complex_qualifier_counting(pool, *inner)
+        }
+        ConceptExpr::Not(inner) => concept_has_complex_qualifier_counting(pool, *inner),
+        ConceptExpr::Some(_, inner) | ConceptExpr::All(_, inner) => {
+            concept_has_complex_qualifier_counting(pool, *inner)
+        }
+        ConceptExpr::And(ops) | ConceptExpr::Or(ops) => ops
+            .iter()
+            .any(|&o| concept_has_complex_qualifier_counting(pool, o)),
+        _ => false,
+    }
+}
+
+/// Classes whose satisfiability the WEDGE cannot decide because it does no object
+/// cardinality counting over a COMPLEX qualifier (#91).
+///
+/// This is the THIRD instance of one pattern, and the previous two are right beside
+/// it: `data_counting_classes` (concrete-domain counting) and
+/// `nominal_counting_classes` (#49, whose own comment reads "Same defect one
+/// construct over"). Here it is one construct further again —
+/// `A ⊑ ≤1 r.(B ⊓ C)` with `A ⊑ ≥2 r.(B ⊓ C)` makes `A` unsatisfiable, both oracles
+/// agree, `rustdl sat A` agrees, and `classify` reported `unsatisfiable: []`.
+///
+/// The ATOMIC-filler control decides correctly, which is what isolates this to the
+/// qualifier shape rather than to cardinality.
+///
+/// Consumed by classify's unsat probe exactly as the other two are: a wedge `Sat`
+/// on such a class is not trusted, and the class falls through to the main tableau.
+/// Sound either way — it only ever swaps a wedge `Sat` for the complete path — so
+/// the cost of being wrong here is wall time, never a wrong answer.
+/// `RUSTDL_COMPLEX_QUALIFIER_VERIFY` — **default ON**, `=0` reverts (#91).
+///
+/// Don't trust a wedge `Sat` for a class carrying a `Min`/`Max` over a COMPLEX
+/// qualifier; fall through to the main tableau. Sound either way — it only swaps a
+/// wedge `Sat` for the complete path — so being wrong here costs wall time, never a
+/// wrong answer.
+///
+/// Default ON, unlike its `RUSTDL_NOMINAL_COUNTING_VERIFY` sibling, because the
+/// addressable set is tiny and measured: only 5 of 1,920 ORE ontologies author a
+/// qualified cardinality whose filler is not a named class, and
+/// `complex_qualifier_counting_classes` is EMPTY for every other input, so the
+/// clause short-circuits before touching the closure.
+pub fn complex_qualifier_verify_enabled() -> bool {
+    std::env::var_os("RUSTDL_COMPLEX_QUALIFIER_VERIFY").is_none_or(|v| v != "0")
+}
+
+fn build_complex_qualifier_counting_classes(
+    internal: &InternalOntology,
+) -> std::collections::HashSet<owl_dl_core::ir::ClassId> {
+    let mut set = std::collections::HashSet::new();
+    let pool = &internal.concepts;
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                if let ConceptExpr::Atomic(c) = pool.get(*sub)
+                    && concept_has_complex_qualifier_counting(pool, *sup)
+                {
+                    set.insert(*c);
+                }
+            }
+            Axiom::EquivalentClasses(members)
+                if members
+                    .iter()
+                    .any(|&m| concept_has_complex_qualifier_counting(pool, m)) =>
+            {
+                for &m in members {
+                    if let ConceptExpr::Atomic(c) = pool.get(m) {
+                        set.insert(*c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    set
+}
+
 /// Classes whose satisfiability the WEDGE cannot decide because it does no nominal
 /// counting: a `Min`/`Max` over a class bounded to finitely many individuals
 /// (`C ≡ {a₁ … a_N}` + `B ≡ ≥(N+1) r.C` ⟹ `B ⊑ ⊥`, by pigeonhole).
@@ -6993,6 +7093,8 @@ impl PreparedOntology {
         let data_counting_classes = build_data_counting_classes(&internal, &dkey_ranges);
         let nominal_bounded = build_nominal_bounded_classes(&internal);
         let nominal_counting_classes = build_nominal_counting_classes(&internal, &nominal_bounded);
+        let complex_qualifier_counting_classes =
+            build_complex_qualifier_counting_classes(&internal);
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         if expired() {
@@ -7089,6 +7191,7 @@ impl PreparedOntology {
             dkey_ranges,
             data_counting_classes,
             nominal_counting_classes,
+            complex_qualifier_counting_classes,
             consistency,
             tableau_id: TableauIdBudget::default(),
         }))

@@ -213,6 +213,31 @@ fn previously_divergent_shapes_now_agree() {
         "#89 regressed: classify and the per-query surfaces disagree again:\n{}",
         d.join("\n")
     );
+
+    // #91 — classify reported `unsatisfiable: []` for `A ⊑ ≤1 r.(B⊓C)` plus
+    // `A ⊑ ≥2 r.(B⊓C)`, which both oracles and `rustdl sat A` call unsatisfiable.
+    // Fixed by not trusting a wedge `Sat` for a class counting over a COMPLEX
+    // qualifier. This shape produced THREE divergences, not one: the missed unsat
+    // also made `A ⊑ B` and `A ⊑ C` wrong, because classify did not know `A` was
+    // unsatisfiable. All three must stay fixed.
+    let body91 = r"Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+                   Declaration(ObjectProperty(:r))
+                   SubClassOf(:A ObjectMaxCardinality(1 :r ObjectIntersectionOf(:B :C)))
+                   SubClassOf(:A ObjectMinCardinality(2 :r ObjectIntersectionOf(:B :C)))";
+    let src91 = format!("Prefix(:=<http://ex#>)\nOntology(\n{body91}\n)");
+    let mut r91 = Cursor::new(src91);
+    let (onto91, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut r91, ParserConfiguration::default()).unwrap();
+    let (d91, _s91, c91) = divergences(&onto91, "#91", true);
+    assert!(
+        c91 > 0,
+        "no comparison made — a green result would be vacuous"
+    );
+    assert!(
+        d91.is_empty(),
+        "#91 regressed: classify and the per-query surfaces disagree again:\n{}",
+        d91.join("\n")
+    );
 }
 
 /// The gate must DETECT divergence, not merely fail to find it. Each case below
@@ -222,7 +247,7 @@ fn previously_divergent_shapes_now_agree() {
 /// these is fixed it will FAIL, which is the signal to delete that row and — if
 /// the fixture is cheap — move it into the passing gate above.
 ///
-/// **That has already happened once, within a day.** #89 was fixed by the wedge
+/// **That has now happened TWICE, on consecutive days.** #89 was fixed by the wedge
 /// consistency route, and this test failed in CI with
 /// `the gate did NOT detect ["#89"]`. Its fixture now lives in
 /// `previously_divergent_shapes_now_agree`, where it guards against regression
@@ -233,24 +258,14 @@ fn previously_divergent_shapes_now_agree() {
 #[test]
 fn the_gate_detects_the_known_divergences() {
     // (issue, leg exercised, ontology body)
-    let cases: [(&str, &str, &str); 2] = [
-        (
-            "#91",
-            "satisfiability",
-            r"Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
-              Declaration(ObjectProperty(:r))
-              SubClassOf(:A ObjectMaxCardinality(1 :r ObjectIntersectionOf(:B :C)))
-              SubClassOf(:A ObjectMinCardinality(2 :r ObjectIntersectionOf(:B :C)))",
-        ),
-        (
-            "#90",
-            "subsumption",
-            r"Declaration(Class(:S)) Declaration(Class(:T)) Declaration(Class(:Z))
+    let cases: [(&str, &str, &str); 1] = [(
+        "#90",
+        "subsumption",
+        r"Declaration(Class(:S)) Declaration(Class(:T)) Declaration(Class(:Z))
               Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:r))
               EquivalentClasses(:S ObjectAllValuesFrom(:p ObjectUnionOf(ObjectComplementOf(ObjectHasSelf(:r)) ObjectComplementOf(:Z))))
               SubClassOf(:T ObjectAllValuesFrom(:p ObjectUnionOf(ObjectComplementOf(ObjectHasSelf(:r)) ObjectComplementOf(:Z))))",
-        ),
-    ];
+    )];
     let mut undetected: Vec<&str> = Vec::new();
     for (issue, leg, body) in cases {
         let src = format!(

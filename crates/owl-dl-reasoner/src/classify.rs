@@ -3801,7 +3801,26 @@ fn classify_top_down_internal_impl(
                                     || closure
                                         .subsumers_of(class_id)
                                         .iter()
-                                        .any(|s| prepared.nominal_counting_classes.contains(s))));
+                                        .any(|s| prepared.nominal_counting_classes.contains(s))))
+                            // THE SAME DEFECT ONE CONSTRUCT FURTHER (issue #91). The
+                            // wedge does no OBJECT cardinality counting over a COMPLEX
+                            // qualifier: `A ⊑ ≤1 r.(B ⊓ C)` with `A ⊑ ≥2 r.(B ⊓ C)`
+                            // makes `A` unsatisfiable, Konclude and HermiT agree, and
+                            // `rustdl sat A` agrees — but `classify` reported
+                            // `unsatisfiable: []`. `cardinality_qualifier` Tseitin-names
+                            // the complex filler, so the wedge counts a synthetic name
+                            // without relating it to the members and cannot see that the
+                            // `≤` and `≥` are over the SAME set. The ATOMIC-filler
+                            // control decides correctly, which is what isolates this to
+                            // the qualifier shape rather than to cardinality.
+                            || (crate::complex_qualifier_verify_enabled()
+                                && !prepared.complex_qualifier_counting_classes.is_empty()
+                                && (prepared
+                                    .complex_qualifier_counting_classes
+                                    .contains(&class_id)
+                                    || closure.subsumers_of(class_id).iter().any(|s| {
+                                        prepared.complex_qualifier_counting_classes.contains(s)
+                                    })));
                         if !needs_verify {
                             return Ok((i, true, true));
                         }

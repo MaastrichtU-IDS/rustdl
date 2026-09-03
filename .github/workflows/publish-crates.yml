@@ -28,10 +28,30 @@ name: Publish crates
 #                    published manifest, so a consumer resolves upstream 1.4 and
 #                    the crate fails to compile (E0432) while building green
 #                    locally. Distributed as GitHub Release binaries instead.
+#   rustdl         - TEMPORARILY excluded for the FIRST 0.4.25 release only; see
+#                    the sequence below. Flip back to publishable afterwards.
 #   owl-dl-cb      - no dependents; deferred dead code.
 #   owl-dl-verify  - no publishable dependent; diagnostic-only.
 #   owl-dl-py      - published to PyPI by release-python.yml.
 #   owl-dl-bench   - internal dev tool, git-only dep.
+# FIRST-RELEASE SEQUENCE for a NEW crate name (why `rustdl` is excluded right now).
+# crates.io requires a crate to EXIST before a trusted publisher can be configured
+# for it -- its docs say so outright: "Your crate must already be published to
+# crates.io (initial publish requires an API token)". There is no PyPI-style pending
+# publisher. So a brand-new name cannot be published by this workflow, and a
+# trusted-publishing token is scoped to crates that HAVE a publisher configured --
+# `--workspace` would publish the others, then fail on the new name, leaving those
+# irreversibly published and the preflight blocking a re-run. Hence:
+#   1. keep the new crate `publish = false`
+#   2. tag -> this workflow publishes the rest, purely via OIDC
+#   3. `cargo publish -p <newcrate>` by hand, with an API token (needs step 2 first,
+#      since it depends on the just-published sibling versions)
+#   4. crates.io -> that crate -> Settings -> Trusted Publishing -> Add
+#      (owner MaastrichtU-IDS, repo rustdl, workflow publish-crates.yml,
+#       environment crates-io -- the environment name is part of the OIDC claim and
+#       must match exactly)
+#   5. flip it back to publishable; every later release covers it via OIDC
+# Token and OIDC never coexist in one run under this sequence.
 on:
   push:
     tags: ['v*.*.*']
@@ -126,8 +146,15 @@ jobs:
       # PyPI. No stored CARGO_REGISTRY_TOKEN secret, so nothing to rotate.
       # Requires a Trusted Publisher configured per-crate on crates.io.
       # Pinned by SHA (= v1.0.5), matching how release-cli.yml pins
-      # dtolnay/rust-toolchain. NB there is NO floating `v1` tag on this action —
-      # only v1.0.x — so `@v1` does not resolve and fails the job.
+      # dtolnay/rust-toolchain: a mutable ref can be repointed at code you did not
+      # review, and this step mints a publish credential.
+      #
+      # CORRECTION to d9262ee's message, which claimed `@v1` "does not resolve" and
+      # would fail the job: it DOES resolve. `v1` exists as a BRANCH
+      # (refs/heads/v1 -> c6f97d4, v1.0.5's commit) and GitHub Actions resolves
+      # branches as well as tags; only `refs/tags/v1` is absent, which is all I had
+      # checked. crates.io's own docs use `@v1`. The pin is still right, for the
+      # reason above rather than the one recorded.
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
 

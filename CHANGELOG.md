@@ -56,15 +56,21 @@ dead-end, but that applies to an UNBOUNDED probe; the wedge route is bounded and
 
 ### Added — the `rustdl` umbrella crate, and crates.io publishing on tag
 
-`rustdl` is a new published crate re-exporting `owl-dl-reasoner`'s API **and** the exact
-`horned-owl` it is built against, so `cargo add rustdl` is one dependency. That fixes a
+`rustdl` is a new crate re-exporting `owl-dl-reasoner`'s API **and** the exact
+`horned-owl` it is built against, so `cargo add rustdl` is one dependency. **It is NOT
+published in 0.4.25** — crates.io cannot configure a trusted publisher for a crate that
+does not exist yet ("initial publish requires an API token", and there is no PyPI-style
+pending publisher), and a trusted-publishing token is scoped to crates that have one, so
+including it would have published the other five and then failed. It ships to crates.io
+by one manual `cargo publish -p rustdl` after this release, then gets its trusted
+publisher; the sequence is recorded in `publish-crates.yml`'s header. That fixes a
 live documentation bug: `owl-dl-reasoner` takes `horned-owl` types in its signatures
 without re-exporting the crate, and `cargo add horned-owl` resolves 3.x against its
 `^1.4`, so the README's own example failed with a type mismatch. It has no `[[bin]]` —
 `owl-dl-cli` stays unpublished because it needs a Manchester reader absent from upstream
 `horned-owl`, so the CLI comes from the release binaries.
 
-`.github/workflows/publish-crates.yml` publishes six crates on a `v*.*.*` tag via
+`.github/workflows/publish-crates.yml` publishes five crates on a `v*.*.*` tag via
 crates.io trusted publishing (OIDC, no stored token), ref-restricted to `main` and `v*`
 tags, with a preflight that fails on a tag/version mismatch or an already-published
 version. Publishing had lapsed after 0.3.0 while tags ran to v0.4.24.

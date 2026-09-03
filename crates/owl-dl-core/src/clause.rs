@@ -647,11 +647,37 @@ impl Clausifier {
             }
             ConceptExpr::Not(inner) => {
                 // body → ¬C  ≡  body ∧ C → ⊥. Only handled when
-                // `C` is atomic (the common disjointness shape);
-                // a nested negation under NNF shouldn't occur.
+                // `C` is atomic (the common disjointness shape) or is
+                // `∃R.Self`; a nested negation under NNF shouldn't occur.
                 if let Some(a) = self.class_id_of(*inner) {
                     let mut b = body;
                     b.push(Atom::Class(a, var));
+                    self.clauses.push(DlClause {
+                        body: b,
+                        head: Vec::new(),
+                    });
+                } else if let ConceptExpr::SelfRestriction(role) = *self.pool.get(*inner) {
+                    // `body → ¬∃R.Self`  ≡  `body ∧ R(var,var) → ⊥`: a node
+                    // satisfying `body` must carry no `R`-self-loop (#90).
+                    //
+                    // This arm was MISSING, and its absence deferred the whole
+                    // clause — so the axiom left the wedge theory entirely.
+                    // `head_atom_for` already had the disjunct-position
+                    // equivalent, which is why `∀p.(¬∃r.Self ⊔ ¬Z)` clausified
+                    // completely while the SINGLE-LITERAL `∀p.¬∃r.Self` did not:
+                    // an `Or` routes per-disjunct through `head_atom_for`, a
+                    // single literal comes here.
+                    //
+                    // Appended to the ENCLOSING body rather than named with a
+                    // fresh `Q`, exactly as the atomic case above does. That is
+                    // the #78 lesson: `body` already carries `Class(C,X)` (and
+                    // `Role(p,X,y)` under a `∀`), so the clause is anchored by
+                    // construction and the matcher can bind `var`. A separately
+                    // emitted `Q ∧ R(var,var) → ⊥` on a successor variable is
+                    // precisely the unanchored shape #78 had to fix.
+                    let role = self.canon_role(role);
+                    let mut b = body;
+                    b.push(Atom::Role(role, var, var));
                     self.clauses.push(DlClause {
                         body: b,
                         head: Vec::new(),

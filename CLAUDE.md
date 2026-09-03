@@ -1083,10 +1083,40 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     buys nothing. The fixture built to demonstrate that FP produced **no FP** — it
     produced an unrelated MISS: `classify` reports `unsatisfiable=[]` for
     `A ⊑ ≤1 r.(B⊓C)` + `A ⊑ ≥2 r.(B⊓C)` where both oracles and rustdl's own `sat` say
-    unsat, while the ATOMIC-filler control is correct. **No flag recovers that one**
-    (`TRUST_SAT=0`, `CLASSIFY_VERIFY_REFUTATIONS=1`, `SPIKE_CARD_ATOM=1` all `[]`), so
-    it is a DIFFERENT mechanism from the `trust_sat` family. See
-    `docs/known-limitations/classify-misses-unsat-complex-cardinality-qualifier.md`.
+    unsat, while the ATOMIC-filler control is correct. **CLOSED 2026-09-03 by #98
+    (`9761ca8`) — and "no flag recovers it" was the CLUE, not a dead end.** The three
+    flags tried (`TRUST_SAT=0`, `CLASSIFY_VERIFY_REFUTATIONS=1`, `SPIKE_CARD_ATOM=1`)
+    all target the SUBSUMPTION path; this lives on the SATISFIABILITY probe, whose
+    `needs_verify` had no clause for the construct. It was the THIRD instance of one
+    pattern — `data_counting_classes` and `nominal_counting_classes` (#49) sit in the
+    same expression — closed by `complex_qualifier_counting_classes` +
+    `RUSTDL_COMPLEX_QUALIFIER_VERIFY` (**default ON**, `=0` reverts). Sound either way:
+    it only swaps a wedge `Sat` for the complete tableau path, so being wrong costs wall
+    time, never an answer.
+    **THE DEFAULT-ON FLIP IS SWEPT, AND ORE IS INERT FOR IT.** Two arms over the **497**
+    ontologies authoring ANY `(Object|Data)(Min|Max|Exact)Cardinality` — a superset BY
+    CONSTRUCTION, since only those three axioms build `Min`/`Max` and NNF *preserves*
+    filler complexity rather than creating it — one pinned binary, env var the only
+    difference: **452 ok/ok, 44 dnf/dnf, 1 err/err, 0 `ok → dnf`, 447 answer-triples
+    IDENTICAL, 0 DIFFER**, wall **−0.21%**, 0 ontologies both >1 s slower and >1.5×.
+    **The PR's "5 of 1,920" was GREP-derived** (reproduced exactly with a same-line
+    grep; a whitespace-insensitive scan finds 7). By GATE — the
+    `# satisfiability probes: tableau=` delta — it fires on **4**: `ore_ont_11647`
+    0→20 probes, `15514` 0→4, `9012` 0→1, `9540` 13→15, and correctly NOT on the two
+    `DataOneOf` members, whose filler lowers to an atomic DKey. **On all 4 the main
+    tableau CONFIRMS the wedge's `Sat`** — no new unsat anywhere in 497 — so the sweep
+    is non-regression only and the evidence is the 5 canaries plus Konclude/HermiT.
+    Cost: `ore_ont_11647` **1.43 → 1.76 s (+23%)**, reproducible across 3 alternated
+    sequential repeats with identical answers. `ore_ont_9540` (the documented
+    label-cache guard case) is flat at the default (14.18–14.25 s over 6 interleaved
+    runs) but **self-inconsistent — arm ON gave 7/8 one row-set and 1/8 another**,
+    differing by ONE Hasse row (the farther parent where the others derive the nearer);
+    at `--pair-timeout-ms 1000` both arms are identical, 41 rows, 217.34 vs 217.22 s, so
+    that is budget truncation, not the fix. **Compare the TRIPLE (rows, unsat, equiv)
+    here**: this fix's success mode is finding an unsat class, which ELIDES its Hasse
+    rows, so a row-count comparison reads a correct fix as a regression. See
+    `docs/known-limitations/classify-misses-unsat-complex-cardinality-qualifier.md` and
+    `docs/benchmarks/2026-09-03-complex-qualifier-verify-flip-sweep.md`.
 
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners (`card_sat`,
   interval/finite-set value ranges). **Wired into reasoning** (via the DKey

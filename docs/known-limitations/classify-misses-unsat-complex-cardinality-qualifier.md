@@ -1,8 +1,26 @@
 # `classify` misses an unsatisfiable class when the cardinality qualifier is COMPLEX
 
-**Status: live on v0.4.24 (`0642465`). Not fixed. Reproduced, stable across 3
-runs, adjudicated against BOTH oracles, and isolated by an atomic-filler
-control. Root cause not localised.**
+**Status: RESOLVED 2026-09-03 by #98 (merged as `9761ca8`), which closed #91.**
+Root cause was localised after all, and it was the THIRD instance of one pattern:
+classify's unsat probe trusts a wedge `Sat` unless `needs_verify` fires, and the
+`data_counting_classes` / `nominal_counting_classes` clauses sitting in that very
+expression had no sibling for object cardinality over a COMPLEX qualifier.
+`cardinality_qualifier` Tseitin-names such a filler, so the wedge counts a synthetic
+name without relating it to the members and cannot see that the `≤` and `≥` range
+over the SAME set. Fixed by `complex_qualifier_counting_classes` +
+`RUSTDL_COMPLEX_QUALIFIER_VERIFY` (**default ON**, `=0` reverts).
+
+**"No flag recovers it" was true and was the diagnostic clue, not a dead end** — the
+three flags tried (`TRUST_SAT=0`, `CLASSIFY_VERIFY_REFUTATIONS=1`, `SPIKE_CARD_ATOM=1`)
+all target the SUBSUMPTION path, and this lives on the SATISFIABILITY probe, which had
+no escape hatch for the construct. The section below is kept as the defect record.
+
+The five ontologies enumerated at the bottom were re-measured under a two-arm sweep of
+the fix: the predicate provably fires on **4 of them and finds no new unsatisfiable
+class on any**, so this doc's own "all 5 show zero unsat disagreement" finding is
+independently confirmed from the other direction. ORE is inert for this fix; the
+evidence is the canaries plus the oracle adjudication. See
+`docs/benchmarks/2026-09-03-complex-qualifier-verify-flip-sweep.md`.
 
 ## The defect
 

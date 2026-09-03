@@ -1,8 +1,38 @@
 # `classify` silently drops subsumptions when `ObjectHasSelf` appears under `∀`
 
-**Status: live. Not fixed. RE-SCOPED 2026-09-03 — the `∀` in the title is
-incidental, and this is at least TWO mechanisms, one of which this document
-previously ruled out.**
+**Status: RESOLVED 2026-09-03 by `d51ac27` (closes #90). Root cause was TWO
+refusals in `eval_order`, each of which discarded a whole clause.**
+
+`eval_order` built a tree over a clause's role atoms and refused any body whose
+atom targeted an already-bound variable. A refused body got **no match plan at
+all**, so the clause never fired and its constraint was silently unenforced — the
+wedge returning a `Sat` it was not entitled to give. Such an atom is not
+unsupported: with both endpoints bound there is nothing to enumerate, so it is a
+**filter** — a check that the edge exists. Fixed as `ClauseMatchPlan::filters`,
+evaluated at the leaf beside `other_classes`.
+
+| shape | old refusal |
+|---|---|
+| `∀p.¬Self`, `∀p.(Self ⊔ ¬Z)`, and the no-`∀` case | `NotTree` — the self-loop `R(y,y)` / `R(X,X)` |
+| `∀p.(¬Self ⊔ ¬Z)` | `Disconnected` — the naming clause sat on a successor variable nothing binds |
+
+Both halves had to be fixed, which is exactly why the earlier anchoring attempt
+measured as a no-op: on `X` the body becomes `R(X,X)`, which the *other* refusal
+then discarded. The two sabotages confirm each half is load-bearing — reverting
+the matcher filter fails 4 canaries with both controls passing; reverting the
+anchoring fails only the `Disconnected` case.
+
+Evidence, with `ro.ofn` as the discriminating case rather than an inert one: it
+goes from **6 `NotTree` refusals to none** — six clauses on a real curated
+ontology move from silently-ignored to enforced — while its oracle-verified
+closure is **unchanged at 158=158**. FP=0 net 22/0 with all 11 closures exact;
+two-arm pinned binaries identical on all 10 curated fixtures and all 9
+`Self`-bearing ORE ontologies; **0 of 150** sampled ORE ontologies produce the
+refusal at all. Canaries `crates/owl-dl-reasoner/tests/self_under_forall.rs`
+(6, including an oracle-adjudicated FP guard — enforcing a previously-ignored
+body atom ADDS clashes, so the risk here runs toward a false positive).
+
+The sections below are kept as the defect record.
 
 **Correction 1 — "`Self` OUTSIDE a `∀` is fine" is wrong for `classify`.** That
 control was checked with `rustdl sat`, which passes. Two axioms, no `∀`:

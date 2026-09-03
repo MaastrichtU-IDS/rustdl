@@ -1073,8 +1073,43 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     `classify` drops `T ⊑ S` whenever `ObjectHasSelf` sits under a `∀`, in either
     polarity, while `subclass`, Konclude and HermiT all confirm it and
     `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` recovers it — the #66 signature, still live after
-    #78/#83. `Self` OUTSIDE a `∀` is fine. See
-    `docs/known-limitations/wedge-drops-self-under-forall.md`.
+    #78/#83. **CLOSED 2026-09-03 by `d51ac27`, and BOTH clauses of the framing above were
+    wrong.**
+    **"`Self` OUTSIDE a `∀` is fine" was checked on the WRONG SURFACE.** That control used
+    `rustdl sat`, which passes. `classify` also missed `U ⊑ ∃r.Self` + `U ⊑ ¬∃r.Self` — two
+    axioms, **no `∀` anywhere** — with Konclude reporting `EquivalentClasses(owl:Nothing, U)`.
+    No flag recovered that one (`TRUST_SAT=0`, `CLASSIFY_VERIFY_REFUTATIONS=1` and all three
+    counting-verify flags all left it missed); **only `RUSTDL_HYPERTABLEAU=0` did**, which is
+    what localised the fault to the wedge rather than `trust_sat`. **Run a control through the
+    SAME command that exhibits the defect.**
+    **And the three fillers did NOT share a mechanism**, so one patch could never have settled
+    them. `eval_order` built a tree over a clause's role atoms and REFUSED any body whose atom
+    targeted an already-bound variable; a refused body got **no match plan at all**, so the
+    clause never fired and its constraint was **silently unenforced**. Two distinct refusals:
+    `NotTree` for the self-loop `R(y,y)`/`R(X,X)` (the single-literal and positive-disjunct
+    fillers, and the no-`∀` case), and `Disconnected` for `∀p.(¬Self ⊔ ¬Z)`, whose naming
+    clause sat on a successor variable nothing binds. **That is precisely why the recorded
+    anchoring attempt "changed nothing"** — on `X` the body becomes `R(X,X)`, which the OTHER
+    refusal then discarded. Fixed as `ClauseMatchPlan::filters`: an atom with both endpoints
+    bound is a CHECK that the edge exists, evaluated at the leaf beside `other_classes`.
+    `OrderReject::NotTree` is deleted (unconstructible), and the unit test asserting
+    `Err(NotTree)` for a legitimate join `R(X,1) ∧ S(X,1)` **was pinning the defect** and is
+    retargeted.
+    **DIRECTION OF RISK IS INVERTED** — enforcing a previously-ignored body atom ADDS clashes,
+    so the failure mode is a false POSITIVE, guarded by an oracle-adjudicated control (a node
+    whose `r`-successor is a DISJOINT class has no self-loop; Konclude reports no unsat class).
+    **`ro.ofn` is the discriminating fixture, not an inert one: 6 `NotTree` refusals → none**,
+    six clauses on a real ontology moving from silently-ignored to enforced, with the
+    oracle-verified closure **unchanged at 158=158**. FP=0 net 22/0, all 11 closures exact;
+    two-arm pinned binaries IDENTICAL on all 10 curated fixtures and all 9 `Self`-bearing ORE
+    ontologies; **0 of 150** sampled ORE ontologies produce the refusal at all — their `Self`
+    is POSITIVE and at head position, which emits a head `Role(var,var)` and never a body
+    atom, so only a NEGATED `Self` (or a `Self` disjunct under `∀`) is addressable and ORE has
+    none. A companion clausifier gap closed in `8ae984c`: `emit_head`'s `Not` arm handled only
+    an atomic inner, so `body → ¬∃R.Self` was DEFERRED out of the wedge theory entirely.
+    Canaries `crates/owl-dl-reasoner/tests/self_under_forall.rs` (6; 2 sabotages run, 2 caught
+    at the predicted granularity), plus `examples/clause_stats_probe` because nothing surfaced
+    `deferred`. See `docs/known-limitations/wedge-drops-self-under-forall.md`.
   * **`fresh_class_id` cannot alias a real class — REFUTED, do not spend time on it.**
     Every call site clamps `fresh_class_id(&base).index().max(num_classes)` and real
     ids are all `< num_classes`; and a qualifier that is not a named class goes through

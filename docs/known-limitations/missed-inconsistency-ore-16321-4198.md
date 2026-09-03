@@ -1,7 +1,21 @@
 # rustdl reports `consistent: true` on two ORE ontologies Konclude AND KM call inconsistent
 
-**Status: live on v0.4.24 (`0642465`) and identically on v0.4.23 — PRE-EXISTING, not a
-release regression. Sound (a MISS, never an invented entailment). Two-peer confirmed.**
+**Status: FIXED in v0.4.25 by #97**, which consults the wedge consistency route in
+classify's inconsistency pre-check. Re-measured on the released binary: `classify --json`
+reports `consistent: false` with 40 unsatisfiable classes on BOTH ontologies, agreeing
+with `rustdl consistent`, Konclude and KM.
+
+Was: live on v0.4.24 (`0642465`) and identically on v0.4.23 — PRE-EXISTING, not a release
+regression. Sound (a MISS, never an invented entailment). Two-peer confirmed.
+
+**This page stayed marked "live" for the whole of 0.4.25's preparation while its sibling
+`dkey-numeric-buckets-are-not-disjoint.md` was corrected — the same drift, caught in one
+place and missed in the other, and only found by re-measuring the inventory instead of
+listing it from memory.** #97's own finding is the part worth carrying: the verdict
+already existed as `consistency: wedge Unsat` and was simply not consulted from classify,
+so neither the DKey-aware ABox saturation nor the `decide(Top)` probe that #89 proposed
+was needed. The recorded dead-end for `decide(Top)` concerns an UNBOUNDED probe; the
+wedge route is bounded and measures 2.34 ms on pizza.
 
 ## The disagreement
 
@@ -10,6 +24,7 @@ release regression. Sound (a MISS, never an invented entailment). Two-peer confi
 | Konclude v0.7.0 | `owl:Thing ≡ owl:Nothing` → **inconsistent** | **inconsistent** |
 | Kobayashi-MaRust v0.2.32 | `consistent: false` | `consistent: false` |
 | rustdl `classify --json` (v0.4.24) | `consistent: true`, `unsatisfiable: []` | same |
+| rustdl `classify --json` (v0.4.25, FIXED) | `consistent: false`, 40 unsat | same |
 | rustdl `classify --json` (v0.4.23) | `consistent: true` | same |
 | rustdl `consistent` subcommand | `consistent` | `consistent` |
 

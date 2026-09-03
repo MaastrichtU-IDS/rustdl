@@ -111,7 +111,15 @@ inherits = "release"
 debug = "line-tables-only"
 
 [patch.crates-io]
-# Manchester Syntax io/omn reader+writer (not yet in upstream horned-owl). Pinned
+# Manchester Syntax io/omn. STATUS CORRECTED 2026-09-03: the upstream PR
+# (phillord/horned-owl#176) MERGED on 2026-07-11 and `io::omn` ships in RELEASED
+# horned-owl 2.0.0 (2026-07-17) and 3.0.0 -- including `reader::read` and
+# `reader::parse_class_expression`. This patch is still needed only because rustdl
+# pins 1.4 (omn landed in 2.0), and because the fork's per-item `AsManchester`
+# rendering trait did NOT land upstream -- upstream ships only a whole-ontology
+# `writer::write`, which cannot render a single axiom. Dropping the patch is a
+# horned-owl MAJOR upgrade plus replacing that trait; see the tracking issue.
+# Pinned
 # to a rev on the `manchester-io-rebased` branch of the fork — rebased onto
 # upstream/main (1.4.0) and conformance-complete (PR micheldumontier/horned-owl →
 # phillord/horned-owl #176) so this builds reproducibly anywhere (the upstream

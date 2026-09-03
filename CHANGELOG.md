@@ -67,7 +67,7 @@ publisher; the sequence is recorded in `publish-crates.yml`'s header. That fixes
 live documentation bug: `owl-dl-reasoner` takes `horned-owl` types in its signatures
 without re-exporting the crate, and `cargo add horned-owl` resolves 3.x against its
 `^1.4`, so the README's own example failed with a type mismatch. It has no `[[bin]]` —
-`owl-dl-cli` stays unpublished because it needs a Manchester reader absent from upstream
+`owl-dl-cli` stays unpublished because it depends on a `[patch.crates-io]` fork of
 `horned-owl`, so the CLI comes from the release binaries.
 
 `.github/workflows/publish-crates.yml` publishes five crates on a `v*.*.*` tag via

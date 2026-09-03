@@ -174,7 +174,7 @@ Windows (x86-64) are attached to every
 supported way to get `rustdl`.
 
 > **Do not `cargo install owl-dl-cli`.** That crate is deliberately not published
-> (it needs a Manchester-syntax reader that is not yet in upstream `horned-owl`, so
+> (it depends on a `[patch.crates-io]` fork of `horned-owl`, so
 > a crates.io build of it would not compile). crates.io still serves the old
 > `0.3.0` from 2026-06-05, so `cargo install owl-dl-cli` silently gives you a
 > months-old binary. The five *library* crates ARE published and current.

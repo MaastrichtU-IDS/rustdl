@@ -40,12 +40,17 @@
 //!
 //! `cargo install rustdl` will not give you the `rustdl` command-line tool — this
 //! is a library. The CLI lives in `owl-dl-cli`, which is deliberately NOT published
-//! (it needs a Manchester-syntax reader that is not yet in upstream `horned-owl`,
+//! (it depends on a `[patch.crates-io]` fork of `horned-owl`,
 //! so a crates.io build of it would not compile). Get the `rustdl` binary from the
 //! [GitHub releases](https://github.com/MaastrichtU-IDS/rustdl/releases/latest),
 //! which carry prebuilt Linux (x86-64/aarch64, musl-static), macOS (aarch64) and
-//! Windows (x86-64) binaries. When that upstream reader lands, a `[[bin]]` can be
-//! added here and `cargo install rustdl` will start working.
+//! Windows (x86-64) binaries.
+//!
+//! The upstream reader has in fact landed — `io::omn` ships in released
+//! `horned-owl` 2.0.0+ — so what keeps the CLI unpublished is that this workspace
+//! pins `horned-owl` 1.4, plus one per-item rendering trait (`AsManchester`) that
+//! did not go upstream. Once that is resolved a `[[bin]]` can be added here and
+//! `cargo install rustdl` will start working.
 //!
 //! # Soundness
 //!

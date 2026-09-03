@@ -11,7 +11,10 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 # Uses `horned_owl::io::omn` (Manchester reader/writer), which exists only in the
-# `[patch.crates-io]` fork rev, NOT in upstream horned-owl 1.4 on crates.io.
+# `[patch.crates-io]` fork rev, NOT in horned-owl 1.4 -- the version this workspace
+# PINS. NB `io::omn` DOES exist in released horned-owl 2.0.0+/3.0.0; what remains
+# fork-only is the per-item `AsManchester` rendering trait. So this is a pinned-
+# version problem plus one trait, not an upstream-feature gap; see the tracking issue.
 # `[patch]` is not carried in a published manifest, so a consumer resolves
 # upstream and this crate FAILS TO COMPILE for them (measured: E0432
 # `unresolved import horned_owl::io::omn`) — while building green here, because

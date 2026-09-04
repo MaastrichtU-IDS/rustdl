@@ -120,12 +120,19 @@ jobs:
       # applied - which is the whole point. This is what catches a fork-only
       # dependency before it can reach the registry.
       #
-      # VERIFIED LOCALLY 2026-09-01 (rc=0): packages exactly the five publishable
+      # VERIFIED LOCALLY 2026-09-01 (rc=0): packaged exactly the five THEN-publishable
       # crates in dependency order - core, datatypes, saturation, tableau,
-      # reasoner - and resolves the sibling 0.4.24 requirements from the local
-      # workspace even though no 0.4.x is on the registry yet. So --workspace
+      # reasoner - and resolved the sibling 0.4.24 requirements from the local
+      # workspace even though no 0.4.x was on the registry yet. So --workspace
       # handles the first-publish chicken-and-egg; it does not need the deps to
       # exist upstream first.
+      #
+      # THAT COUNT IS NOW SIX. `rustdl` became publishable after this note was written
+      # (it was excluded from the 0.4.25 workflow publish and done by hand, because a
+      # NEW crate name cannot use OIDC for its FIRST publish), so the dry-run gate
+      # above DOES cover it. Confirmed by the v0.4.26 tag, which published all six
+      # through this job. The dated figure is left as the datum it is rather than
+      # silently rewritten.
       - name: cargo publish --dry-run --workspace
         run: cargo publish --dry-run --workspace --locked
 

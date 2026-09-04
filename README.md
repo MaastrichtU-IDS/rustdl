@@ -177,7 +177,8 @@ supported way to get `rustdl`.
 > (it depends on a `[patch.crates-io]` fork of `horned-owl`, so
 > a crates.io build of it would not compile). crates.io still serves the old
 > `0.3.0` from 2026-06-05, so `cargo install owl-dl-cli` silently gives you a
-> months-old binary. The five *library* crates ARE published and current.
+> months-old binary. The six published crates — the five libraries plus `rustdl` —
+> ARE current.
 
 To build from source instead:
 

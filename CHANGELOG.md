@@ -6,6 +6,89 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.26] — 2026-09-04
+
+Three fixes, all of them **wrong answers on the default path**, all found by chasing a
+`classify`-vs-`subclass` disagreement to its root rather than to a flag. Two were the
+same shape one construct apart; the third was one line in the wedge's matcher.
+
+### Fixed — `classify` missed an unsatisfiable class when the cardinality qualifier was COMPLEX (#91, PR #98)
+
+`A ⊑ ≤1 r.(B ⊓ C)` with `A ⊑ ≥2 r.(B ⊓ C)` makes `A` unsatisfiable. Konclude, HermiT and
+rustdl's own `sat A` all agreed; `classify` reported `unsatisfiable: []`.
+
+classify's unsat probe trusts the wedge's `Sat` unless `needs_verify` fires, and that
+expression already carved out two constructs the wedge cannot count —
+`data_counting_classes` (concrete-domain) and `nominal_counting_classes` (#49, whose own
+comment reads *"Same defect one construct over"*). This is one construct further again:
+`cardinality_qualifier` Tseitin-names a complex filler, so the wedge counts a synthetic
+name without relating it to the members and cannot see that the `≤` and `≥` range over
+the **same set**. With a *named* filler it can, which is what isolates this to the
+qualifier shape rather than to cardinality.
+
+**"No flag recovers it" was the diagnostic clue, not a dead end.** The three flags tried
+on the issue (`RUSTDL_HYPERTABLEAU_TRUST_SAT=0`, `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1`,
+`RUSTDL_SPIKE_CARD_ATOM=1`) all target the *subsumption* path; this lives on the
+*satisfiability* probe, which had no escape hatch for the construct.
+
+New `RUSTDL_COMPLEX_QUALIFIER_VERIFY`, **default ON**, `=0` reverts. Sound either way —
+it only swaps a wedge `Sat` for the complete tableau path, so being wrong costs wall
+time, never an answer.
+
+### Fixed — `classify` silently dropped `ObjectHasSelf` constraints, in or out of a `∀` (#90)
+
+`eval_order` built a *tree* over each clause's role atoms and **refused** any body whose
+atom targeted an already-bound variable. A refused body got **no match plan at all**, so
+the clause never fired and its constraint went unenforced — the wedge returning a `Sat` it
+was not entitled to give. Such an atom is not unsupported: with both endpoints bound there
+is nothing to enumerate, so it is a **filter**, a check that the edge exists. Now
+collected as `ClauseMatchPlan::filters` and evaluated at the leaf.
+
+Two distinct refusals, which is why the issue's three reproducers did not share a
+mechanism and one patch could never have settled them: `NotTree` for the self-loop
+`R(y,y)`/`R(X,X)`, and `Disconnected` for `∀p.(¬Self ⊔ ¬Z)`, whose naming clause sat on a
+successor variable nothing binds. Anchoring that clause alone had been measured as a
+no-op — correctly, because on `X` the body becomes `R(X,X)` and the *other* refusal then
+discarded it. Both halves are fixed (`OrderReject::NotTree` is now unconstructible and
+deleted).
+
+**The `∀` in the issue title was incidental.** `U ⊑ ∃r.Self` + `U ⊑ ¬∃r.Self` — two
+axioms, no `∀` anywhere — was missed too, with Konclude reporting
+`EquivalentClasses(owl:Nothing, U)`. The issue had ruled that case out because its control
+was checked with `rustdl sat`, which passes; the defect was in `classify`. No flag
+recovered it; only disabling the wedge did, which is what localised the fault.
+
+### Fixed — `¬∃R.Self` at head position was deferred out of the wedge theory
+
+`emit_head`'s `Not` arm handled only an *atomic* inner, so `body → ¬∃R.Self` hit
+`defer("head-not-nonatomic")` and the axiom left the wedge theory entirely — a silent
+drop. `head_atom_for` already carried the disjunct-position equivalent, which is exactly
+why `∀p.(¬Self ⊔ ¬Z)` clausified completely while the single-literal `∀p.¬∃r.Self` did
+not. Emitted now by appending `Role(R,var,var)` to the enclosing, already-anchored body.
+
+### Added — `examples/clause_stats_probe`
+
+Nothing surfaced the clausifier's `deferred` count: the `# fragment:` banner folds it into
+a three-way verdict that reads `out-of-EL` whether the count is 0 or 50, and
+`classify --json` omits it. All four of #90's fixtures printed an *identical* banner while
+their deferral counts were 2, 0, 1 and 0 — that probe is what split the defect. It also
+computes the match-plan refusal census without running the engine, which is how the
+ontologies that stall *in* reasoning could be measured at all.
+
+### Notes on the evidence
+
+**Direction of risk is inverted for all three fixes** — each *adds* constraints, so the
+failure mode is a false POSITIVE rather than a miss. Every one carries an
+oracle-adjudicated negative control, not an assumed one.
+
+**ORE is inert for all three, and that is the headline.** #98 fires on 4 of the 497
+cardinality-bearing ontologies and the main tableau *confirms* the wedge on every one —
+no new unsat anywhere. #90's refusal census over all 1,920, by two independent
+instruments, finds **0 addressable**. So the corpus gates are non-regression evidence
+only; the real evidence is the canaries plus Konclude/HermiT. `ro.ofn` is the one place
+#90 is observable on real data: **6 refusals → none**, six clauses moving from
+silently-ignored to enforced, with its oracle-verified closure unchanged at 158=158.
+
 ## [0.4.25] — 2026-09-03
 
 ### Added — `is_consistent_with_timeout`, a deadline-bearing consistency check (#95)

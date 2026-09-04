@@ -1018,7 +1018,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "owl-dl-bench"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "anyhow",
  "clap",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-cb"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "hashbrown 0.15.5",
  "owl-dl-core",
@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-cli"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "anyhow",
  "clap",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-core"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-datatypes"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "owl-dl-core",
  "proptest",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-py"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "horned-owl",
  "owl-dl-core",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-reasoner"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "anyhow",
  "dashmap",
@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-saturation"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "dashmap",
  "fixedbitset",
@@ -1131,7 +1131,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-tableau"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-verify"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "hashbrown 0.15.5",
  "horned-owl",
@@ -1666,7 +1666,7 @@ checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
 
 [[package]]
 name = "rustdl"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "horned-owl",
  "owl-dl-reasoner",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.25"
+version = "0.4.26"
 dependencies = [
  "anyhow",
  "clap",

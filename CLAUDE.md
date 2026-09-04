@@ -1576,7 +1576,35 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   **The builder itself is an under-approximation in places, and every known imprecision points
   toward a SPURIOUS violation, never toward a false all-clear** — see the three reproduced
   false-`Violated` cases (F1/F2/F3) in
-  `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`. Empirically: zero
+  `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md` — of which **F2 is FIXED
+  (2026-09-04)**; F1 and F3 remain open.
+  **THE INSTRUMENT IS NOW CLEAN ON THE CORPUS (#87 CLOSED, 2026-09-04).** It previously reported
+  **8 `Violated` and every one was its own false positive** — a 0-for-8 record against its
+  headline claim. Both mechanisms are fixed: **F5** (`fold_build_reasons` kept `Violated` over a
+  TRUNCATED model, where the violations are artifacts of the cut) and **F4** (`⊤ ⊑ C` never
+  reached model elements, because `required_atoms` on `⊤` returns an EMPTY antecedent and
+  `expand_from_axioms` read empty as "no rule" rather than "fires on every element").
+  **F4 and F2 turned out to be ONE mechanism**, which neither write-up had noticed.
+  Re-scan over all 1,920, and the deltas are self-validating — exactly +4/+4/−8 on exactly the
+  right ontologies, nothing else moving:
+  | verdict | before | after |
+  |---|---:|---:|
+  | **violated** | **8** | **0** |
+  | verified | 358 | 362 |
+  | unresolved (off-fragment/refused) | 1,357 | 1,361 |
+  | timeout at 60 s — UNMEASURED, not passing | 196 | 196 |
+  | I/O or parse error (`ore_ont_10860`, the SWRL grammar gap) | 1 | 1 |
+  **What this does and does not license.** It makes `verify-el` usable UNATTENDED as a D10
+  hunter, which is the point — the reactive loop that produced most of this file's recent fixes
+  becomes systematic. It does NOT mean no engine defects exist: coverage is **19%** (the pure-EL
+  fragment restriction, not defect density, is the binding constraint), 196 ontologies are
+  UNMEASURED rather than passing, and F1/F3 are still live builder false-positive mechanisms — so
+  a future `Violated` remains a LEAD requiring adjudication, not a proof.
+  **A trap worth carrying beyond this crate**, from F4: any oracle comparison that counts `Thing`
+  rows reports spurious MISSED on any ontology asserting `⊤ ⊑ C`. This project has been bitten
+  once already — 73% of an apparent ~1,795-row gap against Kobayashi-MaRust was the same
+  ⊤-convention artifact.
+  Empirically before the fix: zero
   spurious violations across 16 pure-EL ORE ontologies and 3 healthy controls, and each of the 5
   committed detections below was adjudicated individually. **A `Violated` is a strong lead
   requiring adjudication, not a proof** — the design spec's own hedge (`docs/superpowers/specs/

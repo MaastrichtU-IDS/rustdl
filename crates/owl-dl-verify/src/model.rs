@@ -190,6 +190,11 @@ pub struct FiniteModel {
     /// `seed` builds on via `..Self::default()`) working. Absent reads the
     /// same as an out-of-range role: an empty sub-role extension.
     hierarchy: Option<RoleHierarchy>,
+    /// Atomic classes every element must carry because `⊤ ⊑ C` asserts it
+    /// (#87 F4). Applied in [`FiniteModel::intern`] — the single chokepoint all
+    /// three label-construction sites route through — so no path can forget it
+    /// and elements created in any later round get it too.
+    top_floor: Vec<ClassId>,
     /// Running total of edges across all roles, checked against
     /// `bounds.max_edges` by `push_edge`. Shared by both expansion paths.
     edge_count: usize,
@@ -202,6 +207,16 @@ impl FiniteModel {
             label.windows(2).all(|w| w[0] <= w[1]),
             "label must be sorted"
         );
+        // `⊤ ⊑ C` asserts that EVERY domain element is a `C` (#87 F4). Applied
+        // here rather than at the three call sites, so a future fourth site
+        // cannot miss it. Cheap: `top_floor` is empty on the overwhelming
+        // majority of ontologies, and the whole block is skipped then.
+        let mut label = label;
+        if !self.top_floor.is_empty() {
+            label.extend_from_slice(&self.top_floor);
+            label.sort_unstable_by_key(|c| c.index());
+            label.dedup();
+        }
         let key: Box<[ClassId]> = label.into_boxed_slice();
         if let Some(&e) = self.label_ix.get(&key) {
             return e;
@@ -230,6 +245,68 @@ impl FiniteModel {
     /// Unsatisfiable classes get NO element. That is inertness hygiene, not a
     /// detection mechanism: a dropped `⊑ ⊥` axiom leaves its class satisfiable
     /// and therefore seeded, and the evaluator is what catches it.
+    /// The atomic classes `⊤ ⊑ C` (or `⊤ ≡ C`) asserts of every element,
+    /// closed through the subsumer relation (#87 F4).
+    ///
+    /// Why this is needed at all: the four ORE ontologies in #87 F4 report a
+    /// violation count EXACTLY equal to their `owl:Thing`-LHS axiom count, and
+    /// the reported element is a Tseitin synthetic carrying only itself. The
+    /// saturator emits no fact for such a marker and gives it an empty subsumer
+    /// set by design, so nothing in the closure ever puts `C` on it — the axiom
+    /// has to be read off the ontology, which is what this does.
+    ///
+    /// The engine is not at fault on those four: `rustdl subclass-expr <ont>
+    /// "owl:Thing" "<C>"` answers `yes`; rustdl merely omits `owl:Thing` from
+    /// classification output, a reporting convention. So this makes the BUILDER
+    /// faithful to an ASSERTED axiom, in the same family as the F1/F2/F3
+    /// builder imprecisions.
+    ///
+    /// **Residual, stated rather than hidden:** because the floor is applied to
+    /// every element, the instrument no longer tests whether the closure derived
+    /// `⊤ ⊑ C` for a NAMED class. That is an acceptable trade here — the axiom is
+    /// asserted, not derived — but it is a real narrowing of what a `Verified`
+    /// on such an ontology means.
+    fn compute_top_floor(internal: &InternalOntology, subs: &Subsumers) -> Vec<ClassId> {
+        let pool = &internal.concepts;
+        let mut floor: Vec<ClassId> = Vec::new();
+        let add = |sup: &ConceptId, floor: &mut Vec<ClassId>| {
+            let mut atoms = Vec::new();
+            Self::required_atoms(pool, *sup, &mut atoms);
+            for a in atoms {
+                if subs.is_unsatisfiable(a) {
+                    // `⊤ ⊑ ⊥`-ish: the ontology is inconsistent. Seeding an
+                    // unsatisfiable class onto every element is not this
+                    // function's job to adjudicate, and `seed` already skips
+                    // unsatisfiable classes for the same inertness reason.
+                    continue;
+                }
+                floor.extend(subs.subsumers_of(a));
+            }
+        };
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::SubClassOf { sub, sup } if Self::is_universal_antecedent(pool, *sub) => {
+                    add(sup, &mut floor);
+                }
+                Axiom::EquivalentClasses(members)
+                    if members
+                        .iter()
+                        .any(|m| Self::is_universal_antecedent(pool, *m)) =>
+                {
+                    for m in members {
+                        if !Self::is_universal_antecedent(pool, *m) {
+                            add(m, &mut floor);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        floor.sort_unstable_by_key(|c| c.index());
+        floor.dedup();
+        floor
+    }
+
     #[must_use]
     pub fn seed(
         internal: &InternalOntology,
@@ -240,6 +317,9 @@ impl FiniteModel {
             edges: vec![Vec::new(); internal.vocabulary.num_roles()],
             ..Self::default()
         };
+        // Set BEFORE the intern loop below: `intern` reads `top_floor`, so a
+        // floor computed afterwards would miss every element seeded here.
+        model.top_floor = Self::compute_top_floor(internal, subs);
         let mut population: Vec<ClassId> =
             internal.vocabulary.classes().map(|(id, _)| id).collect();
         for &(sub, _, target) in facts {
@@ -476,6 +556,28 @@ impl FiniteModel {
     /// `Some(..)` bodies contribute NO classes of their own — an element
     /// standing for `∃u.A` is opaque as a class, and its content is carried
     /// by the edge the caller materialises, not by its label.
+    /// Is this antecedent satisfied by EVERY element — `⊤`, or a conjunction of
+    /// such?
+    ///
+    /// **This is NOT the same as `required_atoms` returning nothing**, and
+    /// conflating the two is #87 F4. `required_atoms` yields an empty vector for
+    /// every shape it cannot label from — `Some`, `Or`, `Not`, `Min`, `Max`,
+    /// `All`, nominals — as its own doc says. Treating THOSE as universal would
+    /// apply the consequent to every element unconditionally, adding labels that
+    /// could satisfy an axiom that should have been reported violated: a false
+    /// all-clear, the one direction this crate exists to prevent. So the test is
+    /// structural on `⊤`, never on emptiness.
+    ///
+    /// An empty `And` reads as `⊤`, which is why `all` on an empty iterator
+    /// returning `true` is correct here rather than an accident.
+    fn is_universal_antecedent(pool: &ConceptPool, ce: ConceptId) -> bool {
+        match pool.get(ce) {
+            ConceptExpr::Top => true,
+            ConceptExpr::And(ops) => ops.iter().all(|o| Self::is_universal_antecedent(pool, *o)),
+            _ => false,
+        }
+    }
+
     fn required_atoms(pool: &ConceptPool, ce: ConceptId, out: &mut Vec<ClassId>) {
         match pool.get(ce) {
             ConceptExpr::Atomic(c) => out.push(*c),
@@ -515,7 +617,13 @@ impl FiniteModel {
                 Axiom::SubClassOf { sub, sup } => {
                     let mut ante = Vec::new();
                     Self::required_atoms(&internal.concepts, *sub, &mut ante);
-                    if !ante.is_empty() {
+                    // An EMPTY antecedent from a `⊤` subclass is a rule that
+                    // fires on every element, not the absence of a rule — the
+                    // firing loop's `all` over an empty slice already yields
+                    // `true`. `⊤ ⊑ ∃r.C` reaches `materialise_exists` this way;
+                    // `⊤ ⊑ C` for an atomic `C` is handled by `top_floor`, since
+                    // `materialise_exists` deliberately no-ops on atomics.
+                    if !ante.is_empty() || Self::is_universal_antecedent(&internal.concepts, *sub) {
                         rules.push((ante, *sup));
                     }
                 }
@@ -527,7 +635,10 @@ impl FiniteModel {
                             }
                             let mut ante = Vec::new();
                             Self::required_atoms(&internal.concepts, *lhs, &mut ante);
-                            if !ante.is_empty() {
+                            // `⊤ ≡ C` gives `⊤ ⊑ C`; same universal reading.
+                            if !ante.is_empty()
+                                || Self::is_universal_antecedent(&internal.concepts, *lhs)
+                            {
                                 rules.push((ante, *rhs));
                             }
                         }

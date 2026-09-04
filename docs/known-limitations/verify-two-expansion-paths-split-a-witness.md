@@ -1,9 +1,10 @@
 # The model builder can report a false `Violated` (F1/F2/F3, plus the original split-witness risk)
 
 **Found:** 2026-08-28 (Task 14, `owl-dl-verify`); F1/F2/F3 found 2026-08-28 during the final
-whole-branch review · **Status:** OPEN. The original split-witness risk below is still
-hypothetical/untested; F1/F2/F3 are CONFIRMED, reproducible, and each exits the CLI's normal
-success path (`(0 unresolved)`, exit 2) — the refusal machinery does not catch any of them ·
+whole-branch review · **Status:** PARTIALLY RESOLVED. **F2 is FIXED (2026-09-04)** — see the
+note in its section below; F1 and F3 remain OPEN and reproducible, and each exits the CLI's
+normal success path (`(0 unresolved)`, exit 2). The original split-witness risk below is still
+hypothetical/untested ·
 **Severity:** this crate's central claim ("a `Violated` verdict is a real engine defect") does
 not hold as stated. See the corrected wording in `CLAUDE.md`'s `crates/owl-dl-verify` entry,
 `README.md`, and `rustdl verify-el --help`.
@@ -94,7 +95,41 @@ The flat control (`X ⊑ ∃r.A`, `A ⊑ C`) verifies cleanly: with a single ato
 resolves through the saturator's own closure, which already folds `A ⊑ C` into `A`'s subsumer
 set before the model is ever built. Only the conjunctive body bypasses that closure.
 
-## F2 — nested `∃` plus an ordinary `SubClassOf(owl:Thing, C)`
+## F2 — nested `∃` plus an ordinary `SubClassOf(owl:Thing, C)` — **FIXED 2026-09-04**
+
+> **RESOLVED.** `⊤ ⊑ C` is now applied at `FiniteModel::intern` — the single chokepoint all
+> three label-construction sites route through — so every element carries it, Tseitin
+> synthetics included. `expand_from_axioms` also lets a universal antecedent fire as a RULE,
+> which is what `⊤ ⊑ ∃r.C` needs (a label floor cannot build an existential).
+>
+> **F2 and #87's F4 are ONE mechanism, and neither write-up said so.** F2 was filed here as a
+> builder imprecision; F4 was filed on #87 as a corpus-scale instrument false positive
+> affecting four ORE ontologies whose violation counts equal their `owl:Thing`-LHS axiom counts
+> exactly. They are the same sentence — "the Tseitin marker's label is never closed under
+> `⊤ ⊑ C`" — approached from a fixture and from the corpus.
+>
+> **What surfaced the connection:** `f2_nested_exists_plus_thing_subclass_is_a_false_violated`
+> FAILED when the F4 fix landed, because it asserted the false `Violated`. It was written to
+> trip on a fix ("F2 known limitation did not reproduce (fixed?)") rather than being
+> `#[ignore]`d — which is the only reason this did not pass unnoticed. It is retargeted to
+> assert the absence, keeping the name searchable.
+>
+> **The root cause was a conflation worth remembering:** `required_atoms` returns an empty
+> antecedent both for `⊤` (genuinely universal) and for every shape it cannot decompose
+> (`Some`/`Or`/`Not`/`Min`/`All`). The builder read empty as "no rule". Reading it instead as
+> "universal" would have been worse — applying a consequent to every element can satisfy an
+> axiom that should have been reported violated, i.e. a **false all-clear**. So the fix tests
+> for `⊤` structurally, guarded by
+> `an_unevaluable_antecedent_is_not_treated_as_universal`, which is sabotage-verified: a first
+> version of that guard did NOT fail when the predicate was loosened, and was rewritten around
+> a `DisjointClasses` that makes the over-broad labelling observable.
+>
+> **Residual:** because the floor applies to every element, the instrument no longer tests
+> whether the CLOSURE derived `⊤ ⊑ C` for a named class. Acceptable — the axiom is asserted,
+> not derived, and rustdl's own `subclass-expr owl:Thing <C>` confirms it on all four
+> ontologies — but it is a real narrowing of what a `Verified` means there.
+
+### Original F2 report
 
 **Reproducer:** `crates/owl-dl-verify/tests/known_limitations.rs::f2_nested_exists_plus_thing_subclass_is_a_false_violated`
 (control: `f2_control_flat_exists_plus_thing_subclass_verifies_cleanly`).

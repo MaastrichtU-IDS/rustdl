@@ -499,6 +499,15 @@ impl IntegerRange {
     /// `other` (`None`) imposes no constraint; an unbounded end on
     /// `self` against a bounded `other` end means `self` reaches past
     /// `other`, so it is NOT contained.
+    /// Does `v` lie in this range? Inclusive bounds; `None` is unbounded.
+    ///
+    /// Used to relate a RANGE `DKey` to an ENUMERATION `DKey` of the same datatype
+    /// (#42 item 2): `DataHasValue`/facets land in the range bucket while
+    /// `DataOneOf` lands in a separate set bucket, and the two were never compared.
+    pub(crate) fn contains(self, v: i64) -> bool {
+        self.min.is_none_or(|m| v >= m) && self.max.is_none_or(|m| v <= m)
+    }
+
     pub(crate) fn subset(self, other: Self) -> bool {
         if self.is_empty() {
             return true;
@@ -573,6 +582,23 @@ pub(crate) struct FloatRange {
 }
 
 impl FloatRange {
+    /// Does `v` lie in this range? Honours the explicit inclusivity flags — the
+    /// `±1` normalization that makes [`IntegerRange`] simple is INVALID for reals,
+    /// so an exclusive bound is compared strictly.
+    pub(crate) fn contains(&self, v: f64) -> bool {
+        let lo = match self.min {
+            None => true,
+            Some(m) if self.min_incl => v >= m,
+            Some(m) => v > m,
+        };
+        let hi = match self.max {
+            None => true,
+            Some(m) if self.max_incl => v <= m,
+            Some(m) => v < m,
+        };
+        lo && hi
+    }
+
     pub(crate) const fn unbounded() -> Self {
         Self {
             min: None,
@@ -733,6 +759,23 @@ pub(crate) struct OrdRange<T> {
 }
 
 impl<T: Ord + Clone> OrdRange<T> {
+    /// Does `v` lie in this range? Honours the explicit inclusivity flags — an
+    /// EXCLUSIVE bound must not admit its endpoint, which is why this cannot be
+    /// written as a plain `>=`/`<=` pair the way [`IntegerRange::contains`] can.
+    pub(crate) fn contains(&self, v: &T) -> bool {
+        let lo = match &self.min {
+            None => true,
+            Some(m) if self.min_incl => v >= m,
+            Some(m) => v > m,
+        };
+        let hi = match &self.max {
+            None => true,
+            Some(m) if self.max_incl => v <= m,
+            Some(m) => v < m,
+        };
+        lo && hi
+    }
+
     pub(crate) const fn unbounded() -> Self {
         Self {
             min: None,

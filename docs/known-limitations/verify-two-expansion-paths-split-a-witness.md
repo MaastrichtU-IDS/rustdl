@@ -1,4 +1,7 @@
-# The model builder can report a false `Violated` (F1/F2/F3, plus the original split-witness risk)
+# The model builder can report a false `Violated` (F1/~~F2~~/F3, plus the original split-witness risk)
+
+> **F2 is FIXED (2026-09-04, #87).** F1 and F3 remain OPEN and still reproduce. The header
+> status below is written as of 2026-08-28 and is otherwise unchanged.
 
 **Found:** 2026-08-28 (Task 14, `owl-dl-verify`); F1/F2/F3 found 2026-08-28 during the final
 whole-branch review · **Status:** OPEN. The original split-witness risk below is still
@@ -94,9 +97,31 @@ The flat control (`X ⊑ ∃r.A`, `A ⊑ C`) verifies cleanly: with a single ato
 resolves through the saturator's own closure, which already folds `A ⊑ C` into `A`'s subsumer
 set before the model is ever built. Only the conjunctive body bypasses that closure.
 
-## F2 — nested `∃` plus an ordinary `SubClassOf(owl:Thing, C)`
+## F2 — nested `∃` plus an ordinary `SubClassOf(owl:Thing, C)` — **FIXED 2026-09-04 (#87 F4)**
 
-**Reproducer:** `crates/owl-dl-verify/tests/known_limitations.rs::f2_nested_exists_plus_thing_subclass_is_a_false_violated`
+> **CLOSED.** `FiniteModel::intern` now closes any label containing NO named class under the
+> ⊤-supers (collected from `SubClassOf(⊤, C)` and `EquivalentClasses(⊤, …)`, then closed through
+> the reported subsumer closure). On the corpus this was **4 of the 8** `Violated` verdicts
+> `verify-el` produced across all 1,920 ORE ontologies — `ore_ont_11522`, `ore_ont_14128`,
+> `ore_ont_14826`, `ore_ont_7270` — and in each the violation count equalled the `⊤ ⊑ C` axiom
+> count exactly. All four now report `Verified`.
+>
+> **Scoped to marker-only labels on purpose.** Closing EVERY label would be semantically fine —
+> `⊤ ⊑ C` does hold of everything — and would silently destroy a real detection: a NAMED class
+> whose reported closure lacks a ⊤-super is a genuine engine gap of the D10 shape this crate
+> exists to find, and injecting `C` from the axiom would hide it. Pinned by
+> `model::intern_top_supers_tests::a_label_holding_a_named_class_is_left_alone`, which asserts
+> on `intern` directly. An end-to-end version of that test was written first and **survived its
+> own sabotage** — `test_only_remove_from_label` runs after interning, so it fails under either
+> scoping and discriminated nothing. That is why the pin lives at unit level.
+>
+> The sentinel test is kept and inverted (`f2_nested_exists_plus_thing_subclass_now_verifies`),
+> per this crate's rule against deleting a limitation's reproducer. Three further tests answer
+> the "fixed, or merely untriggered by this shape?" question the sentinel file asks: a 3-deep
+> nesting, the `EquivalentClasses(owl:Thing, …)` spelling, and a ⊤-super reachable only through
+> the closure.
+
+**Reproducer (now a regression test):** `crates/owl-dl-verify/tests/known_limitations.rs::f2_nested_exists_plus_thing_subclass_now_verifies`
 (control: `f2_control_flat_exists_plus_thing_subclass_verifies_cleanly`).
 
 ```

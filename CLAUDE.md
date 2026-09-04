@@ -1591,6 +1591,35 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   runtime dependency and creates no cycle (nothing in `owl-dl-reasoner`'s manifest names
   `owl-dl-verify`).
 
+> **TWO INSTRUMENT FALSE-POSITIVE MECHANISMS FIXED (2026-09-04, #87), and on the corpus they
+> were 100% of the `Violated` verdicts.** Of the 366 ORE ontologies `verify-el` can check, 8
+> reported `Violated` and **all 8 adjudicated to the instrument's own bugs**, not engine gaps —
+> so the crate's headline claim was, corpus-wide, never once earned.
+> * **F4 (= this doc's F2)** — `⊤ ⊑ C` was never applied to a Tseitin witness. The saturator
+>   gives a marker an EMPTY subsumer set by design, so the witness carried only itself and the
+>   checker reported the very axiom that should have closed it; the violation count equalled the
+>   `⊤ ⊑ C` axiom count EXACTLY on all 4 affected ontologies. `FiniteModel::intern` now closes a
+>   label containing NO named class under the ⊤-supers. **The engine was right throughout**
+>   (`rustdl subclass X C` says `yes`; the same fixture with the nesting flattened verifies).
+> * **F5** — a `BoundTripped` build produced `Violated` instead of `Unresolved`. The model was
+>   TRUNCATED, so violations ran to the order of the domain size (25,369 / 20,292 / 54,304 /
+>   92,573). Now exit 3 (no verdict), not exit 2 (defect found).
+>
+> **BOTH FIXES ARE DELIBERATELY NARROW, and the narrowness is the interesting part.** Closing
+> EVERY label under the ⊤-supers, or downgrading on ANY build reason, would each be defensible
+> one line of reasoning at a time — and each would trade this crate's false-POSITIVE problem for
+> a false-NEGATIVE one, which is strictly worse for an instrument whose purpose is finding
+> defects. A named class whose closure lacks a ⊤-super IS a genuine D10 gap; a `LabelNotClosed`
+> alongside a violation is still a real disagreement.
+>
+> **A GUARD TEST SURVIVED ITS OWN SABOTAGE HERE — the third instance recorded in this file.**
+> The scoping canary was first written end-to-end, removing `C` from a named class's element via
+> `test_only_remove_from_label`. That seam runs AFTER interning, so the check fails under either
+> scoping and the test **discriminated nothing**; it passed the "close every label" sabotage. The
+> rule is now pinned at unit level on `intern` directly, where it can be observed, and the
+> end-to-end test was RENAMED to claim only what it checks. **Sabotage: 5 run, 4 caught first
+> pass, 1 survived and was closed** — run the sabotage before believing a guard.
+
   **Measured coverage, stated as measured, not rounded up.** Inertness (no spurious `Violated` on
   ontologies rustdl is believed complete on) is established on **16 of 20** banner-selected
   pure-EL ORE ontologies; the other **4 are UNMEASURED**, not passing — they hit `timeout`'s

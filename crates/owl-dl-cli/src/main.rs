@@ -890,6 +890,34 @@ fn fold_build_reasons(
             violations,
             mut unresolved,
         } => {
+            // #87 F5. A `BoundTripped` means `build_model` STOPPED EARLY: the
+            // model is truncated by construction, so most axioms have no
+            // witness left to satisfy them and the violations are artifacts of
+            // the cut rather than evidence of an engine defect. Measured on the
+            // four ORE ontologies that trip `max_elements = 50_000`, the
+            // violation count runs to the order of the domain size itself
+            // (25_369 / 20_292 / 54_304 / 92_573). A truncated model must
+            // therefore yield NO VERDICT (exit 3), not "defect found" (exit 2).
+            //
+            // This is deliberately narrower than "any build reason downgrades a
+            // Violated". Every OTHER reason describes something the builder
+            // finished and could not close (`LabelNotClosed`, `RunDelta`,
+            // `AxiomsDroppedAtConversion`, …), where a violation found
+            // alongside it is still a real disagreement against whatever was
+            // checked — and suppressing those would trade this crate's
+            // false-POSITIVE problem for a false-NEGATIVE one, which is the
+            // worse direction for an instrument whose whole purpose is finding
+            // defects. Only truncation invalidates the violations wholesale.
+            if build_reasons
+                .iter()
+                .any(|r| matches!(r, owl_dl_verify::UnresolvedReason::BoundTripped { .. }))
+            {
+                unresolved.append(&mut build_reasons);
+                return Verdict::Unresolved {
+                    domain_size,
+                    reasons: unresolved,
+                };
+            }
             unresolved.append(&mut build_reasons);
             Verdict::Violated {
                 domain_size,
@@ -2819,5 +2847,112 @@ mod global_budget_tests {
             global_budget_after_parse(30_000, parse),
             Duration::from_secs(30).checked_sub(parse)
         );
+    }
+}
+
+#[cfg(test)]
+mod fold_build_reasons_tests {
+    use super::fold_build_reasons;
+    use owl_dl_verify::{UnresolvedReason, Verdict};
+
+    fn violated(unresolved: Vec<UnresolvedReason>) -> Verdict {
+        Verdict::Violated {
+            domain_size: 50_738,
+            violations: vec![],
+            unresolved,
+        }
+    }
+
+    /// #87 F5. A `BoundTripped` means `build_model` STOPPED EARLY, so the model is truncated
+    /// and its violations are artifacts of the cut, not evidence of an engine defect. Measured
+    /// on the 4 ORE ontologies that trip `max_elements = 50_000`: 25369 / 20292 / 54304 /
+    /// 92573 violations, on the order of the domain size itself. Such a run must yield NO
+    /// VERDICT (exit 3), not "defect found" (exit 2).
+    #[test]
+    fn a_bound_tripped_build_downgrades_a_violated_to_unresolved() {
+        let out = fold_build_reasons(
+            violated(vec![]),
+            vec![UnresolvedReason::BoundTripped {
+                bound: "max_elements",
+                limit: Some(50_000),
+            }],
+        );
+        assert!(
+            matches!(out, Verdict::Unresolved { .. }),
+            "a truncated model must not report a defect: {out:?}"
+        );
+    }
+
+    /// A deadline `BoundTripped` (`limit: None`) truncates just as much as a count one.
+    #[test]
+    fn a_deadline_bound_tripped_also_downgrades() {
+        let out = fold_build_reasons(
+            violated(vec![]),
+            vec![UnresolvedReason::BoundTripped {
+                bound: "deadline",
+                limit: None,
+            }],
+        );
+        assert!(matches!(out, Verdict::Unresolved { .. }), "{out:?}");
+    }
+
+    /// **The negative control, and the reason F5 is scoped to `BoundTripped` alone.**
+    ///
+    /// Every OTHER build reason describes something the builder FINISHED and could not close.
+    /// A violation found alongside one of those is still a real disagreement against whatever
+    /// was checked. Downgrading them too would trade this crate's false-POSITIVE problem for a
+    /// false-NEGATIVE one — the worse direction for an instrument whose purpose is finding
+    /// defects. If someone broadens the match to "any build reason", this fails.
+    #[test]
+    fn a_non_truncating_build_reason_leaves_a_violated_alone() {
+        for reason in [
+            UnresolvedReason::AxiomsDroppedAtConversion { count: 3 },
+            UnresolvedReason::UnhandledAxiom {
+                axiom_index: 0,
+                variant: "whatever",
+            },
+        ] {
+            let out = fold_build_reasons(violated(vec![]), vec![reason]);
+            assert!(
+                matches!(out, Verdict::Violated { .. }),
+                "a finished-but-incomplete build must keep its Violated verdict: {out:?}"
+            );
+        }
+    }
+
+    /// The reasons must survive the downgrade rather than be swallowed - a caller reading
+    /// `unresolved` has to be able to see WHY there is no verdict.
+    #[test]
+    fn the_downgrade_preserves_both_the_build_reason_and_any_pre_existing_ones() {
+        let out = fold_build_reasons(
+            violated(vec![UnresolvedReason::RunDelta {
+                class: owl_dl_core::ir::ClassId::new(7),
+            }]),
+            vec![UnresolvedReason::BoundTripped {
+                bound: "max_elements",
+                limit: Some(50_000),
+            }],
+        );
+        match out {
+            Verdict::Unresolved { reasons, .. } => assert_eq!(
+                reasons.len(),
+                2,
+                "both the pre-existing reason and the build reason must survive: {reasons:?}"
+            ),
+            other => panic!("expected Unresolved, got {other:?}"),
+        }
+    }
+
+    /// The safety-critical `Verified` arm is unchanged by F5.
+    #[test]
+    fn a_verified_check_still_downgrades_on_any_build_reason() {
+        let out = fold_build_reasons(
+            Verdict::Verified {
+                domain_size: 3,
+                axioms_checked: 1,
+            },
+            vec![UnresolvedReason::AxiomsDroppedAtConversion { count: 1 }],
+        );
+        assert!(matches!(out, Verdict::Unresolved { .. }), "{out:?}");
     }
 }

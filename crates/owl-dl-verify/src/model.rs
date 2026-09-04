@@ -193,15 +193,37 @@ pub struct FiniteModel {
     /// Running total of edges across all roles, checked against
     /// `bounds.max_edges` by `push_edge`. Shared by both expansion paths.
     edge_count: usize,
+    /// Classes asserted of EVERY domain element by a `⊤ ⊑ C` axiom, closed
+    /// through the reported subsumer closure. Applied by `intern` to
+    /// marker-only labels — see `top_supers_of` for why only those.
+    top_supers: Vec<ClassId>,
+    /// `internal.vocabulary.num_classes()` at `seed` time. A `ClassId` at or
+    /// above this is a Tseitin marker, never a named class — the same test
+    /// `lib.rs` uses to decide what is injectable.
+    num_real_classes: usize,
 }
 
 impl FiniteModel {
     /// Interns `label` (which MUST be sorted ascending) and returns its element.
-    pub fn intern(&mut self, label: Vec<ClassId>) -> Element {
+    ///
+    /// A label containing NO named class is a Tseitin witness, and is closed
+    /// under [`Self::top_supers`] before interning. See `top_supers_of` for the
+    /// argument that this is the instrument's own gap and not the engine's, and
+    /// for why the closure is applied HERE rather than to every label.
+    pub fn intern(&mut self, mut label: Vec<ClassId>) -> Element {
         debug_assert!(
             label.windows(2).all(|w| w[0] <= w[1]),
             "label must be sorted"
         );
+        if !self.top_supers.is_empty()
+            && !label
+                .iter()
+                .any(|c| (c.index() as usize) < self.num_real_classes)
+        {
+            label.extend_from_slice(&self.top_supers);
+            label.sort_unstable_by_key(|c| c.index());
+            label.dedup();
+        }
         let key: Box<[ClassId]> = label.into_boxed_slice();
         if let Some(&e) = self.label_ix.get(&key) {
             return e;
@@ -224,6 +246,80 @@ impl FiniteModel {
         self.class_of.get(&c).copied()
     }
 
+    /// The classes a `⊤ ⊑ C` axiom asserts of EVERY domain element, closed
+    /// through the reported subsumer closure.
+    ///
+    /// # Why this is the instrument's gap, not the engine's (#87 F4)
+    ///
+    /// `⊤ ⊑ C` requires every element to be a `C`. A named class picks that up
+    /// for free: its label is `subs.subsumers_of(c)`, and the engine really does
+    /// derive `X ⊑ C` for every named `X` (measured — `rustdl subclass X C`
+    /// answers `yes`, and a copy of the reproducer with the nested existential
+    /// flattened away verifies clean). A **Tseitin marker** does not: the
+    /// saturator emits no fact for a nested existential body and gives its
+    /// marker an EMPTY subsumer set BY DESIGN (`lib.rs` documents the same
+    /// property where it refuses to inject for a marker). So the witness element
+    /// carried only itself, and `verify-el` reported the very `⊤ ⊑ C` axiom that
+    /// should have closed it — on 4 ORE ontologies, with the violation count
+    /// equal to the `⊤ ⊑ C` axiom count EXACTLY.
+    ///
+    /// # Why `intern` applies this ONLY to marker-only labels
+    ///
+    /// Applying it to every label would be semantically fine — the axiom really
+    /// does hold of everything — but it would DESTROY a real detection. If the
+    /// engine ever failed to derive `X ⊑ C` for a named `X`, that element's
+    /// label would lack `C`, the `⊤ ⊑ C` check would fail on it, and that is a
+    /// genuine completeness defect of exactly the D10 shape this crate exists to
+    /// find. Unioning `C` in from the AXIOM would paper over it silently.
+    ///
+    /// Restricting to labels with no named class in them keeps that detection
+    /// completely intact, because such a label never came from the closure of a
+    /// named class in the first place. `top_supers_are_not_applied_to_a_named_
+    /// class_label` pins it.
+    fn top_supers_of(internal: &InternalOntology, subs: &Subsumers) -> Vec<ClassId> {
+        let pool = &internal.concepts;
+        let mut atoms: Vec<ClassId> = Vec::new();
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::SubClassOf { sub, sup } if matches!(pool.get(*sub), ConceptExpr::Top) => {
+                    Self::required_atoms(pool, *sup, &mut atoms);
+                }
+                // `C ≡ ⊤` says the same thing in the other direction, and
+                // conversion does not rewrite it into the `SubClassOf` form the
+                // arm above matches.
+                Axiom::EquivalentClasses(members)
+                    if members
+                        .iter()
+                        .any(|m| matches!(pool.get(*m), ConceptExpr::Top)) =>
+                {
+                    for m in members {
+                        Self::required_atoms(pool, *m, &mut atoms);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Close through the REPORTED closure, not the axioms: a super-class of a
+        // ⊤-super is itself asserted of everything, and taking it from `subs`
+        // means an engine that failed to derive that step still shows up as a
+        // violation rather than being closed over here.
+        let mut out: Vec<ClassId> = Vec::new();
+        for a in &atoms {
+            if subs.is_unsatisfiable(*a) {
+                // `⊤ ⊑ C` with `C` unsatisfiable makes the whole ontology
+                // inconsistent. Seeding it into every witness label would
+                // manufacture violations everywhere and bury that; leave it for
+                // the evaluator to report against the axiom itself.
+                return Vec::new();
+            }
+            out.push(*a);
+            out.extend(subs.subsumers_of(*a));
+        }
+        out.sort_unstable_by_key(|c| c.index());
+        out.dedup();
+        out
+    }
+
     /// Seeds one element per SATISFIABLE class, over the union of the named
     /// vocabulary and every id appearing in `facts` in either position.
     ///
@@ -238,6 +334,8 @@ impl FiniteModel {
     ) -> Self {
         let mut model = Self {
             edges: vec![Vec::new(); internal.vocabulary.num_roles()],
+            top_supers: Self::top_supers_of(internal, subs),
+            num_real_classes: internal.vocabulary.num_classes(),
             ..Self::default()
         };
         let mut population: Vec<ClassId> =
@@ -950,4 +1048,82 @@ pub fn chain_range_out_of_profile(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod intern_top_supers_tests {
+    use super::{Element, FiniteModel};
+    use owl_dl_core::ir::ClassId;
+
+    /// Builds a model with `num_real_classes = 2` (so ids 0,1 are named and 2+ are Tseitin
+    /// markers) and `⊤ ⊑ class 1`.
+    fn model() -> FiniteModel {
+        FiniteModel {
+            top_supers: vec![ClassId::new(1)],
+            num_real_classes: 2,
+            ..FiniteModel::default()
+        }
+    }
+
+    /// A marker-only label is closed under the ⊤-supers: the saturator gives a Tseitin marker
+    /// an EMPTY subsumer set by design, so nothing else will ever put `⊤ ⊑ C`'s `C` there.
+    /// This is #87 F4.
+    #[test]
+    fn a_marker_only_label_gains_the_top_supers() {
+        let mut m = model();
+        let e = m.intern(vec![ClassId::new(5)]);
+        assert_eq!(
+            m.label(e),
+            &[ClassId::new(1), ClassId::new(5)],
+            "a Tseitin witness must satisfy ⊤ ⊑ C like every other domain element"
+        );
+    }
+
+    /// **The scoping rule, tested where it can actually be observed.**
+    ///
+    /// A label containing a NAMED class must come back untouched, even though the ⊤-super is
+    /// missing from it. That label came from the engine's reported closure, so a missing
+    /// ⊤-super there is a genuine completeness defect of the D10 shape this crate exists to
+    /// find — injecting it from the axiom would silently hide one.
+    ///
+    /// This has to be asserted on `intern` directly. An end-to-end test cannot see it: the
+    /// engine has no such gap to observe, and `test_only_remove_from_label` runs AFTER
+    /// interning, so it fails the check under either scoping and discriminates nothing. That
+    /// version of this test was written first and survived its own sabotage, which is how the
+    /// gap in it was found.
+    #[test]
+    fn a_label_holding_a_named_class_is_left_alone() {
+        let mut m = model();
+        let e = m.intern(vec![ClassId::new(0)]);
+        assert_eq!(
+            m.label(e),
+            &[ClassId::new(0)],
+            "closing a NAMED class's label under the ⊤-supers would hide a real engine gap"
+        );
+    }
+
+    /// The union must not duplicate a ⊤-super the label already carries, and must stay sorted:
+    /// `label_ix` keys on the label bytes, so an unsorted or duplicated key would make two
+    /// spellings of one element intern as two different elements.
+    #[test]
+    fn the_union_stays_sorted_and_deduplicated() {
+        let mut m = model();
+        let e = m.intern(vec![ClassId::new(1), ClassId::new(5)]);
+        assert_eq!(m.label(e), &[ClassId::new(1), ClassId::new(5)]);
+        // The same content reached the other way round must intern to the SAME element.
+        let e2 = m.intern(vec![ClassId::new(5)]);
+        assert_eq!(e, e2, "one label content must be one element");
+    }
+
+    /// With no ⊤-axiom at all the path is inert, so every pre-#87 label is unchanged.
+    #[test]
+    fn no_top_axiom_leaves_every_label_untouched() {
+        let mut m = FiniteModel {
+            num_real_classes: 2,
+            ..FiniteModel::default()
+        };
+        let e = m.intern(vec![ClassId::new(5)]);
+        assert_eq!(m.label(e), &[ClassId::new(5)]);
+        assert_eq!(e, Element::new(0));
+    }
 }

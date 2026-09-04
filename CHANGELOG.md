@@ -6,6 +6,19 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Changed — `owl-dl-cli` yanked from crates.io (all five versions)
+
+`0.1.0`–`0.3.0` are yanked as of 2026-09-04. `cargo install owl-dl-cli` now fails with
+`could not find owl-dl-cli in registry crates-io with version *` instead of silently
+installing the June `0.3.0`, which predates every soundness and completeness fix since —
+including the three in 0.4.26. The crate is `publish = false` and was frozen at `0.3.0`
+while the project reached `0.4.26`.
+
+**All five, not just the newest:** yanking only `0.3.0` would have made `cargo install`
+resolve `0.2.2`, i.e. something older. Safe to do — 0 reverse dependencies, so no build
+anywhere resolves it — and reversible via `cargo yank --undo`. Registry state only; no
+code change. The CLI ships as release binaries.
+
 ## [0.4.26] — 2026-09-04
 
 Three fixes, all of them **wrong answers on the default path**, all found by chasing a

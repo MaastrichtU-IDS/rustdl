@@ -41,6 +41,32 @@ reverting #76): the classify-only net reports `pizza 499=499 FP=0 VERIFIED`, whi
 the per-pair gate reports `501 vs 499, FP=2` and fails. Re-run that sabotage after
 touching either flag — a gate that cannot be made to fail is not a gate.
 
+## 1a. Yanking, and why it needs no token
+
+**crates.io's web UI yanks.** Log in, open the crate, use the per-version controls. This
+matters because the publishing setup deliberately keeps **no** crates.io credential
+anywhere — the API token was revoked and releases go through trusted publishing (OIDC) —
+so `cargo yank`, which does need a token, would mean minting one back just to retire a
+dead version. The UI sidesteps that entirely. Verified 2026-09-04 on `owl-dl-cli`.
+
+If you ever do need the CLI form, mint a token scoped **`yank` only** and crate-scoped to
+the single crate, then revoke it. A `yank`-scoped token cannot publish, which is a
+different risk class from the publish token. Note crate scopes are validated as
+*patterns*, not against existing crates — a mismatch there is what produced the 403 during
+the 0.4.25 release.
+
+**Yank ALL versions, not just the newest.** Retiring only the top version makes
+`cargo install <crate>` resolve the next one down, i.e. something *older* — strictly worse
+than doing nothing. Check reverse dependencies first (`/api/v1/crates/<crate>/reverse_dependencies`);
+at 0 nothing anywhere resolves the crate and the yank breaks no build. Yanks are
+reversible (`cargo yank --undo`).
+
+**Confirm the outcome by running the command, not by reading the registry.** Post-yank,
+`cargo install owl-dl-cli` fails with
+`error: could not find owl-dl-cli in registry crates-io with version *` (exit 101), and
+`cargo add rustdl` still resolves — the library path is unaffected. Those two checks are
+what distinguish "retired" from "broke the registry for consumers".
+
 ## 2. The three gates are not substitutes for each other
 
 This is the most expensive lesson in the list, and it was learned twice.

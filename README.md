@@ -173,12 +173,22 @@ Windows (x86-64) are attached to every
 [release](https://github.com/MaastrichtU-IDS/rustdl/releases/latest) — that is the
 supported way to get `rustdl`.
 
-> **Do not `cargo install owl-dl-cli`.** That crate is deliberately not published
-> (it depends on a `[patch.crates-io]` fork of `horned-owl`, so
-> a crates.io build of it would not compile). crates.io still serves the old
-> `0.3.0` from 2026-06-05, so `cargo install owl-dl-cli` silently gives you a
-> months-old binary. The six published crates — the five libraries plus `rustdl` —
-> ARE current.
+> **`cargo install owl-dl-cli` no longer works, on purpose.** All five versions
+> `0.1.0`–`0.3.0` were **yanked on 2026-09-04**, so the command now fails with
+> `error: could not find owl-dl-cli in registry crates-io with version *` instead of
+> silently installing the `0.3.0` from 2026-06-05 — a binary predating every soundness
+> and completeness fix since June. The crate is deliberately unpublished going forward
+> (it depends on a `[patch.crates-io]` fork of `horned-owl`, so a crates.io build would
+> not compile), and it was frozen at `0.3.0` while the project reached `0.4.26`.
+>
+> A loud failure is the point: the warning that used to live here only reached people who
+> read it, and `cargo install owl-dl-cli` is precisely what someone types instead.
+> **All five had to go, not just `0.3.0`** — yanking only the newest would have made
+> `cargo install` fall back to `0.2.2`, which is older. Yanks are reversible
+> (`cargo yank --undo`) and nothing depended on the crate (0 reverse dependencies).
+>
+> Get the CLI from the [release binaries](https://github.com/MaastrichtU-IDS/rustdl/releases/latest).
+> The six published crates — the five libraries plus `rustdl` — ARE current.
 
 To build from source instead:
 

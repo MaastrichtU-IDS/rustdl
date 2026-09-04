@@ -1707,6 +1707,25 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   over all justifications) to break an unwanted entailment; every repair is verified
   by removal (sound even when the justification set is incomplete). See
   `docs/superpowers/specs/2026-06-21-repair-suggestions-design.md`.
+> **A `String.contains` GUARD CANNOT SEE A MALFORMED FILE (2026-09-04, #79).** The Protégé
+> plugin was uninstallable in **every release from v0.4.5 to v0.4.26** — 22 of them — because
+> a `--` inside an XML comment (the literal `rustdl prove --json`) is illegal XML, so Protégé
+> rejected the whole `plugin.xml` and, with it, the **reasoner** registration that has nothing
+> to do with proofs. Verified against the published jars, not just source history: v0.4.4
+> parses, v0.4.5 onward do not.
+>
+> `PluginRegistrationTest` **already guarded that file** with four `String.contains`
+> assertions, and all four passed the entire time — a substring check cannot distinguish
+> "registered" from "present in a file the host discards". `mvn verify` was green too, because
+> Maven copies resources without validating them. **When a test asserts on a structured file,
+> parse it; `contains()` on the raw text is not a check of the thing that consumes it.**
+> Sibling of [[sabotage-your-own-guard-tests]] and of the stale-`#[ignore]` entry: there the
+> guard was absent, here it existed and did not guard.
+>
+> Two parsing tests now cover it, reading the resource off the CLASSPATH so Maven's
+> `${project.version}` filtering is covered too. Sabotage: restoring the shipped file fails
+> exactly the 2 new tests and leaves all 4 old ones passing.
+
   `report` generates a self-contained HTML debugging report (summary + diagnose
   roots/derived + per-root justification + repairs); presentation-only over the
   shipped reasoner output, read-only, no external resources. See

@@ -3186,6 +3186,142 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         std::collections::BTreeSet::is_disjoint,
         comp,
     );
+
+    // #42 item 2 — RANGE bucket vs ENUMERATION bucket of the SAME datatype.
+    //
+    // `DataHasValue` and facet restrictions land in the range bucket; `DataOneOf`
+    // lands in the set bucket just seeded above. Each bucket was compared only
+    // against ITSELF, so `∃p.{5} ⊓ ∀p.{1,2}` never clashed even though 5 ∉ {1,2}.
+    //
+    // `xsd:string` was unaffected and that is the tell: BOTH its forms lower to one
+    // `StrSet` in the `str:` bucket, so `StrSet::disjoint` already compared them.
+    // The numeric and temporal datatypes split across two buckets and lost the
+    // comparison — which is why the string control passed while the integer one did
+    // not. NOT a dropped construct: `dropped` was empty, the clash was simply never
+    // derivable, so this was a SILENT miss rather than a reported one.
+    //
+    // Needs no flag: `collect_oneof_dkeys` returns empty under
+    // `RUSTDL_DKEY_ONEOF_SEED=0`, so the flag-off path feeds these calls nothing,
+    // exactly as it does the `seed_disjoint_bucket` calls above.
+    seed_range_oneof_disjoint(
+        out,
+        &int_dkeys,
+        &int_oneof_dkeys,
+        |r: &IntegerRange, v: &i64| r.contains(*v),
+        comp,
+    );
+    seed_range_oneof_disjoint(
+        out,
+        &float_dkeys,
+        &float_oneof_dkeys,
+        |r: &FloatRange, v: &crate::data_axioms::OrdF64| r.contains(v.0),
+        comp,
+    );
+    seed_range_oneof_disjoint(
+        out,
+        &double_dkeys,
+        &double_oneof_dkeys,
+        |r: &FloatRange, v: &crate::data_axioms::OrdF64| r.contains(v.0),
+        comp,
+    );
+    seed_range_oneof_disjoint(out, &dec_dkeys, &dec_oneof_dkeys, OrdRange::contains, comp);
+    seed_range_oneof_disjoint(
+        out,
+        &date_dkeys,
+        &date_oneof_dkeys,
+        OrdRange::contains,
+        comp,
+    );
+    seed_range_oneof_disjoint(out, &dt_dkeys, &dt_oneof_dkeys, OrdRange::contains, comp);
+}
+
+/// Seed `DisjointClasses` between a RANGE bucket and an ENUMERATION bucket of the
+/// SAME datatype (#42 item 2).
+///
+/// `DataHasValue` and facet restrictions land in the range bucket; `DataOneOf`
+/// lands in a separate set bucket. Disjointness was seeded WITHIN each bucket and
+/// never ACROSS, so `∃p.{5}` never clashed with `∀p.{1,2}` even though 5 ∉ {1,2}.
+///
+/// `xsd:string` was unaffected and that is the tell: for strings BOTH forms lower
+/// to a `StrSet` in one bucket, so `StrSet::disjoint` already compared them. The
+/// numeric and temporal datatypes split into two buckets and lost the comparison.
+///
+/// FP-CRITICAL DIRECTION, as for every `DisjointClasses` seeding: a wrong
+/// "disjoint" is a false UNSAT. `disjoint` here means "no member of the set lies in
+/// the range", decided by an exact `contains` per key.
+///
+/// The precondition that makes `contains` exact is that BOTH operands of a call
+/// reached their `DKey` through the same datatype's parse path, so equal values are
+/// bit-identical keys. That holds because the caller pairs each range bucket with
+/// the enumeration bucket of the SAME datatype: `xsd:float` ranges and `xsd:float`
+/// enumerations are both f32-parsed-then-widened, `xsd:double` is f64 on both
+/// sides, `xsd:decimal` is the exact normalized-lexical `Decimal` on both, and
+/// `date`/`dateTime` are timezone-free component tuples on both. This is the same
+/// invariant the sibling `seed_disjoint_bucket` calls above already rely on — NOT
+/// the weaker one that DP-1's value-membership path lacks, where the two lexicals
+/// are independently authored and `xsd:float` must therefore be dropped.
+///
+/// Pairing ACROSS datatypes would break it and is not done here; the cross-datatype
+/// direction is `seed_cross_bucket_disjoint`'s (#86), and it covers range-vs-range
+/// only, so `∃p.{5}^^integer ⊓ ∀p.{1.0,2.0}^^double` stays a sound MISS.
+///
+/// ORACLES: `HermiT` confirms every same-datatype clash this seeds. Konclude confirms
+/// all but the `xsd:date` one, where it reports `A ⊑ owl:Thing` — a further instance
+/// of the under-reporting recorded elsewhere in this repo, not a semantic dispute.
+/// That verdict is safe to rely on because `HermiT`'s own `xsd:date` pair is
+/// DISCRIMINATING: value-outside-the-enumeration is unsatisfiable and
+/// value-inside-it is satisfiable, so `HermiT` is reasoning about the dates rather
+/// than refusing them. (`seed_cross_bucket_disjoint`'s note that `HermiT` throws
+/// `UnsupportedDatatypeException` on `xsd:date` is about the CROSS-datatype
+/// `date` × `dateTime` construction, and does not extend to this same-datatype
+/// case — measured, not assumed.)
+fn seed_range_oneof_disjoint<R, V>(
+    out: &mut InternalOntology,
+    ranges: &[(ClassId, R)],
+    oneofs: &[(ClassId, std::collections::BTreeSet<V>)],
+    contains: impl Fn(&R, &V) -> bool,
+    components: Option<&DkeyComponents>,
+) {
+    if ranges.is_empty() || oneofs.is_empty() {
+        return;
+    }
+    let reach = |k: &ClassId| -> Option<Option<&Vec<usize>>> {
+        components.map_or(Some(None), |c| {
+            if c.unanchored.contains(k) {
+                return Some(None);
+            }
+            c.components.get(k).map(Some)
+        })
+    };
+    let mut emitted: std::collections::HashSet<(ClassId, ClassId)> =
+        std::collections::HashSet::new();
+    for (r_cid, r) in ranges {
+        let Some(rr) = reach(r_cid) else { continue };
+        for (o_cid, set) in oneofs {
+            let Some(ro) = reach(o_cid) else { continue };
+            let shares = match (rr, ro) {
+                (None, _) | (_, None) => true,
+                (Some(a), Some(b)) => a.iter().any(|c| b.contains(c)),
+            };
+            if !shares {
+                continue;
+            }
+            // Disjoint iff NO member of the enumeration lies in the range.
+            if set.iter().any(|v| contains(r, v)) {
+                continue;
+            }
+            let pair = if r_cid.index() <= o_cid.index() {
+                (*r_cid, *o_cid)
+            } else {
+                (*o_cid, *r_cid)
+            };
+            if emitted.insert(pair) {
+                let a = out.concepts.atomic(*r_cid);
+                let b = out.concepts.atomic(*o_cid);
+                out.axioms.push(Axiom::DisjointClasses(vec![a, b]));
+            }
+        }
+    }
 }
 
 /// One numeric-`DataOneOf` bucket: the `DKey` classes of that datatype paired

@@ -1504,12 +1504,61 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `RUSTDL_DKEY_MERGING_GATE=0` — both verified by deliberately breaking them. Spec
   `docs/superpowers/specs/2026-07-30-dkey-nonmerging-component-gate-design.md`.
 
+  **Range × enumeration disjointness (2026-09-04, #42 item 2, unflagged).**
+  `DataHasValue` and facet restrictions lower into a datatype's RANGE bucket;
+  `DataOneOf` lowers into a separate ENUMERATION bucket. Disjointness was seeded
+  WITHIN each bucket and never ACROSS, so `∃p.{5} ⊓ ∀p.{1,2}` did not clash even
+  though 5 ∉ {1,2} — `classify` reported the class satisfiable while HermiT called
+  it unsatisfiable. Same defect shape as #86 (cross-DATATYPE range×range), one
+  level down. **`seed_range_oneof_disjoint` pairs each range bucket with the
+  enumeration bucket of the SAME datatype only**, which is what keeps `contains`
+  exact: both operands reach their DKey through one datatype's parse path, so
+  equal values are bit-identical keys. Cross-datatype pairing would reintroduce
+  the f32/f64 mismatch and is not done; `∃p.{5}^^integer ⊓ ∀p.{1.0,2.0}^^double`
+  therefore stays a sound MISS, pinned by a canary that a future fix should FLIP
+  rather than delete.
+  **`xsd:string` was unaffected, and that asymmetry is what found it** — both
+  string forms lower to one `StrSet` in the `str:` bucket, so `StrSet::disjoint`
+  already compared them. **NOT a dropped construct**: `dropped` was empty on every
+  probe, the axioms converted fine, the clash was merely never derivable — a
+  SILENT miss, which is why #42 recorded it as "only `xsd:string` enums are
+  handled". Effect: integer / decimal / double / float / date / dateTime probes go
+  sat → UNSAT, string control unmoved, every value-INSIDE-the-enumeration control
+  still satisfiable.
+  **Oracles: HermiT confirms every positive; Konclude confirms all but the
+  `xsd:date` one** (it reports `A ⊑ owl:Thing`) — an eighth recorded
+  under-report, not a semantic dispute. HermiT's `xsd:date` pair is
+  DISCRIMINATING (outside ⇒ unsat, inside ⇒ sat), so it is reasoning about the
+  dates rather than refusing them; the neighbouring `seed_cross_bucket_disjoint`
+  note that HermiT throws `UnsupportedDatatypeException` on `xsd:date` is about
+  the CROSS-datatype `date` × `dateTime` construction and does not extend here.
+  **Evidence, with its limit stated:** FP=0 net 11 VERIFIED, closures exact — but
+  the curated corpus is INERT for the DKey area by `datatype_value_membership.rs`'s
+  own admission, so that shows **non-regression only**. The real evidence is 18
+  canaries plus the HermiT adjudication. ORE two-arm sweep over the **62**
+  `DataOneOf`-bearing ontologies (a grep SUPERSET — the oneof buckets are
+  reachable only from that lowering), arm order alternated: **57 IDENTICAL / 3
+  BOTH_DNF / 2 DIFFER / 0 regressions**, wall +0.25%; both DIFFERs adjudicate
+  clean (3 repeats per arm at a 120 s cap content-identical, while the UNCHANGED
+  binary produces 4 distinct byte hashes of its own at the sweep's 60 s cap).
+  24 non-bearing controls: 22 IDENTICAL / 1 BOTH_DNF / 1 DIFFER, and that one
+  contains **zero** `DataOneOf` so the pass provably cannot run on it.
+  **SABOTAGE: 4 run, 3 caught.** Deleting the seeding fails the 8 positives;
+  inverting the disjointness test fails 16 (FPs on every negative); making
+  `FloatRange::contains` ignore the inclusivity flags is caught by exactly the
+  exclusive/inclusive boundary pair written for it. **The one that SURVIVED:**
+  dropping the component-reachability gate — that gate is a *cost bound*, not an
+  FP guard, so these canaries cannot see it, the same honest limit recorded for
+  the #86 split sabotage.
+  Canaries `crates/owl-dl-reasoner/tests/dkey_range_oneof_disjointness.rs`.
+
   **Remaining datatype under-approximation (sound, all still DROP):**
   - **data cardinality** — D4 already catches the unsat-clash patterns;
     full range-size-aware counting (`≥3 p` over a 2-value range → ⊥) is a
     concrete-domain cardinality reasoner with zero measured corpus reward.
-  - `xsd:decimal`/`date`/`dateTime` `DataOneOf` enumerations (only
-    `xsd:string` enums handled); other non-ordered datatypes;
+  - ~~`xsd:decimal`/`date`/`dateTime` `DataOneOf` enumerations~~ — **CLOSED
+    2026-09-04 (#42 item 2)**; see the range × enumeration entry above. Other
+    non-ordered datatypes still drop;
     `DataComplementOf` / `DataUnionOf` / `DataIntersectionOf` ranges.
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`

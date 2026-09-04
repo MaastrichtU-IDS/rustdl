@@ -848,12 +848,41 @@ fn sorted_verify_el_violations(
 /// `Unresolved`: `owl_dl_verify::UnresolvedReason` is documented as "NEVER
 /// treated as `Verified`", and a model built with an admitted gap is not
 /// evidence of anything — reporting `Verified` over it would be exactly that.
-/// A `Violated`/`Unresolved` check result keeps its own verdict (this mirrors
-/// `owl-dl-verify`'s own acceptance suite, which logs both channels rather
-/// than letting one hide the other — see `cascade.ofn` there: `Violated`
-/// plus 3 build-time `LabelNotClosed` reports on the very node the violation
-/// names) but still folds the build reasons in so nothing is dropped on the
-/// floor.
+/// An `Unresolved` check result keeps its verdict and folds the build reasons in
+/// so nothing is dropped on the floor. A `Violated` one keeps its verdict too —
+/// UNLESS a reason says the model was truncated, in which case the violations
+/// cannot be evidence about the engine and the verdict is downgraded; see
+/// [`reason_means_model_is_truncated`] and the `Violated` arm below (#87 F5).
+///
+/// **The `Violated`-with-non-empty-build-reasons combination is currently
+/// unreachable from any in-tree fixture**, so the unit tests at the bottom of
+/// this file are its ONLY coverage. This doc used to cite `cascade.ofn` as
+/// producing `Violated` plus three `LabelNotClosed` reports; measured
+/// 2026-09-04, cascade reports `Violated` with **zero** build reasons — #81
+/// changed it, and the citation went stale. Every `verify-el` fixture was
+/// checked: the two `Violated` ones (`cascade.ofn`,
+/// `conjexists-builder-gap.ofn`) both carry no reasons, and the three that do
+/// carry reasons (`chainrange.ofn`, `chainrange_ctl.ofn`, `topwitness.ofn`) are
+/// all `Unresolved`.
+/// Does this build reason mean the MODEL ITSELF is incomplete by construction, as
+/// opposed to naming a localized gap in an otherwise-complete model?
+///
+/// The distinction decides whether a `Violated` verdict survives
+/// [`fold_build_reasons`]. A truncated model is smaller than the one the axioms
+/// describe, so axioms that would have been witnessed simply cannot be, and the
+/// resulting violations are artifacts of the cut rather than evidence about the
+/// engine (#87 F5: four 50k–60k-class ORE ontologies reported `violated` with
+/// 20,292–92,573 violations, all of them the truncation). A LOCALIZED gap is
+/// different: `cascade.ofn` reports `Violated` alongside three
+/// `LabelNotClosed` reports **on the very node the violation names**, and that
+/// verdict is real — which is why this is not simply "any reason".
+///
+/// `BoundTripped` is currently the only such reason. `limit: None` covers a
+/// deadline, which truncates for the same reason a count does.
+fn reason_means_model_is_truncated(r: &owl_dl_verify::UnresolvedReason) -> bool {
+    matches!(r, owl_dl_verify::UnresolvedReason::BoundTripped { .. })
+}
+
 fn fold_build_reasons(
     verdict: owl_dl_verify::Verdict,
     mut build_reasons: Vec<owl_dl_verify::UnresolvedReason>,
@@ -891,6 +920,26 @@ fn fold_build_reasons(
             mut unresolved,
         } => {
             unresolved.append(&mut build_reasons);
+            // #87 F5. A TRUNCATED model cannot support a defect claim: it is
+            // smaller than the axioms describe, so what looks like a violated
+            // axiom is usually just an element the cut never created. Measured on
+            // `ore_ont_12317` (domain 50,738 against a 50,000 cap): 25,369
+            // "violations", every one an artifact. Exit 3 (no verdict), not 2
+            // (real defect).
+            //
+            // Deliberately narrower than "any reason": a LOCALIZED gap — a
+            // `LabelNotClosed` on the very node a violation names — leaves that
+            // violation meaningful, and downgrading it would discard a true
+            // positive. So the predicate names the truncating reasons instead of
+            // testing for emptiness. NB no fixture currently produces
+            // `Violated` + reasons at all (see this function's doc), so that
+            // distinction is pinned by unit test, not by a fixture.
+            if unresolved.iter().any(reason_means_model_is_truncated) {
+                return Verdict::Unresolved {
+                    domain_size,
+                    reasons: unresolved,
+                };
+            }
             Verdict::Violated {
                 domain_size,
                 violations,
@@ -2819,5 +2868,124 @@ mod global_budget_tests {
             global_budget_after_parse(30_000, parse),
             Duration::from_secs(30).checked_sub(parse)
         );
+    }
+}
+
+#[cfg(test)]
+mod fold_build_reasons_tests {
+    use super::fold_build_reasons;
+    use owl_dl_verify::{UnresolvedReason, Verdict};
+
+    fn bound() -> UnresolvedReason {
+        UnresolvedReason::BoundTripped {
+            bound: "max_elements",
+            limit: Some(50_000),
+        }
+    }
+
+    fn localized() -> UnresolvedReason {
+        UnresolvedReason::LabelNotClosed {
+            class: owl_dl_core::ir::ClassId::new(3),
+            role: owl_dl_core::ir::RoleId::new(1),
+        }
+    }
+
+    /// `n` placeholder violations. Their CONTENT is irrelevant here — every
+    /// assertion below is about the verdict variant and whether the list
+    /// survives — so the cheapest well-formed `Axiom` is used.
+    fn violated(n: usize) -> Verdict {
+        let axiom = owl_dl_core::ontology::Axiom::SubClassOf {
+            sub: owl_dl_core::ir::ConceptId::new(0),
+            sup: owl_dl_core::ir::ConceptId::new(1),
+        };
+        Verdict::Violated {
+            domain_size: 50_738,
+            violations: (0..n)
+                .map(|i| owl_dl_verify::Violation {
+                    axiom_index: i,
+                    axiom: axiom.clone(),
+                    witness: Vec::new(),
+                    note: String::new(),
+                })
+                .collect(),
+            unresolved: Vec::new(),
+        }
+    }
+
+    /// #87 F5. A truncated model cannot support a defect claim: it is smaller
+    /// than the axioms describe, so an axiom that would have been witnessed
+    /// simply cannot be. Reproduced on `ore_ont_12317` — domain 50,738 against
+    /// the 50,000 cap, 25,369 "violations", exit 2 — where the honest answer is
+    /// "no verdict".
+    #[test]
+    fn a_truncating_reason_downgrades_violated_to_unresolved() {
+        let out = fold_build_reasons(violated(25_369), vec![bound()]);
+        match out {
+            Verdict::Unresolved { reasons, .. } => {
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|r| matches!(r, UnresolvedReason::BoundTripped { .. })),
+                    "the truncation must survive into the reasons so the user learns why"
+                );
+            }
+            other => panic!("expected Unresolved over a truncated model, got {other:?}"),
+        }
+    }
+
+    /// THE DISCRIMINATING CONTROL. Without it, the fix above is
+    /// indistinguishable from "downgrade any `Violated` that carries reasons",
+    /// which would throw away a true positive: a `LabelNotClosed` naming one
+    /// node leaves a violation elsewhere perfectly good evidence.
+    #[test]
+    fn a_localized_reason_leaves_violated_intact() {
+        let out = fold_build_reasons(violated(1), vec![localized()]);
+        match out {
+            Verdict::Violated {
+                violations,
+                unresolved,
+                ..
+            } => {
+                assert_eq!(violations.len(), 1, "the violation must not be discarded");
+                assert_eq!(unresolved.len(), 1, "the reason must still be folded in");
+            }
+            other => panic!("expected Violated to survive a localized gap, got {other:?}"),
+        }
+    }
+
+    /// A truncating reason wins even when a localized one is also present — the
+    /// model is still truncated.
+    #[test]
+    fn a_truncating_reason_wins_over_a_localized_one() {
+        let out = fold_build_reasons(violated(9), vec![localized(), bound()]);
+        assert!(
+            matches!(out, Verdict::Unresolved { .. }),
+            "any truncating reason must downgrade, regardless of what else is present"
+        );
+    }
+
+    /// The pre-existing safety-critical arm, pinned here so this change cannot
+    /// regress it: `Verified` + ANY reason is never a green light.
+    #[test]
+    fn verified_with_any_reason_is_still_downgraded() {
+        for r in [bound(), localized()] {
+            let v = Verdict::Verified {
+                domain_size: 4,
+                axioms_checked: 0,
+            };
+            assert!(
+                matches!(fold_build_reasons(v, vec![r]), Verdict::Unresolved { .. }),
+                "a Verified over an admitted gap must never stay Verified"
+            );
+        }
+    }
+
+    /// No reasons: pass through untouched, including a `Violated`.
+    #[test]
+    fn empty_reasons_change_nothing() {
+        assert!(matches!(
+            fold_build_reasons(violated(2), Vec::new()),
+            Verdict::Violated { .. }
+        ));
     }
 }

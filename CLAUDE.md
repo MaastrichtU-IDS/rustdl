@@ -1102,10 +1102,29 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     six clauses on a real ontology moving from silently-ignored to enforced, with the
     oracle-verified closure **unchanged at 158=158**. FP=0 net 22/0, all 11 closures exact;
     two-arm pinned binaries IDENTICAL on all 10 curated fixtures and all 9 `Self`-bearing ORE
-    ontologies; **0 of 150** sampled ORE ontologies produce the refusal at all — their `Self`
-    is POSITIVE and at head position, which emits a head `Role(var,var)` and never a body
-    atom, so only a NEGATED `Self` (or a `Self` disjunct under `∀`) is addressable and ORE has
-    none. A companion clausifier gap closed in `8ae984c`: `emit_head`'s `Not` arm handled only
+    ontologies.
+    **FULL 1,920-ONTOLOGY REFUSAL CENSUS (2026-09-04): 0 addressable, by TWO independent
+    instruments** — the engine probe (`RUSTDL_TRACE_BODY_VARS=1`, smoke-tested against
+    `ro`=6 / `pizza`=none) reports **1,774 clean / 39 `VarCap`-only / 0
+    `NotTree`+`Disconnected`**, with its 107 unmeasured-at-30 s all retried at 300 s and 0
+    addressable; and a new clausify-only probe (`examples/clause_stats_probe`, which needs no
+    reasoning and so CAN measure the ontologies that stall in it) reports **1,918 with
+    `FILTERS=0`, 0 addressable, 2 unmeasured**. The 2 (`ore_ont_10860` the SWRL grammar gap,
+    `ore_ont_4572` conversion-bound) have **`ObjectHasSelf`=0**, so the `Self` route is
+    excluded by construction. This SUPERSEDES the "0 of 150 sampled" figure.
+    **AND IT CORRECTS THE FRAME ARGUMENT, which was too narrow.** "Only a NEGATED `Self` is
+    addressable" is contradicted by this fix's own evidence — `ro.ofn` has 5 **unnegated**
+    `ObjectHasSelf` and produced 6 refusals. The generator is any occurrence yielding a
+    NEGATIVE one, which includes an ordinary `EquivalentClasses(C, ObjectHasSelf(r))`: the
+    `⊒` direction puts `Self` in the antecedent, and NNF makes it negative. So a grep for
+    `ObjectComplementOf(ObjectHasSelf(…))` gives the right answer for the wrong reason;
+    re-scanned for the corrected pattern, ORE still has **0 of 9**. **`VarCap` is the live
+    residual here at 39 ontologies** — a clause silently discarded for exceeding
+    `MAX_BODY_VARS`, the same shape `NotTree` had — recorded, not queued, since raising that
+    cap is a measured hard stop. Two instruments disagreeing on COUNTS (`ro` 2 vs 6) is
+    expected and was adjudicated rather than papered over: the engine counts indexing EVENTS
+    (`ro` is re-indexed 3×) and the probe counts distinct clause bodies; as booleans they
+    agree 4/4. See `docs/benchmarks/2026-09-04-self-filter-refusal-census.md`. A companion clausifier gap closed in `8ae984c`: `emit_head`'s `Not` arm handled only
     an atomic inner, so `body → ¬∃R.Self` was DEFERRED out of the wedge theory entirely.
     Canaries `crates/owl-dl-reasoner/tests/self_under_forall.rs` (6; 2 sabotages run, 2 caught
     at the predicted granularity), plus `examples/clause_stats_probe` because nothing surfaced

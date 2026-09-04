@@ -3265,13 +3265,13 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
 /// direction is `seed_cross_bucket_disjoint`'s (#86), and it covers range-vs-range
 /// only, so `∃p.{5}^^integer ⊓ ∀p.{1.0,2.0}^^double` stays a sound MISS.
 ///
-/// ORACLES: HermiT confirms every same-datatype clash this seeds. Konclude confirms
+/// ORACLES: `HermiT` confirms every same-datatype clash this seeds. Konclude confirms
 /// all but the `xsd:date` one, where it reports `A ⊑ owl:Thing` — a further instance
 /// of the under-reporting recorded elsewhere in this repo, not a semantic dispute.
-/// That verdict is safe to rely on because HermiT's own `xsd:date` pair is
+/// That verdict is safe to rely on because `HermiT`'s own `xsd:date` pair is
 /// DISCRIMINATING: value-outside-the-enumeration is unsatisfiable and
-/// value-inside-it is satisfiable, so HermiT is reasoning about the dates rather
-/// than refusing them. (`seed_cross_bucket_disjoint`'s note that HermiT throws
+/// value-inside-it is satisfiable, so `HermiT` is reasoning about the dates rather
+/// than refusing them. (`seed_cross_bucket_disjoint`'s note that `HermiT` throws
 /// `UnsupportedDatatypeException` on `xsd:date` is about the CROSS-datatype
 /// `date` × `dateTime` construction, and does not extend to this same-datatype
 /// case — measured, not assumed.)

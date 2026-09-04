@@ -12,10 +12,10 @@
 //!
 //! **The corpus cannot validate this area.** `datatype_value_membership.rs` says so
 //! itself ("the corpus has NO such clash, so these canaries are the ENTIRE safety
-//! net"), and these probes are that net plus the HermiT adjudication recorded in
+//! net"), and these probes are that net plus the `HermiT` adjudication recorded in
 //! `docs/known-limitations/` — a green FP=0 net here shows non-regression only.
 //!
-//! Oracle: HermiT confirms every positive below. **Konclude does NOT confirm the
+//! Oracle: `HermiT` confirms every positive below. **Konclude does NOT confirm the
 //! `xsd:date` one** — it reports `A ⊑ owl:Thing` with no unsatisfiability — which is
 //! a further instance of the under-reporting this repo already records, not a
 //! disagreement about the semantics. The NEGATIVE controls are what make the

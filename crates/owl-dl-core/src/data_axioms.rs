@@ -558,6 +558,165 @@ impl IntegerRange {
     }
 }
 
+/// A UNION of [`IntegerRange`]s — the `xsd:integer` INTERVAL SET (#42 item 1).
+///
+/// The gap it closes: `DataAllValuesFrom(p, DataUnionOf([0,5], [10,15]))` cannot be
+/// split into a class-level disjunction the way `DataSomeValuesFrom` can, so
+/// `data_range_dkey`'s parser chain matched nothing and the WHOLE AXIOM DROPPED.
+/// Konclude derives `∃p.{7} ⊓ ∀p.([0,5] ⊔ [10,15])` UNSATISFIABLE (7 is outside both
+/// components) and rustdl reported it satisfiable — a silent MISS, not a reported drop.
+///
+/// **All three operations are QUANTIFIED LIFTS of the corresponding [`IntegerRange`]
+/// operation, and that is load-bearing.** A one-element `IntSet` evaluates each op to
+/// *exactly* the scalar answer, so widening the integer `DKey` bucket from
+/// `IntegerRange` to `IntSet` leaves every pre-existing key's behaviour unchanged BY
+/// CONSTRUCTION rather than by assertion — including the empty-range corner, which
+/// [`Self::single`] deliberately does not normalise away. The encoding preserves the
+/// property on the other side: a one-component set keys to the historical UNTAGGED
+/// IRI, byte-identical.
+///
+/// Exactness, op by op — the FP-critical distinction:
+/// - [`Self::contains`] (`∃`) and [`Self::disjoint`] (`∀∀`) are EXACT, because
+///   `A ∩ B = ⋃ᵢⱼ (aᵢ ∩ bⱼ)`. Both drive CLASHES, so the direction of risk is a false
+///   POSITIVE and exactness is a soundness requirement, not a quality target.
+/// - [`Self::subset`] (`∀∃`) is a sound UNDER-approximation: it asks each component to
+///   fit inside ONE component of the other, so on un-normalised input it would miss
+///   `[0,10] ⊆ [0,5] ⊔ [6,10]`. It drives SUBSUMPTION seeding, where an
+///   under-approximation is a MISS.
+///
+/// **Integer discreteness is what makes that under-approximation tight here, and it
+/// does NOT transfer.** [`Self::normalized`] merges components that merely TOUCH
+/// (`[0,5] ⊔ [6,10] → [0,10]`), valid only because the integers have a successor. The
+/// result is that every component is separated from the next by at least one absent
+/// integer, so a contiguous interval can never straddle a gap and `∀∃` is exact on
+/// normalised operands. `xsd:float` / `xsd:decimal` / `xsd:date` / `xsd:dateTime` have
+/// no successor: their interval sets can only merge OVERLAPPING components, and their
+/// `subset` stays genuinely conservative. **Do not copy this type to them without
+/// redoing that argument** — the five remaining datatypes are a separate piece of
+/// reasoning, not a mechanical follow-on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IntSet {
+    /// Never empty. [`Self::normalized`] additionally guarantees the components are
+    /// sorted, pairwise disjoint and pairwise non-adjacent; [`Self::single`] makes no
+    /// such promise, because preserving a lone empty range verbatim is what keeps the
+    /// pre-existing bucket byte-identical.
+    ///
+    /// **A `Vec`, and `SmallVec<[IntegerRange; 1]>` was tried and MEASURED OUT.** This
+    /// type is the element of `seed_dkey_subsumptions`' integer bucket, which
+    /// `seed_bucket` walks over k² ORDERED pairs, so the obvious worry is the heap
+    /// allocation this costs per key (essentially every key is one component). Measured
+    /// on `ore_ont_15635` — the largest integer bucket in ORE at k = 7,281, giving
+    /// 5.3 × 10⁷ pairs — min-of-5 interleaved: baseline 3341 ms, `Vec` 3434 ms
+    /// (**1.028×**), `SmallVec` 3437 ms (**1.029×**). **The inline version recovers 0%**,
+    /// so the ~93 ms is NOT the allocation — the likelier cause is the bucket element
+    /// growing ~40% (16 → 24+ bytes payload) and costing cache in the k² scan. Recorded
+    /// so the next person does not re-run the same refuted experiment; if this ever
+    /// needs to be cheap, shrink the ELEMENT or index the loop, do not inline the vector.
+    ranges: Vec<IntegerRange>,
+}
+
+impl IntSet {
+    /// The one-component set — the lift of a plain [`IntegerRange`]. Deliberately does
+    /// NOT normalise: an empty range must survive so that every op reproduces the
+    /// scalar answer exactly (`IntegerRange::disjoint` is conservative on an empty
+    /// range where set semantics would say "disjoint from everything", and swapping
+    /// that in would be a behaviour change in the false-positive direction).
+    pub(crate) fn single(r: IntegerRange) -> Self {
+        Self { ranges: vec![r] }
+    }
+
+    /// Canonicalise a bag of components: drop the empty ones, sort, then merge
+    /// overlapping AND adjacent neighbours. Returns `None` when nothing survives —
+    /// the set denotes `∅`, and dropping the axiom is the sound under-approximation
+    /// (the same choice `flatten_union_of_oneofs` makes for an empty literal list).
+    ///
+    /// Canonical form matters beyond tidiness: the encoded IRI is the interning key,
+    /// so two spellings of one set must produce one `ClassId` or the seeding never
+    /// relates them.
+    pub(crate) fn normalized(mut ranges: Vec<IntegerRange>) -> Option<Self> {
+        ranges.retain(|r| !r.is_empty());
+        if ranges.is_empty() {
+            return None;
+        }
+        // `None` min is −∞ (sorts first); `None` max is +∞ (sorts last).
+        fn min_key(b: Option<i64>) -> (u8, i64) {
+            b.map_or((0, i64::MIN), |v| (1, v))
+        }
+        fn max_key(b: Option<i64>) -> (u8, i64) {
+            b.map_or((1, i64::MAX), |v| (0, v))
+        }
+        ranges.sort_by(|a, b| {
+            min_key(a.min)
+                .cmp(&min_key(b.min))
+                .then(max_key(a.max).cmp(&max_key(b.max)))
+        });
+        let mut out: Vec<IntegerRange> = Vec::with_capacity(ranges.len());
+        for r in ranges {
+            match out.last_mut() {
+                Some(last) if !Self::gap_between(*last, r) => *last = Self::merge(*last, r),
+                _ => out.push(r),
+            }
+        }
+        Some(Self { ranges: out })
+    }
+
+    /// Is there at least one integer strictly between `a` and `b` (given `a` sorts
+    /// before `b`)? Only then must they stay separate components. `a.max + 1 < b.min`
+    /// is the test, written as a checked subtraction so that a span exceeding `i64`
+    /// reads as a gap rather than overflowing. An unbounded facing end reaches the
+    /// other, so there is no gap.
+    fn gap_between(a: IntegerRange, b: IntegerRange) -> bool {
+        match (a.max, b.min) {
+            (Some(amax), Some(bmin)) => bmin.checked_sub(amax).is_none_or(|d| d > 1),
+            _ => false,
+        }
+    }
+
+    /// The bounding interval of two components already known to overlap or touch.
+    /// Order-independent: an unbounded end on either side stays unbounded.
+    fn merge(a: IntegerRange, b: IntegerRange) -> IntegerRange {
+        IntegerRange {
+            min: match (a.min, b.min) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                _ => None,
+            },
+            max: match (a.max, b.max) {
+                (Some(x), Some(y)) => Some(x.max(y)),
+                _ => None,
+            },
+        }
+    }
+
+    /// The components, in encoding order.
+    pub(crate) fn ranges(&self) -> &[IntegerRange] {
+        &self.ranges
+    }
+
+    /// `v ∈ ⋃ᵢ rᵢ`. EXACT: membership in a union is membership in some component.
+    pub(crate) fn contains(&self, v: i64) -> bool {
+        self.ranges.iter().any(|r| r.contains(v))
+    }
+
+    /// `self ∩ other = ∅`. EXACT relative to [`IntegerRange::disjoint`], since
+    /// `(⋃aᵢ) ∩ (⋃bⱼ) = ⋃ᵢⱼ (aᵢ ∩ bⱼ)` — so the union is empty iff every pairwise
+    /// intersection is. FP-CRITICAL: this emits `DisjointClasses`, so a wrong `true`
+    /// is a false UNSAT.
+    pub(crate) fn disjoint(&self, other: &Self) -> bool {
+        self.ranges
+            .iter()
+            .all(|a| other.ranges.iter().all(|b| a.disjoint(*b)))
+    }
+
+    /// `self ⊆ other`, via "every component of `self` fits inside SOME component of
+    /// `other`". Sound in the MISS direction by construction; exact on normalised
+    /// operands by the discreteness argument in the type docs.
+    pub(crate) fn subset(&self, other: &Self) -> bool {
+        self.ranges
+            .iter()
+            .all(|a| other.ranges.iter().any(|b| a.subset(*b)))
+    }
+}
+
 /// Phase D6 (Part B): real-number range with EXPLICIT inclusive/exclusive
 /// bounds. Used for `xsd:float` / `xsd:double` `DatatypeRestriction`
 /// facets and float `DataHasValue` point values.
@@ -1906,6 +2065,59 @@ fn parse_integer_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<Int
         }
     }
     Some(range)
+}
+
+/// Parse a `DataUnionOf` over the `xsd:integer` value space into an [`IntSet`]
+/// (#42 item 1). Returns `None` for anything that is not a union, and for any union
+/// with a member this cannot represent.
+///
+/// **ALL-OR-NOTHING, and that is the load-bearing property.** Keeping the
+/// representable members of a mixed union would yield a strictly NARROWER range, and a
+/// narrower range in a `∀` position manufactures a clash — a false POSITIVE. The
+/// `false` fall-through below is what enforces it; `filter_map` here would be a
+/// soundness bug. (The sibling `flatten_union_of_oneofs` learned this from a sabotage:
+/// a loosened collector passed every canary because a pure-interval union flattened to
+/// an empty literal set that was rejected anyway, and only a MIXED union exposed it.)
+///
+/// An `xsd:integer` ENUMERATION is an accepted member because on a DISCRETE value
+/// space `{v}` IS the interval `[v, v]` — exact, not an approximation — so
+/// `[10,15] ⊔ {1}` is representable without weakening. That is what makes
+/// all-or-nothing affordable rather than restrictive here. It would not be for a dense
+/// datatype, where an enumeration is not an interval union.
+///
+/// Ordering note: `data_range_dkey` runs `flatten_union_of_oneofs` FIRST, so a union
+/// whose members are ALL enumerations still lands in the exact `io:` bucket
+/// (`BTreeSet::is_subset`) rather than here, where subsumption would degrade to the
+/// `∀∃` lift. Pinned by `an_all_enumeration_union_still_lands_in_the_enumeration_bucket`.
+pub(crate) fn parse_integer_interval_set<A: ForIRI>(dr: &DataRange<A>) -> Option<IntSet> {
+    fn collect<A: ForIRI>(dr: &DataRange<A>, out: &mut Vec<IntegerRange>) -> bool {
+        // Nested unions flatten; `⊔` is associative.
+        if let DataRange::DataUnionOf(ms) = dr {
+            return !ms.is_empty() && ms.iter().all(|m| collect(m, out));
+        }
+        if let Some(r) = parse_integer_range(dr) {
+            out.push(r);
+            return true;
+        }
+        if let Some(vs) = parse_integer_oneof(dr) {
+            out.extend(vs.into_iter().map(IntegerRange::point));
+            return true;
+        }
+        false
+    }
+    let DataRange::DataUnionOf(members) = dr else {
+        return None;
+    };
+    if members.is_empty() {
+        return None;
+    }
+    let mut ranges = Vec::new();
+    for m in members {
+        if !collect(m, &mut ranges) {
+            return None;
+        }
+    }
+    IntSet::normalized(ranges)
 }
 
 /// Parse an **`xsd:float`-only** `DataRange` into a [`FloatRange`] using
@@ -3437,6 +3649,160 @@ fn emit_disjoint_dp_same_value_clash(
 
 #[cfg(test)]
 mod tests {
+
+    fn ir(min: i64, max: i64) -> IntegerRange {
+        IntegerRange {
+            min: Some(min),
+            max: Some(max),
+        }
+    }
+
+    fn iset(rs: Vec<IntegerRange>) -> IntSet {
+        let Some(s) = IntSet::normalized(rs) else {
+            panic!("expected a non-empty interval set")
+        };
+        s
+    }
+
+    /// THE NON-REGRESSION PROPERTY, stated as a test: on ONE-COMPONENT sets every
+    /// `IntSet` op returns exactly what the scalar `IntegerRange` op returns.
+    ///
+    /// That is what licenses widening the integer `DKey` bucket from `IntegerRange` to
+    /// `IntSet` without re-validating the bucket — including the corners, which is why
+    /// the empty range is in the grid: `IntegerRange::disjoint` is CONSERVATIVE there
+    /// (it can answer `false` where set semantics would say `∅` is disjoint from
+    /// everything), and `IntSet::single` deliberately preserves that rather than
+    /// normalising it away, because "correcting" it would be a behaviour change in the
+    /// false-POSITIVE direction.
+    #[test]
+    fn one_component_interval_set_ops_agree_with_the_scalar_ops() {
+        let grid = [
+            ir(0, 10),
+            ir(5, 5),
+            ir(11, 20),
+            IntegerRange {
+                min: None,
+                max: Some(5),
+            },
+            IntegerRange {
+                min: Some(3),
+                max: None,
+            },
+            IntegerRange::unbounded(),
+            ir(5, 0), // empty
+        ];
+        for a in grid {
+            for v in [-1_i64, 0, 3, 5, 10, 11, 21] {
+                assert_eq!(
+                    IntSet::single(a).contains(v),
+                    a.contains(v),
+                    "contains({v}) on {a:?}"
+                );
+            }
+            for b in grid {
+                assert_eq!(
+                    IntSet::single(a).disjoint(&IntSet::single(b)),
+                    a.disjoint(b),
+                    "disjoint on {a:?} / {b:?}"
+                );
+                assert_eq!(
+                    IntSet::single(a).subset(&IntSet::single(b)),
+                    a.subset(b),
+                    "subset on {a:?} / {b:?}"
+                );
+            }
+        }
+    }
+
+    /// `normalized` sorts, drops empties, and merges components that OVERLAP or merely
+    /// TOUCH — the second being valid only because the integers are discrete. It must
+    /// NOT merge across a real gap, which is the property the gap canaries in
+    /// `data_union_of_intervals.rs` exercise end-to-end.
+    #[test]
+    fn normalized_merges_overlapping_and_touching_but_never_across_a_gap() {
+        assert_eq!(iset(vec![ir(6, 10), ir(0, 5)]).ranges(), [ir(0, 10)]);
+        assert_eq!(iset(vec![ir(0, 7), ir(5, 10)]).ranges(), [ir(0, 10)]);
+        assert_eq!(
+            iset(vec![ir(0, 5), ir(7, 10)]).ranges(),
+            [ir(0, 5), ir(7, 10)]
+        );
+        // Empties are dropped; an all-empty bag has no representation at all.
+        assert_eq!(iset(vec![ir(5, 0), ir(0, 5)]).ranges(), [ir(0, 5)]);
+        assert_eq!(IntSet::normalized(vec![ir(5, 0), ir(9, 3)]), None);
+        assert_eq!(IntSet::normalized(vec![]), None);
+        // An unbounded end swallows everything on that side.
+        assert_eq!(
+            iset(vec![
+                IntegerRange {
+                    min: None,
+                    max: Some(5)
+                },
+                ir(3, 10)
+            ])
+            .ranges(),
+            [IntegerRange {
+                min: None,
+                max: Some(10)
+            }]
+        );
+    }
+
+    /// The adjacency test is a CHECKED subtraction, so a span wider than `i64` reads as
+    /// a gap rather than overflowing. Without that, `[i64::MIN, -1]` and `[1, i64::MAX]`
+    /// would wrap and merge into one interval that swallows `0` — a strictly WIDER range
+    /// than asserted, which in a `∀` position is a lost clash, and in a `∃` position
+    /// (via the disjointness seeding) a wrong `not disjoint`.
+    #[test]
+    fn adjacency_does_not_overflow_on_extreme_bounds() {
+        let s = iset(vec![ir(i64::MIN, -1), ir(1, i64::MAX)]);
+        assert_eq!(s.ranges().len(), 2, "a two-integer-wide gap is still a gap");
+        assert!(!s.contains(0), "0 is in the gap");
+        assert!(s.contains(-1) && s.contains(1));
+        // …and a genuinely adjacent pair at the extreme still merges.
+        assert_eq!(
+            iset(vec![ir(i64::MIN, -1), ir(0, i64::MAX)]).ranges().len(),
+            1
+        );
+    }
+
+    /// `disjoint` and `contains` are EXACT lifts (`∀∀` and `∃`) because
+    /// `A ∩ B = ⋃ᵢⱼ (aᵢ ∩ bⱼ)`. FP-CRITICAL: `disjoint` emits `DisjointClasses`, so a
+    /// wrong `true` is a false UNSAT. The interleaved pair is the discriminating case —
+    /// neither set's hull is disjoint from the other's, but every component pair is.
+    #[test]
+    fn interval_set_disjointness_is_exact() {
+        let a = iset(vec![ir(0, 5), ir(10, 15)]);
+        let b = iset(vec![ir(6, 9), ir(16, 20)]);
+        assert!(a.disjoint(&b) && b.disjoint(&a), "interleaved but disjoint");
+        // One shared INCLUSIVE endpoint is an overlap, not a gap.
+        assert!(!a.disjoint(&iset(vec![ir(5, 9)])));
+        assert!(!a.disjoint(&iset(vec![ir(12, 30)])));
+        for v in [0, 3, 5, 10, 15] {
+            assert!(a.contains(v), "{v} is in [0,5] ⊔ [10,15]");
+        }
+        for v in [-1, 6, 9, 16] {
+            assert!(!a.contains(v), "{v} is outside [0,5] ⊔ [10,15]");
+        }
+    }
+
+    /// `subset` is the `∀∃` lift: sound in the MISS direction always, and EXACT on
+    /// normalised operands because integer discreteness leaves at least one absent
+    /// integer between components, so a contiguous interval cannot straddle a gap.
+    ///
+    /// The last case is the one that would be a genuine under-approximation for a DENSE
+    /// datatype and is not one here: `[0,10] ⊆ [0,5] ⊔ [6,10]` holds only because
+    /// normalisation already merged the right-hand side into `[0,10]`.
+    #[test]
+    fn interval_set_subset_is_exact_on_normalised_operands() {
+        let big = iset(vec![ir(0, 5), ir(10, 20)]);
+        assert!(iset(vec![ir(1, 4)]).subset(&big));
+        assert!(iset(vec![ir(1, 4), ir(11, 12)]).subset(&big));
+        assert!(big.subset(&big));
+        // Straddling the gap is NOT a subset — the direction that must not be lax.
+        assert!(!iset(vec![ir(4, 11)]).subset(&big));
+        assert!(!iset(vec![ir(1, 4), ir(30, 40)]).subset(&big));
+        assert!(iset(vec![ir(0, 10)]).subset(&iset(vec![ir(0, 5), ir(6, 10)])));
+    }
     use super::*;
     use crate::convert::convert_ontology;
     use horned_owl::io::ParserConfiguration;

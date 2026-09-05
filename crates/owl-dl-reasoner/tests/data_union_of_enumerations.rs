@@ -116,20 +116,23 @@ fn a_value_inside_the_union_stays_satisfiable() {
     );
 }
 
-/// SCOPE GUARD — a union of INTERVALS is deliberately NOT flattened, and this pins a
-/// **known, oracle-confirmed sound MISS** rather than a correct answer.
+/// SCOPE MARKER, **FLIPPED 2026-09-05** when the interval-set representation landed.
 ///
-/// `[0,5] ⊔ [10,15]` is not a single interval, and no range type here can represent a
-/// disjoint set of them. A partial flatten would produce a strictly WEAKER range, which
-/// in a `∀` position is unsound in the sufficient direction — so the axiom drops and `A`
-/// comes back satisfiable.
+/// This test was written to pin a KNOWN, oracle-confirmed sound MISS: `[0,5] ⊔ [10,15]`
+/// is not a single interval, the integer `DKey` bucket held one `IntegerRange` per key,
+/// so the axiom dropped and `A` came back satisfiable while **Konclude derived it
+/// UNSATISFIABLE** (verified 2026-09-05, 1121 bytes of real output — not the ~896-byte
+/// `Thing`/`Nothing` stub it emits on unreadable input). Its own instruction was to flip
+/// it rather than delete it when an interval-set representation arrived, so that the
+/// closure of the gap would be recorded in the place that documented the gap.
 ///
-/// **Konclude reports `A` UNSATISFIABLE here** (verified 2026-09-05, 1121 bytes of real
-/// output — not the ~896-byte Thing/Nothing stub it emits on unreadable input), and it is
-/// right: 7 is outside both intervals. So this test asserts a gap, not a verdict.
-/// **FLIP it if an interval-set representation ever lands — do not delete it.**
+/// It has arrived: the bucket now holds an `IntSet`, and this asserts the verdict rather
+/// than the gap. `7` is outside both components, `A` is unsatisfiable, and rustdl and
+/// Konclude agree. The full probe set — gap boundaries, inclusive endpoints, adjacency,
+/// unbounded ends, mixed enumeration/interval unions — lives in
+/// `data_union_of_intervals.rs`.
 #[test]
-fn a_union_of_intervals_stays_a_sound_drop_and_is_a_known_miss() {
+fn a_union_of_intervals_now_clashes_with_a_value_in_the_gap() {
     let c = load(
         "Declaration(Class(:A)) Declaration(DataProperty(:p))
          SubClassOf(:A DataSomeValuesFrom(:p DataOneOf(\"7\"^^xsd:integer)))
@@ -137,11 +140,11 @@ fn a_union_of_intervals_stays_a_sound_drop_and_is_a_known_miss() {
            DatatypeRestriction(xsd:integer xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"5\"^^xsd:integer) \
            DatatypeRestriction(xsd:integer xsd:minInclusive \"10\"^^xsd:integer xsd:maxInclusive \"15\"^^xsd:integer))))",
     );
-    assert!(
-        c.unsatisfiable_classes().is_empty(),
-        "a union of INTERVALS must stay a sound DROP — never a partial flatten. \
-         Konclude derives unsat here, so this pins a known MISS: flip it when \
-         interval-sets land, do not delete it."
+    assert_eq!(
+        c.unsatisfiable_classes(),
+        vec!["http://ex.org/A"],
+        "7 is outside both [0,5] and [10,15] — the interval-set representation makes \
+         this the clash Konclude always derived"
     );
 }
 
@@ -163,23 +166,29 @@ fn a_mixed_datatype_union_does_not_produce_a_clash() {
     );
 }
 
-/// THE SABOTAGE-DRIVEN GUARD. A union MIXING an enumeration with an interval must not
-/// be partially flattened — and this is the case that makes the enumeration-only
-/// restriction load-bearing rather than merely tidy.
+/// THE SABOTAGE-DRIVEN GUARD, **REFRAMED 2026-09-05**: still a false-positive guard,
+/// but it now guards a different mechanism, because the interval-set representation
+/// changed why it passes.
 ///
 /// `12 ∈ [10,15]`, so `A` is **satisfiable** (Konclude agrees, 1105 bytes of real
-/// output). Correct behaviour: the union has a non-enumeration member, so nothing is
-/// flattened and the axiom drops — a sound under-approximation.
+/// output) and that verdict is what this asserts either way. What changed is the route:
 ///
-/// If the flattener were loosened to accept any member, it would collect only the
-/// enumeration's literals and yield `∀p.{1}`, **silently discarding the interval half**.
-/// That is a strictly WEAKER range in a universal position, so `12 ∉ {1}` would
-/// manufacture a clash and report `A` unsatisfiable — a **false positive**.
+/// - **Then:** the union had a non-enumeration member, so `flatten_union_of_oneofs`
+///   declined and the whole axiom DROPPED — satisfiable because nothing constrained `p`.
+/// - **Now:** on a discrete value space `{1}` IS `[1,1]`, so the union is an interval
+///   set and is represented EXACTLY — satisfiable because `12` really is in it.
 ///
-/// Found by sabotage: flipping `collect`'s `_ => false` arm to `_ => true` passed every
-/// other test in this file, because a union of intervals alone flattens to an EMPTY
-/// literal set and is rejected by the `lits.is_empty()` check anyway. Only a MIXED union
-/// exposes it.
+/// The original sabotage still holds: loosening `collect`'s `_ => false` arm would
+/// collect only the enumeration's literals and yield `∀p.{1}`, silently discarding the
+/// interval half — a strictly WEAKER range in a universal position, so `12 ∉ {1}` would
+/// manufacture a clash. That sabotage was found only because a union of intervals ALONE
+/// flattens to an empty literal set the `lits.is_empty()` check rejects anyway; only a
+/// MIXED union exposes it.
+///
+/// **This test can no longer tell "represented exactly" from "dropped", so it is no
+/// longer sufficient on its own** — `a_mixed_enumeration_and_interval_union_is_
+/// represented_exactly` in `data_union_of_intervals.rs` adds the probe that
+/// discriminates them (a value in NEITHER half, which must clash).
 #[test]
 fn a_union_mixing_an_enumeration_and_an_interval_is_not_partially_flattened() {
     assert!(

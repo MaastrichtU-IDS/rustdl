@@ -1588,13 +1588,99 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     is byte-identical across arms with all 14 drops unchanged. Evidence is 7 canaries
     (3 bug + 4 controls, two oracle-adjudicated) plus Konclude on every probe.
     Canaries `crates/owl-dl-reasoner/tests/data_union_of_enumerations.rs`.
-  - **STILL DROPPED (sound), recorded rather than implied:** a union of INTERVALS
-    (`[0,5] ⊔ [10,15]`) — **Konclude derives unsat there and rustdl does not**, a
-    known MISS pinned by a canary to FLIP when an interval-set representation lands,
-    never to delete; MIXED enumeration/interval unions; unions of bare DATATYPES;
-    `DataIntersectionOf` in these positions; and qualified data CARDINALITY over a
-    union (`≥3 p.({1} ⊔ {2})`), which takes a different path and which Konclude also
-    does not call unsat.
+  - **`DataUnionOf` of `xsd:integer` INTERVALS in a `∀`/range position — CLOSED
+    2026-09-05 (#42 item 1 residual).** The enumeration half above flattens because
+    `DataOneOf(a) ⊔ DataOneOf(b)` IS `DataOneOf(a,b)`; a union of intervals has no such
+    single-range form, the integer `DKey` bucket held ONE `IntegerRange` per key, so the
+    parser chain matched nothing and the whole axiom DROPPED. `∃p.{7} ⊓ ∀p.([0,5] ⊔
+    [10,15])` came back satisfiable where Konclude derives it unsatisfiable — a SILENT
+    miss (`dropped` was empty), which is why the canary written for it pinned a gap
+    rather than a verdict.
+    The bucket now holds an `IntSet`, a union of ranges. **The non-regression argument is
+    structural, in two halves, and both are worth keeping:** every op is a QUANTIFIED
+    LIFT of the scalar `IntegerRange` op (`contains` = `∃`, `disjoint` = `∀∀`, `subset` =
+    `∀∃`), so a one-component set returns exactly the old answer — including the empty
+    range, whose conservative `disjoint` is deliberately NOT "corrected", since set
+    semantics would say `∅` is disjoint from everything and that is a change in the FP
+    direction; and a one-component set ENCODES to the historical UNTAGGED IRI,
+    byte-identical, so every pre-existing key still interns to the same `ClassId` and
+    only genuinely multi-interval keys use the new `iset:` tag. `ore_ont_9347` reads 113
+    at both, the recorded DKey discriminator unmoved.
+    `contains` and `disjoint` are EXACT (`A ∩ B = ⋃ᵢⱼ aᵢ∩bⱼ`), which they must be —
+    they drive clashes, so the direction of risk is a false POSITIVE. `subset` is the
+    `∀∃` lift, sound in the MISS direction always.
+    **INTEGER DISCRETENESS IS LOAD-BEARING AND DOES NOT TRANSFER.** Normalisation merges
+    components that merely TOUCH (`[0,5] ⊔ [6,10] → [0,10]`), valid only because the
+    integers have a successor; the result is that components are separated by at least
+    one absent integer, so `subset` is exact on normalised operands too. `xsd:float` /
+    `decimal` / `date` / `dateTime` have NO successor: they can merge only OVERLAPPING
+    components and their `subset` stays genuinely conservative. **The five remaining
+    datatypes are a separate piece of reasoning, not a mechanical follow-on** — and each
+    is a new `iset`-style tag in a 15-bucket exclusivity matrix, in the subsystem that
+    has already shipped an FP for months.
+    **MIXED enumeration/interval unions come free and are now EXACT, not dropped**: on a
+    discrete space `{v}` IS `[v,v]`, so `{1} ⊔ [10,15]` is an interval set like any
+    other. That is what makes the ALL-OR-NOTHING rule affordable rather than restrictive
+    — and all-or-nothing is still load-bearing, because keeping the representable half of
+    an unrepresentable union yields a strictly NARROWER range, which in a `∀` position
+    manufactures a clash.
+    **TWO TESTS WERE PINNING THE DEFECT, and only one of them was labelled.** The scope
+    guard `a_union_of_intervals_stays_a_sound_drop_and_is_a_known_miss` said so and was
+    flipped as instructed. `datatype_value_membership.rs`'s
+    `data_union_forall_union_dropped` did NOT: it asserted `C` satisfiable ON THE GROUNDS
+    THAT THE UNION DROPS, while Konclude had always called `C` unsatisfiable — the
+    satisfiable verdict was the miss, not the answer. **It surfaced during SABOTAGE
+    testing of the fix, not from the fix's own suite**, which is the argument for running
+    sabotages against neighbouring files and not only the ones you wrote. Flipped, not
+    deleted. See [[tests-that-pin-the-bug]].
+    **EVIDENCE, and the corpus is again not part of it.** Exactly ONE of 1,920 ORE
+    ontologies authors a `DataUnionOf` at all (`ore_ont_5964`, a grep SUPERSET), and its
+    only union is `DataUnionOf(xsd:decimal xsd:float xsd:integer xsd:long)` — bare
+    DATATYPES, which the collector correctly declines, leaving all 14 of its drops
+    unchanged. So corpus reach is provably ZERO and the FP=0 net shows inertness only.
+    The evidence is 8 canaries + 9 unit tests, plus a **Konclude adjudication on 12
+    probes agreeing 12/12** — gap interiors (`6`, `9`), inclusive boundaries (`5`, `10`),
+    adjacency, unbounded ends, and both mixed-union directions — all on real output
+    (1105 sat / 1121 unsat bytes, not the ~896-byte stub). Konclude REPORTS the relation
+    on 5 of the 12, so its silence on the other 7 is a discriminating control rather than
+    the under-reporting it is documented to do elsewhere.
+    **SABOTAGE: 7 run, 7 caught.** Reverting the arm (7 canaries); loosening
+    all-or-nothing (3, incl. two pre-existing); merging across gaps (12); relaxing
+    `subset`'s outer `∀` to `∃`; relaxing `disjoint`'s; dropping the singleton
+    byte-identity short-circuit; and reordering the arm ahead of the enumeration
+    flattener. **Two honest limits, recorded rather than rounded up.** (1) The `disjoint`
+    relaxation is caught by the UNIT test ONLY — every integration canary has a SINGLETON
+    on the `self` side, where the outer `any` and `all` coincide, so the integration
+    surface cannot see it. (2) **The first version of the `subset` canary was VACUOUS and
+    sabotage found it**: in an EXISTENTIAL position a `DataUnionOf` never becomes an
+    interval-set key at all — it is split into a class-level disjunction before
+    `data_range_dkey` is reached — so `∃p.[0,5] ⊑ ∃p.([0,5] ⊔ [10,15])` holds by
+    disjunction introduction and passed with the entire fix reverted. The `∀` position is
+    where the seeded `DKey ⊑ DKey` edge is actually consulted.
+    **PERF: +2.8% on the worst case, and THE FRAME THAT LOOKED RIGHT WAS INERT.** This
+    widens the element of `seed_bucket`'s O(k²) ordered-pair walk, so it needs measuring —
+    but the DKey-heavy ontologies this file names by pair volume (`1833`, `5368`, `2504`,
+    `4141`) are all STRING buckets carrying near-zero integer literals, so the change is
+    provably inert on every one (0.90–0.99×, content identical, `9347` negative control
+    unmoved at 194 vs 199 ms). **Selecting on them would have been the documented
+    "`ore_ont_9347` cannot discriminate" trap, one datatype over.** The discriminator is
+    **`ore_ont_15635`** — 58,794 `xsd:integer` literals, k = 7,281 distinct keys giving
+    5.3 × 10⁷ pairs, the largest integer bucket in ORE (next are `20` and `5753` at
+    k ≈ 1,650, then a cliff). Min-of-5, interleaved with alternating arm order:
+    **3341 → 3434 ms, +2.8%**, content identical. **`SmallVec<[IntegerRange; 1]>` was
+    tried and recovers 0%** (3437 ms), which REFUTES the allocation hypothesis and is why
+    the field is a plain `Vec` — shipping the inline version would have meant a doc
+    comment claiming a benefit the measurement had just contradicted. The residual ~93 ms
+    is most likely the bucket element growing and costing cache in the k² scan; if it ever
+    needs to be cheap, shrink the ELEMENT or index the loop.
+    Canaries `crates/owl-dl-reasoner/tests/data_union_of_intervals.rs`.
+  - **STILL DROPPED (sound), recorded rather than implied:** unions with any member no
+    integer interval set can express — bare DATATYPES (`xsd:decimal`), `DataComplementOf`,
+    other-datatype enumerations — which drop WHOLE and VISIBLY (`dropped` is non-empty),
+    never narrowed; interval unions over the five DENSE datatypes (see the discreteness
+    note above); `DataIntersectionOf` in these positions; and qualified data CARDINALITY
+    over a union (`≥3 p.({1} ⊔ {2})`), which takes a different path and which Konclude
+    also does not call unsat.
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

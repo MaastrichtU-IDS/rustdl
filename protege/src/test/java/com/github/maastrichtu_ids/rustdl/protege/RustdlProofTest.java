@@ -7,7 +7,10 @@ import org.semanticweb.owlapi.model.IRI;
 import org.semanticweb.owlapi.model.OWLAxiom;
 import org.semanticweb.owlapi.model.OWLClass;
 import org.semanticweb.owlapi.model.OWLDataFactory;
+import org.semanticweb.owlapi.model.OWLOntology;
+import org.semanticweb.owlapi.model.OWLOntologyManager;
 import org.semanticweb.owlapi.model.OWLSubClassOfAxiom;
+import org.semanticweb.owl.explanation.api.ExplanationException;
 
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -15,6 +18,7 @@ import java.util.Collection;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * {@link RustdlProof} converts a canned {@code prove --json} result (the fixtures under
@@ -29,6 +33,29 @@ public class RustdlProofTest {
         return DF.getOWLClass(IRI.create("http://ex/#" + localName));
     }
 
+    /**
+     * A source ontology containing exactly the axioms the JSON fixtures cite as leaves.
+     *
+     * #56: `fromProveJson` now verifies every CITED LEAF axiom against the source, so a test
+     * that passed an empty ontology would make every one of these tests fail — the source is
+     * part of the fixture now, not incidental setup.
+     */
+    private static OWLOntology sourceWith(OWLAxiom... axioms) throws Exception {
+        OWLOntologyManager manager = OWLManager.createOWLOntologyManager();
+        OWLOntology ontology = manager.createOntology();
+        for (OWLAxiom axiom : axioms) {
+            manager.addAxiom(ontology, axiom);
+        }
+        return ontology;
+    }
+
+    /** The two told axioms `prove.json` cites. */
+    private static OWLOntology proveJsonSource() throws Exception {
+        return sourceWith(
+            DF.getOWLSubClassOfAxiom(cls("A"), cls("B")),
+            DF.getOWLSubClassOfAxiom(cls("B"), cls("C")));
+    }
+
     private String fixture(String name) throws Exception {
         return new String(Files.readAllBytes(
             Paths.get(getClass().getResource("/json/" + name).toURI())));
@@ -39,7 +66,7 @@ public class RustdlProofTest {
         RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove.json"));
         OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
 
-        RustdlProof proof = RustdlProof.fromProveJson(json, goal);
+        RustdlProof proof = RustdlProof.fromProveJson(json, goal, proveJsonSource());
 
         Collection<? extends Inference<OWLAxiom>> rootInferences = proof.getInferences(goal);
         assertEquals(1, rootInferences.size());
@@ -60,7 +87,7 @@ public class RustdlProofTest {
     public void nestedPremiseInferenceIsReachableAndCitesItsAxiom() throws Exception {
         RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove.json"));
         OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
-        RustdlProof proof = RustdlProof.fromProveJson(json, goal);
+        RustdlProof proof = RustdlProof.fromProveJson(json, goal, proveJsonSource());
 
         OWLSubClassOfAxiom ab = DF.getOWLSubClassOfAxiom(cls("A"), cls("B"));
         Collection<? extends Inference<OWLAxiom>> abInferences = proof.getInferences(ab);
@@ -96,7 +123,9 @@ public class RustdlProofTest {
         RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove_fallback.json"));
         OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("Sub"), cls("Sup"));
 
-        RustdlProof proof = RustdlProof.fromProveJson(json, goal);
+        RustdlProof proof = RustdlProof.fromProveJson(json, goal, sourceWith(
+            DF.getOWLSubClassOfAxiom(cls("X"), cls("Y")),
+            DF.getOWLSubClassOfAxiom(cls("Y"), cls("Z"))));
 
         Collection<? extends Inference<OWLAxiom>> inferences = proof.getInferences(goal);
         assertEquals(1, inferences.size());
@@ -111,11 +140,83 @@ public class RustdlProofTest {
         assertTrue(inference.getPremises().contains(yz));
     }
 
+    /**
+     * #56 — a genuine proof survives verification unchanged.
+     *
+     * The companion to {@link #aFabricatedLeafAxiomIsRejected}: without this one, "the guard
+     * catches fabrication" would be satisfied by a guard that rejects EVERYTHING. Both cited
+     * leaves here are real source axioms, so all four inferences must still be produced.
+     */
+    @Test
+    public void aGenuineProofSurvivesLeafVerification() throws Exception {
+        RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove.json"));
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+
+        RustdlProof proof = RustdlProof.fromProveJson(json, goal, proveJsonSource());
+
+        assertEquals(1, proof.getInferences(goal).size());
+        // Both told leaves survive, each carrying its own "asserted" inference.
+        assertEquals(2, proof.getInferences(DF.getOWLSubClassOfAxiom(cls("A"), cls("B"))).size());
+        assertEquals(2, proof.getInferences(DF.getOWLSubClassOfAxiom(cls("B"), cls("C"))).size());
+    }
+
+    /**
+     * #56 — THE ANTI-FABRICATION TEST. A cited leaf axiom absent from the source must reject the
+     * whole proof rather than being displayed as the justification for a step.
+     *
+     * The source here deliberately OMITS `SubClassOf(:B :C)` while `prove.json` cites it, which
+     * is exactly the shape a future OFN writer/parser normalization mismatch would produce: a
+     * leaf that looks well-formed and is not what the ontology asserts. Before this guard the
+     * proof view rendered it verbatim.
+     *
+     * Fail-hard, matching the justify surface — a partial proof with the offending leaf dropped
+     * would still be displayed as an explanation while no longer establishing its conclusion.
+     */
+    @Test
+    public void aFabricatedLeafAxiomIsRejected() throws Exception {
+        RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove.json"));
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+        OWLOntology missingOneLeaf = sourceWith(DF.getOWLSubClassOfAxiom(cls("A"), cls("B")));
+
+        try {
+            RustdlProof.fromProveJson(json, goal, missingOneLeaf);
+            fail("a cited leaf axiom absent from the source must be rejected as a possible "
+                + "fabrication, not rendered into the proof");
+        } catch (ExplanationException expected) {
+            assertTrue(
+                "the message must name the offending axiom and the surface: "
+                    + expected.getMessage(),
+                expected.getMessage().contains("proof")
+                    && expected.getMessage().contains("not present in the source ontology"));
+        }
+    }
+
+    /**
+     * #56 — the `justification_fallback` branch is guarded too.
+     *
+     * Every axiom on that path IS a literal source axiom (rustdl emits a plain minimal
+     * justification there, never a laconic-weakened one), so it is verified wholesale. Missed by
+     * a fix that only walked the proof tree.
+     */
+    @Test
+    public void aFabricatedFallbackAxiomIsRejected() throws Exception {
+        RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove_fallback.json"));
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("Sub"), cls("Sup"));
+        OWLOntology missingOne = sourceWith(DF.getOWLSubClassOfAxiom(cls("X"), cls("Y")));
+
+        try {
+            RustdlProof.fromProveJson(json, goal, missingOne);
+            fail("a fabricated justification_fallback axiom must be rejected too");
+        } catch (ExplanationException expected) {
+            assertTrue(expected.getMessage().contains("not present in the source ontology"));
+        }
+    }
+
     @Test
     public void unreachableConclusionHasNoInferences() throws Exception {
         RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove.json"));
         OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
-        RustdlProof proof = RustdlProof.fromProveJson(json, goal);
+        RustdlProof proof = RustdlProof.fromProveJson(json, goal, proveJsonSource());
 
         OWLSubClassOfAxiom unrelated = DF.getOWLSubClassOfAxiom(cls("Unrelated1"), cls("Unrelated2"));
         assertTrue(proof.getInferences(unrelated).isEmpty());

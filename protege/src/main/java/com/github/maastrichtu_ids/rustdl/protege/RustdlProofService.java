@@ -129,7 +129,7 @@ public final class RustdlProofService extends ProofService {
                     // disagree, failing loudly here is safer than fabricating an empty proof.
                     throw new UnsupportedEntailmentTypeException(entailment);
                 }
-                return RustdlProof.fromProveJson(json, entailment);
+                return RustdlProof.fromProveJson(json, entailment, ontology);
             } catch (IOException error) {
                 throw new IllegalStateException(
                     "rustdl prove --json failed: " + error.getMessage(), error);

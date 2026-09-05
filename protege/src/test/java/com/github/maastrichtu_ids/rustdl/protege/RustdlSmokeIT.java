@@ -335,7 +335,12 @@ public class RustdlSmokeIT {
                 json.has_proof);
 
             OWLSubClassOfAxiom goal = df.getOWLSubClassOfAxiom(a, c);
-            RustdlProof proof = RustdlProof.fromProveJson(json, goal);
+            // #56: passing the REAL source ontology makes this the end-to-end round-trip
+            // check — the cited leaf axioms come back from the actual rustdl binary through the
+            // OFN writer and the Java parser, and must literally match what `o` contains. If
+            // the round-trip ever normalizes an axiom, this test fails rather than the proof
+            // view silently displaying something the source does not assert.
+            RustdlProof proof = RustdlProof.fromProveJson(json, goal, o);
 
             Collection<? extends Inference<OWLAxiom>> rootInferences = proof.getInferences(goal);
             assertFalse("proof must contain an inference for the root goal conclusion",

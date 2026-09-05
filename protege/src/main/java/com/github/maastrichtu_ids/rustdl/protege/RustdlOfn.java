@@ -96,12 +96,33 @@ final class RustdlOfn {
      * mirrors rather than the softer "skip just this one" alternative.
      */
     static Set<OWLAxiom> verifiedAgainst(Set<OWLAxiom> parsed, OWLOntology source) {
+        return verifiedAgainst(parsed, source, "justification");
+    }
+
+    /**
+     * {@link #verifiedAgainst(Set, OWLOntology)} with the surface named in the log line and the
+     * thrown message, so a rejection from the PROOF surface (#56) is not reported as a
+     * "justification" one.
+     *
+     * <p>The two surfaces share this one implementation deliberately: they make the same
+     * anti-fabrication promise, and a second copy of the {@code containsAxiom} check is exactly
+     * how the two would drift apart again.</p>
+     *
+     * <p><b>Only literal source axioms may be passed here.</b> Anything ENTAILED BY rather than
+     * EQUAL TO a source axiom will be rejected as fabrication — see
+     * {@code RustdlExplanationGenerator#materialize}'s laconic carve-out, which skips this guard
+     * for exactly that reason. On the proof surface the cited {@code axioms[]} resolve from
+     * {@code axiom_refs} into the converted ontology's own axiom list and are reverse-rendered by
+     * {@code owl_dl_core::axiom_to_component}, so they ARE literal; a proof's conclusions and
+     * intermediate premises are derived and must NOT be passed.</p>
+     */
+    static Set<OWLAxiom> verifiedAgainst(Set<OWLAxiom> parsed, OWLOntology source, String what) {
         for (OWLAxiom axiom : parsed) {
             if (!source.containsAxiom(axiom, Imports.INCLUDED, AxiomAnnotations.IGNORE_AXIOM_ANNOTATIONS)) {
-                LOG.warning("Rejecting rustdl justification: axiom not found in the source "
+                LOG.warning("Rejecting rustdl " + what + ": axiom not found in the source "
                     + "ontology's imports closure (possible fabrication): " + axiom);
                 throw new ExplanationException(
-                    "rustdl justification contained an axiom not present in the source ontology "
+                    "rustdl " + what + " contained an axiom not present in the source ontology "
                         + "(possible fabrication): " + axiom);
             }
         }

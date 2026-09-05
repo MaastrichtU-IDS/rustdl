@@ -3,6 +3,7 @@ package com.github.maastrichtu_ids.rustdl.protege;
 import org.liveontologies.puli.BaseProof;
 import org.liveontologies.puli.Inference;
 import org.semanticweb.owlapi.model.OWLAxiom;
+import org.semanticweb.owlapi.model.OWLOntology;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -51,7 +52,8 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
      *     conclusion is used instead (expected — not re-checked here — to be structurally equal
      *     to {@code goal}, since it renders the same {@code SUB ⊑ SUP} the query asked about).
      */
-    static RustdlProof fromProveJson(RustdlJson.ProveJson json, OWLAxiom goal) {
+    static RustdlProof fromProveJson(
+            RustdlJson.ProveJson json, OWLAxiom goal, OWLOntology source) {
         if (json == null) {
             throw new IllegalArgumentException("rustdl prove --json returned no result");
         }
@@ -61,13 +63,19 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
                 throw new IllegalStateException(
                     "rustdl prove --json: has_proof=true but proof is null");
             }
-            proof.buildNode(json.proof);
+            proof.buildNode(json.proof, source);
         } else {
             if (json.justification_fallback == null) {
                 throw new IllegalStateException(
                     "rustdl prove --json: has_proof=false but justification_fallback is null");
             }
-            List<OWLAxiom> premises = new ArrayList<>(RustdlOfn.parse(json.justification_fallback));
+            // #56. Every axiom in `justification_fallback` IS a literal source axiom (rustdl
+            // emits a plain minimal justification here, never a laconic-weakened one — that is
+            // a separate `justify --laconic` surface), so the whole set is verified wholesale,
+            // exactly as `RustdlExplanationGenerator#materialize` does on its own non-laconic
+            // path. Fail-hard: a fabricated axiom rejects the proof rather than being displayed.
+            List<OWLAxiom> premises = new ArrayList<>(RustdlOfn.verifiedAgainst(
+                RustdlOfn.parse(json.justification_fallback), source, "proof justification"));
             proof.produce(new SimpleInference("justification", goal, premises));
         }
         return proof;
@@ -79,7 +87,7 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
      * so the caller (a parent {@code buildNode} call, or {@link #fromProveJson}) can use it as one
      * of ITS premises.
      */
-    private OWLAxiom buildNode(RustdlJson.ProofNodeJson node) {
+    private OWLAxiom buildNode(RustdlJson.ProofNodeJson node, OWLOntology source) {
         // No conclusion de-dup guard needed here today: rustdl's `ProofNodeJson` tree is an OWNED
         // tree (each premise belongs to exactly one parent), not a shared DAG, so a shared
         // sub-conclusion is simply rebuilt (and re-produce()d, harmlessly, into this Proof) once
@@ -93,6 +101,12 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
         if (node.axioms != null) {
             for (String axiomDoc : node.axioms) {
                 OWLAxiom axiom = RustdlOfn.singleLogicalAxiom(axiomDoc);
+                // #56. THE CITED LEAVES ARE THE ONLY PART OF A PROOF NODE THAT IS A SOURCE
+                // AXIOM, and so the only part this guard may be applied to. `node.conclusion`
+                // and the child `node.premises` are DERIVED facts — running `containsAxiom` on
+                // them would (correctly) fail and reject every proof, which is why this is not
+                // a blind copy of the justify guard.
+                RustdlOfn.verifiedAgainst(Collections.singleton(axiom), source, "proof");
                 premises.add(axiom);
                 if (assertedRegistered.add(axiom)) {
                     produce(new SimpleInference("asserted", axiom, Collections.emptyList()));
@@ -101,7 +115,7 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
         }
         if (node.premises != null) {
             for (RustdlJson.ProofNodeJson child : node.premises) {
-                premises.add(buildNode(child));
+                premises.add(buildNode(child, source));
             }
         }
 

@@ -1783,6 +1783,19 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   dropping the conjunctive domain filler (which `role_domains` does silently — its own D10 "Bug B"
   comment says so) leaves `X` with NO EL subsumer, hence in `P`'s own tier. **The discriminating
   control is the ATOMIC filler**, `Domain(r, :P)`, which derives `X ⊑ P` correctly at the default.
+  **`ObjectPropertyRange` HAS THE SAME DEFECT AND IS THE LARGER HALF** — `Range(r, P ⊓ Q)` +
+  `X ⊑ ∃r.B` + `∃r.(B ⊓ P) ⊑ W` misses `X ⊑ W` with the identical signature (`subclass` proves it,
+  `TRUST_SAT=0`/`HYPERTABLEAU=0` do not recover it, `SAME_TIER=1` does), and of the 14 ORE
+  candidates **13 are `Range` against 4 `Domain`**. A fix touching only `role_domains` closes half.
+  **`DisjointClasses(A ⊓ B, C)` — the OTHER hole in the same two-list analysis — is CLEAN**
+  (`D` correctly unsatisfiable): disjointness surfaces as an unsat class, which never enters the
+  tier walk, whereas a domain/range fold needs a positive subsumption derived, which does.
+  **AND A NEAR-MISS WORTH THE READ:** the first `Range` probe used `∃r.⊤` and rustdl returned zero
+  rows on the ATOMIC control too — which reads as a pure-EL miss, i.e. far worse. It is not a
+  defect: `∃r.⊤` lowers to a deliberately subsumer-less ⊤-witness so folding `Range(r)` in cannot
+  destroy the `domain(r)` inference the witness exists for — the documented `topwitness.ofn`
+  DESIGN DECISION. Use a concrete filler, not `⊤`, or the control cannot discriminate. Mirror of
+  [[tests-that-pin-the-bug]], applied to choosing a REPRODUCER rather than a fixture.
   **Filed as #110. Corpus reach MEASURED and it is ZERO**: two-arm run (`RUSTDL_CLASSIFY_SAME_TIER`
   0 vs 1, arm order alternated, triple compared) over the 14 conjunctive-`Domain`/`Range`-filler
   ORE ontologies — **13 IDENTICAL, 0 gained, 0 lost, 1 UNMEASURED** (`ore_ont_10080`, which DNFs SYMMETRICALLY at a

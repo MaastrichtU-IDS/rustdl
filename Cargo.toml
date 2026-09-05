@@ -49,7 +49,16 @@ owl-dl-verify = { path = "crates/owl-dl-verify", version = "0.4.27" }
 owl-dl-reasoner = { path = "crates/owl-dl-reasoner", version = "0.4.27" }
 rustdl = { path = "crates/rustdl", version = "0.4.27" }
 
-horned-owl = { version = "1.4", default-features = false }
+# 3.0 (2026-08-10), from crates.io — the `[patch.crates-io]` fork pin was dropped
+# 2026-09-05 (#99). Released 3.0 carries everything rustdl used the fork for,
+# including `io::omn` AND the per-item `AsManchester` trait the issue believed was
+# fork-only. KNOWN COST, measured, not incidental: the fork also replaced
+# horned-owl's `FullIRI` rule with a fast non-validating one, so upstream parsing is
+# ~2.7-3.1x slower (isolated by subtracting `convert_ms`; conversion itself is
+# unchanged) and 7 of 1,920 ORE ontologies now fail on IRIs that are genuinely
+# invalid per RFC 3987 (U+FFFD is outside every `ucschar` range). Upstreaming those
+# fast terminals would recover the parse speed; there is no feature flag for it.
+horned-owl = { version = "3.0", default-features = false }
 
 hashbrown = "0.15"
 smallvec = { version = "1.13", features = ["const_generics", "union"] }
@@ -110,20 +119,3 @@ inherits = "release"
 [profile.dev]
 debug = "line-tables-only"
 
-[patch.crates-io]
-# Manchester Syntax io/omn. STATUS CORRECTED 2026-09-03: the upstream PR
-# (phillord/horned-owl#176) MERGED on 2026-07-11 and `io::omn` ships in RELEASED
-# horned-owl 2.0.0 (2026-07-17) and 3.0.0 -- including `reader::read` and
-# `reader::parse_class_expression`. This patch is still needed only because rustdl
-# pins 1.4 (omn landed in 2.0), and because the fork's per-item `AsManchester`
-# rendering trait did NOT land upstream -- upstream ships only a whole-ontology
-# `writer::write`, which cannot render a single axiom. Dropping the patch is a
-# horned-owl MAJOR upgrade plus replacing that trait; tracked in #99.
-# Pinned
-# to a rev on the `manchester-io-rebased` branch of the fork — rebased onto
-# upstream/main (1.4.0) and conformance-complete (PR micheldumontier/horned-owl →
-# phillord/horned-owl #176) so this builds reproducibly anywhere (the upstream
-# merge will drop this patch). See
-# docs/superpowers/specs/2026-06-12-horned-owl-manchester-io-design.md and
-# docs/manchester/manchester-io-report.md in the fork.
-horned-owl = { git = "https://github.com/micheldumontier/horned-owl", rev = "b188edaf7c92600918f0524962d928097ecd6b4d" }

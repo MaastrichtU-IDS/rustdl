@@ -1149,11 +1149,30 @@ fn data_union_drop_on_unrecognized_member() {
     );
 }
 
-/// ∀-union is dropped (sound under-approximation): `C ⊑ ∀p.DataUnionOf(...)`
-/// does NOT fire — the axiom drops, so a conflicting ∃ assertion does NOT
-/// produce a clash.  No FP.
+/// **FLIPPED 2026-09-05 — this test was PINNING THE DEFECT, and its own name said so.**
+///
+/// It asserted that `C ⊑ ∀p.DataUnionOf([0,5], [10,15])` alongside `C ⊑ ∃p.[20,25]`
+/// leaves `C` satisfiable, ON THE GROUNDS THAT THE UNION DROPS — a sound
+/// under-approximation, correctly framed at the time. But `20..25` is disjoint from both
+/// components, so **Konclude has always derived `C` unsatisfiable here** (re-verified
+/// 2026-09-05, 1121 bytes of real output). The satisfiable verdict was the MISS, not the
+/// answer, and this test was the thing that would have to change for the miss to close.
+///
+/// #42 item 1's interval-set representation closed it: the union now converts (`dropped`
+/// is empty) and the clash fires. The assertion is inverted rather than deleted, so the
+/// file keeps a record of which verdict moved and why.
+///
+/// Sibling `data_union_drop_on_unrecognized_member` above still asserts a DROP and
+/// still passes — its union carries a `DataComplementOf`, which no interval set can
+/// express, so the all-or-nothing rule correctly declines the whole range. That is the
+/// difference between a representable union and an unrepresentable one, and it is why
+/// only this one flipped.
+///
+/// See [[tests-that-pin-the-bug]]: a fixture chosen for a DEFECT becomes a bug-pin, and
+/// there is no signal until someone fixes the bug. This one surfaced during sabotage
+/// testing of the fix, not from the fix's own suite.
 #[test]
-fn data_union_forall_union_dropped() {
+fn data_union_forall_union_now_clashes() {
     let c = classify(
         r#"    Declaration(Class(:C))
     Declaration(DataProperty(:p))
@@ -1164,11 +1183,12 @@ fn data_union_forall_union_dropped() {
     SubClassOf(:C DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "20"^^xsd:integer xsd:maxInclusive "25"^^xsd:integer)))
 "#,
     );
-    // ∀-union dropped → no ∀p.DKey filler → no clash with ∃p.[20,25].
-    // C must remain satisfiable.
+    // ∀-union now lowers to an interval-set DKey → [20,25] is disjoint from
+    // [0,5] ⊔ [10,15] → clash. Konclude agrees.
     assert!(
-        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
-        "∀p.DataUnionOf should be dropped: C must remain satisfiable"
+        c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "[20,25] is disjoint from [0,5] ⊔ [10,15], so C is unsatisfiable — the verdict \
+         Konclude always gave and this test used to pin the miss of"
     );
 }
 

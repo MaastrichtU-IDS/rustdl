@@ -6660,6 +6660,18 @@ fn build_dkey_range_map(
                 owl_dl_datatypes::CardRange::DateTimeSet(owl_dl_datatypes::FiniteSet::Set(set)),
             );
         }
+        // DELIBERATE FALL-THROUGH, not an omission: a multi-interval `iset:` key
+        // (#42 item 1, `xsd:integer` interval sets) matches NO decoder above — the
+        // untagged integer decoder rejects the tag — so it gets no side-map entry.
+        // `CardRange` carries ONE interval per variant and cannot express a union, and
+        // inventing a hull `[0,15]` for `{[0,5],[10,15]}` would over-state the
+        // concrete-domain capacity in the false-POSITIVE direction. No entry means
+        // `concept_has_dkey_counting` does not flag such a filler and no counting clash
+        // is derived from it — a sound MISS, and the same one already recorded for
+        // qualified data cardinality over a union. The DISJOINTNESS the interval-set
+        // representation exists for is seeded as native `DisjointClasses` axioms in
+        // `convert.rs` and does not come through this map. If you add a decoder here,
+        // leave this absence intentional or widen `CardRange` first.
     }
     map
 }

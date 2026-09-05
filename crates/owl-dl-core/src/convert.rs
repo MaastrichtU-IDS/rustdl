@@ -16,7 +16,7 @@ use thiserror::Error;
 use crate::ConceptPool;
 use crate::Vocabulary;
 use crate::data_axioms::{
-    DataIntersectionDkey, DateKey, DateTimeKey, Decimal, FloatRange, IntegerRange, LangSet,
+    DataIntersectionDkey, DateKey, DateTimeKey, Decimal, FloatRange, IntSet, IntegerRange, LangSet,
     OrdRange, RangeBucket, StrSet, exact_lang_literal, exact_string_literal,
     parse_data_intersection_dkey, parse_date, parse_datetime, parse_decimal,
 };
@@ -73,6 +73,81 @@ fn dkey_iri(range: IntegerRange) -> String {
         b.map_or_else(|| "*".to_string(), |v| v.to_string())
     }
     format!("{DKEY_IRI_PREFIX}{}:{}", bound(range.min), bound(range.max))
+}
+
+/// Datatype tag for the `xsd:integer` INTERVAL-SET `DKey` namespace (#42 item 1).
+/// Full prefix is `urn:rustdl-dkey:iset:`, components `;`-separated
+/// (`urn:rustdl-dkey:iset:0:5;10:15`).
+///
+/// Namespace-safe against every existing decoder, and the integer one is the case
+/// worth stating: the untagged integer form splits on the FIRST `:` and parses both
+/// halves as `i64`, so `iset:0:5;10:15` yields the token `"iset"`, which fails that
+/// parse. Every other decoder uses `strip_prefix(tag)`, and `iset:` neither prefixes
+/// nor is prefixed by `f:`, `db:`, `dec:`, `date:`, `dt:`, `str:`, `lang:`, `io:`,
+/// `fo:`, `dbo:`, `deo:`, `dao:` or `dto:`. Both parser matrices pin this.
+const DKEY_INT_SET_TAG: &str = "iset:";
+
+/// Build the deterministic `xsd:integer` interval-set `DKey` IRI.
+///
+/// **A ONE-COMPONENT SET ENCODES TO THE HISTORICAL UNTAGGED IRI, BYTE-IDENTICAL.**
+/// That is the other half of the non-regression argument in [`IntSet`]'s docs: every
+/// key the pre-#42 engine could produce still interns to the same `ClassId`, so only
+/// genuinely multi-interval keys use the new form and the existing bucket is provably
+/// unmoved. It also keeps the encoding canonical — one set, one spelling, one class.
+fn int_set_dkey_iri(set: &IntSet) -> String {
+    let ranges = set.ranges();
+    if let [single] = ranges {
+        return dkey_iri(*single);
+    }
+    fn bound(b: Option<i64>) -> String {
+        b.map_or_else(|| "*".to_string(), |v| v.to_string())
+    }
+    let body = ranges
+        .iter()
+        .map(|r| format!("{}:{}", bound(r.min), bound(r.max)))
+        .collect::<Vec<_>>()
+        .join(";");
+    format!("{DKEY_IRI_PREFIX}{DKEY_INT_SET_TAG}{body}")
+}
+
+/// Parse any `xsd:integer` `DKey` IRI — untagged single interval OR `iset:`-tagged
+/// multi-interval — back into an [`IntSet`]. This is the bucket collector for
+/// `seed_dkey_subsumptions`, so it must accept BOTH forms: the untagged one carries
+/// every key written before #42 item 1.
+///
+/// The untagged case goes through [`IntSet::single`], which does not normalise. That is
+/// deliberate — see [`IntSet::single`]; normalising here would silently change the
+/// empty-range corner of a bucket this change is supposed to leave alone.
+///
+/// A tagged IRI with fewer than two components is REJECTED: the encoder never emits
+/// one (a single interval takes the untagged form), so accepting it would admit a
+/// second spelling of a set that already has a canonical `ClassId`.
+fn parse_int_set_dkey_iri(iri: &str) -> Option<IntSet> {
+    let Some(rest) = iri
+        .strip_prefix(DKEY_IRI_PREFIX)
+        .and_then(|r| r.strip_prefix(DKEY_INT_SET_TAG))
+    else {
+        return parse_dkey_iri(iri).map(IntSet::single);
+    };
+    fn bound(s: &str) -> Result<Option<i64>, ()> {
+        if s == "*" {
+            Ok(None)
+        } else {
+            s.parse::<i64>().map(Some).map_err(|_| ())
+        }
+    }
+    let mut ranges = Vec::new();
+    for comp in rest.split(';') {
+        let (min_s, max_s) = comp.split_once(':')?;
+        ranges.push(IntegerRange {
+            min: bound(min_s).ok()?,
+            max: bound(max_s).ok()?,
+        });
+    }
+    if ranges.len() < 2 {
+        return None;
+    }
+    IntSet::normalized(ranges)
 }
 
 /// Internal helper: build a float-family `DKey` IRI with the given `tag`.
@@ -839,6 +914,16 @@ fn data_range_dkey<A: ForIRI>(
     // most once.
     if let Some(flat) = flatten_union_of_oneofs(dr) {
         return data_range_dkey(&flat, dp_iri, vocab, pool);
+    }
+    // A union of xsd:integer INTERVALS (and/or integer enumerations) is one interval
+    // SET (#42 item 1 residual). MUST stay after the enumeration flattener: an
+    // all-enumeration union belongs in the `io:` bucket, whose `BTreeSet::is_subset`
+    // is exact, not here, where subsumption degrades to the `∀∃` lift. Only matches a
+    // `DataUnionOf`, so it cannot shadow the scalar `parse_integer_range` arm below.
+    if let Some(set) = crate::data_axioms::parse_integer_interval_set(dr) {
+        let role = Role::named(vocab.intern_role(dp_iri));
+        let dkey_class = vocab.intern_class(&int_set_dkey_iri(&set));
+        return Some((role, pool.atomic(dkey_class)));
     }
     let iri = if let Some(r) = crate::data_axioms::parse_integer_range(dr) {
         dkey_iri(r)
@@ -3012,10 +3097,16 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // The decoders are pairwise mutually exclusive on IRIs (the
     // `parser_matrix_*` canaries pin this), so a given `DKey` IRI lands in
     // exactly one bucket.
-    let int_dkeys: Vec<(ClassId, IntegerRange)> = out
+    // The integer bucket holds INTERVAL SETS (#42 item 1): `parse_int_set_dkey_iri`
+    // accepts the historical untagged single-interval IRI as a one-component set and
+    // the `iset:`-tagged form as many. Every op below is a quantified lift of the
+    // `IntegerRange` op it replaced, so the one-component keys — which is all of them
+    // on any ontology without a `DataUnionOf` of integer ranges — behave exactly as
+    // before by construction.
+    let int_dkeys: Vec<(ClassId, IntSet)> = out
         .vocabulary
         .classes()
-        .filter_map(|(cid, iri)| parse_dkey_iri(iri).map(|r| (cid, r)))
+        .filter_map(|(cid, iri)| parse_int_set_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
     // xsd:float (f:) and xsd:double (db:) are SEPARATE buckets — they have
     // disjoint OWL value spaces (float is f32, double is f64); cross-bucket
@@ -3098,7 +3189,7 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // `DKey(r1) ⊑ DKey(r2)` iff `r1 ⊆ r2` (distinct keys ⟹ strict subset,
     // since equal ranges share one ClassId). Integer/float ranges are
     // `Copy`; the ordered ranges compare by reference.
-    seed_bucket(out, &int_dkeys, |a, b| a.subset(*b));
+    seed_bucket(out, &int_dkeys, IntSet::subset);
     seed_bucket(out, &float_dkeys, |a, b| a.subset(*b));
     seed_bucket(out, &double_dkeys, |a, b| a.subset(*b));
     seed_bucket(out, &dec_dkeys, OrdRange::subset);
@@ -3166,7 +3257,7 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // one O(k²) component). `=0` restores the unconditional all-pairs path.
     // Spec: docs/superpowers/specs/2026-07-20-dkey-disjointness-bounded-seeding-spec.md
     let comp = bounded_components.as_ref();
-    seed_disjoint_bucket(out, &int_dkeys, |a, b| a.disjoint(*b), comp);
+    seed_disjoint_bucket(out, &int_dkeys, IntSet::disjoint, comp);
     seed_disjoint_bucket(out, &float_dkeys, |a, b| a.disjoint(*b), comp);
     seed_disjoint_bucket(out, &double_dkeys, |a, b| a.disjoint(*b), comp);
     seed_disjoint_bucket(out, &dec_dkeys, OrdRange::disjoint, comp);
@@ -3272,7 +3363,7 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         out,
         &int_dkeys,
         &int_oneof_dkeys,
-        |r: &IntegerRange, v: &i64| r.contains(*v),
+        |r: &IntSet, v: &i64| r.contains(*v),
         comp,
     );
     seed_range_oneof_disjoint(
@@ -5484,7 +5575,27 @@ mod tests {
                     .collect(),
                 )),
             ),
+            // #42 item 1: the `iset:` multi-interval form. Two components, so it
+            // cannot degenerate to the untagged encoding.
+            ("iset", int_set_dkey_iri(&sample_int_set())),
         ]
+    }
+
+    /// The interval set `[0,5] ⊔ [10,15]` used by both parser matrices.
+    fn sample_int_set() -> IntSet {
+        let Some(set) = IntSet::normalized(vec![
+            IntegerRange {
+                min: Some(0),
+                max: Some(5),
+            },
+            IntegerRange {
+                min: Some(10),
+                max: Some(15),
+            },
+        ]) else {
+            panic!("two non-empty components normalize to a non-empty set")
+        };
+        set
     }
 
     /// THE matrix: each decoder must return `Some` for EXACTLY its own
@@ -5505,17 +5616,25 @@ mod tests {
                 "dt" => parse_datetime_dkey_iri(iri).is_some(),
                 "str" => parse_string_dkey_iri(iri).is_some(),
                 "lang" => parse_lang_dkey_iri(iri).is_some(),
+                "iset" => parse_int_set_dkey_iri(iri).is_some(),
                 _ => unreachable!(),
             }
         };
         for (decoder, _) in &iris {
             for (bucket, iri) in &iris {
                 let accepted = probe(decoder, iri);
+                // ONE deliberate off-diagonal cell, and only one: `iset` is a
+                // SUPERSET of `int` BY DESIGN — the interval-set decoder must accept
+                // the untagged single-interval IRI, because that is how every key
+                // written before #42 item 1 still reaches the integer bucket (as a
+                // one-component set, whose ops are exact lifts of the scalar ones).
+                // The REVERSE cell stays strict and is the FP-critical one: `int`
+                // accepting an `iset:` IRI would decode a multi-interval key as a
+                // truncated single range and seed edges with the wrong semantics.
+                let expected = decoder == bucket || (*decoder == "iset" && *bucket == "int");
                 assert_eq!(
-                    accepted,
-                    decoder == bucket,
-                    "decoder {decoder} on {bucket} IRI {iri:?}: expected {}",
-                    decoder == bucket
+                    accepted, expected,
+                    "decoder {decoder} on {bucket} IRI {iri:?}: expected {expected}"
                 );
             }
         }
@@ -5598,20 +5717,158 @@ mod tests {
                 "deo" => parse_decimal_oneof_iri(iri).is_some(),
                 "dao" => parse_date_oneof_iri(iri).is_some(),
                 "dto" => parse_datetime_oneof_iri(iri).is_some(),
+                "iset" => parse_int_set_dkey_iri(iri).is_some(),
                 _ => unreachable!(),
             }
         };
         for (decoder, _) in &all {
             for (bucket, iri) in &all {
                 let accepted = probe(decoder, iri);
+                // ONE deliberate off-diagonal cell, and only one: `iset` is a
+                // SUPERSET of `int` BY DESIGN — the interval-set decoder must accept
+                // the untagged single-interval IRI, because that is how every key
+                // written before #42 item 1 still reaches the integer bucket (as a
+                // one-component set, whose ops are exact lifts of the scalar ones).
+                // The REVERSE cell stays strict and is the FP-critical one: `int`
+                // accepting an `iset:` IRI would decode a multi-interval key as a
+                // truncated single range and seed edges with the wrong semantics.
+                let expected = decoder == bucket || (*decoder == "iset" && *bucket == "int");
                 assert_eq!(
-                    accepted,
-                    decoder == bucket,
-                    "decoder {decoder} on {bucket} IRI {iri:?}: expected {}",
-                    decoder == bucket
+                    accepted, expected,
+                    "decoder {decoder} on {bucket} IRI {iri:?}: expected {expected}"
                 );
             }
         }
+    }
+
+    /// A ONE-COMPONENT interval set keys to the HISTORICAL UNTAGGED IRI, byte-identical.
+    ///
+    /// This is half the non-regression argument for #42 item 1's residual (the other
+    /// half is that every `IntSet` op is a quantified lift of the scalar op): every key
+    /// any pre-change ontology could produce still interns to the same `ClassId`, so the
+    /// integer bucket is provably unmoved and only genuinely multi-interval keys use the
+    /// new form. Break this and the bucket silently splits in two.
+    #[test]
+    fn a_one_component_interval_set_keys_identically_to_a_bare_range() {
+        for r in [
+            IntegerRange {
+                min: Some(0),
+                max: Some(10),
+            },
+            IntegerRange {
+                min: None,
+                max: Some(5),
+            },
+            IntegerRange::unbounded(),
+            // The empty range, which `IntSet::single` deliberately does not normalise
+            // away — see its docs.
+            IntegerRange {
+                min: Some(5),
+                max: Some(0),
+            },
+        ] {
+            assert_eq!(int_set_dkey_iri(&IntSet::single(r)), dkey_iri(r));
+        }
+    }
+
+    /// The `iset:` form round-trips, uses the documented spelling, and normalises: the
+    /// components come back sorted, merged across a touching seam, and with unbounded
+    /// ends preserved.
+    #[test]
+    fn interval_set_iri_round_trips_and_canonicalises() {
+        let two = sample_int_set();
+        assert_eq!(int_set_dkey_iri(&two), "urn:rustdl-dkey:iset:0:5;10:15");
+        assert_eq!(parse_int_set_dkey_iri(&int_set_dkey_iri(&two)), Some(two));
+
+        // Unbounded ends on both sides.
+        let Some(unb) = IntSet::normalized(vec![
+            IntegerRange {
+                min: None,
+                max: Some(5),
+            },
+            IntegerRange {
+                min: Some(10),
+                max: None,
+            },
+        ]) else {
+            panic!("two non-empty components normalize");
+        };
+        assert_eq!(int_set_dkey_iri(&unb), "urn:rustdl-dkey:iset:*:5;10:*");
+        assert_eq!(parse_int_set_dkey_iri(&int_set_dkey_iri(&unb)), Some(unb));
+
+        // Out-of-order, touching components collapse to ONE — so the canonical
+        // encoding is the untagged single-interval form, not a two-component `iset:`.
+        let Some(merged) = IntSet::normalized(vec![
+            IntegerRange {
+                min: Some(6),
+                max: Some(10),
+            },
+            IntegerRange {
+                min: Some(0),
+                max: Some(5),
+            },
+        ]) else {
+            panic!("two non-empty components normalize");
+        };
+        assert_eq!(int_set_dkey_iri(&merged), "urn:rustdl-dkey:0:10");
+    }
+
+    /// A one-component `iset:` IRI is REJECTED. The encoder never emits one (a single
+    /// interval takes the untagged form), so accepting it would admit a second spelling
+    /// of a set that already has a canonical `ClassId` — two classes for one range,
+    /// with no edge between them.
+    #[test]
+    fn a_degenerate_one_component_iset_iri_is_rejected() {
+        assert_eq!(parse_int_set_dkey_iri("urn:rustdl-dkey:iset:0:5"), None);
+        // …and the untagged decoder must not accept it either, which is what keeps the
+        // rejection from being a silent reinterpretation.
+        assert_eq!(parse_dkey_iri("urn:rustdl-dkey:iset:0:5"), None);
+    }
+
+    /// ORDERING PIN. `data_range_dkey` runs `flatten_union_of_oneofs` BEFORE the
+    /// interval-set arm, so a union whose members are ALL enumerations still lands in
+    /// the `io:` bucket — even though the interval-set parser would happily accept it
+    /// (an integer enumeration is a set of point intervals).
+    ///
+    /// This is not cosmetic. The `io:` bucket seeds subsumption with the EXACT
+    /// `BTreeSet::is_subset`; the interval bucket uses `IntSet::subset`, a `∀∃` lift
+    /// that is an under-approximation on un-normalised operands. Reordering the two arms
+    /// would silently downgrade every enumeration union's subsumption seeding — a
+    /// completeness regression with no other symptom.
+    #[test]
+    fn an_all_enumeration_union_still_lands_in_the_enumeration_bucket() {
+        use horned_owl::model::{Build, DataRange, Literal};
+
+        let b = Build::<std::rc::Rc<str>>::new();
+        let int_lit = |v: &str| Literal::Datatype {
+            literal: v.to_string(),
+            datatype_iri: b.iri("http://www.w3.org/2001/XMLSchema#integer"),
+        };
+        let union_of_oneofs: DataRange<std::rc::Rc<str>> = DataRange::DataUnionOf(vec![
+            DataRange::DataOneOf(vec![int_lit("1")]),
+            DataRange::DataOneOf(vec![int_lit("2")]),
+        ]);
+
+        // BOTH parsers accept it — so ORDER, not matching, is what decides the bucket.
+        assert!(crate::data_axioms::parse_integer_interval_set(&union_of_oneofs).is_some());
+        assert!(flatten_union_of_oneofs(&union_of_oneofs).is_some());
+
+        let mut vocab = Vocabulary::default();
+        let mut pool = ConceptPool::default();
+        let Some((_, filler)) =
+            data_range_dkey(&union_of_oneofs, "http://ex.org/p", &mut vocab, &mut pool)
+        else {
+            panic!("an all-enumeration union must lower");
+        };
+        let ConceptExpr::Atomic(cid) = pool.get(filler) else {
+            panic!("the filler is the DKey class")
+        };
+        let iri = vocab.class_iri(*cid);
+        assert!(
+            parse_int_oneof_iri(iri).is_some(),
+            "expected the exact `io:` enumeration bucket, got {iri:?} — the interval-set \
+             arm must stay AFTER `flatten_union_of_oneofs`"
+        );
     }
 
     #[test]

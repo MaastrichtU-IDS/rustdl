@@ -171,6 +171,7 @@ Fixture (`ObjectPropertyDomain(r, P ⊓ Q)` + `X ⊑ ∃r.B`; `X ⊑ P` and `X �
 | Konclude v0.7.0-1138 | `X ⊑ P`, `X ⊑ Q` (1,880 bytes — not the 896-byte failure stub) |
 | HermiT 1.4.3 | `X ⊑ P`, `X ⊑ Q` |
 | rustdl `subclass X P` | **`yes`** |
+| Kobayashi-MaRust (Sequoia-CB, `c6ced84`) | `X ⊑ P`, `X ⊑ Q`, `dropped: 0` |
 
 The D10 shape exactly: the gate certifies the fragment complete, the engine drops the axiom, and
 the answer is reported with `incomplete: false`. `dropped` is empty, so it is a SILENT miss, not
@@ -185,8 +186,16 @@ classes. Dropping the conjunctive domain leaves `X` with **no** EL subsumer, so 
 same tier as `P` and `Q` and is never compared against them.
 
 **The discriminating control is the atomic filler.** `ObjectPropertyDomain(r, :P)` derives
-`X ⊑ P` correctly at the default. So the cause is the conjunctive filler, not the domain
-mechanism, and not the fixture's shape in general.
+`X ⊑ P` correctly at the default — in rustdl and in all three peers. So the cause is the
+conjunctive filler, not the domain mechanism, and not the fixture's shape in general.
+
+**KM is worth more than a third vote.** It is a one-pass consequence-based read-off with **no
+tier walk**, so the pruning that loses the pair here — group by EL/told subsumer count, never
+compare same-tier — has no analogue in that architecture and the answer falls out of the
+saturation directly. Together with rustdl's own `subclass` proving the pair, that is good
+evidence the defect is in this orchestration rather than intrinsic to the shape. Both engines
+also report `dropped: 0`, so the axiom is represented in both; the gap is entirely in which
+pairs get compared.
 
 **What this does and does not say about `RUSTDL_CLASSIFY_SAME_TIER`.** That flag ships OFF partly
 because it is *corpus-invisible* — "the pattern occurs only in the `sp11sub` synthetic". This is a

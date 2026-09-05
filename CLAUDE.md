@@ -1771,8 +1771,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `X ⊑ P` and `X ⊑ Q`. **`classify --json` returns `direct_subsumptions: []` with
   `incomplete: false` and `dropped: {}`** under `# mode: hybrid` /
   `# fragment: Horn (trust_sat sound by construction; hyper Horn fixpoint is complete)`, while
-  **Konclude AND HermiT both derive both pairs** and rustdl's own `subclass X P` answers `yes`.
-  Silent miss, gate certifying complete — the D10 shape.
+  **Konclude, HermiT AND Kobayashi-MaRust all derive both pairs** and rustdl's own `subclass X P`
+  answers `yes`. Silent miss, gate certifying complete — the D10 shape. **KM is the informative
+  peer**: a one-pass CB read-off with NO tier walk, so the same-tier pruning that loses the pair
+  here has no analogue there and the answer falls out of the saturation; both engines report
+  `dropped: 0`, so the gap is entirely in which pairs get COMPARED, not in what is represented.
   **NOT the calculus, and no subsumption-path flag recovers it** (`TRUST_SAT=0`,
   `RUSTDL_HYPERTABLEAU=0`, `CLASSIFY_VERIFY_REFUTATIONS=1`, `DOMAIN_ABSORPTION=0` all return zero
   rows) — **`RUSTDL_CLASSIFY_SAME_TIER=1` recovers both.** It is the documented tier-walk

@@ -44,3 +44,6 @@ ontologies/external/
 
 protege/src/main/resources/native/
 protege/target/
+
+# personal, machine-local Claude Code permissions (never shared)
+.claude/settings.local.json

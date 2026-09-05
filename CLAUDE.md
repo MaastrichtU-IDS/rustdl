@@ -1678,7 +1678,7 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     integer interval set can express — bare DATATYPES (`xsd:decimal`), `DataComplementOf`,
     other-datatype enumerations — which drop WHOLE and VISIBLY (`dropped` is non-empty),
     never narrowed; interval unions over the five DENSE datatypes (see the discreteness
-    note above); and `DataIntersectionOf` in these positions.
+    note above).
 
   - **Qualified data CARDINALITY over a union — CLOSED 2026-09-06 (#42).** The list above
     said it "takes a different path", which was true and is now fixed: the three
@@ -1727,6 +1727,22 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     and points at the binary rather than the code. **When two runs of "the same" source
     disagree, print what the code DID before theorising about why.** The build-to-build
     discrepancy itself is UNEXPLAINED and recorded as such rather than given a cause.
+  - **`DataIntersectionOf` IS NOT DROPPED — this list said it was, and that was stale
+    (re-measured 2026-09-06).** `∀p.(≥1 ⊓ ≤10)` with `∃p.{50}` reports `A` **unsatisfiable**
+    with `dropped` EMPTY, i.e. the axiom converts and is reasoned about. Three-way
+    agreement — rustdl, `HermiT` and Konclude all call it unsat — and the discriminating
+    negative control (value 5, INSIDE the intersection) is satisfiable in all three, so the
+    positive is not vacuous.
+  - **THE RESIDUALS WERE AUDITED FOR SILENT DROPS, WHICH IS THE PART THAT MATTERS
+    (2026-09-06).** A residual that drops VISIBLY is a sound under-approximation a caller
+    can see; one that drops SILENTLY (`dropped: {}` AND `incomplete: false` AND a wrong
+    answer) is the D10 shape. Four were probed — dense-datatype interval union, union
+    carrying a `DataComplementOf`, `DataIntersectionOf`, and qualified cardinality over a
+    union — and all behaved as documented: every genuine drop sets `dropped`, and the two
+    that do NOT set it turned out not to drop at all (`DataIntersectionOf` already worked;
+    qualified cardinality over a union was then FIXED outright — see the entry below, which
+    supersedes its line in the list above). **No silent miss was found hiding inside a
+    deliberate one.**
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

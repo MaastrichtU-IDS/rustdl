@@ -769,12 +769,77 @@ pub(crate) fn bucket_to_dkey_iri(b: RangeBucket) -> String {
 /// subsumption (and, for ∀, the `DisjointClasses` seeding). Returns `None`
 /// for any range the datatype machinery doesn't recognize, so the caller
 /// emits `UnsupportedDataRange` and the whole axiom drops (sound).
+/// Flatten `DataUnionOf` whose members are ALL enumerations into one `DataOneOf`
+/// (#42 item 1).
+///
+/// `DataOneOf(a) ⊔ DataOneOf(b)` **is** `DataOneOf(a, b)` — a logical identity, so
+/// this is sound and completeness-preserving by construction rather than by
+/// measurement. It matters because a union in a UNIVERSAL, range or counting
+/// position cannot be split into a class-level disjunction the way
+/// `DataSomeValuesFrom(p, DataUnionOf(…))` already is, so before this the whole
+/// axiom was dropped: `∀p.({1} ⊔ {2})` with `∃p.{5}` reported `A` satisfiable where
+/// Konclude and `HermiT` report it unsatisfiable.
+///
+/// **Enumerations only, deliberately.** A union of INTERVALS (`[0,5] ⊔ [10,15]`) is
+/// not a single interval and would need an interval-set representation none of the
+/// range types have; those still drop, which is sound. Any non-enumeration member
+/// makes the whole thing return `None` rather than flattening part of it — a
+/// partial flatten would be a strictly WEAKER range in a `∀` position, which is
+/// unsound in the sufficient direction (the same all-or-drop discipline D9
+/// established for a `DataOneOf` with one non-string member).
+///
+/// **Datatype consistency needs no check here.** The flattened `DataOneOf` goes
+/// back through the same per-datatype `parse_*_oneof` chain, and those are already
+/// all-or-nothing per bucket, so a mixed-datatype union fails to parse and drops
+/// exactly as it does today. Adding a check here would duplicate that and risk
+/// drifting from it.
+///
+/// An EMPTY union is left alone: `∅` in a `∀` position says the property has no
+/// values, which is not what the existing `∃p.∅ = ⊥` handling means, and conflating
+/// them would be a semantics change rather than a normalisation.
+fn flatten_union_of_oneofs<A: ForIRI>(dr: &DataRange<A>) -> Option<DataRange<A>> {
+    fn collect<A: ForIRI>(dr: &DataRange<A>, out: &mut Vec<Literal<A>>) -> bool {
+        match dr {
+            DataRange::DataOneOf(ls) => {
+                out.extend(ls.iter().cloned());
+                true
+            }
+            // Nested unions flatten too; `⊔` is associative.
+            DataRange::DataUnionOf(ms) => ms.iter().all(|m| collect(m, out)),
+            _ => false,
+        }
+    }
+    let DataRange::DataUnionOf(members) = dr else {
+        return None;
+    };
+    if members.is_empty() {
+        return None;
+    }
+    let mut lits = Vec::new();
+    for m in members {
+        if !collect(m, &mut lits) {
+            return None;
+        }
+    }
+    if lits.is_empty() {
+        return None;
+    }
+    Some(DataRange::DataOneOf(lits))
+}
+
 fn data_range_dkey<A: ForIRI>(
     dr: &DataRange<A>,
     dp_iri: &str,
     vocab: &mut Vocabulary,
     pool: &mut ConceptPool,
 ) -> Option<(Role, ConceptId)> {
+    // A union of enumerations is one enumeration (#42 item 1). Done before the
+    // parser chain so every existing per-datatype arm applies unchanged. The
+    // flattened form is a `DataOneOf`, never a `DataUnionOf`, so this recurses at
+    // most once.
+    if let Some(flat) = flatten_union_of_oneofs(dr) {
+        return data_range_dkey(&flat, dp_iri, vocab, pool);
+    }
     let iri = if let Some(r) = crate::data_axioms::parse_integer_range(dr) {
         dkey_iri(r)
     } else if let Some(r) = crate::data_axioms::parse_xsd_float_range(dr) {

@@ -2,7 +2,7 @@
 # Range(s,F). The t∘u∘v path is an s-edge, so its endpoint is an F, so
 # C ⊑ ∃t.∃u.∃v.F ⊑ D.
 #
-# THIS IS THE DOCUMENTED RESIDUAL OF THE #84 FIX, and it is why this fixture
+# THIS IS THE DOCUMENTED RESIDUAL OF THE #84 FIX (tracked as #108), and it is why this fixture
 # exists. That fix keys `chain_ranges` on the pairs a chain axiom DECLARES —
 # it sees (t,u) and (r,v) — so it never forms the composed (t,u,v) ⊑ s and
 # the range never reaches the innermost witness. Closing this needs a

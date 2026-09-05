@@ -1804,10 +1804,12 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 >
 > Replacement detection, per the guard's own instruction: **`chaincompose.ofn`** — `t∘u ⊑ r`,
 > `r∘v ⊑ s`, `Range(s,F)`, a chain COMPOSED FROM TWO CHAINS. `HermiT` derives `C ⊑ D`; rustdl
-> reports only `F ⊑ G`, silently. **This is the documented residual of the #84 fix itself**:
+> reports only `F ⊑ G`, silently — **tracked as #108**. **This is the documented residual of the #84 fix itself**:
 > `chain_ranges` keys on DECLARED pairs, so it sees `(t,u)` and `(r,v)` but never forms the
 > composed `(t,u,v) ⊑ s`. Closing it needs a transitive closure over chain composition — a
-> strictly larger change. Its oracle also records that `build_model` still REFUSES the shape
+> strictly larger change, and #108 records the constraint that makes the naive fix wrong:
+> folding into `effective_ranges[v]` is UNSOUND, since a bare `v`-successor with no
+> `r`-predecessor is not an `s`-successor. Its oracle also records that `build_model` still REFUSES the shape
 > (`ChainRangeOutOfProfile`), so the fixture guards `classification_matches_oracle`, not the
 > checker.
 >

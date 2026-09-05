@@ -1596,10 +1596,19 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   | I/O or parse error (`ore_ont_10860`, the SWRL grammar gap) | 1 | 1 |
   **What this does and does not license.** It makes `verify-el` usable UNATTENDED as a D10
   hunter, which is the point — the reactive loop that produced most of this file's recent fixes
-  becomes systematic. It does NOT mean no engine defects exist: coverage is **19%** (the pure-EL
-  fragment restriction, not defect density, is the binding constraint), 196 ontologies are
-  UNMEASURED rather than passing, and F1/F3 are still live builder false-positive mechanisms — so
-  a future `Violated` remains a LEAD requiring adjudication, not a proof.
+  becomes systematic. It does NOT mean no engine defects exist: coverage is **21%**, **124**
+  ontologies are UNMEASURED rather than passing, and F1/F3 are still live builder false-positive
+  mechanisms — so a future `Violated` remains a LEAD requiring adjudication, not a proof.
+  **RAISING THE CAP IS A MEASURED-OUT LEVER (2026-09-05).** All 196 of the 60 s timeouts re-run
+  at **300 s**: 41 → verified, 31 → unresolved, **124 still time out, 0 violated**. So 5× the
+  compute converts 37% of that bucket and **63% is immune** — those are genuinely hard, not
+  marginal — buying coverage **18.9% → 21.0%** and finding nothing. Do not spend more compute
+  there. **The binding constraint is the FRAGMENT: 1,392 of 1,920 (72.5%) are `unresolved`
+  (off-fragment/refused) against 124 (6.5%) lost to the cap**, so extending `verify-el` past
+  `is_pure_el` to the Horn fragment is the lever, and it is engine-side work. The retry also
+  *increased* unresolved by 31 — several slow ontologies were off-fragment all along, so part of
+  the timeout bucket was never checkable. See
+  `docs/benchmarks/2026-09-05-verify-el-cap-is-a-weak-lever.md`.
   **A trap worth carrying beyond this crate**, from F4: any oracle comparison that counts `Thing`
   rows reports spurious MISSED on any ontology asserting `⊤ ⊑ C`. This project has been bitten
   once already — 73% of an apparent ~1,795-row gap against Kobayashi-MaRust was the same

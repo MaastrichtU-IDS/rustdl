@@ -3208,17 +3208,44 @@ fn collect_el_rules_with_provenance(
         use std::collections::HashMap as SMap;
         let mut mini_rules = ElRules::default();
         let mut mini_tseitin = TseitinAllocator::new(num_classes);
-        // Pass 1 mini: just range (needed for effective_ranges).
+        // Pass 1 mini: range (needed for effective_ranges) and, since #84, the
+        // length-2 chain axioms `chain_ranges` is keyed on. Both must mirror the
+        // real Pass 1 exactly — this pass re-runs the lowering purely to
+        // ATTRIBUTE each derived rule to its axiom, so any divergence here shows
+        // up as a wrong or missing proof rather than a wrong answer.
         for ax in &internal.axioms {
-            if let Axiom::ObjectPropertyRange { role, range } = ax
-                && !role.is_inverse()
-                && let ConceptExpr::Atomic(id) = internal.concepts.get(*range)
-            {
-                mini_rules
-                    .role_ranges
-                    .entry(role.role_id())
-                    .or_default()
-                    .push(*id);
+            match ax {
+                Axiom::ObjectPropertyRange { role, range }
+                    if !role.is_inverse()
+                        && matches!(internal.concepts.get(*range), ConceptExpr::Atomic(_)) =>
+                {
+                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
+                        mini_rules
+                            .role_ranges
+                            .entry(role.role_id())
+                            .or_default()
+                            .push(*id);
+                    }
+                }
+                Axiom::SubObjectPropertyOf {
+                    sub: SubRolePath::Chain(parts),
+                    sup,
+                } if parts.len() == 2
+                    && !parts[0].is_inverse()
+                    && !parts[1].is_inverse()
+                    && !sup.is_inverse() =>
+                {
+                    mini_rules.chain_axioms.push((
+                        parts[0].role_id(),
+                        parts[1].role_id(),
+                        sup.role_id(),
+                    ));
+                }
+                Axiom::TransitiveRole(role) if !role.is_inverse() => {
+                    let r = role.role_id();
+                    mini_rules.chain_axioms.push((r, r, r));
+                }
+                _ => {}
             }
         }
         let mut mini_effective: SMap<RoleId, Vec<ClassId>> = SMap::new();
@@ -3233,6 +3260,16 @@ fn collect_el_rules_with_provenance(
                 mini_effective.insert(r, union);
             }
         }
+        let mut mini_chain_ranges: SMap<(RoleId, RoleId), Vec<ClassId>> = SMap::new();
+        for &(r1, r2, sup) in &mini_rules.chain_axioms {
+            if let Some(rs) = mini_effective.get(&sup) {
+                let e: &mut Vec<ClassId> = mini_chain_ranges.entry((r1, r2)).or_default();
+                e.extend_from_slice(rs);
+                e.sort_unstable_by_key(|c| c.index());
+                e.dedup();
+            }
+        }
+        let mini_chain_ranges = &mini_chain_ranges;
         for (ax_idx, ax) in internal.axioms.iter().enumerate() {
             match ax {
                 Axiom::SubClassOf { sub, sup } => {
@@ -3249,6 +3286,7 @@ fn collect_el_rules_with_provenance(
                         &mut mini_rules,
                         &mut mini_tseitin,
                         &mini_effective,
+                        mini_chain_ranges,
                     );
                     let a_a = mini_rules.atomic_subsumptions.len();
                     let a_c = mini_rules.conjunctive_triggers.len();
@@ -3288,6 +3326,7 @@ fn collect_el_rules_with_provenance(
                                     &mut mini_rules,
                                     &mut mini_tseitin,
                                     &mini_effective,
+                                    mini_chain_ranges,
                                 );
                                 let a_a = mini_rules.atomic_subsumptions.len();
                                 let a_c = mini_rules.conjunctive_triggers.len();
@@ -3482,6 +3521,25 @@ fn collect_el_rules(
             effective_ranges.insert(r, union);
         }
     }
+    // Issue #84: `chain_ranges[(a, b)]` = the effective ranges of every `sup`
+    // declared as `a ∘ b ⊑ sup`. Consumed by `nested_extras`, which folds them
+    // into the filler of a nested `∃a.∃b.X` — the one place the composed edge is
+    // known to exist. Putting them in `effective_ranges[b]` instead would be
+    // UNSOUND (a bare `b`-successor with no `a`-predecessor is not a
+    // `sup`-successor), which is why this is a separate, pair-keyed table.
+    //
+    // Values come from `effective_ranges[sup]`, already closed over `sup`'s own
+    // super-roles, so a range declared further up the hierarchy is picked up.
+    let mut chain_ranges: HashMap<(RoleId, RoleId), Vec<ClassId>> = HashMap::new();
+    for &(r1, r2, sup) in &rules.chain_axioms {
+        if let Some(rs) = effective_ranges.get(&sup) {
+            let e: &mut Vec<ClassId> = chain_ranges.entry((r1, r2)).or_default();
+            e.extend_from_slice(rs);
+            e.sort_unstable_by_key(|c| c.index());
+            e.dedup();
+        }
+    }
+    let chain_ranges = &chain_ranges;
     // Pass 2: lower SubClassOf / EquivalentClasses with effective_ranges
     // available so RHS existential bodies can be Tseitin-folded with
     // their role's range constraint.
@@ -3495,6 +3553,7 @@ fn collect_el_rules(
                     &mut rules,
                     &mut tseitin,
                     &effective_ranges,
+                    chain_ranges,
                 );
             }
             Axiom::EquivalentClasses(members) => {
@@ -3514,6 +3573,7 @@ fn collect_el_rules(
                                 &mut rules,
                                 &mut tseitin,
                                 &effective_ranges,
+                                chain_ranges,
                             );
                         }
                     }
@@ -3781,6 +3841,7 @@ fn lower_sub_class_of(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
 ) {
     // SP-B1: register an atomic disjunction `C ⊑ D₁⊔…⊔Dₙ` (all `Dᵢ` atomic, n≥2)
     // for the derived-closure forced-disjunct rule fired in `process_subsumer`.
@@ -3911,7 +3972,7 @@ fn lower_sub_class_of(
             // synthetic atomic if the body is a compound And, OR if
             // r has a range constraint that needs to be folded in.
             if let Some((role, target)) =
-                atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges)
+                atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges, chain_ranges)
             {
                 rules.existential_facts.push(ExistentialFact {
                     sub: *sub_id,
@@ -3923,9 +3984,14 @@ fn lower_sub_class_of(
             // operand of a top-level And on the right.
             if let ConceptExpr::And(operands) = pool.get(sup) {
                 for op in operands {
-                    if let Some((role, target)) =
-                        atomic_existential_rhs(*op, pool, rules, tseitin, effective_ranges)
-                    {
+                    if let Some((role, target)) = atomic_existential_rhs(
+                        *op,
+                        pool,
+                        rules,
+                        tseitin,
+                        effective_ranges,
+                        chain_ranges,
+                    ) {
                         rules.existential_facts.push(ExistentialFact {
                             sub: *sub_id,
                             role,
@@ -3957,6 +4023,7 @@ fn lower_sub_class_of(
                             rules,
                             tseitin,
                             effective_ranges,
+                            chain_ranges,
                         ) else {
                             salvageable = false;
                             break;
@@ -4064,15 +4131,27 @@ fn lower_sub_class_of(
             // apart again, and picks up the `≥n R.C` (n ≥ 1) head, the nominal
             // body and the `∃R.⊤` filler that arm already handles.
             let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
-                ConceptExpr::Some(_, _) | ConceptExpr::Min(_, _, _) => {
-                    atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges)
-                        .map(|pair| vec![pair])
-                        .unwrap_or_default()
-                }
+                ConceptExpr::Some(_, _) | ConceptExpr::Min(_, _, _) => atomic_existential_rhs(
+                    sup,
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                    chain_ranges,
+                )
+                .map(|pair| vec![pair])
+                .unwrap_or_default(),
                 ConceptExpr::And(operands) => operands
                     .iter()
                     .filter_map(|&op| {
-                        atomic_existential_rhs(op, pool, rules, tseitin, effective_ranges)
+                        atomic_existential_rhs(
+                            op,
+                            pool,
+                            rules,
+                            tseitin,
+                            effective_ranges,
+                            chain_ranges,
+                        )
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -4149,9 +4228,14 @@ fn lower_sub_class_of(
             // only C's that genuinely derive `∃r.A` (entailed by the KB) gain M and are
             // marked unsat; A itself and classes with unrelated existentials are unaffected.
             if matches!(pool.get(sup), ConceptExpr::Bot) {
-                let Some(body_ids) =
-                    existential_body_alternatives(*body, pool, rules, tseitin, effective_ranges)
-                else {
+                let Some(body_ids) = existential_body_alternatives(
+                    *body,
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                    chain_ranges,
+                ) else {
                     return;
                 };
                 for body_id in body_ids {
@@ -4161,9 +4245,14 @@ fn lower_sub_class_of(
                 }
                 return;
             }
-            let Some(body_ids) =
-                existential_body_alternatives(*body, pool, rules, tseitin, effective_ranges)
-            else {
+            let Some(body_ids) = existential_body_alternatives(
+                *body,
+                pool,
+                rules,
+                tseitin,
+                effective_ranges,
+                chain_ranges,
+            ) else {
                 return;
             };
             for head in atomic_operands_on_right(sup, pool) {
@@ -4190,16 +4279,30 @@ fn lower_sub_class_of(
             // entailed `∃r.B ⊑ ∃s.D` (negative control test guards over-firing).
             let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
                 ConceptExpr::Some(s_role, s_body) if !s_role.is_inverse() => {
-                    atomic_or_tseitin_body(*s_body, pool, rules, tseitin, effective_ranges)
-                        .map(|b| vec![(s_role.role_id(), b)])
-                        .unwrap_or_default()
+                    atomic_or_tseitin_body(
+                        *s_body,
+                        pool,
+                        rules,
+                        tseitin,
+                        effective_ranges,
+                        chain_ranges,
+                    )
+                    .map(|b| vec![(s_role.role_id(), b)])
+                    .unwrap_or_default()
                 }
                 ConceptExpr::And(operands) => operands
                     .iter()
                     .filter_map(|&op| match pool.get(op) {
                         ConceptExpr::Some(s_role, s_body) if !s_role.is_inverse() => {
-                            atomic_or_tseitin_body(*s_body, pool, rules, tseitin, effective_ranges)
-                                .map(|b| (s_role.role_id(), b))
+                            atomic_or_tseitin_body(
+                                *s_body,
+                                pool,
+                                rules,
+                                tseitin,
+                                effective_ranges,
+                                chain_ranges,
+                            )
+                            .map(|b| (s_role.role_id(), b))
                         }
                         _ => None,
                     })
@@ -4258,6 +4361,7 @@ fn atomic_existential_rhs(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
 ) -> Option<(RoleId, ClassId)> {
     // Accept both `∃R.body` (Some) and `≥n R.body` (Min with n ≥ 1).
     // Min(n, R, C) implies ∃R.C for n ≥ 1, so lowering Min as Some is
@@ -4297,9 +4401,60 @@ fn atomic_existential_rhs(
     let extras = effective_ranges
         .get(&role.role_id())
         .map_or(&[][..], Vec::as_slice);
-    let body_id =
-        atomic_or_tseitin_body_with_extras(*body, extras, pool, rules, tseitin, effective_ranges)?;
+    let body_id = atomic_or_tseitin_body_with_extras(
+        *body,
+        extras,
+        pool,
+        rules,
+        tseitin,
+        effective_ranges,
+        chain_ranges,
+        // This body hangs off a `role` edge, so a nested existential inside
+        // it can compose with `role` (issue #84).
+        Some(role.role_id()),
+    )?;
     Some((role.role_id(), body_id))
+}
+
+/// Extras for the filler of an `inner`-edge that hangs off an `outer`-edge:
+/// `Range(inner)` plus, when `outer ∘ inner ⊑ sup` is a declared chain,
+/// `Range(sup)` (issue #84).
+///
+/// **Why the chain range belongs HERE and not in `effective_ranges[inner]`.**
+/// The issue's own analysis rules the latter out as unsound, and it is right: a
+/// bare `inner`-successor with no `outer`-predecessor is not a `sup`-successor
+/// and must not inherit `Range(sup)`. But at THIS site the `outer` step is
+/// present by construction — we are lowering `∃outer.∃inner.X` — so the
+/// composed edge really does exist:
+///
+/// ```text
+/// outer(x,y), inner(y,z), outer ∘ inner ⊑ sup  ⟹  sup(x,z)  ⟹  z ∈ Range(sup)
+/// ```
+///
+/// So `∃outer.∃inner.X` and `∃outer.∃inner.(X ⊓ Range(sup))` denote the SAME
+/// class, exactly as `∃R.B` and `∃R.(B ⊓ Range(R))` do for the plain case in
+/// [`range_extras`] — this is a logical identity, hence sound and
+/// completeness-preserving by construction, and a differing closure would be a
+/// bug rather than a trade-off.
+///
+/// `chain_ranges` is keyed on the ORDERED pair, and its values come from
+/// `effective_ranges[sup]` rather than `role_ranges[sup]`, so a range declared
+/// on a SUPER-role of the chain head is picked up too.
+fn nested_extras(
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
+    outer: Option<RoleId>,
+    inner: RoleId,
+) -> Vec<ClassId> {
+    let mut out = range_extras(effective_ranges, inner).to_vec();
+    if let Some(o) = outer
+        && let Some(extra) = chain_ranges.get(&(o, inner))
+    {
+        out.extend_from_slice(extra);
+    }
+    out.sort_unstable_by_key(|c| c.index());
+    out.dedup();
+    out
 }
 
 /// `effective_ranges[r]`, or an empty slice for a role with no range.
@@ -4324,8 +4479,18 @@ fn atomic_or_tseitin_body(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
 ) -> Option<ClassId> {
-    atomic_or_tseitin_body_with_extras(body, &[], pool, rules, tseitin, effective_ranges)
+    atomic_or_tseitin_body_with_extras(
+        body,
+        &[],
+        pool,
+        rules,
+        tseitin,
+        effective_ranges,
+        chain_ranges,
+        None,
+    )
 }
 
 /// Populate [`ElRules::abox_nominal_reach`]: for each **transitive**
@@ -4427,19 +4592,26 @@ fn existential_body_alternatives(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
 ) -> Option<Vec<ClassId>> {
     match pool.get(body) {
         ConceptExpr::Or(operands) => {
             let mut out = Vec::with_capacity(operands.len());
             for &op in operands {
-                let id = atomic_or_tseitin_body(op, pool, rules, tseitin, effective_ranges)?;
+                let id = atomic_or_tseitin_body(
+                    op,
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                    chain_ranges,
+                )?;
                 out.push(id);
             }
             Some(out)
         }
-        _ => {
-            atomic_or_tseitin_body(body, pool, rules, tseitin, effective_ranges).map(|id| vec![id])
-        }
+        _ => atomic_or_tseitin_body(body, pool, rules, tseitin, effective_ranges, chain_ranges)
+            .map(|id| vec![id]),
     }
 }
 
@@ -4474,6 +4646,7 @@ fn concept_is_provably_bot(c: ConceptId, pool: &ConceptPool) -> bool {
 /// extras…` even if `body` is itself atomic. Used at RHS existential
 /// sites to fold in `Range(R)` constraints, so the witness of an
 /// R-existential is correctly typed.
+#[allow(clippy::too_many_arguments)]
 fn atomic_or_tseitin_body_with_extras(
     body: ConceptId,
     extras: &[ClassId],
@@ -4481,6 +4654,13 @@ fn atomic_or_tseitin_body_with_extras(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    // Issue #84. `chain_ranges[(a, b)]` = the effective ranges of every `sup`
+    // with `a ∘ b ⊑ sup`; `outer_role` is the role of the edge THIS body hangs
+    // off, so a nested `∃inner.X` here can key the pair `(outer_role, inner)`
+    // and fold `Range(sup)` into `X`. `None` means "not under an edge", where no
+    // chain can apply. See [`nested_extras`].
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
+    outer_role: Option<RoleId>,
 ) -> Option<ClassId> {
     // `RUSTDL_EL_BOT_FILLER` (default ON, `=0` opts out): a filler that provably denotes `⊥`
     // lowers to the opaque, seeded-unsat bot key instead of returning `None` and
@@ -4507,6 +4687,8 @@ fn atomic_or_tseitin_body_with_extras(
             rules,
             tseitin,
             effective_ranges,
+            chain_ranges,
+            outer_role,
         )?,
         ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
             // Top-level nested existential as the outer body: `∃R.∃S.X`.
@@ -4526,11 +4708,13 @@ fn atomic_or_tseitin_body_with_extras(
             // an `And` — has always used the equivalent flavour here.
             let inner_id = atomic_or_tseitin_body_with_extras(
                 *inner_body,
-                range_extras(effective_ranges, role.role_id()),
+                &nested_extras(effective_ranges, chain_ranges, outer_role, role.role_id()),
                 pool,
                 rules,
                 tseitin,
                 effective_ranges,
+                chain_ranges,
+                Some(role.role_id()),
             )?;
             let marker =
                 tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
@@ -4549,11 +4733,13 @@ fn atomic_or_tseitin_body_with_extras(
             // uses the equivalent flavour here.
             let inner_id = atomic_or_tseitin_body_with_extras(
                 *inner_body,
-                range_extras(effective_ranges, role.role_id()),
+                &nested_extras(effective_ranges, chain_ranges, outer_role, role.role_id()),
                 pool,
                 rules,
                 tseitin,
                 effective_ranges,
+                chain_ranges,
+                Some(role.role_id()),
             )?;
             let marker =
                 tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
@@ -4585,6 +4771,8 @@ fn atomic_classes_with_existential_markers(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
+    outer_role: Option<RoleId>,
 ) -> Option<Vec<ClassId>> {
     let mut out = Vec::with_capacity(ids.len());
     for &c in ids {
@@ -4593,11 +4781,13 @@ fn atomic_classes_with_existential_markers(
             ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
                 let inner_id = atomic_or_tseitin_body_with_extras(
                     *inner_body,
-                    range_extras(effective_ranges, role.role_id()),
+                    &nested_extras(effective_ranges, chain_ranges, outer_role, role.role_id()),
                     pool,
                     rules,
                     tseitin,
                     effective_ranges,
+                    chain_ranges,
+                    Some(role.role_id()),
                 )?;
                 let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),
@@ -4609,11 +4799,13 @@ fn atomic_classes_with_existential_markers(
             ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
                 let inner_id = atomic_or_tseitin_body_with_extras(
                     *inner_body,
-                    range_extras(effective_ranges, role.role_id()),
+                    &nested_extras(effective_ranges, chain_ranges, outer_role, role.role_id()),
                     pool,
                     rules,
                     tseitin,
                     effective_ranges,
+                    chain_ranges,
+                    Some(role.role_id()),
                 )?;
                 let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),

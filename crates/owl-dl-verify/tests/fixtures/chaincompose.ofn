@@ -1,0 +1,12 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/c2>
+Declaration(Class(:A)) Declaration(Class(:F)) Declaration(Class(:G)) Declaration(Class(:C)) Declaration(Class(:D))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u)) Declaration(ObjectProperty(:v))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+SubObjectPropertyOf(ObjectPropertyChain(:t :u) :r)
+SubObjectPropertyOf(ObjectPropertyChain(:r :v) :s)
+ObjectPropertyRange(:s :F)
+SubClassOf(:F :G)
+SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u ObjectSomeValuesFrom(:v :A))))
+SubClassOf(ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u ObjectSomeValuesFrom(:v :F))) :D)
+)

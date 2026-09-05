@@ -6,6 +6,51 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.28] — 2026-09-05
+
+Three fixes, all in the completeness/verification direction, and every one of them changes
+output on a shape where rustdl previously answered **silently** and wrongly — `dropped`
+empty, `incomplete: false`, the entailment simply never derivable. Full notes:
+`docs/releases/v0.4.28.md`.
+
+### Fixed — `DataUnionOf` in a `∀`/range position was dropped whole (#42 item 1, `3914b1a` + PR #106)
+
+`DataSomeValuesFrom(p, DataUnionOf(…))` always worked (it lowers to a class-level
+disjunction), but a union in a **universal**, range or counting position cannot be split
+that way, so the parser chain matched nothing and the whole axiom dropped.
+`∃p.{5} ⊓ ∀p.({1} ⊔ {2})` and `∃p.{7} ⊓ ∀p.([0,5] ⊔ [10,15])` both reported satisfiable
+where Konclude derives unsatisfiable.
+
+Enumerations flatten by a **logical identity** (`DataOneOf(a) ⊔ DataOneOf(b)` *is*
+`DataOneOf(a,b)`). Intervals have no such single-range form, so the integer `DKey` bucket
+now holds an `IntSet`; every operation is a quantified lift of the scalar one and a
+one-component set encodes to the historical untagged IRI byte-identically, so pre-existing
+keys are unaffected. **Mixed enumeration/interval unions become exact for free** — on a
+discrete space `{v}` *is* `[v,v]`.
+
+Integer discreteness is load-bearing: touching components merge only because integers have
+a successor, so this does **not** transfer to `xsd:float` / `decimal` / `date` /
+`dateTime`, which still drop. So do unions carrying any member no integer interval set can
+express — those drop **whole and visibly** (`dropped` non-empty), never narrowed.
+
+### Fixed — a role chain's range must reach the end of the chain (#84, PR #104)
+
+`Chain(t,u) ⊑ r` + `Range(r,F)` + `C ⊑ ∃t.∃u.A` + `∃t.∃u.F ⊑ D` entails `C ⊑ D`, and
+`classify` reported only `F ⊑ G` with `incomplete: false`. Konclude misses it too; HermiT
+confirms it. Fixed as a fold keyed on the ordered **role pair** (`chain_ranges[(a,b)]`),
+consumed only where the composed edge provably exists — folding into `effective_ranges[u]`
+would be unsound. **Known residual:** a chain composed from two chains (`t∘u ⊑ r`,
+`r∘v ⊑ s`) never forms the composed key; pinned as the fixture `chaincompose.ofn`.
+
+### Fixed — the Protégé proof view verified nothing (#56, PR #105)
+
+The justification surface verified every displayed axiom against the source ontology
+(fail-hard); the proof surface handed cited axioms straight to the view, unguarded — two
+surfaces making the same anti-fabrication promise, one of them unchecked. Only `axioms[]`
+is verifiable (a node's conclusion and intermediate premises are **derived**; verifying
+those rejects every proof), and `justification_fallback` carries literal axioms too, so it
+is verified wholesale. Both surfaces now share one implementation of the check.
+
 ## [0.4.27] — 2026-09-05
 
 One engine fix, two fixes to the self-verification instrument, and a packaging fix. The

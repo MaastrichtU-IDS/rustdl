@@ -1641,6 +1641,49 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   paths can label one logical nested-existential witness differently and get deduped into two
   separate elements — not shown unsound, but untested against a future concept-level check).
 
+> **CHAIN-INDUCED RANGE FOLDING (2026-09-05, #84, unflagged) — THE SIBLING OF #81, KEYED ON A
+> ROLE PAIR.** `Chain(t,u) ⊑ r` + `Range(r,F)` + `C ⊑ ∃t.∃u.A` + `∃t.∃u.F ⊑ D` entails `C ⊑ D`,
+> and `classify` reported only `F ⊑ G` with **`incomplete: false`** — the D10 shape. `HermiT`
+> confirms; **Konclude misses it too**, which is why the adjudication went to `HermiT`.
+>
+> **The issue predicted this needed "a chain-aware derivation rule, not an extras fold at
+> lowering time". That was half right.** It IS a fold — but keyed on the ORDERED ROLE PAIR
+> rather than a single role. New `chain_ranges[(a,b)]` = `effective_ranges[sup]` for every
+> declared `a ∘ b ⊑ sup`, consumed by `nested_extras` at the one site where the composed edge
+> provably exists, namely lowering `∃a.∃b.X`: `a(x,y) ∧ b(y,z) ∧ a∘b ⊑ sup ⟹ sup(x,z)`. So
+> `∃a.∃b.X` and `∃a.∃b.(X ⊓ Range(sup))` are the SAME class — a logical identity, sound and
+> completeness-preserving by construction, exactly as #81's `∃R.B ≡ ∃R.(B ⊓ Range(R))`.
+> **The issue's soundness warning is respected precisely**: folding into `effective_ranges[u]`
+> would be unsound (a bare `u`-successor with no `t`-predecessor is not a `sup`-successor), and
+> the pair key is what avoids it.
+>
+> **A SABOTAGE SURVIVED, AND IT WAS THE UNSOUND VARIANT.** The FP guard used a **top-level**
+> `∃u.A`, which `atomic_existential_rhs` handles WITHOUT calling `nested_extras` — so it guarded
+> the implementation the issue warns about and was structurally blind to an over-broad fold in
+> the code actually written. Making the lookup match any pair whose SECOND leg is `u` left it
+> green. Closed by `a_nested_pair_whose_outer_role_is_not_the_chain_head_does_not_fire`, which
+> drives that path. **Both are kept — they cover different implementations of the same
+> mistake.** Sabotage: 4 run, 3 caught first pass, 1 survived and was closed.
+>
+> **THE VACUITY GUARD FIRED, CORRECTLY, AND THE FIRST READING OF IT WAS WRONG.**
+> `the_detection_set_has_not_silently_gone_vacuous` failed. That reads as "the fix closed every
+> gap in the acceptance set"; a per-fixture diff against a pinned pre-fix binary showed the
+> truth — **exactly ONE of ten fixtures changed** (`chainrange`, the target), and it was simply
+> the LAST remaining detection. The fix is surgical, not sweeping. **Diff the fixtures before
+> believing a vacuity failure's implied scope.**
+>
+> Replacement detection, per the guard's own instruction: **`chaincompose.ofn`** — `t∘u ⊑ r`,
+> `r∘v ⊑ s`, `Range(s,F)`, a chain COMPOSED FROM TWO CHAINS. `HermiT` derives `C ⊑ D`; rustdl
+> reports only `F ⊑ G`, silently. **This is the documented residual of the #84 fix itself**:
+> `chain_ranges` keys on DECLARED pairs, so it sees `(t,u)` and `(r,v)` but never forms the
+> composed `(t,u,v) ⊑ s`. Closing it needs a transitive closure over chain composition — a
+> strictly larger change. Its oracle also records that `build_model` still REFUSES the shape
+> (`ChainRangeOutOfProfile`), so the fixture guards `classification_matches_oracle`, not the
+> checker.
+>
+> Canaries `crates/owl-dl-reasoner/tests/chain_induced_range.rs` (7). Gates: suite 1918/0;
+> FP=0 net 11 VERIFIED, every closure exact; clippy clean.
+
 > **RANGE FOLDING INTO NESTED EXISTENTIAL WITNESSES (2026-08-29, #81, unflagged) — AND FIVE
 > TESTS THAT WERE PINNING THE BUG.** Two lowering sites in `owl-dl-saturation` dropped a role's
 > `ObjectPropertyRange` when building an existential witness, so `cascade.ofn` returned **ZERO

@@ -197,6 +197,10 @@ fn instrument_never_verifies_a_classification_that_disagrees_with_the_oracle() {
         "cascade",
         "chainrange",
         "chainrange_ctl",
+        // Added when #84 made `chainrange` agree and emptied the detection set
+        // (this test fired, as designed). Its own oracle records why it is the
+        // right replacement: same family, still open, HermiT-confirmed.
+        "chaincompose",
         "unsatconj",
         "flat-mono",
         "label-closure-range-sub",
@@ -356,6 +360,8 @@ fn the_detection_set_has_not_silently_gone_vacuous() {
         "cascade",
         "chainrange",
         "chainrange_ctl",
+        // See the note on the same entry in the list above.
+        "chaincompose",
         "unsatconj",
         "flat-mono",
         "label-closure-range-sub",

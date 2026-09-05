@@ -1,0 +1,29 @@
+# C ⊑ D via a chain COMPOSED FROM TWO CHAINS: Chain(t,u) ⊑ r, Chain(r,v) ⊑ s,
+# Range(s,F). The t∘u∘v path is an s-edge, so its endpoint is an F, so
+# C ⊑ ∃t.∃u.∃v.F ⊑ D.
+#
+# THIS IS THE DOCUMENTED RESIDUAL OF THE #84 FIX, and it is why this fixture
+# exists. That fix keys `chain_ranges` on the pairs a chain axiom DECLARES —
+# it sees (t,u) and (r,v) — so it never forms the composed (t,u,v) ⊑ s and
+# the range never reaches the innermost witness. Closing this needs a
+# transitive closure over chain composition, which is a strictly larger
+# change than the pair-keyed fold.
+#
+# It replaces `chainrange` as the acceptance set's detection: #84 made
+# `chainrange` agree with its oracle, which emptied the detection set and
+# tripped `the_detection_set_has_not_silently_gone_vacuous` — the guard doing
+# exactly its job. rustdl currently reports only `F ⊑ G` here, with
+# `incomplete: false`, so this is a SILENT miss of the D10 shape.
+#
+# HermiT derives `C ⊑ D` (verified 2026-09-05, robot 1.9.10 + HermiT 1.4.3).
+#
+# SAME CAVEAT AS `chainrange`, stated rather than left to be discovered: this
+# crate's own `build_model` REFUSES this fixture (Err(ChainRangeOutOfProfile),
+# exit 3), so the acceptance invariant holds here trivially and this fixture
+# currently keeps the DETECTION SET non-empty without the instrument checking
+# it. That is a real limit on what it buys — it guards
+# `classification_matches_oracle` (rustdl vs the oracle), not the checker. It
+# becomes load-bearing for the checker when a Phase 2 chain/range fold lifts
+# the profile refusal.
+provenance: hermit
+subclass: C D

@@ -1803,7 +1803,9 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > believing a vacuity failure's implied scope.**
 >
 > Replacement detection, per the guard's own instruction: **`chaincompose.ofn`** — `t∘u ⊑ r`,
-> `r∘v ⊑ s`, `Range(s,F)`, a chain COMPOSED FROM TWO CHAINS. `HermiT` derives `C ⊑ D`; rustdl
+> `r∘v ⊑ s`, `Range(s,F)`, a chain COMPOSED FROM TWO CHAINS. `HermiT` derives `C ⊑ D` and
+> **Konclude does NOT** (measured 2026-09-05, with a defined-class control proving Konclude
+> reasons over that file — a 9th recorded under-report, so do not validate a fix against it); rustdl
 > reports only `F ⊑ G`, silently — **tracked as #108**. **This is the documented residual of the #84 fix itself**:
 > `chain_ranges` keys on DECLARED pairs, so it sees `(t,u)` and `(r,v)` but never forms the
 > composed `(t,u,v) ⊑ s`. Closing it needs a transitive closure over chain composition — a

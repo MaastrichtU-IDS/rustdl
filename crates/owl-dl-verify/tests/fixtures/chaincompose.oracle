@@ -15,7 +15,16 @@
 # exactly its job. rustdl currently reports only `F ⊑ G` here, with
 # `incomplete: false`, so this is a SILENT miss of the D10 shape.
 #
-# HermiT derives `C ⊑ D` (verified 2026-09-05, robot 1.9.10 + HermiT 1.4.3).
+# HermiT derives `C ⊑ D` (verified 2026-09-05, robot 1.9.10 + HermiT 1.4.3;
+# re-verified same day via robot v1.9.6).
+#
+# KONCLUDE MISSES IT TOO (v0.7.0-1138 native, measured 2026-09-05) — the same
+# behaviour as the sibling `chainrange`, so HermiT is the oracle of record and a
+# Konclude-only check would read a CORRECT fix as a spurious subsumption. Its
+# silence is a genuine non-derivation, not a refusal: on a control adding a
+# defined class `K ≡ ∃t.A` plus `P ⊑ ∃t.A`, Konclude DOES derive the unasserted
+# `P ⊑ K` on this same file. (A first control using a transitive `F ⊑ H` proved
+# nothing — Konclude emits a Hasse diagram, where that row is legitimately absent.)
 #
 # SAME CAVEAT AS `chainrange`, stated rather than left to be discovered: this
 # crate's own `build_model` REFUSES this fixture (Err(ChainRangeOutOfProfile),

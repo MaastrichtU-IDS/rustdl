@@ -37,10 +37,6 @@ owl-dl-reasoner.workspace = true
 [lints]
 workspace = true
 
-[dependencies.whelk]
-git = "https://github.com/INCATools/whelk-rs"
-optional = true
-
 [dependencies.pprof]
 version = "0.14"
 features = ["flamegraph"]
@@ -48,7 +44,21 @@ optional = true
 
 [features]
 default = []
-whelk-compare = ["dep:whelk"]
+# `whelk-compare` was REMOVED 2026-09-05 with the horned-owl 1.4 -> 3.0 upgrade
+# (#99). whelk-rs pins `horned-owl = "^1.4"` (still true at its upstream HEAD
+# a1f7e54), and the `[patch.crates-io]` fork used to unify BOTH sides onto one
+# horned-owl. Without the patch there are two majors in the graph, so
+# `whelk::translate_ontology` wants a 1.4 `SetOntology` and gets a 3.0 one:
+#
+#     expected `&SetOntology<_>`, found `&SetOntology<Rc<str>>`
+#
+# Cargo will not take two versions of one crate as direct deps of a single
+# package, and whelk does not re-export its horned-owl, so the bench cannot
+# simply parse twice. TO RESTORE: bump whelk once it moves to horned-owl 3.x and
+# re-add `whelk-compare = ["dep:whelk"]` plus the `[dependencies.whelk]` block —
+# the implementation is preserved in git history (see the commit that removed it;
+# `git show <that commit>^:crates/owl-dl-bench/src/main.rs`). Failing that, a small shim crate pinning horned-owl 1.4 would also
+# work (different workspace PACKAGES may use different majors).
 profile = ["dep:pprof"]
 # Forward owl-dl-tableau's per-rule counters. Enable for the same
 # diagnostic builds as `profile`; activate at runtime with

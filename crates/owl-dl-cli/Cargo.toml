@@ -10,17 +10,28 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-# Uses `horned_owl::io::omn` (Manchester reader/writer), which exists only in the
-# `[patch.crates-io]` fork rev, NOT in horned-owl 1.4 -- the version this workspace
-# PINS. NB `io::omn` DOES exist in released horned-owl 2.0.0+/3.0.0; what remains
-# fork-only is the per-item `AsManchester` rendering trait. So this is a pinned-
-# version problem plus one trait, not an upstream-feature gap; tracked in #99.
-# `[patch]` is not carried in a published manifest, so a consumer resolves
-# upstream and this crate FAILS TO COMPILE for them (measured: E0432
-# `unresolved import horned_owl::io::omn`) — while building green here, because
-# the patch applies locally. Distribution is the GitHub Release binaries built
-# by .github/workflows/release-cli.yml. Flip back to publishable once upstream
-# PR phillord/horned-owl#176 lands and the patch is dropped.
+# NOT publishable — but the horned-owl reason recorded here until 2026-09-05 is
+# RESOLVED and was replaced by the real one.
+#
+# WAS: `io::omn` / `AsManchester` existed only in the `[patch.crates-io]` fork, so
+# a consumer resolving upstream hit E0432 `unresolved import horned_owl::io::omn`.
+# That is gone: the fork and the patch are dropped, this workspace pins released
+# horned-owl 3.0, and BOTH `io::omn` and the per-item `AsManchester` trait ship in
+# it (the issue's "AsManchester is fork-only" claim was a bad docs.rs probe —
+# 3.0.0 has it, ahead of the fork).
+#
+# ACTUAL remaining blocker, measured with `cargo publish --dry-run -p owl-dl-cli`:
+#
+#     no matching package named `owl-dl-verify` found
+#
+# this crate depends on `owl-dl-verify`, which is itself `publish = false`, and
+# cargo refuses to publish a crate with an unpublished dependency. Flipping this
+# to `true` therefore requires first deciding to publish `owl-dl-verify` — i.e.
+# committing to a public API for a diagnostic-only crate — which is a separate
+# call from the horned-owl upgrade. Tracked in #99.
+#
+# Distribution meanwhile is the GitHub Release binaries built by
+# .github/workflows/release-cli.yml.
 publish = false
 
 [[bin]]

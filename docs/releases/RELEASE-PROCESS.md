@@ -109,6 +109,44 @@ the RSS tail `11085`, and the four that went `ok → dnf` in v0.4.8).
 
 **Add a sentinel whenever an ontology exposes a defect.** That is the maintenance rule.
 
+### Re-baseline on the machine you are gating on
+
+The `lost_ontologies` clause asks whether an ontology finished **inside the cap**, which
+the machine decides as much as the binary. Against a v0.4.23 baseline measured on faster
+hardware, a good v0.4.24 build reported **2 lost, FAIL**; re-measuring the *same v0.4.23
+binary* on the candidate's own host moved the **median 0.21 s → 0.53 s across all 424**,
+and host-matched the gate PASSed with 0 lost — the candidate in fact classified one more.
+A reasoner change cannot slow a median 2.5×; that inversion is the tell.
+
+`release-corpus-report.py` records `host` (`node`/`system`/`machine`/`cpu_count`) and
+prints a **⚠️ CROSS-HOST** or **⚠️ NO host** warning into the markdown block when the
+baseline cannot be compared to the current run. It warns rather than fails: a cross-host
+baseline does not make the run wrong, it makes *that one clause* uninterpretable.
+`verdict_flips` is machine-independent and stays trustworthy either way. The baselines
+through v0.4.27 are hostless and will always warn.
+
+Re-baselining costs one run (~6 min for 424). **Do not swap baselines to turn a FAIL into
+a PASS** — that is legitimate only after showing independently that the arms are
+indistinguishable on the disputed ontologies.
+
+### A reported loss is a candidate, not a finding
+
+The sweep runs at `jobs 8`, and contention manufactures `ok → dnf`. Adjudicate every
+reported loss **sequentially, on an idle host, alternating arm order, 3 runs each**,
+comparing wall *and* the content triple (rows, unsat, equivalence groups).
+
+The script's own confirmation pass re-runs losses at 3× the cap and may relabel itself
+"CAP-BORDERLINE, gate PASSES". **Do not accept that as the adjudication.** At v0.4.28 it
+measured `ore_ont_2574`/`ore_ont_7192` at 61.3 s and 62.2 s against a 60 s cap and called
+them borderline; run sequentially on an idle host they take **21–34 s — half the cap** —
+with content identical across all 12 runs. The confirmation pass was itself contended, so
+its numbers were 2–3× the idle wall. Same conclusion, but reached from evidence rather
+than from a label the instrument gave itself.
+
+**Pick the comparison binary by `binary_sha`, not by filename.** The pin that produced the
+v0.4.27 baseline is named `rustdl-v0.4.27-cand` and self-reports `0.4.26`, having been
+built before the bump. Match the `binary_sha` recorded in the baseline JSON.
+
 ### v0.4.18 baseline
 
 424 ontologies, 60 s cap, 1 thread, binary `17aeec66e978`:
@@ -155,7 +193,9 @@ the RSS tail `11085`, and the four that went `ok → dnf` in v0.4.8).
 
 ## 5. Cutting the release
 
-1. Run the gates above; the corpus report must exit 0.
+1. Run the gates above; the corpus report must exit 0 — **against a baseline measured
+   on this host** (§3). If it exits 1 on `lost_ontologies`, adjudicate sequentially
+   before treating it as a regression; a contended sweep manufactures losses.
 2. Bump `Cargo.toml` and `protege/update.properties`.
 3. **Re-measure the `wine` freshness canary and update `CLAUDE.md` if it moved.** At
    v0.4.18 it went ~74 s → **~38 s** unbounded and ~4.6 s → **~2.7 s** at

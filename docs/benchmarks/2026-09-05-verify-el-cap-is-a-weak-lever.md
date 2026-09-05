@@ -58,6 +58,14 @@ statement can be made at all, since before #87 every `Violated` it produced was 
 
 ## Recommendation
 
-Stop raising the cap. If `verify-el` coverage is worth increasing, the lever is the
-**fragment restriction** — 72.5% of the corpus is refused before checking begins, against
-6.5% lost to the cap. Per-ontology rows: `2026-09-05-verify-el-timeout-retry.tsv`.
+Stop raising the cap. Per-ontology rows: `2026-09-05-verify-el-timeout-retry.tsv`.
+
+> **RETRACTED THE SAME DAY — the second half of this recommendation was wrong.** It said the
+> lever is the fragment restriction, since 72.5% of the corpus is refused before checking begins
+> against 6.5% lost to the cap. **The 72.5% is not a market.** `verify` reaches `Verified` only
+> with zero unresolved axioms, and every construct that makes an ontology Horn-but-not-EL is
+> refused by `eval.rs` — except one (a non-atomic `DisjointClasses` member). A widened gate would
+> admit ontologies whose distinguishing axioms are all `Unresolved` and verify them vacuously,
+> while `build_model`'s EL-saturator model source would make any `Violated` there an artifact.
+> See `2026-09-05-verify-el-horn-widening-market.md`. **A count of refusals is not a count of
+> recoverable cases** — that inference is what this file got wrong.

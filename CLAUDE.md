@@ -1558,8 +1558,43 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     concrete-domain cardinality reasoner with zero measured corpus reward.
   - ~~`xsd:decimal`/`date`/`dateTime` `DataOneOf` enumerations~~ — **CLOSED
     2026-09-04 (#42 item 2)**; see the range × enumeration entry above. Other
-    non-ordered datatypes still drop;
-    `DataComplementOf` / `DataUnionOf` / `DataIntersectionOf` ranges.
+    non-ordered datatypes still drop.
+  - **`DataUnionOf` of ENUMERATIONS in a `∀`/range position — CLOSED 2026-09-05
+    (#42 item 1).** `DataSomeValuesFrom(p, DataUnionOf(…))` always worked (it lowers
+    to a class-level disjunction), but a union in a UNIVERSAL, range or counting
+    position cannot be split that way, so `data_range_dkey`'s parser chain matched
+    nothing and the WHOLE AXIOM DROPPED: `∀p.({1} ⊔ {2})` with `∃p.{5}` reported `A`
+    satisfiable where Konclude reports it unsatisfiable.
+    `flatten_union_of_oneofs` normalises it — a **logical identity**
+    (`DataOneOf(a) ⊔ DataOneOf(b)` IS `DataOneOf(a,b)`), hence sound and
+    completeness-preserving by construction. The flattened form re-enters the same
+    per-datatype `parse_*_oneof` chain, so datatype consistency is enforced where it
+    already was rather than re-checked and left to drift. Unlocks the NESTED
+    composite the issue names first, `DataComplementOf(DataUnionOf(…))`, for free.
+    **ENUMERATIONS ONLY, and the restriction is LOAD-BEARING**: a MIXED union would
+    flatten to just its enumeration half — a strictly WEAKER range, which in a `∀`
+    position manufactures a clash, i.e. a FALSE POSITIVE. **Found by sabotage, and
+    only by the second one**: loosening `collect`'s `_ => false` arm passed every
+    canary, because a union of intervals ALONE flattens to an empty literal set the
+    `is_empty` check rejects anyway. Only a MIXED union exposes it
+    (`∃p.{12}` with `∀p.({1} ⊔ [10,15])` is satisfiable, Konclude agreeing, and the
+    loosened flattener calls it UNSAT) — that canary exists because of the sabotage,
+    not before it.
+    **CORPUS REACH IS PROVABLY ZERO**, so ORE cannot validate this: exactly **1** of
+    1,920 ontologies authors a `DataUnionOf` at all (`ore_ont_5964` — a grep
+    SUPERSET, the flattener being reachable only from that construct), and its single
+    union is `DataUnionOf(xsd:decimal xsd:float xsd:integer xsd:long)`, bare
+    DATATYPES not enumerations, so the flattener correctly declines and that ontology
+    is byte-identical across arms with all 14 drops unchanged. Evidence is 7 canaries
+    (3 bug + 4 controls, two oracle-adjudicated) plus Konclude on every probe.
+    Canaries `crates/owl-dl-reasoner/tests/data_union_of_enumerations.rs`.
+  - **STILL DROPPED (sound), recorded rather than implied:** a union of INTERVALS
+    (`[0,5] ⊔ [10,15]`) — **Konclude derives unsat there and rustdl does not**, a
+    known MISS pinned by a canary to FLIP when an interval-set representation lands,
+    never to delete; MIXED enumeration/interval unions; unions of bare DATATYPES;
+    `DataIntersectionOf` in these positions; and qualified data CARDINALITY over a
+    union (`≥3 p.({1} ⊔ {2})`), which takes a different path and which Konclude also
+    does not call unsat.
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

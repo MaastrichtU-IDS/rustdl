@@ -195,6 +195,11 @@ pub struct FiniteModel {
     /// three label-construction sites route through — so no path can forget it
     /// and elements created in any later round get it too.
     top_floor: Vec<ClassId>,
+    /// `internal.vocabulary.num_classes()` at `seed` time. A `ClassId` at or
+    /// above this is a Tseitin marker, never a named class — the same test
+    /// `lib.rs` uses to decide what is injectable. Scopes [`Self::top_floor`];
+    /// see `intern`.
+    num_real_classes: usize,
     /// Running total of edges across all roles, checked against
     /// `bounds.max_edges` by `push_edge`. Shared by both expansion paths.
     edge_count: usize,
@@ -211,8 +216,31 @@ impl FiniteModel {
         // here rather than at the three call sites, so a future fourth site
         // cannot miss it. Cheap: `top_floor` is empty on the overwhelming
         // majority of ontologies, and the whole block is skipped then.
+        //
+        // SCOPED to labels holding NO named class (#103). The floor exists because
+        // the saturator gives a Tseitin marker an EMPTY subsumer set BY DESIGN, so
+        // nothing will ever put `C` there; a named class picks the ⊤-super up from
+        // its own closure for free — measured, the F4 reproducer with the nesting
+        // flattened away verifies clean even before the fix.
+        //
+        // Flooring a NAMED class's label too would be semantically fine and would
+        // silently destroy a real detection: a named `X` whose reported closure
+        // lacks a ⊤-super is a genuine completeness gap of the D10 shape this crate
+        // exists to find, and injecting `C` from the AXIOM would hide it. That is
+        // the residual #87's own commit message recorded; this is what recovers it.
+        //
+        // Pinned by `intern_top_floor_tests::a_label_holding_a_named_class_is_left_alone`,
+        // which asserts on `intern` DIRECTLY. It cannot be pinned end to end:
+        // `test_only_remove_from_label` runs AFTER interning, so removing `C` from a
+        // named class's element fails the check under either scoping and
+        // discriminates nothing — a guard written that way passes the
+        // "floor every label" sabotage.
         let mut label = label;
-        if !self.top_floor.is_empty() {
+        if !self.top_floor.is_empty()
+            && !label
+                .iter()
+                .any(|c| (c.index() as usize) < self.num_real_classes)
+        {
             label.extend_from_slice(&self.top_floor);
             label.sort_unstable_by_key(|c| c.index());
             label.dedup();
@@ -313,13 +341,19 @@ impl FiniteModel {
         subs: &Subsumers,
         facts: &[(ClassId, RoleId, ClassId)],
     ) -> Self {
+        // Both set IN the literal, not assigned afterwards: `intern` reads them, so a
+        // floor (or marker threshold) computed after the loop below would miss every
+        // element seeded here — and `num_real_classes` left at its `Default` of 0 means
+        // "no id is named", which silently floors EVERY label and reverts #103. Building
+        // them here keeps the two from drifting apart;
+        // `seed_sets_the_marker_threshold` pins the wiring, since the unit tests below
+        // construct `FiniteModel` directly and cannot see it.
         let mut model = Self {
             edges: vec![Vec::new(); internal.vocabulary.num_roles()],
+            top_floor: Self::compute_top_floor(internal, subs),
+            num_real_classes: internal.vocabulary.num_classes(),
             ..Self::default()
         };
-        // Set BEFORE the intern loop below: `intern` reads `top_floor`, so a
-        // floor computed afterwards would miss every element seeded here.
-        model.top_floor = Self::compute_top_floor(internal, subs);
         let mut population: Vec<ClassId> =
             internal.vocabulary.classes().map(|(id, _)| id).collect();
         for &(sub, _, target) in facts {
@@ -1061,4 +1095,118 @@ pub fn chain_range_out_of_profile(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod intern_top_floor_tests {
+    use super::{Element, FiniteModel};
+    use owl_dl_core::ir::ClassId;
+
+    /// `num_real_classes = 2` (ids 0,1 named; 2+ are Tseitin markers) and `⊤ ⊑ class 1`.
+    fn model() -> FiniteModel {
+        FiniteModel {
+            top_floor: vec![ClassId::new(1)],
+            num_real_classes: 2,
+            ..FiniteModel::default()
+        }
+    }
+
+    /// #87 F4: a marker-only label is floored. The saturator gives a Tseitin marker an
+    /// EMPTY subsumer set by design, so nothing else will ever put `⊤ ⊑ C`'s `C` there.
+    #[test]
+    fn a_marker_only_label_gains_the_top_floor() {
+        let mut m = model();
+        let e = m.intern(vec![ClassId::new(5)]);
+        assert_eq!(
+            m.label(e),
+            &[ClassId::new(1), ClassId::new(5)],
+            "a Tseitin witness must satisfy ⊤ ⊑ C like every other domain element"
+        );
+    }
+
+    /// #103, and the reason the floor is scoped.
+    ///
+    /// A label holding a NAMED class comes back untouched even though the ⊤-super is
+    /// absent from it. That label came from the engine's reported closure, so a missing
+    /// ⊤-super there is a genuine completeness gap of the D10 shape this crate exists to
+    /// find — injecting it from the axiom would hide one.
+    ///
+    /// **This has to be asserted on `intern` directly.** An end-to-end version cannot see
+    /// it: the engine has no such gap to observe, and `test_only_remove_from_label` runs
+    /// AFTER interning, so it fails the check under either scoping. That version was
+    /// written first and **passed the "floor every label" sabotage**, which is how the
+    /// hole in it was found.
+    #[test]
+    fn a_label_holding_a_named_class_is_left_alone() {
+        let mut m = model();
+        let e = m.intern(vec![ClassId::new(0)]);
+        assert_eq!(
+            m.label(e),
+            &[ClassId::new(0)],
+            "flooring a NAMED class's label would hide a real engine gap"
+        );
+    }
+
+    /// The union must not duplicate a ⊤-super the label already carries, and must stay
+    /// sorted: `label_ix` keys on the label bytes, so an unsorted or duplicated key would
+    /// intern two spellings of one label as two different elements.
+    #[test]
+    fn the_union_stays_sorted_and_deduplicated() {
+        let mut m = model();
+        let e = m.intern(vec![ClassId::new(1), ClassId::new(5)]);
+        assert_eq!(m.label(e), &[ClassId::new(1), ClassId::new(5)]);
+        assert_eq!(
+            m.intern(vec![ClassId::new(5)]),
+            e,
+            "one label content, one element"
+        );
+    }
+
+    /// **The wiring, which the tests above structurally cannot see.**
+    ///
+    /// They construct `FiniteModel` directly, so they pass even if `seed` never sets
+    /// `num_real_classes`. That default is 0, which makes "no id is named" vacuously
+    /// true, floors EVERY label, and silently reverts #103 — a sabotage dropping the
+    /// assignment from `seed` passed all four of them.
+    #[test]
+    fn seed_sets_the_marker_threshold() {
+        let ofn = "Prefix(:=<http://ex.org/>)\n\
+Ontology(<http://ex.org/w>\n\
+Declaration(Class(:A)) Declaration(Class(:B))\n\
+SubClassOf(:A :B)\n\
+)\n";
+        let (onto, _): (
+            horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+            _,
+        ) = horned_owl::io::ofn::reader::read(
+            &mut ofn.as_bytes(),
+            horned_owl::io::ParserConfiguration::default(),
+        )
+        .expect("parse");
+        let internal = owl_dl_core::convert_ontology(&onto).expect("convert");
+        let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+        let model = FiniteModel::seed(&internal, &subs, &facts);
+        assert_eq!(
+            model.num_real_classes,
+            internal.vocabulary.num_classes(),
+            "seed must carry the marker threshold; left at Default (0) it floors every \
+             label and reverts #103"
+        );
+        assert!(
+            model.num_real_classes > 0,
+            "a 2-class ontology must give a non-zero threshold"
+        );
+    }
+
+    /// With no ⊤-axiom the path is inert, so every pre-#87 label is unchanged.
+    #[test]
+    fn no_top_axiom_leaves_every_label_untouched() {
+        let mut m = FiniteModel {
+            num_real_classes: 2,
+            ..FiniteModel::default()
+        };
+        let e = m.intern(vec![ClassId::new(5)]);
+        assert_eq!(m.label(e), &[ClassId::new(5)]);
+        assert_eq!(e, Element::new(0));
+    }
 }

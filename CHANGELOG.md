@@ -6,6 +6,73 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.27] — 2026-09-05
+
+One engine fix, two fixes to the self-verification instrument, and a packaging fix. The
+instrument work is the headline: `verify-el` went from **0-for-8** on its own headline
+claim to reporting **zero false positives corpus-wide**.
+
+### Fixed — range × enumeration DKey disjointness was never seeded (#42 item 2, PR #100)
+
+`DataHasValue` and facet restrictions lower into a datatype's **range** bucket;
+`DataOneOf` lowers into a separate **enumeration** bucket. Disjointness was seeded
+*within* each bucket and never *across*, so `∃p.{5} ⊓ ∀p.{1,2}` did not clash even though
+5 ∉ {1,2} — `classify` reported the class satisfiable where HermiT called it
+unsatisfiable. Same shape as #86 (cross-**datatype** range × range), one level down.
+
+`xsd:string` was unaffected, and that asymmetry is what found it: both string forms lower
+to one `StrSet`, so they were already compared. **Not a dropped construct** — `dropped`
+was empty on every probe; the axioms converted and the clash was merely never derivable,
+which is why #42 recorded it as "only `xsd:string` enums are handled".
+
+Integer / decimal / double / float / date / dateTime probes go sat → **UNSAT**, every
+value-inside-the-enumeration control stays satisfiable. Same-datatype pairing only, which
+is what keeps `contains` exact; the cross-datatype case stays a deliberate sound MISS,
+pinned by a canary to **flip, not delete**.
+
+### Fixed — `verify-el` reported 8 `Violated` verdicts and all 8 were its own (#87)
+
+The crate's headline claim is that a `Violated` is a real engine defect. On the corpus it
+was **0-for-8**. Two mechanisms, both fixed:
+
+**F5 — a truncated model cannot support a defect claim.** `fold_build_reasons` kept
+`Violated` when a build reason said the model was cut. A truncated model is smaller than
+the axioms describe, so an axiom that would have been witnessed cannot be, and the
+violations are artifacts. Four 50k–60k-class ontologies with 20,292–92,573 "violations"
+now exit 3 (no verdict) instead of 2. Deliberately narrower than "any reason": a
+*localized* gap leaves a violation meaningful.
+
+**F4 — `⊤ ⊑ C` never reached model elements.** `required_atoms` on `⊤` returns an **empty**
+antecedent, and the builder read empty as "no rule" when it means "fires on every
+element". Four ontologies whose violation counts equalled their `owl:Thing`-LHS axiom
+counts exactly now verify with 0. Fixed at the `FiniteModel::intern` chokepoint plus
+universal-rule firing, so `⊤ ⊑ ∃r.C` is materialised too.
+
+**F4 and F2 were one mechanism** — F2, a separately-documented builder false positive, is
+closed by the same fix.
+
+Corpus re-scan, all 1,920: **violated 8 → 0**, verified 358 → 362, unresolved 1,357 →
+1,361, timeout 196 unchanged. The deltas are +4/+4/−8 on exactly the right ontologies with
+nothing else moving.
+
+This makes `verify-el` usable **unattended** as a D10 hunter. It does **not** mean no
+engine defects exist: coverage is 19% (bounded by the pure-EL fragment restriction, not
+defect density), 196 ontologies are UNMEASURED rather than passing, and F1/F3 remain live
+builder false-positive mechanisms — so a `Violated` is now a lead requiring adjudication
+rather than one guaranteed to be spurious.
+
+### Fixed — the Protégé plugin registered nothing (#79, PR #101)
+
+`plugin.xml` was not well-formed XML, so Protégé's "XML contribution" failed and the
+plugin was never installed.
+
+### Added — `examples/clause_stats_probe`
+
+Nothing surfaced the clausifier's `deferred` count — the `# fragment:` banner folds it
+into a three-way verdict that reads `out-of-EL` whether the count is 0 or 50. It also
+computes a match-plan refusal census without running the engine, which is how ontologies
+that stall *in* reasoning can be measured at all.
+
 ### Changed — `owl-dl-cli` yanked from crates.io (all five versions)
 
 `0.1.0`–`0.3.0` are yanked as of 2026-09-04. `cargo install owl-dl-cli` now fails with

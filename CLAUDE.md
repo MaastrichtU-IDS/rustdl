@@ -1782,9 +1782,16 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   control is the ATOMIC filler**, `Domain(r, :P)`, which derives `X ⊑ P` correctly at the default.
   **Filed as #110. Corpus reach MEASURED and it is ZERO**: two-arm run (`RUSTDL_CLASSIFY_SAME_TIER`
   0 vs 1, arm order alternated, triple compared) over the 14 conjunctive-`Domain`/`Range`-filler
-  ORE ontologies — **12 IDENTICAL, 0 gained, 0 lost, 2 UNMEASURED** (cap, not disagreement — `ore_ont_10080` still
-  DNFs at a 600 s cap sequentially on an idle host in the `=0` arm, so it is out of reach, not a
-  contention artifact). So
+  ORE ontologies — **13 IDENTICAL, 0 gained, 0 lost, 1 UNMEASURED** (`ore_ont_10080`, which DNFs SYMMETRICALLY at a
+  600 s cap sequentially on an idle host — 600 s / 601 s, both arms — so it is out of reach, not a
+  contention artifact). **`ore_ont_12451` was nearly recorded as a LOSS and was not one:** at 600 s
+  its `=0` arm finished in 230 s while `=1` hit the cap, a ONE-SIDED timeout, which is the shape
+  that reads as "the flag lost an ontology". At a 1500 s cap with 2 repeats per arm it completes in
+  **777 s / 775 s against 229 s / 228 s — 3.4× slower with all four triples IDENTICAL** (3,733 rows,
+  1 unsat, 0 equiv; the 2-byte size difference is cosmetic). That is a measured instance of the
+  flag's documented ~2× wall cost on this corpus rather than the quoted ore-15672 figure.
+  **A one-sided timeout at a cap is a CANDIDATE loss, not a loss — raise the cap before recording
+  it.** So
   that flag's corpus-invisible default-OFF justification **stands UNQUALIFIED**; this is a second
   SYNTHETIC pattern, as `sp11sub` was, and nothing here argues for flipping it. The narrower fix
   is to stop `role_domains` dropping a conjunctive filler, which would give `X` its EL subsumers

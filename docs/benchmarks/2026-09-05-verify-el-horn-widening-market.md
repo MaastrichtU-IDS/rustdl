@@ -235,10 +235,28 @@ evaluator could judge if it stopped refusing them.
 ## The `RUSTDL_CLASSIFY_SAME_TIER` corpus question is now answered: 0 of 12
 
 Two-arm run over the 14 conjunctive-filler candidates, `RUSTDL_CLASSIFY_SAME_TIER` `0` vs `1`,
-arm order alternated, comparing (rows, unsat, equivalence groups): **12 IDENTICAL, 0 gained, 0
-lost, 2 UNMEASURED** (`ore_ont_10080`, `ore_ont_12451` — cap, not disagreement; `ore_ont_10080`
-re-run sequentially on an IDLE host still DNFs at a **600 s** cap in the `=0` arm, so it is
-genuinely out of reach rather than a contention artifact).
+arm order alternated, comparing (rows, unsat, equivalence groups): **13 IDENTICAL, 0 gained, 0
+lost, 1 UNMEASURED.** The unmeasured one is `ore_ont_10080`, which re-run sequentially on an IDLE
+host still DNFs at a **600 s** cap in **both** arms (600 s / 601 s) — symmetric, so genuinely out
+of reach rather than a contention artifact.
+
+**`ore_ont_12451` was nearly recorded as a LOSS, and raising the cap is what stopped that.** At
+600 s idle its `=0` arm completed in 230 s while `=1` hit the cap — a ONE-SIDED timeout, exactly
+the shape that reads as "the flag lost an ontology". Re-run at a 1500 s cap, 2 repeats per arm,
+sequential and idle:
+
+| arm | wall | rows | unsat | equiv |
+|---|---:|---:|---:|---:|
+| `=0` run 1 | 229 s | 3,733 | 1 | 0 |
+| `=0` run 2 | 228 s | 3,733 | 1 | 0 |
+| `=1` run 1 | **777 s** | 3,733 | 1 | 0 |
+| `=1` run 2 | **775 s** | 3,733 | 1 | 0 |
+
+All four triples **identical**; the 2-byte output-size difference is cosmetic. So it is not a
+loss — it is **3.4× slower with the same answer**, a concrete and reproducible instance of
+`RUSTDL_CLASSIFY_SAME_TIER`'s documented ~2× wall cost, measured on this corpus rather than
+quoted from the recorded ore-15672 figure. **A one-sided timeout at a cap is a CANDIDATE loss,
+not a loss; raise the cap before recording it.**
 
 So the flag's **corpus-invisible default-OFF justification stands unqualified**. The defect filed
 as #110 is a second *synthetic* pattern, exactly as `sp11sub` was, and nothing here argues for

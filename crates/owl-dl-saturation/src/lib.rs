@@ -3147,11 +3147,14 @@ fn collect_el_rules_with_provenance(
                 }
                 disjt_cur += count;
             }
-            Axiom::ObjectPropertyDomain { role, domain } => {
-                if !role.is_inverse()
-                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*domain)
-                {
-                    domain_axiom_refs.push((role.role_id(), *id, ax_idx));
+            // Mirror the real Pass 1 domain arm's decomposition exactly (#118): a
+            // conjunctive filler now contributes each atomic conjunct it decomposes
+            // into (#119, possibly a strict subset), not just a single fully-atomic
+            // filler — one provenance entry per conjunct so `prove` can attribute a
+            // conjunctive-domain-derived subsumption to this axiom.
+            Axiom::ObjectPropertyDomain { role, domain } if !role.is_inverse() => {
+                for id in atomic_conjuncts(&internal.concepts, *domain) {
+                    domain_axiom_refs.push((role.role_id(), id, ax_idx));
                 }
             }
             Axiom::SubObjectPropertyOf {
@@ -3215,16 +3218,23 @@ fn collect_el_rules_with_provenance(
         // up as a wrong or missing proof rather than a wrong answer.
         for ax in &internal.axioms {
             match ax {
-                Axiom::ObjectPropertyRange { role, range }
-                    if !role.is_inverse()
-                        && matches!(internal.concepts.get(*range), ConceptExpr::Atomic(_)) =>
-                {
-                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
+                Axiom::ObjectPropertyRange { role, range } if !role.is_inverse() => {
+                    // Mirror the real Pass 1 range arm's decomposition exactly
+                    // (#118) — a conjunctive filler contributes each atomic
+                    // conjunct it decomposes into (#119, possibly a strict
+                    // subset), same as `atomic_conjuncts` at the real Pass 1 site.
+                    // This feeds `mini_effective`/`mini_chain_ranges`, which
+                    // `lower_sub_class_of`'s per-axiom rule-slot delta cursors
+                    // below rely on staying byte-for-byte aligned with the real
+                    // Pass 1 — a silent divergence here mis-attributes every
+                    // LATER axiom's proof, not just this one's.
+                    let ids = atomic_conjuncts(&internal.concepts, *range);
+                    if !ids.is_empty() {
                         mini_rules
                             .role_ranges
                             .entry(role.role_id())
                             .or_default()
-                            .push(*id);
+                            .extend(ids);
                     }
                 }
                 Axiom::SubObjectPropertyOf {
@@ -3462,16 +3472,21 @@ fn collect_el_rules(
                     // no individual may be an r-source. Poison the role so that
                     // any class deriving `∃r.X` is marked unsatisfiable.
                     rules.poisoned_roles.insert(role.role_id());
-                } else if let Some(ids) = all_atomic_conjuncts(&internal.concepts, *domain) {
+                } else {
                     // `ObjectPropertyDomain(r, P ⊓ Q)` ≡ `∃r.⊤ ⊑ P ⊓ Q` ≡
                     // `∃r.⊤ ⊑ P` AND `∃r.⊤ ⊑ Q` — a logical identity, so splitting
                     // is sound and completeness-preserving by construction (#110).
-                    // The atomic case is the one-element instance of it.
-                    rules
-                        .role_domains
-                        .entry(role.role_id())
-                        .or_default()
-                        .extend(ids);
+                    // The atomic case is the one-element instance of it. A part
+                    // that isn't atomic (or a conjunction of atomics) contributes
+                    // nothing rather than dropping the whole filler (#119).
+                    let ids = atomic_conjuncts(&internal.concepts, *domain);
+                    if !ids.is_empty() {
+                        rules
+                            .role_domains
+                            .entry(role.role_id())
+                            .or_default()
+                            .extend(ids);
+                    }
                 }
             }
             Axiom::ObjectPropertyRange { role, range } => {
@@ -3482,16 +3497,20 @@ fn collect_el_rules(
                     // r-edge can exist in any model. Poison the role so that any
                     // class deriving `∃r.X` is marked unsatisfiable.
                     rules.poisoned_roles.insert(role.role_id());
-                } else if let Some(ids) = all_atomic_conjuncts(&internal.concepts, *range) {
+                } else {
                     // Same identity on the range side: `Range(r, P ⊓ Q)` ≡
                     // `Range(r, P)` AND `Range(r, Q)`. Measured to have the same
                     // defect as the domain arm — HermiT derives the pair, rustdl
-                    // reported `[]` with `incomplete: false` (#110).
-                    rules
-                        .role_ranges
-                        .entry(role.role_id())
-                        .or_default()
-                        .extend(ids);
+                    // reported `[]` with `incomplete: false` (#110). Same partial
+                    // decomposition as the domain arm applies (#119).
+                    let ids = atomic_conjuncts(&internal.concepts, *range);
+                    if !ids.is_empty() {
+                        rules
+                            .role_ranges
+                            .entry(role.role_id())
+                            .or_default()
+                            .extend(ids);
+                    }
                 }
             }
             Axiom::SubObjectPropertyOf {
@@ -4535,36 +4554,55 @@ fn domain_heads_el(
     .collect()
 }
 
-/// The atomic conjuncts of a domain/range filler, or `None` if any part is not
-/// atomic.
+/// The atomic conjuncts a domain/range filler decomposes into — possibly a
+/// STRICT SUBSET of its conjuncts (#119), possibly empty.
 ///
-/// `C` alone when `C` is atomic; each operand when `C` is an `And` of atomics,
-/// recursively. `ObjectPropertyDomain(r, P ⊓ Q)` is `∃r.⊤ ⊑ P ⊓ Q`, which is
-/// exactly `∃r.⊤ ⊑ P` and `∃r.⊤ ⊑ Q` — a logical identity, hence sound and
-/// completeness-preserving by construction (#110). Before this, only the atomic
-/// case was accepted and a conjunctive filler was silently DROPPED: `classify`
-/// returned zero rows with `incomplete: false` under a banner certifying the
-/// fragment complete, while both peer reasoners derived the pairs and rustdl's own
-/// `subclass` proved them.
+/// `C` alone when `C` is atomic; each operand when `C` is an `And`, recursively
+/// — including operands that are themselves non-atomic, which contribute
+/// nothing rather than aborting the whole walk. `ObjectPropertyDomain(r, P ⊓ Q)`
+/// is `∃r.⊤ ⊑ P ⊓ Q`, which is exactly `∃r.⊤ ⊑ P` and `∃r.⊤ ⊑ Q` — a logical
+/// identity, hence sound and completeness-preserving by construction (#110).
+/// Before #110, only the fully-atomic case was accepted and a conjunctive
+/// filler was silently DROPPED whole: `classify` returned zero rows with
+/// `incomplete: false` under a banner certifying the fragment complete, while
+/// both peer reasoners derived the pairs and rustdl's own `subclass` proved
+/// them.
 ///
-/// ALL-OR-NOTHING on purpose. A filler mixing atomic and non-atomic parts (say
-/// `P ⊓ ∃s.Z`) still drops WHOLE, exactly as before, rather than contributing its
-/// atomic half. Taking the half would be sound in isolation — `⊑ P ⊓ Z` entails
-/// `⊑ P` — but it would put the ENGINE ahead of the fragment GATE, which decides
-/// membership separately: the gate would keep calling the axiom out-of-fragment
-/// while the engine quietly acted on part of it. Keeping the two in agreement is
-/// what avoids re-creating the D10 shape this fix exists to close.
-fn all_atomic_conjuncts(pool: &ConceptPool, c: ConceptId) -> Option<Vec<ClassId>> {
+/// PARTIAL DECOMPOSITION, not all-or-nothing (#119 — #110 shipped all-or-
+/// nothing on purpose, and that was itself the residual bug). A filler mixing
+/// atomic and non-atomic parts (say `P ⊓ ∃s.Z`) now contributes its atomic
+/// conjuncts (`P`) and drops only the part it cannot represent (`∃s.Z`).
+/// `Domain(r, P ⊓ Z)` semantically means `∃r.⊤ ⊑ P` AND `∃r.⊤ ⊑ Z`; asserting
+/// only the first is a WEAKER (more permissive) constraint than the true
+/// axiom, so this can only MISS the `Z`-derived subsumptions, never assert a
+/// false one — the same direction of risk as every other domain/range
+/// completeness fix in this file. Unlike `DataUnionOf` (where keeping half a
+/// union NARROWS a range and manufactures a clash), a domain/range filler
+/// narrows nothing: each conjunct is an independent, separately-true
+/// constraint, so dropping one just drops an independent constraint.
+///
+/// Partial DECOMPOSITION is sound; partial ADMISSION to the fragment gate is
+/// NOT (the D10 shape #110 exists to close) — `is_atomic_or_trivial_concept`
+/// in `owl-dl-reasoner::classify` still refuses any non-atomic filler outright
+/// (a `Bot`/`Top` in a domain/range filler is orthogonal — its own arms of the
+/// `ObjectPropertyDomain`/`Range` match already run first), so a partly-atomic
+/// filler is never certified `PureEl` even though the engine now derives part
+/// of it. Do NOT loosen that gate to match this function.
+fn atomic_conjuncts(pool: &ConceptPool, c: ConceptId) -> Vec<ClassId> {
+    let mut out = Vec::new();
+    collect_atomic_conjuncts(pool, c, &mut out);
+    out
+}
+
+fn collect_atomic_conjuncts(pool: &ConceptPool, c: ConceptId, out: &mut Vec<ClassId>) {
     match pool.get(c) {
-        ConceptExpr::Atomic(id) => Some(vec![*id]),
+        ConceptExpr::Atomic(id) => out.push(*id),
         ConceptExpr::And(ops) => {
-            let mut out = Vec::with_capacity(ops.len());
             for op in ops {
-                out.extend(all_atomic_conjuncts(pool, *op)?);
+                collect_atomic_conjuncts(pool, *op, out);
             }
-            Some(out)
         }
-        _ => None,
+        _ => {}
     }
 }
 

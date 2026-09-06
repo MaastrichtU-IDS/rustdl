@@ -108,7 +108,10 @@ the same test file reports `fragment = Horn`, `verdict = Violated`.
 So the market is **non-empty**, and the honest form of the claim is the one stated above: two
 shapes, not zero, and not 1,392.
 
-**Corpus reach, by grep SUPERSET: ≤8 ontologies for hole 1, ≤14 for hole 2.** Eight carry a
+**Corpus reach, by grep SUPERSET: ≤8 ontologies for hole 1, ≤27 for hole 2.** (An earlier draft
+said ≤14; that scan's `break` fired after the first axiom body matching a broad construct regex,
+so an ontology whose FIRST Domain/Range axiom was non-conjunctive was wrongly excluded. Two
+instruments now agree at 27.) Eight carry a
 `DisjointClasses` with a non-atomic member (a same-line grep and a whitespace-insensitive
 balanced-paren scan agree at 8); fourteen carry a conjunctive `ObjectPropertyDomain`/`Range`
 filler (4 domain, 13 range, union 14).
@@ -244,7 +247,8 @@ evaluator could judge if it stopped refusing them.
 ## The `RUSTDL_CLASSIFY_SAME_TIER` corpus question is now answered: 0 of 12
 
 Two-arm run over the 14 conjunctive-filler candidates, `RUSTDL_CLASSIFY_SAME_TIER` `0` vs `1`,
-arm order alternated, comparing (rows, unsat, equivalence groups): **13 IDENTICAL, 0 gained, 0
+arm order alternated, comparing (rows, unsat, equivalence groups) — **THE GAIN BELOW IS RETRACTED;
+see the note at the end of this section** — **13 IDENTICAL, 0 gained, 0
 lost, 1 UNMEASURED.** The unmeasured one is `ore_ont_10080`, which re-run sequentially on an IDLE
 host still DNFs at a **600 s** cap in **both** arms (600 s / 601 s) — symmetric, so genuinely out
 of reach rather than a contention artifact.
@@ -270,3 +274,21 @@ not a loss; raise the cap before recording it.**
 So the flag's **corpus-invisible default-OFF justification stands unqualified**. The defect filed
 as #110 is a second *synthetic* pattern, exactly as `sp11sub` was, and nothing here argues for
 flipping the flag.
+
+## RETRACTION (2026-09-06): the `ore_ont_4796` gain was the FLAG's effect, not a fix's
+
+The two-arm run above compared `RUSTDL_CLASSIFY_SAME_TIER=0` vs `=1` **within one binary**, which
+measures the flag rather than a code change. Once #110 was actually fixed (on `main`, by #112),
+two *pinned binaries* over the corrected 27-ontology frame gave **45 IDENTICAL / 0 DIFFER /
+2 UNMEASURED / 0 lost entailments**, with **zero fragment-routing movers across all 1,920** — and
+`ore_ont_4796` provably cannot be affected, since all four of its conjunctive fillers carry
+`ObjectComplementOf`, which the decomposition declines, and it measures `OutOfFragment` in both
+arms.
+
+**Corpus reward for this class of fix is ZERO.** The evidence for such a fix is peer adjudication
+and canaries, not the corpus; an FP=0 net's green here is inertness.
+
+The transferable rule was already in `CLAUDE.md` from the label-cache probe work: *measuring a
+flag's effect and measuring the ship delta are different questions.* Using the flag as a proxy was
+legitimate while no fix existed — it was the only way to observe the defect — and stopped being
+legitimate the moment there was a real binary to diff.

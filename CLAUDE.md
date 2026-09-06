@@ -1751,7 +1751,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `SubClassOf`/`EquivalentClasses` recurse into `is_el_concept`, whose accepted set
   (`Top`/`Atomic`/`Bot`/`And`/`Some(!inverse)`) is IDENTICAL to `eval_concept`'s
   (`Top`/`Bot`/`Atomic`/`And`/`Some(Named)`) — printed, not eyeballed.
-  **Grep superset ≤8 ontologies for hole 1, ≤14 for hole 2; do NOT add them to 22** — a verdict
+  **Grep superset ≤8 ontologies for hole 1, ≤27 for hole 2 (NOT ≤14 — that scan's `break` fired
+  after the first axiom body matching a broad construct regex, so an ontology whose FIRST
+  Domain/Range axiom was non-conjunctive was wrongly excluded; two instruments now agree at 27);
+  do NOT add them together** — a verdict
   needs EVERY departure from `is_el_axiom` to be one of the two holes, so each count is a superset
   of its own conjunct. `ore_ont_10908` is in the 14, is a curated fixture, and classifies at
   MISSED=0, so the shape does not bite there.
@@ -1766,8 +1769,21 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   was ZERO and carried a `∎`; it was written over five unread `eval.rs` arms and one of them was
   the hole. Enumerate every arm a universal quantifies over, or do not write the universal.** See
   `docs/benchmarks/2026-09-05-verify-el-horn-widening-market.md`.
-  **THE SPIKE'S ACTUAL PAYOFF IS A LIVE D10 DEFECT IN `classify`'s TIER WALK, unrelated to
-  `verify-el` (2026-09-05, UNFIXED).** `ObjectPropertyDomain(r, P ⊓ Q)` + `X ⊑ ∃r.B` entails
+  **THE SPIKE'S ACTUAL PAYOFF WAS A LIVE D10 DEFECT IN `classify`, unrelated to `verify-el`
+  (2026-09-05) — FILED AS #110 AND FIXED ON `main` BY #112 (`ed2ab5f`), WITH TWO RESIDUALS THEN
+  FIXED BY #120 (#118, #119). The description below is the PRE-FIX state; read it as the
+  diagnosis, not as current behaviour.**
+  **AND THE MECHANISM ATTRIBUTION BELOW IS HALF WRONG.** It reads as a tier-walk defect; the ROOT
+  cause is that the saturator dropped the conjunctive filler, which left `X` with no EL subsumer
+  and therefore in `P`'s own tier. #112 fixed the ENGINE and the tier problem dissolved — the
+  tier walk was never touched. `RUSTDL_CLASSIFY_SAME_TIER=1` recovering it was a symptom, not a
+  pointer to the fix, and treating it as one cost a wrong corpus measurement (below).
+  **ALSO: the tier-walk diagnosis was NOT novel.** Commit `2341ff8` (2026-07-29, "Bug B") had
+  already recorded it in the doc comment of
+  `crates/owl-dl-reasoner/tests/conjunctive_unsat.rs::domain_conjunctive_filler_derives_subsumptions`,
+  along with an interim mitigation (refuse the filler at the gate, route to hybrid). What was
+  never filed is the residual that mitigation left: the default `classify()` still returned zero
+  rows, and that test passed only via `classify_n2`. `ObjectPropertyDomain(r, P ⊓ Q)` + `X ⊑ ∃r.B` entails
   `X ⊑ P` and `X ⊑ Q`. **`classify --json` returns `direct_subsumptions: []` with
   `incomplete: false` and `dropped: {}`** under `# mode: hybrid` /
   `# fragment: Horn (trust_sat sound by construction; hyper Horn fixpoint is complete)`, while
@@ -1787,6 +1803,20 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `X ⊑ ∃r.B` + `∃r.(B ⊓ P) ⊑ W` misses `X ⊑ W` with the identical signature (`subclass` proves it,
   `TRUST_SAT=0`/`HYPERTABLEAU=0` do not recover it, `SAME_TIER=1` does), and of the 14 ORE
   candidates **13 are `Range` against 4 `Domain`**. A fix touching only `role_domains` closes half.
+  (Frame corrected: the superset is **27**, not 14 — see the note above.)
+  **RETRACTION (2026-09-06) — the `ore_ont_4796` "2 entailments gained" recorded below is NOT the
+  fix's effect, and the corpus reward for this class of fix is measured ZERO.** That measurement
+  compared `RUSTDL_CLASSIFY_SAME_TIER=0` vs `=1` **within one binary**, which measures the FLAG,
+  not a code change — the same gain is present in the pre-#112 binary. Two *pinned binaries* over
+  the corrected 27-ontology frame give **45 IDENTICAL / 0 DIFFER / 2 UNMEASURED / 0 lost
+  entailments** and **zero fragment-routing movers across all 1,920**; and `ore_ont_4796` provably
+  cannot be affected, since all four of its conjunctive fillers carry `ObjectComplementOf` (which
+  the decomposition declines) and it is `OutOfFragment` in both arms.
+  **This file already carried the rule that would have caught it**, from the label-cache probe
+  work: *measuring a flag's effect and measuring the ship delta are different questions.* Using
+  the flag as a proxy was legitimate while no fix existed — it was the only way to observe the
+  defect — and stopped being legitimate the moment a real binary was diffable. The figure went
+  zero → non-zero → zero, and only the last was measured the right way.
   **`DisjointClasses(A ⊓ B, C)` — the OTHER hole in the same two-list analysis — is CLEAN**
   (`D` correctly unsatisfiable): disjointness surfaces as an unsat class, which never enters the
   tier walk, whereas a domain/range fold needs a positive subsumption derived, which does.
@@ -1798,7 +1828,7 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   [[tests-that-pin-the-bug]], applied to choosing a REPRODUCER rather than a fixture.
   **Filed as #110. Corpus reach MEASURED and it is ZERO**: two-arm run (`RUSTDL_CLASSIFY_SAME_TIER`
   0 vs 1, arm order alternated, triple compared) over the 14 conjunctive-`Domain`/`Range`-filler
-  ORE ontologies — **13 IDENTICAL, 0 gained, 0 lost, 1 UNMEASURED** (`ore_ont_10080`, which DNFs SYMMETRICALLY at a
+  ORE ontologies — **RETRACTED, see below** — **13 IDENTICAL, 0 gained, 0 lost, 1 UNMEASURED** (`ore_ont_10080`, which DNFs SYMMETRICALLY at a
   600 s cap sequentially on an idle host — 600 s / 601 s, both arms — so it is out of reach, not a
   contention artifact). **`ore_ont_12451` was nearly recorded as a LOSS and was not one:** at 600 s
   its `=0` arm finished in 230 s while `=1` hit the cap, a ONE-SIDED timeout, which is the shape

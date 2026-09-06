@@ -3147,11 +3147,16 @@ fn collect_el_rules_with_provenance(
                 }
                 disjt_cur += count;
             }
-            Axiom::ObjectPropertyDomain { role, domain } => {
-                if !role.is_inverse()
-                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*domain)
-                {
-                    domain_axiom_refs.push((role.role_id(), *id, ax_idx));
+            Axiom::ObjectPropertyDomain { role, domain } if !role.is_inverse() => {
+                // Mirrors the real Pass 1's `decompose_role_filler` call: a
+                // conjunctive domain pushes one `(role, atom, ax_idx)` per
+                // decomposed atomic, so the `domain_axiom_refs.find` lookups
+                // at the `DomainSub`/`DomainFact` record sites resolve every
+                // conjunct back to this axiom, not just an atomic filler.
+                let mut atoms = Vec::new();
+                decompose_role_filler(*domain, &internal.concepts, &mut atoms);
+                for id in atoms {
+                    domain_axiom_refs.push((role.role_id(), id, ax_idx));
                 }
             }
             Axiom::SubObjectPropertyOf {
@@ -3215,17 +3220,9 @@ fn collect_el_rules_with_provenance(
         // up as a wrong or missing proof rather than a wrong answer.
         for ax in &internal.axioms {
             match ax {
-                Axiom::ObjectPropertyRange { role, range }
-                    if !role.is_inverse()
-                        && matches!(internal.concepts.get(*range), ConceptExpr::Atomic(_)) =>
-                {
-                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
-                        mini_rules
-                            .role_ranges
-                            .entry(role.role_id())
-                            .or_default()
-                            .push(*id);
-                    }
+                Axiom::ObjectPropertyRange { role, range } if !role.is_inverse() => {
+                    let entry = mini_rules.role_ranges.entry(role.role_id()).or_default();
+                    decompose_role_filler(*range, &internal.concepts, entry);
                 }
                 Axiom::SubObjectPropertyOf {
                     sub: SubRolePath::Chain(parts),
@@ -3429,6 +3426,61 @@ fn collect_el_rules_with_provenance(
     (rules, tseitin, total_classes, Some(trace))
 }
 
+/// Decompose an `ObjectPropertyDomain` / `ObjectPropertyRange` filler into the
+/// ATOMIC classes the saturator's `role_domains` / `role_ranges` can hold,
+/// pushing each onto `sink`. Returns `true` iff the filler decomposed
+/// **completely**.
+///
+/// `Domain(r, P ⊓ Q)` is logically identical to `Domain(r,P) ∧ Domain(r,Q)`
+/// (likewise `Range`), so this is sound and completeness-preserving by
+/// construction — the same identity argument as `flatten_union_of_oneofs`
+/// (#42 item 1) and #81's range fold, not an approximation.
+///
+/// **Partial decomposition is deliberate and sound.** `P ⊓ ∃s.C` yields `P`
+/// alone: a WEAKER (larger) domain than the axiom states, which derives fewer
+/// subsumptions and never a wrong one. Contrast `DataUnionOf`, where keeping
+/// half a union NARROWS a range and manufactures clashes — there all-or-nothing
+/// is load-bearing, here it is not.
+///
+/// **The `bool` is what the fragment gates consume**, and it is why this
+/// function is `pub`. A gate that re-implemented "is this filler decomposable?"
+/// could drift from what this actually processes, and a conjunct the engine
+/// silently skipped inside a complete-certified fragment is exactly the D10 bug
+/// class. One function, no drift — the same reasoning that factored out
+/// `abox_saturation_inconsistent`.
+///
+/// `Bot` returns `false` **without** pushing: `Domain(r, ⊥)` is handled earlier
+/// by `poisoned_roles`, so this function never sees it on the engine path;
+/// `is_processed_role_filler` re-admits it explicitly for the gates.
+///
+/// **Nested `⊥`/`⊤` are UNCONSTRUCTIBLE, so those arms are defensive, not live.**
+/// `ConceptPool::and` collapses `And([P, ⊥])` to `⊥` and drops `⊤`
+/// (`ir.rs:367-390`), `intern_raw` is private, and `convert.rs`/`normalize.rs`
+/// build conjunctions only through `.and(`. So `P ⊓ ⊥` reaches the engine as a
+/// bare `⊥` and correctly poisons the role — a STRONGER outcome than this
+/// function would give. Do not describe that path as if it executes.
+pub fn decompose_role_filler(c: ConceptId, pool: &ConceptPool, sink: &mut Vec<ClassId>) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Atomic(id) => {
+            sink.push(*id);
+            true
+        }
+        // `Domain(r, ⊤)` states nothing; vacuously complete, nothing to push.
+        ConceptExpr::Top => true,
+        ConceptExpr::And(ops) => {
+            let mut complete = true;
+            for op in ops {
+                // Deliberately NOT short-circuiting: every atomic conjunct is
+                // entailed and worth pushing even when a sibling is not
+                // representable.
+                complete &= decompose_role_filler(*op, pool, sink);
+            }
+            complete
+        }
+        _ => false,
+    }
+}
+
 fn collect_el_rules(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
@@ -3462,12 +3514,9 @@ fn collect_el_rules(
                     // no individual may be an r-source. Poison the role so that
                     // any class deriving `∃r.X` is marked unsatisfiable.
                     rules.poisoned_roles.insert(role.role_id());
-                } else if let ConceptExpr::Atomic(id) = internal.concepts.get(*domain) {
-                    rules
-                        .role_domains
-                        .entry(role.role_id())
-                        .or_default()
-                        .push(*id);
+                } else {
+                    let entry = rules.role_domains.entry(role.role_id()).or_default();
+                    decompose_role_filler(*domain, &internal.concepts, entry);
                 }
             }
             Axiom::ObjectPropertyRange { role, range } => {
@@ -3478,12 +3527,9 @@ fn collect_el_rules(
                     // r-edge can exist in any model. Poison the role so that any
                     // class deriving `∃r.X` is marked unsatisfiable.
                     rules.poisoned_roles.insert(role.role_id());
-                } else if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
-                    rules
-                        .role_ranges
-                        .entry(role.role_id())
-                        .or_default()
-                        .push(*id);
+                } else {
+                    let entry = rules.role_ranges.entry(role.role_id()).or_default();
+                    decompose_role_filler(*range, &internal.concepts, entry);
                 }
             }
             Axiom::SubObjectPropertyOf {
@@ -5095,6 +5141,106 @@ fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<Role
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decompose_pushes_every_atomic_conjunct_and_reports_complete() {
+        let mut pool = ConceptPool::default();
+        let p = pool.atomic(owl_dl_core::ClassId::new(0));
+        let q = pool.atomic(owl_dl_core::ClassId::new(1));
+        let and = pool.and([p, q]);
+        let mut sink = Vec::new();
+        assert!(
+            decompose_role_filler(and, &pool, &mut sink),
+            "fully decomposable"
+        );
+        assert_eq!(sink.len(), 2, "both conjuncts pushed");
+    }
+
+    /// PARTIAL: `P ⊓ (Q ⊔ R)` pushes `P` and reports INCOMPLETE. A disjunction is
+    /// used as the non-decomposable conjunct because it needs no `Role`, keeping
+    /// the unit test free of role-hierarchy setup.
+    #[test]
+    fn decompose_reports_incomplete_but_still_pushes_the_atomic_half() {
+        let mut pool = ConceptPool::default();
+        let p = pool.atomic(owl_dl_core::ClassId::new(0));
+        let q = pool.atomic(owl_dl_core::ClassId::new(1));
+        let r = pool.atomic(owl_dl_core::ClassId::new(2));
+        let or = pool.or([q, r]);
+        let and = pool.and([p, or]);
+        let mut sink = Vec::new();
+        assert!(
+            !decompose_role_filler(and, &pool, &mut sink),
+            "not complete"
+        );
+        assert_eq!(sink.len(), 1, "the atomic conjunct is still pushed");
+    }
+
+    /// ORDER-INDEPENDENCE, and what sabotage #5 (short-circuiting the `And` loop)
+    /// is caught by.
+    ///
+    /// **`ConceptPool::and` SORTS its operands by `ConceptId`** (`ir.rs:385-386`,
+    /// `sort_unstable` + `dedup`), so argument order at the call site is NOT the
+    /// order the loop sees — INTERN order is. Interning `p` first therefore makes
+    /// `pool.and([or, p])` intern to the same `And([p, or])` as the previous test,
+    /// where a short-circuiting loop still pushes `p` and the test passes
+    /// VACUOUSLY. Intern the disjunction FIRST so its id is lower and it is
+    /// visited first.
+    #[test]
+    fn decompose_does_not_short_circuit_when_the_bad_conjunct_sorts_first() {
+        let mut pool = ConceptPool::default();
+        // Intern order is what matters: `or` must get a LOWER id than `p`.
+        let q = pool.atomic(owl_dl_core::ClassId::new(1));
+        let r = pool.atomic(owl_dl_core::ClassId::new(2));
+        let or = pool.or([q, r]);
+        let p = pool.atomic(owl_dl_core::ClassId::new(0));
+        let and = pool.and([or, p]);
+        assert!(
+            or < p,
+            "guard: the fixture is only meaningful if `or` sorts first"
+        );
+        let mut sink = Vec::new();
+        assert!(!decompose_role_filler(and, &pool, &mut sink));
+        assert_eq!(
+            sink.len(),
+            1,
+            "the atomic conjunct is pushed regardless of order"
+        );
+    }
+
+    /// FP GUARD: a bare disjunction decomposes to NOTHING. `Domain(r, P ⊔ Q)`
+    /// does not entail `Domain(r, P)`.
+    #[test]
+    fn decompose_declines_a_disjunction_and_pushes_nothing() {
+        let mut pool = ConceptPool::default();
+        let p = pool.atomic(owl_dl_core::ClassId::new(0));
+        let q = pool.atomic(owl_dl_core::ClassId::new(1));
+        let or = pool.or([p, q]);
+        let mut sink = Vec::new();
+        assert!(!decompose_role_filler(or, &pool, &mut sink));
+        assert!(sink.is_empty(), "a disjunct is not a domain — FP guard");
+    }
+
+    /// `Top` states nothing and is vacuously complete: `Domain(r, ⊤)` must be
+    /// admitted by the gate (it adds no constraint) while pushing no class.
+    #[test]
+    fn decompose_treats_top_as_complete_and_pushes_nothing() {
+        let mut pool = ConceptPool::default();
+        let top = pool.top();
+        let mut sink = Vec::new();
+        assert!(decompose_role_filler(top, &pool, &mut sink));
+        assert!(sink.is_empty());
+    }
+
+    /// `Bot` declines WITHOUT pushing — it is handled earlier by
+    /// `poisoned_roles`, and `is_processed_role_filler` re-admits it explicitly.
+    #[test]
+    fn decompose_declines_bot_without_pushing() {
+        let mut pool = ConceptPool::default();
+        let bot = pool.bot();
+        let mut sink = Vec::new();
+        assert!(!decompose_role_filler(bot, &pool, &mut sink));
+        assert!(sink.is_empty());
+    }
 
     #[test]
     fn id_matrix_dense_and_sparse_are_semantically_identical() {

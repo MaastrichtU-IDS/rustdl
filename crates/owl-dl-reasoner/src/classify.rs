@@ -2119,21 +2119,20 @@ fn is_atomic_concept(c: ConceptId, pool: &ConceptPool) -> bool {
     matches!(pool.get(c), ConceptExpr::Atomic(_))
 }
 
-/// True if `c` is a concept that the engine handles completely for
-/// `ObjectPropertyDomain` / `ObjectPropertyRange` filler positions:
-/// - `Atomic` — stored in `role_domains` / `role_ranges` and propagated.
-/// - `Bot`    — stored in `poisoned_roles`; any `∃r.*` class becomes unsat.
-/// - `Top`    — dropped by the engine, but semantically trivial: `Domain(r, ⊤)`
-///   adds no subsumptions, so dropping it is sound (no missed entailment).
+/// True iff a Domain/Range filler is one the saturator processes IN FULL.
 ///
-/// Everything else (`And`, `Some`, `Or`, …) is silently dropped by the engine
-/// while potentially entailing real subsumptions — those MUST fall to the hybrid
-/// path.  See `collect_el_rules`, the `ObjectPropertyDomain` arm.
-fn is_atomic_or_trivial_concept(c: ConceptId, pool: &ConceptPool) -> bool {
-    matches!(
-        pool.get(c),
-        ConceptExpr::Atomic(_) | ConceptExpr::Bot | ConceptExpr::Top
-    )
+/// Delegates to `owl_dl_saturation::decompose_role_filler` and reads only its
+/// completeness flag, so the gate cannot drift from what the engine actually
+/// does. Re-implementing the predicate here is how D10 bugs are born — see that
+/// function's doc.
+///
+/// `Bot` is admitted explicitly because the engine handles it via
+/// `poisoned_roles` *before* the decomposer is reached, so the decomposer
+/// legitimately returns `false` for it.
+fn is_processed_role_filler(c: ConceptId, pool: &ConceptPool) -> bool {
+    let mut sink = Vec::new();
+    owl_dl_saturation::decompose_role_filler(c, pool, &mut sink)
+        || matches!(pool.get(c), ConceptExpr::Bot)
 }
 
 fn is_el_axiom(ax: &Axiom, pool: &ConceptPool, bare: &BareRoleDecls) -> bool {
@@ -2181,10 +2180,10 @@ fn is_el_axiom(ax: &Axiom, pool: &ConceptPool, bare: &BareRoleDecls) -> bool {
         // `Atomic`, `Bot` (handled by `poisoned_roles`), and `Top` (trivially `⊤`
         // — `Domain(r, ⊤)` adds no subsumptions, so dropping it is sound).
         Axiom::ObjectPropertyDomain { role, domain } => {
-            !role.is_inverse() && is_atomic_or_trivial_concept(*domain, pool)
+            !role.is_inverse() && is_processed_role_filler(*domain, pool)
         }
         Axiom::ObjectPropertyRange { role, range } => {
-            !role.is_inverse() && is_atomic_or_trivial_concept(*range, pool)
+            !role.is_inverse() && is_processed_role_filler(*range, pool)
         }
         Axiom::DeclareClass(_)
         | Axiom::DeclareObjectProperty(_)
@@ -2572,10 +2571,10 @@ fn is_saturator_axiom(
         // `Atomic`, `Bot`, and `Top` fillers are handled by the engine; see the
         // comment on `is_el_axiom`'s Domain/Range arms above.
         Axiom::ObjectPropertyDomain { role, domain } => {
-            !role.is_inverse() && is_atomic_or_trivial_concept(*domain, pool)
+            !role.is_inverse() && is_processed_role_filler(*domain, pool)
         }
         Axiom::ObjectPropertyRange { role, range } => {
-            !role.is_inverse() && is_atomic_or_trivial_concept(*range, pool)
+            !role.is_inverse() && is_processed_role_filler(*range, pool)
         }
         Axiom::DeclareClass(_)
         | Axiom::DeclareObjectProperty(_)

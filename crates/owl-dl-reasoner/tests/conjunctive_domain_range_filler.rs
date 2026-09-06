@@ -236,3 +236,53 @@ fn prove_attributes_the_conjunctive_range_folded_subsumer_to_its_axiom() {
          per-axiom rule-slot cursor and silently drops this attribution"
     );
 }
+
+use owl_dl_core::convert::convert_ontology;
+use owl_dl_reasoner::{FragmentClassification as FC, analyze_fragment};
+
+fn fragment_of(body: &str) -> FC {
+    let src = format!("Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/t>\n{body}\n)\n");
+    let mut cur = std::io::Cursor::new(src);
+    let (onto, _): (
+        horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+        _,
+    ) = horned_owl::io::ofn::reader::read(&mut cur, horned_owl::io::ParserConfiguration::default())
+        .expect("parse");
+    analyze_fragment(&convert_ontology(&onto).expect("convert"))
+}
+
+/// The gate must move WITH the engine: a fully-decomposable filler is now
+/// processed, so the ontology belongs on the pure-EL fast path.
+#[test]
+fn a_fully_decomposable_filler_is_admitted_to_pure_el() {
+    let body = format!(
+        "{DECLS}
+         SubClassOf(:X ObjectSomeValuesFrom(:r :B))
+         ObjectPropertyDomain(:r ObjectIntersectionOf(:P :Q))"
+    );
+    assert_eq!(fragment_of(&body), FC::PureEl);
+}
+
+/// THE LOAD-BEARING NEGATIVE. A partially-decomposable filler leaves `∃s.S`
+/// unprocessed by the engine, so admitting it to a complete-certified fragment
+/// would be a FRESH D10 — the exact bug class this fix exists to close.
+#[test]
+fn a_partially_decomposable_filler_is_refused_by_the_gate() {
+    let body = format!(
+        "{DECLS}
+         SubClassOf(:X ObjectSomeValuesFrom(:r :B))
+         ObjectPropertyDomain(:r ObjectIntersectionOf(:P ObjectSomeValuesFrom(:s :S)))"
+    );
+    assert_ne!(fragment_of(&body), FC::PureEl);
+}
+
+/// A disjunctive filler is not decomposable and must stay out of the fragment.
+#[test]
+fn a_disjunctive_filler_is_refused_by_the_gate() {
+    let body = format!(
+        "{DECLS}
+         SubClassOf(:X ObjectSomeValuesFrom(:r :B))
+         ObjectPropertyDomain(:r ObjectUnionOf(:P :Q))"
+    );
+    assert_ne!(fragment_of(&body), FC::PureEl);
+}

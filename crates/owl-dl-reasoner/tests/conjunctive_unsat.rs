@@ -863,31 +863,38 @@ fn disjoint_all_atomic_members_stays_on_fast_path() {
 // ─── Bug B: non-atomic ObjectPropertyDomain silently dropped ─────────────────
 //
 // `ObjectPropertyDomain(:r ObjectIntersectionOf(:P :Q))` has a conjunctive filler.
-// The engine's `role_domains` collector accepts ONLY `ConceptExpr::Atomic` fillers
-// (lines 3167-3172); `ObjectIntersectionOf` is silently dropped, so neither `:P`
-// nor `:Q` end up in `role_domains[:r]`.  The old gate (`is_el_concept` / `is_saturator_concept`
-// both admit `And`) passed this axiom to the fast path where it became a no-op,
-// reporting "complete" while missing `X ⊑ P` and `X ⊑ Q`.
+// At the time this fixture was written, the engine's `role_domains` collector
+// accepted ONLY `ConceptExpr::Atomic` fillers, so `ObjectIntersectionOf` was
+// silently dropped and neither `:P` nor `:Q` ended up in `role_domains[:r]`. The
+// gate of the day (`is_el_concept` / `is_saturator_concept`, both of which admit
+// `And`) passed this axiom to the fast path where it became a no-op, reporting
+// "complete" while missing `X ⊑ P` and `X ⊑ Q`. The interim mitigation was a
+// gate-only tightening (`is_atomic_or_trivial_concept`) that REFUSED this shape,
+// forcing the slower-but-correct hybrid/tableau path.
+//
+// **Issue #110 fixed this at the root**: `owl_dl_saturation::decompose_role_filler`
+// now decomposes a fully-conjunctive filler into its atomic conjuncts and the
+// saturator processes all of them directly, so the gate
+// (`is_processed_role_filler`, née `is_atomic_or_trivial_concept`) now ADMITS
+// this exact shape to the saturation-only fast path — correctly, because the
+// engine that path uses no longer drops anything. This test used to assert the
+// interim mitigation (`!stats.pure_el_mode`); that assertion is now WRONG on
+// purpose, not broken — see [[tests-that-pin-the-bug]]. Flipped below.
 
-/// BUG B REPRODUCER. Non-atomic `ObjectPropertyDomain` silently dropped.
+/// BUG B REPRODUCER, RETARGETED FOR #110. Non-atomic `ObjectPropertyDomain`
+/// used to be silently dropped by the fast path; now the fast path itself
+/// derives both entailed subsumptions.
 /// `ObjectPropertyDomain(:r ObjectIntersectionOf(:P :Q))` + `SubClassOf(:X ObjectSomeValuesFrom(:r owl:Thing))`
-/// entails `X ⊑ P` and `X ⊑ Q`.  With the old gate, zero subsumptions appear
-/// under the "complete" banner.
+/// entails `X ⊑ P` and `X ⊑ Q`.
 ///
 /// # Why `classify_n2` here, not `classify`
 ///
-/// P, Q, and X all have saturation-subsumer-count 0 (the conjunctive domain filler
-/// is invisible to the EL saturator), so the default top-down `classify()` places
-/// all three in a single flat tier — it never generates the pair (X, P) to test.
-/// The N² path (`classify_n2`) tests ALL pairs and correctly finds the subsumptions
-/// via the tableau.  The gate fix is what makes the N² path's verdict trustworthy:
-/// before the fix the ontology was certified "pure-EL complete" and the fast-path
-/// saturator returned 0; after the fix it falls through to the N² hybrid tableau,
-/// which finds X ⊑ P and X ⊑ Q.
-///
-/// `is_subclass_of` (one-shot satisfiability probe) would find X ⊑ P BEFORE the
-/// fix too — it never touches the classify gate — so it cannot serve as a
-/// fail-then-pass test.
+/// Kept for parity with the original fixture and because it is still the
+/// stronger check (it tests ALL pairs regardless of saturation-derived tier
+/// ordering, rather than relying on the top-down walk to have generated the
+/// (X, P) pair). Post-#110, `classify()`'s own top-down walk generates this
+/// pair too (verified separately), but `classify_n2` remains the check that
+/// cannot be defeated by a future tier-walk change.
 #[test]
 fn domain_conjunctive_filler_derives_subsumptions() {
     let body = "    Declaration(Class(:P))
@@ -909,29 +916,28 @@ fn domain_conjunctive_filler_derives_subsumptions() {
         c.is_subclass("http://t/X", "http://t/Q"),
         "Bug B: X ⊑ ∃r.⊤ + Domain(r)=P⊓Q entails X ⊑ Q"
     );
-    // Verify the gate fix is WHY it passes, not some incidental reason.
+    // Verify the #110 fix is WHY it passes, not some incidental reason.
     //
-    // `pure_el_mode` is the DIRECT signal: the bug was that this ontology was
-    // admitted to the saturation-only fast path, whose engine drops a
-    // conjunctive domain filler, while the closure was reported complete. The
-    // fix rejects that filler at the gate, so the ontology must NOT be in
-    // `pure_el_mode`. Asserting only "some subsumption query ran" is weaker —
-    // it would still hold if a later edit to this fixture (say adding a
-    // `FunctionalRole`) forced the hybrid path for an unrelated reason, leaving
-    // the gate fix untested.
+    // `pure_el_mode` is the DIRECT signal: post-#110, the saturator processes a
+    // fully-decomposable conjunctive filler completely, so this ontology
+    // belongs on the saturation-only fast path and the gate must ADMIT it —
+    // the opposite of the pre-#110 interim mitigation this test used to pin.
+    // Asserting only "some subsumption query ran" is weaker — it would still
+    // hold if a later edit to this fixture (say adding a `FunctionalRole`)
+    // forced the hybrid path for an unrelated reason, leaving the #110 fix
+    // untested.
     let stats = c.stats();
     assert!(
-        !stats.pure_el_mode,
-        "Bug B: the conjunctive domain filler must keep this ontology OFF the \
-         saturation-only fast path (that path drops the filler while reporting a \
-         complete closure — the bug)"
+        stats.pure_el_mode,
+        "#110: a fully-decomposable conjunctive domain filler must now be \
+         admitted to the saturation-only fast path — the engine processes it \
+         completely, so the gate refusing it would itself be a stale D10 gap"
     );
     assert!(
-        stats.saturation_subsumption_hits + stats.tableau_subsumption_calls > 0,
-        "Bug B: the hybrid engine must have issued subsumption queries \
-         (saturation_hits={}, tableau_calls={})",
-        stats.saturation_subsumption_hits,
-        stats.tableau_subsumption_calls
+        stats.saturation_subsumption_hits > 0,
+        "#110: the fast-path saturator must have derived both subsumptions \
+         directly (saturation_hits={})",
+        stats.saturation_subsumption_hits
     );
 }
 

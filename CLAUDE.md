@@ -1858,6 +1858,52 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   paths can label one logical nested-existential witness differently and get deduped into two
   separate elements — not shown unsound, but untested against a future concept-level check).
 
+> **A NON-ATOMIC GCI DOMAIN HEAD WAS DISCARDED, NOT DROPPED (2026-09-06, #114, unflagged) — THE
+> SAME D10 FAMILY AS #110, ONE SPELLING OVER.** `SubClassOf(ObjectSomeValuesFrom(:r owl:Thing), C)`
+> is the GCI spelling of `ObjectPropertyDomain(r, C)`. Its arm pushed
+> `atomic_operands_on_right(sup, pool)` into `role_domains`, and that helper keeps only `Atomic`
+> operands and returns `Vec::new()` for anything else — so `∃r.⊤ ⊑ ∃s.S` pushed **nothing** and the
+> axiom vanished, while `is_el_concept` admits `∃s.S`, so the gate certified the ontology
+> **pure-EL**, the fragment where the saturator runs alone and no tableau follows. `classify`
+> returned ZERO rows with `incomplete: false` and `dropped: {}` where **both Konclude and HermiT**
+> derive `X ⊑ Z`. The mixed head `P ⊓ ∃s.S` was subtler: the atomic conjunct survived, so the answer
+> looked partially right. Fixed by routing the head through
+> `atomic_or_tseitin_body_with_extras` — the same lowering every other RHS site uses, which for an
+> `∃` body mints the EQUIVALENT (two-way) marker, so a downstream `∃s.S ⊑ Z` trigger fires on it.
+> Splitting `⊑ C₁ ⊓ … ⊓ Cₙ` is a logical identity, hence unflagged.
+>
+> **THREE SABOTAGES SURVIVED AND THE FIX WAS THE ANSWER, NOT MORE TESTS.** Round 1: dropping the
+> helper's own `And` split, and a `Top` conjunct pushing `ClassId::new(0)`, both left all six
+> canaries green. Round 2: dropping the `Atomic` fast path did too. All three were **equivalent
+> mutations of branches nothing needed** — `atomic_or_tseitin_body_with_extras` already lowers a
+> conjunctive head and already returns the bare id for an atomic one. **The branches were DELETED
+> rather than pinned**, reducing the helper to one path and making those three mutations
+> unconstructible. Writing a canary for a branch that is provably redundant records coverage you do
+> not have. What remains is caught: reverting to `atomic_operands_on_right` fails 3 tests, and a
+> non-atomic arm returning nothing fails 3.
+>
+> **CORPUS REACH IS PROVABLY ZERO, AND THE FIRST INSTRUMENT SAID 91.** A census over the **157** ORE
+> ontologies carrying a GCI-domain axiom finds **0 of 157** with a non-atomic head, across **8,585**
+> such axioms — the changed arm cannot fire on ORE. The first pass reported **91** because the
+> regex truncated heads at 50 characters and read a bare `<http://…>` IRI as non-atomic; the
+> corrected extractor balances parens. Two-arm sweep over those 157, pinned binaries: **154
+> IDENTICAL / 3 BOTH_DNF / 0 DIFFER**. So the sweep is non-regression evidence only and the real
+> evidence is 6 canaries plus the Konclude/HermiT adjudication — the same verdict as #110, #84 and
+> #42 item 2, where the axioms exist but the CONSUMER pattern does not.
+>
+> **A SIBLING GAP THE ISSUE DOES NOT REPORT, MEASURED AND LEFT OPEN.** The AXIOM spelling
+> `ObjectPropertyDomain(r, ∃s.S)` still misses, confirmed by both oracles. Its Pass-1 arm runs
+> during axiom collection, **before `effective_ranges` is built**, so the marker machinery this fix
+> uses is not available there; closing it means moving the arm or deferring it to Pass 2, which is a
+> larger change than #114 asks for. Pinned by
+> `a_nonatomic_domain_on_the_axiom_spelling_is_a_known_sibling_miss`, which asserts the CURRENT
+> (missing) behaviour and instructs a future fix to FLIP it rather than delete it — see
+> [[tests-that-pin-the-bug]].
+>
+> Canaries `crates/owl-dl-reasoner/tests/gci_domain_nonatomic_head.rs` (6, incl. an atomic-head
+> discriminating control and an FP guard on a source with no `r`-successor). Gates: suite 1970/0;
+> FP=0 net 12 VERIFIED, every closure exact; clippy `--all-targets --all-features` exit 0.
+
 > **CHAIN-INDUCED RANGE FOLDING (2026-09-05, #84, unflagged) — THE SIBLING OF #81, KEYED ON A
 > ROLE PAIR.** `Chain(t,u) ⊑ r` + `Range(r,F)` + `C ⊑ ∃t.∃u.A` + `∃t.∃u.F ⊑ D` entails `C ⊑ D`,
 > and `classify` reported only `F ⊑ G` with **`incomplete: false`** — the D10 shape. `HermiT`

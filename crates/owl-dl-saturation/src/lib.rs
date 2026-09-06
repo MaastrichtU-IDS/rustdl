@@ -4214,13 +4214,17 @@ fn lower_sub_class_of(
                     rules.poisoned_roles.insert(role.role_id());
                     return;
                 }
-                for head in atomic_operands_on_right(sup, pool) {
-                    rules
-                        .role_domains
-                        .entry(role.role_id())
-                        .or_default()
-                        .push(head);
-                }
+                // #114: was `atomic_operands_on_right`, which DISCARDED every
+                // non-atomic conjunct — so `∃r.⊤ ⊑ ∃s.S` pushed nothing and the
+                // axiom vanished under a pure-EL completeness banner. See
+                // `domain_heads_el`.
+                let heads =
+                    domain_heads_el(sup, pool, rules, tseitin, effective_ranges, chain_ranges);
+                rules
+                    .role_domains
+                    .entry(role.role_id())
+                    .or_default()
+                    .extend(heads);
                 return;
             }
             // Task 2b Bug 2: `∃r.A ⊑ ⊥`. `atomic_operands_on_right(Bot, _)` returns
@@ -4463,6 +4467,72 @@ fn nested_extras(
     out.sort_unstable_by_key(|c| c.index());
     out.dedup();
     out
+}
+
+/// The domain subsumers of a GCI head `C` in `∃r.⊤ ⊑ C`, lowering NON-ATOMIC
+/// conjuncts to markers instead of discarding them (#114).
+///
+/// `∃r.⊤ ⊑ C` is the GCI spelling of `ObjectPropertyDomain(r, C)`, and
+/// `⊑ C₁ ⊓ … ⊓ Cₙ` is exactly `⊑ C₁` and … and `⊑ Cₙ`, so splitting the head is a
+/// logical identity. Each conjunct then becomes a `role_domains` entry.
+///
+/// **The bug this closes was the worst shape in this file's D10 family.**
+/// `atomic_operands_on_right` keeps only `Atomic` operands and returns
+/// `Vec::new()` for anything else, so `∃r.⊤ ⊑ ∃s.S` pushed NOTHING and the axiom
+/// vanished — while `is_el_concept` admits `∃s.S`, so the gate certified the
+/// ontology **pure-EL**, the fragment where the saturator is claimed complete on
+/// its own and no tableau runs at all. `classify` returned zero rows with
+/// `incomplete: false` and `dropped: {}` where both Konclude and `HermiT` derive
+/// `X ⊑ Z`. The mixed head `P ⊓ ∃s.S` was subtler still: the atomic conjunct
+/// survived, so the answer looked partially right.
+///
+/// A non-atomic conjunct is lowered by the same
+/// `atomic_or_tseitin_body_with_extras` every other RHS site uses, which for an
+/// `∃` body mints the EQUIVALENT (two-way) marker — that is what makes the head's
+/// own consequences reachable, so a downstream `∃s.S ⊑ Z` trigger fires on the
+/// marker and the domain carries `Z` through to every `r`-source.
+///
+/// **The gate and this decomposer are aligned by construction, which is the point.**
+/// `is_el_concept` admits exactly `Top` / `Atomic` / `Bot` / `And` of those /
+/// `Some(non-inverse, …)`; `Bot` and `Top` heads are handled by their own arms
+/// before this is reached, and the marker machinery covers `Atomic`, `And` and
+/// `Some`. So on any head the gate is willing to certify pure-EL, the lowering
+/// succeeds. A head that does NOT lower is by that token outside the certified
+/// fragment, and returning nothing for it is the pre-existing sound
+/// under-approximation — never a silent miss under a completeness claim.
+///
+/// **ONE PATH, BY DELIBERATE SUBTRACTION.** Earlier versions split the top-level
+/// `And` themselves and short-circuited an `Atomic` head. Sabotage showed BOTH
+/// branches were equivalent-not-load-bearing: removing either left all six canaries
+/// green, because `atomic_or_tseitin_body_with_extras` already lowers a conjunctive
+/// head (through `atomic_classes_with_existential_markers`) and already returns the
+/// bare id for an atomic one. Rather than add tests pinning branches nothing needs,
+/// the branches are gone — the two mutations that survived are now unconstructible.
+/// If profiling ever wants the atomic short-circuit back, note that it is a pure
+/// optimisation whose absence no canary can detect.
+///
+/// Sound in the FP direction regardless: every id returned is a genuine subsumer of
+/// the head, so a domain entry can only add entailed consequences.
+fn domain_heads_el(
+    sup: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
+) -> Vec<ClassId> {
+    atomic_or_tseitin_body_with_extras(
+        sup,
+        &[],
+        pool,
+        rules,
+        tseitin,
+        effective_ranges,
+        chain_ranges,
+        None,
+    )
+    .into_iter()
+    .collect()
 }
 
 /// The atomic conjuncts of a domain/range filler, or `None` if any part is not

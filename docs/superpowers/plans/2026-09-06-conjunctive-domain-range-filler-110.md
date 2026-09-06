@@ -46,7 +46,7 @@ must state which of the four now share a call site and which do not.
 ### Task 1: Shared decomposer + engine wiring
 
 **Files:**
-- Modify: `crates/owl-dl-saturation/src/lib.rs` (new `pub fn decompose_role_filler`; the `ObjectPropertyDomain` arm at ~3457 and `ObjectPropertyRange` arm at ~3473)
+- Modify: `crates/owl-dl-saturation/src/lib.rs` (new `pub fn decompose_role_filler`; the `ObjectPropertyDomain` arm at ~3457 and `ObjectPropertyRange` arm at ~3473; the provenance mirrors at ~3150 and ~3218)
 - Test: `crates/owl-dl-reasoner/tests/conjunctive_domain_range_filler.rs` (new)
 
 **Interfaces:**
@@ -391,7 +391,21 @@ cargo test -p owl-dl-saturation decompose_
 
 Expected: 6 passed.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Wire the two PROVENANCE mirrors, or record the gap**
+
+`collect_el_rules_with_provenance` has its **own** Domain arm
+(`owl-dl-saturation/src/lib.rs:3150-3155`, `Atomic`-only, pushing `domain_axiom_refs`) and the
+mini Pass-1 range mirror at `:3218-3228` is likewise `Atomic`-only. That arm's own comment says it
+"must mirror the real Pass 1 exactly … any divergence shows up as a wrong or missing proof".
+
+After Task 1 those mirrors diverge: `rustdl prove` / `RUSTDL_PROOF=1` on a fact derived from a
+conjunctive filler gets an empty `axiom_refs` (the `.find(...)` at `:1639`/`:1860`/`:1882` returns
+`None`). **Answers are unaffected; proofs are.** Route both mirrors through
+`decompose_role_filler` in the same commit — that is the whole point of the shared function — and
+add a canary asserting `prove` attributes the conjunctive-domain subsumption to its axiom. If you
+choose not to wire them, say so explicitly in Task 5's write-up; do not leave it undiscovered.
+
+- [ ] **Step 9: Commit**
 
 ```sh
 git add crates/owl-dl-saturation/src/lib.rs crates/owl-dl-reasoner/tests/conjunctive_domain_range_filler.rs
@@ -405,6 +419,7 @@ git commit -m "fix(saturation): decompose a conjunctive Domain/Range filler (#11
 **Files:**
 - Modify: `crates/owl-dl-reasoner/src/classify.rs` (`is_atomic_or_trivial_concept:2132`; `is_el_axiom`'s Domain/Range arms at 2183/2186; `is_saturator_axiom`'s at 2574/2577)
 - Test: `crates/owl-dl-reasoner/tests/conjunctive_domain_range_filler.rs` (extend)
+- Modify: `crates/owl-dl-verify/tests/horn_widening_market.rs` (Step 5 retargets a test that pins this bug)
 
 **Interfaces:**
 - Consumes: `owl_dl_saturation::decompose_role_filler` from Task 1.
@@ -544,20 +559,6 @@ git add crates/owl-dl-reasoner/src/classify.rs crates/owl-dl-reasoner/tests/conj
 git commit -m "fix(classify): admit a fully-decomposable Domain/Range filler to the EL fragment (#110)"
 ```
 
-- [ ] **Step 8: Wire the two PROVENANCE mirrors, or record the gap**
-
-`collect_el_rules_with_provenance` has its **own** Domain arm
-(`owl-dl-saturation/src/lib.rs:3150-3155`, `Atomic`-only, pushing `domain_axiom_refs`) and the
-mini Pass-1 range mirror at `:3218-3228` is likewise `Atomic`-only. That arm's own comment says it
-"must mirror the real Pass 1 exactly … any divergence shows up as a wrong or missing proof".
-
-After Task 1 those mirrors diverge: `rustdl prove` / `RUSTDL_PROOF=1` on a fact derived from a
-conjunctive filler gets an empty `axiom_refs` (the `.find(...)` at `:1639`/`:1860`/`:1882` returns
-`None`). **Answers are unaffected; proofs are.** Route both mirrors through
-`decompose_role_filler` in the same commit — that is the whole point of the shared function — and
-add a canary asserting `prove` attributes the conjunctive-domain subsumption to its axiom. If you
-choose not to wire them, say so explicitly in Task 5's write-up; do not leave it undiscovered.
-
 ---
 
 ### Task 3: Oracle adjudication and the sabotage battery
@@ -642,6 +643,7 @@ git commit -m "docs: oracle adjudication + sabotage battery for #110"
 
 **Files:**
 - Create: `docs/benchmarks/2026-09-06-conjunctive-filler-sweep.md`
+- Create: `crates/owl-dl-reasoner/examples/fragment_probe.rs` (Step 4's gate-only routing probe)
 
 - [ ] **Step 1: Pin both binaries (S2)**
 
@@ -681,7 +683,7 @@ ore-10908 6001, pizza 499, alehif 247, ro 158, ore-15672 142, sulo 51, bibtex 16
 **Record this as INERTNESS, not correctness (S9):** corpus reach is measured zero, so a green net
 here demonstrates non-regression only. The evidence is Task 3.
 
-- [ ] **Step 3: Two-arm sweep over the 14 conjunctive-filler ontologies + 20 controls**
+- [ ] **Step 3: Two-arm sweep over the 27 conjunctive-filler ontologies + 20 controls**
 
 **The frame is 27, not 14.** An earlier scan reported 14 and was WRONG: its `break` fired after
 the first axiom body matching a broad construct regex, so an ontology whose first Domain/Range

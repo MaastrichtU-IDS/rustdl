@@ -4560,9 +4560,11 @@ fn domain_heads_el(
 /// `C` alone when `C` is atomic; each operand when `C` is an `And`, recursively
 /// — including operands that are themselves non-atomic, which contribute
 /// nothing rather than aborting the whole walk. `ObjectPropertyDomain(r, P ⊓ Q)`
-/// is `∃r.⊤ ⊑ P ⊓ Q`, which is exactly `∃r.⊤ ⊑ P` and `∃r.⊤ ⊑ Q` — a logical
-/// identity, hence sound and completeness-preserving by construction (#110).
-/// Before #110, only the fully-atomic case was accepted and a conjunctive
+/// is `∃r.⊤ ⊑ P ⊓ Q`, which is exactly `∃r.⊤ ⊑ P` and `∃r.⊤ ⊑ Q` — for a
+/// FULLY-ATOMIC filler this is a logical identity, hence sound and
+/// completeness-preserving by construction (#110); see the PARTIAL-case
+/// caveat below for a filler that isn't. Before #110, only the fully-atomic
+/// case was accepted and a conjunctive
 /// filler was silently DROPPED whole: `classify` returned zero rows with
 /// `incomplete: false` under a banner certifying the fragment complete, while
 /// both peer reasoners derived the pairs and rustdl's own `subclass` proved

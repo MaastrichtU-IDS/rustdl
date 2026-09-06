@@ -216,6 +216,12 @@ def format_pairs(pairs: Iterable[Pair], limit: int = 20) -> str:
 
 
 def diff(before_path: str, after_path: str) -> int:
+    """Print the BEFORE/AFTER closure diff. Returns 0 unconditionally --
+    THE EXIT CODE IS NOT A VERDICT: a non-empty `lost` set is not automatically
+    a regression (see the NOTE printed below), so this never fails a lost-pair
+    check by exit code alone. A caller wiring this into a gate must read and
+    adjudicate the printed output, not `$?`.
+    """
     before = load_classify_json(before_path)
     after = load_classify_json(after_path)
 

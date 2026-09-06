@@ -844,6 +844,33 @@ pub(crate) fn bucket_to_dkey_iri(b: RangeBucket) -> String {
 /// subsumption (and, for ∀, the `DisjointClasses` seeding). Returns `None`
 /// for any range the datatype machinery doesn't recognize, so the caller
 /// emits `UnsupportedDataRange` and the whole axiom drops (sound).
+/// Why the three `Data{Min,Max,Exact}Cardinality` arms pre-flatten their range.
+///
+/// A union of ENUMERATIONS is one enumeration — `{1} ⊔ {2}` IS `{1,2}` — and none
+/// of the per-datatype `lower_*_data_cardinality` parsers recognises a
+/// `DataUnionOf`, so without the flatten the whole axiom DROPPED (visibly, via
+/// `dropped`). OWL 2 Direct Semantics:
+///
+/// ```text
+/// DataMinCardinality( n DPE DR ) = { x | #{ y | (x,y) ∈ (DPE)^DP and y ∈ (DR)^DT } ≥ n }
+/// DataOneOf( lt1 ... ltn )       = { (lt1)^LT , ... , (ltn)^LT }
+/// ```
+///
+/// `#` counts DISTINCT values, so the flattened form denotes exactly the same set
+/// and the rewrite is a logical identity — sound and completeness-preserving by
+/// construction, for `≤` and `=` as much as for `≥`.
+///
+/// **NAME THE OPERATOR BEFORE CITING A PEER — they split, and in opposite
+/// directions.** On `≥n` over a union, `HermiT` is right while Konclude and `JFact`
+/// under-report. On `≤n`/`=n` it REVERSES: Konclude and `JFact` are right and
+/// `HermiT` answers satisfiable, the first `HermiT` under-report recorded here.
+/// The control that makes that a finding rather than noise is that `HermiT`
+/// decides the identical hand-written `DataOneOf` correctly.
+///
+/// ALL-OR-NOTHING is inherited from [`flatten_union_of_oneofs`] and is
+/// FP-critical: a partial flatten would yield a strictly NARROWER range, which in
+/// a `≤n` position manufactures a clash.
+///
 /// Flatten `DataUnionOf` whose members are ALL enumerations into one `DataOneOf`
 /// (#42 item 1).
 ///
@@ -1350,6 +1377,11 @@ pub fn convert_class_expression<A: ForIRI>(
         // so this never materialises successors (it would otherwise blow up on
         // a large `≥n` over a tiny range).
         ClassExpression::DataMinCardinality { n, dp, dr } => {
+            // #42: flatten a union of enumerations before the per-datatype chain —
+            // see `flatten_union_of_oneofs_for_cardinality` for the identity, the
+            // per-operator oracle split, and why this must not be a partial flatten.
+            let flat = flatten_union_of_oneofs(dr);
+            let dr = flat.as_ref().unwrap_or(dr);
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, false)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, true, false))
                 .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, true, false))
@@ -1375,6 +1407,11 @@ pub fn convert_class_expression<A: ForIRI>(
                 })
         }
         ClassExpression::DataMaxCardinality { n, dp, dr } => {
+            // #42: flatten a union of enumerations before the per-datatype chain —
+            // see `flatten_union_of_oneofs_for_cardinality` for the identity, the
+            // per-operator oracle split, and why this must not be a partial flatten.
+            let flat = flatten_union_of_oneofs(dr);
+            let dr = flat.as_ref().unwrap_or(dr);
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, false, true)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, false, true))
                 .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, false, true))
@@ -1400,6 +1437,11 @@ pub fn convert_class_expression<A: ForIRI>(
                 })
         }
         ClassExpression::DataExactCardinality { n, dp, dr } => {
+            // #42: flatten a union of enumerations before the per-datatype chain —
+            // see `flatten_union_of_oneofs_for_cardinality` for the identity, the
+            // per-operator oracle split, and why this must not be a partial flatten.
+            let flat = flatten_union_of_oneofs(dr);
+            let dr = flat.as_ref().unwrap_or(dr);
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, true)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, true, true))
                 .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, true, true))

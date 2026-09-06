@@ -1678,7 +1678,7 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     integer interval set can express — bare DATATYPES (`xsd:decimal`), `DataComplementOf`,
     other-datatype enumerations — which drop WHOLE and VISIBLY (`dropped` is non-empty),
     never narrowed; interval unions over the five DENSE datatypes (see the discreteness
-    note above); and `DataIntersectionOf` in these positions.
+    note above).
 
   - **Qualified data CARDINALITY over a union — CLOSED 2026-09-06 (#42).** The list above
     said it "takes a different path", which was true and is now fixed: the three
@@ -1727,6 +1727,47 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     and points at the binary rather than the code. **When two runs of "the same" source
     disagree, print what the code DID before theorising about why.** The build-to-build
     discrepancy itself is UNEXPLAINED and recorded as such rather than given a cause.
+  - **`DataIntersectionOf` IS NOT DROPPED — this list said it was, and that was stale
+    (re-measured 2026-09-06).** `∀p.(≥1 ⊓ ≤10)` with `∃p.{50}` reports `A` **unsatisfiable**
+    with `dropped` EMPTY, i.e. the axiom converts and is reasoned about. Three-way
+    agreement — rustdl, `HermiT` and Konclude all call it unsat — and the discriminating
+    negative control (value 5, INSIDE the intersection) is satisfiable in all three, so the
+    positive is not vacuous.
+  - **WHY the semantics decide it, and why MAJORITY does not.** The peers split 2-2 on
+    `≥3 p.({1} ⊔ {2})` (`HermiT` and rustdl unsatisfiable; **Konclude and `JFact`
+    satisfiable**), and an earlier version of this entry recorded that as "contested, so
+    declining is correct" — wrong, and worth keeping as a correction because that reasoning
+    would have justified never fixing it. OWL 2 Direct Semantics, quoted:
+
+        DataMinCardinality( n DPE DR ) = { x | #{ y | (x,y) ∈ (DPE)^DP and y ∈ (DR)^DT } ≥ n }
+        DataOneOf( lt1 ... ltn )       = { (lt1)^LT , ... , (ltn)^LT }
+
+    `#` counts DISTINCT values and `{1} ⊔ {2}` denotes the 2-element set `{1,2}`, so `≥3`
+    cannot be met and the class is EMPTY. One side is simply right. **This is the
+    justification for the fix recorded above** — the case is no longer dropped at all, so
+    disregard any older text calling it a sound-but-visible MISS.
+  - **The same spec argument makes item 3's fix CORRECT, not merely `HermiT`-endorsed.**
+    `≥3 p.DataOneOf("1","2")` is the identical question one syntactic step away: rustdl
+    calls it unsatisfiable while Konclude and `JFact` call it satisfiable. Majority is not
+    the oracle here; the semantics are.
+  - **METHOD NOTE — a "third reasoner" that PORTS one disputant cannot break a tie.**
+    Kobayashi-MaRust was the obvious tie-breaker and is the wrong instrument for a datatype
+    question: its `konclude_ht` module is, in its own words, "a direct, exact Rust port of
+    Konclude's hypertableau reasoning algorithm", and `SemanticFragment::NativeBridgeAbox`
+    routes the datatype fragment through it. Agreement with Konclude would have been
+    Konclude agreeing with itself. JFact (FaCT++ lineage) is genuinely independent, which
+    is why it was used instead — and its answer, though it matched Konclude, is what
+    exposed that item 3's probe was 2-2 rather than settled.
+  - **THE RESIDUALS WERE AUDITED FOR SILENT DROPS, WHICH IS THE PART THAT MATTERS
+    (2026-09-06).** A residual that drops VISIBLY is a sound under-approximation a caller
+    can see; one that drops SILENTLY (`dropped: {}` AND `incomplete: false` AND a wrong
+    answer) is the D10 shape. Four were probed — dense-datatype interval union, union
+    carrying a `DataComplementOf`, `DataIntersectionOf`, and qualified cardinality over a
+    union — and all behaved as documented: every genuine drop sets `dropped`, and the two
+    that do NOT set it turned out not to drop at all (`DataIntersectionOf` already worked;
+    qualified cardinality over a union was then FIXED outright — see the entry below, which
+    supersedes its line in the list above). **No silent miss was found hiding inside a
+    deliberate one.**
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

@@ -14,6 +14,19 @@
 //!
 //! The atomic controls are what show the cause is the CONJUNCTIVE filler rather
 //! than the domain/range mechanism: they derived their pair correctly throughout.
+//!
+//! #119 — a PARTLY-atomic filler must contribute the atomic conjuncts it CAN
+//! represent, not drop whole. `#110` shipped all-or-nothing on purpose (a filler
+//! mixing atomic and non-atomic parts, e.g. `P ⊓ ∃s.Z`, dropped WHOLE); that was
+//! itself the residual bug — `Domain(r, P ⊓ Q)` where `Q` happens to be
+//! non-atomic (`P ⊓ ∃s.Z`) still entails `∃r.⊤ ⊑ P`, a WEAKER (strictly more
+//! permissive) constraint than the full axiom, so contributing `P` alone can
+//! only MISS a subsumption that needs the dropped part, never assert a false
+//! one. Partial DECOMPOSITION is sound; partial ADMISSION to the fragment gate
+//! is not, so the gate (`analyze_fragment`) must keep refusing a partly-atomic
+//! filler even though the engine now derives part of it — pinned below so a
+//! future widening of the gate cannot silently admit an axiom the engine only
+//! partly processed.
 
 #![allow(clippy::unwrap_used)]
 
@@ -22,6 +35,7 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::classify_top_down_with_timeout;
+use owl_dl_reasoner::{FragmentClassification, analyze_fragment};
 use std::io::Cursor;
 use std::time::Duration;
 
@@ -93,21 +107,58 @@ fn a_nested_conjunction_is_flattened() {
 }
 
 #[test]
-fn a_filler_mixing_atomic_and_non_atomic_parts_still_drops_whole() {
-    // ALL-OR-NOTHING, on purpose. Taking the atomic half would be sound in
-    // isolation (`⊑ P ⊓ Z` entails `⊑ P`) but would put the ENGINE ahead of the
-    // fragment GATE, which decides membership separately — the gate would keep
-    // calling this out-of-fragment while the engine acted on part of it. That is
-    // the D10 shape this fix exists to close, so it must not be re-created here.
+fn a_filler_mixing_atomic_and_non_atomic_parts_contributes_its_atomic_conjuncts() {
+    // #119: PARTIAL decomposition, not all-or-nothing. This FLIPS the pre-#119
+    // assertion (`!holds`) — see [[tests-that-pin-the-bug]]: a fixture chosen to
+    // characterise a defect becomes a bug-pin once the defect closes, and this
+    // one was explicitly flagged for exactly that in #110's own comment ("If a
+    // future change teaches the gate about conjunctive fillers, this becomes the
+    // wrong assertion and should be FLIPPED rather than deleted" — the engine
+    // side changed, not the gate, but the effect on this fixture is the same).
     //
-    // If a future change teaches the gate about conjunctive fillers, this becomes
-    // the wrong assertion and should be FLIPPED rather than deleted.
+    // `Domain(r, P ⊓ ∃s.Z)` means `∃r.⊤ ⊑ P` AND `∃r.⊤ ⊑ ∃s.Z`; contributing only
+    // the atomic `P` conjunct asserts a WEAKER (more permissive) constraint than
+    // the full axiom, so it can only MISS a subsumption that needs the dropped
+    // `∃s.Z` half, never assert a false one — the opposite direction of risk
+    // from a `DataUnionOf` in a `∀`/range position, where keeping half narrows
+    // the range and manufactures a clash.
     let body = format!(
         "{EXISTS}\n\
          ObjectPropertyDomain(:r ObjectIntersectionOf(:P ObjectSomeValuesFrom(:s :Z)))"
     );
     assert!(
-        !holds(&body, "X", "P"),
-        "a mixed filler must drop WHOLE, keeping engine and fragment gate in agreement"
+        holds(&body, "X", "P"),
+        "a partly-atomic filler must contribute the atomic conjuncts it CAN represent (P)"
+    );
+}
+
+#[test]
+fn a_partly_atomic_domain_filler_is_not_admitted_to_the_pure_el_fragment() {
+    // #119's load-bearing constraint: partial DECOMPOSITION in the engine is
+    // sound, but partial ADMISSION to the fragment gate is NOT — a conjunct the
+    // engine never processed, inside a completeness-certified fragment, is
+    // exactly the D10 bug class #110 exists to close. `is_atomic_or_trivial_concept`
+    // (the gate `classify.rs` uses for `ObjectPropertyDomain`/`Range` fillers)
+    // must keep refusing this axiom outright even though the engine now derives
+    // PART of it, so a future widening of the gate cannot silently admit an
+    // axiom the engine only partly processed.
+    let ofn = format!(
+        "Prefix(:=<http://rustdl.test/>)\nOntology(\n\
+         Declaration(Class(:P)) Declaration(Class(:Q)) Declaration(Class(:X))\n\
+         Declaration(Class(:B)) Declaration(Class(:D)) Declaration(Class(:Z))\n\
+         Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+         {EXISTS}\n\
+         ObjectPropertyDomain(:r ObjectIntersectionOf(:P ObjectSomeValuesFrom(:s :Z)))\n)\n"
+    );
+    let mut reader = Cursor::new(ofn);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
+    let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+    assert_ne!(
+        analyze_fragment(&internal),
+        FragmentClassification::PureEl,
+        "a partly-atomic domain filler must NOT be certified PureEl — the engine only \
+         partly processes it, so the gate must keep routing it to the sound+complete \
+         hybrid path"
     );
 }

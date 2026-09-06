@@ -265,6 +265,15 @@ grep -lE 'ObjectProperty(Domain|Range)\([^)]*ObjectIntersectionOf' \
 
 re-derived here. **Prefer 27; the ≤14 is stale wherever it still appears.**
 
+> **SUPERSEDED 2026-09-06 by Task 4 — see §3 of
+> `docs/benchmarks/2026-09-06-conjunctive-filler-sweep.md` for the corrected attribution.**
+> The `ore_ont_4796` gain below is real and KM-confirmed, but it is **not attributable to
+> #110**: the pre-fix binary gains the same two pairs under `RUSTDL_CLASSIFY_SAME_TIER=1`, and
+> BEFORE and AFTER are triple-identical under *either* flag setting. The comparison here crossed
+> a flag boundary (default vs `SAME_TIER`) within one binary rather than comparing arms under
+> the same flag. Corpus reward for #110 is measured **zero**. The analysis below is otherwise
+> unchanged.
+
 **Reach is measured and non-zero.** On `ore_ont_4796` (DOLCE-Lite), `RUSTDL_CLASSIFY_SAME_TIER=1`
 gains exactly `DOLCE-Lite#agent ⊑ DOLCE-Lite#endurant` and `DOLCE-Lite#agent ⊑
 DOLCE-Lite#particular` — **transitive closure 1,224 → 1,226, lost 0** — stable at both the 5 ms

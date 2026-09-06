@@ -165,3 +165,74 @@ fn prove_attributes_the_conjunctive_domain_subsumption_to_its_axiom() {
         "conjunctive domain filler must resolve to the ObjectPropertyDomain axiom, not an empty axiom_refs"
     );
 }
+
+/// Step 8 (provenance mirrors), RANGE half. There is no `RangeSub`/`RangeFact`
+/// rule — range provenance is never attributed directly (unlike Domain), it only
+/// shapes the mini Pass-1 simulation's per-axiom rule-slot delta cursors
+/// (`mini_effective`, feeding `lower_sub_class_of`). A divergence there does not
+/// merely empty one node's `axiom_refs` — the reviewer's traced failure mode is
+/// that it MISALIGNS every later axiom's attribution, so proofs get cited to the
+/// WRONG axiom, which looks correct and is worse than a missing proof.
+///
+/// Empirically (a throwaway probe dumping the proof tree for this exact
+/// fixture): reverting *only* the mini range mirror to `Atomic`-only turns the
+/// two `ToldSubsumer` leaves that fold `Range(r, P⊓Q)` into X's existential
+/// witness (`Sub(synthetic, B)` / `Sub(synthetic, P)`) from `axiom_refs=[AxiomRef(2)]`
+/// to `axiom_refs=[]`, while every ancestor of the root stays `[AxiomRef(1)]`
+/// unchanged — the corruption is localized exactly where the range fold enters
+/// the tree, not at the entailment's own top-level step. So the discriminating
+/// check is a `ToldSubsumer` node concluding `Sub(_, P)`, not the root.
+#[test]
+fn prove_attributes_the_conjunctive_range_folded_subsumer_to_its_axiom() {
+    use owl_dl_reasoner::{
+        DerivedFact, ElRule, ProofNode, ProveEntailmentResult, prove_entailment,
+    };
+
+    let body = format!(
+        "{DECLS}
+         SubClassOf(:X ObjectSomeValuesFrom(:r :B))
+         ObjectPropertyRange(:r ObjectIntersectionOf(:P :Q))
+         SubClassOf(ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :P)) :W)
+         SubClassOf(ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :Q)) :S)"
+    );
+    let src = format!("Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/t>\n{body}\n)\n");
+    let mut cur = std::io::Cursor::new(src);
+    let (onto, _): (
+        horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+        _,
+    ) = horned_owl::io::ofn::reader::read(&mut cur, horned_owl::io::ParserConfiguration::default())
+        .expect("parse");
+
+    // Look up P's ClassId independently (via the same conversion prove_entailment
+    // uses internally) so the test can find the P-typed leaf without guessing IDs.
+    let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+    let p_id = internal
+        .vocabulary
+        .class_id("http://ex.org/P")
+        .expect("P declared");
+
+    let result =
+        prove_entailment(&onto, "http://ex.org/X", "http://ex.org/W").expect("prove_entailment");
+    let ProveEntailmentResult::SaturatorProof(data) = result else {
+        panic!("expected a step-level saturator proof for an EL-fragment entailment");
+    };
+
+    // Walk the whole tree for the ToldSubsumer leaf that folds Range's P
+    // conjunct onto X's existential witness.
+    fn find_p_subsumer(node: &ProofNode, p_id: owl_dl_core::ClassId) -> Option<&ProofNode> {
+        if node.rule == ElRule::ToldSubsumer
+            && matches!(node.conclusion, DerivedFact::Sub(_, sup) if sup == p_id)
+        {
+            return Some(node);
+        }
+        node.premises.iter().find_map(|p| find_p_subsumer(p, p_id))
+    }
+    let p_node = find_p_subsumer(&data.root, p_id)
+        .expect("proof tree must contain a ToldSubsumer step folding Range's P conjunct");
+    assert!(
+        !p_node.axiom_refs.is_empty(),
+        "the range-folded P subsumer must resolve to the ObjectPropertyRange axiom, \
+         not an empty axiom_refs — a divergent mini range mirror desyncs the \
+         per-axiom rule-slot cursor and silently drops this attribution"
+    );
+}

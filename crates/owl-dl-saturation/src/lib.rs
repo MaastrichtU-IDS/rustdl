@@ -3462,12 +3462,16 @@ fn collect_el_rules(
                     // no individual may be an r-source. Poison the role so that
                     // any class deriving `∃r.X` is marked unsatisfiable.
                     rules.poisoned_roles.insert(role.role_id());
-                } else if let ConceptExpr::Atomic(id) = internal.concepts.get(*domain) {
+                } else if let Some(ids) = all_atomic_conjuncts(&internal.concepts, *domain) {
+                    // `ObjectPropertyDomain(r, P ⊓ Q)` ≡ `∃r.⊤ ⊑ P ⊓ Q` ≡
+                    // `∃r.⊤ ⊑ P` AND `∃r.⊤ ⊑ Q` — a logical identity, so splitting
+                    // is sound and completeness-preserving by construction (#110).
+                    // The atomic case is the one-element instance of it.
                     rules
                         .role_domains
                         .entry(role.role_id())
                         .or_default()
-                        .push(*id);
+                        .extend(ids);
                 }
             }
             Axiom::ObjectPropertyRange { role, range } => {
@@ -3478,12 +3482,16 @@ fn collect_el_rules(
                     // r-edge can exist in any model. Poison the role so that any
                     // class deriving `∃r.X` is marked unsatisfiable.
                     rules.poisoned_roles.insert(role.role_id());
-                } else if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
+                } else if let Some(ids) = all_atomic_conjuncts(&internal.concepts, *range) {
+                    // Same identity on the range side: `Range(r, P ⊓ Q)` ≡
+                    // `Range(r, P)` AND `Range(r, Q)`. Measured to have the same
+                    // defect as the domain arm — HermiT derives the pair, rustdl
+                    // reported `[]` with `incomplete: false` (#110).
                     rules
                         .role_ranges
                         .entry(role.role_id())
                         .or_default()
-                        .push(*id);
+                        .extend(ids);
                 }
             }
             Axiom::SubObjectPropertyOf {
@@ -4455,6 +4463,39 @@ fn nested_extras(
     out.sort_unstable_by_key(|c| c.index());
     out.dedup();
     out
+}
+
+/// The atomic conjuncts of a domain/range filler, or `None` if any part is not
+/// atomic.
+///
+/// `C` alone when `C` is atomic; each operand when `C` is an `And` of atomics,
+/// recursively. `ObjectPropertyDomain(r, P ⊓ Q)` is `∃r.⊤ ⊑ P ⊓ Q`, which is
+/// exactly `∃r.⊤ ⊑ P` and `∃r.⊤ ⊑ Q` — a logical identity, hence sound and
+/// completeness-preserving by construction (#110). Before this, only the atomic
+/// case was accepted and a conjunctive filler was silently DROPPED: `classify`
+/// returned zero rows with `incomplete: false` under a banner certifying the
+/// fragment complete, while both peer reasoners derived the pairs and rustdl's own
+/// `subclass` proved them.
+///
+/// ALL-OR-NOTHING on purpose. A filler mixing atomic and non-atomic parts (say
+/// `P ⊓ ∃s.Z`) still drops WHOLE, exactly as before, rather than contributing its
+/// atomic half. Taking the half would be sound in isolation — `⊑ P ⊓ Z` entails
+/// `⊑ P` — but it would put the ENGINE ahead of the fragment GATE, which decides
+/// membership separately: the gate would keep calling the axiom out-of-fragment
+/// while the engine quietly acted on part of it. Keeping the two in agreement is
+/// what avoids re-creating the D10 shape this fix exists to close.
+fn all_atomic_conjuncts(pool: &ConceptPool, c: ConceptId) -> Option<Vec<ClassId>> {
+    match pool.get(c) {
+        ConceptExpr::Atomic(id) => Some(vec![*id]),
+        ConceptExpr::And(ops) => {
+            let mut out = Vec::with_capacity(ops.len());
+            for op in ops {
+                out.extend(all_atomic_conjuncts(pool, *op)?);
+            }
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 /// `effective_ranges[r]`, or an empty slice for a role with no range.

@@ -10,6 +10,27 @@
 
 **Spec:** `docs/superpowers/plans/2026-09-06-d10-arc-roadmap.md` § WS1, and issue #110.
 
+## A scope decision this plan makes CONSCIOUSLY: the GCI sibling (#114)
+
+`SubClassOf(ObjectSomeValuesFrom(:r owl:Thing), C)` is the GCI spelling of `Domain(:r, C)`. With a
+non-atomic `C` it is dropped by `atomic_operands_on_right` (`owl-dl-saturation/src/lib.rs:4924`,
+reached from `:4197`), while `is_el_concept` admits it — and that ontology is certified
+**`pure-EL`**, a stronger claim than #110's `Horn`. Confirmed against Konclude and KM; filed as
+**#114**.
+
+**This plan does NOT fix #114.** It fixes the `ObjectPropertyDomain`/`Range` *axiom variants*.
+That is a deliberate scope line, not an oversight, and the reason to draw it here is that #114
+sits on the `SubClassOf` lowering path with its own consumers and its own gate arm
+(`is_el_concept`), so folding it in would double the change and its blast radius.
+
+**But it qualifies this plan's central thesis, and the qualification must travel with it.** "One
+shared function, therefore no drift" is true only for the two axiom variants. The same semantic
+construct already has **three** other decomposers in tree — `atomic_operands_on_right`
+(`lib.rs:4924`), the inline `And` loop in `abox_saturation.rs:469-477`, and the provenance mirror
+(`lib.rs:3150`) — and this plan adds a fourth. `atomic_operands_on_right` is the natural thing to
+unify with `decompose_role_filler`: it is the same function minus the completeness flag. Task 5
+must state which of the four now share a call site and which do not.
+
 ## Global Constraints
 
 - **`RUSTUP_TOOLCHAIN=stable`** for every build/test; a failed build silently reuses a stale `target/release/` binary.
@@ -95,9 +116,12 @@ fn conjunctive_range_filler_derives_every_conjunct() {
         "{DECLS}
          SubClassOf(:X ObjectSomeValuesFrom(:r :B))
          ObjectPropertyRange(:r ObjectIntersectionOf(:P :Q))
-         SubClassOf(ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :P)) :W)"
+         SubClassOf(ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :P)) :W)
+         SubClassOf(ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :Q)) :S)"
     );
-    assert!(entails(&body, "X", "W"), "X ⊑ W via the folded range");
+    // BOTH conjuncts, or a sabotage that pushes only the lowest-id one passes.
+    assert!(entails(&body, "X", "W"), "X ⊑ W via the P side of the folded range");
+    assert!(entails(&body, "X", "S"), "X ⊑ S via the Q side of the folded range");
 }
 
 /// CONTROL that must keep passing: the atomic filler was never broken.
@@ -196,9 +220,15 @@ Place it immediately above `collect_el_rules`:
 /// `abox_saturation_inconsistent`.
 ///
 /// `Bot` returns `false` **without** pushing: `Domain(r, ⊥)` is handled earlier
-/// by `poisoned_roles`, and a `Bot` nested inside a conjunction (`P ⊓ ⊥ ≡ ⊥`)
-/// means the whole role is poisoned — which this function does not model, so it
-/// declines and the gates route the ontology to the hybrid path.
+/// by `poisoned_roles`, so this function never sees it on the engine path;
+/// `is_processed_role_filler` re-admits it explicitly for the gates.
+///
+/// **Nested `⊥`/`⊤` are UNCONSTRUCTIBLE, so those arms are defensive, not live.**
+/// `ConceptPool::and` collapses `And([P, ⊥])` to `⊥` and drops `⊤`
+/// (`ir.rs:367-390`), `intern_raw` is private, and `convert.rs`/`normalize.rs`
+/// build conjunctions only through `.and(`. So `P ⊓ ⊥` reaches the engine as a
+/// bare `⊥` and correctly poisons the role — a STRONGER outcome than this
+/// function would give. Do not describe that path as if it executes.
 pub fn decompose_role_filler(
     c: ConceptId,
     pool: &ConceptPool,
@@ -292,17 +322,26 @@ In that file's `mod tests`, using this crate's real `ConceptPool` API
         assert_eq!(sink.len(), 1, "the atomic conjunct is still pushed");
     }
 
-    /// ORDER-INDEPENDENCE, and it is what sabotage #5 (short-circuiting the `And`
-    /// loop) is caught by: with the non-decomposable conjunct FIRST, a
-    /// short-circuiting loop would push nothing.
+    /// ORDER-INDEPENDENCE, and what sabotage #5 (short-circuiting the `And` loop)
+    /// is caught by.
+    ///
+    /// **`ConceptPool::and` SORTS its operands by `ConceptId`** (`ir.rs:385-386`,
+    /// `sort_unstable` + `dedup`), so argument order at the call site is NOT the
+    /// order the loop sees — INTERN order is. Interning `p` first therefore makes
+    /// `pool.and([or, p])` intern to the same `And([p, or])` as the previous test,
+    /// where a short-circuiting loop still pushes `p` and the test passes
+    /// VACUOUSLY. Intern the disjunction FIRST so its id is lower and it is
+    /// visited first.
     #[test]
-    fn decompose_does_not_short_circuit_when_the_bad_conjunct_comes_first() {
+    fn decompose_does_not_short_circuit_when_the_bad_conjunct_sorts_first() {
         let mut pool = ConceptPool::default();
-        let p = pool.atomic(owl_dl_core::ClassId::new(0));
+        // Intern order is what matters: `or` must get a LOWER id than `p`.
         let q = pool.atomic(owl_dl_core::ClassId::new(1));
         let r = pool.atomic(owl_dl_core::ClassId::new(2));
         let or = pool.or([q, r]);
+        let p = pool.atomic(owl_dl_core::ClassId::new(0));
         let and = pool.and([or, p]);
+        assert!(or < p, "guard: the fixture is only meaningful if `or` sorts first");
         let mut sink = Vec::new();
         assert!(!decompose_role_filler(and, &pool, &mut sink));
         assert_eq!(sink.len(), 1, "the atomic conjunct is pushed regardless of order");
@@ -466,7 +505,28 @@ cargo test -p owl-dl-reasoner --test conjunctive_domain_range_filler
 
 Expected: `test result: ok. 9 passed; 0 failed`.
 
-- [ ] **Step 5: Run the flag-default and fragment guards**
+- [ ] **Step 5: Retarget the test that PINS this bug**
+
+`crates/owl-dl-verify/tests/horn_widening_market.rs:113` —
+`a_conjunctive_domain_filler_is_horn_non_el_and_the_checker_reaches_a_verdict` asserts
+`fragment == FC::Horn` on **exactly this fixture**. After Step 3 it is `PureEl` and the test
+fails. It is not wrong; it recorded the market analysis while the defect was live, and the defect
+was its vehicle — the `tests-that-pin-the-bug` pattern (roadmap S10).
+
+Retarget it to a shape that stays Horn for a reason that is a DESIGN DECISION rather than a
+defect: keep the assertion but change the filler to `ObjectUnionOf(:P :Q)`, which is
+non-decomposable by construction and must never be admitted. Update the doc comment to say the
+conjunctive case moved to pure-EL when #110 was fixed, and why that does not weaken the market
+analysis (a `Verified` verdict there is now reachable through the fast path, which was the
+finding).
+
+```sh
+cargo test -p owl-dl-verify --test horn_widening_market
+```
+
+Expected: 3 passed, 0 failed.
+
+- [ ] **Step 6: Run the flag-default and fragment guards**
 
 ```sh
 cargo test -p owl-dl-reasoner --test flag_defaults
@@ -476,12 +536,27 @@ cargo test -p owl-dl-reasoner saturator_fragment_
 Expected: all pass — this change must not move any flag default or loosen the D10 allowlist for
 `∀` / `≤n` / `⊔` / `DisjointClasses`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```sh
-git add crates/owl-dl-reasoner/src/classify.rs crates/owl-dl-reasoner/tests/conjunctive_domain_range_filler.rs
+git add crates/owl-dl-reasoner/src/classify.rs crates/owl-dl-reasoner/tests/conjunctive_domain_range_filler.rs \
+        crates/owl-dl-verify/tests/horn_widening_market.rs
 git commit -m "fix(classify): admit a fully-decomposable Domain/Range filler to the EL fragment (#110)"
 ```
+
+- [ ] **Step 8: Wire the two PROVENANCE mirrors, or record the gap**
+
+`collect_el_rules_with_provenance` has its **own** Domain arm
+(`owl-dl-saturation/src/lib.rs:3150-3155`, `Atomic`-only, pushing `domain_axiom_refs`) and the
+mini Pass-1 range mirror at `:3218-3228` is likewise `Atomic`-only. That arm's own comment says it
+"must mirror the real Pass 1 exactly … any divergence shows up as a wrong or missing proof".
+
+After Task 1 those mirrors diverge: `rustdl prove` / `RUSTDL_PROOF=1` on a fact derived from a
+conjunctive filler gets an empty `axiom_refs` (the `.find(...)` at `:1639`/`:1860`/`:1882` returns
+`None`). **Answers are unaffected; proofs are.** Route both mirrors through
+`decompose_role_filler` in the same commit — that is the whole point of the shared function — and
+add a canary asserting `prove` attributes the conjunctive-domain subsumption to its axiom. If you
+choose not to wire them, say so explicitly in Task 5's write-up; do not leave it undiscovered.
 
 ---
 
@@ -525,10 +600,21 @@ done
 Write `docs/benchmarks/2026-09-06-conjunctive-domain-range-adjudication.md` with one row per
 probe × {rustdl before, rustdl after, Konclude, HermiT, KM}.
 
-**Pre-registered pass condition (S3):** all three oracles agree with post-fix rustdl on **6 of 6**.
-`dom_disj` and `dom_partial` are the DISCRIMINATING controls — the oracles must *not* report
-`X ⊑ Q` there, and `dom_atomic`/`rng_atomic` are where they *do* report, which is what makes their
-silence on the negatives meaningful (S5). Any disagreement blocks the merge until adjudicated.
+**Pre-registered pass condition (S3), stated as a defined comparison:** for each probe, the set of
+**named** subsumption pairs — excluding every row whose superclass is `owl:Thing` and every row
+mentioning `owl:Nothing`, since Konclude emits 8 `Thing` rows on `dom_conj` alone and a raw
+`<SubClassOf>` count therefore compares nothing — must be EQUAL across post-fix rustdl, Konclude,
+HermiT and KM, on **6 of 6**.
+
+`dom_disj` is the DISCRIMINATING control: the oracles must not report `X ⊑ P` or `X ⊑ Q` there,
+and `dom_atomic`/`rng_atomic` are where they DO report, which is what makes that silence
+meaningful rather than the under-reporting Konclude is documented to do (S5).
+
+**`dom_partial` as written is a vacuous negative** — it asks whether the oracles report `X ⊑ Q`,
+and `Q` does not appear in that axiom, so "no" is trivially true and no implementation could fail
+it. Replace it with a probe of the conjunct the engine did NOT process: add
+`SubClassOf(ObjectSomeValuesFrom(:s :S) :Z)` and ask whether `X ⊑ Z` is derived. That is the
+informative question, and it strengthens A3 rather than blocking it.
 
 - [ ] **Step 4: Run the sabotage battery — five, each with its predicted failure**
 
@@ -559,10 +645,18 @@ git commit -m "docs: oracle adjudication + sabotage battery for #110"
 
 - [ ] **Step 1: Pin both binaries (S2)**
 
+**`git stash` does NOT work here** — by Task 4 the change is committed, so a clean tree stashes
+nothing and BOTH builds are the AFTER code. Use a worktree at the pre-fix commit, and honour the
+toolchain constraint (a bare `cargo` is 1.75, its build FAILS, and a failed build silently reuses
+whatever is already in `target/release/`):
+
 ```sh
-git stash && cargo build --release && cp target/release/rustdl /tmp/rustdl-110-BEFORE && git stash pop
+export PATH="$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH"
+BASE=$(git rev-parse HEAD~4)          # the commit before Task 1; VERIFY with `git log --oneline`
+git worktree add /tmp/wt-110-before "$BASE"
+(cd /tmp/wt-110-before && cargo build --release) && cp /tmp/wt-110-before/target/release/rustdl /tmp/rustdl-110-BEFORE
 cargo build --release && cp target/release/rustdl /tmp/rustdl-110-AFTER
-sha256sum /tmp/rustdl-110-BEFORE /tmp/rustdl-110-AFTER
+sha256sum /tmp/rustdl-110-BEFORE /tmp/rustdl-110-AFTER    # MUST differ
 ```
 
 **Verify the pin against a discriminating input before trusting it:**
@@ -589,7 +683,21 @@ here demonstrates non-regression only. The evidence is Task 3.
 
 - [ ] **Step 3: Two-arm sweep over the 14 conjunctive-filler ontologies + 20 controls**
 
-The 14: `ore_ont_{10080,10908,11064,11296,11305,11647,12107,12342,12451,15993,16372,16814,5964,714}`.
+**The frame is 27, not 14.** An earlier scan reported 14 and was WRONG: its `break` fired after
+the first axiom body matching a broad construct regex, so an ontology whose first Domain/Range
+axiom was non-conjunctive was recorded as a non-member and its later bodies never examined.
+Reproduce the correct frame with either instrument — they agree at 27:
+
+```sh
+grep -lE 'ObjectProperty(Domain|Range)\([^)]*ObjectIntersectionOf' \
+  /data/dumontier/ore-run/pool_sample/files/* | wc -l      # 27
+```
+
+The 27 = the original 14 (`10080, 10908, 11064, 11296, 11305, 11647, 12107, 12342, 12451, 15993,
+16372, 16814, 5964, 714`) plus `10109, 10517, 10807, 14272, 16371, 4796, 4827, 5764, 6923, 7828,
+8094, 8429, 9864`. Several of the additions are the documented `pt`-sensitive / slow set
+(`14272, 9864, 6923, 8429`), so budget for long walls and expect UNMEASURED members.
+
 Controls: any 20 with zero `ObjectIntersectionOf` inside a Domain/Range, where the pass provably
 cannot fire.
 
@@ -606,19 +714,40 @@ sequential re-adjudication with ≥3 runs.
 
 Admitting these axioms moves ontologies from `Horn` onto the **pure-EL fast path**, changing
 which engine answers. Enumerate the movers **by GATE, not by grep** (grep ≠ gate — the Lever 1
-precedent):
+precedent).
 
-```sh
-for f in /data/dumontier/ore-run/pool_sample/files/*; do
-  b=$(basename "$f"); 
-  before=$(timeout 120 /tmp/rustdl-110-BEFORE classify "$f" 2>/dev/null | grep -m1 '^# fragment:')
-  after=$(timeout 120 /tmp/rustdl-110-AFTER  classify "$f" 2>/dev/null | grep -m1 '^# fragment:')
-  [ "$before" != "$after" ] && echo -e "$b\t$before\t$after"
-done | tee /tmp/fragment-movers.tsv
+**Do NOT do this by diffing `# fragment:` from `classify`.** That banner is written by
+`write_classification` (`main.rs:1098`) only *after* classification completes, so the loop is a
+full two-arm classify of 1,920 ontologies — hours, not a routing probe — and any DNF yields an
+EMPTY string on that side, so a both-arm DNF reads as "not a mover" and a one-sided DNF reads as a
+false mover.
+
+`analyze_fragment` needs no reasoning (cf. `main.rs:2557`, which calls it before any engine runs).
+Add a probe binary alongside the existing `examples/clause_stats_probe`:
+
+```rust
+// crates/owl-dl-reasoner/examples/fragment_probe.rs
+// Prints `<name>\t<fragment>` for one ontology; parse+convert+gate only, no reasoning.
+fn main() {
+    let path = std::env::args().nth(1).expect("usage: fragment_probe <ontology>");
+    let mut r = std::io::BufReader::new(std::fs::File::open(&path).expect("open"));
+    let (onto, _): (
+        horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+        _,
+    ) = horned_owl::io::ofn::reader::read(&mut r, horned_owl::io::ParserConfiguration::default())
+        .expect("parse");
+    let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+    println!("{}\t{:?}", path, owl_dl_reasoner::analyze_fragment(&internal));
+}
 ```
 
-**Pre-registered pass condition:** every mover goes `Horn → pure-EL` or `OutOfFragment → Horn`
-(never the reverse — the gate may only widen), and each mover is triple-identical across arms.
+Run it under both binaries, and record a missing/failed result as **UNMEASURED**, never as
+"not a mover".
+
+**Pre-registered pass condition:** every mover goes `Horn → pure-EL`. **`OutOfFragment → Horn` is
+an ANOMALY, not an allowed outcome** — `Horn` is decided by `clausify_with_stats`, which this
+change does not touch, so such a transition means something unintended moved and must be
+explained before merging. Each mover must additionally be triple-identical across arms.
 
 - [ ] **Step 5: Confirm the standing DKey discriminators did not move**
 

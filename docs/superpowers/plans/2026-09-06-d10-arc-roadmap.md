@@ -64,7 +64,20 @@ decomposition is sound and completeness-preserving by construction — the same 
 **Kill condition.** If A3 cannot be satisfied without the two predicates drifting apart, stop and
 re-plan: the fix has become a gate/engine coupling problem, which is the D10 generator itself.
 
-**Expected corpus reward: ZERO.** Measured — 12 of 14 IDENTICAL under `SAME_TIER=1`, 0 gained.
+**WS1b — the GCI sibling, #114 (NEW, found by adversarial review of the WS1 plan).**
+`SubClassOf(∃r.⊤, C)` with non-atomic `C` is the same construct in different syntax, dropped by a
+DIFFERENT decomposer (`atomic_operands_on_right`), and certified **`pure-EL`** rather than `Horn`
+— a strictly more serious D10 instance. Deliberately out of WS1's scope; sequence it immediately
+after, and treat unifying `atomic_operands_on_right` with WS1's `decompose_role_filler` as its
+first design option. There are **four** decomposers of this one construct in tree; WS1 adds the
+fourth without removing any.
+
+**Expected corpus reward: ZERO — but the frame was WRONG and is being re-measured.** The original
+scan reported 14 conjunctive-filler ontologies; the correct superset is **27** (its `break` fired
+on a broad construct regex, so an ontology whose first Domain/Range axiom was non-conjunctive was
+never fully examined). 13 of 14 were IDENTICAL under `SAME_TIER=1` with 0 gained; the remaining 13
+are in flight. **Do not quote "corpus reach zero" until the full 27 are measured** — the
+conclusion is likely unchanged, but it was measured over half the frame.
 This is a correctness fix. **Do not sell it as a completeness win**, and do not let a flat sweep
 be read as the fix not working (S9).
 

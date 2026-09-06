@@ -80,8 +80,12 @@ fn a_conjunctive_disjointclasses_member_is_the_one_admissible_shape() {
   SubClassOf(:A :B)\n\
   DisjointClasses(ObjectIntersectionOf(:A :B) :C)\n)\n"
     ));
-    eprintln!("fragment = {fragment:?}\nverdict  = {verdict:?}");
     assert_ne!(fragment, FC::PureEl, "the CLI gate must refuse this today");
+    assert!(
+        matches!(verdict, Verdict::Verified { .. }),
+        "this is the shape the doc comment claims makes the market non-empty — \
+         if it is not Verified, that claim is false, got {verdict:?}"
+    );
 }
 
 /// THE SECOND HOLE — RETARGETED (#110). This test used to pin a live defect:

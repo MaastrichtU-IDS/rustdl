@@ -349,6 +349,18 @@ one that carries the check.
    fabricated "3 lost entailments" finding in this project. Two self-tests were run against
    hand-computed values: a 3-cycle `A→B→C→A` plus `C→D` (closure 9, +4 on adding `D→E`), and an
    equivalence group `{P,Q}` expanding to a 2-cycle (closure 4 → 1, lost 3).
+   **The comparator itself was scratchpad-only when this document was first written, which made
+   the method claim unverifiable from the repo record; it is now committed as
+   `scripts/closure-diff.py`** (taking two `classify --json` files, expanding
+   `equivalent_groups` into real graph edges, and running a fresh unmemoised per-node BFS for
+   each closure query — never sharing state across nodes, which is exactly what the
+   `ore_ont_778` memoisation bug got wrong). `python3 scripts/closure-diff.py --self-test`
+   reproduces both hand-computed values above and additionally runs a deliberately-wrong
+   globally-memoised DFS on the equivalence-cycle fixture side by side with the correct
+   algorithm, asserting the two disagree — a direct demonstration, not just an assertion, that
+   sharing memoisation across nodes on a cycle is wrong. This is the committed counterpart to
+   `crates/owl-dl-reasoner/examples/fragment_probe.rs`, which is the instrument for this sweep's
+   other half (§2).
 2. **The comparator's first version printed nothing** — `main()` was never called. It was caught
    only because the self-test was run before any real data. A silent instrument reads exactly
    like a clean result.

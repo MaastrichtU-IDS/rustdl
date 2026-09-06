@@ -893,8 +893,12 @@ fn disjoint_all_atomic_members_stays_on_fast_path() {
 /// stronger check (it tests ALL pairs regardless of saturation-derived tier
 /// ordering, rather than relying on the top-down walk to have generated the
 /// (X, P) pair). Post-#110, `classify()`'s own top-down walk generates this
-/// pair too (verified separately), but `classify_n2` remains the check that
-/// cannot be defeated by a future tier-walk change.
+/// pair too — pinned by
+/// `conjunctive_domain_filler_derives_every_conjunct` in
+/// `crates/owl-dl-reasoner/tests/conjunctive_domain_range_filler.rs`, which
+/// calls `classify()` (not `classify_n2`) on the same conjunctive-domain
+/// shape — but `classify_n2` remains the check that cannot be defeated by a
+/// future tier-walk change.
 #[test]
 fn domain_conjunctive_filler_derives_subsumptions() {
     let body = "    Declaration(Class(:P))

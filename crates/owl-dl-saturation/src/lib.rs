@@ -2673,13 +2673,24 @@ struct ElRules {
     /// Per-role domain classes: `role_domains[r]` holds the atomic
     /// classes `C` such that any `r`-source belongs to `C`. Lowered
     /// from `ObjectPropertyDomain(r, C)` with named `r` and atomic
-    /// `C`. Equivalent to `∃r.⊤ ⊑ C`.
+    /// `C` — or, since #110, from the atomic *conjuncts* of a
+    /// conjunctive `C` (`Domain(r, P ⊓ Q) ≡ Domain(r,P) ∧ Domain(r,Q)`,
+    /// decomposed via `decompose_role_filler`). Equivalent to
+    /// `∃r.⊤ ⊑ C`. This map was already multi-valued before #110 (two
+    /// `ObjectPropertyDomain` axioms on one role, or the `Bug 2b-3`
+    /// `∃r.⊤ ⊑ sup` arm above, both push more than one head via
+    /// `atomic_operands_on_right`), and every consumer already iterates
+    /// the whole `Vec` — so admitting the decomposed shape reaches an
+    /// engine state that was already reachable and already handled.
     role_domains: HashMap<RoleId, Vec<ClassId>>,
     /// Per-role range classes: `role_ranges[r]` holds the atomic
     /// classes `C` such that any `r`-target belongs to `C`. Lowered
     /// from `ObjectPropertyRange(r, C)` with named `r` and atomic
-    /// `C`. Equivalent to `⊤ ⊑ ∀r.C`; in EL we only consult it on
-    /// edges that actually appear (the existential-fact targets).
+    /// `C` — or, since #110, from the atomic *conjuncts* of a
+    /// conjunctive `C` (same `decompose_role_filler` decomposition as
+    /// `role_domains`, see the note there). Equivalent to `⊤ ⊑ ∀r.C`;
+    /// in EL we only consult it on edges that actually appear (the
+    /// existential-fact targets).
     role_ranges: HashMap<RoleId, Vec<ClassId>>,
     /// Role chain axioms `r₁ ∘ r₂ ⊑ sup`. Lowered from
     /// `SubObjectPropertyOf(ObjectPropertyChain(r₁ r₂), sup)` with

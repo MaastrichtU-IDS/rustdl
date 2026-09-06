@@ -1678,9 +1678,55 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     integer interval set can express — bare DATATYPES (`xsd:decimal`), `DataComplementOf`,
     other-datatype enumerations — which drop WHOLE and VISIBLY (`dropped` is non-empty),
     never narrowed; interval unions over the five DENSE datatypes (see the discreteness
-    note above); `DataIntersectionOf` in these positions; and qualified data CARDINALITY
-    over a union (`≥3 p.({1} ⊔ {2})`), which takes a different path and which Konclude
-    also does not call unsat.
+    note above); and `DataIntersectionOf` in these positions.
+
+  - **Qualified data CARDINALITY over a union — CLOSED 2026-09-06 (#42).** The list above
+    said it "takes a different path", which was true and is now fixed: the three
+    `Data{Min,Max,Exact}Cardinality` arms pre-flatten with the SAME
+    `flatten_union_of_oneofs` the `∀`/range path already used, so the two cannot drift.
+    A union of enumerations IS one enumeration, so the rewrite is a logical identity —
+    sound and completeness-preserving by construction, for `≤` and `=` as much as `≥`.
+    `≥3 p.({1} ⊔ {2})` goes from satisfiable-with-the-axiom-DROPPED to UNSAT.
+  - **THE PEERS SPLIT BY OPERATOR, IN OPPOSITE DIRECTIONS — name the operator before
+    citing one.** On `≥n` over a union `HermiT` is right while Konclude and `JFact`
+    under-report. On `≤n`/`=n` it REVERSES: Konclude and `JFact` are right and **`HermiT`
+    answers satisfiable — the first `HermiT` under-report recorded in this project.** The
+    discriminating control is that `HermiT` decides the identical hand-written
+    `DataOneOf` correctly, so it can do the reasoning and simply does not see through
+    `DataUnionOf` in a `≤`/`=` position. The first draft of this fix asserted "HermiT
+    agrees" in all three arms; that was true only for `Min`. (This also RETIRES the old
+    residual line's "which Konclude also does not call unsat" — true, but it was stated
+    as if it justified the drop, and Konclude is on the WRONG side for `≥`.)
+  - **KNOWN PRE-EXISTING SILENT MISS, surfaced by this work and NOT fixed by it:**
+    `≤1 p.DataOneOf(1 2)` with two `DataHasValue` witnesses is SATISFIABLE with
+    `incomplete: false` and `dropped: {}`, while `HermiT`, Konclude and `JFact` all say
+    unsat. `DataHasValue` lowers to the RANGE bucket `[v,v]` while `≤n`-over-enumeration
+    lands in the `io:` bucket, and `concrete_domain_clash` checks buckets independently.
+    D10 shape — wrong AND reported complete. **Practical consequence: a `≤`/`=` canary
+    MUST use `DataSomeValuesFrom(p, DataOneOf(v))` witnesses**, or it fails against a
+    CORRECT engine and invites "fixing" the implementation to match.
+  - **CORPUS REACH IS PROVABLY ZERO, verified independently.** All 1,920 ORE files are
+    OFN, so a `DataUnionOf` grep is a genuine superset (no RDF/XML `owl:unionOf` route);
+    exactly ONE ontology authors one (`ore_ont_5964`); and it appears in **zero**
+    cardinality positions, so the changed arms are never entered. Evidence is 11 canaries
+    plus the per-operator peer adjudication, never a sweep.
+  - **SABOTAGE: 4 run, 4 caught — but TWO survived the FIRST suite.** Reverting the
+    flatten in the `Max`+`Exact` arms only, and a `members.len() != 2` guard, each left
+    all 21 tests across three files green: every canary was `DataMinCardinality`, and
+    EVERY union in all three files plus the `convert.rs` unit pin has exactly two
+    top-level members. A third (integer-only `collect`) was caught only by a NEIGHBOURING
+    file for an unrelated reason — so this file's coverage was incidental and would have
+    vanished silently had that neighbour been retargeted. **Instantiating one arbitrary
+    shape is not pinning the general case.** Closed by 5 canaries; the re-run catches all
+    4, each by exactly one named test.
+  - **TWO STALE-BINARY FALSE ALARMS IN ONE SESSION, both nearly published.** "The fix
+    does not work for `Max`" and "flat 3-member unions drop" were BOTH artifacts of a
+    stale `target/release/rustdl` — the gotcha this file opens with. The second was
+    settled by instrumenting the arm: the flatten fired identically in both cases
+    (`lits=3`, `parse_integer_oneof=Some(3)`), which makes differing outcomes impossible
+    and points at the binary rather than the code. **When two runs of "the same" source
+    disagree, print what the code DID before theorising about why.** The build-to-build
+    discrepancy itself is UNEXPLAINED and recorded as such rather than given a cause.
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

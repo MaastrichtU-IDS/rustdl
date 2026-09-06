@@ -1730,6 +1730,73 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   *increased* unresolved by 31 — several slow ontologies were off-fragment all along, so part of
   the timeout bucket was never checkable. See
   `docs/benchmarks/2026-09-05-verify-el-cap-is-a-weak-lever.md`.
+  **THE SPIKE'S PAYOFF WAS A LIVE D10 DEFECT IN THE SATURATOR, AND IT IS NOW FIXED (#110,
+  2026-09-06, unflagged).** `ObjectPropertyDomain(r, P ⊓ Q)` + `X ⊑ ∃r.B` entails `X ⊑ P` and
+  `X ⊑ Q`. `classify --json` returned **`direct_subsumptions: []` with `incomplete: false` and
+  `dropped: {}`** while certifying `# fragment: Horn` — the gate promising completeness over an
+  axiom the EL saturator silently dropped, the D10 shape, and worse than a DNF. `ObjectPropertyRange`
+  is the same defect and the larger half. **Fixed by DECOMPOSITION, which is a logical identity**
+  (`Domain(r, P ⊓ Q) ≡ Domain(r,P) ∧ Domain(r,Q)`), hence sound and completeness-preserving by
+  construction. **Wherever this defect is recorded as UNFIXED with `RUSTDL_CLASSIFY_SAME_TIER=1` as
+  the only recovery, that record is superseded here**: both pairs now come out at the DEFAULT, and
+  it was never only a tier-walk story.
+  **The design point is the SHARED CALL SITE, not the rule.** One
+  `pub fn owl_dl_saturation::decompose_role_filler(c, pool, sink) -> bool` pushes every atomic
+  conjunct *and* returns whether the filler decomposed COMPLETELY; the engine consumes the entries
+  and **both** fragment gates consume the boolean (`classify.rs::is_processed_role_filler`, née
+  `is_atomic_or_trivial_concept`, at all four call sites — `Bot` re-admitted explicitly there
+  because `poisoned_roles` handles it before the decomposer is reached). Gate/engine drift is the
+  mechanism that GENERATES this bug class, so the fix makes it structurally impossible rather than
+  re-aligning two predicates that happen to agree today.
+  **Partial decomposition is sound; partial ADMISSION is not.** `Domain(r, P ⊓ ∃s.S)` still
+  contributes its `P` conjunct — a weaker domain is the safe direction — but the ontology must NOT
+  be certified EL-complete on that basis, since the `∃s.S` half is genuinely dropped. A negative
+  canary pins exactly that asymmetry.
+  **EVIDENCE, and the corpus is not part of it.** Oracles: post-fix rustdl == Konclude == HermiT ==
+  KM on **6 of 6** probes (pre-registered comparison of named non-`Thing` pair sets); the pinned
+  pre-fix binary returns **∅ with `incomplete: false` on three of them while certifying `Horn`**.
+  Sabotage: **6 run, 5 caught, 1 SURVIVED.** The survivor is the mutation that makes the gate
+  re-implement the decomposition LOCALLY instead of calling the shared function — invisible to the
+  canaries because they pin BEHAVIOUR, not the no-drift property. It is bounded, not unknown
+  (`ConceptPool::and` flattens nested `And` at intern time and there is exactly ONE
+  `ConceptExpr::And` construction site workspace-wide, so the two predicates are equal on every
+  interner-constructible input), so the residual is an untested CROSS-CRATE COUPLING and the
+  no-drift property rests on the shared call site alone. **Report the survivor; do not round it up
+  to 5 of 5.**
+  **CORPUS REWARD IS MEASURED ZERO.** Frame = the **27** ORE ontologies authoring a conjunctive
+  `Domain`/`Range` filler. Two pinned arms: **45 IDENTICAL / 0 DIFFER / 2 UNMEASURED / 0 `ok → dnf`
+  / 0 lost entailments** over 25 measured bearing + 20 controls, and **0 fragment-routing movers
+  across all 1,920** by GATE probe. So the FP=0 net's green here is **INERTNESS, not confirmation**
+  — the evidence is the oracle adjudication and the canaries.
+  **The fix has TWO SEPARABLE EFFECTS and the gate sweep bounds only one.** A ROUTING effect (the
+  gate admits the axiom, moving an ontology to the fast path only if that axiom was its sole
+  blocker) and a DERIVATION effect (the saturator decomposes regardless of the gate).
+  `Domain(r, P ⊓ ∃s.S)` separates them — no routing move, 0 → 2 rows. Stopping at "0 movers" would
+  have left the larger half unmeasured.
+  **THE SUPERSET IS 27, NOT ≤14.** Wherever ≤14 is recorded for this shape it is stale: that scan's
+  `break` fired after the first axiom body matching a broad construct regex, so any ontology whose
+  FIRST `Domain`/`Range` axiom was non-conjunctive was excluded. Re-derived by two agreeing
+  instruments.
+  **The two-hole `verify-el` widening market loses hole 2.** `Domain(r, P ⊓ Q)` is no longer a
+  gate-vs-checker disagreement — it decomposes to EL and reports `PureEl`, a stronger outcome than
+  the hole count implied. Hole 1 (`DisjointClasses(A ⊓ B, C)`) is untouched by #110 and was
+  measured clean separately, outside this branch's evidence — attribute it there, not here.
+  `crates/owl-dl-verify/tests/horn_widening_market.rs`'s second test is retargeted to an
+  EXISTENTIAL domain filler, which stays out of EL for a DESIGN DECISION rather than a defect
+  (`decompose_role_filler` pushes `ClassId`s and `∃s.S` has none, so admitting it needs a
+  structurally different rule, not a wider decomposer). `ObjectUnionOf` was tried first and
+  measures `OutOfFragment`, not `Horn`. See [[tests-that-pin-the-bug]].
+  **THE REWARD FIGURE TOOK THREE REVISIONS AND THE MIDDLE ONE IS THE LESSON.** It read "zero"
+  (right, but over a frame of 14), then **"NON-ZERO" on `ore_ont_4796` — wrong, because it compared
+  `RUSTDL_CLASSIFY_SAME_TIER=0` against `=1` WITHIN ONE BINARY**, measuring the flag rather than the
+  fix: the pre-fix pin gains the same two pairs under that flag, and the arms are triple-identical
+  under either setting. Then "zero" again, from two pinned binaries. Same rule this file already
+  earned from the label-cache probe — **measuring a flag's effect and measuring the ship delta are
+  different questions** — and the same drift this file's "State of play — 2026-08-18" section
+  documents, reproduced inside the change that was recording it.
+  Canaries `crates/owl-dl-reasoner/tests/conjunctive_domain_range_filler.rs`; docs
+  `docs/benchmarks/2026-09-06-conjunctive-domain-range-adjudication.md` (oracles + sabotage) and
+  `docs/benchmarks/2026-09-06-conjunctive-filler-sweep.md` (corpus gates).
   **A trap worth carrying beyond this crate**, from F4: any oracle comparison that counts `Thing`
   rows reports spurious MISSED on any ontology asserting `⊤ ⊑ C`. This project has been bitten
   once already — 73% of an apparent ~1,795-row gap against Kobayashi-MaRust was the same

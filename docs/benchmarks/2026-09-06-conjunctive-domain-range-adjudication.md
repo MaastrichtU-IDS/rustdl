@@ -250,9 +250,10 @@ untested, which is exactly [[sabotage-your-own-guard-tests]].
 
 ## 5. What this evidence does and does not license
 
-### 5.1 Corpus reach is NON-ZERO, and the published superset figure was wrong
+### 5.1 The published superset figure was wrong, and the corpus REWARD is ZERO
 
-**The superset is 27 ORE ontologies, not the ≤14 recorded in CLAUDE.md.** That smaller figure
+**The superset is 27 ORE ontologies, not the ≤14 recorded for this shape elsewhere in the
+design record.** That smaller figure
 came from a scan whose `break` fired after the first axiom body matching a broad construct
 regex, so any ontology whose *first* `Domain`/`Range` axiom happened to be non-conjunctive was
 wrongly excluded. Two independent instruments now agree at 27 — a corrected balanced-paren
@@ -274,7 +275,8 @@ re-derived here. **Prefer 27; the ≤14 is stale wherever it still appears.**
 > the same flag. Corpus reward for #110 is measured **zero**. The analysis below is otherwise
 > unchanged.
 
-**Reach is measured and non-zero.** On `ore_ont_4796` (DOLCE-Lite), `RUSTDL_CLASSIFY_SAME_TIER=1`
+**The shape occurs in the wild, but the observation below is FLAG-ATTRIBUTABLE — see the box
+above before reading it as reward.** On `ore_ont_4796` (DOLCE-Lite), `RUSTDL_CLASSIFY_SAME_TIER=1`
 gains exactly `DOLCE-Lite#agent ⊑ DOLCE-Lite#endurant` and `DOLCE-Lite#agent ⊑
 DOLCE-Lite#particular` — **transitive closure 1,224 → 1,226, lost 0** — stable at both the 5 ms
 default and `--pair-timeout-ms 1000`, and **KM derives both**. Since the flag is the documented
@@ -286,10 +288,13 @@ only `gained=1`: the second pair is transitively implied and therefore has no di
 row-count comparison understates the gain — the fifth recorded instance of the direct-vs-closure
 trap in this repository.
 
-**The bound that survives: no full ORE sweep was run for this task.** `ore_ont_4796`
-*corroborates* that the shape occurs in the wild; it does not measure the population. Task 4 is
-the sweep. Until it lands, the evidence for #110 is **the canaries, this three-oracle
-adjudication, and one corroborating real ontology** — not a population measurement.
+**The bound that survived this task — no full ORE sweep was run here — is now CLOSED by Task 4,
+and it closed against the expectation.** `ore_ont_4796` corroborates that the shape occurs in the
+wild; it never measured the population, and the population measurement came back **zero**: 45
+IDENTICAL / 0 DIFFER / 2 UNMEASURED / 0 lost entailments over 25 measured bearing + 20 controls,
+and 0 fragment-routing movers across all 1,920 (§3 of
+`docs/benchmarks/2026-09-06-conjunctive-filler-sweep.md`). So the evidence for #110 is **the
+canaries and this three-oracle adjudication** — the corpus shows inertness, not confirmation.
 
 ### 5.2 What is established
 

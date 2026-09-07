@@ -2161,7 +2161,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 
 
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**
-  (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`compare-whelk`).
+  (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`matrix`; the in-process
+  `compare-whelk` subcommand was retired 2026-09-07 when the workspace moved to
+  horned-owl 3.x — whelk-rs pins `^1.4` — see
+  `docs/whelk-rs-comparison-2026-07-08.md`).
   `xtask/` holds build automation (corpus fetch, license inventory).
   `diagnose` partitions unsatisfiable classes into root (causes) vs derived
   (collateral) via a stingy structural dependency graph and justifies the roots;

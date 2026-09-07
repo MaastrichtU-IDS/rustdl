@@ -253,8 +253,11 @@ fn build_cell(
                 }
             }
             "whelk-rs" => {
-                // whelk runs in-process behind the `whelk-compare` feature; when
-                // the feature is off, record `na` with a note rather than a fake number.
+                // whelk-rs was never wired into this matrix as a runnable
+                // comparator (the in-process `whelk-compare` feature this
+                // reasoner slot anticipated was retired 2026-09-07 — see
+                // `docs/whelk-rs-comparison-2026-07-08.md`); record `na`
+                // rather than a fake number.
                 status = Status::Na;
             }
             _ => unreachable!(),

@@ -32,8 +32,10 @@ up as `null` in the output — it's still ELK; we use
 
 ## What this is for
 
-Fair comparison against rustdl. Use `owl-dl-bench compare-whelk` for
-the in-process Rust vs Rust comparison; use this harness for
-Rust vs JVM. JVM startup is paid once via the warmup iteration plus
-the static cost of one `java` invocation, so the per-call number is
-a meaningful estimate of reasoning time.
+Fair comparison against rustdl. `owl-dl-bench compare-whelk`, the
+in-process Rust vs Rust comparison, was retired 2026-09-07 when the
+workspace moved to horned-owl 3.x (whelk-rs pins `^1.4`) — see
+`docs/whelk-rs-comparison-2026-07-08.md`; use this harness for
+Rust vs JVM instead. JVM startup is paid once via the warmup iteration
+plus the static cost of one `java` invocation, so the per-call number
+is a meaningful estimate of reasoning time.

@@ -1,5 +1,16 @@
 # rustdl vs whelk-rs — full comparison (2026-07-08)
 
+> **RETIRED 2026-09-07.** The in-process comparator this doc describes
+> (`owl-dl-bench compare-whelk`, the `whelk-compare` feature) was removed when
+> the workspace moved from a pinned `[patch.crates-io]` horned-owl 1.4 fork to
+> released upstream horned-owl 3.0. `whelk-rs` pins `horned-owl = "^1.4"`
+> (upstream `whelk-rs` master still does), which excludes 3.x, so the
+> comparator could no longer build. The findings below stand — the comparison
+> campaign that produced them is complete, and it found 2 real rustdl EL gaps
+> (since fixed) and concluded whelk-rs itself is unsound on some patterns.
+> Reviving the in-process comparator needs `whelk-rs` upgraded to horned-owl
+> 3.x upstream.
+
 whelk-rs (INCATools, a Rust port of Balhoff's Scala *whelk*) is rustdl's closest
 comparator: another **native-Rust, consequence-based EL** reasoner. This is the
 head-to-head across every axis, for paper positioning.

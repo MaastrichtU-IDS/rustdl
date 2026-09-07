@@ -1674,6 +1674,57 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     is most likely the bucket element growing and costing cache in the k² scan; if it ever
     needs to be cheap, shrink the ELEMENT or index the loop.
     Canaries `crates/owl-dl-reasoner/tests/data_union_of_intervals.rs`.
+  - **XSD integer-DERIVED datatypes (`xsd:int`, `xsd:long`, …) — CLOSED 2026-09-07 (#121,
+    unflagged).** `parse_integer_range` keyed on the EXACT `xsd:integer` IRI, so every derived
+    type had no bucket and the whole axiom dropped — `xsd:int` MISSED where `xsd:integer`
+    derived. A SOUND, SURFACED under-approximation (`dropped` was non-empty), so a completeness
+    fix, not a D10. Each type now maps to its exact bounded `IntegerRange`
+    (`int → [-2^31, 2^31-1]`, `nonNegativeInteger → [0, ∞)`, …); they share ONE value space so
+    they share the integer bucket and `IntegerRange::subset` gives the type hierarchy for free.
+    Deliberately unlike the `xsd:float`/`xsd:double` split, where the value spaces genuinely
+    differ and SEPARATE buckets are what keeps them sound.
+    **EXACTNESS IS LOAD-BEARING IN BOTH DIRECTIONS, which is why `xsd:unsignedLong` still
+    DROPS.** Its max `2^64 - 1` does not fit `IntegerRange`'s `i64`, and *neither* approximation
+    is safe: wider makes `nonNegativeInteger ⊆ unsignedLong` derivable, narrower makes
+    `unsignedLong ⊆ [0, i64::MAX]` derivable, and both are FALSE POSITIVES. A canary pins the
+    visible drop and says to FLIP it if `IntegerRange` ever widens to `i128`.
+    **A `DatatypeRestriction` on a derived type must INTERSECT with the datatype's own space** —
+    `xsd:byte` capped at 200 is still `[-128, 127]`. Taking the facets alone was correct when
+    only `xsd:integer` reached that arm (its base is unbounded) and is not now. Discriminator:
+    value 150 → unsat with the intersect, sat without; 100 stays sat.
+    **CORPUS REACH IS NOT ZERO HERE — 341 of 1,920 (17.8%) — and that is unusual for this
+    subsystem, so the sweep is load-bearing rather than non-regression theatre.** Two-arm
+    (pinned `fada7c2a`/`4aeb336e`, pin verified behaviourally, arm order alternated, sequential
+    on an idle host): **329 IDENTICAL / 9 BOTH_DNF / 3 DIFFER / 0 REGRESSED / 0 RECOVERED**, and
+    all 3 DIFFERs show `dropped` FALLING, the intended effect. `ore_ont_11647` is a real gain:
+    **+60 closure pairs, 0 lost, all 60 Konclude-confirmed**, drops 66 → 36.
+    **MY FRAME GREP WAS WRONG BY ~85× AND NEARLY SKIPPED THE SWEEP.** A full-IRI grep
+    (`XMLSchema#int`) found **4** ontologies; the pool writes prefixed `xsd:int`, and the real
+    frame is **341**, with 28,380 `xsd:int` occurrences in `DataPropertyRange` positions. Had I
+    trusted it I would have declared reach negligible and gated on canaries alone.
+    **THREE RUNS ARE NOT ENOUGH ON A BUDGET-TRUNCATED ONTOLOGY — it took NINE per arm.**
+    `ore_ont_16420` and `ore_ont_9577` (both `incomplete: true`) each "lost"
+    `Quotation ⊑ InheritableType`. On `9577` the first **3 AFTER runs all missed it while BEFORE
+    produced it 2/3**, which reads as a systematic loss; six more runs give **AFTER 4/9, BEFORE
+    6/9** — both arms nondeterministic, zero real losses. This is the sibling of the recorded
+    `ore_ont_1508` case where a third run refuted a two-run control.
+    **THE TWO ORACLES SPLIT BY QUESTION, so name which one answers which.** `HermiT` decides the
+    type hierarchy and agrees 4/4 (`int`-inside-`integer` and `short`-inside-`int` derived, both
+    converses refused); **Konclude reports NOTHING on any of the four, including the positives** —
+    a further under-report, and that reading is licensed by a DISCRIMINATING CONTROL rather than
+    assumed: adding a plain `SubClassOf(:C :E)` makes Konclude report `C ⊑ E` while still omitting
+    the datatype pair, so it is reasoning over the file. Conversely the corpus gain rests on
+    **Konclude alone** — `HermiT` via robot dies on `ore_ont_11647` with an `axiom-impl` classpath
+    error, minutes after working on the small fixtures, so that ontology is single-oracle.
+    **SABOTAGE: 5 run, 5 caught**, three by exactly one test each — the naive all-unbounded
+    mapping (3 tests, incl. the FP guard), reverting to `xsd:integer`-only (3), dropping the facet
+    intersect (1), under-approximating `unsignedLong` (1), cross-seeding `decimal` (1).
+    **A PROBE THAT CANNOT PRODUCE A POSITIVE PROVES NOTHING ABOUT FALSE ONES.** The first
+    direction probe used two `SubClassOf` NECESSARY conditions (`A ⊑ ∃p.int`, `B ⊑ ∃p.integer`),
+    which cannot entail `A ⊑ B` — it answered "no" for every pair and read as "no FPs" while being
+    vacuous. The target needs the SUFFICIENT direction (`∃p.integer ⊑ W`). Same shape as #42's
+    vacuous subset canary. Gates: suite 1981/0; FP=0 net 21 VERIFIED, every closure exact; clippy
+    clean. Canaries `crates/owl-dl-reasoner/tests/xsd_integer_derived_datatypes.rs` (7).
   - **STILL DROPPED (sound), recorded rather than implied:** unions with any member no
     integer interval set can express — bare DATATYPES (`xsd:decimal`), `DataComplementOf`,
     other-datatype enumerations — which drop WHOLE and VISIBLY (`dropped` is non-empty),

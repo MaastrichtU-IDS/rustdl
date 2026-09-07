@@ -2010,24 +2010,68 @@ fn scan_class_for_existentials<A: ForIRI>(class_iri: &str, ce: &ClassExpression<
 /// datatypes, unrecognized facets, unparseable literals, or
 /// overflowing exclusive-bound adjustments — sound under-approximation:
 /// unrecognized ranges contribute no constraint (vs. wrong constraints).
+/// The value space of an XSD integer-derived datatype, as an `IntegerRange`,
+/// or `None` if this is not one we can represent EXACTLY.
+///
+/// `xsd:integer` is unbounded; every derived type is a bounded sub-range of it
+/// (XSD 1.1 §3.4). Because they all live in ONE value space, they share the
+/// integer `DKey` bucket and `IntegerRange::subset` gives the type hierarchy
+/// for free — `int ⊆ integer` holds and the converse does not. This is
+/// deliberately unlike the `xsd:float`/`xsd:double` split, where the value
+/// spaces genuinely differ and SEPARATE buckets are what keeps them sound (the
+/// v0.4.6–v0.4.9 FP).
+///
+/// **EXACTNESS IS LOAD-BEARING — neither direction of approximation is safe.**
+/// A range WIDER than the truth makes `nonNegativeInteger ⊆ unsignedLong`
+/// derivable, which is false. A range NARROWER than the truth makes
+/// `unsignedLong ⊆ [0, i64::MAX]` derivable, which is also false. Both are
+/// FALSE POSITIVES, in opposite directions, so a type we cannot express
+/// exactly must keep DROPPING rather than be approximated.
+///
+/// That is why **`xsd:unsignedLong` is absent**: its maximum is `2^64 - 1`,
+/// which does not fit the `i64` bounds of `IntegerRange`. It continues to drop
+/// VISIBLY (`dropped` is non-empty), which is the sound, surfaced behaviour.
+/// `xsd:decimal` is absent for a different reason — it is a distinct value
+/// space with its own `dec:` bucket, and integer/decimal are deliberately never
+/// cross-seeded.
+fn xsd_integer_derived_range(local: &str) -> Option<IntegerRange> {
+    let (min, max) = match local {
+        "integer" => (None, None),
+        "long" => (Some(i64::MIN), Some(i64::MAX)),
+        "int" => (Some(-2_147_483_648), Some(2_147_483_647)),
+        "short" => (Some(-32_768), Some(32_767)),
+        "byte" => (Some(-128), Some(127)),
+        "nonNegativeInteger" => (Some(0), None),
+        "positiveInteger" => (Some(1), None),
+        "nonPositiveInteger" => (None, Some(0)),
+        "negativeInteger" => (None, Some(-1)),
+        "unsignedInt" => (Some(0), Some(4_294_967_295)),
+        "unsignedShort" => (Some(0), Some(65_535)),
+        "unsignedByte" => (Some(0), Some(255)),
+        // "unsignedLong" is NOT here on purpose — see the doc comment.
+        _ => return None,
+    };
+    Some(IntegerRange { min, max })
+}
+
 pub(crate) fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<IntegerRange> {
-    const XSD_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#integer";
+    const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
     match dr {
         // Phase D6 (Part A): a bare `xsd:integer` datatype (no facet) is
         // the unbounded integer range. `DataSomeValuesFrom(p, xsd:integer)`
         // thus lowers to `∃p.DKey(-∞,+∞)` — a sound necessary condition
         // that keeps the enclosing conjunction alive (e.g. Prime/Zoom).
-        DataRange::Datatype(dt) if dt.0.to_string() == XSD_INTEGER => {
-            Some(IntegerRange::unbounded())
-        }
-        // Only xsd:integer for Tier C; other numeric datatypes
-        // (xsd:decimal, xsd:dateTime) extend with their own range types
-        // but share this preprocessing's algebra. Float/double are
-        // handled by `parse_xsd_float_range`/`parse_xsd_double_range`
-        // (DISTINCT datatype buckets — see the DKey datatype-tagging in
-        // `convert.rs`).
-        DataRange::DatatypeRestriction(dt, facets) if dt.0.to_string() == XSD_INTEGER => {
-            parse_integer_facets(facets)
+        // Since #121 the integer-DERIVED types resolve here too, each to its
+        // own exact bounded range, so `xsd:int` is no longer dropped.
+        DataRange::Datatype(dt) => xsd_integer_derived_range(dt.0.to_string().strip_prefix(XSD)?),
+        // A restriction TIGHTENS the datatype's own value space, so the two
+        // must be intersected: `xsd:int` with `minInclusive 0` is `[0, 2^31-1]`,
+        // not `[0, +∞)`. Before #121 only `xsd:integer` reached here, whose base
+        // range is unbounded, which is why taking the facets alone was correct
+        // then and is not now.
+        DataRange::DatatypeRestriction(dt, facets) => {
+            let base = xsd_integer_derived_range(dt.0.to_string().strip_prefix(XSD)?)?;
+            Some(base.intersect(parse_integer_facets(facets)?))
         }
         _ => None,
     }

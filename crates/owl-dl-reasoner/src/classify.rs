@@ -2119,16 +2119,50 @@ fn is_atomic_concept(c: ConceptId, pool: &ConceptPool) -> bool {
     matches!(pool.get(c), ConceptExpr::Atomic(_))
 }
 
-/// True if `c` is a concept that the engine handles completely for
-/// `ObjectPropertyDomain` / `ObjectPropertyRange` filler positions:
+/// True if `c` is a filler this gate will certify for
+/// `ObjectPropertyDomain` / `ObjectPropertyRange` positions:
 /// - `Atomic` — stored in `role_domains` / `role_ranges` and propagated.
 /// - `Bot`    — stored in `poisoned_roles`; any `∃r.*` class becomes unsat.
 /// - `Top`    — dropped by the engine, but semantically trivial: `Domain(r, ⊤)`
 ///   adds no subsumptions, so dropping it is sound (no missed entailment).
 ///
-/// Everything else (`And`, `Some`, `Or`, …) is silently dropped by the engine
-/// while potentially entailing real subsumptions — those MUST fall to the hybrid
-/// path.  See `collect_el_rules`, the `ObjectPropertyDomain` arm.
+/// **This predicate is now STRICTER than the engine.** It used to be exact —
+/// gate-admitted ⟺ engine-handled-or-trivial. Since `ed2ab5f` and `ed94a81`
+/// `collect_el_rules` calls `atomic_conjuncts`, so it also
+/// - handles an `And` of atomics COMPLETELY (a logical identity), and
+/// - handles a MIXED `And` PARTIALLY, contributing the atomic conjuncts only.
+///
+/// Refusing both is right for this gate's own job, which is to never certify
+/// `pure-EL` over an axiom the saturator handles only in part — that is the D10
+/// shape. **But do not read refusal as "the answer is still complete."** A
+/// refused axiom routes to the hybrid path, whose tier walk only discovers a
+/// non-closure pair `sub ⊑ sup` when `closure_count(sub) > closure_count(sup)`;
+/// a dropped or partial filler is exactly when the EL closure fails to make
+/// those counts monotone. `Domain(r, ∃s.Z)` with `∃s.Z ⊑ W` loses `X ⊑ W`, and
+/// `Domain(r⁻, P)` loses its pair outright — both with `direct_subsumptions: []`
+/// and `incomplete: false`, both confirmed by Konclude and `HermiT`, and both
+/// recovered by `RUSTDL_CLASSIFY_SAME_TIER=1` but by no `trust_sat` /
+/// hypertableau flag. Those are PRE-EXISTING misses, not consequences of the
+/// decomposition work, and `Classification::completeness_guaranteed` still
+/// admits their `Horn` verdict — so `disjoint --json` reports
+/// `incomplete: false` on them too.
+///
+/// The fully decomposable case is therefore a MISSED FAST PATH rather than a
+/// missed answer, and for a specific reason: on an otherwise-EL ontology the
+/// saturator's closure is complete, so the tier walk reproduces it exactly.
+/// `Domain(r, P ⊓ Q)` gets the same rows as the atomic spelling; it is only
+/// banner-reported `Horn` instead of `pure-EL`.
+///
+/// Do NOT widen this by pattern-matching `And` here — that re-creates the drift
+/// this comment exists to record. **And do not widen it by delegating to
+/// `atomic_conjuncts` either: that function returns a PARTIAL subset by design,
+/// so a `!atomic_conjuncts(c).is_empty()` gate would admit the MIXED filler and
+/// manufacture the exact D10 regression described above.** Delegation needs the
+/// engine to expose an ALL-atomic predicate (or this gate to compare
+/// `atomic_conjuncts(c).len()` against the filler's own conjunct count). Gate
+/// the flip on a two-arm ORE sweep: it moves ontologies onto the
+/// saturation-only fast path. See `collect_el_rules`, the
+/// `ObjectPropertyDomain` arm.
 fn is_atomic_or_trivial_concept(c: ConceptId, pool: &ConceptPool) -> bool {
     matches!(
         pool.get(c),

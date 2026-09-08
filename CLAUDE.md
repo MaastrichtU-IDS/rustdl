@@ -24,19 +24,67 @@ query which to use. Parsing and the OWL object model come from the external
 ```sh
 cargo build --workspace --release          # build (needs Rust 1.88+, edition 2024)
 cargo test --workspace                      # all tests
-cargo test --workspace --doc                # doctests (CI runs these separately)
+cargo test --workspace --doc                # doctests (LOCAL ONLY — CI has no --doc job; see below)
 cargo test -p owl-dl-tableau <name>         # single crate / filtered test
 cargo fmt --all -- --check                  # format check (max_width = 100)
 cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; warnings are errors
 ```
 
-> **Toolchain gotcha (build with `RUSTUP_TOOLCHAIN=stable`).** `rust-toolchain.toml`
-> pins `1.95.0`, but that toolchain is often installed *without* the `cargo`
-> binary (rustup `profile = minimal`), so a bare `cargo build`/`cargo test` in the
-> repo fails with *"the 'cargo' binary … is not applicable to the '1.95.0'
-> toolchain"* — and a failed/again-skipped build then **silently reuses a stale
-> `target/release/` binary**. Build and benchmark with
-> `RUSTUP_TOOLCHAIN=stable cargo …` (or `rustup component add cargo --toolchain 1.95.0`).
+> **Toolchain gotcha — CORRECTED 2026-09-08, and rustdl runs on THREE machines whose
+> toolchains differ.** The previous advice ("build with `RUSTUP_TOOLCHAIN=stable`,
+> because the pinned `1.95.0` toolchain is often installed *without* `cargo`") was wrong
+> on both halves, and the correction is **per host** — a single instruction cannot be
+> right for all three. Measured 2026-09-08:
+>
+> | | **g1** (`fsesrv-g1`) | **n3** (`fsesrv-node000003`) | **Mac** (`Michels-MacBook-Pro`) |
+> |---|---|---|---|
+> | OS / arch | Ubuntu 22.04.5, x86_64 | Linux 5.15.0-136, x86_64 | macOS 26.6.2, Darwin 25.6.0, **arm64** |
+> | bare `cargo` | **`/usr/bin/cargo` = 1.75.0** | **none** | `~/.cargo/bin/cargo` = **1.96.0** (works) |
+> | `rustup` on `PATH` | no | no | **yes** (1.29.0) |
+> | `stable-*` toolchain | **1.95.0** | **1.98.0** | **1.96.0** |
+> | `1.95.0-*` toolchain | 1.95.0 | 1.95.0 | 1.95.0 (aarch64) |
+>
+> **The ORIGINAL ADVICE WAS WRITTEN ON THE MAC, WHERE IT WORKS.** The Mac has `rustup` on
+> `PATH` and a working bare `cargo` 1.96.0, so both `cargo build` and
+> `RUSTUP_TOOLCHAIN=stable cargo …` behave there — and `rustup component add cargo
+> --toolchain 1.95.0`, the old parenthetical, is actionable **only** there. On the two
+> Linux boxes it is inert, because `rustup` is on neither `PATH`.
+>
+> **The three hosts fail three different ways, and g1's is the dangerous one.** The Mac
+> just works. On n3 a bare `cargo` is *absent*, so you get `command not found` — loud and
+> obvious. On g1 it resolves to **1.75.0**, which predates edition 2024, so the build
+> fails with ``feature `edition2024` is required`` — a message that points at the code
+> rather than at your toolchain.
+>
+> **`stable` IS A DIFFERENT COMPILER ON ALL THREE HOSTS — 1.95.0 (g1) / 1.98.0 (n3) /
+> 1.96.0 (Mac)** — while `rust-toolchain.toml` pins **1.95.0**, which every host does have.
+> So for any measurement that must be comparable across machines, prepend the
+> **explicitly pinned** toolchain, not `stable`:
+>
+> ```sh
+> # comparable across hosts — pins 1.95.0 everywhere
+> PATH="$HOME/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin:$PATH" \
+>   cargo build --workspace --release
+> ```
+>
+> This compounds the cross-host baseline hazard already recorded under
+> **A CROSS-HOST BASELINE MAKES THE CORPUS GATE REPORT A FALSE FAIL**: that entry warns
+> the *machine* decides as much as the binary, and `stable` silently resolving to two
+> different compilers is a second way for the same comparison to go wrong.
+>
+> Reaching the Mac from g1: `ssh micheldumontier@michels-macbook-pro` (the tailnet name;
+> user `dumontier` is refused on `publickey`). `ssh n3` works as `dumontier`. To re-check
+> any host in one command:
+>
+> ```sh
+> command -v cargo; cargo --version; command -v rustup; ls ~/.rustup/toolchains
+> ```
+>
+> This is load-bearing for anything that shells out to `cargo` **itself** rather than
+> inheriting your shell — `maturin` via `pip install ./crates/owl-dl-py` is the case
+> that hit it, and it reports the edition error from deep inside a PEP 517 build where
+> the cause is not obvious. A failed/skipped build then **silently reuses a stale
+> `target/release/` binary**.
 > **Always confirm `target/release/rustdl` is freshly built before benchmarking** —
 > **SUPERSEDED 2026-08-03 (v0.4.13) — THE WINE GUIDANCE BELOW IS OBSOLETE. Read this first.**
 > **Unbounded `classify ontologies/real/wine.ofn` now completes in ~74 s with no flags**, so
@@ -86,7 +134,11 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; w
 > advice above is unaffected.
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy (`-D warnings`), build+test on
-linux/macos/windows, and `cargo-deny`. `RUSTFLAGS: -D warnings` is set in CI, so
+linux/macos/windows, and `cargo-deny`. **There is NO doctest job** — counted from a
+real PR's check runs (2026-09-07): the 9 runs are pytest ×2, build+test ×3, clippy,
+rustfmt, cargo-deny, and the `workflow_dispatch`-only closure-diff stub. So
+`cargo test --workspace --doc` is a LOCAL gate only; a broken doctest reaches `main`
+with CI green. `RUSTFLAGS: -D warnings` is set in CI, so
 **any warning fails the build** — clippy `pedantic` is on workspace-wide (with a
 curated allow-list in the root `Cargo.toml`), and `unwrap_used`/`dbg_macro` are
 warn-level. Push (to `main`), PRs, and `workflow_dispatch` all trigger CI
@@ -124,9 +176,34 @@ the v0.3.11 release wheel build.
 > **oracle** (`konclude-input/pizza-classified.owx`) that was missing. Oracles come from
 > `scripts/konclude-oracle.sh`, whose loop covers only sio/sulo/ro/wine.
 >
-> `~/eval-tools` carries a **native Konclude v0.7.0-1138** binary and `robot.jar` 1.9.10, so
-> no Docker is needed, and `~/data/ore-run/pool_sample/files` holds the whole 1,920-ontology
-> ORE pool. That is enough to build: **bibtex** (`ore_ont_3341`), **ore-10908-sroiq**
+> **THIS BLOCK DESCRIBES THE MAC, and every path in it is host-specific (measured
+> 2026-09-08).** `~/eval-tools` is real — on the Mac. It does not exist on either Linux
+> box, so the oracle recipe below is **Mac-only as written**.
+>
+> | asset | **g1** | **n3** | **Mac** |
+> |---|---|---|---|
+> | rustdl checkout | `/data/dumontier/rustdl` | `/data/dumontier/rustdl` | `~/code/rustdl` |
+> | ORE pool (1,920) | `/data/dumontier/ore-run/pool_sample/files` | same | **`~/data/ore-run/pool_sample/files`** |
+> | OBO corpus (190) | `/data/dumontier/obo-corpus/files` | **absent** | **absent** |
+> | `~/eval-tools` | **absent** | **absent** | present (14 entries, `work/` 69) |
+> | Konclude v0.7.0-1138 | `/data/dumontier/reasoners/Konclude-…-Linux-x64-GCC-Static-…/Konclude` | same | `~/eval-tools/Konclude-…-OSX-x64-Clang-Static-…/Konclude` |
+> | `robot.jar` 1.9.10 | **not found** | **not found** | `~/eval-tools/robot.jar` |
+> | `*.kon.owx` artifacts | **absent** | not checked | present (`pizza`, `wine`, `trivial`) |
+>
+> **The ORE-pool path is per host and BOTH spellings are correct** — `~/data/ore-run/…`
+> on the Mac (which is what this block originally recorded, correctly, for the machine it
+> was written on) and `/data/dumontier/ore-run/…` on g1 and n3. An earlier revision of
+> this correction called the `~/data/…` form simply wrong; that was itself wrong.
+>
+> **Consequence for the oracle recipe below:** `robot.jar` and the `work/*.kon.owx`
+> artifacts exist ONLY on the Mac, so `pizza`'s oracle and the `sio.kon.owx` validation
+> control can be reproduced there and **not** on g1 or n3 without re-provisioning. The
+> Linux hosts do have the native Konclude (so no Docker), but it is the **Linux-x64
+> static** build — which is the one needing `libpcre.so.3`, per the note further down;
+> the Mac's is the OSX Clang build and does not.
+>
+> The Mac is also the manual-publish machine, corroborated here: its `~/.cargo/config.toml`
+> sets `global-credential-providers = ["cargo:token", "cargo:macos-keychain"]`. That is enough to build: **bibtex** (`ore_ont_3341`), **ore-10908-sroiq**
 > (`ore_ont_10908`), **ore-15672-shoin** (`ore_ont_15672`) — each `robot convert` to `.ofn`
 > plus `Konclude classification -w AUTO` for the oracle — and **pizza**'s oracle straight
 > from `~/eval-tools/work/pizza.kon.owx` (its `pizza.ofn` is md5-identical to the repo's).

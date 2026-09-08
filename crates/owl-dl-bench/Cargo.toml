@@ -10,7 +10,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-publish = false   # whelk dep is git-only (not on crates.io); bench is an internal dev tool
+publish = false   # internal dev tool
 
 [[bin]]
 name = "owl-dl-bench"
@@ -37,10 +37,6 @@ owl-dl-reasoner.workspace = true
 [lints]
 workspace = true
 
-[dependencies.whelk]
-git = "https://github.com/INCATools/whelk-rs"
-optional = true
-
 [dependencies.pprof]
 version = "0.14"
 features = ["flamegraph"]
@@ -48,7 +44,6 @@ optional = true
 
 [features]
 default = []
-whelk-compare = ["dep:whelk"]
 profile = ["dep:pprof"]
 # Forward owl-dl-tableau's per-rule counters. Enable for the same
 # diagnostic builds as `profile`; activate at runtime with

@@ -1,7 +1,7 @@
 """Tests for the Python explanation/debugging surface + materialize re-exports."""
 import rustdl
 
-BROKEN = """Prefix(:=<urn:>)
+BROKEN = """Prefix(:=<http://ex/#>)
 Ontology(
   Declaration(Class(:A)) Declaration(Class(:Bad)) Declaration(Class(:SubBad))
   SubClassOf(:Bad ObjectIntersectionOf(:A ObjectComplementOf(:A)))
@@ -37,7 +37,7 @@ def test_reexports_present():
 
 def test_justify(tmp_path):
     p = _write(tmp_path, BROKEN)
-    ax = rustdl.justify(p, ["unsat", "urn:Bad"])
+    ax = rustdl.justify(p, ["unsat", "http://ex/#Bad"])
     assert ax, "expected a non-empty justification"
     assert any("Bad" in a for a in ax)
 
@@ -53,15 +53,15 @@ def test_prepared_justify_matches_free_function(tmp_path):
     # as the one-shot rustdl.justify().
     p = _write(tmp_path, BROKEN)
     onto = rustdl.prepare(p)
-    prepared = onto.justify(["unsat", "urn:Bad"])
-    cold = rustdl.justify(p, ["unsat", "urn:Bad"])
+    prepared = onto.justify(["unsat", "http://ex/#Bad"])
+    cold = rustdl.justify(p, ["unsat", "http://ex/#Bad"])
     assert prepared, "expected a non-empty justification"
     assert sorted(prepared) == sorted(cold)
 
 
 def test_prepare_bytes():
     onto = rustdl.prepare_bytes(BROKEN.encode(), format="ofn")
-    ax = onto.justify(["unsat", "urn:Bad"])
+    ax = onto.justify(["unsat", "http://ex/#Bad"])
     assert any("Bad" in a for a in ax)
 
 
@@ -69,13 +69,13 @@ def test_diagnose(tmp_path):
     p = _write(tmp_path, BROKEN)
     consistent, roots, derived = rustdl.diagnose(p)
     assert consistent is True
-    assert "urn:Bad" in roots
-    assert any(d == "urn:SubBad" for (d, _) in derived)
+    assert "http://ex/#Bad" in roots
+    assert any(d == "http://ex/#SubBad" for (d, _) in derived)
 
 
 def test_repair(tmp_path):
     p = _write(tmp_path, BROKEN)
-    reps = rustdl.repair(p, ["unsat", "urn:Bad"], 10)
+    reps = rustdl.repair(p, ["unsat", "http://ex/#Bad"], 10)
     assert reps and all(isinstance(r, list) for r in reps)
 
 
@@ -85,17 +85,17 @@ def test_debug_consistent_with_unsat(tmp_path):
     assert isinstance(d, rustdl.Diagnosis)
     # attribute API
     assert d.consistent is True
-    assert "urn:Bad" in d.unsatisfiable
-    bad = next(r for r in d.roots if r.iri == "urn:Bad")
+    assert "http://ex/#Bad" in d.unsatisfiable
+    bad = next(r for r in d.roots if r.iri == "http://ex/#Bad")
     assert bad.justification and bad.repairs
-    assert "urn:SubBad" in bad.derives
+    assert "http://ex/#SubBad" in bad.derives
     # back-compat dict API
     assert d["consistent"] is True
-    assert any(r["iri"] == "urn:Bad" for r in d["roots"])
+    assert any(r["iri"] == "http://ex/#Bad" for r in d["roots"])
 
 
 def test_debug_coherent(tmp_path):
-    p = _write(tmp_path, "Prefix(:=<urn:>)\nOntology(Declaration(Class(:A)))\n")
+    p = _write(tmp_path, "Prefix(:=<http://ex/#>)\nOntology(Declaration(Class(:A)))\n")
     d = rustdl.debug(p)
     assert d.consistent is True
     assert d.unsatisfiable == ()
@@ -103,7 +103,7 @@ def test_debug_coherent(tmp_path):
 
 
 def test_materialize_property_assertions(tmp_path):
-    p = _write(tmp_path, """Prefix(:=<urn:>)
+    p = _write(tmp_path, """Prefix(:=<http://ex/#>)
 Ontology(
   Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
   Declaration(ObjectProperty(:hasParent)) Declaration(ObjectProperty(:hasAncestor))
@@ -112,4 +112,4 @@ Ontology(
 )
 """)
     triples = rustdl.materialize_inferred_property_assertions(p)
-    assert ("urn:a", "urn:hasAncestor", "urn:b") in triples
+    assert ("http://ex/#a", "http://ex/#hasAncestor", "http://ex/#b") in triples

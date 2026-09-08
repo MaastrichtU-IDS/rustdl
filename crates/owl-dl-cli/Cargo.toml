@@ -10,18 +10,14 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-# Uses `horned_owl::io::omn` (Manchester reader/writer), which exists only in the
-# `[patch.crates-io]` fork rev, NOT in horned-owl 1.4 -- the version this workspace
-# PINS. NB `io::omn` DOES exist in released horned-owl 2.0.0+/3.0.0; what remains
-# fork-only is the per-item `AsManchester` rendering trait. So this is a pinned-
-# version problem plus one trait, not an upstream-feature gap; tracked in #99.
-# `[patch]` is not carried in a published manifest, so a consumer resolves
-# upstream and this crate FAILS TO COMPILE for them (measured: E0432
-# `unresolved import horned_owl::io::omn`) — while building green here, because
-# the patch applies locally. Distribution is the GitHub Release binaries built
-# by .github/workflows/release-cli.yml. Flip back to publishable once upstream
-# PR phillord/horned-owl#176 lands and the patch is dropped.
-publish = false
+# Uses `horned_owl::io::omn` (Manchester reader/writer) and the per-item
+# `AsManchester` rendering trait. Both ship in RELEASED horned-owl 3.x, so this
+# crate no longer depends on a `[patch.crates-io]` fork and is publishable again.
+# The historical blocker (#99) was that the workspace pinned 1.4 while `io::omn`
+# first appears in 2.0; `AsManchester` was believed fork-only and is NOT — upstream
+# 3.0.0 exports it from `io::omn` with an identical signature, and carries MORE
+# impls than the fork did (17 vs 13, adding the SWRL Atom/DArgument/IArgument/
+# Variable shapes). Dropping the fork also removes an LGPL-3.0 dependency edge.
 
 [[bin]]
 name = "rustdl"

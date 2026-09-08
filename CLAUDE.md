@@ -1118,10 +1118,23 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     NEGATIVE one, which includes an ordinary `EquivalentClasses(C, ObjectHasSelf(r))`: the
     `⊒` direction puts `Self` in the antecedent, and NNF makes it negative. So a grep for
     `ObjectComplementOf(ObjectHasSelf(…))` gives the right answer for the wrong reason;
-    re-scanned for the corrected pattern, ORE still has **0 of 9**. **`VarCap` is the live
-    residual here at 39 ontologies** — a clause silently discarded for exceeding
-    `MAX_BODY_VARS`, the same shape `NotTree` had — recorded, not queued, since raising that
-    cap is a measured hard stop. Two instruments disagreeing on COUNTS (`ro` 2 vs 6) is
+    re-scanned for the corrected pattern, ORE still has **0 of 9**. **`VarCap` WAS the live
+    residual here at 39 ontologies — MEASURED OUT 2026-09-06.** Re-censused at **37** refusing
+    ontologies, of which **11 are ALL-HORN** (`disjunctive=0`, so the refused body is provably
+    Horn) — which **REFUTES** the expectation that they would all be disjunctive. The earlier
+    "23 binders at 8→16, all disjunctive" was not wrong; it measured a DIFFERENT population —
+    binding at 16 and being refused at 8 are not the same set. All 11 refuse at **exactly 9
+    variables**, so the cap is off by ONE for this whole set, not mis-tuned across the
+    9/11/12/16/25/133 spread. **But the shape is INERT:** two arms at cap 8 vs 16, closure-
+    compared — **4 measurable with 0 answer changes; 7 DNF SYMMETRICALLY in both arms**, so
+    there is no answer for a withheld clause to change (claim bounded as 0 of 4, not 0 of 11).
+    And `ore_ont_7775` is both one of the 11 and one of the three completers cap-16 is recorded
+    as destroying, so the naive fix trades recoveries for known regressions. **Do not
+    re-propose without a single ontology where a 9-variable Horn body changes an answer.**
+    **Instrument note:** the first positive control did NOT fire — the fixture was pure-EL, so
+    `classify` took the saturation fast path and never reached the hyper engine; a census run
+    then would have read "0 addressable" from a silent instrument. Adding one `∀` fixed it.
+    See `docs/benchmarks/2026-09-06-varcap-horn-bodies-are-inert.md`. Two instruments disagreeing on COUNTS (`ro` 2 vs 6) is
     expected and was adjudicated rather than papered over: the engine counts indexing EVENTS
     (`ro` is re-indexed 3×) and the probe counts distinct clause bodies; as booleans they
     agree 4/4. See `docs/benchmarks/2026-09-04-self-filter-refusal-census.md`. A companion clausifier gap closed in `8ae984c`: `emit_head`'s `Not` arm handled only
@@ -2269,7 +2282,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 
 
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**
-  (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`compare-whelk`).
+  (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`matrix`; the in-process
+  `compare-whelk` subcommand was retired 2026-09-07 when the workspace moved to
+  horned-owl 3.x — whelk-rs pins `^1.4` — see
+  `docs/whelk-rs-comparison-2026-07-08.md`).
   `xtask/` holds build automation (corpus fetch, license inventory).
   `diagnose` partitions unsatisfiable classes into root (causes) vs derived
   (collateral) via a stingy structural dependency graph and justifies the roots;

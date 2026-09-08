@@ -1199,6 +1199,14 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
 /// (where the arrows respect each position's polarity) implies an
 /// edge of `sup`'s polarity between `node` and `tail`.
 ///
+/// Each position ALSO accepts the opposite-direction edge of a role
+/// declared its inverse (issue #128): `InverseObjectProperties(r, s)`
+/// makes `r` and `s⁻` one relation, so an `s`-labelled edge pointing
+/// the other way satisfies a `Named(r)` position. That is the only
+/// way a chain leg can traverse a SYMMETRIC role, since
+/// `SymmetricObjectProperty(r)` is lowered to
+/// `InverseObjectProperties(r, r)`. See [`chain_leg_targets`].
+///
 /// Skipped at blocked nodes — the blocking ancestor already
 /// witnesses any chain-derived edge by label inclusion.
 #[allow(clippy::too_many_lines)]
@@ -1214,22 +1222,6 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         return RuleOutcome::NoChange;
     }
     let chains: Vec<(Role, Role, Role)> = ctx.chains().to_vec();
-    let outgoing: Vec<(RoleId, NodeId, DepSet)> = {
-        let n = ctx.graph().node(node);
-        n.edges
-            .iter()
-            .enumerate()
-            .map(|(pos, &(r, t))| (r, t, n.edge_deps[pos].clone()))
-            .collect()
-    };
-    let incoming: Vec<(RoleId, NodeId, DepSet)> = {
-        let n = ctx.graph().node(node);
-        n.in_edges
-            .iter()
-            .enumerate()
-            .map(|(pos, &(r, t))| (r, t, n.in_edge_deps[pos].clone()))
-            .collect()
-    };
     // Pending chain-derived edges keyed by `(sup, tail_res)`. The
     // earlier Vec + linear `iter_mut().find()` was O(P) per tail and
     // the outer (mid, tail) iteration is O(K²), making the
@@ -1241,28 +1233,7 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     for (r1, r2, sup) in chains {
         // Step 1: find every `mid` reachable from `node` via the
         // first chain position, together with the edge deps.
-        let mids: Vec<(NodeId, DepSet)> = match r1 {
-            Role::Named(r) => outgoing
-                .iter()
-                .filter_map(|(role, n, d)| {
-                    if *role == r {
-                        Some((*n, d.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-            Role::Inverse(r) => incoming
-                .iter()
-                .filter_map(|(role, n, d)| {
-                    if *role == r {
-                        Some((*n, d.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-        };
+        let mids = chain_leg_targets(ctx, node, r1);
         for (mid, head_deps) in mids {
             if ctx.check_deadline() {
                 return RuleOutcome::NoChange;
@@ -1270,35 +1241,7 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
             let mid_res = ctx.resolve(mid);
             // Step 2: tail walk through `mid_res` carrying that edge's
             // deps too.
-            let tails: Vec<(NodeId, DepSet)> = {
-                let mid_node = ctx.graph().node(mid_res);
-                match r2 {
-                    Role::Named(r) => mid_node
-                        .edges
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(pos, &(role, n))| {
-                            if role == r {
-                                Some((n, mid_node.edge_deps[pos].clone()))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                    Role::Inverse(r) => mid_node
-                        .in_edges
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(pos, &(role, n))| {
-                            if role == r {
-                                Some((n, mid_node.in_edge_deps[pos].clone()))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                }
-            };
+            let tails = chain_leg_targets(ctx, mid_res, r2);
             for (tail, tail_deps) in tails {
                 crate::bump_counter!(ctx, apply_role_chains_body_iters);
                 if ctx.check_deadline() {
@@ -1330,6 +1273,94 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         }
     }
     RuleOutcome::Applied
+}
+
+/// Every node one chain-position hop from `at`, with the deps of the edge
+/// that got us there.
+///
+/// The polarity-correct read is the primary one: a `Named(r)` position walks
+/// `r`-labelled OUT-edges, a `Inverse(r)` position walks `r`-labelled
+/// IN-edges. On top of that, an edge in the OPPOSITE direction counts when its
+/// role is a declared inverse of the wanted one — `InverseObjectProperties(r, s)`
+/// asserts `r ≡ s⁻`, so `s(mid, at)` *is* `r(at, mid)` and refusing it drops
+/// entailments rather than avoiding them.
+///
+/// Issue #128 is the `s == r` case: `SymmetricObjectProperty(r)` is lowered to
+/// `InverseObjectProperties(r, r)`, so a symmetric role's edge is walkable both
+/// ways and a chain leg has to be able to take it backwards.
+///
+/// Both reads compose with the role hierarchy, because **nothing materialises
+/// super-role edges**. `apply_role_rules` adds concept *labels* to neighbours and
+/// [`TableauContext::add_edge`] records only the exact role, so the graph holds
+/// `q`-edges and never the `s`-edges implied by `q ⊑ s`; the rest of the tableau
+/// consults the hierarchy lazily through `edge_satisfies` instead. A chain leg
+/// that tested raw role ids would therefore miss:
+///
+/// - forward, `q ⊑ wanted`: `q(at, t)` entails `wanted(at, t)`;
+/// - reverse, `q ⊑ s` with `s ≡ wanted⁻`: `q(t, at)` entails `s(t, at)`, which
+///   *is* `wanted(at, t)`.
+///
+/// The reverse composition is load-bearing rather than theoretical: with
+/// `q ⊑ co`, `Symmetric(co)` and `co ∘ p ⊑ p`, the entailment
+/// `∃q.Y ⊓ ∃p.Pn ⊑ ∃q.(Y ⊓ ∃p.Pn)` needs `q(x,y) ⇒ co(x,y) ⇒ co(y,x)` before the
+/// chain can fire at `y`, and no EL closure can rescue it because symmetry is
+/// out of fragment. Pinned by `a_subrole_of_a_symmetric_role_fires_the_chain`.
+///
+/// Every accepted edge is licensed by a `⊑` or a `≡`, so this only ever adds
+/// entailed edges. Both predicates short-circuit when the ontology declares no
+/// hierarchy / no inverse pairs, so such an ontology pays nothing.
+fn chain_leg_targets(
+    ctx: &TableauContext<'_, '_, '_>,
+    at: NodeId,
+    position: Role,
+) -> Vec<(NodeId, DepSet)> {
+    let n = ctx.graph().node(at);
+    let wanted = position.role_id();
+    let hier = ctx.hierarchy();
+    // Forward: same polarity, so plain sub-role subsumption carries the edge up.
+    let forward_ok = |role: RoleId| match hier {
+        Some(h) => h.is_sub_role(role, wanted),
+        None => role == wanted,
+    };
+    // Reverse: `role` must reach SOME super-role that is a declared inverse of
+    // `wanted`. `are_declared_inverses` is symmetric and false-fast on an empty
+    // pair set, so the `super_roles` walk is skipped entirely in that case.
+    let reverse_ok = |role: RoleId| {
+        if !ctx.has_inverse_pairs() {
+            return false;
+        }
+        match hier {
+            Some(h) => h
+                .super_roles(role)
+                .iter()
+                .any(|&s| ctx.are_declared_inverses(wanted, s)),
+            None => ctx.are_declared_inverses(wanted, role),
+        }
+    };
+    // `fwd` is the polarity-correct side, `rev` the side an inverse
+    // declaration can license.
+    // Sliced because `edges` and `in_edges` are `SmallVec`s with different
+    // inline capacities, so the two arms need a common type.
+    let (out, out_deps): (&[(RoleId, NodeId)], &[DepSet]) = (&n.edges, &n.edge_deps);
+    let (inc, inc_deps): (&[(RoleId, NodeId)], &[DepSet]) = (&n.in_edges, &n.in_edge_deps);
+    let (fwd, fwd_deps, rev, rev_deps) = if position.is_inverse() {
+        (inc, inc_deps, out, out_deps)
+    } else {
+        (out, out_deps, inc, inc_deps)
+    };
+    let mut targets: Vec<(NodeId, DepSet)> = fwd
+        .iter()
+        .enumerate()
+        .filter(|(_, (role, _))| forward_ok(*role))
+        .map(|(pos, (_, t))| (*t, fwd_deps[pos].clone()))
+        .collect();
+    targets.extend(
+        rev.iter()
+            .enumerate()
+            .filter(|(_, (role, _))| reverse_ok(*role))
+            .map(|(pos, (_, t))| (*t, rev_deps[pos].clone())),
+    );
+    targets
 }
 
 /// True iff the implied chain edge `node —sup→ tail` (where polarity

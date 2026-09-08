@@ -836,6 +836,18 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     /// True if `r` and `s` are linked by a declared
+    /// True iff the ontology declared ANY `InverseObjectProperties` pair
+    /// (`SymmetricObjectProperty` lowers into one, so symmetric roles count).
+    ///
+    /// Lets a caller that would otherwise enumerate candidate roles — e.g. the
+    /// chain rule composing `⊑` with `≡` in
+    /// [`chain_leg_targets`](crate::apply_role_chains) — skip that walk outright
+    /// on the overwhelmingly common inverse-free ontology.
+    #[must_use]
+    pub fn has_inverse_pairs(&self) -> bool {
+        !self.inverse_pairs_set.is_empty()
+    }
+
     /// `InverseObjectProperties` axiom.
     #[must_use]
     pub fn are_declared_inverses(&self, r: RoleId, s: RoleId) -> bool {

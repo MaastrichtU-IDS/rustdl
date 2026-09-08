@@ -3152,8 +3152,20 @@ fn collect_el_rules_with_provenance(
             // into (#119, possibly a strict subset), not just a single fully-atomic
             // filler — one provenance entry per conjunct so `prove` can attribute a
             // conjunctive-domain-derived subsumption to this axiom.
-            Axiom::ObjectPropertyDomain { role, domain } if !role.is_inverse() => {
+            Axiom::ObjectPropertyDomain { role, domain }
+                if constrains_sources(Side::Domain, *role) =>
+            {
                 for id in atomic_conjuncts(&internal.concepts, *domain) {
+                    domain_axiom_refs.push((role.role_id(), id, ax_idx));
+                }
+            }
+            // `Range(r⁻, C) ≡ Domain(r, C)` (#125), so an INVERSE range also feeds
+            // `role_domains` and needs the same attribution — without this the
+            // `Domain(sub)` step it licenses prints with an EMPTY `axiom_refs`.
+            Axiom::ObjectPropertyRange { role, range }
+                if constrains_sources(Side::Range, *role) =>
+            {
+                for id in atomic_conjuncts(&internal.concepts, *range) {
                     domain_axiom_refs.push((role.role_id(), id, ax_idx));
                 }
             }
@@ -3218,7 +3230,9 @@ fn collect_el_rules_with_provenance(
         // up as a wrong or missing proof rather than a wrong answer.
         for ax in &internal.axioms {
             match ax {
-                Axiom::ObjectPropertyRange { role, range } if !role.is_inverse() => {
+                Axiom::ObjectPropertyRange { role, range }
+                    if !constrains_sources(Side::Range, *role) =>
+                {
                     // Mirror the real Pass 1 range arm's decomposition exactly
                     // (#118) — a conjunctive filler contributes each atomic
                     // conjunct it decomposes into (#119, possibly a strict
@@ -3229,6 +3243,23 @@ fn collect_el_rules_with_provenance(
                     // Pass 1 — a silent divergence here mis-attributes every
                     // LATER axiom's proof, not just this one's.
                     let ids = atomic_conjuncts(&internal.concepts, *range);
+                    if !ids.is_empty() {
+                        mini_rules
+                            .role_ranges
+                            .entry(role.role_id())
+                            .or_default()
+                            .extend(ids);
+                    }
+                }
+                // `Domain(r⁻, C) ≡ Range(r, C)` (#125): an inverse DOMAIN
+                // contributes a RANGE, so it must enter this simulation too.
+                // Omitting it does not merely blank one node's `axiom_refs` — it
+                // shifts every later axiom's rule-slot cursor, so proofs get cited
+                // to the WRONG axiom, which looks correct and is worse.
+                Axiom::ObjectPropertyDomain { role, domain }
+                    if !constrains_sources(Side::Domain, *role) =>
+                {
+                    let ids = atomic_conjuncts(&internal.concepts, *domain);
                     if !ids.is_empty() {
                         mini_rules
                             .role_ranges
@@ -3465,53 +3496,10 @@ fn collect_el_rules(
                 }
             }
             Axiom::ObjectPropertyDomain { role, domain } => {
-                if role.is_inverse() {
-                    // inverse-role domain = forward range; handled by the tableau
-                } else if matches!(internal.concepts.get(*domain), ConceptExpr::Bot) {
-                    // `ObjectPropertyDomain(r, ⊥)`: semantically `∃r.⊤ ⊑ ⊥` —
-                    // no individual may be an r-source. Poison the role so that
-                    // any class deriving `∃r.X` is marked unsatisfiable.
-                    rules.poisoned_roles.insert(role.role_id());
-                } else {
-                    // `ObjectPropertyDomain(r, P ⊓ Q)` ≡ `∃r.⊤ ⊑ P ⊓ Q` ≡
-                    // `∃r.⊤ ⊑ P` AND `∃r.⊤ ⊑ Q` — a logical identity, so splitting
-                    // is sound and completeness-preserving by construction (#110).
-                    // The atomic case is the one-element instance of it. A part
-                    // that isn't atomic (or a conjunction of atomics) contributes
-                    // nothing rather than dropping the whole filler (#119).
-                    let ids = atomic_conjuncts(&internal.concepts, *domain);
-                    if !ids.is_empty() {
-                        rules
-                            .role_domains
-                            .entry(role.role_id())
-                            .or_default()
-                            .extend(ids);
-                    }
-                }
+                lower_domain_or_range(*role, *domain, Side::Domain, &internal.concepts, &mut rules);
             }
             Axiom::ObjectPropertyRange { role, range } => {
-                if role.is_inverse() {
-                    // inverse-role range = forward domain; handled by the tableau
-                } else if matches!(internal.concepts.get(*range), ConceptExpr::Bot) {
-                    // `ObjectPropertyRange(r, ⊥)`: the r-range is empty ⟹ no
-                    // r-edge can exist in any model. Poison the role so that any
-                    // class deriving `∃r.X` is marked unsatisfiable.
-                    rules.poisoned_roles.insert(role.role_id());
-                } else {
-                    // Same identity on the range side: `Range(r, P ⊓ Q)` ≡
-                    // `Range(r, P)` AND `Range(r, Q)`. Measured to have the same
-                    // defect as the domain arm — HermiT derives the pair, rustdl
-                    // reported `[]` with `incomplete: false` (#110). Same partial
-                    // decomposition as the domain arm applies (#119).
-                    let ids = atomic_conjuncts(&internal.concepts, *range);
-                    if !ids.is_empty() {
-                        rules
-                            .role_ranges
-                            .entry(role.role_id())
-                            .or_default()
-                            .extend(ids);
-                    }
-                }
+                lower_domain_or_range(*role, *range, Side::Range, &internal.concepts, &mut rules);
             }
             Axiom::SubObjectPropertyOf {
                 sub: SubRolePath::Chain(parts),
@@ -4590,6 +4578,72 @@ fn domain_heads_el(
 /// `ObjectPropertyDomain`/`Range` match already run first), so a partly-atomic
 /// filler is never certified `PureEl` even though the engine now derives part
 /// of it. Do NOT loosen that gate to match this function.
+/// Which side of a role an `ObjectProperty{Domain,Range}` axiom constrains.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Domain,
+    Range,
+}
+
+/// Does this (side, polarity) combination constrain the role's SOURCES?
+///
+/// `Domain(r, …)` and `Range(r⁻, …)` do; `Range(r, …)` and `Domain(r⁻, …)`
+/// constrain its TARGETS instead. **This is the single home of that rule** — Pass 1
+/// and BOTH provenance mirrors call it, because a mirror that decides polarity
+/// independently is exactly how #110 became #118/#119.
+const fn constrains_sources(side: Side, role: Role) -> bool {
+    matches!(side, Side::Domain) != role.is_inverse()
+}
+
+/// Lower `ObjectPropertyDomain`/`ObjectPropertyRange`, in EITHER role polarity.
+///
+/// **`Domain(r⁻, C) ≡ Range(r, C)` and `Range(r⁻, C) ≡ Domain(r, C)`** — logical
+/// identities, hence sound and completeness-preserving by construction (#125).
+/// `Role::role_id` returns the underlying `r` for both polarities, so the ONLY
+/// thing an inverse changes is which table receives the classes; that is why this
+/// is a table flip and not a new rule.
+///
+/// Before #125 both arms did nothing at all on an inverse role, under the comment
+/// *"inverse-role domain = forward range; handled by the tableau"*. The identity
+/// was right and the conclusion was false comfort for `classify`: the pair was
+/// SILENTLY missed — `direct_subsumptions: []` with `incomplete: false` and
+/// `dropped: {}`, while `subclass` said `yes` and both oracles derived it.
+///
+/// `⊥` poisons the role in either polarity and on either side: `Domain(r⁻, ⊥)` is
+/// `Range(r, ⊥)`, and both say no `r`-edge can exist in any model.
+///
+/// The two sides are ONE function on purpose. They were parallel code, and this
+/// file has already paid for that once — #110 changed the real Pass 1 and left the
+/// provenance mirrors behind, which is the whole of #118/#119.
+fn lower_domain_or_range(
+    role: Role,
+    filler: ConceptId,
+    side: Side,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+) {
+    if matches!(pool.get(filler), ConceptExpr::Bot) {
+        rules.poisoned_roles.insert(role.role_id());
+        return;
+    }
+    // `Domain(r, …)` and `Range(r⁻, …)` both constrain r's SOURCES; the other two
+    // combinations constrain its TARGETS.
+    let targets_sources = constrains_sources(side, role);
+    // `Domain(r, P ⊓ Q)` ≡ `∃r.⊤ ⊑ P` AND `∃r.⊤ ⊑ Q` — a logical identity, so
+    // splitting is sound (#110); a non-atomic part contributes nothing rather than
+    // dropping the whole filler (#119).
+    let ids = atomic_conjuncts(pool, filler);
+    if ids.is_empty() {
+        return;
+    }
+    let table = if targets_sources {
+        &mut rules.role_domains
+    } else {
+        &mut rules.role_ranges
+    };
+    table.entry(role.role_id()).or_default().extend(ids);
+}
+
 fn atomic_conjuncts(pool: &ConceptPool, c: ConceptId) -> Vec<ClassId> {
     let mut out = Vec::new();
     collect_atomic_conjuncts(pool, c, &mut out);

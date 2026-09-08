@@ -121,24 +121,45 @@ fn default_classify_finds_inverse_domain_subsumption() {
     );
 }
 
-/// Documents opt-in semantics: with SP1.1 OFF (default), the inverse-domain
-/// same-tier subsumption C ⊑ D is NOT found by classify. This is expected —
-/// the feature is corpus-invisible and ~2× wall, so it defaults OFF.
+/// **FLIPPED by #125 — this asserted the OPPOSITE until the engine learned
+/// `Domain(p⁻, H)`.**
+///
+/// It was written to document `RUSTDL_CLASSIFY_SAME_TIER`'s opt-in semantics, and
+/// used this inverse-domain fixture as its VEHICLE: with the flag off the tier walk
+/// missed `C ⊑ D`, so "the default misses it" doubled as "the flag does something".
+/// #125 made the saturator lower `Domain(p⁻, H)` as `Range(p, H)`, which gives `C`
+/// its EL subsumers, which fixes the tier grouping as a side effect — so the DEFAULT
+/// now derives `C ⊑ D` with no flag at all. The pair is genuinely entailed (the
+/// flag-ON test above asserts it must be found, on this same ontology), so this is
+/// the engine improving, not the flag regressing.
+///
+/// **Flipped rather than deleted**, per this repo's standing rule for a test whose
+/// subject was a defect: it now pins that #125's recovery survives, and would fail
+/// if the inverse-domain lowering were reverted.
+///
+/// **What is NO LONGER guarded here, stated plainly:** a demonstration that the flag
+/// CHANGES behaviour on some ontology. The flag's default-OFF state is still pinned
+/// behaviourally by `internal_flag_defaults` in `lib.rs`, so the default itself is
+/// covered. A future test wanting the behaviour-change demonstration back needs a
+/// fixture whose same-tier miss is a DESIGN DECISION, not an open defect — note that
+/// `Domain(r, ∃s.Z)` (issue #124) would work today and break again the moment #124 is
+/// fixed, which is the bug-pin trap this comment exists to avoid repeating.
 #[test]
-fn default_classify_off_misses_inverse_domain_subsumption() {
+fn default_classify_now_finds_inverse_domain_subsumption_without_the_flag() {
     let _serial = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Explicitly remove the flag so the default-OFF path is active regardless
-    // of any ambient env value from a parent process.
+    // Explicitly remove the flag so the default path is active regardless of any
+    // ambient env value from a parent process.
     let _flag = SetEnvGuard::remove("RUSTDL_CLASSIFY_SAME_TIER");
     let mut r = Cursor::new(INVERSE_DOMAIN_SRC);
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut r, ParserConfiguration::default()).expect("parse");
     let c = owl_dl_reasoner::classify(&onto).expect("classify");
     assert!(
-        !classification_has_subsumption(&c, "http://e#C", "http://e#D"),
-        "with RUSTDL_CLASSIFY_SAME_TIER unset (default OFF): classify must NOT find C ⊑ D (opt-in semantics)"
+        classification_has_subsumption(&c, "http://e#C", "http://e#D"),
+        "since #125 the default classify must find C ⊑ D: `Domain(p⁻, H)` is lowered \
+         as `Range(p, H)`, giving C the EL subsumers the tier walk needs"
     );
 }
 

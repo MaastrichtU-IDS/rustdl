@@ -2028,6 +2028,76 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   paths can label one logical nested-existential witness differently and get deduped into two
   separate elements — not shown unsound, but untested against a future concept-level check).
 
+> **AN INVERSE-ROLE DOMAIN/RANGE WAS DISCARDED UNDER A CORRECT IDENTITY (2026-09-08, #125,
+> unflagged).** Both `collect_el_rules` arms did nothing at all when `role.is_inverse()`, under
+> the comment *"inverse-role domain = forward range; handled by the tableau"*. **The identity is
+> right and the conclusion was false comfort for `classify`**: the pair was SILENTLY missed —
+> `direct_subsumptions: []`, `incomplete: false`, `dropped: {}` — while `subclass` answered `yes`
+> and both oracles derived it. D10 shape.
+>
+> **The fix is a TABLE FLIP, not a new rule.** `Domain(r⁻, C) ≡ Range(r, C)` and
+> `Range(r⁻, C) ≡ Domain(r, C)` are logical identities, and `Role::role_id` already returns the
+> underlying `r` for BOTH polarities, so the only thing an inverse changes is which table receives
+> the classes. Both arms now route through one `lower_domain_or_range`, and the polarity rule has a
+> single home in `constrains_sources` — called by Pass 1 AND both provenance mirrors, because a
+> mirror that decides polarity independently is exactly how #110 became #118/#119.
+> `⊥` now poisons the role in either polarity (`Domain(r⁻, ⊥)` is `Range(r, ⊥)`); it previously did
+> nothing.
+>
+> **DIRECTION OF RISK IS A FALSE POSITIVE — flipping the table the WRONG WAY asserts of a role's
+> SOURCES something true only of its TARGETS.** The guard that fails first is
+> `an_inverse_domain_does_not_constrain_the_forward_sources`. `HermiT` agrees 5/5 (both positives,
+> the FP guard, both `⊥` cases).
+>
+> **READ ROBOT'S ERROR STREAM, NOT JUST ITS OUTPUT FILE.** On an ontology with an unsatisfiable
+> class `robot reason` writes NO output file and reports the unsatisfiability on stderr. Grepping
+> the (absent) output file scores that as "the oracle did not confirm it" — which is what the first
+> version of this adjudication did, nearly recording a `HermiT` disagreement that does not exist.
+>
+> **FEATURE REACH IS PROVABLY ZERO; THE REFACTOR'S BLAST RADIUS IS 868 — DO NOT CONFLATE THEM.**
+> **0 of 1,920** ORE ontologies author an inverse `ObjectPropertyDomain`/`Range` (two instruments
+> agree, and all 1,920 pool files start with `Prefix(`, i.e. are OFN, so `ObjectInverseOf` is the
+> only spelling and the grep is a genuine superset). But folding both arms into a shared helper
+> touches the FORWARD path that **868** ontologies use, so the sweep is load-bearing here in a way
+> it was not for #110/#114/#84. Two-arm, pinned (`28010645`/`10ffcc2f`, verified behaviourally),
+> alternating, sequential: **816 IDENTICAL / 49 BOTH_DNF / 2 DIFFER / 1 "REGRESSED" — and all three
+> flagged rows adjudicate clean.** `ore_ont_205` and `7499` are byte-identical at
+> `--pair-timeout-ms 1000`; `ore_ont_2111` completes in BOTH arms at a 300 s cap, 8/8 runs, identical
+> 66,459 rows.
+>
+> **I CALLED `ore_ont_2111` A REAL REGRESSION AFTER 3 OF 6 DATA POINTS AND IT WAS NOISE.** AFTER had
+> DNF'd twice at 180 s while BEFORE completed in 89 s; the remaining runs showed BEFORE DNFing and
+> AFTER completing. Second instance in one session — see the #121 entry's nine-runs-per-arm case.
+> **Do not read a partial run on a cap-boundary ontology.** The mechanism check is what should have
+> led: all three flagged ontologies contain ZERO inverse domain/range, so the feature cannot fire on
+> them, and the mirrors only run under `record_proofs` so they are off the classify path entirely.
+>
+> **SABOTAGE: 4 run, 3 caught, 1 SURVIVED — and one canary was VACUOUS until sabotage exposed it.**
+> Caught: inverting the polarity (4 canaries + 4 prove + 5 neighbouring tests), reverting inverse to
+> a no-op (2 + 2), and dropping the `domain_axiom_refs` entry for an inverse range — caught by
+> exactly ONE prove test and by NO reasoner test, which is why that canary had to exist.
+> **The survivor** is dropping the mini Pass-1 sim's inverse-domain contributor: every test stays
+> green, on TWO separately constructed fixtures, the second built specifically to expose it per
+> #118's note that the damage lands on LATER axioms' cursors. Attribution came back byte-identical
+> both times. The arm is KEPT — it maintains the Pass-1 mirror invariant #118 established, and
+> failing to observe it is a limit of the fixtures, not evidence the arm is dead.
+> **The vacuous canary** asserted on a `ToldSubsumer` node that does not exist in that proof tree,
+> so it could never fire; retargeted to the folded `ObjectIntersectionOf(:B :P)` witness and
+> re-verified to fail under the no-op revert. Sibling of [[sabotage-your-own-guard-tests]].
+>
+> **A TEST WAS PINNING THIS BUG, AND IT WAS GUARDING A FLAG.**
+> `classify_inverse_domain.rs`'s `default_classify_off_misses_inverse_domain_subsumption` asserted
+> the default must NOT find `C ⊑ D`. It existed to document `RUSTDL_CLASSIFY_SAME_TIER`'s opt-in
+> semantics and used the inverse-domain miss as its VEHICLE. The fix gives `C` its EL subsumers,
+> which fixes the tier grouping as a side effect, so the default now derives a pair the flag-ON test
+> asserts on the SAME ontology. **Flipped, not deleted.** What is no longer guarded there is a
+> demonstration that the flag CHANGES behaviour — the default itself stays pinned by
+> `internal_flag_defaults`. The obvious retarget, `Domain(r, ∃s.Z)`, is **issue #124, an open
+> defect**, so pointing the test at it would re-create the identical trap the moment #124 closes.
+>
+> Canaries `crates/owl-dl-reasoner/tests/inverse_domain_range.rs` (7) +
+> `crates/owl-dl-cli/tests/prove_conjunctive_domain_range.rs` (4). Gates: suite 1990/0; clippy clean.
+
 > **A NON-ATOMIC GCI DOMAIN HEAD WAS DISCARDED, NOT DROPPED (2026-09-06, #114, unflagged) — THE
 > SAME D10 FAMILY AS #110, ONE SPELLING OVER.** `SubClassOf(ObjectSomeValuesFrom(:r owl:Thing), C)`
 > is the GCI spelling of `ObjectPropertyDomain(r, C)`. Its arm pushed

@@ -179,3 +179,77 @@ fn prove_attributes_a_conjunctive_range_derived_subsumption_to_its_axiom() {
         );
     }
 }
+
+/// #125, DOMAIN mirror — `Range(r⁻, P) ≡ Domain(r, P)`, so an INVERSE range feeds
+/// `role_domains` and its derived step must cite the `ObjectPropertyRange` axiom.
+///
+/// Before #125 the `domain_axiom_refs` collector matched only `ObjectPropertyDomain`
+/// on a NON-inverse role, so this step printed `(Domain(sub)) ⊢ X SubClassOf P`
+/// with an EMPTY `axiom_refs` — the same silent shape as #118, one polarity over.
+#[test]
+fn prove_attributes_an_inverse_range_derived_subsumption_to_its_axiom() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/prove_inverse_range.ofn"
+    );
+    let out = rustdl()
+        .args(["prove", "--json", path, "http://ex/#X", "http://ex/#P"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["entailed"], true, "Range(r⁻,P) makes every r-source a P");
+    assert_eq!(v["has_proof"], true);
+    assert_eq!(v["proof"]["rule"].as_str().unwrap(), "Domain(sub)");
+    let axioms: Vec<&str> = v["proof"]["axioms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert!(
+        axioms.iter().any(|a| a.contains("ObjectPropertyRange")),
+        "the inverse-range-derived step must cite its ObjectPropertyRange axiom; got {axioms:?}"
+    );
+}
+
+/// #125 — the INVERSE-DOMAIN range fold must reach the witness and stay attributed.
+///
+/// `Domain(r⁻, P) ≡ Range(r, P)`, so `X`'s `r`-witness must be a `B ⊓ P`, which is
+/// what lets `∃r.(B ⊓ P) ⊑ D` fire. The discriminating check is that the `ToldFact`
+/// leaf's CONCLUSION carries the folded `ObjectIntersectionOf(:B :P)` — reverting the
+/// inverse handling leaves it as a bare `∃r.B` and the proof disappears entirely.
+///
+/// **This does NOT guard the mini Pass-1 range mirror**, and the distinction is
+/// recorded rather than blurred: dropping that mirror's inverse-domain contributor
+/// leaves this test — and every other test in the repo — green, on two separately
+/// constructed fixtures. See the sabotage note in the #125 commit.
+#[test]
+fn prove_attributes_an_inverse_domain_range_fold_to_its_axiom() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/prove_inverse_domain.ofn"
+    );
+    let out = rustdl()
+        .args(["prove", "--json", path, "http://ex/#X", "http://ex/#D"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(
+        v["entailed"], true,
+        "Domain(r⁻,P) folds P into the r-witness"
+    );
+    assert_eq!(v["has_proof"], true);
+
+    let mut nodes = Vec::new();
+    collect_nodes(&v["proof"], &mut nodes);
+    let folded = nodes.iter().any(|(rule, concl, axioms)| {
+        *rule == "ToldFact" && concl.contains("ObjectIntersectionOf") && !axioms.is_empty()
+    });
+    assert!(
+        folded,
+        "expected an attributed ToldFact whose witness carries the folded range \
+         ObjectIntersectionOf(:B :P); got {nodes:?}"
+    );
+}

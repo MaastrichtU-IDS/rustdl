@@ -2820,6 +2820,47 @@ inside a loop when touching any closure builder.**
 
 ### The parse/front-end stage is CLOSED as a lever
 
+> **RE-OPENED, NARROWLY, BY THE horned-owl 3.0 UPGRADE (2026-09-08, #126 / `261522a`).
+> 7 ORE ontologies that parsed under the 1.4 fork DO NOT PARSE on 3.0.** Two arms, both
+> binaries pin-verified against a discriminating input (`<urn:>` → rc 0 on 1.4, rc 1 on
+> 3.0), single-thread, 120 s cap. Full re-measure over 1,920 ORE + 190 OBO:
+>
+> | | ORE | OBO |
+> |---|---:|---:|
+> | OK | 1,908 | 177 |
+> | **FAIL, `expected RFC3987_IriPctEncoded or RFC3987_IriUCSChar`** | **7** | 0 |
+> | FAIL, other parse | 1 | 7 |
+> | TIMEOUT (60 s) | 4 | 6 |
+>
+> The 7 are `ore_ont_10197`, `11411`, `16542`, `20`, `5753`, `9694`, `9881`, and they
+> split by cause: **5 carry U+FFFD** (`ef bf bd`) inside IRIs — 85–86 occurrences each, a
+> mojibake'd `Baden-Württemberg` in `puls.cs.helsinki.fi/med/expression1#…`, and U+FFFD is
+> outside `ucschar` — and **2 carry `[`, `]`, `,`** in IRI fragments, ~138,000 occurrences
+> each, `lod-analysis-properties-data.owl#[dul:Entity,dul:Concept]`.
+>
+> **3.0 is RIGHT and 1.4 was lenient**, so this is a deliberate upstream tightening, not
+> an upstream bug — consistent with horned-owl #232/#234 (writer emitting unescaped
+> `[`/`]`) having been fixed. It is **NOT** the empty-path bug: `<urn:>`/`<mailto:>`/
+> `<tel:>` fail on a *different* rule (`path-empty`, upstream #292, a one-line grammar
+> fix), and that class has **zero corpus reach** — a `<scheme:>` grep over all 2,110
+> files, calibrated against a known positive, finds **0**.
+>
+> **Why this is tolerable, and the one thing to know:** the failure is **LOUD** — a parse
+> error and a non-zero exit, never a wrong answer — so there is no soundness exposure.
+> But a parse abort happens *before* conversion, so it **cannot degrade**: the
+> `convert_ontology` graceful-degradation contract (#43) records unsupported content in
+> `dropped` and reasons over the rest, whereas one invalid IRI now loses the **whole
+> ontology**. That capability existed at `ded32b6` and does not now. Recovering those 7
+> needs a lenient/recovery mode on the reader, which upstream does not have.
+>
+> **Method note.** Knowing #292's exact root cause tempted a shortcut: since the affected
+> class was analytically enumerable, a grep should have sufficed. The grep found **0 of
+> 2,110** and was correct about that rule; only running the parser found the 7, because
+> the same version bump carried a *sibling* tightening the grep could not see. **A root
+> cause bounds the mechanism, not the release.** See [[root-cause-does-not-bound-the-blast-radius]].
+>
+> The counts below predate the upgrade; the OK/TIMEOUT columns above supersede them.
+
 `locality-stats` over all **1,920**: **1,903 OK, 16 TIMEOUT, 1 FAIL**. The historical "23% of ORE
 rejected on the anon-individuals gap" is gone with nothing at scale replacing it. The single failure
 is a `horned-owl` **grammar** gap (SWRL `BuiltInAtom` with `Variable` data args — `DArg` won't take a

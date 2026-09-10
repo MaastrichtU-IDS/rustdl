@@ -4038,3 +4038,10 @@ pub fn hyper_fixpoint_deadline_enabled() -> bool {
     // Default-ON idiom (house convention): an EMPTY value enables.
     std::env::var_os("RUSTDL_FIXPOINT_DEADLINE").is_none_or(|v| v != "0")
 }
+
+/// #137 completeness net for the incremental Horn drain (`RUSTDL_RESEED_VERIFY`,
+/// **default ON**; `=0` reverts). See `hyper::HyperEngine::horn_fixpoint`.
+#[must_use]
+pub fn reseed_verify_enabled() -> bool {
+    std::env::var_os("RUSTDL_RESEED_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
+}

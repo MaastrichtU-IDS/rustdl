@@ -129,16 +129,22 @@ fn negative_functional_sub_values_on_super() {
     check("NEGATIVE-functional-sub-values-on-super", false, 0);
 }
 
-/// PRE-EXISTING MISS — pinned so it is not mistaken for a regression.
+/// FORMERLY a pinned miss; now DERIVED (#137).
 ///
-/// `∀f.DataOneOf` on a super + conflicting value on a sub is MISSED by rustdl:
-/// the `KB` is logically inconsistent (as Konclude/HermiT derive) but rustdl
-/// currently reports it consistent. This is an asymmetric `∀`-propagation gap
-/// down the data-property hierarchy, not introduced by the collapse/broadcast
-/// split. The expectation encodes today's (wrong but stable) behaviour
-/// deliberately; do NOT change it to the logically-correct `true` — that would
-/// only pass once the gap is closed.
+/// `∀f.DataOneOf("a")` on a super, `p ⊑ f`, and `p(i, "b")`: the `KB` is
+/// logically inconsistent, as Konclude and `HermiT` derive. rustdl used to report
+/// it consistent — an asymmetric `∀`-propagation gap down the data-property
+/// hierarchy — and the previous revision of this test pinned that wrong-but-
+/// stable verdict, with a note to flip the expectation to the logically-correct
+/// `true` once the gap closed. It has: the #137 completeness net in
+/// `horn_fixpoint` re-seeds at quiescence, which re-fires the `∀` down the
+/// hierarchy and finds the clash.
+///
+/// Kept under its original name so the history stays greppable. NOTE the
+/// asymmetry that makes this a `#137` fix rather than a data-property one:
+/// `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0` still reports this KB consistent,
+/// because the net only guards the incremental drain — which is the default.
 #[test]
 fn known_miss_forall_super_value_sub() {
-    check("KNOWN-MISS-forall-super-value-sub", false, 0);
+    check("KNOWN-MISS-forall-super-value-sub", true, 0);
 }

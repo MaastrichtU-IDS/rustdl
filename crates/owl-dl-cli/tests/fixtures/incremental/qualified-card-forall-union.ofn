@@ -1,0 +1,28 @@
+# #137 regression fixture, CHECKED IN deliberately.
+#
+# `SSP ⊑ SpicyPizza` is entailed (HermiT and Konclude agree) and was LOST by
+# the incremental Horn drain on the DEFAULT config: the drain reported `Sat`,
+# `trust_sat` believed it, and the subsumption vanished with no signal.
+# Reduced from `ontologies/real/pizza.ofn`'s SpicySalamiPizza/SpicyPizza pair.
+#
+# It lives HERE rather than under the gitignored /ontologies because the
+# incremental identity gate was passing vacuously in CI and in any fresh
+# checkout: its only catching fixture was the gitignored pizza, so the bug was
+# invisible until someone provisioned the corpus by hand.
+#
+# The shape that matters: a qualified `=1 r.C` whose qualifier arrives as a
+# LABEL after the edge (via the `∀` + `⊔` branch), feeding an `∃` under an `∃`.
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/spicy>
+Declaration(Class(:Pizza)) Declaration(Class(:PizzaSauce)) Declaration(Class(:SpicySalami))
+Declaration(Class(:SpicyHot)) Declaration(Class(:SpicyMedium))
+Declaration(Class(:SpicyPizza)) Declaration(Class(:SSP))
+Declaration(ObjectProperty(:hasDirectPart)) Declaration(ObjectProperty(:hasFeature))
+SubClassOf(:SpicySalami ObjectSomeValuesFrom(:hasFeature ObjectUnionOf(:SpicyHot :SpicyMedium)))
+EquivalentClasses(:SpicyPizza ObjectIntersectionOf(:Pizza
+  ObjectSomeValuesFrom(:hasDirectPart ObjectSomeValuesFrom(:hasFeature ObjectUnionOf(:SpicyHot :SpicyMedium)))))
+EquivalentClasses(:SSP ObjectIntersectionOf(:Pizza
+  ObjectAllValuesFrom(:hasDirectPart ObjectUnionOf(:PizzaSauce :SpicySalami))
+  ObjectExactCardinality(1 :hasDirectPart :PizzaSauce)
+  ObjectExactCardinality(1 :hasDirectPart :SpicySalami)))
+)

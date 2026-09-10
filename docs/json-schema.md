@@ -7,12 +7,27 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 
 ```json
 { "schema_version": 1, "consistent": bool, "incomplete": bool,
+  "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...] }
 ```
 
 `incomplete` = some class pair hit the time budget (defaulted to not-subsumed);
 the hierarchy is sound (no false subsumptions) but may miss real ones.
+
+`completeness_guaranteed` = **the flag to read if you want to know whether the
+hierarchy can be trusted as complete** (#124). `true` only on a fragment where
+the engine that answered is provably complete, and only when no pair timed out.
+
+**`incomplete: false` does NOT mean complete.** It means no deadline fired.
+There are Horn ontologies where `classify` misses a subsumption both Konclude and
+HermiT derive while `incomplete` is `false`, `trusted_sat_refutations` is `0`, and
+`consistent` is `true` — every field reading clean on a wrong answer. That is what
+`completeness_guaranteed` exists to say, and it is `false` there.
+
+`trusted_sat_refutations` = pairs concluded not-subsumed from the wedge's own
+`Sat` verdict outside the fragment where that verdict is complete. An exposure
+count, not a defect count; `0` does not imply completeness either.
 
 `equivalent_groups` lists only *satisfiable* equivalence classes; unsatisfiable
 classes are reported in `unsatisfiable` (they are all mutually equivalent to

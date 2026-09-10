@@ -6,6 +6,46 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed — `completeness_guaranteed()`'s Horn arm was a false certificate (#124)
+
+`Classification::completeness_guaranteed()` returned `true` for `PureEl | Horn`. `Horn`
+is a property of the **clause shape** — "no disjunctive head, nothing deferred" — and it
+was being read as a property of the **run**. The two came apart:
+
+```
+X ⊑ ∃r.B,   Domain(r, ∃s.Z),   ∃s.Z ⊑ W        ⟹   X ⊑ W
+```
+
+Konclude and HermiT both derive `X ⊑ W`; so does rustdl's own `subclass X W`. But
+`classify` reports **no subsumptions at all**, and the certificate read clean.
+`CLAUDE.md` already recorded the underlying justification as false-as-implemented — *"the
+shortcircuit ran the EL saturator, not the hyper fixpoint"* — and `saturator_complete_
+fragment` had already learned this exact lesson, replacing its clausal test with a strict
+allowlist "anchored to the constructs the saturator's rules genuinely process". This arm
+had not.
+
+`Horn` is now untrusted: the certificate holds only on `PureEl`, whose gate (`is_pure_el`)
+carries an engine-level completeness contract rather than a clause count. The `#
+fragment:` banner no longer claims completeness for Horn either — it reads "Horn clause
+shape (NOT a completeness claim …)". Pinned by
+`horn_clause_shape_does_not_guarantee_completeness` in `tests/completeness_contract.rs`,
+using the ontology above.
+
+**`classify --json` gained `completeness_guaranteed`.** On that same input every existing
+field reads clean on a wrong answer: `consistent: true`, `incomplete: false`
+(*correctly* — no deadline fired), `trusted_sat_refutations: 0` (the pair was not refuted
+by a trusted `Sat`), `direct_subsumptions: []`. The miss was surfaced **nowhere**. The
+new field is the honest signal and is `false` there.
+
+It is a NEW field rather than a change to `incomplete`, because `incomplete`'s documented
+contract is "a deadline fired" and callers depend on that distinction — the same reasoning
+the code already gives for keeping `trusted_sat_refutations` separate. `docs/json-schema.md`
+now states outright that **`incomplete: false` does not mean complete**, and that
+`trusted_sat_refutations: 0` does not either.
+
+`disjoint --json` reads `completeness_guaranteed()` directly, so it now correctly reports
+`incomplete: true` on this ontology — which was #124's headline symptom.
+
 ### Fixed — a role chain leg could not be walked through an inverse-equivalent edge (#128)
 
 `apply_role_chains` resolved each chain position against raw edge labels *and*

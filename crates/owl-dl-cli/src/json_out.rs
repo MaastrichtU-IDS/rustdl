@@ -93,6 +93,22 @@ pub(crate) struct ClassifyJson {
     /// distinction callers already depend on. Same reasoning as
     /// `Realization::witness_prune_active`.
     pub(crate) trusted_sat_refutations: usize,
+    /// #124: the honest calibration signal — `Classification::
+    /// completeness_guaranteed()`, i.e. **this hierarchy is provably free of
+    /// missed subsumptions**. `true` only on a fragment where the engine that
+    /// answered is complete, and only with no timed-out pair.
+    ///
+    /// Added because on `X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`, `∃s.Z ⊑ W` (⟹ `X ⊑ W`,
+    /// derived by both Konclude and `HermiT`) every other field here reads
+    /// clean: `consistent: true`, `incomplete: false` (correctly — no deadline
+    /// fired), `trusted_sat_refutations: 0` (the pair was not refuted by a
+    /// trusted `Sat`), `direct_subsumptions: []`. The miss was surfaced NOWHERE.
+    ///
+    /// A SEPARATE field rather than a change to `incomplete`, whose contract is
+    /// "a deadline fired" and which callers depend on: this reports a strictly
+    /// broader thing, and `incomplete == false` implies nothing about
+    /// completeness on its own.
+    pub(crate) completeness_guaranteed: bool,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
@@ -281,6 +297,7 @@ pub(crate) fn build_classify_json(
         consistent: !stats.inconsistent,
         incomplete: stats.timed_out_pairs > 0,
         trusted_sat_refutations: trusted_sat_risk(&stats),
+        completeness_guaranteed: h.completeness_guaranteed(),
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,

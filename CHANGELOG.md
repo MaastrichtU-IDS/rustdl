@@ -6,6 +6,184 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed — a role chain leg could not be walked through an inverse-equivalent edge (#128)
+
+`apply_role_chains` resolved each chain position against raw edge labels *and*
+directions: a `Named(r)` position read only `r`-labelled out-edges. So a chain whose
+first leg had to be traversed **backwards** never fired, even when an
+`InverseObjectProperties` declaration made that hop an identity rather than an
+assumption. `SymmetricObjectProperty(r)` lowers to `InverseObjectProperties(r, r)`, so
+symmetric roles were the common way to hit it — the reported shape was
+
+```
+Symmetric(coOccursWith),  coOccursWith ∘ precedes ⊑ precedes
+DiscomfortT1a ≡ Discomfort ⊓ ∃coOccursWith.Yawning ⊓ ∃precedes.Pain
+DiscomfortT1b ≡ Discomfort ⊓ ∃coOccursWith.(Yawning ⊓ ∃precedes.Pain)
+```
+
+where `HermiT` reports the two classes equivalent and rustdl reported only
+`T1b ⊑ T1a` — the direction that reads the chain forwards. `T1a ⊑ T1b` needs the chain
+to fire at the `Yawning` witness `y` through `coOccursWith(y, x)`, which exists purely
+by symmetry.
+
+Chain legs now accept an opposite-direction edge whose role is a declared inverse of
+the wanted one, via the same `are_declared_inverses` predicate `edge_satisfies` already
+used for the cross-polarity concept-level match — so the chain rule and the `∃`/`∀`
+matcher no longer disagree about which edges exist. `r ≡ s⁻` is an equivalence, so the
+extra hop derives nothing a model could refuse.
+
+**Both reads compose with the role hierarchy**, because nothing materialises super-role
+edges: `apply_role_rules` adds concept *labels* and `add_edge` records only the exact
+role, the rest of the tableau consulting the hierarchy lazily via `edge_satisfies`. So
+forward accepts any `q ⊑ wanted`, and reverse accepts a `q` reaching some super-role
+that is a declared inverse of `wanted`. Load-bearing, not theoretical: with `q ⊑ co`,
+`Symmetric(co)` and `co ∘ p ⊑ p`, deriving `∃q.Y ⊓ ∃p.Pn ⊑ ∃q.(Y ⊓ ∃p.Pn)` needs
+`q(x,y) ⇒ co(x,y) ⇒ co(y,x)` before the chain can fire, and no EL closure can rescue it
+because symmetry is out of fragment. Every accepted edge is licensed by a `⊑` or a `≡`;
+`has_inverse_pairs()` short-circuits the whole reverse path on an inverse-free ontology.
+
+> **RETRACTED CLAIM.** An earlier revision of this entry said the two negative tests
+> were "FP guards … that a blanket *read in-edges too* fix would trip". **They were
+> not.** Both fixtures declared no symmetry and no inverse pair, which makes them pure
+> EL: `is_subclass_of` returns the saturation-closure verdict and `chain_leg_targets`
+> never executes. Mutating the reverse read to `true || are_declared_inverses(..)` — the
+> exact unsound fix they were said to catch — left **all six tests passing**. Found by
+> an adversarial review, not by the suite.
+>
+> Two lessons are now written into the test file. (1) **Every tableau fixture must be
+> out of the EL fragment**, or it pins the saturator instead of the code under test —
+> and an EL-derivable *positive* is masked the same way, which is why a chain-plus-
+> sub-role "control" cannot demonstrate anything about the chain rule. (2) Leaving EL is
+> harder than it looks: `BareRoleDecls` admits an inverse/symmetry declaration over a
+> role no axiom can *read* as semantically inert, so a pair over unused roles keeps the
+> ontology pure EL. The declaration has to be over an **observable** role.
+>
+> The suite is now 8 tests, all non-EL, and the file records the acceptance criterion:
+> **a test that survives that mutation is not a guard.** Both negatives now fail under
+> it, and under a second mutation that walks `super_roles` without checking the inverse
+> partner.
+
+`is_subclass_of` now answers the reporter's ontology correctly in both directions.
+**Default `classify` still does not** — it never reaches the chain rule on this shape,
+because the hypertableau wedge decides the pair first and the wedge's `role_matches`
+can traverse a symmetric edge backwards only when the role hierarchy is threaded in,
+which happens solely under `RUSTDL_CLASSIFY_SAME_TIER=1` (documented "DEFAULT OFF —
+sound (FP=0) but corpus-invisible and ~2× wall"). #128 is the counterexample to
+"corpus-invisible", so that default is now a live question rather than a settled one.
+The remaining gap is pinned — visibly, not `#[ignore]`d — by
+`default_classify_still_misses_the_symmetric_chain_leg`, and the wedge additionally has
+no notion of `InverseObjectProperties` between two *distinct* roles at all.
+
+Closure-identical on every ontology available offline (94 files: `bench-corpus`, the
+`docs` reduced cores, and the 87 bench fixtures — 0 changed), and the 87-fixture
+ROBOT/HermiT-oracle differential suite still passes.
+
+**Corpus soundness net: run, and byte-identical to a pristine-HEAD baseline.**
+`./scripts/run-soundness-diff.sh` was run twice over freshly provisioned fixtures —
+once on this change, once on a `HEAD` worktree sharing the same `ontologies/real` — and
+the `[fp0]` manifests, the per-subsumption MISSED/FP lists, and the failure sets all
+diff clean. `ro 158=158`, `sio 8904=8904`, `sulo 51=51`, `wine 653=653`, all
+`FP=0 MISSED=0`, and `family` inconsistency detected. Those four exactly reproduce the
+reference values recorded in `CLAUDE.md` from oracles generated here by a different
+Konclude build, which is the pipeline-validation control that makes the rest of the run
+trustworthy.
+
+Three provisioning notes, because the standing advice "just run the fetch script" did
+not hold and cost most of the debugging time:
+
+- **`protege.stanford.edu` is unreachable**, so `fetch-real-ontologies.sh` dies at
+  `pizza` under `set -e` and silently skips `ro`, `go-basic` and `wine` behind it. Fetch
+  those separately; the repo's own `bench-corpus/pizza.ofn` substitutes for pizza.
+- **That `pizza.ofn` carries two `Import(...)` declarations** (`w3id.org/sulo`,
+  `w3id.org/ontostart/pro`) and ROBOT hangs resolving them, which is what looks like a
+  wedged oracle build. Convert from an import-stripped copy: rustdl never resolves
+  imports either, so both sides then see the same axiom set.
+- **This pizza is NOT the fixture behind the reference `pizza 499`.** It is the
+  *ontostart* pizza and closes at 111/112, so treat 499 as belonging to a different
+  file. Its lone `MISSED: SpicySalamiPizza ⊑ SpicyPizza` needs a disjunction under a
+  nested existential (`∃hasDirectPart.∃hasFeature.(SpicyHot ⊔ SpicyMedium)`) plus
+  `sulo:hasDirectPart ⊑ sulo:hasPart` from the unresolved import — nothing to do with
+  role chains, and **present identically on the baseline**.
+
+**ORE 2015 harness: 0 false positives over 6.4M derived subsumptions, closure-identical
+to baseline.** Re-run in full on the final code (both binaries rebuilt on the
+horned-owl 3.0 base, so internally consistent): 610 ontologies, **604 SAME / 6 DIFF**,
+463 with both binaries completing — 6,423,849 rustdl vs 6,428,115 oracle subsumptions,
+FP=0 on both sides, and **every one of the 6 DIFFs a measurement artifact**:
+
+- 4 are TIMEOUT-vs-completed flips at the 90 s cap, in *both* directions (3 favouring
+  the fix, 1 the baseline) — scheduling noise, and the completing side is FP=0/MISSED=0
+  in each.
+- `ore_ont_12451` exhausts the harness's own 32 GB `ulimit -v` guard on **both**
+  binaries; only *which* limit landed first differed (SIGKILL vs the `ulimit`'s
+  "memory allocation of 12 bytes failed" abort). It is not a code panic — worth knowing,
+  because a bare `PANIC` row in a sweep reads like one.
+- `ore_ont_7532` showed `MISSED 2 → 1`, which looked like a **recovery** and is not:
+  at a 300 s cap both binaries report `10552/10553 MISSED=1` identically, 3/3 runs. The
+  90 s row was the *baseline* losing a subsumption to the 200 ms per-pair budget under
+  contention. A wall-clock budget produces apparent wins as readily as apparent
+  regressions, so treat any single-row MISSED delta as unmeasured until it is re-run
+  uncontended. The corpus net covers 6 ontologies; the change deserved the pool. Scoped
+to the 628 ontologies where the fix can even fire — a chain leg (explicit
+`ObjectPropertyChain`, or `TransitiveObjectProperty`, which lowers to `r∘r⊑r`) meeting
+an inverse-equivalence on the **same role** (142 + 616 of the pool's 1920; filtering
+same-role rather than same-file cut 692 candidates to 616). Konclude oracles built for
+610; 463 had both binaries complete:
+
+| metric | baseline | fixed |
+| --- | --- | --- |
+| rustdl subsumptions | 6,227,229 | 6,227,229 |
+| oracle subsumptions | 6,231,495 | 6,231,495 |
+| false positives | **0** | **0** |
+| MISSED | 4,266 | 4,266 |
+
+Zero rows differ in closure size, FP or MISSED. FP was the whole risk direction — the
+change only ever *adds* derived edges — so this is the result that matters.
+
+**Run it PAIRED, not as two sweeps.** `RUSTDL_TEST_PAIR_MS` is a WALL-CLOCK per-pair
+budget, so a contended run does less work per pair and reports more MISSED; diffing a
+fixed-tree sweep against a separately scheduled baseline lets scheduling noise
+masquerade as a code difference. `scripts/ore-fp-sweep.sh` runs one binary, so a
+before/after built from two of its runs is not a valid comparison. Both binaries must
+run back-to-back on the same ontology in the same worker slot. Even paired, 3 of 610
+rows came back DIFF — every one a TIMEOUT-vs-completed flip at the 90 s cap, splitting
+2:1 in *opposite* directions. Re-run serially at a 900 s cap, **two of the three** agree
+exactly (`ore_ont_16283` 57877=57877, `ore_ont_7416` 195531=195531, FP=0/MISSED=0); the
+third, `ore_ont_9684`, times out on BOTH binaries and yields no closure data either way
+— counted as missing, not as agreement.
+
+That third row is worth keeping in mind when reading any wall-capped result: the fixed
+binary *completed* `ore_ont_9684` in under 90 s while 8 ontologies contended for the
+box, then failed to finish it in 900 s with the machine to itself. A wall-clock per-pair
+budget makes total runtime **non-monotone in available CPU** — with less CPU, more pairs
+blow their 200 ms deadline and get abandoned early, so the run ends sooner having done
+less. Timeout counts from these sweeps are therefore not a stable property of an
+ontology, which is a second reason (beyond MISSED comparability) to pair the binaries
+rather than trust either run's timeout set on its own.
+
+Coverage, stated as data rather than a pass: **463 of 628 (74%)** compared. 146 hit the
+90 s cap on at least one binary; 18 never got an oracle (Konclude OOM under a
+deliberate 12 GB no-swap cap — 552 MB down to 2.7 MB, largest `ore_ont_7192`). Those
+165 are missing data.
+
+Two operational notes for anyone re-running this. The pool lives at
+`/data/dumontier/ore-run` on the Linux host, not the `~/data/ore-run` that
+`ore-oracle-setup.sh` assumes, and `ore-fp-sweep.sh`/`ore-fragment-prepass.sh` carry
+hardcoded `/Users/micheldumontier/...` paths — they only run on the Mac. And **cap
+container swap, not just container memory**: 8 Konclude containers at `--memory=24g`
+drove this host from 0 to 45 GB of swap (of 57) at ~55 MB/s sustained swap-out, because
+a cgroup memory limit does not prevent host paging — it *causes* reclaim, which the
+kernel satisfies by swapping. `--memory-swap` equal to `--memory` makes an oversized
+ontology OOM in seconds and be recorded, instead of quietly paging a box that runs
+production services. Swap held at 0 for the entire re-run.
+
+Still NOT VERIFIED for want of fixtures, unchanged by this work: `galen`, `notgalen`,
+`alehif-test`, `ore-10908-sroiq`, `ore-15672-shoin`, `shoiq-knowledge`, `bibtex`, and
+the four `*-stripped` corpus entries. The net's 7 failures are exactly those
+fixture-absence panics, on both trees. `~/eval-tools` and `~/data/ore-run`, which
+`CLAUDE.md`'s 2026-08-25 note relies on to reconstruct four of them, do not exist on
+this host.
+
 ## [0.4.28] — 2026-09-05
 
 Three fixes, all in the completeness/verification direction, and every one of them changes

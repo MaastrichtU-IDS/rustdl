@@ -2040,6 +2040,23 @@ pub fn counting_pair_verify_enabled() -> bool {
     std::env::var_os("RUSTDL_COUNTING_PAIR_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Layer A of SP1.1, split out (#135): carry the role hierarchy into the classify
+/// wedge, so `hyper::role_matches` can see sub-roles and symmetry. **Default ON.**
+/// `RUSTDL_CLASSIFY_WEDGE_HIERARCHY=0` reverts.
+///
+/// Previously this rode on `RUSTDL_CLASSIFY_SAME_TIER` together with Layer B (the
+/// label-driven same-tier sweep), and that combined lever is DEFAULT OFF for a
+/// "~2× wall" that is dominated by Layer B. The consequence was that on the
+/// default path the wedge ran with `sub_roles == None`, so `role_matches` fell
+/// back to exact role-id plus exact polarity and **symmetry and sub-role matching
+/// were invisible to it** — which is why #128's symmetric-chain entailment
+/// survived in `classify` after the calculus itself was fixed. Splitting the two
+/// lets the cheap half be on by default; Layer B keeps the old flag.
+#[must_use]
+pub(crate) fn classify_wedge_hierarchy_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_WEDGE_HIERARCHY").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
 /// Same-tier classify-completeness (SP1.1): carry the role hierarchy into the
 /// classify oracle (Layer A) + broaden the same-tier sweep to label-driven
 /// (Layer B), so inverse/symmetric-domain subsumptions surface in default
@@ -3722,7 +3739,7 @@ impl HyperCache {
         } else {
             value_disjoint
         };
-        let same_tier = crate::classify_same_tier_enabled();
+        let same_tier = crate::classify_wedge_hierarchy_enabled();
         let idx_hier = if same_tier { Some(&sub_roles) } else { None };
         let mut base_indexes_inner =
             owl_dl_tableau::hyper::build_clause_indexes(&clauses, idx_hier);
@@ -4112,7 +4129,7 @@ impl HyperCache {
             // differently between base and delta (advisor B1). The extras all
             // have class-only bodies, so the hierarchy argument is irrelevant
             // to them; pass the same gate as the base build for consistency.
-            let idx_hier = if crate::classify_same_tier_enabled() {
+            let idx_hier = if crate::classify_wedge_hierarchy_enabled() {
                 Some(&self.sub_roles)
             } else {
                 None
@@ -4152,7 +4169,7 @@ impl HyperCache {
         // role-body atoms, so `with_sub_roles_keep_index` suffices; the old
         // path rebuilds the per-pair index with the hierarchy exactly as
         // before (`with_sub_roles`).
-        if crate::classify_same_tier_enabled() {
+        if crate::classify_wedge_hierarchy_enabled() {
             engine = if self.amortize_idx {
                 engine.with_sub_roles_keep_index(self.sub_roles.clone())
             } else {
@@ -4222,7 +4239,7 @@ impl HyperCache {
         if crate::semantic_branching_enabled() {
             engine = engine.with_semantic_branching();
         }
-        if crate::classify_same_tier_enabled() {
+        if crate::classify_wedge_hierarchy_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
         }
         if hyper_double_block_enabled() {
@@ -4357,7 +4374,7 @@ impl HyperCache {
             // ⊥-headed value-disjoint clashes), so the hierarchy argument is
             // irrelevant to them; pass the same gate as the base build for
             // consistency with `decide_with_stats`.
-            let idx_hier = if crate::classify_same_tier_enabled() {
+            let idx_hier = if crate::classify_wedge_hierarchy_enabled() {
                 Some(&self.sub_roles)
             } else {
                 None
@@ -4375,7 +4392,7 @@ impl HyperCache {
                 std::sync::Arc::clone(&self.base_disjoint_pairs),
                 delta,
             );
-            if crate::classify_same_tier_enabled() {
+            if crate::classify_wedge_hierarchy_enabled() {
                 e = e.with_sub_roles_keep_index(self.sub_roles.clone());
             }
             e
@@ -4389,7 +4406,7 @@ impl HyperCache {
                 || self.value_disjoint.is_some()
             {
                 let mut e = HyperEngine::new(&full_clauses, self.fresh_q);
-                if crate::classify_same_tier_enabled() {
+                if crate::classify_wedge_hierarchy_enabled() {
                     e = e.with_sub_roles(self.sub_roles.clone());
                 }
                 e
@@ -4400,7 +4417,7 @@ impl HyperCache {
                     std::sync::Arc::clone(&self.base_indexes),
                     std::sync::Arc::clone(&self.base_disjoint_pairs),
                 );
-                if crate::classify_same_tier_enabled() {
+                if crate::classify_wedge_hierarchy_enabled() {
                     e = e.with_sub_roles_keep_index(self.sub_roles.clone());
                 }
                 e

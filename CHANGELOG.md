@@ -6,6 +6,59 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed — the classify wedge ran without the role hierarchy, hiding symmetry (#135, #128)
+
+`RUSTDL_CLASSIFY_SAME_TIER` bundled two independent things behind one **default-OFF**
+lever, justified by a "~2× wall":
+
+- **Layer A** — carry the role hierarchy into the classify wedge.
+- **Layer B** — broaden the same-tier sweep to label-driven.
+
+With Layer A off, every wedge on the default path ran with `sub_roles == None`, so
+`hyper::role_matches` fell back to exact role-id **and** exact polarity: **symmetry and
+sub-role matching were invisible to the engine that decides most pairs**. That is why
+#128's symmetric-chain entailment still vanished from `classify` after the calculus was
+fixed in #133 — `subclass` was right and `classify` was wrong on the same binary.
+
+Layer A is now its own lever, `RUSTDL_CLASSIFY_WEDGE_HIERARCHY`, **default ON**
+(`=0` reverts). Layer B keeps `RUSTDL_CLASSIFY_SAME_TIER`.
+
+**The "~2× wall" belonged to Layer B.** Layer A alone, measured: `sio` 1.07 → 1.36 s,
+`wine` 3.17 → 3.99 s (~25-30%), `ro` 0.27 → 0.29 s, `pizza` unchanged.
+
+**And "corpus-invisible" was wrong — it is ORE-visible by 313 subsumptions.** Paired A/B
+over the 610-ontology trigger set, 463 with both binaries completing:
+
+| metric | baseline | with Layer A |
+| --- | --- | --- |
+| rustdl subsumptions | 6,458,921 | 6,459,234 |
+| false positives | **0** | **0** |
+| MISSED | 4,265 | **3,952** |
+
+`ore_ont_16457` alone goes 936 → 695 MISSED; `ore_ont_16666`, `ore_ont_2792` and
+`ore_ont_8148` each recover ~20. Of the 13 DIFF rows, 4 are TIMEOUT flips at the 90 s cap
+in both directions and one (`ore_ont_9662`) looked like a regression (MISSED 1 → 2) but is
+budget noise — identical at a 600 s cap, 3/3 runs. Corpus net unchanged, all FP=0.
+
+**This does NOT close #128 on its own.** The reporter's file needs a third fix: with
+Domain/Range stripped the entailment now appears in `classify`, with them present it does
+not — so #131 (range on a chain leg) co-blocks it. Measured:
+
+| `epi_corrected_debug_minimal` | default | with Layer A |
+| --- | --- | --- |
+| as submitted | 0 | 0 |
+| `Domain`/`Range` stripped | 0 | **1** |
+
+**#135's other half is NOT fixed.** `role_matches` still has no notion of
+`InverseObjectProperties` between two DISTINCT roles; only the `r == s` (symmetry) case
+works. Three attempts failed — adding the pairs to `RoleHierarchy`, a cross-polarity arm
+in `role_matches`, and indexing the first-leg trigger under the partner's key — and were
+reverted rather than left as dead code. The reassessment: the codebase's existing strategy
+for distinct inverse pairs is CANONICALISATION (`build_role_hierarchy`'s `canon_map`
+rewrites `s → co⁻`), and teaching a second matcher about a second representation fights
+it. The route worth trying is applying `canon` during clausification so the case collapses
+into the polarity handling the wedge already has.
+
 ### Fixed — a role chain leg could not be walked through an inverse-equivalent edge (#128)
 
 `apply_role_chains` resolved each chain position against raw edge labels *and*

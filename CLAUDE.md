@@ -2028,6 +2028,73 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   paths can label one logical nested-existential witness differently and get deduped into two
   separate elements — not shown unsound, but untested against a future concept-level check).
 
+> **SP1.1 LAYER A SPLIT OUT OF LAYER B (2026-09-11, #128, `RUSTDL_CLASSIFY_ROLE_HIERARCHY`,
+> DEFAULT OFF, `=1` enables) — A CHEAP CORRECTNESS LEVER WAS BUNDLED WITH AN EXPENSIVE ONE.**
+> Externally reported: `Symmetric(p)` + `p ∘ q ⊑ q` + `A ≡ ∃p.Y ⊓ ∃q.Z` + `B ≡ ∃p.(Y ⊓ ∃q.Z)`
+> makes `A ≡ B`, and `classify` derived only `B ⊑ A` — the chain-only direction — with
+> `incomplete: false` and `dropped: {}`. Both peers derive it.
+>
+> **THE ENGINE COULD ALWAYS DO THIS; IT WAS NOT BEING TOLD.** The wedge's `role_matches` honours
+> sub-roles, declared inverses and symmetry only when the role hierarchy is threaded into the
+> per-pair oracle — SP1.1 "Layer A". That threading shared ONE flag with Layer B's label-driven
+> same-tier sweep, and **the recorded ~2× wall for SP1.1 belongs to Layer B**, so Layer A sat
+> behind an opt-in priced for something else. The split is the durable contribution here; the
+> bare engine (`hyper-classify-probe`) derived the pair all along.
+>
+> **DEFAULT OFF ON A MEASURED WALL REGRESSION, NOT ON DOUBT ABOUT CORRECTNESS.** Full 1,920
+> two-arm sweep (one binary, env var the only difference, arm order alternated, 60 s cap):
+> **1,800 IDENTICAL / 95 BOTH_DNF / 23 DIFFER / 2 REGRESSED**, and all 23 DIFFERs are row GAINS
+> (`ore_ont_10019` +2, both Konclude-confirmed; `13647` 202→500; `16457` 125→301). Both
+> regressions reproduce sequentially on an idle host at a 300 s cap, 3 runs per arm, **with
+> IDENTICAL ANSWERS in both arms** — pure wall: `ore_ont_16372` 3–4 s → **66–73 s** (~19×, 0 rows
+> / 744 unsat both arms), `ore_ont_9890` 17–18 s → **89–94 s** (~5×, 642 rows both arms). The gain
+> is completeness and the cost is other people's wall, so **a flip needs 0 REGRESSED**.
+>
+> **THE MECHANISM IS NOT ESTABLISHED — do not quote the index-rebuild story as the cause.**
+> `with_sub_roles` rebuilds the clause index, which is the documented ~20× cost class of
+> `RUSTDL_CLASSIFY_LABELS_AMORTIZE` and the same magnitude, so it is the leading suspect. But on
+> both regressed ontologies EVERY classify phase reports 0 ms with `subsumption` and
+> `satisfiability probes` both 0 — the pure-EL all-phases-zero trap, so the banner attributes
+> nothing — and the one unconditional rebuild site turned out to be `sat_only_with_stats`, a
+> DIAGNOSTIC path. Retry: pin the cost to a site, use `with_sub_roles_keep_index` wherever the
+> base index is already hierarchy-aware, re-run the same sweep.
+>
+> **A 6-ONTOLOGY SAMPLE SAID THIS WAS FREE, AND IT WAS WRONG BY 25×.** Curated corpus 8/8
+> row-identical; a hand-picked wedge-heavy ORE sample gave ratios 1.00–2.40× with the EXPENSIVE
+> members at ~1.1× and found ONE real change. The full sweep found 25 and two regressions the
+> sample's population could not contain. Same failure mode this file already records for the
+> 12-ontology benchmark that took four ontologies to DNF. **Size a default flip on the sweep, and
+> treat any sample as a smoke test.**
+>
+> **THE REPORTER'S FILE NEEDS TWO FIXES, WHICH IS WHY ONE FLAG LOOKED INERT.** It also carries
+> #131 (a chain-clause wake-up ordering gap), so it needs
+> `RUSTDL_CLASSIFY_ROLE_HIERARCHY=1 RUSTDL_SAT_SEED=0` together and **neither alone** — which is
+> how a correct fix can read as doing nothing. A first workaround posted to the issue was verified
+> on the minimal synthetic and NOT on the reporter's file, and was wrong; it had to be retracted
+> publicly. **Validate a workaround on the reporter's actual input.**
+>
+> **AND "NO FLAG RECOVERS IT" WAS MY OWN MEASUREMENT ERROR.** I tested
+> `RUSTDL_CLASSIFY_SAME_TIER=1` through `rustdl subclass` — a surface that flag does not affect —
+> and concluded the calculus was at fault. On `classify` it recovers the minimal shape outright.
+> The lesson is one this file already carries: **run a control through the SAME command that
+> exhibits the defect.**
+>
+> Residuals recorded, not fixed: a length-3 chain with a symmetric leg (pinned, FLIP when it
+> closes); sub-role-of-symmetric reversal; `SymmetricObjectProperty(ObjectInverseOf(:p))` silently
+> dropped (both `expand_role_characteristics` and `mark_symmetric` guard `!role.is_inverse()`);
+> and a LATENT FP — `collect_inverse_pairs` strips polarity and `mark_symmetric` fires on matching
+> ids, so `InverseObjectProperties(:p ObjectInverseOf(:p))` would mark `p` symmetric. Unreachable
+> today only because horned-owl rejects that syntax while both peers accept it; **closing that
+> parser gap makes it live.** Also still open: `apply_role_chains` in the tableau compares raw role
+> ids with `==` instead of `edge_satisfies`, so it independently ignores symmetry, declared
+> inverses AND the sub-role hierarchy — matters for `subclass`/`sat`/`explain`/`realize`.
+>
+> Canaries `crates/owl-dl-reasoner/tests/symmetric_role_chain.rs` (7, incl. 3 FP guards, a pinned
+> residual, and `the_fix_is_opt_in_and_the_default_still_misses` so a future flip cannot happen
+> silently). **Every test in that file locks a shared env mutex, not just the mutating one** —
+> Rust runs tests in parallel and the first version had read-only tests observing another test's
+> `=0`, which failed spuriously.
+
 > **AN INVERSE-ROLE DOMAIN/RANGE WAS DISCARDED UNDER A CORRECT IDENTITY (2026-09-08, #125,
 > unflagged).** Both `collect_el_rules` arms did nothing at all when `role.is_inverse()`, under
 > the comment *"inverse-role domain = forward range; handled by the tableau"*. **The identity is

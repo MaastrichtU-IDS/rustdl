@@ -2031,6 +2031,22 @@ pub fn reseed_verify_enabled() -> bool {
     std::env::var_os("RUSTDL_RESEED_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Early inconsistency exit (#128, `RUSTDL_EARLY_INCONSISTENCY_PROBE`,
+/// **default OFF** pending the two-arm ORE sweep; `=1` enables). Runs
+/// `probe_says_inconsistent` BEFORE the tier walk when a large share of the label
+/// cache came back `NoVerdict`, so a provably inconsistent KB is not charged for a
+/// hierarchy that `classify_inconsistent` then discards wholesale.
+///
+/// Worth 31.6 s -> 5.8 s with byte-identical output on `ore_ont_16372`, one of the
+/// two ontologies whose wall regression gates `RUSTDL_CLASSIFY_ROLE_HIERARCHY` —
+/// there the ON arm becomes FASTER than the OFF arm. Sound in both settings: the
+/// probe proves inconsistency, so a wrong admission costs one bounded probe, never
+/// a wrong answer.
+#[must_use]
+pub(crate) fn early_inconsistency_probe_enabled() -> bool {
+    std::env::var_os("RUSTDL_EARLY_INCONSISTENCY_PROBE").is_some_and(|v| v == "1")
+}
+
 /// Per-class label heuristic (Phase 7) — when enabled, the classifier
 /// runs wedge satisfiability once per named class to build a label
 /// cache, then prunes non-subsumption pairs whose candidate super is

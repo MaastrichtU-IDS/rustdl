@@ -84,6 +84,13 @@ fn incremental_matches_baseline_on_fixtures() {
         "ontologies/real/pizza.ofn",
         "crates/owl-dl-bench/fixtures/27_eight_way_disjunction_sat.ofn",
         "crates/owl-dl-bench/fixtures/18_diamond_subsumption_unsat.ofn",
+        // #137: the ONLY fixture here that ever caught a real incremental-drain
+        // bug was the gitignored `ontologies/real/pizza.ofn`, so this gate passed
+        // vacuously in CI and in every fresh checkout while the default config
+        // silently lost `SpicySalamiPizza ⊑ SpicyPizza`. This is that pair
+        // reduced to 7 classes and CHECKED IN, so the gate has teeth without the
+        // corpus. Verify with `RUSTDL_RESEED_VERIFY=0`: it must FAIL.
+        "crates/owl-dl-cli/tests/fixtures/incremental/qualified-card-forall-union.ofn",
     ] {
         let path = fixture_path(rel);
         if !path.exists() {

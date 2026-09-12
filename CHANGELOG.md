@@ -46,6 +46,66 @@ now states outright that **`incomplete: false` does not mean complete**, and tha
 `disjoint --json` reads `completeness_guaranteed()` directly, so it now correctly reports
 `incomplete: true` on this ontology — which was #124's headline symptom.
 
+### Fixed — the incremental Horn drain silently lost subsumptions; three missing triggers (#137)
+
+`RUSTDL_HYPER_INCREMENTAL_FIXPOINT` (**default ON**) drains only the delta a decision
+pushed, which is correct only if every rule has a trigger for every way its premises can
+arrive. The non-incremental path re-seeds from the graph every pass and so masks a
+missing trigger; incremental mode simply never fires the rule and reports `Sat` — and
+with `trust_sat` on (also default) that spurious `Sat` is believed, the pair never
+reaches the tableau, and the subsumption is lost **with no signal**.
+
+Found by provisioning `ontologies/real/` for #133's soundness run, which activated a
+test that had been skipping. Three distinct holes, all fixed:
+
+1. **The qualified-`≤1` label trigger.** `≤1 r.C` counts only the `r`-successors
+   carrying `C`, and the label can arrive *after* the edge, with no `Event::Edge` to
+   notice. Every violation observed was `qual=Some(..)`, never unqualified — which is
+   why functional-only corpora (galen, notgalen) never showed it. Fixed by
+   `at_most_ones_qualified` + a neighbour walk in the `Event::Label` arm, mirroring the
+   edge trigger's src/tgt symmetry.
+2. **Merge-inherited `≤1`.** A merge copies `s_j`'s `at_most` onto the survivor without
+   firing the constraint-added trigger the `Atom::AtMost` head path gets, so a survivor
+   already holding ≥2 matching successors was never re-checked.
+3. **The general case**, since (1) and (2) are unlikely to be the last: a completeness
+   net. On reaching quiescence `horn_fixpoint` re-seeds once and re-drains, so a rule
+   whose premise arrived without a trigger still fires. Sound by construction — it can
+   only add entailed facts, i.e. only turn a wrong `Sat` into `Unsat`. Gated by
+   `RUSTDL_RESEED_VERIFY` (**default ON**, `=0` reverts).
+
+**The net is load-bearing 142 times on `sio` and twice on `ro`**, so the drain's
+incompleteness is widespread; it happened to change a verdict only on pizza. A residual
+hole therefore remains — `stats.reseed_recovered` counts it and `RUSTDL_RESEED_PROBE=1`
+prints each occurrence. It is deliberately a COUNTER, not a `debug_assert`: asserting
+"no trigger is ever missing" fires immediately, because that is exactly what is still
+false. Finding the last trigger is follow-up work; the verdict is correct either way.
+
+**Two completeness recoveries, both oracle-confirmed:**
+
+- **`pizza` closes the corpus net's last MISSED: 111/112 → 112/112, FP=0, MISSED=0.**
+  `SpicySalamiPizza ⊑ SpicyPizza` (HermiT and Konclude both derive it) was being dropped
+  on the default config. Every curated-corpus fixture is now MISSED=0.
+- **A pinned known-miss now derives.** `dkey_collapse_broadcast`'s
+  `KNOWN-MISS-forall-super-value-sub` — `∀f.DataOneOf("a")`, `p ⊑ f`, `p(i,"b")` — is
+  logically inconsistent and rustdl reported it consistent. Its own comment said to flip
+  the expectation once the gap closed; done. Note the asymmetry that makes this a #137
+  fix and not a data-property one: `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0` still misses it.
+
+Cost, A/B-able via the flag: `sio` 1.07 → 1.15 s (+7%), `ro` 0.30 → 0.60 s, `pizza` and
+`wine` unchanged.
+
+**The gate that should have caught this was passing vacuously**, which is the more
+transferable lesson. `incremental_fixpoint_identity.rs` is described as the "durable
+byte-identity gate" on this flag, and its only fixture that ever caught a real bug was
+the **gitignored** `ontologies/real/pizza.ofn` — absent in CI and in every fresh
+checkout, while its `compared >= 2` guard was satisfied by two checked-in bench fixtures.
+So it reported `ok` for as long as nobody provisioned the corpus by hand. The pizza pair
+is now reduced to a 7-class fixture and **checked in** at
+`crates/owl-dl-cli/tests/fixtures/incremental/qualified-card-forall-union.ofn`; verified
+with pizza moved aside that the gate fails on it under `RUSTDL_RESEED_VERIFY=0` and
+passes with the net on. Same pattern as the `[fp0]` net's "9 of 22 fixture blocks could
+skip while still reporting ok" — worth auditing the other gitignored-fixture gates.
+
 ### Fixed — a role chain leg could not be walked through an inverse-equivalent edge (#128)
 
 `apply_role_chains` resolved each chain position against raw edge labels *and*

@@ -554,6 +554,12 @@ impl DepSetSnapshot {
 pub struct SearchStats {
     /// Disjuncts asserted across the whole search (decisions made).
     pub branches_taken: u64,
+    /// #137: times the completeness net's re-seed recovered work the
+    /// incremental delta drain had left undone. **Nonzero means a rule premise
+    /// can arrive without a trigger** — the verdict is still correct (the net
+    /// recovers it) but the missing trigger is a real bug worth locating.
+    /// `RUSTDL_RESEED_PROBE=1` prints each occurrence.
+    pub reseed_recovered: u64,
     /// Of `branches_taken`, those from the ⊔ disjunction rule
     /// (`find_open_disjunction`). Split out from `≤n` merge branches so
     /// search-quality work can tell which branch kind dominates a stall.
@@ -741,6 +747,11 @@ pub struct HyperEngine<'c> {
     /// whole graph each solve frame. Default OFF until validated FP=0 AND
     /// MISSED=0.
     incremental_fixpoint: bool,
+    /// #137 completeness net enabled (`RUSTDL_RESEED_VERIFY`, default ON).
+    reseed_verify: bool,
+    /// Re-entrancy guard for the #137 completeness net, keeping the re-seed
+    /// recursion exactly one level deep.
+    reseed_verify_active: bool,
     /// Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`, via
     /// [`with_semantic_branching`]): opt-in in-search boolean constraint
     /// propagation at the `⊔` decision point — drop told-disjoint disjuncts and
@@ -1379,6 +1390,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            reseed_verify: crate::reseed_verify_enabled(),
+            reseed_verify_active: false,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -1438,6 +1451,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            reseed_verify: crate::reseed_verify_enabled(),
+            reseed_verify_active: false,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -2181,6 +2196,54 @@ impl<'c> HyperEngine<'c> {
         if self.match_deadline_hit.get() {
             return HyperResult::Stalled;
         }
+        // #137 completeness net for the INCREMENTAL drain. Incremental mode
+        // drains only the delta its own decision pushed, which is correct only
+        // if every rule has a trigger for every way its premises can arrive. A
+        // single missing trigger is then a SILENT incompleteness: the
+        // non-incremental path re-seeds from the graph every pass and so
+        // recovers it, while incremental mode simply never fires the rule and
+        // reports `Sat`. With `trust_sat` on (the default) that spurious `Sat`
+        // is believed and the subsumption is lost with no signal — measured on
+        // `ontologies/real/pizza.ofn`, where `SpicySalamiPizza ⊑ SpicyPizza`
+        // (confirmed by HermiT and Konclude) was dropped on the DEFAULT config.
+        //
+        // So before concluding `Sat`, re-seed once from the saturated graph and
+        // re-drain. Quiescence-triggered, not per-pass: the fast path still pays
+        // no re-seed while it is making progress, and the guard makes the
+        // recursion exactly one level deep. Any work this recovers was a missing
+        // trigger, and recovering it can only ADD entailed facts, so the net is
+        // sound by construction and can only turn a wrong `Sat` into `Unsat`.
+        //
+        // This is a safety net, not a licence to skip triggers: a rule reached
+        // only through it costs a full re-seed. Two genuine holes are fixed
+        // directly in this change (the qualified-`≤1` label trigger and the
+        // merge-inherited `≤1`), and any further one the net catches should be
+        // fixed at its trigger and pinned by
+        // `owl-dl-cli/tests/incremental_fixpoint_identity.rs`.
+        if self.incremental_fixpoint && self.reseed_verify && !self.reseed_verify_active {
+            let before = self.graph_fingerprint();
+            self.reseed_verify_active = true;
+            self.seed_worklist_from_graph();
+            let r = self.horn_fixpoint(max_iters);
+            self.reseed_verify_active = false;
+            if !matches!(r, HyperResult::Sat) {
+                return r;
+            }
+            // Count, do NOT assert. A nonzero count means a trigger is still
+            // missing somewhere — which is true today, so an assert here would
+            // fire on `pizza`. The count is the tracking signal for finding the
+            // remaining hole; the verdict is already correct either way.
+            if self.graph_fingerprint() != before {
+                self.stats.reseed_recovered += 1;
+                if std::env::var_os("RUSTDL_RESEED_PROBE").is_some() {
+                    eprintln!(
+                        "RESEED_PROBE: incremental drain left work undone \
+                         (recovered by the #137 net); a rule premise arrived \
+                         without a trigger"
+                    );
+                }
+            }
+        }
         HyperResult::Sat
     }
 
@@ -2189,6 +2252,23 @@ impl<'c> HyperEngine<'c> {
     /// the non-incremental `horn_fixpoint` re-seed (every pass) and the
     /// one-time root seed in `decide_with_deadline` under
     /// `incremental_fixpoint`.
+    /// Cheap O(nodes) structural fingerprint — total labels, total out-edges,
+    /// node count, merged-node count. Used by the #137 completeness net to tell
+    /// whether a re-seed recovered work the delta drain missed.
+    fn graph_fingerprint(&self) -> (usize, usize, usize, usize) {
+        let mut l = 0usize;
+        let mut e = 0usize;
+        let mut m = 0usize;
+        for (i, n) in self.nodes.iter().enumerate() {
+            l += n.labels.len();
+            e += n.edges.len();
+            if self.representative[i] != HNode(u32::try_from(i).expect("fits")) {
+                m += 1;
+            }
+        }
+        (l, e, self.nodes.len(), m)
+    }
+
     fn seed_worklist_from_graph(&mut self) {
         self.worklist.clear();
         for idx in 0..self.nodes.len() {
@@ -2257,6 +2337,33 @@ impl<'c> HyperEngine<'c> {
                 // other node carrying it (clashing if they are `≠`).
                 if matches!(self.apply_nn_rule(n, c), FireOutcome::Clash) {
                     return FireOutcome::Clash;
+                }
+                // #137 label trigger for QUALIFIED `≤1`. `n` gaining `c` grows the
+                // `≤1 r.c`-relevant successor set of every NEIGHBOUR of `n`, in
+                // both directions, mirroring the `Event::Edge` trigger's src/tgt
+                // symmetry: `distinct_role_succ` counts an out-edge `p —r→ n` at
+                // `p`, and (under `inverse_func_merge`) counts the pred `n —r→ m`
+                // at `m` via `r.flip()`.
+                if self.inverse_func_merge {
+                    let nbrs: SmallVec<[(HNode, Role); 8]> = self.nodes[n.index()]
+                        .preds
+                        .iter()
+                        .map(|&(r, p)| (p, r))
+                        .chain(
+                            self.nodes[n.index()]
+                                .edges
+                                .iter()
+                                .map(|&(r, m)| (m, r.flip())),
+                        )
+                        .collect();
+                    for (holder, via) in nbrs {
+                        for (cr, q) in self.at_most_ones_qualified(holder, via, c) {
+                            if matches!(self.enforce_at_most_one(holder, cr, q), FireOutcome::Clash)
+                            {
+                                return FireOutcome::Clash;
+                            }
+                        }
+                    }
                 }
                 let key = c.index() as usize;
                 // Clauses with `c` as an `X`-class fire at `n`.
@@ -2864,6 +2971,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            reseed_verify: crate::reseed_verify_enabled(),
+            reseed_verify_active: false,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -3555,6 +3664,31 @@ impl<'c> HyperEngine<'c> {
             .collect()
     }
 
+    /// The `(role, qual)` keys of `node`'s active QUALIFIED `≤1` constraints
+    /// that a neighbour newly labelled `c` can now violate.
+    ///
+    /// Companion to [`Self::at_most_ones`], which triggers off an `Event::Edge`.
+    /// An edge trigger alone is not enough for a QUALIFIED bound: `≤1 r.C`
+    /// counts only the `r`-successors carrying `C`, and the label can arrive
+    /// *after* the edge, at which point the successor set grows with no
+    /// `Event::Edge` to notice. That was #137 — the missing label trigger let a
+    /// genuine `≤1` violation survive the incremental drain and reach
+    /// `find_open_at_most`, which asserts it cannot.
+    fn at_most_ones_qualified(
+        &self,
+        node: HNode,
+        edge_role: Role,
+        c: ClassId,
+    ) -> SmallVec<[(Role, Option<ClassId>); 2]> {
+        let hier = self.sub_roles.as_ref();
+        self.nodes[self.resolve(node).index()]
+            .at_most
+            .iter()
+            .filter(|&&(cr, q, n)| n == 1 && q == Some(c) && role_matches(edge_role, cr, hier))
+            .map(|&(cr, q, _)| (cr, q))
+            .collect()
+    }
+
     /// Fire a deterministic `≤1`/functional merge for the `(role, qual)`
     /// constraint at `node`, INCREMENTALLY inside the Horn fixpoint — mirroring
     /// [`Self::apply_nn_rule`] (nominals). A `≤1` is deterministic: two
@@ -4031,9 +4165,23 @@ impl<'c> HyperEngine<'c> {
                 self.worklist.push(Event::Edge(rp, r, s_i));
             }
         }
+        let mut inherited_at_most_ones: SmallVec<[(Role, Option<ClassId>); 2]> = SmallVec::new();
         for c in self.nodes[s_j.index()].at_most.clone() {
             if !self.nodes[s_i.index()].at_most.contains(&c) {
                 self.nodes[s_i.index()].at_most.push(c);
+                // #137: a MERGE-inherited `≤1` needs the same constraint-added
+                // trigger the `Atom::AtMost` head path gets — the survivor may
+                // already hold ≥2 matching successors (its own plus those just
+                // absorbed) and no `Event::Edge` describes the constraint's
+                // arrival. Fired below, once these borrows have ended.
+                if c.2 == 1 {
+                    inherited_at_most_ones.push((c.0, c.1));
+                }
+            }
+        }
+        for (cr, q) in inherited_at_most_ones {
+            if matches!(self.enforce_at_most_one(s_i, cr, q), FireOutcome::Clash) {
+                return true;
             }
         }
         if !self.nodes[s_j.index()].at_most.is_empty() {

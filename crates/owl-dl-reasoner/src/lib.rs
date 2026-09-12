@@ -2017,6 +2017,20 @@ pub fn hyper_trust_sat_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// #137 completeness net for the incremental Horn drain
+/// (`RUSTDL_RESEED_VERIFY`, **default ON**; `=0` reverts to the pre-fix
+/// behaviour). When on, `horn_fixpoint` re-seeds once from the graph on reaching
+/// quiescence and re-drains, so a rule whose premise arrived without a trigger
+/// still fires. Without it the incremental drain reports `Sat`, `trust_sat`
+/// believes it, and the subsumption is lost silently — measured on
+/// `ontologies/real/pizza.ofn` (`SpicySalamiPizza ⊑ SpicyPizza`, confirmed by
+/// `HermiT` and Konclude). Sound in both settings: the net can only add entailed
+/// facts, i.e. only turn a wrong `Sat` into `Unsat`.
+#[must_use]
+pub fn reseed_verify_enabled() -> bool {
+    std::env::var_os("RUSTDL_RESEED_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
 /// Per-class label heuristic (Phase 7) — when enabled, the classifier
 /// runs wedge satisfiability once per named class to build a label
 /// cache, then prunes non-subsumption pairs whose candidate super is

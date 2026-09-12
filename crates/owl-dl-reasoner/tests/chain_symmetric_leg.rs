@@ -42,10 +42,11 @@
 //! [`is_subclass_of`] drives. Default `classify` answers this shape EARLIER — the
 //! hypertableau wedge decides the pair (and the label heuristic prunes it on the
 //! wedge's labels) — and the wedge carries its own copy of this gap, so the #128
-//! ontology still classifies wrongly. That remaining gap is pinned separately by
-//! `default_classify_still_misses_the_symmetric_chain_leg`, per the
-//! pin-the-defect-visibly convention in
-//! `owl-dl-verify/tests/known_limitations.rs`.
+//! ontology used to classify wrongly even so. #135 closed that by carrying the
+//! role hierarchy into the wedge by default, and
+//! `default_classify_now_finds_the_symmetric_chain_leg` — formerly a pinned
+//! known-limitation, flipped when CI caught it passing — holds both paths to the
+//! same answer.
 //!
 //! # The negatives are the point of this file
 //!
@@ -257,29 +258,28 @@ EquivalentClasses(:T1b ObjectSomeValuesFrom(:s ObjectIntersectionOf(\
 }
 
 #[test]
-fn default_classify_still_misses_the_symmetric_chain_leg() {
-    // KNOWN LIMITATION, pinned deliberately rather than `#[ignore]`d — see
-    // `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`. The chain-rule
-    // fix above repairs the classic tableau, but default `classify` never reaches
-    // it on this shape: the hypertableau wedge decides the pair, and the wedge's
-    // `role_matches` can only traverse a symmetric edge backwards when the role
-    // hierarchy is threaded in — which happens ONLY under
-    // `RUSTDL_CLASSIFY_SAME_TIER=1` ("DEFAULT OFF — sound (FP=0) but
-    // corpus-invisible and ~2× wall"). #128 is the counterexample to
-    // "corpus-invisible": a user hit it. `is_subclass_of` is the correct answer
-    // today; `classify` is not.
+fn default_classify_now_finds_the_symmetric_chain_leg() {
+    // WAS a pinned known limitation. When this fix landed the chain rule, default
+    // `classify` still missed this shape: the hypertableau wedge decided the pair
+    // first and ran with `sub_roles == None`, so `role_matches` fell back to exact
+    // role-id AND exact polarity and symmetry was invisible to it. The hierarchy
+    // reached the wedge only under `RUSTDL_CLASSIFY_SAME_TIER=1`, a lever bundled
+    // with an expensive sweep and defaulted OFF.
     //
-    // If this assertion starts FAILING, that is the good news — the wedge learned
-    // the backward hop (or the gate was flipped). Turn it into a positive and
-    // retire this note.
+    // #135 split that lever: `RUSTDL_CLASSIFY_WEDGE_HIERARCHY` (default ON) now
+    // carries the hierarchy into the wedge on its own. The pin's own failure
+    // message asked for exactly this flip, and CI delivered it.
+    //
+    // Both paths must now agree — that agreement is the point, since the bug this
+    // file exists for was `subclass` and `classify` disagreeing on one binary.
     let ofn = two_definitions("SymmetricObjectProperty(:co)\n");
     assert!(
-        !classify_holds(&ofn, "T1a", "T1b"),
-        "default classify now reports T1a ⊑ T1b — the wedge-side gap behind #128 \
-         is closed; make this a positive assertion and update the module docs"
+        classify_holds(&ofn, "T1a", "T1b"),
+        "default classify must find T1a ⊑ T1b now that the wedge carries the role \
+         hierarchy (#135)"
     );
     assert!(
         holds(&ofn, "T1a", "T1b"),
-        "the complete path must still get it right even while classify does not"
+        "the complete path must agree with classify"
     );
 }

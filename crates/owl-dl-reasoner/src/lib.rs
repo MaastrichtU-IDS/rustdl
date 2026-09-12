@@ -7169,6 +7169,8 @@ impl PreparedOntology {
         } else {
             Some(owl_dl_saturation::saturate(&internal))
         };
+        let __probe = std::env::var_os("RUSTDL_PREP_PROBE").is_some();
+        let __t0 = std::time::Instant::now();
         let told = owl_dl_core::told::build_told_tables(&internal);
         let axioms = internal.axioms.clone();
         // Concrete-domain solver (P2): decode the synthetic DKey filler
@@ -7185,7 +7187,10 @@ impl PreparedOntology {
         if expired() {
             return Ok(None);
         }
+        if __probe { eprintln!("PREP_PROBE pre-hyper {:?}", __t0.elapsed()); }
+        let __t1 = std::time::Instant::now();
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
+        if __probe { eprintln!("PREP_PROBE HyperCache::build {:?}", __t1.elapsed()); }
         if expired() {
             return Ok(None);
         }
@@ -7194,8 +7199,10 @@ impl PreparedOntology {
         // stays byte-identical). Built from the un-mutated `internal`,
         // before the absorb/NNF passes below consume it — so every
         // nominal/role id is matched-by-construction with the clause set.
+        let __t2 = std::time::Instant::now();
         let consistency = (wedge_consistency_enabled() && internal_has_abox(&internal))
             .then(|| ConsistencyCache::build(&internal));
+        if __probe { eprintln!("PREP_PROBE ConsistencyCache::build {:?}", __t2.elapsed()); }
         // Phase 1b: build the snapshot cache from the same un-mutated
         // ontology, iff `RUSTDL_SNAPSHOT_CAPTURE` is ON. The cache's
         // `clausify_with_stats` + `BackPropRisk::classify_ontology`
@@ -7243,6 +7250,7 @@ impl PreparedOntology {
         if expired() {
             return Ok(None);
         }
+        if __probe { eprintln!("PREP_PROBE pre-nnf {:?}", __t0.elapsed()); }
         let normalized = nnf_axioms(&mut internal);
         let tbox = absorb(&normalized, &mut internal.concepts);
         // Ensure `⊥` is interned — `apply_max` flags inequality

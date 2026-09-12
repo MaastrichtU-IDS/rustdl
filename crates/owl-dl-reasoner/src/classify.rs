@@ -1535,14 +1535,27 @@ fn classify_internal_with_timeout_impl(
         }
     }
     let _ = satisfiable; // currently informational only
-    if probe_says_inconsistent(
+    if std::env::var_os("RUSTDL_PREP_PROBE").is_some() {
+        eprintln!(
+            "PREP_PROBE phases: saturate={} precheck={} prepare={} label_cache={} unsat_probe={} tier_walk={} sweeps={} matrix={} unattributed={} total={}",
+            stats.saturate_wall_ms, stats.precheck_wall_ms, stats.prepare_wall_ms,
+            stats.label_cache_build_wall_ms, stats.unsat_probe_wall_ms, stats.tier_walk_wall_ms,
+            stats.sweep_wall_ms, stats.matrix_wall_ms, stats.unattributed_wall_ms, 0u64
+        );
+    }
+    let __t_probe_inc = Instant::now();
+    let __probe_inc = probe_says_inconsistent(
         internal,
         &prepared,
         &reported,
         &unsatisfiable_idxs,
         n,
         &mut stats,
-    ) {
+    );
+    if std::env::var_os("RUSTDL_PREP_PROBE").is_some() {
+        eprintln!("PREP_PROBE probe_says_inconsistent {:?} -> {__probe_inc}", __t_probe_inc.elapsed());
+    }
+    if __probe_inc {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     Ok(Classification {
@@ -3548,9 +3561,16 @@ fn classify_top_down_internal_impl(
     // `abox_verdict()` is `get_or_init`-lazy, so the FIRST call is where the
     // check actually runs — it belongs inside the prepare line item, which is
     // why `t_prepare` is not stopped until after it.
-    if let crate::abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {
-        if std::env::var_os("RUSTDL_TRACE").is_some() {
-            eprintln!("abox_check: inconsistent — {reason:?}");
+    let __t_av = Instant::now();
+    let __av_inconsistent = matches!(prepared.abox_verdict(), crate::abox_check::AboxVerdict::Inconsistent { .. });
+    if std::env::var_os("RUSTDL_PREP_PROBE").is_some() {
+        eprintln!("PREP_PROBE saturate {saturate_ms}ms prepare-so-far {:?} abox_verdict {:?}", t_prepare.elapsed(), __t_av.elapsed());
+    }
+    if __av_inconsistent {
+        if let crate::abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {
+            if std::env::var_os("RUSTDL_TRACE").is_some() {
+                eprintln!("abox_check: inconsistent — {reason:?}");
+            }
         }
         return Ok(classify_inconsistent(
             classes,
@@ -3804,6 +3824,17 @@ fn classify_top_down_internal_impl(
     // RSS probe: after label-cache build.
     crate::rss_probe::probe("after_label_cache");
 
+    if std::env::var_os("RUSTDL_PREP_PROBE").is_some() {
+        let (mut n_sat, mut n_unsat, mut n_nv) = (0usize, 0usize, 0usize);
+        for o in &label_cache {
+            match o {
+                crate::LabelOracle::Sat { .. } => n_sat += 1,
+                crate::LabelOracle::Unsat => n_unsat += 1,
+                crate::LabelOracle::NoVerdict => n_nv += 1,
+            }
+        }
+        eprintln!("PREP_PROBE label_cache outcomes: sat={n_sat} unsat={n_unsat} noverdict={n_nv}");
+    }
     let t_unsat_probe = Instant::now();
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
@@ -3925,6 +3956,43 @@ fn classify_top_down_internal_impl(
         }
     }
     stats.unsat_probe_wall_ms = elapsed_ms(t_unsat_probe);
+
+    // PROTOTYPE P1 (early inconsistency probe): `probe_says_inconsistent`
+    // reads only `internal`, `prepared`, `reported`, `unsatisfiable_idxs`
+    // (fixed from this point on) and `stats.timed_out_pairs` (0 here; the
+    // incomplete-abox admission arm stays with the late call). If the KB is
+    // inconsistent, the whole tier walk + sweeps below are computed and then
+    // DISCARDED by the late probe — so ask first.
+    // PROTOTYPE P1'' admission evidence: a label-cache NoVerdict is a
+    // per-class wedge deadline hit — the same "did not look long enough"
+    // species of evidence as a walk pair timeout, but available BEFORE the
+    // walk. Borrow the probe's incomplete-abox arm by lending the count to
+    // stats.timed_out_pairs for the duration of the early call.
+    let __early_nv: usize = label_cache
+        .iter()
+        .filter(|o| matches!(o, crate::LabelOracle::NoVerdict))
+        .count();
+    let __nv_admit = __early_nv.saturating_mul(4) >= n; // ≥25% of classes stalled
+    let __saved_top = stats.timed_out_pairs;
+    if __nv_admit {
+        stats.timed_out_pairs = stats.timed_out_pairs.max(1).max(__early_nv);
+    }
+    let __early_fired = std::env::var_os("RUSTDL_EARLY_INC_PROBE").is_some_and(|v| v == "1")
+        && probe_says_inconsistent(
+            internal,
+            &prepared,
+            &reported,
+            &unsatisfiable_idxs,
+            n,
+            &mut stats,
+        );
+    stats.timed_out_pairs = __saved_top;
+    if __early_fired {
+        if std::env::var_os("RUSTDL_PREP_PROBE").is_some() {
+            eprintln!("PREP_PROBE early inconsistency probe fired; skipping tier walk");
+        }
+        return Ok(classify_inconsistent(classes, index, stats.fragment));
+    }
 
     // Compute closure-subsumer counts once per class (used for sort key and
     // tier grouping). `subsumers_count` is O(1) (no Vec allocation) vs
@@ -4532,14 +4600,27 @@ fn classify_top_down_internal_impl(
         .saturating_sub(stats.sweep_wall_ms)
         .saturating_sub(stats.matrix_wall_ms);
 
-    if probe_says_inconsistent(
+    if std::env::var_os("RUSTDL_PREP_PROBE").is_some() {
+        eprintln!(
+            "PREP_PROBE phases2: saturate={} precheck={} prepare={} label_cache={} unsat_probe={} tier_walk={} sweeps={} matrix={} unattributed={} total={}",
+            stats.saturate_wall_ms, stats.precheck_wall_ms, stats.prepare_wall_ms,
+            stats.label_cache_build_wall_ms, stats.unsat_probe_wall_ms, stats.tier_walk_wall_ms,
+            stats.sweep_wall_ms, stats.matrix_wall_ms, stats.unattributed_wall_ms, total_wall
+        );
+    }
+    let __t_probe_inc = Instant::now();
+    let __probe_inc = probe_says_inconsistent(
         internal,
         &prepared,
         &reported,
         &unsatisfiable_idxs,
         n,
         &mut stats,
-    ) {
+    );
+    if std::env::var_os("RUSTDL_PREP_PROBE").is_some() {
+        eprintln!("PREP_PROBE probe_says_inconsistent2 {:?} -> {__probe_inc}", __t_probe_inc.elapsed());
+    }
+    if __probe_inc {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     Ok(Classification {

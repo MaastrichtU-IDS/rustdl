@@ -1000,6 +1000,68 @@ struct ClauseMatchPlan {
 /// unsupported (mirrors the inline classification `match_body` used to do per
 /// call): an equality body atom is unsupported, and a non-tree role-atom
 /// structure makes `eval_order` refuse.
+
+// PROTOTYPE P2 flag (cached).
+fn headsat_skip_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RUSTDL_HEADSAT_SKIP").is_some_and(|v| v == "1"))
+}
+
+// ==== TEMPORARY MATCH PROBE (diagnostic; to be reverted) ====
+pub mod match_probe {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::sync::OnceLock;
+    pub static CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static SKIP_HEADSAT_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static SKIP_HEADSAT_BINDINGS: AtomicU64 = AtomicU64::new(0);
+    pub static BOT_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static BOT_SURPLUS_BINDINGS: AtomicU64 = AtomicU64::new(0);
+    pub static TOTAL_BINDINGS: AtomicU64 = AtomicU64::new(0);
+    pub static CHANGED_FIRES: AtomicU64 = AtomicU64::new(0);
+    pub static FRAMES: AtomicU64 = AtomicU64::new(0);
+    pub static EDGE_SCANS: AtomicU64 = AtomicU64::new(0);
+    pub static LEAF_OK: AtomicU64 = AtomicU64::new(0);
+    pub static LEAF_REJECT: AtomicU64 = AtomicU64::new(0);
+    pub static MULTIATOM_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static NONHORN_MATCH_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static NONHORN_BINDINGS: AtomicU64 = AtomicU64::new(0);
+    pub static G_BRANCHES: AtomicU64 = AtomicU64::new(0);
+    pub static G_MERGE_BRANCHES: AtomicU64 = AtomicU64::new(0);
+    pub static G_RESTORES: AtomicU64 = AtomicU64::new(0);
+    pub static G_FIXPOINT_PASSES: AtomicU64 = AtomicU64::new(0);
+    pub static G_DECIDES: AtomicU64 = AtomicU64::new(0);
+    static ON: OnceLock<bool> = OnceLock::new();
+    pub fn on() -> bool {
+        *ON.get_or_init(|| {
+            let v = std::env::var_os("RUSTDL_MATCH_PROBE").is_some();
+            if v {
+                unsafe {
+                    unsafe extern "C" { fn atexit(cb: extern "C" fn()) -> i32; }
+                    atexit(dump_at_exit);
+                }
+            }
+            v
+        })
+    }
+    extern "C" fn dump_at_exit() {
+        eprintln!(
+            "MATCH_PROBE calls={} skip_headsat_calls={} skip_headsat_bindings={} bot_calls={} bot_surplus_bindings={} total_bindings={} changed_fires={} frames={} edge_scans={} leaf_ok={} leaf_reject={} multiatom_calls={} nonhorn_match_calls={} nonhorn_bindings={}",
+            CALLS.load(Relaxed), SKIP_HEADSAT_CALLS.load(Relaxed), SKIP_HEADSAT_BINDINGS.load(Relaxed),
+            BOT_CALLS.load(Relaxed), BOT_SURPLUS_BINDINGS.load(Relaxed),
+            TOTAL_BINDINGS.load(Relaxed), CHANGED_FIRES.load(Relaxed),
+            FRAMES.load(Relaxed), EDGE_SCANS.load(Relaxed),
+            LEAF_OK.load(Relaxed), LEAF_REJECT.load(Relaxed), MULTIATOM_CALLS.load(Relaxed),
+            NONHORN_MATCH_CALLS.load(Relaxed), NONHORN_BINDINGS.load(Relaxed)
+        );
+        eprintln!(
+            "MATCH_PROBE2 branches={} merge_branches={} restores={} fixpoint_passes={} decides={}",
+            G_BRANCHES.load(Relaxed), G_MERGE_BRANCHES.load(Relaxed), G_RESTORES.load(Relaxed),
+            G_FIXPOINT_PASSES.load(Relaxed), G_DECIDES.load(Relaxed)
+        );
+    }
+}
+// ==== END TEMPORARY MATCH PROBE ====
+
 fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
     let mut x_classes: SmallVec<[ClassId; 4]> = SmallVec::new();
     let mut role_atoms: SmallVec<[(Role, Var, Var); 4]> = SmallVec::new();
@@ -2142,6 +2204,9 @@ impl<'c> HyperEngine<'c> {
     /// `Stalled`). See `docs/hypertableau-seminaive-scoping.md`.
     fn horn_fixpoint(&mut self, max_iters: usize) -> HyperResult {
         self.stats.fixpoint_passes += 1;
+        if match_probe::on() {
+            match_probe::G_FIXPOINT_PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         // Non-incremental mode: re-seed from scratch every pass (keeps the
         // worklist out of the cloned branch state — seminaive scoping §4).
         // A failed branch may have left stale events; clearing here discards
@@ -3272,6 +3337,9 @@ impl<'c> HyperEngine<'c> {
                 let saved = self.save();
                 self.stats.branches_taken += 1;
                 self.stats.disj_branches += 1;
+                if match_probe::on() {
+                    match_probe::G_BRANCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
                 match self.solve(depth - 1) {
                     HyperResult::Sat => return HyperResult::Sat,
@@ -3409,6 +3477,9 @@ impl<'c> HyperEngine<'c> {
             self.worklist = saved.worklist;
         }
         self.stats.restores += 1;
+        if match_probe::on() {
+            match_probe::G_RESTORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Find an *open* disjunctive clause: one whose body matches at
@@ -3460,6 +3531,11 @@ impl<'c> HyperEngine<'c> {
                     let Some(bindings) = self.match_body(ci, node) else {
                         continue;
                     };
+                    if match_probe::on() {
+                        use std::sync::atomic::Ordering::Relaxed;
+                        match_probe::NONHORN_MATCH_CALLS.fetch_add(1, Relaxed);
+                        match_probe::NONHORN_BINDINGS.fetch_add(bindings.len() as u64, Relaxed);
+                    }
                     for binding in bindings {
                         if self.any_head_satisfied(ci, node, &binding) {
                             continue;
@@ -3516,6 +3592,11 @@ impl<'c> HyperEngine<'c> {
                 let Some(bindings) = self.match_body(ci, node) else {
                     continue;
                 };
+                if match_probe::on() {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    match_probe::NONHORN_MATCH_CALLS.fetch_add(1, Relaxed);
+                    match_probe::NONHORN_BINDINGS.fetch_add(bindings.len() as u64, Relaxed);
+                }
                 for binding in bindings {
                     if !self.any_head_satisfied(ci, node, &binding) {
                         return Some((ci, node, binding));
@@ -3931,6 +4012,9 @@ impl<'c> HyperEngine<'c> {
             let saved = self.save();
             self.stats.branches_taken += 1;
             self.stats.merge_branches += 1;
+            if match_probe::on() {
+                match_probe::G_MERGE_BRANCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let mut clashed = false;
             'blocks: for block in groups.iter() {
                 let rep = block[0];
@@ -4245,15 +4329,66 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
+        // PROTOTYPE P2 (head-satisfied pre-skip): if the (single) Horn head
+        // atom is anchored at X and is ALREADY satisfied, every binding's
+        // fire_head is NoChange with zero side effects (add_label keeps the
+        // FIRST dep-set; fire_exists returns NoChange on an existing witness
+        // before any mutation), so the entire body match is dead work.
+        if headsat_skip_enabled() && self.horn_head_already_satisfied(ci, node) {
+            return FireOutcome::NoChange;
+        }
+        let probe = match_probe::on();
+        if probe {
+            use std::sync::atomic::Ordering::Relaxed;
+            match_probe::CALLS.fetch_add(1, Relaxed);
+        }
         let Some(bindings) = self.match_body(ci, node) else {
             return FireOutcome::NoChange;
         };
+        if probe {
+            use std::sync::atomic::Ordering::Relaxed;
+            match_probe::TOTAL_BINDINGS.fetch_add(bindings.len() as u64, Relaxed);
+            let clause = self.clause(ci);
+            if clause.head.is_empty() {
+                match_probe::BOT_CALLS.fetch_add(1, Relaxed);
+                match_probe::BOT_SURPLUS_BINDINGS
+                    .fetch_add(bindings.len().saturating_sub(1) as u64, Relaxed);
+            } else {
+                // Would a pre-match head-satisfied check have skipped this call?
+                let sat = match clause.head[0] {
+                    Atom::Class(c, v) if v == X => {
+                        let t = if self.inverse_func_merge { self.resolve(node) } else { node };
+                        self.nodes[t.index()].has(c)
+                    }
+                    Atom::Exists(role, cls, v) if v == X => {
+                        let src = if self.inverse_func_merge { self.resolve(node) } else { node };
+                        let resolve_reads = self.inverse_func_merge;
+                        self.nodes[src.index()].edges.iter().any(|(er, t)| {
+                            let t = if resolve_reads { self.resolve(*t) } else { *t };
+                            role_matches(*er, role, self.sub_roles.as_ref())
+                                && self.nodes[t.index()].has(cls)
+                        })
+                    }
+                    _ => false,
+                };
+                if sat {
+                    match_probe::SKIP_HEADSAT_CALLS.fetch_add(1, Relaxed);
+                    match_probe::SKIP_HEADSAT_BINDINGS.fetch_add(bindings.len() as u64, Relaxed);
+                }
+            }
+        }
         let mut changed = false;
         for binding in bindings {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             match self.fire_head(ci, node, &binding, body_deps) {
                 FireOutcome::Clash => return FireOutcome::Clash,
-                FireOutcome::Changed => changed = true,
+                FireOutcome::Changed => {
+                    if match_probe::on() {
+                        match_probe::CHANGED_FIRES
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    changed = true;
+                }
                 FireOutcome::NoChange => {}
             }
         }
@@ -4285,6 +4420,38 @@ impl<'c> HyperEngine<'c> {
             }
         }
         deps
+    }
+
+    /// PROTOTYPE P2 helper: true iff clause `ci`'s Horn head is a Class or
+    /// Exists atom anchored at `X` that already holds at `node`, mirroring
+    /// exactly the checks `apply_head_atom`/`fire_exists` would perform.
+    fn horn_head_already_satisfied(&self, ci: usize, node: HNode) -> bool {
+        let clause = self.clause(ci);
+        let [head] = clause.head.as_slice() else {
+            return false; // empty head (body → ⊥) or non-Horn
+        };
+        match *head {
+            Atom::Class(c, v) if v == X => {
+                // Mirrors add_label's resolve-under-flag before the keep-first add.
+                let t = if self.inverse_func_merge {
+                    self.resolve(node)
+                } else {
+                    node
+                };
+                self.nodes[t.index()].has(c)
+            }
+            Atom::Exists(role, cls, v) if v == X => {
+                // Mirrors fire_exists' witness-reuse check (src unresolved,
+                // targets resolve-on-read under the flag).
+                let resolve_reads = self.inverse_func_merge;
+                self.nodes[node.index()].edges.iter().any(|(er, t)| {
+                    let t = if resolve_reads { self.resolve(*t) } else { *t };
+                    role_matches(*er, role, self.sub_roles.as_ref())
+                        && self.nodes[t.index()].has(cls)
+                })
+            }
+            _ => false,
+        }
     }
 
     /// Match clause `ci`'s body with `x = node`, enumerating every
@@ -4322,6 +4489,9 @@ impl<'c> HyperEngine<'c> {
             filters: plan.filters.as_slice(),
         };
 
+        if plan.role_atoms.len() > 1 && match_probe::on() {
+            match_probe::MULTIATOM_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let mut out = Vec::new();
         let mut binding: Binding = SmallVec::new();
         self.enumerate_matches(node, &mp, 0, &mut binding, &mut out);
@@ -4339,6 +4509,9 @@ impl<'c> HyperEngine<'c> {
         binding: &mut Binding,
         out: &mut Vec<Binding>,
     ) {
+        if match_probe::on() {
+            match_probe::FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if i == plan.order.len() {
             let ok = plan.other_classes.iter().all(|(c, v)| {
                 resolve_var(*v, node, binding).is_some_and(|m| self.nodes[m.index()].has(*c))
@@ -4352,6 +4525,14 @@ impl<'c> HyperEngine<'c> {
                     _ => false,
                 }
             });
+            if match_probe::on() {
+                use std::sync::atomic::Ordering::Relaxed;
+                if ok {
+                    match_probe::LEAF_OK.fetch_add(1, Relaxed);
+                } else {
+                    match_probe::LEAF_REJECT.fetch_add(1, Relaxed);
+                }
+            }
             if ok {
                 let mut b = binding.clone();
                 b.sort_unstable_by_key(|&(v, _)| v);
@@ -4365,6 +4546,12 @@ impl<'c> HyperEngine<'c> {
         };
         let hier = self.sub_roles.as_ref();
         let src_data = &self.nodes[src.index()];
+        if match_probe::on() {
+            match_probe::EDGE_SCANS.fetch_add(
+                (src_data.edges.len() + src_data.preds.len()) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         // Innermost recursive hot loop: most nodes have few role-matching
         // successors, so keep the match set inline to avoid a heap
         // allocation per recursion frame (profiling: allocator churn here

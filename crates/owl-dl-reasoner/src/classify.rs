@@ -1542,6 +1542,7 @@ fn classify_internal_with_timeout_impl(
         &unsatisfiable_idxs,
         n,
         &mut stats,
+        false,
     ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
@@ -1742,6 +1743,7 @@ fn probe_says_inconsistent(
     unsatisfiable_idxs: &HashSet<usize>,
     n_classes: usize,
     stats: &mut ClassificationStats,
+    extra_admission: bool,
 ) -> bool {
     if !crate::classify_consistency_probe_enabled() || stats.inconsistent {
         return false;
@@ -1755,7 +1757,14 @@ fn probe_says_inconsistent(
     let incomplete_abox = crate::classify_probe_on_incomplete()
         && stats.timed_out_pairs > 0
         && has_abox_axioms(internal);
-    if unsatisfiable_idxs.is_empty() && !incomplete_abox {
+    // `extra_admission` is the #128 early-exit arm: at the pre-walk call site
+    // `unsatisfiable_idxs` is still empty (the unsat classes are found BY the walk)
+    // and `timed_out_pairs` is still 0, so BOTH standing admissions reject and the
+    // probe returns before doing any work. The caller supplies its own evidence
+    // there — a large `NoVerdict` share of the label cache, the same "did not look
+    // long enough" species `incomplete_abox` already admits on. Always `false` at
+    // the post-walk call site, which therefore behaves exactly as before.
+    if unsatisfiable_idxs.is_empty() && !incomplete_abox && !extra_admission {
         return false;
     }
     // (1) ASSERTED INSTANCE OF AN UNSATISFIABLE CLASS ⟹ inconsistent.
@@ -1833,7 +1842,14 @@ fn probe_says_inconsistent(
     // behaviour, so this can only fail to fix, never break.
     let min_permille = crate::classify_probe_min_frac_permille();
     let min_permille = usize::try_from(min_permille).unwrap_or(usize::MAX);
-    if !incomplete_abox && unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * min_permille {
+    // `extra_admission` bypasses this minimum-fraction guard for the same reason it
+    // bypasses the admission above: at the #128 pre-walk call site
+    // `unsatisfiable_idxs` is empty, so the guard would reject on a count that has
+    // not been computed yet rather than on one that came back small.
+    if !incomplete_abox
+        && !extra_admission
+        && unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * min_permille
+    {
         return false;
     }
     // Past every admission test: layers 2-3 are about to run.
@@ -3926,6 +3942,62 @@ fn classify_top_down_internal_impl(
     }
     stats.unsat_probe_wall_ms = elapsed_ms(t_unsat_probe);
 
+    // EARLY INCONSISTENCY EXIT (#128). The same `probe_says_inconsistent` also
+    // runs after the tier walk, but by then the walk and the defined sweeps have
+    // been computed — and if the probe fires they are thrown away wholesale, since
+    // an inconsistent KB makes every class unsatisfiable and
+    // `classify_inconsistent` rebuilds the result from scratch.
+    //
+    // Its layer-1 evidence is ready HERE: an asserted instance of an unsatisfiable
+    // class is sound and exact, and `unsatisfiable_idxs` is final from this point
+    // (the walk below only reads it). So when the KB is provably inconsistent we
+    // can say so before paying for a hierarchy nobody will look at.
+    //
+    // Measured on `ore_ont_16372` (inconsistent per Konclude AND HermiT, and the
+    // ontology whose wall regression gates `RUSTDL_CLASSIFY_ROLE_HIERARCHY`):
+    // 31.6 s -> 5.8 s with byte-identical output, because tier_walk (20.5 s) and
+    // sweeps (5.5 s) are skipped rather than computed-then-discarded.
+    //
+    // ADMISSION. The late probe's normal admission — "some class is already proved
+    // unsatisfiable" — is NOT yet satisfied here on the ontology this targets:
+    // `ore_ont_16372`'s 744 unsat classes are discovered BY the walk, so
+    // `unsatisfiable_idxs` is still empty at this point and a straight hoist fires
+    // nothing (measured: no change). The evidence available early is the label
+    // cache's `NoVerdict` count — per-class wedge satisfiability that did not
+    // converge inside its budget. That is the same "we did not look long enough"
+    // species the existing `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE` arm already admits
+    // on, which is why it is the right signal rather than a new idea.
+    //
+    // A wrong admission costs a bounded probe, never a wrong answer: the probe
+    // PROVES inconsistency (layer 1 is an asserted instance of an unsatisfiable
+    // class; the rest are bounded wedge/⊤ probes under their own budget). It can
+    // only turn "no verdict yet" into a proof-backed all-unsat.
+    //
+    // It CAN change output: on a KB where the late probe would never have been
+    // admitted but the early one is, and the probe succeeds, the result becomes
+    // all-unsat where it previously was a partial hierarchy. That is a row GAIN
+    // backed by a proof (FP=0), not a loss — but it is a behaviour change, so it is
+    // gated and must clear the corpus net and the two-arm ORE sweep before the
+    // default moves.
+    let noverdict = label_cache
+        .iter()
+        .filter(|o| matches!(o, crate::LabelOracle::NoVerdict))
+        .count();
+    let early_admitted = crate::early_inconsistency_probe_enabled() && n > 0 && noverdict * 4 >= n;
+    if early_admitted
+        && probe_says_inconsistent(
+            internal,
+            &prepared,
+            &reported,
+            &unsatisfiable_idxs,
+            n,
+            &mut stats,
+            true,
+        )
+    {
+        return Ok(classify_inconsistent(classes, index, stats.fragment));
+    }
+
     // Compute closure-subsumer counts once per class (used for sort key and
     // tier grouping). `subsumers_count` is O(1) (no Vec allocation) vs
     // `subsumers_of` (allocates Vec<ClassId> per call). sort_by_key calls the
@@ -4539,6 +4611,7 @@ fn classify_top_down_internal_impl(
         &unsatisfiable_idxs,
         n,
         &mut stats,
+        false,
     ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }

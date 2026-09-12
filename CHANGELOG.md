@@ -6,6 +6,53 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Added — early inconsistency exit, removing one of the two blockers on the role-hierarchy flip (#128)
+
+`probe_says_inconsistent` runs AFTER the tier walk. When it fires,
+`classify_inconsistent` discards the walk wholesale — every class is unsatisfiable, so
+the hierarchy it just computed is thrown away. On `ore_ont_16372` that is **20.5 s of
+tier walk plus 5.5 s of sweeps computed and binned**. `RUSTDL_EARLY_INCONSISTENCY_PROBE`
+(**default OFF**, `=1` enables) asks first.
+
+| `ore_ont_16372`, `RUSTDL_CLASSIFY_ROLE_HIERARCHY=1` | wall | rows |
+| --- | --- | --- |
+| early probe off | 31.6 s | 745 |
+| early probe on | **5.9 s** | 745 (byte-identical) |
+
+That is one of the **two** ontologies whose wall regression keeps
+`RUSTDL_CLASSIFY_ROLE_HIERARCHY` (worth 313 recovered subsumptions at FP=0) default-OFF
+against a "0 REGRESSED" bar — and with this it stops being a regression at all: the ON
+arm (5.9 s) is now FASTER than the OFF arm (9.1 s). `ore_ont_9890` is **not** fixed and
+is the harder case; its regression is genuine per-class wedge divergence rather than
+discarded work.
+
+**Two hidden gates, both found by measurement after a straight hoist did nothing.**
+`unsatisfiable_idxs` is still EMPTY before the walk — those 744 unsat classes are found
+BY the walk — so the probe's normal admission rejects. And there is a SECOND
+`!incomplete_abox` bypass further down (the minimum-unsat-fraction guard) that likewise
+rejects on a count not yet computed. Both are now threaded by an explicit
+`extra_admission` parameter, `false` at the existing post-walk call site so its behaviour
+is unchanged.
+
+The early call's admission evidence is a large `NoVerdict` share of the label cache —
+per-class wedge satisfiability that did not converge in its budget, the same "did not
+look long enough" species the existing `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE` arm already
+admits on. A wrong admission costs one bounded probe, never a wrong answer: the probe
+PROVES inconsistency. It CAN change output — a proof-backed all-unsat where the late
+probe was never admitted — which is a row gain at FP=0, and is why this ships default-OFF
+pending the two-arm sweep.
+
+**Two corrections to the #128 record while establishing this.** The regression is a
+BRANCH STORM, not matcher cross-product: enumeration frames per match call are ≈1 in both
+arms (nothing to prune), while ⊔ branches go 54k → 632k and restores 45k → 631k.
+Per-branch matcher cost actually falls; the tree grows. And the all-zero phase banner that
+made the cost unattributable is an artifact — `classify_inconsistent` rebuilds stats as
+`{ inconsistent, fragment, ..Default::default() }`, zeroing every timer after the work is
+done.
+
+Verification: fmt, clippy `-D warnings`, full test suite green; corpus soundness net every
+fixture FP=0/MISSED=0 (sio 8904, wine 653, ro 158, sulo 51, pizza 112).
+
 ### Fixed — `completeness_guaranteed()`'s Horn arm was a false certificate (#124)
 
 `Classification::completeness_guaranteed()` returned `true` for `PureEl | Horn`. `Horn`

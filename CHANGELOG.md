@@ -6,6 +6,37 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed — `InverseObjectProperties` was read without its polarity, a latent FP source (#145)
+
+The axiom asserts `a ≡ b⁻`. Two consumers compared role ids and discarded polarity —
+`collect_inverse_pairs` (which feeds the tableau's `declare_inverse_pair`) and the
+`mark_symmetric` arm of `build_role_hierarchy`:
+
+| axiom | actually asserts | old reading |
+| --- | --- | --- |
+| `InverseObjectProperties(p, p)` | `p ≡ p⁻` — symmetric | symmetric ✔ |
+| `InverseObjectProperties(p, ObjectInverseOf(p))` | `p ≡ (p⁻)⁻` — **tautology** | symmetric ✘ |
+| `InverseObjectProperties(p, ObjectInverseOf(q))` | `p ≡ q` — role **equivalence** | `p ≡ q⁻` ✘ |
+
+Row two invents a symmetry nobody declared — a false-POSITIVE source, and a widening
+one since #133 taught `role_matches` to walk chain legs backwards on a symmetry record.
+Both sites now require MATCHING polarity. Dropping the mixed case is an
+under-approximation (a role equivalence goes unrecorded) and therefore sound; recording
+a relationship the axiom does not assert is not.
+
+**Unreachable today, and that is the point.** horned-owl rejects `ObjectInverseOf` inside
+`InverseObjectProperties`, while Konclude and HermiT both accept it — so the protection
+was an accident of a dependency, not a property of this code. The horned-owl 1.4 → 3.0
+upgrade (#126) could have turned the hazard live with nobody touching the reasoner;
+verified that it did not, but the next bump might.
+
+`crates/owl-dl-reasoner/tests/inverse_polarity_guards.rs` therefore pins the parser
+behaviour as the *stated reason* we are safe, with instructions for what to do when it
+flips — check the guards, then replace the tripwire with the real behavioural
+assertions — rather than letting the protection disappear unnoticed. Two controls come
+with it: a named self-inverse pair must still be symmetry, and a distinct named inverse
+pair must still be an inverse pair, so the tightening cannot silently over-reject.
+
 ### Fixed — `SymmetricObjectProperty(ObjectInverseOf(:p))` was silently ignored (#144)
 
 A role is symmetric iff its inverse is, so `SymmetricObjectProperty(ObjectInverseOf(:p))`

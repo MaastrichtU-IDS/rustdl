@@ -7996,10 +7996,23 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
             Axiom::SymmetricRole(role) => {
                 builder.mark_symmetric(role.role_id());
             }
+            // #145: MATCHING POLARITY, not merely matching ids. `InverseObjectProperties`
+            // asserts `a ≡ b⁻`, so:
+            //   same polarity, same id  — `(p, p)` or `(p⁻, p⁻)` ⟹ `p ≡ p⁻` ⟹ SYMMETRIC.
+            //   mixed polarity, same id — `(p, p⁻)` ⟹ `p ≡ (p⁻)⁻` ⟹ `p ≡ p`, a TAUTOLOGY.
+            // The old guard tested `!a.is_inverse()` and compared role ids only, so the
+            // tautology would have been recorded as a symmetry declaration — inventing a
+            // symmetry nobody asserted, which is a false-POSITIVE source now that #133
+            // lets `role_matches` walk chain legs backwards on it.
+            //
+            // Unreachable today only because horned-owl rejects `ObjectInverseOf` inside
+            // `InverseObjectProperties` (both Konclude and HermiT accept it, so this is a
+            // parser gap, not invalid OWL). That is an accident of the parser, not a
+            // property of this code, so the guard is stated correctly here rather than
+            // relying on it.
             Axiom::InverseObjectProperties(a, b)
-                if a.role_id() == b.role_id() && !a.is_inverse() =>
+                if a.role_id() == b.role_id() && a.is_inverse() == b.is_inverse() =>
             {
-                // Self-inverse declaration: InverseObjectProperties(r, r) ⟹ r is symmetric.
                 builder.mark_symmetric(a.role_id());
             }
             _ => {}
@@ -8210,7 +8223,21 @@ fn collect_inverse_pairs(internal: &InternalOntology) -> Vec<(RoleId, RoleId)> {
     let mut pairs = Vec::new();
     for ax in &internal.axioms {
         if let Axiom::InverseObjectProperties(a, b) = ax {
-            pairs.push((a.role_id(), b.role_id()));
+            // #145: RESPECT POLARITY. The axiom asserts `a ≡ b⁻`, so the role ids are
+            // inverses of each other only when the two expressions carry the SAME
+            // polarity: `(p, q)` and `(p⁻, q⁻)` both give `p ≡ q⁻`. With MIXED polarity
+            // — `(p, q⁻)` — the axiom says `p ≡ (q⁻)⁻`, i.e. `p ≡ q`: role EQUIVALENCE,
+            // not inversion. Recording that as an inverse pair is a false positive, and
+            // at `q == p` it degenerates into declaring `p` symmetric on the strength of
+            // a tautology.
+            //
+            // Dropping the mixed case is an under-approximation (a role equivalence goes
+            // unrecorded here) and therefore sound; the alternative — recording a
+            // relationship the axiom does not assert — is not. Unreachable today only
+            // because horned-owl rejects `ObjectInverseOf` in this position.
+            if a.is_inverse() == b.is_inverse() {
+                pairs.push((a.role_id(), b.role_id()));
+            }
         }
     }
     pairs

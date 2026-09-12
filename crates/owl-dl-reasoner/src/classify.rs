@@ -320,12 +320,17 @@ pub enum FragmentClassification {
     /// Pure EL+ fragment (Kazakov ELK-style). Saturator alone is
     /// complete. `trust_sat` is sound by construction.
     PureEl,
-    /// Horn DL-clauses (every clausified axiom has ≤ 1 head atom
-    /// and the clausifier handles every axiom). The hyper Horn
-    /// fixpoint is complete by construction. `trust_sat` is sound by
-    /// construction. Strict superset of `PureEl` by classification,
-    /// but tagged separately so users see which engine carries the
-    /// guarantee.
+    /// Horn DL-clauses (every clausified axiom has ≤ 1 head atom and the
+    /// clausifier handles every axiom).
+    ///
+    /// **This is a clause-shape observation, NOT a completeness claim** (#124).
+    /// It once asserted "the hyper Horn fixpoint is complete by construction",
+    /// and `completeness_guaranteed()` spent that claim — but the shortcircuit
+    /// runs the EL saturator rather than the hyper fixpoint, and on a Horn
+    /// ontology `classify` can miss a subsumption both peer oracles derive
+    /// (`X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`, `∃s.Z ⊑ W` ⟹ `X ⊑ W`). Kept as a
+    /// diagnostic label because the shape is still worth reporting; it no longer
+    /// certifies anything.
     Horn,
     /// The ontology uses disjunctive heads, axioms the clausifier
     /// defers, or other constructs outside the provably-complete
@@ -342,7 +347,8 @@ impl std::fmt::Display for FragmentClassification {
                 "pure-EL (trust_sat sound by construction; saturator alone is complete)",
             ),
             Self::Horn => f.write_str(
-                "Horn (trust_sat sound by construction; hyper Horn fixpoint is complete)",
+                "Horn clause shape (NOT a completeness claim — see #124; \
+                 trust_sat is empirically sound here, not proven complete)",
             ),
             Self::OutOfFragment => {
                 f.write_str("out-of-EL (trust_sat empirically sound; see fragment-completeness.md)")
@@ -910,10 +916,26 @@ impl Classification {
     /// `false` as "verify externally".
     #[must_use]
     pub fn completeness_guaranteed(&self) -> bool {
-        matches!(
-            self.stats.fragment,
-            FragmentClassification::PureEl | FragmentClassification::Horn
-        ) && self.stats.timed_out_pairs == 0
+        // `Horn` is DELIBERATELY not here (#124). It is a property of the
+        // CLAUSE SHAPE — "no disjunctive head, nothing deferred" — and was read
+        // as a property of the RUN. The two came apart: on
+        //
+        //   X ⊑ ∃r.B,  Domain(r, ∃s.Z),  ∃s.Z ⊑ W        ⟹  X ⊑ W
+        //
+        // (Konclude and HermiT both derive it) the clausification is Horn and
+        // `classify` reports NOTHING, while `subclass X W` answers `yes` — and
+        // the certificate read clean. `CLAUDE.md` already records the
+        // justification as false-as-implemented: "the shortcircuit ran the EL
+        // saturator, not the hyper fixpoint". `saturator_complete_fragment`
+        // learned the same lesson earlier and replaced its clausal test with a
+        // strict allowlist; this arm had not.
+        //
+        // `PureEl` stays because it is gated by `is_pure_el`, whose contract is
+        // that the SATURATOR — the engine that actually answers on that path —
+        // is complete, with the `BareRoleDecls` proof for the admitted inert
+        // declarations. That is an engine property, not a clause count.
+        matches!(self.stats.fragment, FragmentClassification::PureEl)
+            && self.stats.timed_out_pairs == 0
     }
 }
 

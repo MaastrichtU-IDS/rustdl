@@ -1,7 +1,9 @@
 //! Canary for `Classification::completeness_guaranteed()` — the honest C2 contract.
 //!
-//! `completeness_guaranteed()` ⟹ `MISSED == 0`. It holds only on the
-//! provably-complete fragments (PureEl / Horn) with no timed-out pairs. On
+//! `completeness_guaranteed()` ⟹ `MISSED == 0`. It holds only on `PureEl` with
+//! no timed-out pairs. `Horn` was removed from the trusted set in #124: it is a
+//! clause-shape property that was being read as an engine property, and a Horn
+//! ontology exists on which `classify` misses an oracle-confirmed subsumption. On
 //! `OutOfFragment` inputs it returns `false` even when nothing times out, because
 //! `trust_sat` can silently miss a subsumption on complement/disjunction structure
 //! (the ORE-measured silent-miss hole — see
@@ -53,5 +55,32 @@ fn out_of_fragment_does_not_guarantee_completeness() {
     assert!(
         !c.completeness_guaranteed(),
         "OutOfFragment: completeness must NOT be guaranteed (trust_sat may silently miss)"
+    );
+}
+
+#[test]
+fn horn_clause_shape_does_not_guarantee_completeness() {
+    // #124's reproducer. The clausification is Horn (no disjunctive head, nothing
+    // deferred) and `X ⊑ W` IS entailed — Konclude and HermiT both derive it, and
+    // rustdl's own `subclass X W` answers `yes`. But `classify` misses it, so the
+    // certificate must NOT be handed out. Before #124 this returned `true`, which
+    // is the exact shape of a false completeness claim: wrong answer, clean flag.
+    //
+    // If `classify` ever learns this subsumption, this test still passes (the
+    // certificate stays false on `Horn` by construction) — but then consider
+    // whether `Horn` deserves a real, engine-backed allowlist rather than being
+    // untrusted wholesale.
+    let c = classify(
+        "Prefix(:=<http://ex.org/>)\nOntology(\n\
+         Declaration(Class(:X)) Declaration(Class(:B)) Declaration(Class(:Z)) Declaration(Class(:W))\n\
+         Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+         SubClassOf(:X ObjectSomeValuesFrom(:r :B))\n\
+         ObjectPropertyDomain(:r ObjectSomeValuesFrom(:s :Z))\n\
+         SubClassOf(ObjectSomeValuesFrom(:s :Z) :W)\n)",
+    );
+    assert!(
+        !c.completeness_guaranteed(),
+        "Horn clause shape must NOT guarantee completeness: this very ontology \
+         is Horn and classify misses X ⊑ W, which both oracles derive"
     );
 }

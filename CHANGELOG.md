@@ -6,6 +6,53 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed — `SymmetricObjectProperty(ObjectInverseOf(:p))` was silently ignored (#144)
+
+A role is symmetric iff its inverse is, so `SymmetricObjectProperty(ObjectInverseOf(:p))`
+and `SymmetricObjectProperty(:p)` are semantically interchangeable. rustdl acted on the
+named spelling and **silently dropped** the inverse one — empty `dropped`, no warning,
+just a missing entailment. One syntactic change, two different answers:
+
+| spelling | `A ≡ B` derived? |
+| --- | --- |
+| `SymmetricObjectProperty(:p)` | **yes** |
+| `SymmetricObjectProperty(ObjectInverseOf(:p))` | **no** |
+
+(on `Symmetric(p)` + `p ∘ q ⊑ q` with `A ≡ ∃p.Y ⊓ ∃q.Z`, `B ≡ ∃p.(Y ⊓ ∃q.Z)`; HermiT
+derives the equivalence for both spellings).
+
+Two `!role.is_inverse()` guards were responsible — in `expand_role_characteristics`, which
+lowers `SymmetricRole` to a self-inverse `InverseObjectProperties` pair, and in
+`build_role_hierarchy`'s `mark_symmetric` arm. The premise recorded in the first guard's
+own doc comment, *"converter only emits named-role characteristics today"*, had stopped
+holding: `convert_object_property` returns `Role::inverse(..)` for `ObjectInverseOf` and
+passes the polarity straight through, after which both consumers declined it. `role_id()`
+already strips polarity, so both arms needed only the guard removed.
+
+**Deliberately NOT extended to `FunctionalRole` / `InverseFunctionalRole`**, which carry
+the same guard but are *not* interchangeable across polarity — they SWAP.
+`Functional(p⁻)` is inverse-functional `p`; `InverseFunctional(p⁻)` is functional `p`.
+Relaxing their guard identically would place the bound on the wrong role.
+
+That sibling **is** broken, and is now #149: `InverseFunctionalObjectProperty(ObjectInverseOf(:p))`
+is `Functional(:p)`, so `A ≡ ∃p.C ⊓ ∃p.D` with `C`/`D` disjoint must be unsatisfiable —
+rustdl reports it satisfiable with an empty `dropped`. The obvious correction (accept both
+polarities, emit the `≤1` on `role.flip()`) does **not** fix it, which localises the
+problem: the axiom never reaches that arm, and a second emission site
+(`derive_functional_max_cardinality` in `owl-dl-core/src/convert.rs`) owns part of the
+polarity handling. Left for #149 rather than guessed at here, and pinned visibly by
+`inverse_functional_on_an_inverse_role_is_still_missed` so it cannot be mistaken for this
+fix's business.
+
+Canaries in `crates/owl-dl-reasoner/tests/symmetric_inverse_polarity.rs`: each positive is
+paired with the same ontology in the named spelling, because without that control a
+regression breaking *both* spellings would still pass an "inverse behaves like named"
+assertion. Plus an FP guard (no symmetry declared ⟹ no equivalence) so a fix that marked
+roles symmetric too eagerly is caught.
+
+Verification: fmt, clippy `-D warnings`, full test suite green; corpus soundness net every
+fixture FP=0/MISSED=0 (sio 8904, wine 653, ro 158, sulo 51, pizza 112).
+
 ### Added — early inconsistency exit, removing one of the two blockers on the role-hierarchy flip (#128)
 
 `probe_says_inconsistent` runs AFTER the tier walk. When it fires,

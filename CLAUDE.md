@@ -2140,14 +2140,27 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > / 744 unsat both arms), `ore_ont_9890` 17–18 s → **89–94 s** (~5×, 642 rows both arms). The gain
 > is completeness and the cost is other people's wall, so **a flip needs 0 REGRESSED**.
 >
-> **THE MECHANISM IS NOT ESTABLISHED — do not quote the index-rebuild story as the cause.**
-> `with_sub_roles` rebuilds the clause index, which is the documented ~20× cost class of
-> `RUSTDL_CLASSIFY_LABELS_AMORTIZE` and the same magnitude, so it is the leading suspect. But on
-> both regressed ontologies EVERY classify phase reports 0 ms with `subsumption` and
-> `satisfiability probes` both 0 — the pure-EL all-phases-zero trap, so the banner attributes
-> nothing — and the one unconditional rebuild site turned out to be `sat_only_with_stats`, a
-> DIAGNOSTIC path. Retry: pin the cost to a site, use `with_sub_roles_keep_index` wherever the
-> base index is already hierarchy-aware, re-run the same sweep.
+> **THE INDEX-REBUILD HYPOTHESIS IS REFUTED (2026-09-13) — it was MY hypothesis and it was
+> wrong.** The entry here previously named `with_sub_roles`' clause-index rebuild as the leading
+> suspect, because it matches the ~20× cost class of `RUSTDL_CLASSIFY_LABELS_AMORTIZE`. A
+> `sample` profile of the ON arm on `ore_ont_16372` puts the time in the wedge's MATCH/FIRE loop
+> — `solve` 11075, `horn_fixpoint` 6545, `fire_clause` 3983, `match_body` 3449,
+> `enumerate_matches` 3343 — with `build_clause_indexes`/`with_sub_roles` **absent from the
+> profile entirely**. That is what the feature DOES: threading the hierarchy makes `role_matches`
+> accept more edges, so every clause fires against more candidates, landing squarely on the
+> residual wedge-classify hot spot this file already names (`enumerate_matches`/`match_body`, the
+> non-Horn fire loop at ~25% self-time). **Layer A amplifies the dominant cost rather than adding
+> a new one.** The cheap fix the old entry proposed — swapping in `with_sub_roles_keep_index` —
+> would have bought nothing.
+> **Still OPEN: whether the extra matching is REDUCIBLE.** "In matching, not indexing" is not
+> "irreducible"; a hierarchy-aware index enumerating role-closure candidates directly, rather
+> than widening the per-edge acceptance test, is untried.
+> **The cost also did NOT go away with #133/#140/#148**: on `4f2fac1` it is still **9.6×**
+> (`ore_ont_16372` 5 s → 48 s) and **4.1×** (`ore_ont_9890` 15 s → 62 s, now over a 60 s budget),
+> answers identical in both arms.
+> **Profile method caveat:** the OFF arm completes in ~5 s, so a window sized for the ON arm
+> catches a different phase mix — the two samples are NOT comparable and the attribution rests on
+> the ON profile alone.
 >
 > **A 6-ONTOLOGY SAMPLE SAID THIS WAS FREE, AND IT WAS WRONG BY 25×.** Curated corpus 8/8
 > row-identical; a hand-picked wedge-heavy ORE sample gave ratios 1.00–2.40× with the EXPENSIVE

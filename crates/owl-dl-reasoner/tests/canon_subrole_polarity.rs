@@ -21,7 +21,7 @@
 //! ```
 //!
 //! subsume each other: `f(a,d)` is `p(d,a)`, and whichever of the two roles carries
-//! the edge, `⊑ t` lets the chain re-root `m` on the other endpoint. HermiT agrees.
+//! the edge, `⊑ t` lets the chain re-root `m` on the other endpoint. `HermiT` agrees.
 //!
 //! Before the fix rustdl derived **one direction only** — and `which` direction was
 //! decided by which role the `InverseOf` was written on. That is the discriminator

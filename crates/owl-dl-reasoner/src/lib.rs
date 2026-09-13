@@ -7991,7 +7991,9 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
                     }
                 }
             }
-            Axiom::SymmetricRole(role) if !role.is_inverse() => {
+            // #144: both polarities — see `expand_role_characteristics`. `role_id()`
+            // already strips polarity, so this arm needed no other change.
+            Axiom::SymmetricRole(role) => {
                 builder.mark_symmetric(role.role_id());
             }
             Axiom::InverseObjectProperties(a, b)
@@ -8079,8 +8081,23 @@ fn expand_role_characteristics(internal: &mut InternalOntology) {
     let mut additions: Vec<Axiom> = Vec::new();
     for ax in &internal.axioms {
         match ax {
-            Axiom::SymmetricRole(role) if !role.is_inverse() => {
-                additions.push(Axiom::InverseObjectProperties(*role, *role));
+            // #144: BOTH polarities. A role is symmetric iff its inverse is, and
+            // `role_id()` returns the underlying `r` for either spelling, so
+            // `SymmetricRole(Inverse(r))` lowers to exactly the same self-inverse
+            // pair. The old `!role.is_inverse()` guard silently ignored the inverse
+            // spelling — no `dropped` entry, no warning — on the stated premise that
+            // "converter only emits named-role characteristics today", which is no
+            // longer true: the converter passes the axiom through with its polarity
+            // intact and both consumers then declined it.
+            //
+            // Deliberately NOT extended to the `FunctionalRole` /
+            // `InverseFunctionalRole` arms below: those are NOT interchangeable
+            // across polarity — `Functional(p⁻)` is inverse-functional `p`, not
+            // functional `p` — so relaxing their guard the same way would be
+            // unsound. Their inverse-polarity handling is tracked separately.
+            Axiom::SymmetricRole(role) => {
+                let named = Role::named(role.role_id());
+                additions.push(Axiom::InverseObjectProperties(named, named));
             }
             Axiom::FunctionalRole(role) if !role.is_inverse() => {
                 let max1 = internal.concepts.max(1, *role, top);

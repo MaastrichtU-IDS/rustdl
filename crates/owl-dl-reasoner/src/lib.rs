@@ -7980,6 +7980,31 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
                 if cs.is_inverse() == ct.is_inverse() {
                     builder.add_sub_role(cs.role_id(), ct.role_id());
                 }
+                // #138: ALSO record the inclusion as WRITTEN, when the axiom's own
+                // two roles already agree in polarity. Canonicalisation can rewrite
+                // one side to an inverse and leave the pair mismatched, and the
+                // branch above then drops the edge entirely — silently.
+                //
+                // `f ≡ p⁻` sends `p` to `f⁻`, so a plain `SubObjectPropertyOf(p, t)`
+                // canonicalises to `f⁻ ⊑ t` and vanishes, while `f ⊑ t` (not
+                // rewritten) survives. The asymmetry is observable: with
+                // `m ∘ t ⊑ m`, `f ⊑ t`, `p ⊑ t` and `f ≡ p⁻`,
+                // `∃m.(Dc ⊓ ∃p.Pn) ⊑ ∃m.(Pn ⊓ ∃f.Dc)` was missed while its mirror
+                // held — and swapping WHICH role carries the `InverseOf` swaps which
+                // direction is lost.
+                //
+                // Sound because it records exactly what the ontology asserts: this
+                // axiom literally says `sub ⊑ sup`, and the clause set uses these raw
+                // ids (only the hierarchy is canonicalised), so the raw edge is the
+                // one the matcher can actually use. Additive — the canonical edge is
+                // still recorded above when it is well-formed, preserving whatever
+                // canonicalisation buys elsewhere.
+                if sub_role.is_inverse() == sup.is_inverse()
+                    && (cs.role_id(), cs.is_inverse())
+                        != (sub_role.role_id(), sub_role.is_inverse())
+                {
+                    builder.add_sub_role(sub_role.role_id(), sup.role_id());
+                }
             }
             Axiom::EquivalentObjectProperties(roles) => {
                 let cans: Vec<owl_dl_core::ir::Role> = roles.iter().map(|r| canon(*r)).collect();

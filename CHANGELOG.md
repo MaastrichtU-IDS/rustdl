@@ -84,6 +84,44 @@ roles symmetric too eagerly is caught.
 Verification: fmt, clippy `-D warnings`, full test suite green; corpus soundness net every
 fixture FP=0/MISSED=0 (sio 8904, wine 653, ro 158, sulo 51, pizza 112).
 
+### Fixed — role canonicalisation silently dropped a sub-role axiom (#138)
+
+`build_role_hierarchy` canonicalises roles before recording sub-role edges: given
+`InverseObjectProperties(f, p)` it rewrites `p` to `f⁻`. `add_sub_role` records an edge
+only when both canonicalised sides agree in polarity, so a plain
+`SubObjectPropertyOf(p, t)` became `f⁻ ⊑ t`, failed that test, and **vanished without a
+trace** — while `SubObjectPropertyOf(f, t)`, untouched by the rewrite, survived.
+
+The observable effect, with `m ∘ t ⊑ m`, `f ⊑ t`, `p ⊑ t` and `f ≡ p⁻`:
+
+```
+A ≡ ∃m.(Pn ⊓ ∃f.Dc)        B ≡ ∃m.(Dc ⊓ ∃p.Pn)
+```
+
+`A ≡ B` (HermiT agrees) but rustdl derived **one direction only** — and **which**
+direction was decided by which role the `InverseOf` was written on. Writing
+`InverseObjectProperties(p, f)` instead swaps the lost entailment. Since the two
+spellings assert exactly the same thing, no semantic difference can account for that;
+only the rewrite can. That swap is what turned the hypothesis into a diagnosis.
+
+The fix records the inclusion **as written** alongside the canonical one, whenever the
+axiom's own two roles already agree in polarity. Sound because it is literally what the
+ontology asserts, and it is the form the clause set uses — only the hierarchy is
+canonicalised, so the raw edge is the one the matcher can act on. Additive: the canonical
+edge is still recorded when well-formed, so whatever canonicalisation buys elsewhere
+(it was introduced against a SIO false-`Unsat`) is preserved. **SIO verified unchanged at
+8904 = 8904, FP=0/MISSED=0.**
+
+This closes the second of the two defects reported externally on #128. Both of that
+reporter's ontologies now answer correctly on the complete path.
+
+Canaries in `crates/owl-dl-reasoner/tests/canon_subrole_polarity.rs` are built around the
+asymmetry rather than the symptom: besides both directions, `mirrored_declaration_loses_
+the_mirror_image_direction` pins that swapping the declaration must not swap which
+entailment is found — a fix that merely moved the rewrite to the other role would pass a
+single-spelling test. Two FP guards (drop the chain; drop the sub-role edges) catch a fix
+that recorded inclusions the ontology never asserted.
+
 ### Added — early inconsistency exit, removing one of the two blockers on the role-hierarchy flip (#128)
 
 `probe_says_inconsistent` runs AFTER the tier walk. When it fires,

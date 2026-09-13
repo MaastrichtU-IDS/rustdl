@@ -1522,6 +1522,55 @@ pub fn sat_class_probe<A: horned_owl::model::ForIRI>(
 
 /// Branching-recursion depth cap for the H4 in-orchestrator hyper
 /// subsumption check (the per-pair wall budget bounds it further).
+/// Worker-stack size for the global rayon pool (#147).
+///
+/// The wedge's `solve` recursion is DEPTH-BOUNDED — `HYPER_WEDGE_DEPTH` with the
+/// `HYPER_WEDGE_DEPTH_SCHEDULE` deepening to 512 — so the stack requirement is
+/// bounded too, at roughly `depth × frame`. It just exceeds rayon's default worker
+/// stack: with `RUSTDL_SEMANTIC_BRANCHING=1`, `ore_ont_9890` aborts with
+/// `fatal runtime error: stack overflow` (rc=134, core dumped) in a worker thread.
+///
+/// Measured requirement on that ontology, bisected:
+///
+/// | configuration | aborts at | completes at |
+/// |---|---|---|
+/// | `SEMANTIC_BRANCHING=1` | 4 MiB | **8 MiB** |
+/// | `SEMANTIC_BRANCHING=1` + `CLASSIFY_ROLE_HIERARCHY=1` | 16 MiB | **32 MiB** |
+///
+/// So the requirement scales with configuration, not just with the ontology — the
+/// hierarchy makes `role_matches` admit more candidates, which deepens the branch
+/// search within the same depth cap. 32 MiB covers both measured points. Thread
+/// stacks are reserved lazily on Linux, so an unused reservation costs address
+/// space, not RSS.
+///
+/// An abort is a bad failure mode for a reasoner — no partial result, no
+/// `ReasonError`, and the caller cannot catch it — and this one also blocks
+/// evaluating semantic branching on exactly the workload that most wants it (#128's
+/// branch storm). Override with `RUSTDL_RAYON_STACK_MB`.
+fn rayon_stack_bytes() -> usize {
+    const DEFAULT_MB: usize = 32;
+    let mb = std::env::var("RUSTDL_RAYON_STACK_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|m| *m > 0)
+        .unwrap_or(DEFAULT_MB);
+    mb * 1024 * 1024
+}
+
+/// Install the global rayon pool with a stack large enough for the wedge recursion
+/// (#147). Idempotent and best-effort: `build_global` fails if a pool already exists,
+/// which is the correct outcome when an embedding application configured its own —
+/// we do not override someone else's choice, and the default stack is then whatever
+/// they picked.
+pub(crate) fn ensure_rayon_pool() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rayon::ThreadPoolBuilder::new()
+            .stack_size(rayon_stack_bytes())
+            .build_global();
+    });
+}
+
 const HYPER_WEDGE_DEPTH: usize = 256;
 
 /// Depth schedule for the classify per-pair **iterative-deepening** wedge

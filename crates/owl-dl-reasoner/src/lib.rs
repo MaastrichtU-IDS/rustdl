@@ -2160,19 +2160,48 @@ pub(crate) fn classify_same_tier_enabled() -> bool {
 /// | `ore_ont_16372` | identical (0 rows, 744 unsat) | 3–4 s | **66–73 s** |
 /// | `ore_ont_9890` | identical (642 rows) | 17–18 s | **89–94 s** |
 ///
-/// ~19× and ~5×, reproducible, and enough to cross a 60 s budget. **The
-/// mechanism is NOT established** — `with_sub_roles` rebuilds the clause index
-/// (the documented ~20× cost class of `RUSTDL_CLASSIFY_LABELS_AMORTIZE`, and the
-/// same magnitude), which is the leading suspect, but on these two ontologies
-/// every classify phase reports 0 ms and `subsumption`/`satisfiability probes`
-/// are both 0, so the cost is not attributable from the banner and the one
-/// unconditional rebuild site turned out to be a diagnostic path. Do not quote
-/// the index-rebuild story as the cause until someone profiles it.
+/// ~19× and ~5× when first measured; still **9.6×** and **4.1×** on `4f2fac1`
+/// after #133/#140/#148 landed, with `ore_ont_9890` now exceeding a 60 s budget
+/// outright. Answers stay identical in both arms throughout.
 ///
-/// **Retry conditions:** pin the cost to a site, use
-/// `with_sub_roles_keep_index` wherever the base index is already
-/// hierarchy-aware, then re-run the same sweep. A flip needs 0 REGRESSED, since
-/// the gain is completeness and the cost is other people's wall.
+/// **THE INDEX-REBUILD HYPOTHESIS IS REFUTED — do not re-propose it.** This doc
+/// previously named `with_sub_roles`' clause-index rebuild as the leading
+/// suspect, on the strength of it matching the ~20× cost class of
+/// `RUSTDL_CLASSIFY_LABELS_AMORTIZE`. A `sample` profile of the ON arm on
+/// `ore_ont_16372` puts the time in the wedge's MATCH/FIRE loop instead:
+///
+/// ```text
+/// HyperEngine::solve              11075
+/// HyperEngine::horn_fixpoint       6545
+/// HyperEngine::fire_clause         3983
+/// HyperEngine::match_body          3449
+/// HyperEngine::enumerate_matches   3343
+/// ```
+///
+/// `build_clause_indexes` and `with_sub_roles` do not appear at all. That is the
+/// shape you would predict from what the feature DOES: threading the hierarchy
+/// makes `role_matches` accept more edges, so every clause fires against more
+/// candidates. It also lands on the cost this file already names as the residual
+/// wedge-classify hot spot — `enumerate_matches`/`match_body`, the non-Horn fire
+/// loop at ~25% self-time — so Layer A amplifies the dominant cost rather than
+/// adding a new one.
+///
+/// **What is still OPEN is whether that extra matching is REDUCIBLE.** "The cost
+/// is in matching, not indexing" does not by itself mean it is irreducible — a
+/// hierarchy-aware index that enumerated role-closure candidates directly,
+/// instead of widening the per-edge acceptance test, could plausibly recover
+/// some of it. Nobody has tried. What the profile rules out is the cheap fix
+/// (swapping in `with_sub_roles_keep_index`), which would have bought nothing.
+///
+/// **Retry conditions:** make the match loop cheaper under a hierarchy, then
+/// re-run the same 1,920 sweep. A flip needs 0 REGRESSED, since the gain is
+/// completeness and the cost is other people's wall.
+///
+/// **METHOD NOTE on the profile:** the OFF arm completes in ~5 s, so a sampling
+/// window sized for the ON arm catches a different phase mix and the two are NOT
+/// directly comparable. The attribution above rests on the ON profile alone,
+/// which is sufficient to locate the cost and to refute the index hypothesis;
+/// treat any OFF-vs-ON sample ratio as uncalibrated.
 ///
 /// **A 6-ONTOLOGY SAMPLE SAID THIS WAS FREE.** Curated corpus row-identical 8/8;
 /// a hand-picked wedge-heavy ORE sample gave ratios 1.00–2.40× with the

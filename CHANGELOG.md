@@ -6,6 +6,43 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed — `RUSTDL_SEMANTIC_BRANCHING=1` aborted with a worker stack overflow (#147)
+
+`classify` died with `fatal runtime error: stack overflow` (rc=134, core dumped) in a rayon
+worker on `ore_ont_9890`. An abort is a bad failure mode for a reasoner: no partial result,
+no `ReasonError`, and nothing the caller can catch.
+
+**Bounded recursion, not runaway.** The wedge's `solve` recursion is depth-capped
+(`HYPER_WEDGE_DEPTH = 256`, deepening to 512 via `HYPER_WEDGE_DEPTH_SCHEDULE`), so the
+stack requirement is bounded at roughly `depth × frame`. It simply exceeds rayon's default
+worker stack, and rustdl never configured the pool.
+
+Bisected — and the requirement scales with **configuration**, not only with the ontology:
+
+| configuration | aborts at | completes at |
+| --- | --- | --- |
+| `SEMANTIC_BRANCHING=1` | 4 MiB | **8 MiB** |
+| `SEMANTIC_BRANCHING=1` + `CLASSIFY_ROLE_HIERARCHY=1` | 16 MiB | **32 MiB** |
+
+The second row is why the first measurement alone was not enough: the role hierarchy makes
+`role_matches` admit more candidates, deepening the branch search *within the same depth
+cap*. A 16 MiB default would have left the combination still aborting.
+
+`ensure_rayon_pool()` now installs the global pool at **32 MiB** per worker, covering both
+measured points. Idempotent and best-effort: `build_global` fails when a pool already
+exists, which is the right outcome when an embedding application configured its own — we
+do not override someone else's choice. `RUSTDL_RAYON_STACK_MB` overrides, and forcing it
+to `2` reproduces the original abort exactly, which is the control for both the mechanism
+and the knob. Thread stacks are reserved lazily on Linux, so an unused reservation costs
+address space rather than RSS.
+
+**Negative result worth recording.** This crash was blocking an avenue on #128: semantic
+branching's prune looked like the right shape for that issue's remaining blocker, a branch
+storm on `ore_ont_9890` (⊔ branches 126k → 543k under the role hierarchy). Now that it
+runs, it does **not** help — `ROLE_HIERARCHY=1` alone is 42.6 s, with `SEMANTIC_BRANCHING=1`
+45.6 s, same 645 rows. That avenue is closed, which is only knowable because the abort is
+gone.
+
 ### Fixed — `InverseObjectProperties` was read without its polarity, a latent FP source (#145)
 
 The axiom asserts `a ≡ b⁻`. Two consumers compared role ids and discarded polarity —

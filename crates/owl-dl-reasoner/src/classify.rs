@@ -957,6 +957,7 @@ impl Classification {
 /// (e.g. an unsupported role chain) aborts classification with that
 /// error — partial results are not surfaced.
 pub fn classify<A: ForIRI>(ontology: &SetOntology<A>) -> Result<Classification, ReasonError> {
+    crate::ensure_rayon_pool();
     let internal = convert_ontology(ontology)?;
     classify_top_down_internal(&internal, None, None)
 }
@@ -1179,6 +1180,7 @@ pub fn classify_with_budget<A: ForIRI>(
     per_pair_timeout: Option<std::time::Duration>,
     global_budget: Option<std::time::Duration>,
 ) -> Result<Classification, ReasonError> {
+    crate::ensure_rayon_pool();
     let t0 = Instant::now();
     let internal = convert_ontology(ontology)?;
     // Decide prep bounding ONCE and keep the reason, so the fallback is reportable.
@@ -1207,6 +1209,7 @@ pub fn classify_with_budget<A: ForIRI>(
 ///
 /// See [`ReasonError`].
 pub fn classify_n2<A: ForIRI>(ontology: &SetOntology<A>) -> Result<Classification, ReasonError> {
+    crate::ensure_rayon_pool();
     let internal = convert_ontology(ontology)?;
     classify_internal(&internal)
 }
@@ -1221,6 +1224,7 @@ pub fn classify_n2_with_timeout<A: ForIRI>(
     ontology: &SetOntology<A>,
     per_pair_timeout: std::time::Duration,
 ) -> Result<Classification, ReasonError> {
+    crate::ensure_rayon_pool();
     let internal = convert_ontology(ontology)?;
     classify_internal_with_timeout(&internal, Some(per_pair_timeout))
 }
@@ -3102,6 +3106,7 @@ pub fn classify_top_down_with_timeout<A: ForIRI>(
     ontology: &SetOntology<A>,
     per_pair_timeout: std::time::Duration,
 ) -> Result<Classification, ReasonError> {
+    crate::ensure_rayon_pool();
     let internal = convert_ontology(ontology)?;
     classify_top_down_internal(&internal, Some(per_pair_timeout), None)
 }

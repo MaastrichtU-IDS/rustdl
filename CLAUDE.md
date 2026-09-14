@@ -2152,51 +2152,49 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > non-Horn fire loop at ~25% self-time). **Layer A amplifies the dominant cost rather than adding
 > a new one.** The cheap fix the old entry proposed — swapping in `with_sub_roles_keep_index` —
 > would have bought nothing.
-> **NO LONGER OPEN — the extra matching is NOT reducible by indexing (2026-09-14).** The entry
-> above left one lead alive: "a hierarchy-aware index enumerating role-closure candidates
-> directly, rather than widening the per-edge acceptance test, is untried." It has now been
-> tried, and the measurement kills it. Counters in `enumerate_matches` over both regressed
-> ontologies, OFF vs ON arm:
+> **THE INDEX LEAD IS CLOSED — but by a cost bound, not by the counter table (2026-09-14).**
+> The entry above left one lead alive: "a hierarchy-aware index enumerating role-closure
+> candidates directly … is untried." It is now closed. **No index was built** — what closes it
+> is a measurement of the most an index could possibly save.
 >
-> | | edges scanned | targets accepted | frames | **edges/frame** |
-> |---|---|---|---|---|
-> | `ore_ont_16372` OFF | 149 488 376 | 39 693 018 | 96 346 435 | **1.55** |
-> | `ore_ont_16372` ON | 573 039 616 | 138 381 125 | 354 956 032 | **1.61** |
-> | `ore_ont_9890` OFF | 229 435 322 | 53 386 448 | 145 846 000 | **1.57** |
-> | `ore_ont_9890` ON | 675 201 819 | 139 983 358 | 381 307 893 | **1.77** |
+> **What an index could remove is the per-edge acceptance test.** Those tests grew ~4× with the
+> flag ON (`ore_ont_16372` 110M → 435M rejected-edge tests; `ore_ont_9890` 176M → 535M), so the
+> ratio-flatness below does NOT by itself bound the saving — that inference was a non-sequitur
+> and is retracted. Measured directly instead: re-running the ENTIRE edge+pred scan one extra
+> time per frame costs **+0.2–1.6% user CPU** on `ore_ont_16372` and sits inside ±4% run noise on
+> `ore_ont_9890`. A perfect index removes strictly less than one such pass, so the ceiling on the
+> whole idea is **under ~2%** against a 9.6×/4.1× gap.
 >
-> **Edges scanned PER FRAME is flat** (and acceptance rate is flat too: 26.6%→24.1%,
-> 23.3%→20.7%). Each frame scans ~1.6 edges in both arms; what grows 3.7×/2.6× is the NUMBER
-> of frames. An index can only remove the per-edge acceptance test, and there are ~1.6 edges
-> per frame to remove it from — with `is_sub_role` already a binary search over a precomputed
-> `super_closure`, i.e. cheap. The hierarchy makes genuinely more bindings match, and every one
-> must still be enumerated and propagated. **That is semantics, not indexing.**
+> **What the counters do establish** is the structural half: frames = enumeration roots +
+> accepted targets, both semantic, so an index cannot reduce the FRAME count — and frames are
+> what grows (3.7× / 2.6×). Per-scanning-frame edge counts are flat (**~2.5–2.8**, both arms).
+> NOTE: an earlier version of this entry said "~1.6 edges per frame"; that divided by ALL frames,
+> including leaf frames (`i == plan.order.len()`) and roots, which scan zero edges. The corrected
+> figure is ~2.5–2.8 and is still flat, so the conclusion survived the arithmetic error by luck.
 >
-> **Corroborated by an independent attempt.** ~96% of ALL head firings are no-ops
-> (`ore_ont_16372` ON: 4 044 129 fired vs 91 375 927 no-op; `ore_ont_9890` ON: 5 673 979 vs
-> 106 776 963), so "stop re-deriving what is already there" looks like the obvious lever. It
-> was implemented as an identity — skip the body match when the single head atom is
-> `Class(c, X)` and the node already carries `c`, which is provably `NoChange` under
-> `HyperNode::add`'s keep-first rule — and it removes **21–23% of all `fire_clause` calls**.
-> Measured wall: `ore_ont_16372` 8.8→8.5 s and 31.7→31.1 s, `ore_ont_9890` 16.4→16.3 s and
-> 42.4→42.3 s, wine 7.85→7.60 s, galen and sio flat. **0–3%, mostly noise**, with class rows
-> byte-identical in all four ORE configurations. So the match path is not where the wall is,
-> and match-side micro-optimisation of any kind — index or early-out — is the wrong place to
-> look. NOT shipped: a new flag and a hot-loop branch are not worth 0–3%.
+> **Counter values are ratios, not facts.** Independent reruns differ by 10–35% (`ore_ont_16372`
+> ON: 418M / 424M / 573M edges across runs) because `RUSTDL_HYPER_MATCH_DEADLINE` is default ON,
+> the 5 ms pair budget truncates under load, and the decide is a rayon race. The ratios reproduce;
+> the point values do not. Quote ratios.
 >
-> **Where that leaves a Layer A default flip:** still blocked, and now without a cheap fix in
-> sight. The cost is the search doing more real work, so it has to be paid or avoided at the
-> search level, not shaved off the matcher.
-> **Side observation, unexplained:** `RUSTDL_HYPER_INCREMENTAL_FIXPOINT` (default ON) changes
-> neither work nor wall on `ore_ont_16372` (28.3M vs 28.1M bindings, 13.2 vs 12.7 s) and cuts
-> ~10% of work on `ore_ont_9890` (54.9M vs 60.7M bindings) for no wall gain. The semi-naive
-> drain is not paying for itself on either, which is worth a look on its own.
-> **The cost also did NOT go away with #133/#140/#148**: on `4f2fac1` it is still **9.6×**
-> (`ore_ont_16372` 5 s → 48 s) and **4.1×** (`ore_ont_9890` 15 s → 62 s, now over a 60 s budget),
-> answers identical in both arms.
-> **Profile method caveat:** the OFF arm completes in ~5 s, so a window sized for the ON arm
-> catches a different phase mix — the two samples are NOT comparable and the attribution rests on
-> the ON profile alone.
+> **`ore_ont_9890` CANNOT test a matcher optimisation — do not use it as one.** 63 465 of 63 491
+> checked pairs (99.96%) hit the 5 ms per-pair budget, and a timed-out pair burns its budget no
+> matter how fast the matcher is. Its wall is `pairs × budget`: the ON-arm growth there is mostly
+> **3.6× more pairs checked** (17 846 → 63 491), not a bigger search per pair. Any "flat wall ⇒
+> matcher is not the cost" argument run on `ore_ont_9890` is circular. `ore_ont_16372` (an
+> INCONSISTENT KB, one unbudgeted decide) is the only clean matcher-bound workload of the two.
+>
+> **The no-op firing rate is real but is NOT a Layer A phenomenon.** ~96% of Horn head firings
+> change nothing — and it is 96.1% in the OFF arm too, so it is the engine's baseline refiring
+> redundancy. Exploiting it (the `RUSTDL_HEAD_PRESENT_SKIP` identity, below) removes 21–23% of
+> all `fire_clause` calls and is **worth shipping on the corpus but worth nothing on the two
+> regressed ORE ontologies** — 16372 stays flat even though the skip removes ~half its bindings
+> and ~72% of its no-op firings, which is the strong form of "the match path is not the wall
+> HERE". That statement does not generalise: the same change buys 8–14% on wine.
+>
+> **Where a Layer A default flip stands:** still blocked, with no cheap fix in sight. The cost is
+> the search doing more real work (16372) plus more pairs each burning a budget (9890); neither is
+> shaveable off the matcher.
 >
 > **A 6-ONTOLOGY SAMPLE SAID THIS WAS FREE, AND IT WAS WRONG BY 25×.** Curated corpus 8/8
 > row-identical; a hand-picked wedge-heavy ORE sample gave ratios 1.00–2.40× with the EXPENSIVE

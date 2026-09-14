@@ -790,7 +790,7 @@ pub struct HyperEngine<'c> {
     /// vars per test, and a process-scoped cache makes the first test to run win.
     fixpoint_deadline: bool,
     match_deadline: bool,
-    /// `RUSTDL_INVERSE_FUNC_MERGE` (default OFF): fire deterministic `≤1`/
+    /// `RUSTDL_INVERSE_FUNC_MERGE` (**default ON**, `=0` reverts): fire deterministic `≤1`/
     /// functional merges INCREMENTALLY inside `horn_fixpoint` (via
     /// `process_event`) rather than routing them through the `solve`/
     /// `solve_at_most` search layer, and count inverse-induced successors in
@@ -4423,7 +4423,10 @@ impl<'c> HyperEngine<'c> {
             // `ore_ont_16056`, two `classify_labels` calls ran ~17 s each against
             // a 1 ms label-cache budget. Strided so the clock read is amortized
             // (cf. the saturator's shipped `DEADLINE_CHECK_STRIDE`). Gated,
-            // default OFF. Truncating here is sound ONLY because `horn_fixpoint`
+            // **default ON** (`hyper_match_deadline_enabled`) -- this comment said
+            // "default OFF" until 2026-09-14, which misled a benchmarking run into
+            // treating truncated counter values as stable. Truncating here is sound
+            // ONLY because `horn_fixpoint`
             // turns the flag into `Stalled` before it can return `Sat`.
             if self.match_deadline
                 && let Some(dl) = self.deadline

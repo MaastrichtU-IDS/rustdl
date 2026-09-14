@@ -4270,6 +4270,20 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            PROBE_FIRE_CALLS.fetch_add(1, Relaxed);
+            let cl = self.clause(ci);
+            if cl.head.len() == 1
+                && let Atom::Class(c, v) = cl.head[0]
+                && v == owl_dl_core::clause::X
+            {
+                let n = if self.inverse_func_merge { self.resolve(node) } else { node };
+                if self.nodes[n.index()].has(c) {
+                    PROBE_SKIPPABLE.fetch_add(1, Relaxed);
+                }
+            }
+        }
         let Some(bindings) = self.match_body(ci, node) else {
             return FireOutcome::NoChange;
         };
@@ -4278,8 +4292,13 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             match self.fire_head(ci, node, &binding, body_deps) {
                 FireOutcome::Clash => return FireOutcome::Clash,
-                FireOutcome::Changed => changed = true,
-                FireOutcome::NoChange => {}
+                FireOutcome::Changed => {
+                    PROBE_FIRE_CHANGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    changed = true;
+                }
+                FireOutcome::NoChange => {
+                    PROBE_FIRE_NOOP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         if changed {
@@ -4364,6 +4383,7 @@ impl<'c> HyperEngine<'c> {
         binding: &mut Binding,
         out: &mut Vec<Binding>,
     ) {
+        PROBE_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if i == plan.order.len() {
             let ok = plan.other_classes.iter().all(|(c, v)| {
                 resolve_var(*v, node, binding).is_some_and(|m| self.nodes[m.index()].has(*c))
@@ -4378,6 +4398,7 @@ impl<'c> HyperEngine<'c> {
                 }
             });
             if ok {
+                PROBE_BINDINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let mut b = binding.clone();
                 b.sort_unstable_by_key(|&(v, _)| v);
                 out.push(b);
@@ -4400,6 +4421,10 @@ impl<'c> HyperEngine<'c> {
         // when nothing is merged, and the whole read is gated so the flag-off
         // path is byte-for-byte unchanged.
         let resolve_reads = self.inverse_func_merge;
+        PROBE_EDGES.fetch_add(
+            (src_data.edges.len() + src_data.preds.len()) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let mut targets: SmallVec<[HNode; 8]> = src_data
             .edges
             .iter()
@@ -4417,6 +4442,7 @@ impl<'c> HyperEngine<'c> {
                 targets.push(if resolve_reads { self.resolve(*s) } else { *s });
             }
         }
+        PROBE_TARGETS.fetch_add(targets.len() as u64, std::sync::atomic::Ordering::Relaxed);
         for m in targets {
             // `solve` checks the deadline only at ENTRY, so a frame whose work
             // stays inside this recursion never re-consults it: measured on
@@ -5060,6 +5086,37 @@ fn resolve_var(v: Var, xnode: HNode, binding: &[(Var, HNode)]) -> Option<HNode> 
 /// `R ⊑ S` implies `R⁻ ⊑ S⁻`, so the same-polarity + sub-role-id test
 /// covers both axes. With no hierarchy (`None`), this is reflexive —
 /// equal ids only, the pre-HF2 behaviour.
+/// TEMPORARY (#128 Layer A cost split). Not for merge.
+pub static PROBE_EDGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PROBE_TARGETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PROBE_BINDINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PROBE_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Bindings whose head assertion actually changed the graph.
+pub static PROBE_FIRE_CHANGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Bindings whose head assertion was a no-op (already entailed).
+pub static PROBE_FIRE_NOOP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// `fire_clause` calls whose head is `Class(c, X)` with `c` already on the node —
+/// the whole body match is provably pointless (keep-first deps).
+pub static PROBE_SKIPPABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// `fire_clause` calls reaching `match_body` at all (the denominator).
+pub static PROBE_FIRE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Snapshot (edges_scanned, targets_accepted, bindings_out, frames).
+#[must_use]
+pub fn match_probe_snapshot() -> (u64, u64, u64, u64, u64, u64, u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        PROBE_EDGES.load(Relaxed),
+        PROBE_TARGETS.load(Relaxed),
+        PROBE_BINDINGS.load(Relaxed),
+        PROBE_FRAMES.load(Relaxed),
+        PROBE_FIRE_CHANGED.load(Relaxed),
+        PROBE_FIRE_NOOP.load(Relaxed),
+        PROBE_SKIPPABLE.load(Relaxed),
+        PROBE_FIRE_CALLS.load(Relaxed),
+    )
+}
+
 fn role_matches(edge: Role, wanted: Role, sub_roles: Option<&RoleHierarchy>) -> bool {
     // Symmetric role `p ≡ p⁻`: an edge labelled `p` (or `p⁻`) satisfies a
     // wanted `p` (or `p⁻`) regardless of polarity when the ids coincide.

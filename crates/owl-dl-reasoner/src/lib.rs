@@ -13222,3 +13222,6 @@ mod internal_flag_defaults {
         );
     }
 }
+
+// TEMPORARY (#128 Layer A cost split). Not for merge.
+pub use owl_dl_tableau::hyper::match_probe_snapshot;

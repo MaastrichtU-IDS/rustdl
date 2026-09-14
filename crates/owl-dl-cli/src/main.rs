@@ -1148,6 +1148,16 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
         "# wall breakdown ms (nested): snapshot_cache_build={} snapshot_replay={}",
         stats.snapshot_cache_build_wall_ms, stats.snapshot_replay_wall_ms,
     )?;
+    if std::env::var("RUSTDL_MATCH_PROBE").is_ok_and(|v| v == "1") {
+        let (edges, targets, bindings, frames, fired, noop, skippable, calls) =
+            owl_dl_reasoner::match_probe_snapshot();
+        writeln!(
+            out,
+            "# match probe: edges_scanned={edges} targets_accepted={targets} \
+             bindings_out={bindings} frames={frames} fired={fired} noop={noop} \
+             skippable={skippable} fire_calls={calls}",
+        )?;
+    }
     writeln!(
         out,
         "# per-class BackPropRisk: safe={} unsafe={} (Phase 3a recon)",

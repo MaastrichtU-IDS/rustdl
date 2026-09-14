@@ -614,6 +614,11 @@ pub struct SearchStats {
     /// Fix#2 Layer A: times a `⊔` decision collapsed to a single live disjunct
     /// after pruning and was unit-forced (asserted without a decision level).
     pub semantic_unit_forces: u64,
+    /// #128 head-present skip: `fire_clause` calls short-circuited because the
+    /// single head atom `Class(c, X)` was already on the node. **Non-vacuity signal
+    /// for the identity test**: if this is 0 on a fixture, the skip never fired
+    /// there, so an on/off comparison on that fixture proves nothing.
+    pub head_present_skips: u64,
     /// Fix#2 Layer B: classes excluded (asserted false) after a sibling `⊔`
     /// disjunct returned a clean `Unsat`. Non-vacuity signal for the FP gate:
     /// if this is 0 on a fixture, Layer B did not fire there.
@@ -801,6 +806,15 @@ pub struct HyperEngine<'c> {
     /// avoid a per-call env read; when OFF the default path is byte-for-byte
     /// unchanged. See the wedge-incremental-functional-merge design.
     inverse_func_merge: bool,
+    /// HEAD-PRESENT SKIP (`RUSTDL_HEAD_PRESENT_SKIP`, **default ON**, `=0` reverts):
+    /// in `fire_clause`, skip the whole body match when the clause's single head
+    /// atom is `Class(c, X)` and the node already carries `c`. Every binding such a
+    /// match could yield would call `add_label` on a label already present, and
+    /// `HyperNode::add` is keep-first (returns false, does NOT widen the dep-set),
+    /// so the result is `NoChange` either way — an identity, not a heuristic.
+    /// Measured on ORE: ~21-23% of all `fire_clause` calls qualify. Cached at
+    /// construction so the hot loop avoids a per-call env read.
+    head_present_skip: bool,
     /// `RUSTDL_MRV_ORDERING` (default OFF): `find_open_disjunction` returns the open
     /// disjunctive clause with the fewest live disjuncts first (most-constrained-variable).
     /// Verdict-invariant (reordering only). See the MRV spec.
@@ -1398,6 +1412,7 @@ impl<'c> HyperEngine<'c> {
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
             inverse_func_merge: crate::inverse_func_merge_enabled(),
+            head_present_skip: crate::head_present_skip_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -1459,6 +1474,7 @@ impl<'c> HyperEngine<'c> {
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
             inverse_func_merge: crate::inverse_func_merge_enabled(),
+            head_present_skip: crate::head_present_skip_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -1867,6 +1883,16 @@ impl<'c> HyperEngine<'c> {
             }
             None => false,
         }
+    }
+
+    /// Override the #128 head-present skip (normally cached from
+    /// `RUSTDL_HEAD_PRESENT_SKIP` at construction). Lets a test set the flag
+    /// DIRECTLY rather than mutating process env, which is global and would race
+    /// across parallel test threads.
+    #[must_use]
+    pub fn with_head_present_skip(mut self, on: bool) -> Self {
+        self.head_present_skip = on;
+        self
     }
 
     /// Supply the HF2 role hierarchy so `R`-edges satisfy `S`-atoms
@@ -2979,6 +3005,7 @@ impl<'c> HyperEngine<'c> {
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
             inverse_func_merge: crate::inverse_func_merge_enabled(),
+            head_present_skip: crate::head_present_skip_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -4270,6 +4297,37 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
+        // #128: the head is already there, so every binding this body match could
+        // produce would call `add_label` on a label the node already carries.
+        // `HyperNode::add` is KEEP-FIRST — it returns false without widening the
+        // dep-set — so all of that work provably resolves to `NoChange`. Skip it.
+        //
+        // Restricted to a single `Class(c, X)` head on purpose: `X` resolves to
+        // `node` independently of the binding (`resolve_var`), which is what makes
+        // the outcome predictable BEFORE enumerating. A head on a body-bound var
+        // lands on a node this check cannot name yet, and an `Exists`/`AtMost` head
+        // has effects beyond a label, so neither is skippable here.
+        //
+        // Not applicable to `body → ⊥` (empty head): that clause reports a CLASH,
+        // which is a real outcome, and `is_horn`/`head.len() == 1` excludes it.
+        // NB: `v == X` is written as a comparison, NOT as a const pattern
+        // `Atom::Class(c, X)`. If the `X` import were ever dropped, that pattern
+        // would silently become a fresh binding matching EVERY head var, skipping
+        // clauses whose head lands on a body-bound node — a silent completeness bug.
+        if self.head_present_skip
+            && let Some(Atom::Class(c, v)) = self.clause(ci).head.first().copied()
+            && v == X
+        {
+            let n = if self.inverse_func_merge {
+                self.resolve(node)
+            } else {
+                node
+            };
+            if self.nodes[n.index()].has(c) {
+                self.stats.head_present_skips += 1;
+                return FireOutcome::NoChange;
+            }
+        }
         let Some(bindings) = self.match_body(ci, node) else {
             return FireOutcome::NoChange;
         };

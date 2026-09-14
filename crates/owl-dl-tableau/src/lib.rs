@@ -2379,6 +2379,16 @@ pub fn nominal_first_enabled() -> bool {
 /// fast in practice (galen MISSED 10 → 1, ~840 ms; wine 19.78 s → 90 ms;
 /// corpus FP=0). Set `RUSTDL_INVERSE_FUNC_MERGE=0` to revert to the old
 /// (incomplete) behaviour. See docs/known-limitations.
+/// Skip a Horn clause's body match when its single head atom is `Class(c, X)` and
+/// the node already carries `c` (#128). `HyperNode::add` is keep-first, so every
+/// binding the match could produce would resolve to `NoChange` — the skip is an
+/// IDENTITY on both the verdict and the dep-sets, not an approximation.
+/// **Default ON**; set `RUSTDL_HEAD_PRESENT_SKIP=0` to revert.
+#[must_use]
+pub fn head_present_skip_enabled() -> bool {
+    std::env::var_os("RUSTDL_HEAD_PRESENT_SKIP").is_none_or(|v| v != "0")
+}
+
 #[must_use]
 pub fn inverse_func_merge_enabled() -> bool {
     std::env::var_os("RUSTDL_INVERSE_FUNC_MERGE").is_none_or(|v| v != "0")

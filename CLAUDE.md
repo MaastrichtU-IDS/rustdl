@@ -2192,6 +2192,22 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > and ~72% of its no-op firings, which is the strong form of "the match path is not the wall
 > HERE". That statement does not generalise: the same change buys 8–14% on wine.
 >
+> **A WEDGE-LEVEL COMPLETENESS GAP SITS UNDER THIS FLAG (pinned 2026-09-14, #158).**
+> `index_one_clause` files a Horn clause under `role_trigger[` its body atom's OWN role `]`
+> and the `Event::Edge` dispatch looks up the EDGE's own role, so a sub-role `R` edge never
+> wakes a clause whose body wants super-role `S` — even though `role_matches`, with the
+> hierarchy threaded, would accept it. Proven at the engine level in
+> `owl-dl-tableau/tests/subrole_edge_trigger.rs`: correct answer `Unsat`, engine says `Sat`.
+> **Not reachable through the pipeline today** — three end-to-end attempts (asserted ABox
+> edge, generated TBox edge, disjunction-forced) all answered correctly and agreed with
+> Konclude, because `ObjectPropertyDomain(S, C)` is EL-expressible and the SATURATOR answers
+> it (`subsumption: saturation=2 tableau=0`). That is protection by accident of another
+> component — the #145 shape — not a property of the wedge. The fix is available
+> (`index_one_clause` already receives the hierarchy; file role bodies under every sub-role at
+> matching polarity) but widens the index, i.e. the Layer A cost profile, so it must be
+> measured rather than assumed free. **This bears directly on a Layer A flip: turning the flag
+> on is what makes `role_matches` accept these edges in the first place.**
+>
 > **Where a Layer A default flip stands:** still blocked, with no cheap fix in sight. The cost is
 > the search doing more real work (16372) plus more pairs each burning a budget (9890); neither is
 > shaveable off the matcher.

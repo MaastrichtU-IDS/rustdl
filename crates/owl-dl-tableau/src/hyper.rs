@@ -1285,6 +1285,22 @@ fn index_one_clause<S: ClauseIndexSink>(
                 let is_symmetric = sym.is_some_and(|h| h.is_symmetric(r.role_id()));
                 if *u == X && (r.is_inverse() || is_symmetric) {
                     sink.push_inverse_first_trigger(role_id_index(*r), ci);
+                    // Same sub-role widening as `role_trigger` above, and for the same
+                    // reason: this table is ALSO looked up under the EDGE's role id at
+                    // dispatch, so a clause filed only under `S` is never woken at the
+                    // target by an `R`-edge with `R ⊑ S`. Missing this left the identical
+                    // bug one indirection away, covered by
+                    // `a_sub_role_edge_wakes_an_inverse_first_leg_clause`.
+                    //
+                    // Widening here can only cause EXTRA `fire_clause` calls, which
+                    // `match_body` then rejects — sound. Under-widening is the bug.
+                    if let Some(h) = sym {
+                        for &sub in h.sub_roles(r.role_id()) {
+                            if sub != r.role_id() {
+                                sink.push_inverse_first_trigger(sub.index() as usize, ci);
+                            }
+                        }
+                    }
                 }
             }
             // Head-only atoms never appear in a (Horn) body.

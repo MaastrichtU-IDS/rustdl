@@ -3086,7 +3086,32 @@ impl<'c> HyperEngine<'c> {
         live
     }
 
+    /// Stack guard for the branch recursion (#147).
+    ///
+    /// `solve` recurses once per ⊔ branch and its depth is capped
+    /// (`HYPER_WEDGE_DEPTH`, deepening to 512), so the requirement is bounded at
+    /// roughly `depth × frame` — but HOW deep a given run goes varies with the
+    /// wall-clock per-pair budget, so the high-water mark is not fixed run to run.
+    /// A rayon worker aborted with `fatal runtime error: stack overflow` on
+    /// `ore_ont_9890`, and sizing the pool's stack to a constant only moved the
+    /// failure rate: 2/6 aborts at 32 MiB, 1/5 at 64 MiB, 0/5 at 128 MiB. A constant
+    /// is a bet on the tail — the same mistake this codebase already records for
+    /// `HYPER_WEDGE_DEPTH` ("a fixed constant, and a fixed constant is wrong in both
+    /// directions").
+    ///
+    /// `stacker::maybe_grow` removes the bet: when less than `RED_ZONE` remains it
+    /// allocates a fresh segment on the HEAP and continues there, so the ceiling is
+    /// heap capacity rather than a thread-stack guess. On the overwhelmingly common
+    /// shallow path it is a stack-pointer comparison and nothing else.
     fn solve(&mut self, depth: usize) -> HyperResult {
+        /// Grow when under this much stack remains.
+        const RED_ZONE: usize = 512 * 1024;
+        /// Size of each heap-allocated segment.
+        const SEGMENT: usize = 8 * 1024 * 1024;
+        stacker::maybe_grow(RED_ZONE, SEGMENT, || self.solve_inner(depth))
+    }
+
+    fn solve_inner(&mut self, depth: usize) -> HyperResult {
         if let Some(dl) = self.deadline
             && Instant::now() >= dl
         {

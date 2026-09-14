@@ -19,6 +19,7 @@ hashbrown.workspace = true
 smallvec.workspace = true
 bitvec.workspace = true
 bumpalo.workspace = true
+stacker.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

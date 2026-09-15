@@ -2152,15 +2152,65 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > non-Horn fire loop at ~25% self-time). **Layer A amplifies the dominant cost rather than adding
 > a new one.** The cheap fix the old entry proposed — swapping in `with_sub_roles_keep_index` —
 > would have bought nothing.
-> **Still OPEN: whether the extra matching is REDUCIBLE.** "In matching, not indexing" is not
-> "irreducible"; a hierarchy-aware index enumerating role-closure candidates directly, rather
-> than widening the per-edge acceptance test, is untried.
-> **The cost also did NOT go away with #133/#140/#148**: on `4f2fac1` it is still **9.6×**
-> (`ore_ont_16372` 5 s → 48 s) and **4.1×** (`ore_ont_9890` 15 s → 62 s, now over a 60 s budget),
-> answers identical in both arms.
-> **Profile method caveat:** the OFF arm completes in ~5 s, so a window sized for the ON arm
-> catches a different phase mix — the two samples are NOT comparable and the attribution rests on
-> the ON profile alone.
+> **THE INDEX LEAD IS CLOSED — but by a cost bound, not by the counter table (2026-09-14).**
+> The entry above left one lead alive: "a hierarchy-aware index enumerating role-closure
+> candidates directly … is untried." It is now closed. **No index was built** — what closes it
+> is a measurement of the most an index could possibly save.
+>
+> **What an index could remove is the per-edge acceptance test.** Those tests grew ~4× with the
+> flag ON (`ore_ont_16372` 110M → 435M rejected-edge tests; `ore_ont_9890` 176M → 535M), so the
+> ratio-flatness below does NOT by itself bound the saving — that inference was a non-sequitur
+> and is retracted. Measured directly instead: re-running the ENTIRE edge+pred scan one extra
+> time per frame costs **+0.2–1.6% user CPU** on `ore_ont_16372` and sits inside ±4% run noise on
+> `ore_ont_9890`. A perfect index removes strictly less than one such pass, so the ceiling on the
+> whole idea is **under ~2%** against a 9.6×/4.1× gap.
+>
+> **What the counters do establish** is the structural half: frames = enumeration roots +
+> accepted targets, both semantic, so an index cannot reduce the FRAME count — and frames are
+> what grows (3.7× / 2.6×). Per-scanning-frame edge counts are flat (**~2.5–2.8**, both arms).
+> NOTE: an earlier version of this entry said "~1.6 edges per frame"; that divided by ALL frames,
+> including leaf frames (`i == plan.order.len()`) and roots, which scan zero edges. The corrected
+> figure is ~2.5–2.8 and is still flat, so the conclusion survived the arithmetic error by luck.
+>
+> **Counter values are ratios, not facts.** Independent reruns differ by 10–35% (`ore_ont_16372`
+> ON: 418M / 424M / 573M edges across runs) because `RUSTDL_HYPER_MATCH_DEADLINE` is default ON,
+> the 5 ms pair budget truncates under load, and the decide is a rayon race. The ratios reproduce;
+> the point values do not. Quote ratios.
+>
+> **`ore_ont_9890` CANNOT test a matcher optimisation — do not use it as one.** 63 465 of 63 491
+> checked pairs (99.96%) hit the 5 ms per-pair budget, and a timed-out pair burns its budget no
+> matter how fast the matcher is. Its wall is `pairs × budget`: the ON-arm growth there is mostly
+> **3.6× more pairs checked** (17 846 → 63 491), not a bigger search per pair. Any "flat wall ⇒
+> matcher is not the cost" argument run on `ore_ont_9890` is circular. `ore_ont_16372` (an
+> INCONSISTENT KB, one unbudgeted decide) is the only clean matcher-bound workload of the two.
+>
+> **The no-op firing rate is real but is NOT a Layer A phenomenon.** ~96% of Horn head firings
+> change nothing — and it is 96.1% in the OFF arm too, so it is the engine's baseline refiring
+> redundancy. Exploiting it (the `RUSTDL_HEAD_PRESENT_SKIP` identity, below) removes 21–23% of
+> all `fire_clause` calls and is **worth shipping on the corpus but worth nothing on the two
+> regressed ORE ontologies** — 16372 stays flat even though the skip removes ~half its bindings
+> and ~72% of its no-op firings, which is the strong form of "the match path is not the wall
+> HERE". That statement does not generalise: the same change buys 8–14% on wine.
+>
+> **A WEDGE-LEVEL COMPLETENESS GAP SITS UNDER THIS FLAG (pinned 2026-09-14, #158).**
+> `index_one_clause` files a Horn clause under `role_trigger[` its body atom's OWN role `]`
+> and the `Event::Edge` dispatch looks up the EDGE's own role, so a sub-role `R` edge never
+> wakes a clause whose body wants super-role `S` — even though `role_matches`, with the
+> hierarchy threaded, would accept it. Proven at the engine level in
+> `owl-dl-tableau/tests/subrole_edge_trigger.rs`: correct answer `Unsat`, engine says `Sat`.
+> **Not reachable through the pipeline today** — three end-to-end attempts (asserted ABox
+> edge, generated TBox edge, disjunction-forced) all answered correctly and agreed with
+> Konclude, because `ObjectPropertyDomain(S, C)` is EL-expressible and the SATURATOR answers
+> it (`subsumption: saturation=2 tableau=0`). That is protection by accident of another
+> component — the #145 shape — not a property of the wedge. The fix is available
+> (`index_one_clause` already receives the hierarchy; file role bodies under every sub-role at
+> matching polarity) but widens the index, i.e. the Layer A cost profile, so it must be
+> measured rather than assumed free. **This bears directly on a Layer A flip: turning the flag
+> on is what makes `role_matches` accept these edges in the first place.**
+>
+> **Where a Layer A default flip stands:** still blocked, with no cheap fix in sight. The cost is
+> the search doing more real work (16372) plus more pairs each burning a budget (9890); neither is
+> shaveable off the matcher.
 >
 > **A 6-ONTOLOGY SAMPLE SAID THIS WAS FREE, AND IT WAS WRONG BY 25×.** Curated corpus 8/8
 > row-identical; a hand-picked wedge-heavy ORE sample gave ratios 1.00–2.40× with the EXPENSIVE

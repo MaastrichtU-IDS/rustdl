@@ -1245,10 +1245,37 @@ fn index_one_clause<S: ClauseIndexSink>(
             Atom::Class(c, _) => sink.push_succ_trigger(c.index() as usize, ci),
             Atom::Role(r, u, _) => {
                 sink.push_role_trigger(role_id_index(*r), ci);
+                // SUB-ROLE WIDENING (#128). `Event::Edge` dispatches on the EDGE's
+                // role id, so a clause filed only under its body role `S` is never
+                // woken by an `R`-edge with `R ⊑ S` — even though `role_matches`,
+                // once the hierarchy is threaded, accepts that edge. File the clause
+                // under every sub-role too, so the dispatch can find it.
+                //
+                // Trigger keys are POLARITY-FREE (`role_id_index` maps both
+                // `Named(x)` and `Inverse(x)` to `x`), so only the role id matters
+                // here; `role_matches` still enforces polarity at match time.
+                //
+                // `sub_roles` is reflexive, so `r` itself reappears — `push_trigger`
+                // dedups consecutive repeats per key, and the explicit skip keeps the
+                // intent readable rather than relying on that.
+                if let Some(h) = sym {
+                    for &sub in h.sub_roles(r.role_id()) {
+                        if sub != r.role_id() {
+                            sink.push_role_trigger(sub.index() as usize, ci);
+                        }
+                    }
+                }
                 // Non-first leg (`R₂(y,z)`, `u != X`): also index for
                 // predecessor back-triggering (HF3 chain second-leg).
                 if *u != X {
                     sink.push_role_back_trigger(role_id_index(*r), ci);
+                    if let Some(h) = sym {
+                        for &sub in h.sub_roles(r.role_id()) {
+                            if sub != r.role_id() {
+                                sink.push_role_back_trigger(sub.index() as usize, ci);
+                            }
+                        }
+                    }
                 }
                 // First-leg inverse OR symmetric role: must fire at the
                 // edge TARGET. For inverse roles, the incoming edge `src—p→tgt`
@@ -1258,6 +1285,22 @@ fn index_one_clause<S: ClauseIndexSink>(
                 let is_symmetric = sym.is_some_and(|h| h.is_symmetric(r.role_id()));
                 if *u == X && (r.is_inverse() || is_symmetric) {
                     sink.push_inverse_first_trigger(role_id_index(*r), ci);
+                    // Same sub-role widening as `role_trigger` above, and for the same
+                    // reason: this table is ALSO looked up under the EDGE's role id at
+                    // dispatch, so a clause filed only under `S` is never woken at the
+                    // target by an `R`-edge with `R ⊑ S`. Missing this left the identical
+                    // bug one indirection away, covered by
+                    // `a_sub_role_edge_wakes_an_inverse_first_leg_clause`.
+                    //
+                    // Widening here can only cause EXTRA `fire_clause` calls, which
+                    // `match_body` then rejects — sound. Under-widening is the bug.
+                    if let Some(h) = sym {
+                        for &sub in h.sub_roles(r.role_id()) {
+                            if sub != r.role_id() {
+                                sink.push_inverse_first_trigger(sub.index() as usize, ci);
+                            }
+                        }
+                    }
                 }
             }
             // Head-only atoms never appear in a (Horn) body.

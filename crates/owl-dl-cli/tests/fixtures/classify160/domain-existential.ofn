@@ -1,0 +1,11 @@
+Prefix(:=<http://rustdl.test/>)
+Ontology(<http://rustdl.test/mini160>
+    Declaration(Class(:X)) Declaration(Class(:B)) Declaration(Class(:Z)) Declaration(Class(:W))
+    Declaration(Class(:P)) Declaration(Class(:Q))
+    Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+    SubClassOf(:X ObjectSomeValuesFrom(:r :B))
+    ObjectPropertyDomain(:r ObjectSomeValuesFrom(:s :Z))
+    SubClassOf(ObjectSomeValuesFrom(:s :Z) :W)
+    SubClassOf(:P ObjectUnionOf(:Q :W))
+    SubClassOf(:Q :P)
+)

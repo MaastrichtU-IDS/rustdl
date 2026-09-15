@@ -503,6 +503,10 @@ pub struct ClassificationStats {
     /// Per-class label heuristic: pairs where the cache was missing
     /// (`NoVerdict` or hyper disabled) and the orchestrator fell through.
     pub label_cache_misses: usize,
+    /// #160: label-heuristic prunes that were VERIFIED with the tableau instead
+    /// of trusted. Non-vacuity signal — if this is 0 with the flag on, the gate
+    /// never fired and any "no change" result proves nothing.
+    pub label_cache_prunes_verified: usize,
     /// Phase 1b snapshot cache: pairs where the snapshot-replay path
     /// was consulted (some verdict returned by `try_replay`, not `None`).
     /// Sum of `*_subsumed + *_not_subsumed + *_aborts + (replay stalls)`.
@@ -4085,6 +4089,12 @@ fn classify_top_down_internal_impl(
     let mut rss_pair_counter: u64 = 0;
     // THE fix for the mis-attribution: `tier_walk_wall_ms` is now this interval,
     // not `total − (label_cache + snapshot_build + snapshot_replay)`.
+    // #160: verify label-heuristic prunes rather than trusting them, but only
+    // where the prune is actually unsound — out of fragment. Computed HERE from
+    // the real `stats.fragment`; the per-worker `local_stats` below is a fresh
+    // `default()` whose fragment is `OutOfFragment` regardless of the ontology.
+    let verify_prunes = crate::classify_verify_refutations_enabled()
+        && matches!(stats.fragment, FragmentClassification::OutOfFragment);
     let t_tier_walk = Instant::now();
     for tier in &tiers {
         // Each tier member walks the snapshot of `direct_children`
@@ -4107,6 +4117,7 @@ fn classify_top_down_internal_impl(
                     global_deadline,
                     &label_cache,
                     &counting_relevant,
+                    verify_prunes,
                     &mut local_stats,
                 )?;
                 Ok((c, parents, local_stats))
@@ -4134,6 +4145,7 @@ fn classify_top_down_internal_impl(
             stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
             stats.counting_verified_pairs += sd.counting_verified_pairs;
             stats.label_cache_pruned += sd.label_cache_pruned;
+            stats.label_cache_prunes_verified += sd.label_cache_prunes_verified;
             stats.label_cache_pass_through += sd.label_cache_pass_through;
             stats.label_cache_misses += sd.label_cache_misses;
             stats.snapshot_replay_used += sd.snapshot_replay_used;
@@ -4354,8 +4366,26 @@ fn classify_top_down_internal_impl(
                                 .ok()
                                 .flatten()
                                 .unwrap_or(false)
+                            } else if verify_prunes {
+                                // #160 — see the tier-walk site.
+                                local_stats.label_cache_prunes_verified += 1;
+                                subsumes_via_tableau(
+                                    &prepared,
+                                    &reported,
+                                    cand_id,
+                                    sup_id,
+                                    Some(sweep_budget),
+                                    global_deadline,
+                                    false,
+                                    &counting_relevant,
+                                    &mut local_stats,
+                                )
+                                .ok()
+                                .flatten()
+                                .unwrap_or(false)
                             } else {
-                                // sup_id ∉ labels: sound non-subsumption.
+                                // sup_id ∉ labels: sound non-subsumption
+                                // WHEN THE COMPLETION IS COMPLETE (in fragment).
                                 local_stats.label_cache_pruned += 1;
                                 false
                             }
@@ -4412,6 +4442,7 @@ fn classify_top_down_internal_impl(
             stats.snapshot_replay_aborts += sd.snapshot_replay_aborts;
             stats.snapshot_cache_falls_through += sd.snapshot_cache_falls_through;
             stats.label_cache_pruned += sd.label_cache_pruned;
+            stats.label_cache_prunes_verified += sd.label_cache_prunes_verified;
             stats.label_cache_pass_through += sd.label_cache_pass_through;
             stats.label_cache_misses += sd.label_cache_misses;
             for (k, v) in sd.pairs_per_sub {
@@ -4718,6 +4749,12 @@ fn find_direct_parents_top_down(
     global_deadline: Option<Instant>,
     label_cache: &[crate::LabelOracle],
     counting_relevant: &std::collections::HashSet<owl_dl_core::ClassId>,
+    // #160: verify label-heuristic PRUNES instead of trusting them. Passed in
+    // rather than read off `stats.fragment`, because the tier walk hands each
+    // worker a fresh `ClassificationStats::default()` — and `OutOfFragment` is
+    // the `#[default]`, so reading it here would enable verification for EVERY
+    // ontology including `PureEl`, where the prune is sound by construction.
+    verify_prunes: bool,
     stats: &mut ClassificationStats,
 ) -> Result<Vec<usize>, ReasonError> {
     let c_id = reported.class_id(c);
@@ -4791,9 +4828,31 @@ fn find_direct_parents_top_down(
                             stats,
                         )?
                         .unwrap_or_default()
+                    } else if verify_prunes {
+                        // #160: D ∉ C's labels is a sound non-subsumption ONLY if
+                        // the completion is COMPLETE. Out of fragment it is not, so
+                        // "absent from the model" can mean "never derived" rather
+                        // than "does not hold" — the #66 error, committed one layer
+                        // ABOVE where #66's remedy (inside `subsumes_via_tableau`)
+                        // can act, which is why enabling that flag alone changed
+                        // nothing. Verify instead of pruning.
+                        stats.label_cache_prunes_verified += 1;
+                        subsumes_via_tableau(
+                            prepared,
+                            reported,
+                            c_id,
+                            d_id,
+                            per_pair_timeout,
+                            global_deadline,
+                            false,
+                            counting_relevant,
+                            stats,
+                        )?
+                        .unwrap_or_default()
                     } else {
                         // D ∉ C's labels: this completion graph is a
-                        // counterexample model. Sound non-subsumption.
+                        // counterexample model. Sound non-subsumption
+                        // WHEN THE COMPLETION IS COMPLETE (in fragment).
                         stats.label_cache_pruned += 1;
                         false
                     }

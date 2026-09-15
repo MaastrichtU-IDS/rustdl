@@ -1119,8 +1119,11 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     )?;
     writeln!(
         out,
-        "# label heuristic: pruned={} pass_through={} misses={}",
-        stats.label_cache_pruned, stats.label_cache_pass_through, stats.label_cache_misses,
+        "# label heuristic: pruned={} pass_through={} misses={} prunes_verified={}",
+        stats.label_cache_pruned,
+        stats.label_cache_pass_through,
+        stats.label_cache_misses,
+        stats.label_cache_prunes_verified,
     )?;
     // Phase line items, in execution order, each MEASURED DIRECTLY. These eight
     // plus `unattributed` sum to the classify wall — no residual absorbs the

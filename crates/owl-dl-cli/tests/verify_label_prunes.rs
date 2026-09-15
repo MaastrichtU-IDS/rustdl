@@ -25,7 +25,7 @@ fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/classify160/domain-existential.ofn")
 }
 
-/// Returns (pruned, prunes_verified) off the `# label heuristic:` banner line.
+/// Returns `(pruned, prunes_verified)` off the `# label heuristic:` banner line.
 fn prune_counters(verify: bool) -> (u64, u64) {
     let out = Command::new(env!("CARGO_BIN_EXE_rustdl"))
         .arg("classify")

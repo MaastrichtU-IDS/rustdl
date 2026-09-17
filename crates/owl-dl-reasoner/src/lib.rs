@@ -2122,8 +2122,15 @@ pub fn counting_pair_verify_enabled() -> bool {
 /// Same-tier classify-completeness (SP1.1): carry the role hierarchy into the
 /// classify oracle (Layer A) + broaden the same-tier sweep to label-driven
 /// (Layer B), so inverse/symmetric-domain subsumptions surface in default
-/// classify. DEFAULT OFF — sound (FP=0) but corpus-invisible and ~2× wall, so
-/// opt-in. Set `RUSTDL_CLASSIFY_SAME_TIER=1` to enable.
+/// classify. DEFAULT OFF — sound (FP=0); with Layer A now default ON, this flag's
+/// own marginal gain is ~12 entailments at ~3× wall. Set `RUSTDL_CLASSIFY_SAME_TIER=1`
+/// to enable.
+///
+/// **NOTE (#128, 2026-09-16):** this doc called the gain "corpus-invisible". That was
+/// true of the 9-fixture curated corpus and FALSE on ORE — but the gain belongs to
+/// LAYER A, not to this flag. `classify_role_hierarchy_enabled` is
+/// `ROLE_HIERARCHY || same_tier`, so setting this flag silently enabled Layer A too and
+/// the recovery was mis-attributed here.
 #[must_use]
 pub(crate) fn classify_same_tier_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_SAME_TIER").is_some_and(|v| v == "1")
@@ -2193,9 +2200,16 @@ pub(crate) fn classify_same_tier_enabled() -> bool {
 /// some of it. Nobody has tried. What the profile rules out is the cheap fix
 /// (swapping in `with_sub_roles_keep_index`), which would have bought nothing.
 ///
-/// **Retry conditions:** make the match loop cheaper under a hierarchy, then
-/// re-run the same 1,920 sweep. A flip needs 0 REGRESSED, since the gain is
-/// completeness and the cost is other people's wall.
+/// **FLIPPED ON 2026-09-16 (#128).** The bar above — "a flip needs 0 REGRESSED,
+/// since the gain is completeness and the cost is other people's wall" — was set
+/// when the cost was measured and the gain was not. A full 610-ontology paired ORE
+/// sweep (every pool ontology with a Konclude oracle, both arms in the same worker
+/// slot) measured the gain: MISSED 4276 → 3214, i.e. **1062 entailments recovered
+/// (24.8%)**, with **0 new FP** and **0 ontologies whose answers got worse**. Wall
+/// (n=324): median 1.00×, p75 1.24×, p90 1.67×, p99 6.0×, max 81.7×; 23 of 324 above
+/// 2×, 4 above 5×. Every regression is WALL, not answers. A reasoner that silently
+/// omits entailments is worse than one that is sometimes slow.
+/// `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` reverts.
 ///
 /// **METHOD NOTE on the profile:** the OFF arm completes in ~5 s, so a sampling
 /// window sized for the ON arm catches a different phase mix and the two are NOT
@@ -2209,8 +2223,54 @@ pub(crate) fn classify_same_tier_enabled() -> bool {
 /// 25. Sizing a default flip on a sample is the failure mode this repo already
 /// records for a 12-ontology benchmark that took four ontologies to DNF.
 #[must_use]
+/// #128 GUARD: is Layer A affordable on this role hierarchy?
+///
+/// Layer A's cost is semantic, not an implementation artifact: with the hierarchy
+/// threaded, an `r0` edge is accepted for EVERY super-role of `r0`, so a clause body
+/// on any of them must be woken. On a ladder `r0 ⊑ r1 ⊑ … ⊑ r300` that is 300 wake-ups
+/// per edge, and `index_one_clause`'s sub-role widening (#159) files each role-body
+/// clause under all 300 sub-roles, so the two multiply. Measured:
+/// `classify_inconsistency_budget` (300-deep role ladder × 300 edges) goes from 105 s
+/// to NOT FINISHING in 3600 s.
+///
+/// Real ontologies are shallow — this is why the `subprop/props` ratio failed as a
+/// predictor on the 610-ontology sweep: it measures axiom density, not DEPTH, and the
+/// two decouple. The closure size is the quantity that actually bounds the work.
+///
+/// Above the cap, Layer A stays off and behaviour is EXACTLY today's default — so this
+/// guard cannot regress anything relative to the current release; it only declines to
+/// add the gain where it would be unaffordable.
+pub fn layer_a_affordable(hierarchy: &owl_dl_core::role_hierarchy::RoleHierarchy) -> bool {
+    let cap = classify_role_hierarchy_max_closure();
+    let mut worst = 0usize;
+    for i in 0..hierarchy.num_roles() {
+        let r = owl_dl_core::ir::RoleId::new(u32::try_from(i).unwrap_or(u32::MAX));
+        worst = worst
+            .max(hierarchy.sub_roles(r).len())
+            .max(hierarchy.super_roles(r).len());
+    }
+    if std::env::var_os("RUSTDL_ROLE_CLOSURE_PROBE").is_some_and(|v| v == "1") {
+        eprintln!(
+            "ROLECLOSURE\tnum_roles={}\tmax_closure={worst}\tcap={cap}\taffordable={}",
+            hierarchy.num_roles(),
+            worst <= cap
+        );
+    }
+    worst <= cap
+}
+
+/// #128: per-role sub/super-role closure cap for [`layer_a_affordable`]
+/// (`RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`, default 32).
+#[must_use]
+pub fn classify_role_hierarchy_max_closure() -> usize {
+    std::env::var("RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(32)
+}
+
 pub(crate) fn classify_role_hierarchy_enabled() -> bool {
-    std::env::var_os("RUSTDL_CLASSIFY_ROLE_HIERARCHY").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_CLASSIFY_ROLE_HIERARCHY").is_none_or(|v| v != "0")
         || classify_same_tier_enabled()
 }
 
@@ -3470,6 +3530,9 @@ pub(crate) struct HyperCache {
     /// not just ABox-seeded nodes. Without this, classify misses subsumptions
     /// derivable only via an inverse-domain triggered on a generated successor.
     sub_roles: RoleHierarchy,
+    /// #128: Layer A gate, cached at construction. `classify_role_hierarchy_enabled()`
+    /// AND the hierarchy is shallow enough to afford it — see [`layer_a_affordable`].
+    layer_a: bool,
     /// Pre-built seed-saturator for the ⊔ look-ahead gate
     /// (`RUSTDL_SAT_LOOKAHEAD`, default OFF). `None` when the flag is off
     /// (zero build cost). Shared via `Arc::clone` across all per-pair probes.
@@ -3886,11 +3949,10 @@ impl HyperCache {
         } else {
             value_disjoint
         };
-        let idx_hier = if crate::classify_role_hierarchy_enabled() {
-            Some(&sub_roles)
-        } else {
-            None
-        };
+        // #128: the base index and the per-probe engines MUST use the same gate, or
+        // the index is hierarchy-aware while matching is not (or vice versa).
+        let layer_a = classify_role_hierarchy_enabled() && layer_a_affordable(&sub_roles);
+        let idx_hier = if layer_a { Some(&sub_roles) } else { None };
         let mut base_indexes_inner =
             owl_dl_tableau::hyper::build_clause_indexes(&clauses, idx_hier);
         {
@@ -3928,6 +3990,7 @@ impl HyperCache {
             None
         };
         Self {
+            layer_a,
             id_shallow_waste_us: std::sync::atomic::AtomicU64::new(0),
             id_shallow_decided: std::sync::atomic::AtomicU64::new(0),
             id_shallow_missed: std::sync::atomic::AtomicU64::new(0),
@@ -4279,7 +4342,7 @@ impl HyperCache {
             // differently between base and delta (advisor B1). The extras all
             // have class-only bodies, so the hierarchy argument is irrelevant
             // to them; pass the same gate as the base build for consistency.
-            let idx_hier = if crate::classify_role_hierarchy_enabled() {
+            let idx_hier = if self.layer_a {
                 Some(&self.sub_roles)
             } else {
                 None
@@ -4319,7 +4382,7 @@ impl HyperCache {
         // role-body atoms, so `with_sub_roles_keep_index` suffices; the old
         // path rebuilds the per-pair index with the hierarchy exactly as
         // before (`with_sub_roles`).
-        if crate::classify_role_hierarchy_enabled() {
+        if self.layer_a {
             engine = if self.amortize_idx {
                 engine.with_sub_roles_keep_index(self.sub_roles.clone())
             } else {
@@ -4389,7 +4452,7 @@ impl HyperCache {
         if crate::semantic_branching_enabled() {
             engine = engine.with_semantic_branching();
         }
-        if crate::classify_role_hierarchy_enabled() {
+        if self.layer_a {
             engine = engine.with_sub_roles(self.sub_roles.clone());
         }
         if hyper_double_block_enabled() {
@@ -4524,7 +4587,7 @@ impl HyperCache {
             // ⊥-headed value-disjoint clashes), so the hierarchy argument is
             // irrelevant to them; pass the same gate as the base build for
             // consistency with `decide_with_stats`.
-            let idx_hier = if crate::classify_role_hierarchy_enabled() {
+            let idx_hier = if self.layer_a {
                 Some(&self.sub_roles)
             } else {
                 None
@@ -4542,7 +4605,7 @@ impl HyperCache {
                 std::sync::Arc::clone(&self.base_disjoint_pairs),
                 delta,
             );
-            if crate::classify_role_hierarchy_enabled() {
+            if self.layer_a {
                 e = e.with_sub_roles_keep_index(self.sub_roles.clone());
             }
             e
@@ -4556,7 +4619,7 @@ impl HyperCache {
                 || self.value_disjoint.is_some()
             {
                 let mut e = HyperEngine::new(&full_clauses, self.fresh_q);
-                if crate::classify_role_hierarchy_enabled() {
+                if self.layer_a {
                     e = e.with_sub_roles(self.sub_roles.clone());
                 }
                 e
@@ -4567,7 +4630,7 @@ impl HyperCache {
                     std::sync::Arc::clone(&self.base_indexes),
                     std::sync::Arc::clone(&self.base_disjoint_pairs),
                 );
-                if crate::classify_role_hierarchy_enabled() {
+                if self.layer_a {
                     e = e.with_sub_roles_keep_index(self.sub_roles.clone());
                 }
                 e
@@ -13153,13 +13216,16 @@ mod internal_flag_defaults {
                 super::classify_labels_amortize_enabled,
                 true,
             ),
-            // #128: split out of SAME_TIER. Both OFF — Layer A on a measured
-            // ~19× wall regression (2 ontologies past a 60 s cap, answers
-            // identical), Layer B on its recorded ~2x sweep cost.
+            // #128: split out of SAME_TIER. Layer A flipped ON 2026-09-16 on a full
+            // 610-ontology paired ORE sweep — 1062 entailments recovered (24.8%),
+            // 0 new FP, 0 answers worse; wall median 1.00×, p90 1.67×, 23/324 above
+            // 2×. The prior OFF default rested on a ~19× regression measured on 2
+            // ontologies with the GAIN never measured. Layer B stays OFF: ~12 extra
+            // entailments at ~3× wall once Layer A is on.
             (
                 "RUSTDL_CLASSIFY_ROLE_HIERARCHY",
                 super::classify_role_hierarchy_enabled,
-                false,
+                true,
             ),
             (
                 "RUSTDL_CLASSIFY_SAME_TIER",

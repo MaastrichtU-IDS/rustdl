@@ -167,26 +167,33 @@ fn symmetry_without_a_chain_entails_neither_direction() {
     assert!(!holds(&body, "B", "A"));
 }
 
-/// The fix is OPT-IN, and this pins both halves of that: the default still
-/// misses the pair, and `=1` derives it. If a future change flips the default,
-/// this test tells you immediately — and the flag's doc comment records what
-/// evidence a flip needs (0 REGRESSED on the full sweep).
+/// The fix is ON BY DEFAULT since 2026-09-16 (#128), and this pins both halves:
+/// the default derives the pair, and `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` reverts.
+///
+/// This test previously pinned the opposite ("the default still misses") and said
+/// "if a future change flips the default, this test tells you immediately". It did
+/// exactly that when the flip landed, which is why it is rewritten rather than
+/// deleted. The flip's evidence: a full 610-ontology paired ORE sweep — +351
+/// entailments recovered, 1 lost, 0 new FP, wall median 1.00x / p90 1.40x — plus a
+/// closure-size guard that keeps Layer A off on pathologically deep role
+/// hierarchies, where it is unaffordable.
 #[test]
-fn the_fix_is_opt_in_and_the_default_still_misses() {
+fn the_fix_is_on_by_default_and_the_flag_still_works() {
     let _serial = lock();
     let body = shape(
         "SymmetricObjectProperty(:p)\n\
          SubObjectPropertyOf(ObjectPropertyChain(:p :q) :q)",
     );
-    // Default: no flag set at all.
+    // Default: no flag set at all. Layer A is ON, so classify derives the pair.
     assert!(
-        !classify(&body).is_subclass("http://ex.org/A", "http://ex.org/B"),
-        "default is OFF on a measured wall regression; if this now passes the \
-         default was flipped — update the flag doc and the pin table together"
+        classify(&body).is_subclass("http://ex.org/A", "http://ex.org/B"),
+        "default classify must derive A ⊑ B — this is #128's reported symptom, and \
+         the default flipped ON in 2026-09-16. If this fails, check whether the \
+         closure guard (`layer_a_affordable`) is declining this ontology"
     );
     assert!(
         holds(&body, "A", "B"),
-        "RUSTDL_CLASSIFY_ROLE_HIERARCHY=1 must derive it"
+        "RUSTDL_CLASSIFY_ROLE_HIERARCHY=1 must derive it too"
     );
 }
 

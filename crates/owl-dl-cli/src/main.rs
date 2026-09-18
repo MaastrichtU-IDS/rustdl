@@ -1203,6 +1203,16 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.hyper_proven_pairs
         )?;
     }
+    // #139: tail-bound skips. Printed unconditionally when non-zero so the
+    // non-vacuity signal is actually OBSERVABLE — the counter was merged but
+    // invisible on first write, which is how it read 0 after firing 69 892 times.
+    if stats.stall_tail_skips > 0 || stats.diverged_tail_skips > 0 {
+        writeln!(
+            out,
+            "# tail-bound skips: stall={} diverged={} (fallthrough skipped; each is a MISS, never an FP)",
+            stats.stall_tail_skips, stats.diverged_tail_skips
+        )?;
+    }
     if stats.fallthrough_ran > 0 {
         writeln!(
             out,

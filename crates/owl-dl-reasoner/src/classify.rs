@@ -425,7 +425,12 @@ pub struct ClassificationStats {
     /// fallthrough is MISSED-safe; the `_diverged` splits say whether rescues
     /// come from divergence- vs deadline-stalls.
     /// #139: stall fallthroughs skipped by `RUSTDL_BOUND_STALL_TAIL`. Non-vacuity
-    /// signal — 0 here means the skip never fired.
+    /// signal — 0 with the flag ON means the skip never fired.
+    ///
+    /// MUST be added to BOTH worker-stat merge sites below. It was not, on first
+    /// write, so it read 0 after firing 69 892 times — a vacuous non-vacuity signal,
+    /// which is the exact failure it exists to prevent. The merges are hand-maintained
+    /// field lists; adding a counter without adding it there is silent.
     pub stall_tail_skips: usize,
     pub fallthrough_ran: usize,
     pub fallthrough_subsumed: usize,
@@ -4132,6 +4137,7 @@ fn classify_top_down_internal_impl(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.diverged_tail_skips += sd.diverged_tail_skips;
+            stats.stall_tail_skips += sd.stall_tail_skips;
             stats.fallthrough_ran += sd.fallthrough_ran;
             stats.fallthrough_subsumed += sd.fallthrough_subsumed;
             stats.fallthrough_notsubsumed += sd.fallthrough_notsubsumed;
@@ -4424,6 +4430,7 @@ fn classify_top_down_internal_impl(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.diverged_tail_skips += sd.diverged_tail_skips;
+            stats.stall_tail_skips += sd.stall_tail_skips;
             stats.fallthrough_ran += sd.fallthrough_ran;
             stats.fallthrough_subsumed += sd.fallthrough_subsumed;
             stats.fallthrough_notsubsumed += sd.fallthrough_notsubsumed;

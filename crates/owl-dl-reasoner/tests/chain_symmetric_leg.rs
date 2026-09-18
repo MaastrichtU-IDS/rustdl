@@ -257,29 +257,28 @@ EquivalentClasses(:T1b ObjectSomeValuesFrom(:s ObjectIntersectionOf(\
 }
 
 #[test]
-fn default_classify_still_misses_the_symmetric_chain_leg() {
-    // KNOWN LIMITATION, pinned deliberately rather than `#[ignore]`d — see
-    // `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`. The chain-rule
-    // fix above repairs the classic tableau, but default `classify` never reaches
-    // it on this shape: the hypertableau wedge decides the pair, and the wedge's
-    // `role_matches` can only traverse a symmetric edge backwards when the role
-    // hierarchy is threaded in — which happens ONLY under
-    // `RUSTDL_CLASSIFY_SAME_TIER=1` ("DEFAULT OFF — sound (FP=0) but
-    // corpus-invisible and ~2× wall"). #128 is the counterexample to
-    // "corpus-invisible": a user hit it. `is_subclass_of` is the correct answer
-    // today; `classify` is not.
+fn default_classify_now_finds_the_symmetric_chain_leg() {
+    // WAS A PINNED LIMITATION, now a positive (#128, 2026-09-16). The note it
+    // carried said: "If this assertion starts FAILING, that is the good news — the
+    // wedge learned the backward hop (or the gate was flipped). Turn it into a
+    // positive and retire this note." The gate was flipped:
+    // `RUSTDL_CLASSIFY_ROLE_HIERARCHY` is default ON, so the wedge's `role_matches`
+    // can traverse a symmetric edge backwards in default `classify`.
     //
-    // If this assertion starts FAILING, that is the good news — the wedge learned
-    // the backward hop (or the gate was flipped). Turn it into a positive and
-    // retire this note.
+    // The old note also recorded the flag as "corpus-invisible", and observed that
+    // "#128 is the counterexample: a user hit it". A full 610-ontology paired ORE
+    // sweep put a number on it — 1062 entailments recovered, 0 new FP, 0 answers
+    // worse — which is what justified the flip.
+    //
+    // `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` reverts to the old behaviour, under which
+    // this assertion fails; that is the intended meaning of the flag, not a bug.
     let ofn = two_definitions("SymmetricObjectProperty(:co)\n");
     assert!(
-        !classify_holds(&ofn, "T1a", "T1b"),
-        "default classify now reports T1a ⊑ T1b — the wedge-side gap behind #128 \
-         is closed; make this a positive assertion and update the module docs"
+        classify_holds(&ofn, "T1a", "T1b"),
+        "default classify must now report T1a ⊑ T1b — this is #128's reported symptom"
     );
     assert!(
         holds(&ofn, "T1a", "T1b"),
-        "the complete path must still get it right even while classify does not"
+        "and the complete path must still agree"
     );
 }

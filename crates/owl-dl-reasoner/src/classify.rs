@@ -424,6 +424,14 @@ pub struct ClassificationStats {
     /// `fallthrough_subsumed / fallthrough_ran` decides whether skipping the
     /// fallthrough is MISSED-safe; the `_diverged` splits say whether rescues
     /// come from divergence- vs deadline-stalls.
+    /// #139: stall fallthroughs skipped by `RUSTDL_BOUND_STALL_TAIL`. Non-vacuity
+    /// signal — 0 with the flag ON means the skip never fired.
+    ///
+    /// MUST be added to BOTH worker-stat merge sites below. It was not, on first
+    /// write, so it read 0 after firing 69 892 times — a vacuous non-vacuity signal,
+    /// which is the exact failure it exists to prevent. The merges are hand-maintained
+    /// field lists; adding a counter without adding it there is silent.
+    pub stall_tail_skips: usize,
     pub fallthrough_ran: usize,
     pub fallthrough_subsumed: usize,
     pub fallthrough_notsubsumed: usize,
@@ -4129,6 +4137,7 @@ fn classify_top_down_internal_impl(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.diverged_tail_skips += sd.diverged_tail_skips;
+            stats.stall_tail_skips += sd.stall_tail_skips;
             stats.fallthrough_ran += sd.fallthrough_ran;
             stats.fallthrough_subsumed += sd.fallthrough_subsumed;
             stats.fallthrough_notsubsumed += sd.fallthrough_notsubsumed;
@@ -4421,6 +4430,7 @@ fn classify_top_down_internal_impl(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.diverged_tail_skips += sd.diverged_tail_skips;
+            stats.stall_tail_skips += sd.stall_tail_skips;
             stats.fallthrough_ran += sd.fallthrough_ran;
             stats.fallthrough_subsumed += sd.fallthrough_subsumed;
             stats.fallthrough_notsubsumed += sd.fallthrough_notsubsumed;
@@ -5127,6 +5137,21 @@ fn subsumes_via_tableau(
                 // fall through to the tableau probe below; if the tableau
                 // returns Subsumed, bump hyper_refuted_fast_flipped_pairs.
             }
+        }
+        // #139: the SAME argument as bound-the-tail below, for a wedge stall that did
+        // not formally diverge. Measured on the reporter's ontology (PMD core, 1375
+        // classes): the stall fallthrough ran 71 460 times and RESCUED 19 — 0.027%.
+        // Each non-rescue burns the full per-pair budget and then defaults to "not
+        // subsumed" anyway, which is ~7 100 CPU-seconds of the 13 750 the run costs.
+        // `fallthrough_subsumed / fallthrough_ran` is the ratio this repo already
+        // instrumented to decide exactly this. Sound for the same reason: skipping only
+        // ever yields "not subsumed" — a MISS at worst, never an FP — and the pair is
+        // counted as timed-out so the INCOMPLETE banner stays honest.
+        crate::HyperVerdict::Unknown if crate::bound_stall_tail_enabled() => {
+            stats.stall_tail_skips += 1;
+            stats.timed_out_pairs += 1;
+            push_undecided_pair(stats, reported, sub, sup);
+            return Ok(None);
         }
         crate::HyperVerdict::UnknownDiverged if crate::bound_diverged_tail_enabled() => {
             // Bound-the-tail: the wedge diverged (thrashed at saturated depth) on

@@ -826,7 +826,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "owl-dl-bench"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "anyhow",
  "clap",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-cb"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "hashbrown 0.15.5",
  "owl-dl-core",
@@ -853,7 +853,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-cli"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "anyhow",
  "clap",
@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-core"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -883,7 +883,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-datatypes"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "owl-dl-core",
  "proptest",
@@ -893,7 +893,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-py"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "horned-owl",
  "owl-dl-core",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-reasoner"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "anyhow",
  "dashmap",
@@ -922,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-saturation"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "dashmap",
  "fixedbitset",
@@ -938,7 +938,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-tableau"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-verify"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "hashbrown 0.15.5",
  "horned-owl",
@@ -1405,7 +1405,7 @@ checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustdl"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "horned-owl",
  "owl-dl-reasoner",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "anyhow",
  "clap",

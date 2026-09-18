@@ -737,24 +737,61 @@ fn global_budget_after_parse(
         .then(|| std::time::Duration::from_millis(global_timeout_ms).saturating_sub(parse_elapsed))
 }
 
-fn warn_if_incomplete(timed_out_pairs: usize, pair_timeout_ms: u64, global_timeout_ms: u64) {
+fn warn_if_incomplete(
+    timed_out_pairs: usize,
+    tail_bound_skips: usize,
+    pair_timeout_ms: u64,
+    global_timeout_ms: u64,
+) {
     if timed_out_pairs == 0 {
         return;
     }
+    // #139: pairs skipped by a tail bound (`RUSTDL_BOUND_STALL_TAIL` /
+    // `RUSTDL_BOUND_DIVERGED_TAIL`) are counted in `timed_out_pairs` so the
+    // INCOMPLETE signal fires, but they did NOT hit a timeout — they were
+    // policy-skipped after the wedge stalled. Two consequences for this message:
+    // the "hit the N ms timeout" wording would be false for them, and the
+    // "re-run with --pair-timeout-ms 0" advice would be WRONG — the wedge can
+    // stall on depth-schedule exhaustion with no deadline at all, so an
+    // unbounded re-run with the flag still set skips the same pairs and the
+    // caption would claim they "hit the 0 ms timeout".
+    let timed_out = timed_out_pairs.saturating_sub(tail_bound_skips);
     let bound = match (pair_timeout_ms, global_timeout_ms) {
         (p, 0) => format!("{p} ms per-pair timeout"),
         (0, g) => format!("{g} ms global timeout"),
         (p, g) => format!("{p} ms per-pair / {g} ms global timeout"),
     };
-    eprintln!(
-        "\n⚠  INCOMPLETE: {timed_out_pairs} class pair(s) hit the {bound} and were recorded \
-         as 'not subsumed'."
-    );
-    eprintln!(
-        "   The classification is SOUND (no false subsumptions) but may be missing real ones. \
-         Re-run with `--pair-timeout-ms 0 --global-timeout-ms 0` for the complete (unbounded) \
-         result."
-    );
+    match (timed_out, tail_bound_skips) {
+        (t, 0) => eprintln!(
+            "\n⚠  INCOMPLETE: {t} class pair(s) hit the {bound} and were recorded as \
+             'not subsumed'."
+        ),
+        (0, k) => eprintln!(
+            "\n⚠  INCOMPLETE: {k} class pair(s) were skipped by a tail bound \
+             (RUSTDL_BOUND_STALL_TAIL / RUSTDL_BOUND_DIVERGED_TAIL) after the wedge \
+             stalled, and were recorded as 'not subsumed'."
+        ),
+        (t, k) => eprintln!(
+            "\n⚠  INCOMPLETE: {t} class pair(s) hit the {bound}, and {k} more were \
+             skipped by a tail bound after the wedge stalled; all were recorded as \
+             'not subsumed'."
+        ),
+    }
+    if tail_bound_skips == 0 {
+        eprintln!(
+            "   The classification is SOUND (no false subsumptions) but may be missing real \
+             ones. Re-run with `--pair-timeout-ms 0 --global-timeout-ms 0` for the complete \
+             (unbounded) result."
+        );
+    } else {
+        eprintln!(
+            "   The classification is SOUND (no false subsumptions) but may be missing real \
+             ones. For the complete (unbounded) result re-run with `--pair-timeout-ms 0 \
+             --global-timeout-ms 0` AND the tail bounds disabled \
+             (RUSTDL_BOUND_STALL_TAIL=0 RUSTDL_BOUND_DIVERGED_TAIL=0) — an unbounded run \
+             with a tail bound still set skips the same pairs."
+        );
+    }
 }
 
 /// Print a stderr warning if any axioms were dropped during conversion
@@ -1203,6 +1240,16 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.hyper_proven_pairs
         )?;
     }
+    // #139: tail-bound skips. Printed unconditionally when non-zero so the
+    // non-vacuity signal is actually OBSERVABLE — the counter was merged but
+    // invisible on first write, which is how it read 0 after firing 69 892 times.
+    if stats.stall_tail_skips > 0 || stats.diverged_tail_skips > 0 {
+        writeln!(
+            out,
+            "# tail-bound skips: stall={} diverged={} (fallthrough skipped; each is a MISS, never an FP)",
+            stats.stall_tail_skips, stats.diverged_tail_skips
+        )?;
+    }
     if stats.fallthrough_ran > 0 {
         writeln!(
             out,
@@ -1513,6 +1560,7 @@ fn main() -> Result<()> {
                 );
                 warn_if_incomplete(
                     h.stats().timed_out_pairs,
+                    h.stats().stall_tail_skips + h.stats().diverged_tail_skips,
                     pair_timeout_ms,
                     global_timeout_ms,
                 );
@@ -1521,6 +1569,7 @@ fn main() -> Result<()> {
             print_classification(&h);
             warn_if_incomplete(
                 h.stats().timed_out_pairs,
+                h.stats().stall_tail_skips + h.stats().diverged_tail_skips,
                 pair_timeout_ms,
                 global_timeout_ms,
             );

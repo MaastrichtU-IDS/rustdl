@@ -2439,6 +2439,23 @@ pub(crate) fn semantic_branching_enabled() -> bool {
     std::env::var_os("RUSTDL_SEMANTIC_BRANCHING").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
+/// #139: skip the main-tableau fallthrough after a wedge STALL, not only after a
+/// divergence. Same soundness argument as [`bound_diverged_tail_enabled`]: the
+/// fallthrough only ever yields "not subsumed", so skipping can MISS but never FP.
+///
+/// Motivated by a measurement this repo already instrumented for exactly this
+/// decision -- `fallthrough_subsumed / fallthrough_ran`. On the #139 reporter's
+/// ontology that ratio is **19 / 71 460 = 0.027%**, and the non-rescues burn roughly
+/// 7 100 of the run's 13 750 CPU-seconds.
+///
+/// **Default OFF** pending a corpus MISSED measurement.
+#[must_use]
+pub(crate) fn bound_stall_tail_enabled() -> bool {
+    // Parsed like its sibling `bound_diverged_tail_enabled` (any non-empty,
+    // non-"0" value), NOT `== "1"` — otherwise `=true` is silently off.
+    std::env::var_os("RUSTDL_BOUND_STALL_TAIL").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
 /// Bound-the-tail (`RUSTDL_BOUND_DIVERGED_TAIL`, **default OFF**): when the
 /// wedge returns a *divergence*-`Stalled` (`is_diverging` fired — the search
 /// thrashed at saturated depth), skip the main-tableau fallthrough in
@@ -3356,6 +3373,12 @@ pub(crate) enum HyperVerdict {
     NotSubsumed,
     /// `Stalled`/budget exhausted — caller falls back to the tableau.
     Unknown,
+    /// There is no wedge at all (`RUSTDL_HYPERTABLEAU=0`), so nothing was tried.
+    /// Split out from [`Self::Unknown`] (#139) because `bound_stall_tail` skips the
+    /// tableau fallthrough on a wedge STALL — and "the wedge stalled" and "there is
+    /// no wedge" must not be the same value, or disabling the wedge would silently
+    /// disable per-pair reasoning entirely.
+    NoWedge,
     /// `Stalled` because the adaptive-budget `is_diverging` early-cut fired —
     /// the wedge thrashed at saturated depth. Distinguished from `Unknown` so
     /// the bound-the-tail path can skip a main-tableau fallthrough that would
@@ -7570,9 +7593,15 @@ impl PreparedOntology {
         sup: owl_dl_core::ir::ClassId,
         deadline: Option<std::time::Instant>,
     ) -> HyperVerdict {
+        // #139: `Unknown` is overloaded — it means BOTH "the wedge ran and stalled"
+        // and "there is no wedge". `bound_stall_tail` must only skip the former, or
+        // `RUSTDL_HYPERTABLEAU=0` would silently skip the tableau for every
+        // label-miss pair and degenerate classification to the saturation closure.
+        // `UnknownDiverged` cannot arise without a wedge run, which is why its
+        // sibling bound never needed this.
         self.hyper
             .as_ref()
-            .map_or(HyperVerdict::Unknown, |hc| hc.decide(sub, sup, deadline))
+            .map_or(HyperVerdict::NoWedge, |hc| hc.decide(sub, sup, deadline))
     }
 
     /// Per-class label heuristic: run wedge satisfiability of `c` and

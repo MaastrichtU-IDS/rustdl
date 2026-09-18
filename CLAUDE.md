@@ -85,6 +85,21 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; w
 > that hit it, and it reports the edition error from deep inside a PEP 517 build where
 > the cause is not obvious. A failed/skipped build then **silently reuses a stale
 > `target/release/` binary**.
+> **WALL-CLOCK IS NOT MEASURABLE ON A SHARED HOST — USE CPU TIME (2026-09-18).** The same
+> release binary classifying `wine.ofn` measured **19.82 s and 8.41 s** minutes apart (2.4×,
+> identical code) on a 96-core host whose load average was 131–135 with other tenants
+> (`qemu` 385% CPU, `oxigraph` 90%, `k3s` 64%, Defender 86%). CPU time on the same runs has a
+> **5% spread**. So a 2× wall difference between two runs says nothing about the code.
+> Use `/usr/bin/time -f "%U %S"` and sum; interleave the arms in ONE loop (A,B,A,B…) rather
+> than running two sweeps; take ≥5 reps and report the median AND range; and **recheck every
+> DIFF serially before believing it** — the ORE closure-diff harness at its default
+> `RUSTDL_TEST_PAIR_MS=200` under `-P 8` has a ~1.5% spurious-DIFF rate that affects BOTH
+> arms. Answer data (FP/MISSED/rows) is robust; wall is not — except when a per-pair budget
+> is binding, where load converts into missed entailments and contention masquerades as a
+> correctness regression. This invalidated five separate conclusions in the #128/#159/#160
+> work, each of which looked well-supported at the time; see
+> `docs/benchmarks/2026-09-18-wall-clock-is-not-measurable-on-this-host.md`.
+>
 > **Always confirm `target/release/rustdl` is freshly built before benchmarking** —
 > **SUPERSEDED 2026-08-03 (v0.4.13) — THE WINE GUIDANCE BELOW IS OBSOLETE. Read this first.**
 > **Unbounded `classify ontologies/real/wine.ofn` now completes in ~74 s with no flags**, so

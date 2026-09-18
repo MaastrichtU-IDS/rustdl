@@ -1181,6 +1181,17 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
         stats.matrix_wall_ms,
         stats.unattributed_wall_ms,
     )?;
+    // #162: the monotonicity fallback is OBSERVABLE, per the soundness-contract
+    // rule that a caller must be able to tell a fallback happened. `true` means a
+    // bounded saturation aborted with an EMPTY closure and prep was re-run
+    // unbounded rather than returning 0 rows — the dead-zone rescue. Printed only
+    // when it fired, like the tail-bound line.
+    if stats.prep_empty_retry {
+        writeln!(
+            out,
+            "# prep: bounded saturation aborted EMPTY; re-ran unbounded (#162 monotonicity fallback)"
+        )?;
+    }
     // NESTED sub-timers of the label-cache / tier-walk phases above — reported on
     // their own line precisely so they are not mistaken for members of that sum.
     writeln!(

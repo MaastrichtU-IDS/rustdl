@@ -6,6 +6,74 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.29] — 2026-09-18
+
+### Changed — `classify` uses the role hierarchy by default (`RUSTDL_CLASSIFY_ROLE_HIERARCHY`, now ON) (#128, #163)
+
+The hypertableau's `role_matches` can now traverse symmetric edges backwards and accept
+sub-role edges during default `classify` — previously this required an opt-in flag, so
+default `classify` silently missed entailments that `rustdl subclass` proved on the same
+binary (the #128 report: `DiscomfortT1a ≡ DiscomfortT1b` was absent from `classify` output).
+
+Measured on the 610-ontology ORE pool (Konclude oracles, paired arms):
+**+294 entailments recovered, 0 new false positives, 0 answer regressions.** CPU-time cost
+(wall is not measurable on the benchmark host — see `docs/benchmarks/2026-09-18-…`):
+median **1.00×**, p90 1.32×, p99 2.43×, max 6.3×; 13 of 418 rated ontologies above 1.5×;
+**3 of 544 pushed past a 600 s cap** (`ore_ont_16372`, `ore_ont_9890`, `ore_ont_14551`),
+plus one field report of +51% CPU (#139). No structural predicate separates that tail —
+three candidate gates were fitted and refuted on held-out data — so the escape hatch is
+the flag itself: **`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` restores the previous behaviour.**
+
+A guard keeps the flip affordable where it is provably not: when any role's sub/super-role
+closure exceeds `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE` (default 32), Layer A stays
+off and behaviour is exactly the old default. This exists for deep role ladders — the
+in-repo 300-deep fixture went from 105 s to not finishing in 3600 s without it.
+
+### Fixed — a sub-role edge never woke a super-role-body clause in the wedge (#128, #159)
+
+`index_one_clause` filed a Horn clause under its body atom's own role, while `Event::Edge`
+dispatch looks up the edge's role — so an `R`-edge never woke a clause whose body wants
+super-role `S`, even though `role_matches` (hierarchy threaded) accepts that edge. Same gap
+one indirection away in `inverse_first_trigger` (the shape `ObjectPropertyRange` takes at
+the far endpoint). Both trigger tables are now widened by sub-roles at index build.
+Validated against the full ORE pool: 0 attributable answer changes; mutation-checked tests.
+
+### Fixed — `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS` was inert for exactly the pairs that needed it (#160, #161)
+
+Issue #66's remedy (withdraw trust in a wedge `Sat` out of fragment) lives inside
+`subsumes_via_tableau`, but the Phase 7 label heuristic pruned `sup ∉ labels` pairs one
+layer above it, so the flag changed nothing alone. The prune is now gated the same way:
+out of fragment with the flag on, a prune falls through to verification.
+`ore_ont_3258`: MISSED 200 → 0, closure exactly matching the oracle. Still default OFF —
+blanket verification does not scale on prune-heavy ontologies.
+
+### Fixed — the wedge branch recursion now grows its stack on demand (#147, #155)
+
+Supersedes the fixed-size rayon pool stack below: `stacker::maybe_grow` (512 KiB red zone,
+8 MiB heap segments) around `solve`, so the bound is heap capacity rather than a guessed
+constant. 0 aborts at a forced 2 MiB stack — the size that previously aborted reliably.
+
+### Added — head-present skip in the Horn fire loop (#128, #157)
+
+`fire_clause` skips the whole body match when the clause's single head atom is
+`Class(c, X)` and the node already carries `c` — an identity under `HyperNode::add`'s
+keep-first rule, not a heuristic. Removes 21–23 % of all `fire_clause` calls; wine and
+galen ~8 % faster, no fixture regressed. `RUSTDL_HEAD_PRESENT_SKIP=0` reverts.
+
+### Changed — horned-owl 1.4 → 3.0; fork dropped; whelk-compare retired (#99, #123, #126)
+
+Known regression recorded in `CLAUDE.md`: 7 ORE ontologies that parsed under 1.4 fail to
+parse under 3.0 (#136 tracks).
+
+### Fixed — saturation lowering gaps for Domain/Range and datatype buckets (#110–#129)
+
+A batch of pre-#128 correctness fixes: inverse-role `ObjectPropertyDomain/Range` lowering
+(#125/#129), XSD integer-derived types' DKey bucket (#121/#127), partial Domain/Range
+filler decomposition with provenance mirrors (#118–#120), non-atomic GCI domain heads
+(#114/#116), unions of enumerations in data cardinality positions (#42/#115), conjunctive
+domain/range fillers (#110/#112), and the ⊤-floor scoped to marker-only labels (#103/#109).
+
+
 ### Fixed — `RUSTDL_SEMANTIC_BRANCHING=1` aborted with a worker stack overflow (#147)
 
 `classify` died with `fatal runtime error: stack overflow` (rc=134, core dumped) in a rayon

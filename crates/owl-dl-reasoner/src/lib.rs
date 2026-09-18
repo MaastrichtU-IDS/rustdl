@@ -2439,6 +2439,21 @@ pub(crate) fn semantic_branching_enabled() -> bool {
     std::env::var_os("RUSTDL_SEMANTIC_BRANCHING").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
+/// #139: skip the main-tableau fallthrough after a wedge STALL, not only after a
+/// divergence. Same soundness argument as [`bound_diverged_tail_enabled`]: the
+/// fallthrough only ever yields "not subsumed", so skipping can MISS but never FP.
+///
+/// Motivated by a measurement this repo already instrumented for exactly this
+/// decision -- `fallthrough_subsumed / fallthrough_ran`. On the #139 reporter's
+/// ontology that ratio is **19 / 71 460 = 0.027%**, and the non-rescues burn roughly
+/// 7 100 of the run's 13 750 CPU-seconds.
+///
+/// **Default OFF** pending a corpus MISSED measurement.
+#[must_use]
+pub(crate) fn bound_stall_tail_enabled() -> bool {
+    std::env::var_os("RUSTDL_BOUND_STALL_TAIL").is_some_and(|v| v == "1")
+}
+
 /// Bound-the-tail (`RUSTDL_BOUND_DIVERGED_TAIL`, **default OFF**): when the
 /// wedge returns a *divergence*-`Stalled` (`is_diverging` fired — the search
 /// thrashed at saturated depth), skip the main-tableau fallthrough in

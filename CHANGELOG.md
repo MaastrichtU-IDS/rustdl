@@ -8,6 +8,28 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [0.4.29] — 2026-09-18
 
+### Added — `RUSTDL_BOUND_STALL_TAIL` (opt-in, default OFF), and honest INCOMPLETE captions (#139)
+
+**Erratum: this entry was missing from the release cut.** The release branch was created
+from the #139 working branch rather than `main`, so this shipped in 0.4.29 while the
+release PR claimed it did not. Recorded here rather than silently backfilled.
+
+What shipped, all default-off or behaviour-neutral:
+
+* `RUSTDL_BOUND_STALL_TAIL=1` skips the main-tableau fallthrough after a wedge **stall**
+  (the existing `RUSTDL_BOUND_DIVERGED_TAIL` covers only formal divergence). Measured on
+  the #139 reporter's ontology: CPU 13 738 → 7 147 s (−48 %) for 19 of 9 123 closure
+  entailments (0.21 %) — and those 19 are exactly the fallthrough's only rescues, so this
+  is a real completeness trade, opt-in until a corpus MISSED sweep sizes it.
+* `HyperVerdict::NoWedge` split out of `Unknown`, so "the wedge stalled" and "there is no
+  wedge" are distinct — without this, `RUSTDL_HYPERTABLEAU=0` plus the flag would have
+  silently skipped per-pair reasoning entirely. Neutral when the flag is off.
+* The INCOMPLETE banner now distinguishes budget-exhausted pairs from policy-skipped ones,
+  and its re-run advice names the env vars that must be cleared — previously it told users
+  an unbounded re-run would be complete, which is false under a tail bound.
+* `stall_tail_skips` / `diverged_tail_skips` are now merged from worker stats and printed
+  (`# tail-bound skips:`), so the skip is observable.
+
 ### Changed — `classify` uses the role hierarchy by default (`RUSTDL_CLASSIFY_ROLE_HIERARCHY`, now ON) (#128, #163)
 
 The hypertableau's `role_matches` can now traverse symmetric edges backwards and accept

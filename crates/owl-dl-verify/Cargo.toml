@@ -6,13 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-# Never published, and not publishable as written (no `description`, which
-# crates.io requires). Its only dependent is owl-dl-cli, itself
-# `publish = false` (fork-only `horned_owl::io::omn`), so nothing publishable
-# consumes it. It is also diagnostic-only: a `Violated` verdict is documented
-# as a lead requiring adjudication, not a proof — easy for an external consumer
-# to misread. Revisit if it gains a published consumer.
-publish = false
+# Published since 0.4.30: #126 flipped owl-dl-cli back to publishable, which made
+# this crate a dependency of a published crate — the exact "revisit" condition the
+# old `publish = false` comment named. Nobody re-ran publish preflight between
+# #126 and the v0.4.29 tag (it is tag-triggered), so 0.4.29's crates preflight was
+# the first to see the combination, and failed. The description below carries the
+# caveat that used to justify staying unpublished: verdicts are diagnostic leads,
+# not proofs.
+description = """Diagnostic verification harness for the rustdl OWL 2 DL reasoner. \
+A `Violated` verdict is a lead requiring adjudication against a peer reasoner, \
+not a proof of unsoundness."""
 
 [dependencies]
 owl-dl-core = { workspace = true }

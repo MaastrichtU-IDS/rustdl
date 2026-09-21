@@ -6,6 +6,21 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.30] — 2026-09-21
+
+### Fixed — crates.io publish was broken by #126, caught by 0.4.29's tag preflight
+
+`v0.4.29`'s `Publish crates` preflight failed: `owl-dl-cli` depends on `owl-dl-verify`,
+which was `publish = false`. The combination is new — at 0.4.28 `owl-dl-cli` was itself
+`publish = false` (fork `[patch]` reasons), so preflight never examined its dependencies;
+#126 flipped the cli back to publishable without revisiting the verify crate, and the
+preflight only runs on tags, so 0.4.29 was the first to see it. `owl-dl-verify` is now
+published, with its long-standing caveat moved into the crate description: a `Violated`
+verdict is a diagnostic lead requiring adjudication, not a proof of unsoundness.
+
+`v0.4.29` remains a valid release for CLI binaries and Python wheels; its crates were
+never published, so crates.io goes 0.4.28 → 0.4.30.
+
 ## [0.4.29] — 2026-09-18
 
 ### Added — `RUSTDL_BOUND_STALL_TAIL` (opt-in, default OFF), and honest INCOMPLETE captions (#139)

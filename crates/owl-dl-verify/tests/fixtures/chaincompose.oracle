@@ -12,8 +12,14 @@
 # It replaces `chainrange` as the acceptance set's detection: #84 made
 # `chainrange` agree with its oracle, which emptied the detection set and
 # tripped `the_detection_set_has_not_silently_gone_vacuous` — the guard doing
-# exactly its job. rustdl currently reports only `F ⊑ G` here, with
-# `incomplete: false`, so this is a SILENT miss of the D10 shape.
+# exactly its job.
+#
+# ROLE CHANGE (2026-09-21, #108): the certificate fix (`has_composed_chain_range`)
+# de-certifies this shape from pure-EL, and `classify_internal` now derives
+# `C ⊑ D` via the hybrid path — rustdl AGREES with this oracle, and
+# `invfunc-inverse` took over detection duty (the guard's third firing).
+# Residual recorded on #160: the CLI `classify` output still omits the row at
+# any per-pair budget while the library path derives it.
 #
 # HermiT derives `C ⊑ D` (verified 2026-09-05, robot 1.9.10 + HermiT 1.4.3;
 # re-verified same day via robot v1.9.6).

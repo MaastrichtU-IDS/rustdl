@@ -1,0 +1,23 @@
+# issue #149: `InverseFunctionalObjectProperty(ObjectInverseOf(:p))` IS
+# `FunctionalObjectProperty(:p)` — the characteristics SWAP across polarity. So
+# with C and D disjoint, `A ≡ ∃p.C ⊓ ∃p.D` forces its two p-successors to merge
+# and clash: A is UNSATISFIABLE.
+#
+# rustdl reports A satisfiable with an EMPTY `dropped` — the axiom is silently
+# ignored (both #144-era consumers guard on `!role.is_inverse()`, and unlike
+# symmetry these must NOT be relaxed the same way; see #149 for why the naive
+# fix was measured and rejected). The same miss is pinned engine-side by
+# `symmetric_inverse_polarity::inverse_functional_on_an_inverse_role_is_still_missed`.
+#
+# This fixture replaced `chaincompose` as the acceptance set's detection when
+# the #108 certificate fix made `classify_internal` agree with chaincompose's
+# oracle and tripped `the_detection_set_has_not_silently_gone_vacuous` — the
+# THIRD time that guard has done its job (chainrange -> chaincompose -> this).
+#
+# The claim rests on hand-derivation; the polarity identity is textbook
+# (Functional(p) ≡ InverseFunctional(p⁻)). HermiT and Konclude both accept the
+# construct (recorded in inverse_polarity_guards.rs); neither has been run on
+# THIS file yet — pair any peer probe with a discriminating control first, per
+# the chaincompose oracle's Konclude caveat.
+provenance: derivation-only   # Functional(p) ≡ InverseFunctional(p⁻); see #149
+unsatisfiable: A

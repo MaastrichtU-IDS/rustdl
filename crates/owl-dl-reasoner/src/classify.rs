@@ -1938,6 +1938,104 @@ fn classify_inconsistent(
 /// cardinality, nominals, inverse roles, role characteristics that
 /// expand to cardinality, `ABox` assertions, ...) immediately returns
 /// `false`.
+/// #108: is there a chain whose super-role edge would carry an (effective) range
+/// onto witnesses the saturator's pair-keyed range fold cannot reach?
+///
+/// The saturator handles chains by SYNTACTIC lowering: #84's fold keys ranges on
+/// the ordered role pairs that chain axioms DECLARE, consumed when lowering
+/// `∃a.∃b.X`. A chain COMPOSED from other chains (`t∘u ⊑ r`, `r∘v ⊑ s`) never
+/// forms its composed key `(t,u,v) ⊑ s`, so `Range(s, F)` never reaches the
+/// innermost witness — while the gate certifies the closure complete. That is
+/// the #108 miss: `C ⊑ D` absent, `incomplete: false`.
+///
+/// Probed empirically before writing this predicate (2026-09-21, all via
+/// `subclass` on minimal fixtures):
+///   - single chain + range: complete (#84's fold works)          — ADMIT
+///   - SELF-recursive chain (`r∘v ⊑ r`) + range: complete         — ADMIT
+///   - composed super in an ∃-LHS, no range: complete             — ADMIT
+///   - composed chains + DOMAIN: complete                         — ADMIT
+///   - composed chains + range: INCOMPLETE (#108)                 — REJECT
+///   - composed chains + range INHERITED via `s ⊑ w`: INCOMPLETE  — REJECT
+///
+/// So the reject condition is exactly: a chain whose parts include ANOTHER
+/// chain's super-role, where the outer chain's super has a non-empty EFFECTIVE
+/// range (direct, or inherited from a super-role). Everything else stays on the
+/// fast path. ORE census: naive "any composition" would de-certify 304/1896
+/// pool ontologies (16%, including `ro`, which is corpus-verified complete);
+/// this predicate hits 41 (2.2%).
+///
+/// Runs on `internal.axioms`, i.e. POST `decompose_long_chains` — so a
+/// user-written length-3 chain (decomposed into two length-2 chains through an
+/// aux role) is caught by the same condition, which is correct: it is the same
+/// missing composed key.
+///
+/// Polarity: role ids are compared ignoring inverse marks. That can only ADD
+/// rejections (conservative direction — a rejection merely routes to the hybrid
+/// path), and the surrounding gates reject inverse-position roles per-axiom
+/// anyway.
+fn has_composed_chain_range(internal: &InternalOntology) -> bool {
+    use owl_dl_core::ir::RoleId;
+    use owl_dl_core::ontology::SubRolePath;
+    let mut chain_sups: HashSet<RoleId> = HashSet::new();
+    let mut chains: Vec<(Vec<RoleId>, RoleId)> = Vec::new();
+    let mut role_sups: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
+    let mut ranged: HashSet<RoleId> = HashSet::new();
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf { sub, sup } => match sub {
+                SubRolePath::Chain(parts) => {
+                    chain_sups.insert(sup.role_id());
+                    chains.push((parts.iter().map(|r| r.role_id()).collect(), sup.role_id()));
+                }
+                SubRolePath::Role(r) => {
+                    role_sups
+                        .entry(r.role_id())
+                        .or_default()
+                        .push(sup.role_id());
+                }
+            },
+            Axiom::EquivalentObjectProperties(roles) => {
+                for a in roles {
+                    for b in roles {
+                        if a.role_id() != b.role_id() {
+                            role_sups.entry(a.role_id()).or_default().push(b.role_id());
+                        }
+                    }
+                }
+            }
+            Axiom::ObjectPropertyRange { role, .. } => {
+                ranged.insert(role.role_id());
+            }
+            _ => {}
+        }
+    }
+    if chains.len() < 2 || ranged.is_empty() {
+        return false;
+    }
+    // Effective range: `r` or anything above it in the (simple-inclusion) role
+    // hierarchy carries a range. Bounded walk with a visited set — inclusions
+    // can be cyclic (mutually equivalent roles).
+    let eff_ranged = |r: RoleId| -> bool {
+        let mut seen: HashSet<RoleId> = HashSet::new();
+        let mut stack = vec![r];
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            if ranged.contains(&x) {
+                return true;
+            }
+            if let Some(ss) = role_sups.get(&x) {
+                stack.extend(ss.iter().copied());
+            }
+        }
+        false
+    };
+    chains.iter().any(|(parts, sup)| {
+        parts.iter().any(|p| p != sup && chain_sups.contains(p)) && eff_ranged(*sup)
+    })
+}
+
 pub(crate) fn is_pure_el(internal: &InternalOntology) -> bool {
     is_pure_el_impl(internal, false)
 }
@@ -1947,6 +2045,11 @@ pub(crate) fn is_pure_el(internal: &InternalOntology) -> bool {
 /// so an EL `TBox` carrying a big `ABox` is still classified completely by the
 /// saturation fast path.
 fn is_pure_el_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
+    // #108: composed-chain ranges are outside the saturator's pair-keyed fold —
+    // a SET-level property the per-axiom loop below cannot see.
+    if has_composed_chain_range(internal) {
+        return false;
+    }
     let bare = BareRoleDecls::analyze(internal);
     internal
         .axioms
@@ -2335,6 +2438,11 @@ pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
 /// assertions declare no role characteristics), so only the final per-axiom
 /// allowlist walk is `TBox`-restricted.
 fn saturator_complete_fragment_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
+    // #108: same set-level rejection as `is_pure_el_impl` — see
+    // `has_composed_chain_range`.
+    if has_composed_chain_range(internal) {
+        return false;
+    }
     // The set of roles for which conversion emitted a derived `∃R.⊤ ⊑ ≤1 R`
     // GCI: `FunctionalRole(r) → r` (FORWARD only — `derive_functional_max_
     // cardinality` does not emit for inverse-functional).

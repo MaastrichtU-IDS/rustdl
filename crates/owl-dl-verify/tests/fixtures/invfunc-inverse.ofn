@@ -1,0 +1,10 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/invfunc>
+Declaration(Class(:A))
+Declaration(Class(:C))
+Declaration(Class(:D))
+Declaration(ObjectProperty(:p))
+InverseFunctionalObjectProperty(ObjectInverseOf(:p))
+DisjointClasses(:C :D)
+EquivalentClasses(:A ObjectIntersectionOf(ObjectSomeValuesFrom(:p :C) ObjectSomeValuesFrom(:p :D)))
+)

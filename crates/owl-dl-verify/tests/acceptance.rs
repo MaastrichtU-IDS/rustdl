@@ -198,9 +198,15 @@ fn instrument_never_verifies_a_classification_that_disagrees_with_the_oracle() {
         "chainrange",
         "chainrange_ctl",
         // Added when #84 made `chainrange` agree and emptied the detection set
-        // (this test fired, as designed). Its own oracle records why it is the
-        // right replacement: same family, still open, HermiT-confirmed.
+        // (this test fired, as designed). The #108 certificate fix then made
+        // THIS one agree too (2026-09-21) — kept as an agreement fixture, with
+        // `invfunc-inverse` (below) taking over detection duty.
         "chaincompose",
+        // Added when #108's fix emptied the detection set AGAIN (third firing:
+        // chainrange -> chaincompose -> this). The #149 miss: rustdl silently
+        // drops `InverseFunctional(p⁻)` (= `Functional(p)`), so `A` is reported
+        // satisfiable where it is provably unsatisfiable. See its oracle.
+        "invfunc-inverse",
         "unsatconj",
         "flat-mono",
         "label-closure-range-sub",
@@ -360,8 +366,9 @@ fn the_detection_set_has_not_silently_gone_vacuous() {
         "cascade",
         "chainrange",
         "chainrange_ctl",
-        // See the note on the same entry in the list above.
+        // See the notes on the same entries in the list above.
         "chaincompose",
+        "invfunc-inverse",
         "unsatconj",
         "flat-mono",
         "label-closure-range-sub",
@@ -386,6 +393,33 @@ fn the_detection_set_has_not_silently_gone_vacuous() {
          a new detection fixture rather than leaving a green suite that tests \
          nothing — or `classification_matches_oracle` has broken in the \
          always-true direction."
+    );
+}
+
+/// `chaincompose.ofn`'s role change (2026-09-21, #108), pinned like `cascade`'s
+/// below so it is explicit rather than inferred from a passing suite.
+///
+/// BEFORE the #108 fix, rustdl's classification missed `C ⊑ D` while certifying
+/// itself complete (pure-EL) — a genuine detection. The fix de-certifies
+/// composed-chain-plus-range ontologies (`has_composed_chain_range`), so
+/// `classify_internal` now routes to the hybrid path and derives the entailment:
+/// rustdl AGREES with the `HermiT` oracle here.
+///
+/// KNOWN RESIDUAL, recorded on #160: the CLI `classify` output still omits the
+/// `C ⊑ D` row at every `--pair-timeout-ms` (recovered by
+/// `RUSTDL_CLASSIFY_SAME_TIER=1`), while the library `classify_internal` this
+/// test drives derives it. That CLI/library divergence is its own lead.
+///
+/// Fails loudly if rustdl stops agreeing — that is a completeness regression in
+/// the #108 gate or the hybrid path it routes to.
+#[test]
+fn chaincompose_now_agrees_with_its_oracle() {
+    let internal = load_fixture("chaincompose");
+    let oracle = load_oracle("chaincompose");
+    assert!(
+        classification_matches_oracle(&internal, &oracle),
+        "the #108 certificate fix routes composed-chain ranges to the hybrid path; \
+         losing C ⊑ D again means the gate or that path regressed"
     );
 }
 

@@ -1316,6 +1316,51 @@ pub(crate) fn classify_internal_with_timeout(
     Ok(c)
 }
 
+/// Fold one probe's worker-local [`ClassificationStats`] into the run's
+/// aggregate. This list is HAND-MAINTAINED and was previously duplicated
+/// inline at the sweep's fold site; a counter absent from it silently reads 0
+/// (the #139 `stall_tail_skips` bug shipped exactly that way). Every sweep-style
+/// probe site (the defined-sup sweep and the Layer B label-driven pass) folds
+/// through THIS function so they cannot drift from one another. The tier walk
+/// has its own merge (different worker semantics) — when adding a counter,
+/// update BOTH there and here.
+fn fold_probe_stats(stats: &mut ClassificationStats, sd: ClassificationStats) {
+    stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
+    stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
+    stats.diverged_tail_skips += sd.diverged_tail_skips;
+    stats.stall_tail_skips += sd.stall_tail_skips;
+    stats.fallthrough_ran += sd.fallthrough_ran;
+    stats.fallthrough_subsumed += sd.fallthrough_subsumed;
+    stats.fallthrough_notsubsumed += sd.fallthrough_notsubsumed;
+    stats.fallthrough_noverdict += sd.fallthrough_noverdict;
+    stats.fallthrough_from_diverged += sd.fallthrough_from_diverged;
+    stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
+    stats.timed_out_pairs += sd.timed_out_pairs;
+    stats
+        .timed_out_pair_ids
+        .extend(sd.timed_out_pair_ids.iter().copied());
+    stats.hyper_proven_pairs += sd.hyper_proven_pairs;
+    stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
+    stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
+    stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
+    stats.counting_verified_pairs += sd.counting_verified_pairs;
+    stats.snapshot_replay_used += sd.snapshot_replay_used;
+    stats.snapshot_replay_subsumed += sd.snapshot_replay_subsumed;
+    stats.snapshot_replay_not_subsumed += sd.snapshot_replay_not_subsumed;
+    stats.snapshot_replay_aborts += sd.snapshot_replay_aborts;
+    stats.snapshot_cache_falls_through += sd.snapshot_cache_falls_through;
+    stats.label_cache_pruned += sd.label_cache_pruned;
+    stats.label_cache_prunes_verified += sd.label_cache_prunes_verified;
+    stats.label_cache_pass_through += sd.label_cache_pass_through;
+    stats.label_cache_misses += sd.label_cache_misses;
+    for (k, v) in sd.pairs_per_sub {
+        *stats.pairs_per_sub.entry(k).or_insert(0) += v;
+    }
+    for (i, cnt) in sd.wedge_cost_histogram_ms.iter().enumerate() {
+        stats.wedge_cost_histogram_ms[i] += cnt;
+    }
+}
+
 /// The body of [`classify_internal_with_timeout`]. Separated so the wrapper can
 /// stamp `stats.dropped` on every return path — this function has several
 /// (pure-EL fast path, inconsistency short-circuit, the pairwise loop), and a
@@ -4334,32 +4379,18 @@ fn classify_top_down_internal_impl(
         }
         set.into_iter().collect()
     };
-    // SP1.1 Layer B: broaden the sweep's sup-side from defined-classes-only to
-    // LABEL-DRIVEN. With the classify oracle now hierarchy-aware (Layer A),
-    // `labels(cand)` includes inverse/symmetric-domain-derived subsumers, so any
-    // such sup appears in some label set. Union those in; the existing
-    // label-gated sweep body then tests them (a sup in no label set adds zero
-    // oracle calls). Sound: the sweep only ADDS candidate pairs; every recorded
-    // subsumption is oracle-confirmed and the label gate only prunes.
-    // DEFAULT OFF (RUSTDL_CLASSIFY_SAME_TIER=1 to enable): corpus-invisible gain
-    // at ~2× wall cost. When off, sweep_sups == defined_sups (pre-SP1.1 behavior).
-    let sweep_sups: Vec<usize> = if crate::classify_same_tier_enabled() {
-        let mut set: std::collections::HashSet<usize> = defined_sups.iter().copied().collect();
-        for oracle in &label_cache {
-            if let crate::LabelOracle::Sat { labels, .. } = oracle {
-                for &sup_id in labels {
-                    if let Some(i) = reported.report_pos(sup_id)
-                        && !unsatisfiable_idxs.contains(&i)
-                    {
-                        set.insert(i);
-                    }
-                }
-            }
-        }
-        set.into_iter().collect()
-    } else {
-        defined_sups.clone()
-    };
+    // SP1.1 Layer B moved (2026-09-22): it used to UNION every label-set member
+    // into this sweep's sup side, which made the loop below enumerate
+    // O(|sups| × n) candidate pairs (62M pruned pairs on `ore_ont_9577`) and —
+    // worse — gave every NoVerdict-oracle candidate a budget-burning tableau
+    // probe against EVERY label-derived sup: a 610-ontology paired sweep found
+    // 27 ontologies going complete → DNF from exactly that. Every measured
+    // recovery (`ore_ont_16457` +695, `9577`, `15066`, `chaincompose`) is a
+    // label PASS-THROUGH pair (`misses=0` on all), so Layer B is now the
+    // INVERTED, label-driven pass after this loop: it generates only the pairs
+    // whose sup is in `labels(cand)` — the pairs this sweep would have
+    // pass-through-probed — and never enumerates the rest.
+    let sweep_sups: Vec<usize> = defined_sups.clone();
     // Sweep budget: honour the caller's per_pair_timeout so that
     // pairs requiring more than the default 200 ms (e.g. ones that
     // need the hyper wedge but converge in 1–5 s) aren't silently
@@ -4535,40 +4566,107 @@ fn classify_top_down_internal_impl(
             })
             .collect();
         for (cand, subsumed, sd) in probe_results {
-            stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
-            stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
-            stats.diverged_tail_skips += sd.diverged_tail_skips;
-            stats.stall_tail_skips += sd.stall_tail_skips;
-            stats.fallthrough_ran += sd.fallthrough_ran;
-            stats.fallthrough_subsumed += sd.fallthrough_subsumed;
-            stats.fallthrough_notsubsumed += sd.fallthrough_notsubsumed;
-            stats.fallthrough_noverdict += sd.fallthrough_noverdict;
-            stats.fallthrough_from_diverged += sd.fallthrough_from_diverged;
-            stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
-            stats.timed_out_pairs += sd.timed_out_pairs;
-            stats
-                .timed_out_pair_ids
-                .extend(sd.timed_out_pair_ids.iter().copied());
-            stats.hyper_proven_pairs += sd.hyper_proven_pairs;
-            stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
-            stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
-            stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
-            stats.counting_verified_pairs += sd.counting_verified_pairs;
-            stats.snapshot_replay_used += sd.snapshot_replay_used;
-            stats.snapshot_replay_subsumed += sd.snapshot_replay_subsumed;
-            stats.snapshot_replay_not_subsumed += sd.snapshot_replay_not_subsumed;
-            stats.snapshot_replay_aborts += sd.snapshot_replay_aborts;
-            stats.snapshot_cache_falls_through += sd.snapshot_cache_falls_through;
-            stats.label_cache_pruned += sd.label_cache_pruned;
-            stats.label_cache_prunes_verified += sd.label_cache_prunes_verified;
-            stats.label_cache_pass_through += sd.label_cache_pass_through;
-            stats.label_cache_misses += sd.label_cache_misses;
-            for (k, v) in sd.pairs_per_sub {
-                *stats.pairs_per_sub.entry(k).or_insert(0) += v;
+            fold_probe_stats(&mut stats, sd);
+            if subsumed && !direct_supers[cand].contains(&sup) {
+                direct_supers[cand].push(sup);
+                direct_children[sup].push(cand);
             }
-            for (i, cnt) in sd.wedge_cost_histogram_ms.iter().enumerate() {
-                stats.wedge_cost_histogram_ms[i] += cnt;
+        }
+    }
+
+    // SP1.1 Layer B (RUSTDL_CLASSIFY_SAME_TIER=1): label-driven same-tier pass.
+    // The tier walk never compares same-tier classes (#160 Gap 1), and the
+    // hierarchy-aware label oracle (Layer A) is where the engine's evidence for
+    // such a pair lives: `sup ∈ labels(cand)`. This pass enumerates exactly
+    // those pairs — the ones the old sup-union sweep would have pass-through
+    // probed — and verifies each via the tableau (`trust_sat=true`), so every
+    // recorded edge is oracle-confirmed: sound, FP-safe by the same argument as
+    // the sweep above.
+    //
+    // What it deliberately does NOT do, and why that is the design: the old
+    // shape also probed every NoVerdict-oracle candidate against every
+    // label-derived sup. Those pairs have no positive evidence, hit ~0% (every
+    // measured recovery is a pass-through pair), and burn a full per-pair
+    // budget each — the mechanism that took 27 of 610 ORE ontologies from
+    // complete to DNF. Dropping them is a MISS at worst, and one the default
+    // path misses anyway.
+    if crate::classify_same_tier_enabled() {
+        // Pair generation: sups from labels, minus self/unsat/defined (pass 1
+        // above already probed defined sups), minus closure-known.
+        let mut by_sup: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
+        for cand in 0..n {
+            if unsatisfiable_idxs.contains(&cand) {
+                continue;
             }
+            if let Some(crate::LabelOracle::Sat { labels, .. }) = label_cache.get(cand) {
+                let cand_id = reported.class_id(cand);
+                for &sup_id in labels {
+                    if let Some(sup) = reported.report_pos(sup_id)
+                        && sup != cand
+                        && !unsatisfiable_idxs.contains(&sup)
+                        && !defined_set.contains(&sup)
+                        && !closure.contains(cand_id, sup_id)
+                    {
+                        by_sup.entry(sup).or_default().push(cand);
+                    }
+                }
+            }
+        }
+        // Drop pairs the built hierarchy already implies: one descendants-BFS
+        // per sup THAT HAS PAIRS (the old shape did this for every swept sup).
+        let mut todo: Vec<(usize, usize)> = Vec::new();
+        for (sup, cands) in by_sup {
+            if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
+                // Same invariant-safe marker + bail as the sweep above.
+                let sm = u32::try_from(sup).expect("class index fits in u32");
+                stats.timed_out_pairs += 1;
+                stats.timed_out_pair_ids.push((sm, sm));
+                break;
+            }
+            let mut known: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            let mut frontier = direct_children[sup].clone();
+            while let Some(c) = frontier.pop() {
+                if known.insert(c) {
+                    frontier.extend(direct_children[c].iter().copied());
+                }
+            }
+            todo.extend(
+                cands
+                    .into_iter()
+                    .filter(|c| !known.contains(c))
+                    .map(|c| (c, sup)),
+            );
+        }
+        let probe_results: Vec<(usize, usize, bool, ClassificationStats)> = todo
+            .par_iter()
+            .map(|&(cand, sup)| {
+                let cand_id = reported.class_id(cand);
+                let sup_id = reported.class_id(sup);
+                let mut local_stats = ClassificationStats::default();
+                // Pass-through semantics: sup ∈ labels(cand) might be model
+                // coincidence; verify via subsumes_via_tableau, exactly as the
+                // sweep's pass-through arm.
+                local_stats.label_cache_pass_through += 1;
+                let subsumed = subsumes_via_tableau(
+                    &prepared,
+                    &reported,
+                    cand_id,
+                    sup_id,
+                    Some(sweep_budget),
+                    global_deadline,
+                    true,
+                    &counting_relevant,
+                    &mut local_stats,
+                )
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+                (cand, sup, subsumed, local_stats)
+            })
+            .collect();
+        for (cand, sup, subsumed, sd) in probe_results {
+            fold_probe_stats(&mut stats, sd);
             if subsumed && !direct_supers[cand].contains(&sup) {
                 direct_supers[cand].push(sup);
                 direct_children[sup].push(cand);

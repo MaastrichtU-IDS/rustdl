@@ -2119,18 +2119,31 @@ pub fn counting_pair_verify_enabled() -> bool {
     std::env::var_os("RUSTDL_COUNTING_PAIR_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
-/// Same-tier classify-completeness (SP1.1): carry the role hierarchy into the
-/// classify oracle (Layer A) + broaden the same-tier sweep to label-driven
-/// (Layer B), so inverse/symmetric-domain subsumptions surface in default
-/// classify. DEFAULT OFF — sound (FP=0); with Layer A now default ON, this flag's
-/// own marginal gain is ~12 entailments at ~3× wall. Set `RUSTDL_CLASSIFY_SAME_TIER=1`
-/// to enable.
+/// Same-tier classify-completeness (SP1.1 Layer B): the tier walk never compares
+/// same-tier classes (#160 Gap 1), so engine-derivable same-tier subsumptions are
+/// silently missed. When ON, a label-driven pass probes exactly the pairs with
+/// positive oracle evidence (`sup ∈ labels(cand)`), tableau-verifying each — sound,
+/// FP=0. DEFAULT OFF pending the flip decision. Set `RUSTDL_CLASSIFY_SAME_TIER=1`
+/// to enable (implies Layer A).
 ///
-/// **NOTE (#128, 2026-09-16):** this doc called the gain "corpus-invisible". That was
-/// true of the 9-fixture curated corpus and FALSE on ORE — but the gain belongs to
-/// LAYER A, not to this flag. `classify_role_hierarchy_enabled` is
-/// `ROLE_HIERARCHY || same_tier`, so setting this flag silently enabled Layer A too and
-/// the recovery was mis-attributed here.
+/// **Marginal gain, measured 2026-09-21 against the Layer-A-ON default over the
+/// 610 oracle-backed ORE ontologies: +745 entailments, 0 FP** (`ore_ont_16457`
+/// +695 alone; the earlier "~12 at ~3× wall" figure in this doc was stale).
+///
+/// **IMPLEMENTATION INVERTED 2026-09-22 (#160):** Layer B used to union every
+/// label-set member into the defined-sup sweep's sup side, which (a) enumerated
+/// O(|sups| × n) candidate pairs (62M pruned on `ore_ont_9577`), and (b) gave
+/// every NoVerdict-oracle candidate a budget-burning probe against every such
+/// sup — 27 of 610 ORE ontologies went complete → DNF from exactly that. Every
+/// measured recovery is a label PASS-THROUGH pair (`misses=0` on all probed
+/// ontologies), so the pass now generates those pairs directly and skips the
+/// rest; `ore_ont_16457`'s sweep phase went 24.9 s → 0.9 s with MISSED still 0.
+///
+/// **NOTE (#128, 2026-09-16):** an older version of this doc called the gain
+/// "corpus-invisible". That was true of the 9-fixture curated corpus and FALSE
+/// on ORE — and the pre-#163 recovery belonged to LAYER A, which this flag
+/// silently enabled (`classify_role_hierarchy_enabled` is
+/// `ROLE_HIERARCHY || same_tier`), so it was mis-attributed here.
 #[must_use]
 pub(crate) fn classify_same_tier_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_SAME_TIER").is_some_and(|v| v == "1")
@@ -2138,8 +2151,10 @@ pub(crate) fn classify_same_tier_enabled() -> bool {
 
 /// SP1.1 **Layer A** alone: carry the role hierarchy into the classify oracle
 /// (`HyperCache::{build,decide_with_stats,classify_labels}`) so `role_matches`
-/// can honour sub-roles, declared inverses and symmetry. **DEFAULT OFF**
-/// (`RUSTDL_CLASSIFY_ROLE_HIERARCHY=1` enables) — see the wall measurement below.
+/// can honour sub-roles, declared inverses and symmetry. **DEFAULT ON since
+/// #163 (2026-09-16)**, guarded by `layer_a_affordable` (role-closure cap);
+/// `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` reverts. The wall history below predates
+/// the flip and describes the UNGUARDED cost profile.
 ///
 /// **Split out of `RUSTDL_CLASSIFY_SAME_TIER` for #128.** Layer A (threading)
 /// and Layer B (the label-driven same-tier sweep) shared one flag, and the ~2×

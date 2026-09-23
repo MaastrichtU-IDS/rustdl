@@ -202,11 +202,17 @@ fn instrument_never_verifies_a_classification_that_disagrees_with_the_oracle() {
         // THIS one agree too (2026-09-21) — kept as an agreement fixture, with
         // `invfunc-inverse` (below) taking over detection duty.
         "chaincompose",
-        // Added when #108's fix emptied the detection set AGAIN (third firing:
-        // chainrange -> chaincompose -> this). The #149 miss: rustdl silently
-        // drops `InverseFunctional(p⁻)` (= `Functional(p)`), so `A` is reported
-        // satisfiable where it is provably unsatisfiable. See its oracle.
+        // Added when #108's fix emptied the detection set (third firing), then
+        // CLOSED by #149's polarity normalization — kept as an agreement
+        // fixture, with `invfunc-min-two` (below) taking over detection.
         "invfunc-inverse",
+        // Added when #149's fix emptied the detection set AGAIN (fourth
+        // firing). The DKey bucket-split silent miss from the #42 work:
+        // `≤1 p.DataOneOf(1 2)` never sees its two DataHasValue witnesses
+        // (range vs enumeration bucket), three peer reasoners say unsat, and
+        // the miss exists on THIS harness's own surface (`classify_internal`)
+        // — a first candidate was rejected for being top-down-driver-only.
+        "dkey-maxcard-oneof",
         "unsatconj",
         "flat-mono",
         "label-closure-range-sub",
@@ -369,6 +375,7 @@ fn the_detection_set_has_not_silently_gone_vacuous() {
         // See the notes on the same entries in the list above.
         "chaincompose",
         "invfunc-inverse",
+        "dkey-maxcard-oneof",
         "unsatconj",
         "flat-mono",
         "label-closure-range-sub",
@@ -420,6 +427,24 @@ fn chaincompose_now_agrees_with_its_oracle() {
         classification_matches_oracle(&internal, &oracle),
         "the #108 certificate fix routes composed-chain ranges to the hybrid path; \
          losing C ⊑ D again means the gate or that path regressed"
+    );
+}
+
+/// `invfunc-inverse.ofn`'s role change (#149), pinned cascade-style.
+///
+/// It was the detection fixture from the #108 succession until #149 normalized
+/// `InverseFunctional(p⁻)` to `FunctionalRole(p)` at conversion, whereupon the
+/// unconditional `≤1` GCI made `classify_internal` derive A's unsatisfiability
+/// and rustdl now AGREES with the oracle. Fails loudly if the normalization
+/// regresses.
+#[test]
+fn invfunc_inverse_now_agrees_with_its_oracle() {
+    let internal = load_fixture("invfunc-inverse");
+    let oracle = load_oracle("invfunc-inverse");
+    assert!(
+        classification_matches_oracle(&internal, &oracle),
+        "#149's polarity normalization makes A unsatisfiable here; losing it \
+         again is a conversion regression"
     );
 }
 

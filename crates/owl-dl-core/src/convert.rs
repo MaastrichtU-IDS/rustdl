@@ -2185,9 +2185,30 @@ pub fn convert_component<A: ForIRI>(
         C::FunctionalObjectProperty(ax) => Ok(Some(Axiom::FunctionalRole(
             convert_object_property(&ax.0, vocab)?,
         ))),
-        C::InverseFunctionalObjectProperty(ax) => Ok(Some(Axiom::InverseFunctionalRole(
-            convert_object_property(&ax.0, vocab)?,
-        ))),
+        C::InverseFunctionalObjectProperty(ax) => {
+            let role = convert_object_property(&ax.0, vocab)?;
+            // #149: `InverseFunctional(p⁻)` IS `Functional(p)` — the
+            // characteristics SWAP across polarity (see the identity table on
+            // `expand_role_characteristics`). Normalize here so every consumer
+            // (the unconditional `≤1` GCI, the saturator's FunctionalRole
+            // bitset, `abox_check` P5, the fragment gates) sees the standard
+            // spelling. Without this the axiom sat behind
+            // `inv_func_merge_consumable` and was silently inert on any
+            // ABox-free ontology: `A` reported satisfiable with `dropped`
+            // empty. Cost profile after normalization is identical to the
+            // user having written `FunctionalObjectProperty(:p)`.
+            //
+            // `Functional(p⁻)` is deliberately NOT normalized to
+            // `InverseFunctionalRole(p)`: today it converts to
+            // `FunctionalRole(p⁻)` whose `≤1 p⁻` GCI is emitted
+            // UNCONDITIONALLY and is measured correct — rerouting it through
+            // the gated inverse-functional arm would regress it.
+            if role.is_inverse() {
+                Ok(Some(Axiom::FunctionalRole(role.flip())))
+            } else {
+                Ok(Some(Axiom::InverseFunctionalRole(role)))
+            }
+        }
         C::ReflexiveObjectProperty(ax) => Ok(Some(Axiom::ReflexiveRole(convert_object_property(
             &ax.0, vocab,
         )?))),
@@ -2961,10 +2982,65 @@ pub fn dkey_group_skip_enabled() -> bool {
 /// Same shape as `RUSTDL_DKEY_MERGING_GATE`: seed only where the axiom is consumable.
 fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
     let target = r.role_id();
-    out.axioms.iter().any(|ax| match ax {
+    if out.axioms.iter().any(|ax| match ax {
         Axiom::ObjectPropertyAssertion { role, .. } => role.role_id() == target,
         _ => false,
-    })
+    }) {
+        return true;
+    }
+    // #149, the TBox-aware admission this gate's doc asked for. The emitted GCI
+    // is `∃f.⊤ ⊑ ≤1 f` with `f = r⁻`, and it can only ever fire a merge on a
+    // node with TWO `f`-successors. Admit exactly the ontologies whose TBox can
+    // construct that:
+    //   - two distinct `∃f._` / `≥n f._` generators (they can co-occur on one
+    //     node via conjunction or a shared subsumer), or one `≥n` with n ≥ 2 —
+    //     which with the `≤1` is a clash outright;
+    //   - a single `∃r.{a}`-shaped generator (`ObjectHasValue` lowering): a
+    //     NOMINAL target is shared, so two nodes carrying the concept give `a`
+    //     two `r`-predecessors, i.e. two `f`-successors.
+    // The three ontologies whose 19–47× regression put this gate here
+    // (`ore_ont_9662`, `7532`, `9786`; 8 IF declarations each) stay excluded:
+    // `7532`/`9786` have no inverse-polarity or nominal generators at all, and
+    // `9662`'s three inverse-existentials are on `bearer_of`, not on any of its
+    // IF roles — verified per-role before this predicate was written.
+    //
+    // KNOWN RESIDUAL, recorded rather than modeled away: `ore_ont_13859` gains
+    // +17 Konclude-confirmed rows under UNCONDITIONAL emission yet has no
+    // generator this predicate (or the mental model behind it) can see — no
+    // inverse usage, no HasValue on its IF role, no ABox. Its mechanism is
+    // unexplained; this admission is a strict improvement over the pure-ABox
+    // gate, not a completeness claim.
+    //
+    // Census limits (all in the sound-MISS direction): the pool holds TOLD
+    // forms at this point, so a generator manufactured later by NNF
+    // (`¬∀f.C → ∃f.¬C`) is invisible; and generators on a strict SUB-role of
+    // `f` are not counted (no closed hierarchy exists yet at this stage).
+    let f = r.flip();
+    let mut singles = 0usize;
+    for e in out.concepts.iter_exprs() {
+        let (role, n, filler) = match e {
+            crate::ir::ConceptExpr::Some(q, c) => (*q, 1u32, *c),
+            crate::ir::ConceptExpr::Min(n, q, c) => (*q, *n, *c),
+            _ => continue,
+        };
+        if n == 0 {
+            continue;
+        }
+        if role == f {
+            if n >= 2 {
+                return true;
+            }
+            singles += 1;
+            if singles >= 2 {
+                return true;
+            }
+        } else if role == r
+            && matches!(out.concepts.get(filler), crate::ir::ConceptExpr::Nominal(_))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Emit a derived role-triggered `≤1` GCI for every (forward) functional

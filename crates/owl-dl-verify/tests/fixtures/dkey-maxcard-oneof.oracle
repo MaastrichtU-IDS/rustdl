@@ -1,0 +1,21 @@
+# `≤1 p.DataOneOf(1 2)` with two DataHasValue witnesses (values 1 and 2, both
+# inside the enumeration): A has two distinct in-range values against a ≤1 —
+# UNSATISFIABLE. rustdl reports A satisfiable with `incomplete: false` AND
+# `dropped: {}` — the D10 shape, recorded as a known pre-existing silent miss
+# during the #42 qualified-cardinality work (CLAUDE.md, "KNOWN PRE-EXISTING
+# SILENT MISS"): DataHasValue lowers into the RANGE bucket `[v,v]` while
+# ≤n-over-enumeration lands in the `io:` bucket, and `concrete_domain_clash`
+# checks buckets independently, so the count never sees the witnesses.
+#
+# Adjudicated during that work: HermiT, Konclude AND JFact all call it unsat.
+#
+# This fixture took over the acceptance set's detection when #149's fix made
+# `invfunc-inverse` agree with its oracle (the guard's FOURTH firing:
+# chainrange -> chaincompose -> invfunc-inverse -> this). A first replacement
+# candidate — the #149 inverse-min classify miss — was rejected here because
+# its miss is TOP-DOWN-DRIVER-only and `classification_matches_oracle` drives
+# the n² `classify_internal`, which derives it: the detection set needs misses
+# on the harness's own surface. Verified on that exact surface before
+# committing: `unsat=[]`, `dropped={}`.
+provenance: hermit+konclude+jfact   # three-reasoner adjudication, #42 work (2026-09-06)
+unsatisfiable: A

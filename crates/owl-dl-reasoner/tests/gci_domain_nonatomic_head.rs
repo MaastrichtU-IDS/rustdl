@@ -122,17 +122,74 @@ fn a_source_without_an_r_successor_gains_nothing() {
     );
 }
 
+// The two tests below both read/write `RUSTDL_CLASSIFY_SAME_TIER` state (one relies
+// on the default, one pins `=0`), so they serialize against each other; the other
+// tests in this file pass at either setting and need no lock. Guard pattern from
+// `funcmerge_inverse.rs`.
+static SAME_TIER_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct SetEnvGuard {
+    key: &'static str,
+    prior: Option<std::ffi::OsString>,
+}
+
+impl SetEnvGuard {
+    #[allow(unsafe_code)]
+    fn set(key: &'static str, value: &str) -> Self {
+        let prior = std::env::var_os(key);
+        // SAFETY: set_var is unsafe under edition 2024. Held only for one
+        // test, serialized via SAME_TIER_ENV, restored on Drop.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, prior }
+    }
+}
+
+impl Drop for SetEnvGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: see SetEnvGuard::set.
+        unsafe {
+            match &self.prior {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 #[test]
-fn a_nonatomic_domain_on_the_axiom_spelling_is_a_known_sibling_miss() {
-    // `ObjectPropertyDomain(r, ∃s.S)` is the SAME semantics as the fixed GCI above and
-    // still misses: its arm runs in Pass 1, before `effective_ranges` exists, so the
-    // marker machinery is unavailable there and closing it needs a pass restructure.
-    //
-    // Konclude and HermiT both derive `X ⊑ Z` here, so this pins a REAL gap, not a
-    // design choice. A future fix should FLIP this assertion, never delete it.
+fn the_axiom_spelling_now_holds_via_the_layer_b_default() {
+    // FLIPPED 2026-09-22, as the pinned-gap version of this test instructed.
+    // `ObjectPropertyDomain(r, ∃s.S)` was the #114 sibling miss: its Pass-1 arm
+    // runs before `effective_ranges` exists, so the axiom is still NOT lowered
+    // into the saturator (that residual is pinned by the `=0` test below). What
+    // changed is the RECOVERY ROUTE: the wedge derives `Z` into `labels(X)`, and
+    // the Layer B label-driven pass (RUSTDL_CLASSIFY_SAME_TIER, default ON since
+    // 2026-09-22) tableau-verifies exactly such pairs. Konclude and HermiT both
+    // derive `X ⊑ Z`, so holding is the CORRECT answer.
+    let _lock = SAME_TIER_ENV.lock().unwrap();
     let body = format!("ObjectPropertyDomain(:r ObjectSomeValuesFrom(:s :S))\n{SRC}\n{SINK}");
     assert!(
-        !holds(&body, "X", "Z"),
-        "if this now HOLDS the sibling gap is closed — flip this test and update #114"
+        holds(&body, "X", "Z"),
+        "the Layer B default recovers the #114 sibling; losing it again is a \
+         regression in the label-driven pass or its default"
+    );
+}
+
+#[test]
+fn the_axiom_spelling_lowering_gap_itself_is_still_open() {
+    // The UNDERLYING #114 sibling defect is unfixed: with Layer B off, the
+    // Pass-1 arm still drops the non-atomic domain head and the pair is missed.
+    // A future fix to the LOWERING should flip this assertion, never delete it.
+    let _lock = SAME_TIER_ENV.lock().unwrap();
+    let flag = SetEnvGuard::set("RUSTDL_CLASSIFY_SAME_TIER", "0");
+    let body = format!("ObjectPropertyDomain(:r ObjectSomeValuesFrom(:s :S))\n{SRC}\n{SINK}");
+    let held = holds(&body, "X", "Z");
+    drop(flag);
+    assert!(
+        !held,
+        "the Pass-1 lowering gap has closed — flip this test and update the #114 record"
     );
 }

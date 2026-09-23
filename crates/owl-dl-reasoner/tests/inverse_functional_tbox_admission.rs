@@ -1,11 +1,11 @@
 //! #149, the wide form: `InverseFunctionalObjectProperty` was inert on any
-//! ABox-free ontology — `inv_func_merge_consumable` admitted the derived
+//! `ABox`-free ontology — `inv_func_merge_consumable` admitted the derived
 //! `≤1 r⁻` GCI only when the role had an `ObjectPropertyAssertion`, so a pure
-//! TBox got no constraint and a wrong `satisfiable` with `dropped: {}`.
+//! `TBox` got no constraint and a wrong `satisfiable` with `dropped: {}`.
 //!
 //! The TBox-aware admission (this issue's explicit ask) reasons from what the
 //! GCI can DO: `∃r⁻.⊤ ⊑ ≤1 r⁻` fires a merge only on a node with two
-//! `r⁻`-successors, so admit exactly the ontologies whose TBox can construct
+//! `r⁻`-successors, so admit exactly the ontologies whose `TBox` can construct
 //! that — two `∃r⁻`/`≥n r⁻` generators, one `≥n r⁻` with n ≥ 2, or an
 //! `∃r.{a}` (nominal targets are shared). The bar it must clear is recorded in
 //! the gate's doc: the three ontologies whose 19–47× regression created the

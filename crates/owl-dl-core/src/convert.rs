@@ -3015,7 +3015,7 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
     // forms at this point, so a generator manufactured later by NNF
     // (`¬∀f.C → ∃f.¬C`) is invisible; and generators on a strict SUB-role of
     // `f` are not counted (no closed hierarchy exists yet at this stage).
-    let f = r.flip();
+    let flipped = r.flip();
     let mut singles = 0usize;
     for e in out.concepts.iter_exprs() {
         let (role, n, filler) = match e {
@@ -3026,7 +3026,7 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         if n == 0 {
             continue;
         }
-        if role == f {
+        if role == flipped {
             if n >= 2 {
                 return true;
             }

@@ -2123,8 +2123,7 @@ pub fn counting_pair_verify_enabled() -> bool {
 /// same-tier classes (#160 Gap 1), so engine-derivable same-tier subsumptions are
 /// silently missed. When ON, a label-driven pass probes exactly the pairs with
 /// positive oracle evidence (`sup ∈ labels(cand)`), tableau-verifying each — sound,
-/// FP=0. DEFAULT OFF pending the flip decision. Set `RUSTDL_CLASSIFY_SAME_TIER=1`
-/// to enable (implies Layer A).
+/// FP=0. **DEFAULT ON since 2026-09-22** (`RUSTDL_CLASSIFY_SAME_TIER=0` reverts).
 ///
 /// **Marginal gain, measured 2026-09-21 against the Layer-A-ON default over the
 /// 610 oracle-backed ORE ontologies: +745 entailments, 0 FP** (`ore_ont_16457`
@@ -2146,7 +2145,9 @@ pub fn counting_pair_verify_enabled() -> bool {
 /// `ROLE_HIERARCHY || same_tier`), so it was mis-attributed here.
 #[must_use]
 pub(crate) fn classify_same_tier_enabled() -> bool {
-    std::env::var_os("RUSTDL_CLASSIFY_SAME_TIER").is_some_and(|v| v == "1")
+    // DEFAULT ON since the 2026-09-22 inversion (house idiom: empty enables,
+    // `=0` reverts). The old `== "1"` parse also silently ignored `=true`.
+    std::env::var_os("RUSTDL_CLASSIFY_SAME_TIER").is_none_or(|v| v != "0")
 }
 
 /// SP1.1 **Layer A** alone: carry the role hierarchy into the classify oracle
@@ -2285,8 +2286,16 @@ pub fn classify_role_hierarchy_max_closure() -> usize {
 }
 
 pub(crate) fn classify_role_hierarchy_enabled() -> bool {
+    // The historical `|| classify_same_tier_enabled()` implication is GONE
+    // (2026-09-22): it existed so an explicit SAME_TIER=1 opt-in could not run
+    // Layer B on hierarchy-blind labels while Layer A defaulted OFF. With both
+    // layers default ON it was redundant — and actively harmful: with
+    // SAME_TIER default ON it would have made `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`
+    // (the documented #139 escape hatch) silently inert. Consequence: setting
+    // `=0` here now also strips hierarchy-derived sups out of the labels Layer B
+    // reads — Layer B stays sound (every pair is tableau-verified), it just
+    // recovers less, which is what "turn the role hierarchy off" should mean.
     std::env::var_os("RUSTDL_CLASSIFY_ROLE_HIERARCHY").is_none_or(|v| v != "0")
-        || classify_same_tier_enabled()
 }
 
 /// Defined-sup sweep VERIFY mode. For a class defined via a non-EL body
@@ -13274,7 +13283,11 @@ mod internal_flag_defaults {
             (
                 "RUSTDL_CLASSIFY_SAME_TIER",
                 super::classify_same_tier_enabled,
-                false,
+                // Flipped ON 2026-09-22 with the label-driven inversion: +793
+                // entailments / FP=0 over the 610-oracle ORE sweep, TO flips
+                // symmetric (load), the old implementation's 27 complete→DNF
+                // regressions structurally removed.
+                true,
             ),
             (
                 "RUSTDL_FRAGMENT_BARE_DECL",

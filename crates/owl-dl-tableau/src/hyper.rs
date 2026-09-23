@@ -966,6 +966,17 @@ pub struct ClauseIndexes {
     /// TARGET) never re-fires. This index closes that gap: fire at `tgt`.
     /// `match_body` re-verifies, so an over-fire is a perf no-op.
     inverse_first_trigger: Vec<Vec<usize>>,
+    /// By role index: clauses with a FIRST-leg body role atom on a POSITIVE
+    /// (named, non-symmetric) role `Atom::Role(Named(r), X, v)`. The mirror of
+    /// `inverse_first_trigger` (#135): an INVERSE-polarity edge `src —r⁻→ tgt`
+    /// asserts `r(tgt, src)`, i.e. it gives the edge TARGET a positive
+    /// `r`-successor — but `Event::Edge` fires `role_trigger` only at the edge
+    /// SOURCE, so a positive first-leg clause (e.g. a chain `r∘p ⊑ p`) is never
+    /// woken at `tgt` and the wedge silently misses the pair `classify` then
+    /// omits. Dispatch is GATED on `role.is_inverse()`, so ontologies with no
+    /// inverse-polarity edges pay nothing. `match_body` re-verifies, so an
+    /// over-fire is a perf no-op, never soundness.
+    pos_first_target_trigger: Vec<Vec<usize>>,
     /// Clauses with an empty body (`⊤ → …`) — fire at every node.
     empty_body: Vec<usize>,
     /// NON-Horn (disjunctive) clauses in ascending clause-id order, each paired
@@ -1088,6 +1099,7 @@ pub struct ClauseIndexDelta {
     role_trigger: Vec<(usize, Vec<usize>)>,
     role_back_trigger: Vec<(usize, Vec<usize>)>,
     inverse_first_trigger: Vec<(usize, Vec<usize>)>,
+    pos_first_target_trigger: Vec<(usize, Vec<usize>)>,
     empty_body: Vec<usize>,
     nonhorn: Vec<(usize, Option<ClassId>)>,
     /// Pairwise disjointness contributed by the extra clauses (the per-pair
@@ -1132,6 +1144,7 @@ trait ClauseIndexSink {
     fn push_role_trigger(&mut self, key: usize, ci: usize);
     fn push_role_back_trigger(&mut self, key: usize, ci: usize);
     fn push_inverse_first_trigger(&mut self, key: usize, ci: usize);
+    fn push_pos_first_target_trigger(&mut self, key: usize, ci: usize);
 }
 
 fn push_dense(v: &mut Vec<Vec<usize>>, key: usize, ci: usize) {
@@ -1173,6 +1186,9 @@ impl ClauseIndexSink for ClauseIndexes {
     fn push_inverse_first_trigger(&mut self, key: usize, ci: usize) {
         push_dense(&mut self.inverse_first_trigger, key, ci);
     }
+    fn push_pos_first_target_trigger(&mut self, key: usize, ci: usize) {
+        push_dense(&mut self.pos_first_target_trigger, key, ci);
+    }
 }
 
 impl ClauseIndexSink for ClauseIndexDelta {
@@ -1204,6 +1220,9 @@ impl ClauseIndexSink for ClauseIndexDelta {
     }
     fn push_inverse_first_trigger(&mut self, key: usize, ci: usize) {
         Self::push_trigger(&mut self.inverse_first_trigger, key, ci);
+    }
+    fn push_pos_first_target_trigger(&mut self, key: usize, ci: usize) {
+        Self::push_trigger(&mut self.pos_first_target_trigger, key, ci);
     }
 }
 
@@ -1298,6 +1317,28 @@ fn index_one_clause<S: ClauseIndexSink>(
                         for &sub in h.sub_roles(r.role_id()) {
                             if sub != r.role_id() {
                                 sink.push_inverse_first_trigger(sub.index() as usize, ci);
+                            }
+                        }
+                    }
+                }
+                // #135, the MIRROR of the arm above: a POSITIVE first leg
+                // `Role(Named(r), X, v)` is satisfied at the TARGET of an
+                // INVERSE-polarity edge (`src —r⁻→ tgt` is `r(tgt, src)`), and
+                // `role_trigger` only fires at the SOURCE — so a chain like
+                // `r ∘ p ⊑ p` never wakes at the witness a `∃r⁻`-lowering
+                // created, and the wedge misses a pair `subclass` proves.
+                // Filed in a SEPARATE table whose dispatch is gated on
+                // `role.is_inverse()`, so the (overwhelmingly common) ontology
+                // with no inverse-polarity edges pays zero extra fires.
+                // Symmetric first legs are excluded — the arm above already
+                // files them target-side for every edge polarity.
+                if *u == X && !r.is_inverse() && !is_symmetric {
+                    sink.push_pos_first_target_trigger(role_id_index(*r), ci);
+                    // Same sub-role widening, same reason as both siblings above.
+                    if let Some(h) = sym {
+                        for &sub in h.sub_roles(r.role_id()) {
+                            if sub != r.role_id() {
+                                sink.push_pos_first_target_trigger(sub.index() as usize, ci);
                             }
                         }
                     }
@@ -2576,6 +2617,37 @@ impl<'c> HyperEngine<'c> {
                         let ci = self.extra_indexes.inverse_first_trigger[dp].1[i];
                         if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
                             return FireOutcome::Clash;
+                        }
+                    }
+                }
+                // #135: an INVERSE-polarity edge gives its TARGET a positive
+                // `role_id`-successor, so positive first-leg clauses must wake
+                // there too. Gated on the edge's polarity: a forward edge gives
+                // the target only an inverse successor, which the table above
+                // already covers, and gating keeps this free when no
+                // inverse-polarity edge is ever created.
+                if role.is_inverse() {
+                    let n_pos = self
+                        .indexes
+                        .pos_first_target_trigger
+                        .get(key)
+                        .map_or(0, Vec::len);
+                    for i in 0..n_pos {
+                        let ci = self.indexes.pos_first_target_trigger[key][i];
+                        if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
+                            return FireOutcome::Clash;
+                        }
+                    }
+                    if let Some(dp) = ClauseIndexDelta::trigger_pos(
+                        &self.extra_indexes.pos_first_target_trigger,
+                        key,
+                    ) {
+                        let d_pos = self.extra_indexes.pos_first_target_trigger[dp].1.len();
+                        for i in 0..d_pos {
+                            let ci = self.extra_indexes.pos_first_target_trigger[dp].1[i];
+                            if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
+                                return FireOutcome::Clash;
+                            }
                         }
                     }
                 }

@@ -36,16 +36,19 @@
 //! **Acceptance criterion for anything added here: it must fail under that
 //! mutation.** A test that survives it is not a guard.
 //!
-//! # Why the positives query `is_subclass_of`, not `classify`
+//! # `is_subclass_of` positives AND `classify` positives
 //!
 //! The chain rule lives in the classic tableau, which is what
-//! [`is_subclass_of`] drives. Default `classify` answers this shape EARLIER — the
-//! hypertableau wedge decides the pair (and the label heuristic prunes it on the
-//! wedge's labels) — and the wedge carries its own copy of this gap, so the #128
-//! ontology still classifies wrongly. That remaining gap is pinned separately by
-//! `default_classify_still_misses_the_symmetric_chain_leg`, per the
-//! pin-the-defect-visibly convention in
-//! `owl-dl-verify/tests/known_limitations.rs`.
+//! [`is_subclass_of`] drives; the `holds` positives below pin that (#133). The
+//! hypertableau wedge — which decides pairs on the default `classify` path —
+//! carried its own copy of the gap (#135): the canonicaliser turns a declared
+//! inverse pair into inverse-POLARITY atoms, and a positive first-leg clause was
+//! never woken at an inverse edge's TARGET (`pos_first_target_trigger` in
+//! `hyper.rs` closes it; engine-level tests in
+//! `owl-dl-tableau/tests/pos_first_leg_target_trigger.rs`). The
+//! `classify_holds` positives below pin the end-to-end recovery. (An older
+//! revision of this header referenced a pinned classify-miss test by a name that
+//! no longer exists; the miss it pinned is the one #135 fixed.)
 //!
 //! # The negatives are the point of this file
 //!
@@ -280,5 +283,57 @@ fn default_classify_now_finds_the_symmetric_chain_leg() {
     assert!(
         holds(&ofn, "T1a", "T1b"),
         "and the complete path must still agree"
+    );
+}
+
+#[test]
+fn default_classify_derives_the_declared_inverse_chain_pair() {
+    // #135 END-TO-END. Same fixture as `a_declared_inverse_pair_fires_the_chain_at_
+    // the_successor`, queried through default `classify` — the surface the issue
+    // reports. Before `pos_first_target_trigger` the wedge answered Sat, the label
+    // oracle never carried T1b, and classify silently omitted the pair `subclass`
+    // proves.
+    let ofn = format!(
+        "{HEAD}InverseObjectProperties(:co :s)\n\
+SubObjectPropertyOf(ObjectPropertyChain(:co :p) :p)\n\
+EquivalentClasses(:T1a ObjectIntersectionOf(\
+ObjectSomeValuesFrom(:s :Y) ObjectSomeValuesFrom(:p :Pn)))\n\
+EquivalentClasses(:T1b ObjectSomeValuesFrom(:s ObjectIntersectionOf(\
+:Y ObjectSomeValuesFrom(:p :Pn))))\n)\n"
+    );
+    assert!(
+        classify_holds(&ofn, "T1a", "T1b"),
+        "classify must agree with subclass on the declared-inverse chain pair (#135)"
+    );
+}
+
+#[test]
+fn default_classify_derives_the_raw_inverse_chain_pair() {
+    // The canon-free variant: `ObjectInverseOf(:co)` written directly, so this
+    // cannot pass via `build_inverse_canon` — it isolates the trigger fix itself.
+    let ofn = format!(
+        "{HEAD}SubObjectPropertyOf(ObjectPropertyChain(:co :p) :p)\n\
+EquivalentClasses(:T1a ObjectIntersectionOf(\
+ObjectSomeValuesFrom(ObjectInverseOf(:co) :Y) ObjectSomeValuesFrom(:p :Pn)))\n\
+EquivalentClasses(:T1b ObjectSomeValuesFrom(ObjectInverseOf(:co) ObjectIntersectionOf(\
+:Y ObjectSomeValuesFrom(:p :Pn))))\n)\n"
+    );
+    assert!(
+        classify_holds(&ofn, "T1a", "T1b"),
+        "classify must derive the pair with a raw inverse-polarity first hop (#135)"
+    );
+}
+
+#[test]
+fn default_classify_does_not_walk_a_plain_role_backwards() {
+    // FP guard on the classify surface: the same shape with NO inverse pair and no
+    // symmetry — `co(x,y)` alone never licenses `co(y,x)`, through the wedge as
+    // much as through the tableau. A dispatch that woke positive first legs at the
+    // target of FORWARD edges (rather than inverse-polarity ones) and a matcher
+    // defect together could derive this; hold the line here.
+    let ofn = two_definitions("");
+    assert!(
+        !classify_holds(&ofn, "T1a", "T1b"),
+        "no characteristic licenses the backward hop — classify deriving this is an FP"
     );
 }

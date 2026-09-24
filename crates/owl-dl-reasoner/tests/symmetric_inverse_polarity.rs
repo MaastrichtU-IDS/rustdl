@@ -26,11 +26,11 @@
 //! Those carry the same `!role.is_inverse()` guard but are **not** interchangeable
 //! across polarity — they SWAP. `Functional(p⁻)` is inverse-functional `p`, and
 //! `InverseFunctional(p⁻)` is functional `p`. Relaxing their guard the same way
-//! would be unsound, and their inverse-polarity handling involves a second emission
-//! site (`derive_functional_max_cardinality` in `owl-dl-core/src/convert.rs`), so it
-//! is tracked separately. `inverse_functional_on_an_inverse_role_is_still_missed`
-//! below pins today's behaviour there so the gap cannot be mistaken for this fix's
-//! business, and fails loudly if it is ever closed.
+//! would be unsound. That gap was closed by #149 the SWAP way: conversion
+//! normalizes `InverseFunctional(p⁻)` to `FunctionalRole(p)`
+//! (`convert.rs`), and `inverse_functional_on_an_inverse_role_is_applied`
+//! below (flipped from the pinned-gap test, per its own instruction) plus its
+//! wrong-polarity FP guard pin both directions.
 
 #![allow(clippy::unwrap_used)]
 
@@ -126,19 +126,14 @@ fn symmetry_is_not_invented_where_it_was_not_declared() {
 }
 
 #[test]
-fn inverse_functional_on_an_inverse_role_is_still_missed() {
-    // PINNED KNOWN GAP, deliberately not `#[ignore]`d — see
-    // `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
-    //
-    // `InverseFunctional(p⁻)` IS `Functional(p)`, so with `C`/`D` disjoint the class
-    // `A ≡ ∃p.C ⊓ ∃p.D` is unsatisfiable. rustdl reports it satisfiable, with an
-    // EMPTY `dropped` — the same silent-miss shape #144 fixed for symmetry, but a
-    // different fix: these characteristics SWAP across polarity rather than being
-    // interchangeable, and a second emission site
-    // (`derive_functional_max_cardinality`) is involved.
-    //
-    // Pinned here, next to its sibling, so the two are not confused. If this starts
-    // failing the gap has been closed — flip it to a positive and delete this note.
+fn inverse_functional_on_an_inverse_role_is_applied() {
+    // FLIPPED (#149), as the pinned-gap version of this test instructed.
+    // `InverseFunctional(p⁻)` IS `Functional(p)`; conversion now normalizes the
+    // axiom to `FunctionalRole(p)` (`convert.rs`, the
+    // `InverseFunctionalObjectProperty` arm), so the unconditional `≤1 p` GCI,
+    // the saturator's functional bitset and `abox_check` P5 all see it. With
+    // `C`/`D` disjoint, `A ≡ ∃p.C ⊓ ∃p.D` is UNSATISFIABLE — the two
+    // `p`-successors merge and clash.
     let ofn = "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/f>\n\
 Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:D))\n\
 Declaration(ObjectProperty(:p))\n\
@@ -149,8 +144,31 @@ ObjectSomeValuesFrom(:p :C) ObjectSomeValuesFrom(:p :D)))\n)\n";
     let sat = owl_dl_reasoner::is_class_satisfiable(&parse(ofn), "http://ex.org/A")
         .expect("satisfiability query");
     assert!(
+        !sat,
+        "InverseFunctional(p⁻) is Functional(p): A must be unsatisfiable (#149)"
+    );
+}
+
+#[test]
+fn inverse_functional_normalization_does_not_constrain_the_wrong_role() {
+    // FP GUARD for the #149 normalization: flipping the characteristic the WRONG
+    // way (`InverseFunctional(p⁻)` read as `InverseFunctional(p)`, i.e. a `≤1`
+    // on `p⁻`) would merge the SOURCES of `p`-edges instead of the targets.
+    // Here two ∃p⁻ successors of `A` must NOT merge: `InverseFunctional(p⁻)` =
+    // `Functional(p)` says nothing about p⁻-successor multiplicity.
+    let ofn = "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/f2>\n\
+Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+Declaration(ObjectProperty(:p))\n\
+InverseFunctionalObjectProperty(ObjectInverseOf(:p))\n\
+DisjointClasses(:C :D)\n\
+EquivalentClasses(:A ObjectIntersectionOf(\
+ObjectSomeValuesFrom(ObjectInverseOf(:p) :C) \
+ObjectSomeValuesFrom(ObjectInverseOf(:p) :D)))\n)\n";
+    let sat = owl_dl_reasoner::is_class_satisfiable(&parse(ofn), "http://ex.org/A")
+        .expect("satisfiability query");
+    assert!(
         sat,
-        "known gap: InverseFunctional(p⁻) is Functional(p), so A should be \
-         UNSATISFIABLE. If this now fails, the gap is closed — make it a positive"
+        "Functional(p) does not bound p⁻-successors — deriving unsat here is the \
+         wrong-polarity normalization (a false positive)"
     );
 }

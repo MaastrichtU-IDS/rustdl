@@ -1,0 +1,9 @@
+Prefix(:=<http://ex.org/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://ex.org/d1>
+Declaration(Class(:A))
+Declaration(DataProperty(:p))
+SubClassOf(:A DataMaxCardinality(1 :p DataOneOf("1"^^xsd:integer "2"^^xsd:integer)))
+SubClassOf(:A DataHasValue(:p "1"^^xsd:integer))
+SubClassOf(:A DataHasValue(:p "2"^^xsd:integer))
+)

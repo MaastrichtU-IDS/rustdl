@@ -6,6 +6,79 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.31] — 2026-09-25
+
+### Changed — `classify` compares same-tier classes by default (#160 Gap 1, #169)
+
+The tier walk groups classes by closure-subsumer count and never compares same-tier
+members, silently missing engine-derivable subsumptions — the largest single slice of
+the ORE missed-entailment profile. `RUSTDL_CLASSIFY_SAME_TIER` (previously an opt-in
+priced at ~2× wall) was first INVERTED — the old implementation unioned every
+label-set member into the defined-sup sweep, enumerating O(|sups|×n) candidate pairs
+(62M pruned on one ontology) and giving every NoVerdict candidate a budget-burning
+probe against every sup, which took 27 of 610 ORE ontologies from complete to DNF.
+Every measured recovery is a label PASS-THROUGH pair, so the pass now generates
+exactly those pairs. Then the default flipped on the re-sweep: **+745 entailments,
+FP=0, zero real regressions** (all timeout flips symmetric and serially dissolved),
+flagship sweep-phase cost down 28×. `RUSTDL_CLASSIFY_SAME_TIER=0` reverts.
+The flip also closed #114's pinned sibling gap as a side effect, and
+`classify_role_hierarchy_enabled` lost its `|| same_tier` clause so
+`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` (the #139 escape hatch) keeps working.
+
+### Fixed — composed-chain ranges are no longer certified saturator-complete (#108, #168)
+
+`t∘u ⊑ r`, `r∘v ⊑ s`, `Range(s,F)`: the #84 range fold keys on DECLARED pairs and
+never forms the composed key, so the entailment was missing while the gate certified
+the closure complete (the D10 shape). Probing showed the tableau proves every
+composed shape, so the fix is a certificate correction: `has_composed_chain_range`
+de-certifies exactly the incomplete condition (cross-chain composition with an
+EFFECTIVE range on the outer super — 2.2% of the ORE pool, vs 16% for naive
+"any composition", which would have cost `ro` its fast path). 34 oracle-backed
+de-certified ontologies: answer-identical, FP=0.
+
+### Fixed — the wedge wakes positive first-leg clauses at inverse-edge targets (#135, #170)
+
+`src —r⁻→ tgt` asserts `r(tgt, src)`, but nothing woke a positive first-leg clause
+(e.g. a chain `r∘p ⊑ p`) at `tgt`, so `classify` silently missed pairs `subclass`
+proves. The canon and the matcher were already correct — the gap was TRIGGERING, the
+mirror of SP1's inverse-first-leg case. New `pos_first_target_trigger` table,
+dispatched only for inverse-polarity edges (free on ontologies without them).
+Corpus: +76 confirmed entailments (one +39 serially confirmed), FP=0, zero losses.
+
+### Fixed — `InverseFunctionalObjectProperty` works without an ABox (#149, #171)
+
+Both spellings were inert on ABox-free ontologies (wrong `satisfiable` with empty
+`dropped`). `InverseFunctional(p⁻)` is now normalized to `FunctionalRole(p)` at
+conversion (an exact identity), and the `≤1 r⁻` GCI's ABox-only admission gate
+gained the TBox-aware predicate its own doc asked for: admit where the TBox can
+put two `r⁻`-successors on one node. The three ontologies whose 19–47× regression
+created the gate stay excluded (verified per-role before the predicate was
+written); corpus answer-neutral, FP=0.
+
+### Changed — `RUSTDL_BOUND_STALL_TAIL` is adaptive (#139, #172)
+
+The blanket skip forfeited every fallthrough rescue; the rescue rate is
+ontology-dependent by two orders of magnitude (~0/71,598 on the #139 reporter's
+ontology vs 98/16,781 on `ore_ont_8273`). The flag now pays by observed rescue rate
+(64-fallthrough sample, 1/512 floor, 1-in-32 probes below it — the floor retuned
+once from 1/256 after load-truncation dipped the marginal payer under it). Measured:
+reporter CPU **−55/−61%** (vs blanket's −48%), `8273` keeps all rescues the blanket
+forfeited, five DNFs still rescued, 600/610 identical, FP=0. Still default OFF.
+
+### Fixed — the `--global-timeout-ms` dead zone (#162, #173)
+
+A mid-range budget returned ZERO rows while smaller and larger budgets returned the
+complete answer: bounded prep aborted saturation and read off a closure with nothing
+reportable. An aborted saturation whose closure yields nothing (reported→reported
+edges or a reported unsat — the first predicate counted synthetic Tseitin subsumers
+and never fired) is now retried unbounded, observably (`prep_empty_retry` + banner).
+Verified statistically on the live wandering zone: base 6 zeros/20 reps; fixed
+0 zeros/40 reps with 19 banner-proven rescues. The wall-bounding half of #162
+remains open.
+
+Cumulative ORE effect of 0.4.29–0.4.31: missed entailments 4,284 → ~3,165 (−26%),
+FP=0 throughout.
+
 ## [0.4.30] — 2026-09-21
 
 ### Fixed — crates.io publish was broken by #126, caught by 0.4.29's tag preflight

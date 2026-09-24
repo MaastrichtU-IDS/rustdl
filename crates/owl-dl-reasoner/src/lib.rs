@@ -2472,7 +2472,19 @@ pub(crate) fn semantic_branching_enabled() -> bool {
 /// ontology that ratio is **19 / 71 460 = 0.027%**, and the non-rescues burn roughly
 /// 7 100 of the run's 13 750 CPU-seconds.
 ///
-/// **Default OFF** pending a corpus MISSED measurement.
+/// **ADAPTIVE since 2026-09-24** (was a blanket skip): the corpus sweep found the
+/// rescue rate is ontology-dependent by two orders of magnitude — `ore_ont_8273`'s
+/// fallthroughs rescue 97 entailments, ALL forfeited by the blanket skip — so the
+/// skip now consults the live [`StallTailGauge`]: pay the first
+/// [`STALL_TAIL_MIN_SAMPLE`] fallthroughs, keep paying while the observed rescue
+/// rate is at/above 1/[`STALL_TAIL_RESCUE_DIV`], and below it still pay every
+/// [`STALL_TAIL_PROBE_K`]-th skip so late-clustered rescues can lift the rate back
+/// over the floor. Worst-case overhead vs the blanket skip is bounded at
+/// ~(sample + skips/K) budgets; worst-case loss vs NOT skipping is bounded by the
+/// rate floor.
+///
+/// **Default OFF**: even adaptively, a skip costs real entailments on
+/// low-rate ontologies, which fails this repo's default-flip bar.
 #[must_use]
 pub(crate) fn bound_stall_tail_enabled() -> bool {
     // Parsed like its sibling `bound_diverged_tail_enabled` (any non-empty,
@@ -6698,7 +6710,127 @@ pub(crate) fn build_abox_check_inputs(internal: &InternalOntology) -> OwnedAboxC
 /// Holds the absorbed `TBox`, role-side metadata, `ABox` seed data and
 /// the (now-frozen) concept pool, so each tableau query reuses one
 /// preparation pass.
+/// Live, run-wide rescue-rate gauge for the adaptive stall-tail bound (#139).
+///
+/// The per-worker `ClassificationStats` counters (`fallthrough_ran` /
+/// `fallthrough_subsumed`) are merged only at the END of a run, so a policy
+/// that must decide DURING the run needs its own shared counters. Atomics with
+/// relaxed ordering: the policy is a heuristic threshold, and a stale read
+/// costs at most one mispriced probe, never soundness (skipping only ever
+/// yields "not subsumed").
+#[derive(Default)]
+pub(crate) struct StallTailGauge {
+    /// Plain-stall fallthroughs actually RUN (paid for).
+    pub(crate) ran: std::sync::atomic::AtomicU64,
+    /// Of those, how many the tableau rescued (returned Subsumed).
+    pub(crate) rescued: std::sync::atomic::AtomicU64,
+    /// Fallthroughs skipped by the policy (drives the 1-in-K probe cadence).
+    pub(crate) skipped: std::sync::atomic::AtomicU64,
+}
+
+impl StallTailGauge {
+    /// Should THIS stall fallthrough be paid for?
+    ///
+    /// Pay while the sample is small, pay while the observed rescue rate is at
+    /// or above the floor (1 in `STALL_TAIL_RESCUE_DIV`), and even below the
+    /// floor pay every `STALL_TAIL_PROBE_K`-th skip — the probe keeps evidence
+    /// flowing so an ontology whose rescues cluster late (the `ore_ont_8273`
+    /// hazard: 97 rescues that a blanket skip forfeits) can lift the rate back
+    /// over the floor and re-enter full pay. Stateless by design: no mode flag
+    /// to get stuck in.
+    pub(crate) fn pay(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        let ran = self.ran.load(Relaxed);
+        if ran < STALL_TAIL_MIN_SAMPLE {
+            return true;
+        }
+        let rescued = self.rescued.load(Relaxed);
+        if rescued.saturating_mul(STALL_TAIL_RESCUE_DIV) >= ran {
+            return true;
+        }
+        // Below the floor: probe every K-th skip.
+        self.skipped
+            .fetch_add(1, Relaxed)
+            .is_multiple_of(STALL_TAIL_PROBE_K)
+    }
+}
+
+/// Fallthroughs paid unconditionally before the rate is trusted.
+pub(crate) const STALL_TAIL_MIN_SAMPLE: u64 = 64;
+/// The rescue-rate floor is 1 in this many: pay while `rescued/ran ≥ 1/DIV`.
+///
+/// 512, not 256: the corpus's marginal payer (`ore_ont_8273`, rate 1/171) sat
+/// only 1.5× above a 1/256 floor, and under heavy parallel load budget
+/// truncation dipped its observed rate below the floor transiently — the
+/// loaded sweep lost 7 of its 97 rescues while the serial run lost 0. At
+/// 1/512 the headroom is 3×. The floor only prices ontologies whose rate falls
+/// BETWEEN the two values; a rate-0 ontology (the #139 reporter) pays the same
+/// sample + probe cadence either way.
+pub(crate) const STALL_TAIL_RESCUE_DIV: u64 = 512;
+/// While skipping, still pay every K-th fallthrough as a probe.
+pub(crate) const STALL_TAIL_PROBE_K: u64 = 32;
+
+#[cfg(test)]
+mod stall_gauge_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    #[test]
+    fn pays_unconditionally_during_the_sample() {
+        let g = StallTailGauge::default();
+        g.ran.store(STALL_TAIL_MIN_SAMPLE - 1, Relaxed);
+        // Zero rescues, still inside the sample: must pay.
+        assert!(g.pay());
+    }
+
+    #[test]
+    fn skips_below_the_floor_and_probes_every_kth() {
+        let g = StallTailGauge::default();
+        g.ran.store(10_000, Relaxed);
+        g.rescued.store(0, Relaxed); // rate 0 — far below 1/DIV
+        // First call: skipped counter 0 % K == 0 → PROBE (pays). Deliberate:
+        // the first post-floor decision keeps evidence flowing.
+        assert!(g.pay());
+        // Then exactly one probe per K decisions.
+        let mut pays = 0;
+        for _ in 0..(STALL_TAIL_PROBE_K * 3) {
+            if g.pay() {
+                pays += 1;
+            }
+        }
+        assert_eq!(pays, 3, "exactly one probe per K skips");
+    }
+
+    #[test]
+    fn a_rescue_rate_at_the_floor_keeps_paying() {
+        let g = StallTailGauge::default();
+        // Exactly at the floor: rescued * DIV == ran → pay (the `ore_ont_8273`
+        // direction: a genuinely rescuing ontology must never be starved).
+        g.ran.store(STALL_TAIL_RESCUE_DIV * 5, Relaxed);
+        g.rescued.store(5, Relaxed);
+        assert!(g.pay());
+        // The pay path must not advance the probe cadence.
+        assert_eq!(g.skipped.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn probe_rescues_can_lift_an_ontology_back_into_full_pay() {
+        let g = StallTailGauge::default();
+        g.ran.store(1_000, Relaxed);
+        g.rescued.store(0, Relaxed);
+        g.pay(); // consume the cadence-0 probe
+        assert!(!g.pay(), "below floor, off-cadence: skips");
+        // Probes rescuing lifts the rate back over the floor:
+        g.rescued.store(2, Relaxed); // 2 * 512 = 1024 >= 1000
+        assert!(g.pay(), "rate back at/above the floor: full pay resumes");
+    }
+}
+
 pub(crate) struct PreparedOntology {
+    /// #139 adaptive stall-tail gauge; see [`StallTailGauge`]. Runtime state
+    /// with interior mutability, deliberately NOT part of the snapshot
+    /// semantics of the surrounding fields.
+    pub(crate) stall_gauge: StallTailGauge,
     pub(crate) pool: ConceptPool,
     /// IRI ↔ id vocabulary, cloned from the input `InternalOntology` before
     /// its `concepts` are moved into `pool`. Lets downstream query surfaces
@@ -7457,6 +7589,7 @@ impl PreparedOntology {
         let complements = precompute_max_complements(&mut internal.concepts);
         let abox = collect_abox(&mut internal);
         Ok(Some(Self {
+            stall_gauge: StallTailGauge::default(),
             pool: internal.concepts,
             vocabulary,
             tbox,

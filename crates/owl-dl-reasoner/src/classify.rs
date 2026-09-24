@@ -5128,6 +5128,7 @@ fn find_direct_parents_top_down(
 /// (rescue), `Some(false)` = not-subsumed, `None` = no-verdict/timeout.
 fn record_fallthrough_outcome(
     stats: &mut ClassificationStats,
+    gauge: &crate::StallTailGauge,
     stall_fallthrough: bool,
     stall_diverged: bool,
     outcome: Option<bool>,
@@ -5140,6 +5141,12 @@ fn record_fallthrough_outcome(
             stats.fallthrough_subsumed += 1;
             if stall_diverged {
                 stats.fallthrough_subsumed_diverged += 1;
+            } else {
+                // #139 gauge: a plain-stall RESCUE — the evidence the adaptive
+                // bound's pay/skip decision runs on.
+                gauge
+                    .rescued
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         Some(false) => stats.fallthrough_notsubsumed += 1,
@@ -5353,7 +5360,16 @@ fn subsumes_via_tableau(
         // instrumented to decide exactly this. Sound for the same reason: skipping only
         // ever yields "not subsumed" — a MISS at worst, never an FP — and the pair is
         // counted as timed-out so the INCOMPLETE banner stays honest.
-        crate::HyperVerdict::Unknown if crate::bound_stall_tail_enabled() => {
+        // #139, ADAPTIVE since 2026-09-24 (was a blanket skip): consult the live
+        // run-wide rescue-rate gauge. Pay while the sample is small or the rate
+        // is at/above the floor, and probe every K-th skip so evidence keeps
+        // flowing — `ore_ont_8273` (97 rescues, all forfeited by the blanket
+        // skip) is the acceptance case for the pay side; the #139 reporter's
+        // ontology (19 rescues in 71k stalls) is the acceptance case for the
+        // skip side. Sound either way: a skip only ever yields "not subsumed".
+        crate::HyperVerdict::Unknown
+            if crate::bound_stall_tail_enabled() && !prepared.stall_gauge.pay() =>
+        {
             stats.stall_tail_skips += 1;
             stats.timed_out_pairs += 1;
             push_undecided_pair(stats, reported, sub, sup);
@@ -5385,6 +5401,13 @@ fn subsumes_via_tableau(
         stats.fallthrough_ran += 1;
         if stall_diverged {
             stats.fallthrough_from_diverged += 1;
+        } else {
+            // #139 gauge: a PAID plain-stall fallthrough (diverged stalls are
+            // the other flag's stratum and carry zero measured rescues).
+            prepared
+                .stall_gauge
+                .ran
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
     let build = move |pool: &mut ConceptPool| {
@@ -5406,7 +5429,13 @@ fn subsumes_via_tableau(
             if counting_verified && subsumed {
                 stats.counting_verified_pairs += 1;
             }
-            record_fallthrough_outcome(stats, stall_fallthrough, stall_diverged, Some(subsumed));
+            record_fallthrough_outcome(
+                stats,
+                &prepared.stall_gauge,
+                stall_fallthrough,
+                stall_diverged,
+                Some(subsumed),
+            );
             Ok(Some(subsumed))
         }
         Some(deadline) => {
@@ -5428,6 +5457,7 @@ fn subsumes_via_tableau(
                     }
                     record_fallthrough_outcome(
                         stats,
+                        &prepared.stall_gauge,
                         stall_fallthrough,
                         stall_diverged,
                         Some(subsumed),
@@ -5437,7 +5467,13 @@ fn subsumes_via_tableau(
                 Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                     stats.timed_out_pairs += 1;
                     push_undecided_pair(stats, reported, sub, sup);
-                    record_fallthrough_outcome(stats, stall_fallthrough, stall_diverged, None);
+                    record_fallthrough_outcome(
+                        stats,
+                        &prepared.stall_gauge,
+                        stall_fallthrough,
+                        stall_diverged,
+                        None,
+                    );
                     Ok(None)
                 }
                 Err(other) => Err(other),

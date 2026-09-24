@@ -67,7 +67,7 @@ pub use classify::{
     cb_eli_eligible, cb_eli_eligible_tbox_only, cb_fragment_features, classify, classify_internal,
     classify_n2, classify_n2_with_timeout, classify_saturation_only, classify_top_down,
     classify_top_down_with_timeout, classify_with_budget, classify_with_global_deadline,
-    classify_with_timeout,
+    classify_with_timeout, closure_yields_something_for_test,
 };
 pub use diagnose::{DerivedClass, Diagnosis, diagnose};
 pub use disjointness::{

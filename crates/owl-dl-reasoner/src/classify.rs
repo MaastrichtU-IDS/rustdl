@@ -649,6 +649,10 @@ pub struct ClassificationStats {
     /// unlike [`Self::prep_timed_out`] it does NOT imply incompleteness: prep ran to
     /// completion, it simply ran unbudgeted.
     pub prep_unbounded_budget_spent: bool,
+    /// #162: bounded prep was abandoned with an EMPTY closure and prep was re-run
+    /// unbounded rather than returning 0 rows. Non-vacuity signal for the
+    /// monotonicity fix — if this is never true, the dead zone is not being hit.
+    pub prep_empty_retry: bool,
 }
 
 impl Classification {
@@ -1614,6 +1618,51 @@ fn classify_internal_with_timeout_impl(
         unsatisfiable_idxs,
         stats,
         direct_index: std::sync::OnceLock::new(),
+    })
+}
+
+/// #162: does this (possibly partial) closure carry anything a caller could use?
+///
+/// An aborted saturation can leave a closure with no derived edge at all. Reading
+/// that off as "the answer" means paying the full prep wall and returning **0 rows**
+/// — while a SMALLER budget, which `prep_bounding_active` judges already-blown and
+/// so runs prep unbounded, returns the COMPLETE answer. That is the non-monotone
+/// dead zone in #162: `ore_ont_1043` at 700 ms returned 0 where 500 ms and 800 ms
+/// both returned all 30 607.
+///
+/// `prep_bounding_active`'s doc claims the bounded path is "never worse than the
+/// unbounded one". That holds when the budget is clearly blown and when it is
+/// ample; it fails in between, which is exactly the window this detects.
+/// Test-only window onto [`closure_yields_something`]: saturates `internal`
+/// fully and applies the predicate, so `prep_empty_retry.rs` can pin the
+/// reported-vs-synthetic discrimination without reproducing the (load-wandering)
+/// #162 dead zone. Not part of the public API surface.
+#[doc(hidden)]
+pub fn closure_yields_something_for_test(internal: &owl_dl_core::InternalOntology) -> bool {
+    let reported = ReportedClasses::collect(internal);
+    let closure = saturate(internal);
+    closure_yields_something(&reported, &closure)
+}
+
+fn closure_yields_something(
+    reported: &ReportedClasses,
+    closure: &owl_dl_saturation::Subsumers,
+) -> bool {
+    // REPORTED → REPORTED edges only, because that is all the read-off emits.
+    // The first version of this predicate used `subsumers_count(c) > 1`, which
+    // counts SYNTHETIC subsumers (Tseitin markers, DKeys) too — and an aborted
+    // early-phase closure is full of exactly those. It therefore answered
+    // "yields something" on closures whose read-off printed 0 rows, and the
+    // retry never fired: the statistical hunt read base zeros 6/20 vs fixed
+    // zeros 19/40 with 0 rescues. A usable answer is a non-reflexive edge
+    // between two classes the caller will actually see, or a reported unsat.
+    (0..reported.iris().len()).any(|i| {
+        let c = reported.class_id(i);
+        closure.is_unsatisfiable(c)
+            || closure
+                .subsumers_of(c)
+                .into_iter()
+                .any(|sup| sup != c && reported.report_pos(sup).is_some())
     })
 }
 
@@ -3615,9 +3664,21 @@ fn classify_top_down_internal_impl(
     // RSS probe: after EL closure / saturation.
     crate::rss_probe::probe("after_saturate");
 
+    // #162 MONOTONICITY: if the abort left NOTHING usable, returning it is strictly
+    // worse than not having bounded prep at all — the caller paid the wall and got 0
+    // rows, where a smaller (already-blown) budget would have run prep unbounded and
+    // returned the complete answer. Retry unbounded instead. This cannot lose
+    // entailments: it replaces an empty partial closure with the full one.
+    let (closure, sat_aborted, prep_empty_retry) =
+        if sat_aborted && !closure_yields_something(&reported, &closure) {
+            (saturate(internal), false, true)
+        } else {
+            (closure, sat_aborted, false)
+        };
+
     if sat_aborted {
-        // The fixpoint was abandoned. Every derived edge is still entailed, so
-        // read the partial closure off as the answer and flag it incomplete.
+        // The fixpoint was abandoned but left usable edges. Every derived edge is
+        // still entailed, so read the partial closure off and flag it incomplete.
         return Ok(classify_prep_timeout(
             internal, &reported, &index, &closure, "saturate",
         ));
@@ -3695,6 +3756,7 @@ fn classify_top_down_internal_impl(
         // that spent 15 s in saturation looked like it spent nothing anywhere.
         h.stats.saturate_wall_ms = saturate_ms;
         h.stats.precheck_wall_ms = precheck_ms;
+        h.stats.prep_empty_retry = prep_empty_retry;
         h.stats.unattributed_wall_ms = elapsed_ms(classify_start)
             .saturating_sub(saturate_ms)
             .saturating_sub(precheck_ms);

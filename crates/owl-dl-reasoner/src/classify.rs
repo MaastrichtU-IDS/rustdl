@@ -4576,10 +4576,16 @@ fn classify_top_down_internal_impl(
                                 .ok()
                                 .flatten()
                                 .unwrap_or(false)
-                            } else if verify_prunes {
-                                // #160 — see the tier-walk site.
+                            } else if verify_prunes && prepared.prune_gauge.pay() {
+                                // #160 — see the tier-walk site (adaptive since
+                                // 2026-09-26, same gauge).
                                 local_stats.label_cache_prunes_verified += 1;
-                                subsumes_via_tableau(
+                                {
+                                    use std::sync::atomic::Ordering::Relaxed;
+                                    prepared.prune_gauge.verified.fetch_add(1, Relaxed);
+                                }
+                                let t_verify = Instant::now();
+                                let subsumed = subsumes_via_tableau(
                                     &prepared,
                                     &reported,
                                     cand_id,
@@ -4592,7 +4598,17 @@ fn classify_top_down_internal_impl(
                                 )
                                 .ok()
                                 .flatten()
-                                .unwrap_or(false)
+                                .unwrap_or(false);
+                                {
+                                    use std::sync::atomic::Ordering::Relaxed;
+                                    let us = u64::try_from(t_verify.elapsed().as_micros())
+                                        .unwrap_or(u64::MAX);
+                                    prepared.prune_gauge.spent_us.fetch_add(us, Relaxed);
+                                    if subsumed {
+                                        prepared.prune_gauge.flipped.fetch_add(1, Relaxed);
+                                    }
+                                }
+                                subsumed
                             } else {
                                 // sup_id ∉ labels: sound non-subsumption
                                 // WHEN THE COMPLETION IS COMPLETE (in fragment).
@@ -5106,16 +5122,23 @@ fn find_direct_parents_top_down(
                             stats,
                         )?
                         .unwrap_or_default()
-                    } else if verify_prunes {
+                    } else if verify_prunes && prepared.prune_gauge.pay() {
                         // #160: D ∉ C's labels is a sound non-subsumption ONLY if
                         // the completion is COMPLETE. Out of fragment it is not, so
                         // "absent from the model" can mean "never derived" rather
                         // than "does not hold" — the #66 error, committed one layer
                         // ABOVE where #66's remedy (inside `subsumes_via_tableau`)
                         // can act, which is why enabling that flag alone changed
-                        // nothing. Verify instead of pruning.
+                        // nothing. Verify instead of pruning — ADAPTIVELY (2026-09-26):
+                        // blanket verification recovers +265 on 7 ontologies and DNFs
+                        // 200 of 610, so the gauge pays by observed FLIP rate.
                         stats.label_cache_prunes_verified += 1;
-                        subsumes_via_tableau(
+                        {
+                            use std::sync::atomic::Ordering::Relaxed;
+                            prepared.prune_gauge.verified.fetch_add(1, Relaxed);
+                        }
+                        let t_verify = Instant::now();
+                        let subsumed = subsumes_via_tableau(
                             prepared,
                             reported,
                             c_id,
@@ -5126,7 +5149,17 @@ fn find_direct_parents_top_down(
                             counting_relevant,
                             stats,
                         )?
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                        {
+                            use std::sync::atomic::Ordering::Relaxed;
+                            let us =
+                                u64::try_from(t_verify.elapsed().as_micros()).unwrap_or(u64::MAX);
+                            prepared.prune_gauge.spent_us.fetch_add(us, Relaxed);
+                            if subsumed {
+                                prepared.prune_gauge.flipped.fetch_add(1, Relaxed);
+                            }
+                        }
+                        subsumed
                     } else {
                         // D ∉ C's labels: this completion graph is a
                         // counterexample model. Sound non-subsumption

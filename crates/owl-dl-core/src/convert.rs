@@ -3004,12 +3004,27 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
     // `9662`'s three inverse-existentials are on `bearer_of`, not on any of its
     // IF roles — verified per-role before this predicate was written.
     //
-    // KNOWN RESIDUAL, recorded rather than modeled away: `ore_ont_13859` gains
-    // +17 Konclude-confirmed rows under UNCONDITIONAL emission yet has no
-    // generator this predicate (or the mental model behind it) can see — no
-    // inverse usage, no HasValue on its IF role, no ABox. Its mechanism is
-    // unexplained; this admission is a strict improvement over the pure-ABox
-    // gate, not a completeness claim.
+    // KNOWN RESIDUAL — mechanism now EXPLAINED (2026-09-25) and the widening
+    // DELIBERATELY DECLINED: `ore_ont_13859` gains +17 rows under UNCONDITIONAL
+    // emission via `IF(p)` + `InverseObjectProperties(p, q)` (so Functional(q)),
+    // told `∃q.C`, and a definition `B ≡ A ⊓ ∃q.C ⊓ ∀q.C` — the classify
+    // probe's ¬B expands to `∃q.¬C`, the `≤1 q` merges that fresh witness into
+    // the told one, the clash makes `∀q.C` hold, and the sufficient direction
+    // fires. TWO census blind spots at once: the generator is spelled through
+    // the DECLARED INVERSE (this census compares raw role ids), and the second
+    // edge is manufactured by PROBE-TIME NEGATION of the `∀` (the documented
+    // NNF-invisibility limit, live).
+    //
+    // The widening that would see both — inverse-partner spellings plus
+    // `All(f, _)` as a generator — was measured against the blockers before
+    // being written, and it RE-ADMITS them: all three SIO ontologies declare
+    // inverses on every IF role, with 9–13 ∃/∀ generators through the partners
+    // (more than 13859 has). A static predicate that admits 13859 cannot
+    // exclude them, and their cost is the 19–47× this gate exists to prevent.
+    // +17 entailments against that tail is declined; do not re-propose a
+    // generator-presence widening without a predicate that separates
+    // "generators exist" from "generators produce entailments", which three
+    // structural-predicate hunts in this repo have failed to find.
     //
     // Census limits (all in the sound-MISS direction): the pool holds TOLD
     // forms at this point, so a generator manufactured later by NNF

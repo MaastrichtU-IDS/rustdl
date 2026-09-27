@@ -2279,10 +2279,17 @@ pub fn layer_a_affordable(hierarchy: &owl_dl_core::role_hierarchy::RoleHierarchy
 /// (`RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`, default 32).
 #[must_use]
 pub fn classify_role_hierarchy_max_closure() -> usize {
+    // 128 since #177 (was 32). The 610-corpus closure census: 305 ontologies
+    // are ≤32, 212 sit in 33–128 — including ALL of the SWEET family (max 65),
+    // whose polarity-crossing entailments the signed hierarchy can only deliver
+    // when Layer A is on, and the CPU-exonerated SIO trio (116) — and exactly
+    // FIVE sit above 128 (141, 149, 412, 2195, 2369), the last three being the
+    // ladder-pathology class this guard exists for (#163: the in-repo 300-deep
+    // ladder went 105 s → DNF unguarded). 128 sits in the measured gap.
     std::env::var("RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(32)
+        .unwrap_or(128)
 }
 
 pub(crate) fn classify_role_hierarchy_enabled() -> bool {
@@ -8469,6 +8476,14 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
                 if cs.is_inverse() == ct.is_inverse() {
                     builder.add_sub_role(cs.role_id(), ct.role_id());
                 }
+                // #177: the SIGNED hierarchy records the inclusion exactly as
+                // asserted AND in canonical spelling, at full polarity — this is
+                // what makes `supersetOf ⊑ setRelation` (canon: `subsetOf⁻ ⊑
+                // setRelation`) representable at all. Over-adding is harmless:
+                // every edge is the axiom itself under identity rewrites, and
+                // the closure dedups.
+                builder.add_signed_sub_role(*sub_role, *sup);
+                builder.add_signed_sub_role(cs, ct);
                 // #138: ALSO record the inclusion as WRITTEN, when the axiom's own
                 // two roles already agree in polarity. Canonicalisation can rewrite
                 // one side to an inverse and leave the pair mismatched, and the
@@ -8502,7 +8517,17 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
                         if a != b && a.is_inverse() == b.is_inverse() {
                             builder.add_sub_role(a.role_id(), b.role_id());
                         }
+                        if a != b {
+                            // #177: signed, both spellings (see the Role arm).
+                            builder.add_signed_sub_role(*a, *b);
+                        }
                     }
+                }
+                for (a, b) in roles.iter().zip(roles.iter().skip(1)) {
+                    // As-written signed equivalence edges too (#138's lesson:
+                    // clauses use raw ids where canon rewrote only one side).
+                    builder.add_signed_sub_role(*a, *b);
+                    builder.add_signed_sub_role(*b, *a);
                 }
             }
             // #144: both polarities — see `expand_role_characteristics`. `role_id()`
@@ -8528,6 +8553,15 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
                 if a.role_id() == b.role_id() && a.is_inverse() == b.is_inverse() =>
             {
                 builder.mark_symmetric(a.role_id());
+            }
+            // #177: every declared inverse pair enters the SIGNED hierarchy, in
+            // both the as-written and canonical spellings. The canon rewrites
+            // one partner out of every clause, so without this the hierarchy
+            // holds ids no canonicalised edge carries and the pair's inclusion
+            // consequences (`a⁻ ⊑ b`-mediated chains) are unrepresentable.
+            Axiom::InverseObjectProperties(a, b) => {
+                builder.add_inverse_pair(*a, *b);
+                builder.add_inverse_pair(canon(*a), canon(*b));
             }
             _ => {}
         }

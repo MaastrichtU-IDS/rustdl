@@ -11,7 +11,24 @@ use std::collections::VecDeque;
 
 use smallvec::SmallVec;
 
-use crate::ir::RoleId;
+use crate::ir::{Role, RoleId};
+
+/// Index of a SIGNED role (`Role`) in the signed closure: `2·id + polarity`.
+#[inline]
+fn sidx(r: Role) -> usize {
+    r.role_id().index() as usize * 2 + usize::from(r.is_inverse())
+}
+
+/// Inverse of [`sidx`].
+#[inline]
+fn srole(i: usize) -> Role {
+    let id = RoleId::new(u32::try_from(i / 2).expect("signed index fits"));
+    if i % 2 == 1 {
+        Role::inverse(id)
+    } else {
+        Role::named(id)
+    }
+}
 
 /// Mutable accumulator for sub-role axioms. Build it once, then call
 /// [`Self::build`] to produce the immutable closed [`RoleHierarchy`].
@@ -21,6 +38,12 @@ pub struct RoleHierarchyBuilder {
     direct_super: Vec<SmallVec<[RoleId; 4]>>,
     /// `symmetric[r.index()]` is `true` iff `r` was declared symmetric.
     symmetric: Vec<bool>,
+    /// SIGNED direct supers (#177): `signed_direct_super[sidx(r)]` holds the
+    /// signed roles directly above the signed role `r`. Unlike the id-space
+    /// table above, this one can express polarity-CROSSING inclusions —
+    /// `subsetOf⁻ ⊑ setRelation` from `Inverse(subsetOf, supersetOf)` +
+    /// `supersetOf ⊑ setRelation` — which the id table structurally cannot.
+    signed_direct_super: Vec<SmallVec<[u32; 4]>>,
 }
 
 impl RoleHierarchyBuilder {
@@ -30,6 +53,7 @@ impl RoleHierarchyBuilder {
         Self {
             direct_super: (0..n as usize).map(|_| SmallVec::new()).collect(),
             symmetric: vec![false; n as usize],
+            signed_direct_super: (0..n as usize * 2).map(|_| SmallVec::new()).collect(),
         }
     }
 
@@ -51,6 +75,44 @@ impl RoleHierarchyBuilder {
     /// Panics if `role` is out of range for this builder.
     pub fn mark_symmetric(&mut self, role: RoleId) {
         self.symmetric[role.index() as usize] = true;
+        self.push_signed(Role::named(role), Role::inverse(role));
+        self.push_signed(Role::inverse(role), Role::named(role));
+    }
+
+    fn push_signed(&mut self, sub: Role, sup: Role) {
+        let i = sidx(sub);
+        let s = u32::try_from(sidx(sup)).expect("signed index fits in u32");
+        if !self.signed_direct_super[i].contains(&s) {
+            self.signed_direct_super[i].push(s);
+        }
+    }
+
+    /// Record the SIGNED inclusion `sub ⊑ sup` (#177) plus its mirror
+    /// `sub⁻ ⊑ sup⁻`, which is a logical consequence (`R ⊑ S ⟹ R⁻ ⊑ S⁻`).
+    ///
+    /// # Panics
+    /// Panics if either role's id is out of range for this builder.
+    pub fn add_signed_sub_role(&mut self, sub: Role, sup: Role) {
+        self.push_signed(sub, sup);
+        self.push_signed(sub.flip(), sup.flip());
+    }
+
+    /// Record `InverseObjectProperties(a, b)` — `a ≡ b⁻` — as four signed
+    /// inclusions (#177): `a ⊑ b⁻`, `b⁻ ⊑ a`, `a⁻ ⊑ b`, `b ⊑ a⁻`. This is
+    /// what makes polarity-CROSSING chains representable: with `r ⊑ s`,
+    /// `Inverse(s, t)` and `t ⊑ u`, the closure composes
+    /// `r⁻ ⊑ s⁻ ⊑ t ⊑ u`, i.e. an `r`-edge read backwards is a `u`-edge —
+    /// the SWEET `Range(setRelation)` mechanism that owns 49% of the
+    /// remaining ORE missed-entailment mass.
+    ///
+    /// # Panics
+    /// Panics if either role's id is out of range for this builder.
+    pub fn add_inverse_pair(&mut self, a: Role, b: Role) {
+        // a ≡ b⁻:
+        self.push_signed(a, b.flip());
+        self.push_signed(b.flip(), a);
+        self.push_signed(a.flip(), b);
+        self.push_signed(b, a.flip());
     }
 
     #[must_use]
@@ -118,10 +180,61 @@ impl RoleHierarchyBuilder {
             })
             .collect();
 
+        // SIGNED closure (#177): same reflexive-transitive BFS over the signed
+        // graph (2n nodes). Reuses the visited-buffer discipline above; the
+        // graph is twice as large but the same O(n·edges) shape.
+        let sn = self.signed_direct_super.len();
+        let mut signed_super_closure: Vec<Box<[u32]>> = Vec::with_capacity(sn);
+        let mut signed_sub_closure: Vec<Vec<u32>> = vec![Vec::new(); sn];
+        let mut svisited = vec![false; sn];
+        let mut squeue: VecDeque<u32> = VecDeque::new();
+        let mut polarity_crossing = false;
+        for r in 0..sn {
+            squeue.clear();
+            squeue.push_back(u32::try_from(r).expect("signed index fits"));
+            let mut ups: Vec<u32> = Vec::new();
+            while let Some(curr) = squeue.pop_front() {
+                let ci = curr as usize;
+                if svisited[ci] {
+                    continue;
+                }
+                svisited[ci] = true;
+                ups.push(curr);
+                for &sup in &self.signed_direct_super[ci] {
+                    squeue.push_back(sup);
+                }
+            }
+            for &u in &ups {
+                svisited[u as usize] = false;
+            }
+            ups.sort_unstable();
+            for &sup in &ups {
+                // A closure edge between DIFFERENT ids at DIFFERENT polarities is
+                // what the id-space hierarchy cannot express; its presence is what
+                // obliges target-side trigger dispatch on NAMED edges (see the
+                // `pos_first_target_trigger` gate in `hyper.rs`).
+                if sup as usize / 2 != r / 2 && (sup as usize % 2) != (r % 2) {
+                    polarity_crossing = true;
+                }
+                signed_sub_closure[sup as usize].push(u32::try_from(r).expect("fits"));
+            }
+            signed_super_closure.push(ups.into_boxed_slice());
+        }
+        let signed_sub_closure: Vec<Box<[u32]>> = signed_sub_closure
+            .into_iter()
+            .map(|mut v| {
+                v.sort_unstable();
+                v.into_boxed_slice()
+            })
+            .collect();
+
         RoleHierarchy {
             super_closure,
             sub_closure,
             symmetric: self.symmetric.into_boxed_slice(),
+            signed_super_closure,
+            signed_sub_closure,
+            polarity_crossing,
         }
     }
 }
@@ -135,6 +248,14 @@ pub struct RoleHierarchy {
     sub_closure: Vec<Box<[RoleId]>>,
     /// `symmetric[r.index()]` is `true` iff `r` was declared symmetric.
     symmetric: Box<[bool]>,
+    /// SIGNED reflexive-transitive closure (#177), indexed by [`sidx`]. Can
+    /// express polarity-crossing inclusions the id-space closure cannot.
+    signed_super_closure: Vec<Box<[u32]>>,
+    signed_sub_closure: Vec<Box<[u32]>>,
+    /// True iff some closure inclusion connects DIFFERENT ids at DIFFERENT
+    /// polarities — the condition under which a NAMED edge, read backwards,
+    /// can satisfy a NAMED body atom (the SWEET mechanism, #177).
+    polarity_crossing: bool,
 }
 
 impl RoleHierarchy {
@@ -176,6 +297,39 @@ impl RoleHierarchy {
     #[must_use]
     pub fn is_symmetric(&self, role: RoleId) -> bool {
         self.symmetric[role.index() as usize]
+    }
+
+    /// SIGNED inclusion (#177): `sub ⊑ sup` over signed roles, reflexive and
+    /// transitively closed, including polarity-crossing inclusions mediated by
+    /// declared inverse pairs and symmetry.
+    ///
+    /// # Panics
+    /// Panics if either role's id is out of range.
+    #[must_use]
+    pub fn is_signed_sub(&self, sub: Role, sup: Role) -> bool {
+        self.signed_super_closure[sidx(sub)]
+            .binary_search(&u32::try_from(sidx(sup)).expect("signed index fits"))
+            .is_ok()
+    }
+
+    /// All signed roles `s` with `s ⊑ sup` (reflexive, closed). Sorted by
+    /// signed index.
+    ///
+    /// # Panics
+    /// Panics if `sup`'s id is out of range.
+    pub fn signed_sub_roles(&self, sup: Role) -> impl Iterator<Item = Role> + '_ {
+        self.signed_sub_closure[sidx(sup)]
+            .iter()
+            .map(|&i| srole(i as usize))
+    }
+
+    /// True iff the closure contains an inclusion between DIFFERENT ids at
+    /// DIFFERENT polarities — when false, a named edge read backwards can only
+    /// match via the symmetric flag, and the cheaper pre-#177 trigger gating
+    /// remains sufficient.
+    #[must_use]
+    pub fn has_polarity_crossing(&self) -> bool {
+        self.polarity_crossing
     }
 
     #[must_use]

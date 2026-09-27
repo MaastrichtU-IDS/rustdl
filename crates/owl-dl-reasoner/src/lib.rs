@@ -6770,6 +6770,165 @@ pub(crate) const STALL_TAIL_RESCUE_DIV: u64 = 512;
 /// While skipping, still pay every K-th fallthrough as a probe.
 pub(crate) const STALL_TAIL_PROBE_K: u64 = 32;
 
+/// Live, run-wide FLIP-rate gauge for adaptive label-prune verification
+/// (#160 Gap 2) — the [`StallTailGauge`] design applied one mechanism over.
+///
+/// Out of fragment, a label prune (`sup ∉ labels(cand)` ⇒ not subsumed) trusts
+/// an incomplete completion; #161 made `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS`
+/// verify each prune with the tableau instead. Corpus sizing (610 oracle-backed
+/// ORE, 2026-09-26): blanket verification recovers **+265 entailments, FP=0 —
+/// concentrated on SEVEN ontologies** (`ore_ont_3258` +200) — and drives **200
+/// of 610 to DNF**, because prune volumes reach 2.2M (`ore_ont_9151`) and
+/// almost none of them flip. So pay per observed flip rate: verify the first
+/// [`PRUNE_VERIFY_MIN_SAMPLE`], keep verifying while flips/verified ≥
+/// 1/[`PRUNE_VERIFY_FLIP_DIV`], and below the floor probe on a DECAYING cadence
+/// — powers of two plus every 65 536th skip — so a 2.2M-prune run pays ~55
+/// probes, not 1-in-32 of 2.2M. Sound in both directions: skipping restores
+/// the pre-#161 prune (a MISS at worst), verifying is the complete path.
+#[derive(Default)]
+pub(crate) struct PruneVerifyGauge {
+    /// Prunes actually VERIFIED (paid for with a tableau probe).
+    pub(crate) verified: std::sync::atomic::AtomicU64,
+    /// Of those, how many FLIPPED (the tableau proved the pruned pair).
+    pub(crate) flipped: std::sync::atomic::AtomicU64,
+    /// Prunes taken on trust (drives the decaying probe cadence).
+    pub(crate) skipped: std::sync::atomic::AtomicU64,
+    /// Wall spent verifying, in MICROSECONDS (accumulated by the callers).
+    pub(crate) spent_us: std::sync::atomic::AtomicU64,
+}
+
+impl PruneVerifyGauge {
+    /// Should THIS prune be verified?
+    ///
+    /// COST-FIRST, not rate-first (the first version sampled 64 and starved
+    /// `ore_ont_3258`, whose 200 flips sit LATE in its 4,302 prunes while its
+    /// ENTIRE blanket verification costs ~tens of ms): verify freely while the
+    /// run has spent under [`PRUNE_VERIFY_WALL_BUDGET_US`] on verification —
+    /// which covers every ontology where blanket verification was ever cheap,
+    /// in full — and only once real wall has been paid let the observed flip
+    /// rate (≥ 1/[`PRUNE_VERIFY_FLIP_DIV`]) and the decaying probe cadence
+    /// decide. A 2.2M-prune flood (`ore_ont_9151`) gets cut ~2 s in instead of
+    /// `DNF`ing; a flip-rich run keeps paying because its rate holds.
+    pub(crate) fn pay(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        // COUNT is the primary gate because it is LOAD-INVARIANT. The previous
+        // wall-only budget failed its own corpus sweep: under 6-way contention
+        // each verification's wall inflates several-fold, so the same 20 s
+        // covered a fraction of the verifications it covered serially and
+        // `ore_ont_3258` lost its +200 again — this host's "wall is not
+        // measurable under load" lesson, applied to a shipped constant. The
+        // wall term remains only as a SAFETY NET against adversarial floods
+        // whose individual probes each burn a full per-pair budget (131,072 ×
+        // 200 ms would otherwise be hours).
+        if self.verified.load(Relaxed) < PRUNE_VERIFY_COUNT_BUDGET
+            && self.spent_us.load(Relaxed) < prune_verify_wall_budget_us()
+        {
+            return true;
+        }
+        let verified = self.verified.load(Relaxed).max(1);
+        let flipped = self.flipped.load(Relaxed);
+        if flipped.saturating_mul(PRUNE_VERIFY_FLIP_DIV) >= verified {
+            return true;
+        }
+        // Below the floor: decaying probe. Powers of two give log2(n) early
+        // probes (a late-flipping ontology re-enters full pay); the 65 536
+        // stride keeps a slow trickle of evidence on very long runs.
+        let k = self.skipped.fetch_add(1, Relaxed);
+        k.is_power_of_two() || (k > 0 && k.is_multiple_of(65_536))
+    }
+}
+
+/// Verifications paid unconditionally — the PRIMARY, load-invariant budget.
+/// 131,072 (2^17) covers the measured flip-rich class ENTIRELY
+/// (`ore_ont_3258`: 4,302 prunes; `ore_ont_9786`: 79,485) and cuts the flood
+/// class (`ore_ont_9151`: 2.2M) at ~6%, ≈ +52 s at its measured ~0.4 ms/probe.
+pub(crate) const PRUNE_VERIFY_COUNT_BUDGET: u64 = 131_072;
+
+/// Wall SAFETY NET on the free-verification phase
+/// (`RUSTDL_PRUNE_VERIFY_BUDGET_MS` overrides). This constant's history is its
+/// documentation: 2 s (set from the NON-verifying run's wall — wrong currency),
+/// then 20 s as the sole gate (correct serially, failed under 6-way load when
+/// contention inflated per-probe wall — wrong CURRENCY again), now 120 s as a
+/// net behind the load-invariant count budget, existing only so an adversarial
+/// flood of full-budget probes cannot turn 131,072 free verifications into
+/// hours.
+pub(crate) fn prune_verify_wall_budget_us() -> u64 {
+    std::env::var_os("RUSTDL_PRUNE_VERIFY_BUDGET_MS")
+        .and_then(|v| v.into_string().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(120_000_000, |ms| ms.saturating_mul(1_000))
+}
+/// The flip-rate floor is 1 in this many: verify while `flipped/verified ≥ 1/DIV`.
+pub(crate) const PRUNE_VERIFY_FLIP_DIV: u64 = 512;
+
+#[cfg(test)]
+mod prune_gauge_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    #[test]
+    fn verifies_freely_inside_the_wall_budget() {
+        let g = PruneVerifyGauge::default();
+        g.verified.store(PRUNE_VERIFY_COUNT_BUDGET - 1, Relaxed);
+        g.flipped.store(0, Relaxed);
+        g.spent_us.store(prune_verify_wall_budget_us() - 1, Relaxed);
+        assert!(
+            g.pay(),
+            "under the wall budget: always verify (the 3258 direction)"
+        );
+        assert_eq!(
+            g.skipped.load(Relaxed),
+            0,
+            "pay path must not advance the cadence"
+        );
+    }
+
+    #[test]
+    fn the_rate_floor_takes_over_once_the_budget_is_spent() {
+        let g = PruneVerifyGauge::default();
+        g.spent_us.store(prune_verify_wall_budget_us(), Relaxed);
+        g.verified.store(PRUNE_VERIFY_FLIP_DIV * 3, Relaxed);
+        g.flipped.store(3, Relaxed);
+        assert!(g.pay(), "at the floor: keep verifying");
+        g.flipped.store(0, Relaxed);
+        g.skipped.store(5, Relaxed); // off-cadence
+        assert!(
+            !g.pay(),
+            "below floor, off-cadence, budget spent: trust the prune"
+        );
+    }
+
+    #[test]
+    fn the_probe_cadence_decays() {
+        let g = PruneVerifyGauge::default();
+        g.spent_us.store(prune_verify_wall_budget_us(), Relaxed);
+        g.verified.store(10_000, Relaxed);
+        g.flipped.store(0, Relaxed);
+        let mut pays = 0u64;
+        for _ in 0..1_048_576u64 {
+            if g.pay() {
+                pays += 1;
+            }
+        }
+        assert!(
+            (20..=60).contains(&pays),
+            "decaying cadence must pay tens, not thousands, on a million skips (got {pays})"
+        );
+    }
+
+    #[test]
+    fn probe_flips_lift_back_into_full_verification() {
+        let g = PruneVerifyGauge::default();
+        g.spent_us.store(prune_verify_wall_budget_us(), Relaxed);
+        g.verified.store(1_000, Relaxed);
+        g.flipped.store(0, Relaxed);
+        g.skipped.store(5, Relaxed);
+        assert!(!g.pay());
+        g.flipped.store(2, Relaxed); // 2 * 512 = 1024 >= 1000
+        assert!(g.pay(), "flips at/above the floor resume full verification");
+    }
+}
+
 #[cfg(test)]
 mod stall_gauge_tests {
     use super::*;
@@ -6831,6 +6990,8 @@ pub(crate) struct PreparedOntology {
     /// with interior mutability, deliberately NOT part of the snapshot
     /// semantics of the surrounding fields.
     pub(crate) stall_gauge: StallTailGauge,
+    /// #160 Gap 2 adaptive prune-verification gauge; see [`PruneVerifyGauge`].
+    pub(crate) prune_gauge: PruneVerifyGauge,
     pub(crate) pool: ConceptPool,
     /// IRI ↔ id vocabulary, cloned from the input `InternalOntology` before
     /// its `concepts` are moved into `pool`. Lets downstream query surfaces
@@ -7590,6 +7751,7 @@ impl PreparedOntology {
         let abox = collect_abox(&mut internal);
         Ok(Some(Self {
             stall_gauge: StallTailGauge::default(),
+            prune_gauge: PruneVerifyGauge::default(),
             pool: internal.concepts,
             vocabulary,
             tbox,

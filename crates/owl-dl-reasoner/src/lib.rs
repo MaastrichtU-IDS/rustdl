@@ -2253,21 +2253,36 @@ pub(crate) fn classify_same_tier_enabled() -> bool {
 /// predictor on the 610-ontology sweep: it measures axiom density, not DEPTH, and the
 /// two decouple. The closure size is the quantity that actually bounds the work.
 ///
+/// **The gauged quantity is the SIGNED closure since #177** — that is what
+/// `role_matches` and the trigger widening actually walk, and the two closures can
+/// diverge by an order of magnitude: galen is id-max 85 / signed-max **826** (its
+/// inverse structure fuses all 413 roles into one signed component), and admitting it
+/// on the id number turned a 103 CPU-s classify into a >3,500 CPU-s DNF, found by the
+/// soundness net. The signed closure is a superset of the id closure at matching
+/// polarity (the builder seeds it that way), so this single condition subsumes the old
+/// id-space check, including the #163 ladder guard. Census over 530 measured ORE
+/// oracles + curated fixtures: NO ontology with id ≤ 32 (the pre-#177 admission set)
+/// has signed > 128, so this gauge cannot regress anything vs the shipped release; all
+/// 56 SWEET-family members sit at signed 122 (in), and the decline set is galen 826,
+/// its ORE twin `ore_ont_12432` 826, the 940 trio, the inverse-functional trio at 382,
+/// and the ladder class (a 300-rung ladder is signed ≥ 600).
+///
 /// Above the cap, Layer A stays off and behaviour is EXACTLY today's default — so this
 /// guard cannot regress anything relative to the current release; it only declines to
 /// add the gain where it would be unaffordable.
 pub fn layer_a_affordable(hierarchy: &owl_dl_core::role_hierarchy::RoleHierarchy) -> bool {
     let cap = classify_role_hierarchy_max_closure();
-    let mut worst = 0usize;
-    for i in 0..hierarchy.num_roles() {
-        let r = owl_dl_core::ir::RoleId::new(u32::try_from(i).unwrap_or(u32::MAX));
-        worst = worst
-            .max(hierarchy.sub_roles(r).len())
-            .max(hierarchy.super_roles(r).len());
-    }
+    let worst = hierarchy.signed_max_closure();
     if std::env::var_os("RUSTDL_ROLE_CLOSURE_PROBE").is_some_and(|v| v == "1") {
+        let mut id_worst = 0usize;
+        for i in 0..hierarchy.num_roles() {
+            let r = owl_dl_core::ir::RoleId::new(u32::try_from(i).unwrap_or(u32::MAX));
+            id_worst = id_worst
+                .max(hierarchy.sub_roles(r).len())
+                .max(hierarchy.super_roles(r).len());
+        }
         eprintln!(
-            "ROLECLOSURE\tnum_roles={}\tmax_closure={worst}\tcap={cap}\taffordable={}",
+            "ROLECLOSURE\tnum_roles={}\tmax_closure={id_worst}\tsigned_max={worst}\tcap={cap}\taffordable={}",
             hierarchy.num_roles(),
             worst <= cap
         );
@@ -2275,17 +2290,19 @@ pub fn layer_a_affordable(hierarchy: &owl_dl_core::role_hierarchy::RoleHierarchy
     worst <= cap
 }
 
-/// #128: per-role sub/super-role closure cap for [`layer_a_affordable`]
-/// (`RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`, default 32).
+/// #128: per-role closure cap for [`layer_a_affordable`]
+/// (`RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`, default 128 — measured against
+/// the SIGNED closure since #177).
 #[must_use]
 pub fn classify_role_hierarchy_max_closure() -> usize {
-    // 128 since #177 (was 32). The 610-corpus closure census: 305 ontologies
-    // are ≤32, 212 sit in 33–128 — including ALL of the SWEET family (max 65),
-    // whose polarity-crossing entailments the signed hierarchy can only deliver
-    // when Layer A is on, and the CPU-exonerated SIO trio (116) — and exactly
-    // FIVE sit above 128 (141, 149, 412, 2195, 2369), the last three being the
-    // ladder-pathology class this guard exists for (#163: the in-repo 300-deep
-    // ladder went 105 s → DNF unguarded). 128 sits in the measured gap.
+    // 128 since #177 (was 32, id-space). The gauge now measures the SIGNED
+    // max closure (see `layer_a_affordable`); census over the 530 measured ORE
+    // oracles: 496 are ≤128 — including all 56 SWEET-family members at exactly
+    // 122, the cohort whose polarity-crossing entailments the signed hierarchy
+    // exists to deliver — then a measured gap to 130 (×8), with galen and
+    // `ore_ont_12432` at 826 and the ladder-pathology class beyond. An id-space
+    // 128 admitted galen (id-max 85) and turned its classify into a DNF, which
+    // is why the id number is no longer the gauged quantity.
     std::env::var("RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE")
         .ok()
         .and_then(|v| v.parse().ok())

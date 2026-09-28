@@ -341,6 +341,16 @@ impl RoleHierarchy {
         self.polarity_crossing
     }
 
+    /// The largest SIGNED sub- or super-closure over all signed roles — the
+    /// quantity that bounds per-edge matcher work post-#177 (the matcher and
+    /// the trigger widening walk the signed closure, not the id-space one).
+    #[must_use]
+    pub fn signed_max_closure(&self) -> usize {
+        let subs = self.signed_sub_closure.iter().map(|c| c.len());
+        let sups = self.signed_super_closure.iter().map(|c| c.len());
+        subs.chain(sups).max().unwrap_or(0)
+    }
+
     #[must_use]
     pub fn num_roles(&self) -> usize {
         self.super_closure.len()

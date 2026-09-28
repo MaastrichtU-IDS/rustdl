@@ -67,6 +67,15 @@ impl RoleHierarchyBuilder {
         if !supers.contains(&sup) {
             supers.push(sup);
         }
+        // An id-space inclusion IS the signed same-polarity inclusion (plus its
+        // logical mirror `sub⁻ ⊑ sup⁻`), so seed the signed table here too. This
+        // keeps the signed closure a SUPERSET of the id-space closure for every
+        // builder client — a client calling only this method (the pre-#177 API,
+        // still used by engine-level tests and any external consumer) must not
+        // end up with `is_signed_sub` narrower than the old `sub_roles` walk,
+        // because `role_matches` and the trigger widening now consult the
+        // signed closure.
+        self.add_signed_sub_role(Role::named(sub), Role::named(sup));
     }
 
     /// Record that `role` is symmetric (`role ≡ role⁻`).

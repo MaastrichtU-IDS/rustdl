@@ -1,8 +1,18 @@
 # Functionality is not propagated across a declared `InverseObjectProperties` pair
 
-**Found:** 2026-08-05 · **Status:** **MECHANISM FIXED** behind `RUSTDL_INVERSE_PAIR_FUNC`
-(default OFF); the full ontologies remain a **performance** DNF · **Severity:** wrong
-`consistent` verdict
+**Found:** 2026-08-05 · **Status:** **MOSTLY CLOSED AT THE DEFAULT by #177 (signed role
+hierarchy, 2026-09-28)** — the `Functional(R)` ⟹ `InverseFunctional(S)` direction, the
+two-link chain, and the `ore_ont_4141` 7-axiom core are all decided **flag OFF** now: the
+signed hierarchy lets `Functional(R)`'s forward `≤1` accept an S-asserted edge as an
+R⁻-edge, so neither the derived characteristic nor the materialised edge is needed on
+those routes. Verified against the pinned pre-#177 baseline (exactly those three flip
+`consistent` → `inconsistent`; controls unmoved; both peers agree). **The one residual is
+the reverse direction** — `InverseFunctional(R)` ⟹ `Functional(S)`
+(`f-derived-functional.ofn`), still missed flag-OFF because the `≤1` lands on the
+predecessor side, which the engine does not merge; `RUSTDL_INVERSE_PAIR_FUNC` (default
+OFF) remains the fix for that route and is pinned non-vacuous by
+`derived_functional_needs_the_flag`. The full-ontology **performance** DNF also stands.
+The description below is the pre-#177 state · **Severity:** wrong `consistent` verdict
 **Oracle:** Konclude 0.7.0 **and** HermiT 1.4.3, independently
 **Fixtures:** `crates/owl-dl-reasoner/tests/fixtures/inverse_functional_derivation/`
 

@@ -1278,7 +1278,11 @@ fn index_one_clause<S: ClauseIndexSink>(
                 // dedups consecutive repeats per key, and the explicit skip keeps the
                 // intent readable rather than relying on that.
                 if let Some(h) = sym {
-                    for &sub in h.sub_roles(r.role_id()) {
+                    // #177: widened over the SIGNED closure — a polarity-crossing sub
+                    // (e.g. tpo⁻ ⊑ setRelation via an inverse pair) shares its
+                    // polarity-free trigger KEY with its id, so filing under signed
+                    // subs' ids is what lets the dispatch find the clause.
+                    for sub in h.signed_sub_roles(*r).map(owl_dl_core::ir::Role::role_id) {
                         if sub != r.role_id() {
                             sink.push_role_trigger(sub.index() as usize, ci);
                         }
@@ -1289,7 +1293,11 @@ fn index_one_clause<S: ClauseIndexSink>(
                 if *u != X {
                     sink.push_role_back_trigger(role_id_index(*r), ci);
                     if let Some(h) = sym {
-                        for &sub in h.sub_roles(r.role_id()) {
+                        // #177: widened over the SIGNED closure — a polarity-crossing sub
+                        // (e.g. tpo⁻ ⊑ setRelation via an inverse pair) shares its
+                        // polarity-free trigger KEY with its id, so filing under signed
+                        // subs' ids is what lets the dispatch find the clause.
+                        for sub in h.signed_sub_roles(*r).map(owl_dl_core::ir::Role::role_id) {
                             if sub != r.role_id() {
                                 sink.push_role_back_trigger(sub.index() as usize, ci);
                             }
@@ -1314,7 +1322,11 @@ fn index_one_clause<S: ClauseIndexSink>(
                     // Widening here can only cause EXTRA `fire_clause` calls, which
                     // `match_body` then rejects — sound. Under-widening is the bug.
                     if let Some(h) = sym {
-                        for &sub in h.sub_roles(r.role_id()) {
+                        // #177: widened over the SIGNED closure — a polarity-crossing sub
+                        // (e.g. tpo⁻ ⊑ setRelation via an inverse pair) shares its
+                        // polarity-free trigger KEY with its id, so filing under signed
+                        // subs' ids is what lets the dispatch find the clause.
+                        for sub in h.signed_sub_roles(*r).map(owl_dl_core::ir::Role::role_id) {
                             if sub != r.role_id() {
                                 sink.push_inverse_first_trigger(sub.index() as usize, ci);
                             }
@@ -1336,7 +1348,11 @@ fn index_one_clause<S: ClauseIndexSink>(
                     sink.push_pos_first_target_trigger(role_id_index(*r), ci);
                     // Same sub-role widening, same reason as both siblings above.
                     if let Some(h) = sym {
-                        for &sub in h.sub_roles(r.role_id()) {
+                        // #177: widened over the SIGNED closure — a polarity-crossing sub
+                        // (e.g. tpo⁻ ⊑ setRelation via an inverse pair) shares its
+                        // polarity-free trigger KEY with its id, so filing under signed
+                        // subs' ids is what lets the dispatch find the clause.
+                        for sub in h.signed_sub_roles(*r).map(owl_dl_core::ir::Role::role_id) {
                             if sub != r.role_id() {
                                 sink.push_pos_first_target_trigger(sub.index() as usize, ci);
                             }
@@ -2626,7 +2642,12 @@ impl<'c> HyperEngine<'c> {
                 // the target only an inverse successor, which the table above
                 // already covers, and gating keeps this free when no
                 // inverse-polarity edge is ever created.
-                if role.is_inverse() {
+                if role.is_inverse()
+                    || self
+                        .sub_roles
+                        .as_ref()
+                        .is_some_and(owl_dl_core::RoleHierarchy::has_polarity_crossing)
+                {
                     let n_pos = self
                         .indexes
                         .pos_first_target_trigger
@@ -5237,20 +5258,20 @@ fn resolve_var(v: Var, xnode: HNode, binding: &[(Var, HNode)]) -> Option<HNode> 
 /// covers both axes. With no hierarchy (`None`), this is reflexive —
 /// equal ids only, the pre-HF2 behaviour.
 fn role_matches(edge: Role, wanted: Role, sub_roles: Option<&RoleHierarchy>) -> bool {
-    // Symmetric role `p ≡ p⁻`: an edge labelled `p` (or `p⁻`) satisfies a
-    // wanted `p` (or `p⁻`) regardless of polarity when the ids coincide.
-    if let Some(h) = sub_roles
-        && edge.role_id() == wanted.role_id()
-        && h.is_symmetric(wanted.role_id())
-    {
-        return true;
-    }
-    if edge.is_inverse() != wanted.is_inverse() {
-        return false;
-    }
+    // #177: with a hierarchy, matching is the SIGNED inclusion, which subsumes
+    // every case the old three-step test accepted — same-id symmetric at any
+    // polarity (symmetry seeds `p ≡ p⁻`), and same-polarity id-space sub-roles
+    // (every id edge is seeded signed with its mirror) — and additionally the
+    // polarity-CROSSING inclusions the id-space hierarchy could not express:
+    // `r ⊑ s`, `Inverse(s, t)`, `t ⊑ u` makes an `r`-edge read backwards a
+    // `u`-edge (`r⁻ ⊑ s⁻ ⊑ t ⊑ u`), which is the SWEET `Range(setRelation)`
+    // mechanism owning 49% of the remaining ORE misses. Sound: each closure
+    // edge is an asserted axiom, its mirror (`R ⊑ S ⟹ R⁻ ⊑ S⁻`), or an
+    // inverse-pair identity, so an accepted edge is genuinely entailed to
+    // carry the wanted role — and `match_body` re-verifies bindings anyway.
     match sub_roles {
-        Some(h) => h.is_sub_role(edge.role_id(), wanted.role_id()),
-        None => edge.role_id() == wanted.role_id(),
+        Some(h) => h.is_signed_sub(edge, wanted),
+        None => edge == wanted,
     }
 }
 

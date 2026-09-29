@@ -2291,22 +2291,27 @@ pub fn layer_a_affordable(hierarchy: &owl_dl_core::role_hierarchy::RoleHierarchy
 }
 
 /// #128: per-role closure cap for [`layer_a_affordable`]
-/// (`RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`, default 128 — measured against
+/// (`RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`, default 144 — measured against
 /// the SIGNED closure since #177).
 #[must_use]
 pub fn classify_role_hierarchy_max_closure() -> usize {
-    // 128 since #177 (was 32, id-space). The gauge now measures the SIGNED
-    // max closure (see `layer_a_affordable`); census over the 530 measured ORE
-    // oracles: 496 are ≤128 — including all 56 SWEET-family members at exactly
-    // 122, the cohort whose polarity-crossing entailments the signed hierarchy
-    // exists to deliver — then a measured gap to 130 (×8), with galen and
-    // `ore_ont_12432` at 826 and the ladder-pathology class beyond. An id-space
-    // 128 admitted galen (id-max 85) and turned its classify into a DNF, which
-    // is why the id number is no longer the gauged quantity.
+    // 144 since the post-#177 residual profile (was 128 at #177, 32 id-space
+    // before that). The gauge measures the SIGNED max closure (see
+    // `layer_a_affordable`); census over the 530 measured ORE oracles: 496 are
+    // ≤128 — including all 56 SWEET-family members at exactly 122 — then 130
+    // (×8) and 138 (×3), then a gap to 148. 144 sits in that second gap
+    // because `ore_ont_9151` (signed 138, a COSMO variant) recovers ALL 143 of
+    // its missed entailments when admitted, for +9 s wall, and a two-arm sweep
+    // over the ENTIRE (128,144] band — the provable blast radius of this
+    // constant, 11 ontologies — shows the other 10 byte-identical with flat
+    // walls. The boundary is deliberately BELOW 148: `ore_ont_1707` (148)
+    // recovers only 2 of 14 for +95 s, `ore_ont_16420`/`9577` (156) go 48 s →
+    // DNF on admission (the galen shape), and `ore_ont_9786` (382) trades 13
+    // pairs for 87x wall. galen itself is 826 and stays declined.
     std::env::var("RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(128)
+        .unwrap_or(144)
 }
 
 pub(crate) fn classify_role_hierarchy_enabled() -> bool {

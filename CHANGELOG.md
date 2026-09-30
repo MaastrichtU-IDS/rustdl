@@ -6,6 +6,48 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.32] — 2026-09-30
+
+### Added — signed role hierarchy: polarity-crossing inclusions reach the matcher (#177, #178)
+
+`RoleHierarchy` was keyed on polarity-blind `RoleId`, so an inclusion that crosses
+polarity — `supersetOf ⊑ setRelation` where canonicalisation rewrites `supersetOf`
+to `subsetOf⁻` — was structurally unrepresentable, and every entailment riding on
+it was silently missed. A SIGNED closure over `Role` (index `2·id + polarity`) now
+records `SubObjectPropertyOf` as asserted AND in canonical spelling,
+`InverseObjectProperties(a,b)` as the four `a ≡ b⁻` inclusions, and symmetry as
+`p ≡ p⁻`, with every edge carrying its logical mirror (`R ⊑ S ⟹ R⁻ ⊑ S⁻`);
+`role_matches` and the trigger widening consult the signed closure, and the
+id-space `add_sub_role` seeds it too so no builder client can construct a narrower
+signed view. 610-oracle paired sweep: **112 ontologies gain 2,652 previously
+missed entailments — ~84% of the residual ORE missed mass — with FP=0 in both
+arms, zero rows worse, zero answer changes elsewhere**; the SWEET family closes
+outright. One documented wall regression (`ore_ont_9429`, complete → timeout,
+reproduced serially; `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` restores baseline).
+As a side effect, three routes of the inverse-pair-functionality known limitation
+(`Functional(R)` + `Inverse(R,S)`, including the two-link chain and the
+`ore_ont_4141` 7-axiom core) are now decided inconsistent at the DEFAULT —
+`RUSTDL_INVERSE_PAIR_FUNC` remains for the reverse
+(`InverseFunctional(R) ⟹ Functional(S)`) direction only.
+
+### Changed — `layer_a_affordable` gauges the SIGNED closure; cap 128 → 144 (#178, #179, #160)
+
+The Layer A affordability guard now measures the signed max closure — the quantity
+the matcher actually walks — after an id-space cap raise admitted galen (id-max 85,
+signed-max **826**: its inverse structure fuses all 413 roles into one signed
+component) into a >3,500 CPU-s DNF that the soundness net caught. Census over the
+530 measured ORE oracles: no pre-#177 admission exceeds signed 128, so nothing the
+shipped release admits is declined. The default cap then moved 128 → 144 on a
+measured gap: `ore_ont_9151` (COSMO, signed 138) recovers **all 143** of its missed
+entailments for +9 s wall, and a two-arm sweep over the entire (128,144] band — the
+provable blast radius, 11 ontologies — shows the other ten byte-identical with flat
+walls. The boundary stays below 148 deliberately: `ore_ont_16420`/`9577` (156) go
+48 s → DNF on admission and `ore_ont_9786` (382) trades 13 pairs for 87× wall
+(now tracked as #180). `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE` overrides.
+
+Post-release ORE residual: **356 missed entailments over 17 ontologies** (from
+4,284 when #160 opened), FP=0 corpus-wide throughout.
+
 ## [0.4.31] — 2026-09-25
 
 ### Changed — `classify` compares same-tier classes by default (#160 Gap 1, #169)

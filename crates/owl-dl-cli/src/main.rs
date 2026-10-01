@@ -27,8 +27,8 @@ use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, Realization, classify_n2, classify_n2_with_timeout, classify_saturation_only,
     classify_with_budget, inferred_data_property_values, inferred_object_property_values,
-    instances_of, instances_of_saturation_only, is_class_satisfiable, is_consistent,
-    is_instance_of, is_instance_of_saturation_only, is_subclass_of, is_subclass_of_saturation_only,
+    instances_of, instances_of_saturation_only, is_class_satisfiable, is_instance_of,
+    is_instance_of_saturation_only, is_subclass_of, is_subclass_of_saturation_only,
     is_subclass_of_with_stats, realize, realize_saturation_only,
 };
 use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment_rcstr, render_proof_with_defs};
@@ -1328,7 +1328,14 @@ fn main() -> Result<()> {
     match command {
         Command::Consistent { file, json } => {
             let onto = parse_ofn(&file)?;
-            let verdict = is_consistent(&onto).context("is_consistent")?;
+            // #182: the stats-bearing form, so a GIVE-UP (fall-through
+            // deadline / node cap) is distinguishable from a verdict. The
+            // bare `is_consistent` folded both into `true`, and the CLI
+            // printed a definitive-looking `consistent` for an answer the
+            // engine never actually reached.
+            let (verdict, stats) =
+                owl_dl_reasoner::is_consistent_with_stats(&onto).context("is_consistent")?;
+            let incomplete = verdict && stats.incomplete;
             // NOTE: `dropped_block` re-runs `convert_ontology` (see its doc
             // comment) — one extra conversion per invocation, negligible
             // vs. reasoning; accepted trade-off.
@@ -1337,10 +1344,27 @@ fn main() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_consistent_json(
-                        verdict, dropped
+                        verdict, incomplete, dropped
                     ))?
                 );
+                if incomplete {
+                    std::process::exit(3);
+                }
                 return Ok(());
+            }
+            if incomplete {
+                // A give-up is not a verdict. Print a distinct token (so
+                // scripts grepping for exactly `consistent` do not read it as
+                // one), explain on stderr, and exit 3 — the `verify-el`
+                // "Unresolved" convention.
+                println!("unknown");
+                eprintln!(
+                    "warning: no inconsistency found within budget — this is a sound \
+                     under-approximation, not a verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS \
+                     (default 10000) for more budget."
+                );
+                warn_if_dropped(&dropped);
+                std::process::exit(3);
             }
             println!(
                 "{}",

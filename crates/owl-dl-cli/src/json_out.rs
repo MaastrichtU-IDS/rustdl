@@ -119,6 +119,9 @@ pub(crate) struct ClassifyJson {
 pub(crate) struct ConsistentJson {
     pub(crate) schema_version: u32,
     pub(crate) consistent: bool,
+    /// #182: `true` when `consistent` is a GIVE-UP reported in its sound
+    /// direction (fall-through deadline / node cap), not a witnessed verdict.
+    pub(crate) incomplete: bool,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
 
@@ -308,11 +311,13 @@ pub(crate) fn build_classify_json(
 #[must_use]
 pub(crate) fn build_consistent_json(
     consistent: bool,
+    incomplete: bool,
     dropped: BTreeMap<String, u64>,
 ) -> ConsistentJson {
     ConsistentJson {
         schema_version: SCHEMA_VERSION,
         consistent,
+        incomplete,
         dropped,
     }
 }

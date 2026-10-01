@@ -5585,6 +5585,47 @@ pub(crate) fn tableau_early_abandon_enabled() -> bool {
     std::env::var_os("RUSTDL_TABLEAU_EARLY_ABANDON").is_none_or(|v| v != "0")
 }
 
+std::thread_local! {
+    /// #182: scoped suppression of early-abandon for the CURRENT thread's next
+    /// probes. Set only by the consistency fall-through (see
+    /// `is_consistent_internal_full`), whose probe runs inline on the calling
+    /// thread. Early-abandon was calibrated for per-pair classify probes,
+    /// where a give-up costs one pair; on `is_consistent` it costs THE
+    /// verdict, and the `RUSTDL_CONSISTENCY_FALLBACK_MS` deadline already
+    /// bounds the wall — so abandoning there traded a bounded wait for a
+    /// wrong-looking answer (the #182 reproducer flips `inconsistent` →
+    /// `consistent` at ~124 ABox individuals purely on the abandon
+    /// threshold, and decides correctly in 2.5 s without it).
+    static SUPPRESS_EARLY_ABANDON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard: suppress early-abandon on this thread while held.
+struct EarlyAbandonSuppression;
+
+impl EarlyAbandonSuppression {
+    fn new() -> Self {
+        SUPPRESS_EARLY_ABANDON.with(|c| c.set(true));
+        Self
+    }
+}
+
+impl Drop for EarlyAbandonSuppression {
+    fn drop(&mut self) {
+        SUPPRESS_EARLY_ABANDON.with(|c| c.set(false));
+    }
+}
+
+fn early_abandon_suppressed() -> bool {
+    SUPPRESS_EARLY_ABANDON.with(std::cell::Cell::get)
+}
+
+/// #182: `RUSTDL_CONSISTENCY_FULL_EFFORT` (default ON, `=0` reverts) — the
+/// consistency fall-through probe runs WITHOUT early-abandon, spending its
+/// whole `RUSTDL_CONSISTENCY_FALLBACK_MS` budget before giving up.
+pub(crate) fn consistency_full_effort_enabled() -> bool {
+    std::env::var_os("RUSTDL_CONSISTENCY_FULL_EFFORT").is_none_or(|v| v != "0")
+}
+
 /// Depth-cap bottom-outs after which a main-tableau probe is abandoned.
 ///
 /// **Calibrated, not guessed** (`docs/2026-08-03-tableau-early-abandon.md` §2).
@@ -6017,6 +6058,16 @@ pub struct QueryStats {
     /// is also complete for the input, so a closure miss is itself
     /// the verdict).
     pub pure_el_mode: bool,
+    /// `true` iff the verdict is a GIVE-UP reported in its sound direction
+    /// rather than a witnessed answer (#182): the consistency fall-through
+    /// tableau hit its `RUSTDL_CONSISTENCY_FALLBACK_MS` deadline, abandoned,
+    /// or tripped the node cap, and "consistent" was reported because no
+    /// clash was WITNESSED — not because a model was found at the usual
+    /// trust level. Callers presenting the verdict as such (the CLI, the
+    /// Python surface) must surface this; the silent form is the bug class
+    /// the soundness contract names ("a sound under-approximation the
+    /// caller cannot see").
+    pub incomplete: bool,
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -6174,6 +6225,7 @@ fn is_class_satisfiable_internal_full(
             QueryStats {
                 answered_by_saturation: true,
                 pure_el_mode: pure_el,
+                incomplete: false,
             },
         ));
     }
@@ -6183,6 +6235,7 @@ fn is_class_satisfiable_internal_full(
             QueryStats {
                 answered_by_saturation: true,
                 pure_el_mode: true,
+                incomplete: false,
             },
         ));
     }
@@ -6192,6 +6245,7 @@ fn is_class_satisfiable_internal_full(
         QueryStats {
             answered_by_saturation: false,
             pure_el_mode: false,
+            incomplete: false,
         },
     ))
 }
@@ -6363,6 +6417,7 @@ fn is_consistent_internal_full(
             QueryStats {
                 answered_by_saturation: true,
                 pure_el_mode: false,
+                incomplete: false,
             },
         ));
     }
@@ -6377,6 +6432,7 @@ fn is_consistent_internal_full(
             QueryStats {
                 answered_by_saturation: false,
                 pure_el_mode: false,
+                incomplete: false,
             },
         ));
     }
@@ -6398,6 +6454,7 @@ fn is_consistent_internal_full(
                 QueryStats {
                     answered_by_saturation: false,
                     pure_el_mode: false,
+                    incomplete: false,
                 },
             ));
         }
@@ -6413,6 +6470,7 @@ fn is_consistent_internal_full(
                 QueryStats {
                     answered_by_saturation: false,
                     pure_el_mode: false,
+                    incomplete: false,
                 },
             ));
         }
@@ -6431,16 +6489,26 @@ fn is_consistent_internal_full(
     // stalled we BOUND it (so a hard out-of-EL ABox can't hang); on the
     // pure no-ABox path we keep the unbounded call (no hang risk).
     let wedge_route_active = prepared.consistency.is_some();
-    let consistent = if wedge_route_active {
+    let (consistent, incomplete) = if wedge_route_active {
         let dl =
             std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
+        // #182: the fall-through probe runs at FULL EFFORT — early-abandon is
+        // suppressed for this one probe (default; `RUSTDL_CONSISTENCY_FULL_EFFORT=0`
+        // reverts). The abandon lever was calibrated for per-pair classify probes
+        // where a give-up costs one pair; here it costs the verdict, and the
+        // fallback deadline already bounds the wall. The #182 reproducer flips
+        // `inconsistent` → `consistent` at ~124 ABox individuals purely on the
+        // abandon threshold, and decides correctly in 2.5 s without it.
+        let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
         if let Some(sat) = prepared.decide_with_deadline(dl, owl_dl_core::ConceptPool::top)? {
-            sat
+            (sat, false)
         } else {
-            // Deadline elapsed: no inconsistency witnessed within
-            // budget. Report consistent (sound — a tableau timeout
-            // is "don't know", and the trusted direction here is
-            // "consistent") with an incompleteness trace.
+            // Deadline elapsed (or node cap): no inconsistency witnessed within
+            // budget. Report consistent (sound — a tableau timeout is "don't
+            // know", and the trusted direction here is "consistent") and mark
+            // the verdict INCOMPLETE so a caller can tell a give-up from an
+            // answer (#182 — the invisible form of this under-approximation is
+            // the bug class the soundness contract names).
             if trace {
                 eprintln!(
                     "consistency: bounded tableau fall-through timed out \
@@ -6448,16 +6516,23 @@ fn is_consistent_internal_full(
                     consistency_fallback_ms()
                 );
             }
-            true
+            (true, true)
         }
     } else {
-        prepared.decide(owl_dl_core::ConceptPool::top)?
+        // `decide_raw`, NOT `decide`: the latter's `unwrap_or(true)` folds a
+        // node-cap `None` into `true` silently — the same invisible give-up,
+        // one path over (#182).
+        match prepared.decide_raw(owl_dl_core::ConceptPool::top)? {
+            Some(sat) => (sat, false),
+            None => (true, true),
+        }
     };
     Ok((
         consistent,
         QueryStats {
             answered_by_saturation: false,
             pure_el_mode: false,
+            incomplete,
         },
     ))
 }
@@ -6556,6 +6631,7 @@ fn is_subclass_of_internal_full(
     let sat_stats = QueryStats {
         answered_by_saturation: true,
         pure_el_mode: pure_el,
+        incomplete: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -6592,6 +6668,7 @@ fn is_subclass_of_internal_full(
             QueryStats {
                 answered_by_saturation: false,
                 pure_el_mode: false,
+                incomplete: false,
             },
         ));
     }
@@ -6608,6 +6685,7 @@ fn is_subclass_of_internal_full(
         QueryStats {
             answered_by_saturation: false,
             pure_el_mode: false,
+            incomplete: false,
         },
     ))
 }
@@ -9002,7 +9080,9 @@ where
         // Armed only on the DEADLINE-BOUNDED arm — that is the one and only path
         // `MAX_SEARCH_DEPTH` is reachable from, so arming the deep arm would be
         // dead code that nonetheless changed a `search`-entry predicate.
-        if tableau_early_abandon_enabled() {
+        // The consistency fall-through suppresses it for its one probe (#182):
+        // there a give-up costs the whole verdict, not one pair.
+        if tableau_early_abandon_enabled() && !early_abandon_suppressed() {
             ctx.enable_early_abandon(tableau_early_abandon_cap_hits());
         }
         // Iterative deepening of the modest cap (RUSTDL_TABLEAU_ITERATIVE_DEEPENING,
@@ -13613,6 +13693,13 @@ mod internal_flag_defaults {
                 "RUSTDL_CLASSIFY_DEFINED_SWEEP",
                 super::classify_defined_sweep_enabled,
                 false,
+            ),
+            // #182: the consistency fall-through probe runs without
+            // early-abandon — a give-up there costs the verdict, not one pair.
+            (
+                "RUSTDL_CONSISTENCY_FULL_EFFORT",
+                super::consistency_full_effort_enabled,
+                true,
             ),
             // The 2026-08-17 incident: documented OFF, shipping ON since 0.4.10.
             (

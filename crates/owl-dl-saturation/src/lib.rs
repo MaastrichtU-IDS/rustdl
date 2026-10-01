@@ -3988,6 +3988,7 @@ fn lower_sub_class_of(
             // r has a range constraint that needs to be folded in.
             if let Some((role, target)) =
                 atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges, chain_ranges)
+                    .or_else(|| top_weakened_existential_rhs(sup, pool, tseitin))
             {
                 rules.existential_facts.push(ExistentialFact {
                     sub: *sub_id,
@@ -4006,7 +4007,9 @@ fn lower_sub_class_of(
                         tseitin,
                         effective_ranges,
                         chain_ranges,
-                    ) {
+                    )
+                    .or_else(|| top_weakened_existential_rhs(*op, pool, tseitin))
+                    {
                         rules.existential_facts.push(ExistentialFact {
                             sub: *sub_id,
                             role,
@@ -4433,6 +4436,53 @@ fn atomic_existential_rhs(
         Some(role.role_id()),
     )?;
     Some((role.role_id(), body_id))
+}
+
+/// ⊤-weakening fallback for an RHS existential whose body
+/// [`atomic_existential_rhs`] refuses (a union filler, a negation, any
+/// out-of-fragment shape): `X ⊑ ∃R.body` entails `X ⊑ ∃R.⊤` for EVERY body,
+/// so emit the fact to the same opaque per-role ⊤-witness the `∃R.⊤` arm
+/// uses. That is all the domain machinery needs — `DomainSub` walks
+/// `role_super`, so `Domain(S)` for every told super `S ⊒ R` now fires on
+/// `X` even though the filler itself stays unrepresented (the COSMO shape
+/// behind issue #180: `CoveringSomething ⊑ ∃hadObjectCovered.(A ⊔ B)`,
+/// `hadObjectCovered ⊑ hadObjectTouched`, `Domain(hadObjectTouched) =
+/// Touching` was silently missed because the union dropped the whole fact).
+///
+/// **Sound in the ⊑-FACT direction ONLY.** The callers are the two
+/// Atomic-LHS sites that push a one-directional `ExistentialFact`; do NOT
+/// route this through any site that mints a two-way (equivalent) marker —
+/// `M ≡ ∃R.⊤` in trigger position would fire `M` on any class with any
+/// R-successor, asserting the original (stronger) head off the weakened
+/// premise. The And-LHS arm therefore still drops these bodies.
+///
+/// The ⊤-witness has no subsumers by design, so the only triggers this fact
+/// can feed are `∃R.⊤ ⊑ Z` forms (domain axioms and `≡ ∃R.⊤` definitions) —
+/// each of which is genuinely entailed by "X has SOME R-successor".
+fn top_weakened_existential_rhs(
+    c: ConceptId,
+    pool: &ConceptPool,
+    tseitin: &mut TseitinAllocator,
+) -> Option<(RoleId, ClassId)> {
+    let (role, body) = match pool.get(c) {
+        ConceptExpr::Some(role, body) => (role, body),
+        ConceptExpr::Min(n, role, body) if *n >= 1 => (role, body),
+        _ => return None,
+    };
+    if role.is_inverse() {
+        return None;
+    }
+    // A provably-⊥ filler must NOT be weakened to ⊤ — `∃R.⊥ ⊑ ⊥` and the
+    // bot-key arm in `atomic_or_tseitin_body_with_extras` carries that
+    // emptiness; weakening would hide it. `atomic_existential_rhs` handles
+    // it when the flag is on; when it is off the axiom drops as before.
+    if concept_is_provably_bot(*body, pool) {
+        return None;
+    }
+    Some((
+        role.role_id(),
+        tseitin.introduce_top_witness(role.role_id()),
+    ))
 }
 
 /// Extras for the filler of an `inner`-edge that hangs off an `outer`-edge:

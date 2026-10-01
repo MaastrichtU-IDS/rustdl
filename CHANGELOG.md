@@ -6,6 +6,28 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.33] — 2026-10-01
+
+### Fixed — an unrepresentable RHS existential body no longer drops the whole fact (#180, #183)
+
+`X ⊑ ∃R.body` entails `X ⊑ ∃R.⊤` for EVERY body, but a body the EL lowering
+could not represent (a union filler, in COSMO) dropped the whole existential
+fact, so `DomainSub` — which already walks `role_super` — had nothing to fire
+on and `Domain(S)` for told supers `S ⊒ R` was silently missed. The lowering
+now weakens such a body to the per-role ⊤-witness the `∃R.⊤` arm already uses.
+Sound in the one-directional fact position only, and scoped to exactly the two
+Atomic-LHS sites that push such a fact; the And-LHS arm (whose two-way marker
+would make the weakening unsound) still drops, pinned saturation-only with the
+wedge covering it end-to-end. A provably-⊥ filler keeps its emptiness.
+Measured: `ore_ont_16420` MISSED **130 → 2**, `ore_ont_9577` **82 → 2**
+(serially stable), with the pairs answered by saturation instead of per-pair
+tableau probes — dissolving #180's tier-walk-economics problem for this class.
+610-oracle paired sweep: 602 identical, zero regressions (every flagged row
+dissolved under serial adjudication), FP=0 in both arms everywhere.
+
+Post-release ORE residual: **~148 missed entailments over 15 ontologies**
+(4,284 when #160 opened).
+
 ## [0.4.32] — 2026-09-30
 
 ### Added — signed role hierarchy: polarity-crossing inclusions reach the matcher (#177, #178)

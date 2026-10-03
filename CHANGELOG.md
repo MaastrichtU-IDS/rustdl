@@ -6,6 +6,31 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed — a consistency give-up re-checks the ABox by connected components (#182)
+
+When the full-effort consistency check still gives up, the ABox is partitioned
+into connected components of individuals (linked by property assertions,
+`SameIndividual`, `DifferentIndividuals`), packed smallest-first into batches of
+at most 64 ABox axioms, and each batch is checked against the full TBox/RBox
+under its own deadline. A batch with no model proves the whole ontology has
+none (monotonicity), so `inconsistent` is reported; a consistent or undecided
+batch proves nothing and the answer stays `unknown`. Inconsistency direction
+only, so FP-safe by construction. `RUSTDL_CONSISTENCY_COMPONENTS=0` reverts;
+`RUSTDL_CONSISTENCY_COMPONENT_BATCH{,_MS}` and `RUSTDL_CONSISTENCY_COMPONENTS_MS`
+(default 60 s total) tune it.
+
+The full ECO+GENEPIO merge from #182 goes `unknown` → **`inconsistent`** in
+~38 s (the clash sits in a 42-axiom component; Konclude agrees). Batch size
+matters: at 256 the clash component lands in a 701-axiom batch that also gives up.
+
+**Corpus effect is zero, and the cost is stated.** Each batch re-prepares the
+whole TBox, so a feasibility gate skips the retry when the batches cannot all be
+prepared within the budget. Over 1,920 ORE ontologies: 251 `unknown`; the gate
+skips 136 (+0.6 s each), 27 have no ABox, and 88 run the retry, recover
+**none**, and pay **+27.8 s** each on average. A pre-change control over all 251
+unknowns plus the 81 timeouts/OOMs is result-identical (0 verdict changes, 0 new
+timeouts).
+
 ## [0.4.34] — 2026-10-03
 
 ### Changed — `consistent` decides at full effort, and says `unknown` when it still gives up (#182, #185)

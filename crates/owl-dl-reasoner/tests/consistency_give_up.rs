@@ -119,6 +119,10 @@ fn full_effort_off_reverts_and_the_give_up_is_visible_or_characterised() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set("RUSTDL_CONSISTENCY_FULL_EFFORT", "0");
+    // The component retry rescues this give-up on its own (the clash
+    // individual is a one-axiom component); switch it off so this test
+    // isolates the full-effort flag.
+    let _c = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS", "0");
     let (verdict, _stats) =
         owl_dl_reasoner::is_consistent_with_stats(&parse("reproducer.ofn")).expect("consistency");
     assert!(
@@ -170,4 +174,78 @@ fn consistent_abox_ontology_is_a_clean_verdict() {
     let (verdict, stats) = owl_dl_reasoner::is_consistent_with_stats(&onto).expect("consistency");
     assert!(verdict);
     assert!(!stats.incomplete);
+}
+
+// ---------------------------------------------------------------------------
+// The component retry (`RUSTDL_CONSISTENCY_COMPONENTS`, default ON). The full
+// ECO+GENEPIO merge still gives up after the full-effort fix; the clash lives in
+// a small `ABox` component, so on a give-up the `ABox` is re-checked in batches
+// of connected components. Sound only in the inconsistency direction (a subset
+// with no model ⇒ the whole has none), which is the only direction used.
+//
+// To make the give-up deterministic, these tests starve the whole-ontology
+// fall-through (`RUSTDL_CONSISTENCY_FALLBACK_MS=1`) and give the batches their
+// own generous budget. In the reproducer the clash individual
+// (`GENEPIO_0002195`) is a one-axiom component of its own.
+
+const CLASH_ASSERTION: &str = "ClassAssertion(<http://purl.obolibrary.org/obo/GENEPIO_0002148> \
+     <http://purl.obolibrary.org/obo/GENEPIO_0002195>)";
+
+/// The reproducer with its one clash assertion removed. Konclude reports it
+/// consistent (and the reproducer inconsistent), so the pair discriminates.
+fn parse_without_clash() -> SetOntology<RcStr> {
+    let text = std::fs::read_to_string(fixture("reproducer.ofn")).expect("read fixture");
+    assert!(text.contains(CLASH_ASSERTION), "fixture drifted");
+    let text = text.replace(CLASH_ASSERTION, "");
+    let (onto, _) =
+        read_ofn(&mut Cursor::new(text), ParserConfiguration::default()).expect("parse ofn");
+    onto
+}
+
+/// A give-up on the whole ontology is turned into `inconsistent` by a component
+/// batch that witnesses the clash, and the answer is a verdict, not `incomplete`.
+#[test]
+fn component_retry_decides_a_whole_ontology_give_up() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "1");
+    let _b = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS", "600000");
+    let _t = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS_MS", "1200000");
+    let (verdict, stats) =
+        owl_dl_reasoner::is_consistent_with_stats(&parse("reproducer.ofn")).expect("consistency");
+    assert!(!verdict, "a component batch must witness the clash");
+    assert!(!stats.incomplete, "a witnessed clash is a verdict");
+}
+
+/// `RUSTDL_CONSISTENCY_COMPONENTS=0` keeps the give-up: the flag is what
+/// decides the case above, not something else on the path.
+#[test]
+fn component_retry_off_keeps_the_give_up() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _off = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS", "0");
+    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "1");
+    let _b = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS", "600000");
+    let (verdict, stats) =
+        owl_dl_reasoner::is_consistent_with_stats(&parse("reproducer.ofn")).expect("consistency");
+    assert!(verdict);
+    assert!(stats.incomplete);
+}
+
+/// FP guard: on the consistent variant every batch is consistent, so the retry
+/// must leave the give-up as `consistent (incomplete)` and never invent a clash.
+#[test]
+fn component_retry_does_not_invent_a_clash() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "1");
+    let _b = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS", "600000");
+    let _t = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS_MS", "1200000");
+    let (verdict, stats) =
+        owl_dl_reasoner::is_consistent_with_stats(&parse_without_clash()).expect("consistency");
+    assert!(verdict, "Konclude: consistent");
+    assert!(stats.incomplete, "the whole-ontology check still gave up");
 }

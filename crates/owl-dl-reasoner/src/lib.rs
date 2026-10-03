@@ -6421,7 +6421,17 @@ fn is_consistent_internal_full(
             },
         ));
     }
+    // Kept only for the #182 component retry on a give-up; `from_internal`
+    // consumes `internal`. An `ABox`-free input never reaches that retry.
+    let component_source =
+        if consistency_components_enabled() && classify::has_abox_axioms(&internal) {
+            Some(internal.clone())
+        } else {
+            None
+        };
+    let prep_started = std::time::Instant::now();
     let prepared = PreparedOntology::from_internal(internal)?;
+    let prep_elapsed = prep_started.elapsed();
     // Sound pre-check: a positive verdict short-circuits the tableau.
     if let abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
@@ -6499,7 +6509,7 @@ fn is_consistent_internal_full(
         // fallback deadline already bounds the wall. The #182 reproducer flips
         // `inconsistent` → `consistent` at ~124 ABox individuals purely on the
         // abandon threshold, and decides correctly in 2.5 s without it.
-        let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
+        let guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
         if let Some(sat) = prepared.decide_with_deadline(dl, owl_dl_core::ConceptPool::top)? {
             (sat, false)
         } else {
@@ -6512,11 +6522,22 @@ fn is_consistent_internal_full(
             if trace {
                 eprintln!(
                     "consistency: bounded tableau fall-through timed out \
-                     ({} ms) — reporting consistent (incomplete)",
+                     ({} ms) — trying ABox components",
                     consistency_fallback_ms()
                 );
             }
-            (true, true)
+            // The guard is a thread-local flag, not a stack: release it before
+            // the batches take their own.
+            drop(guard);
+            if consistency_components_enabled()
+                && component_source
+                    .as_ref()
+                    .is_some_and(|src| abox_components_inconsistent(src, prep_elapsed, trace))
+            {
+                (false, false)
+            } else {
+                (true, true)
+            }
         }
     } else {
         // `decide_raw`, NOT `decide`: the latter's `unwrap_or(true)` folds a
@@ -6535,6 +6556,273 @@ fn is_consistent_internal_full(
             incomplete,
         },
     ))
+}
+
+/// #182: `RUSTDL_CONSISTENCY_COMPONENTS` (default ON, `=0` reverts) — when the
+/// consistency fall-through gives up, re-check the `ABox` in batches of its
+/// connected components before reporting `consistent (incomplete)`.
+pub(crate) fn consistency_components_enabled() -> bool {
+    std::env::var_os("RUSTDL_CONSISTENCY_COMPONENTS").is_none_or(|v| v != "0")
+}
+
+/// Most `ABox` axioms placed in one batch by [`abox_components_inconsistent`]. A
+/// component larger than this forms a batch on its own. Measured on the full
+/// #182 ECO+GENEPIO merge (the clash lives in a 42-axiom component): 256 puts
+/// that component in a 701-axiom batch that gives up (`unknown`); 64, 16 and 1
+/// all find the clash, 64 fastest (39 s end to end vs 45 s and 104 s).
+const COMPONENT_BATCH_MAX_ABOX_AXIOMS: usize = 64;
+
+/// The individuals an `ABox` axiom mentions, or `None` for a `TBox`/`RBox`/
+/// declaration axiom.
+fn abox_axiom_individuals(ax: &owl_dl_core::ontology::Axiom) -> Option<Vec<IndividualId>> {
+    use owl_dl_core::ontology::Axiom;
+    match ax {
+        Axiom::ClassAssertion { individual, .. } => Some(vec![*individual]),
+        Axiom::ObjectPropertyAssertion {
+            subject, object, ..
+        }
+        | Axiom::NegativeObjectPropertyAssertion {
+            subject, object, ..
+        } => Some(vec![*subject, *object]),
+        Axiom::SameIndividual(v) | Axiom::DifferentIndividuals(v) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+/// Partition the `ABox` axioms of `internal` by the connected components of the
+/// individual graph (an edge per assertion that mentions two or more
+/// individuals), and pack the components smallest-first into batches of at most
+/// [`COMPONENT_BATCH_MAX_ABOX_AXIOMS`] axioms. Returns axiom indices per batch.
+/// Returns an empty list when there is only one batch: checking it would repeat
+/// the whole-`ABox` check that just gave up.
+fn abox_component_batches(internal: &InternalOntology) -> Vec<Vec<usize>> {
+    fn find(parent: &mut [u32], mut x: u32) -> u32 {
+        while parent[x as usize] != x {
+            let up = parent[parent[x as usize] as usize];
+            parent[x as usize] = up;
+            x = up;
+        }
+        x
+    }
+    let n = internal.vocabulary.num_individuals();
+    let Ok(n32) = u32::try_from(n) else {
+        return Vec::new();
+    };
+    let mut parent: Vec<u32> = (0..n32).collect();
+    let mut abox: Vec<(usize, u32)> = Vec::new();
+    for (i, ax) in internal.axioms.iter().enumerate() {
+        if let Some(inds) = abox_axiom_individuals(ax)
+            && let Some((first, rest)) = inds.split_first()
+        {
+            let a = find(&mut parent, first.index());
+            for b in rest {
+                let b = find(&mut parent, b.index());
+                if a != b {
+                    parent[b as usize] = a;
+                }
+            }
+            abox.push((i, first.index()));
+        }
+    }
+    let mut by_root: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (i, ind) in abox {
+        by_root.entry(find(&mut parent, ind)).or_default().push(i);
+    }
+    let mut components: Vec<Vec<usize>> = by_root.into_values().collect();
+    components.sort_by_key(|c| (c.len(), c[0]));
+    let batch_max = std::env::var("RUSTDL_CONSISTENCY_COMPONENT_BATCH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(COMPONENT_BATCH_MAX_ABOX_AXIOMS);
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    for comp in components {
+        if !current.is_empty() && current.len() + comp.len() > batch_max {
+            batches.push(std::mem::take(&mut current));
+        }
+        current.extend(comp);
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    if batches.len() < 2 {
+        return Vec::new();
+    }
+    batches
+}
+
+/// #182: decide whether some batch of `ABox` components is inconsistent together
+/// with the full `TBox`/`RBox`. Used only after the whole-ontology check gave up.
+///
+/// SOUND IN THE ONE DIRECTION IT IS USED: OWL is monotonic, so if a subset of the
+/// axioms has no model the whole ontology has none. This holds however the
+/// `ABox` is split — nominals and all — so the component partition is a cost
+/// heuristic, not a correctness condition. A batch that comes back consistent
+/// or undecided says nothing about the whole and is ignored; the caller keeps
+/// its `consistent (incomplete)` answer.
+///
+/// Each batch gets the full-effort probe under
+/// `RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS` (default: the
+/// `RUSTDL_CONSISTENCY_FALLBACK_MS` value), the whole retry is capped at
+/// `RUSTDL_CONSISTENCY_COMPONENTS_MS` (default 60 s), and the batch size is
+/// `RUSTDL_CONSISTENCY_COMPONENT_BATCH` (default
+/// [`COMPONENT_BATCH_MAX_ABOX_AXIOMS`]). `prep_elapsed` is how long preparing the
+/// whole ontology took; a batch is not started with less budget than that left.
+fn abox_components_inconsistent(
+    internal: &InternalOntology,
+    prep_elapsed: std::time::Duration,
+    trace: bool,
+) -> bool {
+    let batches = abox_component_batches(internal);
+    if batches.is_empty() {
+        return false;
+    }
+    let total_ms = std::env::var("RUSTDL_CONSISTENCY_COMPONENTS_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60_000u64);
+    let batch_ms = std::env::var("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(consistency_fallback_ms);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(total_ms);
+    let tbox: Vec<usize> = internal
+        .axioms
+        .iter()
+        .enumerate()
+        .filter(|(_, ax)| abox_axiom_individuals(ax).is_none())
+        .map(|(i, _)| i)
+        .collect();
+    let n_batches = batches.len();
+    // Feasibility gate: every batch pays at least one `TBox` preparation, so if
+    // the batches cannot all be prepared inside the budget the retry would only
+    // sample the smallest few. On ORE that is the common case (thousands of
+    // singleton components, e.g. `ore_ont_10125` 11,688 batches) and the sample
+    // found nothing in 30 of 30 give-ups, at 60 s each; skip it outright.
+    let prep_all = prep_elapsed.saturating_mul(u32::try_from(n_batches).unwrap_or(u32::MAX));
+    if prep_all > std::time::Duration::from_millis(total_ms) {
+        if trace {
+            eprintln!(
+                "consistency: component retry skipped — {n_batches} batches × {} ms prep \
+                 exceeds {total_ms} ms",
+                prep_elapsed.as_millis()
+            );
+        }
+        return false;
+    }
+    for (k, batch) in batches.into_iter().enumerate() {
+        // Preparing a batch re-runs the `TBox` preprocessing, which takes no
+        // deadline. Start a batch only if the budget left covers one more
+        // preparation (the whole ontology's took `prep_elapsed`), so the retry
+        // cannot overrun its cap by more than one probe.
+        if deadline.saturating_duration_since(std::time::Instant::now()) <= prep_elapsed {
+            if trace {
+                eprintln!(
+                    "consistency: component retry out of budget after {k}/{n_batches} batches"
+                );
+            }
+            return false;
+        }
+        let mut idx: Vec<usize> = tbox.iter().copied().chain(batch.iter().copied()).collect();
+        idx.sort_unstable();
+        let sub = InternalOntology {
+            vocabulary: internal.vocabulary.clone(),
+            concepts: internal.concepts.clone(),
+            axioms: idx.iter().map(|&i| internal.axioms[i].clone()).collect(),
+            dropped: internal.dropped.clone(),
+        };
+        let started = std::time::Instant::now();
+        let verdict = {
+            let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
+            let batch_cap = std::time::Instant::now() + std::time::Duration::from_millis(batch_ms);
+            is_consistent_internal_bounded(sub, batch_cap.min(deadline))
+        };
+        if trace {
+            eprintln!(
+                "consistency: component batch {}/{n_batches} ({} ABox axioms) -> {verdict:?} in {} ms",
+                k + 1,
+                batch.len(),
+                started.elapsed().as_millis()
+            );
+        }
+        if matches!(verdict, Ok(Some(false))) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod abox_component_batch_tests {
+    use super::abox_component_batches;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use owl_dl_core::convert::convert_ontology;
+    use owl_dl_core::ontology::InternalOntology;
+    use std::fmt::Write as _;
+
+    fn internal(body: &str) -> InternalOntology {
+        let text = format!("Prefix(:=<http://e/>)\nOntology(<http://e/o>\n{body}\n)");
+        let (o, _): (SetOntology<RcStr>, _) = read_ofn(
+            &mut std::io::Cursor::new(text),
+            ParserConfiguration::default(),
+        )
+        .expect("parse");
+        convert_ontology(&o).expect("convert")
+    }
+
+    /// `n` disconnected one-assertion components: `:A(:iK)`.
+    fn singletons(n: usize) -> String {
+        (0..n).fold(String::new(), |mut s, k| {
+            let _ = writeln!(s, "ClassAssertion(:A :i{k})");
+            s
+        })
+    }
+
+    #[test]
+    fn one_batch_is_no_retry() {
+        // Everything fits in one batch, which would repeat the check that gave up.
+        assert!(abox_component_batches(&internal(&singletons(3))).is_empty());
+    }
+
+    #[test]
+    fn components_are_packed_and_never_split() {
+        // A 70-axiom chain (one component, over the batch size) plus 70 singletons.
+        let chain = (0..70).fold(String::new(), |mut s, k| {
+            let _ = writeln!(s, "ObjectPropertyAssertion(:p :c{k} :c{})", k + 1);
+            s
+        });
+        let onto = internal(&format!("{chain}{}", singletons(70)));
+        let batches = abox_component_batches(&onto);
+        // 70 singletons pack into 64 + 6, the chain stays whole: 3 batches.
+        let sizes: Vec<usize> = batches.iter().map(Vec::len).collect();
+        assert_eq!(sizes, vec![64, 6, 70]);
+        // Every ABox axiom lands in exactly one batch, and no TBox axiom does.
+        let mut all: Vec<usize> = batches.concat();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 140);
+        assert!(
+            all.iter()
+                .all(|&i| super::abox_axiom_individuals(&onto.axioms[i]).is_some())
+        );
+    }
+
+    #[test]
+    fn same_and_different_individuals_connect() {
+        // SameIndividual / DifferentIndividuals join their arguments, so a clash
+        // through them cannot be split across two batches.
+        let mut body = singletons(64);
+        body.push_str("ClassAssertion(:B :x)\nClassAssertion(:C :y)\nSameIndividual(:x :y)\n");
+        let batches = abox_component_batches(&internal(&body));
+        let together = batches.iter().any(|b| b.len() == 3);
+        assert!(
+            together,
+            "x, y and their SameIndividual must share a batch: {batches:?}"
+        );
+    }
 }
 
 /// Decide whether `sub_iri ⊑ super_iri` holds in `ontology`. Standard
@@ -13699,6 +13987,13 @@ mod internal_flag_defaults {
             (
                 "RUSTDL_CONSISTENCY_FULL_EFFORT",
                 super::consistency_full_effort_enabled,
+                true,
+            ),
+            // #182: on a consistency give-up, re-check the ABox in batches of
+            // connected components; sound for the inconsistency direction.
+            (
+                "RUSTDL_CONSISTENCY_COMPONENTS",
+                super::consistency_components_enabled,
                 true,
             ),
             // The 2026-08-17 incident: documented OFF, shipping ON since 0.4.10.

@@ -6,6 +6,36 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.34] — 2026-10-03
+
+### Changed — `consistent` decides at full effort, and says `unknown` when it still gives up (#182, #185)
+
+⚠️ **Visible CLI behaviour change.** When the engine gives up on a consistency
+check — the bounded tableau fall-through hitting `RUSTDL_CONSISTENCY_FALLBACK_MS`,
+or the node cap on the no-ABox path — `rustdl consistent` now prints **`unknown`**
+with an explanation on stderr and **exits 3** (the `verify-el` Unresolved
+convention). `--json` gains `"incomplete": true` and also exits 3; the verdict field
+is kept. Previously a give-up printed a plain `consistent` with exit 0: a sound
+under-approximation the caller could not see. Scripts that treat exit 0 +
+`consistent` as a verdict will now see `unknown` on those inputs; raise
+`RUSTDL_CONSISTENCY_FALLBACK_MS` to turn them back into real verdicts.
+`QueryStats` gains `incomplete` for library callers.
+
+**Full effort** (`RUSTDL_CONSISTENCY_FULL_EFFORT`, default ON, `=0` reverts): the
+fall-through probe now runs with early-abandon suppressed. Early abandon was tuned
+for per-pair classify probes, where a give-up costs one pair; on `is_consistent` it
+costs the verdict. The #182 reproducer (97 axioms, from an ECO + GENEPIO merge;
+HermiT, Konclude and JFact all say inconsistent) flipped to `consistent` at ~124
+ABox individuals purely on the abandon threshold. It now answers `inconsistent` at
+the default in ~2.5 s.
+
+Measured over all 1,920 ORE ontologies, two arms: **248 (13%) go `consistent` →
+`unknown`** with identical walls — those answers were deadline give-ups all along —
+0 `consistent` → `inconsistent`, 1,516 unchanged at +0.87% aggregate wall.
+
+Still open in #182: the full ECO + GENEPIO merge, where no budget suffices (HermiT
+finds the clash in ~8 s). It now reports `unknown` rather than `consistent`.
+
 ## [0.4.33] — 2026-10-01
 
 ### Fixed — an unrepresentable RHS existential body no longer drops the whole fact (#180, #183)

@@ -9,7 +9,7 @@
 #   SKIP_FIXTURES=1 ./scripts/install-deps.sh
 #
 # Steps:
-#   1. apt: GNU time (CPU-time measurement), perf, a JRE if none is found
+#   1. apt: GNU time (CPU-time measurement), bc, perf, a JRE if none is found
 #   2. maturin (Python wheel builds) via uv
 #   3. pinned Rust 1.95.0 toolchain + java on PATH (marked block in ~/.bashrc)
 #   4. ~/.local/bin/konclude wrapper (supplies the bundled libpcre.so.3)
@@ -31,6 +31,7 @@ mkdir -p "$BIN"
 # --- 1. system packages ------------------------------------------------------
 pkgs=()
 [ -x /usr/bin/time ] || pkgs+=(time)
+have bc || pkgs+=(bc)   # release-corpus-report.sh's confirmation pass
 have perf || pkgs+=(linux-perf)
 if [ -z "$JDK_HOME" ] && ! have java; then pkgs+=(openjdk-17-jre-headless); fi
 if [ ${#pkgs[@]} -gt 0 ]; then
@@ -135,6 +136,7 @@ say "check"
 printf '  %-8s %s\n' cargo "$(cargo --version 2>&1)"
 printf '  %-8s %s\n' java "$(java -version 2>&1 | head -1)"
 printf '  %-8s %s\n' time "$([ -x /usr/bin/time ] && /usr/bin/time --version 2>&1 | head -1 || echo MISSING)"
+printf '  %-8s %s\n' bc "$(command -v bc || echo MISSING)"
 printf '  %-8s %s\n' perf "$(perf --version 2>&1 || echo MISSING)"
 printf '  %-8s %s\n' maturin "$(maturin --version 2>&1 || echo MISSING)"
 printf '  %-8s %s\n' konclude "$("$BIN/konclude" -h 2>&1 | grep -m1 -o 'Version v[^ ]*' || echo MISSING)"

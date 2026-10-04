@@ -53,3 +53,21 @@ fn without_reflexivity_nothing_is_under_the_range() {
         );
     }
 }
+
+/// A super-role of a reflexive role is reflexive: `Reflexive(r)` + `r ⊑ s` +
+/// `Range(s, C)` also entails `⊤ ⊑ C`.
+#[test]
+fn reflexivity_reaches_a_super_role() {
+    let src = ONTOLOGY
+        .replace("ObjectPropertyRange(:r :C)", "ObjectPropertyRange(:s :C)")
+        .replace(
+            "Declaration(ObjectProperty(:p))",
+            "Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:s))\nSubObjectPropertyOf(:r :s)",
+        );
+    for x in ["A", "B", "D"] {
+        assert!(
+            is_under_c(&src, x),
+            "classify misses {x} ⊑ C via super-role"
+        );
+    }
+}

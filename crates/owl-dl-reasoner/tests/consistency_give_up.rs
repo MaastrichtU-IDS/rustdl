@@ -108,27 +108,38 @@ fn issue182_control_stays_inconsistent() {
     assert!(!verdict);
 }
 
-/// `RUSTDL_CONSISTENCY_FULL_EFFORT=0` reverts to the pre-fix behaviour — the
-/// flag is load-bearing, not decorative. The reverted verdict must ALSO carry
-/// the incompleteness signal when the give-up happens via the fall-through's
-/// `None`; if the abandon instead surfaces as a trusted `Sat`, this assert
-/// documents which shape the revert takes (see the match below).
+/// With BOTH #182 safety nets off (`RUSTDL_CONSISTENCY_FULL_EFFORT=0` and
+/// `RUSTDL_CONSISTENCY_COMPONENTS=0`) the wedge itself now refutes the
+/// reproducer.
+///
+/// FLIPPED (#139). This test used to assert the opposite — that the nets off
+/// reproduce the wrong-looking `consistent` — to show the full-effort flag was
+/// load-bearing. The give-up it relied on was the #139 ghost-node loop: a `⊔`
+/// whose body sat on a node a `≤1` merge had folded was read on the ghost and
+/// never closed, so the wedge re-picked it until the depth cap and abandoned.
+/// Pre-#139 `main` with `RUSTDL_INVERSE_FUNC_MERGE=0` (no merge, so no ghost)
+/// also answers `inconsistent` here, which is what attributes the give-up to
+/// the merge rather than to the calculus. The safety nets stay — they protect
+/// give-ups this fix does not cure — but this fixture can no longer
+/// demonstrate them, and a test asserting the wrong answer would now pin a
+/// fixed defect.
 #[test]
-fn full_effort_off_reverts_and_the_give_up_is_visible_or_characterised() {
+fn with_both_safety_nets_off_the_wedge_now_refutes_the_reproducer() {
     let _lock = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set("RUSTDL_CONSISTENCY_FULL_EFFORT", "0");
-    // The component retry rescues this give-up on its own (the clash
-    // individual is a one-axiom component); switch it off so this test
-    // isolates the full-effort flag.
     let _c = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS", "0");
-    let (verdict, _stats) =
+    let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&parse("reproducer.ofn")).expect("consistency");
     assert!(
-        verdict,
-        "flag off must reproduce the pre-fix wrong-looking `consistent` — \
-         if this fails, the flag is not actually gating the suppression"
+        !verdict,
+        "HermiT, Konclude and `JFact` all say inconsistent; with the #139 fix the \
+         wedge reaches that without either safety net"
+    );
+    assert!(
+        !stats.incomplete,
+        "a witnessed clash is a verdict, not a give-up"
     );
 }
 

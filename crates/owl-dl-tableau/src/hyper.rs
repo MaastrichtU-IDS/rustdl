@@ -3720,11 +3720,41 @@ impl<'c> HyperEngine<'c> {
     /// Extracted from [`Self::any_head_satisfied`] to allow per-atom inspection (e.g.
     /// counting live disjuncts for MRV ordering in Task 2).
     fn head_atom_satisfied(&self, ci: usize, k: usize, xnode: HNode, binding: &Binding) -> bool {
-        let resolve = |v: Var| resolve_var(v, xnode, binding);
+        // A disjunct asserted at a node that a `≤1` merge has folded does not
+        // always land where it was asserted: `add_label` resolves through the
+        // union-find and writes the SURVIVOR, while `fire_exists` and the `≤n`
+        // head write the raw (ghost) node. `find_open_disjunction` still scans
+        // ghosts, so a read on only one of the two leaves the `⊔` permanently
+        // open for the other kind of head, and the search re-picks the same
+        // disjunction at every level until the depth cap, returning `Stalled`
+        // on a satisfiable class (#139: all 350 label-cache stalls were the
+        // label case). So a disjunct counts as satisfied if it holds on the raw
+        // node OR on its representative. A superset of either read alone, so it
+        // can only remove `⊔` branch points, never add a clash. Identity when
+        // `inverse_func_merge` is off.
+        self.head_atom_satisfied_on(ci, k, xnode, binding, false)
+            || (self.inverse_func_merge && self.head_atom_satisfied_on(ci, k, xnode, binding, true))
+    }
+
+    /// [`Self::head_atom_satisfied`] reading every bound node raw
+    /// (`resolve_nodes == false`) or through the merge union-find (`true`).
+    fn head_atom_satisfied_on(
+        &self,
+        ci: usize,
+        k: usize,
+        xnode: HNode,
+        binding: &Binding,
+        resolve_nodes: bool,
+    ) -> bool {
+        let resolve = |v: Var| {
+            resolve_var(v, xnode, binding).map(|t| if resolve_nodes { self.resolve(t) } else { t })
+        };
+        let resolve_reads = resolve_nodes;
         match &self.clause(ci).head[k] {
             Atom::Class(c, v) => matches!(resolve(*v), Some(t) if self.nodes[t.index()].has(*c)),
             Atom::Exists(role, cls, v) => matches!(resolve(*v), Some(src) if
             self.nodes[src.index()].edges.iter().any(|(er, t)| {
+                let t = if resolve_reads { self.resolve(*t) } else { *t };
                 role_matches(*er, *role, self.sub_roles.as_ref()) && self.nodes[t.index()].has(*cls)
             })),
             Atom::AtMost(role, qual, n, v) => matches!(resolve(*v), Some(src) if
@@ -6200,6 +6230,76 @@ mod tests {
             .decide(64);
         assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
         assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
+    }
+
+    /// #139: a `⊔` whose body sits on a node the `≤1` merge has FOLDED must be
+    /// read as satisfied once its disjunct holds on the survivor. `add_label`
+    /// resolves through the union-find, so an asserted disjunct lands on the
+    /// survivor; if `head_atom_satisfied` reads the ghost, the clause never
+    /// closes and the search re-picks it at every level until the depth cap,
+    /// returning `Stalled` on a satisfiable class.
+    ///
+    /// The two successors arrive by DIFFERENT roles (`sub ⊑ sup` gives the `sub`-one a
+    /// `sup` edge too), so pairwise blocking cannot block the ghost — with a shared
+    /// incoming role, or under anywhere blocking, the ghost is label-subsumed by
+    /// the survivor and gets blocked, which masks the bug. Both `B` and `C` carry
+    /// a disjunction so the test does not depend on which successor survives.
+    #[test]
+    fn disjunction_on_a_merged_ghost_closes_on_the_survivor() {
+        if !crate::inverse_func_merge_enabled() {
+            return; // the incremental merge (and so the ghost) only exists with it on
+        }
+        let (sup, sub) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (a, b, c, d1, d2) = (cls(0), cls(1), cls(2), cls(3), cls(4));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(sub, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Role(sub, X, 1)],
+                head: vec![Atom::Role(sup, X, 1)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(sup, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(sup, None, 1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+        ];
+        let mut engine = HyperEngine::new(&clauses, a).with_double_blocking();
+        // Deadline so a regression FAILS rather than hangs: without the fix the
+        // re-picked `⊔` multiplies with its sibling disjuncts and never returns.
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let verdict = engine.decide_with_deadline(16, Some(deadline));
+        assert!(
+            engine
+                .representative
+                .iter()
+                .enumerate()
+                .any(|(i, rep)| rep.index() != i),
+            "precondition: the ≤1 merge must fold a node, or this test proves nothing"
+        );
+        assert_eq!(
+            verdict,
+            HyperResult::Sat,
+            "a disjunction on a folded node must close on the survivor"
+        );
+        assert!(
+            engine.stats().branches_taken <= 2,
+            "the same ⊔ was re-picked: {} branches",
+            engine.stats().branches_taken
+        );
     }
 
     // ── new_seeded (ABox-consistency) constructor ─────────────────────

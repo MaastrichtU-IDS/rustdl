@@ -396,8 +396,22 @@ impl Clausifier {
                     head: vec![Atom::Role(r, X, z)],
                 });
             }
+            // Reflexivity `⊤ ⊑ ∃R.Self` → the empty-body clause `→ R(X,X)`,
+            // fired at every node's creation; the self-loop head is the one
+            // `∃R.Self` already uses. Previously this fell into the catch-all
+            // below and was dropped from the wedge theory without being
+            // counted as deferred, so `Reflexive(r)` + `Range(r, C)` (which
+            // entails `⊤ ⊑ C`) was invisible to the wedge, and a wedge `Sat`
+            // under `trust_sat` silently refuted every `X ⊑ C`.
+            Axiom::ReflexiveRole(role) => {
+                let r = self.canon_role(*role);
+                self.clauses.push(DlClause {
+                    body: Vec::new(),
+                    head: vec![Atom::Role(r, X, X)],
+                });
+            }
             // RBox role hierarchy (`SubObjectPropertyOf{ Role }`),
-            // characteristics other than transitivity, ABox,
+            // characteristics other than transitivity and reflexivity, ABox,
             // declarations: not handled here. `SubObjectPropertyOf{ Role }`
             // is handled by `build_role_hierarchy` / `role_matches`
             // (do not duplicate). `InverseObjectProperties` is consumed
@@ -1203,6 +1217,23 @@ SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
         assert!(
             stats.deferred >= 1,
             "over-cap antecedent must defer; stats={stats:?}"
+        );
+    }
+
+    /// `ReflexiveObjectProperty(r)` clausifies to the empty-body self-loop
+    /// clause `→ r(X,X)`. It used to fall into `clausify_axiom`'s catch-all and
+    /// vanish without being counted as deferred.
+    #[test]
+    fn reflexive_role_clausifies_to_an_empty_body_self_loop() {
+        let (clauses, _stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(ObjectProperty(:r))\n\
+ReflexiveObjectProperty(:r)\n)\n"
+        ));
+        assert!(
+            clauses.iter().any(|c| c.body.is_empty()
+                && matches!(c.head.as_slice(), [Atom::Role(_, v, w)] if *v == X && *w == X)),
+            "expected `→ r(X,X)`; got {clauses:?}"
         );
     }
 

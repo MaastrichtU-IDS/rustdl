@@ -125,7 +125,56 @@ changes, 1 real recovery (`16372`), 1 real wall regression (`10109`), aggregate 
 plus #139 (75 → ~8–10 s, MISSED 23 → 3) and the #182 reproducer (`unknown` → `inconsistent`
 with the safety nets off).
 
-**Residual:** 3 MISSED on #139 (vs HermiT), not yet examined.
+## Residual: the 3 MISSED on #139 (investigated, NOT fixed)
+
+All three share one sub: `PMD_0010100` (elemental semiconductor) ⊑ `PMD_0020210` (elemental
+crystal), plus that class's two told supers `PMD_0020003` and `BFO_0000030`. HermiT's
+justification is two axioms:
+
+    PMD_0010100 ⊑ =1 has_member.PMD_0020140
+    PMD_0020210 ≡ =1 has_member.PMD_0020140
+
+That core alone classifies correctly (both binaries). The miss needs context, and it is
+**budget-insensitive** (missed at `--pair-timeout-ms` 5 / 100 / 1000 / 2000) while `subclass`
+and `explain` on the pair run past 120 s. Reproduced on a 482-axiom ⊥-module (`m100.ofn`,
+deterministic 5/5 at 1 and 4 threads). No existing flag recovers it (`TRUST_SAT=0`,
+`LABEL_HEURISTIC=0`, `INVERSE_FUNC_MERGE=0`, `HYPER_DOUBLE_BLOCK=0`, `SAME_TIER=1`,
+`ROLE_HIERARCHY=1`).
+
+Because `A`'s only route to `BFO_0000030` is through `PMD_0020210`, the top-down tier walk must
+prove `A ⊑ BFO_0000030` before it ever compares `A` with `PMD_0020210`.
+
+**Three distinct wedge gaps, found with a per-pair pick-log probe; each was prototyped in a
+throwaway worktree, and all three together still leave the pair missed:**
+
+1. **`≠`-only cardinality clash carries `DepSet::ALL`.** `card_clash_deps` returns `ALL` when
+   two successors are distinct via `≠` rather than disjoint labels (guard 2), and the `≠` clash
+   in `merge_with_cause` is hard-coded `ALL`. With 13 `PMD_00200xx ≡ PMD_0020140 ⊓ ∀has_part.X`
+   definitions, every `PMD_0020140` successor carries 13 binary disjunctions, and backjumping
+   cannot skip them: the wedge enumerated all 2¹³ (pick counts halving 5351 / 2676 / 1338 …,
+   `restores = branches`). The main tableau shows the same blow-up in isolation — synthetic
+   `A ⊑ =1 r.C`, `B ≡ =1 r.C` + k such definitions: `subclass` 1.4 s at k=12, 3.8 s at 14,
+   15 s at 16, >120 s at 20 — while classify's wedge stays ~0.3 s there. A prototype (`≠`
+   between unmerged endpoints justified by birth deps, which is how `generate_at_least`, the
+   only `add_neq` caller, creates it; and only qualifier-label deps when distinctness is all
+   `≠`) fixed a 20-axiom ddmin reduction but not the module. **Soundness-critical** — an
+   under-reported dep set is an unsound backjump, i.e. an FP.
+2. **`≥n` over an INVERSE role is never generated.** `has_member` is canonicalised to
+   `member_of⁻` by `InverseObjectProperties`, so `PMD_0020210`'s ⊒ clause is
+   `⊤ → PMD_0020210 ∨ ≥2 member_of⁻.C ∨ ≤0 member_of⁻.C`. `generate_at_least` returns
+   `NoChange` for any inverse role (HF3a scope), so choosing that disjunct does nothing and the
+   clause is re-picked ~494 times until the depth cap — the same re-pick-loop *shape* as the
+   ghost bug, different cause. (The 20-axiom ddmin reduction had dropped the
+   `InverseObjectProperties` axiom, which is why it showed only gap 1.)
+3. **An `≥n` disjunct is never counted satisfied.** `head_atom_satisfied` returns `false` for
+   `AtLeast`, but `generate_at_least` declines when the count guard or fire-once already holds,
+   so a picked `≥n` disjunct can be a no-op that leaves its clause open — a third re-pick loop.
+
+With all three prototypes on, what remains on `A ⊑ BFO_0000030` is a genuine search (a 5-way
+disjunction over ~8 nodes, depth 89, no loop). These are wedge completeness work on inverse
+cardinality, each needing a design + FP gate; they should be their own issue, not a #139
+follow-up patch. Reproducers in the session scratchpad: `m100.ofn` (module), the 20-axiom
+ddmin reduction (gap 1 only), the synthetic `k`-sweep (gap 1 in the main tableau).
 
 ## TL;DR
 

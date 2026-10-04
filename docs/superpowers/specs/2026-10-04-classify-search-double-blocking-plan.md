@@ -23,7 +23,7 @@ Small graph in both arms ⇒ by the pre-registered rule, **not** non-terminating
 blocking-redesign branch (Step 3) is dead.
 
 **But "the search tree explodes" (H4) was also wrong, and the depth figure said so.** Raising
-the label-cache depth cap (diagnostic `RUSTDL_LABEL_DEPTH`) to 512 / 1,024 / 2,048 left the
+the label-cache depth cap (a throwaway probe, `RUSTDL_LABEL_DEPTH`, not in the tree) to 512 / 1,024 / 2,048 left the
 same 350 stalled, and at 2,048 every one of the 312 reached depth **2,048 on graphs of 4–73
 nodes** — 2,048 nested decisions over as few as 4 nodes. That is not a large search; it is
 **one disjunction re-opened at every level.**
@@ -53,9 +53,12 @@ skips it. Pairwise blocking cannot block it when ghost and survivor arrived by d
 **Fix.** A disjunct now counts as satisfied if it holds on the raw node **or** on its
 representative (identity when `inverse_func_merge` is off). Both halves are needed, because the
 writers disagree: `add_label` writes the survivor, while `fire_exists` and the `≤n` head write the
-raw node. A resolve-only read (the first version) fixed #139 but opened the mirror gap for an `∃`
-disjunct asserted at a ghost — `fire_exists` puts the witness on the ghost, a survivor-only read
-cannot see it, and the same loop forms. The OR is a superset of both reads, so it can only
+raw node. A resolve-only read (the first version) fixed #139, but by inspection it could leave an
+`∃` disjunct asserted at a ghost open — `fire_exists` puts the witness on the ghost, which a
+survivor-only read cannot see. That gap was argued, not observed: a canary with `∃` disjuncts
+passes under resolve-only too, because the survivor inherits the ghost's labels at merge and its
+own copy of the disjunction closes the ghost's. The raw half is kept anyway because it IS main's
+read, so the OR can never close fewer disjunctions than main does; it is not test-guarded. The OR is a superset of both reads, so it can only
 *remove* `⊔` branch points, never add a clash: FP-safe by construction (a spurious `Sat` is a
 MISS, never an FP). Unflagged — it makes existing reads agree with existing writes.
 
@@ -75,7 +78,7 @@ With the fix, pairwise ON and OFF agree (0 / 3 both).
 
 **Guard.** `hyper::tests::disjunction_on_a_merged_ghost_closes_on_the_survivor`: ghost and
 survivor reached by different roles (`s ⊑ r` via a role-head clause) under pairwise blocking,
-with a precondition assert that a node was actually folded. **Sabotage verified**: reverting
+with a precondition assert that a node was actually folded. **Sabotage verified for the resolved half only**: reverting
 only the resolve makes it fail on its 5 s deadline (without a deadline it hangs — the re-picked
 `⊔` multiplies with its sibling). Two earlier versions of the test were VACUOUS and sabotage
 exposed both: one used the default (anywhere) blocking, the other a shared incoming role, and in
@@ -116,7 +119,8 @@ Its answer is unchanged, so the cost is wall only; it crosses the 60 s sweep cap
 
 **v2 (raw-OR-resolved), the shipped form**: #139 unchanged (0 label misses, 7.5 s), `10109`
 unchanged (98 s), guard sabotage fails as expected. v2 swept over all 1,920 (60 s cap, 6 workers)
-and compared against main's outputs from the v1 sweep: **1,732 identical / 176 both-fail / 12
+and compared against main's outputs recorded in the v1 sweep (a separate parallel run, hence the
+sequential re-runs of every flagged row below): **1,732 identical / 176 both-fail / 12
 flagged.** Nine flagged rows are the v1 set with the same verdicts. The three new ones —
 `4911` (rows differ), `11005` and `3562` (main ~60 s, v2 55–56 s) — re-run sequentially, 3
 alternating repeats per arm at 180 s: **answers identical 6/6 on all three**, walls overlapping

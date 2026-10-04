@@ -130,6 +130,9 @@ fn with_both_safety_nets_off_the_wedge_now_refutes_the_reproducer() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set("RUSTDL_CONSISTENCY_FULL_EFFORT", "0");
     let _c = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS", "0");
+    // Generous fallback deadline so a slow CI host cannot turn the wedge's
+    // refutation into a deadline give-up (release wall is ~0.18 s).
+    let _b = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "600000");
     let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&parse("reproducer.ofn")).expect("consistency");
     assert!(

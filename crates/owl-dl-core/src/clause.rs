@@ -402,6 +402,9 @@ impl Clausifier {
             // is handled by `build_role_hierarchy` / `role_matches`
             // (do not duplicate). `InverseObjectProperties` is consumed
             // up front by `build_inverse_canon` (role canonicalization).
+            // `ReflexiveObjectProperty` is applied after all axioms are
+            // clausified, by `apply_reflexive_roles`; it used to vanish here
+            // without being counted as deferred.
             _ => {}
         }
     }
@@ -961,8 +964,146 @@ pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, Claus
     for ax in &normalized {
         c.clausify_axiom(ax);
     }
+    let reflexive = reflexive_role_ids(&normalized, &c);
+    if !reflexive.is_empty() {
+        apply_reflexive_roles(&mut c, &reflexive);
+    }
     let stats = ClauseStats::of(&c.clauses, c.deferred);
     (c.clauses, stats)
+}
+
+/// Canonical ids of every reflexive role: those declared
+/// `ReflexiveObjectProperty`, closed upward through `SubObjectPropertyOf`
+/// (a super-role of a reflexive role is reflexive). Keyed by role id, because
+/// `r` is reflexive iff `r⁻` is.
+fn reflexive_role_ids(axioms: &[Axiom], c: &Clausifier) -> std::collections::HashSet<RoleId> {
+    let mut set: std::collections::HashSet<RoleId> = axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::ReflexiveRole(r) => Some(c.canon_role(*r).role_id()),
+            _ => None,
+        })
+        .collect();
+    if set.is_empty() {
+        return set;
+    }
+    let edges: Vec<(RoleId, RoleId)> = axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: crate::ontology::SubRolePath::Role(sub),
+                sup,
+            } => Some((c.canon_role(*sub).role_id(), c.canon_role(*sup).role_id())),
+            _ => None,
+        })
+        .collect();
+    loop {
+        let before = set.len();
+        for &(sub, sup) in &edges {
+            if set.contains(&sub) {
+                set.insert(sup);
+            }
+        }
+        if set.len() == before {
+            return set;
+        }
+    }
+}
+
+/// Cap on clauses derived by [`apply_reflexive_roles`]; past it the remaining
+/// derivations are deferred (sound: a missing clause only weakens the theory).
+const REFLEXIVE_DERIVED_CAP: usize = 4096;
+
+/// Apply reflexivity of each role in `reflexive` to the clause set without
+/// materialising self-loop edges. A body atom `R(a, b)` on a reflexive `R` is
+/// always satisfiable with `b = a` (every node is its own `R`-successor), so
+/// for each such atom the clause is copied with `b` replaced by `a` and the atom
+/// dropped — e.g. `Range(r, C)`'s `r(X,y) → C(y)` also yields `→ C(X)`, i.e.
+/// `⊤ ⊑ C`. Derived clauses are processed in turn, so several reflexive atoms in
+/// one body are all covered.
+///
+/// An earlier version emitted the empty-body clause `→ R(X,X)` instead, which
+/// is exact but put a self-loop on every node and cost 3–5× wall on
+/// reflexive-bearing ORE ontologies for no change in their answers. This form
+/// gives up two effects of a real self-loop, both in the MISS direction only:
+/// a node does not count itself toward a `≤n` on `R`, and is never its own
+/// `∃R` witness.
+fn apply_reflexive_roles(cz: &mut Clausifier, reflexive: &std::collections::HashSet<RoleId>) {
+    let is_reflexive =
+        |atom: &Atom| matches!(atom, Atom::Role(role, _, _) if reflexive.contains(&role.role_id()));
+    let mut seen: Vec<DlClause> = Vec::new();
+    let mut queue: Vec<DlClause> = cz
+        .clauses
+        .iter()
+        .filter(|clause| clause.body.iter().any(is_reflexive))
+        .cloned()
+        .collect();
+    let mut derived = 0usize;
+    while let Some(clause) = queue.pop() {
+        for (idx, atom) in clause.body.iter().enumerate() {
+            let Atom::Role(role, src, tgt) = *atom else {
+                continue;
+            };
+            if !reflexive.contains(&role.role_id()) {
+                continue;
+            }
+            // Contract `b` into `a`, keeping `X` as the central variable.
+            let (keep, drop) = if tgt == X { (tgt, src) } else { (src, tgt) };
+            let sub = |var: Var| if var == drop { keep } else { var };
+            let body: Vec<Atom> = clause
+                .body
+                .iter()
+                .enumerate()
+                .filter(|&(other, _)| other != idx)
+                .map(|(_, at)| substitute_atom(*at, &sub))
+                .collect();
+            let head: Vec<Atom> = clause
+                .head
+                .iter()
+                .map(|at| substitute_atom(*at, &sub))
+                .collect();
+            // A derived clause that always holds adds nothing, and two kinds
+            // occur: a tautology (a head atom is also in the body — what
+            // contracting transitivity `r(X,y) ∧ r(y,z) → r(X,z)` produces) and
+            // a head that is a reflexive self-loop `R(v,v)`, already true.
+            // Contracting the tautology `r(X,z) → r(X,z)` once more would emit
+            // `→ r(X,X)` and reintroduce the self-loop on every node by a side
+            // route, which is what this encoding exists to avoid.
+            if head.iter().any(|atom| body.contains(atom))
+                || head
+                    .iter()
+                    .any(|atom| matches!(atom, Atom::Role(role, u, v) if u == v && reflexive.contains(&role.role_id())))
+            {
+                continue;
+            }
+            let new = DlClause { body, head };
+            if seen.contains(&new) {
+                continue;
+            }
+            if derived == REFLEXIVE_DERIVED_CAP {
+                cz.defer("reflexive-derived-cap");
+                return;
+            }
+            derived += 1;
+            seen.push(new.clone());
+            if new.body.iter().any(is_reflexive) {
+                queue.push(new.clone());
+            }
+            cz.clauses.push(new);
+        }
+    }
+}
+
+/// `atom` with every variable mapped through `sub`.
+fn substitute_atom(atom: Atom, sub: &impl Fn(Var) -> Var) -> Atom {
+    match atom {
+        Atom::Class(k, v) => Atom::Class(k, sub(v)),
+        Atom::Role(r, u, v) => Atom::Role(r, sub(u), sub(v)),
+        Atom::Exists(r, k, v) => Atom::Exists(r, k, sub(v)),
+        Atom::AtMost(r, q, n, v) => Atom::AtMost(r, q, n, sub(v)),
+        Atom::AtLeast(r, q, n, v) => Atom::AtLeast(r, q, n, sub(v)),
+        Atom::Equal(u, v) => Atom::Equal(sub(u), sub(v)),
+    }
 }
 
 /// Per-category breakdown of what the clausifier still defers — the
@@ -1203,6 +1344,40 @@ SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
         assert!(
             stats.deferred >= 1,
             "over-cap antecedent must defer; stats={stats:?}"
+        );
+    }
+
+    /// `ReflexiveObjectProperty(r)` + `ObjectPropertyRange(r, C)` (+ transitivity,
+    /// whose contraction must not reintroduce a self-loop): reflexivity is
+    /// applied by contracting `r(X,y)` to `y = X`, so the range clause
+    /// `r(X,y) → C(y)` also yields the empty-body clause `→ C(X)` (`⊤ ⊑ C`).
+    /// Reflexivity used to fall into `clausify_axiom`'s catch-all and vanish.
+    #[test]
+    fn reflexive_role_contracts_role_bodies() {
+        let (clauses, _stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:C))\nDeclaration(ObjectProperty(:r))\n\
+ReflexiveObjectProperty(:r)\nTransitiveObjectProperty(:r)\n\
+ObjectPropertyRange(:r :C)\n)\n"
+        ));
+        assert!(
+            clauses.iter().any(|c| c.body.is_empty()
+                && matches!(c.head.as_slice(), [Atom::Class(_, v)] if *v == X)),
+            "expected `→ C(X)`; got {clauses:?}"
+        );
+        assert!(
+            !clauses.iter().any(|c| c
+                .head
+                .iter()
+                .any(|a| matches!(a, Atom::Role(_, v, w) if v == w))),
+            "reflexivity must not materialise self-loops; got {clauses:?}"
+        );
+        // Contracting transitivity yields only tautologies, which are dropped.
+        assert!(
+            !clauses
+                .iter()
+                .any(|c| c.head.iter().any(|h| c.body.contains(h))),
+            "tautological derived clauses must be dropped; got {clauses:?}"
         );
     }
 

@@ -3760,8 +3760,16 @@ impl<'c> HyperEngine<'c> {
             Atom::AtMost(role, qual, n, v) => matches!(resolve(*v), Some(src) if
                 self.nodes[src.index()].at_most.contains(&(*role, *qual, *n))
                 || self.distinct_role_succ(src, *role, *qual).len() <= *n as usize),
-            // TODO(HF3): `≥n` generation not yet enforced — never counts as satisfied.
-            Atom::AtLeast(..) | Atom::Equal(..) | Atom::Role(..) => false,
+            // `≥n` holds once `n` distinct qualified neighbours exist — the same
+            // count `generate_at_least`'s guard uses to decline, so a picked
+            // `≥n` disjunct it declines no longer leaves the `⊔` open (#190).
+            // Inverse roles count predecessors (`distinct_role_succ`), which is
+            // the only way an inverse `≥n` is ever met, since it is never
+            // generated. Re-evaluated on every scan, so a later `≤n` merge that
+            // lowers the count reopens the clause.
+            Atom::AtLeast(role, qual, n, v) => matches!(resolve(*v), Some(src) if
+                self.distinct_role_succ(src, *role, *qual).len() >= *n as usize),
+            Atom::Equal(..) | Atom::Role(..) => false,
         }
     }
 
@@ -7033,6 +7041,83 @@ mod tests {
         ];
         let mut e = HyperEngine::new(&clauses, root);
         assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// #190 gap 2: a `≥n` disjunct whose count already holds must close its `⊔`.
+    /// `generate_at_least` declines when `n` distinct successors exist, so if
+    /// `head_atom_satisfied` never counts `AtLeast` as satisfied, picking that
+    /// disjunct is a no-op that leaves the clause open and the search re-picks
+    /// it at every level until the depth cap (`Stalled` on a satisfiable class).
+    #[test]
+    fn at_least_disjunct_already_met_closes_its_disjunction() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, b, c, d) = (cls(0), cls(1), cls(2), cls(3));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            // `b ⊓ c ⊑ ⊥` keeps the two witnesses distinct nodes.
+            DlClause {
+                body: vec![Atom::Class(b, X), Atom::Class(c, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtLeast(role, None, 2, X), Atom::Class(d, X)],
+            },
+        ];
+        let mut engine = HyperEngine::new(&clauses, a);
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        assert_eq!(
+            engine.decide_with_deadline(16, Some(deadline)),
+            HyperResult::Sat
+        );
+        assert_eq!(
+            engine.stats().branches_taken,
+            0,
+            "the `⊔` is already satisfied by the two `∃` witnesses and must not branch"
+        );
+    }
+
+    /// #190 gap 1/2: an INVERSE `≥n` disjunct is never generated, so it must at
+    /// least count as satisfied when the node already has `n` distinct
+    /// predecessors — here the `r`-predecessor that generated it.
+    #[test]
+    fn inverse_at_least_disjunct_met_by_a_predecessor_closes_its_disjunction() {
+        if !crate::inverse_func_merge_enabled() {
+            return; // `distinct_role_succ` counts predecessors only with it on
+        }
+        let role = RoleId::new(0);
+        let (a, b, d) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(Role::Named(role), b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![
+                    Atom::AtLeast(Role::Inverse(role), Some(a), 1, X),
+                    Atom::Class(d, X),
+                ],
+            },
+        ];
+        let mut engine = HyperEngine::new(&clauses, a);
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        assert_eq!(
+            engine.decide_with_deadline(16, Some(deadline)),
+            HyperResult::Sat
+        );
+        assert_eq!(
+            engine.stats().branches_taken,
+            0,
+            "`b`'s `a`-predecessor already satisfies `≥1 r⁻.a`; the `⊔` must not branch"
+        );
     }
 
     /// `HF3a` boundary canary: `≥2 R.⊤ ⊓ ≤2 R.⊤` is **Sat** (n == m, no

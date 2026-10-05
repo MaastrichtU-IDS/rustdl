@@ -424,6 +424,14 @@ impl Clausifier {
             Axiom::DisjointObjectProperties(roles) => {
                 for i in 0..roles.len() {
                     for j in (i + 1)..roles.len() {
+                        // A repeated operand (`Disjoint(r r)`) is a set-collapse,
+                        // vacuous to HermiT, Konclude and the main tableau; as a
+                        // clause it would empty `r`. Compare BEFORE `canon_role`:
+                        // `Disjoint(s, r⁻)` with `s ≡ r⁻` canonicalises to equal
+                        // roles and is a genuine constraint.
+                        if roles[i] == roles[j] {
+                            continue;
+                        }
                         self.next_var = X + 1;
                         let y = self.fresh_var();
                         let r = self.canon_role(roles[i]);

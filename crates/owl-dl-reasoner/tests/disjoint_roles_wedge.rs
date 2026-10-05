@@ -64,11 +64,56 @@ fn disjoint_roles_allow_separate_successors() {
     );
 }
 
-/// FP guard: an edge one way on `p` and the other way on `q` is not a shared pair.
+/// FP guard: a `p`-edge one way and a `q`-edge the other way share no ordered pair.
+/// `{o} ⊑ ∃p.{o2}`, `{o2} ⊑ ∃q.{o}` is consistent (HermiT).
 #[test]
 fn disjoint_roles_allow_opposite_directions() {
     assert!(
-        unsat("SubClassOf(:A ObjectSomeValuesFrom(:p ObjectHasSelf(:t)))\nSubClassOf(:B ObjectSomeValuesFrom(:q ObjectSomeValuesFrom(ObjectInverseOf(:p) :A)))")
+        unsat(
+            "Declaration(NamedIndividual(:o)) Declaration(NamedIndividual(:o2))\n\
+             SubClassOf(ObjectOneOf(:o) ObjectSomeValuesFrom(:p ObjectOneOf(:o2)))\n\
+             SubClassOf(ObjectOneOf(:o2) ObjectSomeValuesFrom(:q ObjectOneOf(:o)))\n\
+             SubClassOf(:A ObjectSomeValuesFrom(:p :B))"
+        )
+        .is_empty()
+    );
+}
+
+/// `Disjoint(p, t⁻)`: a `t` self-loop is also a `t⁻` self-loop, so it clashes with a
+/// `p` self-loop on the same node. Exercises the inverse-polarity edge check.
+#[test]
+fn disjointness_with_an_inverse_role_matches_through_polarity() {
+    assert_eq!(
+        unsat(
+            "DisjointObjectProperties(:p ObjectInverseOf(:t))\n\
+             SubClassOf(:A ObjectIntersectionOf(ObjectHasSelf(:p) ObjectHasSelf(:t)))"
+        ),
+        ["A"]
+    );
+}
+
+/// A repeated operand is vacuous (OWL 2 operands are a set): `Disjoint(t t)` must not
+/// empty `t`. HermiT and the main tableau agree.
+#[test]
+fn a_repeated_operand_is_vacuous() {
+    assert!(
+        unsat("DisjointObjectProperties(:t :t)\nSubClassOf(:A ObjectSomeValuesFrom(:t :B))")
             .is_empty()
+    );
+}
+
+/// ...but disjointness between a role and the declared inverse of its inverse is
+/// genuine: `InverseObjectProperties(t s)` makes `s ≡ t⁻`, so `Disjoint(s, t⁻)`
+/// empties `s` (HermiT, Konclude). The duplicate check must run before inverse
+/// canonicalisation.
+#[test]
+fn disjointness_of_a_role_with_its_own_equivalent_is_not_skipped() {
+    assert_eq!(
+        unsat(
+            "Declaration(ObjectProperty(:s))\nInverseObjectProperties(:t :s)\n\
+             DisjointObjectProperties(:s ObjectInverseOf(:t))\n\
+             SubClassOf(:A ObjectSomeValuesFrom(:s :B))"
+        ),
+        ["A"]
     );
 }

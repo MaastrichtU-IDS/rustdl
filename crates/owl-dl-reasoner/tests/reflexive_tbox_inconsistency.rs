@@ -96,3 +96,14 @@ fn asymmetric_sub_role_of_a_reflexive_role_is_consistent() {
 fn reflexive_role_alone_is_consistent() {
     assert_eq!(verdicts("ReflexiveObjectProperty(:r)"), (true, true));
 }
+
+/// The bounded entry point agrees with `is_consistent` (review of #197).
+#[test]
+fn bounded_consistency_check_agrees() {
+    let o = onto("ReflexiveObjectProperty(:r)\nAsymmetricObjectProperty(:r)");
+    assert_eq!(
+        owl_dl_reasoner::is_consistent_with_timeout(&o, std::time::Duration::from_secs(20))
+            .unwrap(),
+        Some(false)
+    );
+}

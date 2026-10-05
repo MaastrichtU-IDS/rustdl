@@ -3196,6 +3196,11 @@ pub(crate) fn classify_inconsistency_precheck(
 /// unsatisfiable alongside `consistent: true` while `rustdl consistent` said
 /// `consistent` outright.
 ///
+/// This rests on every axiom in `internal.axioms` being entailed by the input
+/// ontology. That holds for every current conversion pass; a pass that adds a
+/// non-entailed axiom (rather than a conservative extension over fresh names)
+/// would make this check unsound.
+///
 /// Gated on a declared `ReflexiveObjectProperty`, so every other input pays nothing.
 /// A plain `⊤ ⊑ ⊥` reaches the saturator's `globally_inconsistent` first. FP-safe by
 /// construction: it reports `true` only on an entailed `⊤ ⊑ ⊥`.
@@ -6399,7 +6404,9 @@ pub fn is_consistent_internal_bounded(
     // deadline check immediately after converts that into `None` rather than a
     // guess.
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    if abox_saturation_inconsistent_bounded(&internal, Some(remaining)) {
+    if abox_saturation_inconsistent_bounded(&internal, Some(remaining))
+        || reflexive_empty_clause_inconsistent(&internal)
+    {
         return Ok(Some(false));
     }
     if std::time::Instant::now() >= deadline {
@@ -6442,7 +6449,7 @@ fn is_consistent_internal_full(
     // the existing hybrid path unchanged (FP-safe; sound under-approximation).
     if abox_saturation_inconsistent(&internal) || reflexive_empty_clause_inconsistent(&internal) {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
-            eprintln!("abox_saturation / empty clause: inconsistent");
+            eprintln!("consistency pre-check: inconsistent (abox_saturation or empty clause)");
         }
         return Ok((
             false,

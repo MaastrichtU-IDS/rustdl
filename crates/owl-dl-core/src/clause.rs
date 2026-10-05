@@ -417,6 +417,24 @@ impl Clausifier {
                     head: Vec::new(),
                 });
             }
+            // Role disjointness `¬(R(x,y) ∧ S(x,y))`, pairwise →
+            // `R(X,y) ∧ S(X,y) → ⊥`. The second atom has both endpoints bound,
+            // so it is an edge check (`filters`). With a reflexive `R` and `S`,
+            // contraction reduces it to the empty clause (#198).
+            Axiom::DisjointObjectProperties(roles) => {
+                for i in 0..roles.len() {
+                    for j in (i + 1)..roles.len() {
+                        self.next_var = X + 1;
+                        let y = self.fresh_var();
+                        let r = self.canon_role(roles[i]);
+                        let s = self.canon_role(roles[j]);
+                        self.clauses.push(DlClause {
+                            body: vec![Atom::Role(r, X, y), Atom::Role(s, X, y)],
+                            head: Vec::new(),
+                        });
+                    }
+                }
+            }
             // RBox role hierarchy (`SubObjectPropertyOf{ Role }`),
             // characteristics other than transitivity, ABox,
             // declarations: not handled here. `SubObjectPropertyOf{ Role }`

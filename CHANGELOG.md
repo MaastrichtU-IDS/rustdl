@@ -6,6 +6,47 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.36] — 2026-10-05
+
+### Fixed — a reflexive role's contradiction was not read as an inconsistency (#194, #197)
+
+Contracting a reflexive role's atoms (#191) can turn a role axiom into an
+empty clause: `Reflexive(r)` + `Asymmetric(r)`, `Reflexive(r)` +
+`Irreflexive(r)`, a reflexive role under an asymmetric super-role, or two
+disjoint reflexive roles. Such a KB is inconsistent, but `classify` and
+`consistent` reported it consistent. An empty clause from the clausifier is
+now read as an inconsistency on the classify pre-check and on both the
+bounded and unbounded `is_consistent` paths. It is gated on a
+`ReflexiveObjectProperty` being present, and every emitted clause is
+entailed, so this cannot report a consistent KB inconsistent.
+
+### Fixed — `DisjointObjectProperties` was not enforced by the wedge (#198, #199)
+
+The clausifier dropped `DisjointObjectProperties`, so a node with the same
+successor under two disjoint roles did not clash in the wedge. It now emits
+`R(x,y) ∧ S(x,y) → ⊥` for each pair. A repeated operand (`Disjoint(r, r)`)
+is skipped: OWL 2 reads the operands as a set, so the axiom says nothing,
+and the clause would have emptied `r`.
+
+### Fixed — the main tableau's asymmetry and role-disjointness checks ignored the hierarchy (#198, #200)
+
+`apply_role_axioms` compared raw role ids on out-edges only, so an
+asymmetric or disjoint role was not enforced through its sub-roles, its
+declared inverses, symmetric roles, or incoming edges. It now matches edges
+the way `∀`/`∃` do. This affects `sat`, `subclass`, `explain` and `realize`.
+
+Review found that the stronger check exposed a false positive in the `≤n`
+merge step (#76): the trial merge kept the first candidate pair whose merged
+node had no label clash, even if that merge broke asymmetry by fusing an
+edge with its reverse, so a satisfiable class could come back unsatisfiable
+on the per-pair surface. One form of this was already present on `main`. A
+trial merge is now also rejected when it violates a role axiom at the parent
+or the survivor. `classify` was not affected.
+
+Still open: a symmetric sub-role of an asymmetric role is not caught (a miss,
+not a false positive), and a merge whose clash appears only later is still
+committed without a choice point (the #76 limit).
+
 ## [0.4.35] — 2026-10-05
 
 ### Fixed — a disjunction on a merged ghost node never closed (#139, #189)

@@ -396,6 +396,27 @@ impl Clausifier {
                     head: vec![Atom::Role(r, X, z)],
                 });
             }
+            // Irreflexivity `¬R(x,x)` → `R(X,X) → ⊥`. The body is a self-loop,
+            // which the matcher evaluates as an edge check (`filters`).
+            Axiom::IrreflexiveRole(role) => {
+                let r = self.canon_role(*role);
+                self.clauses.push(DlClause {
+                    body: vec![Atom::Role(r, X, X)],
+                    head: Vec::new(),
+                });
+            }
+            // Asymmetry `R(x,y) → ¬R(y,x)` → `R(X,y) ∧ R(y,X) → ⊥`. The second
+            // atom has both endpoints bound, so it is an edge check too. With
+            // `y = X` it also covers the irreflexivity asymmetry entails.
+            Axiom::AsymmetricRole(role) => {
+                self.next_var = X + 1;
+                let y = self.fresh_var();
+                let r = self.canon_role(*role);
+                self.clauses.push(DlClause {
+                    body: vec![Atom::Role(r, X, y), Atom::Role(r, y, X)],
+                    head: Vec::new(),
+                });
+            }
             // RBox role hierarchy (`SubObjectPropertyOf{ Role }`),
             // characteristics other than transitivity, ABox,
             // declarations: not handled here. `SubObjectPropertyOf{ Role }`
@@ -974,7 +995,8 @@ pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, Claus
 
 /// Canonical ids of every reflexive role: those declared
 /// `ReflexiveObjectProperty`, closed upward through `SubObjectPropertyOf`
-/// (a super-role of a reflexive role is reflexive). Keyed by role id, because
+/// and `EquivalentObjectProperties` (a super-role of a reflexive role is
+/// reflexive). Keyed by role id, because
 /// `r` is reflexive iff `r⁻` is.
 fn reflexive_role_ids(axioms: &[Axiom], c: &Clausifier) -> std::collections::HashSet<RoleId> {
     let mut set: std::collections::HashSet<RoleId> = axioms
@@ -989,12 +1011,19 @@ fn reflexive_role_ids(axioms: &[Axiom], c: &Clausifier) -> std::collections::Has
     }
     let edges: Vec<(RoleId, RoleId)> = axioms
         .iter()
-        .filter_map(|ax| match ax {
+        .flat_map(|ax| match ax {
             Axiom::SubObjectPropertyOf {
                 sub: crate::ontology::SubRolePath::Role(sub),
                 sup,
-            } => Some((c.canon_role(*sub).role_id(), c.canon_role(*sup).role_id())),
-            _ => None,
+            } => vec![(c.canon_role(*sub).role_id(), c.canon_role(*sup).role_id())],
+            Axiom::EquivalentObjectProperties(roles) => {
+                let ids: Vec<RoleId> = roles.iter().map(|r| c.canon_role(*r).role_id()).collect();
+                ids.iter()
+                    .flat_map(|&a| ids.iter().map(move |&b| (a, b)))
+                    .filter(|(a, b)| a != b)
+                    .collect()
+            }
+            _ => Vec::new(),
         })
         .collect();
     loop {
@@ -1132,6 +1161,10 @@ pub fn deferred_census(internal: &InternalOntology) -> Vec<(&'static str, usize)
     );
     for ax in &normalized {
         c.clausify_axiom(ax);
+    }
+    let reflexive = reflexive_role_ids(&normalized, &c);
+    if !reflexive.is_empty() {
+        apply_reflexive_roles(&mut c, &reflexive);
     }
     c.deferred_kinds.into_iter().collect()
 }

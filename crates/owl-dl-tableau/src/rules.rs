@@ -1004,8 +1004,18 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                         compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps);
                     let cp = trial.then(|| ctx.checkpoint());
                     if ctx.merge_into_with_deps(b, a, merge_deps.as_slice()) {
-                        // `b` merged INTO `a`, so `a` is the survivor.
-                        if !trial || !ctx.clash_in(a) {
+                        // `b` merged INTO `a`, so `a` is the survivor. A merge
+                        // can also violate a role axiom (asymmetry, disjoint
+                        // roles) through the edges it fuses, and that clash
+                        // lands on `node` or `a`, not only in `a`'s labels — so
+                        // check them inside the trial too (#200 review). The
+                        // `⊥` it may add is on the trail, so `rollback_to`
+                        // undoes it.
+                        if trial {
+                            apply_role_axioms(ctx, node);
+                            apply_role_axioms(ctx, a);
+                        }
+                        if !trial || !(ctx.clash_in(a) || ctx.clash_in(node)) {
                             applied = true;
                             merged = true;
                             break 'pairs;

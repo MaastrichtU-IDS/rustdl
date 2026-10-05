@@ -121,3 +121,56 @@ fn separate_successors_on_disjoint_roles_are_fine() {
          SubClassOf(:A ObjectIntersectionOf(ObjectSomeValuesFrom(:r :B) ObjectSomeValuesFrom(:s :B)))"
     ));
 }
+
+// ── `≤n` trial merge × role axioms (#200 review) ────────────────────────────
+//
+// `apply_max` keeps a merge pair when the survivor is clash-free. A merge whose
+// only consequence is an asymmetry violation through the fused edges must be
+// rejected inside the trial too, or the `≤`-rule commits to it without a choice
+// point and a satisfiable class reads unsat (the #76 shape). Here `A` has three
+// `s.C` witnesses under `≤2 s.C`: merging the `r → a` and `a → r` witnesses
+// violates asymmetry, merging either with the plain `C3` witness is harmless, so
+// `A` is satisfiable (HermiT, Konclude). The `C3` witness arrives last, behind two
+// unfoldings, so the clashing pair is enumerated first.
+
+const MERGE_DECLS: &str = "Declaration(Class(:C1)) Declaration(Class(:C2)) Declaration(Class(:C3))\n\
+     Declaration(Class(:D1)) Declaration(Class(:D2)) Declaration(ObjectProperty(:q))\n\
+     Declaration(NamedIndividual(:a))\n\
+     SubClassOf(:C1 :C) SubClassOf(:C2 :C) SubClassOf(:C3 :C) ClassAssertion(:A :a)\n";
+
+fn merge_fixture(back_edge: &str, max: u32, with_harmless: bool) -> String {
+    let harmless = if with_harmless {
+        "SubClassOf(:A :D1) SubClassOf(:D1 :D2) SubClassOf(:D2 ObjectSomeValuesFrom(:s :C3))"
+    } else {
+        ""
+    };
+    format!(
+        "{MERGE_DECLS}AsymmetricObjectProperty(:r)\n\
+         SubClassOf(:A ObjectMaxCardinality({max} :s :C))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:s ObjectIntersectionOf(:C1 ObjectHasValue(:r :a))))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:s ObjectIntersectionOf(:C2 {back_edge})))\n\
+         {harmless}"
+    )
+}
+
+const FWD_BACK: &str = "ObjectSomeValuesFrom(ObjectInverseOf(:r) ObjectOneOf(:a))";
+
+#[test]
+fn a_harmless_merge_is_found_past_an_asymmetric_one_declared_inverse() {
+    let body = merge_fixture("ObjectHasValue(:q :a)", 2, true) + "\nInverseObjectProperties(:q :r)";
+    assert!(tableau_sat(&body));
+}
+
+#[test]
+fn a_harmless_merge_is_found_past_an_asymmetric_one_inverse_role() {
+    assert!(tableau_sat(&merge_fixture(FWD_BACK, 2, true)));
+}
+
+/// Positive control: under `≤1` the clashing merge is forced, so `A` is unsat.
+#[test]
+fn a_forced_asymmetric_merge_is_still_unsat() {
+    let body =
+        merge_fixture("ObjectHasValue(:q :a)", 1, false) + "\nInverseObjectProperties(:q :r)";
+    assert!(!tableau_sat(&body));
+    assert!(!tableau_sat(&merge_fixture(FWD_BACK, 1, false)));
+}

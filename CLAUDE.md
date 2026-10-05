@@ -2135,6 +2135,20 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 
 > **SP1.1 LAYER A SPLIT OUT OF LAYER B (2026-09-11, #128, `RUSTDL_CLASSIFY_ROLE_HIERARCHY`,
 > DEFAULT OFF, `=1` enables) — A CHEAP CORRECTNESS LEVER WAS BUNDLED WITH AN EXPENSIVE ONE.**
+>
+> **SUPERSEDED (corrected 2026-10-05): THE FLAG IS DEFAULT ON SINCE #163 (2026-09-16), `=0`
+> reverts.** Everything below that says "default OFF" or "a flip is still blocked" predates the
+> flip. The flip was justified by a measurement this block never had: a 610-ontology paired
+> ORE sweep against Konclude found **MISSED 4276 → 3214 (1,062 entailments recovered, 24.8%),
+> 0 new FP, 0 ontologies with worse answers**. Every regression was wall-only (median 1.00×,
+> p90 1.67×, max 81.7×). It is guarded by `layer_a_affordable`: Layer A stays off when the
+> SIGNED role closure exceeds `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE` (default 144; #177
+> moved the gauge from the id closure to the signed one after galen, id-max 85 but signed-max
+> 826, went from 103 CPU-s to a DNF). The authoritative record is the doc comment on
+> `classify_role_hierarchy_enabled` in `crates/owl-dl-reasoner/src/lib.rs`. **Why it matters:**
+> the wedge's symmetric / inverse / sub-role matching in `role_matches`, which the #193
+> `Asymmetric` clause relies on, is live only with this flag on and under the cap; above the
+> cap those matches revert to exact-id, which can only MISS.
 > Externally reported: `Symmetric(p)` + `p ∘ q ⊑ q` + `A ≡ ∃p.Y ⊓ ∃q.Z` + `B ≡ ∃p.(Y ⊓ ∃q.Z)`
 > makes `A ≡ B`, and `classify` derived only `B ⊑ A` — the chain-only direction — with
 > `incomplete: false` and `dropped: {}`. Both peers derive it.
@@ -2223,7 +2237,7 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > measured rather than assumed free. **This bears directly on a Layer A flip: turning the flag
 > on is what makes `role_matches` accept these edges in the first place.**
 >
-> **Where a Layer A default flip stands:** still blocked, with no cheap fix in sight. The cost is
+> **Where a Layer A default flip stood (pre-#163; SUPERSEDED, see the correction at the top of this block):** still blocked, with no cheap fix in sight. The cost is
 > the search doing more real work (16372) plus more pairs each burning a budget (9890); neither is
 > shaveable off the matcher.
 >

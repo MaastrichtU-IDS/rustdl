@@ -3183,6 +3183,38 @@ pub(crate) fn classify_inconsistency_precheck(
             },
         )
         || classify_wedge_inconsistent(internal)
+        || reflexive_empty_clause_inconsistent(internal)
+}
+
+/// A syntactic inconsistency certificate from the wedge clausifier (#194).
+///
+/// Every clause `clausify_with_stats` emits is entailed by the KB, so a clause with
+/// an EMPTY body and an EMPTY head (`⊤ → ⊥`, fired at every element) proves the KB
+/// has no model. The one producer the other pre-checks miss is reflexive-role
+/// contraction (#191): `Reflexive(r)` + `Asymmetric(r)` contracts
+/// `r(X,y) ∧ r(y,X) → ⊥` to `→ ⊥`, and without this `classify` reported every class
+/// unsatisfiable alongside `consistent: true` while `rustdl consistent` said
+/// `consistent` outright.
+///
+/// Gated on a declared `ReflexiveObjectProperty`, so every other input pays nothing.
+/// A plain `⊤ ⊑ ⊥` reaches the saturator's `globally_inconsistent` first. FP-safe by
+/// construction: it reports `true` only on an entailed `⊤ ⊑ ⊥`.
+pub(crate) fn reflexive_empty_clause_inconsistent(internal: &InternalOntology) -> bool {
+    if !internal
+        .axioms
+        .iter()
+        .any(|ax| matches!(ax, owl_dl_core::ontology::Axiom::ReflexiveRole(_)))
+    {
+        return false;
+    }
+    let (clauses, _stats) = owl_dl_core::clause::clausify_with_stats(internal);
+    let found = clauses
+        .iter()
+        .any(|c| c.body.is_empty() && c.head.is_empty());
+    if found && std::env::var_os("RUSTDL_TRACE").is_some() {
+        eprintln!("inconsistency: empty wedge clause (reflexive contraction)");
+    }
+    found
 }
 
 /// `RUSTDL_CLASSIFY_WEDGE_INCONSISTENCY` — **default ON**, `=0` reverts (#89).
@@ -6408,9 +6440,9 @@ fn is_consistent_internal_full(
     // Runs before `from_internal` (which moves `internal`); guarded by
     // `has_abox_axioms` so ABox-free inputs skip it. Non-clash ⇒ fall through to
     // the existing hybrid path unchanged (FP-safe; sound under-approximation).
-    if abox_saturation_inconsistent(&internal) {
+    if abox_saturation_inconsistent(&internal) || reflexive_empty_clause_inconsistent(&internal) {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
-            eprintln!("abox_saturation: inconsistent");
+            eprintln!("abox_saturation / empty clause: inconsistent");
         }
         return Ok((
             false,

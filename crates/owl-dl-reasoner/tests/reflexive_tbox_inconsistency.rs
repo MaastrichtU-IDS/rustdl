@@ -107,3 +107,23 @@ fn bounded_consistency_check_agrees() {
         Some(false)
     );
 }
+
+/// Two reflexive roles cannot be disjoint: both have a self-loop everywhere (#198).
+#[test]
+fn disjoint_reflexive_roles_are_inconsistent_on_both_surfaces() {
+    assert_eq!(
+        verdicts(
+            "ReflexiveObjectProperty(:r)\nReflexiveObjectProperty(:s)\nDisjointObjectProperties(:r :s)"
+        ),
+        (false, false)
+    );
+}
+
+/// Control: only one of the two disjoint roles is reflexive.
+#[test]
+fn disjointness_with_one_reflexive_role_is_consistent() {
+    assert_eq!(
+        verdicts("ReflexiveObjectProperty(:r)\nDisjointObjectProperties(:r :s)"),
+        (true, true)
+    );
+}

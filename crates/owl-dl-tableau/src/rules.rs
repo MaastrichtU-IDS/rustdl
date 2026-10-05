@@ -1489,11 +1489,10 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
 /// - `DisjointObjectProperties(r, s)`: at every node `x`, if both
 ///   `x —r→ y` and `x —s→ y` exist, the two pairs collapse — flag `⊥`.
 ///
-/// Sub-role propagation is left to the role hierarchy: the axiom
-/// declarations name *atomic* roles, so the asymmetry / disjointness
-/// holds for the literal `RoleId`. (Sub-roles inherit the constraint
-/// upstream from the SROIQ legality conditions; we don't enforce that
-/// here, the input is assumed regular.)
+/// Edges are matched through [`TableauContext::edge_satisfies`], so an edge on a
+/// sub-role or a declared inverse counts, and a self-loop counts in both
+/// directions (#198). Before, the check compared raw forward `RoleId`s and
+/// skipped self-loops, missing e.g. `Reflexive(r)` + `Asymmetric(r)`.
 ///
 /// Skipped at blocked nodes — the blocking ancestor witnesses any
 /// edge configuration by structural inclusion.
@@ -1511,49 +1510,33 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     if ctx.graph().node(node).has_label(bot) {
         return RuleOutcome::NoChange;
     }
-    let outgoing: Vec<(RoleId, NodeId)> = ctx.graph().node(node).edges().to_vec();
-    let mut violated = false;
-    // Asymmetric: for each outgoing r-edge to y, look for an r-edge
-    // back from y to node.
-    for &r in ctx.asymmetric_roles() {
-        for &(role, y) in &outgoing {
-            if role != r || y == node {
-                continue;
-            }
-            let back_exists = ctx
-                .graph()
-                .node(y)
-                .edges()
-                .iter()
-                .any(|&(rr, tt)| rr == r && tt == node);
-            if back_exists {
-                violated = true;
-                break;
-            }
-        }
-        if violated {
-            break;
-        }
-    }
+    // Role-tagged views from `node`: a forward `r`-edge to `y` reads `Named(r)`, an
+    // incoming `r`-edge from `y` reads `Inverse(r)`. A self-loop is stored as both,
+    // so it is seen in both polarities. Matching goes through `edge_satisfies`, the
+    // same test the `∀`/`∃` rules use, so a sub-role or declared-inverse edge counts
+    // (#198). Each view is entailed, so a match is a genuine violation.
+    let views: Vec<(Role, NodeId)> = ctx.graph().node(node).neighbours().collect();
+    let pair_at = |ctx: &TableauContext<'_, '_, '_>, a: Role, b: Role| {
+        views.iter().any(|&(va, y)| {
+            ctx.edge_satisfies(va, a)
+                && views
+                    .iter()
+                    .any(|&(vb, z)| z == y && ctx.edge_satisfies(vb, b))
+        })
+    };
+    // Asymmetric `r`: `r(node, y)` and `r(y, node)`, i.e. views `r` and `r⁻` to one
+    // `y`. `y == node` is a self-loop, which asymmetry also forbids.
+    let mut violated = ctx
+        .asymmetric_roles()
+        .iter()
+        .any(|&r| pair_at(ctx, Role::Named(r), Role::Inverse(r)));
+    // Disjoint `(r, s)` (forward pairs only, see `collect_disjoint_role_pairs`):
+    // `r(node, y)` and `s(node, y)`.
     if !violated {
-        // Disjoint: for each unordered pair (r, s), look for outgoing
-        // edges of both roles to the same target.
-        for &(r, s) in ctx.disjoint_role_pairs() {
-            let mut r_targets: Vec<NodeId> = outgoing
-                .iter()
-                .filter_map(|&(rr, t)| if rr == r { Some(t) } else { None })
-                .collect();
-            let s_targets: Vec<NodeId> = outgoing
-                .iter()
-                .filter_map(|&(rr, t)| if rr == s { Some(t) } else { None })
-                .collect();
-            r_targets.sort();
-            r_targets.dedup();
-            if s_targets.iter().any(|t| r_targets.binary_search(t).is_ok()) {
-                violated = true;
-                break;
-            }
-        }
+        violated = ctx
+            .disjoint_role_pairs()
+            .iter()
+            .any(|&(r, s)| pair_at(ctx, Role::Named(r), Role::Named(s)));
     }
     if violated {
         // Conservative deps: the violation depends on whichever

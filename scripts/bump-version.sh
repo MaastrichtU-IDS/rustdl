@@ -77,9 +77,19 @@ got=$(cargo metadata --format-version 1 --locked \
       | python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='owl-dl-core'))")
 [ "$got" = "$new" ] || { echo "cargo reports $got, expected $new" >&2; exit 1; }
 
-# The lock must actually carry the new version for every workspace member.
-stale=$(grep -cF "\"$old\"" Cargo.lock || true)
-[ "$stale" = "0" ] || { echo "Cargo.lock still has $stale reference(s) to $old" >&2; exit 1; }
+# The lock must actually carry the new version for every workspace member. Match
+# members by NAME: a plain grep for the old version string also hits third-party
+# crates that happen to share it (`log` 0.4.34 blocked the 0.4.35 bump).
+members=$(cargo metadata --format-version 1 --no-deps --offline \
+      | python3 -c "import json,sys;print(' '.join(p['name'] for p in json.load(sys.stdin)['packages']))")
+stale=$(python3 - "$old" $members <<'PY'
+import re, sys
+old, names = sys.argv[1], set(sys.argv[2:])
+pkgs = re.findall(r'name = "([^"]+)"\nversion = "([^"]+)"', open("Cargo.lock").read())
+print(sum(1 for n, v in pkgs if n in names and v == old))
+PY
+)
+[ "$stale" = "0" ] || { echo "Cargo.lock still has $stale workspace member(s) at $old" >&2; exit 1; }
 
 trap - EXIT
 rm -f "$backup" "$lockbackup"

@@ -6,6 +6,55 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.35] — 2026-10-05
+
+### Fixed — a disjunction on a merged ghost node never closed (#139, #189)
+
+After a `≤1` merge folds node *g* into survivor *s*, the wedge wrote a chosen
+disjunct onto *s* but checked it on *g*, so the disjunction was re-picked until
+the depth cap and a satisfiable class came back `Stalled`. A disjunct now counts
+as satisfied on the raw node **or** its representative. This only removes branch
+points, so it is FP-safe. No flag. On #139's PMD ontology: 350 → 0 label-cache
+no-verdict classes, user CPU 973 → 61 s, MISSED vs HermiT 23 → 3, FP 0. It also
+explains the #182 wedge give-up.
+
+### Fixed — a met `≥n` disjunct was never counted as satisfied (#190, #191)
+
+`generate_at_least` declines when *n* distinct qualified successors already
+exist, but `head_atom_satisfied` never counted `≥n`. So a chosen `≥n` disjunct
+could be a no-op that left its clause open, re-picked to the depth cap. It now
+counts as satisfied under the same guard, inverse roles counting predecessors.
+This only removes branch points, so it is FP-safe. Two-arm sweep over the 497
+cardinality-bearing ORE ontologies: **15 recovered, 0 lost**, wall −24% where
+both arms finish (e.g. `ore_ont_10460` 88 → 0.5 s, `ore_ont_14272` 175 → 0.8 s).
+All five members of the `--pair-timeout-ms 1`-sensitive set recorded in
+CLAUDE.md recover.
+
+### Fixed — role characteristics were silently dropped from the wedge (#191, #192, #193)
+
+`ReflexiveObjectProperty`, `IrreflexiveObjectProperty` and
+`AsymmetricObjectProperty` fell into the clausifier's catch-all without being
+counted as deferred, so the wedge never enforced them and `classify` could miss
+entailments while reporting `incomplete: false`. Example: `Reflexive(r)` +
+`Range(r, C)` entails `⊤ ⊑ C`.
+- **Reflexivity** is applied by contracting each reflexive role atom in a clause
+  body. It is closed upward over `SubObjectPropertyOf` and
+  `EquivalentObjectProperties`.
+- **Irreflexivity** becomes `R(X,X) → ⊥`, and **asymmetry** becomes
+  `R(X,y) ∧ R(y,X) → ⊥`.
+
+These add only entailed clauses: 0 FP over 85 adversarial probes against
+Konclude ∪ HermiT and over the corpus checks.
+- **Reflexive (38 ORE ontologies):** 0 lost; `ore_ont_10517` recovered (DNF →
+  ~9 s, FP 0 vs Konclude).
+- **Four completeness gains** where the old answer claimed complete on three of
+  them: `ore_ont_13584` MISSED 135 → 2, `13700` 2 → 0, `2548` 2 → 0, `9786`
+  55 → 15.
+- **Irreflexive / Asymmetric (20 ORE ontologies):** corpus-inert, 13 identical
+  answers and 7 both at the cap.
+
+Known residuals are tracked in #192 (reflexive + `Functional`/`≤n`) and #194.
+
 ### Fixed — a consistency give-up re-checks the ABox by connected components (#182)
 
 When the full-effort consistency check still gives up, the ABox is partitioned

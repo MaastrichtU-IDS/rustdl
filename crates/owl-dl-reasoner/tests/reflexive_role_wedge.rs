@@ -71,3 +71,20 @@ fn reflexivity_reaches_a_super_role() {
         );
     }
 }
+
+/// `EquivalentObjectProperties(r s)` makes `s` reflexive too (#192 gap 3).
+#[test]
+fn reflexivity_reaches_an_equivalent_role() {
+    let src = ONTOLOGY
+        .replace("ObjectPropertyRange(:r :C)", "ObjectPropertyRange(:s :C)")
+        .replace(
+            "Declaration(ObjectProperty(:p))",
+            "Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:s))\nEquivalentObjectProperties(:r :s)",
+        );
+    for x in ["A", "B", "D"] {
+        assert!(
+            is_under_c(&src, x),
+            "classify misses {x} ⊑ C via equivalent role"
+        );
+    }
+}

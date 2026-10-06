@@ -74,7 +74,10 @@ pub(crate) fn trusted_sat_risk(stats: &owl_dl_reasoner::ClassificationStats) -> 
     }
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema,
+// so the shape is the wire format, not a design choice an enum could improve.
 #[derive(Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct ClassifyJson {
     pub(crate) schema_version: u32,
     pub(crate) consistent: bool,
@@ -93,6 +96,16 @@ pub(crate) struct ClassifyJson {
     /// distinction callers already depend on. Same reasoning as
     /// `Realization::witness_prune_active`.
     pub(crate) trusted_sat_refutations: usize,
+    /// The wedge inconsistency pre-check gave up without a verdict, so
+    /// `consistent: true` means "no clash found", not "proven consistent". On
+    /// an inconsistent KB every class is unsatisfiable, so the hierarchy below
+    /// may then be missing entailments (#204 review: a pigeonhole over
+    /// `TBox`-only individuals read `consistent: true` with every flag clean).
+    /// A SEPARATE field for the same reason as `trusted_sat_refutations`: the
+    /// pre-check usually stops on its depth cap rather than a deadline, and
+    /// folding it into `incomplete` would change that flag's meaning on about a
+    /// fifth of `ABox`-bearing ORE ontologies.
+    pub(crate) consistency_undetermined: bool,
     /// #124: the honest calibration signal — `Classification::
     /// completeness_guaranteed()`, i.e. **this hierarchy is provably free of
     /// missed subsumptions**. `true` only on a fragment where the engine that
@@ -299,6 +312,7 @@ pub(crate) fn build_classify_json(
         schema_version: SCHEMA_VERSION,
         consistent: !stats.inconsistent,
         incomplete: stats.timed_out_pairs > 0,
+        consistency_undetermined: stats.consistency_undetermined && !stats.inconsistent,
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
         unsatisfiable,

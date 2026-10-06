@@ -3259,7 +3259,7 @@ fn classify_wedge_inconsistency_enabled() -> bool {
 fn classify_wedge_inconsistent(internal: &InternalOntology) -> bool {
     if !classify_wedge_inconsistency_enabled()
         || !wedge_consistency_enabled()
-        || !internal_has_abox(internal)
+        || !internal_has_individuals(internal)
     {
         return false;
     }
@@ -3553,6 +3553,20 @@ fn internal_has_abox(internal: &InternalOntology) -> bool {
                 | Axiom::DifferentIndividuals(_)
         )
     })
+}
+
+/// Whether `internal` names an individual the consistency check must
+/// instantiate: one in an `ABox` axiom, or one in a `TBox` nominal (`{a}`,
+/// `ObjectHasValue`). Every named individual denotes a domain element, so
+/// `{a} ⊑ ⊥`, or `{a} ⊑ ∃r.{a}` with `r` irreflexive, is inconsistent with no
+/// `ABox` at all (#194 item 2). `ConsistencyCache` seeds one node per
+/// individual, so widening its gate is all that is needed.
+fn internal_has_individuals(internal: &InternalOntology) -> bool {
+    internal_has_abox(internal)
+        || internal
+            .concepts
+            .iter_exprs()
+            .any(|e| matches!(e, ConceptExpr::Nominal(_)))
 }
 
 fn push_different_individuals_disjoint(
@@ -8121,11 +8135,12 @@ impl PreparedOntology {
             return Ok(None);
         }
         // ABox-seeded wedge consistency: build iff enabled AND the input
-        // has ABox axioms (so ABox-free inputs pay nothing and classify
-        // stays byte-identical). Built from the un-mutated `internal`,
+        // names an individual, in an ABox axiom or a TBox nominal (so
+        // individual-free inputs pay nothing and classify stays
+        // byte-identical). Built from the un-mutated `internal`,
         // before the absorb/NNF passes below consume it — so every
         // nominal/role id is matched-by-construction with the clause set.
-        let consistency = (wedge_consistency_enabled() && internal_has_abox(&internal))
+        let consistency = (wedge_consistency_enabled() && internal_has_individuals(&internal))
             .then(|| ConsistencyCache::build(&internal));
         // Phase 1b: build the snapshot cache from the same un-mutated
         // ontology, iff `RUSTDL_SNAPSHOT_CAPTURE` is ON. The cache's

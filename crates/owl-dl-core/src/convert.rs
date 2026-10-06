@@ -3066,8 +3066,8 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
 }
 
 /// Whether role `target` is reflexive: declared `ReflexiveObjectProperty`, or a
-/// super-role (through `SubObjectPropertyOf` / `EquivalentObjectProperties`) of
-/// one that is. Keyed by role id, since `r` is reflexive iff `r⁻` is.
+/// super-role (through `SubObjectPropertyOf` / `EquivalentObjectProperties`) or
+/// declared inverse of one that is. Keyed by role id, since `r` is reflexive iff `r⁻` is.
 fn role_is_reflexive(out: &InternalOntology, target: crate::ir::RoleId) -> bool {
     let mut set: Vec<crate::ir::RoleId> = out
         .axioms
@@ -3095,6 +3095,11 @@ fn role_is_reflexive(out: &InternalOntology, target: crate::ir::RoleId) -> bool 
                         }
                     }
                 }
+            }
+            // `s = r⁻` is reflexive iff `r` is.
+            Axiom::InverseObjectProperties(a, b) => {
+                edges.push((a.role_id(), b.role_id()));
+                edges.push((b.role_id(), a.role_id()));
             }
             _ => {}
         }

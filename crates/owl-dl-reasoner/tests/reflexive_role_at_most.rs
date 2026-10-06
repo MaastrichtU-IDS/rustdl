@@ -112,6 +112,15 @@ fn inverse_functional_reflexive_role() {
     assert!(sub(ax, "A", "B"));
 }
 
+/// `s = r⁻` is reflexive, so `InverseFunctional(s)` (that is,
+/// `Functional(r)`) forces the merge.
+#[test]
+fn inverse_functional_declared_inverse_of_a_reflexive_role() {
+    let ax = "InverseObjectProperties(:r :s) ReflexiveObjectProperty(:r) \
+              InverseFunctionalObjectProperty(:s) SubClassOf(:A ObjectSomeValuesFrom(:s :B))";
+    assert!(sub(ax, "A", "B"));
+}
+
 /// The witness is an `r`-predecessor: it is functional on `r` and has both
 /// itself and `A` as `r`-successors, so the two coincide.
 #[test]

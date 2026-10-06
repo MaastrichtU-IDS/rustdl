@@ -4961,8 +4961,8 @@ fn consistency_fallback_ms() -> u64 {
 /// the clause set — the false-`Unsat` (false-inconsistent) surface.
 ///
 /// `None` on the prepared ontology when the wedge route is disabled
-/// or there is no `ABox` (`has_abox_axioms` false), so `ABox`-free inputs
-/// pay nothing and classify stays byte-identical.
+/// or no individual is named (`internal_has_individuals` false), so
+/// individual-free inputs pay nothing and classify stays byte-identical.
 pub(crate) struct ConsistencyCache {
     /// Clause set: base `TBox`/`RBox` clauses, `DifferentIndividuals`
     /// disjointness (`{a}⊓{b}⊑⊥`, via [`push_different_individuals_disjoint`]),
@@ -6501,8 +6501,9 @@ fn is_consistent_internal_full(
     }
     let trace = std::env::var_os("RUSTDL_TRACE").is_some();
     // ABox-seeded wedge route (default on; kills the `decide(Top)` hang
-    // on out-of-EL ABoxes). `Some` only when enabled AND there is an
-    // ABox; otherwise fall straight through to the main tableau.
+    // on out-of-EL ABoxes). `Some` only when enabled AND an individual is
+    // named (ABox or TBox nominal); otherwise fall straight through to the
+    // main tableau.
     let wedge_deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
     match prepared.consistency_wedge(Some(wedge_deadline)) {

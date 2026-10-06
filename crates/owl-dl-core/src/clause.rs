@@ -1014,6 +1014,7 @@ pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, Claus
     let reflexive = reflexive_role_ids(&normalized, &c);
     if !reflexive.is_empty() {
         apply_reflexive_roles(&mut c, &reflexive);
+        add_counted_self_loops(&mut c, &reflexive);
     }
     let stats = ClauseStats::of(&c.clauses, c.deferred);
     (c.clauses, stats)
@@ -1082,7 +1083,8 @@ const REFLEXIVE_DERIVED_CAP: usize = 4096;
 /// reflexive-bearing ORE ontologies for no change in their answers. This form
 /// gives up two effects of a real self-loop, both in the MISS direction only:
 /// a node does not count itself toward a `≤n` on `R`, and is never its own
-/// `∃R` witness.
+/// `∃R` witness. The first is restored where it can matter by
+/// [`add_counted_self_loops`].
 fn apply_reflexive_roles(cz: &mut Clausifier, reflexive: &std::collections::HashSet<RoleId>) {
     let is_reflexive =
         |atom: &Atom| matches!(atom, Atom::Role(role, _, _) if reflexive.contains(&role.role_id()));
@@ -1149,6 +1151,61 @@ fn apply_reflexive_roles(cz: &mut Clausifier, reflexive: &std::collections::Hash
     }
 }
 
+/// Materialise the self-loop `R(v,v)` where a node can count it: wherever a
+/// clause asserts `≤n R` (functional included) on a reflexive `R` at `v` and
+/// `v` already has an `R`-edge. [`apply_reflexive_roles`] never builds the
+/// self-loop, so without this a node is not its own `R`-successor under the
+/// bound, and `Reflexive(r)` + `Functional(r)` + `A ⊑ ∃r.B` misses `A ⊑ B`
+/// (#192 gap 1): the `B`-witness must be `A` itself.
+///
+/// Each emitted clause `body ∧ R(v,z) → R(v,v)` is entailed, since `R(v,v)`
+/// holds of every element. The `R(v,z)` guard keeps the loop off nodes with no
+/// `R`-edge, where it cannot change a count; the unguarded `→ R(X,X)` is what
+/// cost 3–5× (see [`apply_reflexive_roles`]). An `R`-predecessor, which
+/// `distinct_role_succ` also counts, does not trigger the guard; that case
+/// stays a miss.
+fn add_counted_self_loops(cz: &mut Clausifier, reflexive: &std::collections::HashSet<RoleId>) {
+    let mut new: Vec<DlClause> = Vec::new();
+    for clause in &cz.clauses {
+        for atom in &clause.head {
+            let Atom::AtMost(role, _, _, v) = *atom else {
+                continue;
+            };
+            if !reflexive.contains(&role.role_id()) {
+                continue;
+            }
+            let fresh = clause
+                .body
+                .iter()
+                .chain(&clause.head)
+                .flat_map(atom_vars)
+                .max()
+                .map_or(X + 1, |m| m + 1);
+            let mut body = clause.body.clone();
+            body.push(Atom::Role(role, v, fresh));
+            let derived = DlClause {
+                body,
+                head: vec![Atom::Role(role, v, v)],
+            };
+            if !new.contains(&derived) {
+                new.push(derived);
+            }
+        }
+    }
+    cz.clauses.extend(new);
+}
+
+/// The variables `atom` mentions.
+fn atom_vars(atom: &Atom) -> Vec<Var> {
+    match *atom {
+        Atom::Class(_, v)
+        | Atom::Exists(_, _, v)
+        | Atom::AtMost(_, _, _, v)
+        | Atom::AtLeast(_, _, _, v) => vec![v],
+        Atom::Role(_, u, v) | Atom::Equal(u, v) => vec![u, v],
+    }
+}
+
 /// `atom` with every variable mapped through `sub`.
 fn substitute_atom(atom: Atom, sub: &impl Fn(Var) -> Var) -> Atom {
     match atom {
@@ -1191,6 +1248,7 @@ pub fn deferred_census(internal: &InternalOntology) -> Vec<(&'static str, usize)
     let reflexive = reflexive_role_ids(&normalized, &c);
     if !reflexive.is_empty() {
         apply_reflexive_roles(&mut c, &reflexive);
+        add_counted_self_loops(&mut c, &reflexive);
     }
     c.deferred_kinds.into_iter().collect()
 }

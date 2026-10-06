@@ -102,16 +102,76 @@ fn inverse_min_alone_keeps_an_instance_consistent() {
     assert!(is_consistent(&parse(ax)).expect("consistent"));
 }
 
-/// Two `q`-successors that are `p`-predecessors-of-`a` already exist in the
-/// ABox, so the inverse `≥2` is met by counting predecessors and nothing is
-/// left unenforced.
+/// `a` already has two `q`-successors (its asserted, distinct
+/// `p`-predecessors), so `≤2 q` forces any generated successor to merge
+/// into `b` or `c`. Consistent; the `≥3` twin is not.
+const TWO_PREDS: &str = "Declaration(NamedIndividual(:b)) Declaration(NamedIndividual(:c)) \
+                         ClassAssertion(:A :a) ObjectPropertyAssertion(:p :b :a) \
+                         ObjectPropertyAssertion(:p :c :a) DifferentIndividuals(:b :c)";
+
 #[test]
 fn inverse_min_met_by_asserted_predecessors_is_consistent() {
-    let ax = "Declaration(NamedIndividual(:b)) Declaration(NamedIndividual(:c)) \
-              SubClassOf(:A ObjectMinCardinality(2 :q owl:Thing)) ClassAssertion(:A :a) \
-              ObjectPropertyAssertion(:p :b :a) ObjectPropertyAssertion(:p :c :a) \
-              DifferentIndividuals(:b :c)";
-    assert!(is_consistent(&parse(ax)).expect("consistent"));
+    let ax = format!(
+        "SubClassOf(:A ObjectIntersectionOf(ObjectMinCardinality(2 :q owl:Thing) \
+         ObjectMaxCardinality(2 :q owl:Thing))) {TWO_PREDS}"
+    );
+    assert!(is_consistent(&parse(&ax)).expect("consistent"));
+}
+
+#[test]
+fn inverse_min_above_asserted_predecessors_and_max_is_inconsistent() {
+    let ax = format!(
+        "SubClassOf(:A ObjectIntersectionOf(ObjectMinCardinality(3 :q owl:Thing) \
+         ObjectMaxCardinality(2 :q owl:Thing))) {TWO_PREDS}"
+    );
+    assert!(!is_consistent(&parse(&ax)).expect("consistent"));
+}
+
+/// A generated `q`-successor `y` is a `p`-PREDECESSOR of `A`: `∀q.E` on `y`
+/// speaks about `y`'s own `q`-successors, not about `A`.
+#[test]
+fn forall_on_a_generated_node_does_not_reach_back_with_the_wrong_polarity() {
+    let ax = "SubClassOf(:A ObjectMinCardinality(2 :q :D)) \
+              SubClassOf(:D ObjectAllValuesFrom(:q :E)) SubClassOf(:A ObjectComplementOf(:E))";
+    assert!(unsat(ax).is_empty());
+}
+
+/// `A`'s `p`-successor `B` needs two `q`-successors and allows only two, so
+/// `A` (already one of them) is merged with a generated `C` node. Disjoint
+/// `A`/`C` makes that a clash; without it `A` is satisfiable.
+#[test]
+fn a_generated_node_merging_with_the_predecessor_carries_its_labels() {
+    let shape = "SubClassOf(:A ObjectSomeValuesFrom(:p :B)) \
+                 SubClassOf(:B ObjectIntersectionOf(ObjectMinCardinality(2 :q :C) \
+                 ObjectMaxCardinality(2 :q owl:Thing)))";
+    assert!(unsat(shape).is_empty());
+    assert!(unsat(&format!("{shape} DisjointClasses(:A :C)")).contains(&"http://ex.org/#A".into()));
+}
+
+/// With `r ⊑ p`, a generated `p⁻` edge is not an `r⁻` edge.
+#[test]
+fn a_generated_super_role_edge_does_not_count_for_the_sub_role() {
+    let ax = "Declaration(ObjectProperty(:r)) SubObjectPropertyOf(:r :p) \
+              SubClassOf(:A ObjectIntersectionOf(ObjectMinCardinality(2 :q :D) \
+              ObjectMaxCardinality(1 ObjectInverseOf(:r) owl:Thing)))";
+    assert!(unsat(ax).is_empty());
+}
+
+/// KNOWN GAP, not this fix: `InverseFunctional(p)` with the generator spelled
+/// `≥2 q` through the declared inverse. HermiT and Konclude both call `A`
+/// unsatisfiable; `classify` says satisfiable with `incomplete: false`. The
+/// derived `≤1 p⁻` is never emitted because `inv_func_merge_consumable`
+/// (owl-dl-core convert.rs) compares raw role ids before canonicalisation, so
+/// it does not see `≥2 q` as `≥2 p⁻`. Spelled `ObjectInverseOf(:p)` it is
+/// caught (`inverse_functional_tbox_admission.rs`). FLIP this when the gate
+/// learns the declared-inverse spelling.
+#[test]
+fn inverse_functional_with_a_declared_inverse_min_is_still_missed() {
+    let ax = "SubClassOf(:A ObjectMinCardinality(2 :q :D)) InverseFunctionalObjectProperty(:p)";
+    assert!(
+        unsat(ax).is_empty(),
+        "the declared-inverse IF gap closed: flip this test to assert A unsat"
+    );
 }
 
 /// `≥2 q.D` ⊑ `≥2 q.⊤` holds (HermiT). FLIPPED from

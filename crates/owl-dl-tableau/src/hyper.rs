@@ -3763,9 +3763,8 @@ impl<'c> HyperEngine<'c> {
             // `≥n` holds once `n` distinct qualified neighbours exist — the same
             // count `generate_at_least`'s guard uses to decline, so a picked
             // `≥n` disjunct it declines no longer leaves the `⊔` open (#190).
-            // Inverse roles count predecessors (`distinct_role_succ`), which is
-            // the only way an inverse `≥n` is ever met, since it is never
-            // generated. Re-evaluated on every scan, so a later `≤n` merge that
+            // Inverse roles count predecessors as well as generated
+            // `R⁻`-children (`distinct_role_succ`). Re-evaluated on every scan, so a later `≤n` merge that
             // lowers the count reopens the clause.
             Atom::AtLeast(role, qual, n, v) => matches!(resolve(*v), Some(src) if
                 self.distinct_role_succ(src, *role, *qual).len() >= *n as usize),
@@ -5031,8 +5030,8 @@ impl<'c> HyperEngine<'c> {
         // fired a later `≤n` merge can't drop `distinct < n`; and if it
         // was *skipped*, fire-once is unset, so the rule can still fire
         // after a merge reduces the count. Scope of this claim: HF3a
-        // (no nominal-induced cardinality, anywhere
-        // blocking) — not a general SROIQ termination theorem.
+        // (no nominal-induced cardinality, anywhere blocking) — not a
+        // general SROIQ termination theorem.
         if self.distinct_role_succ(x, role, qual).len() >= n as usize {
             return FireOutcome::NoChange;
         }
@@ -7087,9 +7086,9 @@ mod tests {
         );
     }
 
-    /// #190 gap 1/2: an INVERSE `≥n` disjunct is never generated, so it must at
-    /// least count as satisfied when the node already has `n` distinct
-    /// predecessors — here the `r`-predecessor that generated it.
+    /// #190 gap 1/2: an INVERSE `≥n` disjunct must count as satisfied when the
+    /// node already has `n` distinct predecessors — here the `r`-predecessor
+    /// that generated it — rather than branch or generate more.
     #[test]
     fn inverse_at_least_disjunct_met_by_a_predecessor_closes_its_disjunction() {
         if !crate::inverse_func_merge_enabled() {

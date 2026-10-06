@@ -3030,6 +3030,13 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
     // forms at this point, so a generator manufactured later by NNF
     // (`¬∀f.C → ∃f.¬C`) is invisible; and generators on a strict SUB-role of
     // `f` are not counted (no closed hierarchy exists yet at this stage).
+    // A reflexive `r` supplies the second `f`-successor itself: every node is
+    // its own `r⁻`-successor, so one `∃r⁻._` generator already makes two
+    // (#192 gap 1). The wedge only counts that self-loop when a `≤n` is
+    // present, which is what this GCI provides.
+    if role_is_reflexive(out, target) {
+        return true;
+    }
     let flipped = r.flip();
     let mut singles = 0usize;
     for e in out.concepts.iter_exprs() {
@@ -3056,6 +3063,61 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         }
     }
     false
+}
+
+/// Whether role `target` is reflexive: declared `ReflexiveObjectProperty`, or a
+/// super-role (through `SubObjectPropertyOf` / `EquivalentObjectProperties`) or
+/// declared inverse of one that is. Keyed by role id, since `r` is reflexive iff `r⁻` is.
+fn role_is_reflexive(out: &InternalOntology, target: crate::ir::RoleId) -> bool {
+    let mut set: Vec<crate::ir::RoleId> = out
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::ReflexiveRole(r) => Some(r.role_id()),
+            _ => None,
+        })
+        .collect();
+    if set.is_empty() {
+        return false;
+    }
+    let mut edges: Vec<(crate::ir::RoleId, crate::ir::RoleId)> = Vec::new();
+    for ax in &out.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Role(sub),
+                sup,
+            } => edges.push((sub.role_id(), sup.role_id())),
+            Axiom::EquivalentObjectProperties(roles) => {
+                for a in roles {
+                    for b in roles {
+                        if a != b {
+                            edges.push((a.role_id(), b.role_id()));
+                        }
+                    }
+                }
+            }
+            // `s = r⁻` is reflexive iff `r` is.
+            Axiom::InverseObjectProperties(a, b) => {
+                edges.push((a.role_id(), b.role_id()));
+                edges.push((b.role_id(), a.role_id()));
+            }
+            _ => {}
+        }
+    }
+    loop {
+        let before = set.len();
+        for &(sub, sup) in &edges {
+            if set.contains(&sub) && !set.contains(&sup) {
+                set.push(sup);
+            }
+        }
+        if set.contains(&target) {
+            return true;
+        }
+        if set.len() == before {
+            return false;
+        }
+    }
 }
 
 /// Emit a derived role-triggered `≤1` GCI for every (forward) functional

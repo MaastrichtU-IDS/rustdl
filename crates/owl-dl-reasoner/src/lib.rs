@@ -756,15 +756,20 @@ pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
 }
 
 /// Smallest `ClassId` strictly greater than every class index that
-/// appears in `clauses` — a fresh id usable for the subsumption
-/// probe's helper concept `Q`.
+/// appears in `clauses`, including cardinality qualifiers. NOT a safe probe
+/// id on its own — it ignores the reserved nominal range; call
+/// [`first_free_class_id`] instead.
 fn fresh_class_id(clauses: &[owl_dl_core::clause::DlClause]) -> owl_dl_core::ir::ClassId {
     use owl_dl_core::clause::Atom;
     let mut max = 0u32;
     for cl in clauses {
         for atom in cl.body.iter().chain(cl.head.iter()) {
-            if let Atom::Class(c, _) | Atom::Exists(_, c, _) = atom {
-                max = max.max(c.index() + 1);
+            match atom {
+                Atom::Class(c, _)
+                | Atom::Exists(_, c, _)
+                | Atom::AtMost(_, Some(c), _, _)
+                | Atom::AtLeast(_, Some(c), _, _) => max = max.max(c.index() + 1),
+                _ => {}
             }
         }
     }
@@ -781,16 +786,25 @@ fn fresh_class_id(clauses: &[owl_dl_core::clause::DlClause]) -> owl_dl_core::ir:
 /// `clauses` when this is computed, so `Q` aliased `{a}` and the first
 /// complement `Ā` aliased `{b}`. The pair clause then read `Q ⊓ Ā → ⊥`, which
 /// every subsumption probe `Q ⊓ ¬A` asserts at its root: a spurious clash, and
-/// a spurious `X ⊑ A` for every `X`.
+/// a spurious `X ⊑ A` for every `X`. On the `HF4a` probe it also made `Q`
+/// itself a nominal id (`with_nominals(num_classes, …)`), so the NN-rule
+/// treated the probe root as the singleton `{ind₀}`.
+///
+/// Panics on `u32` overflow, as the clausifier does for the same bound: a
+/// saturated id would wrap in the callers' `next_fresh += 1` and alias real
+/// classes.
 fn first_free_class_id(
     clauses: &[owl_dl_core::clause::DlClause],
     internal: &InternalOntology,
 ) -> u32 {
-    let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
-    let num_individuals = u32::try_from(internal.vocabulary.num_individuals()).unwrap_or(u32::MAX);
-    fresh_class_id(clauses)
-        .index()
-        .max(num_classes.saturating_add(num_individuals))
+    let num_classes =
+        u32::try_from(internal.vocabulary.num_classes()).expect("class count fits u32");
+    let num_individuals =
+        u32::try_from(internal.vocabulary.num_individuals()).expect("individual count fits u32");
+    let nominal_end = num_classes
+        .checked_add(num_individuals)
+        .expect("nominal id range fits u32");
+    fresh_class_id(clauses).index().max(nominal_end)
 }
 
 /// Get-or-allocate the complement class `Ā` for atomic `a`, emitting
@@ -9775,6 +9789,9 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 .expect("declared class")
         };
         let cache = HyperCache::build(&internal);
+        // `GF ⊑ GG` is the row that discriminates at `decide` level: the
+        // defined sup expands to complements `Ḡ`, `G̅F`, which the old floor
+        // put on `{b}`, `{c}`. Classify's `GF ⊑ G` followed by transitivity.
         for (sub, sup) in [("GF", "G"), ("GF", "GG"), ("G", "GF"), ("Doc", "G")] {
             assert_ne!(
                 cache.decide(id(sub), id(sup), None),

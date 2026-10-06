@@ -248,15 +248,22 @@ fn component_retry_off_keeps_the_give_up() {
     assert!(stats.incomplete);
 }
 
-/// FP guard: on the consistent variant every batch is consistent, so the retry
-/// must leave the give-up as `consistent (incomplete)` and never invent a clash.
+/// FP guard: on the consistent variant no batch may report a clash, so the
+/// retry must leave the give-up as `consistent (incomplete)`.
+///
+/// The variant has two batches. Batch 1 (59 `ABox` axioms) is decided
+/// consistent in milliseconds, and that verdict is what this test guards. Batch
+/// 2 (7 axioms) never reaches a verdict and burns whatever budget it is given:
+/// at the 600 s batch budget the other tests use, this one test took 600 s and
+/// most of a CI job. A 5 s batch budget keeps the check on batch 1 and bounds
+/// the stall.
 #[test]
 fn component_retry_does_not_invent_a_clash() {
     let _lock = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "1");
-    let _b = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS", "600000");
+    let _b = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS", "5000");
     let _t = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS_MS", "1200000");
     let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&parse_without_clash()).expect("consistency");

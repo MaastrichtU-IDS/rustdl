@@ -3253,13 +3253,26 @@ fn classify_wedge_inconsistency_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_WEDGE_INCONSISTENCY").is_none_or(|v| v != "0")
 }
 
+thread_local! {
+    /// Set when [`classify_wedge_inconsistent`] gives up. The classify entry
+    /// points clear it before the run and move it into
+    /// `ClassificationStats::consistency_undetermined` after, so every one of
+    /// their return paths reports it. The pre-check runs on the calling thread.
+    static CONSISTENCY_UNDETERMINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Read and clear the flag [`classify_wedge_inconsistent`] sets on a give-up.
+pub(crate) fn take_consistency_undetermined() -> bool {
+    CONSISTENCY_UNDETERMINED.with(|f| f.replace(false))
+}
+
 /// The wedge half of [`classify_inconsistency_precheck`]. `true` only on a
 /// witnessed `Unsat`: `Sat` and `Stalled` both mean "no clash seen here", which is
 /// the same sound under-approximation classify already made.
 fn classify_wedge_inconsistent(internal: &InternalOntology) -> bool {
     if !classify_wedge_inconsistency_enabled()
         || !wedge_consistency_enabled()
-        || !internal_has_abox(internal)
+        || !internal_has_individuals(internal)
     {
         return false;
     }
@@ -3267,10 +3280,11 @@ fn classify_wedge_inconsistent(internal: &InternalOntology) -> bool {
         0 => None,
         ms => Some(std::time::Instant::now() + std::time::Duration::from_millis(ms)),
     };
-    let unsat = matches!(
-        ConsistencyCache::build(internal).decide(budget),
-        owl_dl_tableau::hyper::HyperResult::Unsat
-    );
+    let verdict = ConsistencyCache::build(internal).decide(budget);
+    if verdict == owl_dl_tableau::hyper::HyperResult::Stalled {
+        CONSISTENCY_UNDETERMINED.with(|f| f.set(true));
+    }
+    let unsat = verdict == owl_dl_tableau::hyper::HyperResult::Unsat;
     if unsat && std::env::var_os("RUSTDL_TRACE").is_some() {
         eprintln!("classify: KB inconsistent (wedge Unsat)");
     }
@@ -3553,6 +3567,20 @@ fn internal_has_abox(internal: &InternalOntology) -> bool {
                 | Axiom::DifferentIndividuals(_)
         )
     })
+}
+
+/// Whether `internal` names an individual the consistency check must
+/// instantiate: one in an `ABox` axiom, or one in a `TBox` nominal (`{a}`,
+/// `ObjectHasValue`). Every named individual denotes a domain element, so
+/// `{a} ⊑ ⊥`, or `{a} ⊑ ∃r.{a}` with `r` irreflexive, is inconsistent with no
+/// `ABox` at all (#194 item 2). `ConsistencyCache` seeds one node per
+/// individual, so widening its gate is all that is needed.
+fn internal_has_individuals(internal: &InternalOntology) -> bool {
+    internal_has_abox(internal)
+        || internal
+            .concepts
+            .iter_exprs()
+            .any(|e| matches!(e, ConceptExpr::Nominal(_)))
 }
 
 fn push_different_individuals_disjoint(
@@ -4947,8 +4975,8 @@ fn consistency_fallback_ms() -> u64 {
 /// the clause set — the false-`Unsat` (false-inconsistent) surface.
 ///
 /// `None` on the prepared ontology when the wedge route is disabled
-/// or there is no `ABox` (`has_abox_axioms` false), so `ABox`-free inputs
-/// pay nothing and classify stays byte-identical.
+/// or no individual is named (`internal_has_individuals` false), so
+/// individual-free inputs pay nothing and classify stays byte-identical.
 pub(crate) struct ConsistencyCache {
     /// Clause set: base `TBox`/`RBox` clauses, `DifferentIndividuals`
     /// disjointness (`{a}⊓{b}⊑⊥`, via [`push_different_individuals_disjoint`]),
@@ -6436,7 +6464,7 @@ pub fn is_consistent_internal_bounded(
     // Main tableau, bounded by the caller's deadline. THE DIVERGENCE FROM THE
     // UNBOUNDED PATH IS HERE: that one reports `true` when its internal budget
     // elapses; this one reports `None`, because the caller asked to be told.
-    prepared.decide_with_deadline(deadline, owl_dl_core::ConceptPool::top)
+    prepared.decide_consistency(Some(deadline))
 }
 
 fn is_consistent_internal_full(
@@ -6487,8 +6515,9 @@ fn is_consistent_internal_full(
     }
     let trace = std::env::var_os("RUSTDL_TRACE").is_some();
     // ABox-seeded wedge route (default on; kills the `decide(Top)` hang
-    // on out-of-EL ABoxes). `Some` only when enabled AND there is an
-    // ABox; otherwise fall straight through to the main tableau.
+    // on out-of-EL ABoxes). `Some` only when enabled AND an individual is
+    // named (ABox or TBox nominal); otherwise fall straight through to the
+    // main tableau.
     let wedge_deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
     match prepared.consistency_wedge(Some(wedge_deadline)) {
@@ -6549,7 +6578,7 @@ fn is_consistent_internal_full(
         // `inconsistent` → `consistent` at ~124 ABox individuals purely on the
         // abandon threshold, and decides correctly in 2.5 s without it.
         let guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
-        if let Some(sat) = prepared.decide_with_deadline(dl, owl_dl_core::ConceptPool::top)? {
+        if let Some(sat) = prepared.decide_consistency(Some(dl))? {
             (sat, false)
         } else {
             // Deadline elapsed (or node cap): no inconsistency witnessed within
@@ -6582,7 +6611,7 @@ fn is_consistent_internal_full(
         // `decide_raw`, NOT `decide`: the latter's `unwrap_or(true)` folds a
         // node-cap `None` into `true` silently — the same invisible give-up,
         // one path over (#182).
-        match prepared.decide_raw(owl_dl_core::ConceptPool::top)? {
+        match prepared.decide_consistency(None)? {
             Some(sat) => (sat, false),
             None => (true, true),
         }
@@ -7441,6 +7470,12 @@ pub(crate) struct PreparedOntology {
     disjoint_role_pairs: Vec<(RoleId, RoleId)>,
     complements: Vec<(ConceptId, ConceptId)>,
     pub(crate) abox: Abox,
+    /// `(individual, Nominal(individual))` for each individual named only
+    /// in a `TBox` nominal (`{a}`, `ObjectHasValue`), never in an `ABox`
+    /// axiom. The consistency probe seeds them alongside `abox`, because
+    /// every named individual denotes a domain element (#194 item 2).
+    /// Classify's per-pair probes do not.
+    tbox_individuals: Vec<(IndividualId, ConceptId)>,
     /// Lever A (2026-07-20): true iff the `ABox` is provably irrelevant to class
     /// subsumption — the ontology has `ABox` axioms, uses NO nominals, and the
     /// `TBox`-only-classify gate is on. When true, the per-pair classification
@@ -8121,11 +8156,12 @@ impl PreparedOntology {
             return Ok(None);
         }
         // ABox-seeded wedge consistency: build iff enabled AND the input
-        // has ABox axioms (so ABox-free inputs pay nothing and classify
-        // stays byte-identical). Built from the un-mutated `internal`,
+        // names an individual, in an ABox axiom or a TBox nominal (so
+        // individual-free inputs pay nothing and classify stays
+        // byte-identical). Built from the un-mutated `internal`,
         // before the absorb/NNF passes below consume it — so every
         // nominal/role id is matched-by-construction with the clause set.
-        let consistency = (wedge_consistency_enabled() && internal_has_abox(&internal))
+        let consistency = (wedge_consistency_enabled() && internal_has_individuals(&internal))
             .then(|| ConsistencyCache::build(&internal));
         // Phase 1b: build the snapshot cache from the same un-mutated
         // ontology, iff `RUSTDL_SNAPSHOT_CAPTURE` is ON. The cache's
@@ -8183,6 +8219,7 @@ impl PreparedOntology {
         let _ = internal.concepts.bot();
         let complements = precompute_max_complements(&mut internal.concepts);
         let abox = collect_abox(&mut internal);
+        let tbox_individuals = tbox_only_individuals(&internal.concepts, &abox);
         Ok(Some(Self {
             stall_gauge: StallTailGauge::default(),
             prune_gauge: PruneVerifyGauge::default(),
@@ -8196,6 +8233,7 @@ impl PreparedOntology {
             disjoint_role_pairs,
             complements,
             abox,
+            tbox_individuals,
             abox_irrelevant_to_classify,
             closure,
             told,
@@ -8437,6 +8475,43 @@ impl PreparedOntology {
         )
     }
 
+    /// Satisfiability of `⊤` for the CONSISTENCY question: like
+    /// [`Self::decide_raw`] / [`Self::decide_with_deadline`], but the seed also
+    /// carries [`Self::tbox_individuals`]. Without them the probe never
+    /// instantiates an individual named only in the `TBox`, so after a wedge
+    /// stall it answered a confident `consistent` on `{a} ⊑ ⊥`-shaped KBs.
+    pub(crate) fn decide_consistency(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Option<bool>, ReasonError> {
+        let extended;
+        let abox = if self.tbox_individuals.is_empty() {
+            &self.abox
+        } else {
+            let mut a = self.abox.clone();
+            a.individuals.extend_from_slice(&self.tbox_individuals);
+            extended = a;
+            &extended
+        };
+        decide(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            abox,
+            &[],
+            &[],
+            &self.dkey_ranges,
+            &self.tableau_id,
+            deadline,
+            owl_dl_core::ConceptPool::top,
+        )
+    }
+
     /// Lever A: like [`Self::decide`], but for the **classification pairwise
     /// subsumption loop only** — skips the `ABox` seed when it is provably
     /// irrelevant to class subsumption (`abox_irrelevant_to_classify`: has
@@ -8646,7 +8721,7 @@ impl PreparedOntology {
 /// All `ConceptId` fields are interned in the pool by
 /// [`collect_abox`] (the last stage to mutate the pool); the tableau
 /// then runs with a frozen pool.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct Abox {
     /// `(individual, Nominal(individual)_id)` — one entry per
     /// individual referenced in any `ABox` axiom. Each gets a root
@@ -8678,6 +8753,19 @@ struct Abox {
     /// stored in `negative_property_assertions` is for the tableau;
     /// this is for the `ABox` consistency check.
     pub(crate) negative_property_triples: Vec<(IndividualId, RoleId, IndividualId)>,
+}
+
+/// Individuals whose nominal is interned in `pool` but that no `ABox` axiom
+/// names, i.e. those reachable only through a `TBox` nominal.
+fn tbox_only_individuals(pool: &ConceptPool, abox: &Abox) -> Vec<(IndividualId, ConceptId)> {
+    let seeded: std::collections::HashSet<IndividualId> =
+        abox.individuals.iter().map(|&(ind, _)| ind).collect();
+    pool.iter_with_ids()
+        .filter_map(|(id, e)| match e {
+            ConceptExpr::Nominal(ind) if !seeded.contains(ind) => Some((*ind, id)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn collect_abox(internal: &mut InternalOntology) -> Abox {

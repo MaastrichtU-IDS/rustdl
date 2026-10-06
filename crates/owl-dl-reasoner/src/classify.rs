@@ -399,6 +399,14 @@ pub struct ClassificationStats {
     /// from "the probe never ran". Two sabotages of an earlier verdict-only canary
     /// both passed for exactly that reason.
     pub consistency_probe_admitted: bool,
+    /// The wedge inconsistency pre-check gave up (`Stalled`) before reaching a
+    /// verdict, so `inconsistent == false` is "no clash found", not a proof. On
+    /// a KB that really is inconsistent every class is unsatisfiable, so the
+    /// hierarchy may be missing entailments; `completeness_guaranteed()` is then
+    /// false, and `classify --json` reports it as `consistency_undetermined`
+    /// (#204 review: a pigeonhole over `TBox`-only individuals read
+    /// `consistent: true, incomplete: false`).
+    pub consistency_undetermined: bool,
     /// Axioms dropped during conversion, tallied by diagnostic kind (issue
     /// #43). Carried here so a caller that wants the tally does NOT have to
     /// re-run `convert_ontology` to get it: the CLI used to, which cost a
@@ -952,6 +960,7 @@ impl Classification {
         // declarations. That is an engine property, not a clause count.
         matches!(self.stats.fragment, FragmentClassification::PureEl)
             && self.stats.timed_out_pairs == 0
+            && !self.stats.consistency_undetermined
     }
 }
 
@@ -1315,8 +1324,10 @@ pub(crate) fn classify_internal_with_timeout(
     internal: &InternalOntology,
     per_pair_timeout: Option<std::time::Duration>,
 ) -> Result<Classification, ReasonError> {
+    crate::take_consistency_undetermined();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
+    c.stats.consistency_undetermined = crate::take_consistency_undetermined();
     Ok(c)
 }
 
@@ -1988,10 +1999,7 @@ fn probe_says_inconsistent(
     // Sound: `Some(false)` is a real `⊤`-unsatisfiability. A timeout yields `None` ⇒
     // no verdict ⇒ today's behaviour, which is the trusted direction.
     let dl = std::time::Instant::now() + budget;
-    matches!(
-        prepared.decide_with_deadline(dl, owl_dl_core::ConceptPool::top),
-        Ok(Some(false))
-    )
+    matches!(prepared.decide_consistency(Some(dl)), Ok(Some(false)))
 }
 
 /// Build a `Classification` representing an inconsistent ontology:
@@ -3574,8 +3582,10 @@ pub(crate) fn classify_top_down_internal(
             }
         }
     }
+    crate::take_consistency_undetermined();
     let mut c = classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline)?;
     c.stats.dropped = internal.dropped.clone();
+    c.stats.consistency_undetermined = crate::take_consistency_undetermined();
     Ok(c)
 }
 

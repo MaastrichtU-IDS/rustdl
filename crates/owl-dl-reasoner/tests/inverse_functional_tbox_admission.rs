@@ -165,3 +165,66 @@ fn min_two_on_the_inverse_role_clashes_on_the_classify_surface() {
         "≥2 p⁻ ∧ ≤1 p⁻ clashes: classify must report A unsatisfiable"
     );
 }
+
+/// #207: `InverseFunctional(p)` bounds `p⁻`, so a `≥2` over a role that is
+/// `p⁻` only through an `InverseObjectProperties` axiom must be admitted —
+/// and one that is `p` itself through the same axiom must not. Verdicts are
+/// `HermiT`'s and Konclude's (both agree on all three).
+fn with_q(inverse_axiom: &str, min: &str) -> String {
+    ont(&format!(
+        "Declaration(ObjectProperty(:q)) {inverse_axiom} \
+         SubClassOf(:A ObjectMinCardinality(2 {min} :D))"
+    ))
+}
+
+fn classify_unsat(ofn: &str) -> bool {
+    owl_dl_reasoner::classify(&parse(ofn))
+        .expect("classify")
+        .unsatisfiable_classes()
+        .contains(&"http://ex.org/A")
+}
+
+#[test]
+fn a_min_two_through_the_declared_inverse_clashes_either_argument_order() {
+    for inv in [
+        "InverseObjectProperties(:p :q)",
+        "InverseObjectProperties(:q :p)",
+    ] {
+        assert!(
+            classify_unsat(&with_q(inv, ":q")),
+            "{inv}: q = p⁻, ≥2 q ∧ ≤1 p⁻ clashes"
+        );
+    }
+}
+
+#[test]
+fn the_declared_inverse_is_resolved_with_its_polarity() {
+    // FP guard: with `q = p⁻`, `≥2 q⁻` is two p-SUCCESSORS, which `IF(p)` does
+    // not bound. (The `InverseObjectProperties(ObjectInverseOf(:p) :q)`
+    // spelling the gate also handles is rejected by the OFN parser.)
+    let inv = "InverseObjectProperties(:p :q)";
+    assert!(
+        !classify_unsat(&with_q(inv, "ObjectInverseOf(:q)")),
+        "q⁻ = p: unsat here is an FP"
+    );
+}
+
+/// A self-inverse role is its own `p⁻`, so `≥2 p` under `IF(p)` clashes —
+/// whether the symmetry is spelled `InverseObjectProperties(:p :p)` or
+/// `SymmetricObjectProperty(:p)`. The second spelling was missed by the
+/// admission gate after #207 fixed the first (review of #208).
+#[test]
+fn a_min_two_on_a_self_inverse_role_clashes_in_both_spellings() {
+    for decl in [
+        "InverseObjectProperties(:p :p)",
+        "SymmetricObjectProperty(:p)",
+    ] {
+        let ofn = ont(&format!(
+            "{decl} SubClassOf(:A ObjectMinCardinality(2 :p :D))"
+        ));
+        assert!(
+            classify_unsat(&ofn),
+            "{decl}: p = p⁻, so ≥2 p ∧ ≤1 p⁻ clashes"
+        );
+    }
+}

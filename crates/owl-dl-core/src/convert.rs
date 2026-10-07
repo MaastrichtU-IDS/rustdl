@@ -3038,6 +3038,31 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         return true;
     }
     let flipped = r.flip();
+    // #207: `≥n q` with `InverseObjectProperties(r, q)` IS `≥n r⁻`. Resolved
+    // for the `n ≥ 2` arm ONLY: that arm is a clash with the `≤1` outright,
+    // so it cannot be the "generators exist but entail nothing" shape the
+    // declined widening above re-admits (the SIO blockers' partner
+    // generators are ∃/∀, not `≥2`). `InverseObjectProperties(a, b)` makes
+    // `b ≡ a⁻`, so `b ≡ r⁻` when `a = r`. (The `a = r⁻` arm is defensive:
+    // both sides are always named here, since horned-owl models only named
+    // properties in this axiom.) `SymmetricObjectProperty(r)` makes `r ≡ r⁻`,
+    // the same as `InverseObjectProperties(r, r)`.
+    let mut flipped_equivs: Vec<Role> = Vec::new();
+    for ax in &out.axioms {
+        match ax {
+            Axiom::InverseObjectProperties(a, b) => {
+                for (x, y) in [(*a, *b), (*b, *a)] {
+                    if x == r {
+                        flipped_equivs.push(y);
+                    } else if x == flipped {
+                        flipped_equivs.push(y.flip());
+                    }
+                }
+            }
+            Axiom::SymmetricRole(x) if x.role_id() == target => flipped_equivs.push(r),
+            _ => {}
+        }
+    }
     let mut singles = 0usize;
     for e in out.concepts.iter_exprs() {
         let (role, n, filler) = match e {
@@ -3048,10 +3073,10 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         if n == 0 {
             continue;
         }
+        if n >= 2 && (role == flipped || flipped_equivs.contains(&role)) {
+            return true;
+        }
         if role == flipped {
-            if n >= 2 {
-                return true;
-            }
             singles += 1;
             if singles >= 2 {
                 return true;
@@ -5490,6 +5515,58 @@ mod tests {
         let (onto, _prefixes) =
             read_ofn(&mut r, ParserConfiguration::default()).expect("test fixture parses");
         onto
+    }
+
+    /// Gate-level observable for `inv_func_merge_consumable` (#207): whether
+    /// `IF(p)` gets its derived `≤1 p⁻` GCI. The reasoner-level canaries cannot
+    /// see an over-broad admission, because the GCI is entailed either way.
+    fn emits_inverse_functional_max(body: &str) -> bool {
+        let src = format!(
+            "Prefix(:=<http://ex/#>)\nOntology(<http://ex/>\n\
+             Declaration(Class(:A)) Declaration(Class(:D))\n\
+             Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+             InverseFunctionalObjectProperty(:p)\n{body}\n)"
+        );
+        let internal = convert_ontology(&read_ofn_str(&src)).expect("converts");
+        internal.axioms.iter().any(|ax| {
+            matches!(ax, Axiom::SubClassOf { sup, .. }
+                if matches!(internal.concepts.get(*sup),
+                    ConceptExpr::Max(1, r, _) if r.is_inverse()))
+        })
+    }
+
+    #[test]
+    fn inverse_functional_gate_resolves_declared_inverses_for_min_two() {
+        let inv = "InverseObjectProperties(:p :q)";
+        // `≥2 q` with `q = p⁻` is `≥2 p⁻`: admitted.
+        assert!(emits_inverse_functional_max(&format!(
+            "{inv} SubClassOf(:A ObjectMinCardinality(2 :q :D))"
+        )));
+        // `≥2 q⁻` is `≥2 p`, which `IF(p)` does not bound: not admitted.
+        assert!(!emits_inverse_functional_max(&format!(
+            "{inv} SubClassOf(:A ObjectMinCardinality(2 ObjectInverseOf(:q) :D))"
+        )));
+        // A forward `≥2 p` without any declared inverse: not admitted.
+        assert!(!emits_inverse_functional_max(
+            "SubClassOf(:A ObjectMinCardinality(2 :p :D))"
+        ));
+        // Self-inverse, both spellings: `p = p⁻`, admitted.
+        for decl in [
+            "InverseObjectProperties(:p :p)",
+            "SymmetricObjectProperty(:p)",
+        ] {
+            assert!(
+                emits_inverse_functional_max(&format!(
+                    "{decl} SubClassOf(:A ObjectMinCardinality(2 :p :D))"
+                )),
+                "{decl}"
+            );
+        }
+        // A SINGLE `∃q` through the partner stays excluded (the declined
+        // widening that re-admits the SIO blockers).
+        assert!(!emits_inverse_functional_max(&format!(
+            "{inv} SubClassOf(:A ObjectSomeValuesFrom(:q :D))"
+        )));
     }
 
     #[test]

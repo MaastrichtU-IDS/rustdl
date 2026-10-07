@@ -157,21 +157,14 @@ fn a_generated_super_role_edge_does_not_count_for_the_sub_role() {
     assert!(unsat(ax).is_empty());
 }
 
-/// KNOWN GAP, not this fix: `InverseFunctional(p)` with the generator spelled
-/// `≥2 q` through the declared inverse. HermiT and Konclude both call `A`
-/// unsatisfiable; `classify` says satisfiable with `incomplete: false`. The
-/// derived `≤1 p⁻` is never emitted because `inv_func_merge_consumable`
-/// (owl-dl-core convert.rs) compares raw role ids before canonicalisation, so
-/// it does not see `≥2 q` as `≥2 p⁻`. Spelled `ObjectInverseOf(:p)` it is
-/// caught (`inverse_functional_tbox_admission.rs`). FLIP this when the gate
-/// learns the declared-inverse spelling.
+/// #207, FLIPPED (was `…_is_still_missed`): `InverseFunctional(p)` with the
+/// generator spelled `≥2 q` through the declared inverse. The admission gate
+/// for the derived `≤1 p⁻` compared raw role ids, so it did not see `≥2 q` as
+/// `≥2 p⁻` and `classify` answered satisfiable with `incomplete: false`.
 #[test]
-fn inverse_functional_with_a_declared_inverse_min_is_still_missed() {
+fn inverse_functional_with_a_declared_inverse_min_is_unsatisfiable() {
     let ax = "SubClassOf(:A ObjectMinCardinality(2 :q :D)) InverseFunctionalObjectProperty(:p)";
-    assert!(
-        unsat(ax).is_empty(),
-        "the declared-inverse IF gap closed: flip this test to assert A unsat"
-    );
+    assert_eq!(unsat(ax), ["http://ex.org/#A"]);
 }
 
 /// `≥2 q.D` ⊑ `≥2 q.⊤` holds (HermiT). FLIPPED from
@@ -183,4 +176,19 @@ fn inverse_min_subsumption_is_derived() {
     let ax = "SubClassOf(:A ObjectMinCardinality(2 :q :D)) \
               EquivalentClasses(:C ObjectMinCardinality(2 :q owl:Thing))";
     assert!(classified(ax).is_subclass("http://ex.org/#A", "http://ex.org/#C"));
+}
+
+/// `ObjectExactCardinality` lowers to `Min ⊓ Max`, a separate path into the
+/// gate's census.
+#[test]
+fn inverse_functional_with_a_declared_inverse_exact_is_unsatisfiable() {
+    let ax = "SubClassOf(:A ObjectExactCardinality(2 :q :D)) InverseFunctionalObjectProperty(:p)";
+    assert_eq!(unsat(ax), ["http://ex.org/#A"]);
+}
+
+#[test]
+fn inverse_functional_with_a_declared_inverse_min_makes_an_instance_inconsistent() {
+    let ax = "SubClassOf(:A ObjectMinCardinality(2 :q :D)) InverseFunctionalObjectProperty(:p) \
+              ClassAssertion(:A :a)";
+    assert!(!is_consistent(&parse(ax)).expect("consistent"));
 }

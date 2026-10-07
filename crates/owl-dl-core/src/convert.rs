@@ -3038,6 +3038,25 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         return true;
     }
     let flipped = r.flip();
+    // #207: `≥n q` with `InverseObjectProperties(r, q)` IS `≥n r⁻`. Resolved
+    // for the `n ≥ 2` arm ONLY: that arm is a clash with the `≤1` outright,
+    // so it cannot be the "generators exist but entail nothing" shape the
+    // declined widening above re-admits (the SIO blockers' partner
+    // generators are ∃/∀, not `≥2`). `InverseObjectProperties(a, b)` makes
+    // `b ≡ a⁻`, so `b ≡ r⁻` when `a = r`, and `b⁻ ≡ r⁻` when `a = r⁻` (either
+    // side may itself be an `ObjectInverseOf`).
+    let mut flipped_equivs: Vec<Role> = Vec::new();
+    for ax in &out.axioms {
+        if let Axiom::InverseObjectProperties(a, b) = ax {
+            for (x, y) in [(*a, *b), (*b, *a)] {
+                if x == r {
+                    flipped_equivs.push(y);
+                } else if x == flipped {
+                    flipped_equivs.push(y.flip());
+                }
+            }
+        }
+    }
     let mut singles = 0usize;
     for e in out.concepts.iter_exprs() {
         let (role, n, filler) = match e {
@@ -3048,10 +3067,10 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         if n == 0 {
             continue;
         }
+        if n >= 2 && (role == flipped || flipped_equivs.contains(&role)) {
+            return true;
+        }
         if role == flipped {
-            if n >= 2 {
-                return true;
-            }
             singles += 1;
             if singles >= 2 {
                 return true;

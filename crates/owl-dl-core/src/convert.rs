@@ -3045,7 +3045,9 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
     // Resolved for this arm ONLY, through the signed sub-role closure, which
     // covers declared inverses, symmetry, equivalences, sub-roles and any
     // chain of them.
-    let below_flipped = signed_sub_roles_of(out, flipped);
+    // Built on the first `≥2` only: most IF-bearing ontologies have none, and
+    // the closure rescans every axiom (once per IF role).
+    let mut below_flipped: Option<Vec<Role>> = None;
     let mut singles = 0usize;
     for e in out.concepts.iter_exprs() {
         let (role, n, filler) = match e {
@@ -3056,7 +3058,11 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         if n == 0 {
             continue;
         }
-        if n >= 2 && below_flipped.contains(&role) {
+        if n >= 2
+            && below_flipped
+                .get_or_insert_with(|| signed_sub_roles_of(out, flipped))
+                .contains(&role)
+        {
             return true;
         }
         if role == flipped {
@@ -5620,15 +5626,33 @@ mod tests {
             "InverseObjectProperties(:p :q) EquivalentObjectProperties(:q :s) {s}",
             "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) {s}",
             "SubObjectPropertyOf(:s :p) {s-}",
+            // inverse-spelled roles inside the role axioms (polarity)
+            "SubObjectPropertyOf(ObjectInverseOf(:s) :p) {s}",
+            "SubObjectPropertyOf(:s ObjectInverseOf(:p)) {s}",
+            "EquivalentObjectProperties(:q ObjectInverseOf(:p)) {q}",
+            "SymmetricObjectProperty(ObjectInverseOf(:p)) {p}",
+            // a sub-role cycle
+            "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) \
+             SubObjectPropertyOf(:q :s) {s}",
+            // `ObjectExactCardinality` lowers through `Min`
+            "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) \
+             SubClassOf(:A ObjectExactCardinality(2 :s :D))",
         ];
         let refused = [
             "InverseObjectProperties(:p :q) SubObjectPropertyOf(:q :s) {s}",
             "EquivalentObjectProperties(:p :s) {s}",
             "InverseObjectProperties(:p :q) InverseObjectProperties(:q :s) {s}",
             "SubObjectPropertyOf(:s :p) {s}",
+            // `p ⊑ s⁻` gives `p⁻ ⊑ s`: `s` is ABOVE `p⁻`, not below
+            "SubObjectPropertyOf(:p ObjectInverseOf(:s)) {s}",
+            // a chain is not a sub-role: `s` alone is not below `q`
+            "InverseObjectProperties(:p :q) \
+             SubObjectPropertyOf(ObjectPropertyChain(:s :t) :q) {s}",
         ];
         let fill = |t: &str| {
             t.replace("{t}", &min2(":t"))
+                .replace("{q}", &min2(":q"))
+                .replace("{p}", &min2(":p"))
                 .replace("{s-}", &min2("ObjectInverseOf(:s)"))
                 .replace("{s}", &min2(":s"))
         };

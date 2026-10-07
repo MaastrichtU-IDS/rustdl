@@ -281,3 +281,20 @@ fn a_min_two_not_below_the_inverse_does_not_clash() {
         );
     }
 }
+
+/// KNOWN GAP (#211), pinned: #209's gate emits the `≤1 p⁻` GCI here and
+/// `classify` derives the clash (above), but the per-query surface does not
+/// apply `≤1 p⁻` to `s`-successors when `s ⊑ p⁻` holds only through the role
+/// hierarchy. `HermiT` and Konclude both call `A` unsatisfiable. FLIP this to
+/// `!sat(..)` when #211 closes.
+#[test]
+fn a_min_two_on_a_sub_role_of_the_inverse_is_still_missed_by_sat() {
+    let ofn = with_roles(
+        "SubObjectPropertyOf(ObjectInverseOf(:s) :p) SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+    );
+    assert!(classify_unsat(&ofn), "classify must still derive the clash");
+    assert!(
+        sat(&ofn, "A"),
+        "#211 closed: flip this test to assert A unsatisfiable on the sat surface"
+    );
+}

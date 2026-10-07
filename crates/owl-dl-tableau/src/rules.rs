@@ -1232,7 +1232,7 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         return RuleOutcome::NoChange;
     }
     let chains: Vec<(Role, Role, Role)> = ctx.chains().to_vec();
-    // Pending chain-derived edges keyed by `(sup, tail_res)`. The
+    // Pending chain-derived edges (originally keyed by `(sup, tail_res)`). The
     // earlier Vec + linear `iter_mut().find()` was O(P) per tail and
     // the outer (mid, tail) iteration is O(K²), making the
     // structure O(K² · P) per call. HashMap brings the find to O(1)
@@ -1308,9 +1308,9 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     }
     for ((head, sup, tail), deps) in pending {
         // Polarity of `sup` chooses which direction we materialise:
-        // Named(r)  ⇒ outgoing r-edge from node to tail.
-        // Inverse(r) ⇒ outgoing r-edge from tail to node (which
-        //               looks like an incoming r-edge at node).
+        // Named(r)  ⇒ outgoing r-edge from head to tail.
+        // Inverse(r) ⇒ outgoing r-edge from tail to head (which
+        //               looks like an incoming r-edge at head).
         match sup {
             Role::Named(r) => ctx.add_edge_with_deps(head, r, tail, &deps),
             Role::Inverse(r) => ctx.add_edge_with_deps(tail, r, head, &deps),

@@ -21,7 +21,7 @@ fn sat(axioms: &str) -> bool {
         "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/t>\n\
          Declaration(Class(:A)) Declaration(Class(:D))\n\
          Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
-         Declaration(ObjectProperty(:t))\n{axioms}\n)\n"
+         Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:ri))\n{axioms}\n)\n"
     );
     let (o, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut Cursor::new(ofn), ParserConfiguration::default()).expect("parse");
@@ -72,6 +72,69 @@ fn a_general_chain_composes_in_order() {
          SubClassOf(:A ObjectAllValuesFrom(:t :D))"));
 }
 
+/// The middle pass reads each leg with its polarity (`chain_leg_targets` at
+/// `r1⁻` for the head side). Each of these is unsat with the fix and was sat
+/// without it; each has a mirror guard below.
+#[test]
+fn chains_with_inverse_legs_or_an_inverse_super_role_compose() {
+    for axioms in [
+        // inverse first leg
+        "SubObjectPropertyOf(ObjectPropertyChain(ObjectInverseOf(:r) :s) :t) \
+         SubClassOf(:A ObjectAllValuesFrom(:t :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:r) \
+         ObjectSomeValuesFrom(:s ObjectComplementOf(:D))))",
+        // inverse second leg
+        "SubObjectPropertyOf(ObjectPropertyChain(:r ObjectInverseOf(:s)) :t) \
+         SubClassOf(:A ObjectAllValuesFrom(:t :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(:r \
+         ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectComplementOf(:D))))",
+        // inverse super-role
+        "SubObjectPropertyOf(ObjectPropertyChain(:r :s) ObjectInverseOf(:t)) \
+         SubClassOf(:A ObjectAllValuesFrom(ObjectInverseOf(:t) :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s ObjectComplementOf(:D))))",
+        // everything inverse
+        "SubObjectPropertyOf(ObjectPropertyChain(ObjectInverseOf(:r) ObjectInverseOf(:s)) \
+         ObjectInverseOf(:t)) SubClassOf(:A ObjectAllValuesFrom(ObjectInverseOf(:t) :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:r) \
+         ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectComplementOf(:D))))",
+        // first leg reached through a declared inverse (`ri⁻ = r`)
+        "InverseObjectProperties(:r :ri) SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t) \
+         SubClassOf(:A ObjectAllValuesFrom(:t :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:ri) \
+         ObjectSomeValuesFrom(:s ObjectComplementOf(:D))))",
+    ] {
+        assert!(!sat(axioms), "should be unsat: {axioms}");
+    }
+}
+
+#[test]
+fn chains_do_not_compose_against_a_legs_polarity() {
+    for axioms in [
+        // `r⁻` where the chain wants `r`
+        "SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t) \
+         SubClassOf(:A ObjectAllValuesFrom(:t :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:r) \
+         ObjectSomeValuesFrom(:s ObjectComplementOf(:D))))",
+        // `s⁻` where the chain wants `s`
+        "SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t) \
+         SubClassOf(:A ObjectAllValuesFrom(:t :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(:r \
+         ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectComplementOf(:D))))",
+        // `∀t` where the chain derives `t⁻`
+        "SubObjectPropertyOf(ObjectPropertyChain(:r :s) ObjectInverseOf(:t)) \
+         SubClassOf(:A ObjectAllValuesFrom(:t :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s ObjectComplementOf(:D))))",
+        // `ri` (= `r⁻`) where the chain wants `r`
+        "InverseObjectProperties(:r :ri) SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t) \
+         SubClassOf(:A ObjectAllValuesFrom(:t :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(:ri ObjectSomeValuesFrom(:s ObjectComplementOf(:D))))",
+    ] {
+        assert!(sat(axioms), "unsat here is an FP: {axioms}");
+    }
+}
+
+/// CONTROL, not a fix positive: it passes with `RUSTDL_TABLEAU_CHAIN_MIDDLE=0`
+/// too (here the edges happen to arrive in an order the head pass sees).
 #[test]
 fn the_inverse_of_a_transitive_role_is_transitive() {
     assert!(!sat("TransitiveObjectProperty(:r) \

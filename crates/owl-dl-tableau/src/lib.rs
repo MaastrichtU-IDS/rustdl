@@ -2335,30 +2335,6 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
     i == small.len()
 }
 
-/// Whether anywhere (pairwise) blocking is enabled for the main tableau.
-///
-/// Opt-IN: returns `true` only when `RUSTDL_ANYWHERE_BLOCKING=1`. Default
-/// (unset / any other value) is `false` — the historical ancestor-scoped
-/// pair blocking. Read ONCE per [`TableauContext`] at construction and cached
-/// in the `anywhere_blocking` field; the hot `is_blocked` path never re-reads
-/// the environment. The reasoner crate carries a mirror `*_enabled()` for
-/// `RUSTDL_MAX_TRIAL_MERGE` — **default ON**; `=0` reverts.
-///
-/// Issue #76 (SOUNDNESS). The SROIQ `≤`-rule is don't-know nondeterministic
-/// over WHICH pair of witnesses to merge. `apply_max` runs in the
-/// deterministic saturation pass and used to commit to the first pair not
-/// marked distinct; when that pair was the one inconsistent combination its
-/// clash propagated as `Unsat`, yielding a FALSE-POSITIVE subsumption.
-///
-/// With this on, each candidate pair is merged behind a checkpoint and kept
-/// only if the survivor is clash-free, rolling back otherwise. If no pair
-/// survives, the pre-existing `Bot` arm still fires — sound, since satisfying
-/// `≤n` requires SOME merge and every candidate is immediately contradictory.
-///
-/// PARTIAL by construction: a pair that clashes only deeper is still committed
-/// to without a choice point. The complete fix is a backtrackable choice point
-/// over merge pairs in `search.rs`, which branches over CONCEPTS today and so
-/// needs a new branching primitive.
 /// Whether the main tableau's role matching (`edge_satisfies`, which drives
 /// `∀`, `∃`, role rules and `≤n`) also consults the SIGNED role closure (#211,
 /// `RUSTDL_TABLEAU_SIGNED_ROLES`, **default ON**, `=0` reverts).
@@ -2389,6 +2365,30 @@ pub fn chain_middle_enabled() -> bool {
     std::env::var_os("RUSTDL_TABLEAU_CHAIN_MIDDLE").is_none_or(|v| v != "0")
 }
 
+/// Whether anywhere (pairwise) blocking is enabled for the main tableau.
+///
+/// Opt-IN: returns `true` only when `RUSTDL_ANYWHERE_BLOCKING=1`. Default
+/// (unset / any other value) is `false` — the historical ancestor-scoped
+/// pair blocking. Read ONCE per [`TableauContext`] at construction and cached
+/// in the `anywhere_blocking` field; the hot `is_blocked` path never re-reads
+/// the environment. The reasoner crate carries a mirror `*_enabled()` for
+/// `RUSTDL_MAX_TRIAL_MERGE` — **default ON**; `=0` reverts.
+///
+/// Issue #76 (SOUNDNESS). The SROIQ `≤`-rule is don't-know nondeterministic
+/// over WHICH pair of witnesses to merge. `apply_max` runs in the
+/// deterministic saturation pass and used to commit to the first pair not
+/// marked distinct; when that pair was the one inconsistent combination its
+/// clash propagated as `Unsat`, yielding a FALSE-POSITIVE subsumption.
+///
+/// With this on, each candidate pair is merged behind a checkpoint and kept
+/// only if the survivor is clash-free, rolling back otherwise. If no pair
+/// survives, the pre-existing `Bot` arm still fires — sound, since satisfying
+/// `≤n` requires SOME merge and every candidate is immediately contradictory.
+///
+/// PARTIAL by construction: a pair that clashes only deeper is still committed
+/// to without a choice point. The complete fix is a backtrackable choice point
+/// over merge pairs in `search.rs`, which branches over CONCEPTS today and so
+/// needs a new branching primitive.
 #[must_use]
 pub fn max_trial_merge_enabled() -> bool {
     // Default-ON idiom: an EMPTY value enables.

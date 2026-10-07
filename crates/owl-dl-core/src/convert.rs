@@ -5692,7 +5692,9 @@ mod tests {
             "SubObjectPropertyOf(:s :p) {s}",
             // `p ⊑ s⁻` gives `p⁻ ⊑ s`: `s` is ABOVE `p⁻`, not below
             "SubObjectPropertyOf(:p ObjectInverseOf(:s)) {s}",
-            // a chain is not a sub-role: `s` alone is not below `q`
+            // a chain is not a sub-role: `s` alone is not below `q`. Structural
+            // only: with IF(p) this ontology is outside OWL 2 DL (non-simple
+            // role under a cardinality), so no oracle adjudicates its verdict.
             "InverseObjectProperties(:p :q) \
              SubObjectPropertyOf(ObjectPropertyChain(:s :t) :q) {s}",
         ];

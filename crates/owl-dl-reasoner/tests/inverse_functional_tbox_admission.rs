@@ -309,14 +309,15 @@ fn a_min_two_below_the_inverse_clashes_on_the_sat_surface() {
     }
 }
 
-/// FP guards on the same surface: `s` above `p⁻`, and a chain, which is not a
-/// sub-role, must stay satisfiable.
+/// FP guards on the same surface: `s` above `p⁻` must stay satisfiable. (No
+/// property-chain row: a chain under a role that `IF(p)` bounds makes it
+/// non-simple, which is outside OWL 2 DL; `HermiT` rejects it, so it has no
+/// oracle. The gate-level unit test still checks that a chain is not read as a
+/// sub-role.)
 #[test]
 fn a_min_two_not_below_the_inverse_stays_satisfiable_on_the_sat_surface() {
     for axioms in [
         "SubObjectPropertyOf(:p ObjectInverseOf(:s)) SubClassOf(:A ObjectMinCardinality(2 :s :D))",
-        "InverseObjectProperties(:p :q) SubObjectPropertyOf(ObjectPropertyChain(:s :t) :q) \
-         SubClassOf(:A ObjectMinCardinality(2 :s :D))",
         "InverseObjectProperties(:p :q) SubObjectPropertyOf(:q :s) \
          SubClassOf(:A ObjectMinCardinality(2 :s :D))",
     ] {

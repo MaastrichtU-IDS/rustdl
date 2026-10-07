@@ -228,3 +228,56 @@ fn a_min_two_on_a_self_inverse_role_clashes_in_both_spellings() {
         );
     }
 }
+
+/// #209: a `≥2` on any role provably below `p⁻` clashes with `IF(p)`, however
+/// the relation is spelled; one equal to or above `p` (or above `p⁻`) does
+/// not. Every verdict is `HermiT`'s and Konclude's.
+fn with_roles(axioms: &str) -> String {
+    ont(&format!(
+        "Declaration(ObjectProperty(:q)) Declaration(ObjectProperty(:s)) \
+         Declaration(ObjectProperty(:t)) {axioms}"
+    ))
+}
+
+#[test]
+fn a_min_two_below_the_inverse_through_role_axioms_clashes() {
+    for axioms in [
+        "InverseObjectProperties(:p :q) InverseObjectProperties(:q :s) \
+         SubClassOf(:A ObjectMinCardinality(2 ObjectInverseOf(:s) :D))",
+        "InverseObjectProperties(:p :q) InverseObjectProperties(:q :s) \
+         InverseObjectProperties(:s :t) SubClassOf(:A ObjectMinCardinality(2 :t :D))",
+        "EquivalentObjectProperties(:p :s) \
+         SubClassOf(:A ObjectMinCardinality(2 ObjectInverseOf(:s) :D))",
+        "InverseObjectProperties(:p :q) EquivalentObjectProperties(:q :s) \
+         SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) \
+         SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        "SubObjectPropertyOf(:s :p) SubClassOf(:A ObjectMinCardinality(2 ObjectInverseOf(:s) :D))",
+    ] {
+        assert!(
+            classify_unsat(&with_roles(axioms)),
+            "should clash: {axioms}"
+        );
+    }
+}
+
+#[test]
+fn a_min_two_not_below_the_inverse_does_not_clash() {
+    for axioms in [
+        // a SUPER-role of p⁻
+        "InverseObjectProperties(:p :q) SubObjectPropertyOf(:q :s) \
+         SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        // s = p
+        "EquivalentObjectProperties(:p :s) SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        // s = q⁻ = p
+        "InverseObjectProperties(:p :q) InverseObjectProperties(:q :s) \
+         SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        // s ⊑ p: s-successors are p-successors, which IF(p) does not bound
+        "SubObjectPropertyOf(:s :p) SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+    ] {
+        assert!(
+            !classify_unsat(&with_roles(axioms)),
+            "unsat here is an FP: {axioms}"
+        );
+    }
+}

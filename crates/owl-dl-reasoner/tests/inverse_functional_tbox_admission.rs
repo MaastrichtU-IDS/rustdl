@@ -172,8 +172,7 @@ fn min_two_on_the_inverse_role_clashes_on_the_classify_surface() {
 /// `HermiT`'s and Konclude's (both agree on all three).
 fn with_q(inverse_axiom: &str, min: &str) -> String {
     ont(&format!(
-        "Declaration(ObjectProperty(:q)) Declaration(Class(:B)) Declaration(Class(:E)) \
-         SubClassOf(:B ObjectAllValuesFrom(:p :E)) {inverse_axiom} \
+        "Declaration(ObjectProperty(:q)) {inverse_axiom} \
          SubClassOf(:A ObjectMinCardinality(2 {min} :D))"
     ))
 }
@@ -208,4 +207,24 @@ fn the_declared_inverse_is_resolved_with_its_polarity() {
         !classify_unsat(&with_q(inv, "ObjectInverseOf(:q)")),
         "q⁻ = p: unsat here is an FP"
     );
+}
+
+/// A self-inverse role is its own `p⁻`, so `≥2 p` under `IF(p)` clashes —
+/// whether the symmetry is spelled `InverseObjectProperties(:p :p)` or
+/// `SymmetricObjectProperty(:p)`. The second spelling was missed by the
+/// admission gate after #207 fixed the first (review of #208).
+#[test]
+fn a_min_two_on_a_self_inverse_role_clashes_in_both_spellings() {
+    for decl in [
+        "InverseObjectProperties(:p :p)",
+        "SymmetricObjectProperty(:p)",
+    ] {
+        let ofn = ont(&format!(
+            "{decl} SubClassOf(:A ObjectMinCardinality(2 :p :D))"
+        ));
+        assert!(
+            classify_unsat(&ofn),
+            "{decl}: p = p⁻, so ≥2 p ∧ ≤1 p⁻ clashes"
+        );
+    }
 }

@@ -167,6 +167,25 @@ fn inverse_functional_with_a_declared_inverse_min_is_unsatisfiable() {
     assert_eq!(unsat(ax), ["http://ex.org/#A"]);
 }
 
+/// `≥2 q.D` ⊑ `≥2 q.⊤` holds (HermiT). FLIPPED from
+/// `…_is_flagged_incomplete`: a give-up-only fix left this a flagged MISS,
+/// because classify's per-pair path counts a wedge `Stalled` as a timeout.
+/// Generating the inverse successors is what proves it.
+#[test]
+fn inverse_min_subsumption_is_derived() {
+    let ax = "SubClassOf(:A ObjectMinCardinality(2 :q :D)) \
+              EquivalentClasses(:C ObjectMinCardinality(2 :q owl:Thing))";
+    assert!(classified(ax).is_subclass("http://ex.org/#A", "http://ex.org/#C"));
+}
+
+/// `ObjectExactCardinality` lowers to `Min ⊓ Max`, a separate path into the
+/// gate's census.
+#[test]
+fn inverse_functional_with_a_declared_inverse_exact_is_unsatisfiable() {
+    let ax = "SubClassOf(:A ObjectExactCardinality(2 :q :D)) InverseFunctionalObjectProperty(:p)";
+    assert_eq!(unsat(ax), ["http://ex.org/#A"]);
+}
+
 #[test]
 fn inverse_functional_with_a_declared_inverse_min_makes_an_instance_inconsistent() {
     let ax = "SubClassOf(:A ObjectMinCardinality(2 :q :D)) InverseFunctionalObjectProperty(:p) \

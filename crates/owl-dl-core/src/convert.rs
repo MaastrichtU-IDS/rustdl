@@ -2915,6 +2915,16 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
 /// fragment gates, since a `Max` is normally disqualifying and only the exact derived
 /// shape is whitelisted (`classify::is_derived_functional_max`). Both need a corpus
 /// sweep before this becomes a default.
+/// Whether a sub-role of a `≤1`-bounded role that carries a `≥2` gets its own
+/// derived `∃s.⊤ ⊑ ≤1 s` (#211, `RUSTDL_SUB_ROLE_FUNCTIONAL_MAX`, **default ON**,
+/// `=0` reverts). Entailed (`s ⊑ f` and `Functional(f)` ⟹ `Functional(s)`),
+/// so FP-safe. It lets classify see the clash without Layer A; see
+/// `derive_functional_max_cardinality`.
+#[must_use]
+pub fn sub_role_functional_max_enabled() -> bool {
+    std::env::var_os("RUSTDL_SUB_ROLE_FUNCTIONAL_MAX").is_none_or(|v| v != "0")
+}
+
 #[must_use]
 pub fn inverse_functional_max_enabled() -> bool {
     std::env::var_os("RUSTDL_INVERSE_FUNC_MAX").is_none_or(|v| v != "0")
@@ -3086,6 +3096,11 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
 /// gives `x ≡ x⁻`. Told forms only, so a role made sub-role by a later pass is
 /// not seen (a sound MISS for its callers).
 fn signed_sub_roles_of(out: &InternalOntology, goal: Role) -> Vec<Role> {
+    signed_closure_below(&signed_role_edges(out), goal)
+}
+
+/// The signed `(sub, sup)` inclusions [`signed_sub_roles_of`] closes over.
+fn signed_role_edges(out: &InternalOntology) -> Vec<(Role, Role)> {
     let mut edges: Vec<(Role, Role)> = Vec::new();
     let both = |a: Role, b: Role, edges: &mut Vec<(Role, Role)>| {
         edges.push((a, b));
@@ -3116,10 +3131,15 @@ fn signed_sub_roles_of(out: &InternalOntology, goal: Role) -> Vec<Role> {
             _ => {}
         }
     }
+    edges
+}
+
+/// Every role reaching `goal` through `edges` (reflexive).
+fn signed_closure_below(edges: &[(Role, Role)], goal: Role) -> Vec<Role> {
     let mut set = vec![goal];
     loop {
         let before = set.len();
-        for &(sub, sup) in &edges {
+        for &(sub, sup) in edges {
             if set.contains(&sup) && !set.contains(&sub) {
                 set.push(sub);
             }
@@ -3255,6 +3275,33 @@ fn derive_functional_max_cardinality(out: &mut InternalOntology) {
         .collect();
     if roles.is_empty() {
         return;
+    }
+    // #211: `f` functional and `s ⊑ f` make `s` functional too, so a `≥2 s`
+    // clashes. The `≤1 f` above only fires on an `f`-edge, and with exact-id
+    // role matching (classify without Layer A, e.g. above its cost cap) an
+    // `s`-edge is not one, so the clash was silently missed. Emit the entailed
+    // `∃s.⊤ ⊑ ≤1 s` for exactly those sub-roles that carry a `≥n, n ≥ 2`:
+    // they are already off the EL fast path, so the new `Max` costs no
+    // routing, and the bound needs no hierarchy to apply.
+    let min_two_roles: Vec<Role> = out
+        .concepts
+        .iter_exprs()
+        .filter_map(|e| match e {
+            crate::ir::ConceptExpr::Min(n, q, _) if *n >= 2 => Some(*q),
+            _ => None,
+        })
+        .collect();
+    if !min_two_roles.is_empty() && sub_role_functional_max_enabled() {
+        let edges = signed_role_edges(out);
+        let mut extra = Vec::new();
+        for f in &roles {
+            for s in signed_closure_below(&edges, *f) {
+                if s != *f && min_two_roles.contains(&s) {
+                    extra.push(s);
+                }
+            }
+        }
+        roles.extend(extra);
     }
     roles.sort_by_key(|r| (r.role_id().index(), r.is_inverse()));
     roles.dedup();
@@ -5665,6 +5712,71 @@ mod tests {
         for t in refused {
             if emits_inverse_functional_max(&fill(t)) {
                 wrong.push(format!("should refuse: {t}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// #211: whether conversion emits `∃s.⊤ ⊑ ≤1 s` for role `s` (forward).
+    fn emits_max_one_on(body: &str, role_iri: &str) -> bool {
+        let src = format!(
+            "Prefix(:=<http://ex/#>)\nOntology(<http://ex/>\n\
+             Declaration(Class(:A)) Declaration(Class(:D))\n\
+             Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+             Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:t))\n{body}\n)"
+        );
+        let internal = convert_ontology(&read_ofn_str(&src)).expect("converts");
+        let want = internal
+            .vocabulary
+            .role_id(&format!("http://ex/#{role_iri}"));
+        internal.axioms.iter().any(|ax| {
+            matches!(ax, Axiom::SubClassOf { sup, .. }
+                if matches!(internal.concepts.get(*sup),
+                    ConceptExpr::Max(1, r, _) if !r.is_inverse() && Some(r.role_id()) == want))
+        })
+    }
+
+    #[test]
+    fn a_sub_role_with_min_two_of_a_bounded_role_gets_its_own_max_one() {
+        let min2 = "SubClassOf(:A ObjectMinCardinality(2 :s :D))";
+        let mut wrong: Vec<String> = Vec::new();
+        for (body, want) in [
+            // s ⊑ p, p functional: s is functional.
+            (
+                format!("FunctionalObjectProperty(:p) SubObjectPropertyOf(:s :p) {min2}"),
+                true,
+            ),
+            // s ⊑ p⁻, p inverse-functional (p⁻ functional): s is functional.
+            (
+                format!(
+                    "InverseFunctionalObjectProperty(:p) \
+                     SubObjectPropertyOf(ObjectInverseOf(:s) :p) {min2}"
+                ),
+                true,
+            ),
+            // No `≥2` on s: nothing to gain, and it must not cost routing.
+            (
+                "FunctionalObjectProperty(:p) SubObjectPropertyOf(:s :p) \
+                 SubClassOf(:A ObjectSomeValuesFrom(:s :D))"
+                    .to_owned(),
+                false,
+            ),
+            // s ABOVE the functional role: not entailed functional.
+            (
+                format!("FunctionalObjectProperty(:p) SubObjectPropertyOf(:p :s) {min2}"),
+                false,
+            ),
+            // s ⊑ p⁻ with p functional (not p⁻): s is not bounded.
+            (
+                format!(
+                    "FunctionalObjectProperty(:p) \
+                     SubObjectPropertyOf(ObjectInverseOf(:s) :p) {min2}"
+                ),
+                false,
+            ),
+        ] {
+            if emits_max_one_on(&body, "s") != want {
+                wrong.push(format!("want {want}: {body}"));
             }
         }
         assert!(wrong.is_empty(), "{wrong:#?}");

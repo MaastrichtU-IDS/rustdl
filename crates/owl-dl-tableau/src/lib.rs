@@ -114,6 +114,9 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     pool: &'pool ConceptPool,
     tbox: Option<&'tbox AbsorbedTBox>,
     hierarchy: Option<&'hier RoleHierarchy>,
+    /// Cached [`signed_role_edges_enabled`] (#211), read once per context
+    /// because [`Self::edge_satisfies`] is on the hot path.
+    signed_roles: bool,
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
     /// axiom in the source ontology. Stored symmetrically (both `(r, s)` and
     /// `(s, r)` are pushed) to match `inverse_pairs_set`'s contents. Retained
@@ -323,6 +326,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             pool,
             tbox: None,
             hierarchy: None,
+            signed_roles: signed_role_edges_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -356,6 +360,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             pool,
             tbox: Some(tbox),
             hierarchy: None,
+            signed_roles: signed_role_edges_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -394,6 +399,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             pool,
             tbox: Some(tbox),
             hierarchy: Some(hierarchy),
+            signed_roles: signed_role_edges_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -953,14 +959,24 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     pub fn edge_satisfies(&self, seen: Role, wanted: Role) -> bool {
         let s = seen.role_id();
         let w = wanted.role_id();
-        if seen.is_inverse() == wanted.is_inverse() {
+        let direct = if seen.is_inverse() == wanted.is_inverse() {
             match self.hierarchy {
                 Some(h) => h.is_sub_role(s, w),
                 None => s == w,
             }
         } else {
             self.are_declared_inverses(s, w)
-        }
+        };
+        // #211: the attached hierarchy also carries the SIGNED closure (#177),
+        // which composes inclusions across polarity — `s⁻ ⊑ p` makes an
+        // `s`-edge a `p⁻`-edge, which neither branch above sees, so a `≤1 p⁻`
+        // never counted `s`-successors. Every signed inclusion is entailed, so
+        // this can only add true matches.
+        direct
+            || (self.signed_roles
+                && self
+                    .hierarchy
+                    .is_some_and(|h| h.is_signed_sub(seen, wanted)))
     }
 
     #[must_use]
@@ -2332,6 +2348,21 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
 /// to without a choice point. The complete fix is a backtrackable choice point
 /// over merge pairs in `search.rs`, which branches over CONCEPTS today and so
 /// needs a new branching primitive.
+/// Whether the main tableau's role matching (`edge_satisfies`, which drives
+/// `∀`, `∃`, role rules and `≤n`) also consults the SIGNED role closure (#211,
+/// `RUSTDL_TABLEAU_SIGNED_ROLES`, **default ON**, `=0` reverts).
+///
+/// Without it, an inclusion that crosses polarity through the hierarchy
+/// (`SubObjectPropertyOf(ObjectInverseOf(:s) :p)`, an inverse chain, an
+/// equivalence with an inverse) is invisible to the tableau: `IF(p)` with
+/// `≥2` on such an `s` was `sat` with `incomplete: false` while `HermiT` and
+/// Konclude say unsat. Sound by construction — every signed inclusion is
+/// entailed — so it can only add matches.
+#[must_use]
+pub fn signed_role_edges_enabled() -> bool {
+    std::env::var_os("RUSTDL_TABLEAU_SIGNED_ROLES").is_none_or(|v| v != "0")
+}
+
 #[must_use]
 pub fn max_trial_merge_enabled() -> bool {
     // Default-ON idiom: an EMPTY value enables.

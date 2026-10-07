@@ -282,19 +282,47 @@ fn a_min_two_not_below_the_inverse_does_not_clash() {
     }
 }
 
-/// KNOWN GAP (#211), pinned: #209's gate emits the `≤1 p⁻` GCI here and
-/// `classify` derives the clash (above), but the per-query surface does not
-/// apply `≤1 p⁻` to `s`-successors when `s ⊑ p⁻` holds only through the role
-/// hierarchy. `HermiT` and Konclude both call `A` unsatisfiable. FLIP this to
-/// `!sat(..)` when #211 closes.
+/// #211, FLIPPED (was `…_is_still_missed_by_sat`): `classify` derived this
+/// clash, but the per-query surface did not. The main tableau's
+/// `edge_satisfies` ignored polarity-crossing sub-roles, so `≤1 p⁻` never
+/// counted `s`-successors when `s ⊑ p⁻` held only through the role hierarchy.
+/// It now consults the signed closure. Every verdict here is `HermiT`'s and
+/// Konclude's.
 #[test]
-fn a_min_two_on_a_sub_role_of_the_inverse_is_still_missed_by_sat() {
-    let ofn = with_roles(
+fn a_min_two_below_the_inverse_clashes_on_the_sat_surface() {
+    for axioms in [
         "SubObjectPropertyOf(ObjectInverseOf(:s) :p) SubClassOf(:A ObjectMinCardinality(2 :s :D))",
-    );
-    assert!(classify_unsat(&ofn), "classify must still derive the clash");
-    assert!(
-        sat(&ofn, "A"),
-        "#211 closed: flip this test to assert A unsatisfiable on the sat surface"
-    );
+        "SubObjectPropertyOf(:s ObjectInverseOf(:p)) SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        "EquivalentObjectProperties(:q ObjectInverseOf(:p)) \
+         SubClassOf(:A ObjectMinCardinality(2 :q :D))",
+        "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) SubObjectPropertyOf(:q :s) \
+         SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        "InverseObjectProperties(:p :q) InverseObjectProperties(:q :s) \
+         InverseObjectProperties(:s :t) SubClassOf(:A ObjectMinCardinality(2 :t :D))",
+        "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) \
+         SubClassOf(:A ObjectExactCardinality(2 :s :D))",
+    ] {
+        assert!(
+            !sat(&with_roles(axioms), "A"),
+            "sat must agree with classify: {axioms}"
+        );
+    }
+}
+
+/// FP guards on the same surface: `s` above `p⁻`, and a chain, which is not a
+/// sub-role, must stay satisfiable.
+#[test]
+fn a_min_two_not_below_the_inverse_stays_satisfiable_on_the_sat_surface() {
+    for axioms in [
+        "SubObjectPropertyOf(:p ObjectInverseOf(:s)) SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        "InverseObjectProperties(:p :q) SubObjectPropertyOf(ObjectPropertyChain(:s :t) :q) \
+         SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+        "InverseObjectProperties(:p :q) SubObjectPropertyOf(:q :s) \
+         SubClassOf(:A ObjectMinCardinality(2 :s :D))",
+    ] {
+        assert!(
+            sat(&with_roles(axioms), "A"),
+            "unsat here is an FP: {axioms}"
+        );
+    }
 }

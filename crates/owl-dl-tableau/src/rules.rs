@@ -1238,9 +1238,43 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     // structure O(K² · P) per call. HashMap brings the find to O(1)
     // and the call to O(K² + P). Showed up at ~17 % of CPU on the
     // pizza `:NamedPizza` flamegraph (post-reorder).
-    let mut pending: std::collections::HashMap<(Role, NodeId), DepSet> =
+    // Keyed by `(head, sup, tail)`: the middle pass below derives edges whose
+    // head is a predecessor of `node`, not `node` itself.
+    let mut pending: std::collections::HashMap<(NodeId, Role, NodeId), DepSet> =
         std::collections::HashMap::new();
+    let middle = ctx.chain_middle_enabled();
     for (r1, r2, sup) in chains {
+        // #213 MIDDLE pass: `node` as the chain's middle, pairing each
+        // `r1`-predecessor with each `r2`-successor. Without it the rule only
+        // looked forward from a chain's HEAD, and an edge that completes a
+        // chain further down (`h —r1→ node` already present, then
+        // `node —r2→ t` added) dirties only `node` and `t`, never `h`. So
+        // `h —sup→ t` was never derived: `Transitive(r)` with
+        // `∃r.∃r.¬D ⊓ ∀r.D` came back satisfiable. Every derived edge is
+        // licensed by the chain axiom exactly as in the head pass.
+        if middle {
+            let heads = chain_leg_targets(ctx, node, r1.flip());
+            if !heads.is_empty() {
+                let tails = chain_leg_targets(ctx, node, r2);
+                for (head, head_deps) in &heads {
+                    let head_res = ctx.resolve(*head);
+                    for (tail, tail_deps) in &tails {
+                        if ctx.check_deadline() {
+                            return RuleOutcome::NoChange;
+                        }
+                        let tail_res = ctx.resolve(*tail);
+                        if chain_edge_already_present(ctx, head_res, sup, tail_res) {
+                            continue;
+                        }
+                        let combined = union(head_deps, tail_deps);
+                        pending
+                            .entry((head_res, sup, tail_res))
+                            .and_modify(|d| *d = union(d, &combined))
+                            .or_insert(combined);
+                    }
+                }
+            }
+        }
         // Step 1: find every `mid` reachable from `node` via the
         // first chain position, together with the edge deps.
         let mids = chain_leg_targets(ctx, node, r1);
@@ -1263,7 +1297,7 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
                 }
                 let combined = union(&head_deps, &tail_deps);
                 pending
-                    .entry((sup, tail_res))
+                    .entry((node, sup, tail_res))
                     .and_modify(|d| *d = union(d, &combined))
                     .or_insert(combined);
             }
@@ -1272,14 +1306,14 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     if pending.is_empty() {
         return RuleOutcome::NoChange;
     }
-    for ((sup, tail), deps) in pending {
+    for ((head, sup, tail), deps) in pending {
         // Polarity of `sup` chooses which direction we materialise:
         // Named(r)  ⇒ outgoing r-edge from node to tail.
         // Inverse(r) ⇒ outgoing r-edge from tail to node (which
         //               looks like an incoming r-edge at node).
         match sup {
-            Role::Named(r) => ctx.add_edge_with_deps(node, r, tail, &deps),
-            Role::Inverse(r) => ctx.add_edge_with_deps(tail, r, node, &deps),
+            Role::Named(r) => ctx.add_edge_with_deps(head, r, tail, &deps),
+            Role::Inverse(r) => ctx.add_edge_with_deps(tail, r, head, &deps),
         }
     }
     RuleOutcome::Applied

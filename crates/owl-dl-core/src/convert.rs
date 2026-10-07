@@ -3038,31 +3038,16 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         return true;
     }
     let flipped = r.flip();
-    // #207: `≥n q` with `InverseObjectProperties(r, q)` IS `≥n r⁻`. Resolved
-    // for the `n ≥ 2` arm ONLY: that arm is a clash with the `≤1` outright,
-    // so it cannot be the "generators exist but entail nothing" shape the
-    // declined widening above re-admits (the SIO blockers' partner
-    // generators are ∃/∀, not `≥2`). `InverseObjectProperties(a, b)` makes
-    // `b ≡ a⁻`, so `b ≡ r⁻` when `a = r`. (The `a = r⁻` arm is defensive:
-    // both sides are always named here, since horned-owl models only named
-    // properties in this axiom.) `SymmetricObjectProperty(r)` makes `r ≡ r⁻`,
-    // the same as `InverseObjectProperties(r, r)`.
-    let mut flipped_equivs: Vec<Role> = Vec::new();
-    for ax in &out.axioms {
-        match ax {
-            Axiom::InverseObjectProperties(a, b) => {
-                for (x, y) in [(*a, *b), (*b, *a)] {
-                    if x == r {
-                        flipped_equivs.push(y);
-                    } else if x == flipped {
-                        flipped_equivs.push(y.flip());
-                    }
-                }
-            }
-            Axiom::SymmetricRole(x) if x.role_id() == target => flipped_equivs.push(r),
-            _ => {}
-        }
-    }
+    // #207/#209: a `≥n` with n ≥ 2 on any role `s ⊑ r⁻` makes two
+    // `r⁻`-successors, a clash with the `≤1` outright, so it cannot be the
+    // "generators exist but entail nothing" shape the declined widening above
+    // re-admits (the SIO blockers' partner generators are ∃/∀, not `≥2`).
+    // Resolved for this arm ONLY, through the signed sub-role closure, which
+    // covers declared inverses, symmetry, equivalences, sub-roles and any
+    // chain of them.
+    // Built on the first `≥2` only: most IF-bearing ontologies have none, and
+    // the closure rescans every axiom (once per IF role).
+    let mut below_flipped: Option<Vec<Role>> = None;
     let mut singles = 0usize;
     for e in out.concepts.iter_exprs() {
         let (role, n, filler) = match e {
@@ -3073,7 +3058,11 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         if n == 0 {
             continue;
         }
-        if n >= 2 && (role == flipped || flipped_equivs.contains(&role)) {
+        if n >= 2
+            && below_flipped
+                .get_or_insert_with(|| signed_sub_roles_of(out, flipped))
+                .contains(&role)
+        {
             return true;
         }
         if role == flipped {
@@ -3088,6 +3077,57 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         }
     }
     false
+}
+
+/// Every signed role `s` with `s ⊑ goal` (including `goal`) under the told
+/// role axioms: `SubObjectPropertyOf` (role, not chain) gives `a ⊑ b` and
+/// `a⁻ ⊑ b⁻`; `EquivalentObjectProperties` both directions;
+/// `InverseObjectProperties(a, b)` gives `b ≡ a⁻`; `SymmetricObjectProperty(x)`
+/// gives `x ≡ x⁻`. Told forms only, so a role made sub-role by a later pass is
+/// not seen (a sound MISS for its callers).
+fn signed_sub_roles_of(out: &InternalOntology, goal: Role) -> Vec<Role> {
+    let mut edges: Vec<(Role, Role)> = Vec::new();
+    let both = |a: Role, b: Role, edges: &mut Vec<(Role, Role)>| {
+        edges.push((a, b));
+        edges.push((a.flip(), b.flip()));
+    };
+    for ax in &out.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Role(sub),
+                sup,
+            } => both(*sub, *sup, &mut edges),
+            Axiom::EquivalentObjectProperties(roles) => {
+                for a in roles {
+                    for b in roles {
+                        if a != b {
+                            both(*a, *b, &mut edges);
+                        }
+                    }
+                }
+            }
+            Axiom::InverseObjectProperties(a, b) => {
+                both(*b, a.flip(), &mut edges);
+                both(a.flip(), *b, &mut edges);
+            }
+            Axiom::SymmetricRole(x) => {
+                both(*x, x.flip(), &mut edges);
+            }
+            _ => {}
+        }
+    }
+    let mut set = vec![goal];
+    loop {
+        let before = set.len();
+        for &(sub, sup) in &edges {
+            if set.contains(&sup) && !set.contains(&sub) {
+                set.push(sub);
+            }
+        }
+        if set.len() == before {
+            return set;
+        }
+    }
 }
 
 /// Whether role `target` is reflexive: declared `ReflexiveObjectProperty`, or a
@@ -5525,6 +5565,7 @@ mod tests {
             "Prefix(:=<http://ex/#>)\nOntology(<http://ex/>\n\
              Declaration(Class(:A)) Declaration(Class(:D))\n\
              Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+             Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:t))\n\
              InverseFunctionalObjectProperty(:p)\n{body}\n)"
         );
         let internal = convert_ontology(&read_ofn_str(&src)).expect("converts");
@@ -5567,6 +5608,66 @@ mod tests {
         assert!(!emits_inverse_functional_max(&format!(
             "{inv} SubClassOf(:A ObjectSomeValuesFrom(:q :D))"
         )));
+    }
+
+    /// #209: the `≥2` arm follows the signed sub-role closure of `p⁻`. Each
+    /// admitted row is a role provably below `p⁻`; each refused row is a role
+    /// equal to or above `p` (or above `p⁻`), which `IF(p)` does not bound.
+    #[test]
+    fn inverse_functional_gate_follows_the_signed_sub_role_closure() {
+        let min2 = |role: &str| format!("SubClassOf(:A ObjectMinCardinality(2 {role} :D))");
+        let admitted = [
+            // inverse chain: q = p⁻, s = q⁻ = p, t = s⁻ = p⁻
+            "InverseObjectProperties(:p :q) InverseObjectProperties(:q :s) \
+             InverseObjectProperties(:s :t) {t}",
+            // inverse of an inverse-chain end: s = p, so s⁻ = p⁻
+            "InverseObjectProperties(:p :q) InverseObjectProperties(:q :s) {s-}",
+            "EquivalentObjectProperties(:p :s) {s-}",
+            "InverseObjectProperties(:p :q) EquivalentObjectProperties(:q :s) {s}",
+            "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) {s}",
+            "SubObjectPropertyOf(:s :p) {s-}",
+            // inverse-spelled roles inside the role axioms (polarity)
+            "SubObjectPropertyOf(ObjectInverseOf(:s) :p) {s}",
+            "SubObjectPropertyOf(:s ObjectInverseOf(:p)) {s}",
+            "EquivalentObjectProperties(:q ObjectInverseOf(:p)) {q}",
+            "SymmetricObjectProperty(ObjectInverseOf(:p)) {p}",
+            // a sub-role cycle
+            "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) \
+             SubObjectPropertyOf(:q :s) {s}",
+            // `ObjectExactCardinality` lowers through `Min`
+            "InverseObjectProperties(:p :q) SubObjectPropertyOf(:s :q) \
+             SubClassOf(:A ObjectExactCardinality(2 :s :D))",
+        ];
+        let refused = [
+            "InverseObjectProperties(:p :q) SubObjectPropertyOf(:q :s) {s}",
+            "EquivalentObjectProperties(:p :s) {s}",
+            "InverseObjectProperties(:p :q) InverseObjectProperties(:q :s) {s}",
+            "SubObjectPropertyOf(:s :p) {s}",
+            // `p ⊑ s⁻` gives `p⁻ ⊑ s`: `s` is ABOVE `p⁻`, not below
+            "SubObjectPropertyOf(:p ObjectInverseOf(:s)) {s}",
+            // a chain is not a sub-role: `s` alone is not below `q`
+            "InverseObjectProperties(:p :q) \
+             SubObjectPropertyOf(ObjectPropertyChain(:s :t) :q) {s}",
+        ];
+        let fill = |t: &str| {
+            t.replace("{t}", &min2(":t"))
+                .replace("{q}", &min2(":q"))
+                .replace("{p}", &min2(":p"))
+                .replace("{s-}", &min2("ObjectInverseOf(:s)"))
+                .replace("{s}", &min2(":s"))
+        };
+        let mut wrong: Vec<String> = Vec::new();
+        for t in admitted {
+            if !emits_inverse_functional_max(&fill(t)) {
+                wrong.push(format!("should admit: {t}"));
+            }
+        }
+        for t in refused {
+            if emits_inverse_functional_max(&fill(t)) {
+                wrong.push(format!("should refuse: {t}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]

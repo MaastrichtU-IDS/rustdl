@@ -756,19 +756,55 @@ pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
 }
 
 /// Smallest `ClassId` strictly greater than every class index that
-/// appears in `clauses` — a fresh id usable for the subsumption
-/// probe's helper concept `Q`.
+/// appears in `clauses`, including cardinality qualifiers. NOT a safe probe
+/// id on its own — it ignores the reserved nominal range; call
+/// [`first_free_class_id`] instead.
 fn fresh_class_id(clauses: &[owl_dl_core::clause::DlClause]) -> owl_dl_core::ir::ClassId {
     use owl_dl_core::clause::Atom;
     let mut max = 0u32;
     for cl in clauses {
         for atom in cl.body.iter().chain(cl.head.iter()) {
-            if let Atom::Class(c, _) | Atom::Exists(_, c, _) = atom {
-                max = max.max(c.index() + 1);
+            match atom {
+                Atom::Class(c, _)
+                | Atom::Exists(_, c, _)
+                | Atom::AtMost(_, Some(c), _, _)
+                | Atom::AtLeast(_, Some(c), _, _) => max = max.max(c.index() + 1),
+                _ => {}
             }
         }
     }
     owl_dl_core::ir::ClassId::new(max)
+}
+
+/// First class id free for per-query helpers (`Q`, complements): past every
+/// class in `clauses`, every named class, AND the nominal range
+/// `[num_classes, num_classes + num_individuals)` the clausifier reserves.
+///
+/// Flooring at `num_classes` alone was a FALSE-POSITIVE bug: nominal-class
+/// clauses added AFTER the base clausification (e.g.
+/// `push_different_individuals_disjoint`'s `{a} ⊓ {b} → ⊥`) do not appear in
+/// `clauses` when this is computed, so `Q` aliased `{a}` and the first
+/// complement `Ā` aliased `{b}`. The pair clause then read `Q ⊓ Ā → ⊥`, which
+/// every subsumption probe `Q ⊓ ¬A` asserts at its root: a spurious clash, and
+/// a spurious `X ⊑ A` for every `X`. On the `HF4a` probe it also made `Q`
+/// itself a nominal id (`with_nominals(num_classes, …)`), so the NN-rule
+/// treated the probe root as the singleton `{ind₀}`.
+///
+/// Panics on `u32` overflow, as the clausifier does for the same bound: a
+/// saturated id would wrap in the callers' `next_fresh += 1` and alias real
+/// classes.
+fn first_free_class_id(
+    clauses: &[owl_dl_core::clause::DlClause],
+    internal: &InternalOntology,
+) -> u32 {
+    let num_classes =
+        u32::try_from(internal.vocabulary.num_classes()).expect("class count fits u32");
+    let num_individuals =
+        u32::try_from(internal.vocabulary.num_individuals()).expect("individual count fits u32");
+    let nominal_end = num_classes
+        .checked_add(num_individuals)
+        .expect("nominal id range fits u32");
+    fresh_class_id(clauses).index().max(nominal_end)
 }
 
 /// Get-or-allocate the complement class `Ā` for atomic `a`, emitting
@@ -1043,7 +1079,7 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     // (matching the clausifier's `nominal_base`), so the engine's NN-rule
     // can recognise singleton labels.
     let num_individuals = u32::try_from(internal.vocabulary.num_individuals()).unwrap_or(0);
-    let mut next_fresh = fresh_class_id(&base).index().max(num_classes);
+    let mut next_fresh = first_free_class_id(&base, &internal);
     let q = ClassId::new(next_fresh);
     next_fresh += 1;
 
@@ -3840,7 +3876,7 @@ impl HyperCache {
         let (defined_exists_bodies, defined_body_by_genus) =
             build_defined_exists_bodies(&internal, &defs);
         let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
-        let mut next_fresh = fresh_class_id(&base).index().max(num_classes);
+        let mut next_fresh = first_free_class_id(&base, &internal);
         let fresh_q = ClassId::new(next_fresh);
         next_fresh += 1;
         let vocab: Vec<(ClassId, String)> = internal
@@ -5262,8 +5298,7 @@ impl SnapshotCache {
         let internal = internal.clone();
         let (base_clauses, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
         let risk = owl_dl_tableau::BackPropRisk::classify_ontology(&internal);
-        let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
-        let next_fresh = fresh_class_id(&base_clauses).index().max(num_classes);
+        let next_fresh = first_free_class_id(&base_clauses, &internal);
         let fresh_q = owl_dl_core::ir::ClassId::new(next_fresh);
         Self {
             base_clauses,
@@ -9723,6 +9758,53 @@ mod tests {
     const HEADER: &str = "\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// The per-pair wedge probe's helper `Q` and its complement classes must not
+    /// alias the nominal-class ids `[num_classes, num_classes + num_individuals)`.
+    /// They used to: `fresh_q` floored at `num_classes`, so with
+    /// `DifferentIndividuals(a, b)` the pair clause `{a} ⊓ {b} → ⊥` read as
+    /// `Q ⊓ Ḡ → ⊥`, and every probe `X ⊓ ¬G` clashed at its root. Classify
+    /// then reported `GF ⊑ G` (and `GF ≡ GG`) whenever the label heuristic did
+    /// not prune the pair first — found on `ore_ont_7789`. The inverse/range
+    /// pair keeps the ontology off the saturation fast path.
+    #[test]
+    fn probe_helpers_do_not_alias_nominal_classes() {
+        let internal = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:G)) Declaration(Class(:GF)) Declaration(Class(:GG))
+            Declaration(Class(:Doc))
+            Declaration(ObjectProperty(:page)) Declaration(ObjectProperty(:topic))
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c))
+            EquivalentClasses(:GG ObjectIntersectionOf(:G :GF))
+            InverseObjectProperties(:page :topic)
+            ObjectPropertyRange(:page :Doc)
+            DifferentIndividuals(:a :b :c))",
+        );
+        let id = |n: &str| {
+            internal
+                .vocabulary
+                .class_id(&format!("http://ex/#{n}"))
+                .expect("declared class")
+        };
+        let cache = HyperCache::build(&internal);
+        // `GF ⊑ GG` is the row that discriminates at `decide` level: the
+        // defined sup expands to complements `Ḡ`, `G̅F`, which the old floor
+        // put on `{b}`, `{c}`. Classify's `GF ⊑ G` followed by transitivity.
+        for (sub, sup) in [("GF", "G"), ("GF", "GG"), ("G", "GF"), ("Doc", "G")] {
+            assert_ne!(
+                cache.decide(id(sub), id(sup), None),
+                HyperVerdict::Subsumed,
+                "{sub} ⊑ {sup} is not entailed"
+            );
+        }
+        // Positive control: the probe still proves what does hold.
+        assert_eq!(
+            cache.decide(id("GG"), id("G"), None),
+            HyperVerdict::Subsumed
+        );
+    }
 
     /// Task 0.2: `PreparedOntology::pair_disjoint_with_deadline` must return
     /// `Some(true)` for a told-disjoint pair (`a ⊓ b` unsatisfiable) and

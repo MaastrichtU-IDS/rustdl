@@ -3763,9 +3763,8 @@ impl<'c> HyperEngine<'c> {
             // `≥n` holds once `n` distinct qualified neighbours exist — the same
             // count `generate_at_least`'s guard uses to decline, so a picked
             // `≥n` disjunct it declines no longer leaves the `⊔` open (#190).
-            // Inverse roles count predecessors (`distinct_role_succ`), which is
-            // the only way an inverse `≥n` is ever met, since it is never
-            // generated. Re-evaluated on every scan, so a later `≤n` merge that
+            // Inverse roles count predecessors as well as generated
+            // `R⁻`-children (`distinct_role_succ`). Re-evaluated on every scan, so a later `≤n` merge that
             // lowers the count reopens the clause.
             Atom::AtLeast(role, qual, n, v) => matches!(resolve(*v), Some(src) if
                 self.distinct_role_succ(src, *role, *qual).len() >= *n as usize),
@@ -4999,9 +4998,12 @@ impl<'c> HyperEngine<'c> {
     /// (skip if `x` already has `n` distinct `qual`-successors — the
     /// load-bearing one for performance), **fire-once** per
     /// `(role, qual, n)` (regen defense), and **blocking** (a blocked
-    /// node generates nothing — termination). Inverse-role `≥n` is
-    /// deferred (TODO HF3): generating predecessors is a separate path
-    /// the corpus doesn't exercise.
+    /// node generates nothing — termination). An inverse `role` is
+    /// generated the same way: each fresh node hangs off `x` by an
+    /// `R⁻`-labelled edge, which is how `fire_exists` already builds an
+    /// `∃R⁻` witness, and `distinct_role_succ` counts it. This used to be
+    /// skipped, which left a plain Horn head `≥n R⁻` silently unenforced
+    /// and let the run end in a trusted `Sat` (#190 gap 1).
     fn generate_at_least(
         &mut self,
         x: HNode,
@@ -5010,7 +5012,7 @@ impl<'c> HyperEngine<'c> {
         n: u32,
         deps: DepSet,
     ) -> FireOutcome {
-        if n == 0 || role.is_inverse() {
+        if n == 0 {
             return FireOutcome::NoChange;
         }
         let x = self.resolve(x);
@@ -5028,8 +5030,8 @@ impl<'c> HyperEngine<'c> {
         // fired a later `≤n` merge can't drop `distinct < n`; and if it
         // was *skipped*, fire-once is unset, so the rule can still fire
         // after a merge reduces the count. Scope of this claim: HF3a
-        // (no inverse `≥n`, no nominal-induced cardinality, anywhere
-        // blocking) — not a general SROIQ termination theorem.
+        // (no nominal-induced cardinality, anywhere blocking) — not a
+        // general SROIQ termination theorem.
         if self.distinct_role_succ(x, role, qual).len() >= n as usize {
             return FireOutcome::NoChange;
         }
@@ -7084,9 +7086,9 @@ mod tests {
         );
     }
 
-    /// #190 gap 1/2: an INVERSE `≥n` disjunct is never generated, so it must at
-    /// least count as satisfied when the node already has `n` distinct
-    /// predecessors — here the `r`-predecessor that generated it.
+    /// #190 gap 1/2: an INVERSE `≥n` disjunct must count as satisfied when the
+    /// node already has `n` distinct predecessors — here the `r`-predecessor
+    /// that generated it — rather than branch or generate more.
     #[test]
     fn inverse_at_least_disjunct_met_by_a_predecessor_closes_its_disjunction() {
         if !crate::inverse_func_merge_enabled() {

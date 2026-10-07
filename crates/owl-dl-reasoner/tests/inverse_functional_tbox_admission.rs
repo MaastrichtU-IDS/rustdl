@@ -152,21 +152,16 @@ fn min_two_on_the_inverse_role_clashes_on_the_satisfiability_surface() {
 }
 
 #[test]
-fn min_two_on_the_inverse_role_is_still_missed_by_classify() {
-    // PINNED KNOWN GAP, classify-surface only, deliberately not #[ignore]d.
-    // On the SAME fixture the test above proves unsat in ms, default `classify`
-    // reports A satisfiable: the wedge DEFERS the inverse-polarity `≥2`, answers
-    // Sat, and trust_sat accepts it — the #66/#76 trusted-Sat family. The
-    // counting-verify gate (#98's `complex_qualifier_counting_classes`) keys on
-    // COMPLEX qualifiers, and this qualifier is ⊤, so it does not fire. Closing
-    // it means teaching the counting-relevant collector inverse-polarity
-    // min/max with simple fillers — a classify-routing fix, not an admission
-    // fix. If this starts failing, that gap has closed: flip it to a positive.
+fn min_two_on_the_inverse_role_clashes_on_the_classify_surface() {
+    // FLIPPED by #190 gap 1 (was `…_is_still_missed_by_classify`, a pinned
+    // known gap). The wedge never generated an inverse-polarity `≥n`, so it
+    // answered `Sat` here and `trust_sat` accepted it — the #66/#76
+    // trusted-Sat family. It now generates the two `p⁻`-successors and the
+    // `≤1 p⁻` clash follows.
     let ofn = ont("SubClassOf(:A ObjectMinCardinality(2 ObjectInverseOf(:p)))");
     let h = owl_dl_reasoner::classify(&parse(&ofn)).expect("classify");
     assert!(
-        !h.unsatisfiable_classes().contains(&"http://ex.org/A"),
-        "classify now derives the inverse-min clash — flip this test to a \
-         positive and update the #149 record"
+        h.unsatisfiable_classes().contains(&"http://ex.org/A"),
+        "≥2 p⁻ ∧ ≤1 p⁻ clashes: classify must report A unsatisfiable"
     );
 }

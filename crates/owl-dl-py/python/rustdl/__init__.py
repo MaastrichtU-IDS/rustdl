@@ -87,12 +87,19 @@ Classification.superclasses_of = _superclasses_of  # type: ignore[attr-defined]
 
 
 class IncompleteClassificationWarning(UserWarning):
-    """Raised when classification hit a timeout (per-pair or global), so
-    the returned hierarchy is a sound under-approximation (no false
-    subsumptions, but real ones may be missing). Silence with the
-    standard `warnings` module, or pass `per_pair_timeout_ms=0,
-    global_timeout_ms=0` to classify for the complete (unbounded)
-    result."""
+    """Raised when the returned hierarchy may be missing real subsumptions.
+    It is still a sound under-approximation (no false subsumptions). Two
+    causes, each with its own remedy:
+
+    * a timeout fired (`result.complete is False`): pass
+      `per_pair_timeout_ms=0, global_timeout_ms=0` for the unbounded result;
+    * the wedge ran without role-hierarchy matching
+      (`result.wedge_hierarchy_blind is True`): Layer A was off, by
+      `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` or because the role closure exceeded
+      `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`; raising that cap trades
+      time for the missing entailments.
+
+    Silence with the standard `warnings` module."""
 
 
 def _warn_if_incomplete(result: "Classification") -> "Classification":
@@ -107,14 +114,15 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             IncompleteClassificationWarning,
             stacklevel=3,
         )
-    elif not result.complete:
-        # #214: no pair timed out, but the role hierarchy was too large for the
-        # wedge's hierarchy-aware matching, so completeness is not guaranteed.
+    if result.wedge_hierarchy_blind:
+        # #214: the wedge ran without its role-hierarchy matching (Layer A off),
+        # so completeness is not guaranteed even with no timeout.
         _warnings.warn(
-            "the role hierarchy was too large for hierarchy-aware matching, so "
-            "entailments that need sub-role, inverse or symmetric reasoning may be "
-            "missing. It is still sound (no false subsumptions). Raise "
-            "RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE to trade time for them.",
+            "the classification ran without role-hierarchy matching (Layer A is "
+            "off: RUSTDL_CLASSIFY_ROLE_HIERARCHY=0, or the role closure exceeded "
+            "RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE), so entailments that need "
+            "sub-role, inverse or symmetric reasoning may be missing. It is still "
+            "sound (no false subsumptions); check result.wedge_hierarchy_blind.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )
@@ -243,7 +251,9 @@ def classify(
     Pairs cut by a timeout are recorded as "not subsumed" — sound, but the
     result may be incomplete; an `IncompleteClassificationWarning` is
     emitted when that happens, and `result.complete` /
-    `result.timed_out_pairs` report it. `saturation_only=True` skips the
+    `result.timed_out_pairs` report it. The same warning is emitted when the
+    wedge ran without role-hierarchy matching (`result.wedge_hierarchy_blind`),
+    which no timeout setting fixes. `saturation_only=True` skips the
     tableau (EL-closure under-approximation; fast).
 
     `global_deadline_ms` is a deprecated alias for `global_timeout_ms`."""

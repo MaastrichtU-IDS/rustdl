@@ -128,8 +128,8 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
-            "RUSTDL_LAYER_A_OFF_INCOMPLETE",
-            owl_dl_reasoner::layer_a_off_incomplete_enabled,
+            "RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND",
+            owl_dl_reasoner::report_wedge_hierarchy_blind_enabled,
             true,
         ),
         (

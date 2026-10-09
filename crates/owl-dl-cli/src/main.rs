@@ -737,14 +737,15 @@ fn global_budget_after_parse(
         .then(|| std::time::Duration::from_millis(global_timeout_ms).saturating_sub(parse_elapsed))
 }
 
-/// #214: say WHY a run is incomplete when no pair timed out.
+/// #214: say why completeness is not guaranteed when no deadline fired.
 fn warn_if_hierarchy_blind(blind: bool) {
     if blind {
         eprintln!(
-            "\n⚠  INCOMPLETE: the role hierarchy was too large for the wedge's \
-             hierarchy-aware matching (Layer A), so entailments that need \
-             sub-role, inverse or symmetric reasoning may be missing. Raise \
-             RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE to trade time for them."
+            "\n⚠  NOT GUARANTEED COMPLETE: the wedge ran without its role-hierarchy \
+             matching (Layer A is off: RUSTDL_CLASSIFY_ROLE_HIERARCHY=0, or the \
+             role closure exceeded RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE), so \
+             entailments that need sub-role, inverse or symmetric reasoning may be \
+             missing. Raising the cap trades time for them."
         );
     }
 }

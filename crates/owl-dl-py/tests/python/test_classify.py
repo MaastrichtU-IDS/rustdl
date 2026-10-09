@@ -76,3 +76,25 @@ def test_unbounded_timeout_accepted(fixtures_dir):
     # per_pair_timeout_ms=0 means unbounded — must classify, complete.
     r = rustdl.classify(str(fixture), per_pair_timeout_ms=0)
     assert r.complete is True
+
+
+def test_wedge_hierarchy_blind_is_its_own_signal(fixtures_dir, monkeypatch):
+    # #214: with Layer A off the wedge ignores the role hierarchy. That is
+    # reported by `wedge_hierarchy_blind` and warned about, while `complete`
+    # keeps meaning "no timeout fired". Fixture: #214's probe t9.
+    import warnings
+    fixture = str(fixtures_dir / "role_hierarchy_blind.ofn")
+    monkeypatch.setenv("RUSTDL_CLASSIFY_ROLE_HIERARCHY", "0")
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_hierarchy_blind is True
+    assert r.complete is True
+    assert sum(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning) for w in rec
+    ) == 1
+
+    monkeypatch.setenv("RUSTDL_CLASSIFY_ROLE_HIERARCHY", "1")
+    r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_hierarchy_blind is False
+    assert "http://ex.org/A" in r.unsatisfiable

@@ -49,14 +49,23 @@ impl PyClassification {
     }
 
     /// True iff classification ran to completion — no pair hit the
-    /// timeout and the wedge was not blind to a non-trivial role hierarchy
-    /// (#214). When `False`, the hierarchy may be missing real
+    /// timeout. When `False`, the hierarchy may be missing real
     /// subsumptions (see `timed_out_pairs`); re-classify with
     /// `per_pair_timeout_ms=0, global_deadline_ms=0` for the complete
     /// (unbounded) result.
     #[getter]
     fn complete(&self) -> bool {
-        !self.inner.incomplete()
+        self.inner.stats().timed_out_pairs == 0
+    }
+
+    /// True iff the wedge ran without its role-hierarchy matching (Layer A
+    /// off, by flag or above the role-closure cost cap) on an ontology with a
+    /// non-trivial role hierarchy (#214). Then entailments needing sub-role,
+    /// inverse or symmetric reasoning may be missing even though `complete`
+    /// (no timeout) is `True`.
+    #[getter]
+    fn wedge_hierarchy_blind(&self) -> bool {
+        self.inner.stats().wedge_hierarchy_blind
     }
 
     /// True iff `sub ⊑ sup` is entailed.

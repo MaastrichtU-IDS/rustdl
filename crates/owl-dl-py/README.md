@@ -95,7 +95,8 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, 
   `0` = unbounded). A pair that exceeds the budget is recorded as "not
   subsumed": **sound** (never a false subsumption) but the result may be
   **incomplete**. When that happens, an `IncompleteClassificationWarning`
-  is emitted and `result.complete` is `False`. Pass `0` for the complete,
+  is emitted and `result.complete` is `False`. (The same warning also fires
+  when `result.wedge_hierarchy_blind` is `True`; see the table below.) Pass `0` for the complete,
   unbounded classification. The default bounds pathological SROIQ inputs
   so classification can't hang silently. Conversely, on nominal-heavy
   ontologies (e.g. the W3C wine ontology) the engines never terminate on
@@ -115,6 +116,7 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, 
 | `.inconsistent` | `bool` | whole ontology unsatisfiable |
 | `.complete` | `bool` | `False` if any pair hit the timeout (result may miss edges) |
 | `.timed_out_pairs` | `int` | how many pairs hit the timeout |
+| `.wedge_hierarchy_blind` | `bool` | `True` if role-hierarchy matching was off (Layer A), so sub-role / inverse / symmetric entailments may be missing even with `.complete` |
 | `.is_subclass(sub, sup)` | `bool` | is `sub ⊑ sup` entailed? |
 | `.subclasses_of(cls)` | `list[str]` | every `D` with `D ⊑ cls` |
 | `.superclasses_of(cls)` | `list[str]` | every `D` with `cls ⊑ D` |

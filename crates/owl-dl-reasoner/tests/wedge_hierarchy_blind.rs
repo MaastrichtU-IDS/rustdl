@@ -1,7 +1,8 @@
 //! #214: with Layer A off the wedge matches role ids exactly, and its trusted
 //! `Sat` can silently miss an entailment that needs role-hierarchy reasoning.
-//! Such a run is now reported `incomplete` when the role hierarchy is
-//! non-trivial, and stays complete when there is no hierarchy to miss.
+//! Such a run now sets `wedge_hierarchy_blind` when the role hierarchy is
+//! non-trivial, and not when there is no hierarchy to miss. It is a separate
+//! signal: no deadline fires, so `timed_out_pairs` stays 0.
 //!
 //! In its own file because it sets `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`, which
 //! sibling tests in one binary would observe.
@@ -46,15 +47,12 @@ fn a_hierarchy_blind_wedge_flags_the_result_and_a_plain_one_does_not() {
         "precondition: without Layer A the wedge misses this (else the test is vacuous)"
     );
     assert!(c.stats().wedge_hierarchy_blind);
-    assert!(
-        c.incomplete(),
-        "a hierarchy-blind run must not claim completeness"
-    );
+    assert_eq!(c.stats().timed_out_pairs, 0, "no deadline fired");
 
     // No role axioms at all: nothing for the wedge to be blind to.
     let plain = classify(
         "SubClassOf(:B ObjectAllValuesFrom(:r :D)) SubClassOf(:A ObjectSomeValuesFrom(:r :D))",
     );
     assert!(!plain.stats().wedge_hierarchy_blind);
-    assert!(!plain.incomplete());
+    assert_eq!(plain.stats().timed_out_pairs, 0);
 }

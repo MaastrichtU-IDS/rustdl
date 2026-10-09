@@ -411,8 +411,10 @@ pub struct ClassificationStats {
     /// or above `layer_a_affordable`'s cap) on an ontology whose role hierarchy is
     /// non-trivial. Its exact-id role matching cannot see sub-role, inverse or
     /// symmetric reasoning, and its trusted `Sat` can then miss an entailment
-    /// silently, so completeness is not guaranteed. Reported via
-    /// [`Classification::incomplete`] (`RUSTDL_LAYER_A_OFF_INCOMPLETE`).
+    /// silently, so completeness is not guaranteed: [`Classification::
+    /// completeness_guaranteed`] is false and `classify --json` reports this
+    /// field (`RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND`). It does NOT set
+    /// `incomplete`, which means only "a deadline fired".
     pub wedge_hierarchy_blind: bool,
     /// Axioms dropped during conversion, tallied by diagnostic kind (issue
     /// #43). Carried here so a caller that wants the tally does NOT have to
@@ -913,16 +915,6 @@ impl Classification {
     /// configured deadline — the flagged-undecided set. A timed-out pair is
     /// reported "not subsumed" but recorded here, so a consumer knows
     /// exactly which subsumptions are unverified (the anytime contract).
-    /// Whether the result may be missing entailments the run could not rule
-    /// out: some pair or class probe was cut (`timed_out_pairs > 0`), or the
-    /// wedge ran blind to a non-trivial role hierarchy (#214,
-    /// [`ClassificationStats::wedge_hierarchy_blind`]). This is what
-    /// `classify --json` reports as `incomplete`.
-    #[must_use]
-    pub fn incomplete(&self) -> bool {
-        self.stats.timed_out_pairs > 0 || self.stats.wedge_hierarchy_blind
-    }
-
     #[must_use]
     pub fn undecided_pairs(&self) -> Vec<(&str, &str)> {
         self.stats
@@ -941,10 +933,10 @@ impl Classification {
     /// subsumptions, silent or flagged.
     ///
     /// This is the honest calibration contract: `completeness_guaranteed()` ⟹
-    /// `MISSED == 0`. It holds **only** on the provably-complete fragments
-    /// ([`FragmentClassification::PureEl`] — the saturator is complete; or
-    /// [`FragmentClassification::Horn`] — the hyper Horn fixpoint is complete)
-    /// **and** when no per-pair probe timed out.
+    /// `MISSED == 0`. It holds **only** on [`FragmentClassification::PureEl`]
+    /// (the saturator is complete; `Horn` is excluded, see #124 in the body),
+    /// **and** when no per-pair probe timed out, the wedge was not blind to the
+    /// role hierarchy (#214) and consistency was determined.
     ///
     /// On `OutOfFragment` inputs it returns `false` even when nothing timed out,
     /// because the classifier relies on the wedge's `trust_sat` verdicts, which
@@ -3478,7 +3470,7 @@ fn unsat_probe_cap() -> Option<std::time::Duration> {
 
 /// #214: the wedge will decide pairs blind to a non-trivial role hierarchy.
 fn wedge_hierarchy_blind(prepared: &PreparedOntology) -> bool {
-    crate::layer_a_off_incomplete_enabled() && prepared.wedge_hierarchy_blind()
+    crate::report_wedge_hierarchy_blind_enabled() && prepared.wedge_hierarchy_blind()
 }
 
 /// Record that class `i`'s per-class unsat probe was cut (deadline or

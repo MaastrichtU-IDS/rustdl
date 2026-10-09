@@ -21,7 +21,8 @@ fn sat(axioms: &str) -> bool {
         "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/t>\n\
          Declaration(Class(:A)) Declaration(Class(:D))\n\
          Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
-         Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:ri))\n{axioms}\n)\n"
+         Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:ri))\n\
+         Declaration(ObjectProperty(:q))\n{axioms}\n)\n"
     );
     let (o, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut Cursor::new(ofn), ParserConfiguration::default()).expect("parse");
@@ -167,4 +168,29 @@ fn a_transitive_role_does_not_compose_across_polarity() {
          SubClassOf(:A ObjectSomeValuesFrom(:r \
          ObjectSomeValuesFrom(ObjectInverseOf(:r) ObjectComplementOf(:D))))"
     )));
+}
+
+/// #216: `q ⊑ ri` with `ri ≡ r⁻` makes a `q`-edge read backwards an `r`-edge.
+/// Without a chain this is #212's signed `edge_satisfies`; as a chain LEG it
+/// needs `chain_leg_targets` to consult the signed closure too. Both verdicts
+/// are `HermiT`'s.
+#[test]
+fn a_sub_role_of_a_declared_inverse_serves_as_an_inverse_leg() {
+    let shared = "InverseObjectProperties(:r :ri) \
+                  SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t) \
+                  SubClassOf(:A ObjectAllValuesFrom(:t :D)) \
+                  SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:q) \
+                  ObjectSomeValuesFrom(:s ObjectComplementOf(:D))))";
+    assert!(!sat(&format!("SubObjectPropertyOf(:q :ri) {shared}")));
+    // Guard: `ri ⊑ q` puts `q` ABOVE `r⁻`, so its edges need not be `r`-edges.
+    assert!(sat(&format!("SubObjectPropertyOf(:ri :q) {shared}")));
+}
+
+#[test]
+fn a_sub_role_of_a_declared_inverse_is_read_backwards_without_a_chain() {
+    assert!(!sat(
+        "SubObjectPropertyOf(:q :ri) InverseObjectProperties(:r :ri) \
+         SubClassOf(:A ObjectAllValuesFrom(:r :D)) \
+         SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:q) ObjectComplementOf(:D)))"
+    ));
 }

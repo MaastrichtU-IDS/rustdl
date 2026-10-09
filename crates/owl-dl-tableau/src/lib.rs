@@ -899,6 +899,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self
     }
 
+    /// Whether role matching consults the signed closure (#211, #216).
+    #[must_use]
+    pub fn signed_roles_active(&self) -> bool {
+        self.signed_roles
+    }
+
     /// Whether `apply_role_chains` also runs its middle pass (#213).
     #[must_use]
     pub fn chain_middle_enabled(&self) -> bool {

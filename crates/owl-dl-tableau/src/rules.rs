@@ -1333,6 +1333,11 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
 /// `InverseObjectProperties(r, r)`, so a symmetric role's edge is walkable both
 /// ways and a chain leg has to be able to take it backwards.
 ///
+/// A third read (#216, under `RUSTDL_TABLEAU_SIGNED_ROLES`): any edge whose
+/// signed reading from `at` (out-edge `role`, in-edge `role⁻`) is a signed
+/// sub-role of `position`. It covers the compositions the two reads above
+/// cannot, such as `q ⊑ ri` with `ri ≡ r⁻` read backwards.
+///
 /// Both reads compose with the role hierarchy, because **nothing materialises
 /// super-role edges**. `apply_role_rules` adds concept *labels* to neighbours and
 /// [`TableauContext::add_edge`] records only the exact role, so the graph holds

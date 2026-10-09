@@ -2930,6 +2930,15 @@ pub fn report_wedge_hierarchy_blind_enabled() -> bool {
 /// per-class unsat probe already builds one tableau model per class; its root
 /// labels now serve as candidates. Every candidate is still verified by the
 /// tableau, so a label can only cost a probe, never assert a subsumption.
+///
+/// COST: the candidates are uncapped, like the wedge-label ones. On the default
+/// path they rarely appear (a class needs a wedge `NoVerdict` and then a `Sat`
+/// from the 5 ms unsat probe; a 400-ontology ORE sweep measured no cost). Where
+/// the unsat probe is unbounded (library `classify()`, CLI
+/// `--pair-timeout-ms 0`) or the wedge is off, every class without a wedge
+/// label contributes its root labels minus the closure, each verified within
+/// the same-tier sweep's per-pair budget; on `ro` wedge-off they were all
+/// closure-known and wall was flat.
 #[must_use]
 pub fn classify_tableau_labels_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_TABLEAU_LABELS").is_none_or(|v| v != "0")
@@ -8748,10 +8757,6 @@ impl PreparedOntology {
         Ok(sat.map(|s| !s)) // {a}⊓{b} unsat ⇒ a≠b
     }
 
-    /// Lever A: like [`Self::decide_with_deadline`], but for the classification
-    /// pairwise subsumption loop only — skips the `ABox` seed when it is provably
-    /// irrelevant (`abox_irrelevant_to_classify`). Same scoping caveat as
-    /// [`Self::decide_classify`].
     /// Per-class classify probe that also returns the test root's atomic labels
     /// on `Sat` (#192), for the same-tier sweep's candidates when there is no
     /// wedge label. `deadline: None` runs unbounded, like
@@ -8791,6 +8796,10 @@ impl PreparedOntology {
         )
     }
 
+    /// Lever A: like [`Self::decide_with_deadline`], but for the classification
+    /// pairwise subsumption loop only — skips the `ABox` seed when it is provably
+    /// irrelevant (`abox_irrelevant_to_classify`). Same scoping caveat as
+    /// [`Self::decide_classify`].
     pub(crate) fn decide_classify_with_deadline<F>(
         &self,
         deadline: std::time::Instant,

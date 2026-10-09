@@ -43,6 +43,10 @@ fn tableau_labels_nominate_same_tier_primitive_sups_without_a_wedge() {
     // `B` (or `C`) is a candidate that is NOT entailed. Verification must
     // reject it.
     let d = classify("SubClassOf(:A ObjectUnionOf(:B :C))");
+    assert!(
+        d.stats().label_cache_pass_through >= 1,
+        "precondition: a disjunct must be nominated, or the guard is vacuous"
+    );
     assert!(!d.is_subclass("http://ex.org/A", "http://ex.org/B"));
     assert!(!d.is_subclass("http://ex.org/A", "http://ex.org/C"));
 }

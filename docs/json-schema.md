@@ -8,6 +8,7 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 ```json
 { "schema_version": 1, "consistent": bool, "incomplete": bool,
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
+  "wedge_hierarchy_blind": bool,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...] }
 ```
@@ -17,7 +18,15 @@ the hierarchy is sound (no false subsumptions) but may miss real ones.
 
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where
-the engine that answered is provably complete, and only when no pair timed out.
+the engine that answered is provably complete, only when no pair timed out, and
+only when neither `wedge_hierarchy_blind` nor `consistency_undetermined` is set.
+
+`wedge_hierarchy_blind` = the wedge decided pairs without its role-hierarchy
+matching (Layer A off: `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`, or the role closure
+exceeded `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`) on an ontology with a
+non-trivial role hierarchy (#214). Entailments needing sub-role, inverse or
+symmetric reasoning may then be missing. A separate field, because no deadline
+fired: it does not set `incomplete`.
 
 **`incomplete: false` does NOT mean complete.** It means no deadline fired.
 There are Horn ontologies where `classify` misses a subsumption both Konclude and

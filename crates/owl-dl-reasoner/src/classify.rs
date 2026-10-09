@@ -933,10 +933,10 @@ impl Classification {
     /// subsumptions, silent or flagged.
     ///
     /// This is the honest calibration contract: `completeness_guaranteed()` ⟹
-    /// `MISSED == 0`. It holds **only** on the provably-complete fragments
-    /// ([`FragmentClassification::PureEl`] — the saturator is complete; or
-    /// [`FragmentClassification::Horn`] — the hyper Horn fixpoint is complete)
-    /// **and** when no per-pair probe timed out.
+    /// `MISSED == 0`. It holds **only** on [`FragmentClassification::PureEl`]
+    /// (the saturator is complete; `Horn` is excluded, see #124 in the body),
+    /// **and** when no per-pair probe timed out, the wedge was not blind to the
+    /// role hierarchy (#214) and consistency was determined.
     ///
     /// On `OutOfFragment` inputs it returns `false` even when nothing timed out,
     /// because the classifier relies on the wedge's `trust_sat` verdicts, which

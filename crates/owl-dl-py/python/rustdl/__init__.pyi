@@ -30,7 +30,8 @@ class Classification:
         ...
     @property
     def complete(self) -> bool:
-        """True iff no pair timed out (the hierarchy is exact)."""
+        """True iff no pair timed out. See also `wedge_hierarchy_blind`: a
+        result can be `complete` (no timeout) and still miss entailments."""
         ...
     @property
     def wedge_hierarchy_blind(self) -> bool:
@@ -56,8 +57,9 @@ class Classification:
     def __repr__(self) -> str: ...
 
 class IncompleteClassificationWarning(UserWarning):
-    """Emitted when classification hit the per-pair timeout (sound but possibly
-    incomplete)."""
+    """Emitted when the hierarchy may be missing subsumptions (sound but
+    possibly incomplete): a timeout fired, or the wedge ran without
+    role-hierarchy matching (`Classification.wedge_hierarchy_blind`)."""
 
 class IncompleteQueryWarning(UserWarning):
     """Emitted by the budgeted inferred queries (`disjoint_classes`,

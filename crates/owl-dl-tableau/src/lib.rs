@@ -109,6 +109,10 @@ use owl_dl_core::{
 ///
 /// All graph mutation goes through this type so the trail stays in
 /// sync.
+// The bools are per-context caches of independent env flags (read once,
+// because the rules that consult them are on the hot path), not a state
+// machine; grouping them would only move the count.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct TableauContext<'pool, 'tbox, 'hier> {
     pool: &'pool ConceptPool,
@@ -117,6 +121,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// Cached [`signed_role_edges_enabled`] (#211), read once per context
     /// because [`Self::edge_satisfies`] is on the hot path.
     signed_roles: bool,
+    /// Cached [`chain_middle_enabled`] (#213), read once per context.
+    chain_middle: bool,
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
     /// axiom in the source ontology. Stored symmetrically (both `(r, s)` and
     /// `(s, r)` are pushed) to match `inverse_pairs_set`'s contents. Retained
@@ -327,6 +333,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             tbox: None,
             hierarchy: None,
             signed_roles: signed_role_edges_enabled(),
+            chain_middle: chain_middle_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -361,6 +368,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             tbox: Some(tbox),
             hierarchy: None,
             signed_roles: signed_role_edges_enabled(),
+            chain_middle: chain_middle_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -400,6 +408,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             tbox: Some(tbox),
             hierarchy: Some(hierarchy),
             signed_roles: signed_role_edges_enabled(),
+            chain_middle: chain_middle_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -888,6 +897,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     pub fn declare_chain_axiom(&mut self, r1: Role, r2: Role, sup: Role) -> &mut Self {
         self.chains.push((r1, r2, sup));
         self
+    }
+
+    /// Whether `apply_role_chains` also runs its middle pass (#213).
+    #[must_use]
+    pub fn chain_middle_enabled(&self) -> bool {
+        self.chain_middle
     }
 
     /// Slice of all registered length-2 chain axioms.
@@ -2324,6 +2339,36 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
     i == small.len()
 }
 
+/// Whether the main tableau's role matching (`edge_satisfies`, which drives
+/// `∀`, `∃`, role rules and `≤n`) also consults the SIGNED role closure (#211,
+/// `RUSTDL_TABLEAU_SIGNED_ROLES`, **default ON**, `=0` reverts).
+///
+/// Without it, an inclusion that crosses polarity through the hierarchy
+/// (`SubObjectPropertyOf(ObjectInverseOf(:s) :p)`, an inverse chain, an
+/// equivalence with an inverse) is invisible to the tableau: `IF(p)` with
+/// `≥2` on such an `s` was `sat` with `incomplete: false` while `HermiT` and
+/// Konclude say unsat. Sound by construction — every signed inclusion is
+/// entailed — so it can only add matches.
+#[must_use]
+pub fn signed_role_edges_enabled() -> bool {
+    std::env::var_os("RUSTDL_TABLEAU_SIGNED_ROLES").is_none_or(|v| v != "0")
+}
+
+/// Whether the main tableau's role-chain rule also fires with the dirty node
+/// as the chain's MIDDLE (#213, `RUSTDL_TABLEAU_CHAIN_MIDDLE`, **default ON**,
+/// `=0` reverts).
+///
+/// The rule only looked forward from a chain's head, and an edge completing a
+/// chain below the head dirties only its own endpoints. So `h —r→ m` then
+/// `m —r→ t` never derived `h —r→ t` for a transitive `r`, and
+/// `Transitive(r)` + `A ⊑ ∃r.∃r.¬D ⊓ ∀r.D` was satisfiable on `sat` and on
+/// classify with the wedge off (`incomplete: false`), while `HermiT` and
+/// Konclude say unsat. Every derived edge is licensed by the chain axiom.
+#[must_use]
+pub fn chain_middle_enabled() -> bool {
+    std::env::var_os("RUSTDL_TABLEAU_CHAIN_MIDDLE").is_none_or(|v| v != "0")
+}
+
 /// Whether anywhere (pairwise) blocking is enabled for the main tableau.
 ///
 /// Opt-IN: returns `true` only when `RUSTDL_ANYWHERE_BLOCKING=1`. Default
@@ -2348,21 +2393,6 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
 /// to without a choice point. The complete fix is a backtrackable choice point
 /// over merge pairs in `search.rs`, which branches over CONCEPTS today and so
 /// needs a new branching primitive.
-/// Whether the main tableau's role matching (`edge_satisfies`, which drives
-/// `∀`, `∃`, role rules and `≤n`) also consults the SIGNED role closure (#211,
-/// `RUSTDL_TABLEAU_SIGNED_ROLES`, **default ON**, `=0` reverts).
-///
-/// Without it, an inclusion that crosses polarity through the hierarchy
-/// (`SubObjectPropertyOf(ObjectInverseOf(:s) :p)`, an inverse chain, an
-/// equivalence with an inverse) is invisible to the tableau: `IF(p)` with
-/// `≥2` on such an `s` was `sat` with `incomplete: false` while `HermiT` and
-/// Konclude say unsat. Sound by construction — every signed inclusion is
-/// entailed — so it can only add matches.
-#[must_use]
-pub fn signed_role_edges_enabled() -> bool {
-    std::env::var_os("RUSTDL_TABLEAU_SIGNED_ROLES").is_none_or(|v| v != "0")
-}
-
 #[must_use]
 pub fn max_trial_merge_enabled() -> bool {
     // Default-ON idiom: an EMPTY value enables.

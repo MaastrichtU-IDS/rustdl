@@ -4121,6 +4121,23 @@ fn classify_top_down_internal_impl(
 
     let t_unsat_probe = Instant::now();
     let cut_probes = std::sync::Mutex::new(Vec::new());
+    // #192: with no wedge label for a class, keep the main tableau's model
+    // labels as same-tier sweep candidates.
+    let tableau_labels_on =
+        crate::classify_tableau_labels_enabled() && crate::classify_same_tier_enabled();
+    let want_labels = |i: usize| {
+        tableau_labels_on && !matches!(label_cache.get(i), Some(crate::LabelOracle::Sat { .. }))
+    };
+    let tableau_labels: std::sync::Mutex<Vec<(usize, Vec<owl_dl_core::ir::ClassId>)>> =
+        std::sync::Mutex::new(Vec::new());
+    let keep_labels = |i: usize, labels: Vec<owl_dl_core::ir::ClassId>| {
+        if !labels.is_empty() {
+            tableau_labels
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((i, labels));
+        }
+    };
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -4214,9 +4231,19 @@ fn classify_top_down_internal_impl(
                 // satisfiable" — the class survives the unsat probe,
                 // sound under-approximation. Crashing classify on a
                 // single oversized class is worse.
-                let sat = match prepared
-                    .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))
-                {
+                let mut labels = Vec::new();
+                let probe = if want_labels(i) {
+                    prepared.decide_classify_labelled(
+                        Some(deadline),
+                        move |pool| pool.atomic(class_id),
+                        &mut labels,
+                    )
+                } else {
+                    prepared
+                        .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))
+                };
+                keep_labels(i, labels);
+                let sat = match probe {
                     Ok(Some(s)) => s,
                     Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                         // Possibly unsat: recorded so the result is flagged
@@ -4230,7 +4257,17 @@ fn classify_top_down_internal_impl(
             } else {
                 // No deadline, but a `RUSTDL_MAX_NODES` trip still yields no
                 // verdict; record it like a deadline cut (#218).
-                let verdict = prepared.decide_classify_raw(move |pool| pool.atomic(class_id))?;
+                let mut labels = Vec::new();
+                let verdict = if want_labels(i) {
+                    prepared.decide_classify_labelled(
+                        None,
+                        move |pool| pool.atomic(class_id),
+                        &mut labels,
+                    )?
+                } else {
+                    prepared.decide_classify_raw(move |pool| pool.atomic(class_id))?
+                };
+                keep_labels(i, labels);
                 if verdict.is_none() {
                     record_cut_probe(&cut_probes, i);
                 }
@@ -4752,13 +4789,10 @@ fn classify_top_down_internal_impl(
         // above already probed defined sups), minus closure-known.
         let mut by_sup: std::collections::HashMap<usize, Vec<usize>> =
             std::collections::HashMap::new();
-        for cand in 0..n {
-            if unsatisfiable_idxs.contains(&cand) {
-                continue;
-            }
-            if let Some(crate::LabelOracle::Sat { labels, .. }) = label_cache.get(cand) {
+        let mut add_candidates =
+            |cand: usize, labels: &mut dyn Iterator<Item = owl_dl_core::ir::ClassId>| {
                 let cand_id = reported.class_id(cand);
-                for &sup_id in labels {
+                for sup_id in labels {
                     if let Some(sup) = reported.report_pos(sup_id)
                         && sup != cand
                         && !unsatisfiable_idxs.contains(&sup)
@@ -4768,6 +4802,23 @@ fn classify_top_down_internal_impl(
                         by_sup.entry(sup).or_default().push(cand);
                     }
                 }
+            };
+        for cand in 0..n {
+            if unsatisfiable_idxs.contains(&cand) {
+                continue;
+            }
+            if let Some(crate::LabelOracle::Sat { labels, .. }) = label_cache.get(cand) {
+                add_candidates(cand, &mut labels.iter().copied());
+            }
+        }
+        // #192: classes with no wedge label contribute the main tableau's model
+        // labels instead (collected by the per-class unsat probe).
+        let tableau_labels = tableau_labels
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (cand, labels) in &tableau_labels {
+            if !unsatisfiable_idxs.contains(cand) {
+                add_candidates(*cand, &mut labels.iter().copied());
             }
         }
         // Drop pairs the built hierarchy already implies: one descendants-BFS

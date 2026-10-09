@@ -2919,6 +2919,22 @@ pub fn report_wedge_hierarchy_blind_enabled() -> bool {
     std::env::var_os("RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND").is_none_or(|v| v != "0")
 }
 
+/// Whether classify takes same-tier sweep candidates from the MAIN TABLEAU's
+/// per-class model when the wedge gave no label (#192,
+/// `RUSTDL_CLASSIFY_TABLEAU_LABELS`, **default ON**, `=0` reverts).
+///
+/// The label-driven same-tier sweep nominates `C ⊑ D` only from labels, and
+/// with the wedge off (`RUSTDL_HYPERTABLEAU=0`) there are none, so a same-tier
+/// subsumption with a PRIMITIVE super-class that needs the tableau was never
+/// tested: `Reflexive(r)` + `Functional(r)` + `A ⊑ ∃r.B` missed `A ⊑ B`. The
+/// per-class unsat probe already builds one tableau model per class; its root
+/// labels now serve as candidates. Every candidate is still verified by the
+/// tableau, so a label can only cost a probe, never assert a subsumption.
+#[must_use]
+pub fn classify_tableau_labels_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_TABLEAU_LABELS").is_none_or(|v| v != "0")
+}
+
 /// Minimum unsatisfiable-class fraction, in PER MILLE, for the expensive
 /// consistency-probe layers to run. **Default 2 (= 0.2%).** `0` disables the gate.
 ///
@@ -8736,6 +8752,45 @@ impl PreparedOntology {
     /// pairwise subsumption loop only — skips the `ABox` seed when it is provably
     /// irrelevant (`abox_irrelevant_to_classify`). Same scoping caveat as
     /// [`Self::decide_classify`].
+    /// Per-class classify probe that also returns the test root's atomic labels
+    /// on `Sat` (#192), for the same-tier sweep's candidates when there is no
+    /// wedge label. `deadline: None` runs unbounded, like
+    /// [`Self::decide_classify_raw`].
+    pub(crate) fn decide_classify_labelled<F>(
+        &self,
+        deadline: Option<std::time::Instant>,
+        build_test_concept: F,
+        root_labels: &mut Vec<owl_dl_core::ir::ClassId>,
+    ) -> Result<Option<bool>, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        let empty = Abox::default();
+        let abox = if self.abox_irrelevant_to_classify {
+            &empty
+        } else {
+            &self.abox
+        };
+        decide_capturing(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            abox,
+            &[],
+            &[],
+            &self.dkey_ranges,
+            &self.tableau_id,
+            deadline,
+            build_test_concept,
+            Some(root_labels),
+        )
+    }
+
     pub(crate) fn decide_classify_with_deadline<F>(
         &self,
         deadline: std::time::Instant,
@@ -9420,6 +9475,51 @@ fn decide<F>(
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
+    decide_capturing(
+        pool,
+        tbox,
+        hierarchy,
+        inverse_pairs,
+        chain_axioms,
+        asymmetric_roles,
+        disjoint_role_pairs,
+        complements,
+        abox,
+        extra_distinct,
+        extra_neg_prop,
+        dkey_ranges,
+        id_budget,
+        deadline,
+        build_test_concept,
+        None,
+    )
+}
+
+/// [`decide`], and on a `Sat` verdict also report the test root's ATOMIC labels
+/// in the satisfying completion into `root_labels` (#192). The search leaves
+/// that completion in place on `Sat`, so the labels are those of a real model.
+#[allow(clippy::too_many_arguments)]
+fn decide_capturing<F>(
+    pool: &ConceptPool,
+    tbox: &AbsorbedTBox,
+    hierarchy: &RoleHierarchy,
+    inverse_pairs: &[(RoleId, RoleId)],
+    chain_axioms: &[(Role, Role, Role)],
+    asymmetric_roles: &[RoleId],
+    disjoint_role_pairs: &[(RoleId, RoleId)],
+    complements: &[(ConceptId, ConceptId)],
+    abox: &Abox,
+    extra_distinct: &[(IndividualId, IndividualId)],
+    extra_neg_prop: &[(IndividualId, RoleId, IndividualId)],
+    dkey_ranges: &std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
+    id_budget: &TableauIdBudget,
+    deadline: Option<std::time::Instant>,
+    build_test_concept: F,
+    root_labels: Option<&mut Vec<owl_dl_core::ir::ClassId>>,
+) -> Result<Option<bool>, ReasonError>
+where
+    F: FnOnce(&mut ConceptPool) -> ConceptId,
+{
     // Fast-exit if the deadline is already spent — BEFORE the expensive
     // `pool.clone()` + context setup below. On large ontologies that per-call
     // ConceptPool clone dominates: under a global classify deadline,
@@ -9622,6 +9722,19 @@ where
             "# ea probe trials={trials} definite={definite} depth0={depth0} \
              max_stall_run={max_stall_run} abandoned={}",
             u8::from(abandoned)
+        );
+    }
+    if let (owl_dl_tableau::SearchVerdict::Sat, Some(out)) = (&outcome, root_labels) {
+        let root = ctx.resolve(test_root);
+        out.extend(
+            ctx.graph()
+                .node(root)
+                .labels()
+                .iter()
+                .filter_map(|&c| match pool.get(c) {
+                    owl_dl_core::ConceptExpr::Atomic(id) => Some(*id),
+                    _ => None,
+                }),
         );
     }
     match outcome {

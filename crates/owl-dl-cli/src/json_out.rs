@@ -311,7 +311,7 @@ pub(crate) fn build_classify_json(
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
         consistent: !stats.inconsistent,
-        incomplete: stats.timed_out_pairs > 0,
+        incomplete: h.incomplete(),
         consistency_undetermined: stats.consistency_undetermined && !stats.inconsistent,
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),

@@ -737,6 +737,18 @@ fn global_budget_after_parse(
         .then(|| std::time::Duration::from_millis(global_timeout_ms).saturating_sub(parse_elapsed))
 }
 
+/// #214: say WHY a run is incomplete when no pair timed out.
+fn warn_if_hierarchy_blind(blind: bool) {
+    if blind {
+        eprintln!(
+            "\n⚠  INCOMPLETE: the role hierarchy was too large for the wedge's \
+             hierarchy-aware matching (Layer A), so entailments that need \
+             sub-role, inverse or symmetric reasoning may be missing. Raise \
+             RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE to trade time for them."
+        );
+    }
+}
+
 fn warn_if_incomplete(
     timed_out_pairs: usize,
     tail_bound_skips: usize,
@@ -1242,6 +1254,12 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.timed_out_pairs
         )?;
     }
+    if stats.wedge_hierarchy_blind {
+        writeln!(
+            out,
+            "# wedge ran without the role hierarchy (Layer A off): completeness not guaranteed"
+        )?;
+    }
     let tsr = json_out::trusted_sat_risk(&stats);
     if tsr > 0 {
         writeln!(
@@ -1605,6 +1623,7 @@ fn main() -> Result<()> {
                     pair_timeout_ms,
                     global_timeout_ms,
                 );
+                warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
                 return Ok(());
             }
             print_classification(&h);
@@ -1614,6 +1633,7 @@ fn main() -> Result<()> {
                 pair_timeout_ms,
                 global_timeout_ms,
             );
+            warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
             warn_if_dropped(&dropped);
         }
         Command::Instance {

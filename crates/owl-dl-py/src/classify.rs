@@ -49,13 +49,14 @@ impl PyClassification {
     }
 
     /// True iff classification ran to completion — no pair hit the
-    /// timeout. When `False`, the hierarchy may be missing real
+    /// timeout and the wedge was not blind to a non-trivial role hierarchy
+    /// (#214). When `False`, the hierarchy may be missing real
     /// subsumptions (see `timed_out_pairs`); re-classify with
     /// `per_pair_timeout_ms=0, global_deadline_ms=0` for the complete
     /// (unbounded) result.
     #[getter]
     fn complete(&self) -> bool {
-        self.inner.stats().timed_out_pairs == 0
+        !self.inner.incomplete()
     }
 
     /// True iff `sub ⊑ sup` is entailed.

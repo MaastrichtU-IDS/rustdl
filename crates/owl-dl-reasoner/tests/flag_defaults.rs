@@ -30,7 +30,7 @@
 //! commit. That is the point — the table makes a default change a reviewable edit
 //! instead of a silent one.
 //!
-//! Coverage is the 36 public `fn() -> bool` accessors across `owl-dl-core`,
+//! Coverage is the 37 public `fn() -> bool` accessors across `owl-dl-core`,
 //! `owl-dl-tableau` and `owl-dl-reasoner`. Numeric knobs
 //! (`RUSTDL_*_MS`, `RUSTDL_MAX_NODES`, …) are out of scope here; they are pinned by
 //! their own tests where they are load-bearing (e.g.
@@ -125,6 +125,11 @@ fn expected() -> Vec<FlagRow> {
         (
             "RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE",
             owl_dl_reasoner::unsat_probe_cut_incomplete_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_LAYER_A_OFF_INCOMPLETE",
+            owl_dl_reasoner::layer_a_off_incomplete_enabled,
             true,
         ),
         (

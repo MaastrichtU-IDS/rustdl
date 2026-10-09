@@ -30,7 +30,7 @@
 //! commit. That is the point — the table makes a default change a reviewable edit
 //! instead of a silent one.
 //!
-//! Coverage is the 32 public `fn() -> bool` accessors across `owl-dl-core`,
+//! Coverage is the 34 public `fn() -> bool` accessors across `owl-dl-core`,
 //! `owl-dl-tableau` and `owl-dl-reasoner`. Numeric knobs
 //! (`RUSTDL_*_MS`, `RUSTDL_MAX_NODES`, …) are out of scope here; they are pinned by
 //! their own tests where they are load-bearing (e.g.
@@ -96,6 +96,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_core::convert::inverse_pair_functionality_enabled,
             false,
         ),
+        (
+            "RUSTDL_SUB_ROLE_FUNCTIONAL_MAX",
+            owl_dl_core::convert::sub_role_functional_max_enabled,
+            true,
+        ),
         // ── owl-dl-tableau ───────────────────────────────────────────────
         (
             "RUSTDL_FIXPOINT_DEADLINE",
@@ -105,6 +110,11 @@ fn expected() -> Vec<FlagRow> {
         (
             "RUSTDL_MAX_TRIAL_MERGE",
             owl_dl_tableau::max_trial_merge_enabled as fn() -> bool,
+            true,
+        ),
+        (
+            "RUSTDL_TABLEAU_SIGNED_ROLES",
+            owl_dl_tableau::signed_role_edges_enabled,
             true,
         ),
         (

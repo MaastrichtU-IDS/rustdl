@@ -6,6 +6,89 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+All of these are correctness or completeness-signal fixes. Each behaviour change
+has its own default-ON flag (`=0` reverts it). None changes an answer on the
+curated corpus, and each was swept on ORE with every difference checked against
+Konclude: 0 false positives.
+
+### Fixed — a probe helper id could alias a nominal class (#205)
+
+The per-pair wedge probe picked its helper class ids from just past the named
+classes, but ids past them are reserved for nominal classes, and
+`DifferentIndividuals(a, b)` adds `{a} ⊓ {b} → ⊥` afterwards. The helper could
+alias `{a}` and its complement `{b}`, giving a spurious clash and a **false
+positive** subsumption. At default settings the label heuristic masked it; with
+`RUSTDL_LABEL_HEURISTIC=0` three ORE ontologies carried 405–1225 false pairs
+each. Fixed unconditionally.
+
+### Fixed — the wedge never generated an inverse-role `≥n` (#190, #206)
+
+A plain `A ⊑ ≥2 q.D` with `q` declared the inverse of `p` fired once, generated
+nothing, and the wedge trusted the resulting `Sat`. So `A ⊑ ≥2 q.D ⊓ ≤1 q.D`
+came back satisfiable, reported complete. Inverse `≥n` now generates
+successors the same way `∃R⁻` does.
+
+### Fixed — `InverseFunctional(p)` was missed through declared inverses and sub-roles (#207, #208, #209, #210)
+
+The derived `≤1 p⁻` was only emitted when the `≥2` generator was written on
+`p⁻` itself. A `≥2` on a role that equals or is below `p⁻` is now recognised,
+whether through `InverseObjectProperties`, `SymmetricObjectProperty`,
+`EquivalentObjectProperties`, sub-roles, or chains of these. The narrower
+`∃`-generator widening, which would bring back known 19–47× slowdowns, is
+still deliberately not done.
+
+### Fixed — per-query `sat` and Layer-A-off `classify` missed sub-role `≤1` clashes (#211, #212)
+
+- The main tableau's role matching now consults the signed role closure
+  (`RUSTDL_TABLEAU_SIGNED_ROLES`). This fixes `sat` / `is_class_satisfiable`
+  and classify with the wedge off.
+- Conversion now emits the entailed `∃s.⊤ ⊑ ≤1 s` for a `≥2`-bearing
+  sub-role `s` of a `≤1`-bound role (`RUSTDL_SUB_ROLE_FUNCTIONAL_MAX`). This
+  fixes classify without Layer A.
+
+### Fixed — `∀` over a transitive role (and general role chains) missed in the main tableau (#213, #215, #216, #217)
+
+- The role-chain rule only looked forward from a chain's head, so an edge
+  completing a chain further down was never composed. `Transitive(r)` with
+  `A ⊑ ∃r.∃r.¬D ⊓ ∀r.D` came back satisfiable, reported complete. The rule now
+  also fires from the chain's middle (`RUSTDL_TABLEAU_CHAIN_MIDDLE`).
+- Chain legs now also consult the signed role closure. This catches, for
+  example, a sub-role of a declared inverse.
+
+### Fixed — a timed-out class satisfiability check was reported complete (#218, #219)
+
+When classify's per-class satisfiability check was cut (by deadline, by a
+search give-up, or by the node cap on the unbounded path), the class was kept
+as satisfiable with nothing recorded. It is now recorded as an undecided
+`(c, c)` pair, so `incomplete` is set (`RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE`).
+
+### Added — `wedge_hierarchy_blind` (#214, #220, #221)
+
+`classify --json` has a new field `wedge_hierarchy_blind`, with a matching
+Python getter `Classification.wedge_hierarchy_blind`. It is `true` when the
+wedge ran without its role-hierarchy matching over a non-trivial role
+hierarchy. That happens when Layer A is off, either by
+`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` or because the role closure exceeded
+`RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`.
+
+When the field is set:
+- entailments needing sub-role, inverse or symmetric reasoning may be missing;
+- `completeness_guaranteed` is false;
+- the CLI and Python emit a warning.
+
+It deliberately does **not** set `incomplete`, which still means only "a
+deadline fired" (`RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND`).
+
+### Fixed — wedge-off classify never tested same-tier primitive super-classes (#192, #222)
+
+With the wedge off there are no labels, so the same-tier sweep had no
+candidates. A subsumption between two classes in the same tier whose
+super-class is primitive was therefore never tested. #192's example is
+`Reflexive(r)` + `Functional(r)` + `A ⊑ ∃r.B`, which missed `A ⊑ B`.
+
+The main tableau's per-class model labels now nominate candidates, and each one
+is still verified before it is reported (`RUSTDL_CLASSIFY_TABLEAU_LABELS`).
+
 ## [0.4.36] — 2026-10-05
 
 ### Fixed — a reflexive role's contradiction was not read as an inconsistency (#194, #197)

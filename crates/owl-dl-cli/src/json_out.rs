@@ -122,6 +122,12 @@ pub(crate) struct ClassifyJson {
     /// broader thing, and `incomplete == false` implies nothing about
     /// completeness on its own.
     pub(crate) completeness_guaranteed: bool,
+    /// #214: the wedge decided pairs with Layer A off (by flag, or above the
+    /// role-closure cost cap) over a non-trivial role hierarchy, so entailments
+    /// needing sub-role, inverse or symmetric reasoning may be missing.
+    /// A SEPARATE field for the same reason as `consistency_undetermined`: no
+    /// deadline fired, and `incomplete` means exactly that.
+    pub(crate) wedge_hierarchy_blind: bool,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
@@ -311,10 +317,11 @@ pub(crate) fn build_classify_json(
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
         consistent: !stats.inconsistent,
-        incomplete: h.incomplete(),
+        incomplete: stats.timed_out_pairs > 0,
         consistency_undetermined: stats.consistency_undetermined && !stats.inconsistent,
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
+        wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,

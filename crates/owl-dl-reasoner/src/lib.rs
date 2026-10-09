@@ -2902,20 +2902,21 @@ pub fn unsat_probe_cut_incomplete_enabled() -> bool {
     std::env::var_os("RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE").is_none_or(|v| v != "0")
 }
 
-/// Whether classify reports `incomplete` when its wedge ran blind to a
-/// non-trivial role hierarchy (#214, `RUSTDL_LAYER_A_OFF_INCOMPLETE`,
-/// **default ON**, `=0` reverts).
+/// Whether classify records [`crate::classify::ClassificationStats::wedge_hierarchy_blind`]
+/// (#214, `RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND`, **default ON**, `=0` reverts).
 ///
-/// With Layer A off (by flag, or above `layer_a_affordable`'s cost cap) the
-/// wedge matches role ids exactly, so its trusted `Sat` can silently miss
-/// entailments that need sub-role, inverse or symmetric reasoning (#214's
-/// probes: disjoint roles via a sub-role, symmetry on a super-role, …).
-/// Reporting only: no answer changes. Measured on the 394 ORE ontologies with
-/// ≥100 role-hierarchy axioms, it newly flags 8, all of which were in fact
-/// complete against Konclude, so on the corpus it is conservative.
+/// With Layer A off (by `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`, or above
+/// `layer_a_affordable`'s cost cap) the wedge matches role ids exactly, so its
+/// trusted `Sat` can silently miss entailments that need sub-role, inverse or
+/// symmetric reasoning (#214's probes: disjoint roles via a sub-role, symmetry
+/// on a super-role, …). The signal is a SEPARATE field, not `incomplete`, which
+/// keeps meaning "a deadline fired"; `completeness_guaranteed()` is false when
+/// it is set. Reporting only: no answer changes. On the 394 ORE ontologies with
+/// ≥100 role-hierarchy axioms it is set on 26 (the Layer-A-capped ones), and
+/// the 8 of those with no timed-out pair were in fact complete against Konclude.
 #[must_use]
-pub fn layer_a_off_incomplete_enabled() -> bool {
-    std::env::var_os("RUSTDL_LAYER_A_OFF_INCOMPLETE").is_none_or(|v| v != "0")
+pub fn report_wedge_hierarchy_blind_enabled() -> bool {
+    std::env::var_os("RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND").is_none_or(|v| v != "0")
 }
 
 /// Minimum unsatisfiable-class fraction, in PER MILLE, for the expensive

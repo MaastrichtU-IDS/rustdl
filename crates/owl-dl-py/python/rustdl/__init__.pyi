@@ -30,8 +30,13 @@ class Classification:
         ...
     @property
     def complete(self) -> bool:
-        """True iff no pair timed out and the role hierarchy was not too large
-        for hierarchy-aware matching (the hierarchy is exact)."""
+        """True iff no pair timed out (the hierarchy is exact)."""
+        ...
+    @property
+    def wedge_hierarchy_blind(self) -> bool:
+        """True iff the wedge ran without role-hierarchy matching (Layer A
+        off) over a non-trivial role hierarchy, so entailments needing
+        sub-role, inverse or symmetric reasoning may be missing (#214)."""
         ...
     def is_subclass(self, sub: str, sup: str) -> bool:
         """True iff `sub ⊑ sup` is entailed."""

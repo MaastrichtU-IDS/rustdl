@@ -1,0 +1,9 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/t9>
+Declaration(Class(:A)) Declaration(Class(:B))
+Declaration(ObjectProperty(:q)) Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:v))
+DisjointObjectProperties(:r :q) SubObjectPropertyOf(:s :r) SubObjectPropertyOf(:t :q)
+SubObjectPropertyOf(:s :v) SubObjectPropertyOf(:t :v)
+SubClassOf(:A ObjectIntersectionOf(ObjectSomeValuesFrom(:s :B) ObjectSomeValuesFrom(:t :B) ObjectMaxCardinality(1 :v)))
+)

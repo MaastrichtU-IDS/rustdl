@@ -107,14 +107,15 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             IncompleteClassificationWarning,
             stacklevel=3,
         )
-    elif not result.complete:
-        # #214: no pair timed out, but the role hierarchy was too large for the
-        # wedge's hierarchy-aware matching, so completeness is not guaranteed.
+    if result.wedge_hierarchy_blind:
+        # #214: the wedge ran without its role-hierarchy matching (Layer A off),
+        # so completeness is not guaranteed even with no timeout.
         _warnings.warn(
-            "the role hierarchy was too large for hierarchy-aware matching, so "
-            "entailments that need sub-role, inverse or symmetric reasoning may be "
-            "missing. It is still sound (no false subsumptions). Raise "
-            "RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE to trade time for them.",
+            "the classification ran without role-hierarchy matching (Layer A is "
+            "off: RUSTDL_CLASSIFY_ROLE_HIERARCHY=0, or the role closure exceeded "
+            "RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE), so entailments that need "
+            "sub-role, inverse or symmetric reasoning may be missing. It is still "
+            "sound (no false subsumptions); check result.wedge_hierarchy_blind.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )

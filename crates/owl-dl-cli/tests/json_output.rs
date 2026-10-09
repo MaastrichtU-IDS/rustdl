@@ -836,3 +836,39 @@ fn prove_json_not_entailed() {
     assert!(v["proof"].is_null());
     assert!(v["justification_fallback"].is_null());
 }
+
+/// #214: with Layer A off the wedge is blind to the role hierarchy. That is
+/// reported in its own field; `incomplete` keeps meaning "a deadline fired".
+/// The fixture is #214's probe t9 (`HermiT`: `A ≡ Nothing`).
+#[test]
+fn classify_reports_a_hierarchy_blind_wedge_in_its_own_field() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/role_hierarchy_blind.ofn"
+    );
+    let run = |layer_a: &str| {
+        let out = rustdl()
+            .args(["classify", "--json", "--pair-timeout-ms", "0", fixture])
+            .env("RUSTDL_CLASSIFY_ROLE_HIERARCHY", layer_a)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let blind = run("0");
+    assert_eq!(blind["wedge_hierarchy_blind"], true);
+    assert_eq!(blind["incomplete"], false, "no deadline fired");
+    assert_eq!(blind["completeness_guaranteed"], false);
+
+    // Layer A on (the default): not blind, and the clash is found.
+    let seeing = run("1");
+    assert_eq!(seeing["wedge_hierarchy_blind"], false);
+    assert_eq!(
+        seeing["unsatisfiable"],
+        serde_json::json!(["http://ex.org/A"])
+    );
+}

@@ -2902,6 +2902,22 @@ pub fn unsat_probe_cut_incomplete_enabled() -> bool {
     std::env::var_os("RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE").is_none_or(|v| v != "0")
 }
 
+/// Whether classify reports `incomplete` when its wedge ran blind to a
+/// non-trivial role hierarchy (#214, `RUSTDL_LAYER_A_OFF_INCOMPLETE`,
+/// **default ON**, `=0` reverts).
+///
+/// With Layer A off (by flag, or above `layer_a_affordable`'s cost cap) the
+/// wedge matches role ids exactly, so its trusted `Sat` can silently miss
+/// entailments that need sub-role, inverse or symmetric reasoning (#214's
+/// probes: disjoint roles via a sub-role, symmetry on a super-role, …).
+/// Reporting only: no answer changes. Measured on the 394 ORE ontologies with
+/// ≥100 role-hierarchy axioms, it newly flags 8, all of which were in fact
+/// complete against Konclude, so on the corpus it is conservative.
+#[must_use]
+pub fn layer_a_off_incomplete_enabled() -> bool {
+    std::env::var_os("RUSTDL_LAYER_A_OFF_INCOMPLETE").is_none_or(|v| v != "0")
+}
+
 /// Minimum unsatisfiable-class fraction, in PER MILLE, for the expensive
 /// consistency-probe layers to run. **Default 2 (= 0.2%).** `0` disables the gate.
 ///
@@ -3876,6 +3892,12 @@ fn build_defined_exists_bodies(
 }
 
 impl HyperCache {
+    /// Layer A is off and the role hierarchy relates at least one role to
+    /// another (the signed closure is larger than the reflexive one).
+    pub(crate) fn hierarchy_blind(&self) -> bool {
+        !self.layer_a && self.sub_roles.signed_max_closure() > 1
+    }
+
     /// Clausify `internal` and pre-compute the `¬sup` expansions once.
     pub(crate) fn build(internal: &InternalOntology) -> Self {
         use owl_dl_core::ir::ClassId;
@@ -8428,6 +8450,13 @@ impl PreparedOntology {
     /// wedge is disabled. `Subsumed` is sound for any ontology;
     /// `NotSubsumed` is sound only under [`hyper_trust_sat_enabled`]
     /// (HF5) — the caller decides whether to trust it.
+    /// #214: a wedge exists and runs with Layer A OFF over a non-trivial role
+    /// hierarchy (some role signed-included in another), so its exact-id matching
+    /// cannot see role-hierarchy reasoning.
+    pub(crate) fn wedge_hierarchy_blind(&self) -> bool {
+        self.hyper.as_ref().is_some_and(HyperCache::hierarchy_blind)
+    }
+
     pub(crate) fn hyper_decide(
         &self,
         sub: owl_dl_core::ir::ClassId,

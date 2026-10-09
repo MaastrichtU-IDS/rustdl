@@ -407,6 +407,13 @@ pub struct ClassificationStats {
     /// (#204 review: a pigeonhole over `TBox`-only individuals read
     /// `consistent: true, incomplete: false`).
     pub consistency_undetermined: bool,
+    /// #214: the wedge decided pairs with Layer A OFF (`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`,
+    /// or above `layer_a_affordable`'s cap) on an ontology whose role hierarchy is
+    /// non-trivial. Its exact-id role matching cannot see sub-role, inverse or
+    /// symmetric reasoning, and its trusted `Sat` can then miss an entailment
+    /// silently, so completeness is not guaranteed. Reported via
+    /// [`Classification::incomplete`] (`RUSTDL_LAYER_A_OFF_INCOMPLETE`).
+    pub wedge_hierarchy_blind: bool,
     /// Axioms dropped during conversion, tallied by diagnostic kind (issue
     /// #43). Carried here so a caller that wants the tally does NOT have to
     /// re-run `convert_ontology` to get it: the CLI used to, which cost a
@@ -906,6 +913,16 @@ impl Classification {
     /// configured deadline — the flagged-undecided set. A timed-out pair is
     /// reported "not subsumed" but recorded here, so a consumer knows
     /// exactly which subsumptions are unverified (the anytime contract).
+    /// Whether the result may be missing entailments the run could not rule
+    /// out: some pair or class probe was cut (`timed_out_pairs > 0`), or the
+    /// wedge ran blind to a non-trivial role hierarchy (#214,
+    /// [`ClassificationStats::wedge_hierarchy_blind`]). This is what
+    /// `classify --json` reports as `incomplete`.
+    #[must_use]
+    pub fn incomplete(&self) -> bool {
+        self.stats.timed_out_pairs > 0 || self.stats.wedge_hierarchy_blind
+    }
+
     #[must_use]
     pub fn undecided_pairs(&self) -> Vec<(&str, &str)> {
         self.stats
@@ -960,6 +977,7 @@ impl Classification {
         // declarations. That is an engine property, not a clause count.
         matches!(self.stats.fragment, FragmentClassification::PureEl)
             && self.stats.timed_out_pairs == 0
+            && !self.stats.wedge_hierarchy_blind
             && !self.stats.consistency_undetermined
     }
 }
@@ -1494,6 +1512,7 @@ fn classify_internal_with_timeout_impl(
         fragment: analyze_fragment(internal),
         per_class_safe_count: prepared.per_class_safe_count(),
         per_class_unsafe_count: prepared.per_class_unsafe_count(),
+        wedge_hierarchy_blind: wedge_hierarchy_blind(&prepared),
         ..ClassificationStats::default()
     };
     let cut_probes = std::sync::Mutex::new(Vec::new());
@@ -3457,6 +3476,11 @@ fn unsat_probe_cap() -> Option<std::time::Duration> {
         .map(std::time::Duration::from_millis)
 }
 
+/// #214: the wedge will decide pairs blind to a non-trivial role hierarchy.
+fn wedge_hierarchy_blind(prepared: &PreparedOntology) -> bool {
+    crate::layer_a_off_incomplete_enabled() && prepared.wedge_hierarchy_blind()
+}
+
 /// Record that class `i`'s per-class unsat probe was cut (deadline or
 /// `NoVerdict`) and defaulted to "satisfiable" (#218).
 fn record_cut_probe(cut: &std::sync::Mutex<Vec<usize>>, i: usize) {
@@ -3866,6 +3890,7 @@ fn classify_top_down_internal_impl(
         saturate_wall_ms: saturate_ms,
         precheck_wall_ms: precheck_ms,
         prepare_wall_ms: prepare_ms,
+        wedge_hierarchy_blind: wedge_hierarchy_blind(&prepared),
         ..ClassificationStats::default()
     };
 

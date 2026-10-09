@@ -2887,6 +2887,21 @@ pub fn classify_consistency_probe_ms() -> u64 {
         .unwrap_or(200)
 }
 
+/// Whether classify flags a CUT per-class unsat probe as incomplete (#218,
+/// `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE`, **default ON**, `=0` reverts).
+///
+/// A probe cut by its deadline (or bailing with `NoVerdict`) keeps the class
+/// as satisfiable, which is sound, but the class may in fact be unsatisfiable.
+/// Without this, nothing recorded the cut, so `classify --json` could report
+/// a genuinely unsat class as satisfiable with `incomplete: false`. Each cut
+/// adds a `(c, c)` undecided marker to `timed_out_pairs`. Reporting only: no
+/// answer changes, though `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`'s `ABox` probe
+/// may now be admitted earlier on such runs.
+#[must_use]
+pub fn unsat_probe_cut_incomplete_enabled() -> bool {
+    std::env::var_os("RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE").is_none_or(|v| v != "0")
+}
+
 /// Minimum unsatisfiable-class fraction, in PER MILLE, for the expensive
 /// consistency-probe layers to run. **Default 2 (= 0.2%).** `0` disables the gate.
 ///

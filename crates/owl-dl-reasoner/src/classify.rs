@@ -1496,6 +1496,7 @@ fn classify_internal_with_timeout_impl(
         per_class_unsafe_count: prepared.per_class_unsafe_count(),
         ..ClassificationStats::default()
     };
+    let cut_probes = std::sync::Mutex::new(Vec::new());
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -1505,14 +1506,15 @@ fn classify_internal_with_timeout_impl(
             } else if let Some(timeout) = unsat_probe_budget(per_pair_timeout) {
                 let deadline = Instant::now() + timeout;
                 // A timed-out unsat probe defaults to "satisfiable" —
-                // sound: if the class actually were unsat the timeout
-                // would have flagged it via saturation already, and
-                // assuming sat here can never cause us to claim a
-                // false subsumption later.
-                let sat = prepared
-                    .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))?
-                    .unwrap_or(true);
-                Ok((i, sat, false))
+                // sound, since assuming sat can never cause a false
+                // subsumption later. But the class may be unsat, so the cut is
+                // recorded and flags the result incomplete (#218).
+                let verdict = prepared
+                    .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))?;
+                if verdict.is_none() {
+                    record_cut_probe(&cut_probes, i);
+                }
+                Ok((i, verdict.unwrap_or(true), false))
             } else {
                 let sat = prepared.decide_classify(move |pool| pool.atomic(class_id))?;
                 Ok((i, sat, false))
@@ -1520,6 +1522,7 @@ fn classify_internal_with_timeout_impl(
         })
         .collect();
     let unsat_probe_results = unsat_probe_results?;
+    flag_cut_probes(cut_probes, &mut stats);
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
     let mut satisfiable: Vec<bool> = vec![false; n];
     for (i, is_sat, used_saturation) in unsat_probe_results {
@@ -1880,7 +1883,8 @@ fn probe_says_inconsistent(
         && has_abox_axioms(internal);
     // `extra_admission` is the #128 early-exit arm: at the pre-walk call site
     // `unsatisfiable_idxs` is still empty (the unsat classes are found BY the walk)
-    // and `timed_out_pairs` is still 0, so BOTH standing admissions reject and the
+    // and `timed_out_pairs` counts only cut unsat probes (#218), so absent those
+    // BOTH standing admissions reject and the
     // probe returns before doing any work. The caller supplies its own evidence
     // there — a large `NoVerdict` share of the label cache, the same "did not look
     // long enough" species `incomplete_abox` already admits on. Always `false` at
@@ -3444,6 +3448,33 @@ fn unsat_probe_cap() -> Option<std::time::Duration> {
         .map(std::time::Duration::from_millis)
 }
 
+/// Record that class `i`'s per-class unsat probe was cut (deadline or
+/// `NoVerdict`) and defaulted to "satisfiable" (#218).
+fn record_cut_probe(cut: &std::sync::Mutex<Vec<usize>>, i: usize) {
+    if crate::unsat_probe_cut_incomplete_enabled() {
+        cut.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(i);
+    }
+}
+
+/// Fold cut unsat probes into the incompleteness signal (#218). A cut probe
+/// left a possibly-unsatisfiable class reported satisfiable, so the result is
+/// not complete. Each is recorded as a `(c, c)` marker, the same shape the
+/// global-deadline bail uses for "this class is undecided", which keeps the
+/// `undecided_pairs().len() == timed_out_pairs` invariant.
+fn flag_cut_probes(cut: std::sync::Mutex<Vec<usize>>, stats: &mut ClassificationStats) {
+    let mut cut = cut
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cut.sort_unstable();
+    for i in cut {
+        let c = u32::try_from(i).expect("class index fits in u32");
+        stats.timed_out_pairs += 1;
+        stats.timed_out_pair_ids.push((c, c));
+    }
+}
+
 /// The per-class budget the unsat probe should use: the pair budget, capped by
 /// [`unsat_probe_cap`] when set.
 fn unsat_probe_budget(per_pair: Option<std::time::Duration>) -> Option<std::time::Duration> {
@@ -4063,6 +4094,7 @@ fn classify_top_down_internal_impl(
     crate::rss_probe::probe("after_label_cache");
 
     let t_unsat_probe = Instant::now();
+    let cut_probes = std::sync::Mutex::new(Vec::new());
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -4160,7 +4192,12 @@ fn classify_top_down_internal_impl(
                     .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))
                 {
                     Ok(Some(s)) => s,
-                    Ok(None) | Err(crate::ReasonError::NoVerdict) => true,
+                    Ok(None) | Err(crate::ReasonError::NoVerdict) => {
+                        // Possibly unsat: recorded so the result is flagged
+                        // incomplete (#218).
+                        record_cut_probe(&cut_probes, i);
+                        true
+                    }
                     Err(other) => return Err(other),
                 };
                 Ok((i, sat, false))
@@ -4171,6 +4208,7 @@ fn classify_top_down_internal_impl(
         })
         .collect();
     let unsat_probe_results = unsat_probe_results?;
+    flag_cut_probes(cut_probes, &mut stats);
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
     for (i, is_sat, used_saturation) in unsat_probe_results {
         if used_saturation {

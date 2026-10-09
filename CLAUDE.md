@@ -1234,6 +1234,17 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     Canaries `crates/owl-dl-reasoner/tests/self_under_forall.rs` (6; 2 sabotages run, 2 caught
     at the predicted granularity), plus `examples/clause_stats_probe` because nothing surfaced
     `deferred`. See `docs/known-limitations/wedge-drops-self-under-forall.md`.
+  * **CORRECTED 2026-10-07 (#205) — the alias this entry calls "REFUTED" was REAL, against
+    NOMINAL class ids rather than named ones.** The clausifier reserves
+    `[num_classes, num_classes + num_individuals)` for nominal classes, and
+    `push_different_individuals_disjoint` adds `{a} ⊓ {b} → ⊥` AFTER the probe's fresh id is
+    chosen, so the floor `.max(num_classes)` let `Q` alias `{a}` and its complement alias `{b}`:
+    a spurious clash and a false-positive subsumption under `DifferentIndividuals`. Masked at
+    default settings by the label heuristic; live with `RUSTDL_LABEL_HEURISTIC=0` on
+    `ore_ont_13805`/`7668`/`7789` (1225/1207/405 FP closure pairs). Fixed by
+    `first_free_class_id` (floor at `num_classes + num_individuals`, and it now also scans
+    `AtMost`/`AtLeast` qualifiers). The original entry follows; its reasoning about NAMED ids
+    stands.
   * **`fresh_class_id` cannot alias a real class — REFUTED, do not spend time on it.**
     Every call site clamps `fresh_class_id(&base).index().max(num_classes)` and real
     ids are all `< num_classes`; and a qualifier that is not a named class goes through
@@ -2149,6 +2160,13 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > the wedge's symmetric / inverse / sub-role matching in `role_matches`, which the #193
 > `Asymmetric` clause relies on, is live only with this flag on and under the cap; above the
 > cap those matches revert to exact-id, which can only MISS.
+> **UPDATE 2026-10-09:** two of those misses are handled. (1) `≥2` on a sub-role of a `≤1`-bound
+> role: conversion emits the entailed `∃s.⊤ ⊑ ≤1 s` (`RUSTDL_SUB_ROLE_FUNCTIONAL_MAX`, #212), so
+> the exact-id wedge sees the clash. (2) The rest are now VISIBLE: `classify --json` reports
+> `wedge_hierarchy_blind: true` when the wedge ran with Layer A off over a non-trivial hierarchy
+> (`RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND`, #220/#221). That is a SEPARATE field; `incomplete` still
+> means only "a deadline fired". On ORE it is set on the 26 Layer-A-capped ontologies among the
+> 394 with ≥100 role axioms, and the 8 of those with no timed-out pair are in fact complete.
 > Externally reported: `Symmetric(p)` + `p ∘ q ⊑ q` + `A ≡ ∃p.Y ⊓ ∃q.Z` + `B ≡ ∃p.(Y ⊓ ∃q.Z)`
 > makes `A ≡ B`, and `classify` derived only `B ⊑ A` — the chain-only direction — with
 > `incomplete: false` and `dropped: {}`. Both peers derive it.
@@ -2270,6 +2288,9 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 > parser gap makes it live.** Also still open: `apply_role_chains` in the tableau compares raw role
 > ids with `==` instead of `edge_satisfies`, so it independently ignores symmetry, declared
 > inverses AND the sub-role hierarchy — matters for `subclass`/`sat`/`explain`/`realize`.
+> **SUPERSEDED 2026-10-09:** chain legs (`chain_leg_targets`) honour sub-roles and declared
+> inverses, and since #217 also the signed closure (`RUSTDL_TABLEAU_SIGNED_ROLES`); and the rule
+> now fires from a chain's MIDDLE as well as its head (#215, `RUSTDL_TABLEAU_CHAIN_MIDDLE`).
 >
 > Canaries `crates/owl-dl-reasoner/tests/symmetric_role_chain.rs` (7, incl. 3 FP guards, a pinned
 > residual, and `the_fix_is_opt_in_and_the_default_still_misses` so a future flip cannot happen
@@ -2853,6 +2874,52 @@ matters most is an unsound *positive*. See `docs/handoff-2026-06-03-snapshot-cac
 current engine state, characterized MISSED, open levers, and dead-ends;
 `docs/model-caching-plan.md` / `docs/moms-plan.md` explain why model caching is
 a deliberately un-integrated Phase-1 stub.
+
+## State of play — 2026-10-09, after v0.4.36 (read this first)
+
+**Eleven PRs since v0.4.36 (#205–#222), all correctness or signal fixes, all on `main` and not
+yet released.** Every one passed the FP=0 net (all closures exact), a two-arm ORE sweep with the
+DIFFERs adjudicated against Konclude (0 FP everywhere), and a Fable review. Each behaviour change
+has its own default-ON flag, pinned in `flag_defaults.rs`; `=0` reverts it.
+
+| PR | issue | what changed | flag |
+|---|---|---|---|
+| #205 | — | probe helper ids aliased NOMINAL class ids → FP under `DifferentIndividuals` (see the correction in the `fresh_class_id` entry) | none (soundness) |
+| #206 | #190 | the wedge now GENERATES inverse-role `≥n` successors; it used to skip them and end in a trusted `Sat` | none |
+| #208 | #207 | IF admission gate sees `≥2` spelled through a declared inverse, or `SymmetricObjectProperty` | none |
+| #210 | #209 | same gate follows the signed sub-role closure (inverse chains, equivalences, sub-roles) | none |
+| #212 | #211 | main tableau `edge_satisfies` consults the signed closure; conversion emits `∃s.⊤ ⊑ ≤1 s` for a `≥2`-bearing sub-role of a `≤1`-bound role | `RUSTDL_TABLEAU_SIGNED_ROLES`, `RUSTDL_SUB_ROLE_FUNCTIONAL_MAX` |
+| #215 | #213 | tableau role-chain rule also fires from the chain's middle (`∀` over a transitive role was missed by edge order) | `RUSTDL_TABLEAU_CHAIN_MIDDLE` |
+| #217 | #216 | chain legs consult the signed closure | `RUSTDL_TABLEAU_SIGNED_ROLES` |
+| #219 | #218 | a cut per-class unsat probe (deadline, `NoVerdict`, or node cap on the unbounded arm) is recorded as an undecided `(c, c)` marker | `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` |
+| #220/#221 | #214 | `wedge_hierarchy_blind` (JSON field, Python getter, stats): the wedge ran with Layer A off over a non-trivial role hierarchy | `RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND` |
+| #222 | #192 | with no wedge label, the main tableau's per-class model labels nominate same-tier candidates (all verified) | `RUSTDL_CLASSIFY_TABLEAU_LABELS` |
+
+**Contract reminder, re-learned in #220/#221:** `incomplete` in `classify --json` means ONLY "a
+deadline fired". Every other "not guaranteed complete" cause gets its own field
+(`trusted_sat_refutations`, `consistency_undetermined`, `completeness_guaranteed`,
+`wedge_hierarchy_blind`). #220 folded a non-deadline cause into `incomplete` and had to be undone
+in #221. Read `json_out.rs`'s field docs before touching that struct.
+
+**Open follow-ups recorded but not started:** realize's pseudo-model prune shares the
+hierarchy-blind wedge and has no signal for it; counting spread over two DIFFERENT sub-roles of a
+bound role still relies on Layer A; the Protégé plugin reads only `incomplete`, so the new
+`wedge_hierarchy_blind` signal is not surfaced there.
+
+**Method notes this round:**
+- **Sweep timeouts at 4-way parallelism were contention every time.** Across 9 sweeps, every
+  `ok → DNF` and every "1.5–2.5× slower" row was flat on a serial CPU-time recheck. Several ORE
+  ontologies burn 280–420 CPU-s in ~35 s of wall, so four in parallel starve each other past the
+  60 s cap. Recheck serially by CPU time before believing a sweep regression.
+- **A `/usr/bin/time` wrapped in a `2>/dev/null` measures nothing**: the redirect swallowed its
+  output. Use bash `time` with `TIMEFORMAT` and calibrate on one run first.
+- **`pkill -f <pattern>` can kill the shell running it** when the pattern appears in the command
+  line. Kill by exact process name (`pkill -x`) or by PID.
+- **When two PRs each add a field, their combination can trip a lint neither CI saw**: #212 and
+  #215 each added a cached bool to `TableauContext`, and together crossed
+  `clippy::struct_excessive_bools`.
+
+---
 
 ## State of play — v0.4.24 (2026-08-29) (read this first)
 

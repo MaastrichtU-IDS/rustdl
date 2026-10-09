@@ -1392,16 +1392,33 @@ fn chain_leg_targets(
     } else {
         (out, out_deps, inc, inc_deps)
     };
+    // #216: also accept an edge whose SIGNED reading is a sub-role of the leg,
+    // through the signed closure (#177) the hierarchy already carries. Read
+    // from `at`, an out-edge `role` is `role` and an in-edge is `role⁻`. The
+    // two checks above compose sub-roles and declared inverses only one way
+    // each, so `q ⊑ ri`, `ri ≡ r⁻` never let a `q`-in-edge serve as an
+    // `r`-leg. Same flag as `edge_satisfies`, whose #211 change this mirrors.
+    let signed = |seen: Role| {
+        ctx.signed_roles_active() && hier.is_some_and(|h| h.is_signed_sub(seen, position))
+    };
+    let as_seen = |role: RoleId, incoming: bool| {
+        if incoming {
+            Role::Inverse(role)
+        } else {
+            Role::Named(role)
+        }
+    };
+    let fwd_incoming = position.is_inverse();
     let mut targets: Vec<(NodeId, DepSet)> = fwd
         .iter()
         .enumerate()
-        .filter(|(_, (role, _))| forward_ok(*role))
+        .filter(|(_, (role, _))| forward_ok(*role) || signed(as_seen(*role, fwd_incoming)))
         .map(|(pos, (_, t))| (*t, fwd_deps[pos].clone()))
         .collect();
     targets.extend(
         rev.iter()
             .enumerate()
-            .filter(|(_, (role, _))| reverse_ok(*role))
+            .filter(|(_, (role, _))| reverse_ok(*role) || signed(as_seen(*role, !fwd_incoming)))
             .map(|(pos, (_, t))| (*t, rev_deps[pos].clone())),
     );
     targets

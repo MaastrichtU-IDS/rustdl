@@ -8572,6 +8572,26 @@ impl PreparedOntology {
     where
         F: FnOnce(&mut ConceptPool) -> ConceptId,
     {
+        self.decide_classify_raw(build_test_concept)
+        // `None` was previously impossible with no deadline set (search always
+        // returned `Some(_)`), but a live-node cap trip (#35 v4 safety net) can
+        // now legitimately yield `None` even here. Treat it the same as the
+        // deadline-bounded callers already do: "no verdict" ⇒ satisfiable ⇒
+        // not-an-instance/not-subsumed — a sound under-approximation, never a
+        // panic.
+            .map(|opt| opt.unwrap_or(true))
+    }
+
+    /// [`Self::decide_classify`] without folding an inconclusive `None` (a
+    /// `RUSTDL_MAX_NODES` trip) into "satisfiable", for callers that must
+    /// RECORD the inconclusive verdict (#218).
+    pub(crate) fn decide_classify_raw<F>(
+        &self,
+        build_test_concept: F,
+    ) -> Result<Option<bool>, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
         let empty = Abox::default();
         let abox = if self.abox_irrelevant_to_classify {
             &empty
@@ -8595,13 +8615,6 @@ impl PreparedOntology {
             None,
             build_test_concept,
         )
-        // `None` was previously impossible with no deadline set (search always
-        // returned `Some(_)`), but a live-node cap trip (#35 v4 safety net) can
-        // now legitimately yield `None` even here. Treat it the same as the
-        // deadline-bounded callers already do: "no verdict" ⇒ satisfiable ⇒
-        // not-an-instance/not-subsumed — a sound under-approximation, never a
-        // panic.
-        .map(|opt| opt.unwrap_or(true))
     }
 
     /// Like [`Self::decide`] but the search is bounded by `deadline`.

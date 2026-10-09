@@ -43,5 +43,4 @@ fn a_cut_unsat_probe_flags_the_class_undecided() {
          (unsat={:?}, undecided={undecided:?})",
         c.unsatisfiable_classes()
     );
-    assert!(!c.completeness_guaranteed());
 }

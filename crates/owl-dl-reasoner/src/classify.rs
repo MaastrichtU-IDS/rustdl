@@ -1509,6 +1509,10 @@ fn classify_internal_with_timeout_impl(
                 // sound, since assuming sat can never cause a false
                 // subsumption later. But the class may be unsat, so the cut is
                 // recorded and flags the result incomplete (#218).
+                // `Err(NoVerdict)` (a depth cap) still propagates via `?` here,
+                // aborting this driver, whereas `classify_top_down_internal`
+                // treats it as a cut. Pre-existing asymmetry, deliberately left
+                // alone by #218: this is the non-default driver.
                 let verdict = prepared
                     .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))?;
                 if verdict.is_none() {
@@ -1516,8 +1520,13 @@ fn classify_internal_with_timeout_impl(
                 }
                 Ok((i, verdict.unwrap_or(true), false))
             } else {
-                let sat = prepared.decide_classify(move |pool| pool.atomic(class_id))?;
-                Ok((i, sat, false))
+                // No deadline, but a `RUSTDL_MAX_NODES` trip still yields no
+                // verdict; record it like a deadline cut (#218).
+                let verdict = prepared.decide_classify_raw(move |pool| pool.atomic(class_id))?;
+                if verdict.is_none() {
+                    record_cut_probe(&cut_probes, i);
+                }
+                Ok((i, verdict.unwrap_or(true), false))
             }
         })
         .collect();
@@ -4202,8 +4211,13 @@ fn classify_top_down_internal_impl(
                 };
                 Ok((i, sat, false))
             } else {
-                let sat = prepared.decide_classify(move |pool| pool.atomic(class_id))?;
-                Ok((i, sat, false))
+                // No deadline, but a `RUSTDL_MAX_NODES` trip still yields no
+                // verdict; record it like a deadline cut (#218).
+                let verdict = prepared.decide_classify_raw(move |pool| pool.atomic(class_id))?;
+                if verdict.is_none() {
+                    record_cut_probe(&cut_probes, i);
+                }
+                Ok((i, verdict.unwrap_or(true), false))
             }
         })
         .collect();

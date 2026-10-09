@@ -109,6 +109,10 @@ use owl_dl_core::{
 ///
 /// All graph mutation goes through this type so the trail stays in
 /// sync.
+// The bools are per-context caches of independent env flags (read once,
+// because the rules that consult them are on the hot path), not a state
+// machine; grouping them would only move the count.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct TableauContext<'pool, 'tbox, 'hier> {
     pool: &'pool ConceptPool,

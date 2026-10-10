@@ -10,6 +10,13 @@ public final class RustdlJson {
         public int schema_version;
         public boolean consistent;
         public boolean incomplete;
+        /**
+         * The wedge decided pairs without its role-hierarchy matching on an ontology with a
+         * non-trivial role hierarchy (#214), so entailments needing sub-role, inverse or
+         * symmetric reasoning may be missing. Separate from {@code incomplete}, which means
+         * only "a deadline fired". Absent in output from rustdl before 0.4.37, read as false.
+         */
+        public boolean wedge_hierarchy_blind;
         public List<String> unsatisfiable;
         public List<List<String>> equivalent_groups;
         public List<List<String>> direct_subsumptions;

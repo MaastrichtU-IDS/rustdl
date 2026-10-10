@@ -1,0 +1,6 @@
+{ "schema_version": 1, "consistent": true, "incomplete": false,
+  "completeness_guaranteed": false, "trusted_sat_refutations": 0,
+  "wedge_hierarchy_blind": true,
+  "unsatisfiable": [],
+  "equivalent_groups": [],
+  "direct_subsumptions": [["http://ex/#Sub", "http://ex/#Sup"]] }

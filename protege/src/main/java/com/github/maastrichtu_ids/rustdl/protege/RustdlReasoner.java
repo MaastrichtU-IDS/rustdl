@@ -172,10 +172,7 @@ public class RustdlReasoner extends OWLReasonerBase {
             // KB, so we must know consistency before ever calling any of them.
             if ((wantHierarchy || wantAssertions || wantAnyNew) && classifyResult == null) {
                 classifyResult = RustdlProcess.classify(ofn, timeoutSec, pairTimeoutMs);
-                if (classifyResult.incomplete) {
-                    LOG.warning("rustdl reports an INCOMPLETE classification (some class pairs timed out); "
-                        + "the hierarchy is a sound under-approximation.");
-                }
+                for (String w : classifyWarnings(classifyResult)) LOG.warning(w);
                 rebuildIndices();
             }
             if (wantAssertions && realizeResult == null
@@ -229,6 +226,27 @@ public class RustdlReasoner extends OWLReasonerBase {
         } finally {
             if (ofn != null) try { Files.deleteIfExists(ofn); } catch (Exception ignored) {}
         }
+    }
+
+    /**
+     * The warnings a classify result warrants, one per signal. Each signal has its own
+     * message because they mean different things: {@code incomplete} says a deadline
+     * fired, {@code wedge_hierarchy_blind} says role-hierarchy reasoning was skipped.
+     * Either way the hierarchy stays sound and may miss subsumptions.
+     */
+    static List<String> classifyWarnings(RustdlJson.ClassifyJson c) {
+        List<String> out = new ArrayList<>();
+        if (c.incomplete) {
+            out.add("rustdl reports an INCOMPLETE classification (some class pairs timed out); "
+                + "the hierarchy is a sound under-approximation.");
+        }
+        if (c.wedge_hierarchy_blind) {
+            out.add("rustdl classified without role-hierarchy matching in its wedge engine "
+                + "(the role closure exceeded RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE, or "
+                + "RUSTDL_CLASSIFY_ROLE_HIERARCHY=0); subsumptions that need sub-role, inverse "
+                + "or symmetric reasoning may be missing. The hierarchy is a sound under-approximation.");
+        }
+        return out;
     }
 
     /** Ensure classify ran (lazy precompute for a supported query issued before precomputeInferences). */

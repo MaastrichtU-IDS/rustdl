@@ -30,6 +30,26 @@ public class RustdlProcessTest {
         assertEquals("http://ex/#Bad", c.unsatisfiable.get(0));
     }
 
+    @Test public void parsesWedgeHierarchyBlindAsItsOwnSignal() throws Exception {
+        RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_blind.json"));
+        assertTrue(c.wedge_hierarchy_blind);
+        assertFalse(c.incomplete);
+        // One warning, the blind one: no deadline fired, so the incomplete warning must not appear.
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(1, w.size());
+        assertTrue(w.get(0).contains("role-hierarchy"));
+        assertFalse(w.get(0).contains("timed out"));
+    }
+
+    @Test public void wedgeHierarchyBlindDefaultsFalseWhenAbsent() throws Exception {
+        // Output from rustdl before 0.4.37 has no such field.
+        RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_unsat.json"));
+        assertFalse(c.wedge_hierarchy_blind);
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(1, w.size());
+        assertTrue(w.get(0).contains("timed out"));
+    }
+
     @Test public void parsesConsistent() throws Exception {
         RustdlJson.ConsistentJson c = RustdlProcess.parseConsistent(fixture("inconsistent.json"));
         assertFalse(c.consistent);

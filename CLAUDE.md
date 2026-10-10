@@ -2901,10 +2901,20 @@ deadline fired". Every other "not guaranteed complete" cause gets its own field
 `wedge_hierarchy_blind`). #220 folded a non-deadline cause into `incomplete` and had to be undone
 in #221. Read `json_out.rs`'s field docs before touching that struct.
 
-**Open follow-ups recorded but not started:** realize's pseudo-model prune shares the
-hierarchy-blind wedge and has no signal for it; counting spread over two DIFFERENT sub-roles of a
-bound role still relies on Layer A; the Protégé plugin reads only `incomplete`, so the new
-`wedge_hierarchy_blind` signal is not surfaced there.
+**Follow-ups, as of 2026-10-10:**
+- **Protégé surfaces `wedge_hierarchy_blind`:** done in #225, as its own log warning. `incomplete`
+  keeps its deadline-only message.
+- **"realize's pseudo-model prune shares the hierarchy-blind wedge": WRONG, retracted.** The prune
+  reads `ConsistencyCache` (`realize_base_model_types` → `base_model_types`), not the classify
+  `HyperCache`. Its `build_seeded_engine` threads `with_sub_roles` UNCONDITIONALLY, so Layer A
+  and its closure cap never gate it. Measured: `realize --json` with the prune active and
+  `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` keeps `b:B` through a sub-role, `d:D` through a declared
+  inverse and `f:F` through a symmetric role. None of the three has an asserted type, so the
+  told-closure shortcut cannot explain them. Output is identical to `RUSTDL_PSEUDO_MODEL=0`.
+  No signal is needed. The prune's real, separate gap is the pre-model one recorded under
+  `witness_prune_active`.
+- **Counting spread over two DIFFERENT sub-roles of a bound role** still needs Layer A. Above the
+  cap that is no longer silent: `wedge_hierarchy_blind` reports it.
 
 **Method notes this round:**
 - **Sweep timeouts at 4-way parallelism were contention every time.** Across 9 sweeps, every

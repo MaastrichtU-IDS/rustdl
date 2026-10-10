@@ -174,8 +174,15 @@ enum Command {
         /// under-approximation: FP=0, real subsumptions may be missed).
         /// Composes with `--pair-timeout-ms`: each probe is cut at the
         /// smaller of the per-pair budget and the time left on the global
-        /// deadline. Use it for a hard "give me whatever you have in N ms"
-        /// bound on large or hard ontologies.
+        /// deadline.
+        ///
+        /// Parse time is charged against the budget, but parsing and
+        /// conversion cannot be interrupted. By default, once they have used
+        /// the budget up, saturation and preparation run unbounded so the run
+        /// still returns an answer: wall can then far exceed N (#162). Set
+        /// `RUSTDL_HARD_GLOBAL_DEADLINE=1` to hold them to the deadline too:
+        /// the run then ends near parse + conversion + N, and the answer may be
+        /// empty (always sound, flagged incomplete).
         #[arg(long, default_value_t = 0)]
         global_timeout_ms: u64,
         /// Deprecated no-op: top-down classification is now the

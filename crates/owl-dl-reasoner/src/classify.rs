@@ -1091,6 +1091,10 @@ fn prep_bounding_decision(call_instant: Instant, budget: std::time::Duration) ->
     if !crate::prep_deadline_enabled() {
         return (false, false);
     }
+    // Hard mode always bounds prep, so nothing is ever left unbounded to report.
+    if crate::hard_global_deadline_enabled() {
+        return (true, false);
+    }
     let within = Instant::now() < call_instant + budget;
     (within, !within)
 }
@@ -3716,7 +3720,12 @@ fn classify_top_down_internal_impl(
     // hierarchy, having paid the full prep wall. Once the budget is blown, run
     // the fixpoint unbounded — see `prep_bounding_active`.
     let prep_deadline = match global_deadline {
-        Some(gd) if crate::prep_deadline_enabled() && Instant::now() < gd => Some(gd),
+        Some(gd)
+            if crate::prep_deadline_enabled()
+                && (crate::hard_global_deadline_enabled() || Instant::now() < gd) =>
+        {
+            Some(gd)
+        }
         _ => None,
     };
     let t_saturate = Instant::now();
@@ -3736,12 +3745,14 @@ fn classify_top_down_internal_impl(
     // rows, where a smaller (already-blown) budget would have run prep unbounded and
     // returned the complete answer. Retry unbounded instead. This cannot lose
     // entailments: it replaces an empty partial closure with the full one.
-    let (closure, sat_aborted, prep_empty_retry) =
-        if sat_aborted && !closure_yields_something(&reported, &closure) {
-            (saturate(internal), false, true)
-        } else {
-            (closure, sat_aborted, false)
-        };
+    let (closure, sat_aborted, prep_empty_retry) = if sat_aborted
+        && !crate::hard_global_deadline_enabled()
+        && !closure_yields_something(&reported, &closure)
+    {
+        (saturate(internal), false, true)
+    } else {
+        (closure, sat_aborted, false)
+    };
 
     if sat_aborted {
         // The fixpoint was abandoned but left usable edges. Every derived edge is

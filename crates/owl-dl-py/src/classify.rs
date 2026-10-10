@@ -58,10 +58,11 @@ impl PyClassification {
         self.inner.stats().timed_out_pairs == 0
     }
 
-    /// True iff the global deadline ran out during preparation (conversion /
-    /// saturation), so only a partial saturation closure is reported: it may
-    /// be empty, and consistency was not checked (#162). Implies
-    /// `complete is False`. Only reachable with `RUSTDL_HARD_GLOBAL_DEADLINE=1`.
+    /// True iff the global deadline ran out during preparation (EL saturation
+    /// or building the prepared ontology), so only a partial saturation closure
+    /// is reported and consistency was not fully checked (#162). Implies
+    /// `complete is False`. Can fire at the default settings; with
+    /// `RUSTDL_HARD_GLOBAL_DEADLINE=1` the closure may also be empty.
     #[getter]
     fn prep_timed_out(&self) -> bool {
         self.inner.stats().prep_timed_out

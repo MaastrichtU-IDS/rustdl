@@ -36,8 +36,8 @@ class Classification:
     @property
     def prep_timed_out(self) -> bool:
         """True iff the global deadline ran out during preparation, so only a
-        partial (possibly empty) saturation closure is reported and consistency
-        was not checked (#162). Implies `complete is False`."""
+        partial saturation closure is reported and consistency was not fully
+        checked (#162). Implies `complete is False`."""
         ...
     @property
     def consistency_undetermined(self) -> bool:

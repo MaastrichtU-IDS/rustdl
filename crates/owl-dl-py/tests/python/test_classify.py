@@ -129,7 +129,9 @@ def test_prep_timed_out_is_its_own_signal(tmp_path, monkeypatch):
     ]
     assert len(msgs) == 1 and "preparation" in msgs[0], msgs
 
-    monkeypatch.setenv("RUSTDL_HARD_GLOBAL_DEADLINE", "0")
-    r = rustdl.classify(str(p), global_timeout_ms=1)
+    # No budget: nothing can be cut. (Not "1 ms, hard mode off": whether that
+    # bounds saturation depends on host speed, see the #230 review.)
+    monkeypatch.delenv("RUSTDL_HARD_GLOBAL_DEADLINE")
+    r = rustdl.classify(str(p), global_timeout_ms=0)
     assert r.prep_timed_out is False
     assert r.is_subclass("http://ex#A0", "http://ex#C0")

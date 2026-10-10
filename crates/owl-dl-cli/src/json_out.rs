@@ -84,13 +84,15 @@ pub(crate) struct ClassifyJson {
     /// A class pair hit a DEADLINE and was recorded as not-subsumed. Reports
     /// only that; it does NOT cover the `trust_sat` risk below.
     pub(crate) incomplete: bool,
-    /// #162: the global deadline ran out during PREPARATION (conversion /
-    /// saturation), so only a partial saturation closure is reported. It may be
-    /// empty, and the inconsistency pre-check did not run. Implies `incomplete`;
-    /// a separate field because it says the whole answer is partial, not that
-    /// some class pairs were cut. Reachable only with
-    /// `RUSTDL_HARD_GLOBAL_DEADLINE=1`: by default a spent budget lets
-    /// preparation finish unbounded.
+    /// #162: the global deadline ran out during PREPARATION (EL saturation or
+    /// building the prepared ontology; conversion is never cut), so only a
+    /// partial saturation closure is reported and consistency was not fully
+    /// checked. Implies `incomplete`; a separate field because it says the whole
+    /// answer is partial, not that some class pairs were cut. Set at the default
+    /// whenever the budget is still meetable when prep bounding is decided. By
+    /// default a budget already spent at that point leaves prep unbounded, and an
+    /// empty partial closure is re-run unbounded; `RUSTDL_HARD_GLOBAL_DEADLINE=1`
+    /// removes both fallbacks, so there the closure may be empty.
     pub(crate) prep_timed_out: bool,
     /// Issue #66: pairs concluded NOT SUBSUMED from the wedge's own `Sat`
     /// verdict, on an ontology OUTSIDE the fragment where that verdict is
@@ -326,8 +328,8 @@ pub(crate) fn build_classify_json(
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
         consistent: !stats.inconsistent,
-        incomplete: stats.timed_out_pairs > 0,
-        prep_timed_out: stats.prep_timed_out,
+        incomplete: deadline_flags(&stats).0,
+        prep_timed_out: deadline_flags(&stats).1,
         consistency_undetermined: stats.consistency_undetermined && !stats.inconsistent,
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
@@ -337,6 +339,13 @@ pub(crate) fn build_classify_json(
         direct_subsumptions,
         dropped,
     }
+}
+
+/// `(incomplete, prep_timed_out)`: a deadline fired anywhere, and it fired
+/// during preparation. A cut preparation counts as one timed-out pair, so the
+/// second implies the first but not the converse.
+fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool) {
+    (stats.timed_out_pairs > 0, stats.prep_timed_out)
 }
 
 #[must_use]
@@ -891,6 +900,28 @@ mod tests {
     use horned_owl::model::RcStr;
     use horned_owl::ontology::set::SetOntology;
     use std::io::Cursor;
+
+    /// A pair cut and a preparation cut both set `incomplete`; only the second
+    /// sets `prep_timed_out`. (The end-to-end test in `json_output.rs` cannot
+    /// make a pair time out deterministically, so it sees the two co-vary.)
+    #[test]
+    fn a_pair_cut_is_incomplete_without_prep_timed_out() {
+        let pair_cut = owl_dl_reasoner::ClassificationStats {
+            timed_out_pairs: 3,
+            ..Default::default()
+        };
+        assert_eq!(deadline_flags(&pair_cut), (true, false));
+        let prep_cut = owl_dl_reasoner::ClassificationStats {
+            timed_out_pairs: 1,
+            prep_timed_out: true,
+            ..Default::default()
+        };
+        assert_eq!(deadline_flags(&prep_cut), (true, true));
+        assert_eq!(
+            deadline_flags(&owl_dl_reasoner::ClassificationStats::default()),
+            (false, false)
+        );
+    }
 
     fn classify_ofn(src: &str) -> owl_dl_reasoner::Classification {
         let (onto, _): (SetOntology<RcStr>, _) = read_ofn(

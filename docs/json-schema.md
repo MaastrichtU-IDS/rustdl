@@ -17,10 +17,14 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 the hierarchy is sound (no false subsumptions) but may miss real ones.
 
 `prep_timed_out` = the `--global-timeout-ms` budget ran out during preparation
-(conversion / saturation), so only a partial saturation closure is reported. It
-may be empty, and consistency was not checked (`consistency_undetermined` is set
-too). Implies `incomplete`. Only reachable with `RUSTDL_HARD_GLOBAL_DEADLINE=1`;
-by default a spent budget lets preparation finish unbounded (#162).
+(EL saturation or building the prepared ontology; parsing and conversion are
+never cut), so only a partial saturation closure is reported and consistency was
+not fully checked (`consistency_undetermined` is normally set too). Implies
+`incomplete`. It can fire at the default settings, whenever the budget is still
+meetable when prep bounding is decided. By default a budget already spent at
+that point leaves preparation unbounded, and an empty partial closure is re-run
+unbounded; `RUSTDL_HARD_GLOBAL_DEADLINE=1` removes both fallbacks, so there the
+closure may be empty (#162).
 
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where

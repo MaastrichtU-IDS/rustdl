@@ -7,6 +7,18 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **Told definition matching (#139), `RUSTDL_TOLD_DEFINITION_MATCH`, default ON (`=0` reverts).**
+  A conversion pass that derives `A ⊑ D` when `A` asserts every conjunct of a definition
+  `D ≡ X₁ ⊓ … ⊓ Xₙ`, matching complex conjuncts by interned identity (through `A`'s told
+  superclasses, to a fixpoint). Sound by construction: every emitted axiom is entailed. Closes
+  the last 3 misses on #139's PMD core ontology (`PMD_0010100 ⊑ PMD_0020210` and its two
+  superclasses), which needed only `SubClassOf(A, =1 r.P)` against `EquivalentClasses(D, =1 r.P)`
+  but were left to a tableau probe that did not finish in 120 s inside the full ontology. That
+  ontology now matches HermiT exactly (9,197 pairs, 0 missed, 0 false positives) at the same wall.
+  Only definitions with at least one conjunct outside EL are matched; all-EL ones are left to the
+  saturator, which derives them anyway. A first version without that filter took five large
+  PRO-derived ORE ontologies from ~6 s of conversion to a 120 s timeout. With it, the pass fires on
+  63 of 1,920 ORE ontologies and returns after one axiom scan on the rest.
 - **`RUSTDL_HARD_GLOBAL_DEADLINE=1` (default OFF, #162).** By default a global budget that
   parsing and conversion have already used up leaves saturation and preparation unbounded,
   so the run still returns an answer. The flag holds them to the deadline instead (and turns

@@ -651,6 +651,13 @@ pub struct ClassificationStats {
     /// `completeness_guaranteed()` is false and `classify --json` reports
     /// `"incomplete": true`. See [`crate::prep_deadline_enabled`].
     pub prep_timed_out: bool,
+    /// #162: with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the global budget expired
+    /// during CONVERSION, so only some of the ontology's axioms were converted
+    /// and reasoned over. Sound (a subset of the axioms), and the answer is
+    /// flagged incomplete like any cut preparation (`prep_timed_out` is set too,
+    /// since the deadline has passed by the time preparation starts). Classes
+    /// whose axioms were never reached may be missing from the hierarchy.
+    pub conversion_timed_out: bool,
     /// A global budget was set but prep (conversion / saturation) was left
     /// **UNBOUNDED**, because the budget was already spent by the time prep bounding
     /// was decided.
@@ -1222,7 +1229,18 @@ pub fn classify_with_budget<A: ForIRI>(
 ) -> Result<Classification, ReasonError> {
     crate::ensure_rayon_pool();
     let t0 = Instant::now();
-    let internal = convert_ontology(ontology)?;
+    // #162: in hard mode conversion is held to the budget too. A cut conversion
+    // is a subset of the axioms, so the answer stays sound; the deadline has then
+    // passed, so preparation is cut at once and reported as `prep_timed_out`.
+    let convert_deadline = global_budget
+        .filter(|_| {
+            crate::prep_deadline_enabled()
+                && crate::hard_global_deadline_enabled()
+                && crate::convert_deadline_enabled()
+        })
+        .map(|b| t0 + b);
+    let (internal, conversion_cut) =
+        owl_dl_core::convert::convert_ontology_with_deadline(ontology, convert_deadline)?;
     // Decide prep bounding ONCE and keep the reason, so the fallback is reportable.
     // Note the decision point is AFTER `convert_ontology` — that is exactly why a
     // budget smaller than conversion cost reads as already-spent, which is the
@@ -1237,7 +1255,31 @@ pub fn classify_with_budget<A: ForIRI>(
     };
     let mut c = classify_top_down_internal(&internal, per_pair_timeout, global_deadline)?;
     c.stats.prep_unbounded_budget_spent = budget_spent;
+    if conversion_cut {
+        mark_conversion_cut(&mut c);
+    }
     Ok(c)
+}
+
+/// A cut conversion leaves a partial ontology, which preparation may finish
+/// "completely" (an empty one certainly does). So set the same three signals as
+/// [`classify_prep_timeout`] here, whatever preparation reported: the answer
+/// covers only the converted axioms. An inconsistency found in a subset of the
+/// axioms is genuine, so `inconsistent` is left alone.
+fn mark_conversion_cut(c: &mut Classification) {
+    c.stats.conversion_timed_out = true;
+    if c.stats.prep_timed_out {
+        return;
+    }
+    c.stats.prep_timed_out = true;
+    c.stats.fragment = FragmentClassification::OutOfFragment;
+    if crate::classify_inconsistency_enabled() && !c.stats.inconsistent {
+        c.stats.consistency_undetermined = true;
+    }
+    c.stats.timed_out_pairs += 1;
+    if !c.classes.is_empty() {
+        c.stats.timed_out_pair_ids.push((0, 0));
+    }
 }
 
 /// Naive `n²` pair-sweep classifier. Kept for benchmarking and

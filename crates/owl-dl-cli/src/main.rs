@@ -732,10 +732,11 @@ fn print_classification(h: &Classification) {
 /// probe is cut, and the run returns the sound partial hierarchy rather than
 /// silently running on.
 ///
-/// **Honest bound.** Parsing and `convert_ontology` are not interruptible, so this
-/// does not make the flag a hard wall cap — it stops the budget being *extended*
-/// by work that already happened. Conversion is the other pre-deadline segment and
-/// is covered separately by `RUSTDL_PREP_DEADLINE` (default off). See
+/// **Honest bound.** Parsing is not interruptible, so this does not make the flag a
+/// hard wall cap — it stops the budget being *extended* by work that already
+/// happened. By default conversion is not interruptible either; with
+/// `RUSTDL_HARD_GLOBAL_DEADLINE=1` it stops at the deadline
+/// (`RUSTDL_CONVERT_DEADLINE`, #162). See
 /// `docs/2026-08-16-global-deadline-does-not-bound-wall.md`.
 fn global_budget_after_parse(
     global_timeout_ms: u64,
@@ -768,7 +769,14 @@ fn warn_classify_incomplete(
     global_timeout_ms: u64,
 ) {
     let prep_cut = usize::from(stats.prep_timed_out);
-    if stats.prep_timed_out {
+    if stats.conversion_timed_out {
+        eprintln!(
+            "\n⚠  INCOMPLETE: the {global_timeout_ms} ms global budget ran out during \
+             conversion (RUSTDL_HARD_GLOBAL_DEADLINE=1), so only part of the ontology was \
+             read. Axioms past the cut were neither reasoned over nor listed as dropped, \
+             and consistency was not checked."
+        );
+    } else if stats.prep_timed_out {
         eprintln!(
             "\n⚠  INCOMPLETE: the {global_timeout_ms} ms global budget ran out during \
              preparation, so only a partial saturation closure is reported (it may be \

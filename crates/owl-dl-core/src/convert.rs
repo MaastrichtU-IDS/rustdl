@@ -2527,6 +2527,10 @@ thread_local! {
     static CONVERT_DEADLINE: std::cell::Cell<Option<std::time::Instant>> =
         const { std::cell::Cell::new(None) };
     static CONVERT_CUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook: polls left before the cut, and polls made. `None` = no hook.
+    static CONVERT_POLLS_LEFT: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+    static CONVERT_POLLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Whether the active conversion deadline has passed (#162). Latches: once it
@@ -2537,6 +2541,15 @@ thread_local! {
 pub(crate) fn conversion_cut() -> bool {
     if CONVERT_CUT.get() {
         return true;
+    }
+    CONVERT_POLLS.set(CONVERT_POLLS.get() + 1);
+    if let Some(left) = CONVERT_POLLS_LEFT.get() {
+        if left == 0 {
+            CONVERT_CUT.set(true);
+            return true;
+        }
+        CONVERT_POLLS_LEFT.set(Some(left - 1));
+        return false;
     }
     let cut = CONVERT_DEADLINE
         .get()
@@ -2564,18 +2577,49 @@ pub fn convert_ontology_with_deadline<A: ForIRI>(
     src: &SetOntology<A>,
     deadline: Option<std::time::Instant>,
 ) -> Result<(InternalOntology, bool), ConversionError> {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            CONVERT_DEADLINE.set(None);
-            CONVERT_CUT.set(false);
-        }
-    }
-    CONVERT_DEADLINE.set(deadline);
-    CONVERT_CUT.set(false);
-    let _reset = Reset;
+    let _reset = ConvertCutState::arm(deadline, None);
     let out = convert_ontology(src)?;
     Ok((out, CONVERT_CUT.get()))
+}
+
+/// Test hook for [`convert_ontology_with_deadline`]: cut at the `(polls + 1)`-th
+/// deadline poll instead of at a time, so a test can land the cut at a chosen
+/// point deterministically. Returns the ontology, whether it was cut, and how
+/// many polls were made.
+///
+/// # Errors
+///
+/// As [`convert_ontology`].
+#[doc(hidden)]
+pub fn convert_ontology_cut_after_polls<A: ForIRI>(
+    src: &SetOntology<A>,
+    polls: usize,
+) -> Result<(InternalOntology, bool, usize), ConversionError> {
+    let _reset = ConvertCutState::arm(None, Some(polls));
+    let out = convert_ontology(src)?;
+    Ok((out, CONVERT_CUT.get(), CONVERT_POLLS.get()))
+}
+
+/// Sets the thread-local cut state for one conversion and clears it on drop,
+/// including on an error return or a panic.
+struct ConvertCutState;
+
+impl ConvertCutState {
+    fn arm(deadline: Option<std::time::Instant>, polls: Option<usize>) -> Self {
+        CONVERT_DEADLINE.set(deadline);
+        CONVERT_POLLS_LEFT.set(polls);
+        CONVERT_POLLS.set(0);
+        CONVERT_CUT.set(false);
+        Self
+    }
+}
+
+impl Drop for ConvertCutState {
+    fn drop(&mut self) {
+        CONVERT_DEADLINE.set(None);
+        CONVERT_POLLS_LEFT.set(None);
+        CONVERT_CUT.set(false);
+    }
 }
 
 /// Convert an entire horned-owl [`SetOntology`] into an [`InternalOntology`].
@@ -2666,6 +2710,8 @@ pub fn convert_ontology<A: ForIRI>(
     }
     let mut out = InternalOntology::new();
     for (i, ac) in components.into_iter().enumerate() {
+        // At `i == 0` this repeats the check before the sort; harmless, and it
+        // keeps the poll pattern uniform for the test hook.
         if i % 1024 == 0 && conversion_cut() {
             break;
         }

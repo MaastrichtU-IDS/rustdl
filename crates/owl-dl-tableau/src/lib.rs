@@ -1695,8 +1695,17 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
 
         // 5. Rewrite children-parent pointers: any node whose
         //    parent equals source becomes parented at target.
-        //    Iterate through the node arena. Skip the source itself.
-        let node_count = self.graph.len();
+        //    Iterate through the node arena. Skip the source itself, and
+        //    skip the scan when no node has ever had `source` as parent.
+        let node_count = if self.graph.had_child(source) {
+            self.graph.len()
+        } else {
+            debug_assert!(
+                (0..self.graph.len()).all(|i| self.graph.nodes[i].parent != Some(source)),
+                "had_child({source:?}) is false but a node has it as parent"
+            );
+            0
+        };
         for idx in 0..node_count {
             let nid = NodeId::new(u32::try_from(idx).expect("node count fits in u32"));
             if nid == source {
@@ -1722,6 +1731,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     Some(target)
                 };
                 self.graph.node_mut(nid).parent = new_parent;
+                if let Some(t) = new_parent {
+                    self.graph.had_child[t.index() as usize] = true;
+                }
                 // Mirror the parent update into the cache-dense
                 // blocking summary; `is_blocked` walks ancestors via
                 // this array, and a stale entry would cause it to
@@ -3487,6 +3499,42 @@ mod tests {
         let s2 = ctx.new_successor(s1, r);
         ctx.add_label(s2, a);
         assert!(ctx.is_blocked(s2));
+    }
+
+    #[test]
+    fn merge_reparents_a_child_moved_by_an_earlier_merge() {
+        // `a —r→ c`; merge `a` into root `b` (c re-parented to b), then `b`
+        // into root `d`. `b` never generated a child itself, so only the
+        // re-parent in the first merge tells the second that `b` has one;
+        // without it the second merge skips its scan and `c` keeps pointing
+        // at the merged-away `b`.
+        let pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let mut ctx = TableauContext::new(&pool);
+        let a = ctx.new_node();
+        let c = ctx.new_successor(a, r);
+        let b = ctx.new_node();
+        let d = ctx.new_node();
+        assert!(ctx.merge_into(a, b));
+        assert_eq!(ctx.graph.node(c).parent(), Some(b));
+        assert!(ctx.merge_into(b, d));
+        assert_eq!(ctx.graph.node(c).parent(), Some(d));
+        assert_eq!(ctx.graph.blocking[c.index() as usize].parent, Some(d));
+    }
+
+    #[test]
+    fn merging_childless_roots_leaves_other_parents_alone() {
+        // The skip path: two ABox-style roots merge while an unrelated node
+        // has a child. Nothing is re-parented.
+        let pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let mut ctx = TableauContext::new(&pool);
+        let p = ctx.new_node();
+        let c = ctx.new_successor(p, r);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        assert!(ctx.merge_into(x, y));
+        assert_eq!(ctx.graph.node(c).parent(), Some(p));
     }
 
     #[test]

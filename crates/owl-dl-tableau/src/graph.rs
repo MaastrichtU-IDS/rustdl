@@ -262,6 +262,13 @@ pub struct CompletionGraph {
     /// changed since the previous pass; the bit caps work at "rules
     /// re-fire only when a relevant input changed."
     pub(crate) dirty: Vec<bool>,
+    /// Per-node: `true` once some node has had this one as its `parent`.
+    /// Sticky — never cleared by rollback, which only makes it conservative.
+    /// `false` therefore proves no node points at this one, which lets a merge
+    /// skip its O(#nodes) re-parenting scan. `ABox` individuals are roots that
+    /// never generate a child, and merging them (functional roles,
+    /// `SameIndividual`) was quadratic in the individual count.
+    pub(crate) had_child: Vec<bool>,
     /// Canonical node for each nominal individual seen during this
     /// tableau run. Phase 5 (N): when a node is labelled `{a}` and
     /// another already represents `a`, they must denote the same
@@ -389,6 +396,10 @@ impl CompletionGraph {
         // New nodes start dirty: the saturator must visit them at
         // least once to apply rules over their initial labels/edges.
         self.dirty.push(true);
+        self.had_child.push(false);
+        if let Some(p) = parent {
+            self.had_child[p.0 as usize] = true;
+        }
         id
     }
 
@@ -401,6 +412,7 @@ impl CompletionGraph {
         self.blocking.truncate(new_len);
         self.residuals_saturated.truncate(new_len);
         self.dirty.truncate(new_len);
+        self.had_child.truncate(new_len);
         // Drop anywhere-blocking index entries for nodes that no longer exist.
         // Buckets are ascending, so the entries to remove are a contiguous
         // tail (`id >= new_len`); `retain` is O(bucket) and trivially correct.
@@ -413,6 +425,12 @@ impl CompletionGraph {
                 bucket.retain(|n| n.0 < cutoff);
             }
         }
+    }
+
+    /// `false` proves no node has `id` as its `parent` (see [`Self::had_child`]).
+    #[must_use]
+    pub(crate) fn had_child(&self, id: NodeId) -> bool {
+        self.had_child[id.0 as usize]
     }
 
     /// Worklist accessor: `true` iff this node has had a relevant

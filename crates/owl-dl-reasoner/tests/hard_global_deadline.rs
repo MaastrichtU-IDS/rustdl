@@ -48,6 +48,12 @@ fn ladder(extra: &str) -> SetOntology<RcStr> {
 /// Classify `onto` at a spent budget, `RUSTDL_PREP_DEADLINE` pinned ON (hard mode
 /// requires it) and `RUSTDL_HARD_GLOBAL_DEADLINE` set as asked.
 fn run(onto: &SetOntology<RcStr>, hard: bool) -> Classification {
+    run_with(onto, hard, false)
+}
+
+/// As [`run`], with `RUSTDL_CONVERT_DEADLINE` chosen: `false` lets conversion
+/// finish, so the tests of the PREPARATION cut still reach it with a zero budget.
+fn run_with(onto: &SetOntology<RcStr>, hard: bool, cut_conversion: bool) -> Classification {
     let _g = ENV
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -55,12 +61,17 @@ fn run(onto: &SetOntology<RcStr>, hard: bool) -> Classification {
     unsafe {
         std::env::set_var("RUSTDL_PREP_DEADLINE", "1");
         std::env::set_var("RUSTDL_HARD_GLOBAL_DEADLINE", if hard { "1" } else { "0" });
+        std::env::set_var(
+            "RUSTDL_CONVERT_DEADLINE",
+            if cut_conversion { "1" } else { "0" },
+        );
     }
     let c = owl_dl_reasoner::classify_with_budget(onto, None, Some(Duration::ZERO)).unwrap();
     // SAFETY: as above.
     unsafe {
         std::env::remove_var("RUSTDL_PREP_DEADLINE");
         std::env::remove_var("RUSTDL_HARD_GLOBAL_DEADLINE");
+        std::env::remove_var("RUSTDL_CONVERT_DEADLINE");
     }
     c
 }
@@ -98,6 +109,7 @@ fn hard_holds_prep_to_a_spent_deadline() {
         "hard mode must not re-run saturation unbounded"
     );
     assert!(st.prep_timed_out, "a cut prep must be flagged");
+    assert!(!st.conversion_timed_out, "conversion was let finish");
     assert!(st.timed_out_pairs > 0, "the cut must drive `incomplete`");
     assert!(!c.completeness_guaranteed());
     assert!(
@@ -119,4 +131,27 @@ fn hard_mode_reports_an_unexamined_consistency_verdict() {
     let st = run(&onto, true).stats();
     assert!(!st.inconsistent, "the cut closure cannot see it");
     assert!(st.consistency_undetermined, "and must say so");
+}
+
+/// Hard mode holds CONVERSION to the deadline too (#162). With a zero budget the
+/// main loop stops at its first poll, so nothing is converted: the answer is
+/// empty, which is sound, and must be flagged incomplete rather than reported
+/// as a complete classification of an empty ontology.
+#[test]
+fn hard_mode_cuts_conversion_and_flags_the_answer_incomplete() {
+    let c = run_with(&ladder(""), true, true);
+    let st = c.stats();
+    assert!(st.conversion_timed_out, "a zero budget cuts conversion");
+    assert!(st.prep_timed_out, "the cut must reach the prep signal");
+    assert!(st.timed_out_pairs > 0, "and drive `incomplete`");
+    assert!(!c.completeness_guaranteed());
+    assert!(!rung(&c, 0), "nothing was converted, so nothing is derived");
+}
+
+/// Default mode never cuts conversion.
+#[test]
+fn default_mode_converts_everything() {
+    let c = run_with(&ladder(""), false, true);
+    assert!(!c.stats().conversion_timed_out);
+    assert!(rung(&c, N - 1));
 }

@@ -399,8 +399,9 @@ pub struct ClassificationStats {
     /// from "the probe never ran". Two sabotages of an earlier verdict-only canary
     /// both passed for exactly that reason.
     pub consistency_probe_admitted: bool,
-    /// The wedge inconsistency pre-check gave up (`Stalled`) before reaching a
-    /// verdict, so `inconsistent == false` is "no clash found", not a proof. On
+    /// The inconsistency pre-check reached no verdict: a route gave up (wedge
+    /// `Stalled`, or an `ABox`-saturation timeout with no wedge model) or was
+    /// skipped because the global deadline had already passed (#162). So `inconsistent == false` is "no clash found", not a proof. On
     /// a KB that really is inconsistent every class is unsatisfiable, so the
     /// hierarchy may be missing entailments; `completeness_guaranteed()` is then
     /// false, and `classify --json` reports it as `consistency_undetermined`
@@ -1424,7 +1425,7 @@ fn classify_internal_with_timeout_impl(
     // reporting `"consistent": true` where `rustdl consistent` reports
     // `inconsistent`.
     if crate::classify_inconsistency_enabled()
-        && crate::classify_inconsistency_precheck(internal, &closure)
+        && crate::classify_inconsistency_precheck(internal, &closure, None)
     {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("classify: KB inconsistent (pre-check)");
@@ -3760,7 +3761,7 @@ fn classify_top_down_internal_impl(
     // reporting `"consistent": true` where `rustdl consistent` reports
     // `inconsistent`.
     if crate::classify_inconsistency_enabled()
-        && crate::classify_inconsistency_precheck(internal, &closure)
+        && crate::classify_inconsistency_precheck(internal, &closure, global_deadline)
     {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("classify: KB inconsistent (pre-check)");

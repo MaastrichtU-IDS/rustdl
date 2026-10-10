@@ -1160,7 +1160,7 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     if stats.consistency_undetermined && !stats.inconsistent {
         writeln!(
             out,
-            "# consistency: undetermined (inconsistency pre-check gave up)"
+            "# consistency: undetermined (inconsistency pre-check gave up or was skipped)"
         )?;
     }
     writeln!(

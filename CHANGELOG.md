@@ -6,6 +6,16 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **`--global-timeout-ms` now bounds the classify inconsistency pre-check (#162, partial).**
+  Its `ABox`-saturation and wedge routes ran against their own adaptive budget (up to 12 s)
+  whatever the global budget said: `ore_ont_1043` at 500 ms spent 12.9 s there (18.2 s total,
+  now 5.5 s, identical rows). Each route now stops at the earlier of its own budget and the
+  global deadline, and is skipped once that has passed. A skipped or cut route is reported as
+  `consistency_undetermined` unless the wedge reached a model. Parse and conversion are still
+  not interruptible, so #162 stays open for that half.
+- **The Protégé plugin logs `wedge_hierarchy_blind`** as its own warning (#225).
+
 ## [0.4.37] — 2026-10-10
 
 All of these are correctness or completeness-signal fixes. Each behaviour change

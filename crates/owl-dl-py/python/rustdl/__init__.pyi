@@ -34,6 +34,18 @@ class Classification:
         result can be `complete` (no timeout) and still miss entailments."""
         ...
     @property
+    def prep_timed_out(self) -> bool:
+        """True iff the global deadline ran out during preparation, so only a
+        partial (possibly empty) saturation closure is reported and consistency
+        was not checked (#162). Implies `complete is False`."""
+        ...
+    @property
+    def consistency_undetermined(self) -> bool:
+        """True iff the inconsistency pre-check reached no verdict, so
+        `inconsistent is False` means "no clash found", not "proven
+        consistent" (#162)."""
+        ...
+    @property
     def wedge_hierarchy_blind(self) -> bool:
         """True iff the wedge ran without role-hierarchy matching (Layer A
         off) over a non-trivial role hierarchy, so entailments needing

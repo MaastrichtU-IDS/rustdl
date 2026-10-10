@@ -26,6 +26,13 @@ All notable changes to rustdl are documented here. Format is based on
   returning a sound partial answer flagged incomplete, possibly empty. At
   `--global-timeout-ms 1000`: `ore_ont_345` 119.7 s → 18.8 s (parse 14.7 s), `ore_ont_7507`
   99.3 s → 17.3 s, `ore_ont_12128` 62.2 s → 19.3 s.
+- **`prep_timed_out` in `classify --json` and Python (#162).** `true` when the global deadline
+  cut preparation, so only a partial (possibly empty) saturation closure is reported and
+  consistency was not checked. It implies `incomplete`; a separate field because it says the
+  whole answer is partial, not that some pairs were cut. Python also gains
+  `Classification.prep_timed_out` and `Classification.consistency_undetermined`. In Python, a cut
+  preparation now produces its own warning; before, it was reported as "1 class pair(s) exceeded
+  the timeout".
 
 ### Fixed
 - **`--global-timeout-ms` now bounds the classify inconsistency pre-check (#162, partial).**

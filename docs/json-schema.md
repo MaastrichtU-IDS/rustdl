@@ -7,7 +7,7 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 
 ```json
 { "schema_version": 1, "consistent": bool, "incomplete": bool,
-  "completeness_guaranteed": bool, "trusted_sat_refutations": int,
+  "prep_timed_out": bool, "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...] }
@@ -15,6 +15,12 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 
 `incomplete` = some class pair hit the time budget (defaulted to not-subsumed);
 the hierarchy is sound (no false subsumptions) but may miss real ones.
+
+`prep_timed_out` = the `--global-timeout-ms` budget ran out during preparation
+(conversion / saturation), so only a partial saturation closure is reported. It
+may be empty, and consistency was not checked (`consistency_undetermined` is set
+too). Implies `incomplete`. Only reachable with `RUSTDL_HARD_GLOBAL_DEADLINE=1`;
+by default a spent budget lets preparation finish unbounded (#162).
 
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where

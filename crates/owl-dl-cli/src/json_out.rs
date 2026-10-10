@@ -84,6 +84,14 @@ pub(crate) struct ClassifyJson {
     /// A class pair hit a DEADLINE and was recorded as not-subsumed. Reports
     /// only that; it does NOT cover the `trust_sat` risk below.
     pub(crate) incomplete: bool,
+    /// #162: the global deadline ran out during PREPARATION (conversion /
+    /// saturation), so only a partial saturation closure is reported. It may be
+    /// empty, and the inconsistency pre-check did not run. Implies `incomplete`;
+    /// a separate field because it says the whole answer is partial, not that
+    /// some class pairs were cut. Reachable only with
+    /// `RUSTDL_HARD_GLOBAL_DEADLINE=1`: by default a spent budget lets
+    /// preparation finish unbounded.
+    pub(crate) prep_timed_out: bool,
     /// Issue #66: pairs concluded NOT SUBSUMED from the wedge's own `Sat`
     /// verdict, on an ontology OUTSIDE the fragment where that verdict is
     /// complete by construction — so this hierarchy CAN disagree with
@@ -319,6 +327,7 @@ pub(crate) fn build_classify_json(
         schema_version: SCHEMA_VERSION,
         consistent: !stats.inconsistent,
         incomplete: stats.timed_out_pairs > 0,
+        prep_timed_out: stats.prep_timed_out,
         consistency_undetermined: stats.consistency_undetermined && !stats.inconsistent,
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),

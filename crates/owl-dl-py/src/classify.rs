@@ -58,6 +58,25 @@ impl PyClassification {
         self.inner.stats().timed_out_pairs == 0
     }
 
+    /// True iff the global deadline ran out during preparation (conversion /
+    /// saturation), so only a partial saturation closure is reported: it may
+    /// be empty, and consistency was not checked (#162). Implies
+    /// `complete is False`. Only reachable with `RUSTDL_HARD_GLOBAL_DEADLINE=1`.
+    #[getter]
+    fn prep_timed_out(&self) -> bool {
+        self.inner.stats().prep_timed_out
+    }
+
+    /// True iff the inconsistency pre-check reached no verdict: a route gave
+    /// up, or was skipped because the global deadline had run out (#162).
+    /// `inconsistent is False` then means "no clash found", not "proven
+    /// consistent", and the hierarchy may miss entailments.
+    #[getter]
+    fn consistency_undetermined(&self) -> bool {
+        let st = self.inner.stats();
+        st.consistency_undetermined && !st.inconsistent
+    }
+
     /// True iff the wedge ran without its role-hierarchy matching (Layer A
     /// off, by flag or above the role-closure cost cap) on an ontology with a
     /// non-trivial role hierarchy (#214). Then entailments needing sub-role,

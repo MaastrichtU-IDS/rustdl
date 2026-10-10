@@ -93,17 +93,36 @@ class IncompleteClassificationWarning(UserWarning):
 
     * a timeout fired (`result.complete is False`): pass
       `per_pair_timeout_ms=0, global_timeout_ms=0` for the unbounded result;
+    * the global budget ran out during preparation
+      (`result.prep_timed_out is True`): only a partial saturation closure is
+      reported; give a larger `global_timeout_ms`, or leave
+      `RUSTDL_HARD_GLOBAL_DEADLINE` unset;
     * the wedge ran without role-hierarchy matching
       (`result.wedge_hierarchy_blind is True`): Layer A was off, by
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` or because the role closure exceeded
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`; raising that cap trades
       time for the missing entailments.
 
+    `result.consistency_undetermined` is reported but not warned about, matching
+    the CLI, which notes it only in the banner.
+
     Silence with the standard `warnings` module."""
 
 
 def _warn_if_incomplete(result: "Classification") -> "Classification":
     n = result.timed_out_pairs
+    if result.prep_timed_out:
+        # #162: the cut preparation is counted as one timed-out "pair" so that
+        # `complete` reads False; report it as what it is (#228 review).
+        n -= 1
+        _warnings.warn(
+            "the global budget ran out during preparation, so only a partial "
+            "saturation closure is reported (it may be empty) and consistency "
+            "was not checked. It is still sound (no false subsumptions); check "
+            "result.prep_timed_out.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
     if n:
         _warnings.warn(
             f"{n} class pair(s) exceeded the timeout and were recorded as "

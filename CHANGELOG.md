@@ -6,6 +6,8 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.37] — 2026-10-10
+
 All of these are correctness or completeness-signal fixes. Each behaviour change
 has its own default-ON flag (`=0` reverts it). None changes an answer on the
 curated corpus, and each was swept on ORE with every difference checked against

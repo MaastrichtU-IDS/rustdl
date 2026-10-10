@@ -399,8 +399,9 @@ pub struct ClassificationStats {
     /// from "the probe never ran". Two sabotages of an earlier verdict-only canary
     /// both passed for exactly that reason.
     pub consistency_probe_admitted: bool,
-    /// The wedge inconsistency pre-check gave up (`Stalled`) before reaching a
-    /// verdict, so `inconsistent == false` is "no clash found", not a proof. On
+    /// The inconsistency pre-check reached no verdict: a route gave up (wedge
+    /// `Stalled`, or an `ABox`-saturation timeout with no wedge model) or was
+    /// skipped because the global deadline had already passed (#162). So `inconsistent == false` is "no clash found", not a proof. On
     /// a KB that really is inconsistent every class is unsatisfiable, so the
     /// hierarchy may be missing entailments; `completeness_guaranteed()` is then
     /// false, and `classify --json` reports it as `consistency_undetermined`

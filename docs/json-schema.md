@@ -8,7 +8,7 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 ```json
 { "schema_version": 1, "consistent": bool, "incomplete": bool,
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
-  "wedge_hierarchy_blind": bool,
+  "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...] }
 ```
@@ -27,6 +27,11 @@ exceeded `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`) on an ontology with a
 non-trivial role hierarchy (#214). Entailments needing sub-role, inverse or
 symmetric reasoning may then be missing. A separate field, because no deadline
 fired: it does not set `incomplete`.
+
+`consistency_undetermined` = the KB-level inconsistency pre-check reached no
+verdict: a route gave up, or was skipped because `--global-timeout-ms` had
+already run out (#162). `consistent: true` then means "no clash found", not
+"proven consistent". A separate field; it does not set `incomplete`.
 
 **`incomplete: false` does NOT mean complete.** It means no deadline fired.
 There are Horn ontologies where `classify` misses a subsumption both Konclude and

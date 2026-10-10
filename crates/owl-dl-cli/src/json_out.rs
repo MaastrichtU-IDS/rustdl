@@ -96,13 +96,14 @@ pub(crate) struct ClassifyJson {
     /// distinction callers already depend on. Same reasoning as
     /// `Realization::witness_prune_active`.
     pub(crate) trusted_sat_refutations: usize,
-    /// The wedge inconsistency pre-check gave up without a verdict, so
+    /// The inconsistency pre-check reached no verdict: a route gave up, or was
+    /// skipped because the global deadline had already passed (#162). So
     /// `consistent: true` means "no clash found", not "proven consistent". On
     /// an inconsistent KB every class is unsatisfiable, so the hierarchy below
     /// may then be missing entailments (#204 review: a pigeonhole over
     /// `TBox`-only individuals read `consistent: true` with every flag clean).
     /// A SEPARATE field for the same reason as `trusted_sat_refutations`: the
-    /// pre-check usually stops on its depth cap rather than a deadline, and
+    /// pre-check usually stops on its depth cap rather than a pair deadline, and
     /// folding it into `incomplete` would change that flag's meaning on about a
     /// fifth of `ABox`-bearing ORE ontologies.
     pub(crate) consistency_undetermined: bool,

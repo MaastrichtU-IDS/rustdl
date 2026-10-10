@@ -1740,6 +1740,13 @@ fn classify_prep_timeout(
         FragmentClassification::OutOfFragment,
     );
     h.stats.prep_timed_out = true;
+    // This path returns BEFORE the inconsistency pre-check, and the closure-level
+    // `⊤`-unsat test above ran on a PARTIAL closure, so a consistent-looking
+    // result is unexamined, not determined (#228 review). Marked through the
+    // thread-local because the classify drivers overwrite the stats field from it.
+    if crate::classify_inconsistency_enabled() && !h.stats.inconsistent {
+        crate::mark_consistency_undetermined();
+    }
     // Invariant kept by every other timeout site: +1 count, +1 id (so
     // `undecided_pairs()` stays index-safe). With no classes there is no id to
     // record; the count alone still drives the `incomplete` signal.

@@ -181,8 +181,9 @@ enum Command {
         /// the budget up, saturation and preparation run unbounded so the run
         /// still returns an answer: wall can then far exceed N (#162). Set
         /// `RUSTDL_HARD_GLOBAL_DEADLINE=1` to hold them to the deadline too:
-        /// the run then ends near parse + conversion + N, and the answer may be
-        /// empty (always sound, flagged incomplete).
+        /// the run then takes at most about parse + conversion + N, and the
+        /// answer may be empty (always sound, flagged incomplete, consistency
+        /// unchecked). `--n2-classify` ignores the global budget.
         #[arg(long, default_value_t = 0)]
         global_timeout_ms: u64,
         /// Deprecated no-op: top-down classification is now the
@@ -755,6 +756,31 @@ fn warn_if_hierarchy_blind(blind: bool) {
              missing. Raising the cap trades time for them."
         );
     }
+}
+
+/// `warn_if_incomplete` for a classification, with a cut PREPARATION reported as
+/// what it is. `classify_prep_timeout` counts the cut as one timed-out "pair" so
+/// `incomplete` fires; without this split the warning blamed one class pair for
+/// what was the whole saturation or preparation being abandoned (#228 review).
+fn warn_classify_incomplete(
+    stats: &owl_dl_reasoner::ClassificationStats,
+    pair_timeout_ms: u64,
+    global_timeout_ms: u64,
+) {
+    let prep_cut = usize::from(stats.prep_timed_out);
+    if stats.prep_timed_out {
+        eprintln!(
+            "\n⚠  INCOMPLETE: the {global_timeout_ms} ms global budget ran out during \
+             preparation, so only a partial saturation closure is reported (it may be \
+             empty) and consistency was not checked."
+        );
+    }
+    warn_if_incomplete(
+        stats.timed_out_pairs.saturating_sub(prep_cut),
+        stats.stall_tail_skips + stats.diverged_tail_skips,
+        pair_timeout_ms,
+        global_timeout_ms,
+    );
 }
 
 fn warn_if_incomplete(
@@ -1625,22 +1651,12 @@ fn main() -> Result<()> {
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_classify_json(&h, dropped))?
                 );
-                warn_if_incomplete(
-                    h.stats().timed_out_pairs,
-                    h.stats().stall_tail_skips + h.stats().diverged_tail_skips,
-                    pair_timeout_ms,
-                    global_timeout_ms,
-                );
+                warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
                 warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
                 return Ok(());
             }
             print_classification(&h);
-            warn_if_incomplete(
-                h.stats().timed_out_pairs,
-                h.stats().stall_tail_skips + h.stats().diverged_tail_skips,
-                pair_timeout_ms,
-                global_timeout_ms,
-            );
+            warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
             warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
             warn_if_dropped(&dropped);
         }

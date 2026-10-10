@@ -2796,9 +2796,15 @@ pub fn prep_deadline_enabled() -> bool {
 /// - the #162 empty-closure retry, which re-runs saturation unbounded, is off.
 ///
 /// The result is sound (every reported subsumption is entailed) and flagged
-/// `incomplete`, and may be EMPTY. Parsing and `convert_ontology` still cannot be
-/// interrupted, so wall is bounded by roughly parse + convert + budget.
-/// Requires [`prep_deadline_enabled`] (default ON); inert without a global budget.
+/// `incomplete`, and may be EMPTY. A cut returns before the inconsistency
+/// pre-check, so `consistency_undetermined` is set: `consistent: true` there
+/// means "not checked". Parsing and `convert_ontology` still cannot be
+/// interrupted, so wall is at most about parse + convert + budget.
+///
+/// Classify only. Requires [`prep_deadline_enabled`] (default ON); inert without
+/// a global budget. Known small post-deadline residuals: the saturator checks the
+/// clock every 4,096 worklist pops, and the post-walk inconsistency probe
+/// (`probe_says_inconsistent`) runs on its own ~200 ms budgets.
 #[must_use]
 pub fn hard_global_deadline_enabled() -> bool {
     std::env::var_os("RUSTDL_HARD_GLOBAL_DEADLINE").is_some_and(|v| v == "1")
@@ -3427,6 +3433,11 @@ thread_local! {
 
 /// Read and clear the flag [`classify_inconsistency_precheck`] sets when a route
 /// is skipped or gives up.
+pub(crate) fn mark_consistency_undetermined() {
+    CONSISTENCY_UNDETERMINED.with(|f| f.set(true));
+}
+
+/// Read and clear the flag (see [`mark_consistency_undetermined`]).
 pub(crate) fn take_consistency_undetermined() -> bool {
     CONSISTENCY_UNDETERMINED.with(|f| f.replace(false))
 }

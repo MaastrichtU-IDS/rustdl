@@ -82,6 +82,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_TOLD_DEFINITION_MATCH",
+            owl_dl_core::told_definition_match::told_definition_match_enabled as fn() -> bool,
+            true,
+        ),
+        (
             "RUSTDL_NOMINAL_EXISTS_ABSORPTION",
             owl_dl_core::absorb::nominal_exists_absorption_enabled as fn() -> bool,
             true,

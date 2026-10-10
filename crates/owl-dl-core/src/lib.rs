@@ -26,6 +26,7 @@ pub mod residual_absorbability;
 pub mod residual_trigger;
 pub mod role_hierarchy;
 pub mod told;
+pub mod told_definition_match;
 pub mod transform;
 pub mod vocab;
 

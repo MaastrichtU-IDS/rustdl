@@ -2672,6 +2672,12 @@ pub fn convert_ontology<A: ForIRI>(
     // both the EL saturator (which drops union-LHS) and the disjunction-
     // existential / told-table passes below see the atomic-LHS form.
     crate::disjunctive_antecedent::split_disjunctive_antecedents(&mut out);
+    // #139: `A ⊑ X`, `D ≡ X` (same interned conjuncts) ⟹ `A ⊑ D`, emitted as an
+    // atomic axiom so it reaches every engine without a per-pair probe. Runs
+    // before the told-table passes below so they see the new edges. Sound
+    // (told subsumption + syntactic identity). RUSTDL_TOLD_DEFINITION_MATCH,
+    // default ON.
+    let _ = crate::told_definition_match::derive_told_definition_matches(&mut out);
     // Derive `X ⊑ ∃R.C` from `X ⊑ ∃R.(D₁ ⊔ … ⊔ Dₙ)` when the disjuncts
     // share a told-subsumer C (sound under-approximation; feeds the EL
     // saturator a case-split it otherwise drops). Runs on the fully

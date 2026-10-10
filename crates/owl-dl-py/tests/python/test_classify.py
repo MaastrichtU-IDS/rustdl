@@ -98,3 +98,40 @@ def test_wedge_hierarchy_blind_is_its_own_signal(fixtures_dir, monkeypatch):
     r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
     assert r.wedge_hierarchy_blind is False
     assert "http://ex.org/A" in r.unsatisfiable
+
+
+def test_prep_timed_out_is_its_own_signal(tmp_path, monkeypatch):
+    # #162: a preparation cut by the global deadline is reported by
+    # `prep_timed_out` and warned about once as a cut preparation, not as a
+    # timed-out class pair. The ladder is `hard_global_deadline.rs`'s: every
+    # `A_i ⊑ C_i` is derived, so a saturation stopped at once reports nothing.
+    import warnings
+    lines = ["Prefix(:=<http://ex#>)", "Ontology("]
+    for i in range(3000):
+        lines.append(f"SubClassOf(:A{i} ObjectSomeValuesFrom(:r :B{i}))")
+        lines.append(f"SubClassOf(ObjectSomeValuesFrom(:r :B{i}) :C{i})")
+    lines.append(")")
+    p = tmp_path / "ladder.ofn"
+    p.write_text("\n".join(lines))
+    monkeypatch.setenv("RUSTDL_PREP_DEADLINE", "1")
+
+    monkeypatch.setenv("RUSTDL_HARD_GLOBAL_DEADLINE", "1")
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(p), global_timeout_ms=1)
+    assert r.prep_timed_out is True
+    assert r.complete is False
+    assert r.consistency_undetermined is True
+    msgs = [
+        str(w.message)
+        for w in rec
+        if issubclass(w.category, rustdl.IncompleteClassificationWarning)
+    ]
+    assert len(msgs) == 1 and "preparation" in msgs[0], msgs
+
+    # No budget: nothing can be cut. (Not "1 ms, hard mode off": whether that
+    # bounds saturation depends on host speed, see the #230 review.)
+    monkeypatch.delenv("RUSTDL_HARD_GLOBAL_DEADLINE")
+    r = rustdl.classify(str(p), global_timeout_ms=0)
+    assert r.prep_timed_out is False
+    assert r.is_subclass("http://ex#A0", "http://ex#C0")

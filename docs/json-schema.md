@@ -7,7 +7,7 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 
 ```json
 { "schema_version": 1, "consistent": bool, "incomplete": bool,
-  "completeness_guaranteed": bool, "trusted_sat_refutations": int,
+  "prep_timed_out": bool, "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...] }
@@ -15,6 +15,16 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 
 `incomplete` = some class pair hit the time budget (defaulted to not-subsumed);
 the hierarchy is sound (no false subsumptions) but may miss real ones.
+
+`prep_timed_out` = the `--global-timeout-ms` budget ran out during preparation
+(EL saturation or building the prepared ontology; parsing and conversion are
+never cut), so only a partial saturation closure is reported and consistency was
+not fully checked (`consistency_undetermined` is normally set too). Implies
+`incomplete`. It can fire at the default settings, whenever the budget is still
+meetable when prep bounding is decided. By default a budget already spent at
+that point leaves preparation unbounded, and an empty partial closure is re-run
+unbounded; `RUSTDL_HARD_GLOBAL_DEADLINE=1` removes both fallbacks, so there the
+closure may be empty (#162).
 
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where

@@ -2779,6 +2779,37 @@ pub fn prep_deadline_enabled() -> bool {
     std::env::var_os("RUSTDL_PREP_DEADLINE").is_none_or(|v| v != "0")
 }
 
+/// `RUSTDL_HARD_GLOBAL_DEADLINE` — **default OFF**, `=1` enables (#162).
+///
+/// By default a global budget that uninterruptible work has already used up is
+/// not enforced on prep: saturation and `PreparedOntology` construction run
+/// unbounded, because bounding them then returned **0 rows** where unbounded
+/// prep returned the complete answer (`ore_ont_7192`; see
+/// `prep_bounding_active`). That trades the wall bound for an answer.
+///
+/// This flag makes the opposite trade for callers who need the run to END near
+/// the budget (a harness cap, an anytime lower bound). With it on and a global
+/// budget set:
+/// - the budget counts from the call and is never restarted after conversion;
+/// - saturation and prep are held to the deadline even when it has already
+///   passed, so they stop at once and their partial closure is reported;
+/// - the #162 empty-closure retry, which re-runs saturation unbounded, is off.
+///
+/// The result is sound (every reported subsumption is entailed) and flagged
+/// `incomplete`, and may be EMPTY. A cut returns before the inconsistency
+/// pre-check, so `consistency_undetermined` is set: `consistent: true` there
+/// means "not checked". Parsing and `convert_ontology` still cannot be
+/// interrupted, so wall is at most about parse + convert + budget.
+///
+/// Classify only. Requires [`prep_deadline_enabled`] (default ON); inert without
+/// a global budget. Known small post-deadline residuals: the saturator checks the
+/// clock every 4,096 worklist pops, and the post-walk inconsistency probe
+/// (`probe_says_inconsistent`) runs on its own ~200 ms budgets.
+#[must_use]
+pub fn hard_global_deadline_enabled() -> bool {
+    std::env::var_os("RUSTDL_HARD_GLOBAL_DEADLINE").is_some_and(|v| v == "1")
+}
+
 /// Wall-clock budget, in milliseconds, for the `ABox`-saturation half of the
 /// **classify** inconsistency pre-check (`RUSTDL_CLASSIFY_INCONSISTENCY_MS`).
 /// **Default 3000**; `0` (or a garbage value) means unbounded.
@@ -3402,6 +3433,11 @@ thread_local! {
 
 /// Read and clear the flag [`classify_inconsistency_precheck`] sets when a route
 /// is skipped or gives up.
+pub(crate) fn mark_consistency_undetermined() {
+    CONSISTENCY_UNDETERMINED.with(|f| f.set(true));
+}
+
+/// Read and clear the flag (see [`mark_consistency_undetermined`]).
 pub(crate) fn take_consistency_undetermined() -> bool {
     CONSISTENCY_UNDETERMINED.with(|f| f.replace(false))
 }

@@ -1091,6 +1091,10 @@ fn prep_bounding_decision(call_instant: Instant, budget: std::time::Duration) ->
     if !crate::prep_deadline_enabled() {
         return (false, false);
     }
+    // Hard mode always bounds prep, so nothing is ever left unbounded to report.
+    if crate::hard_global_deadline_enabled() {
+        return (true, false);
+    }
     let within = Instant::now() < call_instant + budget;
     (within, !within)
 }
@@ -1736,6 +1740,13 @@ fn classify_prep_timeout(
         FragmentClassification::OutOfFragment,
     );
     h.stats.prep_timed_out = true;
+    // This path returns BEFORE the inconsistency pre-check, and the closure-level
+    // `⊤`-unsat test above ran on a PARTIAL closure, so a consistent-looking
+    // result is unexamined, not determined (#228 review). Marked through the
+    // thread-local because the classify drivers overwrite the stats field from it.
+    if crate::classify_inconsistency_enabled() && !h.stats.inconsistent {
+        crate::mark_consistency_undetermined();
+    }
     // Invariant kept by every other timeout site: +1 count, +1 id (so
     // `undecided_pairs()` stays index-safe). With no classes there is no id to
     // record; the count alone still drives the `incomplete` signal.
@@ -3716,7 +3727,12 @@ fn classify_top_down_internal_impl(
     // hierarchy, having paid the full prep wall. Once the budget is blown, run
     // the fixpoint unbounded — see `prep_bounding_active`.
     let prep_deadline = match global_deadline {
-        Some(gd) if crate::prep_deadline_enabled() && Instant::now() < gd => Some(gd),
+        Some(gd)
+            if crate::prep_deadline_enabled()
+                && (crate::hard_global_deadline_enabled() || Instant::now() < gd) =>
+        {
+            Some(gd)
+        }
         _ => None,
     };
     let t_saturate = Instant::now();
@@ -3736,12 +3752,14 @@ fn classify_top_down_internal_impl(
     // rows, where a smaller (already-blown) budget would have run prep unbounded and
     // returned the complete answer. Retry unbounded instead. This cannot lose
     // entailments: it replaces an empty partial closure with the full one.
-    let (closure, sat_aborted, prep_empty_retry) =
-        if sat_aborted && !closure_yields_something(&reported, &closure) {
-            (saturate(internal), false, true)
-        } else {
-            (closure, sat_aborted, false)
-        };
+    let (closure, sat_aborted, prep_empty_retry) = if sat_aborted
+        && !crate::hard_global_deadline_enabled()
+        && !closure_yields_something(&reported, &closure)
+    {
+        (saturate(internal), false, true)
+    } else {
+        (closure, sat_aborted, false)
+    };
 
     if sat_aborted {
         // The fixpoint was abandoned but left usable edges. Every derived edge is

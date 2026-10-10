@@ -6,6 +6,15 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Added
+- **`RUSTDL_HARD_GLOBAL_DEADLINE=1` (default OFF, #162).** By default a global budget that
+  parsing and conversion have already used up leaves saturation and preparation unbounded,
+  so the run still returns an answer. The flag holds them to the deadline instead (and turns
+  off the unbounded empty-closure retry), so the run ends near parse + conversion + budget,
+  returning a sound partial answer flagged incomplete, possibly empty. At
+  `--global-timeout-ms 1000`: `ore_ont_345` 119.7 s → 18.8 s (parse 14.7 s), `ore_ont_7507`
+  99.3 s → 17.3 s, `ore_ont_12128` 62.2 s → 19.3 s.
+
 ### Fixed
 - **`--global-timeout-ms` now bounds the classify inconsistency pre-check (#162, partial).**
   Its `ABox`-saturation and wedge routes ran against their own adaptive budget (up to 12 s)

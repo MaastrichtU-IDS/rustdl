@@ -244,13 +244,17 @@ of either of the last two — never treated as a clean `Verified`. **1** is an I
 still holds; pairs not decided in time default to "not subsumed", never a false
 one):
 
-- `--pair-timeout-ms N` — cap each pairwise tableau probe (default 1000; `0` =
+- `--pair-timeout-ms N` — cap each pairwise tableau probe (default 5; `0` =
   unbounded). Good for pathological SROIQ where a few pairs never terminate.
-- `--global-timeout-ms N` — bound the **reasoning** wall for the whole classify
-  (`0` = unbounded): each probe is cut at the smaller of the per-pair and global
-  budgets, so total probing can't grow with the pair count. The fixed saturation +
-  preprocessing overhead (seconds to tens of seconds on very large ontologies) is
-  *not* deadline-gated, so the wall floor isn't zero.
+- `--global-timeout-ms N` — a budget for the whole classify (`0` = unbounded),
+  counted from the start of parsing: each probe is cut at the smaller of the
+  per-pair and global budgets, so total probing can't grow with the pair count.
+  Parsing and conversion cannot be interrupted. By default, once they have used
+  the budget up, saturation and preparation run unbounded so the run still returns
+  an answer, and wall can far exceed `N`. Set `RUSTDL_HARD_GLOBAL_DEADLINE=1` to
+  hold them to the deadline too: the run then takes at most about parse +
+  conversion + `N`, and the answer may be empty (still sound, flagged incomplete,
+  consistency unchecked).
 - `--saturation-only` — skip the tableau entirely and report only the EL closure.
 
 Any run that hits a bound prints a prominent `INCOMPLETE` warning to stderr.

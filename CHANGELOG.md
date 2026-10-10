@@ -18,7 +18,7 @@ All notable changes to rustdl are documented here. Format is based on
   Only definitions with at least one conjunct outside EL are matched; all-EL ones are left to the
   saturator, which derives them anyway. A first version without that filter took five large
   PRO-derived ORE ontologies from ~6 s of conversion to a 120 s timeout. With it, the pass fires on
-  63 of 1,920 ORE ontologies and returns after one axiom scan on the rest.
+  63 of 1,920 ORE ontologies; on the rest it walks the axioms once and never builds the told tables.
 - **`RUSTDL_HARD_GLOBAL_DEADLINE=1` (default OFF, #162).** By default a global budget that
   parsing and conversion have already used up leaves saturation and preparation unbounded,
   so the run still returns an answer. The flag holds them to the deadline instead (and turns

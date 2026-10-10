@@ -26,7 +26,8 @@
 //! part of the ontology. Without that filter the pass cost tens of seconds on
 //! large EL ontologies (the PRO-derived ORE members, each with ~30,000 EL
 //! definitions) and found nothing the saturator does not. With no qualifying
-//! definition the told tables are never built, so the pass is a single axiom scan.
+//! definition the told tables are never built: the pass is one walk over the
+//! axioms.
 //!
 //! Candidates visited per round are capped at [`MAX_CHECKS`]; like the round cap,
 //! stopping early only loses derivations.

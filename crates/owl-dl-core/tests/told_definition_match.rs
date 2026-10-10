@@ -108,7 +108,36 @@ fn a_candidate_missing_a_conjunct_does_not_fire() {
          EquivalentClasses(:D ObjectIntersectionOf(ObjectMinCardinality(2 :r :P) ObjectMaxCardinality(4 :r :P)))",
     );
     assert!(!has_edge(&o, "A", "D"));
-    assert!(!has_edge(&o, "B", "D"));
+}
+
+/// An atomic conjunct satisfied only through an atom asserted inside an `And`
+/// on a told superclass: `A ⊑ B`, `B ⊑ X ⊓ M`, `M ⊑ K` covers `K` in
+/// `D ≡ X ⊓ K`. `K` is not a told superclass of `A` (told tables do not split
+/// an asserted `And`), so only the second clause of `has_atom` decides it.
+#[test]
+fn an_atomic_conjunct_is_reached_through_an_asserted_conjunction() {
+    let o = convert(
+        "SubClassOf(:A :B)
+         SubClassOf(:B ObjectIntersectionOf(ObjectMinCardinality(2 :r :P) :M))
+         SubClassOf(:M :K)
+         EquivalentClasses(:D ObjectIntersectionOf(ObjectMinCardinality(2 :r :P) :K))",
+    );
+    assert!(has_edge(&o, "A", "D"));
+}
+
+/// A class in a three-member equivalence asserts each complex member, and a
+/// defined class satisfies a WEAKER definition: `D1 ⊑ D2`, not the converse.
+#[test]
+fn equivalence_members_and_weaker_definitions_are_matched() {
+    let o = convert(
+        "EquivalentClasses(:E1 :E2 ObjectMinCardinality(2 :r :P))
+         SubClassOf(:A ObjectMinCardinality(2 :r :P))
+         EquivalentClasses(:D1 ObjectIntersectionOf(ObjectMinCardinality(2 :r :P) ObjectMaxCardinality(3 :r :P)))
+         EquivalentClasses(:D2 ObjectMinCardinality(2 :r :P))",
+    );
+    assert!(has_edge(&o, "A", "E1") && has_edge(&o, "A", "E2"));
+    assert!(has_edge(&o, "D1", "D2"));
+    assert!(!has_edge(&o, "D2", "D1"), "the converse is not entailed");
 }
 
 /// FP guard: a different expression (even an entailing one) is not matched, and

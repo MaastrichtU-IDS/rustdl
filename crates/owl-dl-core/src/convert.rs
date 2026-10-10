@@ -2520,6 +2520,64 @@ fn convert_hash_sort_enabled() -> bool {
     std::env::var_os("RUSTDL_CONVERT_HASH_SORT").is_some_and(|v| v == "1")
 }
 
+thread_local! {
+    /// The deadline [`convert_ontology_with_deadline`] polls, and whether it fired.
+    /// Thread-local so the heavy passes keep their signatures; conversion runs on
+    /// one thread.
+    static CONVERT_DEADLINE: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+    static CONVERT_CUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the active conversion deadline has passed (#162). Latches: once it
+/// returns `true` it keeps returning `true` for the rest of the conversion, so
+/// every later pass is skipped consistently. Always `false` outside
+/// [`convert_ontology_with_deadline`]. Reads the clock, so call it per outer
+/// iteration, not per pair.
+pub(crate) fn conversion_cut() -> bool {
+    if CONVERT_CUT.get() {
+        return true;
+    }
+    let cut = CONVERT_DEADLINE
+        .get()
+        .is_some_and(|d| std::time::Instant::now() >= d);
+    if cut {
+        CONVERT_CUT.set(true);
+    }
+    cut
+}
+
+/// [`convert_ontology`], stopping at `deadline` (#162). Returns the ontology and
+/// whether the deadline cut it short.
+///
+/// A cut conversion is a SUBSET of what the full one produces. The main loop
+/// stops converting components, the loops in the `DKey` seeding stop, and every
+/// later derivation pass is skipped. Each of those only adds entailed axioms or
+/// rewrites one into an equivalent form, so the result is a weaker ontology:
+/// reasoning over it can miss entailments but never invent one. The final sort
+/// still runs.
+///
+/// # Errors
+///
+/// As [`convert_ontology`].
+pub fn convert_ontology_with_deadline<A: ForIRI>(
+    src: &SetOntology<A>,
+    deadline: Option<std::time::Instant>,
+) -> Result<(InternalOntology, bool), ConversionError> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CONVERT_DEADLINE.set(None);
+            CONVERT_CUT.set(false);
+        }
+    }
+    CONVERT_DEADLINE.set(deadline);
+    CONVERT_CUT.set(false);
+    let _reset = Reset;
+    let out = convert_ontology(src)?;
+    Ok((out, CONVERT_CUT.get()))
+}
+
 /// Convert an entire horned-owl [`SetOntology`] into an [`InternalOntology`].
 ///
 /// Issue #43: a component that `convert_component` can't lower no longer
@@ -2548,6 +2606,11 @@ fn convert_hash_sort_enabled() -> bool {
 pub fn convert_ontology<A: ForIRI>(
     src: &SetOntology<A>,
 ) -> Result<InternalOntology, ConversionError> {
+    // #162: a deadline that has already passed converts nothing. Checked before
+    // the sort, which on large ontologies is itself seconds of comparisons.
+    if conversion_cut() {
+        return Ok(InternalOntology::new());
+    }
     let mut components: Vec<&AnnotatedComponent<A>> = src.iter().collect();
     // `sort_unstable`, not `sort`: the elements come from a `HashSet` so they are
     // pairwise distinct, which makes stability unobservable — the resulting order is
@@ -2602,7 +2665,10 @@ pub fn convert_ontology<A: ForIRI>(
         components.sort_unstable();
     }
     let mut out = InternalOntology::new();
-    for ac in components {
+    for (i, ac) in components.into_iter().enumerate() {
+        if i % 1024 == 0 && conversion_cut() {
+            break;
+        }
         match convert_component(&ac.component, &mut out.vocabulary, &mut out.concepts) {
             Ok(Some(axiom)) => out.axioms.push(axiom),
             Ok(None) => {} // benign: metadata / annotation / declaration — no reasoning content
@@ -2627,7 +2693,9 @@ pub fn convert_ontology<A: ForIRI>(
     // referenced by any axiom that survived ce_or_skip!).
     // RefCell scoped tightly so its borrow on out.concepts ends before
     // out.axioms.extend (which doesn't need it but reads cleaner).
-    let derived = {
+    let derived = if conversion_cut() {
+        Vec::new()
+    } else {
         let concepts_cell = std::cell::RefCell::new(&mut out.concepts);
         crate::data_axioms::derive_data_axioms(src, &out.vocabulary, top_id, bot_id, |cid| {
             concepts_cell.borrow_mut().atomic(cid)
@@ -2645,7 +2713,9 @@ pub fn convert_ontology<A: ForIRI>(
     // classes never appear in the reported class list (filtered by
     // `DKEY_IRI_PREFIX` in the reasoner), so these edges add no output
     // noise — they only relay through the existential machinery.
-    seed_dkey_subsumptions(&mut out);
+    if !conversion_cut() {
+        seed_dkey_subsumptions(&mut out);
+    }
     // Disjunctive data-property domains: for `DataPropertyDomain(dp,
     // D₁ ⊔ … ⊔ Dₙ)` (all atomic) and each class `C` using `dp`, emit the
     // bare disjunctive GCI `C ⊑ (D₁ ⊔ … ⊔ Dₙ)`. Sound (`C ⊑ ∃dp.⊤ ⊑ ⊔Dᵢ`).
@@ -2655,8 +2725,12 @@ pub fn convert_ontology<A: ForIRI>(
     // (common told-subsumer) and also case-split natively by the tableau.
     // Closes the SAO/BFO cross-ontology cluster — see
     // `docs/sao-bfo-chain-2026-06-10.md`.
-    for (c_id, disjunct_ids) in crate::data_axioms::derive_data_domain_unions(src, &out.vocabulary)
-    {
+    let domain_unions = if conversion_cut() {
+        Vec::new()
+    } else {
+        crate::data_axioms::derive_data_domain_unions(src, &out.vocabulary)
+    };
+    for (c_id, disjunct_ids) in domain_unions {
         let sub = out.concepts.atomic(c_id);
         let members: Vec<_> = disjunct_ids
             .into_iter()
@@ -2671,13 +2745,17 @@ pub fn convert_ontology<A: ForIRI>(
     // — `(D₁ ⊔ … ⊔ Dₙ) ⊑ C ≡ ⋀ Dᵢ ⊑ C` (sound equivalence). Runs first so
     // both the EL saturator (which drops union-LHS) and the disjunction-
     // existential / told-table passes below see the atomic-LHS form.
-    crate::disjunctive_antecedent::split_disjunctive_antecedents(&mut out);
+    if !conversion_cut() {
+        crate::disjunctive_antecedent::split_disjunctive_antecedents(&mut out);
+    }
     // #139: `A ⊑ X`, `D ≡ X` (same interned conjuncts) ⟹ `A ⊑ D`, emitted as an
     // atomic axiom so it reaches every engine without a per-pair probe. Runs
     // before the told-table passes below so they see the new edges. Sound
     // (told subsumption + syntactic identity). RUSTDL_TOLD_DEFINITION_MATCH,
     // default ON.
-    let _ = crate::told_definition_match::derive_told_definition_matches(&mut out);
+    if !conversion_cut() {
+        let _ = crate::told_definition_match::derive_told_definition_matches(&mut out);
+    }
     // Derive `X ⊑ ∃R.C` from `X ⊑ ∃R.(D₁ ⊔ … ⊔ Dₙ)` when the disjuncts
     // share a told-subsumer C (sound under-approximation; feeds the EL
     // saturator a case-split it otherwise drops). Runs on the fully
@@ -2687,11 +2765,17 @@ pub fn convert_ontology<A: ForIRI>(
     // reused ONLY when the ontology is provably unchanged, and pass 2 rebuilds
     // otherwise (which is what preserves the intentional dependency noted below —
     // pass 2 must see pass 1's additions).
-    let reusable_told = crate::disjunction_existential::derive_disjunction_existentials(&mut out);
+    let reusable_told = if conversion_cut() {
+        None
+    } else {
+        crate::disjunction_existential::derive_disjunction_existentials(&mut out)
+    };
     // SP-A: forced-disjunct over atomic disjunctions. Runs AFTER
     // derive_disjunction_existentials so it sees the common-subsumer axioms that
     // pass adds (richer told tables ⟹ more forcings). Sound; atomic-only.
-    crate::approx_saturation::derive_forced_disjuncts_with(&mut out, reusable_told);
+    if !conversion_cut() {
+        crate::approx_saturation::derive_forced_disjuncts_with(&mut out, reusable_told);
+    }
     // Canonicalize `X ⊑ ¬Y` into `X ⊓ Y ⊑ ⊥` (a logical equivalence). The gates
     // reject `ConceptExpr::Not` outright, so one negated GCI routes an
     // otherwise-EL ontology onto the O(n²) hybrid path; the lowered-⊥ form is
@@ -2699,7 +2783,9 @@ pub fn convert_ontology<A: ForIRI>(
     // ConjunctiveUnsat rule. Runs on the fully populated IR, and BEFORE any NNF
     // view is taken — `nnf_axioms` would already have turned `¬(A ⊓ B)` into an
     // `Or`. Gated RUSTDL_NEG_TO_BOT_GCI (default ON).
-    let _ = crate::negation_gci::rewrite_negated_supers(&mut out);
+    if !conversion_cut() {
+        let _ = crate::negation_gci::rewrite_negated_supers(&mut out);
+    }
     // HF3: decompose role chains longer than 2 legs into a cascade of
     // 2-leg chains using fresh auxiliary roles, so both the wedge
     // clausifier (which only encodes 2-leg chains) and the main tableau
@@ -2707,7 +2793,9 @@ pub fn convert_ontology<A: ForIRI>(
     // vocabulary is fully populated; allocates aux roles IN the vocabulary
     // so `num_roles()` grows and `build_role_hierarchy` / the engine stay
     // consistent. Sound + additive — see `decompose_long_chains`.
-    decompose_long_chains(&mut out);
+    if !conversion_cut() {
+        decompose_long_chains(&mut out);
+    }
     // Functional object-property ENFORCEMENT for the tableau + hypertableau
     // wedge. `FunctionalRole(R)` is read by the EL saturator's bitset
     // machinery (classify), but the wedge clausifier DROPS it and the main
@@ -2743,8 +2831,10 @@ pub fn convert_ontology<A: ForIRI>(
     // no derived-functional role gains an enforcement GCI. The materialisation half is
     // unaffected because it fires on a role whose functionality is DECLARED, so the `≤1`
     // GCI it needs already exists.
-    derive_functional_max_cardinality(&mut out);
-    derive_inverse_pair_functionality(&mut out);
+    if !conversion_cut() {
+        derive_functional_max_cardinality(&mut out);
+        derive_inverse_pair_functionality(&mut out);
+    }
     out.axioms.sort();
     Ok(out)
 }
@@ -4615,6 +4705,9 @@ fn seed_disjoint_bucket<R>(
 ) {
     let Some(comp) = components else {
         for (i, (a_cid, a_r)) in keys.iter().enumerate() {
+            if conversion_cut() {
+                return;
+            }
             for (b_cid, b_r) in keys.iter().skip(i + 1) {
                 if disjoint(a_r, b_r) {
                     let a = out.concepts.atomic(*a_cid);
@@ -4775,6 +4868,9 @@ fn seed_disjoint_bucket<R>(
             });
             if !vo.is_empty() {
                 for (i, &a_idx) in rest.iter().enumerate() {
+                    if conversion_cut() {
+                        break;
+                    }
                     for &b_idx in &rest[i + 1..] {
                         try_emit(a_idx, b_idx, Some(c));
                     }
@@ -4796,12 +4892,18 @@ fn seed_disjoint_bucket<R>(
             }
         }
         for (i, &a_idx) in group.iter().enumerate() {
+            if conversion_cut() {
+                break;
+            }
             for &b_idx in &group[i + 1..] {
                 try_emit(a_idx, b_idx, Some(c));
             }
         }
     }
     for (i, &a_idx) in global.iter().enumerate() {
+        if conversion_cut() {
+            break;
+        }
         for &b_idx in &global[i + 1..] {
             try_emit(a_idx, b_idx, None);
         }
@@ -4890,6 +4992,9 @@ fn seed_bucket<R>(
     subset: impl Fn(&R, &R) -> bool,
 ) {
     for (i, (sub_cid, sub_r)) in keys.iter().enumerate() {
+        if conversion_cut() {
+            return;
+        }
         for (j, (sup_cid, sup_r)) in keys.iter().enumerate() {
             if i == j {
                 continue;

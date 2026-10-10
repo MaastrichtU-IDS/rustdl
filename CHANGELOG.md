@@ -26,6 +26,15 @@ All notable changes to rustdl are documented here. Format is based on
   returning a sound partial answer flagged incomplete, possibly empty. At
   `--global-timeout-ms 1000`: `ore_ont_345` 119.7 s → 18.8 s (parse 14.7 s), `ore_ont_7507`
   99.3 s → 17.3 s, `ore_ont_12128` 62.2 s → 19.3 s.
+- **Hard mode now holds conversion to the deadline too (#162), `RUSTDL_CONVERT_DEADLINE`, default
+  ON (`=0` reverts; inert without `RUSTDL_HARD_GLOBAL_DEADLINE=1` and a global budget).**
+  Conversion polls the deadline: before the component sort, every 1,024 components in the main
+  loop, and in the outer loops of the DKey seeding. It skips every later derivation pass once the
+  deadline has passed. A cut conversion is a subset of the axioms, so the answer stays sound. It is
+  flagged `conversion_timed_out` and `prep_timed_out`, and is incomplete. At
+  `--global-timeout-ms 1000` in hard mode: `ore_ont_4141` 102.8 s → 1.9 s, `ore_ont_5368`
+  32.3 s → 1.3 s, `ore_ont_16632` 11.1 s → 1.2 s. `ore_ont_12898` 98 s → 74 s, all of it now
+  parsing (69 s), which still cannot be interrupted.
 
 ### Fixed
 - **`--global-timeout-ms` now bounds the classify inconsistency pre-check (#162, partial).**

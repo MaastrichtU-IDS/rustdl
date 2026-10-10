@@ -1424,7 +1424,7 @@ fn classify_internal_with_timeout_impl(
     // reporting `"consistent": true` where `rustdl consistent` reports
     // `inconsistent`.
     if crate::classify_inconsistency_enabled()
-        && crate::classify_inconsistency_precheck(internal, &closure)
+        && crate::classify_inconsistency_precheck(internal, &closure, None)
     {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("classify: KB inconsistent (pre-check)");
@@ -3760,7 +3760,7 @@ fn classify_top_down_internal_impl(
     // reporting `"consistent": true` where `rustdl consistent` reports
     // `inconsistent`.
     if crate::classify_inconsistency_enabled()
-        && crate::classify_inconsistency_precheck(internal, &closure)
+        && crate::classify_inconsistency_precheck(internal, &closure, global_deadline)
     {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("classify: KB inconsistent (pre-check)");

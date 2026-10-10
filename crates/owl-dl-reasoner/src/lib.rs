@@ -3262,21 +3262,43 @@ pub(crate) fn abox_saturation_inconsistent_bounded(
 ///
 /// A negative verdict is *not* a claim of consistency: both signals are
 /// under-approximations, so the caller proceeds exactly as before.
+///
+/// **`global_deadline` (#162):** the two bounded routes (`ABox` saturation and the
+/// wedge) run against the EARLIER of their own budget and the caller's global
+/// deadline. Without this, `--global-timeout-ms 500` on `ore_ont_1043` spent
+/// 12.9 s here alone, the wedge route running out its full adaptive 12 s budget.
+/// If the global deadline has already passed, both routes are skipped and
+/// consistency is reported undetermined on an `ABox`-bearing KB. Sound either
+/// way: a skipped or cut route yields no verdict, never an inconsistency.
 pub(crate) fn classify_inconsistency_precheck(
     internal: &InternalOntology,
     closure: &owl_dl_saturation::Subsumers,
+    global_deadline: Option<std::time::Instant>,
 ) -> bool {
-    closure.globally_inconsistent()
-        || closure.top_is_unsat()
-        || abox_saturation_inconsistent_bounded(
-            internal,
-            match classify_inconsistency_budget_ms(internal) {
-                0 => None,
-                ms => Some(std::time::Duration::from_millis(ms)),
-            },
-        )
-        || classify_wedge_inconsistent(internal)
-        || reflexive_empty_clause_inconsistent(internal)
+    if closure.globally_inconsistent() || closure.top_is_unsat() {
+        return true;
+    }
+    let now = std::time::Instant::now();
+    let own = match classify_inconsistency_budget_ms(internal) {
+        0 => None,
+        ms => Some(now + std::time::Duration::from_millis(ms)),
+    };
+    let deadline = match (own, global_deadline) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    if deadline.is_some_and(|d| d <= now) {
+        if internal_has_individuals(internal) {
+            CONSISTENCY_UNDETERMINED.with(|f| f.set(true));
+        }
+    } else if abox_saturation_inconsistent_bounded(
+        internal,
+        deadline.map(|d| d.saturating_duration_since(now)),
+    ) || classify_wedge_inconsistent(internal, deadline)
+    {
+        return true;
+    }
+    reflexive_empty_clause_inconsistent(internal)
 }
 
 /// A syntactic inconsistency certificate from the wedge clausifier (#194).
@@ -3362,18 +3384,17 @@ pub(crate) fn take_consistency_undetermined() -> bool {
 /// The wedge half of [`classify_inconsistency_precheck`]. `true` only on a
 /// witnessed `Unsat`: `Sat` and `Stalled` both mean "no clash seen here", which is
 /// the same sound under-approximation classify already made.
-fn classify_wedge_inconsistent(internal: &InternalOntology) -> bool {
+fn classify_wedge_inconsistent(
+    internal: &InternalOntology,
+    deadline: Option<std::time::Instant>,
+) -> bool {
     if !classify_wedge_inconsistency_enabled()
         || !wedge_consistency_enabled()
         || !internal_has_individuals(internal)
     {
         return false;
     }
-    let budget = match classify_inconsistency_budget_ms(internal) {
-        0 => None,
-        ms => Some(std::time::Instant::now() + std::time::Duration::from_millis(ms)),
-    };
-    let verdict = ConsistencyCache::build(internal).decide(budget);
+    let verdict = ConsistencyCache::build(internal).decide(deadline);
     if verdict == owl_dl_tableau::hyper::HyperResult::Stalled {
         CONSISTENCY_UNDETERMINED.with(|f| f.set(true));
     }

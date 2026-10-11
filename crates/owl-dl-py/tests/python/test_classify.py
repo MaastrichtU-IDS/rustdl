@@ -135,8 +135,11 @@ def test_prep_timed_out_is_its_own_signal(tmp_path, monkeypatch):
     msgs = incomplete_warnings(rec)
     assert len(msgs) == 1 and "preparation" in msgs[0], msgs
 
-    # With the conversion deadline on, the 1 ms budget (spent by parsing) stops
-    # conversion at its first poll: one warning, naming conversion.
+    # With the conversion deadline on, conversion is cut too. In Python the
+    # budget starts after loading, so parsing does not spend it; the component
+    # sort and the first 1,024-component batch do, and every `∃r.B_i ⊑ C_i`
+    # sorts after the 3,000 `A_i` axioms, so none is read. One warning, naming
+    # conversion.
     monkeypatch.setenv("RUSTDL_CONVERT_DEADLINE", "1")
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")

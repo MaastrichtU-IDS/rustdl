@@ -3538,6 +3538,31 @@ mod tests {
     }
 
     #[test]
+    fn rollback_keeps_had_child_in_step_with_the_nodes() {
+        // Nodes created after a checkpoint are truncated on rollback, and the
+        // flag vector must shrink with them so a reused index starts clean.
+        // Then redo the re-parent case on the reused indices.
+        let pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let mut ctx = TableauContext::new(&pool);
+        let root = ctx.new_node();
+        let cp = ctx.checkpoint();
+        let a = ctx.new_node();
+        let _ = ctx.new_successor(a, r);
+        let b = ctx.new_node();
+        assert!(ctx.merge_into(a, b));
+        ctx.rollback_to(cp);
+        assert_eq!(ctx.graph.had_child.len(), ctx.graph.len());
+        let a = ctx.new_node();
+        let c = ctx.new_successor(a, r);
+        let b = ctx.new_node();
+        assert!(ctx.merge_into(a, b));
+        assert!(ctx.merge_into(b, root));
+        assert_eq!(ctx.graph.node(c).parent(), Some(root));
+        assert_eq!(ctx.graph.had_child.len(), ctx.graph.len());
+    }
+
+    #[test]
     fn merge_into_does_not_create_parent_pointer_cycle() {
         // root —r→ s1 —r→ s2 —r→ s3. Merge s1 into s3: step 5 re-parents
         // s1's child s2 to s3 — but s3's ancestor chain already reaches

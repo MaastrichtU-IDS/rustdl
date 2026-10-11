@@ -116,3 +116,59 @@ fn the_named_only_closure_misses_it() {
         "with the flag off nothing else derives P ⊑ G here"
     );
 }
+
+/// The fragment gates admit a bare `InverseObjectProperties` only when both
+/// roles are unread (`RUSTDL_FRAGMENT_BARE_DECL`). The signed closure DOES read
+/// such declarations: here it derives `a ⊑ d` (`a ⊑ p`, `p⁻ = q`, `q ⊑ c`,
+/// `c⁻ = d`). Nothing reads `d`, so the ontology must stay on the pure-EL fast
+/// path and classify identically with the flag on and off.
+#[test]
+fn a_gated_ontology_is_unchanged_by_the_signed_closure() {
+    const GATED: &str = "Prefix(:=<http://t/>)
+Ontology(<http://t/g>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))
+Declaration(ObjectProperty(:a)) Declaration(ObjectProperty(:p))
+Declaration(ObjectProperty(:q)) Declaration(ObjectProperty(:c))
+Declaration(ObjectProperty(:d))
+SubClassOf(:A ObjectSomeValuesFrom(:a :B))
+SubObjectPropertyOf(:a :p)
+InverseObjectProperties(:p :q)
+SubObjectPropertyOf(:q :c)
+InverseObjectProperties(:c :d)
+)
+";
+    let run = |signed: Option<&str>| {
+        let _g = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _s = SetEnvGuard::set("RUSTDL_SAT_SIGNED_ROLE_SUPER", signed);
+        let (onto, _): (SetOntology<RcStr>, _) = read_ofn(
+            &mut Cursor::new(GATED.to_owned()),
+            ParserConfiguration::default(),
+        )
+        .unwrap();
+        let c = owl_dl_reasoner::classify(&onto).unwrap();
+        let mut rows: Vec<(String, Vec<String>)> = c
+            .classes()
+            .iter()
+            .map(|x| {
+                let mut s: Vec<String> = c
+                    .direct_subsumers(x)
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                s.sort();
+                (x.to_string(), s)
+            })
+            .collect();
+        rows.sort();
+        (c.stats().pure_el_mode, rows)
+    };
+    let (on_pure, on_rows) = run(None);
+    let (off_pure, off_rows) = run(Some("0"));
+    assert!(
+        on_pure && off_pure,
+        "the bare declarations keep the fast path"
+    );
+    assert_eq!(on_rows, off_rows);
+}

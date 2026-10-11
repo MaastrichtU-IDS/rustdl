@@ -6,6 +6,8 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.38] — 2026-10-11
+
 ### Changed
 - **Bump horned-owl 3.0 → 4.0.** API migration only in rustdl: the RDF reader's `read`
   now takes `RDFParserConfiguration` (bridged from `ParserConfiguration` via `.into()`)

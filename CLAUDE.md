@@ -115,6 +115,12 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; w
 > ~38 s means a pre-v0.4.19 binary; near ~74 s means pre-v0.4.18. A wine that DNFs unbounded is now itself the
 > stale-binary signal.
 >
+> **RE-MEASURED 2026-10-11 (v0.4.38 release): `wine` is ~13 s at the default, not ~2.7 s** —
+> 13.2–13.3 CPU-s and ~13 s wall, single-threaded or default threads, on the coder host. The
+> v0.4.37 tag measures the SAME (13.2 CPU-s), so the move happened somewhere between v0.4.19
+> and v0.4.37, not in v0.4.38; it was not bisected. Until it is, treat **~13 s** as current
+> and a ~2.7 s wine as either an older binary or a different host.
+>
 > **Cause:** `HYPER_WEDGE_DEPTH = 256` was a fixed constant, and a fixed constant is wrong in
 > both directions — `ore_ont_10407` genuinely needs depth **319** (at 256 it does **4.4× more work
 > than completing**, because a capped branch cannot conclude so the search re-descends through

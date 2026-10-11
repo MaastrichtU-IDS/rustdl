@@ -5266,8 +5266,9 @@ pub(crate) fn freeze_role_super(closure: &HashMap<RoleId, HashSet<RoleId>>) -> V
 /// - `SubObjectPropertyOf(r, s)` with both sides named.
 /// - `EquivalentObjectProperties(rs)` decomposed pairwise.
 ///
-/// Inverse-role sub-properties are ignored — Phase 6's EL scope is
-/// named-roles only. Role chain LHS sub-properties are likewise
+/// Inclusions that hold only through inverses or symmetry (`memberOf ⊑ eltOf`
+/// from `hasMember ⊑ hasElt` and the two declared inverse pairs) are added by
+/// [`add_signed_named_inclusions`] (#180). Role chain LHS sub-properties are
 /// ignored: chain semantics belong to the tableau path.
 fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<RoleId>> {
     let num_roles = internal.vocabulary.num_roles();
@@ -5321,6 +5322,9 @@ fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<Role
             _ => {}
         }
     }
+    if sat_signed_role_super_enabled() {
+        add_signed_named_inclusions(internal, &mut bs);
+    }
     // Floyd-Warshall transitive closure on the bitset matrix:
     // for each intermediate node k, for each source i, if i reaches k,
     // union row i with row k (reaching everything k reaches).
@@ -5345,6 +5349,107 @@ fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<Role
         closure.insert(r, set);
     }
     closure
+}
+
+/// #180: whether [`build_role_super`] also takes the named inclusions that hold
+/// only through declared inverses or symmetry. DEFAULT ON (`=0` reverts).
+fn sat_signed_role_super_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_SIGNED_ROLE_SUPER").is_none_or(|v| v != "0")
+}
+
+/// #180: add to `bs` (direct named edges, row `r` = roles `s` with `r ⊑ s`) every
+/// named inclusion `r ⊑ s` that follows from the role axioms over SIGNED roles but
+/// not from the named ones alone. Example: `hasMember ⊑ hasElt` with
+/// `memberOf ≡ hasMember⁻` and `eltOf ≡ hasElt⁻` gives `memberOf ⊑ eltOf`, so a
+/// domain on `eltOf` applies to `memberOf`-successors' sources.
+///
+/// Sources, as in the tableau's signed closure: `SubObjectPropertyOf(a, b)` (role,
+/// not chain) gives `a ⊑ b` and `a⁻ ⊑ b⁻`; `EquivalentObjectProperties` both ways;
+/// `InverseObjectProperties(a, b)` gives `b ≡ a⁻`; `SymmetricObjectProperty(x)`
+/// gives `x ≡ x⁻`. Each is a logical identity, so every inclusion added holds in
+/// every model: sound. Only inclusions between two POSITIVE roles are kept, since
+/// the saturator's facts are on named roles.
+///
+/// Skipped (no cost, `bs` untouched) when no axiom mentions an inverse or symmetry:
+/// then the signed closure projects to exactly the named one.
+fn add_signed_named_inclusions(internal: &InternalOntology, bs: &mut [FixedBitSet]) {
+    let n = bs.len();
+    let mentions_inverse = internal.axioms.iter().any(|ax| match ax {
+        Axiom::InverseObjectProperties(..) | Axiom::SymmetricRole(..) => true,
+        Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Role(a),
+            sup,
+        } => a.is_inverse() || sup.is_inverse(),
+        Axiom::EquivalentObjectProperties(rs) => rs.iter().any(|r| r.is_inverse()),
+        _ => false,
+    });
+    if !mentions_inverse {
+        return;
+    }
+    // Signed node: `2·id` for `r`, `2·id + 1` for `r⁻`. Sparse adjacency and one
+    // BFS per POSITIVE source (the only rows kept), with a reused visited buffer as
+    // in `RoleHierarchyBuilder::build`. A Floyd-Warshall over the 2n signed nodes
+    // was measured at 2x classify CPU on `ore_ont_1270` (11,312 roles).
+    let node = |r: Role| -> Option<usize> {
+        let i = r.role_id().index() as usize;
+        (i < n).then(|| 2 * i + usize::from(r.is_inverse()))
+    };
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); 2 * n];
+    // `a ⊑ b`, and with it `a⁻ ⊑ b⁻`.
+    let mut both = |a: Role, b: Role| {
+        for (x, y) in [(a, b), (a.flip(), b.flip())] {
+            if let (Some(x), Some(y)) = (node(x), node(y)) {
+                adj[x].push(y);
+            }
+        }
+    };
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Role(a),
+                sup,
+            } => both(*a, *sup),
+            Axiom::EquivalentObjectProperties(rs) => {
+                for a in rs {
+                    for b in rs {
+                        if a != b {
+                            both(*a, *b);
+                        }
+                    }
+                }
+            }
+            Axiom::InverseObjectProperties(a, b) => {
+                both(*b, a.flip());
+                both(a.flip(), *b);
+            }
+            Axiom::SymmetricRole(x) => both(*x, x.flip()),
+            _ => {}
+        }
+    }
+    let mut visited = vec![false; 2 * n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut reached: Vec<usize> = Vec::new();
+    for (i, row) in bs.iter_mut().enumerate() {
+        if adj[2 * i].is_empty() {
+            continue;
+        }
+        stack.push(2 * i);
+        while let Some(x) = stack.pop() {
+            if visited[x] {
+                continue;
+            }
+            visited[x] = true;
+            reached.push(x);
+            stack.extend(adj[x].iter().copied().filter(|&y| !visited[y]));
+        }
+        for &x in &reached {
+            visited[x] = false;
+            if x % 2 == 0 {
+                row.insert(x / 2);
+            }
+        }
+        reached.clear();
+    }
 }
 
 #[cfg(test)]
@@ -5920,6 +6025,104 @@ Ontology(<http://rustdl.test/test>\n\
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "A"), class(&internal, "B")));
         assert!(subs.contains(class(&internal, "A"), class(&internal, "C")));
+    }
+
+    /// #180: `hasMember ⊑ hasElt` with `memberOf ≡ hasMember⁻` and
+    /// `eltOf ≡ hasElt⁻` entails `memberOf ⊑ eltOf`, so `eltOf`'s domain applies
+    /// to `P ⊑ ∃memberOf.Z`. The named-only closure missed it.
+    #[test]
+    fn signed_closure_carries_a_domain_through_two_inverse_pairs() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:P)) Declaration(Class(:Z)) Declaration(Class(:G))\n\
+    Declaration(ObjectProperty(:memberOf)) Declaration(ObjectProperty(:hasMember))\n\
+    Declaration(ObjectProperty(:hasElt)) Declaration(ObjectProperty(:eltOf))\n\
+    SubObjectPropertyOf(:hasMember :hasElt)\n\
+    InverseObjectProperties(:hasElt :eltOf)\n\
+    InverseObjectProperties(:hasMember :memberOf)\n\
+    ObjectPropertyDomain(:eltOf :G)\n\
+    SubClassOf(:P ObjectSomeValuesFrom(:memberOf :Z))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "P"), class(&internal, "G")));
+    }
+
+    /// FP guard for the test above: `hasMember` itself is NOT a sub-role of
+    /// `eltOf` (it is a sub-role of `eltOf⁻`), so `eltOf`'s domain lands on the
+    /// `hasMember`-successor, never on `P`.
+    #[test]
+    fn signed_closure_keeps_polarity_for_the_forward_role() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:P)) Declaration(Class(:Z)) Declaration(Class(:G))\n\
+    Declaration(ObjectProperty(:hasMember)) Declaration(ObjectProperty(:hasElt))\n\
+    Declaration(ObjectProperty(:eltOf))\n\
+    SubObjectPropertyOf(:hasMember :hasElt)\n\
+    InverseObjectProperties(:hasElt :eltOf)\n\
+    ObjectPropertyDomain(:eltOf :G)\n\
+    SubClassOf(:P ObjectSomeValuesFrom(:hasMember :Z))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(!subs.contains(class(&internal, "P"), class(&internal, "G")));
+    }
+
+    /// FP guard: a declared inverse pair alone makes `q ≡ p⁻`, not `q ⊑ p`.
+    #[test]
+    fn signed_closure_does_not_equate_a_role_with_its_inverse() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:P)) Declaration(Class(:Z)) Declaration(Class(:G))\n\
+    Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+    InverseObjectProperties(:p :q)\n\
+    ObjectPropertyDomain(:p :G)\n\
+    SubClassOf(:P ObjectSomeValuesFrom(:q :Z))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(!subs.contains(class(&internal, "P"), class(&internal, "G")));
+    }
+
+    /// Symmetry crosses polarity: `Symmetric(p)` and `q ≡ p⁻` give `q ≡ p`.
+    #[test]
+    fn signed_closure_uses_symmetry() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:P)) Declaration(Class(:Z)) Declaration(Class(:G))\n\
+    Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+    InverseObjectProperties(:p :q)\n\
+    SymmetricObjectProperty(:p)\n\
+    ObjectPropertyDomain(:p :G)\n\
+    SubClassOf(:P ObjectSomeValuesFrom(:q :Z))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "P"), class(&internal, "G")));
+    }
+
+    /// An inverse on the sub side of a told inclusion: `a⁻ ⊑ b` with `c ≡ a⁻`
+    /// gives `c ⊑ b`.
+    #[test]
+    fn signed_closure_reads_an_inverse_sub_role_axiom() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:P)) Declaration(Class(:Z)) Declaration(Class(:G))\n\
+    Declaration(ObjectProperty(:a)) Declaration(ObjectProperty(:b))\n\
+    Declaration(ObjectProperty(:c))\n\
+    SubObjectPropertyOf(ObjectInverseOf(:a) :b)\n\
+    InverseObjectProperties(:a :c)\n\
+    ObjectPropertyDomain(:b :G)\n\
+    SubClassOf(:P ObjectSomeValuesFrom(:c :Z))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "P"), class(&internal, "G")));
     }
 
     #[test]

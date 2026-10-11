@@ -45,6 +45,15 @@ All notable changes to rustdl are documented here. Format is based on
   parsing (69 s), which still cannot be interrupted.
 
 ### Fixed
+- **The EL saturator's role hierarchy now follows declared inverses and symmetry (#180),
+  `RUSTDL_SAT_SIGNED_ROLE_SUPER`, default ON (`=0` reverts).** Its role closure was named-only,
+  so `hasMember ⊑ hasElt` with `memberOf ≡ hasMember⁻` and `eltOf ≡ hasElt⁻` never gave
+  `memberOf ⊑ eltOf`, and a domain on `eltOf` never reached `memberOf`'s sources. The pair was
+  left to the wedge, which reads inverses only with Layer A on, and Layer A is off above its
+  closure cap. The closure now runs over signed roles (each source is a logical identity, so
+  this is sound) and keeps the inclusions between named roles. Recovers `JewishPerson ⊑ Group`
+  and `Rabbi ⊑ Group` on both COSMO variants `ore_ont_16420` and `ore_ont_9577` (Konclude
+  confirms; FP 0).
 - **`--global-timeout-ms` now bounds the classify inconsistency pre-check (#162, partial).**
   Its `ABox`-saturation and wedge routes ran against their own adaptive budget (up to 12 s)
   whatever the global budget said: `ore_ont_1043` at 500 ms spent 12.9 s there (18.2 s total,

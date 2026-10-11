@@ -4195,3 +4195,18 @@ pub fn hyper_fixpoint_deadline_enabled() -> bool {
 pub fn reseed_verify_enabled() -> bool {
     std::env::var_os("RUSTDL_RESEED_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
 }
+
+/// Where the #137 net runs inside the wedge search (`RUSTDL_RESEED_AT_LEAF`,
+/// **default ON**; `=0` reverts to re-seeding at every frame's fixpoint). ON: the
+/// branching search skips the net at intermediate frames and runs it once where a
+/// frame would conclude `Sat`. Missing facts can only make a branch look MORE
+/// satisfiable, so deferring the net to the `Sat` point loses no verdict; it only
+/// stops every branch frame from paying a full re-seed (5-7x CPU on
+/// `ore_ont_4903` / `ore_ont_8911`). Intermediate frames still re-seed on an
+/// exponential back-off (every frame after a recovery, doubling the gap after
+/// each empty re-seed), which keeps the early pruning on searches that do have a
+/// missing trigger. See `hyper::HyperEngine::solve_inner`.
+#[must_use]
+pub fn reseed_at_leaf_enabled() -> bool {
+    std::env::var_os("RUSTDL_RESEED_AT_LEAF").is_none_or(|v| v != "0")
+}

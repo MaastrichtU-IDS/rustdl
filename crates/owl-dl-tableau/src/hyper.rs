@@ -108,6 +108,10 @@ const MATCH_DEADLINE_STRIDE: u64 = 4096;
 const FIXPOINT_DEADLINE_STRIDE: usize = 256;
 const FIXPOINT_ITERS: usize = 100_000;
 
+/// Upper bound on the back-off interval for intermediate-frame #137 re-seeds
+/// under `RUSTDL_RESEED_AT_LEAF` (see `HyperEngine::solve_inner`).
+const RESEED_MAX_INTERVAL: u32 = 1024;
+
 /// Node id in the hyper completion graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HNode(u32);
@@ -757,6 +761,20 @@ pub struct HyperEngine<'c> {
     /// Re-entrancy guard for the #137 completeness net, keeping the re-seed
     /// recursion exactly one level deep.
     reseed_verify_active: bool,
+    /// `RUSTDL_RESEED_AT_LEAF`: run the #137 net at the search's `Sat` points
+    /// instead of at every frame's fixpoint.
+    reseed_at_leaf: bool,
+    /// Set by `solve_inner` around its own `horn_fixpoint` call when
+    /// `reseed_at_leaf` is on, so that call skips the net (the frame runs it at
+    /// its `Sat` point instead).
+    reseed_deferred: bool,
+    /// Back-off schedule for intermediate-frame re-seeds under `reseed_at_leaf`:
+    /// frames skip the net while `reseed_skip_left > 0`, then one frame runs it.
+    /// A re-seed that recovers facts resets `reseed_interval` to 1 (every frame);
+    /// one that finds nothing doubles it, up to `RESEED_MAX_INTERVAL`. Reset per
+    /// `decide`.
+    reseed_interval: u32,
+    reseed_skip_left: u32,
     /// Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`, via
     /// [`with_semantic_branching`]): opt-in in-search boolean constraint
     /// propagation at the `⊔` decision point — drop told-disjoint disjuncts and
@@ -1506,6 +1524,10 @@ impl<'c> HyperEngine<'c> {
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,
+            reseed_at_leaf: crate::reseed_at_leaf_enabled(),
+            reseed_deferred: false,
+            reseed_interval: 1,
+            reseed_skip_left: 0,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -1568,6 +1590,10 @@ impl<'c> HyperEngine<'c> {
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,
+            reseed_at_leaf: crate::reseed_at_leaf_enabled(),
+            reseed_deferred: false,
+            reseed_interval: 1,
+            reseed_skip_left: 0,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -2346,31 +2372,51 @@ impl<'c> HyperEngine<'c> {
         // merge-inherited `≤1`), and any further one the net catches should be
         // fixed at its trigger and pinned by
         // `owl-dl-cli/tests/incremental_fixpoint_identity.rs`.
-        if self.incremental_fixpoint && self.reseed_verify && !self.reseed_verify_active {
-            let before = self.graph_fingerprint();
-            self.reseed_verify_active = true;
-            self.seed_worklist_from_graph();
-            let r = self.horn_fixpoint(max_iters);
-            self.reseed_verify_active = false;
+        //
+        // Inside the branching search (`solve_inner`) the net is deferred to the
+        // frame's `Sat` point when `reseed_at_leaf` is on; see there.
+        if self.reseed_net_due() && !self.reseed_deferred {
+            let (r, changed) = self.run_reseed_net(max_iters);
             if !matches!(r, HyperResult::Sat) {
                 return r;
             }
-            // Count, do NOT assert. A nonzero count means a trigger is still
-            // missing somewhere — which is true today, so an assert here would
-            // fire on `pizza`. The count is the tracking signal for finding the
-            // remaining hole; the verdict is already correct either way.
-            if self.graph_fingerprint() != before {
-                self.stats.reseed_recovered += 1;
-                if std::env::var_os("RUSTDL_RESEED_PROBE").is_some() {
-                    eprintln!(
-                        "RESEED_PROBE: incremental drain left work undone \
-                         (recovered by the #137 net); a rule premise arrived \
-                         without a trigger"
-                    );
-                }
+            if changed {
+                self.note_reseed_recovered();
             }
         }
         HyperResult::Sat
+    }
+
+    /// Whether the #137 net applies at this point: incremental drain, net
+    /// enabled, and not already inside a net re-drain.
+    fn reseed_net_due(&self) -> bool {
+        self.incremental_fixpoint && self.reseed_verify && !self.reseed_verify_active
+    }
+
+    /// One pass of the #137 net: re-seed from the graph and re-drain. Returns
+    /// the drain's verdict and whether the graph changed.
+    fn run_reseed_net(&mut self, max_iters: usize) -> (HyperResult, bool) {
+        let before = self.graph_fingerprint();
+        self.reseed_verify_active = true;
+        self.seed_worklist_from_graph();
+        let r = self.horn_fixpoint(max_iters);
+        self.reseed_verify_active = false;
+        (r, self.graph_fingerprint() != before)
+    }
+
+    /// Count, do NOT assert. A nonzero count means a trigger is still missing
+    /// somewhere — which is true today, so an assert here would fire on `pizza`.
+    /// The count is the tracking signal for finding the remaining hole; the
+    /// verdict is already correct either way.
+    fn note_reseed_recovered(&mut self) {
+        self.stats.reseed_recovered += 1;
+        if std::env::var_os("RUSTDL_RESEED_PROBE").is_some() {
+            eprintln!(
+                "RESEED_PROBE: incremental drain left work undone \
+                 (recovered by the #137 net); a rule premise arrived \
+                 without a trigger"
+            );
+        }
     }
 
     /// Clear the worklist and re-seed it from the full current graph
@@ -2742,6 +2788,8 @@ impl<'c> HyperEngine<'c> {
         self.stats = SearchStats::default();
         self.init_depth = max_depth;
         self.deadline = deadline;
+        self.reseed_interval = 1;
+        self.reseed_skip_left = 0;
         self.at_most_exhaust_probe = std::env::var_os("RUSTDL_AT_MOST_EXHAUST_PROBE")
             .is_some_and(|v| v != "0" && !v.is_empty());
         // Incremental mode: the root query graph is built by direct field
@@ -3135,6 +3183,10 @@ impl<'c> HyperEngine<'c> {
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,
+            reseed_at_leaf: crate::reseed_at_leaf_enabled(),
+            reseed_deferred: false,
+            reseed_interval: 1,
+            reseed_skip_left: 0,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -3306,7 +3358,27 @@ impl<'c> HyperEngine<'c> {
                 );
             }
         }
-        match self.horn_fixpoint(FIXPOINT_ITERS) {
+        // #137 net placement (`RUSTDL_RESEED_AT_LEAF`): skip it in this frame's
+        // fixpoint and run it once at the `Sat` point at the end of this function.
+        let prev_deferred = self.reseed_deferred;
+        let frame_reseeds = !self.reseed_at_leaf || self.reseed_skip_left == 0;
+        self.reseed_deferred = !frame_reseeds;
+        let recovered_before = self.stats.reseed_recovered;
+        let fixpoint = self.horn_fixpoint(FIXPOINT_ITERS);
+        self.reseed_deferred = prev_deferred;
+        if self.reseed_at_leaf {
+            if frame_reseeds {
+                self.reseed_interval = if self.stats.reseed_recovered > recovered_before {
+                    1
+                } else {
+                    (self.reseed_interval * 2).min(RESEED_MAX_INTERVAL)
+                };
+                self.reseed_skip_left = self.reseed_interval - 1;
+            } else {
+                self.reseed_skip_left -= 1;
+            }
+        }
+        match fixpoint {
             HyperResult::Unsat => return HyperResult::Unsat,
             HyperResult::Stalled => return HyperResult::Stalled,
             HyperResult::Sat => {}
@@ -3553,6 +3625,36 @@ impl<'c> HyperEngine<'c> {
             // the order-redundancy is removed. See
             // `docs/wedge-cardinality-clash-precheck.md`.
             return self.solve_at_most(node, &succs, n as usize, depth);
+        }
+        // #137 net, at the point this frame would conclude `Sat`. Facts only
+        // accumulate along a branch, so one re-seed here sees every premise an
+        // earlier frame's re-seed would have, and it can only ADD entailed facts:
+        // a clash means this branch is closed after all. If the re-seed added
+        // facts without a clash, re-examine the frame, since they may open a
+        // disjunction or violate a `≤n`. That terminates: each pass either finds
+        // no new fact or adds some to a bounded graph.
+        //
+        // Intermediate frames also re-seed, on the back-off schedule in this
+        // function's head: a clash the net finds near the root prunes the whole
+        // subtree below it, which is what keeps small nominal-heavy searches
+        // (`ore_ont_2182`, `16481`, `6272`) fast, while searches that never
+        // recover anything (`ore_ont_4903`, `8911`) back off to rare re-seeds.
+        // This leaf re-seed is the guarantee; the schedule is only pruning.
+        if self.reseed_at_leaf && self.reseed_net_due() {
+            let (r, changed) = self.run_reseed_net(FIXPOINT_ITERS);
+            if changed {
+                self.note_reseed_recovered();
+                self.reseed_interval = 1;
+                self.reseed_skip_left = 0;
+            }
+            match r {
+                HyperResult::Unsat => return HyperResult::Unsat,
+                HyperResult::Stalled => return HyperResult::Stalled,
+                HyperResult::Sat => {}
+            }
+            if changed {
+                return self.solve_inner(depth);
+            }
         }
         HyperResult::Sat
     }

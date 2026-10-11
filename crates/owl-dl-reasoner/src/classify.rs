@@ -2244,9 +2244,10 @@ fn is_pure_el_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
 ///
 /// # The problem
 ///
-/// The EL saturator has **no symmetry and no inverse rule at all** — grep
-/// `owl-dl-saturation` for `SymmetricRole` / `InverseObjectProperties`: neither
-/// variant is matched anywhere, so both are silently dropped. Admitting them to
+/// The EL saturator has **no symmetry and no inverse rule** — it reads the two
+/// variants only to close its role hierarchy over signed roles (#180,
+/// `RUSTDL_SAT_SIGNED_ROLE_SUPER`), which yields named inclusions but never the
+/// backward edge. Admitting them to
 /// a fragment gate unconditionally would therefore be a textbook D10 bug (gate
 /// certifies the closure complete while the engine drops the axiom): with
 /// `Symmetric(r)`, `A ⊑ ∃r.B` and `Range(r, E)` the backward edge `r(y, x)`
@@ -2290,6 +2291,14 @@ fn is_pure_el_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
 /// there either. ∎ `InverseObjectProperties(p, q)` is the same argument with
 /// `p^{M'}` and `q^{M'}` set to a common edge set and its converse; it requires
 /// **both** roles to be non-observable.
+///
+/// The saturator's signed role closure (#180) does read admitted declarations,
+/// and can derive a named `x ⊑ y` that crosses one. That cannot change an
+/// answer on a gated ontology: the gates reject every other signed source, so
+/// after the last crossing the path to `y` is told named `⊑` edges from a
+/// non-observable role, which makes `y` non-observable too (the hierarchy rule
+/// above). Nothing reads `y`, so the new inclusion has no consumer. Pinned by
+/// `sat_signed_role_super.rs`'s gated-ontology test.
 ///
 /// Polarity is ignored throughout (everything is keyed on `RoleId`): symmetry
 /// of `r⁻` is symmetry of `r`, and treating `r⁻`'s occurrences as `r`'s can

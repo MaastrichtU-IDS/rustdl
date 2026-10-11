@@ -873,13 +873,14 @@ fn classify_reports_a_hierarchy_blind_wedge_in_its_own_field() {
     );
 }
 
-/// #162: a preparation cut by the global deadline is reported in its own field.
+/// #162: a preparation or conversion cut by the global deadline is reported in
+/// its own field.
 /// The 3,000-rung EL ladder (`A_i ⊑ ∃r.B_i`, `∃r.B_i ⊑ C_i`) is the one
 /// `hard_global_deadline.rs` uses: every `A_i ⊑ C_i` must be derived, so a
 /// saturation stopped at once leaves nothing to report. A 1 ms budget is spent
 /// by parsing, so hard mode holds preparation to an already-passed deadline.
 #[test]
-fn classify_reports_a_cut_preparation_in_its_own_field() {
+fn classify_reports_a_cut_preparation_or_conversion_in_its_own_field() {
     use std::fmt::Write as _;
     let mut src = String::from("Prefix(:=<http://ex#>)\nOntology(\n");
     for i in 0..3000 {
@@ -889,12 +890,15 @@ fn classify_reports_a_cut_preparation_in_its_own_field() {
     src.push(')');
     let path = std::env::temp_dir().join(format!("rustdl-prep-cut-{}.ofn", std::process::id()));
     std::fs::write(&path, src).unwrap();
-    let run = |hard: &str| {
+    // `hard` lets conversion finish (`RUSTDL_CONVERT_DEADLINE=0`), so its cut
+    // lands in preparation; `conv` turns the conversion deadline on.
+    let run = |hard: &str, convert: &str| {
         let out = rustdl()
             .args(["classify", "--json", "--global-timeout-ms", "1"])
             .arg(&path)
             .env("RUSTDL_PREP_DEADLINE", "1")
             .env("RUSTDL_HARD_GLOBAL_DEADLINE", hard)
+            .env("RUSTDL_CONVERT_DEADLINE", convert)
             .output()
             .unwrap();
         assert!(
@@ -904,17 +908,41 @@ fn classify_reports_a_cut_preparation_in_its_own_field() {
         );
         serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
     };
-    let hard = run("1");
-    let soft = run("0");
+    let hard = run("1", "0");
+    let soft = run("0", "1");
+    let conv = run("1", "1");
     std::fs::remove_file(&path).ok();
 
     assert_eq!(hard["prep_timed_out"], true);
+    assert_eq!(
+        hard["conversion_timed_out"], false,
+        "a preparation cut is not a conversion cut"
+    );
     assert_eq!(hard["incomplete"], true, "a cut preparation is incomplete");
     assert_eq!(hard["consistency_undetermined"], true);
     assert_eq!(hard["completeness_guaranteed"], false);
 
-    // Default: the spent budget lets preparation finish, so nothing is cut.
+    // A 1 ms budget is spent by parsing, so with the conversion deadline on,
+    // hard mode stops conversion at its first poll: nothing is read.
+    assert_eq!(conv["conversion_timed_out"], true);
+    assert_eq!(
+        conv["prep_timed_out"], true,
+        "a conversion cut is a prep cut"
+    );
+    assert_eq!(conv["incomplete"], true);
+    assert_eq!(conv["completeness_guaranteed"], false);
+    assert!(
+        !conv["direct_subsumptions"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(["http://ex#A0", "http://ex#C0"])),
+        "nothing was converted, so nothing is derived"
+    );
+
+    // Default: the spent budget lets conversion and preparation finish, so
+    // nothing is cut, even with the conversion deadline on.
     assert_eq!(soft["prep_timed_out"], false);
+    assert_eq!(soft["conversion_timed_out"], false);
     assert!(
         soft["direct_subsumptions"]
             .as_array()

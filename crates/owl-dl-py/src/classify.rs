@@ -68,6 +68,17 @@ impl PyClassification {
         self.inner.stats().prep_timed_out
     }
 
+    /// True iff, with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the global deadline ran
+    /// out during conversion, so only part of the ontology was read (#162).
+    /// Axioms past the cut were neither reasoned over nor counted by
+    /// `dropped_axioms`, and classes they declare may be missing. Implies
+    /// `prep_timed_out` (and so `complete is False`). Never set in the default
+    /// mode, where conversion always finishes.
+    #[getter]
+    fn conversion_timed_out(&self) -> bool {
+        self.inner.stats().conversion_timed_out
+    }
+
     /// True iff the inconsistency pre-check reached no verdict: a route gave
     /// up, or was skipped because the global deadline had run out (#162).
     /// `inconsistent is False` then means "no clash found", not "proven

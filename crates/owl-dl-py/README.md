@@ -116,6 +116,9 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, 
 | `.inconsistent` | `bool` | whole ontology unsatisfiable |
 | `.complete` | `bool` | `False` if any pair hit the timeout (result may miss edges) |
 | `.timed_out_pairs` | `int` | how many pairs hit the timeout |
+| `.prep_timed_out` | `bool` | `True` if the global budget ran out during preparation, so only a partial saturation closure is reported (implies `.complete is False`) |
+| `.conversion_timed_out` | `bool` | `True` if, with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the budget ran out during conversion, so only part of the ontology was read (implies `.prep_timed_out`) |
+| `.consistency_undetermined` | `bool` | `True` if the inconsistency pre-check reached no verdict, so `.inconsistent is False` means "no clash found", not "proven consistent" |
 | `.wedge_hierarchy_blind` | `bool` | `True` if role-hierarchy matching was off (Layer A), so sub-role / inverse / symmetric entailments may be missing even with `.complete` |
 | `.is_subclass(sub, sup)` | `bool` | is `sub ⊑ sup` entailed? |
 | `.subclasses_of(cls)` | `list[str]` | every `D` with `D ⊑ cls` |

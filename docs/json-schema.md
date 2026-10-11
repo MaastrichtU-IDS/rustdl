@@ -7,7 +7,8 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 
 ```json
 { "schema_version": 1, "consistent": bool, "incomplete": bool,
-  "prep_timed_out": bool, "completeness_guaranteed": bool, "trusted_sat_refutations": int,
+  "prep_timed_out": bool, "conversion_timed_out": bool,
+  "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...] }
@@ -18,13 +19,21 @@ the hierarchy is sound (no false subsumptions) but may miss real ones.
 
 `prep_timed_out` = the `--global-timeout-ms` budget ran out during preparation
 (EL saturation or building the prepared ontology; parsing is never cut, and
-conversion is cut only with `RUSTDL_HARD_GLOBAL_DEADLINE=1`), so only a partial saturation closure is reported and consistency was
-not fully checked (`consistency_undetermined` is normally set too). Implies
+conversion is cut only with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, see
+`conversion_timed_out`), so only a partial saturation closure is reported and
+consistency was not fully checked (`consistency_undetermined` is normally set too). Implies
 `incomplete`. It can fire at the default settings, whenever the budget is still
 meetable when prep bounding is decided. By default a budget already spent at
 that point leaves preparation unbounded, and an empty partial closure is re-run
 unbounded; `RUSTDL_HARD_GLOBAL_DEADLINE=1` removes both fallbacks, so there the
 closure may be empty (#162).
+
+`conversion_timed_out` = with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the budget ran
+out while the ontology was being converted, so only part of it was read (#162).
+Axioms past the cut were neither reasoned over nor counted in `dropped`, and
+classes they declare may be missing from the output. Implies `prep_timed_out`,
+and so `incomplete`. Never set in the default mode, where conversion always
+finishes.
 
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where

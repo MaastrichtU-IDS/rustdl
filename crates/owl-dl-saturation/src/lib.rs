@@ -3755,12 +3755,24 @@ fn collect_el_rules(
         // common told superclass (ORE 6822: `EducationOrdering ≡ {…}` whose eight
         // members are typed `ehBachelor`, `eElementary`, …, all `⊑ … ⊑ Education`).
         // Sound: a told subsumer of an asserted type is a type of the member.
-        if oneof_told_closure_enabled() {
+        // Only individuals used as nominals can be enumeration members, so only they
+        // are closed: an ontology with a large ABox and no nominals pays nothing.
+        let enum_members: std::collections::HashSet<IndividualId> = pool
+            .iter_exprs()
+            .filter_map(|e| match e {
+                ConceptExpr::Nominal(ind) => Some(*ind),
+                _ => None,
+            })
+            .collect();
+        if oneof_told_closure_enabled() && !enum_members.is_empty() {
             let mut up: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
             for e in &rules.atomic_subsumptions {
                 up.entry(e.sub).or_default().push(e.sup);
             }
-            for types in asserted.values_mut() {
+            for (_, types) in asserted
+                .iter_mut()
+                .filter(|(ind, _)| enum_members.contains(ind))
+            {
                 let mut stack: Vec<ClassId> = types.iter().copied().collect();
                 while let Some(c) = stack.pop() {
                     for &s in up.get(&c).map_or(&[][..], Vec::as_slice) {

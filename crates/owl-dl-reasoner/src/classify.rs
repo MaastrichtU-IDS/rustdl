@@ -6109,9 +6109,10 @@ Ontology(<http://rustdl.test/test>\n\
                 continue;
             };
             let mut reader = Cursor::new(src);
-            let Ok((onto, _)) =
-                read::<RcStr, SetOntology<RcStr>, _>(&mut reader, ParserConfiguration::default())
-            else {
+            let Ok((onto, _)) = read::<RcStr, _, SetOntology<RcStr>, _>(
+                &mut reader,
+                ParserConfiguration::default(),
+            ) else {
                 println!("{line} PARSE_ERROR");
                 continue;
             };

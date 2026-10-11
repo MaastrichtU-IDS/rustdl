@@ -155,10 +155,10 @@ InverseObjectProperties(:c :d)
                 let mut s: Vec<String> = c
                     .direct_subsumers(x)
                     .into_iter()
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect();
                 s.sort();
-                (x.to_string(), s)
+                (x.clone(), s)
             })
             .collect();
         rows.sort();

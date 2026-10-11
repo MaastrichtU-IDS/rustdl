@@ -3734,9 +3734,9 @@ fn collect_el_rules(
     // FP LANDMINE: the intersection MUST be over ALL n members — a member with NO
     // asserted type is unconstrained (could be a non-`C`), so it contributes the EMPTY
     // set and collapses the intersection to ∅ (seed nothing). Guards: all disjuncts
-    // nominal (else `X` is not bounded by the enumeration), n ≥ 1. Under-approx: only
-    // ASSERTED member types (not the derived NomKey closure) — sufficient for the
-    // enumeration pattern; the derived version is deferred.
+    // nominal (else `X` is not bounded by the enumeration), n ≥ 1. Under-approx: the
+    // members' ASSERTED types, closed under told atomic subsumption
+    // (`RUSTDL_ONEOF_TOLD_CLOSURE`), not the full derived NomKey closure.
     if std::env::var_os("RUSTDL_ONEOF_SUBSUMER").is_none_or(|v| v != "0" && !v.is_empty()) {
         let pool = &internal.concepts;
         // member individual → set of atomic asserted types
@@ -3747,6 +3747,39 @@ fn collect_el_rules(
                 let entry = asserted.entry(*individual).or_default();
                 for sup in atomic_operands_on_right(*class, pool) {
                     entry.insert(sup);
+                }
+            }
+        }
+        // #180: close each member's asserted types under the atomic subsumptions
+        // collected so far, so members typed with DIFFERENT leaves still meet at a
+        // common told superclass (ORE 6822: `EducationOrdering ≡ {…}` whose eight
+        // members are typed `ehBachelor`, `eElementary`, …, all `⊑ … ⊑ Education`).
+        // Sound: a told subsumer of an asserted type is a type of the member.
+        // Only individuals used as nominals can be enumeration members, so only they
+        // are closed: an ontology with a large ABox and no nominals pays nothing.
+        let enum_members: std::collections::HashSet<IndividualId> = pool
+            .iter_exprs()
+            .filter_map(|e| match e {
+                ConceptExpr::Nominal(ind) => Some(*ind),
+                _ => None,
+            })
+            .collect();
+        if oneof_told_closure_enabled() && !enum_members.is_empty() {
+            let mut up: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+            for e in &rules.atomic_subsumptions {
+                up.entry(e.sub).or_default().push(e.sup);
+            }
+            for (_, types) in asserted
+                .iter_mut()
+                .filter(|(ind, _)| enum_members.contains(ind))
+            {
+                let mut stack: Vec<ClassId> = types.iter().copied().collect();
+                while let Some(c) = stack.pop() {
+                    for &s in up.get(&c).map_or(&[][..], Vec::as_slice) {
+                        if types.insert(s) {
+                            stack.push(s);
+                        }
+                    }
                 }
             }
         }
@@ -5351,6 +5384,13 @@ fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<Role
     closure
 }
 
+/// #180: whether the enumeration common-subsumer rule (`RUSTDL_ONEOF_SUBSUMER`)
+/// intersects the members' told-subsumer CLOSURES rather than only their asserted
+/// types. DEFAULT ON (`=0` reverts).
+fn oneof_told_closure_enabled() -> bool {
+    std::env::var_os("RUSTDL_ONEOF_TOLD_CLOSURE").is_none_or(|v| v != "0")
+}
+
 /// #180: whether [`build_role_super`] also takes the named inclusions that hold
 /// only through declared inverses or symmetry. DEFAULT ON (`=0` reverts).
 fn sat_signed_role_super_enabled() -> bool {
@@ -5931,6 +5971,54 @@ Ontology(<http://rustdl.test/oo>\n\
         assert!(
             subs.contains(class(&internal, "Y"), class(&internal, "C")),
             "Y ⊑ X ≡ {{a,b}} + a,b:C ⟹ Y ⊑ C (cascade)"
+        );
+    }
+
+    /// #180 (`RUSTDL_ONEOF_TOLD_CLOSURE`): members typed with DIFFERENT leaves that
+    /// share a told superclass. The ORE 6822 pattern (`EducationOrdering`).
+    #[test]
+    fn oneof_subsumer_meets_at_a_told_superclass() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/oo>\n\
+    Declaration(Class(:X)) Declaration(Class(:L1)) Declaration(Class(:L2))\n\
+    Declaration(Class(:M)) Declaration(Class(:C))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    SubClassOf(:L1 :C) SubClassOf(:L2 :M) SubClassOf(:M :C)\n\
+    ClassAssertion(:L1 :a) ClassAssertion(:L2 :b)\n\
+    EquivalentClasses(:X ObjectOneOf(:a :b))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "C")),
+            "X ≡ {{a,b}}, a:L1 ⊑ C, b:L2 ⊑ M ⊑ C ⟹ X ⊑ C"
+        );
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "M")),
+            "only b reaches M, so X ⊄ M (no FP)"
+        );
+    }
+
+    /// #180 FP guard: the told closure must not let one member's superclass stand
+    /// in for another member that never reaches it.
+    #[test]
+    fn oneof_subsumer_closure_needs_every_member() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/oo>\n\
+    Declaration(Class(:X)) Declaration(Class(:L1)) Declaration(Class(:L2))\n\
+    Declaration(Class(:C))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    SubClassOf(:L1 :C)\n\
+    ClassAssertion(:L1 :a) ClassAssertion(:L2 :b)\n\
+    EquivalentClasses(:X ObjectOneOf(:a :b))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "C")),
+            "b:L2 with L2 ⋢ C ⟹ X ⊄ C (no FP)"
         );
     }
 

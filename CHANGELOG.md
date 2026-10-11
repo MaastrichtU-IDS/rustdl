@@ -61,6 +61,15 @@ All notable changes to rustdl are documented here. Format is based on
   the preparation one, matching the CLI.
 
 ### Fixed
+- **An enumerated class now inherits a superclass its members share only through told
+  subsumption (#180), `RUSTDL_ONEOF_TOLD_CLOSURE`, default ON (`=0` reverts).** For
+  `X ≡ {a₁ … aₙ}`, the saturator seeds `X ⊑ C` for each `C` every member belongs to, but it
+  compared only the members' ASSERTED types. `ore_ont_6822` types its eight
+  `EducationOrdering` members with eight different leaves, all `⊑ … ⊑ Education`, so the
+  intersection was empty and `EducationOrdering ⊑ Education` (and two more pairs) were missed
+  with `incomplete: false`. The rule now closes each member's asserted types under the told
+  atomic subsumptions first. Sound: a told superclass of an asserted type is a type of the
+  member.
 - **The EL saturator's role hierarchy now follows declared inverses and symmetry (#180),
   `RUSTDL_SAT_SIGNED_ROLE_SUPER`, default ON (`=0` reverts).** Its role closure was named-only,
   so `hasMember ⊑ hasElt` with `memberOf ≡ hasMember⁻` and `eltOf ≡ hasElt⁻` never gave

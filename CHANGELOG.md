@@ -16,6 +16,34 @@ All notable changes to rustdl are documented here. Format is based on
   now classify.
 
 ### Added
+- **Two EL saturator rules that read declared inverses and symmetry (#180), both default ON.**
+  The saturator's role hierarchy is named-only, and the wedge reads inverses only with Layer A
+  on, which is off above its closure cap. So on `ore_ont_9786` (SIO) 13 entailments that
+  Konclude derives were missed. Both rules use the signed role hierarchy, built only when an
+  inverse or symmetry axiom exists.
+  - `RUSTDL_SAT_INVERSE_FORALL` (`=0` reverts): a told `A ⊑ ∀p.K` becomes the trigger
+    `∃s.A ⊑ K` for every named `s ⊑ p⁻`. This is the identity `∀p.K ≡ ¬∃p.¬K` read backwards,
+    so it is sound. It recovers `SIO_000022 ⊑ SIO_000004`.
+  - `RUSTDL_SAT_INVERSE_FUNC_MERGE` (`=0` reverts): from `X ⊑ ∃p.T`, `T ⊑ ∃s.B`, `p⁻ ⊑ f`,
+    `s ⊑ f` and `f` functional (or the inverse of an inverse-functional role), derive `X ⊑ B`.
+    The `T`-witness has both `x` and `b` as `f`-successors, so they are equal. It recovers the
+    other 12 (six classes, each `⊑ SIO_000003` and `⊑ SIO_999999`).
+  `ore_ont_9786` goes from 13 missed to 0, with no false positives against Konclude.
+  Two-arm sweep over the 584 ORE ontologies that have an inverse or symmetry axiom plus a `∀` or
+  a functional role (one pinned binary, both flags `=0` vs default, 60 s cap). 502 were
+  identical, 66 timed out in both arms, and 0 lost an entailment. Answers changed on 10, and
+  every flagged row was rechecked serially:
+  - 40 pairs gained on 8 ontologies, every one in 3 of 3 runs and in Konclude's closure:
+    `9786` (13), the COD family `4469`, `7730` (11 each), `12253`, `3843` (1 each), and the SIO
+    variants `12723`, `7532`, `9662` (1 each).
+  - `ore_ont_13647` goes from incomplete in 162 s to complete in 53 s, gaining 100 pairs. All
+    100 are Konclude-confirmed, and its closure now matches Konclude's exactly.
+  - `ore_ont_9654` goes from incomplete in 102 s to complete in 35 s. Konclude cannot load
+    it, so there is no oracle. The rules-off arm reaches the same 972-row answer only at
+    `--pair-timeout-ms 1000`.
+  - `12698` and `4911` were budget noise: the flagged pairs appear in both arms across 3 runs.
+  The four one-sided 60 s timeouts all finish in both arms when run serially. Two give
+  identical answers (cap noise); the other two are `13647` and `9654` above.
 - **Told definition matching (#139), `RUSTDL_TOLD_DEFINITION_MATCH`, default ON (`=0` reverts).**
   A conversion pass that derives `A ⊑ D` when `A` asserts every conjunct of a definition
   `D ≡ X₁ ⊓ … ⊓ Xₙ`, matching complex conjuncts by interned identity (through `A`'s told

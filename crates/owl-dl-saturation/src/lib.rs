@@ -68,7 +68,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use fixedbitset::FixedBitSet;
 use owl_dl_core::{
     Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, InternalOntology, Role,
-    RoleId, SubRolePath,
+    RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath,
 };
 
 use proof::{AxiomRef, DerivedFact, ElRule, Inference, ProofTrace};
@@ -147,6 +147,22 @@ fn el_bot_filler_enabled() -> bool {
     // DEFAULT ON since 0.4.8 (`=0` reverts). Closes a D10 bug: `X ⊑ ∃r.⊥` was certified
     // pure-EL-complete while the lowering dropped it, so `X` read as satisfiable.
     std::env::var_os("RUSTDL_EL_BOT_FILLER").is_none_or(|v| v != "0")
+}
+
+/// #180: lower a `∀R.K` key through declared inverses and symmetry into an
+/// existential trigger `∃S.Key(R,K) ⊑ K` for each named `S ⊑ R⁻`. Default
+/// **ON**; `RUSTDL_SAT_INVERSE_FORALL=0` opts out. See
+/// [`lower_inverse_forall_triggers`].
+fn sat_inverse_forall_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_INVERSE_FORALL").is_none_or(|v| v != "0")
+}
+
+/// #180: the functional merge across an inverse edge — `X ⊑ ∃R.T`,
+/// `T ⊑ ∃S.B`, `R⁻ ⊑ F`, `S ⊑ F`, `F` functional ⟹ `X ⊑ B`. Default **ON**;
+/// `RUSTDL_SAT_INVERSE_FUNC_MERGE=0` opts out. See
+/// [`collect_inverse_func_partners`].
+fn sat_inverse_func_merge_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_INVERSE_FUNC_MERGE").is_none_or(|v| v != "0")
 }
 
 /// Configuration for [`saturate_with_config`].
@@ -1758,8 +1774,63 @@ impl WorklistEngine {
 
     /// Fire all rules triggered by a freshly-added existential fact.
     #[allow(clippy::too_many_lines)]
+    /// #180 functional merge across an inverse edge. `fact` is either half of
+    /// the pattern `X ⊑ ∃R.T`, `T ⊑ ∃S.B` with `S ∈ inverse_func_partners[R]`:
+    /// the `T`-witness `t` has `x` (via `R⁻`) and its `S`-successor `b ∈ B` as
+    /// successors on one functional role, so `x = b` and `X ⊑ B`. Facts are
+    /// inherited down `⊑` (Phase 2d), so pairing exact `sub`/`target` matches
+    /// from both sides reaches the fixpoint. Only user-class heads are
+    /// concluded.
+    fn fire_inverse_func_merge(&mut self, fact: ExistentialFact) {
+        let mut out: Vec<(ExistentialFact, ExistentialFact)> = Vec::new();
+        if let Some(partners) = self.rules.inverse_func_partners.get(&fact.role) {
+            for &gidx in &self.facts_by_sub[fact.target.index() as usize] {
+                let g = self.facts[gidx];
+                if partners
+                    .binary_search_by_key(&g.role.index(), |r| r.index())
+                    .is_ok()
+                {
+                    out.push((fact, g));
+                }
+            }
+        }
+        if let Some(partners) = self.rules.inverse_func_partners_rev.get(&fact.role) {
+            for &hidx in &self.facts_by_target[fact.sub.index() as usize] {
+                let h = self.facts[hidx];
+                if partners
+                    .binary_search_by_key(&h.role.index(), |r| r.index())
+                    .is_ok()
+                {
+                    out.push((h, fact));
+                }
+            }
+        }
+        for (up, down) in out {
+            if (down.target.index() as usize) >= self.rules.num_user_classes {
+                continue;
+            }
+            if self.record_proofs && !self.subsumers.contains(up.sub, down.target) {
+                let inf = Inference {
+                    rule: ElRule::InverseFunctionalMerge,
+                    premise_facts: vec![
+                        DerivedFact::Exist(up.sub, up.role, up.target),
+                        DerivedFact::Exist(down.sub, down.role, down.target),
+                    ],
+                    axiom_refs: vec![],
+                };
+                if let Some(t) = self.proof_trace.as_mut() {
+                    t.record(DerivedFact::Sub(up.sub, down.target), inf);
+                }
+            }
+            self.enqueue_subsumer(up.sub, down.target);
+        }
+    }
+
     fn process_fact(&mut self, idx: usize) {
         let fact = self.facts[idx];
+        if !self.rules.inverse_func_partners.is_empty() {
+            self.fire_inverse_func_merge(fact);
+        }
         // Nominal/ABox transitive propagation: if `fact` is
         // `X ⊑ ∃R.{a}` (target is a NomKey) and `R` is transitive with
         // `a R⁺ b` in the ABox, derive `X ⊑ ∃R.{b}`. Sound: `X R a`,
@@ -2723,6 +2794,19 @@ struct ElRules {
     /// class X itself and classes with existentials on unrelated roles are unaffected.
     /// Inert on ontologies with no poisoned roles (the common case).
     poisoned_roles: HashSet<RoleId>,
+    /// #180 inverse-functional merge (`RUSTDL_SAT_INVERSE_FUNC_MERGE`):
+    /// `inverse_func_partners[R]` lists (sorted) every named `S` such that some
+    /// functional signed role `F` has `R⁻ ⊑ F` and `S ⊑ F`. A fact `X ⊑ ∃R.T` and
+    /// a fact `T ⊑ ∃S.B` then force `X ⊑ B`: the `T`-witness `t` has `x` as an
+    /// `F`-successor (via `R⁻`) and its `S`-successor `b ∈ B` as another, so
+    /// functionality gives `x = b`. Empty unless the signed hierarchy crosses
+    /// polarity into a functional role.
+    inverse_func_partners: HashMap<RoleId, Box<[RoleId]>>,
+    /// Reverse of `inverse_func_partners`: `S ↦` every `R` it partners.
+    inverse_func_partners_rev: HashMap<RoleId, Box<[RoleId]>>,
+    /// Number of user-declared classes (synthetic ids start here). The
+    /// inverse-functional merge only concludes named heads.
+    num_user_classes: usize,
 }
 
 impl ElRules {
@@ -3697,6 +3781,23 @@ fn collect_el_rules(
         supers.retain(|s| rules.is_functional(*s));
         supers.sort_unstable_by_key(|r| r.index());
         rules.functional_supers_of[r_idx] = supers;
+    }
+    rules.num_user_classes = internal.vocabulary.num_classes();
+
+    // #180: two rules that read the SIGNED role hierarchy, i.e. inclusions that
+    // cross polarity through declared inverses and symmetry. The named-only
+    // `role_super` cannot express `R ⊑ S⁻`, so both were invisible to the
+    // saturator. The hierarchy is built only when an axiom can cross polarity.
+    if (sat_inverse_forall_enabled() || sat_inverse_func_merge_enabled())
+        && has_polarity_axioms(internal)
+    {
+        let signed = build_signed_role_hierarchy(internal);
+        if sat_inverse_forall_enabled() {
+            lower_inverse_forall_triggers(&mut rules, &tseitin, &signed);
+        }
+        if sat_inverse_func_merge_enabled() {
+            collect_inverse_func_partners(&mut rules, internal, &signed);
+        }
     }
 
     // NOMINAL-FILLER TYPING (RUSTDL_NOMINAL_TYPING, **default ON**; `=0` to disable):
@@ -5303,6 +5404,142 @@ pub(crate) fn freeze_role_super(closure: &HashMap<RoleId, HashSet<RoleId>>) -> V
 /// from `hasMember ⊑ hasElt` and the two declared inverse pairs) are added by
 /// [`add_signed_named_inclusions`] (#180). Role chain LHS sub-properties are
 /// ignored: chain semantics belong to the tableau path.
+/// True if some axiom can make the signed role closure cross polarity: a
+/// declared inverse pair, a symmetric role, or a role inclusion or equivalence
+/// that mentions an inverse. Without one, `R ⊑ S⁻` holds for no named `R, S`
+/// and the #180 rules have nothing to read.
+fn has_polarity_axioms(internal: &InternalOntology) -> bool {
+    internal.axioms.iter().any(|ax| match ax {
+        Axiom::InverseObjectProperties(..) | Axiom::SymmetricRole(_) => true,
+        Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Role(sub),
+            sup,
+        } => sub.is_inverse() || sup.is_inverse(),
+        Axiom::EquivalentObjectProperties(members) => members.iter().any(|r| r.is_inverse()),
+        _ => false,
+    })
+}
+
+/// The SIGNED role hierarchy over the axioms as written. The saturator reads
+/// raw role ids (no inverse canonicalisation), so the as-written spelling is
+/// the only one it needs. Every edge is a logical consequence of its axiom:
+/// `add_signed_sub_role` adds `r ⊑ s` and its mirror `r⁻ ⊑ s⁻`, and
+/// `add_inverse_pair` records `a ≡ b⁻` exactly (a mixed-polarity same-id pair
+/// is a tautology and adds only reflexive edges).
+fn build_signed_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
+    let n = u32::try_from(internal.vocabulary.num_roles()).expect("role count fits in u32");
+    let mut b = RoleHierarchyBuilder::with_roles(n);
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Role(sub),
+                sup,
+            } => b.add_signed_sub_role(*sub, *sup),
+            Axiom::EquivalentObjectProperties(members) => {
+                for (x, y) in members.iter().zip(members.iter().skip(1)) {
+                    b.add_signed_sub_role(*x, *y);
+                    b.add_signed_sub_role(*y, *x);
+                }
+            }
+            Axiom::InverseObjectProperties(x, y) => b.add_inverse_pair(*x, *y),
+            Axiom::SymmetricRole(r) => b.mark_symmetric(r.role_id()),
+            _ => {}
+        }
+    }
+    b.build()
+}
+
+/// #180 `RUSTDL_SAT_INVERSE_FORALL`: `ForallAtomicKey(R,K)` stands for `∀R.K`,
+/// and `∀R.K ≡ ¬∃R.¬K` gives `∃R⁻.∀R.K ⊑ K`. So for every named `S ⊑ R⁻`
+/// (signed) the trigger `∃S.Key(R,K) ⊑ K` is sound: an `S`-edge from `x` to
+/// `t ∈ ∀R.K` is an `R`-edge from `t` back to `x`, so `x ∈ K`.
+///
+/// The saturator otherwise drops a told `A ⊑ ∀R.K` except as an opaque key,
+/// so `22 ⊑ ∃96.4`, `4 ⊑ ∀53.4`, `96 ⊑ 93`, `Inverse(53, 93)` never gave
+/// `22 ⊑ 4` (SIO on `ore_ont_9786`). Triggers fire through `role_super`, so
+/// named sub-roles of each `S` (here `96 ⊑ 93`) are covered.
+fn lower_inverse_forall_triggers(
+    rules: &mut ElRules,
+    tseitin: &TseitinAllocator,
+    signed: &RoleHierarchy,
+) {
+    let mut keys: Vec<(RoleId, ClassId, ClassId)> = tseitin
+        .forall_atomic_key_by_role
+        .iter()
+        .map(|(&(r, k), &key)| (r, k, key))
+        .collect();
+    // HashMap order would make the trigger indices nondeterministic.
+    keys.sort_unstable_by_key(|&(r, k, key)| (r.index(), k.index(), key.index()));
+    for (r, k, key) in keys {
+        for s in signed.signed_sub_roles(Role::inverse(r)) {
+            if s.is_inverse() {
+                continue;
+            }
+            rules.existential_triggers.push(ExistentialTrigger {
+                role: s.role_id(),
+                body: key,
+                head: k,
+            });
+        }
+    }
+}
+
+/// #180 `RUSTDL_SAT_INVERSE_FUNC_MERGE`: fills `inverse_func_partners`. For
+/// each functional signed role `F` (`Functional(F)`, or `F = G⁻` from
+/// `InverseFunctional(G)`), every named `R` with `R⁻ ⊑ F` partners every named
+/// `S` with `S ⊑ F`.
+fn collect_inverse_func_partners(
+    rules: &mut ElRules,
+    internal: &InternalOntology,
+    signed: &RoleHierarchy,
+) {
+    let mut functional: Vec<Role> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::FunctionalRole(r) => Some(*r),
+            Axiom::InverseFunctionalRole(r) => Some(r.flip()),
+            _ => None,
+        })
+        .collect();
+    functional.sort_unstable_by_key(|r| (r.role_id().index(), r.is_inverse()));
+    functional.dedup();
+    let mut partners: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
+    for f in functional {
+        let (mut via_inverse, mut forward) = (Vec::new(), Vec::new());
+        for s in signed.signed_sub_roles(f) {
+            if s.is_inverse() {
+                via_inverse.push(s.role_id());
+            } else {
+                forward.push(s.role_id());
+            }
+        }
+        if via_inverse.is_empty() || forward.is_empty() {
+            continue;
+        }
+        for &r in &via_inverse {
+            partners.entry(r).or_default().extend_from_slice(&forward);
+        }
+    }
+    let mut reverse: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
+    for (&r, ss) in &partners {
+        for &s in ss {
+            reverse.entry(s).or_default().push(r);
+        }
+    }
+    let freeze = |m: HashMap<RoleId, Vec<RoleId>>| -> HashMap<RoleId, Box<[RoleId]>> {
+        m.into_iter()
+            .map(|(k, mut v)| {
+                v.sort_unstable_by_key(|r| r.index());
+                v.dedup();
+                (k, v.into_boxed_slice())
+            })
+            .collect()
+    };
+    rules.inverse_func_partners = freeze(partners);
+    rules.inverse_func_partners_rev = freeze(reverse);
+}
+
 fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<RoleId>> {
     let num_roles = internal.vocabulary.num_roles();
     // Fast path: build the direct edge matrix as bitsets (densely indexed by
@@ -8841,5 +9078,215 @@ Ontology(<http://rustdl.test/test>\n\
             failures.is_empty(),
             "Faithfulness failures on galen corpus:\n{failures:#?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #180: rules over the SIGNED role hierarchy (declared inverses, symmetry).
+    // Negatives first: each FP guard is a near-miss of a positive below.
+    // -----------------------------------------------------------------------
+
+    fn sat_onto(body: &str) -> InternalOntology {
+        parse_internal(&format!(
+            "{HEADER}Ontology(<http://rustdl.test/inv>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:K))\n\
+    Declaration(Class(:T)) Declaration(Class(:U)) Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+    Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:t))\n\
+    Declaration(ObjectProperty(:f)) Declaration(ObjectProperty(:g))\n\
+{body}\n)\n"
+        ))
+    }
+
+    fn sat_entails(body: &str, sub: &str, sup: &str) -> bool {
+        let internal = sat_onto(body);
+        saturate(&internal).contains(class(&internal, sub), class(&internal, sup))
+    }
+
+    /// FP guard: a FORWARD `p`-edge from `X` into `∀p.K` says nothing about `X`.
+    #[test]
+    fn inverse_forall_does_not_fire_on_the_forward_role() {
+        assert!(!sat_entails(
+            "SubClassOf(:A ObjectAllValuesFrom(:p :K))\n\
+             InverseObjectProperties(:p :q)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:p :A))",
+            "X",
+            "K"
+        ));
+    }
+
+    /// FP guard: a SUPER-role of `p⁻` is not `p⁻`; a `t`-edge need not be a
+    /// `q`-edge, so it need not point back along `p`.
+    #[test]
+    fn inverse_forall_does_not_fire_on_a_super_role_of_the_inverse() {
+        assert!(!sat_entails(
+            "SubClassOf(:A ObjectAllValuesFrom(:p :K))\n\
+             InverseObjectProperties(:p :q)\n\
+             SubObjectPropertyOf(:q :t)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:t :A))",
+            "X",
+            "K"
+        ));
+    }
+
+    /// Discriminating control: with no inverse declared the trigger has no
+    /// role to fire on.
+    #[test]
+    fn inverse_forall_needs_a_declared_inverse() {
+        assert!(!sat_entails(
+            "SubClassOf(:A ObjectAllValuesFrom(:p :K))\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:q :A))",
+            "X",
+            "K"
+        ));
+    }
+
+    /// `A ⊑ ∀p.K`, `q ≡ p⁻`, `X ⊑ ∃q.A` ⟹ `X ⊑ K`.
+    #[test]
+    fn inverse_forall_fires_through_a_declared_inverse() {
+        assert!(sat_entails(
+            "SubClassOf(:A ObjectAllValuesFrom(:p :K))\n\
+             InverseObjectProperties(:p :q)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:q :A))",
+            "X",
+            "K"
+        ));
+    }
+
+    /// The `ore_ont_9786` shape: the edge is on a named SUB-role of `p⁻`.
+    #[test]
+    fn inverse_forall_fires_through_a_sub_role_of_the_inverse() {
+        assert!(sat_entails(
+            "SubClassOf(:A ObjectAllValuesFrom(:p :K))\n\
+             InverseObjectProperties(:p :q)\n\
+             SubObjectPropertyOf(:s :q)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:s :A))",
+            "X",
+            "K"
+        ));
+    }
+
+    /// A symmetric role is its own inverse.
+    #[test]
+    fn inverse_forall_fires_through_a_symmetric_role() {
+        assert!(sat_entails(
+            "SubClassOf(:A ObjectAllValuesFrom(:p :K))\n\
+             SymmetricObjectProperty(:p)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:p :A))",
+            "X",
+            "K"
+        ));
+    }
+
+    /// FP guard: a forward functional CHAIN `x s t s b` does not merge `x`
+    /// with `b`; only an inverse edge back into the witness does. The inverse
+    /// declaration is load-bearing: it gives `s` a sub-role of each polarity, so
+    /// the rule is built and treating a forward sub-role as `R⁻` would fire.
+    #[test]
+    fn inverse_func_merge_does_not_fire_on_a_forward_chain() {
+        assert!(!sat_entails(
+            "InverseObjectProperties(:p :s)\n\
+             FunctionalObjectProperty(:s)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:s :T))\n\
+             SubClassOf(:T ObjectSomeValuesFrom(:s :B))",
+            "X",
+            "B"
+        ));
+    }
+
+    /// FP guard: the two edges must land on ONE functional role. `r⁻ ⊑ f` and
+    /// `s ⊑ g` with `f ≠ g` both functional force no equality.
+    #[test]
+    fn inverse_func_merge_needs_one_shared_functional_role() {
+        assert!(!sat_entails(
+            "InverseObjectProperties(:p :f)\n\
+             FunctionalObjectProperty(:f)\n\
+             SubObjectPropertyOf(:s :g)\n\
+             FunctionalObjectProperty(:g)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:p :T))\n\
+             SubClassOf(:T ObjectSomeValuesFrom(:s :B))",
+            "X",
+            "B"
+        ));
+    }
+
+    /// Discriminating control: drop functionality and nothing merges.
+    #[test]
+    fn inverse_func_merge_needs_functionality() {
+        assert!(!sat_entails(
+            "InverseObjectProperties(:p :s)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:p :T))\n\
+             SubClassOf(:T ObjectSomeValuesFrom(:s :B))",
+            "X",
+            "B"
+        ));
+    }
+
+    /// `X ⊑ ∃p.T`, `T ⊑ ∃s.B`, `s ≡ p⁻`, `Functional(s)` ⟹ `X ⊑ B`: the
+    /// `T`-witness has `x` and `b` as `s`-successors.
+    #[test]
+    fn inverse_func_merge_fires_on_the_minimal_shape() {
+        assert!(sat_entails(
+            "InverseObjectProperties(:p :s)\n\
+             FunctionalObjectProperty(:s)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:p :T))\n\
+             SubClassOf(:T ObjectSomeValuesFrom(:s :B))",
+            "X",
+            "B"
+        ));
+    }
+
+    /// The `ore_ont_9786` shape: the existential on the witness is INHERITED
+    /// from a superclass, and both edges reach the functional role through a
+    /// sub-role (`s ⊑ f`, `p⁻ ≡ s`).
+    #[test]
+    fn inverse_func_merge_fires_through_inheritance_and_a_super_role() {
+        assert!(sat_entails(
+            "InverseObjectProperties(:s :p)\n\
+             SubObjectPropertyOf(:s :f)\n\
+             FunctionalObjectProperty(:f)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:p :T))\n\
+             SubClassOf(:T :U)\n\
+             SubClassOf(:U ObjectSomeValuesFrom(:s :B))",
+            "X",
+            "B"
+        ));
+    }
+
+    /// `InverseFunctional(g)` makes `g⁻` the functional role: `x g t` and
+    /// `t h b` with `h ≡ g⁻` give `t` two `g⁻`-successors.
+    #[test]
+    fn inverse_func_merge_fires_through_inverse_functionality() {
+        assert!(sat_entails(
+            "InverseObjectProperties(:s :g)\n\
+             InverseFunctionalObjectProperty(:g)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:g :T))\n\
+             SubClassOf(:T ObjectSomeValuesFrom(:s :B))",
+            "X",
+            "B"
+        ));
+    }
+
+    /// The recorded proof step chains its two facts through the witness and
+    /// passes the checker.
+    #[test]
+    fn inverse_func_merge_records_a_checkable_proof() {
+        use crate::proof::{check_proof, prove_subsumption};
+        let internal = sat_onto(
+            "InverseObjectProperties(:p :s)\n\
+             FunctionalObjectProperty(:s)\n\
+             SubClassOf(:X ObjectSomeValuesFrom(:p :T))\n\
+             SubClassOf(:T ObjectSomeValuesFrom(:s :B))",
+        );
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (subs, trace) = saturate_with_config(&internal, &cfg);
+        let (x, b) = (class(&internal, "X"), class(&internal, "B"));
+        assert!(subs.contains(x, b));
+        let trace = trace.expect("trace must be Some");
+        let mut memo = std::collections::HashMap::new();
+        let root = prove_subsumption(&trace, x, b, &mut memo).expect("a proof of X ⊑ B");
+        assert_eq!(root.rule, ElRule::InverseFunctionalMerge);
+        check_proof(&root, internal.axioms.len()).expect("proof checker must pass");
     }
 }

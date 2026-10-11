@@ -97,6 +97,9 @@ pub enum ElRule {
     UnsatSubclass,
     /// Unsat propagation (`process_unsat`, fact-source): `(D,r,C)`, `C ⊑ ⊥` ⟹ `D ⊑ ⊥`.
     UnsatFactSource,
+    /// #180 functional merge across an inverse: `(X,R,T)`, `(T,S,B)`, `R⁻ ⊑ F`,
+    /// `S ⊑ F`, `F` functional ⟹ `X ⊑ B`.
+    InverseFunctionalMerge,
 }
 
 /// One step in a proof: how a derived fact was produced.
@@ -757,6 +760,27 @@ pub fn check_proof(node: &ProofNode, num_axioms: usize) -> Result<(), CheckError
                 });
             }
         }
+        // `(X,R,T)`, `(T,S,B)` ⟹ `Sub(X,B)`: the two facts must chain through
+        // `T` and the conclusion must run from the first fact's source to the
+        // second fact's target.
+        ElRule::InverseFunctionalMerge => {
+            let shaped = match (&node.conclusion, node.premises.as_slice()) {
+                (DerivedFact::Sub(x, b), [up, down]) => matches!(
+                    (&up.conclusion, &down.conclusion),
+                    (DerivedFact::Exist(ux, _, ut), DerivedFact::Exist(dt, _, db))
+                        if ux == x && ut == dt && db == b
+                ),
+                _ => false,
+            };
+            if !shaped {
+                return Err(CheckError {
+                    fact: node.conclusion.clone(),
+                    message: "InverseFunctionalMerge: premises are not Exist(X,R,T), \
+                              Exist(T,S,B) for conclusion Sub(X,B)"
+                        .to_string(),
+                });
+            }
+        }
         // Remaining rules: coarse structural check only (no wrong-ref risk).
         _ => {
             // Rules like NominalTransitiveProp, MaxKeyDerived, ForallKeyDerived
@@ -1019,6 +1043,7 @@ impl std::fmt::Display for ElRule {
             ElRule::FunctionalMergeSubRole => "FunctionalMerge(sub-role)",
             ElRule::UnsatSubclass => "UnsatSubclass",
             ElRule::UnsatFactSource => "UnsatFactSource",
+            ElRule::InverseFunctionalMerge => "InverseFunctionalMerge",
         };
         write!(f, "{name}")
     }

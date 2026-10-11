@@ -6,6 +6,15 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Changed
+- **Bump horned-owl 3.0 → 4.0.** API migration only in rustdl: the RDF reader's `read`
+  now takes `RDFParserConfiguration` (bridged from `ParserConfiguration` via `.into()`)
+  and its `ConcreteRDFOntology` index type must be named (`ConcreteRcRDFOntology`); the OFN
+  reader's `read` gained a `Build` generic. No behaviour change in rustdl's own code, but
+  4.0's RDF reader is more lenient on non-conformant input that 3.0 aborted on (e.g.
+  "unexpected property kind in restriction"), so ontologies that previously failed to parse
+  now classify.
+
 ### Added
 - **Told definition matching (#139), `RUSTDL_TOLD_DEFINITION_MATCH`, default ON (`=0` reverts).**
   A conversion pass that derives `A ⊑ D` when `A` asserts every conjunct of a definition

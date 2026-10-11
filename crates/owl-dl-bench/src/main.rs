@@ -172,7 +172,7 @@ enum Command {
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
     use horned_owl::io::owx::reader::read as read_owx;
-    use horned_owl::io::rdf::reader::read as read_rdf;
+    use horned_owl::io::rdf::reader::{ConcreteRcRDFOntology, read as read_rdf};
     // Content-sniff so this works on OFN (ORE), OWX (pilot canon), and
     // RDF/XML (BioPortal) alike.
     let src = std::fs::read_to_string(path)
@@ -180,9 +180,10 @@ fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
     let cfg = ParserConfiguration::default();
     let mut reader = std::io::Cursor::new(src.as_bytes().to_vec());
     if src.contains("<rdf:RDF") || src.contains("<rdf:Description") {
-        let (o, _): (horned_owl::ontology::set::SetOntology<RcStr>, _) = read_rdf(&mut reader, cfg)
-            .map(|(o, i)| (o.into(), i))
-            .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display()))?;
+        let (o, _): (horned_owl::ontology::set::SetOntology<RcStr>, _) =
+            read_rdf(&mut reader, cfg.into())
+                .map(|(o, i): (ConcreteRcRDFOntology, _)| (o.into(), i))
+                .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display()))?;
         Ok(o)
     } else if src.trim_start().starts_with('<') {
         let (o, _) = read_owx(&mut reader, cfg)

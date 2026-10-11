@@ -6,7 +6,7 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::io::omn::reader::read as read_omn;
 use horned_owl::io::owx::reader::read as read_owx;
-use horned_owl::io::rdf::reader::read as read_rdf;
+use horned_owl::io::rdf::reader::{ConcreteRcRDFOntology, read as read_rdf};
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use pyo3::PyResult;
@@ -70,9 +70,8 @@ fn parse_with_format_pm(src: &str, format: &str) -> PyResult<(SetOntology<RcStr>
         "ofn" => read_ofn(&mut reader, cfg).map(|(o, pm): (SetOntology<RcStr>, _)| (o, pm)),
         "owx" => read_owx(&mut reader, cfg).map(|(o, pm): (SetOntology<RcStr>, _)| (o, pm)),
         // rdf::reader::read exposes no PrefixMapping; use the default (empty) one.
-        "rdf-xml" | "rdf" => {
-            read_rdf(&mut reader, cfg).map(|(o, _)| (o.into(), PrefixMapping::default()))
-        }
+        "rdf-xml" | "rdf" => read_rdf(&mut reader, cfg.into())
+            .map(|(o, _): (ConcreteRcRDFOntology, _)| (o.into(), PrefixMapping::default())),
         "omn" | "manchester" => {
             read_omn(&mut reader, cfg).map(|(o, pm): (SetOntology<RcStr>, _)| (o, pm))
         }
@@ -93,7 +92,9 @@ fn parse_with_format(src: &str, format: &str) -> PyResult<SetOntology<RcStr>> {
         "owx" => read_owx(&mut reader, cfg).map(|(o, _): (SetOntology<RcStr>, _)| o),
         // rdf::reader::read returns ConcreteRDFOntology; convert via the
         // From<ConcreteRDFOntology> impl that horned-owl provides for SetOntology.
-        "rdf-xml" | "rdf" => read_rdf(&mut reader, cfg).map(|(o, _)| o.into()),
+        "rdf-xml" | "rdf" => {
+            read_rdf(&mut reader, cfg.into()).map(|(o, _): (ConcreteRcRDFOntology, _)| o.into())
+        }
         "omn" | "manchester" => read_omn(&mut reader, cfg).map(|(o, _): (SetOntology<RcStr>, _)| o),
         other => {
             return Err(ParseError::new_err(format!(

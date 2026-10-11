@@ -170,7 +170,8 @@ fn read_any(src: &str) -> horned_owl::ontology::set::SetOntology<horned_owl::mod
             .expect("parse OFN")
             .0
     } else {
-        let (o, _) = horned_owl::io::rdf::reader::read(&mut cursor, cfg).expect("parse RDF/XML");
+        let (o, _): (horned_owl::io::rdf::reader::ConcreteRcRDFOntology, _) =
+            horned_owl::io::rdf::reader::read(&mut cursor, cfg.into()).expect("parse RDF/XML");
         o.into()
     }
 }

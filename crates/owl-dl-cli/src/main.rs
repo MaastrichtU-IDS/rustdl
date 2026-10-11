@@ -21,7 +21,7 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::io::omn::AsManchester;
 use horned_owl::io::omn::reader::read as read_omn;
 use horned_owl::io::owx::reader::read as read_owx;
-use horned_owl::io::rdf::reader::read as read_rdf;
+use horned_owl::io::rdf::reader::{ConcreteRcRDFOntology, read as read_rdf};
 use horned_owl::model::{AnnotationSubject, AnnotationValue, Component, RcStr};
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
@@ -630,8 +630,8 @@ fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
         OntFormat::Owx => read_owx(&mut reader, cfg)
             .map(|(o, _)| o)
             .map_err(|e| anyhow::anyhow!("parsing OWX ontology {}: {e}", path.display()))?,
-        OntFormat::RdfXml => read_rdf(&mut reader, cfg)
-            .map(|(o, _)| o.into())
+        OntFormat::RdfXml => read_rdf(&mut reader, cfg.into())
+            .map(|(o, _): (ConcreteRcRDFOntology, _)| o.into())
             .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display()))?,
         OntFormat::Ofn => read_ofn(&mut reader, cfg)
             .map(|(o, _)| o)
@@ -660,8 +660,10 @@ fn parse_ofn_with_pm(path: &Path) -> Result<(SetOntology<RcStr>, PrefixMapping)>
     match format {
         OntFormat::Owx => read_owx(&mut reader, cfg)
             .map_err(|e| anyhow::anyhow!("parsing OWX ontology {}: {e}", path.display())),
-        OntFormat::RdfXml => read_rdf(&mut reader, cfg)
-            .map(|(o, _incomplete)| (o.into(), PrefixMapping::default()))
+        OntFormat::RdfXml => read_rdf(&mut reader, cfg.into())
+            .map(|(o, _incomplete): (ConcreteRcRDFOntology, _)| {
+                (o.into(), PrefixMapping::default())
+            })
             .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display())),
         OntFormat::Ofn => read_ofn(&mut reader, cfg)
             .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display())),

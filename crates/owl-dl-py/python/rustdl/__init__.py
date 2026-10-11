@@ -88,14 +88,17 @@ Classification.superclasses_of = _superclasses_of  # type: ignore[attr-defined]
 
 class IncompleteClassificationWarning(UserWarning):
     """Raised when the returned hierarchy may be missing real subsumptions.
-    It is still a sound under-approximation (no false subsumptions). Two
+    It is still a sound under-approximation (no false subsumptions). Three
     causes, each with its own remedy:
 
     * a timeout fired (`result.complete is False`): pass
       `per_pair_timeout_ms=0, global_timeout_ms=0` for the unbounded result;
     * the global budget ran out during preparation
       (`result.prep_timed_out is True`): only a partial saturation closure is
-      reported; give a larger `global_timeout_ms`, or `0` for no budget;
+      reported; give a larger `global_timeout_ms`, or `0` for no budget. With
+      `RUSTDL_HARD_GLOBAL_DEADLINE=1` the cut can come earlier, during
+      conversion (`result.conversion_timed_out is True`), and then only part
+      of the ontology was read;
     * the wedge ran without role-hierarchy matching
       (`result.wedge_hierarchy_blind is True`): Layer A was off, by
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` or because the role closure exceeded
@@ -110,7 +113,20 @@ class IncompleteClassificationWarning(UserWarning):
 
 def _warn_if_incomplete(result: "Classification") -> "Classification":
     n = result.timed_out_pairs
-    if result.prep_timed_out:
+    if result.conversion_timed_out:
+        # #162: a cut conversion is also a cut preparation, counted as one
+        # timed-out "pair"; name the earlier cut, matching the CLI.
+        n = max(n - 1, 0)
+        _warnings.warn(
+            "the global budget ran out during conversion "
+            "(RUSTDL_HARD_GLOBAL_DEADLINE=1), so only part of the ontology was "
+            "read. Axioms past the cut were neither reasoned over nor counted as "
+            "dropped, and consistency was not checked. It is still sound (no "
+            "false subsumptions); check result.conversion_timed_out.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    elif result.prep_timed_out:
         # #162: the cut preparation is counted as one timed-out "pair" so that
         # `complete` reads False; report it as what it is (#228 review).
         n = max(n - 1, 0)

@@ -40,6 +40,13 @@ class Classification:
         checked (#162). Implies `complete is False`."""
         ...
     @property
+    def conversion_timed_out(self) -> bool:
+        """True iff, with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the global deadline
+        ran out during conversion, so only part of the ontology was read and
+        axioms past the cut were neither reasoned over nor counted as dropped
+        (#162). Implies `prep_timed_out`."""
+        ...
+    @property
     def consistency_undetermined(self) -> bool:
         """True iff the inconsistency pre-check reached no verdict, so
         `inconsistent is False` means "no clash found", not "proven

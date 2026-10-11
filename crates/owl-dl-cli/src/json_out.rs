@@ -86,7 +86,8 @@ pub(crate) struct ClassifyJson {
     pub(crate) incomplete: bool,
     /// #162: the global deadline ran out during PREPARATION (EL saturation or
     /// building the prepared ontology; conversion too, but only with
-    /// `RUSTDL_HARD_GLOBAL_DEADLINE=1`), so only a partial saturation closure is reported and consistency was not fully
+    /// `RUSTDL_HARD_GLOBAL_DEADLINE=1`, see `conversion_timed_out`), so only a
+    /// partial saturation closure is reported and consistency was not fully
     /// checked. Implies `incomplete`; a separate field because it says the whole
     /// answer is partial, not that some class pairs were cut. Set at the default
     /// whenever the budget is still meetable when prep bounding is decided. By
@@ -94,6 +95,11 @@ pub(crate) struct ClassifyJson {
     /// empty partial closure is re-run unbounded; `RUSTDL_HARD_GLOBAL_DEADLINE=1`
     /// removes both fallbacks, so there the closure may be empty.
     pub(crate) prep_timed_out: bool,
+    /// #162: with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the deadline ran out during
+    /// CONVERSION, so only part of the ontology was read. Axioms past the cut
+    /// were neither reasoned over nor counted in `dropped`, and classes they
+    /// declare may be missing. Implies `prep_timed_out` (and so `incomplete`).
+    pub(crate) conversion_timed_out: bool,
     /// Issue #66: pairs concluded NOT SUBSUMED from the wedge's own `Sat`
     /// verdict, on an ontology OUTSIDE the fragment where that verdict is
     /// complete by construction — so this hierarchy CAN disagree with
@@ -330,6 +336,7 @@ pub(crate) fn build_classify_json(
         consistent: !stats.inconsistent,
         incomplete: deadline_flags(&stats).0,
         prep_timed_out: deadline_flags(&stats).1,
+        conversion_timed_out: deadline_flags(&stats).2,
         consistency_undetermined: stats.consistency_undetermined && !stats.inconsistent,
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
@@ -341,11 +348,16 @@ pub(crate) fn build_classify_json(
     }
 }
 
-/// `(incomplete, prep_timed_out)`: a deadline fired anywhere, and it fired
-/// during preparation. A cut preparation counts as one timed-out pair, so the
-/// second implies the first but not the converse.
-fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool) {
-    (stats.timed_out_pairs > 0, stats.prep_timed_out)
+/// `(incomplete, prep_timed_out, conversion_timed_out)`: a deadline fired
+/// anywhere, it fired during preparation, and it fired during conversion. A cut
+/// preparation counts as one timed-out pair and a cut conversion is also a cut
+/// preparation, so each flag implies the one before but not the converse.
+fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool, bool) {
+    (
+        stats.timed_out_pairs > 0,
+        stats.prep_timed_out,
+        stats.conversion_timed_out,
+    )
 }
 
 #[must_use]
@@ -901,25 +913,33 @@ mod tests {
     use horned_owl::ontology::set::SetOntology;
     use std::io::Cursor;
 
-    /// A pair cut and a preparation cut both set `incomplete`; only the second
-    /// sets `prep_timed_out`. (The end-to-end test in `json_output.rs` cannot
-    /// make a pair time out deterministically, so it sees the two co-vary.)
+    /// A pair cut, a preparation cut and a conversion cut all set `incomplete`;
+    /// only the last two set `prep_timed_out`, and only the last sets
+    /// `conversion_timed_out`. (The end-to-end test in `json_output.rs` cannot
+    /// make a pair time out deterministically, so it sees the flags co-vary.)
     #[test]
     fn a_pair_cut_is_incomplete_without_prep_timed_out() {
         let pair_cut = owl_dl_reasoner::ClassificationStats {
             timed_out_pairs: 3,
             ..Default::default()
         };
-        assert_eq!(deadline_flags(&pair_cut), (true, false));
+        assert_eq!(deadline_flags(&pair_cut), (true, false, false));
         let prep_cut = owl_dl_reasoner::ClassificationStats {
             timed_out_pairs: 1,
             prep_timed_out: true,
             ..Default::default()
         };
-        assert_eq!(deadline_flags(&prep_cut), (true, true));
+        assert_eq!(deadline_flags(&prep_cut), (true, true, false));
+        let conversion_cut = owl_dl_reasoner::ClassificationStats {
+            timed_out_pairs: 1,
+            prep_timed_out: true,
+            conversion_timed_out: true,
+            ..Default::default()
+        };
+        assert_eq!(deadline_flags(&conversion_cut), (true, true, true));
         assert_eq!(
             deadline_flags(&owl_dl_reasoner::ClassificationStats::default()),
-            (false, false)
+            (false, false, false)
         );
     }
 

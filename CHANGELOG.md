@@ -29,8 +29,9 @@ All notable changes to rustdl are documented here. Format is based on
 - **`prep_timed_out` in `classify --json` and Python (#162).** `true` when the global deadline
   cut preparation (EL saturation or building the prepared ontology), so only a partial
   saturation closure is reported and consistency was not fully checked. It can fire at the
-  default settings; with `RUSTDL_HARD_GLOBAL_DEADLINE=1` the closure may also be empty. It implies `incomplete`; a separate field because it says the
-  whole answer is partial, not that some pairs were cut. Python also gains
+  default settings; with `RUSTDL_HARD_GLOBAL_DEADLINE=1` the closure may also be empty. It
+  implies `incomplete`; a separate field because it says the whole answer is partial, not that
+  some pairs were cut. Python also gains
   `Classification.prep_timed_out` and `Classification.consistency_undetermined`. In Python, a cut
   preparation now produces its own warning; before, it was reported as "1 class pair(s) exceeded
   the timeout".
@@ -43,6 +44,12 @@ All notable changes to rustdl are documented here. Format is based on
   `--global-timeout-ms 1000` in hard mode: `ore_ont_4141` 102.8 s → 1.9 s, `ore_ont_5368`
   32.3 s → 1.3 s, `ore_ont_16632` 11.1 s → 1.2 s. `ore_ont_12898` 98 s → 74 s, all of it now
   parsing (69 s), which still cannot be interrupted.
+- **`conversion_timed_out` in `classify --json` and Python (#162).** `true` when hard mode cut
+  conversion, so only part of the ontology was read: axioms past the cut were neither reasoned
+  over nor counted in `dropped`, and classes they declare may be missing. It implies
+  `prep_timed_out` and `incomplete`, and is never set in the default mode. Python gains
+  `Classification.conversion_timed_out`, and a cut conversion gets its own warning instead of
+  the preparation one, matching the CLI.
 
 ### Fixed
 - **`--global-timeout-ms` now bounds the classify inconsistency pre-check (#162, partial).**

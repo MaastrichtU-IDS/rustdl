@@ -115,23 +115,43 @@ def test_prep_timed_out_is_its_own_signal(tmp_path, monkeypatch):
     p.write_text("\n".join(lines))
     monkeypatch.setenv("RUSTDL_PREP_DEADLINE", "1")
 
+    def incomplete_warnings(rec):
+        return [
+            str(w.message)
+            for w in rec
+            if issubclass(w.category, rustdl.IncompleteClassificationWarning)
+        ]
+
+    # Conversion is let finish, so the cut lands in preparation.
     monkeypatch.setenv("RUSTDL_HARD_GLOBAL_DEADLINE", "1")
+    monkeypatch.setenv("RUSTDL_CONVERT_DEADLINE", "0")
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         r = rustdl.classify(str(p), global_timeout_ms=1)
     assert r.prep_timed_out is True
+    assert r.conversion_timed_out is False
     assert r.complete is False
     assert r.consistency_undetermined is True
-    msgs = [
-        str(w.message)
-        for w in rec
-        if issubclass(w.category, rustdl.IncompleteClassificationWarning)
-    ]
+    msgs = incomplete_warnings(rec)
     assert len(msgs) == 1 and "preparation" in msgs[0], msgs
+
+    # With the conversion deadline on, the 1 ms budget (spent by parsing) stops
+    # conversion at its first poll: one warning, naming conversion.
+    monkeypatch.setenv("RUSTDL_CONVERT_DEADLINE", "1")
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(p), global_timeout_ms=1)
+    assert r.conversion_timed_out is True
+    assert r.prep_timed_out is True
+    assert r.complete is False
+    assert not r.is_subclass("http://ex#A0", "http://ex#C0")
+    msgs = incomplete_warnings(rec)
+    assert len(msgs) == 1 and "conversion" in msgs[0], msgs
 
     # No budget: nothing can be cut. (Not "1 ms, hard mode off": whether that
     # bounds saturation depends on host speed, see the #230 review.)
     monkeypatch.delenv("RUSTDL_HARD_GLOBAL_DEADLINE")
     r = rustdl.classify(str(p), global_timeout_ms=0)
     assert r.prep_timed_out is False
+    assert r.conversion_timed_out is False
     assert r.is_subclass("http://ex#A0", "http://ex#C0")

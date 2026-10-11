@@ -17,8 +17,8 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 the hierarchy is sound (no false subsumptions) but may miss real ones.
 
 `prep_timed_out` = the `--global-timeout-ms` budget ran out during preparation
-(EL saturation or building the prepared ontology; parsing and conversion are
-never cut), so only a partial saturation closure is reported and consistency was
+(EL saturation or building the prepared ontology; parsing is never cut, and
+conversion is cut only with `RUSTDL_HARD_GLOBAL_DEADLINE=1`), so only a partial saturation closure is reported and consistency was
 not fully checked (`consistency_undetermined` is normally set too). Implies
 `incomplete`. It can fire at the default settings, whenever the budget is still
 meetable when prep bounding is decided. By default a budget already spent at

@@ -294,6 +294,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::hard_global_deadline_enabled,
             false,
         ),
+        (
+            "RUSTDL_CONVERT_DEADLINE",
+            owl_dl_reasoner::convert_deadline_enabled,
+            true,
+        ),
         // OFF since 2026-06-08 — SOUNDNESS FIX (FP-unsound on non-Horn).
         // A default flip here would re-introduce false subsumptions.
         (

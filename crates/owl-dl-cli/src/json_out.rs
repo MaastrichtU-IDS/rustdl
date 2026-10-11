@@ -85,8 +85,8 @@ pub(crate) struct ClassifyJson {
     /// only that; it does NOT cover the `trust_sat` risk below.
     pub(crate) incomplete: bool,
     /// #162: the global deadline ran out during PREPARATION (EL saturation or
-    /// building the prepared ontology; conversion is never cut), so only a
-    /// partial saturation closure is reported and consistency was not fully
+    /// building the prepared ontology; conversion too, but only with
+    /// `RUSTDL_HARD_GLOBAL_DEADLINE=1`), so only a partial saturation closure is reported and consistency was not fully
     /// checked. Implies `incomplete`; a separate field because it says the whole
     /// answer is partial, not that some class pairs were cut. Set at the default
     /// whenever the budget is still meetable when prep bounding is decided. By

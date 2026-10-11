@@ -2798,8 +2798,9 @@ pub fn prep_deadline_enabled() -> bool {
 /// The result is sound (every reported subsumption is entailed) and flagged
 /// `incomplete`, and may be EMPTY. A cut returns before the inconsistency
 /// pre-check, so `consistency_undetermined` is set: `consistent: true` there
-/// means "not checked". Parsing and `convert_ontology` still cannot be
-/// interrupted, so wall is at most about parse + convert + budget.
+/// means "not checked". Conversion is held to the deadline as well (see
+/// [`convert_deadline_enabled`]); parsing cannot be interrupted, so wall is at
+/// most about parse + budget, plus the granularity of conversion's checks.
 ///
 /// Classify only. Requires [`prep_deadline_enabled`] (default ON); inert without
 /// a global budget. Known small post-deadline residuals: the saturator checks the
@@ -2808,6 +2809,19 @@ pub fn prep_deadline_enabled() -> bool {
 #[must_use]
 pub fn hard_global_deadline_enabled() -> bool {
     std::env::var_os("RUSTDL_HARD_GLOBAL_DEADLINE").is_some_and(|v| v == "1")
+}
+
+/// `RUSTDL_CONVERT_DEADLINE` (#162) — **default ON**, `=0` disables. Under
+/// [`hard_global_deadline_enabled`], `classify_with_budget` holds conversion to
+/// the global deadline: the main loop and the `DKey` seeding loops poll it, and
+/// every later derivation pass is skipped once it has passed
+/// (`owl_dl_core::convert::convert_ontology_with_deadline`). A cut conversion
+/// is a subset of the axioms, so the answer stays sound; it is flagged
+/// `conversion_timed_out` and `prep_timed_out`, and is incomplete. Inert
+/// without hard mode or without a global budget.
+#[must_use]
+pub fn convert_deadline_enabled() -> bool {
+    std::env::var_os("RUSTDL_CONVERT_DEADLINE").is_none_or(|v| v != "0")
 }
 
 /// Wall-clock budget, in milliseconds, for the `ABox`-saturation half of the

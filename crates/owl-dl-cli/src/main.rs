@@ -10,6 +10,13 @@
 //! from disk via horned-owl. Verdicts go to stdout; tracing/logging
 //! goes to stderr.
 
+/// musl's allocator takes a global lock, which on the static Linux release
+/// binaries cost ~10x wall on multithreaded classification. See the comment on
+/// the `mimalloc` dependency in this crate's `Cargo.toml`.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 

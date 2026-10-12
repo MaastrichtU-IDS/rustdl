@@ -114,10 +114,31 @@ fn implied_free(
     (dropped && !rest.is_empty()).then_some(rest)
 }
 
+/// Some `EquivalentClasses` member is an `And` with both an `∃` and a `∀`
+/// conjunct. Checked first, so an ontology with no such definition does not pay
+/// for the functional-role closure (+0.2-0.4 s on `ore_ont_1270`, 2,360
+/// functional declarations and no `EquivalentClasses` at all).
+fn has_candidate_definition(onto: &InternalOntology) -> bool {
+    let pool = &onto.concepts;
+    onto.axioms.iter().any(|ax| match ax {
+        Axiom::EquivalentClasses(ids) => ids.iter().any(|&y| match pool.get(y) {
+            ConceptExpr::And(cs) => {
+                cs.iter()
+                    .any(|&k| matches!(pool.get(k), ConceptExpr::Some(..)))
+                    && cs
+                        .iter()
+                        .any(|&k| matches!(pool.get(k), ConceptExpr::All(..)))
+            }
+            _ => false,
+        }),
+        _ => false,
+    })
+}
+
 /// Emit `SubClassOf(⊓ rest, D)` for every definition the rule applies to.
 /// Returns how many axioms were added.
 pub fn derive_functional_forall_defs(onto: &mut InternalOntology) -> usize {
-    if !functional_forall_def_enabled() {
+    if !functional_forall_def_enabled() || !has_candidate_definition(onto) {
         return 0;
     }
     let functional = functional_roles(onto);
@@ -168,7 +189,8 @@ mod tests {
 
     fn added(body: &str) -> usize {
         let src = format!(
-            "Prefix(:=<http://t/>)\nOntology(<http://t/x>\n\
+            "Prefix(:=<http://t/>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+             Ontology(<http://t/x>\n\
              Declaration(Class(:D)) Declaration(Class(:A)) Declaration(Class(:B))\n\
              Declaration(Class(:C)) Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:q))\n\
              {body}\n)\n"
@@ -226,6 +248,88 @@ mod tests {
             ),
             0
         );
+    }
+
+    /// A sub-role of a functional role is functional.
+    #[test]
+    fn fires_on_a_sub_role_of_a_functional_role() {
+        assert_eq!(
+            added(&format!(
+                "SubObjectPropertyOf(:r :q) FunctionalObjectProperty(:q) {DEF}"
+            )),
+            1
+        );
+    }
+
+    /// FP guard: a SUPER-role of a functional role is not functional. Catches the
+    /// closure walked in the wrong direction (`InverseObjectProperties` edges run
+    /// both ways, so the inverse test above cannot).
+    #[test]
+    fn a_super_role_of_a_functional_role_does_not_count() {
+        assert_eq!(
+            added(&format!(
+                "SubObjectPropertyOf(:q :r) FunctionalObjectProperty(:q) {DEF}"
+            )),
+            0
+        );
+    }
+
+    /// FP guard: the `∃` and the `∀` must be on the same role.
+    #[test]
+    fn an_exists_on_another_role_does_not_count() {
+        assert_eq!(
+            added(
+                "FunctionalObjectProperty(:r) FunctionalObjectProperty(:q) \
+                 EquivalentClasses(:D ObjectIntersectionOf(:A \
+                 ObjectSomeValuesFrom(:q :B) ObjectAllValuesFrom(:r :B)))"
+            ),
+            0
+        );
+    }
+
+    /// `∃r.(B ⊓ C)` implies `∀r.B`; `∃r.B` does not imply `∀r.(B ⊓ C)` (FP guard).
+    #[test]
+    fn a_conjunctive_filler_counts_in_one_direction_only() {
+        assert_eq!(
+            added(
+                "FunctionalObjectProperty(:r) EquivalentClasses(:D ObjectIntersectionOf(:A \
+                 ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :C)) ObjectAllValuesFrom(:r :B)))"
+            ),
+            1
+        );
+        assert_eq!(
+            added(
+                "FunctionalObjectProperty(:r) EquivalentClasses(:D ObjectIntersectionOf(:A \
+                 ObjectSomeValuesFrom(:r :B) ObjectAllValuesFrom(:r ObjectIntersectionOf(:B :C))))"
+            ),
+            0
+        );
+    }
+
+    /// FP guard: `∀r.⊥` is not implied by any `∃r.B` (it would make `A ⊓ ∃r.B` empty).
+    #[test]
+    fn a_forall_bottom_is_never_dropped() {
+        assert_eq!(
+            added(
+                "FunctionalObjectProperty(:r) EquivalentClasses(:D ObjectIntersectionOf(:A \
+                 ObjectSomeValuesFrom(:r :B) ObjectAllValuesFrom(:r owl:Nothing)))"
+            ),
+            0
+        );
+    }
+
+    /// Inverse polarity: `∀r⁻.B` needs `r⁻` functional, i.e. `InverseFunctional(r)`;
+    /// `Functional(r)` does not do (FP guard).
+    #[test]
+    fn an_inverse_forall_needs_the_inverse_to_be_functional() {
+        let inv_def = "EquivalentClasses(:D ObjectIntersectionOf(:A \
+             ObjectSomeValuesFrom(ObjectInverseOf(:r) :B) \
+             ObjectAllValuesFrom(ObjectInverseOf(:r) :B)))";
+        assert_eq!(
+            added(&format!("InverseFunctionalObjectProperty(:r) {inv_def}")),
+            1
+        );
+        assert_eq!(added(&format!("FunctionalObjectProperty(:r) {inv_def}")), 0);
     }
 
     #[test]

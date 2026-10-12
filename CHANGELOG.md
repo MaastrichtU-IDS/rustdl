@@ -12,10 +12,13 @@ All notable changes to rustdl are documented here. Format is based on
   named-class range the two engines number classes differently: the wedge's nominal class
   for an individual is the saturator's first synthetic, e.g. the `⊥` key of an `∃r.⊥` filler.
   `a : C`, `C ⊑ D ⊔ E`, `Z ⊑ ∃r.⊥` was reported inconsistent, and so was `wine.ofn` (137
-  classes unsatisfiable, 0 subsumptions). Only named class ids are seeded now. Default
-  settings were not affected.
+  classes unsatisfiable, 0 subsumptions). Only named class ids are seeded now. A second
+  bug under the same flag: a disjunct the look-ahead dropped did not record the deps of the
+  labels that killed it, so when every disjunct was dropped the search backjumped past the
+  decision responsible and could report a satisfiable class unsatisfiable (7-axiom
+  reproducer). Those deps are now folded in, as `RUSTDL_SEMANTIC_BRANCHING` already did.
+  Default settings were not affected.
 
-### Fixed
 - **A definition's `∀R.B` conjunct is read as implied by its `∃R.B` conjunct when `R` is
   functional (#180), `RUSTDL_FUNCTIONAL_FORALL_DEF`, default ON (`=0` reverts).** The "closure"
   pattern `D ≡ A ⊓ ∃R.B ⊓ ∀R.B` has a sufficient direction the EL saturator cannot read
@@ -25,7 +28,6 @@ All notable changes to rustdl are documented here. Format is based on
   emits `A ⊓ ∃R.B ⊑ D`. `ore_ont_13859` 17 missed → 0 (it reported `incomplete: false`) and
   `ore_ont_7893` 5 → 0, FP 0.
 
-### Fixed
 - **The #137 completeness net no longer re-seeds the whole wedge graph at every search frame,
   `RUSTDL_RESEED_AT_LEAF`, default ON (`=0` reverts).** The net (`RUSTDL_RESEED_VERIFY`,
   0.4.29) re-drains the full graph before a fixpoint may conclude `Sat`, catching facts and

@@ -234,6 +234,31 @@ Ontology(<http://rustdl.test/test>\n\
         );
     }
 
+    /// The id range the old filter let through: `num_classes` is the wedge's nominal
+    /// class for the first individual AND the saturator's first synthetic, here
+    /// the `⊥` key minted for `Z ⊑ ∃r.⊥`. Seeding it must not read as `⊥`.
+    #[test]
+    fn a_wedge_nominal_id_is_not_seeded_as_a_saturator_synthetic() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Z))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(NamedIndividual(:a))\n\
+    SubClassOf(:Z ObjectSomeValuesFrom(:r owl:Nothing))\n\
+)\n"
+        ));
+        let sat = build_base(&internal);
+        let first_synthetic =
+            ClassId::new(u32::try_from(internal.vocabulary.num_classes()).expect("fits"));
+        assert!(
+            first_synthetic.index() < sat.reserved_x.index(),
+            "precondition: the saturator minted a synthetic at num_classes"
+        );
+        assert!(!sat.seed_unsat(&[first_synthetic], &[]));
+        assert!(!sat.seed_unsat(&[], &[(role_id(&internal, "r"), first_synthetic)]));
+    }
+
     /// Out-of-universe seed elements must be silently skipped, not panic.
     ///
     /// The tableau (the real caller) can pass `ClassId`s for complement classes
@@ -244,7 +269,9 @@ Ontology(<http://rustdl.test/test>\n\
     ///
     /// The guard silently drops out-of-universe ids (sound under-approximation:
     /// dropping a constraint from the seed can only make the saturator derive ⊥
-    /// *less* often — a MISS, never an FP).
+    /// *less* often — a MISS, never an FP). It now drops every non-named id, a
+    /// superset; the range between `num_classes` and `reserved_x` is pinned by
+    /// `a_wedge_nominal_id_is_not_seeded_as_a_saturator_synthetic`.
     ///
     /// This test:
     ///   1. Verifies no panic when an out-of-range atomic seed is present.

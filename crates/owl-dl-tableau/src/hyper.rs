@@ -3366,6 +3366,10 @@ impl<'c> HyperEngine<'c> {
     }
 
     fn solve_inner(&mut self, depth: usize) -> HyperResult {
+        // Consume the fresh mark FIRST, before any early return: a mark left set by
+        // a `Stalled` exit below would make the next sibling frame skip both
+        // re-seed points with no net ever run on its graph.
+        let fresh = std::mem::take(&mut self.leaf_net_fresh);
         if let Some(dl) = self.deadline
             && Instant::now() >= dl
         {
@@ -3399,7 +3403,6 @@ impl<'c> HyperEngine<'c> {
         }
         // #137 net placement (`RUSTDL_RESEED_AT_LEAF`): skip it in this frame's
         // fixpoint and run it once at the `Sat` point at the end of this function.
-        let fresh = std::mem::take(&mut self.leaf_net_fresh);
         let prev_deferred = self.reseed_deferred;
         let frame_reseeds = !fresh && (!self.reseed_at_leaf || self.reseed_skip_left == 0);
         self.reseed_deferred = !frame_reseeds;

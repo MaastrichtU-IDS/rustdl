@@ -6,6 +6,27 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Added
+- **Told definition matching follows asserted conjuncts transitively (#180),
+  `RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS`, default ON (`=0` reverts).** The #139 matcher looked
+  for a definition's atomic conjuncts among a class's told superclasses plus ONE hop through
+  an atomic conjunct asserted on one of them. Told tables do not split an asserted `⊓`, so a
+  conjunct of a conjunct was out of reach: `YeastCell ≡ Fungus ⊓ …`,
+  `Fungus ≡ ∃hasInherence.… ⊓ Eukaryote` and `Eukaryote ⊑ Organism` never reached `Organism`, so
+  `YeastCell ⊑ UnicellularOrganism ≡ Organism ⊓ …` was left to a tableau probe that did not
+  finish inside the full ontology. The candidate's superclasses are now closed over told
+  edges and asserted atomic conjuncts, upward only, and a complex conjunct asserted anywhere
+  in that closure counts. Each step is a told subsumption or an asserted `B ⊑ … ⊓ C ⊓ …`, so
+  every emitted axiom stays entailed.
+  - The BakersYeastCell family (`16847`, `12141`, `9024`, `14936`, `12433`) each go from 3
+    missed to 0, with no false positives against Konclude ∪ HermiT. `=0` brings the 3 back.
+  - A parse-and-convert census of all 1,920 ORE ontologies shows the pass emits more axioms on
+    32 of them (31 axioms on 22, 29 on 2, 482 on `6712`, 1 on each of the 5 above). Total
+    conversion time is unchanged (5,291 s vs 5,268 s).
+  - A two-arm `classify` sweep over those 32 (120 s cap) changes answers only on the 5 targets,
+    each gaining exactly its 3 pairs. 26 are identical, 1 times out in both arms, and none
+    lost an entailment.
+
 ### Fixed
 - **The #137 completeness net no longer re-seeds the whole wedge graph at every search frame,
   `RUSTDL_RESEED_AT_LEAF`, default ON (`=0` reverts).** The net (`RUSTDL_RESEED_VERIFY`,

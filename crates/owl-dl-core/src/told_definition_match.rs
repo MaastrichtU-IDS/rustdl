@@ -79,6 +79,14 @@ fn conjuncts(cid: ConceptId, pool: &ConceptPool) -> Vec<ConceptId> {
     }
 }
 
+/// #180: close a candidate's known superclasses over asserted atomic conjuncts,
+/// not just one hop. Default ON; `RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS=0` restores
+/// the single hop.
+#[must_use]
+pub fn told_match_conjunct_supers_enabled() -> bool {
+    std::env::var_os("RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS").is_none_or(|v| v != "0")
+}
+
 /// A definition `D ≡ Y` split into its atomic and complex conjuncts.
 struct Definition {
     class: ClassId,
@@ -169,19 +177,52 @@ pub fn derive_told_definition_matches(onto: &mut InternalOntology) -> usize {
             }
         }
 
-        let has_complex = |a: ClassId, k: ConceptId| {
-            told.super_classes(a)
-                .iter()
-                .any(|b| asserted[b.index() as usize].contains(&k))
-        };
-        let has_atom = |a: ClassId, k: ClassId| {
-            let sups = told.super_classes(a);
-            sups.binary_search(&k).is_ok()
-                || sups.iter().any(|b| {
-                    asserted_atoms[b.index() as usize]
-                        .iter()
-                        .any(|&c| told.super_classes(c).binary_search(&k).is_ok())
-                })
+        // The superclasses `A` is known to have: its told closure, plus (with
+        // `RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS`) every atomic conjunct asserted on
+        // any class reached, closed again. Each step is a told subsumption or an
+        // asserted `B ⊑ … ⊓ C ⊓ …`, so every member is entailed. Without the
+        // closure only ONE asserted-conjunct hop is followed, and
+        // `YeastCell ≡ Fungus ⊓ …`, `Fungus ≡ ∃… ⊓ Eukaryote`, `Eukaryote ⊑ Organism`
+        // never reaches `Organism` (#180, the BakersYeastCell family). Candidates
+        // are still enumerated through TOLD subclasses only, so a class linked to a
+        // seed by an asserted conjunct is not visited.
+        let close_conjuncts = told_match_conjunct_supers_enabled();
+        let mut memo: HashMap<ClassId, (Vec<ClassId>, Vec<ClassId>)> = HashMap::new();
+        // Returns (classes whose asserted complex conjuncts count for `a`,
+        // atomic superclasses `a` is known to have). Both sorted.
+        let mut known = |a: ClassId| -> (Vec<ClassId>, Vec<ClassId>) {
+            if let Some(v) = memo.get(&a) {
+                return v.clone();
+            }
+            let told_a = told.super_classes(a);
+            let mut reached: HashSet<ClassId> = told_a.iter().copied().collect();
+            if close_conjuncts {
+                let mut queue: Vec<ClassId> = told_a.to_vec();
+                while let Some(b) = queue.pop() {
+                    for &c in &asserted_atoms[b.index() as usize] {
+                        for &y in told.super_classes(c) {
+                            if reached.insert(y) {
+                                queue.push(y);
+                            }
+                        }
+                    }
+                }
+            } else {
+                for &b in told_a {
+                    for &c in &asserted_atoms[b.index() as usize] {
+                        reached.extend(told.super_classes(c).iter().copied());
+                    }
+                }
+            }
+            let mut atoms: Vec<ClassId> = reached.into_iter().collect();
+            atoms.sort_unstable();
+            let scope = if close_conjuncts {
+                atoms.clone()
+            } else {
+                told_a.to_vec()
+            };
+            memo.insert(a, (scope.clone(), atoms.clone()));
+            (scope, atoms)
         };
 
         let mut new_edges: Vec<(ClassId, ClassId)> = Vec::new();
@@ -212,8 +253,12 @@ pub fn derive_told_definition_matches(onto: &mut InternalOntology) -> usize {
                     {
                         continue;
                     }
-                    if def.complex.iter().all(|&k| has_complex(a, k))
-                        && def.atoms.iter().all(|&k| has_atom(a, k))
+                    let (scope, atoms) = known(a);
+                    if def.complex.iter().all(|&k| {
+                        scope
+                            .iter()
+                            .any(|b| asserted[b.index() as usize].contains(&k))
+                    }) && def.atoms.iter().all(|k| atoms.binary_search(k).is_ok())
                     {
                         new_edges.push((a, def.class));
                     }

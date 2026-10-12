@@ -2799,6 +2799,13 @@ pub fn convert_ontology<A: ForIRI>(
     // before the told-table passes below so they see the new edges. Sound
     // (told subsumption + syntactic identity). RUSTDL_TOLD_DEFINITION_MATCH,
     // default ON.
+    // #180: `D ≡ C ⊓ ∃R.B ⊓ ∀R.B` with `R` functional ⟹ `C ⊓ ∃R.B ⊑ D`, the
+    // `∀`-free sufficient direction the EL saturator can read. Runs before told
+    // matching only so both see the same axioms; neither reads the other's output.
+    // RUSTDL_FUNCTIONAL_FORALL_DEF, default ON.
+    if !conversion_cut() {
+        let _ = crate::functional_forall::derive_functional_forall_defs(&mut out);
+    }
     if !conversion_cut() {
         let _ = crate::told_definition_match::derive_told_definition_matches(&mut out);
     }
@@ -3242,7 +3249,7 @@ fn signed_sub_roles_of(out: &InternalOntology, goal: Role) -> Vec<Role> {
 }
 
 /// The signed `(sub, sup)` inclusions [`signed_sub_roles_of`] closes over.
-fn signed_role_edges(out: &InternalOntology) -> Vec<(Role, Role)> {
+pub(crate) fn signed_role_edges(out: &InternalOntology) -> Vec<(Role, Role)> {
     let mut edges: Vec<(Role, Role)> = Vec::new();
     let both = |a: Role, b: Role, edges: &mut Vec<(Role, Role)>| {
         edges.push((a, b));
@@ -3277,7 +3284,7 @@ fn signed_role_edges(out: &InternalOntology) -> Vec<(Role, Role)> {
 }
 
 /// Every role reaching `goal` through `edges` (reflexive).
-fn signed_closure_below(edges: &[(Role, Role)], goal: Role) -> Vec<Role> {
+pub(crate) fn signed_closure_below(edges: &[(Role, Role)], goal: Role) -> Vec<Role> {
     let mut set = vec![goal];
     loop {
         let before = set.len();

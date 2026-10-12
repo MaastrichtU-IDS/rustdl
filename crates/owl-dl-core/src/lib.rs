@@ -17,6 +17,7 @@ pub mod definitions;
 pub mod disjunction_existential;
 pub mod disjunctive_antecedent;
 pub mod dropped;
+pub mod functional_forall;
 pub mod ir;
 pub mod locality;
 pub mod negation_gci;

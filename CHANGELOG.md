@@ -7,6 +7,16 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **A definition's `∀R.B` conjunct is read as implied by its `∃R.B` conjunct when `R` is
+  functional (#180), `RUSTDL_FUNCTIONAL_FORALL_DEF`, default ON (`=0` reverts).** The "closure"
+  pattern `D ≡ A ⊓ ∃R.B ⊓ ∀R.B` has a sufficient direction the EL saturator cannot read
+  because of the `∀`, so a class that is `A ⊓ ∃R.B` was left to a per-pair tableau probe
+  that needs over 120 s. With `R` functional (declared, through `InverseFunctional` on its
+  inverse, or as a sub-role of either) `∃R.B` already gives `∀R.B`, so conversion now also
+  emits `A ⊓ ∃R.B ⊑ D`. `ore_ont_13859` 17 missed → 0 (it reported `incomplete: false`) and
+  `ore_ont_7893` 5 → 0, FP 0.
+
+### Fixed
 - **The #137 completeness net no longer re-seeds the whole wedge graph at every search frame,
   `RUSTDL_RESEED_AT_LEAF`, default ON (`=0` reverts).** The net (`RUSTDL_RESEED_VERIFY`,
   0.4.29) re-drains the full graph before a fixpoint may conclude `Sat`, catching facts and

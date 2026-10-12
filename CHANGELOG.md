@@ -7,6 +7,15 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **The `⊔` look-ahead (`RUSTDL_SAT_LOOKAHEAD`, default OFF) could report a consistent ontology
+  as inconsistent.** It seeds the EL saturator with a wedge node's labels, and above the
+  named-class range the two engines number classes differently: the wedge's nominal class
+  for an individual is the saturator's first synthetic, e.g. the `⊥` key of an `∃r.⊥` filler.
+  `a : C`, `C ⊑ D ⊔ E`, `Z ⊑ ∃r.⊥` was reported inconsistent, and so was `wine.ofn` (137
+  classes unsatisfiable, 0 subsumptions). Only named class ids are seeded now. Default
+  settings were not affected.
+
+### Fixed
 - **A definition's `∀R.B` conjunct is read as implied by its `∃R.B` conjunct when `R` is
   functional (#180), `RUSTDL_FUNCTIONAL_FORALL_DEF`, default ON (`=0` reverts).** The "closure"
   pattern `D ≡ A ⊓ ∃R.B ⊓ ∀R.B` has a sufficient direction the EL saturator cannot read

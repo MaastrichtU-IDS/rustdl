@@ -18,6 +18,9 @@ use crate::{WorklistEngine, build_run_engine_with_reserved};
 pub struct SeedSaturator {
     base: WorklistEngine,
     reserved_x: ClassId,
+    /// Number of NAMED classes: the only class ids whose meaning the caller's
+    /// id space (the wedge) and this saturator share. See [`Self::seed_unsat`].
+    num_named: usize,
 }
 
 /// Build and fully run the base saturation engine for the given ontology,
@@ -28,7 +31,11 @@ pub struct SeedSaturator {
 #[must_use]
 pub fn build_base(internal: &InternalOntology) -> SeedSaturator {
     let (base, reserved_x) = build_run_engine_with_reserved(internal);
-    SeedSaturator { base, reserved_x }
+    SeedSaturator {
+        base,
+        reserved_x,
+        num_named: internal.vocabulary.num_classes(),
+    }
 }
 
 impl SeedSaturator {
@@ -39,32 +46,34 @@ impl SeedSaturator {
     /// injects `X ⊑ aᵢ`; for each `(rⱼ, cⱼ)` in `exists_seed` injects
     /// `X ⊑ ∃rⱼ.cⱼ`.  Then runs to fixpoint and reads `X ⊑ ⊥`.
     ///
-    /// **Out-of-universe ids are silently skipped.**  The tableau caller can
-    /// pass `ClassId`s for complement classes or decision-specific Tseitin
-    /// synthetics whose `.index()` is ≥ `reserved_x.index()`.  Those ids lie
-    /// outside the saturator's class universe (no rules exist for them), so
-    /// injecting them would panic on a bitset bounds check.  Dropping them is a
-    /// sound under-approximation: the saturator can only derive ⊥ *less* often,
-    /// never producing a spurious unsatisfiability verdict.
+    /// **Only NAMED class ids are seeded; every other id is silently skipped.**
+    /// Above the named range the two id spaces disagree. The wedge uses
+    /// `[num_classes, num_classes + num_individuals)` for nominal classes and
+    /// mints clausifier helpers above that, while this saturator numbers its own
+    /// synthetics (nominal keys, Tseitin markers, the `⊥` key) from
+    /// `num_classes` up. Seeding a wedge nominal id here therefore asserted an
+    /// unrelated synthetic class: with an unsatisfiable `∃r.⊥` marker at that id,
+    /// `a : C`, `C ⊑ D ⊔ E` read as inconsistent, and so did `wine.ofn` (#180
+    /// follow-up). The previous filter skipped only ids at or above the whole
+    /// universe (`reserved_x`), which let exactly this range through.
+    ///
+    /// Dropping seeds is a sound under-approximation: the saturator can only
+    /// derive `⊥` less often, never a spurious unsatisfiability.
     #[must_use]
     pub fn seed_unsat(&self, atomic_seed: &[ClassId], exists_seed: &[(RoleId, ClassId)]) -> bool {
         let mut e = self.base.clone();
         let x = self.reserved_x;
-        let universe = self.reserved_x.index();
+        let named = |c: ClassId| (c.index() as usize) < self.num_named;
         for &a in atomic_seed {
-            // Skip ids that lie outside the saturator's class universe.
-            if a.index() >= universe {
-                continue;
+            if named(a) {
+                e.inject_subsumer(x, a);
             }
-            e.inject_subsumer(x, a);
         }
         for &(r, c) in exists_seed {
-            // Skip existentials whose filler class is out of universe.
-            // (Roles are a separate id space — we do NOT filter on role id.)
-            if c.index() >= universe {
-                continue;
+            // Roles are a separate, shared id space: only the filler is filtered.
+            if named(c) {
+                e.inject_existential(x, r, c);
             }
-            e.inject_existential(x, r, c);
         }
         e.run();
         e.is_unsat_class(x)

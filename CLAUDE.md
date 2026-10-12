@@ -2881,7 +2881,36 @@ current engine state, characterized MISSED, open levers, and dead-ends;
 `docs/model-caching-plan.md` / `docs/moms-plan.md` explain why model caching is
 a deliberately un-integrated Phase-1 stub.
 
-## State of play — 2026-10-09, after v0.4.36 (read this first)
+## State of play — 2026-10-12, after v0.4.38 (read this first)
+
+**Changes on `main` since v0.4.38, each behind its own default-ON flag (`=0` reverts), pinned in
+`flag_defaults.rs`:**
+
+| PR | what | flag |
+|---|---|---|
+| #239 | the #137 re-seed net (`RUSTDL_RESEED_VERIFY`) runs where a wedge frame would conclude `Sat`, plus a back-off at intermediate frames, instead of a full re-seed at EVERY frame. `ore_ont_4903` 94 → 28 CPU-s, `8911` 79 → 35, `2182`/`16481`/`6272` ~8 → ~2; answers unchanged | `RUSTDL_RESEED_AT_LEAF` |
+| #242 | `D ≡ A ⊓ ∃R.B ⊓ ∀R.B` with `R` functional also emits `A ⊓ ∃R.B ⊑ D` (the `∀`-free sufficient direction the EL saturator can read). `13859` 17 → 0, `7893` 5 → 0 missed | `RUSTDL_FUNCTIONAL_FORALL_DEF` |
+
+**The #137 net catches CLASHES on existing facts, not only missing facts.** On `ore_ont_2182` a
+leaf-only net returned `Unsat` with an unchanged graph ~10,000 times. So
+`stats.reseed_recovered`, which counts only fingerprint changes, undercounts the net's work,
+and any gate on "did the re-seed change the graph" is blind to clash-only recoveries. A
+fingerprint that missed `≤n` constraints was a real completeness hole in #239's first version
+(caught in review): re-examine the frame unconditionally instead.
+
+**This host is shared by two Claude sessions (16 cores, 65 GB).** Rules agreed on 2026-10-11:
+- one timing sweep or corpus report at a time, announced to the other session first;
+- no workspace test build while a sweep runs (one build hit ENOMEM);
+- kill only PIDs you started (no `pkill -f` / grep-and-kill);
+- distinct tags for files in `~/owl-reasoner-harness/baselines`.
+
+Load turns per-pair budget cuts into fake misses and fake `ok → DNF`: recheck every flagged row
+serially by CPU time on a quiet box.
+
+**`wine` is ~13 s at the default on 0.4.37 and 0.4.38, not ~2.7 s** (see the canary note above);
+whether #239 fixed it is the next thing to measure.
+
+## State of play — 2026-10-09, after v0.4.36
 
 **Eleven PRs since v0.4.36 (#205–#222), all correctness or signal fixes, all on `main` and not
 yet released.** Every one passed the FP=0 net (all closures exact), a two-arm ORE sweep with the
@@ -3375,6 +3404,12 @@ WITH a number before calling it non-reproducing.**
   (the `RUSTDL_DKEY_MERGING_GATE` pattern). Until then **`RUSTDL_PSEUDO_MODEL`'s soundness-by-
   construction argument stays falsified**, since restoring it requires this flag ON. See
   `docs/2026-08-18-inverse-func-max-sweep.md`.
+  **SUPERSEDED (corrected 2026-10-12): `RUSTDL_INVERSE_FUNC_MAX` is DEFAULT ON since 2026-08-22**
+  (see its doc comment in `convert.rs`), so "stay OFF" above is history. And `ore_ont_13859`'s
+  remaining 17 misses on 0.4.38 were NOT this flag (identical with it on or off): they are the
+  functional-closure pattern `D ≡ A ⊓ ∃R.B ⊓ ∀R.B`, fixed by #242
+  (`RUSTDL_FUNCTIONAL_FORALL_DEF`). Treating this passage as current cost a wrong attribution
+  in #180.
 * **`realize` dropped DERIVED individual equality, and the root cause FALSIFIES a shipped
   soundness claim** — `docs/known-limitations/realize-drops-derived-individual-equality.md`.
   The residual is **the pseudo-model prune, not the tableau**: `rustdl justify … instance x B`

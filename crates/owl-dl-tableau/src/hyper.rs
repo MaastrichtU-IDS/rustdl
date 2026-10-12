@@ -788,6 +788,14 @@ pub struct HyperEngine<'c> {
     /// measured on `ore_ont_2182`, where ~10k leaf re-seeds returned `Unsat`
     /// with no change. Drives the back-off schedule.
     reseed_net_hit: bool,
+    /// Set by `run_reseed_net`: a net re-seed actually ran (the drain can return
+    /// `Unsat`/`Stalled` before reaching it). The schedule only learns from runs.
+    reseed_net_ran: bool,
+    /// Set when a frame re-enters itself straight after a leaf re-seed that
+    /// returned `Sat`: the graph is at full fixpoint, so the re-entered frame
+    /// skips both re-seed points and only re-runs the open checks. Consumed at
+    /// frame entry, so child frames never see it.
+    leaf_net_fresh: bool,
     /// Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`, via
     /// [`with_semantic_branching`]): opt-in in-search boolean constraint
     /// propagation at the `⊔` decision point — drop told-disjoint disjuncts and
@@ -1542,6 +1550,8 @@ impl<'c> HyperEngine<'c> {
             reseed_interval: 1,
             reseed_skip_left: 0,
             reseed_net_hit: false,
+            reseed_net_ran: false,
+            leaf_net_fresh: false,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -1609,6 +1619,8 @@ impl<'c> HyperEngine<'c> {
             reseed_interval: 1,
             reseed_skip_left: 0,
             reseed_net_hit: false,
+            reseed_net_ran: false,
+            leaf_net_fresh: false,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -2417,6 +2429,7 @@ impl<'c> HyperEngine<'c> {
         let r = self.horn_fixpoint(max_iters);
         self.reseed_verify_active = false;
         let changed = self.graph_fingerprint() != before;
+        self.reseed_net_ran = true;
         self.reseed_net_hit = changed || matches!(r, HyperResult::Unsat);
         (r, changed)
     }
@@ -2444,18 +2457,22 @@ impl<'c> HyperEngine<'c> {
     /// Cheap O(nodes) structural fingerprint — total labels, total out-edges,
     /// node count, merged-node count. Used by the #137 completeness net to tell
     /// whether a re-seed recovered work the delta drain missed.
-    fn graph_fingerprint(&self) -> (usize, usize, usize, usize) {
+    fn graph_fingerprint(&self) -> (usize, usize, usize, usize, usize, usize) {
         let mut l = 0usize;
         let mut e = 0usize;
         let mut m = 0usize;
+        let mut am = 0usize;
         for (i, n) in self.nodes.iter().enumerate() {
             l += n.labels.len();
             e += n.edges.len();
+            am += n.at_most.len();
             if self.representative[i] != HNode(u32::try_from(i).expect("fits")) {
                 m += 1;
             }
         }
-        (l, e, self.nodes.len(), m)
+        // `at_most` and `neq` change no label, edge, node or merge: a re-seed
+        // that recovers only a `≤n` head would otherwise read as no change.
+        (l, e, self.nodes.len(), m, am, self.neq.len())
     }
 
     fn seed_worklist_from_graph(&mut self) {
@@ -2807,6 +2824,8 @@ impl<'c> HyperEngine<'c> {
         self.deadline = deadline;
         self.reseed_interval = RESEED_INITIAL_INTERVAL;
         self.reseed_skip_left = RESEED_INITIAL_INTERVAL;
+        self.reseed_deferred = false;
+        self.leaf_net_fresh = false;
         self.at_most_exhaust_probe = std::env::var_os("RUSTDL_AT_MOST_EXHAUST_PROBE")
             .is_some_and(|v| v != "0" && !v.is_empty());
         // Incremental mode: the root query graph is built by direct field
@@ -3205,6 +3224,8 @@ impl<'c> HyperEngine<'c> {
             reseed_interval: 1,
             reseed_skip_left: 0,
             reseed_net_hit: false,
+            reseed_net_ran: false,
+            leaf_net_fresh: false,
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
@@ -3378,20 +3399,30 @@ impl<'c> HyperEngine<'c> {
         }
         // #137 net placement (`RUSTDL_RESEED_AT_LEAF`): skip it in this frame's
         // fixpoint and run it once at the `Sat` point at the end of this function.
+        let fresh = std::mem::take(&mut self.leaf_net_fresh);
         let prev_deferred = self.reseed_deferred;
-        let frame_reseeds = !self.reseed_at_leaf || self.reseed_skip_left == 0;
+        let frame_reseeds = !fresh && (!self.reseed_at_leaf || self.reseed_skip_left == 0);
         self.reseed_deferred = !frame_reseeds;
         self.reseed_net_hit = false;
+        self.reseed_net_ran = false;
         let fixpoint = self.horn_fixpoint(FIXPOINT_ITERS);
         self.reseed_deferred = prev_deferred;
-        if self.reseed_at_leaf {
+        // This frame's own fixpoint re-seeded and found nothing. Only read-only
+        // open checks run between here and the leaf, so the leaf re-seed would
+        // re-drain an unchanged, already-complete graph.
+        let head_net_clean = frame_reseeds && self.reseed_net_ran && !self.reseed_net_hit;
+        if self.reseed_at_leaf && !fresh {
             if frame_reseeds {
-                self.reseed_interval = if self.reseed_net_hit {
-                    1
-                } else {
-                    (self.reseed_interval * 2).min(RESEED_MAX_INTERVAL)
-                };
-                self.reseed_skip_left = self.reseed_interval - 1;
+                // Learn only from a re-seed that ran: the drain can return
+                // `Unsat`/`Stalled` first, which says nothing about the net.
+                if self.reseed_net_ran {
+                    self.reseed_interval = if self.reseed_net_hit {
+                        1
+                    } else {
+                        (self.reseed_interval * 2).min(RESEED_MAX_INTERVAL)
+                    };
+                    self.reseed_skip_left = self.reseed_interval - 1;
+                }
             } else {
                 self.reseed_skip_left -= 1;
             }
@@ -3647,10 +3678,11 @@ impl<'c> HyperEngine<'c> {
         // #137 net, at the point this frame would conclude `Sat`. Facts only
         // accumulate along a branch, so one re-seed here sees every premise an
         // earlier frame's re-seed would have, and it can only ADD entailed facts:
-        // a clash means this branch is closed after all. If the re-seed added
-        // facts without a clash, re-examine the frame, since they may open a
-        // disjunction or violate a `≤n`. That terminates: each pass either finds
-        // no new fact or adds some to a bounded graph.
+        // a clash means this branch is closed after all. Otherwise the frame is
+        // re-examined once, since recovered facts may open a disjunction or
+        // violate a `≤n`. That terminates: the re-entered frame skips this block
+        // (`leaf_net_fresh`) and either concludes `Sat` or branches, and its
+        // children run the net normally.
         //
         // Intermediate frames also re-seed, on the back-off schedule in this
         // function's head: a clash the net finds near the root prunes the whole
@@ -3658,7 +3690,7 @@ impl<'c> HyperEngine<'c> {
         // (`ore_ont_2182`, `16481`, `6272`) fast, while searches that never
         // recover anything (`ore_ont_4903`, `8911`) back off to rare re-seeds.
         // This leaf re-seed is the guarantee; the schedule is only pruning.
-        if self.reseed_at_leaf && self.reseed_net_due() {
+        if self.reseed_at_leaf && self.reseed_net_due() && !fresh && !head_net_clean {
             let (r, changed) = self.run_reseed_net(FIXPOINT_ITERS);
             if changed {
                 self.note_reseed_recovered();
@@ -3672,9 +3704,14 @@ impl<'c> HyperEngine<'c> {
                 HyperResult::Stalled => return HyperResult::Stalled,
                 HyperResult::Sat => {}
             }
-            if changed {
-                return self.solve_inner(depth);
-            }
+            // Re-examine the frame whether or not anything visibly changed: the
+            // re-seed can add constraints no fingerprint component tracks (a
+            // `≤n` head lands in `at_most`, with no label, edge or event), and the
+            // open checks above are what read them. Deciding by the fingerprint
+            // was a completeness hole in review. The re-entered frame skips both
+            // re-seed points, so this costs one pass of the read-only checks.
+            self.leaf_net_fresh = true;
+            return self.solve(depth);
         }
         HyperResult::Sat
     }
@@ -8497,5 +8534,55 @@ mod tests {
                 .with_mrv_ordering()
                 .mrv_ordering_for_test()
         );
+    }
+
+    /// #239 review, shared body: a Horn clause `A(X) → ≤2 r.⊤(X)`, a root
+    /// with three pairwise-`≠` `r`-successors, and `A(root)` placed WITHOUT a
+    /// worklist event (the simulated #137 missing trigger). The only
+    /// consequence of the missed fact is a `≤2` constraint, which lands in
+    /// `node.at_most` and changes no label/edge/node/merge — invisible to
+    /// `graph_fingerprint`. The correct verdict is `Unsat` (3 must-distinct
+    /// successors under `≤2`).
+    fn leaf_net_at_most_only_recovery(at_leaf: bool) -> HyperResult {
+        let r = Role::Named(RoleId::new(0));
+        let a = cls(1);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![Atom::AtMost(r, None, 2, X)],
+        }];
+        let mut eng = HyperEngine::new(&clauses, cls(0)).with_incremental_fixpoint();
+        eng.reseed_verify = true;
+        eng.reseed_at_leaf = at_leaf;
+        let root = HNode(0);
+        let mut succs = Vec::new();
+        for _ in 0..3 {
+            let s = eng.new_node();
+            eng.nodes[root.index()].edges.push((r, s));
+            eng.nodes[s.index()].preds.push((r, root));
+            succs.push(s);
+        }
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                eng.add_neq(succs[i], succs[j]);
+            }
+        }
+        // The missed fact: lands on the graph, no event.
+        eng.nodes[root.index()].add(a, DepSet::EMPTY);
+        eng.worklist.clear();
+        // Mid-search schedule state exactly as `decide_with_deadline` leaves it.
+        eng.reseed_interval = RESEED_INITIAL_INTERVAL;
+        eng.reseed_skip_left = RESEED_INITIAL_INTERVAL;
+        eng.init_depth = 8;
+        eng.solve(8)
+    }
+
+    #[test]
+    fn leaf_net_per_frame_net_refutes_at_most_only_recovery() {
+        assert_eq!(leaf_net_at_most_only_recovery(false), HyperResult::Unsat);
+    }
+
+    #[test]
+    fn leaf_net_leaf_net_refutes_at_most_only_recovery() {
+        assert_eq!(leaf_net_at_most_only_recovery(true), HyperResult::Unsat);
     }
 }

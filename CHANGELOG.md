@@ -6,6 +6,20 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **The #137 completeness net no longer re-seeds the whole wedge graph at every search frame,
+  `RUSTDL_RESEED_AT_LEAF`, default ON (`=0` reverts).** The net (`RUSTDL_RESEED_VERIFY`,
+  0.4.29) re-drains the full graph before a fixpoint may conclude `Sat`, catching facts and
+  clashes the incremental drain missed. It ran at every frame of the branching search, which
+  made label-cache builds 5-7x more expensive on some ontologies: `ore_ont_4903` 17 → 94 CPU-s
+  and `ore_ont_8911` 18 → 79 CPU-s between 0.4.28 and 0.4.38, with identical answers. The net now
+  always runs where a frame would conclude `Sat`, and at intermediate frames on a back-off: every
+  frame after a re-seed finds something (new facts, or a clash on existing ones), doubling the gap
+  after each empty one. Same guarantee, since facts only accumulate along a branch. `4903` now
+  takes 26 CPU-s and `8911` 29; the nominal-heavy `ore_ont_2182`, `16481` and `6272` go from ~8 to
+  ~2.3 CPU-s. On the 424-ontology release corpus: 2 more ontologies classify, 0 verdict flips, 0
+  lost, mean wall −12%.
+
 ## [0.4.38] — 2026-10-11
 
 ### Changed

@@ -20,6 +20,15 @@ All notable changes to rustdl are documented here. Format is based on
   build of `owl-dl-py`, so a mimalloc or `cc` bump no longer first breaks on a release tag.
 
 ### Fixed
+- **The rest of the integer/decimal datatype relation (#247), `RUSTDL_DKEY_INT_DECIMAL_CROSS`,
+  default ON (`=0` reverts).** #245 related only integer ranges to decimal ranges. Now also:
+  integer enumerations inside decimal ranges and enumerations, integers inside decimal
+  enumerations, whole-number decimals (`12.0`) inside integer keys, and DISJOINTNESS between an
+  integer key and a decimal key whose values do not meet, so `{12} ⊓ ∀p.(xsd:decimal < 0)` is
+  unsatisfiable. Each relation is decided on the values; never a blanket integer/decimal
+  disjointness, which would be wrong (`xsd:integer ⊂ xsd:decimal`). HermiT agrees on all 29
+  adjudication probes. `datatype_value_membership.rs`'s test asserting `"5.0"^^xsd:decimal` is
+  not in an integer range pinned one of these misses and is flipped.
 - **The wedge fixpoint stops on its deadline when individual events are expensive,
   `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`, default ON (`=0` reverts).** `horn_fixpoint` read the
   clock every 256 events. On a large ABox graph an event can cost 10-25 ms, so the classify

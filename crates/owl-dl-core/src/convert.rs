@@ -3790,6 +3790,18 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     if dkey_int_within_decimal_enabled() {
         seed_int_within_decimal(out, &int_dkeys, &dec_dkeys);
     }
+    // #247: the integer/decimal edges `seed_int_within_decimal` leaves out
+    // (enumerations, and a whole-number decimal inside an integer key).
+    let int_dec_cross = dkey_int_decimal_cross_enabled();
+    if int_dec_cross {
+        seed_int_decimal_cross_subsumptions(
+            out,
+            &int_dkeys,
+            &int_oneof_dkeys,
+            &dec_dkeys,
+            &dec_oneof_dkeys,
+        );
+    }
 
     // Phase D11b: `DisjointClasses(DKey(ra), DKey(rb))` for every PROVABLY
     // disjoint pair within a bucket — the basis of the `∃p.DKey(v) ⊓
@@ -3855,7 +3867,8 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         seed_cross_bucket_disjoint(out, &floats, &ints, comp);
         seed_cross_bucket_disjoint(out, &doubles, &decs, comp);
         seed_cross_bucket_disjoint(out, &doubles, &ints, comp);
-        // NOT (ints, decs) — xsd:integer ⊂ xsd:decimal.
+        // NOT (ints, decs) blanket — xsd:integer ⊂ xsd:decimal. Integer/decimal
+        // pairs whose VALUES do not meet are seeded below, per pair (#247).
     }
     // Numeric-oneof disjointness. FP-CRITICAL DIRECTION: emitting a
     // `DisjointClasses` ADDS clashes, so a wrong "disjoint" is a false UNSAT,
@@ -3951,6 +3964,18 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         comp,
     );
     seed_range_oneof_disjoint(out, &dt_dkeys, &dt_oneof_dkeys, OrdRange::contains, comp);
+    // #247: integer/decimal disjointness, per pair of values. Never blanket: the
+    // integer value space is INSIDE the decimal one (see the #86 note above).
+    if int_dec_cross {
+        seed_int_decimal_cross_disjoint(
+            out,
+            &int_dkeys,
+            &int_oneof_dkeys,
+            &dec_dkeys,
+            &dec_oneof_dkeys,
+            comp,
+        );
+    }
 }
 
 /// Seed `DisjointClasses` between a RANGE bucket and an ENUMERATION bucket of the
@@ -4201,6 +4226,277 @@ fn seed_int_within_decimal(
         let sub = out.concepts.atomic(i);
         let sup = out.concepts.atomic(d);
         out.axioms.push(Axiom::SubClassOf { sub, sup });
+    }
+}
+
+/// #247: the rest of the integer/decimal relation, beyond the range ⊑ range edge
+/// [`seed_int_within_decimal`] seeds. Default **ON**; `RUSTDL_DKEY_INT_DECIMAL_CROSS=0`
+/// reverts. See [`seed_int_decimal_cross_subsumptions`] and
+/// [`seed_int_decimal_cross_disjoint`].
+#[must_use]
+pub fn dkey_int_decimal_cross_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_INT_DECIMAL_CROSS").is_none_or(|v| v != "0")
+}
+
+/// The decimal value of an integer (`12` IS the decimal `12`). Exact: `i64`
+/// prints without an exponent, so the lexical round-trip always parses.
+fn int_as_decimal(v: i64) -> Option<Decimal> {
+    parse_decimal(&v.to_string())
+}
+
+/// The integer value of a whole decimal (`12.0` IS the integer `12`), or `None`
+/// for a fractional decimal or one outside `i64`.
+fn decimal_as_int(d: &Decimal) -> Option<i64> {
+    if !d.frac.is_empty() {
+        return None;
+    }
+    let mag: i64 = if d.int.is_empty() {
+        0
+    } else {
+        d.int.parse().ok()?
+    };
+    Some(if d.negative { -mag } else { mag })
+}
+
+/// The single value of a decimal range that is a point `[v, v]`, else `None`.
+fn decimal_point(d: &OrdRange<Decimal>) -> Option<&Decimal> {
+    match (&d.min, &d.max) {
+        (Some(lo), Some(hi)) if lo == hi && d.min_incl && d.max_incl => Some(lo),
+        _ => None,
+    }
+}
+
+/// Every integer in `set`, if it is finite and has at most `cap` members.
+fn enumerate_int_set(set: &IntSet, cap: usize) -> Option<Vec<i64>> {
+    let mut out = Vec::new();
+    for r in set.ranges() {
+        let (Some(lo), Some(hi)) = (r.min, r.max) else {
+            return None;
+        };
+        if lo > hi {
+            continue;
+        }
+        let n = usize::try_from(hi.checked_sub(lo)?).ok()?.checked_add(1)?;
+        if out.len() + n > cap {
+            return None;
+        }
+        out.extend(lo..=hi);
+    }
+    Some(out)
+}
+
+/// #247: subsumptions between integer and decimal keys that
+/// [`seed_int_within_decimal`] (range ⊑ range only) leaves out. Each holds iff the
+/// value set of the subclass is inside that of the superclass, decided exactly:
+///
+/// * integer enumeration ⊑ decimal range / decimal enumeration: every member fits;
+/// * integer range ⊑ decimal enumeration: the range is finite (at most as many
+///   integers as the enumeration has members) and every integer is a member;
+/// * decimal point `[v, v]` or decimal enumeration ⊑ integer range / integer
+///   enumeration: every value is WHOLE and in the integer key. A decimal range
+///   that is not a point is dense, so it is never inside an integer key.
+///
+/// Only adds subsumptions, so the direction of risk is a false positive; the
+/// "every value fits" tests are the whole of it.
+fn seed_int_decimal_cross_subsumptions(
+    out: &mut InternalOntology,
+    int_ranges: &[(ClassId, IntSet)],
+    int_oneofs: &[(ClassId, std::collections::BTreeSet<i64>)],
+    dec_ranges: &[(ClassId, OrdRange<Decimal>)],
+    dec_oneofs: &[(ClassId, std::collections::BTreeSet<Decimal>)],
+) {
+    let push = |out: &mut InternalOntology, a: ClassId, b: ClassId| {
+        let sub = out.concepts.atomic(a);
+        let sup = out.concepts.atomic(b);
+        out.axioms.push(Axiom::SubClassOf { sub, sup });
+    };
+    let as_dec = |s: &std::collections::BTreeSet<i64>| -> Option<Vec<Decimal>> {
+        s.iter().map(|&v| int_as_decimal(v)).collect()
+    };
+    // Integer enumeration ⊑ decimal key.
+    for (ic, set) in int_oneofs {
+        let Some(vals) = as_dec(set).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        for (dc, d) in dec_ranges {
+            if vals.iter().all(|v| d.contains(v)) {
+                push(out, *ic, *dc);
+            }
+        }
+        for (dc, t) in dec_oneofs {
+            if vals.iter().all(|v| t.contains(v)) {
+                push(out, *ic, *dc);
+            }
+        }
+    }
+    // Integer range ⊑ decimal enumeration (only a finite range can fit).
+    for (ic, set) in int_ranges {
+        for (dc, t) in dec_oneofs {
+            let Some(ints) = enumerate_int_set(set, t.len()) else {
+                continue;
+            };
+            if !ints.is_empty()
+                && ints
+                    .iter()
+                    .all(|&v| int_as_decimal(v).is_some_and(|d| t.contains(&d)))
+            {
+                push(out, *ic, *dc);
+            }
+        }
+    }
+    // Decimal point / enumeration ⊑ integer key: every value whole and inside.
+    let dec_values: Vec<(ClassId, Vec<&Decimal>)> = dec_ranges
+        .iter()
+        .filter_map(|(c, d)| decimal_point(d).map(|p| (*c, vec![p])))
+        .chain(
+            dec_oneofs
+                .iter()
+                .filter(|(_, t)| !t.is_empty())
+                .map(|(c, t)| (*c, t.iter().collect())),
+        )
+        .collect();
+    for (dc, vals) in &dec_values {
+        let Some(ints) = vals
+            .iter()
+            .map(|d| decimal_as_int(d))
+            .collect::<Option<Vec<i64>>>()
+        else {
+            continue;
+        };
+        for (ic, set) in int_ranges {
+            if ints.iter().all(|&v| set.contains(v)) {
+                push(out, *dc, *ic);
+            }
+        }
+        for (ic, set) in int_oneofs {
+            if ints.iter().all(|v| set.contains(v)) {
+                push(out, *dc, *ic);
+            }
+        }
+    }
+}
+
+/// #247: `DisjointClasses` between an integer key and a decimal key whose value sets
+/// do not meet. Before this, integer and decimal keys were never disjoint, so
+/// `{12} ⊓ ∀p.(xsd:decimal < 0)` was satisfiable. A blanket integer/decimal
+/// disjointness would be WRONG (`xsd:integer ⊂ xsd:decimal`), so each pair is
+/// decided on its values:
+///
+/// * integer range × decimal range: every interval, read as a CONTINUOUS decimal
+///   interval, is disjoint from the decimal range. Continuous disjointness implies
+///   integer disjointness, so this can only miss (`[1, 2]` vs `(1, 2)`), never
+///   claim a shared value is absent;
+/// * any key × an enumeration, or an integer enumeration × a decimal range: no
+///   member of one is a value of the other, decided exactly per value.
+///
+/// FP-CRITICAL DIRECTION: a wrong "disjoint" is a false UNSAT. Empty keys are never
+/// claimed disjoint (the conservative convention of the within-bucket seeding), and
+/// the seeding is restricted to merge-aware role components like every other `DKey`
+/// disjointness.
+fn seed_int_decimal_cross_disjoint(
+    out: &mut InternalOntology,
+    int_ranges: &[(ClassId, IntSet)],
+    int_oneofs: &[(ClassId, std::collections::BTreeSet<i64>)],
+    dec_ranges: &[(ClassId, OrdRange<Decimal>)],
+    dec_oneofs: &[(ClassId, std::collections::BTreeSet<Decimal>)],
+    components: Option<&DkeyComponents>,
+) {
+    let as_dec_interval = |r: &IntegerRange| -> Option<OrdRange<Decimal>> {
+        if let (Some(lo), Some(hi)) = (r.min, r.max)
+            && lo > hi
+        {
+            return None;
+        }
+        Some(OrdRange {
+            min: match r.min {
+                Some(v) => Some(int_as_decimal(v)?),
+                None => None,
+            },
+            min_incl: r.min.is_some(),
+            max: match r.max {
+                Some(v) => Some(int_as_decimal(v)?),
+                None => None,
+            },
+            max_incl: r.max.is_some(),
+        })
+    };
+    let range_x_range = |i: &IntSet, d: &OrdRange<Decimal>| {
+        !i.ranges().is_empty()
+            && i.ranges()
+                .iter()
+                .all(|r| as_dec_interval(r).is_some_and(|c| c.disjoint(d)))
+    };
+    let int_in = |i: &IntSet, d: &Decimal| decimal_as_int(d).is_some_and(|v| i.contains(v));
+    let range_x_oneof = |i: &IntSet, t: &std::collections::BTreeSet<Decimal>| {
+        !t.is_empty()
+            && i.ranges()
+                .iter()
+                .any(|r| r.min.zip(r.max).is_none_or(|(lo, hi)| lo <= hi))
+            && !t.iter().any(|d| int_in(i, d))
+    };
+    let oneof_x_range = |s: &std::collections::BTreeSet<i64>, d: &OrdRange<Decimal>| {
+        !s.is_empty()
+            && s.iter()
+                .all(|&v| int_as_decimal(v).is_some_and(|x| !d.contains(&x)))
+    };
+    let oneof_x_oneof = |s: &std::collections::BTreeSet<i64>,
+                         t: &std::collections::BTreeSet<Decimal>| {
+        !s.is_empty()
+            && !t.is_empty()
+            && s.iter()
+                .all(|&v| int_as_decimal(v).is_some_and(|x| !t.contains(&x)))
+    };
+    seed_pair_disjoint(out, int_ranges, dec_ranges, range_x_range, components);
+    seed_pair_disjoint(out, int_ranges, dec_oneofs, range_x_oneof, components);
+    seed_pair_disjoint(out, int_oneofs, dec_ranges, oneof_x_range, components);
+    seed_pair_disjoint(out, int_oneofs, dec_oneofs, oneof_x_oneof, components);
+}
+
+/// `DisjointClasses(a, b)` for every `(a, b)` across two key lists where `disjoint`
+/// holds, restricted to keys that can share a node label (the same merge-aware role
+/// components [`seed_range_oneof_disjoint`] uses).
+fn seed_pair_disjoint<A, B>(
+    out: &mut InternalOntology,
+    a_keys: &[(ClassId, A)],
+    b_keys: &[(ClassId, B)],
+    disjoint: impl Fn(&A, &B) -> bool,
+    components: Option<&DkeyComponents>,
+) {
+    if a_keys.is_empty() || b_keys.is_empty() {
+        return;
+    }
+    let reach = |k: &ClassId| -> Option<Option<&Vec<usize>>> {
+        components.map_or(Some(None), |c| {
+            if c.unanchored.contains(k) {
+                return Some(None);
+            }
+            c.components.get(k).map(Some)
+        })
+    };
+    let mut emitted: std::collections::HashSet<(ClassId, ClassId)> =
+        std::collections::HashSet::new();
+    for (a_cid, a) in a_keys {
+        let Some(ra) = reach(a_cid) else { continue };
+        for (b_cid, b) in b_keys {
+            let Some(rb) = reach(b_cid) else { continue };
+            let shares = match (ra, rb) {
+                (None, _) | (_, None) => true,
+                (Some(x), Some(y)) => x.iter().any(|c| y.contains(c)),
+            };
+            if !shares || !disjoint(a, b) {
+                continue;
+            }
+            let pair = if a_cid.index() <= b_cid.index() {
+                (*a_cid, *b_cid)
+            } else {
+                (*b_cid, *a_cid)
+            };
+            if emitted.insert(pair) {
+                let ca = out.concepts.atomic(*a_cid);
+                let cb = out.concepts.atomic(*b_cid);
+                out.axioms.push(Axiom::DisjointClasses(vec![ca, cb]));
+            }
+        }
     }
 }
 

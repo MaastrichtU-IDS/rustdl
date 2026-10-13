@@ -1435,9 +1435,13 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     integer ⊆ decimal (#180, `RUSTDL_DKEY_INT_WITHIN_DECIMAL`, default ON):**
     `seed_int_within_decimal` now seeds `DKey(int set) ⊑ DKey(decimal range)`
     when every interval fits, exactly (convex range, integer endpoints); no
-    reverse edge and no integer/decimal disjointness. Enumerations, and a
-    whole-number decimal inside an integer range, remain unrelated (silent
-    misses, confirmed by Konclude). Completeness-neutral on the current corpus (no MISSED to
+    reverse edge and no integer/decimal disjointness. **#247 (`RUSTDL_DKEY_INT_DECIMAL_CROSS`,
+    default ON) adds the rest**: enumerations both ways, whole-number decimals inside integer
+    keys, and per-value disjointness (never blanket). HermiT agrees on all 29 probes.
+    **KONCLUDE IS NOT AN ORACLE FOR INTEGER-VS-DECIMAL.** On those probes it derives that
+    `"12.5"^^xsd:decimal`, the decimal interval `[1, 3]` and `{1.0, 2.5}` lie in `xsd:integer`
+    keys: three false positives, plus one under-report. It appears to treat the two value
+    spaces as one. Adjudicate integer/decimal shapes with HermiT. Completeness-neutral on the current corpus (no MISSED to
     chase — `ore_ont_9054` already closed by D6/D7); the win is canaries
     + FP=0/MISSED=0 UNCHANGED corpus-wide. **8 new negatives-first
     canaries** (decimal exclusive-boundary, distinct-values-don't-

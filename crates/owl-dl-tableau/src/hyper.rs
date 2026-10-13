@@ -1805,10 +1805,10 @@ impl<'c> HyperEngine<'c> {
     /// For the `ABox`-seeded consistency engine. Its graph has one node per
     /// individual, and a deterministic drain over thousands of individuals can
     /// need more than `FIXPOINT_ITERS` events. The cap then stopped it with
-    /// time left: 37 of the 227 ORE ontologies whose classify consistency probe
-    /// stalled stopped before their budget. The cap's exit is the same `Stalled`
-    /// as the deadline's, so lifting it changes when a drain stops, never what a
-    /// step derives.
+    /// time left: with the cap lifted, 100 of the 227 ORE ontologies whose
+    /// classify consistency probe was undetermined are proved consistent. The
+    /// cap's exit is the same `Stalled` as the deadline's, so lifting it changes
+    /// when a drain stops, never what a step derives.
     #[must_use]
     pub fn with_deadline_bounded_fixpoint(mut self) -> Self {
         self.deadline_bounded_fixpoint = true;
@@ -6681,7 +6681,7 @@ mod tests {
 
     /// `with_deadline_bounded_fixpoint`: a drain longer than `max_iters` runs to
     /// its end while a deadline bounds it, and stops at the cap otherwise (no
-    /// deadline, or the option off). A 100-clause told chain drained with a cap
+    /// deadline, the option off, or the fixpoint not reading the clock). A 100-clause told chain drained with a cap
     /// of 10 events.
     #[test]
     fn deadline_bounded_fixpoint_lifts_the_step_cap_only_under_a_deadline() {
@@ -6692,19 +6692,22 @@ mod tests {
             })
             .collect();
         let far = Instant::now() + std::time::Duration::from_secs(60);
-        let run = |bounded: bool, deadline: Option<Instant>| {
+        let run = |bounded: bool, deadline: Option<Instant>, clock: bool| {
             let mut engine = HyperEngine::new(&clauses, cls(0));
             if bounded {
                 engine = engine.with_deadline_bounded_fixpoint();
             }
-            engine.fixpoint_deadline = true;
+            engine.fixpoint_deadline = clock;
             engine.incremental_fixpoint = false;
             engine.deadline = deadline;
             engine.horn_fixpoint(10)
         };
-        assert_eq!(run(true, Some(far)), HyperResult::Sat);
-        assert_eq!(run(true, None), HyperResult::Stalled);
-        assert_eq!(run(false, Some(far)), HyperResult::Stalled);
+        assert_eq!(run(true, Some(far), true), HyperResult::Sat);
+        assert_eq!(run(true, None, true), HyperResult::Stalled);
+        assert_eq!(run(false, Some(far), true), HyperResult::Stalled);
+        // With the fixpoint's clock reads off, a deadline does not bound the
+        // drain, so the cap must stay.
+        assert_eq!(run(true, Some(far), false), HyperResult::Stalled);
     }
 
     /// `RUSTDL_NN_INDEX`: the index finds the same holder as the full scan

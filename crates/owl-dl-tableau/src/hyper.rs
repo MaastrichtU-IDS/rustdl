@@ -2388,8 +2388,8 @@ impl<'c> HyperEngine<'c> {
             // verdict and no new soundness surface — a clock-truncated fixpoint is
             // indistinguishable, to callers, from a step-truncated one. `Stalled`
             // is never `Sat`, so a truncated proof can only MISS.
-            // Cheap test FIRST: `&&` is left-to-right, so putting the flag read first
-            // evaluated it on every iteration.
+            // One integer compare per event; the probe runs only every
+            // `next_check` steps (see `fixpoint_deadline_passed` for the stride).
             if steps >= next_check {
                 if self.fixpoint_deadline_passed() {
                     return HyperResult::Stalled;
@@ -2518,15 +2518,19 @@ impl<'c> HyperEngine<'c> {
     /// Under `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE` it also retunes the stride from the
     /// wall time since the previous read: halve it past `FIXPOINT_CHECK_TARGET`,
     /// double it below an eighth of that, within `1..=FIXPOINT_DEADLINE_STRIDE`.
-    /// Cheap events therefore climb to the old 256-event stride after eight
-    /// reads, and expensive ones are checked about every millisecond. The stride
+    /// Cheap events therefore climb to the old 256-event stride after nine
+    /// reads (eight doublings; the first read has nothing to compare with),
+    /// and expensive ones are checked about every millisecond. With no deadline,
+    /// or `RUSTDL_FIXPOINT_DEADLINE=0`, the stride goes straight to 256. The stride
     /// changes only WHEN the deadline is noticed, never what a step derives.
     fn fixpoint_deadline_passed(&mut self) -> bool {
-        if !self.fixpoint_deadline {
-            return false;
-        }
-        let Some(dl) = self.deadline else {
-            return false;
+        let dl = match self.deadline {
+            Some(dl) if self.fixpoint_deadline => dl,
+            _ => {
+                // No clock to read: probe as rarely as the fixed stride does.
+                self.fixpoint_stride = FIXPOINT_DEADLINE_STRIDE;
+                return false;
+            }
         };
         let now = Instant::now();
         if now >= dl {
@@ -6515,18 +6519,6 @@ mod tests {
         assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
     }
 
-    /// #139: a `⊔` whose body sits on a node the `≤1` merge has FOLDED must be
-    /// read as satisfied once its disjunct holds on the survivor. `add_label`
-    /// resolves through the union-find, so an asserted disjunct lands on the
-    /// survivor; if `head_atom_satisfied` reads the ghost, the clause never
-    /// closes and the search re-picks it at every level until the depth cap,
-    /// returning `Stalled` on a satisfiable class.
-    ///
-    /// The two successors arrive by DIFFERENT roles (`sub ⊑ sup` gives the `sub`-one a
-    /// `sup` edge too), so pairwise blocking cannot block the ghost — with a shared
-    /// incoming role, or under anywhere blocking, the ghost is label-subsumed by
-    /// the survivor and gets blocked, which masks the bug. Both `B` and `C` carry
-    /// a disjunction so the test does not depend on which successor survives.
     /// `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`: a fresh engine reads the clock from the
     /// FIRST drain event, so a deadline that has already passed stops a fixpoint
     /// shorter than the fixed 256-event stride. The fixed stride never reads the
@@ -6553,6 +6545,77 @@ mod tests {
         assert_ne!(run(false), HyperResult::Stalled);
     }
 
+    /// The stride's three moves, driven directly: a window over
+    /// `FIXPOINT_CHECK_TARGET` halves it (floor 1), a window under an eighth of it
+    /// doubles it (cap 256), and with no deadline it goes straight to the cap.
+    #[test]
+    fn adaptive_stride_halves_doubles_and_caps() {
+        let clauses: Vec<DlClause> = Vec::new();
+        let mut engine = HyperEngine::new(&clauses, cls(0));
+        engine.fixpoint_deadline = true;
+        engine.fixpoint_adaptive_stride = true;
+        engine.deadline = Some(Instant::now() + std::time::Duration::from_secs(60));
+        let slow = std::time::Duration::from_millis(5);
+
+        engine.fixpoint_stride = 64;
+        engine.fixpoint_last_check = Instant::now().checked_sub(slow);
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(engine.fixpoint_stride, 32, "a slow window halves");
+
+        engine.fixpoint_stride = 1;
+        engine.fixpoint_last_check = Instant::now().checked_sub(slow);
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(engine.fixpoint_stride, 1, "the floor is 1");
+
+        engine.fixpoint_stride = 64;
+        engine.fixpoint_last_check = Some(Instant::now());
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(engine.fixpoint_stride, 128, "a fast window doubles");
+
+        engine.fixpoint_stride = FIXPOINT_DEADLINE_STRIDE;
+        engine.fixpoint_last_check = Some(Instant::now());
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(
+            engine.fixpoint_stride, FIXPOINT_DEADLINE_STRIDE,
+            "the cap is 256"
+        );
+
+        engine.fixpoint_stride = 1;
+        engine.deadline = None;
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(
+            engine.fixpoint_stride, FIXPOINT_DEADLINE_STRIDE,
+            "no deadline, no probing"
+        );
+    }
+
+    /// Each `decide_with_deadline` restarts the calibration: stride 1, no
+    /// previous read. A stride left high by an earlier decide would skip the
+    /// first expensive window of the next one, which is the overshoot this fixes.
+    #[test]
+    fn decide_resets_the_adaptive_stride() {
+        let clauses: Vec<DlClause> = Vec::new();
+        let mut engine = HyperEngine::new(&clauses, cls(0));
+        engine.fixpoint_stride = FIXPOINT_DEADLINE_STRIDE;
+        engine.fixpoint_last_check = Some(Instant::now());
+        // An already-passed deadline: `solve` stops at entry, before any probe.
+        let _ = engine.decide_with_deadline(4, Some(Instant::now()));
+        assert_eq!(engine.fixpoint_stride, 1);
+        assert_eq!(engine.fixpoint_last_check, None);
+    }
+
+    /// #139: a `⊔` whose body sits on a node the `≤1` merge has FOLDED must be
+    /// read as satisfied once its disjunct holds on the survivor. `add_label`
+    /// resolves through the union-find, so an asserted disjunct lands on the
+    /// survivor; if `head_atom_satisfied` reads the ghost, the clause never
+    /// closes and the search re-picks it at every level until the depth cap,
+    /// returning `Stalled` on a satisfiable class.
+    ///
+    /// The two successors arrive by DIFFERENT roles (`sub ⊑ sup` gives the `sub`-one a
+    /// `sup` edge too), so pairwise blocking cannot block the ghost — with a shared
+    /// incoming role, or under anywhere blocking, the ghost is label-subsumed by
+    /// the survivor and gets blocked, which masks the bug. Both `B` and `C` carry
+    /// a disjunction so the test does not depend on which successor survives.
     #[test]
     fn disjunction_on_a_merged_ghost_closes_on_the_survivor() {
         if !crate::inverse_func_merge_enabled() {

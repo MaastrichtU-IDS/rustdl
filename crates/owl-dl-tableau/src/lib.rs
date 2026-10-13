@@ -4195,9 +4195,9 @@ pub fn hyper_fixpoint_deadline_enabled() -> bool {
 ///
 /// The fixed stride bounds the deadline overshoot in EVENTS. On a large `ABox`
 /// graph an event can cost 10-25 ms, so the classify consistency probe ran up to
-/// ~3 s past its budget on `ore_ont_10073` (decide 3.2-3.6 s against a 1 s
-/// budget in about half of the runs). The adaptive stride targets one clock read
-/// per millisecond of drain work and climbs back to 256 when events are cheap.
+/// ~3 s past its budget on `ore_ont_10073` (wedge build + decide 3.4-3.7 s against
+/// a 1 s budget in 5 of 6 runs). The adaptive stride targets one clock read per
+/// millisecond of drain work and climbs back to 256 when events are cheap.
 /// Timing only: a step derives the same facts either way, and a deadline exit is
 /// the same `Stalled` as before.
 #[must_use]

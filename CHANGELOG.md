@@ -55,8 +55,9 @@ All notable changes to rustdl are documented here. Format is based on
   weakened, never a left-hand side, so nothing new can be entailed that the original axiom did
   not entail. The axiom is still counted in `dropped`. `ore_ont_14379` recovers
   `ObservationEvent ⊑ Event` (1 missed → 0). Conversion changes on 6 of the 196 ORE ontologies
-  known to drop a class axiom; classify output changes only on `14379`, and the gained pair is
-  in the Konclude ∪ HermiT oracle.
+  known to drop a class axiom (21 more could not be measured at a 60 s cap); of the 5 of those
+  that classify within 60 s, output changes only on `14379`, and the gained pair is in the
+  Konclude ∪ HermiT oracle.
 
 - **The #137 completeness net no longer re-seeds the whole wedge graph at every search frame,
   `RUSTDL_RESEED_AT_LEAF`, default ON (`=0` reverts).** The net (`RUSTDL_RESEED_VERIFY`,

@@ -60,6 +60,42 @@ fn has_edge(o: &InternalOntology, a: &str, d: &str) -> bool {
     })
 }
 
+/// Every class axiom in the converted ontology, rendered as `A⊑B` / `A≡D`, sorted.
+/// Declarations are skipped. A non-atomic operand renders as `?` and any other
+/// axiom kind as `other`, so an unexpected leak of ANY shape changes the set:
+/// an `EquivalentClasses([A, B])` from a best-effort lowering of `B ⊓ U` would
+/// show up here even though it contains no `SubClassOf(B, A)`.
+fn class_axioms(o: &InternalOntology) -> Vec<String> {
+    let name = |id| match o.concepts.get(id) {
+        ConceptExpr::Atomic(c) => o
+            .vocabulary
+            .class_iri(*c)
+            .rsplit('#')
+            .next()
+            .unwrap_or("?")
+            .to_string(),
+        _ => "?".to_string(),
+    };
+    let mut out: Vec<String> = o
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::DeclareClass(_)
+            | Axiom::DeclareObjectProperty(_)
+            | Axiom::DeclareNamedIndividual(_) => None,
+            Axiom::SubClassOf { sub, sup } => Some(format!("{}⊑{}", name(*sub), name(*sup))),
+            Axiom::EquivalentClasses(ids) => {
+                let mut ns: Vec<String> = ids.iter().map(|&i| name(i)).collect();
+                ns.sort();
+                Some(ns.join("≡"))
+            }
+            _ => Some("other".to_string()),
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 // ---------------------------------------------------------------- negatives
 
 /// FP guard: an unconvertible conjunct on the LEFT keeps nothing.
@@ -68,7 +104,7 @@ fn has_edge(o: &InternalOntology, a: &str, d: &str) -> bool {
 fn nothing_is_kept_from_a_subclass_position() {
     let o = convert(&format!("SubClassOf(ObjectIntersectionOf(:B {BOOL}) :A)"));
     assert_eq!(o.dropped.total(), 1, "precondition: the axiom is dropped");
-    assert!(!has_edge(&o, "B", "A"));
+    assert!(class_axioms(&o).is_empty(), "{:?}", class_axioms(&o));
 }
 
 /// FP guard: the sufficient direction of an equivalence is not kept.
@@ -79,7 +115,7 @@ fn the_sufficient_direction_of_an_equivalence_is_not_kept() {
         "EquivalentClasses(:A ObjectIntersectionOf(:B {BOOL}))"
     ));
     assert_eq!(o.dropped.total(), 1, "precondition: the axiom is dropped");
-    assert!(!has_edge(&o, "B", "A"));
+    assert_eq!(class_axioms(&o), ["A⊑B"]);
 }
 
 /// The axiom is still reported as dropped: part of it is still lost.
@@ -122,12 +158,7 @@ fn a_three_member_equivalence_keeps_the_rest() {
     let o = convert(&format!(
         "EquivalentClasses(:A :D ObjectIntersectionOf(:B {BOOL}))"
     ));
-    assert!(has_edge(&o, "A", "B") && has_edge(&o, "D", "B"));
-    assert!(
-        o.axioms
-            .iter()
-            .any(|ax| matches!(ax, Axiom::EquivalentClasses(ids) if ids.len() == 2))
-    );
+    assert_eq!(class_axioms(&o), ["A≡D", "A⊑B", "D⊑B"]);
 }
 
 /// `RUSTDL_SALVAGE_DROPPED_CONJUNCTS=0` drops the whole axiom as before.

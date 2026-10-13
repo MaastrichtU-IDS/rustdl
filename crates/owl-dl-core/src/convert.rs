@@ -1240,7 +1240,9 @@ pub fn convert_class_expression<A: ForIRI>(
         // cardinality) MUST still return `UnsupportedDataRange` so the
         // whole axiom drops. Partial lowering of a mixed conjunction
         // would WEAKEN an equivalence RHS → false-positive subsumption
-        // via the sufficient direction. Do not best-effort.
+        // via the sufficient direction. Do not best-effort. (The
+        // sanctioned salvage is `salvage_necessary_conjuncts`, which keeps
+        // only NECESSARY-direction consequences of an axiom that dropped.)
         ClassExpression::DataSomeValuesFrom { dp, dr } => {
             // `∃p.DKey(range)` for any recognized datatype range (integer
             // incl. bare xsd:integer, float/double, decimal, date, dateTime,
@@ -2537,9 +2539,6 @@ fn salvage_necessary_conjuncts<A: ForIRI>(
                     Err(_) => partial.push(m),
                 }
             }
-            if whole.len() >= 2 {
-                out.push(Axiom::EquivalentClasses(whole.clone()));
-            }
             for m in partial {
                 for k in top_level_conjuncts(m) {
                     if let Ok(sup) = convert_class_expression(k, vocab, pool) {
@@ -2548,6 +2547,9 @@ fn salvage_necessary_conjuncts<A: ForIRI>(
                         }
                     }
                 }
+            }
+            if whole.len() >= 2 {
+                out.push(Axiom::EquivalentClasses(whole));
             }
         }
         _ => {}
@@ -2790,6 +2792,7 @@ pub fn convert_ontology<A: ForIRI>(
         components.sort_unstable();
     }
     let mut out = InternalOntology::new();
+    let salvage = salvage_dropped_conjuncts_enabled();
     for (i, ac) in components.into_iter().enumerate() {
         // At `i == 0` this repeats the check before the sort; harmless, and it
         // keeps the poll pattern uniform for the test hook.
@@ -2801,7 +2804,7 @@ pub fn convert_ontology<A: ForIRI>(
             Ok(None) => {} // benign: metadata / annotation / declaration — no reasoning content
             Err(e) => {
                 out.dropped.record(drop_label(&ac.component, &e));
-                if salvage_dropped_conjuncts_enabled() {
+                if salvage {
                     let kept = salvage_necessary_conjuncts(
                         &ac.component,
                         &mut out.vocabulary,

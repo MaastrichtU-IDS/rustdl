@@ -143,6 +143,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_NN_INDEX",
+            owl_dl_tableau::hyper_nn_index_enabled,
+            true,
+        ),
+        (
             "RUSTDL_MAX_TRIAL_MERGE",
             owl_dl_tableau::max_trial_merge_enabled as fn() -> bool,
             true,

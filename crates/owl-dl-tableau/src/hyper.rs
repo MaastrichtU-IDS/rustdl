@@ -3303,10 +3303,12 @@ impl<'c> HyperEngine<'c> {
         let seed_deps = if self.nodes[rep.index()].nn_tainted && !self.nn_taint_disabled {
             DepSet::ALL
         } else {
+            // Node existence too: labels normally carry it already, but say so in
+            // code rather than rely on that (#243 re-review).
             self.nodes[rep.index()]
                 .label_deps
                 .iter()
-                .fold(DepSet::EMPTY, |acc, &dep| acc.union(dep))
+                .fold(self.nodes[rep.index()].birth_deps, |acc, &dep| acc.union(dep))
         };
         // Base seed: atomic labels of the resolved node.
         let atomic_base: Vec<owl_dl_core::ir::ClassId> = self.nodes[rep.index()].labels.clone();

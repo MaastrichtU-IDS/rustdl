@@ -599,17 +599,22 @@ fn datetime_value_in_range_subsumes() {
     assert!(c.is_subclass(C, D), "dateTime in range: C ⊑ D must hold");
 }
 
+/// #247: the decimal `5.0` IS the integer `5`, so it lies in the integer range
+/// `[1, 10]`. Before #247 this test asserted the opposite, on the grounds that the
+/// buckets are disjoint; that pinned a missed entailment (Konclude derives it). It is
+/// flipped, not deleted. The control is a FRACTIONAL decimal, which is no integer.
 #[test]
-fn decimal_value_vs_integer_range_no_cross_subsumption() {
-    // 5.0-decimal numerically sits in the integer range [1,10], but the
-    // decimal and integer buckets are DISJOINT — no edge may be seeded.
-    let c = classify_value_range(
-        r#""5.0"^^xsd:decimal"#,
-        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "1"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)"#,
+fn decimal_value_vs_integer_range_whole_number_is_in_it() {
+    let range = r#"DatatypeRestriction(xsd:integer xsd:minInclusive "1"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)"#;
+    let c = classify_value_range(r#""5.0"^^xsd:decimal"#, range);
+    assert!(
+        c.is_subclass(C, D),
+        "the decimal 5.0 is the integer 5, inside [1, 10]: C ⊑ D must hold"
     );
+    let c = classify_value_range(r#""5.5"^^xsd:decimal"#, range);
     assert!(
         !c.is_subclass(C, D),
-        "decimal value vs integer range: cross-datatype, C ⊑ D must NOT hold"
+        "the decimal 5.5 is no integer: C ⊑ D must NOT hold"
     );
 }
 

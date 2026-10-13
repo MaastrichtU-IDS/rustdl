@@ -7,6 +7,10 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Changed
+- **The static Linux (musl) release binaries use mimalloc (#241).** musl's allocator serialises
+  allocation behind a lock, which made rayon-parallel classification ~10x slower than a glibc
+  build (#139: PMD core 79–80 s wall and ~935 s of system time, against 5.6–10.3 s with
+  mimalloc). Only musl targets get it; glibc, macOS and Windows keep the system allocator.
 - **The musllinux Python wheels use mimalloc too (#248).** Same musl allocator lock contention
   as the CLI (#241): `rustdl.classify` on PMD inside `python:3.10-alpine` took 104–110 s wall
   and ~1,000 s of system time with the musl allocator, and 4.9–5.6 s / under 1 s with mimalloc
@@ -16,6 +20,15 @@ All notable changes to rustdl are documented here. Format is based on
   build of `owl-dl-py`, so a mimalloc or `cc` bump no longer first breaks on a release tag.
 
 ### Fixed
+- **The rest of the integer/decimal datatype relation (#247), `RUSTDL_DKEY_INT_DECIMAL_CROSS`,
+  default ON (`=0` reverts).** #245 related only integer ranges to decimal ranges. Now also:
+  integer enumerations inside decimal ranges and enumerations, integers inside decimal
+  enumerations, whole-number decimals (`12.0`) inside integer keys, and DISJOINTNESS between an
+  integer key and a decimal key whose values do not meet, so `{12} ⊓ ∀p.(xsd:decimal < 0)` is
+  unsatisfiable. Each relation is decided on the values; never a blanket integer/decimal
+  disjointness, which would be wrong (`xsd:integer ⊂ xsd:decimal`). HermiT agrees on all 29
+  adjudication probes. `datatype_value_membership.rs`'s test asserting `"5.0"^^xsd:decimal` is
+  not in an integer range pinned one of these misses and is flipped.
 - **The wedge fixpoint stops on its deadline when individual events are expensive,
   `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`, default ON (`=0` reverts).** `horn_fixpoint` read the
   clock every 256 events. On a large ABox graph an event can cost 10-25 ms, so the classify
@@ -27,6 +40,34 @@ All notable changes to rustdl are documented here. Format is based on
   12.1-12.2 s with identical output. Only when the deadline is noticed changes, never what
   a step derives. On the 424-ontology release corpus: 0 verdict flips, 0 lost, 0 shrunken
   closures; MISSED net ΔMISSED 0, FP 0.
+- **`completeness_guaranteed` is now false when an axiom was dropped at conversion (#246).** Its
+  contract is "true ⟹ no missed subsumptions", but it never consulted `dropped`, so a pure-EL
+  ontology with an unsupported axiom (e.g. `A ⊑ ∃r.(B ⊓ ∀dp.xsd:boolean)`, `∃r.B ⊑ E`)
+  reported a guarantee while missing `A ⊑ E`. The engine reasons over the converted KB, which is
+  strictly weaker than the input, so the guarantee cannot hold. Affects the
+  `completeness_guaranteed` field of `classify --json`, `Classification::completeness_guaranteed()`
+  and so `disjoint`'s `incomplete`; `classify`'s `incomplete` stays deadline-only. No answer
+  changes.
+- **A class axiom dropped for one unsupported conjunct now keeps the conjuncts that convert
+  (#180), `RUSTDL_SALVAGE_DROPPED_CONJUNCTS`, default ON (`=0` reverts).** `C ⊑ X ⊓ U` and
+  `C ≡ X ⊓ U`, where `U` cannot be converted (e.g. `DataAllValuesFrom(p, xsd:boolean)`), were
+  dropped whole, losing `C ⊑ X`. Only the necessary direction is kept: a right-hand side is
+  weakened, never a left-hand side, so nothing new can be entailed that the original axiom did
+  not entail. The axiom is still counted in `dropped`. `ore_ont_14379` recovers
+  `ObservationEvent ⊑ Event` (1 missed → 0). Conversion changes on 6 of the 196 ORE ontologies
+  known to drop a class axiom (21 more could not be measured at a 60 s cap); of the 5 of those
+  that classify within 60 s, output changes only on `14379`, and the gained pair is in the
+  Konclude ∪ HermiT oracle.
+- **An `xsd:integer` value or range is now seen to lie in an `xsd:decimal` range (#180),
+  `RUSTDL_DKEY_INT_WITHIN_DECIMAL`, default ON (`=0` reverts).** The integer value space is a
+  subset of the decimal one, but the two DKey buckets were never related, so
+  `∃p.{"12"^^xsd:integer}` was not subsumed by `∃p.(xsd:decimal > 0)`. Conversion now seeds
+  `DKey(int) ⊑ DKey(dec)` when every component of the integer set fits inside the decimal range,
+  respecting exclusive bounds; an unbounded integer end needs an unbounded decimal end. No
+  integer/decimal disjointness is added. Range keys only: integer and decimal enumerations
+  (`DataOneOf`), and a whole-number decimal inside an integer range, are still not related. `ore_ont_11647` 20 missed → 0. Seeding fires on 25 of
+  the 34 ORE ontologies mentioning `decimal`; classify output changes only on `11647`, and all
+  20 gained pairs are in the Konclude ∪ HermiT oracle.
 
 ## [0.4.39] — 2026-10-13
 
@@ -52,14 +93,6 @@ All notable changes to rustdl are documented here. Format is based on
     lost an entailment.
 
 ### Fixed
-- **`completeness_guaranteed` is now false when an axiom was dropped at conversion (#246).** Its
-  contract is "true ⟹ no missed subsumptions", but it never consulted `dropped`, so a pure-EL
-  ontology with an unsupported axiom (e.g. `A ⊑ ∃r.(B ⊓ ∀dp.xsd:boolean)`, `∃r.B ⊑ E`)
-  reported a guarantee while missing `A ⊑ E`. The engine reasons over the converted KB, which is
-  strictly weaker than the input, so the guarantee cannot hold. Affects the
-  `completeness_guaranteed` field of `classify --json`, `Classification::completeness_guaranteed()`
-  and so `disjoint`'s `incomplete`; `classify`'s `incomplete` stays deadline-only. No answer
-  changes.
 - **The `⊔` look-ahead (`RUSTDL_SAT_LOOKAHEAD`, default OFF) could report a consistent ontology
   as inconsistent.** It seeds the EL saturator with a wedge node's labels, and above the
   named-class range the two engines number classes differently: the wedge's nominal class
@@ -80,26 +113,6 @@ All notable changes to rustdl are documented here. Format is based on
   inverse, or as a sub-role of either) `∃R.B` already gives `∀R.B`, so conversion now also
   emits `A ⊓ ∃R.B ⊑ D`. `ore_ont_13859` 17 missed → 0 (it reported `incomplete: false`) and
   `ore_ont_7893` 5 → 0, FP 0.
-- **A class axiom dropped for one unsupported conjunct now keeps the conjuncts that convert
-  (#180), `RUSTDL_SALVAGE_DROPPED_CONJUNCTS`, default ON (`=0` reverts).** `C ⊑ X ⊓ U` and
-  `C ≡ X ⊓ U`, where `U` cannot be converted (e.g. `DataAllValuesFrom(p, xsd:boolean)`), were
-  dropped whole, losing `C ⊑ X`. Only the necessary direction is kept: a right-hand side is
-  weakened, never a left-hand side, so nothing new can be entailed that the original axiom did
-  not entail. The axiom is still counted in `dropped`. `ore_ont_14379` recovers
-  `ObservationEvent ⊑ Event` (1 missed → 0). Conversion changes on 6 of the 196 ORE ontologies
-  known to drop a class axiom (21 more could not be measured at a 60 s cap); of the 5 of those
-  that classify within 60 s, output changes only on `14379`, and the gained pair is in the
-  Konclude ∪ HermiT oracle.
-- **An `xsd:integer` value or range is now seen to lie in an `xsd:decimal` range (#180),
-  `RUSTDL_DKEY_INT_WITHIN_DECIMAL`, default ON (`=0` reverts).** The integer value space is a
-  subset of the decimal one, but the two DKey buckets were never related, so
-  `∃p.{"12"^^xsd:integer}` was not subsumed by `∃p.(xsd:decimal > 0)`. Conversion now seeds
-  `DKey(int) ⊑ DKey(dec)` when every component of the integer set fits inside the decimal range,
-  respecting exclusive bounds; an unbounded integer end needs an unbounded decimal end. No
-  integer/decimal disjointness is added. Range keys only: integer and decimal enumerations
-  (`DataOneOf`), and a whole-number decimal inside an integer range, are still not related. `ore_ont_11647` 20 missed → 0. Seeding fires on 25 of
-  the 34 ORE ontologies mentioning `decimal`; classify output changes only on `11647`, and all
-  20 gained pairs are in the Konclude ∪ HermiT oracle.
 
 - **The #137 completeness net no longer re-seeds the whole wedge graph at every search frame,
   `RUSTDL_RESEED_AT_LEAF`, default ON (`=0` reverts).** The net (`RUSTDL_RESEED_VERIFY`,

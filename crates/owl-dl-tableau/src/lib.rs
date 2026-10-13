@@ -4189,6 +4189,23 @@ pub fn hyper_fixpoint_deadline_enabled() -> bool {
     std::env::var_os("RUSTDL_FIXPOINT_DEADLINE").is_none_or(|v| v != "0")
 }
 
+/// Whether `horn_fixpoint` adapts how many events pass between two reads of the
+/// clock (`RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`, **default ON**, `=0` reverts to a
+/// fixed 256).
+///
+/// The fixed stride bounds the deadline overshoot in EVENTS. On a large `ABox`
+/// graph an event can cost 10-25 ms, so the classify consistency probe ran up to
+/// ~3 s past its budget on `ore_ont_10073` (decide 3.2-3.6 s against a 1 s
+/// budget in about half of the runs). The adaptive stride targets one clock read
+/// per millisecond of drain work and climbs back to 256 when events are cheap.
+/// Timing only: a step derives the same facts either way, and a deadline exit is
+/// the same `Stalled` as before.
+#[must_use]
+pub fn hyper_fixpoint_adaptive_stride_enabled() -> bool {
+    // Default-ON idiom (house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_FIXPOINT_ADAPTIVE_STRIDE").is_none_or(|v| v != "0")
+}
+
 /// #137 completeness net for the incremental Horn drain (`RUSTDL_RESEED_VERIFY`,
 /// **default ON**; `=0` reverts). See `hyper::HyperEngine::horn_fixpoint`.
 #[must_use]

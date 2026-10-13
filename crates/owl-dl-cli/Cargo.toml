@@ -35,5 +35,13 @@ serde_json = { workspace = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# musl's default allocator serialises allocation behind a lock, so the static
+# Linux release binaries ran ~10x slower than a glibc build on multithreaded
+# classification (#139's PMD core on v0.4.38: 79-80 s wall and ~935 s of system
+# time, against 7.4-8.4 s wall for glibc and 5.6-10.3 s with mimalloc).
+# Only musl targets get mimalloc; glibc, macOS and Windows keep the system one.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
 [lints]
 workspace = true

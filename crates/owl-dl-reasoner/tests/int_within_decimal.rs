@@ -56,6 +56,26 @@ fn probe_unlocked(have: &str, target: &str) -> (bool, bool) {
     (r.is_subclass("http://ex.org/A", "http://ex.org/W"), unsat)
 }
 
+/// Like [`probe`] but the target is a whole class expression: `A ⊑ have`,
+/// `want ⊑ W`. Returns `(A ⊑ W, A unsatisfiable)`.
+fn probe_forall(have: &str, want: &str) -> (bool, bool) {
+    let _g = ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ofn = format!(
+        "{PRE}Ontology(<http://ex.org/o>\n\
+         Declaration(Class(:A)) Declaration(Class(:W)) Declaration(DataProperty(:dp))\n\
+         SubClassOf(:A {have})\n\
+         SubClassOf({want} :W)\n)\n"
+    );
+    let mut reader = Cursor::new(ofn);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
+    let r = classify_top_down_with_timeout(&onto, Duration::from_secs(10)).expect("classify");
+    let unsat = r.unsatisfiable_classes().contains(&"http://ex.org/A");
+    (r.is_subclass("http://ex.org/A", "http://ex.org/W"), unsat)
+}
+
 fn value(v: &str) -> String {
     format!("DataHasValue(:dp \"{v}\"^^xsd:integer)")
 }
@@ -96,6 +116,50 @@ fn an_integer_range_must_fit_at_both_ends() {
 fn unbounded_integers_do_not_fit_a_bounded_decimal_range() {
     let have = "DataSomeValuesFrom(:dp xsd:integer)";
     assert!(!probe(have, &dec("xsd:minInclusive \"0\"^^xsd:decimal")).0);
+}
+
+/// FP guard: an exclusive UPPER bound excludes its endpoint too. `10` is not in
+/// `(-∞, 10)`; the inclusive control `(-∞, 10]` is.
+#[test]
+fn an_integer_on_an_exclusive_upper_decimal_bound_is_outside() {
+    assert!(!probe(&value("10"), &dec("xsd:maxExclusive \"10\"^^xsd:decimal")).0);
+    assert!(probe(&value("10"), &dec("xsd:maxInclusive \"10\"^^xsd:decimal")).0);
+}
+
+/// FP guard: an integer type unbounded ABOVE does not fit a decimal range bounded
+/// above, even when its lower end fits. `xsd:nonNegativeInteger` is `[0, ∞)`.
+#[test]
+fn integers_unbounded_above_do_not_fit_a_range_bounded_above() {
+    let have = "DataSomeValuesFrom(:dp xsd:nonNegativeInteger)";
+    let target = dec("xsd:minInclusive \"0\"^^xsd:decimal xsd:maxInclusive \"100\"^^xsd:decimal");
+    assert!(!probe(have, &target).0);
+    // Control: unbounded on both the integer and the decimal side does fit.
+    assert!(probe(have, &dec("xsd:minExclusive \"-0.5\"^^xsd:decimal")).0);
+}
+
+/// FP guard: EVERY interval of a multi-interval integer set must fit, not just
+/// one. `[1,2] ∪ [20,30]` is not inside `[0,10]`; the control `[1,2] ∪ [5,9]` is.
+/// A union in a `∀` position lowers to one interval-set key, so the probe goes
+/// through the sufficient direction on `∀`.
+#[test]
+fn every_interval_of_an_integer_set_must_fit() {
+    let int_range = |lo: u32, hi: u32| {
+        format!(
+            "DatatypeRestriction(xsd:integer xsd:minInclusive \"{lo}\"^^xsd:integer \
+             xsd:maxInclusive \"{hi}\"^^xsd:integer)"
+        )
+    };
+    let target = dec("xsd:minInclusive \"0\"^^xsd:decimal xsd:maxInclusive \"10\"^^xsd:decimal");
+    let forall = |a: String, b: String| {
+        (
+            format!("DataAllValuesFrom(:dp DataUnionOf({a} {b}))"),
+            format!("DataAllValuesFrom(:dp {target})"),
+        )
+    };
+    let (have, want) = forall(int_range(1, 2), int_range(20, 30));
+    assert!(!probe_forall(&have, &want).0);
+    let (have, want) = forall(int_range(1, 2), int_range(5, 9));
+    assert!(probe_forall(&have, &want).0);
 }
 
 /// FP guard: no integer/decimal disjointness is introduced, so an integer value

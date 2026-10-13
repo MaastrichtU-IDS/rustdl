@@ -151,7 +151,9 @@ fn incomparable_types_are_related_in_neither_direction() {
 /// decimal bucket, because in OWL 2 every integer IS a decimal, so `xsd:int`
 /// reaches `xsd:decimal`. This test asserted the opposite before #180, which
 /// pinned a missed entailment; it is flipped, not deleted. The reverse direction
-/// is the false-positive guard and must never hold: a decimal is not an integer.
+/// is the false-positive guard: `xsd:decimal` as a datatype is not inside
+/// `xsd:int`. (A single whole-number decimal such as `12.0` IS an integer; that
+/// direction is simply not derived, a sound miss.)
 /// `dt_family` lumps both under `Numeric`, which is a different classification and
 /// must not be mistaken for a bucket.
 #[test]

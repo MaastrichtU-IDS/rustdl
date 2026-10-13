@@ -1394,7 +1394,8 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   bounds via `f64::to_bits()` for exact round-trip) and
   `seed_dkey_subsumptions` buckets by datatype, seeding edges ONLY
   within a bucket — int and float NEVER cross-subsume (conservative
-  under-approximation). **Sound by construction**; FP=0/MISSED=0
+  under-approximation). The one exception, since #180, is integer range ⊑
+  decimal range (`RUSTDL_DKEY_INT_WITHIN_DECIMAL`, see below). **Sound by construction**; FP=0/MISSED=0
   re-verified across the full gate (sio/shoiq-knowledge/wine/ore-10908/
   ore-15672/pizza/alehif/galen/notgalen) + `ore_ont_9054` 37→0.
   Negatives-first canaries:
@@ -1430,9 +1431,13 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     The five `parse_*_dkey_iri` decoders are **pairwise mutually
     exclusive** (pinned by the `parser_matrix_mutual_exclusivity`
     canary — a single off-diagonal `Some` would seed a cross-datatype
-    edge = FP). All five buckets stay strictly disjoint (no
-    integer⊆decimal cross-seed even though XSD-sound — extra FP surface,
-    deferred). Completeness-neutral on the current corpus (no MISSED to
+    edge = FP). All five buckets stay strictly disjoint. **SUPERSEDED for
+    integer ⊆ decimal (#180, `RUSTDL_DKEY_INT_WITHIN_DECIMAL`, default ON):**
+    `seed_int_within_decimal` now seeds `DKey(int set) ⊑ DKey(decimal range)`
+    when every interval fits, exactly (convex range, integer endpoints); no
+    reverse edge and no integer/decimal disjointness. Enumerations, and a
+    whole-number decimal inside an integer range, remain unrelated (silent
+    misses, confirmed by Konclude). Completeness-neutral on the current corpus (no MISSED to
     chase — `ore_ont_9054` already closed by D6/D7); the win is canaries
     + FP=0/MISSED=0 UNCHANGED corpus-wide. **8 new negatives-first
     canaries** (decimal exclusive-boundary, distinct-values-don't-

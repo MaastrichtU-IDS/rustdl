@@ -1247,7 +1247,9 @@ pub fn convert_class_expression<A: ForIRI>(
             // `∃p.DKey(range)` for any recognized datatype range (integer
             // incl. bare xsd:integer, float/double, decimal, date, dateTime,
             // string/oneOf). Distinct DKey datatype buckets never
-            // cross-subsume. Any other range drops (UnsupportedDataRange).
+            // cross-subsume, with one exception: integer range keys are seeded
+            // into decimal range keys (`seed_int_within_decimal`, #180). Any
+            // other range drops (UnsupportedDataRange).
             //
             // DataIntersectionOf: fold members into a single range (exact —
             // no approximation). If the intersection is provably empty, lower
@@ -3640,10 +3642,13 @@ fn decompose_long_chains(out: &mut InternalOntology) {
 /// the number of distinct integer ranges (small in practice — bounded
 /// by the count of distinct facet/value combinations in the ontology).
 fn seed_dkey_subsumptions(out: &mut InternalOntology) {
-    // Bucket DKeys BY DATATYPE so edges are only ever seeded WITHIN a
-    // bucket — never across datatypes. Cross-datatype subsumption would be
-    // unsound (integer / real / decimal / temporal value spaces are
-    // disjoint for our purposes; deliberate conservative under-approx).
+    // Bucket DKeys BY DATATYPE so edges are seeded WITHIN a bucket. The one
+    // cross-bucket edge is integer range ⊑ decimal range
+    // (`seed_int_within_decimal`, #180): the integer value space IS a subset
+    // of the decimal one. Every other pair of buckets stays unrelated, which
+    // is either exact (float/double vs decimal/integer are disjoint value
+    // spaces) or a deliberate under-approximation (e.g. integer/decimal
+    // enumerations, a whole-number decimal inside an integer range).
     // The decoders are pairwise mutually exclusive on IRIs (the
     // `parser_matrix_*` canaries pin this), so a given `DKey` IRI lands in
     // exactly one bucket.
@@ -3712,9 +3717,10 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // inclusion IS `⊑` and set intersection-emptiness IS provable disjointness —
     // no boundary algebra, unlike the interval buckets. Same `seed_bucket` /
     // `seed_disjoint_bucket` route as every other bucket; strictly WITHIN a
-    // bucket, so int / float / double / decimal / date / dateTime never
-    // cross-subsume (the `numeric_oneof_parser_matrix_exclusivity` canary pins
-    // the decoders pairwise-exclusive).
+    // bucket, so int / float / double / decimal / date / dateTime enumerations
+    // never cross-subsume (the `numeric_oneof_parser_matrix_exclusivity` canary
+    // pins the decoders pairwise-exclusive). Only the RANGE buckets get the
+    // integer ⊑ decimal edge.
     //
     // Gated `RUSTDL_DKEY_ONEOF_SEED` (default ON since 2026-08-03; `=0` reverts).
     let oneof_seed = dkey_oneof_seed_enabled();
@@ -4112,8 +4118,12 @@ pub fn dkey_int_within_decimal_enabled() -> bool {
 /// **Direction of risk is a FALSE POSITIVE**, so three things are deliberately
 /// NOT done: the reverse `decimal ⊑ int` edge; any edge to or from another
 /// bucket (`xsd:float`/`xsd:double` are disjoint from both, and are seeded so);
-/// and any `DisjointClasses` between the two buckets, which would make an integer
-/// in a decimal range unsatisfiable (see `seed_cross_bucket_disjoint`).
+/// and any `DisjointClasses` between the two buckets. A blanket integer/decimal
+/// disjointness (as `seed_cross_bucket_disjoint` does for genuinely disjoint
+/// buckets) would make an in-range integer unsatisfiable. Disjointness only
+/// between NON-overlapping integer and decimal keys would be sound and would
+/// close `{12} ⊓ ∀p.(xsd:decimal < 0)`, which is still a silent miss here; it is
+/// left out of this change.
 fn seed_int_within_decimal(
     out: &mut InternalOntology,
     ints: &[(ClassId, IntSet)],

@@ -133,6 +133,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_FIXPOINT_ADAPTIVE_STRIDE",
+            owl_dl_tableau::hyper_fixpoint_adaptive_stride_enabled,
+            true,
+        ),
+        (
             "RUSTDL_MAX_TRIAL_MERGE",
             owl_dl_tableau::max_trial_merge_enabled as fn() -> bool,
             true,

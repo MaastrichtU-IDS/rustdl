@@ -102,10 +102,21 @@ fn trace_body_vars() -> bool {
 /// per-step clock read here is a measured cost in this codebase.
 const MATCH_DEADLINE_STRIDE: u64 = 4096;
 
-/// Stride for the `horn_fixpoint` wall-clock probe. The drain loop's events are
-/// individually cheap, so the clock read must be amortized; 256 keeps the check
-/// well under 1% of loop cost while bounding overshoot to ~256 events.
+/// Stride for the `horn_fixpoint` wall-clock probe. Most drain-loop events are
+/// cheap, so the clock read must be amortized; 256 keeps the check well under 1%
+/// of loop cost while bounding overshoot to ~256 events.
+///
+/// That bound is in EVENTS, not time. On a large `ABox` graph one event can cost
+/// 10-25 ms, so 256 of them overran the classify consistency probe's budget by
+/// up to ~3 s (`ore_ont_10073`). Under `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE` (default
+/// ON) this is the CEILING of an adaptive stride, see
+/// `HyperEngine::fixpoint_deadline_passed`.
 const FIXPOINT_DEADLINE_STRIDE: usize = 256;
+
+/// Target wall time between two clock reads in `horn_fixpoint` under
+/// `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`. A window longer than this halves the
+/// stride, one shorter than an eighth of it doubles the stride.
+const FIXPOINT_CHECK_TARGET: std::time::Duration = std::time::Duration::from_millis(1);
 const FIXPOINT_ITERS: usize = 100_000;
 
 /// Upper bound on the back-off interval for intermediate-frame #137 re-seeds
@@ -834,6 +845,16 @@ pub struct HyperEngine<'c> {
     /// vars per test, and a process-scoped cache makes the first test to run win.
     fixpoint_deadline: bool,
     match_deadline: bool,
+    /// `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE` (default ON, `=0` reverts to the fixed
+    /// 256-event stride). Per-engine cached like `fixpoint_deadline`.
+    fixpoint_adaptive_stride: bool,
+    /// Current events-between-clock-reads in `horn_fixpoint` under the adaptive
+    /// stride. Starts at 1 and calibrates; persists across `horn_fixpoint` calls
+    /// so one engine calibrates once. Reset by `decide_with_deadline`.
+    fixpoint_stride: usize,
+    /// When `horn_fixpoint` last read the clock, for calibrating
+    /// `fixpoint_stride`. `None` until the first read.
+    fixpoint_last_check: Option<Instant>,
     /// `RUSTDL_INVERSE_FUNC_MERGE` (**default ON**, `=0` reverts): fire deterministic `≤1`/
     /// functional merges INCREMENTALLY inside `horn_fixpoint` (via
     /// `process_event`) rather than routing them through the `solve`/
@@ -1557,6 +1578,9 @@ impl<'c> HyperEngine<'c> {
             at_most_exhaust_probe: false,
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
+            fixpoint_adaptive_stride: crate::hyper_fixpoint_adaptive_stride_enabled(),
+            fixpoint_stride: 1,
+            fixpoint_last_check: None,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
             mrv_ordering: false,
@@ -1626,6 +1650,9 @@ impl<'c> HyperEngine<'c> {
             at_most_exhaust_probe: false,
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
+            fixpoint_adaptive_stride: crate::hyper_fixpoint_adaptive_stride_enabled(),
+            fixpoint_stride: 1,
+            fixpoint_last_check: None,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
             mrv_ordering: false,
@@ -2338,6 +2365,11 @@ impl<'c> HyperEngine<'c> {
             self.seed_worklist_from_graph();
         }
         let mut steps = 0usize;
+        let mut next_check = if self.fixpoint_adaptive_stride {
+            self.fixpoint_stride
+        } else {
+            FIXPOINT_DEADLINE_STRIDE
+        };
         while let Some(ev) = self.worklist.pop() {
             steps += 1;
             if steps > max_iters {
@@ -2356,14 +2388,18 @@ impl<'c> HyperEngine<'c> {
             // verdict and no new soundness surface — a clock-truncated fixpoint is
             // indistinguishable, to callers, from a step-truncated one. `Stalled`
             // is never `Sat`, so a truncated proof can only MISS.
-            // Cheap test FIRST: `&&` is left-to-right, so putting the flag read first
-            // evaluated it on every iteration.
-            if steps.is_multiple_of(FIXPOINT_DEADLINE_STRIDE)
-                && self.fixpoint_deadline
-                && let Some(dl) = self.deadline
-                && Instant::now() >= dl
-            {
-                return HyperResult::Stalled;
+            // One integer compare per event; the probe runs only every
+            // `next_check` steps (see `fixpoint_deadline_passed` for the stride).
+            if steps >= next_check {
+                if self.fixpoint_deadline_passed() {
+                    return HyperResult::Stalled;
+                }
+                next_check = steps
+                    + if self.fixpoint_adaptive_stride {
+                        self.fixpoint_stride
+                    } else {
+                        FIXPOINT_DEADLINE_STRIDE
+                    };
             }
             if matches!(self.process_event(ev), FireOutcome::Clash) {
                 return HyperResult::Unsat;
@@ -2473,6 +2509,45 @@ impl<'c> HyperEngine<'c> {
         // `at_most` and `neq` change no label, edge, node or merge: a re-seed
         // that recovers only a `≤n` head would otherwise read as no change.
         (l, e, self.nodes.len(), m, am, self.neq.len())
+    }
+
+    /// The `horn_fixpoint` deadline probe: `true` once the deadline has passed.
+    /// Reads the clock only when `RUSTDL_FIXPOINT_DEADLINE` is on and a deadline
+    /// is set, so an unbudgeted engine never pays for it.
+    ///
+    /// Under `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE` it also retunes the stride from the
+    /// wall time since the previous read: halve it past `FIXPOINT_CHECK_TARGET`,
+    /// double it below an eighth of that, within `1..=FIXPOINT_DEADLINE_STRIDE`.
+    /// Cheap events therefore climb to the old 256-event stride after nine
+    /// reads (eight doublings; the first read has nothing to compare with),
+    /// and expensive ones are checked about every millisecond. With no deadline,
+    /// or `RUSTDL_FIXPOINT_DEADLINE=0`, the stride goes straight to 256. The stride
+    /// changes only WHEN the deadline is noticed, never what a step derives.
+    fn fixpoint_deadline_passed(&mut self) -> bool {
+        let dl = match self.deadline {
+            Some(dl) if self.fixpoint_deadline => dl,
+            _ => {
+                // No clock to read: probe as rarely as the fixed stride does.
+                self.fixpoint_stride = FIXPOINT_DEADLINE_STRIDE;
+                return false;
+            }
+        };
+        let now = Instant::now();
+        if now >= dl {
+            return true;
+        }
+        if self.fixpoint_adaptive_stride {
+            if let Some(prev) = self.fixpoint_last_check {
+                let dt = now.duration_since(prev);
+                if dt > FIXPOINT_CHECK_TARGET {
+                    self.fixpoint_stride = (self.fixpoint_stride / 2).max(1);
+                } else if dt < FIXPOINT_CHECK_TARGET / 8 {
+                    self.fixpoint_stride = (self.fixpoint_stride * 2).min(FIXPOINT_DEADLINE_STRIDE);
+                }
+            }
+            self.fixpoint_last_check = Some(now);
+        }
+        false
     }
 
     fn seed_worklist_from_graph(&mut self) {
@@ -2824,6 +2899,8 @@ impl<'c> HyperEngine<'c> {
         self.deadline = deadline;
         self.reseed_interval = RESEED_INITIAL_INTERVAL;
         self.reseed_skip_left = RESEED_INITIAL_INTERVAL;
+        self.fixpoint_stride = 1;
+        self.fixpoint_last_check = None;
         self.reseed_deferred = false;
         self.leaf_net_fresh = false;
         self.at_most_exhaust_probe = std::env::var_os("RUSTDL_AT_MOST_EXHAUST_PROBE")
@@ -3231,6 +3308,9 @@ impl<'c> HyperEngine<'c> {
             at_most_exhaust_probe: false,
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
+            fixpoint_adaptive_stride: crate::hyper_fixpoint_adaptive_stride_enabled(),
+            fixpoint_stride: 1,
+            fixpoint_last_check: None,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
             mrv_ordering: false,
@@ -6437,6 +6517,91 @@ mod tests {
             .decide(64);
         assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
         assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
+    }
+
+    /// `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`: a fresh engine reads the clock from the
+    /// FIRST drain event, so a deadline that has already passed stops a fixpoint
+    /// shorter than the fixed 256-event stride. The fixed stride never reads the
+    /// clock inside that drain and runs it to the end. A 100-clause told chain is
+    /// the drain; the flags are set on the fields so the env cannot interfere.
+    #[test]
+    fn adaptive_stride_notices_a_passed_deadline_inside_a_short_drain() {
+        let clauses: Vec<DlClause> = (0..100)
+            .map(|i| DlClause {
+                body: vec![Atom::Class(cls(i), X)],
+                head: vec![Atom::Class(cls(i + 1), X)],
+            })
+            .collect();
+        let run = |adaptive: bool| {
+            let mut engine = HyperEngine::new(&clauses, cls(0));
+            engine.fixpoint_deadline = true;
+            engine.match_deadline = false;
+            engine.incremental_fixpoint = false;
+            engine.fixpoint_adaptive_stride = adaptive;
+            engine.deadline = Some(Instant::now());
+            engine.horn_fixpoint(FIXPOINT_ITERS)
+        };
+        assert_eq!(run(true), HyperResult::Stalled);
+        assert_ne!(run(false), HyperResult::Stalled);
+    }
+
+    /// The stride's three moves, driven directly: a window over
+    /// `FIXPOINT_CHECK_TARGET` halves it (floor 1), a window under an eighth of it
+    /// doubles it (cap 256), and with no deadline it goes straight to the cap.
+    #[test]
+    fn adaptive_stride_halves_doubles_and_caps() {
+        let clauses: Vec<DlClause> = Vec::new();
+        let mut engine = HyperEngine::new(&clauses, cls(0));
+        engine.fixpoint_deadline = true;
+        engine.fixpoint_adaptive_stride = true;
+        engine.deadline = Some(Instant::now() + std::time::Duration::from_secs(60));
+        let slow = std::time::Duration::from_millis(5);
+
+        engine.fixpoint_stride = 64;
+        engine.fixpoint_last_check = Instant::now().checked_sub(slow);
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(engine.fixpoint_stride, 32, "a slow window halves");
+
+        engine.fixpoint_stride = 1;
+        engine.fixpoint_last_check = Instant::now().checked_sub(slow);
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(engine.fixpoint_stride, 1, "the floor is 1");
+
+        engine.fixpoint_stride = 64;
+        engine.fixpoint_last_check = Some(Instant::now());
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(engine.fixpoint_stride, 128, "a fast window doubles");
+
+        engine.fixpoint_stride = FIXPOINT_DEADLINE_STRIDE;
+        engine.fixpoint_last_check = Some(Instant::now());
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(
+            engine.fixpoint_stride, FIXPOINT_DEADLINE_STRIDE,
+            "the cap is 256"
+        );
+
+        engine.fixpoint_stride = 1;
+        engine.deadline = None;
+        assert!(!engine.fixpoint_deadline_passed());
+        assert_eq!(
+            engine.fixpoint_stride, FIXPOINT_DEADLINE_STRIDE,
+            "no deadline, no probing"
+        );
+    }
+
+    /// Each `decide_with_deadline` restarts the calibration: stride 1, no
+    /// previous read. A stride left high by an earlier decide would skip the
+    /// first expensive window of the next one, which is the overshoot this fixes.
+    #[test]
+    fn decide_resets_the_adaptive_stride() {
+        let clauses: Vec<DlClause> = Vec::new();
+        let mut engine = HyperEngine::new(&clauses, cls(0));
+        engine.fixpoint_stride = FIXPOINT_DEADLINE_STRIDE;
+        engine.fixpoint_last_check = Some(Instant::now());
+        // An already-passed deadline: `solve` stops at entry, before any probe.
+        let _ = engine.decide_with_deadline(4, Some(Instant::now()));
+        assert_eq!(engine.fixpoint_stride, 1);
+        assert_eq!(engine.fixpoint_last_check, None);
     }
 
     /// #139: a `⊔` whose body sits on a node the `≤1` merge has FOLDED must be

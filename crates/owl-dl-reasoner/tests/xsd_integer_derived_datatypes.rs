@@ -146,13 +146,17 @@ fn incomparable_types_are_related_in_neither_direction() {
     }
 }
 
-/// `xsd:integer` and `xsd:decimal` are DISTINCT value spaces with distinct
-/// buckets and are deliberately never cross-seeded, so widening the integer
-/// parser must not have leaked across. `dt_family` lumps both under `Numeric`,
-/// which is a different classification and must not be mistaken for a bucket.
+/// `xsd:integer` and `xsd:decimal` have distinct buckets. Since #180
+/// (`RUSTDL_DKEY_INT_WITHIN_DECIMAL`) the integer family is seeded INTO the
+/// decimal bucket, because in OWL 2 every integer IS a decimal, so `xsd:int`
+/// reaches `xsd:decimal`. This test asserted the opposite before #180, which
+/// pinned a missed entailment; it is flipped, not deleted. The reverse direction
+/// is the false-positive guard and must never hold: a decimal is not an integer.
+/// `dt_family` lumps both under `Numeric`, which is a different classification and
+/// must not be mistaken for a bucket.
 #[test]
-fn the_integer_family_does_not_cross_seed_with_decimal() {
-    assert!(!a_is_w("int", "decimal"), "int must not reach dec:");
+fn the_integer_family_seeds_into_decimal_but_never_back() {
+    assert!(a_is_w("int", "decimal"), "every xsd:int is an xsd:decimal");
     assert!(
         !a_is_w("decimal", "int"),
         "decimal must not reach the int bucket"

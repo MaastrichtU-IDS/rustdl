@@ -68,6 +68,15 @@ All notable changes to rustdl are documented here. Format is based on
   known to drop a class axiom (21 more could not be measured at a 60 s cap); of the 5 of those
   that classify within 60 s, output changes only on `14379`, and the gained pair is in the
   Konclude ∪ HermiT oracle.
+- **An `xsd:integer` value or range is now seen to lie in an `xsd:decimal` range (#180),
+  `RUSTDL_DKEY_INT_WITHIN_DECIMAL`, default ON (`=0` reverts).** The integer value space is a
+  subset of the decimal one, but the two DKey buckets were never related, so
+  `∃p.{"12"^^xsd:integer}` was not subsumed by `∃p.(xsd:decimal > 0)`. Conversion now seeds
+  `DKey(int) ⊑ DKey(dec)` when every component of the integer set fits inside the decimal range,
+  respecting exclusive bounds; an unbounded integer end needs an unbounded decimal end. No
+  integer/decimal disjointness is added. `ore_ont_11647` 20 missed → 0. Seeding fires on 25 of
+  the 34 ORE ontologies mentioning `decimal`; classify output changes only on `11647`, and all
+  20 gained pairs are in the Konclude ∪ HermiT oracle. HermiT agrees with all 9 fixtures.
 
 - **The #137 completeness net no longer re-seeds the whole wedge graph at every search frame,
   `RUSTDL_RESEED_AT_LEAF`, default ON (`=0` reverts).** The net (`RUSTDL_RESEED_VERIFY`,

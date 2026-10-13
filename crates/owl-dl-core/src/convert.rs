@@ -3778,6 +3778,12 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         std::collections::BTreeSet::is_subset,
     );
     seed_bucket(out, &dt_oneof_dkeys, std::collections::BTreeSet::is_subset);
+    // #180: `xsd:integer` is derived from `xsd:decimal`, so an integer key whose
+    // values all lie in a decimal range is subsumed by it. The ONLY cross-bucket
+    // subsumption seeded; see `seed_int_within_decimal`.
+    if dkey_int_within_decimal_enabled() {
+        seed_int_within_decimal(out, &int_dkeys, &dec_dkeys);
+    }
 
     // Phase D11b: `DisjointClasses(DKey(ra), DKey(rb))` for every PROVABLY
     // disjoint pair within a bucket — the basis of the `∃p.DKey(v) ⊓
@@ -4082,6 +4088,110 @@ fn collect_oneof_dkeys<T: Ord>(
 /// See `docs/2026-08-03-dkey-volume-scan.md`.
 fn dkey_oneof_seed_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_ONEOF_SEED").is_none_or(|v| v != "0")
+}
+
+/// #180: seed `DKey(int) ⊑ DKey(decimal)` across the two buckets. Default **ON**;
+/// `RUSTDL_DKEY_INT_WITHIN_DECIMAL=0` reverts. See [`seed_int_within_decimal`].
+#[must_use]
+pub fn dkey_int_within_decimal_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_INT_WITHIN_DECIMAL").is_none_or(|v| v != "0")
+}
+
+/// `DKey(I) ⊑ DKey(D)` for an integer set `I` and a decimal range `D` when every
+/// integer in `I` lies in `D`. In OWL 2 the value space of `xsd:integer` is a
+/// subset of that of `xsd:decimal` (the integer `12` IS the decimal `12`), so
+/// `∃p.{"12"^^xsd:integer} ⊑ ∃p.(xsd:decimal > 0)`: `ore_ont_11647` missed 20
+/// pairs of exactly that shape.
+///
+/// **Exact, not approximate.** `D` is convex and each component `[lo, hi]` of `I`
+/// has integer endpoints, so the integers in `[lo, hi]` all lie in `D` iff `lo` and
+/// `hi` do (an unbounded end needs `D` unbounded on that side). Integer endpoints
+/// convert to `Decimal` losslessly through their lexical form. An empty component
+/// is never claimed to fit, so an empty key gets no edge.
+///
+/// **Direction of risk is a FALSE POSITIVE**, so three things are deliberately
+/// NOT done: the reverse `decimal ⊑ int` edge; any edge to or from another
+/// bucket (`xsd:float`/`xsd:double` are disjoint from both, and are seeded so);
+/// and any `DisjointClasses` between the two buckets, which would make an integer
+/// in a decimal range unsatisfiable (see `seed_cross_bucket_disjoint`).
+fn seed_int_within_decimal(
+    out: &mut InternalOntology,
+    ints: &[(ClassId, IntSet)],
+    decs: &[(ClassId, OrdRange<Decimal>)],
+) {
+    if ints.is_empty() || decs.is_empty() {
+        return;
+    }
+    let to_dec = |v: i64| parse_decimal(&v.to_string());
+    // Each integer key as its decimal-endpoint components, computed once.
+    // `None` for a key with an empty or unconvertible component: no edge.
+    type Bound = Option<Decimal>;
+    type Components = Option<Vec<(Bound, Bound)>>;
+    let int_bounds: Vec<(ClassId, Components)> = ints
+        .iter()
+        .map(|(cid, set)| {
+            let comps: Components = set
+                .ranges()
+                .iter()
+                .map(|r| {
+                    if let (Some(lo), Some(hi)) = (r.min, r.max)
+                        && lo > hi
+                    {
+                        return None;
+                    }
+                    let lo = match r.min {
+                        Some(v) => Some(to_dec(v)?),
+                        None => None,
+                    };
+                    let hi = match r.max {
+                        Some(v) => Some(to_dec(v)?),
+                        None => None,
+                    };
+                    Some((lo, hi))
+                })
+                .collect();
+            (*cid, comps)
+        })
+        .collect();
+    let above = |d: &OrdRange<Decimal>, lo: &Bound| match (&d.min, lo) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(m), Some(x)) => {
+            if d.min_incl {
+                x >= m
+            } else {
+                x > m
+            }
+        }
+    };
+    let below = |d: &OrdRange<Decimal>, hi: &Bound| match (&d.max, hi) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(m), Some(x)) => {
+            if d.max_incl {
+                x <= m
+            } else {
+                x < m
+            }
+        }
+    };
+    let mut edges: Vec<(ClassId, ClassId)> = Vec::new();
+    for (icid, comps) in &int_bounds {
+        let Some(comps) = comps else { continue };
+        if comps.is_empty() {
+            continue;
+        }
+        for (dcid, d) in decs {
+            if comps.iter().all(|(lo, hi)| above(d, lo) && below(d, hi)) {
+                edges.push((*icid, *dcid));
+            }
+        }
+    }
+    for (i, d) in edges {
+        let sub = out.concepts.atomic(i);
+        let sup = out.concepts.atomic(d);
+        out.axioms.push(Axiom::SubClassOf { sub, sup });
+    }
 }
 
 /// Bounded DKey-disjointness seeding (2026-07-20). **Default ON** — set

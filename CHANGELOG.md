@@ -6,6 +6,18 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **The wedge fixpoint stops on its deadline when individual events are expensive,
+  `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`, default ON (`=0` reverts).** `horn_fixpoint` read the
+  clock every 256 events. On a large ABox graph an event can cost 10-25 ms, so the classify
+  consistency probe ran up to ~3 s past its budget: `ore_ont_10073` spent 3.0-3.3 s in the
+  wedge route against a 1 s budget in 5 of 6 runs, and 12.5-14.7 s against the default 12 s.
+  The stride now starts at 1 per search and adapts to the time between clock reads (halve
+  past 1 ms, double below 125 µs, at most 256), so `10073` stops at 1.03-1.34 s and
+  12.1-12.2 s with identical output. Only when the deadline is noticed changes, never what
+  a step derives. On the 424-ontology release corpus: 0 verdict flips, 0 lost, 0 shrunken
+  closures; MISSED net ΔMISSED 0, FP 0.
+
 ## [0.4.39] — 2026-10-13
 
 ### Added

@@ -5350,6 +5350,11 @@ impl ConsistencyCache {
         deadline: Option<std::time::Instant>,
     ) -> owl_dl_tableau::hyper::HyperResult {
         let mut engine = self.build_seeded_engine();
+        // Consistency verdict only: `base_model_types` (realize's witness) keeps
+        // the step cap. See `with_deadline_bounded_fixpoint`.
+        if owl_dl_tableau::seeded_fixpoint_uncapped_enabled() {
+            engine = engine.with_deadline_bounded_fixpoint();
+        }
         engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
     }
 

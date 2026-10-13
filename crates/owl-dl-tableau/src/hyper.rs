@@ -913,6 +913,9 @@ pub struct HyperEngine<'c> {
     nn_holders: Option<Vec<Vec<HNode>>>,
     /// `RUSTDL_NN_INDEX` (default ON, `=0` reverts to the full scan).
     nn_index: bool,
+    /// Lift `horn_fixpoint`'s `max_iters` step cap while a deadline bounds the
+    /// drain (see [`Self::with_deadline_bounded_fixpoint`]). Off by default.
+    deadline_bounded_fixpoint: bool,
     /// Test-only: when `true`, BOTH NN-merge backjump-dep fixes are
     /// disabled — the merge-causation dep is dropped in
     /// [`Self::merge_with_cause`] (the source fix for residuals A+B) AND
@@ -1610,6 +1613,7 @@ impl<'c> HyperEngine<'c> {
             block_index: None,
             nn_holders: None,
             nn_index: crate::hyper_nn_index_enabled(),
+            deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
@@ -1685,6 +1689,7 @@ impl<'c> HyperEngine<'c> {
             block_index: None,
             nn_holders: None,
             nn_index: crate::hyper_nn_index_enabled(),
+            deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
@@ -1789,6 +1794,24 @@ impl<'c> HyperEngine<'c> {
     pub fn with_double_blocking(mut self) -> Self {
         self.double_blocking = true;
         self.block_index = Some(std::collections::HashMap::new());
+        self
+    }
+
+    /// Let a deadline, rather than the `max_iters` step cap, bound each
+    /// `horn_fixpoint` drain. Applies only while a deadline is set and
+    /// `RUSTDL_FIXPOINT_DEADLINE` is on; otherwise the cap stays, so a run
+    /// without a deadline still terminates by step count.
+    ///
+    /// For the `ABox`-seeded consistency engine. Its graph has one node per
+    /// individual, and a deterministic drain over thousands of individuals can
+    /// need more than `FIXPOINT_ITERS` events. The cap then stopped it with
+    /// time left: 37 of the 227 ORE ontologies whose classify consistency probe
+    /// stalled stopped before their budget. The cap's exit is the same `Stalled`
+    /// as the deadline's, so lifting it changes when a drain stops, never what a
+    /// step derives.
+    #[must_use]
+    pub fn with_deadline_bounded_fixpoint(mut self) -> Self {
+        self.deadline_bounded_fixpoint = true;
         self
     }
 
@@ -2405,7 +2428,7 @@ impl<'c> HyperEngine<'c> {
         };
         while let Some(ev) = self.worklist.pop() {
             steps += 1;
-            if steps > max_iters {
+            if steps > max_iters && !self.deadline_bounds_fixpoint() {
                 return HyperResult::Stalled;
             }
             // WALL-CLOCK bound (2026-08-08, `RUSTDL_FIXPOINT_DEADLINE`). This loop
@@ -3355,6 +3378,7 @@ impl<'c> HyperEngine<'c> {
             block_index: None,
             nn_holders: None,
             nn_index: crate::hyper_nn_index_enabled(),
+            deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false; n],
             snapshot_backprop_aborted: false,
@@ -5481,6 +5505,11 @@ impl<'c> HyperEngine<'c> {
         }
     }
 
+    /// Whether a deadline, not `max_iters`, bounds `horn_fixpoint` right now.
+    fn deadline_bounds_fixpoint(&self) -> bool {
+        self.deadline_bounded_fixpoint && self.fixpoint_deadline && self.deadline.is_some()
+    }
+
     /// The lowest-index representative other than `rn` carrying nominal `c`,
     /// by scanning every node. The reference the index must agree with.
     fn nn_other_holder_scan(&self, rn: HNode, c: ClassId) -> Option<HNode> {
@@ -6648,6 +6677,34 @@ mod tests {
             .decide(64);
         assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
         assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
+    }
+
+    /// `with_deadline_bounded_fixpoint`: a drain longer than `max_iters` runs to
+    /// its end while a deadline bounds it, and stops at the cap otherwise (no
+    /// deadline, or the option off). A 100-clause told chain drained with a cap
+    /// of 10 events.
+    #[test]
+    fn deadline_bounded_fixpoint_lifts_the_step_cap_only_under_a_deadline() {
+        let clauses: Vec<DlClause> = (0..100)
+            .map(|i| DlClause {
+                body: vec![Atom::Class(cls(i), X)],
+                head: vec![Atom::Class(cls(i + 1), X)],
+            })
+            .collect();
+        let far = Instant::now() + std::time::Duration::from_secs(60);
+        let run = |bounded: bool, deadline: Option<Instant>| {
+            let mut engine = HyperEngine::new(&clauses, cls(0));
+            if bounded {
+                engine = engine.with_deadline_bounded_fixpoint();
+            }
+            engine.fixpoint_deadline = true;
+            engine.incremental_fixpoint = false;
+            engine.deadline = deadline;
+            engine.horn_fixpoint(10)
+        };
+        assert_eq!(run(true, Some(far)), HyperResult::Sat);
+        assert_eq!(run(true, None), HyperResult::Stalled);
+        assert_eq!(run(false, Some(far)), HyperResult::Stalled);
     }
 
     /// `RUSTDL_NN_INDEX`: the index finds the same holder as the full scan

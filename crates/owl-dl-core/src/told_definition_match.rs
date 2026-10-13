@@ -12,11 +12,19 @@
 //! **Rule.** For a definition `D ≡ Y` with `Y` non-atomic and conjuncts `c(Y)`
 //! (`Y` itself unless it is an `And`), derive `A ⊑ D` when every conjunct is
 //! satisfied for `A`:
-//! - a complex conjunct `k` is satisfied when some told superclass `B` of `A`
-//!   (including `A`) asserts `k`: `SubClassOf(B, k)`, `EquivalentClasses(B, k)`,
-//!   or `k` is a conjunct of such an asserted `And`;
-//! - an atomic conjunct `K` is satisfied when `K` is a told superclass of `A`, or
-//!   of an atomic conjunct asserted on a told superclass of `A`.
+//! - let `known(A)` be the classes reached upward from `A` (including `A`) by
+//!   told superclass edges and by atomic conjuncts asserted on a reached class
+//!   (`SubClassOf(B, K ⊓ …)` or the `D ⊑ Y` direction of a definition),
+//!   transitively (#180, `RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS`, default ON; `=0`
+//!   restores the single hop: told superclasses of `A`, plus told superclasses of
+//!   atomic conjuncts asserted on those);
+//! - an atomic conjunct `K` is satisfied when `K ∈ known(A)`;
+//! - a complex conjunct `k` is satisfied when some class in `known(A)` asserts
+//!   `k`: `SubClassOf(B, k)`, `EquivalentClasses(B, k)`, or `k` is a conjunct of
+//!   such an asserted `And` (with `=0`, only told superclasses of `A` are asked).
+//!
+//! Every edge followed is a NECESSARY direction, so `known(A)` holds only
+//! entailed superclasses of `A`.
 //!
 //! **Sound by construction**: every step is a told subsumption or interned
 //! syntactic identity, so each emitted axiom is entailed. It only adds atomic

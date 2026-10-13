@@ -915,6 +915,7 @@ name = "owl-dl-py"
 version = "0.4.39"
 dependencies = [
  "horned-owl",
+ "mimalloc",
  "owl-dl-core",
  "owl-dl-reasoner",
  "pyo3",

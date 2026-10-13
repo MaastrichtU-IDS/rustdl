@@ -68,6 +68,30 @@ jobs:
       # the link path). If you add a Rust test to that crate, it is covered there
       # and nowhere else.
 
+  musl:
+    # The static Linux release binaries are musl builds, and since #241 they link
+    # mimalloc (a C build via `libmimalloc-sys`). Without this job that path was
+    # compiled only by release-cli.yml on a tag, so a mimalloc / `cc` bump or a
+    # runner image change would first break a release (#248). Also checks the
+    # musl build of owl-dl-py, whose musllinux wheels use the same allocator.
+    name: musl build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # Pinned toolchain (keep `toolchain:` in sync with rust-toolchain.toml).
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master, pinned
+        with:
+          toolchain: "1.95.0"
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl
+      - run: cargo build --locked --target x86_64-unknown-linux-musl -p owl-dl-cli --bin rustdl
+      # Run it: a broken allocator shows up as a crash, not just a link error.
+      - run: target/x86_64-unknown-linux-musl/debug/rustdl classify bench-corpus/pizza.ofn > /dev/null
+      - run: cargo check --locked --target x86_64-unknown-linux-musl -p owl-dl-py
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

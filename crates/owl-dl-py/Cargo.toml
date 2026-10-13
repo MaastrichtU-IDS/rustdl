@@ -23,6 +23,16 @@ owl-dl-core.workspace = true
 horned-owl.workspace = true
 thiserror.workspace = true
 
+# Same reason as owl-dl-cli (#139, #248): musl's default allocator serialises
+# allocation behind a lock, which makes rayon-parallel classification ~10x
+# slower. This covers the musllinux wheels; Rust-side allocations only, Python
+# objects keep CPython's allocator. glibc, macOS and Windows keep the system one.
+# `local_dynamic_tls` is REQUIRED here, unlike in owl-dl-cli: this crate is a
+# dlopen'd extension, and musl refuses mimalloc's default initial-exec TLS in one
+# ("initial-exec TLS resolves to dynamic definition" at `import rustdl`).
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls"] }
+
 # `extension-module` tells pyo3 not to link libpython (Python provides those
 # symbols at runtime via dlopen). That's right for the actual Python
 # extension (built by maturin) but breaks a plain `cargo test` binary, which

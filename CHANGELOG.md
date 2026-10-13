@@ -18,6 +18,14 @@ All notable changes to rustdl are documented here. Format is based on
   without it musl refuses the `dlopen` (`import rustdl` fails with "initial-exec TLS resolves
   to dynamic definition"). CI now also builds the CLI for musl, runs it, and checks the musl
   build of `owl-dl-py`, so a mimalloc or `cc` bump no longer first breaks on a release tag.
+- **The wedge's nominal (`HF4a` NN) rule looks up the other holder of a nominal through an
+  index, `RUSTDL_NN_INDEX`, default ON (`=0` reverts).** When a node gained a nominal `{o}`,
+  the rule scanned every node in the graph for another node carrying `{o}`. On an
+  ABox-seeded graph, with one node per individual, that scan was about 45% of the classify
+  consistency probe on `ore_ont_10073` (~28k nodes). The index returns the same node as the
+  scan (same filter, lowest index first), and debug builds check that on every lookup.
+  `ore_ont_10073` classify 26.1-27.1 → 16.9-18.5 CPU-s and `ore_ont_10127` 10.0-11.2 →
+  7.6-8.5, output identical.
 
 ### Fixed
 - **The rest of the integer/decimal datatype relation (#247), `RUSTDL_DKEY_INT_DECIMAL_CROSS`,

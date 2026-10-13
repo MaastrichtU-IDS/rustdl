@@ -426,6 +426,9 @@ struct Snapshot {
     representative: Vec<HNode>,
     neq: Vec<(HNode, HNode)>,
     block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
+    /// `nn_holders`, saved with the graph so a restore drops the holders the
+    /// abandoned branch added.
+    nn_holders: Option<Vec<Vec<HNode>>>,
     /// Per-node sentinel-origin bits, saved alongside `nodes` so they
     /// stay in sync after restore. The `snapshot_backprop_aborted`
     /// flag on the engine is intentionally NOT saved — once back-prop
@@ -892,6 +895,16 @@ pub struct HyperEngine<'c> {
     /// O(bucket-size). `None` unless double-blocking is enabled (no
     /// overhead on the default anywhere-blocking path).
     block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
+    /// `HF4a` NN-rule index (`RUSTDL_NN_INDEX`, default ON): for each nominal
+    /// `{c}` (by offset from the nominal range start), every node that has
+    /// carried it since the index was built. A superset: merged-away nodes stay
+    /// listed and are filtered on read, exactly as the full scan filters them.
+    /// Built lazily by one scan at the first NN lookup, which covers labels
+    /// written directly by the constructors; `add_label` keeps it current
+    /// after that. `None` until built.
+    nn_holders: Option<Vec<Vec<HNode>>>,
+    /// `RUSTDL_NN_INDEX` (default ON, `=0` reverts to the full scan).
+    nn_index: bool,
     /// Test-only: when `true`, BOTH NN-merge backjump-dep fixes are
     /// disabled — the merge-causation dep is dropped in
     /// [`Self::merge_with_cause`] (the source fix for residuals A+B) AND
@@ -1586,6 +1599,8 @@ impl<'c> HyperEngine<'c> {
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
+            nn_holders: None,
+            nn_index: crate::hyper_nn_index_enabled(),
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
@@ -1658,6 +1673,8 @@ impl<'c> HyperEngine<'c> {
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
+            nn_holders: None,
+            nn_index: crate::hyper_nn_index_enabled(),
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
@@ -2127,6 +2144,12 @@ impl<'c> HyperEngine<'c> {
             n
         };
         if self.nodes[n.index()].add(c, deps) {
+            if let (Some(holders), Some((start, count))) = (self.nn_holders.as_mut(), self.nominals)
+                && let Some(k) = c.index().checked_sub(start)
+                && k < count
+            {
+                holders[k as usize].push(n);
+            }
             // Shadow: mirror the insertion into shadow_label_deps at the same
             // sorted position so the two vecs stay parallel. Guard: flag-off
             // does zero work here.
@@ -3316,6 +3339,8 @@ impl<'c> HyperEngine<'c> {
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
+            nn_holders: None,
+            nn_index: crate::hyper_nn_index_enabled(),
             nn_taint_disabled: false,
             snapshot_origin: vec![false; n],
             snapshot_backprop_aborted: false,
@@ -3855,6 +3880,7 @@ impl<'c> HyperEngine<'c> {
             representative: self.representative.clone(),
             neq: self.neq.clone(),
             block_index: self.block_index.clone(),
+            nn_holders: self.nn_holders.clone(),
             origin: self.snapshot_origin.clone(),
             worklist: if self.incremental_fixpoint {
                 self.worklist.clone()
@@ -3869,6 +3895,7 @@ impl<'c> HyperEngine<'c> {
         self.representative = saved.representative;
         self.neq = saved.neq;
         self.block_index = saved.block_index;
+        self.nn_holders = saved.nn_holders;
         self.snapshot_origin = saved.origin;
         if self.incremental_fixpoint {
             self.worklist = saved.worklist;
@@ -5372,9 +5399,17 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         let rn = self.resolve(n);
-        let other = (0..self.nodes.len())
-            .map(|i| HNode(u32::try_from(i).expect("fits u32")))
-            .find(|&m| self.resolve(m) == m && m != rn && self.nodes[m.index()].has(c));
+        let other = if self.nn_index {
+            let found = self.nn_other_holder(rn, c);
+            debug_assert_eq!(
+                found,
+                self.nn_other_holder_scan(rn, c),
+                "NN index diverged from the scan"
+            );
+            found
+        } else {
+            self.nn_other_holder_scan(rn, c)
+        };
         match other {
             Some(m) => {
                 // Merge-causation dep: the two nodes coincide *because*
@@ -5411,6 +5446,48 @@ impl<'c> HyperEngine<'c> {
             }
             None => FireOutcome::NoChange,
         }
+    }
+
+    /// The lowest-index representative other than `rn` carrying nominal `c`,
+    /// by scanning every node. The reference the index must agree with.
+    fn nn_other_holder_scan(&self, rn: HNode, c: ClassId) -> Option<HNode> {
+        (0..self.nodes.len())
+            .map(|i| HNode(u32::try_from(i).expect("fits u32")))
+            .find(|&m| self.resolve(m) == m && m != rn && self.nodes[m.index()].has(c))
+    }
+
+    /// [`Self::nn_other_holder_scan`] through `nn_holders`: same predicate, same
+    /// lowest-index choice, over the nodes that have carried `c` instead of all
+    /// nodes. The scan was O(nodes) per nominal label event, which on an `ABox`
+    /// graph of ~28k individuals was ~45% of the classify consistency probe
+    /// (`ore_ont_10073`).
+    fn nn_other_holder(&mut self, rn: HNode, c: ClassId) -> Option<HNode> {
+        let (start, count) = self.nominals?;
+        if self.nn_holders.is_none() {
+            let mut holders: Vec<Vec<HNode>> = vec![Vec::new(); count as usize];
+            for (i, node) in self.nodes.iter().enumerate() {
+                for l in &node.labels {
+                    if let Some(k) = l.index().checked_sub(start)
+                        && k < count
+                    {
+                        holders[k as usize].push(HNode(u32::try_from(i).expect("fits u32")));
+                    }
+                }
+            }
+            self.nn_holders = Some(holders);
+        }
+        let k = c.index().checked_sub(start)? as usize;
+        let holders = self.nn_holders.as_ref()?.get(k)?;
+        holders
+            .iter()
+            .copied()
+            .filter(|&m| {
+                m.index() < self.nodes.len()
+                    && self.resolve(m) == m
+                    && m != rn
+                    && self.nodes[m.index()].has(c)
+            })
+            .min()
     }
 
     /// Number of nodes in the completion graph (diagnostic).
@@ -6517,6 +6594,74 @@ mod tests {
             .decide(64);
         assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
         assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
+    }
+
+    /// `RUSTDL_NN_INDEX`: the index finds the same holder as the full scan
+    /// through the three ways it changes after it is built. Nominals are class
+    /// ids 10..12. The index is built by the first lookup, from labels written
+    /// directly; later holders arrive through `add_label`; a restore drops the
+    /// holders its branch added; and a merged-away node is not returned.
+    #[test]
+    fn nn_index_tracks_holders_like_the_scan() {
+        let (a, b) = (cls(10), cls(11));
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 2);
+        eng.nn_index = true;
+        let n1 = eng.new_node();
+        let n2 = eng.new_node();
+        let n3 = eng.new_node();
+        // Written directly, as the seeded constructor does: the lazy build must see it.
+        eng.nodes[n1.index()].add(a, DepSet::EMPTY);
+        let check = |eng: &mut HyperEngine<'_>, rn: HNode, c: ClassId| {
+            let scan = eng.nn_other_holder_scan(rn, c);
+            assert_eq!(eng.nn_other_holder(rn, c), scan);
+            scan
+        };
+        assert_eq!(check(&mut eng, n2, a), Some(n1));
+        assert!(
+            eng.nn_holders.is_some(),
+            "the first lookup builds the index"
+        );
+        // A holder added after the build arrives through `add_label`.
+        eng.add_label(n2, b, DepSet::EMPTY);
+        assert_eq!(check(&mut eng, n3, b), Some(n2));
+        // A restore drops the holder its branch added.
+        let saved = eng.save();
+        eng.add_label(n3, a, DepSet::EMPTY);
+        assert_eq!(check(&mut eng, n1, a), Some(n3));
+        eng.restore(saved);
+        assert_eq!(check(&mut eng, n1, a), None);
+        // A merged-away holder is skipped, the survivor is found.
+        eng.add_label(n3, a, DepSet::EMPTY);
+        eng.representative[n1.index()] = n3;
+        assert_eq!(check(&mut eng, n2, a), Some(n3));
+        // Two live holders: the lowest index wins, as in the scan.
+        let n4 = eng.new_node();
+        eng.add_label(n2, a, DepSet::EMPTY);
+        assert_eq!(check(&mut eng, n4, a), Some(n2));
+    }
+
+    /// `RUSTDL_NN_INDEX`: restoring a snapshot saved before the index existed
+    /// drops the index, and the next lookup rebuilds it from the restored labels.
+    #[test]
+    fn nn_index_rebuilds_after_restoring_a_pre_build_snapshot() {
+        let a = cls(10);
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        eng.nn_index = true;
+        let n1 = eng.new_node();
+        let n2 = eng.new_node();
+        eng.nodes[n1.index()].add(a, DepSet::EMPTY);
+        let saved = eng.save();
+        assert!(eng.nn_holders.is_none());
+        eng.add_label(n2, a, DepSet::EMPTY);
+        assert_eq!(
+            eng.nn_other_holder(n1, a),
+            Some(n2),
+            "built inside the branch"
+        );
+        eng.restore(saved);
+        assert!(eng.nn_holders.is_none(), "restored to the pre-build state");
+        assert_eq!(eng.nn_other_holder(n1, a), eng.nn_other_holder_scan(n1, a));
+        assert_eq!(eng.nn_other_holder(n2, a), Some(n1));
     }
 
     /// `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`: a fresh engine reads the clock from the

@@ -4161,6 +4161,21 @@ pub fn hyper_match_deadline_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_MATCH_DEADLINE").is_none_or(|v| v != "0")
 }
 
+/// Whether the wedge's `HF4a` NN rule finds the other holder of a nominal through
+/// an index instead of scanning every node (`RUSTDL_NN_INDEX`, **default ON**,
+/// `=0` reverts).
+///
+/// The scan is O(nodes) per nominal label event. On an `ABox`-seeded graph that is
+/// one node per individual, so the classify consistency probe spent ~45% of its
+/// time there on `ore_ont_10073` (~28k nodes). The index returns the same node as
+/// the scan: same filter, same lowest-index choice, checked against the scan by a
+/// `debug_assert` on every lookup in debug builds.
+#[must_use]
+pub fn hyper_nn_index_enabled() -> bool {
+    // Default-ON idiom (house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_NN_INDEX").is_none_or(|v| v != "0")
+}
+
 /// Whether `horn_fixpoint`'s drain loop consults the wall-clock deadline.
 ///
 /// The loop is bounded by a `max_iters` STEP count only, so a fixpoint whose

@@ -6,6 +6,15 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Changed
+- **The musllinux Python wheels use mimalloc too (#248).** Same musl allocator lock contention
+  as the CLI (#241): `rustdl.classify` on PMD inside `python:3.10-alpine` took 104–110 s wall
+  and ~1,000 s of system time with the musl allocator, and 4.9–5.6 s / under 1 s with mimalloc
+  (alternated runs, same answers). The extension needs mimalloc's `local_dynamic_tls` feature:
+  without it musl refuses the `dlopen` (`import rustdl` fails with "initial-exec TLS resolves
+  to dynamic definition"). CI now also builds the CLI for musl, runs it, and checks the musl
+  build of `owl-dl-py`, so a mimalloc or `cc` bump no longer first breaks on a release tag.
+
 ### Fixed
 - **The wedge fixpoint stops on its deadline when individual events are expensive,
   `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`, default ON (`=0` reverts).** `horn_fixpoint` read the

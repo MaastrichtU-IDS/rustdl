@@ -6,6 +6,11 @@
 
 use pyo3::prelude::*;
 
+// musllinux wheels: see the `mimalloc` comment in this crate's Cargo.toml (#248).
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod classify;
 mod errors;
 mod explain;

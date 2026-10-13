@@ -48,6 +48,15 @@ All notable changes to rustdl are documented here. Format is based on
   inverse, or as a sub-role of either) `∃R.B` already gives `∀R.B`, so conversion now also
   emits `A ⊓ ∃R.B ⊑ D`. `ore_ont_13859` 17 missed → 0 (it reported `incomplete: false`) and
   `ore_ont_7893` 5 → 0, FP 0.
+- **A class axiom dropped for one unsupported conjunct now keeps the conjuncts that convert
+  (#180), `RUSTDL_SALVAGE_DROPPED_CONJUNCTS`, default ON (`=0` reverts).** `C ⊑ X ⊓ U` and
+  `C ≡ X ⊓ U`, where `U` cannot be converted (e.g. `DataAllValuesFrom(p, xsd:boolean)`), were
+  dropped whole, losing `C ⊑ X`. Only the necessary direction is kept: a right-hand side is
+  weakened, never a left-hand side, so nothing new can be entailed that the original axiom did
+  not entail. The axiom is still counted in `dropped`. `ore_ont_14379` recovers
+  `ObservationEvent ⊑ Event` (1 missed → 0). Conversion changes on 6 of the 196 ORE ontologies
+  known to drop a class axiom; classify output changes only on `14379`, and the gained pair is
+  in the Konclude ∪ HermiT oracle.
 
 - **The #137 completeness net no longer re-seeds the whole wedge graph at every search frame,
   `RUSTDL_RESEED_AT_LEAF`, default ON (`=0` reverts).** The net (`RUSTDL_RESEED_VERIFY`,

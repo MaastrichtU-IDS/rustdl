@@ -1247,7 +1247,9 @@ pub fn convert_class_expression<A: ForIRI>(
             // `∃p.DKey(range)` for any recognized datatype range (integer
             // incl. bare xsd:integer, float/double, decimal, date, dateTime,
             // string/oneOf). Distinct DKey datatype buckets never
-            // cross-subsume. Any other range drops (UnsupportedDataRange).
+            // cross-subsume, with one exception: integer range keys are seeded
+            // into decimal range keys (`seed_int_within_decimal`, #180). Any
+            // other range drops (UnsupportedDataRange).
             //
             // DataIntersectionOf: fold members into a single range (exact —
             // no approximation). If the intersection is provably empty, lower
@@ -3640,10 +3642,13 @@ fn decompose_long_chains(out: &mut InternalOntology) {
 /// the number of distinct integer ranges (small in practice — bounded
 /// by the count of distinct facet/value combinations in the ontology).
 fn seed_dkey_subsumptions(out: &mut InternalOntology) {
-    // Bucket DKeys BY DATATYPE so edges are only ever seeded WITHIN a
-    // bucket — never across datatypes. Cross-datatype subsumption would be
-    // unsound (integer / real / decimal / temporal value spaces are
-    // disjoint for our purposes; deliberate conservative under-approx).
+    // Bucket DKeys BY DATATYPE so edges are seeded WITHIN a bucket. The one
+    // cross-bucket edge is integer range ⊑ decimal range
+    // (`seed_int_within_decimal`, #180): the integer value space IS a subset
+    // of the decimal one. Every other pair of buckets stays unrelated, which
+    // is either exact (float/double vs decimal/integer are disjoint value
+    // spaces) or a deliberate under-approximation (e.g. integer/decimal
+    // enumerations, a whole-number decimal inside an integer range).
     // The decoders are pairwise mutually exclusive on IRIs (the
     // `parser_matrix_*` canaries pin this), so a given `DKey` IRI lands in
     // exactly one bucket.
@@ -3712,9 +3717,10 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // inclusion IS `⊑` and set intersection-emptiness IS provable disjointness —
     // no boundary algebra, unlike the interval buckets. Same `seed_bucket` /
     // `seed_disjoint_bucket` route as every other bucket; strictly WITHIN a
-    // bucket, so int / float / double / decimal / date / dateTime never
-    // cross-subsume (the `numeric_oneof_parser_matrix_exclusivity` canary pins
-    // the decoders pairwise-exclusive).
+    // bucket, so int / float / double / decimal / date / dateTime enumerations
+    // never cross-subsume (the `numeric_oneof_parser_matrix_exclusivity` canary
+    // pins the decoders pairwise-exclusive). Only the RANGE buckets get the
+    // integer ⊑ decimal edge.
     //
     // Gated `RUSTDL_DKEY_ONEOF_SEED` (default ON since 2026-08-03; `=0` reverts).
     let oneof_seed = dkey_oneof_seed_enabled();
@@ -3778,6 +3784,12 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         std::collections::BTreeSet::is_subset,
     );
     seed_bucket(out, &dt_oneof_dkeys, std::collections::BTreeSet::is_subset);
+    // #180: `xsd:integer` is derived from `xsd:decimal`, so an integer key whose
+    // values all lie in a decimal range is subsumed by it. The ONLY cross-bucket
+    // subsumption seeded; see `seed_int_within_decimal`.
+    if dkey_int_within_decimal_enabled() {
+        seed_int_within_decimal(out, &int_dkeys, &dec_dkeys);
+    }
 
     // Phase D11b: `DisjointClasses(DKey(ra), DKey(rb))` for every PROVABLY
     // disjoint pair within a bucket — the basis of the `∃p.DKey(v) ⊓
@@ -4082,6 +4094,114 @@ fn collect_oneof_dkeys<T: Ord>(
 /// See `docs/2026-08-03-dkey-volume-scan.md`.
 fn dkey_oneof_seed_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_ONEOF_SEED").is_none_or(|v| v != "0")
+}
+
+/// #180: seed `DKey(int) ⊑ DKey(decimal)` across the two buckets. Default **ON**;
+/// `RUSTDL_DKEY_INT_WITHIN_DECIMAL=0` reverts. See [`seed_int_within_decimal`].
+#[must_use]
+pub fn dkey_int_within_decimal_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_INT_WITHIN_DECIMAL").is_none_or(|v| v != "0")
+}
+
+/// `DKey(I) ⊑ DKey(D)` for an integer set `I` and a decimal range `D` when every
+/// integer in `I` lies in `D`. In OWL 2 the value space of `xsd:integer` is a
+/// subset of that of `xsd:decimal` (the integer `12` IS the decimal `12`), so
+/// `∃p.{"12"^^xsd:integer} ⊑ ∃p.(xsd:decimal > 0)`: `ore_ont_11647` missed 20
+/// pairs of exactly that shape.
+///
+/// **Exact, not approximate.** `D` is convex and each component `[lo, hi]` of `I`
+/// has integer endpoints, so the integers in `[lo, hi]` all lie in `D` iff `lo` and
+/// `hi` do (an unbounded end needs `D` unbounded on that side). Integer endpoints
+/// convert to `Decimal` losslessly through their lexical form. An empty component
+/// is never claimed to fit, so an empty key gets no edge.
+///
+/// **Direction of risk is a FALSE POSITIVE**, so three things are deliberately
+/// NOT done: the reverse `decimal ⊑ int` edge; any edge to or from another
+/// bucket (`xsd:float`/`xsd:double` are disjoint from both, and are seeded so);
+/// and any `DisjointClasses` between the two buckets. A blanket integer/decimal
+/// disjointness (as `seed_cross_bucket_disjoint` does for genuinely disjoint
+/// buckets) would make an in-range integer unsatisfiable. Disjointness only
+/// between NON-overlapping integer and decimal keys would be sound and would
+/// close `{12} ⊓ ∀p.(xsd:decimal < 0)`, which is still a silent miss here; it is
+/// left out of this change.
+fn seed_int_within_decimal(
+    out: &mut InternalOntology,
+    ints: &[(ClassId, IntSet)],
+    decs: &[(ClassId, OrdRange<Decimal>)],
+) {
+    if ints.is_empty() || decs.is_empty() {
+        return;
+    }
+    let to_dec = |v: i64| parse_decimal(&v.to_string());
+    // Each integer key as its decimal-endpoint components, computed once.
+    // `None` for a key with an empty or unconvertible component: no edge.
+    type Bound = Option<Decimal>;
+    type Components = Option<Vec<(Bound, Bound)>>;
+    let int_bounds: Vec<(ClassId, Components)> = ints
+        .iter()
+        .map(|(cid, set)| {
+            let comps: Components = set
+                .ranges()
+                .iter()
+                .map(|r| {
+                    if let (Some(lo), Some(hi)) = (r.min, r.max)
+                        && lo > hi
+                    {
+                        return None;
+                    }
+                    let lo = match r.min {
+                        Some(v) => Some(to_dec(v)?),
+                        None => None,
+                    };
+                    let hi = match r.max {
+                        Some(v) => Some(to_dec(v)?),
+                        None => None,
+                    };
+                    Some((lo, hi))
+                })
+                .collect();
+            (*cid, comps)
+        })
+        .collect();
+    let above = |d: &OrdRange<Decimal>, lo: &Bound| match (&d.min, lo) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(m), Some(x)) => {
+            if d.min_incl {
+                x >= m
+            } else {
+                x > m
+            }
+        }
+    };
+    let below = |d: &OrdRange<Decimal>, hi: &Bound| match (&d.max, hi) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(m), Some(x)) => {
+            if d.max_incl {
+                x <= m
+            } else {
+                x < m
+            }
+        }
+    };
+    let mut edges: Vec<(ClassId, ClassId)> = Vec::new();
+    for (icid, comps) in &int_bounds {
+        let Some(comps) = comps else { continue };
+        if comps.is_empty() {
+            continue;
+        }
+        for (dcid, d) in decs {
+            if comps.iter().all(|(lo, hi)| above(d, lo) && below(d, hi)) {
+                edges.push((*icid, *dcid));
+            }
+        }
+    }
+    for (i, d) in edges {
+        let sub = out.concepts.atomic(i);
+        let sup = out.concepts.atomic(d);
+        out.axioms.push(Axiom::SubClassOf { sub, sup });
+    }
 }
 
 /// Bounded DKey-disjointness seeding (2026-07-20). **Default ON** — set

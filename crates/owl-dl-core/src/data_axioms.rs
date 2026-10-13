@@ -2031,9 +2031,9 @@ fn scan_class_for_existentials<A: ForIRI>(class_iri: &str, ce: &ClassExpression<
 /// That is why **`xsd:unsignedLong` is absent**: its maximum is `2^64 - 1`,
 /// which does not fit the `i64` bounds of `IntegerRange`. It continues to drop
 /// VISIBLY (`dropped` is non-empty), which is the sound, surfaced behaviour.
-/// `xsd:decimal` is absent for a different reason — it is a distinct value
-/// space with its own `dec:` bucket, and integer/decimal are deliberately never
-/// cross-seeded.
+/// `xsd:decimal` is absent for a different reason — it has its own `dec:`
+/// bucket. Integer range keys are related to it only by the one-way
+/// `seed_int_within_decimal` edge (#180), never by sharing a bucket.
 fn xsd_integer_derived_range(local: &str) -> Option<IntegerRange> {
     let (min, max) = match local {
         "integer" => (None, None),

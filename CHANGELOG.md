@@ -28,6 +28,16 @@ All notable changes to rustdl are documented here. Format is based on
   7.6-8.5, output identical.
 
 ### Fixed
+- **The wedge's open-rule scans honour the deadline, and a scan the deadline cut short no
+  longer concludes `Sat`, `RUSTDL_OPEN_SCAN_DEADLINE`, default ON (`=0` reverts the clock
+  reads).** `find_open_disjunction` and `find_open_at_most` visit every node and call
+  `is_blocked` on each, which is quadratic in the graph, and never read the clock: on
+  `ore_ont_15635`, with a graph of ~247k nodes, one scan ran 177 s past a 3 s budget. They now
+  check every 64 nodes. Separately, a deadline that cut a scan short (here, or in the match
+  enumeration inside `find_open_disjunction`, which could already happen) could hide an open
+  rule, and the frame then concluded `Sat` without having examined the whole graph; it now
+  concludes `Stalled`. Both can only turn a verdict into `Stalled`.
+
 - **The rest of the integer/decimal datatype relation (#247), `RUSTDL_DKEY_INT_DECIMAL_CROSS`,
   default ON (`=0` reverts).** #245 related only integer ranges to decimal ranges. Now also:
   integer enumerations inside decimal ranges and enumerations, integers inside decimal

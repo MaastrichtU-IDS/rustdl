@@ -4131,6 +4131,22 @@ mod phase3b_canaries {
     }
 }
 
+/// Whether the wedge's open-rule scans (`find_open_disjunction`,
+/// `find_open_at_most`) read the wall-clock deadline (`RUSTDL_OPEN_SCAN_DEADLINE`,
+/// **default ON**, `=0` reverts).
+///
+/// Both scans visit every node and call `is_blocked` on each, so their cost grows
+/// with the square of the graph, and before this they never read the clock. On
+/// `ore_ont_15635`, once the classify consistency probe's graph reached ~247k
+/// nodes, one scan ran 177 s past its budget. A passed deadline ends the scan and
+/// the frame concludes `Stalled`, so this can only turn a late verdict into a
+/// `Stalled`, never produce a `Sat` or an `Unsat`.
+#[must_use]
+pub fn hyper_open_scan_deadline_enabled() -> bool {
+    // Default-ON idiom (house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_OPEN_SCAN_DEADLINE").is_none_or(|v| v != "0")
+}
+
 /// `RUSTDL_HYPER_MATCH_DEADLINE` — probe the deadline inside the wedge's match
 /// cross-product. **Default ON** since v0.4.16; `=0` reverts.
 ///

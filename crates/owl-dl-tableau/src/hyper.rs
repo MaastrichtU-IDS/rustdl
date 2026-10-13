@@ -3308,7 +3308,9 @@ impl<'c> HyperEngine<'c> {
             self.nodes[rep.index()]
                 .label_deps
                 .iter()
-                .fold(self.nodes[rep.index()].birth_deps, |acc, &dep| acc.union(dep))
+                .fold(self.nodes[rep.index()].birth_deps, |acc, &dep| {
+                    acc.union(dep)
+                })
         };
         // Base seed: atomic labels of the resolved node.
         let atomic_base: Vec<owl_dl_core::ir::ClassId> = self.nodes[rep.index()].labels.clone();

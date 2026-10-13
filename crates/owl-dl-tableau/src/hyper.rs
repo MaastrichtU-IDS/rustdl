@@ -6640,6 +6640,30 @@ mod tests {
         assert_eq!(check(&mut eng, n4, a), Some(n2));
     }
 
+    /// `RUSTDL_NN_INDEX`: restoring a snapshot saved before the index existed
+    /// drops the index, and the next lookup rebuilds it from the restored labels.
+    #[test]
+    fn nn_index_rebuilds_after_restoring_a_pre_build_snapshot() {
+        let a = cls(10);
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        eng.nn_index = true;
+        let n1 = eng.new_node();
+        let n2 = eng.new_node();
+        eng.nodes[n1.index()].add(a, DepSet::EMPTY);
+        let saved = eng.save();
+        assert!(eng.nn_holders.is_none());
+        eng.add_label(n2, a, DepSet::EMPTY);
+        assert_eq!(
+            eng.nn_other_holder(n1, a),
+            Some(n2),
+            "built inside the branch"
+        );
+        eng.restore(saved);
+        assert!(eng.nn_holders.is_none(), "restored to the pre-build state");
+        assert_eq!(eng.nn_other_holder(n1, a), eng.nn_other_holder_scan(n1, a));
+        assert_eq!(eng.nn_other_holder(n2, a), Some(n1));
+    }
+
     /// `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`: a fresh engine reads the clock from the
     /// FIRST drain event, so a deadline that has already passed stops a fixpoint
     /// shorter than the fixed 256-event stride. The fixed stride never reads the

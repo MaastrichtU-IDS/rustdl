@@ -1240,7 +1240,9 @@ pub fn convert_class_expression<A: ForIRI>(
         // cardinality) MUST still return `UnsupportedDataRange` so the
         // whole axiom drops. Partial lowering of a mixed conjunction
         // would WEAKEN an equivalence RHS → false-positive subsumption
-        // via the sufficient direction. Do not best-effort.
+        // via the sufficient direction. Do not best-effort. (The
+        // sanctioned salvage is `salvage_necessary_conjuncts`, which keeps
+        // only NECESSARY-direction consequences of an axiom that dropped.)
         ClassExpression::DataSomeValuesFrom { dp, dr } => {
             // `∃p.DKey(range)` for any recognized datatype range (integer
             // incl. bare xsd:integer, float/double, decimal, date, dateTime,
@@ -2474,6 +2476,87 @@ fn drop_label<A: ForIRI>(c: &Component<A>, e: &ConversionError) -> String {
     }
 }
 
+/// #180: when a class axiom is dropped because part of it cannot be converted,
+/// keep the parts that are entailed on their own. Default ON;
+/// `RUSTDL_SALVAGE_DROPPED_CONJUNCTS=0` drops the whole axiom as before.
+#[must_use]
+pub fn salvage_dropped_conjuncts_enabled() -> bool {
+    std::env::var_os("RUSTDL_SALVAGE_DROPPED_CONJUNCTS").is_none_or(|v| v != "0")
+}
+
+/// The top-level conjuncts of `ce`, with nested intersections flattened.
+fn top_level_conjuncts<A: ForIRI>(ce: &ClassExpression<A>) -> Vec<&ClassExpression<A>> {
+    match ce {
+        ClassExpression::ObjectIntersectionOf(xs) => {
+            xs.iter().flat_map(top_level_conjuncts).collect()
+        }
+        _ => vec![ce],
+    }
+}
+
+/// The NECESSARY-side consequences of a class axiom that [`convert_component`]
+/// dropped, for the conjuncts that do convert.
+///
+/// * `SubClassOf(C, X₁ ⊓ … ⊓ Xₙ)` with `C` convertible: `C ⊑ Xᵢ` for every
+///   convertible `Xᵢ`.
+/// * `EquivalentClasses(M₁ … Mₖ)`: the convertible members stay equivalent, and
+///   for every member `Mⱼ = X₁ ⊓ … ⊓ Xₙ` that does not convert, every convertible
+///   member is subsumed by each convertible `Xᵢ`.
+///
+/// **Sound because it only weakens a right-hand side**: `C ⊑ X ⊓ U` entails
+/// `C ⊑ X` whatever `U` is. Nothing is ever kept on a LEFT side, where dropping
+/// a conjunct would strengthen the axiom: a `SubClassOf` whose subclass does not
+/// convert yields nothing, and the sufficient direction of an equivalence
+/// (`X ⊓ U ⊑ C`) is never kept. The axiom is still counted in `dropped`, because
+/// part of it is still lost.
+///
+/// `ore_ont_14379` lost `ObservationEvent ⊑ Event` this way: one conjunct of
+/// `ObservationEvent ≡ Event ⊓ … ⊓ ∀usingStrictOrder.xsd:boolean` has an
+/// unsupported data range, so the whole equivalence was dropped.
+fn salvage_necessary_conjuncts<A: ForIRI>(
+    c: &Component<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> Vec<Axiom> {
+    let mut out = Vec::new();
+    match c {
+        Component::SubClassOf(ax) => {
+            let Ok(sub) = convert_class_expression(&ax.sub, vocab, pool) else {
+                return out;
+            };
+            for k in top_level_conjuncts(&ax.sup) {
+                if let Ok(sup) = convert_class_expression(k, vocab, pool) {
+                    out.push(Axiom::SubClassOf { sub, sup });
+                }
+            }
+        }
+        Component::EquivalentClasses(ax) => {
+            let mut whole: Vec<ConceptId> = Vec::new();
+            let mut partial: Vec<&ClassExpression<A>> = Vec::new();
+            for m in &ax.0 {
+                match convert_class_expression(m, vocab, pool) {
+                    Ok(id) => whole.push(id),
+                    Err(_) => partial.push(m),
+                }
+            }
+            for m in partial {
+                for k in top_level_conjuncts(m) {
+                    if let Ok(sup) = convert_class_expression(k, vocab, pool) {
+                        for &sub in &whole {
+                            out.push(Axiom::SubClassOf { sub, sup });
+                        }
+                    }
+                }
+            }
+            if whole.len() >= 2 {
+                out.push(Axiom::EquivalentClasses(whole));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// Sort `convert_ontology`'s components by a fixed-seed HASH (tie-broken by the full
 /// `Ord`) instead of by the derived `Ord` directly. **Default OFF**, `=1` opts in.
 ///
@@ -2709,6 +2792,7 @@ pub fn convert_ontology<A: ForIRI>(
         components.sort_unstable();
     }
     let mut out = InternalOntology::new();
+    let salvage = salvage_dropped_conjuncts_enabled();
     for (i, ac) in components.into_iter().enumerate() {
         // At `i == 0` this repeats the check before the sort; harmless, and it
         // keeps the poll pattern uniform for the test hook.
@@ -2718,7 +2802,17 @@ pub fn convert_ontology<A: ForIRI>(
         match convert_component(&ac.component, &mut out.vocabulary, &mut out.concepts) {
             Ok(Some(axiom)) => out.axioms.push(axiom),
             Ok(None) => {} // benign: metadata / annotation / declaration — no reasoning content
-            Err(e) => out.dropped.record(drop_label(&ac.component, &e)),
+            Err(e) => {
+                out.dropped.record(drop_label(&ac.component, &e));
+                if salvage {
+                    let kept = salvage_necessary_conjuncts(
+                        &ac.component,
+                        &mut out.vocabulary,
+                        &mut out.concepts,
+                    );
+                    out.axioms.extend(kept);
+                }
+            }
         }
     }
     // Phase D4 (2026-06-03): scan for data-axiom patterns the main

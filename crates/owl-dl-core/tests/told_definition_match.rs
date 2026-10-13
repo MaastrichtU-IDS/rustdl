@@ -197,3 +197,90 @@ fn the_flag_switches_the_pass_off() {
     unsafe { std::env::remove_var("RUSTDL_TOLD_DEFINITION_MATCH") };
     assert!(!has_edge(&conv, "S", "E"));
 }
+
+/// #180, the `BakersYeastCell` family: the atomic conjunct is TWO asserted-conjunct
+/// hops away. `A ≡ B ⊓ X`, `B ≡ Y ⊓ M`, `M ⊑ K` covers `K` in `D ≡ K ⊓ X`; one
+/// hop reaches only `B`'s told superclasses, which do not include `K`.
+const TWO_HOPS: &str =
+    "EquivalentClasses(:A ObjectIntersectionOf(:B ObjectMinCardinality(2 :r :P)))
+    EquivalentClasses(:B ObjectIntersectionOf(ObjectSomeValuesFrom(:s :Q) :M))
+    SubClassOf(:M :K)
+    EquivalentClasses(:D ObjectIntersectionOf(:K ObjectMinCardinality(2 :r :P)))";
+
+#[test]
+fn an_atomic_conjunct_is_reached_through_two_asserted_conjunctions() {
+    assert!(has_edge(&convert(TWO_HOPS), "A", "D"));
+}
+
+/// FP guard: a disjunct is not a conjunct. `B ⊑ K ⊔ M` does not give `B ⊑ K`.
+#[test]
+fn a_disjunct_does_not_count_as_an_asserted_conjunct() {
+    let o = convert(
+        "SubClassOf(:A ObjectIntersectionOf(:B ObjectMinCardinality(2 :r :P)))
+         SubClassOf(:B ObjectUnionOf(:K :M))
+         EquivalentClasses(:D ObjectIntersectionOf(:K ObjectMinCardinality(2 :r :P)))",
+    );
+    assert!(!has_edge(&o, "A", "D"));
+}
+
+/// FP guard: the closure runs UP. A conjunct asserted on a SUBCLASS of `A`
+/// (`C ⊑ A ⊓ K`) says nothing about `A`, which IS a candidate here (it asserts
+/// the complex conjunct). `C` itself is not derived: candidates are still
+/// enumerated through told subclasses only, and `C ⊑ A` is an asserted
+/// conjunct, not a told edge.
+#[test]
+fn a_conjunct_asserted_on_a_subclass_does_not_count() {
+    let o = convert(
+        "SubClassOf(:A ObjectMinCardinality(2 :r :P))
+         SubClassOf(:C ObjectIntersectionOf(:A :K))
+         EquivalentClasses(:D ObjectIntersectionOf(:K ObjectMinCardinality(2 :r :P)))",
+    );
+    assert!(!has_edge(&o, "A", "D"));
+}
+
+/// `RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS=0` restores the single hop, which misses
+/// the two-hop shape.
+#[test]
+fn the_conjunct_closure_flag_restores_the_single_hop() {
+    let _g = ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: every env access in this binary holds `ENV`.
+    unsafe { std::env::set_var("RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS", "0") };
+    let src = format!("Prefix(:=<http://ex#>)\nOntology(\n{TWO_HOPS}\n)");
+    let o: SetOntology<RcStr> = read_ofn(&mut Cursor::new(src), ParserConfiguration::default())
+        .unwrap()
+        .0;
+    let conv = owl_dl_core::convert::convert_ontology(&o).unwrap();
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS") };
+    assert!(!has_edge(&conv, "A", "D"));
+}
+
+/// FP guard: the closure must not walk DOWN from an asserted conjunct. `A ⊑ B ⊓ X`
+/// and `K ⊑ B` do not give `A ⊑ K`, so `D ≡ K ⊓ X` must not match.
+#[test]
+fn an_asserted_conjunct_does_not_reach_its_subclasses() {
+    let o = convert(
+        "SubClassOf(:A ObjectIntersectionOf(:B ObjectMinCardinality(2 :r :P)))
+         SubClassOf(:K :B)
+         EquivalentClasses(:D ObjectIntersectionOf(:K ObjectMinCardinality(2 :r :P)))",
+    );
+    assert!(!has_edge(&o, "A", "D"));
+}
+
+/// A complex conjunct asserted on a class that `A` reaches only through an
+/// asserted atomic conjunct: `A ⊑ X1 ⊓ B`, `B ⊑ X2`, `D ≡ X1 ⊓ X2`. `X2` is also
+/// asserted on an unrelated `F`, so `X1` is the rarest conjunct and `A` is the
+/// candidate.
+#[test]
+fn a_complex_conjunct_is_reached_through_an_asserted_conjunction() {
+    let o = convert(
+        "SubClassOf(:A ObjectIntersectionOf(ObjectMinCardinality(2 :r :P) :B))
+         SubClassOf(:B ObjectMaxCardinality(4 :s :Q))
+         SubClassOf(:F ObjectMaxCardinality(4 :s :Q))
+         EquivalentClasses(:D ObjectIntersectionOf(ObjectMinCardinality(2 :r :P) ObjectMaxCardinality(4 :s :Q)))",
+    );
+    assert!(has_edge(&o, "A", "D"));
+    assert!(!has_edge(&o, "F", "D"), "F lacks the first conjunct");
+}

@@ -26,6 +26,14 @@ All notable changes to rustdl are documented here. Format is based on
   scan (same filter, lowest index first), and debug builds check that on every lookup.
   `ore_ont_10073` classify 26.1-27.1 → 16.9-18.5 CPU-s and `ore_ont_10127` 10.0-11.2 →
   7.6-8.5, output identical.
+- **The ABox-seeded consistency pre-check is bounded by its deadline instead of a step cap,
+  `RUSTDL_SEEDED_FIXPOINT_UNCAPPED`, default ON (`=0` reverts).** The wedge's Horn fixpoint gave
+  up after 100,000 steps, so on large ABoxes the classify consistency pre-check stopped well
+  before its 3–12 s budget and reported `consistency_undetermined`. Under a deadline it now runs
+  until the deadline. Other callers keep the cap. Of the 227 ORE ontologies whose pre-check was
+  undetermined, 100 are now proved consistent, 110 stay undetermined and 17 are decided with or without the change;
+  classification output is identical on all 227. Cost: +14.6% wall on that set, almost all of it
+  in 41 ontologies that now spend their full budget and still end undetermined.
 
 ### Fixed
 - **The wedge's open-rule scans honour the deadline, and a scan the deadline cut short no

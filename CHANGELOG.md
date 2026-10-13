@@ -30,6 +30,14 @@ All notable changes to rustdl are documented here. Format is based on
     lost an entailment.
 
 ### Fixed
+- **`completeness_guaranteed` is now false when an axiom was dropped at conversion (#246).** Its
+  contract is "true ⟹ no missed subsumptions", but it never consulted `dropped`, so a pure-EL
+  ontology with an unsupported axiom (e.g. `A ⊑ ∃r.(B ⊓ ∀dp.xsd:boolean)`, `∃r.B ⊑ E`)
+  reported a guarantee while missing `A ⊑ E`. The engine reasons over the converted KB, which is
+  strictly weaker than the input, so the guarantee cannot hold. Affects the
+  `completeness_guaranteed` field of `classify --json`, `Classification::completeness_guaranteed()`
+  and so `disjoint`'s `incomplete`; `classify`'s `incomplete` stays deadline-only. No answer
+  changes.
 - **The `⊔` look-ahead (`RUSTDL_SAT_LOOKAHEAD`, default OFF) could report a consistent ontology
   as inconsistent.** It seeds the EL saturator with a wedge node's labels, and above the
   named-class range the two engines number classes differently: the wedge's nominal class

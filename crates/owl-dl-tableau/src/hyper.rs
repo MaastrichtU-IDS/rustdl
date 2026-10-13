@@ -3286,14 +3286,32 @@ impl<'c> HyperEngine<'c> {
     /// in the live set — conservative/sound under-seeding).
     ///
     /// Returns `(0..head_len).collect()` when no lookahead saturator is set.
+    /// Returns the live disjunct indices and the dep-set of the facts the seed was
+    /// built from. A dropped disjunct is dead because of those facts, so its
+    /// flag-OFF clash would carry their deps: the caller must fold them into the
+    /// branch's `prune_deps`, or backjumping skips a decision the clash depended on
+    /// (false `Unsat`). Per-edge deps are not tracked, so a seed that used any edge
+    /// fact, or a tainted node, reports `DepSet::ALL`.
     fn lookahead_live_disjuncts(
         &mut self,
         sat: &owl_dl_saturation::seed_sat::SeedSaturator,
         ci: usize,
         node: HNode,
-    ) -> Vec<usize> {
+    ) -> (Vec<usize>, DepSet) {
         let head_len = self.clause(ci).head.len();
         let rep = self.resolve(node);
+        let seed_deps = if self.nodes[rep.index()].nn_tainted && !self.nn_taint_disabled {
+            DepSet::ALL
+        } else {
+            // Node existence too: labels normally carry it already, but say so in
+            // code rather than rely on that (#243 re-review).
+            self.nodes[rep.index()]
+                .label_deps
+                .iter()
+                .fold(self.nodes[rep.index()].birth_deps, |acc, &dep| {
+                    acc.union(dep)
+                })
+        };
         // Base seed: atomic labels of the resolved node.
         let atomic_base: Vec<owl_dl_core::ir::ClassId> = self.nodes[rep.index()].labels.clone();
         // Base existential seed: non-inverse outgoing edges with atomic targets.
@@ -3337,7 +3355,12 @@ impl<'c> HyperEngine<'c> {
         if live.len() == 1 {
             self.stats.lookahead_forced_single += 1;
         }
-        live
+        let seed_deps = if exists_base.is_empty() {
+            seed_deps
+        } else {
+            DepSet::ALL
+        };
+        (live, seed_deps)
     }
 
     /// Stack guard for the branch recursion (#147).
@@ -3447,10 +3470,18 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clause(ci).head.len();
-            let mut live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
-                self.lookahead_live_disjuncts(&sat, ci, node)
+            let (mut live, lookahead_seed_deps): (Vec<usize>, DepSet) =
+                if let Some(sat) = self.sat_lookahead.clone() {
+                    self.lookahead_live_disjuncts(&sat, ci, node)
+                } else {
+                    ((0..head_len).collect(), DepSet::EMPTY)
+                };
+            // Disjuncts the look-ahead dropped would each have clashed, flag-OFF,
+            // with `decision_deps` plus the deps of the facts that killed them.
+            let lookahead_prune = if live.len() < head_len {
+                decision_deps.union(lookahead_seed_deps)
             } else {
-                (0..head_len).collect()
+                DepSet::EMPTY
             };
             // Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`, default OFF): in-search
             // disjointness pruning + unit-forcing. Drop each atomic `Class(c,_)`
@@ -3476,8 +3507,9 @@ impl<'c> HyperEngine<'c> {
             // dropped-but-branched-and-clashed disjuncts too). Dropping those
             // disjuncts without carrying their deps forward narrows `combined`
             // → unsound backjump past an ancestor decision → false Unsat → FP.
-            // EMPTY (hence inert) when the flag is off.
-            let mut prune_deps = DepSet::EMPTY;
+            // EMPTY (hence inert) when the flag is off. Seeded with the look-ahead's
+            // contribution (`RUSTDL_SAT_LOOKAHEAD`), for the same reason.
+            let mut prune_deps = lookahead_prune;
             if self.semantic_branching {
                 let mut kept: Vec<usize> = Vec::with_capacity(live.len());
                 for &k in &live {
@@ -3569,9 +3601,12 @@ impl<'c> HyperEngine<'c> {
                 }
             }
             // If the lookahead proved ALL disjuncts dead, treat it as a clash
-            // on this branch (same as if every branch returned Unsat).
+            // on this branch (same as if every branch returned Unsat): the
+            // dropped disjuncts' clash deps, decision `d` removed as exhausted.
+            // `body_deps` alone was too narrow and backjumped past decisions the
+            // killing labels depended on (false `Unsat`).
             if live.is_empty() {
-                self.clash_deps = body_deps;
+                self.clash_deps = body_deps.union(prune_deps).remove(d);
                 return HyperResult::Unsat;
             }
             let mut any_stalled = false;

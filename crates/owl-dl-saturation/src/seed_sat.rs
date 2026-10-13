@@ -18,6 +18,9 @@ use crate::{WorklistEngine, build_run_engine_with_reserved};
 pub struct SeedSaturator {
     base: WorklistEngine,
     reserved_x: ClassId,
+    /// Number of NAMED classes: the only class ids whose meaning the caller's
+    /// id space (the wedge) and this saturator share. See [`Self::seed_unsat`].
+    num_named: usize,
 }
 
 /// Build and fully run the base saturation engine for the given ontology,
@@ -28,7 +31,11 @@ pub struct SeedSaturator {
 #[must_use]
 pub fn build_base(internal: &InternalOntology) -> SeedSaturator {
     let (base, reserved_x) = build_run_engine_with_reserved(internal);
-    SeedSaturator { base, reserved_x }
+    SeedSaturator {
+        base,
+        reserved_x,
+        num_named: internal.vocabulary.num_classes(),
+    }
 }
 
 impl SeedSaturator {
@@ -39,32 +46,34 @@ impl SeedSaturator {
     /// injects `X ⊑ aᵢ`; for each `(rⱼ, cⱼ)` in `exists_seed` injects
     /// `X ⊑ ∃rⱼ.cⱼ`.  Then runs to fixpoint and reads `X ⊑ ⊥`.
     ///
-    /// **Out-of-universe ids are silently skipped.**  The tableau caller can
-    /// pass `ClassId`s for complement classes or decision-specific Tseitin
-    /// synthetics whose `.index()` is ≥ `reserved_x.index()`.  Those ids lie
-    /// outside the saturator's class universe (no rules exist for them), so
-    /// injecting them would panic on a bitset bounds check.  Dropping them is a
-    /// sound under-approximation: the saturator can only derive ⊥ *less* often,
-    /// never producing a spurious unsatisfiability verdict.
+    /// **Only NAMED class ids are seeded; every other id is silently skipped.**
+    /// Above the named range the two id spaces disagree. The wedge uses
+    /// `[num_classes, num_classes + num_individuals)` for nominal classes and
+    /// mints clausifier helpers above that, while this saturator numbers its own
+    /// synthetics (nominal keys, Tseitin markers, the `⊥` key) from
+    /// `num_classes` up. Seeding a wedge nominal id here therefore asserted an
+    /// unrelated synthetic class: with an unsatisfiable `∃r.⊥` marker at that id,
+    /// `a : C`, `C ⊑ D ⊔ E` read as inconsistent, and so did `wine.ofn` (#180
+    /// follow-up). The previous filter skipped only ids at or above the whole
+    /// universe (`reserved_x`), which let exactly this range through.
+    ///
+    /// Dropping seeds is a sound under-approximation: the saturator can only
+    /// derive `⊥` less often, never a spurious unsatisfiability.
     #[must_use]
     pub fn seed_unsat(&self, atomic_seed: &[ClassId], exists_seed: &[(RoleId, ClassId)]) -> bool {
         let mut e = self.base.clone();
         let x = self.reserved_x;
-        let universe = self.reserved_x.index();
+        let named = |c: ClassId| (c.index() as usize) < self.num_named;
         for &a in atomic_seed {
-            // Skip ids that lie outside the saturator's class universe.
-            if a.index() >= universe {
-                continue;
+            if named(a) {
+                e.inject_subsumer(x, a);
             }
-            e.inject_subsumer(x, a);
         }
         for &(r, c) in exists_seed {
-            // Skip existentials whose filler class is out of universe.
-            // (Roles are a separate id space — we do NOT filter on role id.)
-            if c.index() >= universe {
-                continue;
+            // Roles are a separate, shared id space: only the filler is filtered.
+            if named(c) {
+                e.inject_existential(x, r, c);
             }
-            e.inject_existential(x, r, c);
         }
         e.run();
         e.is_unsat_class(x)
@@ -225,6 +234,31 @@ Ontology(<http://rustdl.test/test>\n\
         );
     }
 
+    /// The id range the old filter let through: `num_classes` is the wedge's nominal
+    /// class for the first individual AND the saturator's first synthetic, here
+    /// the `⊥` key minted for `Z ⊑ ∃r.⊥`. Seeding it must not read as `⊥`.
+    #[test]
+    fn a_wedge_nominal_id_is_not_seeded_as_a_saturator_synthetic() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Z))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(NamedIndividual(:a))\n\
+    SubClassOf(:Z ObjectSomeValuesFrom(:r owl:Nothing))\n\
+)\n"
+        ));
+        let sat = build_base(&internal);
+        let first_synthetic =
+            ClassId::new(u32::try_from(internal.vocabulary.num_classes()).expect("fits"));
+        assert!(
+            first_synthetic.index() < sat.reserved_x.index(),
+            "precondition: the saturator minted a synthetic at num_classes"
+        );
+        assert!(!sat.seed_unsat(&[first_synthetic], &[]));
+        assert!(!sat.seed_unsat(&[], &[(role_id(&internal, "r"), first_synthetic)]));
+    }
+
     /// Out-of-universe seed elements must be silently skipped, not panic.
     ///
     /// The tableau (the real caller) can pass `ClassId`s for complement classes
@@ -235,7 +269,9 @@ Ontology(<http://rustdl.test/test>\n\
     ///
     /// The guard silently drops out-of-universe ids (sound under-approximation:
     /// dropping a constraint from the seed can only make the saturator derive ⊥
-    /// *less* often — a MISS, never an FP).
+    /// *less* often — a MISS, never an FP). It now drops every non-named id, a
+    /// superset; the range between `num_classes` and `reserved_x` is pinned by
+    /// `a_wedge_nominal_id_is_not_seeded_as_a_saturator_synthetic`.
     ///
     /// This test:
     ///   1. Verifies no panic when an out-of-range atomic seed is present.

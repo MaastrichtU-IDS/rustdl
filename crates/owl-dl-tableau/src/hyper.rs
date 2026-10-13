@@ -2930,6 +2930,9 @@ impl<'c> HyperEngine<'c> {
         self.stats = SearchStats::default();
         self.init_depth = max_depth;
         self.deadline = deadline;
+        // A truncation flag belongs to the decide that set it.
+        self.match_deadline_hit.set(false);
+        self.match_steps.set(0);
         self.reseed_interval = RESEED_INITIAL_INTERVAL;
         self.reseed_skip_left = RESEED_INITIAL_INTERVAL;
         self.fixpoint_stride = 1;
@@ -3844,6 +3847,16 @@ impl<'c> HyperEngine<'c> {
         // (`ore_ont_2182`, `16481`, `6272`) fast, while searches that never
         // recover anything (`ore_ont_4903`, `8911`) back off to rare re-seeds.
         // This leaf re-seed is the guarantee; the schedule is only pruning.
+        // A deadline that cut `find_open_disjunction` or `find_open_at_most`
+        // short (the scans above, or the match enumeration inside them) may
+        // have hidden an open rule, so this frame has not shown a model. Same
+        // rule as the load-bearing check at the end of `horn_fixpoint`: a
+        // truncated examination is `Stalled`, never `Sat`. Checked before the
+        // leaf re-seed, which would only re-drain the graph to reach the same
+        // `Stalled`.
+        if self.match_deadline_hit.get() {
+            return HyperResult::Stalled;
+        }
         if self.reseed_at_leaf && self.reseed_net_due() && !fresh && !head_net_clean {
             let (r, changed) = self.run_reseed_net(FIXPOINT_ITERS);
             if changed {
@@ -3866,14 +3879,6 @@ impl<'c> HyperEngine<'c> {
             // re-seed points, so this costs one pass of the read-only checks.
             self.leaf_net_fresh = true;
             return self.solve(depth);
-        }
-        // A deadline that cut `find_open_disjunction` or `find_open_at_most`
-        // short (the scans below, or the match enumeration inside them) may
-        // have hidden an open rule, so this frame has not shown a model. Same
-        // rule as the load-bearing check at the end of `horn_fixpoint`: a
-        // truncated examination is `Stalled`, never `Sat`.
-        if self.match_deadline_hit.get() {
-            return HyperResult::Stalled;
         }
         HyperResult::Sat
     }

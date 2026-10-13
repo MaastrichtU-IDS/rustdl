@@ -944,7 +944,10 @@ impl Classification {
     /// `MISSED == 0`. It holds **only** on [`FragmentClassification::PureEl`]
     /// (the saturator is complete; `Horn` is excluded, see #124 in the body),
     /// **and** when no per-pair probe timed out, the wedge was not blind to the
-    /// role hierarchy (#214) and consistency was determined.
+    /// role hierarchy (#214), consistency was determined, and no axiom was
+    /// dropped at conversion (#246). A dropped axiom means the engine reasoned
+    /// over a strictly weaker KB than the input, so entailments of the input can
+    /// be missed even when the saturator is complete on what it was given.
     ///
     /// On `OutOfFragment` inputs it returns `false` even when nothing timed out,
     /// because the classifier relies on the wedge's `trust_sat` verdicts, which
@@ -979,6 +982,7 @@ impl Classification {
             && self.stats.timed_out_pairs == 0
             && !self.stats.wedge_hierarchy_blind
             && !self.stats.consistency_undetermined
+            && self.stats.dropped.is_empty()
     }
 }
 

@@ -84,3 +84,48 @@ fn horn_clause_shape_does_not_guarantee_completeness() {
          is Horn and classify misses X ⊑ W, which both oracles derive"
     );
 }
+
+/// #246: a dropped axiom voids the guarantee. The ontology is pure-EL once the
+/// unsupported `DataAllValuesFrom(:dp xsd:boolean)` axiom is dropped, and the
+/// saturator is complete on what remains, but `A ⊑ ∃r.(B ⊓ U) ⊑ ∃r.B ⊑ E` is
+/// entailed by the INPUT and missed. Before the fix this reported
+/// `completeness_guaranteed() == true` with `A ⊑ E` absent.
+#[test]
+fn a_dropped_axiom_voids_the_guarantee() {
+    let c = classify(
+        "Prefix(:=<http://e#>)\nPrefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\nOntology(\n\
+         Declaration(DataProperty(:dp)) Declaration(ObjectProperty(:r))\n\
+         Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:E))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B \
+         DataAllValuesFrom(:dp xsd:boolean))))\n\
+         SubClassOf(ObjectSomeValuesFrom(:r :B) :E)\n)",
+    );
+    assert!(
+        !c.stats().dropped.is_empty(),
+        "precondition: the axiom is dropped"
+    );
+    assert!(
+        !c.is_subclass("http://e#A", "http://e#E"),
+        "precondition: the entailed A ⊑ E is missed"
+    );
+    assert!(
+        !c.completeness_guaranteed(),
+        "a dropped axiom: completeness must NOT be guaranteed"
+    );
+}
+
+/// Control: the same shape with no unsupported conjunct drops nothing, derives
+/// `A ⊑ E`, and keeps the guarantee, so the test above isolates the drop.
+#[test]
+fn the_same_shape_without_a_drop_keeps_the_guarantee() {
+    let c = classify(
+        "Prefix(:=<http://e#>)\nOntology(\n\
+         Declaration(ObjectProperty(:r))\n\
+         Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:E))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n\
+         SubClassOf(ObjectSomeValuesFrom(:r :B) :E)\n)",
+    );
+    assert!(c.stats().dropped.is_empty());
+    assert!(c.is_subclass("http://e#A", "http://e#E"));
+    assert!(c.completeness_guaranteed());
+}

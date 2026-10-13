@@ -6,6 +6,8 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.39] — 2026-10-13
+
 ### Added
 - **Told definition matching follows asserted conjuncts transitively (#180),
   `RUSTDL_TOLD_MATCH_CONJUNCT_SUPERS`, default ON (`=0` reverts).** The #139 matcher looked

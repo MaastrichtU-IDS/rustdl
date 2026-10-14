@@ -4224,6 +4224,22 @@ pub fn hyper_nn_index_enabled() -> bool {
     std::env::var_os("RUSTDL_NN_INDEX").is_none_or(|v| v != "0")
 }
 
+/// Whether a branch restore undoes the NN index by an undo log rather than
+/// restoring a cloned copy (`RUSTDL_NN_UNDO_LOG`, **default ON**, `=0` reverts).
+///
+/// With the clone, every branch save copied the whole index, and an index first
+/// built inside a branch was dropped by its restore, so the next branch paid the
+/// build scan again. The log records each holder `add_label` pushes; a restore
+/// pops the branch's entries and keeps an index built inside the branch, whose
+/// lists are a superset of the restored holders (labels only grow along a
+/// branch). Lookups answer the same either way: they filter by the current
+/// labels, and debug builds check every lookup against the full scan.
+#[must_use]
+pub fn hyper_nn_undo_log_enabled() -> bool {
+    // Default-ON idiom (house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_NN_UNDO_LOG").is_none_or(|v| v != "0")
+}
+
 /// Whether `horn_fixpoint`'s drain loop consults the wall-clock deadline.
 ///
 /// The loop is bounded by a `max_iters` STEP count only, so a fixpoint whose

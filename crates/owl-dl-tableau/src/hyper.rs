@@ -432,8 +432,11 @@ struct Snapshot {
     neq: Vec<(HNode, HNode)>,
     block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
     /// `nn_holders`, saved with the graph so a restore drops the holders the
-    /// abandoned branch added.
+    /// abandoned branch added. Only with `RUSTDL_NN_UNDO_LOG=0`; otherwise
+    /// `None`, and `nn_log_len` does the job.
     nn_holders: Option<Vec<Vec<HNode>>>,
+    /// `nn_log.len()` at save time: a restore pops the index back to it.
+    nn_log_len: usize,
     /// Per-node sentinel-origin bits, saved alongside `nodes` so they
     /// stay in sync after restore. The `snapshot_backprop_aborted`
     /// flag on the engine is intentionally NOT saved — once back-prop
@@ -914,8 +917,16 @@ pub struct HyperEngine<'c> {
     /// written directly by the constructors; `add_label` keeps it current
     /// after that. `None` until built.
     nn_holders: Option<Vec<Vec<HNode>>>,
+    /// Undo log for `nn_holders` (`RUSTDL_NN_UNDO_LOG`): the nominal offset of
+    /// every holder `add_label` pushed since the build, in push order. A restore
+    /// pops the entries its branch added instead of the snapshot carrying a
+    /// clone of the whole index.
+    nn_log: Vec<u32>,
     /// `RUSTDL_NN_INDEX` (default ON, `=0` reverts to the full scan).
     nn_index: bool,
+    /// `RUSTDL_NN_UNDO_LOG` (default ON, `=0` reverts to cloning `nn_holders`
+    /// on every save and dropping an index built inside the restored branch).
+    nn_undo_log: bool,
     /// Lift `horn_fixpoint`'s `max_iters` step cap while a deadline bounds the
     /// drain (see [`Self::with_deadline_bounded_fixpoint`]). Off by default.
     deadline_bounded_fixpoint: bool,
@@ -1616,7 +1627,9 @@ impl<'c> HyperEngine<'c> {
             tautology_pairs: None,
             block_index: None,
             nn_holders: None,
+            nn_log: Vec::new(),
             nn_index: crate::hyper_nn_index_enabled(),
+            nn_undo_log: crate::hyper_nn_undo_log_enabled(),
             deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -1693,7 +1706,9 @@ impl<'c> HyperEngine<'c> {
             tautology_pairs: None,
             block_index: None,
             nn_holders: None,
+            nn_log: Vec::new(),
             nn_index: crate::hyper_nn_index_enabled(),
+            nn_undo_log: crate::hyper_nn_undo_log_enabled(),
             deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -2203,6 +2218,9 @@ impl<'c> HyperEngine<'c> {
                 && k < count
             {
                 holders[k as usize].push(n);
+                if self.nn_undo_log {
+                    self.nn_log.push(k);
+                }
             }
             // Shadow: mirror the insertion into shadow_label_deps at the same
             // sorted position so the two vecs stay parallel. Guard: flag-off
@@ -3423,7 +3441,9 @@ impl<'c> HyperEngine<'c> {
             tautology_pairs: None,
             block_index: None,
             nn_holders: None,
+            nn_log: Vec::new(),
             nn_index: crate::hyper_nn_index_enabled(),
+            nn_undo_log: crate::hyper_nn_undo_log_enabled(),
             deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false; n],
@@ -3974,7 +3994,12 @@ impl<'c> HyperEngine<'c> {
             representative: self.representative.clone(),
             neq: self.neq.clone(),
             block_index: self.block_index.clone(),
-            nn_holders: self.nn_holders.clone(),
+            nn_holders: if self.nn_undo_log {
+                None
+            } else {
+                self.nn_holders.clone()
+            },
+            nn_log_len: self.nn_log.len(),
             origin: self.snapshot_origin.clone(),
             worklist: if self.incremental_fixpoint {
                 self.worklist.clone()
@@ -3989,7 +4014,21 @@ impl<'c> HyperEngine<'c> {
         self.representative = saved.representative;
         self.neq = saved.neq;
         self.block_index = saved.block_index;
-        self.nn_holders = saved.nn_holders;
+        if self.nn_undo_log {
+            // Pop the holders the abandoned branch added. An index first built
+            // inside that branch is kept: labels only grow along a branch, so
+            // its build-time lists are a superset of the restored holders, and
+            // the lookup filters by the current labels exactly as the scan does.
+            // That spares the rebuild scan in the next branch.
+            if let Some(holders) = self.nn_holders.as_mut() {
+                while self.nn_log.len() > saved.nn_log_len {
+                    let k = self.nn_log.pop().expect("len checked");
+                    holders[k as usize].pop();
+                }
+            }
+        } else {
+            self.nn_holders = saved.nn_holders;
+        }
         self.snapshot_origin = saved.origin;
         if self.incremental_fixpoint {
             self.worklist = saved.worklist;
@@ -5692,6 +5731,7 @@ impl<'c> HyperEngine<'c> {
                 }
             }
             self.nn_holders = Some(holders);
+            self.nn_log.clear();
         }
         let k = c.index().checked_sub(start)? as usize;
         let holders = self.nn_holders.as_ref()?.get(k)?;
@@ -6913,13 +6953,15 @@ mod tests {
         assert_eq!(check(&mut eng, n4, a), Some(n2));
     }
 
-    /// `RUSTDL_NN_INDEX`: restoring a snapshot saved before the index existed
-    /// drops the index, and the next lookup rebuilds it from the restored labels.
+    /// `RUSTDL_NN_INDEX` with `RUSTDL_NN_UNDO_LOG=0`: restoring a snapshot saved
+    /// before the index existed drops the index, and the next lookup rebuilds it
+    /// from the restored labels.
     #[test]
     fn nn_index_rebuilds_after_restoring_a_pre_build_snapshot() {
         let a = cls(10);
         let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
         eng.nn_index = true;
+        eng.nn_undo_log = false;
         let n1 = eng.new_node();
         let n2 = eng.new_node();
         eng.nodes[n1.index()].add(a, DepSet::EMPTY);
@@ -6933,6 +6975,79 @@ mod tests {
         );
         eng.restore(saved);
         assert!(eng.nn_holders.is_none(), "restored to the pre-build state");
+        assert_eq!(eng.nn_other_holder(n1, a), eng.nn_other_holder_scan(n1, a));
+        assert_eq!(eng.nn_other_holder(n2, a), Some(n1));
+    }
+
+    /// `RUSTDL_NN_UNDO_LOG`: a save carries no copy of the index, and each
+    /// restore, nested or not, puts the index back exactly as it was at its save,
+    /// across several nominals. Lookups agree with the scan throughout.
+    #[test]
+    fn nn_undo_log_restores_the_index_exactly() {
+        let (a, b) = (cls(10), cls(11));
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 2);
+        eng.nn_index = true;
+        eng.nn_undo_log = true;
+        let n: Vec<HNode> = (0..4).map(|_| eng.new_node()).collect();
+        eng.nodes[n[0].index()].add(a, DepSet::EMPTY);
+        let agree = |eng: &mut HyperEngine<'_>| {
+            for &rn in &n {
+                for c in [a, b] {
+                    let scan = eng.nn_other_holder_scan(rn, c);
+                    assert_eq!(eng.nn_other_holder(rn, c), scan);
+                }
+            }
+        };
+        agree(&mut eng);
+        eng.add_label(n[1], b, DepSet::EMPTY);
+        let before_outer = eng.nn_holders.clone();
+        let outer = eng.save();
+        assert!(outer.nn_holders.is_none(), "no clone in the snapshot");
+        eng.add_label(n[2], a, DepSet::EMPTY);
+        eng.add_label(n[2], b, DepSet::EMPTY);
+        agree(&mut eng);
+        let before_inner = eng.nn_holders.clone();
+        let inner = eng.save();
+        let n4 = eng.new_node();
+        eng.add_label(n4, a, DepSet::EMPTY);
+        eng.add_label(n[3], b, DepSet::EMPTY);
+        agree(&mut eng);
+        eng.restore(inner);
+        assert_eq!(eng.nn_holders, before_inner, "inner restore");
+        agree(&mut eng);
+        eng.add_label(n[3], a, DepSet::EMPTY);
+        eng.restore(outer);
+        assert_eq!(eng.nn_holders, before_outer, "outer restore");
+        assert!(eng.nn_log.len() <= 1, "log back to its save-time length");
+        agree(&mut eng);
+    }
+
+    /// `RUSTDL_NN_UNDO_LOG`: an index first built inside a branch survives that
+    /// branch's restore, trimmed to its build-time lists, so the next branch does
+    /// not rescan. Those lists still contain the holder the abandoned branch
+    /// wrote directly, which the lookup filters out by its current labels.
+    #[test]
+    fn nn_undo_log_keeps_an_index_built_inside_a_branch() {
+        let a = cls(10);
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        eng.nn_index = true;
+        eng.nn_undo_log = true;
+        let n1 = eng.new_node();
+        let n2 = eng.new_node();
+        let n3 = eng.new_node();
+        eng.nodes[n1.index()].add(a, DepSet::EMPTY);
+        let saved = eng.save();
+        eng.nodes[n2.index()].add(a, DepSet::EMPTY);
+        assert_eq!(
+            eng.nn_other_holder(n1, a),
+            Some(n2),
+            "built inside the branch"
+        );
+        let built = eng.nn_holders.clone();
+        eng.add_label(n3, a, DepSet::EMPTY);
+        eng.restore(saved);
+        assert_eq!(eng.nn_holders, built, "kept at its build-time lists");
+        assert_eq!(eng.nn_other_holder(n1, a), None, "n2 is filtered out");
         assert_eq!(eng.nn_other_holder(n1, a), eng.nn_other_holder_scan(n1, a));
         assert_eq!(eng.nn_other_holder(n2, a), Some(n1));
     }

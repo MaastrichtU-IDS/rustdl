@@ -100,6 +100,11 @@ pub(crate) struct ClassifyJson {
     /// were neither reasoned over nor counted in `dropped`, and classes they
     /// declare may be missing. Implies `prep_timed_out` (and so `incomplete`).
     pub(crate) conversion_timed_out: bool,
+    /// #162: with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the deadline ran out while
+    /// PARSING, so nothing was classified and every list below is empty. Implies
+    /// `conversion_timed_out` and `consistency_undetermined`. Never set without
+    /// hard mode, or with `RUSTDL_PARSE_DEADLINE=0`.
+    pub(crate) parse_timed_out: bool,
     /// Issue #66: pairs concluded NOT SUBSUMED from the wedge's own `Sat`
     /// verdict, on an ontology OUTSIDE the fragment where that verdict is
     /// complete by construction — so this hierarchy CAN disagree with
@@ -338,6 +343,7 @@ pub(crate) fn build_classify_json(
         incomplete: deadline_flags(&stats).0,
         prep_timed_out: deadline_flags(&stats).1,
         conversion_timed_out: deadline_flags(&stats).2,
+        parse_timed_out: false,
         consistency_undetermined: stats.consistency_undetermined && !stats.inconsistent,
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
@@ -346,6 +352,30 @@ pub(crate) fn build_classify_json(
         equivalent_groups: groups,
         direct_subsumptions,
         dropped,
+    }
+}
+
+/// `classify --json` when the global deadline ran out while parsing (#162,
+/// `RUSTDL_PARSE_DEADLINE`). Nothing was read, so the answer is empty, which is
+/// trivially sound, and every cut flag is set. `consistent: true` here means
+/// "not checked", as `consistency_undetermined` says.
+#[must_use]
+pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
+    ClassifyJson {
+        schema_version: SCHEMA_VERSION,
+        consistent: true,
+        incomplete: true,
+        prep_timed_out: true,
+        conversion_timed_out: true,
+        parse_timed_out: true,
+        consistency_undetermined: true,
+        trusted_sat_refutations: 0,
+        completeness_guaranteed: false,
+        wedge_hierarchy_blind: false,
+        unsatisfiable: Vec::new(),
+        equivalent_groups: Vec::new(),
+        direct_subsumptions: Vec::new(),
+        dropped: BTreeMap::new(),
     }
 }
 

@@ -6,6 +6,8 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.40] — 2026-10-14
+
 ### Changed
 - **The static Linux (musl) release binaries use mimalloc (#241).** musl's allocator serialises
   allocation behind a lock, which made rayon-parallel classification ~10x slower than a glibc
@@ -93,9 +95,9 @@ All notable changes to rustdl are documented here. Format is based on
   subset of the decimal one, but the two DKey buckets were never related, so
   `∃p.{"12"^^xsd:integer}` was not subsumed by `∃p.(xsd:decimal > 0)`. Conversion now seeds
   `DKey(int) ⊑ DKey(dec)` when every component of the integer set fits inside the decimal range,
-  respecting exclusive bounds; an unbounded integer end needs an unbounded decimal end. No
-  integer/decimal disjointness is added. Range keys only: integer and decimal enumerations
-  (`DataOneOf`), and a whole-number decimal inside an integer range, are still not related. `ore_ont_11647` 20 missed → 0. Seeding fires on 25 of
+  respecting exclusive bounds; an unbounded integer end needs an unbounded decimal end. Enumerations,
+  whole-number decimals and integer/decimal disjointness are covered by #247, above.
+  `ore_ont_11647` 20 missed → 0. Seeding fires on 25 of
   the 34 ORE ontologies mentioning `decimal`; classify output changes only on `11647`, and all
   20 gained pairs are in the Konclude ∪ HermiT oracle.
 

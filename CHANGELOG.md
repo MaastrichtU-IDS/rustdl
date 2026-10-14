@@ -18,6 +18,18 @@ All notable changes to rustdl are documented here. Format is based on
   With a 60 s budget, `ore_ont_14375` decides in 10.4–11.6 CPU-s instead of 16.1–16.5, and
   `ore_ont_10127` in 24.3–29.1 instead of 39.2–45.7. Default OFF until a `classify` sweep has been run.
 
+### Changed
+- **A branch restore undoes the wedge's NN-rule index with a log instead of a copy (#255
+  follow-up), `RUSTDL_NN_UNDO_LOG`, default ON (`=0` reverts).** Each branch save used to copy
+  the whole index, and an index first built inside a branch was thrown away by its restore, so
+  the next branch scanned every node again to rebuild it. Now the index records each holder it
+  adds, a restore removes the ones its branch added, and an index built inside a branch is
+  kept. Labels only grow along a branch, so a kept index can list extra nodes but never misses
+  one, and every lookup checks the current labels, as the scan does. Unbounded `classify`,
+  single thread, same binary with the flag the only difference: outputs identical on all
+  8 ontologies tried; `ore_ont_2182`, `16481` and `6272` run 2.5% fewer instructions, and
+  `10073` and `6792` are unchanged.
+
 ### Fixed
 - **With `RUSTDL_HARD_GLOBAL_DEADLINE=1`, `rustdl classify` no longer waits on a parse that
   outlasts `--global-timeout-ms` (#162), `RUSTDL_PARSE_DEADLINE`, default ON (`=0` waits).**

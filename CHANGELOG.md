@@ -15,8 +15,8 @@ All notable changes to rustdl are documented here. Format is based on
   enumerated. Clauses still fire at the same nodes, so the flag can only drop bindings that
   don't use the edge. `rustdl consistent` over the same 227, single thread, default budget:
   6 ontologies go from undetermined to consistent, none the other way, and no answer changes.
-  `ore_ont_14375` decides in 10.4–11.6 CPU-s instead of 16.1–16.5, and `ore_ont_10127` (60 s
-  budget) in 24.3–29.1 instead of 39.2–45.7. Default OFF until a `classify` sweep has been run.
+  With a 60 s budget, `ore_ont_14375` decides in 10.4–11.6 CPU-s instead of 16.1–16.5, and
+  `ore_ont_10127` in 24.3–29.1 instead of 39.2–45.7. Default OFF until a `classify` sweep has been run.
 
 ### Fixed
 - **With `RUSTDL_HARD_GLOBAL_DEADLINE=1`, `rustdl classify` no longer waits on a parse that

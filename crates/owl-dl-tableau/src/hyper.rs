@@ -4876,8 +4876,9 @@ impl<'c> HyperEngine<'c> {
     }
 
     /// Fire clause `ci` at `node` for the edge event `src —role→ tgt`. Under
-    /// `RUSTDL_HYPER_EDGE_PIN` only bindings that use that edge are enumerated;
-    /// otherwise this is exactly [`Self::fire_clause`].
+    /// `RUSTDL_HYPER_EDGE_PIN` only bindings that use that edge are enumerated (a
+    /// binding using it at two atom positions is emitted twice, see
+    /// [`Self::match_body_pinned`]); otherwise this is exactly [`Self::fire_clause`].
     fn fire_edge_clause(
         &mut self,
         ci: usize,

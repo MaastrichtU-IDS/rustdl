@@ -15,11 +15,16 @@
 //! switch the net off per engine and check that `RUSTDL_HYPER_EDGE_PIN` keeps every
 //! binding the existing triggers reach: pinning narrows which bindings an edge event
 //! enumerates, never where a clause is fired.
+//!
+//! Only the base clause indexes are exercised; the per-pair extras tables share the
+//! same dispatch code (`fire_edge_clause`) and, for the classify oracle, hold
+//! class-body clauses only.
 
 #![allow(clippy::unwrap_used)]
 
 use owl_dl_core::clause::{Atom, DlClause, X};
 use owl_dl_core::ir::{ClassId, Role, RoleId};
+use owl_dl_core::role_hierarchy::RoleHierarchyBuilder;
 use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
 
 const A: u32 = 0;
@@ -248,8 +253,8 @@ fn pinned_two_hop_body_through_the_parent() {
     // atom) and comes back down: r⁻(X,1) ∧ s(1,2) → Q(X). The root's parent p
     // gets its s-edge late; the edge is the second leg, so the clause fires at
     // p's predecessors — and the root is p's successor, i.e. gap (a)'s shape. That
-    // is not fixed here, so with the net off both arms must AGREE, whatever they
-    // say: pinning must not change which bindings the dispatch can reach.
+    // is not fixed here: the drain alone misses it with and without pinning, and
+    // the net catches it.
     let mut cl = vec![
         horn(
             vec![Atom::Class(cls(A), X)],
@@ -262,15 +267,36 @@ fn pinned_two_hop_body_through_the_parent() {
         horn(vec![Atom::Class(cls(Q), X), Atom::Class(cls(M), X)], vec![]),
     ];
     cl.extend(late_exists(A, fwd(S), Z));
-    let off = drain_only(&cl, false).decide(64);
-    let on = drain_only(&cl, true).decide(64);
-    assert_eq!(off, on);
-    // And with the net on (default), the entailed clash is found either way.
+    assert_gap_caught_only_by_the_net(&cl);
+}
+
+#[test]
+fn pinned_backward_reading_under_a_symmetric_hierarchy() {
+    // `p` is symmetric, so the edge root —p→ d also gives d a `p`-successor (the
+    // root). `p(X,1) → Q(X)` is filed under `inverse_first_trigger` (symmetric
+    // first leg) and fired at d, the edge TARGET. The forward reading needs
+    // X = root and is skipped; only the backward reading, accepted by
+    // `role_matches(p⁻, p, hier)` through the symmetry, binds X = d. `Q ⊓ M → ⊥`
+    // at d.
+    let mut cl = vec![
+        horn(vec![Atom::Role(fwd(R), X, 1)], vec![Atom::Class(cls(Q), X)]),
+        horn(vec![Atom::Class(cls(Q), X), Atom::Class(cls(M), X)], vec![]),
+    ];
+    cl.extend(late_exists(A, fwd(R), M));
+    let symmetric = || {
+        let mut b = RoleHierarchyBuilder::with_roles(4);
+        b.mark_symmetric(RoleId::new(R));
+        b.build()
+    };
     for pin in [false, true] {
-        let mut eng = HyperEngine::new(&cl, cls(A))
-            .with_incremental_fixpoint()
-            .with_reseed_verify(true)
-            .with_edge_pin(pin);
+        // CONTROL: without the hierarchy `r` is not symmetric and d has no
+        // `r`-successor, so `Sat` is correct.
+        assert_eq!(
+            drain_only(&cl, pin).decide(64),
+            HyperResult::Sat,
+            "pin={pin}"
+        );
+        let mut eng = drain_only(&cl, pin).with_sub_roles(symmetric());
         assert_eq!(eng.decide(64), HyperResult::Unsat, "pin={pin}");
     }
 }

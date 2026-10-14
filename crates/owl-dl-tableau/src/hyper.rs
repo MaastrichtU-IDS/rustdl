@@ -257,7 +257,8 @@ impl DepSet {
 
 #[derive(Debug, Default, Clone)]
 struct HyperNode {
-    /// Class atoms true at this node — sorted by id, deduped.
+    /// Class atoms true at this node — sorted by id, deduped. Mutate only via
+    /// [`HyperNode::add`], which keeps `label_sig` in step (or recompute it).
     labels: Vec<ClassId>,
     /// 64-bit Bloom signature of `labels` (bit `c mod 64` per label), kept in step
     /// by [`HyperNode::add`]. `is_blocked` uses it to reject a candidate blocker
@@ -2386,6 +2387,8 @@ impl<'c> HyperEngine<'c> {
                     let (lnp, lmp) = (&self.nodes[np.index()], &self.nodes[mp.index()]);
                     debug_assert_eq!(ln.label_sig, label_sig_of(&ln.labels));
                     debug_assert_eq!(lm.label_sig, label_sig_of(&lm.labels));
+                    debug_assert_eq!(lnp.label_sig, label_sig_of(&lnp.labels));
+                    debug_assert_eq!(lmp.label_sig, label_sig_of(&lmp.labels));
                     if ln.labels.len() > lm.labels.len()
                         || ln.label_sig & !lm.label_sig != 0
                         || lnp.labels.len() > lmp.labels.len()

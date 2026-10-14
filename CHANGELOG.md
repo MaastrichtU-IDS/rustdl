@@ -46,8 +46,11 @@ All notable changes to rustdl are documented here. Format is based on
   up after 100,000 steps, so on large ABoxes the classify consistency pre-check stopped well
   before its 3–12 s budget and reported `consistency_undetermined`. Under a deadline it now runs
   until the deadline. The same route serves `is_consistent` (`rustdl consistent`), whose
-  wedge attempt can now use its 10 s budget before falling back to the tableau; that path was
-  not measured separately. Other callers keep the cap. Census: 227 ORE ontologies whose
+  wedge attempt can now use its 10 s budget before falling back to the tableau. Measured after
+  release on the same 227, `rustdl consistent` with and without the change: 27 → 118 proved
+  consistent, 193 → 102 undetermined, 1 inconsistent and 6 past a 180 s cap in both, no answer
+  changed; +4.8% wall over the 221 that finished, median per ontology unchanged. Other callers
+  keep the cap. Census: 227 ORE ontologies whose
   pre-check was undetermined on an earlier binary. Re-run with and without the change, 100 move
   from undetermined to consistent, 110 stay undetermined, and 17 are decided in both runs.
   Classification output is identical on all 227. Cost: +14.6% wall on that set, almost all of

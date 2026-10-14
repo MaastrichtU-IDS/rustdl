@@ -886,7 +886,7 @@ pub struct HyperEngine<'c> {
     /// Measured on ORE: ~21-23% of all `fire_clause` calls qualify. Cached at
     /// construction so the hot loop avoids a per-call env read.
     head_present_skip: bool,
-    /// `RUSTDL_HYPER_EDGE_PIN` (default OFF): edge-triggered matches enumerate only
+    /// `RUSTDL_HYPER_EDGE_PIN` (default ON): edge-triggered matches enumerate only
     /// bindings that use the new edge. See [`crate::hyper_edge_pin_enabled`].
     edge_pin: bool,
     /// `RUSTDL_MRV_ORDERING` (default OFF): `find_open_disjunction` returns the open

@@ -2469,7 +2469,7 @@ pub fn head_present_skip_enabled() -> bool {
 }
 
 /// Pin the new edge into edge-triggered matches (`RUSTDL_HYPER_EDGE_PIN`,
-/// **default OFF**, `=1` enables). An `Event::Edge` fires every Horn clause with a
+/// **default ON** since the 1,920-ontology `classify` sweep; `=0` reverts). An `Event::Edge` fires every Horn clause with a
 /// body atom on the edge's role as a full re-match. A census over 227 ORE
 /// ontologies found 94–96% of those bindings do not use the new edge at all, so
 /// they were already found when their last fact arrived. With the flag on, an
@@ -2480,9 +2480,14 @@ pub fn head_present_skip_enabled() -> bool {
 /// fired), so this never finds a binding today's dispatch would not. It drops only
 /// bindings that do not use the edge. Those that were missed by every trigger are
 /// recovered by the #137 re-seed net before any `Sat`, as today.
+///
+/// Flip evidence (two arms over all 1,920 ORE, `classify`, 60 s cap, one thread):
+/// 1,752 of 1,753 both-completed ontologies answer identically, the one difference
+/// being `ore_ont_12698`, which differs between runs of either arm; 3 time-outs
+/// finish (`ore_ont_13647`, `2232`, `3562`); none goes the other way.
 #[must_use]
 pub fn hyper_edge_pin_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPER_EDGE_PIN").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_HYPER_EDGE_PIN").is_none_or(|v| v != "0")
 }
 
 #[must_use]

@@ -6,6 +6,18 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Added
+- **The wedge can pin the new edge into edge-triggered clause matches, `RUSTDL_HYPER_EDGE_PIN`,
+  default OFF (`=1` enables).** An edge event re-matched every Horn clause with a body atom on
+  the edge's role from scratch. Over 227 ORE ontologies, 94–96% of those bindings did not use
+  the new edge, so they had already been found when their last fact arrived. With the flag on,
+  only bindings in which the new edge fills a role atom (read forwards or backwards) are
+  enumerated. Clauses still fire at the same nodes, so the flag can only drop bindings that
+  don't use the edge. `rustdl consistent` over the same 227, single thread, default budget:
+  6 ontologies go from undetermined to consistent, none the other way, and no answer changes.
+  With a 60 s budget, `ore_ont_14375` decides in 10.4–11.6 CPU-s instead of 16.1–16.5, and
+  `ore_ont_10127` in 24.3–29.1 instead of 39.2–45.7. Default OFF until a `classify` sweep has been run.
+
 ### Fixed
 - **With `RUSTDL_HARD_GLOBAL_DEADLINE=1`, `rustdl classify` no longer waits on a parse that
   outlasts `--global-timeout-ms` (#162), `RUSTDL_PARSE_DEADLINE`, default ON (`=0` waits).**
@@ -55,8 +67,11 @@ All notable changes to rustdl are documented here. Format is based on
   up after 100,000 steps, so on large ABoxes the classify consistency pre-check stopped well
   before its 3–12 s budget and reported `consistency_undetermined`. Under a deadline it now runs
   until the deadline. The same route serves `is_consistent` (`rustdl consistent`), whose
-  wedge attempt can now use its 10 s budget before falling back to the tableau; that path was
-  not measured separately. Other callers keep the cap. Census: 227 ORE ontologies whose
+  wedge attempt can now use its 10 s budget before falling back to the tableau. Measured after
+  release on the same 227, `rustdl consistent` with and without the change: 27 → 118 proved
+  consistent, 193 → 102 undetermined, 1 inconsistent and 6 past a 180 s cap in both, no answer
+  changed; +4.8% wall over the 221 that finished, median per ontology unchanged. Other callers
+  keep the cap. Census: 227 ORE ontologies whose
   pre-check was undetermined on an earlier binary. Re-run with and without the change, 100 move
   from undetermined to consistent, 110 stay undetermined, and 17 are decided in both runs.
   Classification output is identical on all 227. Cost: +14.6% wall on that set, almost all of

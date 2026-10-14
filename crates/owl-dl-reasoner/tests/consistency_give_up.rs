@@ -156,11 +156,15 @@ fn deadline_give_up_is_marked_incomplete() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Keep full effort ON (the default) and starve the fall-through budget
-    // instead, so the give-up is the deadline, not the abandon.
-    let _g = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "1");
+    // instead, so the give-up is the deadline, not the abandon. The budget is
+    // 0, not 1: the engines read the clock on a stride, so a release build
+    // could finish this reproducer inside 1 ms before its first clock read and
+    // return a real verdict (2 of 3 release runs failed). A 0 ms deadline has
+    // already passed when each route checks it on entry.
+    let _g = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "0");
     let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&parse("reproducer.ofn")).expect("consistency");
-    assert!(verdict, "a 1 ms budget cannot witness this clash");
+    assert!(verdict, "a 0 ms budget cannot witness this clash");
     assert!(
         stats.incomplete,
         "a deadline give-up must be VISIBLE — the invisible form is the #182 bug class"
@@ -198,7 +202,8 @@ fn consistent_abox_ontology_is_a_clean_verdict() {
 // with no model ⇒ the whole has none), which is the only direction used.
 //
 // To make the give-up deterministic, these tests starve the whole-ontology
-// fall-through (`RUSTDL_CONSISTENCY_FALLBACK_MS=1`) and give the batches their
+// fall-through (`RUSTDL_CONSISTENCY_FALLBACK_MS=0`, see
+// `deadline_give_up_is_marked_incomplete` for why not 1) and give the batches their
 // own generous budget. In the reproducer the clash individual
 // (`GENEPIO_0002195`) is a one-axiom component of its own.
 
@@ -223,7 +228,7 @@ fn component_retry_decides_a_whole_ontology_give_up() {
     let _lock = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "1");
+    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "0");
     let _b = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS", "600000");
     let _t = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS_MS", "1200000");
     let (verdict, stats) =
@@ -240,7 +245,7 @@ fn component_retry_off_keeps_the_give_up() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _off = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS", "0");
-    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "1");
+    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "0");
     let _b = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS", "600000");
     let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&parse("reproducer.ofn")).expect("consistency");
@@ -262,7 +267,7 @@ fn component_retry_does_not_invent_a_clash() {
     let _lock = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "1");
+    let _f = EnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "0");
     let _b = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENT_BATCH_MS", "5000");
     let _t = EnvGuard::set("RUSTDL_CONSISTENCY_COMPONENTS_MS", "1200000");
     let (verdict, stats) =

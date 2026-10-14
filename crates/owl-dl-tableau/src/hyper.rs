@@ -5974,7 +5974,6 @@ fn role_matches(edge: Role, wanted: Role, sub_roles: Option<&RoleHierarchy>) -> 
     }
 }
 
-/// `a ⊆ b` for sorted-by-index class-id slices.
 /// The [`HyperNode::label_sig`] bit for class `c`.
 fn label_bit(c: ClassId) -> u64 {
     1u64 << (c.index() % 64)
@@ -5985,6 +5984,7 @@ fn label_sig_of(labels: &[ClassId]) -> u64 {
     labels.iter().fold(0, |s, &c| s | label_bit(c))
 }
 
+/// `a ⊆ b` for sorted-by-index class-id slices.
 fn subset_sorted(a: &[ClassId], b: &[ClassId]) -> bool {
     let mut bi = b.iter();
     'outer: for x in a {

@@ -115,6 +115,18 @@ fn the_default_mode_never_abandons_a_parse() {
     assert!(derives_a0_c0(&v));
 }
 
+/// Hard mode with no budget (`0`, the default) never abandons a parse.
+#[test]
+fn hard_mode_without_a_budget_never_abandons_a_parse() {
+    let path = ladder("nobudget");
+    let out = classify(&path, "0", true, &[HARD]);
+    std::fs::remove_file(&path).ok();
+    let v = json_of(&out);
+    assert_eq!(v["parse_timed_out"], false);
+    assert_eq!(v["incomplete"], false);
+    assert!(derives_a0_c0(&v));
+}
+
 /// A budget the parse fits in: the worker thread classifies exactly as the
 /// main thread would, and nothing is flagged.
 #[test]

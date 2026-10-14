@@ -191,7 +191,9 @@ enum Command {
         /// deadline: conversion and preparation stop at it, and a parse still
         /// running then is abandoned. The run then takes about N, and the
         /// answer may be empty (always sound, flagged incomplete, consistency
-        /// unchecked). `--n2-classify` ignores the global budget.
+        /// unchecked). `--n2-classify` ignores the global budget once
+        /// parsing is done, but in hard mode its parse is still abandoned at
+        /// the deadline.
         #[arg(long, default_value_t = 0)]
         global_timeout_ms: u64,
         /// Deprecated no-op: top-down classification is now the

@@ -6,6 +6,18 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Added
+- **The wedge can pin the new edge into edge-triggered clause matches, `RUSTDL_HYPER_EDGE_PIN`,
+  default OFF (`=1` enables).** An edge event re-matched every Horn clause with a body atom on
+  the edge's role from scratch. Over 227 ORE ontologies, 94–96% of those bindings did not use
+  the new edge, so they had already been found when their last fact arrived. With the flag on,
+  only bindings in which the new edge fills a role atom (read forwards or backwards) are
+  enumerated. Clauses still fire at the same nodes, so the flag can only drop bindings that
+  don't use the edge. `rustdl consistent` over the same 227, single thread, default budget:
+  6 ontologies go from undetermined to consistent, none the other way, and no answer changes.
+  `ore_ont_14375` decides in 10.4–11.6 CPU-s instead of 16.1–16.5, and `ore_ont_10127` (60 s
+  budget) in 24.3–29.1 instead of 39.2–45.7. Default OFF until a `classify` sweep has been run.
+
 ### Fixed
 - **With `RUSTDL_HARD_GLOBAL_DEADLINE=1`, `rustdl classify` no longer waits on a parse that
   outlasts `--global-timeout-ms` (#162), `RUSTDL_PARSE_DEADLINE`, default ON (`=0` waits).**

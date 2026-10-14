@@ -886,6 +886,9 @@ pub struct HyperEngine<'c> {
     /// Measured on ORE: ~21-23% of all `fire_clause` calls qualify. Cached at
     /// construction so the hot loop avoids a per-call env read.
     head_present_skip: bool,
+    /// `RUSTDL_HYPER_EDGE_PIN` (default OFF): edge-triggered matches enumerate only
+    /// bindings that use the new edge. See [`crate::hyper_edge_pin_enabled`].
+    edge_pin: bool,
     /// `RUSTDL_MRV_ORDERING` (default OFF): `find_open_disjunction` returns the open
     /// disjunctive clause with the fewest live disjuncts first (most-constrained-variable).
     /// Verdict-invariant (reordering only). See the MRV spec.
@@ -1608,6 +1611,7 @@ impl<'c> HyperEngine<'c> {
             fixpoint_last_check: None,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
+            edge_pin: crate::hyper_edge_pin_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -1684,6 +1688,7 @@ impl<'c> HyperEngine<'c> {
             fixpoint_last_check: None,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
+            edge_pin: crate::hyper_edge_pin_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -2122,6 +2127,22 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_head_present_skip(mut self, on: bool) -> Self {
         self.head_present_skip = on;
+        self
+    }
+
+    /// Override the #137 re-seed net (`RUSTDL_RESEED_VERIFY`, normally cached at
+    /// construction). Tests use it to observe the incremental drain on its own.
+    #[must_use]
+    pub fn with_reseed_verify(mut self, on: bool) -> Self {
+        self.reseed_verify = on;
+        self
+    }
+
+    /// Override `RUSTDL_HYPER_EDGE_PIN` (normally cached at construction), so a
+    /// test can set it without mutating process env.
+    #[must_use]
+    pub fn with_edge_pin(mut self, on: bool) -> Self {
+        self.edge_pin = on;
         self
     }
 
@@ -2766,7 +2787,10 @@ impl<'c> HyperEngine<'c> {
                 let n_r = self.indexes.role_trigger.get(key).map_or(0, Vec::len);
                 for i in 0..n_r {
                     let ci = self.indexes.role_trigger[key][i];
-                    if matches!(self.fire_clause(ci, src), FireOutcome::Clash) {
+                    if matches!(
+                        self.fire_edge_clause(ci, src, src, role, tgt),
+                        FireOutcome::Clash
+                    ) {
                         return FireOutcome::Clash;
                     }
                 }
@@ -2778,7 +2802,10 @@ impl<'c> HyperEngine<'c> {
                     let d_r = self.extra_indexes.role_trigger[dp].1.len();
                     for i in 0..d_r {
                         let ci = self.extra_indexes.role_trigger[dp].1[i];
-                        if matches!(self.fire_clause(ci, src), FireOutcome::Clash) {
+                        if matches!(
+                            self.fire_edge_clause(ci, src, src, role, tgt),
+                            FireOutcome::Clash
+                        ) {
                             return FireOutcome::Clash;
                         }
                     }
@@ -2804,7 +2831,10 @@ impl<'c> HyperEngine<'c> {
                     for p in preds {
                         for i in 0..n_b {
                             let ci = self.indexes.role_back_trigger[key][i];
-                            if matches!(self.fire_clause(ci, p), FireOutcome::Clash) {
+                            if matches!(
+                                self.fire_edge_clause(ci, p, src, role, tgt),
+                                FireOutcome::Clash
+                            ) {
                                 return FireOutcome::Clash;
                             }
                         }
@@ -2812,7 +2842,10 @@ impl<'c> HyperEngine<'c> {
                             let d_b = self.extra_indexes.role_back_trigger[dp].1.len();
                             for i in 0..d_b {
                                 let ci = self.extra_indexes.role_back_trigger[dp].1[i];
-                                if matches!(self.fire_clause(ci, p), FireOutcome::Clash) {
+                                if matches!(
+                                    self.fire_edge_clause(ci, p, src, role, tgt),
+                                    FireOutcome::Clash
+                                ) {
                                     return FireOutcome::Clash;
                                 }
                             }
@@ -2830,7 +2863,10 @@ impl<'c> HyperEngine<'c> {
                     .map_or(0, Vec::len);
                 for i in 0..n_inv {
                     let ci = self.indexes.inverse_first_trigger[key][i];
-                    if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
+                    if matches!(
+                        self.fire_edge_clause(ci, tgt, src, role, tgt),
+                        FireOutcome::Clash
+                    ) {
                         return FireOutcome::Clash;
                     }
                 }
@@ -2842,7 +2878,10 @@ impl<'c> HyperEngine<'c> {
                     let d_inv = self.extra_indexes.inverse_first_trigger[dp].1.len();
                     for i in 0..d_inv {
                         let ci = self.extra_indexes.inverse_first_trigger[dp].1[i];
-                        if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
+                        if matches!(
+                            self.fire_edge_clause(ci, tgt, src, role, tgt),
+                            FireOutcome::Clash
+                        ) {
                             return FireOutcome::Clash;
                         }
                     }
@@ -2866,7 +2905,10 @@ impl<'c> HyperEngine<'c> {
                         .map_or(0, Vec::len);
                     for i in 0..n_pos {
                         let ci = self.indexes.pos_first_target_trigger[key][i];
-                        if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
+                        if matches!(
+                            self.fire_edge_clause(ci, tgt, src, role, tgt),
+                            FireOutcome::Clash
+                        ) {
                             return FireOutcome::Clash;
                         }
                     }
@@ -2877,7 +2919,10 @@ impl<'c> HyperEngine<'c> {
                         let d_pos = self.extra_indexes.pos_first_target_trigger[dp].1.len();
                         for i in 0..d_pos {
                             let ci = self.extra_indexes.pos_first_target_trigger[dp].1[i];
-                            if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
+                            if matches!(
+                                self.fire_edge_clause(ci, tgt, src, role, tgt),
+                                FireOutcome::Clash
+                            ) {
                                 return FireOutcome::Clash;
                             }
                         }
@@ -3373,6 +3418,7 @@ impl<'c> HyperEngine<'c> {
             fixpoint_last_check: None,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
+            edge_pin: crate::hyper_edge_pin_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -4826,6 +4872,33 @@ impl<'c> HyperEngine<'c> {
     /// role atoms, equality, or a class on a third variable are not
     /// matched (deferred to later phases).
     fn fire_clause(&mut self, ci: usize, node: HNode) -> FireOutcome {
+        self.fire_clause_with(ci, node, None)
+    }
+
+    /// Fire clause `ci` at `node` for the edge event `src —role→ tgt`. Under
+    /// `RUSTDL_HYPER_EDGE_PIN` only bindings that use that edge are enumerated;
+    /// otherwise this is exactly [`Self::fire_clause`].
+    fn fire_edge_clause(
+        &mut self,
+        ci: usize,
+        node: HNode,
+        src: HNode,
+        role: Role,
+        tgt: HNode,
+    ) -> FireOutcome {
+        if self.edge_pin {
+            self.fire_clause_with(ci, node, Some((src, role, tgt)))
+        } else {
+            self.fire_clause(ci, node)
+        }
+    }
+
+    fn fire_clause_with(
+        &mut self,
+        ci: usize,
+        node: HNode,
+        edge: Option<(HNode, Role, HNode)>,
+    ) -> FireOutcome {
         // Disjunctive clauses are branch points, not Horn-fired here.
         if !self.clause(ci).is_horn() {
             return FireOutcome::NoChange;
@@ -4862,7 +4935,11 @@ impl<'c> HyperEngine<'c> {
                 return FireOutcome::NoChange;
             }
         }
-        let Some(bindings) = self.match_body(ci, node) else {
+        let matched = match edge {
+            None => self.match_body(ci, node),
+            Some(e) => self.match_body_pinned(ci, node, e),
+        };
+        let Some(bindings) = matched else {
             return FireOutcome::NoChange;
         };
         let mut changed = false;
@@ -4937,11 +5014,73 @@ impl<'c> HyperEngine<'c> {
             order: plan.order.as_slice(),
             other_classes: plan.other_classes.as_slice(),
             filters: plan.filters.as_slice(),
+            pinned: false,
         };
 
         let mut out = Vec::new();
         let mut binding: Binding = SmallVec::new();
         self.enumerate_matches(node, &mp, 0, &mut binding, &mut out);
+        Some(out)
+    }
+
+    /// As [`Self::match_body`], but only bindings in which the edge
+    /// `src —role→ tgt` occupies some role-atom position of the body
+    /// (`RUSTDL_HYPER_EDGE_PIN`).
+    ///
+    /// For each atom `r(u, v)` the edge satisfies — read forward
+    /// (`u = src, v = tgt`) or backward (`u = tgt, v = src`), the same two
+    /// readings `enumerate_matches` takes from `edges` and from `preds` — the
+    /// endpoints are pre-bound and the usual X-rooted enumeration runs, keeping
+    /// only targets equal to a pre-bound variable's node. An endpoint on `X` must
+    /// equal `node`. Each emitted binding is still a full homomorphism checked
+    /// atom by atom, so the result is a subset of `match_body`'s. A binding that
+    /// uses the edge at two positions is emitted twice; firing is idempotent
+    /// (keep-first labels, witness reuse), so that costs only time.
+    fn match_body_pinned(
+        &self,
+        ci: usize,
+        node: HNode,
+        (src, role, tgt): (HNode, Role, HNode),
+    ) -> Option<Vec<Binding>> {
+        let plan = self.match_plan(ci)?;
+        for &c in &plan.x_classes {
+            if !self.nodes[node.index()].has(c) {
+                return Some(Vec::new());
+            }
+        }
+        let hier = self.sub_roles.as_ref();
+        let resolve_reads = self.inverse_func_merge;
+        let read = |n: HNode| if resolve_reads { self.resolve(n) } else { n };
+        let (src, tgt, root) = (read(src), read(tgt), read(node));
+        let mp = MatchPlan {
+            role_atoms: plan.role_atoms.as_slice(),
+            order: plan.order.as_slice(),
+            other_classes: plan.other_classes.as_slice(),
+            filters: plan.filters.as_slice(),
+            pinned: true,
+        };
+        let mut out = Vec::new();
+        for &(r, u, v) in &plan.role_atoms {
+            let fwd = role_matches(role, r, hier).then_some((src, tgt));
+            let bwd = role_matches(role.flip(), r, hier).then_some((tgt, src));
+            for (a, b) in [fwd, bwd].into_iter().flatten() {
+                let mut binding: Binding = SmallVec::new();
+                let mut ok = true;
+                for (var, n) in [(u, a), (v, b)] {
+                    if var == X {
+                        ok &= n == root;
+                    } else if let Some(&(_, prev)) = binding.iter().find(|(bv, _)| *bv == var) {
+                        // Self-loop atom `r(y, y)`: both readings must agree.
+                        ok &= prev == n;
+                    } else {
+                        binding.push((var, n));
+                    }
+                }
+                if ok {
+                    self.enumerate_matches(node, &mp, 0, &mut binding, &mut out);
+                }
+            }
+        }
         Some(out)
     }
 
@@ -4980,6 +5119,21 @@ impl<'c> HyperEngine<'c> {
         let Some(src) = resolve_var(src_var, node, binding) else {
             return;
         };
+        // `RUSTDL_HYPER_EDGE_PIN`: a target variable pre-bound to the new edge's
+        // endpoint is already in `binding`. The atom is then a check that the edge
+        // `role(src, want)` exists — `role_atom_holds` reads exactly the edges and
+        // flipped preds collected below — and the variable is not bound twice.
+        if plan.pinned
+            && let Some(want) = binding
+                .iter()
+                .find(|(bv, _)| *bv == tgt_var)
+                .map(|&(_, n)| n)
+        {
+            if self.role_atom_holds(role, src, want) {
+                self.enumerate_matches(node, plan, i + 1, binding, out);
+            }
+            return;
+        }
         let hier = self.sub_roles.as_ref();
         let src_data = &self.nodes[src.index()];
         // Innermost recursive hot loop: most nodes have few role-matching
@@ -5615,6 +5769,10 @@ struct MatchPlan<'p> {
     other_classes: &'p [(ClassId, Var)],
     /// See [`ClauseMatchPlan::filters`] — role atoms checked at the leaf.
     filters: &'p [usize],
+    /// `RUSTDL_HYPER_EDGE_PIN`: `binding` arrives holding the new edge's
+    /// endpoints for some non-`X` variables. `false` on every unpinned match, which
+    /// keeps the hot loop's extra work to one branch per frame.
+    pinned: bool,
 }
 
 /// Why [`eval_order`] refused a body. [`OrderReject::VarCap`] is the variable

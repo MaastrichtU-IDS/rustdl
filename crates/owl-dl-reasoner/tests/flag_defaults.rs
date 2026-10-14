@@ -183,6 +183,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_HYPER_EDGE_PIN",
+            owl_dl_tableau::hyper_edge_pin_enabled,
+            false,
+        ),
+        (
             "RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE",
             owl_dl_reasoner::unsat_probe_cut_incomplete_enabled,
             true,

@@ -2468,6 +2468,23 @@ pub fn head_present_skip_enabled() -> bool {
     std::env::var_os("RUSTDL_HEAD_PRESENT_SKIP").is_none_or(|v| v != "0")
 }
 
+/// Pin the new edge into edge-triggered matches (`RUSTDL_HYPER_EDGE_PIN`,
+/// **default OFF**, `=1` enables). An `Event::Edge` fires every Horn clause with a
+/// body atom on the edge's role as a full re-match. A census over 227 ORE
+/// ontologies found 94–96% of those bindings do not use the new edge at all, so
+/// they were already found when their last fact arrived. With the flag on, an
+/// edge-triggered match enumerates only bindings in which the new edge occupies
+/// one of the body's role-atom positions (in either orientation).
+///
+/// The roots are unchanged (the same four trigger tables decide where a clause is
+/// fired), so this never finds a binding today's dispatch would not. It drops only
+/// bindings that do not use the edge. Those that were missed by every trigger are
+/// recovered by the #137 re-seed net before any `Sat`, as today.
+#[must_use]
+pub fn hyper_edge_pin_enabled() -> bool {
+    std::env::var_os("RUSTDL_HYPER_EDGE_PIN").is_some_and(|v| v == "1")
+}
+
 #[must_use]
 pub fn inverse_func_merge_enabled() -> bool {
     std::env::var_os("RUSTDL_INVERSE_FUNC_MERGE").is_none_or(|v| v != "0")

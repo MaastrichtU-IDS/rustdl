@@ -23,7 +23,7 @@ All notable changes to rustdl are documented here. Format is based on
   4,096 pops, but one pop can insert hundreds of facts. On `ore_ont_15074` the first 4,095
   pops took 14 s, so under a 1,000 ms hard deadline `classify` ran 15–18 s. Subsumer pushes
   and fact inserts now count toward the 4,096 as well: that run takes 1.2 s, and at 3 s and
-  8 s budgets wall lands within ~20 ms of the budget. Over 1,920 ORE ontologies in hard mode
+  8 s budgets wall is 3.2 s and 8.2 s. Over 1,920 ORE ontologies in hard mode
   at 1,000 ms, the slowest run goes from 18.1 s to 2.7 s; no answer differs where both
   versions report themselves complete. Only when a bounded fixpoint stops changes, never
   what it derives.

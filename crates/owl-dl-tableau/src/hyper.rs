@@ -102,6 +102,11 @@ fn trace_body_vars() -> bool {
 /// per-step clock read here is a measured cost in this codebase.
 const MATCH_DEADLINE_STRIDE: u64 = 4096;
 
+/// Nodes between two clock reads in the open-rule scans
+/// (`find_open_disjunction`, `find_open_at_most`). See
+/// [`HyperEngine::open_scan_deadline_passed`].
+const OPEN_SCAN_DEADLINE_STRIDE: usize = 64;
+
 /// Stride for the `horn_fixpoint` wall-clock probe. Most drain-loop events are
 /// cheap, so the clock read must be amortized; 256 keeps the check well under 1%
 /// of loop cost while bounding overshoot to ~256 events.
@@ -848,6 +853,9 @@ pub struct HyperEngine<'c> {
     /// vars per test, and a process-scoped cache makes the first test to run win.
     fixpoint_deadline: bool,
     match_deadline: bool,
+    /// `RUSTDL_OPEN_SCAN_DEADLINE` (default ON, `=0` reverts): the open-rule
+    /// scans read the clock. Per-engine cached like `match_deadline`.
+    open_scan_deadline: bool,
     /// `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE` (default ON, `=0` reverts to the fixed
     /// 256-event stride). Per-engine cached like `fixpoint_deadline`.
     fixpoint_adaptive_stride: bool,
@@ -1591,6 +1599,7 @@ impl<'c> HyperEngine<'c> {
             at_most_exhaust_probe: false,
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
+            open_scan_deadline: crate::hyper_open_scan_deadline_enabled(),
             fixpoint_adaptive_stride: crate::hyper_fixpoint_adaptive_stride_enabled(),
             fixpoint_stride: 1,
             fixpoint_last_check: None,
@@ -1665,6 +1674,7 @@ impl<'c> HyperEngine<'c> {
             at_most_exhaust_probe: false,
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
+            open_scan_deadline: crate::hyper_open_scan_deadline_enabled(),
             fixpoint_adaptive_stride: crate::hyper_fixpoint_adaptive_stride_enabled(),
             fixpoint_stride: 1,
             fixpoint_last_check: None,
@@ -2920,6 +2930,9 @@ impl<'c> HyperEngine<'c> {
         self.stats = SearchStats::default();
         self.init_depth = max_depth;
         self.deadline = deadline;
+        // A truncation flag belongs to the decide that set it.
+        self.match_deadline_hit.set(false);
+        self.match_steps.set(0);
         self.reseed_interval = RESEED_INITIAL_INTERVAL;
         self.reseed_skip_left = RESEED_INITIAL_INTERVAL;
         self.fixpoint_stride = 1;
@@ -3331,6 +3344,7 @@ impl<'c> HyperEngine<'c> {
             at_most_exhaust_probe: false,
             fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
             match_deadline: crate::hyper_match_deadline_enabled(),
+            open_scan_deadline: crate::hyper_open_scan_deadline_enabled(),
             fixpoint_adaptive_stride: crate::hyper_fixpoint_adaptive_stride_enabled(),
             fixpoint_stride: 1,
             fixpoint_last_check: None,
@@ -3833,6 +3847,16 @@ impl<'c> HyperEngine<'c> {
         // (`ore_ont_2182`, `16481`, `6272`) fast, while searches that never
         // recover anything (`ore_ont_4903`, `8911`) back off to rare re-seeds.
         // This leaf re-seed is the guarantee; the schedule is only pruning.
+        // A deadline that cut `find_open_disjunction` or `find_open_at_most`
+        // short (the scans above, or the match enumeration inside them) may
+        // have hidden an open rule, so this frame has not shown a model. Same
+        // rule as the load-bearing check at the end of `horn_fixpoint`: a
+        // truncated examination is `Stalled`, never `Sat`. Checked before the
+        // leaf re-seed, which would only re-drain the graph to reach the same
+        // `Stalled`.
+        if self.match_deadline_hit.get() {
+            return HyperResult::Stalled;
+        }
         if self.reseed_at_leaf && self.reseed_net_due() && !fresh && !head_net_clean {
             let (r, changed) = self.run_reseed_net(FIXPOINT_ITERS);
             if changed {
@@ -3923,6 +3947,9 @@ impl<'c> HyperEngine<'c> {
         if self.mrv_ordering {
             let mut best: Option<(usize, (usize, HNode, Binding))> = None; // (live_count, candidate)
             for idx in 0..self.nodes.len() {
+                if self.open_scan_deadline_passed(idx) {
+                    return None;
+                }
                 let node = HNode(u32::try_from(idx).expect("fits u32"));
                 if self.is_blocked(node) {
                     continue;
@@ -3972,6 +3999,9 @@ impl<'c> HyperEngine<'c> {
             return best.map(|(_, cand)| cand);
         }
         for idx in 0..self.nodes.len() {
+            if self.open_scan_deadline_passed(idx) {
+                return None;
+            }
             let node = HNode(u32::try_from(idx).expect("fits u32"));
             // A directly-blocked node gets NO rule applied — including the ⊔
             // rule. Generation (∃/≥n) already skips blocked nodes
@@ -4521,6 +4551,9 @@ impl<'c> HyperEngine<'c> {
     /// branch merges over. Only canonical (un-merged) nodes are checked.
     fn find_open_at_most(&self) -> Option<(HNode, Vec<HNode>, u32)> {
         for idx in 0..self.nodes.len() {
+            if self.open_scan_deadline_passed(idx) {
+                return None;
+            }
             let node = HNode(u32::try_from(idx).expect("fits u32"));
             if self.resolve(node) != node {
                 continue;
@@ -5488,6 +5521,27 @@ impl<'c> HyperEngine<'c> {
                     && self.nodes[m.index()].has(c)
             })
             .min()
+    }
+
+    /// The open-rule scans' deadline probe, read every
+    /// `OPEN_SCAN_DEADLINE_STRIDE` nodes. Those scans walk every node and call
+    /// `is_blocked` on each, which is quadratic in the graph, and they never
+    /// read the clock: on `ore_ont_15635`, once the consistency probe's graph
+    /// reached ~247k nodes, one `find_open_disjunction` ran 177 s past a 3 s
+    /// budget. On a passed deadline this sets `match_deadline_hit`, the scan
+    /// returns `None`, and `solve_inner` then concludes `Stalled` rather than
+    /// `Sat`.
+    fn open_scan_deadline_passed(&self, idx: usize) -> bool {
+        if !idx.is_multiple_of(OPEN_SCAN_DEADLINE_STRIDE) || !self.open_scan_deadline {
+            return self.match_deadline_hit.get() && self.open_scan_deadline;
+        }
+        let Some(dl) = self.deadline else {
+            return false;
+        };
+        if Instant::now() >= dl {
+            self.match_deadline_hit.set(true);
+        }
+        self.match_deadline_hit.get()
     }
 
     /// Number of nodes in the completion graph (diagnostic).
@@ -6662,6 +6716,51 @@ mod tests {
         assert!(eng.nn_holders.is_none(), "restored to the pre-build state");
         assert_eq!(eng.nn_other_holder(n1, a), eng.nn_other_holder_scan(n1, a));
         assert_eq!(eng.nn_other_holder(n2, a), Some(n1));
+    }
+
+    /// `RUSTDL_OPEN_SCAN_DEADLINE`: with the deadline passed, both open-rule
+    /// scans stop and report nothing open, and they record the truncation in
+    /// `match_deadline_hit`, which is what makes `solve_inner` conclude
+    /// `Stalled` instead of `Sat`. Here an open `⊔` (`A → B ⊔ C` at a node
+    /// labelled `A`) and a violated `≤1` are both present, so an untruncated
+    /// scan finds them; with the option off the scans ignore the clock.
+    #[test]
+    fn open_rule_scans_stop_and_flag_at_a_passed_deadline() {
+        let (a, b, c) = (cls(0), cls(1), cls(2));
+        let r = Role::Named(RoleId::new(0));
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![Atom::Class(b, X), Atom::Class(c, X)],
+        }];
+        let build = |scan: bool, deadline: Option<Instant>| {
+            let mut eng = HyperEngine::new(&clauses, a);
+            eng.open_scan_deadline = scan;
+            eng.deadline = deadline;
+            let (s1, s2) = (eng.new_node(), eng.new_node());
+            let root = HNode(0);
+            for s in [s1, s2] {
+                eng.nodes[root.index()].edges.push((r, s));
+                eng.nodes[s.index()].preds.push((r, root));
+            }
+            eng.nodes[root.index()].at_most.push((r, None, 1));
+            eng.inverse_func_merge = false;
+            eng
+        };
+        let passed = Some(Instant::now());
+        let mut eng = build(true, passed);
+        assert!(eng.find_open_disjunction().is_none());
+        assert!(eng.match_deadline_hit.get(), "the truncation is recorded");
+        let eng = build(true, passed);
+        assert!(eng.find_open_at_most().is_none());
+        assert!(eng.match_deadline_hit.get());
+        // Controls: no deadline, or the option off, and both scans find their rule.
+        let far = Some(Instant::now() + std::time::Duration::from_secs(60));
+        for (scan, dl) in [(true, None), (true, far), (false, passed)] {
+            let mut eng = build(scan, dl);
+            assert!(eng.find_open_disjunction().is_some());
+            assert!(eng.find_open_at_most().is_some());
+            assert!(!eng.match_deadline_hit.get());
+        }
     }
 
     /// `RUSTDL_FIXPOINT_ADAPTIVE_STRIDE`: a fresh engine reads the clock from the

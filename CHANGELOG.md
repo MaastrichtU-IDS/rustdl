@@ -6,6 +6,19 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **With `RUSTDL_HARD_GLOBAL_DEADLINE=1`, `rustdl classify` no longer waits on a parse that
+  outlasts `--global-timeout-ms` (#162), `RUSTDL_PARSE_DEADLINE`, default ON (`=0` waits).**
+  The parser cannot be interrupted, so the command now runs on a worker thread and the main
+  thread waits for the parse at most until the deadline. If the parse is still running, it
+  prints an empty classification with the new `parse_timed_out` flag set (and every weaker
+  cut flag) and exits. Empty is sound; nothing was read. `ore_ont_12898` (a 590 MB file that
+  takes ~69 s to parse) at a 1,000 ms budget: 70.2 s → 1.1 s wall, 12.9 GB → 0.4 GB peak
+  RSS, same empty answer (before, conversion was cut at once after the parse). When the
+  parse fits, output is identical to v0.4.40 on pizza, wine, ro, family, sulo and bibtex.
+  Default mode is unchanged. The Python API parses before any budget applies, so it has no
+  such flag.
+
 ## [0.4.40] — 2026-10-14
 
 ### Changed

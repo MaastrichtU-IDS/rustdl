@@ -183,12 +183,13 @@ enum Command {
         /// smaller of the per-pair budget and the time left on the global
         /// deadline.
         ///
-        /// Parse time is charged against the budget, but parsing and
-        /// conversion cannot be interrupted. By default, once they have used
-        /// the budget up, saturation and preparation run unbounded so the run
-        /// still returns an answer: wall can then far exceed N (#162). Set
-        /// `RUSTDL_HARD_GLOBAL_DEADLINE=1` to hold them to the deadline too:
-        /// the run then takes at most about parse + conversion + N, and the
+        /// Parse time is charged against the budget. By default parsing and
+        /// conversion always finish, and once they have used the budget up,
+        /// saturation and preparation run unbounded so the run still returns
+        /// an answer: wall can then far exceed N (#162). Set
+        /// `RUSTDL_HARD_GLOBAL_DEADLINE=1` to hold the whole run to the
+        /// deadline: conversion and preparation stop at it, and a parse still
+        /// running then is abandoned. The run then takes about N, and the
         /// answer may be empty (always sound, flagged incomplete, consistency
         /// unchecked). `--n2-classify` ignores the global budget.
         #[arg(long, default_value_t = 0)]
@@ -741,11 +742,12 @@ fn print_classification(h: &Classification) {
 /// probe is cut, and the run returns the sound partial hierarchy rather than
 /// silently running on.
 ///
-/// **Honest bound.** Parsing is not interruptible, so this does not make the flag a
-/// hard wall cap — it stops the budget being *extended* by work that already
-/// happened. By default conversion is not interruptible either; with
-/// `RUSTDL_HARD_GLOBAL_DEADLINE=1` it stops at the deadline
-/// (`RUSTDL_CONVERT_DEADLINE`, #162). See
+/// **Honest bound.** By default this does not make the flag a hard wall cap —
+/// parsing and conversion always finish — it stops the budget being *extended*
+/// by work that already happened. With `RUSTDL_HARD_GLOBAL_DEADLINE=1`,
+/// conversion stops at the deadline (`RUSTDL_CONVERT_DEADLINE`) and a parse that
+/// outlasts it is abandoned (`RUSTDL_PARSE_DEADLINE`, see
+/// [`classify_with_parse_deadline`]), #162. See
 /// `docs/2026-08-16-global-deadline-does-not-bound-wall.md`.
 fn global_budget_after_parse(
     global_timeout_ms: u64,
@@ -753,6 +755,146 @@ fn global_budget_after_parse(
 ) -> Option<std::time::Duration> {
     (global_timeout_ms != 0)
         .then(|| std::time::Duration::from_millis(global_timeout_ms).saturating_sub(parse_elapsed))
+}
+
+/// The arguments of `rustdl classify` (`top_down` is a no-op and not carried).
+struct ClassifyArgs {
+    file: PathBuf,
+    pair_timeout_ms: u64,
+    global_timeout_ms: u64,
+    n2_classify: bool,
+    saturation_only: bool,
+    json: bool,
+}
+
+/// `rustdl classify`. `after_parse` runs once the file is parsed; `false` means
+/// the caller has given up on this run (see [`classify_with_parse_deadline`]),
+/// so nothing is classified or printed.
+fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Result<()> {
+    let ClassifyArgs {
+        file,
+        pair_timeout_ms,
+        global_timeout_ms,
+        n2_classify,
+        saturation_only,
+        json,
+    } = args;
+    let (pair_timeout_ms, global_timeout_ms) = (*pair_timeout_ms, *global_timeout_ms);
+    // Opt-in phase timing (`RUSTDL_TIMING=1`): separate parse (horned-owl
+    // read) from classify (convert/preprocess + reasoning), so the wall can
+    // be compared apples-to-apples with reasoners whose reported time
+    // excludes parsing (e.g. Konclude's `reason_ms`). Default output
+    // unchanged.
+    let timing = std::env::var_os("RUSTDL_TIMING").is_some();
+    let t_parse = std::time::Instant::now();
+    let onto = parse_ofn(file)?;
+    if !after_parse() {
+        return Ok(());
+    }
+    let parse_ms = t_parse.elapsed().as_secs_f64() * 1000.0;
+    // 0 = unbounded; any positive value bounds each pair / the whole run.
+    let timeout = (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
+    let global_budget = global_budget_after_parse(global_timeout_ms, t_parse.elapsed());
+    let t_classify = std::time::Instant::now();
+    let h = if *saturation_only {
+        classify_saturation_only(&onto).context("classify_saturation_only")?
+    } else if *n2_classify {
+        // Legacy n² path honors only the per-pair budget.
+        match timeout {
+            Some(t) => classify_n2_with_timeout(&onto, t).context("classify_n2_with_timeout")?,
+            None => classify_n2(&onto).context("classify_n2")?,
+        }
+    } else {
+        // Default top-down path: both bounds (either/both may be None).
+        classify_with_budget(&onto, timeout, global_budget).context("classify_with_budget")?
+    };
+    let classify_ms = t_classify.elapsed().as_secs_f64() * 1000.0;
+    if timing {
+        eprintln!("TIMING parse_ms={parse_ms:.1} classify_ms={classify_ms:.1}");
+    }
+    // Read the conversion's dropped-axiom tally off the result rather
+    // than calling `dropped_block`, which re-runs `convert_ontology`.
+    // That second conversion is invisible when reasoning dominates and
+    // ruinous when it does not: `ore_ont_868` spends 42 s of a 92 s
+    // classify in conversion, so paying it twice was ~46% of the wall.
+    let dropped = h.stats().dropped.by_kind().clone();
+    if *json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_out::build_classify_json(&h, dropped))?
+        );
+        warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
+        warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
+        return Ok(());
+    }
+    print_classification(&h);
+    warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
+    warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
+    warn_if_dropped(&dropped);
+    Ok(())
+}
+
+/// Stack for the classify worker thread. Generous, because parsing and
+/// reasoning ran on the main thread before #162 and its 8 MiB is the floor they
+/// were tested against; a thread stack is reserved, not committed.
+const CLASSIFY_WORKER_STACK: usize = 64 << 20;
+
+/// `rustdl classify` with the parse held to the global deadline
+/// (`RUSTDL_PARSE_DEADLINE`, hard mode, #162).
+///
+/// horned-owl's reader cannot be interrupted, and the parsed ontology (`Rc`
+/// based) cannot cross threads, so the WHOLE command runs on a worker thread.
+/// It reports when the parse is done and then waits for a go-ahead; this thread
+/// waits for that report at most until the deadline. In time: go-ahead, and the
+/// worker classifies under the rest of the budget exactly as `run_classify`
+/// would on this thread (conversion and preparation are held to the deadline by
+/// hard mode). Too late: the worker is never told to go on, this thread prints
+/// the empty, fully flagged answer and exits the process, which ends the parse.
+/// The go-ahead handshake means the two answers can never both be printed.
+fn classify_with_parse_deadline(args: ClassifyArgs) -> Result<()> {
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    let start = std::time::Instant::now();
+    let budget = std::time::Duration::from_millis(args.global_timeout_ms);
+    let (json, global_timeout_ms) = (args.json, args.global_timeout_ms);
+    let (parsed_tx, parsed_rx) = channel::<()>();
+    let (go_tx, go_rx) = channel::<()>();
+    let worker = std::thread::Builder::new()
+        .name("rustdl-classify".into())
+        .stack_size(CLASSIFY_WORKER_STACK)
+        .spawn(move || {
+            run_classify(&args, move || {
+                parsed_tx.send(()).is_ok() && go_rx.recv().is_ok()
+            })
+        })
+        .context("spawning the classify thread")?;
+    match parsed_rx.recv_timeout(budget.saturating_sub(start.elapsed())) {
+        Ok(()) => {
+            // The worker blocks on this; it cannot fail while the worker waits.
+            let _ = go_tx.send(());
+        }
+        // The worker returned before reporting a parse: a parse error, which
+        // `join` below hands back.
+        Err(RecvTimeoutError::Disconnected) => {}
+        Err(RecvTimeoutError::Timeout) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::parse_timed_out_classify_json())?
+                );
+            }
+            eprintln!(
+                "\n⚠  INCOMPLETE: the {global_timeout_ms} ms global budget ran out while \
+                 parsing (RUSTDL_HARD_GLOBAL_DEADLINE=1), so nothing was classified. \
+                 RUSTDL_PARSE_DEADLINE=0 waits for the parse instead."
+            );
+            std::io::stdout().flush()?;
+            std::process::exit(0);
+        }
+    }
+    match worker.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// #214: say why completeness is not guaranteed when no deadline fired.
@@ -1624,58 +1766,22 @@ fn main() -> Result<()> {
             saturation_only,
             json,
         } => {
-            // Opt-in phase timing (`RUSTDL_TIMING=1`): separate parse (horned-owl
-            // read) from classify (convert/preprocess + reasoning), so the wall can
-            // be compared apples-to-apples with reasoners whose reported time
-            // excludes parsing (e.g. Konclude's `reason_ms`). Default output
-            // unchanged.
-            let timing = std::env::var_os("RUSTDL_TIMING").is_some();
-            let t_parse = std::time::Instant::now();
-            let onto = parse_ofn(&file)?;
-            let parse_ms = t_parse.elapsed().as_secs_f64() * 1000.0;
-            // 0 = unbounded; any positive value bounds each pair / the whole run.
-            let timeout =
-                (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
-            let global_budget = global_budget_after_parse(global_timeout_ms, t_parse.elapsed());
-            let t_classify = std::time::Instant::now();
-            let h = if saturation_only {
-                classify_saturation_only(&onto).context("classify_saturation_only")?
-            } else if n2_classify {
-                // Legacy n² path honors only the per-pair budget.
-                match timeout {
-                    Some(t) => {
-                        classify_n2_with_timeout(&onto, t).context("classify_n2_with_timeout")?
-                    }
-                    None => classify_n2(&onto).context("classify_n2")?,
-                }
-            } else {
-                // Default top-down path: both bounds (either/both may be None).
-                classify_with_budget(&onto, timeout, global_budget)
-                    .context("classify_with_budget")?
+            let args = ClassifyArgs {
+                file,
+                pair_timeout_ms,
+                global_timeout_ms,
+                n2_classify,
+                saturation_only,
+                json,
             };
-            let classify_ms = t_classify.elapsed().as_secs_f64() * 1000.0;
-            if timing {
-                eprintln!("TIMING parse_ms={parse_ms:.1} classify_ms={classify_ms:.1}");
+            if global_timeout_ms != 0
+                && owl_dl_reasoner::hard_global_deadline_enabled()
+                && owl_dl_reasoner::parse_deadline_enabled()
+            {
+                classify_with_parse_deadline(args)?;
+            } else {
+                run_classify(&args, || true)?;
             }
-            // Read the conversion's dropped-axiom tally off the result rather
-            // than calling `dropped_block`, which re-runs `convert_ontology`.
-            // That second conversion is invisible when reasoning dominates and
-            // ruinous when it does not: `ore_ont_868` spends 42 s of a 92 s
-            // classify in conversion, so paying it twice was ~46% of the wall.
-            let dropped = h.stats().dropped.by_kind().clone();
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json_out::build_classify_json(&h, dropped))?
-                );
-                warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
-                warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
-                return Ok(());
-            }
-            print_classification(&h);
-            warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
-            warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
-            warn_if_dropped(&dropped);
         }
         Command::Instance {
             file,

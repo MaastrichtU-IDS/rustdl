@@ -20,6 +20,9 @@ fn classify_stderr(hard: &str, convert: &str) -> String {
         .args(["classify", "--global-timeout-ms", "1"])
         .arg(&path)
         .env("RUSTDL_PREP_DEADLINE", "1")
+        // The 1 ms budget is spent while parsing; wait for the parse so the cut
+        // lands in conversion or preparation, which is what these tests check.
+        .env("RUSTDL_PARSE_DEADLINE", "0")
         .env("RUSTDL_HARD_GLOBAL_DEADLINE", hard)
         .env("RUSTDL_CONVERT_DEADLINE", convert)
         .output()

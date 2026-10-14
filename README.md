@@ -249,12 +249,13 @@ one):
 - `--global-timeout-ms N` — a budget for the whole classify (`0` = unbounded),
   counted from the start of parsing: each probe is cut at the smaller of the
   per-pair and global budgets, so total probing can't grow with the pair count.
-  Parsing and conversion cannot be interrupted. By default, once they have used
-  the budget up, saturation and preparation run unbounded so the run still returns
-  an answer, and wall can far exceed `N`. Set `RUSTDL_HARD_GLOBAL_DEADLINE=1` to
-  hold them to the deadline too: the run then takes at most about parse +
-  conversion + `N`, and the answer may be empty (still sound, flagged incomplete,
-  consistency unchecked).
+  By default parsing and conversion always finish, and once they have used the
+  budget up, saturation and preparation run unbounded so the run still returns an
+  answer, and wall can far exceed `N`. Set `RUSTDL_HARD_GLOBAL_DEADLINE=1` to hold
+  the whole run to the deadline: conversion and preparation stop at it, and a
+  parse still running then is abandoned (`parse_timed_out` in `--json`). The run
+  then takes about `N`, and the answer may be empty (still sound, flagged
+  incomplete, consistency unchecked).
 - `--saturation-only` — skip the tableau entirely and report only the EL closure.
 
 Any run that hits a bound prints a prominent `INCOMPLETE` warning to stderr.

@@ -897,6 +897,8 @@ fn classify_reports_a_cut_preparation_or_conversion_in_its_own_field() {
             .args(["classify", "--json", "--global-timeout-ms", "1"])
             .arg(&path)
             .env("RUSTDL_PREP_DEADLINE", "1")
+            // Wait for the parse, which outlasts 1 ms, so the cut lands after it.
+            .env("RUSTDL_PARSE_DEADLINE", "0")
             .env("RUSTDL_HARD_GLOBAL_DEADLINE", hard)
             .env("RUSTDL_CONVERT_DEADLINE", convert)
             .output()

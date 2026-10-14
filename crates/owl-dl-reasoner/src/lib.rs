@@ -2799,8 +2799,10 @@ pub fn prep_deadline_enabled() -> bool {
 /// `incomplete`, and may be EMPTY. A cut returns before the inconsistency
 /// pre-check, so `consistency_undetermined` is set: `consistent: true` there
 /// means "not checked". Conversion is held to the deadline as well (see
-/// [`convert_deadline_enabled`]); parsing cannot be interrupted, so wall is at
-/// most about parse + budget, plus the granularity of conversion's checks.
+/// [`convert_deadline_enabled`]), and the CLI stops waiting on a parse that
+/// outlasts it ([`parse_deadline_enabled`]), so `rustdl classify` takes about the
+/// budget, plus the granularity of conversion's checks. A library caller parses
+/// before calling in, so for it wall is still parse + budget.
 ///
 /// Classify only. Requires [`prep_deadline_enabled`] (default ON); inert without
 /// a global budget. Known small post-deadline residuals: the saturator checks the
@@ -2822,6 +2824,19 @@ pub fn hard_global_deadline_enabled() -> bool {
 #[must_use]
 pub fn convert_deadline_enabled() -> bool {
     std::env::var_os("RUSTDL_CONVERT_DEADLINE").is_none_or(|v| v != "0")
+}
+
+/// `RUSTDL_PARSE_DEADLINE` (#162) — **default ON**, `=0` disables. Under
+/// [`hard_global_deadline_enabled`] with a global budget, `rustdl classify`
+/// parses on a worker thread and waits for it at most until the deadline. The
+/// parser (horned-owl) cannot be interrupted, so a parse still running then is
+/// abandoned: the CLI reports an empty classification flagged
+/// `parse_timed_out` (and every weaker cut flag) and exits, which ends the
+/// thread. Empty is trivially sound. Inert without hard mode or a budget, and
+/// outside the CLI: the library API takes an already-parsed ontology.
+#[must_use]
+pub fn parse_deadline_enabled() -> bool {
+    std::env::var_os("RUSTDL_PARSE_DEADLINE").is_none_or(|v| v != "0")
 }
 
 /// Wall-clock budget, in milliseconds, for the `ABox`-saturation half of the

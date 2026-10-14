@@ -30,8 +30,8 @@
 //! commit. That is the point — the table makes a default change a reviewable edit
 //! instead of a silent one.
 //!
-//! Coverage is the 53 public `fn() -> bool` accessors across `owl-dl-core`,
-//! `owl-dl-tableau` and `owl-dl-reasoner`. Numeric knobs
+//! Coverage is the 57 public `fn() -> bool` accessors across `owl-dl-core`,
+//! `owl-dl-saturation`, `owl-dl-tableau` and `owl-dl-reasoner`. Numeric knobs
 //! (`RUSTDL_*_MS`, `RUSTDL_MAX_NODES`, …) are out of scope here; they are pinned by
 //! their own tests where they are load-bearing (e.g.
 //! `adaptive_inconsistency_budget.rs`, `pair_timeout_default.rs`).
@@ -129,6 +129,12 @@ fn expected() -> Vec<FlagRow> {
         (
             "RUSTDL_FUNCTIONAL_FORALL_DEF",
             owl_dl_core::functional_forall::functional_forall_def_enabled,
+            true,
+        ),
+        // ── owl-dl-saturation ────────────────────────────────────────────
+        (
+            "RUSTDL_SAT_WORK_CLOCK",
+            owl_dl_saturation::sat_work_clock_enabled,
             true,
         ),
         // ── owl-dl-tableau ───────────────────────────────────────────────

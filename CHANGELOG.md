@@ -18,6 +18,15 @@ All notable changes to rustdl are documented here. Format is based on
   parse fits, output is identical to v0.4.40 on pizza, wine, ro, family, sulo and bibtex.
   Default mode is unchanged. The Python API parses before any budget applies, so it has no
   such flag.
+- **A deadline-bounded EL saturation now stops within about one work-queue pop of the deadline
+  (#262), `RUSTDL_SAT_WORK_CLOCK`, default ON (`=0` reverts).** It read the clock once every
+  4,096 pops, but one pop can insert hundreds of facts. On `ore_ont_15074` the first 4,095
+  pops took 14 s, so under a 1,000 ms hard deadline `classify` ran 15–18 s. Subsumer pushes
+  and fact inserts now count toward the 4,096 as well: that run takes 1.2 s, and at 3 s and
+  8 s budgets wall lands within ~20 ms of the budget. Over 1,920 ORE ontologies in hard mode
+  at 1,000 ms, the slowest run goes from 18.1 s to 2.7 s; no answer differs where both
+  versions report themselves complete. Only when a bounded fixpoint stops changes, never
+  what it derives.
 
 ## [0.4.40] — 2026-10-14
 

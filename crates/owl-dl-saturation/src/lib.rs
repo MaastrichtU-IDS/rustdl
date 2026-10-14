@@ -99,6 +99,26 @@ fn enqueue_dedup_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_ENQUEUE_DEDUP").is_some_and(|v| v == "1")
 }
 
+/// #262: pace the deadline-bounded fixpoint's clock reads by WORK done, not by
+/// pops.  Default **ON**; `RUSTDL_SAT_WORK_CLOCK=0` reverts to one clock read per
+/// [`DEADLINE_CHECK_STRIDE`] pops.
+///
+/// A pop is not a unit of cost: `process_subsumer` copies every fact of `d` onto
+/// `c` and every subclass of `c` (Phase 2d), so one pop can insert hundreds of
+/// facts.  On `ore_ont_15074` the first 4,095 pops took **13.95 s** (longest
+/// 159 ms), so under a 1 s hard deadline the clock was first read 13 s late.
+/// With the flag on, every subsumer push and every fact insert attempt also
+/// counts toward the stride, so the clock is read at the first pop boundary
+/// after [`DEADLINE_CHECK_STRIDE`] such operations: the overshoot is at most one
+/// pop.
+///
+/// Only WHEN the fixpoint stops changes, never what it derives; the unbounded
+/// [`saturate`] path never reads the counter.
+#[must_use]
+pub fn sat_work_clock_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_WORK_CLOCK").is_none_or(|v| v != "0")
+}
+
 /// Lower a **provably-empty existential filler** (`⊥` under an `∃`/`≥n`) instead of
 /// dropping the axiom. Default **ON**; `RUSTDL_EL_BOT_FILLER=0` opts out.
 ///
@@ -196,10 +216,12 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
     saturate_with_config(internal, &SaturateConfig::default()).0
 }
 
-/// How many worklist pops happen between two `Instant::now()` reads in
-/// [`WorklistEngine::run_until`]. Coarse on purpose: a per-pop clock read is a
-/// measured cost in this codebase (11.28% self-time on one ontology), while a
-/// 4096-pop stride overshoots a deadline by microseconds on any real workload.
+/// How many units of work happen between two `Instant::now()` reads in
+/// [`WorklistEngine::run_until`]: pops, plus (with [`sat_work_clock_enabled`])
+/// subsumer pushes and fact insert attempts. Coarse on purpose: a per-pop clock
+/// read is a measured cost in this codebase (11.28% self-time on one ontology).
+/// Counting pops alone was not enough: one pop can do thousands of inserts, and
+/// on `ore_ont_15074` 4,096 pops took 14 s (#262).
 const DEADLINE_CHECK_STRIDE: u32 = 4096;
 
 /// Like [`saturate`] but ABANDONS the fixpoint once `deadline` passes.
@@ -508,6 +530,12 @@ struct WorklistEngine {
     /// number of *distinct* pairs.  Read once at construction so the hot loop
     /// never touches the environment.  See [`enqueue_dedup_enabled`].
     enqueue_dedup: bool,
+    /// Subsumer pushes plus fact insert attempts so far: the work measure
+    /// [`Self::run_until`] paces its clock reads by (see
+    /// [`sat_work_clock_enabled`]).
+    work: u64,
+    /// [`sat_work_clock_enabled`], read once at construction.
+    work_clock: bool,
     /// High-water mark of `todo_subsumer.len()`.  This is the quantity the
     /// enqueue-dedup fix bounds (by the number of *distinct* class pairs), and
     /// the only observable that distinguishes the two paths — the closure they
@@ -677,6 +705,8 @@ impl WorklistEngine {
             todo_fact: VecDeque::new(),
             todo_unsat: VecDeque::new(),
             enqueue_dedup: enqueue_dedup_enabled(),
+            work: 0,
+            work_clock: sat_work_clock_enabled(),
             peak_todo_subsumer: 0,
             rules,
             role_super,
@@ -1050,18 +1080,30 @@ impl WorklistEngine {
     /// the closure: it can only MISS subsumptions / unsat flags, never invent
     /// one. Callers MUST surface the `true` return as incomplete.
     ///
-    /// The clock is read once every [`DEADLINE_CHECK_STRIDE`] pops rather than
-    /// per pop — `Instant::now()` in a saturation-hot loop has been measured at
-    /// over 10% of self-time in this codebase. The loop is written out separately
-    /// from [`Self::run`] so the DEFAULT (unbounded) path keeps exactly its
-    /// pre-existing instruction stream — not even a per-pop `Option` test.
+    /// The clock is read once every [`DEADLINE_CHECK_STRIDE`] units of work
+    /// rather than per pop — `Instant::now()` in a saturation-hot loop has been
+    /// measured at over 10% of self-time in this codebase. A unit is a pop, and,
+    /// with [`sat_work_clock_enabled`], also a subsumer push or a fact insert
+    /// attempt, so the overshoot is bounded by the cost of one pop rather than
+    /// 4,096 of them. The loop is written out separately from [`Self::run`] so
+    /// the DEFAULT (unbounded) path takes no per-pop test; its only addition is
+    /// the `work` increment in the two push functions, which `perf stat` puts
+    /// within ±0.1% of the old instruction count on galen, go-basic and
+    /// `ore_ont_9318`.
     fn run_until(&mut self, deadline: std::time::Instant) -> bool {
         let mut aborted = false;
         let mut ticks: u32 = 0;
+        let mut work_at_check = self.work;
         loop {
             ticks += 1;
-            if ticks >= DEADLINE_CHECK_STRIDE {
+            let due = if self.work_clock {
+                u64::from(ticks) + (self.work - work_at_check) >= u64::from(DEADLINE_CHECK_STRIDE)
+            } else {
+                ticks >= DEADLINE_CHECK_STRIDE
+            };
+            if due {
                 ticks = 0;
+                work_at_check = self.work;
                 if std::time::Instant::now() >= deadline {
                     aborted = true;
                     break;
@@ -1170,6 +1212,7 @@ impl WorklistEngine {
     /// Flag OFF: push unconditionally (recording happens at pop) — the exact
     /// pre-2026-08 behaviour.
     fn push_subsumer(&mut self, c: ClassId, d: ClassId) {
+        self.work += 1;
         if self.enqueue_dedup {
             if !self.record_subsumer(c, d) {
                 return;
@@ -1250,6 +1293,7 @@ impl WorklistEngine {
         fact: ExistentialFact,
         parent_fact: Option<&DerivedFact>,
     ) -> Option<usize> {
+        self.work += 1;
         if !self.seen_facts.insert((fact.sub, fact.role, fact.target)) {
             return None;
         }
@@ -5962,6 +6006,98 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         let far = std::time::Instant::now() + std::time::Duration::from_secs(600);
         let (bounded, aborted) = saturate_with_deadline(&internal, Some(far));
         assert!(!aborted, "a 600 s deadline must not abort this fixture");
+        let n = universe(&internal);
+        assert_eq!(closure_rows(&full, n), closure_rows(&bounded, n));
+    }
+
+    /// `saturate_with_deadline` with `work_clock` forced, bypassing the
+    /// environment (see [`run_with_dedup`] for why).
+    fn run_bounded(
+        internal: &InternalOntology,
+        deadline: std::time::Instant,
+        work_clock: bool,
+    ) -> (Subsumers, bool) {
+        let n = internal.vocabulary.num_classes();
+        let role_super_map = build_role_super(internal);
+        let (rules, tseitin, num_total_classes, maybe_trace) =
+            collect_el_rules_with_provenance(internal, &role_super_map, false);
+        let role_super = freeze_role_super(&role_super_map);
+        let mut engine = WorklistEngine::new(
+            n,
+            num_total_classes,
+            rules,
+            tseitin,
+            role_super,
+            false,
+            maybe_trace,
+        );
+        engine.work_clock = work_clock;
+        engine.seed(internal);
+        let aborted = engine.run_until(deadline);
+        (engine.subsumers, aborted)
+    }
+
+    /// `k` subclasses of `A`, and `A ⊑ ∃r.Bⱼ` for `m` fillers: each `Sᵢ ⊑ A`
+    /// pop copies all `m` facts onto `Sᵢ` (Phase 2d), so pops are few and the
+    /// fact inserts many — the `ore_ont_15074` shape in miniature.
+    fn fact_fan(k: usize, m: usize) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::from(HEADER);
+        s.push_str("Ontology(<http://rustdl.test/fan>\n");
+        s.push_str("    Declaration(Class(:A))\n    Declaration(ObjectProperty(:r))\n");
+        for i in 0..k {
+            let _ = writeln!(s, "    Declaration(Class(:S{i}))");
+            let _ = writeln!(s, "    SubClassOf(:S{i} :A)");
+        }
+        for j in 0..m {
+            let _ = writeln!(s, "    Declaration(Class(:B{j}))");
+            let _ = writeln!(s, "    SubClassOf(:A ObjectSomeValuesFrom(:r :B{j}))");
+        }
+        s.push_str(")\n");
+        s
+    }
+
+    /// #262: with an expired deadline, the work clock abandons a fixpoint that
+    /// has fewer than [`DEADLINE_CHECK_STRIDE`] pops but more than that many fact
+    /// inserts. The pop clock never reads the clock on it, which is the defect.
+    #[test]
+    fn the_work_clock_reads_the_clock_on_insert_heavy_pops() {
+        let internal = parse_internal(&fact_fan(50, 50));
+        let full = saturate(&internal);
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("monotonic clock is at least 1 s past its origin");
+        let n = universe(&internal);
+        let (by_pops, aborted_by_pops) = run_bounded(&internal, past, false);
+        assert!(
+            !aborted_by_pops,
+            "precondition: the fixture must finish in under {DEADLINE_CHECK_STRIDE} pops, \
+             or it cannot tell the two clocks apart"
+        );
+        assert_eq!(closure_rows(&full, n), closure_rows(&by_pops, n));
+        let (by_work, aborted_by_work) = run_bounded(&internal, past, true);
+        assert!(
+            aborted_by_work,
+            "the work clock must read the expired deadline before the fixpoint ends"
+        );
+        let full_rows: std::collections::HashSet<(usize, u32)> =
+            closure_rows(&full, n).into_iter().collect();
+        assert!(
+            closure_rows(&by_work, n)
+                .iter()
+                .all(|row| full_rows.contains(row)),
+            "an abandoned fixpoint may miss rows, never invent one"
+        );
+    }
+
+    /// With time to spare, the work clock reaches the complete fixpoint.
+    #[test]
+    fn the_work_clock_with_a_generous_deadline_is_complete() {
+        let internal = parse_internal(&fact_fan(50, 50));
+        let full = saturate(&internal);
+        let far = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        let (bounded, aborted) = run_bounded(&internal, far, true);
+        assert!(!aborted);
         let n = universe(&internal);
         assert_eq!(closure_rows(&full, n), closure_rows(&bounded, n));
     }

@@ -4177,6 +4177,21 @@ pub fn hyper_match_deadline_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_MATCH_DEADLINE").is_none_or(|v| v != "0")
 }
 
+/// Whether the `ABox`-seeded consistency engine lets its deadline, instead of the
+/// fixed `horn_fixpoint` step cap, bound a deterministic drain
+/// (`RUSTDL_SEEDED_FIXPOINT_UNCAPPED`, **default ON**, `=0` reverts).
+///
+/// On a graph with one node per individual the drain can need more than the cap's
+/// 100,000 events, and the cap stopped it early with budget left. Only applied when
+/// a deadline is set, so an unbudgeted run still terminates by step count. Read by
+/// `owl-dl-reasoner`'s `ConsistencyCache::decide`; realize's witness model keeps the
+/// cap.
+#[must_use]
+pub fn seeded_fixpoint_uncapped_enabled() -> bool {
+    // Default-ON idiom (house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_SEEDED_FIXPOINT_UNCAPPED").is_none_or(|v| v != "0")
+}
+
 /// Whether the wedge's `HF4a` NN rule finds the other holder of a nominal through
 /// an index instead of scanning every node (`RUSTDL_NN_INDEX`, **default ON**,
 /// `=0` reverts).

@@ -169,6 +169,17 @@ fn el_bot_filler_enabled() -> bool {
     std::env::var_os("RUSTDL_EL_BOT_FILLER").is_none_or(|v| v != "0")
 }
 
+/// #180, `ore_ont_778`: key `∀R.F` for any filler `F` the saturator can lower, not only an
+/// atomic one, including inside `∃` fillers, and derive `Key(R,F₁) ⊑ Key(R,F₂)` whenever
+/// the fixpoint derives `F₁ ⊑ F₂` (`∀` is monotone). Without it a `∀` inside an `∃` filler
+/// makes the lowering return `None` and the whole axiom is dropped. Default **OFF**;
+/// `RUSTDL_SAT_FORALL_KEYS=1` enables. The monotonicity rule is skipped while proofs are
+/// recorded (`prove`), so a proof never cites an unrecorded step.
+#[must_use]
+pub fn sat_forall_keys_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_FORALL_KEYS").is_some_and(|v| v == "1")
+}
+
 /// #180: lower a `∀R.K` key through declared inverses and symmetry into an
 /// existential trigger `∃S.Key(R,K) ⊑ K` for each named `S ⊑ R⁻`. Default
 /// **ON**; `RUSTDL_SAT_INVERSE_FORALL=0` opts out. See
@@ -1376,6 +1387,20 @@ impl WorklistEngine {
                 {
                     self.enqueue_forall_targets(c, role, ind);
                 }
+            }
+        }
+        // `RUSTDL_SAT_FORALL_KEYS`: `C ⊑ D` gives `∀R.C ⊑ ∀R.D` for every role `R` with
+        // both keys. Skipped while recording proofs (no inference is recorded for it).
+        if !self.record_proofs
+            && let Some(keyed) = self.rules.forall_keys_by_filler.get(&c)
+        {
+            let ups: Vec<(ClassId, ClassId)> = keyed
+                .iter()
+                .filter_map(|&(r, kc)| self.rules.forall_key_of.get(&(r, d)).map(|&kd| (kc, kd)))
+                .filter(|&(kc, kd)| kc != kd)
+                .collect();
+            for (kc, kd) in ups {
+                self.enqueue_subsumer(kc, kd);
             }
         }
         // Transitivity (forward): anything D ⊑ is also a subsumer
@@ -2771,6 +2796,11 @@ struct ElRules {
     /// Reverse of `max1_key_by_role` (the `MaxKey(1,R)` class id back to its role),
     /// so `process_subsumer` can detect a `≤1 R` subsumer and fire path (b).
     max1_role_by_key: std::collections::HashMap<ClassId, RoleId>,
+    /// `RUSTDL_SAT_FORALL_KEYS`: `(R, F) ↦ Key(R,F)` for every `∀R.F` key, and its inverse
+    /// index `F ↦ [(R, Key(R,F))]`, read by the monotonicity rule in `process_subsumer`.
+    /// Empty unless the flag is on.
+    forall_key_of: std::collections::HashMap<(RoleId, ClassId), ClassId>,
+    forall_keys_by_filler: std::collections::HashMap<ClassId, Vec<(RoleId, ClassId)>>,
     /// Atomic classes told directly to be unsatisfiable via
     /// `SubClassOf(Atomic(C), Bot)`. Seeded into the unsat worklist
     /// at `seed` time so the standard `process_unsat` propagation
@@ -3795,6 +3825,23 @@ fn collect_el_rules(
             }
         }
         rules.atomic_subsumptions.extend(edges);
+    }
+    if sat_forall_keys_enabled() {
+        let mut keys: Vec<((RoleId, ClassId), ClassId)> = tseitin
+            .forall_atomic_key_by_role
+            .iter()
+            .map(|(&rk, &key)| (rk, key))
+            .collect();
+        // HashMap order would make the per-filler lists nondeterministic.
+        keys.sort_unstable_by_key(|&((r, f), key)| (r.index(), f.index(), key.index()));
+        for ((r, f), key) in keys {
+            rules.forall_key_of.insert((r, f), key);
+            rules
+                .forall_keys_by_filler
+                .entry(f)
+                .or_default()
+                .push((r, key));
+        }
     }
 
     let total_classes = tseitin.next_id as usize;
@@ -5073,6 +5120,34 @@ fn concept_is_provably_bot(c: ConceptId, pool: &ConceptPool) -> bool {
     }
 }
 
+/// `RUSTDL_SAT_FORALL_KEYS`: the opaque key class for `∀R.inner`. The filler is lowered with
+/// no extras and no outer role, so its class denotes exactly `inner`: no `Range` or chain
+/// folding, which hold only for an element known to sit under an edge. Every marker that
+/// lowering can build is two-way (conjunction, equivalent existential, nominal, bot, nested
+/// `∀` key), which is what lets the monotonicity rule read `∀R.F₁ ⊑ ∀R.F₂` off a derived
+/// `F₁ ⊑ F₂`. An atomic filler reuses the SP-B2b key, so that path is unchanged.
+fn forall_filler_key(
+    role: RoleId,
+    inner: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
+) -> Option<ClassId> {
+    let filler = atomic_or_tseitin_body_with_extras(
+        inner,
+        &[],
+        pool,
+        rules,
+        tseitin,
+        effective_ranges,
+        chain_ranges,
+        None,
+    )?;
+    Some(tseitin.introduce_forall_atomic_key(role, filler))
+}
+
 /// Like `atomic_or_tseitin_body`, but additionally folds `extras`
 /// (atomic class ids) into the synthetic body. When `extras` is
 /// non-empty, always allocates a Tseitin synthetic `F ≡ body ⊓
@@ -5178,6 +5253,17 @@ fn atomic_or_tseitin_body_with_extras(
                 tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
             vec![marker]
         }
+        ConceptExpr::All(role, inner) if sat_forall_keys_enabled() && !role.is_inverse() => {
+            vec![forall_filler_key(
+                role.role_id(),
+                *inner,
+                pool,
+                rules,
+                tseitin,
+                effective_ranges,
+                chain_ranges,
+            )?]
+        }
         _ => return None,
     };
     if extras.is_empty() && body_atomics.len() == 1 {
@@ -5246,6 +5332,17 @@ fn atomic_classes_with_existential_markers(
                     rules,
                 );
                 out.push(marker);
+            }
+            ConceptExpr::All(role, inner) if sat_forall_keys_enabled() && !role.is_inverse() => {
+                out.push(forall_filler_key(
+                    role.role_id(),
+                    *inner,
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                    chain_ranges,
+                )?);
             }
             // NB: `≤n R` conjuncts are deliberately NOT lowered here — this
             // function lowers an existential *body* (the filler's type), where a

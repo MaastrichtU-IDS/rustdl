@@ -137,6 +137,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_saturation::sat_work_clock_enabled,
             true,
         ),
+        (
+            "RUSTDL_SAT_FORALL_KEYS",
+            owl_dl_saturation::sat_forall_keys_enabled,
+            false,
+        ),
         // ── owl-dl-tableau ───────────────────────────────────────────────
         (
             "RUSTDL_FIXPOINT_DEADLINE",

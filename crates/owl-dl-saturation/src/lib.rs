@@ -174,8 +174,8 @@ fn el_bot_filler_enabled() -> bool {
 /// the fixpoint derives `F₁ ⊑ F₂` (`∀` is monotone). Without it a `∀` inside an `∃` filler
 /// makes the lowering return `None` and the whole axiom is dropped. **Default ON**;
 /// `RUSTDL_SAT_FORALL_KEYS=0` reverts. Flipped on a missed-entailment net (400 ORE
-/// ontologies: FP 0, MISSED 15 → 13) and a two-arm sweep of the 128 ontologies with a `∀` or
-/// complement inside a filler, with `ore_ont_778` the only answer change. The monotonicity rule
+/// ontologies: FP 0, MISSED 15 → 13) and a two-arm sweep, on main after #270, of the 128
+/// ontologies with a `∀` or complement inside a filler, with `ore_ont_778` the only answer change. The monotonicity rule
 /// is skipped while proofs are recorded (`prove`), so a proof never cites an unrecorded step.
 #[must_use]
 pub fn sat_forall_keys_enabled() -> bool {

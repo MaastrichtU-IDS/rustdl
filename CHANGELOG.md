@@ -18,9 +18,11 @@ All notable changes to rustdl are documented here. Format is based on
   `ore_ont_778`: `KoalaBear ⊑ HerbivoreAnimal` and `Shark ⊑ CarnivoreAnimal` are now derived by
   saturation instead of being missed. MISSED goes 2 → 0 and FP stays 0 against the Konclude ∪
   HermiT oracle (630 = 630); the tableau needs ~44 s per pair there. Two-arm `classify` sweep over
-  the 128 ORE ontologies with a `∀` or complement inside a filler (60 s cap, single thread):
-  109 identical, 17 time out in both arms, `ore_ont_778` the only answer change, and one
-  cap-boundary flip (`ore_ont_934`, 60.1 s). Missed-entailment net (400 ontologies, Konclude ∪
+  the 128 ORE ontologies with a `∀` or complement inside a filler, `=0` vs default on main after
+  #270 (which interacts through `≥n` inside `∀` fillers), 60 s cap, single thread: 108 identical,
+  18 time out in both arms, `ore_ont_778` the only answer change, and one cap-boundary flip
+  (`ore_ont_4796`: 56.1–57.1 vs 55.6–59.0 CPU-s serially, identical answers in 3/3 runs). The
+  same sweep before #270 gave 109 / 17 / `ore_ont_778`. Missed-entailment net (400 ontologies, Konclude ∪
   HermiT oracle): FP 0 in both arms, MISSED 15 → 13; the one pair the flag-on arm lost
   (`ore_ont_1509`) is identical in both arms over 3 serial runs each. Shipped OFF in #269 and
   flipped ON on that evidence. Skipped while proofs are recorded (`prove`).

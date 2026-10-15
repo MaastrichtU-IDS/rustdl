@@ -257,8 +257,15 @@ impl DepSet {
 
 #[derive(Debug, Default, Clone)]
 struct HyperNode {
-    /// Class atoms true at this node — sorted by id, deduped.
+    /// Class atoms true at this node — sorted by id, deduped. Mutate only via
+    /// [`HyperNode::add`], which keeps `label_sig` in step (or recompute it).
     labels: Vec<ClassId>,
+    /// 64-bit Bloom signature of `labels` (bit `c mod 64` per label), kept in step
+    /// by [`HyperNode::add`]. `is_blocked` uses it to reject a candidate blocker
+    /// without walking both label lists: if `L(n) ⊆ L(m)` then
+    /// `sig(n) & !sig(m) == 0`, so a nonzero result proves "not a subset". Rides
+    /// the whole-node-clone `Snapshot`, so backtracking restores it with the labels.
+    label_sig: u64,
     /// Backjumping dependency sets, parallel to `labels` (same index):
     /// `label_deps[i]` is the set of decision levels `labels[i]`'s
     /// derivation depends on. Empty before any branching.
@@ -386,6 +393,7 @@ impl HyperNode {
             Err(pos) => {
                 self.labels.insert(pos, c);
                 self.label_deps.insert(pos, deps);
+                self.label_sig |= label_bit(c);
                 true
             }
         }
@@ -2371,6 +2379,30 @@ impl<'c> HyperEngine<'c> {
                         continue;
                     };
                     compares += 1;
+                    // Cheap rejects before the label walks: a subset cannot be
+                    // longer, and its Bloom signature must be covered. Both are
+                    // exact consequences of `L(n) ⊆ L(m)`, so the verdict is
+                    // unchanged; they only skip walks that would return false.
+                    let (ln, lm) = (&self.nodes[n.index()], &self.nodes[m_hnode.index()]);
+                    let (lnp, lmp) = (&self.nodes[np.index()], &self.nodes[mp.index()]);
+                    if ln.labels.len() > lm.labels.len()
+                        || ln.label_sig & !lm.label_sig != 0
+                        || lnp.labels.len() > lmp.labels.len()
+                        || lnp.label_sig & !lmp.label_sig != 0
+                    {
+                        // A signature out of step with its labels could reject a real
+                        // blocker. Debug builds re-run the walk this skipped, which
+                        // costs what a candidate cost before the prefilter (the walk
+                        // usually exits at the first missing label). Recomputing all
+                        // four signatures here instead scans every label of every
+                        // candidate and made the debug test suite hang in CI.
+                        debug_assert!(
+                            !(subset_sorted(&ln.labels, &lm.labels)
+                                && subset_sorted(&lnp.labels, &lmp.labels)),
+                            "label_sig rejected a real blocker"
+                        );
+                        continue;
+                    }
                     // Anywhere pair-blocking (Horrocks 1998 / Motik 2009):
                     // *subset* semantics — the blocker is "at least as
                     // rich" as the blocked. Stricter than anywhere
@@ -3270,6 +3302,7 @@ impl<'c> HyperEngine<'c> {
                 ..HyperNode::default()
             };
             hn.labels.clone_from(&snap_node.labels);
+            hn.label_sig = label_sig_of(&hn.labels);
             hn.label_deps = vec![snap_node.birth_deps; snap_node.labels.len()];
             // parent / parent_role: unknown from snapshot (Phase 1b.5
             // will capture them); leave None. Double-blocking is a
@@ -5949,6 +5982,16 @@ fn role_matches(edge: Role, wanted: Role, sub_roles: Option<&RoleHierarchy>) -> 
         Some(h) => h.is_signed_sub(edge, wanted),
         None => edge == wanted,
     }
+}
+
+/// The [`HyperNode::label_sig`] bit for class `c`.
+fn label_bit(c: ClassId) -> u64 {
+    1u64 << (c.index() % 64)
+}
+
+/// [`HyperNode::label_sig`] recomputed from scratch.
+fn label_sig_of(labels: &[ClassId]) -> u64 {
+    labels.iter().fold(0, |s, &c| s | label_bit(c))
 }
 
 /// `a ⊆ b` for sorted-by-index class-id slices.

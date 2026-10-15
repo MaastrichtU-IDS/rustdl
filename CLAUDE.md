@@ -2890,7 +2890,52 @@ current engine state, characterized MISSED, open levers, and dead-ends;
 `docs/model-caching-plan.md` / `docs/moms-plan.md` explain why model caching is
 a deliberately un-integrated Phase-1 stub.
 
-## State of play — 2026-10-12, after v0.4.38 (read this first)
+## State of play — 2026-10-15, after v0.4.40 (read this first)
+
+**Wedge performance changes on `main` since v0.4.40.** Each has its own flag (`=0` reverts),
+pinned in `flag_defaults.rs`:
+
+| PR | what | flag |
+|---|---|---|
+| #263, #266 | an edge-triggered clause match enumerates only bindings that USE the new edge. **Default ON since #266** (it shipped OFF in #263). Full 1,920 two-arm sweep: 1,752 identical, 3 `dnf → ok`, 0 `ok → dnf`, the one DIFFER (`ore_ont_12698`) budget truncation, identical at `--pair-timeout-ms 1000` | `RUSTDL_HYPER_EDGE_PIN` |
+| #264 | the bounded saturation fixpoint paces its clock by work, not by pops | — |
+| #265 | a branch restore undoes the NN-rule nominal index with a log instead of cloning it | `RUSTDL_NN_UNDO_LOG` |
+| #267 | `is_blocked` rejects most candidate blockers by label count and a 64-bit label signature before the subset walks. −15–20% CPU on the stall cases, `consistent` decides 3 more of 227 stall ontologies, no answer changes | none (verdict-identical by construction) |
+
+**With the edge pin on, `RUSTDL_RESEED_VERIFY=0` is no longer a harmless perf knob.** Pinning
+narrows which bindings an edge event enumerates, and the #137 net is what recovers the ones no
+trigger reaches.
+
+**What the #137 net actually recovers (measured 2026-10-15).** It is NOT mostly trigger-table
+gaps. Instrumenting every label event on `ore_ont_2313` with the phase that queued it and
+whether the drain processed it: all 4,437 primary recoveries are `→ ∃` heads the drain
+correctly skipped while the node was BLOCKED, at nodes that later became unblocked. Nothing
+re-fires a skipped `∃` on unblocking. The other ~7,000 recoveries are downstream of those, on
+successors the net itself creates. No label event is lost. So a fix to the edge/label trigger
+tables cannot shrink the net's work, and an "unblock trigger" would need blocking tracked
+rather than recomputed lazily.
+
+**Measured out this round, do not re-propose without new evidence** (details in
+`docs/benchmarks/2026-10-15-wedge-triggers-and-component-retry.md`):
+- **Root-recovery dispatch** (fire edge/label matches at the roots recovered by walking the
+  clause's variable tree). It closes trigger gaps (a), (c) and two label gaps in the drain
+  itself, but CPU is flat to +16% over 5 interleaved reps with identical answers. Parked at
+  `refs/archive/heads/perf/hyper-root-recovery`.
+- **A cheaper #182 component retry.** Its cost is batch probes that genuinely stall for the full
+  fallback budget (`ore_ont_9540` stalls on a 6-axiom batch), not preparation. The only cut is a
+  heuristic skip, which could lose the #182 clash.
+
+**A `debug_assert` in a hot loop can hang CI.** #267's first version recomputed four label
+signatures per blocking candidate in debug builds. That turned an early-exit subset walk into a
+full label scan, and the debug `phase_attribution` tests ran 3 h on all three CI platforms
+(9 min on main). It was first misread as a host-load stall. Check the expensive half only on
+the path where a wrong answer could come from (here, a signature REJECT), and compare the debug
+test time against main's CI before believing "load".
+
+**`wine` is still ~12 CPU-s at the default** after #239, #263/#266 and #267 (5 interleaved reps,
+11.7–12.0 median), not ~2.7 s.
+
+## State of play — 2026-10-12, after v0.4.38
 
 **Changes on `main` since v0.4.38, each behind its own default-ON flag (`=0` reverts), pinned in
 `flag_defaults.rs`:**

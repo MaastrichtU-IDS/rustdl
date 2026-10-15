@@ -7,8 +7,8 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
-- **The wedge can pin the new edge into edge-triggered clause matches, `RUSTDL_HYPER_EDGE_PIN`,
-  default OFF (`=1` enables).** An edge event re-matched every Horn clause with a body atom on
+- **The wedge pins the new edge into edge-triggered clause matches, `RUSTDL_HYPER_EDGE_PIN`,
+  default ON (`=0` reverts).** An edge event re-matched every Horn clause with a body atom on
   the edge's role from scratch. Over 227 ORE ontologies, 94–96% of those bindings did not use
   the new edge, so they had already been found when their last fact arrived. With the flag on,
   only bindings in which the new edge fills a role atom (read forwards or backwards) are
@@ -16,7 +16,15 @@ All notable changes to rustdl are documented here. Format is based on
   don't use the edge. `rustdl consistent` over the same 227, single thread, default budget:
   6 ontologies go from undetermined to consistent, none the other way, and no answer changes.
   With a 60 s budget, `ore_ont_14375` decides in 10.4–11.6 CPU-s instead of 16.1–16.5, and
-  `ore_ont_10127` in 24.3–29.1 instead of 39.2–45.7. Default OFF until a `classify` sweep has been run.
+  `ore_ont_10127` in 24.3–29.1 instead of 39.2–45.7. Two-arm `classify` sweep over all 1,920
+  ORE (60 s cap, single thread): 1,752 of 1,753 ontologies that finish in both arms give the same
+  answer; 3 that timed out now finish (`ore_ont_13647`, `2232`, `3562`); none goes the other way.
+  The one difference, `ore_ont_12698`, is cut by the per-pair budget and gives a different answer
+  on every run of either arm (6 distinct answers in 6 serial runs). Missed-entailment net (400
+  ontologies, Konclude ∪ HermiT oracle): FP 0 in both arms, no ontology loses a pair, MISSED
+  29 → 8, all of it `ore_ont_12698`. Two ontologies the flag-on net arm failed to finish under
+  parallel load, `ore_ont_13723` and `2232`, give identical answers in both arms in 3 serial
+  runs each (44–54 CPU-s either way).
 
 ### Changed
 - **A branch restore undoes the wedge's NN-rule index with a log instead of a copy (#255

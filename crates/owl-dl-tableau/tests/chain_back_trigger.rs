@@ -156,10 +156,16 @@ fn gap_c_three_hop_body() {
     assert_gap_caught_only_by_the_net(&cl);
 }
 
-/// `cl` is unsatisfiable. The incremental drain alone misses it (a KNOWN gap — if
-/// this starts failing on the `Sat` line, the gap closed: flip it to `Unsat`), and
-/// the #137 net recovers it, with and without edge pinning.
+/// `cl` is unsatisfiable. The incremental drain alone misses it under the default
+/// trigger tables (a KNOWN gap — if this starts failing on the `Sat` line, the gap
+/// closed: flip it to `Unsat`), and the #137 net recovers it, with and without edge
+/// pinning. `RUSTDL_HYPER_ROOT_RECOVERY` closes it in the drain itself.
 fn assert_gap_caught_only_by_the_net(cl: &[DlClause]) {
+    assert_eq!(
+        root_recovery(cl).decide(64),
+        HyperResult::Unsat,
+        "root recovery: the drain alone must find the binding at its own root"
+    );
     for pin in [false, true] {
         assert_eq!(
             drain_only(cl, pin).decide(64),
@@ -169,13 +175,22 @@ fn assert_gap_caught_only_by_the_net(cl: &[DlClause]) {
         let mut eng = HyperEngine::new(cl, cls(A))
             .with_incremental_fixpoint()
             .with_reseed_verify(true)
-            .with_edge_pin(pin);
+            .with_edge_pin(pin)
+            .with_root_recovery(false);
         assert_eq!(
             eng.decide(64),
             HyperResult::Unsat,
             "pin={pin}: the #137 net must catch it"
         );
     }
+}
+
+/// As [`drain_only`], but edge events fire through `RUSTDL_HYPER_ROOT_RECOVERY`.
+fn root_recovery(cl: &[DlClause]) -> HyperEngine<'_> {
+    HyperEngine::new(cl, cls(A))
+        .with_incremental_fixpoint()
+        .with_reseed_verify(false)
+        .with_root_recovery(true)
 }
 
 /// An engine on the incremental drain with the #137 net OFF, so a binding the edge
@@ -185,6 +200,7 @@ fn drain_only(cl: &[DlClause], pin: bool) -> HyperEngine<'_> {
         .with_incremental_fixpoint()
         .with_reseed_verify(false)
         .with_edge_pin(pin)
+        .with_root_recovery(false)
 }
 
 #[test]
@@ -208,6 +224,7 @@ fn pinned_back_trigger_keeps_a_non_first_leg() {
             "pin={pin}"
         );
     }
+    assert_eq!(root_recovery(&cl).decide(64), HyperResult::Unsat);
 }
 
 #[test]
@@ -227,6 +244,7 @@ fn pinned_inverse_first_leg_reads_the_edge_backwards() {
             "pin={pin}"
         );
     }
+    assert_eq!(root_recovery(&cl).decide(64), HyperResult::Unsat);
 }
 
 #[test]
@@ -245,6 +263,7 @@ fn pinned_positive_first_leg_at_an_inverse_edge_target() {
             "pin={pin}"
         );
     }
+    assert_eq!(root_recovery(&cl).decide(64), HyperResult::Unsat);
 }
 
 #[test]
@@ -299,4 +318,167 @@ fn pinned_backward_reading_under_a_symmetric_hierarchy() {
         let mut eng = drain_only(&cl, pin).with_sub_roles(symmetric());
         assert_eq!(eng.decide(64), HyperResult::Unsat, "pin={pin}");
     }
+    assert_eq!(root_recovery(&cl).decide(64), HyperResult::Sat);
+    let mut eng = root_recovery(&cl).with_sub_roles(symmetric());
+    assert_eq!(eng.decide(64), HyperResult::Unsat);
+}
+
+#[test]
+fn inverse_non_first_leg() {
+    // Body r(X,1) ∧ s⁻(1,2) → Q(X), the second leg INVERSE. A → ∃r.M gives
+    // root —r→ m, then M → ∃s⁻.N adds m —s⁻→ n late. The edge satisfies s⁻(1,2)
+    // forward with 1 ↦ m, and root recovery walks r back from m to the root.
+    let mut cl = vec![
+        horn(
+            vec![Atom::Class(cls(A), X)],
+            vec![Atom::Exists(fwd(R), cls(M), X)],
+        ),
+        horn(
+            vec![Atom::Role(fwd(R), X, 1), Atom::Role(inv(S), 1, 2)],
+            vec![Atom::Class(cls(Q), X)],
+        ),
+        horn(vec![Atom::Class(cls(A), X), Atom::Class(cls(Q), X)], vec![]),
+    ];
+    cl.extend(late_exists(M, inv(S), N));
+    assert_eq!(
+        root_recovery(&cl).decide(64),
+        HyperResult::Unsat,
+        "root recovery"
+    );
+    let mut eng = HyperEngine::new(&cl, cls(A))
+        .with_incremental_fixpoint()
+        .with_reseed_verify(true);
+    assert_eq!(eng.decide(64), HyperResult::Unsat, "net");
+}
+
+#[test]
+fn root_recovery_control_unrelated_edge_stays_sat() {
+    // FP guard: the chain needs r then s from the SAME middle node. Here the root has
+    // an r-successor m and a separate s-successor z, so r(X,1) ∧ s(1,2) has no binding
+    // and the answer is Sat under every dispatch.
+    let mut cl = chain_and_consumer();
+    cl.push(horn(
+        vec![Atom::Class(cls(A), X)],
+        vec![Atom::Class(cls(Y), X)],
+    ));
+    cl.push(horn(
+        vec![Atom::Class(cls(A), X)],
+        vec![Atom::Exists(fwd(R), cls(M), X)],
+    ));
+    cl.extend(late_exists(A, fwd(S), Z));
+    assert_eq!(root_recovery(&cl).decide(64), HyperResult::Sat);
+    assert_eq!(drain_only(&cl, false).decide(64), HyperResult::Sat);
+}
+
+/// `trigger(X) → P1(X) ∨ P2(X)`, each disjunct `→ label(X)`: like [`late_exists`],
+/// the label arrives in a drain after every edge already exists.
+fn late_label(trigger: u32, label: u32) -> Vec<DlClause> {
+    vec![
+        horn(
+            vec![Atom::Class(cls(trigger), X)],
+            vec![Atom::Class(cls(P1), X), Atom::Class(cls(P2), X)],
+        ),
+        horn(
+            vec![Atom::Class(cls(P1), X)],
+            vec![Atom::Class(cls(label), X)],
+        ),
+        horn(
+            vec![Atom::Class(cls(P2), X)],
+            vec![Atom::Class(cls(label), X)],
+        ),
+    ]
+}
+
+/// `cl` is unsatisfiable through a body class atom whose LABEL arrives last. The
+/// default `succ_trigger` fires only at the labelled node's predecessors.
+fn assert_label_gap(cl: &[DlClause]) {
+    assert_eq!(
+        drain_only(cl, false).decide(64),
+        HyperResult::Sat,
+        "known label-trigger gap — if this flips, the default dispatch closed it"
+    );
+    assert_eq!(
+        root_recovery(cl).decide(64),
+        HyperResult::Unsat,
+        "root recovery"
+    );
+    let mut eng = HyperEngine::new(cl, cls(A))
+        .with_incremental_fixpoint()
+        .with_reseed_verify(true)
+        .with_root_recovery(false);
+    assert_eq!(eng.decide(64), HyperResult::Unsat, "the #137 net");
+}
+
+#[test]
+fn label_gap_class_atom_two_hops_down() {
+    // r(X,1) ∧ s(1,2) ∧ K(2) → Q(X). Edges root —r→ m —s→ z exist first; K arrives
+    // on z last. `succ_trigger` fires at z.preds = {m}, one level short of the root.
+    let mut cl = vec![
+        horn(
+            vec![Atom::Class(cls(A), X)],
+            vec![Atom::Exists(fwd(R), cls(M), X)],
+        ),
+        horn(
+            vec![Atom::Class(cls(M), X)],
+            vec![Atom::Exists(fwd(S), cls(Z), X)],
+        ),
+        horn(
+            vec![
+                Atom::Role(fwd(R), X, 1),
+                Atom::Role(fwd(S), 1, 2),
+                Atom::Class(cls(K), 2),
+            ],
+            vec![Atom::Class(cls(Q), X)],
+        ),
+        horn(vec![Atom::Class(cls(A), X), Atom::Class(cls(Q), X)], vec![]),
+    ];
+    cl.extend(late_label(Z, K));
+    assert_label_gap(&cl);
+}
+
+#[test]
+fn label_gap_class_atom_on_the_parent() {
+    // r⁻(X,1) ∧ K(1) → Q(X): the class atom sits on X's PARENT. root —r→ m exists
+    // first; K arrives on the root last. `succ_trigger` fires at root.preds = ∅, but
+    // the clause's root is m, the root's successor. `Q ⊓ M → ⊥` at m.
+    let mut cl = vec![
+        horn(
+            vec![Atom::Class(cls(A), X)],
+            vec![Atom::Exists(fwd(R), cls(M), X)],
+        ),
+        horn(
+            vec![Atom::Role(inv(R), X, 1), Atom::Class(cls(K), 1)],
+            vec![Atom::Class(cls(Q), X)],
+        ),
+        horn(vec![Atom::Class(cls(Q), X), Atom::Class(cls(M), X)], vec![]),
+    ];
+    cl.extend(late_label(A, K));
+    assert_label_gap(&cl);
+}
+
+#[test]
+fn label_root_recovery_control_wrong_branch_stays_sat() {
+    // FP guard: K lands on a node that is NOT at the body's s-position (the root's
+    // own r-successor m, not m's s-successor), so no binding exists.
+    let mut cl = vec![
+        horn(
+            vec![Atom::Class(cls(A), X)],
+            vec![Atom::Exists(fwd(R), cls(M), X)],
+        ),
+        horn(
+            vec![Atom::Class(cls(M), X)],
+            vec![Atom::Exists(fwd(S), cls(Z), X)],
+        ),
+        horn(
+            vec![
+                Atom::Role(fwd(R), X, 1),
+                Atom::Role(fwd(S), 1, 2),
+                Atom::Class(cls(K), 2),
+            ],
+            vec![Atom::Class(cls(Q), X)],
+        ),
+        horn(vec![Atom::Class(cls(A), X), Atom::Class(cls(Q), X)], vec![]),
+    ];
+    cl.extend(late_label(M, K));
+    assert_eq!(root_recovery(&cl).decide(64), HyperResult::Sat);
 }

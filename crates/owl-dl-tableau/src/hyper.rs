@@ -652,6 +652,9 @@ pub struct SearchStats {
     /// for the identity test**: if this is 0 on a fixture, the skip never fired
     /// there, so an on/off comparison on that fixture proves nothing.
     pub head_present_skips: u64,
+    /// `RUSTDL_HYPER_ROOT_RECOVERY`: anchored firings issued by edge events, one per
+    /// (clause, atom, reading, recovered root).
+    pub root_recovery_fires: u64,
     /// Fix#2 Layer B: classes excluded (asserted false) after a sibling `⊔`
     /// disjunct returned a clean `Unsat`. Non-vacuity signal for the FP gate:
     /// if this is 0 on a fixture, Layer B did not fire there.
@@ -892,6 +895,10 @@ pub struct HyperEngine<'c> {
     /// `RUSTDL_HYPER_EDGE_PIN` (default OFF): edge-triggered matches enumerate only
     /// bindings that use the new edge. See [`crate::hyper_edge_pin_enabled`].
     edge_pin: bool,
+    /// `RUSTDL_HYPER_ROOT_RECOVERY` (default OFF): edge-triggered matches fire at the
+    /// roots recovered by walking each clause's variable tree back from the new edge.
+    /// See [`crate::hyper_root_recovery_enabled`].
+    root_recovery: bool,
     /// `RUSTDL_MRV_ORDERING` (default OFF): `find_open_disjunction` returns the open
     /// disjunctive clause with the fewest live disjuncts first (most-constrained-variable).
     /// Verdict-invariant (reordering only). See the MRV spec.
@@ -1623,6 +1630,7 @@ impl<'c> HyperEngine<'c> {
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
             edge_pin: crate::hyper_edge_pin_enabled(),
+            root_recovery: crate::hyper_root_recovery_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -1702,6 +1710,7 @@ impl<'c> HyperEngine<'c> {
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
             edge_pin: crate::hyper_edge_pin_enabled(),
+            root_recovery: crate::hyper_root_recovery_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -2158,6 +2167,14 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_edge_pin(mut self, on: bool) -> Self {
         self.edge_pin = on;
+        self
+    }
+
+    /// Override `RUSTDL_HYPER_ROOT_RECOVERY` (normally cached at construction), so a
+    /// test can set it without mutating process env.
+    #[must_use]
+    pub fn with_root_recovery(mut self, on: bool) -> Self {
+        self.root_recovery = on;
         self
     }
 
@@ -2764,6 +2781,12 @@ impl<'c> HyperEngine<'c> {
                         }
                     }
                 }
+                if self.root_recovery {
+                    if matches!(self.fire_label_roots(n, c), FireOutcome::Clash) {
+                        return FireOutcome::Clash;
+                    }
+                    return FireOutcome::NoChange;
+                }
                 // Clauses with `c` as a successor-class fire at `n`'s
                 // predecessors (back-propagation: a successor gained `c`).
                 let n_s = self.indexes.succ_trigger.get(key).map_or(0, Vec::len);
@@ -2798,28 +2821,18 @@ impl<'c> HyperEngine<'c> {
                 }
             }
             Event::Edge(src, role, tgt) => {
-                // Clauses with a body atom on this role fire at `src`;
-                // these re-check the (now-present) successor's labels,
-                // covering the edge-added-after-label case.
-                let key = role_id_index(role);
-                let n_r = self.indexes.role_trigger.get(key).map_or(0, Vec::len);
-                for i in 0..n_r {
-                    let ci = self.indexes.role_trigger[key][i];
-                    if matches!(
-                        self.fire_edge_clause(ci, src, src, role, tgt),
-                        FireOutcome::Clash
-                    ) {
+                if self.root_recovery {
+                    if matches!(self.fire_edge_roots(src, role, tgt), FireOutcome::Clash) {
                         return FireOutcome::Clash;
                     }
-                }
-                // Per-pair extras on this role (empty for the classify-decide
-                // extras, which are all class-body — kept for generality).
-                if let Some(dp) =
-                    ClauseIndexDelta::trigger_pos(&self.extra_indexes.role_trigger, key)
-                {
-                    let d_r = self.extra_indexes.role_trigger[dp].1.len();
-                    for i in 0..d_r {
-                        let ci = self.extra_indexes.role_trigger[dp].1[i];
+                } else {
+                    // Clauses with a body atom on this role fire at `src`;
+                    // these re-check the (now-present) successor's labels,
+                    // covering the edge-added-after-label case.
+                    let key = role_id_index(role);
+                    let n_r = self.indexes.role_trigger.get(key).map_or(0, Vec::len);
+                    for i in 0..n_r {
+                        let ci = self.indexes.role_trigger[key][i];
                         if matches!(
                             self.fire_edge_clause(ci, src, src, role, tgt),
                             FireOutcome::Clash
@@ -2827,39 +2840,43 @@ impl<'c> HyperEngine<'c> {
                             return FireOutcome::Clash;
                         }
                     }
-                }
-                // HF3 second-leg back-trigger: this edge `R(src,tgt)` may
-                // be the NON-FIRST leg of a multi-role clause body (e.g.
-                // `R₁(x,src) ∧ R₂(src,tgt) → …`). Such clauses are rooted
-                // at the chain root `x` = a predecessor of `src`, so fire
-                // them at `src`'s predecessors. `match_body` re-verifies,
-                // so firing at a non-root predecessor is a no-op.
-                let n_b = self.indexes.role_back_trigger.get(key).map_or(0, Vec::len);
-                let dp_b =
-                    ClauseIndexDelta::trigger_pos(&self.extra_indexes.role_back_trigger, key);
-                if n_b > 0 || dp_b.is_some() {
-                    // Resolve-on-read (advisor §4): fold a merged predecessor to
-                    // its representative. No-op / byte-identical when flag off.
-                    let resolve_reads = self.inverse_func_merge;
-                    let preds: Vec<HNode> = self.nodes[src.index()]
-                        .preds
-                        .iter()
-                        .map(|&(_, p)| if resolve_reads { self.resolve(p) } else { p })
-                        .collect();
-                    for p in preds {
-                        for i in 0..n_b {
-                            let ci = self.indexes.role_back_trigger[key][i];
+                    // Per-pair extras on this role (empty for the classify-decide
+                    // extras, which are all class-body — kept for generality).
+                    if let Some(dp) =
+                        ClauseIndexDelta::trigger_pos(&self.extra_indexes.role_trigger, key)
+                    {
+                        let d_r = self.extra_indexes.role_trigger[dp].1.len();
+                        for i in 0..d_r {
+                            let ci = self.extra_indexes.role_trigger[dp].1[i];
                             if matches!(
-                                self.fire_edge_clause(ci, p, src, role, tgt),
+                                self.fire_edge_clause(ci, src, src, role, tgt),
                                 FireOutcome::Clash
                             ) {
                                 return FireOutcome::Clash;
                             }
                         }
-                        if let Some(dp) = dp_b {
-                            let d_b = self.extra_indexes.role_back_trigger[dp].1.len();
-                            for i in 0..d_b {
-                                let ci = self.extra_indexes.role_back_trigger[dp].1[i];
+                    }
+                    // HF3 second-leg back-trigger: this edge `R(src,tgt)` may
+                    // be the NON-FIRST leg of a multi-role clause body (e.g.
+                    // `R₁(x,src) ∧ R₂(src,tgt) → …`). Such clauses are rooted
+                    // at the chain root `x` = a predecessor of `src`, so fire
+                    // them at `src`'s predecessors. `match_body` re-verifies,
+                    // so firing at a non-root predecessor is a no-op.
+                    let n_b = self.indexes.role_back_trigger.get(key).map_or(0, Vec::len);
+                    let dp_b =
+                        ClauseIndexDelta::trigger_pos(&self.extra_indexes.role_back_trigger, key);
+                    if n_b > 0 || dp_b.is_some() {
+                        // Resolve-on-read (advisor §4): fold a merged predecessor to
+                        // its representative. No-op / byte-identical when flag off.
+                        let resolve_reads = self.inverse_func_merge;
+                        let preds: Vec<HNode> = self.nodes[src.index()]
+                            .preds
+                            .iter()
+                            .map(|&(_, p)| if resolve_reads { self.resolve(p) } else { p })
+                            .collect();
+                        for p in preds {
+                            for i in 0..n_b {
+                                let ci = self.indexes.role_back_trigger[key][i];
                                 if matches!(
                                     self.fire_edge_clause(ci, p, src, role, tgt),
                                     FireOutcome::Clash
@@ -2867,62 +2884,31 @@ impl<'c> HyperEngine<'c> {
                                     return FireOutcome::Clash;
                                 }
                             }
+                            if let Some(dp) = dp_b {
+                                let d_b = self.extra_indexes.role_back_trigger[dp].1.len();
+                                for i in 0..d_b {
+                                    let ci = self.extra_indexes.role_back_trigger[dp].1[i];
+                                    if matches!(
+                                        self.fire_edge_clause(ci, p, src, role, tgt),
+                                        FireOutcome::Clash
+                                    ) {
+                                        return FireOutcome::Clash;
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-                // Inverse first-leg trigger: this edge `src—role→tgt` gives
-                // `tgt` an `Inverse(role)`-successor (`src`). A clause
-                // `Atom::Role(Inverse(role), X, y) → …` rooted at `tgt` can now
-                // fire; `Event::Edge` otherwise only fires at `src`.
-                let n_inv = self
-                    .indexes
-                    .inverse_first_trigger
-                    .get(key)
-                    .map_or(0, Vec::len);
-                for i in 0..n_inv {
-                    let ci = self.indexes.inverse_first_trigger[key][i];
-                    if matches!(
-                        self.fire_edge_clause(ci, tgt, src, role, tgt),
-                        FireOutcome::Clash
-                    ) {
-                        return FireOutcome::Clash;
-                    }
-                }
-                // Per-pair extras: inverse/symmetric first-legs (empty for the
-                // classify-decide extras — class-body only).
-                if let Some(dp) =
-                    ClauseIndexDelta::trigger_pos(&self.extra_indexes.inverse_first_trigger, key)
-                {
-                    let d_inv = self.extra_indexes.inverse_first_trigger[dp].1.len();
-                    for i in 0..d_inv {
-                        let ci = self.extra_indexes.inverse_first_trigger[dp].1[i];
-                        if matches!(
-                            self.fire_edge_clause(ci, tgt, src, role, tgt),
-                            FireOutcome::Clash
-                        ) {
-                            return FireOutcome::Clash;
-                        }
-                    }
-                }
-                // #135: an INVERSE-polarity edge gives its TARGET a positive
-                // `role_id`-successor, so positive first-leg clauses must wake
-                // there too. Gated on the edge's polarity: a forward edge gives
-                // the target only an inverse successor, which the table above
-                // already covers, and gating keeps this free when no
-                // inverse-polarity edge is ever created.
-                if role.is_inverse()
-                    || self
-                        .sub_roles
-                        .as_ref()
-                        .is_some_and(owl_dl_core::RoleHierarchy::has_polarity_crossing)
-                {
-                    let n_pos = self
+                    // Inverse first-leg trigger: this edge `src—role→tgt` gives
+                    // `tgt` an `Inverse(role)`-successor (`src`). A clause
+                    // `Atom::Role(Inverse(role), X, y) → …` rooted at `tgt` can now
+                    // fire; `Event::Edge` otherwise only fires at `src`.
+                    let n_inv = self
                         .indexes
-                        .pos_first_target_trigger
+                        .inverse_first_trigger
                         .get(key)
                         .map_or(0, Vec::len);
-                    for i in 0..n_pos {
-                        let ci = self.indexes.pos_first_target_trigger[key][i];
+                    for i in 0..n_inv {
+                        let ci = self.indexes.inverse_first_trigger[key][i];
                         if matches!(
                             self.fire_edge_clause(ci, tgt, src, role, tgt),
                             FireOutcome::Clash
@@ -2930,18 +2916,62 @@ impl<'c> HyperEngine<'c> {
                             return FireOutcome::Clash;
                         }
                     }
+                    // Per-pair extras: inverse/symmetric first-legs (empty for the
+                    // classify-decide extras — class-body only).
                     if let Some(dp) = ClauseIndexDelta::trigger_pos(
-                        &self.extra_indexes.pos_first_target_trigger,
+                        &self.extra_indexes.inverse_first_trigger,
                         key,
                     ) {
-                        let d_pos = self.extra_indexes.pos_first_target_trigger[dp].1.len();
-                        for i in 0..d_pos {
-                            let ci = self.extra_indexes.pos_first_target_trigger[dp].1[i];
+                        let d_inv = self.extra_indexes.inverse_first_trigger[dp].1.len();
+                        for i in 0..d_inv {
+                            let ci = self.extra_indexes.inverse_first_trigger[dp].1[i];
                             if matches!(
                                 self.fire_edge_clause(ci, tgt, src, role, tgt),
                                 FireOutcome::Clash
                             ) {
                                 return FireOutcome::Clash;
+                            }
+                        }
+                    }
+                    // #135: an INVERSE-polarity edge gives its TARGET a positive
+                    // `role_id`-successor, so positive first-leg clauses must wake
+                    // there too. Gated on the edge's polarity: a forward edge gives
+                    // the target only an inverse successor, which the table above
+                    // already covers, and gating keeps this free when no
+                    // inverse-polarity edge is ever created.
+                    if role.is_inverse()
+                        || self
+                            .sub_roles
+                            .as_ref()
+                            .is_some_and(owl_dl_core::RoleHierarchy::has_polarity_crossing)
+                    {
+                        let n_pos = self
+                            .indexes
+                            .pos_first_target_trigger
+                            .get(key)
+                            .map_or(0, Vec::len);
+                        for i in 0..n_pos {
+                            let ci = self.indexes.pos_first_target_trigger[key][i];
+                            if matches!(
+                                self.fire_edge_clause(ci, tgt, src, role, tgt),
+                                FireOutcome::Clash
+                            ) {
+                                return FireOutcome::Clash;
+                            }
+                        }
+                        if let Some(dp) = ClauseIndexDelta::trigger_pos(
+                            &self.extra_indexes.pos_first_target_trigger,
+                            key,
+                        ) {
+                            let d_pos = self.extra_indexes.pos_first_target_trigger[dp].1.len();
+                            for i in 0..d_pos {
+                                let ci = self.extra_indexes.pos_first_target_trigger[dp].1[i];
+                                if matches!(
+                                    self.fire_edge_clause(ci, tgt, src, role, tgt),
+                                    FireOutcome::Clash
+                                ) {
+                                    return FireOutcome::Clash;
+                                }
                             }
                         }
                     }
@@ -3437,6 +3467,7 @@ impl<'c> HyperEngine<'c> {
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             head_present_skip: crate::head_present_skip_enabled(),
             edge_pin: crate::hyper_edge_pin_enabled(),
+            root_recovery: crate::hyper_root_recovery_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -4911,7 +4942,7 @@ impl<'c> HyperEngine<'c> {
     /// role atoms, equality, or a class on a third variable are not
     /// matched (deferred to later phases).
     fn fire_clause(&mut self, ci: usize, node: HNode) -> FireOutcome {
-        self.fire_clause_with(ci, node, None)
+        self.fire_clause_with(ci, node, BodyMatch::Full)
     }
 
     /// Fire clause `ci` at `node` for the edge event `src —role→ tgt`. Under
@@ -4927,18 +4958,13 @@ impl<'c> HyperEngine<'c> {
         tgt: HNode,
     ) -> FireOutcome {
         if self.edge_pin {
-            self.fire_clause_with(ci, node, Some((src, role, tgt)))
+            self.fire_clause_with(ci, node, BodyMatch::Pinned(src, role, tgt))
         } else {
             self.fire_clause(ci, node)
         }
     }
 
-    fn fire_clause_with(
-        &mut self,
-        ci: usize,
-        node: HNode,
-        edge: Option<(HNode, Role, HNode)>,
-    ) -> FireOutcome {
+    fn fire_clause_with(&mut self, ci: usize, node: HNode, how: BodyMatch) -> FireOutcome {
         // Disjunctive clauses are branch points, not Horn-fired here.
         if !self.clause(ci).is_horn() {
             return FireOutcome::NoChange;
@@ -4975,9 +5001,13 @@ impl<'c> HyperEngine<'c> {
                 return FireOutcome::NoChange;
             }
         }
-        let matched = match edge {
-            None => self.match_body(ci, node),
-            Some(e) => self.match_body_pinned(ci, node, e),
+        let matched = match how {
+            BodyMatch::Full => self.match_body(ci, node),
+            BodyMatch::Pinned(src, role, tgt) => self.match_body_pinned(ci, node, (src, role, tgt)),
+            BodyMatch::Anchored { atom, from, to } => {
+                self.match_body_anchored(ci, node, atom, from, to)
+            }
+            BodyMatch::VarAt { var, node: at } => self.match_body_var_at(ci, node, var, at),
         };
         let Some(bindings) = matched else {
             return FireOutcome::NoChange;
@@ -5121,6 +5151,256 @@ impl<'c> HyperEngine<'c> {
                 }
             }
         }
+        Some(out)
+    }
+
+    /// `RUSTDL_HYPER_ROOT_RECOVERY`: fire every Horn clause the edge
+    /// `src —role→ tgt` can complete, at the roots a binding using it would have.
+    ///
+    /// Candidates are the clauses filed under the edge's role key in
+    /// `role_trigger`, which holds every Horn clause with ANY body atom on that role
+    /// (widened over sub-roles). For each body atom the edge satisfies, read forward
+    /// (`u = src, v = tgt`) or backward (`u = tgt, v = src`), [`Self::anchor_roots`]
+    /// finds the nodes `X` can be bound to, and the clause is matched there with
+    /// only that atom pinned to the edge.
+    fn fire_edge_roots(&mut self, src: HNode, role: Role, tgt: HNode) -> FireOutcome {
+        let key = role_id_index(role);
+        let mut cands: SmallVec<[usize; 16]> = SmallVec::new();
+        if let Some(v) = self.indexes.role_trigger.get(key) {
+            cands.extend(v.iter().copied());
+        }
+        if let Some(dp) = ClauseIndexDelta::trigger_pos(&self.extra_indexes.role_trigger, key) {
+            cands.extend(self.extra_indexes.role_trigger[dp].1.iter().copied());
+        }
+        // Sub-role widening can file a clause under one key more than once.
+        cands.sort_unstable();
+        cands.dedup();
+        let hier = self.sub_roles.as_ref();
+        let resolve_reads = self.inverse_func_merge;
+        let read = |n: HNode| if resolve_reads { self.resolve(n) } else { n };
+        let (s, t) = (read(src), read(tgt));
+        let mut fires: SmallVec<[(usize, HNode, usize, HNode, HNode); 8]> = SmallVec::new();
+        for &ci in &cands {
+            let Some(plan) = self.match_plan(ci) else {
+                continue;
+            };
+            for (k, &(r, _, _)) in plan.role_atoms.iter().enumerate() {
+                let fwd = role_matches(role, r, hier).then_some((s, t));
+                let bwd = role_matches(role.flip(), r, hier).then_some((t, s));
+                for (a, b) in [fwd, bwd].into_iter().flatten() {
+                    for root in self.anchor_roots(plan, k, a, b) {
+                        fires.push((ci, root, k, a, b));
+                    }
+                }
+            }
+        }
+        self.stats.root_recovery_fires += fires.len() as u64;
+        for (ci, root, atom, from, to) in fires {
+            let how = BodyMatch::Anchored { atom, from, to };
+            if matches!(self.fire_clause_with(ci, root, how), FireOutcome::Clash) {
+                return FireOutcome::Clash;
+            }
+        }
+        FireOutcome::NoChange
+    }
+
+    /// `RUSTDL_HYPER_ROOT_RECOVERY`, label side: `n` gained `c`, so fire every Horn
+    /// clause with a body atom `c(w)`, `w ≠ X`, at the roots a binding with
+    /// `w ↦ n` would have, with `w` pinned to `n`. Replaces `succ_trigger`'s firing
+    /// at `n`'s predecessors, which reaches only roots one tree step above `n` along
+    /// a forward-stored edge.
+    fn fire_label_roots(&mut self, n: HNode, c: ClassId) -> FireOutcome {
+        let key = c.index() as usize;
+        let mut cands: SmallVec<[usize; 16]> = SmallVec::new();
+        if let Some(v) = self.indexes.succ_trigger.get(key) {
+            cands.extend(v.iter().copied());
+        }
+        if let Some(dp) = ClauseIndexDelta::trigger_pos(&self.extra_indexes.succ_trigger, key) {
+            cands.extend(self.extra_indexes.succ_trigger[dp].1.iter().copied());
+        }
+        cands.sort_unstable();
+        cands.dedup();
+        let node = if self.inverse_func_merge {
+            self.resolve(n)
+        } else {
+            n
+        };
+        let mut fires: SmallVec<[(usize, HNode, Var); 8]> = SmallVec::new();
+        for &ci in &cands {
+            let Some(plan) = self.match_plan(ci) else {
+                continue;
+            };
+            for &(oc, w) in &plan.other_classes {
+                if oc != c || fires.iter().any(|&(fc, _, fw)| fc == ci && fw == w) {
+                    continue;
+                }
+                for root in self.roots_from_var(plan, w, node) {
+                    fires.push((ci, root, w));
+                }
+            }
+        }
+        self.stats.root_recovery_fires += fires.len() as u64;
+        for (ci, root, var) in fires {
+            let how = BodyMatch::VarAt { var, node };
+            if matches!(self.fire_clause_with(ci, root, how), FireOutcome::Clash) {
+                return FireOutcome::Clash;
+            }
+        }
+        FireOutcome::NoChange
+    }
+
+    /// The nodes `X` can be bound to in a binding of `plan` that maps role atom `k`
+    /// = `r(u, v)` to the pair `(a, b)`, i.e. `u ↦ a`, `v ↦ b`.
+    ///
+    /// The plan's variable tree is rooted at `X` and every tree atom is oriented
+    /// away from it (`eval_order` binds a target only from a bound source), so `u`
+    /// has a unique path of tree atoms back to `X`. Each step `q(w, c)` maps `w` to a
+    /// node `p` with `q(p, n)` for the current node `n`: a predecessor `p —er→ n`
+    /// with `er` matching `q`, or a successor `n —er→ p` with `er⁻` matching `q`.
+    /// These are exactly the pairs [`Self::role_atom_holds`] accepts, so every root of
+    /// a real binding is in the result. The result may also hold nodes no binding
+    /// reaches; the anchored match at those finds nothing.
+    fn anchor_roots(
+        &self,
+        plan: &ClauseMatchPlan,
+        k: usize,
+        a: HNode,
+        b: HNode,
+    ) -> SmallVec<[HNode; 4]> {
+        let (_, u, v) = plan.role_atoms[k];
+        if u == X {
+            return smallvec![a];
+        }
+        if v == X {
+            return smallvec![b];
+        }
+        self.roots_from_var(plan, u, a)
+    }
+
+    /// The nodes `X` can be bound to in a binding of `plan` that maps the non-`X`
+    /// variable `var` to `node`, found by walking `var`'s tree path back to `X`.
+    /// See [`Self::anchor_roots`].
+    fn roots_from_var(
+        &self,
+        plan: &ClauseMatchPlan,
+        var: Var,
+        node: HNode,
+    ) -> SmallVec<[HNode; 4]> {
+        let (u, a) = (var, node);
+        let hier = self.sub_roles.as_ref();
+        let resolve_reads = self.inverse_func_merge;
+        let read = |n: HNode| if resolve_reads { self.resolve(n) } else { n };
+        let mut frontier: SmallVec<[HNode; 4]> = smallvec![a];
+        let mut var = u;
+        while var != X {
+            let Some(&j) = plan.order.iter().find(|&&j| plan.role_atoms[j].2 == var) else {
+                return SmallVec::new();
+            };
+            let (q, w, _) = plan.role_atoms[j];
+            let mut next: SmallVec<[HNode; 4]> = SmallVec::new();
+            for &n in &frontier {
+                let nd = &self.nodes[n.index()];
+                let ups = nd
+                    .preds
+                    .iter()
+                    .filter(|(er, _)| role_matches(*er, q, hier))
+                    .chain(
+                        nd.edges
+                            .iter()
+                            .filter(|(er, _)| role_matches(er.flip(), q, hier)),
+                    );
+                for &(_, p) in ups {
+                    let p = read(p);
+                    if !next.contains(&p) {
+                        next.push(p);
+                    }
+                }
+            }
+            if next.is_empty() {
+                return next;
+            }
+            frontier = next;
+            var = w;
+        }
+        frontier
+    }
+
+    /// Bindings of clause `ci` rooted at `node` that map the non-`X` variable `var`
+    /// to `at`. The variable is pre-bound and the pinned enumeration checks it, like
+    /// a pinned edge endpoint.
+    fn match_body_var_at(
+        &self,
+        ci: usize,
+        node: HNode,
+        var: Var,
+        at: HNode,
+    ) -> Option<Vec<Binding>> {
+        let plan = self.match_plan(ci)?;
+        for &c in &plan.x_classes {
+            if !self.nodes[node.index()].has(c) {
+                return Some(Vec::new());
+            }
+        }
+        let mp = MatchPlan {
+            role_atoms: plan.role_atoms.as_slice(),
+            order: plan.order.as_slice(),
+            other_classes: plan.other_classes.as_slice(),
+            filters: plan.filters.as_slice(),
+            pinned: true,
+        };
+        let mut binding: Binding = smallvec![(var, at)];
+        let mut out = Vec::new();
+        self.enumerate_matches(node, &mp, 0, &mut binding, &mut out);
+        Some(out)
+    }
+
+    /// As [`Self::match_body_pinned`], but for ONE atom and ONE reading: role atom
+    /// `atom` = `r(u, v)` is pre-bound to `u ↦ from`, `v ↦ to`, and `X` is `node`.
+    /// The caller has already checked that the edge satisfies the atom that way.
+    fn match_body_anchored(
+        &self,
+        ci: usize,
+        node: HNode,
+        atom: usize,
+        from: HNode,
+        to: HNode,
+    ) -> Option<Vec<Binding>> {
+        let plan = self.match_plan(ci)?;
+        for &c in &plan.x_classes {
+            if !self.nodes[node.index()].has(c) {
+                return Some(Vec::new());
+            }
+        }
+        let root = if self.inverse_func_merge {
+            self.resolve(node)
+        } else {
+            node
+        };
+        let (_, u, v) = plan.role_atoms[atom];
+        let mut binding: Binding = SmallVec::new();
+        for (var, n) in [(u, from), (v, to)] {
+            if var == X {
+                if n != root {
+                    return Some(Vec::new());
+                }
+            } else if let Some(&(_, prev)) = binding.iter().find(|(bv, _)| *bv == var) {
+                // Self-loop atom `r(y, y)`: both endpoints must agree.
+                if prev != n {
+                    return Some(Vec::new());
+                }
+            } else {
+                binding.push((var, n));
+            }
+        }
+        let mp = MatchPlan {
+            role_atoms: plan.role_atoms.as_slice(),
+            order: plan.order.as_slice(),
+            other_classes: plan.other_classes.as_slice(),
+            filters: plan.filters.as_slice(),
+            pinned: true,
+        };
+        let mut out = Vec::new();
+        self.enumerate_matches(node, &mp, 0, &mut binding, &mut out);
         Some(out)
     }
 
@@ -5792,6 +6072,19 @@ impl<'c> HyperEngine<'c> {
     pub fn root_node(&self) -> HNode {
         HNode(0)
     }
+}
+
+/// How [`HyperEngine::fire_clause_with`] matches a clause body.
+#[derive(Clone, Copy)]
+enum BodyMatch {
+    /// Every binding rooted at the node.
+    Full,
+    /// Only bindings that use the edge `src —role→ tgt` at some role-atom position.
+    Pinned(HNode, Role, HNode),
+    /// Only bindings mapping role atom `atom` = `r(u, v)` to `u ↦ from`, `v ↦ to`.
+    Anchored { atom: usize, from: HNode, to: HNode },
+    /// Only bindings mapping the non-`X` variable `var` to `node`.
+    VarAt { var: Var, node: HNode },
 }
 
 enum FireOutcome {

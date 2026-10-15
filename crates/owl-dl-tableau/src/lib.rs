@@ -2485,6 +2485,26 @@ pub fn hyper_edge_pin_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_EDGE_PIN").is_some_and(|v| v == "1")
 }
 
+/// Fire edge-triggered clause matches at the roots the new edge can reach
+/// (`RUSTDL_HYPER_ROOT_RECOVERY`, **default OFF**, `=1` enables).
+///
+/// Without it, an `Event::Edge` fires each clause at fixed nodes: the edge's
+/// source, the source's predecessors, and (for inverse or symmetric first legs) the
+/// target. A binding whose root `X` is somewhere else is missed by the drain and
+/// left to the #137 re-seed net. Most of the fixed-node firings match nothing.
+///
+/// With the flag on, for each Horn clause with a body atom on the edge's role, and
+/// each such atom the edge satisfies (read forward or backward), the engine walks
+/// the clause's variable tree from that atom back to `X` through the graph and
+/// fires a match pinned to that atom at each root it reaches. Every binding that
+/// uses the edge is found at its own root, whatever the body's depth or the
+/// direction its edges are stored in. Each emitted binding is still a full
+/// homomorphism checked atom by atom, so the change cannot add a wrong match.
+#[must_use]
+pub fn hyper_root_recovery_enabled() -> bool {
+    std::env::var_os("RUSTDL_HYPER_ROOT_RECOVERY").is_some_and(|v| v == "1")
+}
+
 #[must_use]
 pub fn inverse_func_merge_enabled() -> bool {
     std::env::var_os("RUSTDL_INVERSE_FUNC_MERGE").is_none_or(|v| v != "0")

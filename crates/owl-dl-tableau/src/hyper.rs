@@ -428,6 +428,79 @@ impl HyperNode {
     }
 }
 
+/// The engine's node graph: one shared, copy-on-write box per node, so a branch
+/// [`Snapshot`] costs a pointer per node instead of a deep copy of every label
+/// list. Measured on `ore_ont_3077` (one chain to branch level 221 over ~7,000
+/// nodes) the deep copy held ~5.4 MB per live snapshot, ~1.2 GB at peak.
+///
+/// Reads (`Index`, [`Self::iter`]) are a plain deref: no refcount touch, so the
+/// hot readers (`is_blocked`, the subset walks, `enumerate_matches`) pay only the
+/// extra pointer hop. Every write goes through `IndexMut` / [`Self::iter_mut`],
+/// which call `Rc::make_mut`: a node a live snapshot still shares is cloned
+/// whole (labels, deps and `label_sig` together) before the write lands, so the
+/// snapshot never sees it and `label_sig` cannot drift from the labels it
+/// summarises. Mutate labels via [`HyperNode::add`] as before.
+#[derive(Debug, Default)]
+struct Nodes(Vec<std::rc::Rc<HyperNode>>);
+
+impl Nodes {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn push(&mut self, n: HyperNode) {
+        self.0.push(std::rc::Rc::new(n));
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &HyperNode> {
+        self.0.iter().map(|n| &**n)
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut HyperNode> {
+        self.0.iter_mut().map(std::rc::Rc::make_mut)
+    }
+
+    /// Branch save: share every node (`cow`, `RUSTDL_COW_NODES`) or deep-copy
+    /// each one (the pre-CoW cost, kept as the `=0` fallback).
+    fn snapshot(&self, cow: bool) -> Self {
+        if cow {
+            Self(self.0.clone())
+        } else {
+            Self(
+                self.0
+                    .iter()
+                    .map(|n| std::rc::Rc::new(HyperNode::clone(n)))
+                    .collect(),
+            )
+        }
+    }
+}
+
+impl From<Vec<HyperNode>> for Nodes {
+    fn from(v: Vec<HyperNode>) -> Self {
+        Self(v.into_iter().map(std::rc::Rc::new).collect())
+    }
+}
+
+impl std::ops::Index<usize> for Nodes {
+    type Output = HyperNode;
+    #[inline]
+    fn index(&self, i: usize) -> &HyperNode {
+        &self.0[i]
+    }
+}
+
+impl std::ops::IndexMut<usize> for Nodes {
+    #[inline]
+    fn index_mut(&mut self, i: usize) -> &mut HyperNode {
+        std::rc::Rc::make_mut(&mut self.0[i])
+    }
+}
+
 /// Branch save/restore snapshot — captures every mutable engine state
 /// that branching can alter, so a failed branch fully reverts.
 ///
@@ -435,7 +508,7 @@ impl HyperNode {
 /// read-only contract from [`HyperEngine::from_snapshot_lazy`],
 /// untouched by branching.
 struct Snapshot {
-    nodes: Vec<HyperNode>,
+    nodes: Nodes,
     representative: Vec<HNode>,
     neq: Vec<(HNode, HNode)>,
     block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
@@ -732,7 +805,7 @@ pub struct HyperEngine<'c> {
     /// `HyperCache::classify_labels` probes can share the pre-built
     /// set via an O(1) reference-count bump instead of an O(N) clone.
     disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
-    nodes: Vec<HyperNode>,
+    nodes: Nodes,
     stats: SearchStats,
     init_depth: usize,
     deadline: Option<Instant>,
@@ -935,6 +1008,9 @@ pub struct HyperEngine<'c> {
     /// `RUSTDL_NN_UNDO_LOG` (default ON, `=0` reverts to cloning `nn_holders`
     /// on every save and dropping an index built inside the restored branch).
     nn_undo_log: bool,
+    /// `RUSTDL_COW_NODES`: a branch save shares the nodes copy-on-write instead
+    /// of deep-copying them (see [`Nodes`]).
+    cow_nodes: bool,
     /// Lift `horn_fixpoint`'s `max_iters` step cap while a deadline bounds the
     /// drain (see [`Self::with_deadline_bounded_fixpoint`]). Off by default.
     deadline_bounded_fixpoint: bool,
@@ -1594,7 +1670,7 @@ impl<'c> HyperEngine<'c> {
             clauses,
             extra_clauses: &[],
             disjoint_pairs: std::sync::Arc::new(build_disjoint_pairs(clauses)),
-            nodes: vec![root_node],
+            nodes: Nodes::from(vec![root_node]),
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
@@ -1638,6 +1714,7 @@ impl<'c> HyperEngine<'c> {
             nn_log: Vec::new(),
             nn_index: crate::hyper_nn_index_enabled(),
             nn_undo_log: crate::hyper_nn_undo_log_enabled(),
+            cow_nodes: crate::hyper_cow_nodes_enabled(),
             deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -1673,7 +1750,7 @@ impl<'c> HyperEngine<'c> {
             clauses,
             extra_clauses: &[],
             disjoint_pairs,
-            nodes: vec![root_node],
+            nodes: Nodes::from(vec![root_node]),
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
@@ -1717,6 +1794,7 @@ impl<'c> HyperEngine<'c> {
             nn_log: Vec::new(),
             nn_index: crate::hyper_nn_index_enabled(),
             nn_undo_log: crate::hyper_nn_undo_log_enabled(),
+            cow_nodes: crate::hyper_cow_nodes_enabled(),
             deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -1910,7 +1988,7 @@ impl<'c> HyperEngine<'c> {
             // present (e.g. the root label set at construction time), mirroring
             // their real label_deps. Post-construction, shadow_label_deps is
             // maintained in lock-step with labels/label_deps by add_label.
-            for node in &mut self.nodes {
+            for node in self.nodes.iter_mut() {
                 if node.shadow_label_deps.len() != node.label_deps.len() {
                     node.shadow_label_deps = node.label_deps.clone();
                 }
@@ -3433,7 +3511,7 @@ impl<'c> HyperEngine<'c> {
             clauses,
             extra_clauses: &[],
             disjoint_pairs: std::sync::Arc::new(build_disjoint_pairs(clauses)),
-            nodes,
+            nodes: Nodes::from(nodes),
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
@@ -3477,6 +3555,7 @@ impl<'c> HyperEngine<'c> {
             nn_log: Vec::new(),
             nn_index: crate::hyper_nn_index_enabled(),
             nn_undo_log: crate::hyper_nn_undo_log_enabled(),
+            cow_nodes: crate::hyper_cow_nodes_enabled(),
             deadline_bounded_fixpoint: false,
             nn_taint_disabled: false,
             snapshot_origin: vec![false; n],
@@ -4023,7 +4102,7 @@ impl<'c> HyperEngine<'c> {
     fn save(&mut self) -> Snapshot {
         self.stats.node_clones += 1;
         Snapshot {
-            nodes: self.nodes.clone(),
+            nodes: self.nodes.snapshot(self.cow_nodes),
             representative: self.representative.clone(),
             neq: self.neq.clone(),
             block_index: self.block_index.clone(),
@@ -7063,6 +7142,74 @@ mod tests {
         assert_eq!(eng.nn_holders, before_outer, "outer restore");
         assert!(eng.nn_log.len() <= 1, "log back to its save-time length");
         agree(&mut eng);
+    }
+
+    /// Every node's `label_sig` equals a fresh recompute from its labels. Debug
+    /// builds no longer recompute it on each `is_blocked` comparison (#267), so
+    /// the copy-on-write tests check it explicitly.
+    fn assert_label_sigs(eng: &HyperEngine<'_>) {
+        for (i, n) in eng.nodes.iter().enumerate() {
+            assert_eq!(
+                n.label_sig,
+                label_sig_of(&n.labels),
+                "label_sig drifted at node {i}"
+            );
+        }
+    }
+
+    fn node_dump(eng: &HyperEngine<'_>) -> Vec<String> {
+        eng.nodes.iter().map(|n| format!("{n:?}")).collect()
+    }
+
+    /// `RUSTDL_COW_NODES`: a snapshot is unaffected by writes made after it, a
+    /// restore brings back the exact saved nodes, and `label_sig` stays in step
+    /// through the copy a write triggers. Same under the deep-copy fallback.
+    #[test]
+    fn cow_nodes_snapshot_and_restore_are_exact() {
+        for cow in [true, false] {
+            let (ca, cb, cc) = (cls(10), cls(11), cls(12));
+            let role = Role::Named(RoleId::new(0));
+            let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 2);
+            eng.cow_nodes = cow;
+            let n: Vec<HNode> = (0..4).map(|_| eng.new_node()).collect();
+            eng.add_label(n[0], ca, DepSet::EMPTY);
+            let dump_outer = node_dump(&eng);
+            let outer = eng.save();
+            eng.add_label(n[1], cb, DepSet::EMPTY);
+            eng.nodes[n[1].index()].edges.push((role, n[2]));
+            eng.nodes[n[2].index()].preds.push((role, n[1]));
+            assert_label_sigs(&eng);
+            let dump_inner = node_dump(&eng);
+            let inner = eng.save();
+            let n5 = eng.new_node();
+            eng.add_label(n5, cc, DepSet::EMPTY);
+            eng.add_label(n[0], cc, DepSet::EMPTY);
+            eng.add_label(n[1], ca, DepSet::EMPTY);
+            assert_label_sigs(&eng);
+            let saved: Vec<String> = inner.nodes.iter().map(|x| format!("{x:?}")).collect();
+            assert_eq!(
+                saved, dump_inner,
+                "cow={cow}: writes after save leaked into it"
+            );
+            if cow {
+                assert!(
+                    std::rc::Rc::ptr_eq(&inner.nodes.0[n[3].index()], &eng.nodes.0[n[3].index()]),
+                    "an untouched node stays shared"
+                );
+                assert!(
+                    !std::rc::Rc::ptr_eq(&inner.nodes.0[n[0].index()], &eng.nodes.0[n[0].index()]),
+                    "a written node is copied"
+                );
+            }
+            eng.restore(inner);
+            assert_eq!(node_dump(&eng), dump_inner, "cow={cow}: inner restore");
+            assert_label_sigs(&eng);
+            eng.add_label(n[3], cb, DepSet::EMPTY);
+            assert_label_sigs(&eng);
+            eng.restore(outer);
+            assert_eq!(node_dump(&eng), dump_outer, "cow={cow}: outer restore");
+            assert_label_sigs(&eng);
+        }
     }
 
     /// `RUSTDL_NN_UNDO_LOG`: an index first built inside a branch survives that

@@ -4258,7 +4258,8 @@ pub fn hyper_nn_undo_log_enabled() -> bool {
 /// a pointer per node, and a write clones only the node it touches. Answers are
 /// unchanged either way; only who owns a node's memory differs. Measured on
 /// `ore_ont_3077`: peak RSS 1,498 → 157 MB. Two-arm sweep over 1,920 ORE: no answer
-/// changes, and no ontology slower on a serial CPU-time recheck.
+/// changes outside two budget-truncated ontologies (which agree at a 1 s per-pair budget),
+/// and the worst serial CPU-time recheck is ×1.11 (`ore_ont_13964`, +0.14 s).
 #[must_use]
 pub fn hyper_cow_nodes_enabled() -> bool {
     // Default-ON idiom (house convention): an EMPTY value enables.

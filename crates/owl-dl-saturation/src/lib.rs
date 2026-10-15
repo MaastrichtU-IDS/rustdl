@@ -5120,12 +5120,33 @@ fn concept_is_provably_bot(c: ConceptId, pool: &ConceptPool) -> bool {
     }
 }
 
-/// `RUSTDL_SAT_FORALL_KEYS`: the opaque key class for `∀R.inner`. The filler is lowered with
-/// no extras and no outer role, so its class denotes exactly `inner`: no `Range` or chain
-/// folding, which hold only for an element known to sit under an edge. Every marker that
-/// lowering can build is two-way (conjunction, equivalent existential, nominal, bot, nested
-/// `∀` key), which is what lets the monotonicity rule read `∀R.F₁ ⊑ ∀R.F₂` off a derived
-/// `F₁ ⊑ F₂`. An atomic filler reuses the SP-B2b key, so that path is unchanged.
+/// Does `c` contain a `≥n R.X` with `n ≥ 2` anywhere? See [`forall_filler_key`].
+fn forall_contains_counting_min(c: ConceptId, pool: &ConceptPool) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Min(n, _, inner) => *n >= 2 || forall_contains_counting_min(*inner, pool),
+        ConceptExpr::And(ops) | ConceptExpr::Or(ops) => {
+            ops.iter().any(|&op| forall_contains_counting_min(op, pool))
+        }
+        ConceptExpr::Some(_, inner)
+        | ConceptExpr::All(_, inner)
+        | ConceptExpr::Max(_, _, inner)
+        | ConceptExpr::Not(inner) => forall_contains_counting_min(*inner, pool),
+        _ => false,
+    }
+}
+
+/// `RUSTDL_SAT_FORALL_KEYS`: the opaque key class for `∀R.inner`. The monotonicity rule reads
+/// `∀R.F₁ ⊑ ∀R.F₂` off a derived `F₁ ⊑ F₂`, so the filler's class must denote EXACTLY `inner`:
+/// - it is lowered with no extras and no outer role, so nothing keyed on a role OUTSIDE the
+///   filler is folded in (chain ranges hold only for an element known to sit under that
+///   edge). `Range` folding into an `∃S` INSIDE the filler is an equivalence and stays;
+/// - a filler containing `≥n S.X` with `n ≥ 2` is refused, because the body lowerings read it
+///   as the weaker `∃S.X`. Keyed, `∀R.(≥2 s.X)` and `∀R.∃s.X` would share a key, and a
+///   definition using the first would fire on the second (a false positive, refuted by
+///   Konclude and HermiT).
+///
+/// The markers that lowering builds (conjunction, equivalent existential, nominal, bot, nested
+/// `∀` key) are two-way. An atomic filler reuses the SP-B2b key, so that path is unchanged.
 fn forall_filler_key(
     role: RoleId,
     inner: ConceptId,
@@ -5135,6 +5156,9 @@ fn forall_filler_key(
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
     chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
 ) -> Option<ClassId> {
+    if forall_contains_counting_min(inner, pool) {
+        return None;
+    }
     let filler = atomic_or_tseitin_body_with_extras(
         inner,
         &[],

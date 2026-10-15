@@ -12,8 +12,10 @@ All notable changes to rustdl are documented here. Format is based on
   saturator drop the whole axiom, and its `∀` keys took only an atomic `F` with told
   monotonicity edges. With the flag on, `∀R.F` gets a key for any filler the saturator can
   lower, inside fillers too. When the fixpoint derives `F₁ ⊑ F₂`, it also derives
-  `∀R.F₁ ⊑ ∀R.F₂`. `∀` is monotone, so the rule only adds entailed subsumptions. The filler is
-  lowered with no `Range` or chain folding, so its class denotes exactly the inner concept.
+  `∀R.F₁ ⊑ ∀R.F₂`. `∀` is monotone, so the rule only adds entailed subsumptions, provided the
+  filler's class denotes exactly the inner concept: nothing keyed on a role outside the filler is
+  folded in, and a filler containing `≥n` with `n ≥ 2` (which the lowering reads as the weaker
+  `∃`) is not keyed.
   `ore_ont_778`: `KoalaBear ⊑ HerbivoreAnimal` and `Shark ⊑ CarnivoreAnimal` are now derived by
   saturation instead of being missed. MISSED goes 2 → 0 and FP stays 0 against the Konclude ∪
   HermiT oracle (630 = 630); the tableau needs ~44 s per pair there. Two-arm `classify` sweep over

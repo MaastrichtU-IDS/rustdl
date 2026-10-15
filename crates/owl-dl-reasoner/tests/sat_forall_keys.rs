@@ -135,3 +135,28 @@ EquivalentClasses(:B ObjectIntersectionOf(ObjectAllValuesFrom(:r :L) :Z))
         );
     }
 }
+
+/// Review finding: `∀R.(≥2 s.X)` must not share a key with `∀R.∃s.X`. Konclude and HermiT
+/// both refute `Y ⊑ H` here (an `R`-successor with one `s`-successor is a countermodel).
+fn forall_min(n: u32) -> String {
+    format!(
+        r"Prefix(:=<http://e/>)
+Ontology(<http://e/o>
+Declaration(Class(:H)) Declaration(Class(:Y)) Declaration(Class(:X))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:R)) Declaration(ObjectProperty(:s))
+EquivalentClasses(:H ObjectSomeValuesFrom(:r ObjectAllValuesFrom(:R ObjectMinCardinality({n} :s :X))))
+SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectAllValuesFrom(:R ObjectSomeValuesFrom(:s :X))))
+)"
+    )
+}
+
+#[test]
+fn a_min_two_filler_is_not_read_as_an_existential() {
+    assert!(!sat_sub(true, &forall_min(2), "http://e/Y", "http://e/H"));
+}
+
+#[test]
+fn a_min_one_filler_is_an_existential() {
+    // Control: `≥1 s.X ≡ ∃s.X`, so `Y ⊑ H` is entailed and the flag derives it.
+    assert!(sat_sub(true, &forall_min(1), "http://e/Y", "http://e/H"));
+}

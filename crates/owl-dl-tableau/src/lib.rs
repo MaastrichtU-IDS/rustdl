@@ -4249,6 +4249,23 @@ pub fn hyper_nn_undo_log_enabled() -> bool {
     std::env::var_os("RUSTDL_NN_UNDO_LOG").is_none_or(|v| v != "0")
 }
 
+/// Whether a branch save shares the engine's nodes copy-on-write instead of
+/// deep-copying them (`RUSTDL_COW_NODES`, **default ON**, `=0` reverts).
+///
+/// The deep copy held every node's label lists once per live snapshot, so a deep
+/// branch chain grew peak RSS linearly with depth: `ore_ont_3077` reached branch
+/// level 221 over ~7,000 nodes and peaked near 1.2 GB. Shared, a snapshot costs
+/// a pointer per node, and a write clones only the node it touches. Answers are
+/// unchanged either way; only who owns a node's memory differs. Measured on
+/// `ore_ont_3077`: peak RSS 1,498 → 157 MB. Two-arm sweep over 1,920 ORE: no answer
+/// changes outside two budget-truncated ontologies (which agree at a 1 s per-pair budget),
+/// and the worst serial CPU-time recheck is ×1.11 (`ore_ont_13964`, +0.14 s).
+#[must_use]
+pub fn hyper_cow_nodes_enabled() -> bool {
+    // Default-ON idiom (house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_COW_NODES").is_none_or(|v| v != "0")
+}
+
 /// Whether `horn_fixpoint`'s drain loop consults the wall-clock deadline.
 ///
 /// The loop is bounded by a `max_iters` STEP count only, so a fixpoint whose

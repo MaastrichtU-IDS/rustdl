@@ -44,6 +44,29 @@ All notable changes to rustdl are documented here. Format is based on
   29 → 8, all of it `ore_ont_12698`. Two ontologies the flag-on net arm failed to finish under
   parallel load, `ore_ont_13723` and `2232`, give identical answers in both arms in 3 serial
   runs each (44–54 CPU-s either way).
+- **Branch saves share the wedge's nodes copy-on-write, `RUSTDL_COW_NODES`, default ON
+  (`=0` reverts).** Each branch save deep-copied every node's label lists, and every live
+  snapshot kept its copy, so peak RSS grew with branch depth. `ore_ont_3077` reaches branch level
+  221 over ~7,000 nodes: about 5.4 MB per snapshot, about 1.2 GB at peak. With the flag on, a save
+  shares the nodes and a write copies only the node it touches. Reads touch no reference count.
+  The fields `is_blocked` filters candidates on (order, parent, label count, `label_sig`) are
+  mirrored in a contiguous array, so blocking checks do not follow a pointer per candidate.
+  `rustdl consistent ore_ont_3077` (single thread, 60 s consistency fallback): peak RSS
+  1,498 → 157 MB, same verdict, same CPU. `classify` CPU-s medians over 3 interleaved reps
+  (single thread, default budget): `ore_ont_2313` ×0.68, `2182` ×0.70, `6272` ×0.73, `14375`
+  ×0.78, `16481` ×0.83, `6792` ×0.90, `13078` ×0.93, `10127` ×0.96, `10073` ×0.98, wine ×1.00.
+  The class hierarchy is identical across all runs of every one, and unbudgeted outputs match
+  main's on all 9 tried. With the default budget, `ore_ont_6272` completes where main stops
+  incomplete. Two-arm `classify` sweep of the final build over all 1,920 ORE (60 s cap, single
+  thread, flag on vs main): every ontology both arms finish gives the same answer, apart from two
+  the per-pair budget truncates in both (`ore_ont_12698`, `8666`), which agree at
+  `--pair-timeout-ms 1000` in 3 reps per arm. Of the 3 outcome flips, `15108` (57.8–71.3 →
+  40.3–43.6 CPU-s) and `934` (62.5–66.5 → 48.7–55.0) are real wins and `16008` is flat at the
+  cap. The 12 rows the sweep flagged as slower are flat on a serial CPU-time recheck (worst
+  `13964`, ×1.11 / +0.14 s). Peak RSS geomean ×0.94. Before the contiguous array was added,
+  `ore_ont_5107` looked 2× slower while running the same 143G instructions: its hot loop is
+  byte-identical and only its code alignment differed. With the flag off the nodes are still
+  boxed, so `ore_ont_3077` peaks at 1,609 MB, 7% above main.
 
 ### Changed
 - **A branch restore undoes the wedge's NN-rule index with a log instead of a copy (#255

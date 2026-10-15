@@ -126,6 +126,8 @@ pub enum SyntheticDef {
     NominalKey(IndividualId),
     /// `MaxKey`: stands in for `≤n R`.
     MaxKey { n: u32, role: RoleId },
+    /// `MinKey`: stands in for `≥n R.B` with `n ≥ 2`.
+    MinKey { n: u32, role: RoleId, body: ClassId },
     /// `ForallKey`: stands in for `∀R.OneOf(S)`.
     ForallKey {
         role: RoleId,
@@ -1187,6 +1189,11 @@ fn render_synthetic_def<S: std::hash::BuildHasher>(
         SyntheticDef::MaxKey { n, role } => {
             let r_str = render_role(*role, vocab);
             format!("ObjectMaxCardinality({n} {r_str})")
+        }
+        SyntheticDef::MinKey { n, role, body } => {
+            let r_str = render_role(*role, vocab);
+            let b_str = render_class_expanded(*body, vocab, Some(defs));
+            format!("ObjectMinCardinality({n} {r_str} {b_str})")
         }
         SyntheticDef::ForallKey { role, members } => {
             let r_str = render_role(*role, vocab);

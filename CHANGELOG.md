@@ -67,6 +67,22 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_13233`, `14375`, `14556`, all consistent), none lost, no answer changes.
 
 ### Fixed
+- **The EL saturator no longer reads `≥n R.X` (n ≥ 2) as `∃R.X` in a definition's
+  sufficient direction, a false positive.** With `H ≡ ∃r.(≥2 s.X)` and `Y ⊑ ∃r.∃s.X`,
+  `classify` reported `Y ⊑ H` at default settings. Konclude and HermiT both refute it: a `Y`
+  whose `r`-successor has one `s`-successor is a countermodel. Reading `≥n` as `∃` is sound
+  only where the concept is asserted. Now `≥n R.X` gets its own class (a `MinKey`):
+  - it is derived wherever `≥n R.X` is asserted: inside a filler, at top level, or as the head
+    of a conjunctive axiom;
+  - `MinKey(n,R,C) ⊑ MinKey(m,R,D)` is derived whenever `C ⊑ D` and `n ≥ m`;
+  - `MinKey ⊑ ∃R.X` keeps every consequence of the weaker `∃`.
+
+  A definition's `≥2` therefore fires only on a concept entailed to have it. Refusing such
+  definitions outright was tried first and lost Konclude-confirmed entailments that depend on
+  the same `≥2` on both sides (`SulfonicAcidGroup ⊑ SulfonicAcidDerivativeGroup` on
+  `ore_ont_10019`, `1707`, `6333`, `6485`). With the key they are kept. Unflagged, as a
+  soundness fix. The false-positive shape does not occur in ORE, so the evidence is 11
+  canaries (5 sabotages, each caught) plus the Konclude pair (`≥2` refuted, `≥1` entailed).
 - **With `RUSTDL_HARD_GLOBAL_DEADLINE=1`, `rustdl classify` no longer waits on a parse that
   outlasts `--global-timeout-ms` (#162), `RUSTDL_PARSE_DEADLINE`, default ON (`=0` waits).**
   The parser cannot be interrupted, so the command now runs on a worker thread and the main

@@ -766,6 +766,11 @@ fn synthetic_def_to_class_expression(
             ope: role_id_to_ope(*role, vocab, build),
             bce: Box::new(ClassExpression::ObjectIntersectionOf(vec![])), // unqualified: ⊤
         },
+        SyntheticDef::MinKey { n, role, body } => ClassExpression::ObjectMinCardinality {
+            n: *n,
+            ope: role_id_to_ope(*role, vocab, build),
+            bce: Box::new(class_id_to_class_expression(*body, vocab, defs, build)?),
+        },
         SyntheticDef::ForallKey { role, members } => {
             let mems: Vec<Individual<RcStr>> = members
                 .iter()

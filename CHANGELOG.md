@@ -43,8 +43,8 @@ All notable changes to rustdl are documented here. Format is based on
   Before the two subset walks, a candidate is skipped if its label list is shorter than the
   blocked node's, or if the blocked node's signature has a bit the candidate's lacks. Either
   test is checked for the node pair and for the parents. Both follow from `L(n) ⊆ L(m)`, so
-  the verdict cannot change; debug builds check that each signature matches its labels on
-  every comparison. On `ore_ont_14375` and `10127` the blocking loop had made 143 M and 142 M
+  the verdict cannot change; whenever the signature rejects a candidate, debug builds re-run
+  the skipped walks and check they would have failed. On `ore_ont_14375` and `10127` the blocking loop had made 143 M and 142 M
   label comparisons. Median CPU-s over 6 interleaved runs, edge pin on, identical answers in
   every run: `consistent` on `ore_ont_14375` 10.64 → 8.69 (−18%) and on `10127` 26.89 → 22.93
   (−15%), with a 60 s budget; `classify` on `ore_ont_2313` 9.26 → 7.40 (−20%); `wine` flat.

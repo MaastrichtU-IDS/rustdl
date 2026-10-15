@@ -2994,6 +2994,9 @@ struct TseitinAllocator {
     /// `(n, R)` identity; exact match only (no `≤m ⊑ ≤n` cross-`n`), qualifier
     /// must be `⊤` (unqualified). See `docs/classify-recovery-scope-2026-06-07.md`.
     max_key_by_role: HashMap<(u32, RoleId), ClassId>,
+    /// `MinKey(n, R, B)` for `≥n R.B` with `n ≥ 2` inside a body. See
+    /// [`TseitinAllocator::introduce_min_key`].
+    min_key_by: HashMap<(u32, RoleId, ClassId), ClassId>,
     /// Stable synthetic atomic class per `∀R.OneOf(S)` universal-over-nominal-set
     /// restriction (`(R, sorted S)`), used as a structural stand-in (cluster-B
     /// lever, wine residual-9). Same opaque-atom discipline as `max_key_by_role`:
@@ -3034,6 +3037,7 @@ impl TseitinAllocator {
             by_union_existential: HashMap::new(),
             nominal_by_ind: HashMap::new(),
             max_key_by_role: HashMap::new(),
+            min_key_by: HashMap::new(),
             forall_key_by_role: HashMap::new(),
             forall_atomic_key_by_role: HashMap::new(),
             top_witness_by_role: HashMap::new(),
@@ -3235,6 +3239,36 @@ impl TseitinAllocator {
             target: body,
         });
         marker
+    }
+
+    /// Get-or-allocate the opaque class standing in for `≥n R.B` (`n ≥ 2`) inside a body.
+    ///
+    /// The body lowerings used to read `≥n R.B` as the equivalent `∃R.B` marker. That is
+    /// sound where the concept is asserted (a weaker fact) and UNSOUND in a trigger body, a
+    /// sufficient condition: `H ≡ ∃r.(≥2 s.X)` fired on `Y ⊑ ∃r.∃s.X`, and `classify`
+    /// reported `Y ⊑ H`, which Konclude and `HermiT` refute. The key is derived only where
+    /// `≥n R.B` itself is asserted (or inherited through subsumption), so a trigger on it fires
+    /// only on the same restriction. `Key ⊑ ∃R.B` keeps every consequence the old
+    /// under-approximation gave an asserted `≥n`.
+    fn introduce_min_key(
+        &mut self,
+        n: u32,
+        role: RoleId,
+        body: ClassId,
+        rules: &mut ElRules,
+    ) -> ClassId {
+        if let Some(&existing) = self.min_key_by.get(&(n, role, body)) {
+            return existing;
+        }
+        let key = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.min_key_by.insert((n, role, body), key);
+        let exists = self.introduce_equivalent_existential_marker(role, body, rules);
+        rules.atomic_subsumptions.push(AtomicSubsumption {
+            sub: key,
+            sup: exists,
+        });
+        key
     }
 }
 
@@ -3596,6 +3630,10 @@ fn collect_el_rules_with_provenance(
     // MaxKey: MaxKey(n, role) → stand-in for ≤n R
     for (&(n, role), &key) in &tseitin.max_key_by_role {
         synthetic_defs.insert(key, proof::SyntheticDef::MaxKey { n, role });
+    }
+    // MinKey: MinKey(n, role, B) → stand-in for ≥n role.B (n ≥ 2)
+    for (&(n, role, body), &key) in &tseitin.min_key_by {
+        synthetic_defs.insert(key, proof::SyntheticDef::MinKey { n, role, body });
     }
     // ForallKey: ForallKey(role, S) → stand-in for ∀role.OneOf(S)
     for ((role, members), &key) in &tseitin.forall_key_by_role {
@@ -5273,8 +5311,11 @@ fn atomic_or_tseitin_body_with_extras(
                 chain_ranges,
                 Some(role.role_id()),
             )?;
-            let marker =
-                tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
+            let marker = if *n >= 2 {
+                tseitin.introduce_min_key(*n, role.role_id(), inner_id, rules)
+            } else {
+                tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules)
+            };
             vec![marker]
         }
         ConceptExpr::All(role, inner) if sat_forall_keys_enabled() && !role.is_inverse() => {
@@ -5350,11 +5391,11 @@ fn atomic_classes_with_existential_markers(
                     chain_ranges,
                     Some(role.role_id()),
                 )?;
-                let marker = tseitin.introduce_equivalent_existential_marker(
-                    role.role_id(),
-                    inner_id,
-                    rules,
-                );
+                let marker = if *n >= 2 {
+                    tseitin.introduce_min_key(*n, role.role_id(), inner_id, rules)
+                } else {
+                    tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules)
+                };
                 out.push(marker);
             }
             ConceptExpr::All(role, inner) if sat_forall_keys_enabled() && !role.is_inverse() => {

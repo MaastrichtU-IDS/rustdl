@@ -67,6 +67,20 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_13233`, `14375`, `14556`, all consistent), none lost, no answer changes.
 
 ### Fixed
+- **The EL saturator no longer reads `≥n R.X` (n ≥ 2) as `∃R.X` in a definition's
+  sufficient direction, a false positive.** With `H ≡ ∃r.(≥2 s.X)` and `Y ⊑ ∃r.∃s.X`,
+  `classify` reported `Y ⊑ H` at default settings. Konclude and HermiT both refute it: a `Y`
+  whose `r`-successor has one `s`-successor is a countermodel. Reading `≥n` as `∃` is sound
+  only where the concept is asserted. Inside a body, `≥n R.X` now gets its own class, with
+  `≥n R.X ⊑ ∃R.X` kept as a subsumption, so a definition's `≥2` matches only the same asserted
+  `≥2`. Refusing such definitions outright was tried first and lost Konclude-confirmed
+  entailments that depend on the same `≥2` on both sides (`SulfonicAcidGroup ⊑
+  SulfonicAcidDerivativeGroup` on `ore_ont_10019`, `1707`, `6333`, `6485`). With the key they
+  are kept. Unflagged, as a soundness fix. Two-arm `classify` sweep over the 476 ORE
+  ontologies with a cardinality restriction (60 s cap, single thread): 435 identical, 36 time
+  out in both arms, no answer changes after serial recheck, and CPU flat on the 4 rows that
+  read slower under load. The false-positive shape does not occur in ORE, so the evidence is
+  6 canaries plus the Konclude pair (`≥2` refuted, `≥1` entailed).
 - **With `RUSTDL_HARD_GLOBAL_DEADLINE=1`, `rustdl classify` no longer waits on a parse that
   outlasts `--global-timeout-ms` (#162), `RUSTDL_PARSE_DEADLINE`, default ON (`=0` waits).**
   The parser cannot be interrupted, so the command now runs on a worker thread and the main

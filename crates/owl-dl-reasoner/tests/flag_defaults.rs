@@ -156,7 +156,7 @@ fn expected() -> Vec<FlagRow> {
         (
             "RUSTDL_COW_NODES",
             owl_dl_tableau::hyper_cow_nodes_enabled,
-            false,
+            true,
         ),
         (
             "RUSTDL_NN_INDEX",

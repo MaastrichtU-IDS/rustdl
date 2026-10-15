@@ -40,8 +40,8 @@ All notable changes to rustdl are documented here. Format is based on
   29 → 8, all of it `ore_ont_12698`. Two ontologies the flag-on net arm failed to finish under
   parallel load, `ore_ont_13723` and `2232`, give identical answers in both arms in 3 serial
   runs each (44–54 CPU-s either way).
-- **Branch saves can share the wedge's nodes copy-on-write, `RUSTDL_COW_NODES`, default OFF
-  (`=1` enables).** Each branch save deep-copied every node's label lists, and every live
+- **Branch saves share the wedge's nodes copy-on-write, `RUSTDL_COW_NODES`, default ON
+  (`=0` reverts).** Each branch save deep-copied every node's label lists, and every live
   snapshot kept its copy, so peak RSS grew with branch depth. `ore_ont_3077` reaches branch level
   221 over ~7,000 nodes: about 5.4 MB per snapshot, about 1.2 GB at peak. With the flag on, a save
   shares the nodes and a write copies only the node it touches. Reads touch no reference count.

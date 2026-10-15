@@ -109,13 +109,95 @@ SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectMinCardinality(2 :s :X)))
     assert!(classify_sub(o, Y, H), "classify: Y ⊑ H");
 }
 
+/// An ontology from bare axiom lines over classes `A B F H W X Y Z` and roles `r s p`.
+fn axioms(body: &str) -> String {
+    format!(
+        r"Prefix(:=<http://e/>)
+Ontology(<http://e/o>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:F)) Declaration(Class(:H))
+Declaration(Class(:W)) Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:Z))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:p))
+{body}
+)"
+    )
+}
+
+const Z: &str = "http://e/Z";
+const H_DEF: &str = "EquivalentClasses(:H ObjectSomeValuesFrom(:r ObjectMinCardinality(2 :s :X)))";
+
 #[test]
-fn the_same_min_two_on_both_sides_still_matches() {
-    // `H ≡ ∃r.(≥2 s.X)`, `Y ⊑ ∃r.(≥2 s.X)`: entailed, and derived by saturation through the key.
-    let o = ont("ObjectMinCardinality(2 :s :X)").replace(
-        "SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :X)))",
-        "SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectMinCardinality(2 :s :X)))",
-    );
+fn an_asserted_min_two_inside_a_conjunction_matches_through_the_key() {
+    // Derived through `MinKey`, not told-definition matching (the conjunct `A` makes the two
+    // fillers different concepts). The `Z` twin, with `∃s.X` where `Y` has `≥2 s.X`, is the
+    // false positive `main` had.
+    let o = axioms(&format!(
+        "{H_DEF}
+SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A ObjectMinCardinality(2 :s :X))))
+SubClassOf(:Z ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A ObjectSomeValuesFrom(:s :X))))"
+    ));
     assert!(sat_sub(&o, Y, H), "saturation: Y ⊑ H");
-    assert!(classify_sub(&o, Y, H), "classify: Y ⊑ H");
+    assert!(!sat_sub(&o, Z, H), "saturation: Z ⋢ H");
+    assert!(!classify_sub(&o, Z, H), "classify: Z ⋢ H");
+}
+
+#[test]
+fn a_top_level_asserted_min_two_seeds_the_key() {
+    let o = axioms(&format!(
+        "{H_DEF}
+SubClassOf(:W ObjectMinCardinality(2 :s :X))
+SubClassOf(:Y ObjectSomeValuesFrom(:r :W))"
+    ));
+    assert!(sat_sub(&o, Y, H), "saturation: Y ⊑ H");
+}
+
+#[test]
+fn a_conjunctive_min_two_head_gives_the_key() {
+    let o = axioms(&format!(
+        "{H_DEF}
+SubClassOf(ObjectIntersectionOf(:A :B) ObjectMinCardinality(2 :s :X))
+SubClassOf(:W ObjectIntersectionOf(:A :B))
+SubClassOf(:Y ObjectSomeValuesFrom(:r :W))"
+    ));
+    assert!(sat_sub(&o, Y, H), "saturation: Y ⊑ H");
+}
+
+#[test]
+fn a_chain_range_folded_body_still_matches_by_monotonicity() {
+    // Under `r ∘ s ⊑ p`, `Range(p, F)`, the asserted filler folds `F` in and the definition's
+    // does not, so the two keys differ; `X ⊓ F ⊑ X` connects them.
+    let o = axioms(&format!(
+        "SubObjectPropertyOf(ObjectPropertyChain(:r :s) :p)
+ObjectPropertyRange(:p :F)
+{H_DEF}
+SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A ObjectMinCardinality(2 :s :X))))"
+    ));
+    assert!(sat_sub(&o, Y, H), "saturation: Y ⊑ H");
+}
+
+#[test]
+fn min_keys_are_monotone_in_count_and_filler() {
+    // `≥3 s.X ⊑ ≥2 s.X`, and `A ⊑ X` gives `≥2 s.A ⊑ ≥2 s.X`.
+    let o = axioms(&format!(
+        "SubClassOf(:A :X)
+{H_DEF}
+SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectMinCardinality(3 :s :X)))
+SubClassOf(:Z ObjectSomeValuesFrom(:r ObjectMinCardinality(2 :s :A)))"
+    ));
+    assert!(sat_sub(&o, Y, H), "≥3 ⊑ ≥2");
+    assert!(sat_sub(&o, Z, H), "filler monotonicity");
+}
+
+#[test]
+fn min_key_monotonicity_does_not_run_backwards() {
+    // `≥2 s.X ⋢ ≥3 s.X`, and `X ⋢ A`.
+    let o = axioms(
+        "SubClassOf(:A :X)
+EquivalentClasses(:H ObjectSomeValuesFrom(:r ObjectMinCardinality(3 :s :X)))
+EquivalentClasses(:F ObjectSomeValuesFrom(:r ObjectMinCardinality(2 :s :A)))
+SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectMinCardinality(2 :s :X)))",
+    );
+    assert!(!sat_sub(&o, Y, H), "≥2 ⋢ ≥3");
+    assert!(!sat_sub(&o, Y, "http://e/F"), "≥2 s.X ⋢ ≥2 s.A");
+    assert!(!classify_sub(&o, Y, H));
+    assert!(!classify_sub(&o, Y, "http://e/F"));
 }

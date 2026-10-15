@@ -1403,6 +1403,25 @@ impl WorklistEngine {
                 self.enqueue_subsumer(kc, kd);
             }
         }
+        // `MinKey` monotonicity: `C ⊑ D` and `n ≥ m` give `≥n R.C ⊑ ≥m R.D`. Skipped while
+        // recording proofs (no inference is recorded for it).
+        if !self.record_proofs
+            && let Some(keyed) = self.rules.min_keys_by_body.get(&c)
+        {
+            let mut ups: Vec<(ClassId, ClassId)> = Vec::new();
+            for &(n, r, kc) in keyed {
+                if let Some(targets) = self.rules.min_keys_by_role_body.get(&(r, d)) {
+                    for &(m, kd) in targets {
+                        if n >= m && kc != kd {
+                            ups.push((kc, kd));
+                        }
+                    }
+                }
+            }
+            for (kc, kd) in ups {
+                self.enqueue_subsumer(kc, kd);
+            }
+        }
         // Transitivity (forward): anything D ⊑ is also a subsumer
         // of C.
         let supers_of_d = self.supers_of_class(d);
@@ -2801,6 +2820,11 @@ struct ElRules {
     /// Empty unless the flag is on.
     forall_key_of: std::collections::HashMap<(RoleId, ClassId), ClassId>,
     forall_keys_by_filler: std::collections::HashMap<ClassId, Vec<(RoleId, ClassId)>>,
+    /// `MinKey` monotonicity index: body `B` ↦ `[(n, R, MinKey(n,R,B))]`, and `(R, B)` ↦
+    /// `[(n, MinKey(n,R,B))]`. Read in `process_subsumer`: `C ⊑ D` and `n ≥ m` give
+    /// `MinKey(n,R,C) ⊑ MinKey(m,R,D)`.
+    min_keys_by_body: std::collections::HashMap<ClassId, Vec<(u32, RoleId, ClassId)>>,
+    min_keys_by_role_body: std::collections::HashMap<(RoleId, ClassId), Vec<(u32, ClassId)>>,
     /// Atomic classes told directly to be unsatisfiable via
     /// `SubClassOf(Atomic(C), Bot)`. Seeded into the unsat worklist
     /// at `seed` time so the standard `process_unsat` propagation
@@ -3882,6 +3906,36 @@ fn collect_el_rules(
         }
     }
 
+    {
+        let mut keys: Vec<((u32, RoleId, ClassId), ClassId)> =
+            tseitin.min_key_by.iter().map(|(&k, &v)| (k, v)).collect();
+        // HashMap order would make the per-body lists nondeterministic.
+        keys.sort_unstable_by_key(|&((n, r, b), k)| (r.index(), b.index(), n, k.index()));
+        for ((n, r, b), key) in &keys {
+            rules
+                .min_keys_by_body
+                .entry(*b)
+                .or_default()
+                .push((*n, *r, *key));
+            rules
+                .min_keys_by_role_body
+                .entry((*r, *b))
+                .or_default()
+                .push((*n, *key));
+        }
+        // Same body, larger count: `≥n R.B ⊑ ≥m R.B` for `n > m`.
+        for ((n, r, b), key) in &keys {
+            for &(m, other) in &rules.min_keys_by_role_body[&(*r, *b)] {
+                if *n > m {
+                    rules.atomic_subsumptions.push(AtomicSubsumption {
+                        sub: *key,
+                        sup: other,
+                    });
+                }
+            }
+        }
+    }
+
     let total_classes = tseitin.next_id as usize;
 
     // Phase 2a: collect functional-role declarations and precompute
@@ -4211,6 +4265,19 @@ fn lower_sub_class_of(
                     sup: key,
                 });
             }
+            // A told `≥n R.B` (`n ≥ 2`, top-level or `And` operand) seeds `sub ⊑ MinKey`, the
+            // key a definition's `≥n R.B` trigger waits on. The weak `∃R.B` fact is still
+            // emitted below. Sound: it is the asserted concept itself.
+            for op in self_or_conjuncts(sup, pool) {
+                if let Some(key) =
+                    top_level_min_key(op, pool, rules, tseitin, effective_ranges, chain_ranges)
+                {
+                    rules.atomic_subsumptions.push(AtomicSubsumption {
+                        sub: *sub_id,
+                        sup: key,
+                    });
+                }
+            }
             // Cluster-B lever: a told `∀R.OneOf(S)` (top-level or And operand)
             // seeds `sub ⊑ ForallKey(R,S)` — the same opaque key a defined
             // class's `∀R.OneOf(S)` conjunct lowers to. Sound: `C ⊑ ∀R.OneOf(S)`
@@ -4451,6 +4518,18 @@ fn lower_sub_class_of(
                     bodies: bodies.clone(),
                     head: marker,
                 });
+            }
+            // A `≥n R.B` (`n ≥ 2`) head also gives its `MinKey`, so a definition's `≥n R.B`
+            // trigger can fire on the conjunction (the `∃` marker above alone cannot).
+            for op in self_or_conjuncts(sup, pool) {
+                if let Some(key) =
+                    top_level_min_key(op, pool, rules, tseitin, effective_ranges, chain_ranges)
+                {
+                    rules.conjunctive_triggers.push(ConjunctiveTrigger {
+                        bodies: bodies.clone(),
+                        head: key,
+                    });
+                }
             }
         }
         ConceptExpr::Some(role, body) => {
@@ -4772,6 +4851,46 @@ fn top_weakened_existential_rhs(
 /// `chain_ranges` is keyed on the ORDERED pair, and its values come from
 /// `effective_ranges[sup]` rather than `role_ranges[sup]`, so a range declared
 /// on a SUPER-role of the chain head is picked up too.
+/// The `MinKey` for a top-level `≥n R.B` (`n ≥ 2`, non-inverse `R`), with `B` lowered
+/// exactly as a trigger body lowers it (`nested_extras(.., None, R)`, outer role `Some(R)`), so
+/// the key an assertion seeds is the one a definition's trigger waits on. `None` for any other
+/// concept or an unlowerable `B`.
+fn top_level_min_key(
+    c: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
+) -> Option<ClassId> {
+    let ConceptExpr::Min(n, role, inner) = pool.get(c) else {
+        return None;
+    };
+    if *n < 2 || role.is_inverse() {
+        return None;
+    }
+    let r = role.role_id();
+    let body = atomic_or_tseitin_body_with_extras(
+        *inner,
+        &nested_extras(effective_ranges, chain_ranges, None, r),
+        pool,
+        rules,
+        tseitin,
+        effective_ranges,
+        chain_ranges,
+        Some(r),
+    )?;
+    Some(tseitin.introduce_min_key(*n, r, body, rules))
+}
+
+/// `c` itself or its top-level `And` operands.
+fn self_or_conjuncts(c: ConceptId, pool: &ConceptPool) -> Vec<ConceptId> {
+    match pool.get(c) {
+        ConceptExpr::And(ops) => ops.to_vec(),
+        _ => vec![c],
+    }
+}
+
 fn nested_extras(
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
     chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,

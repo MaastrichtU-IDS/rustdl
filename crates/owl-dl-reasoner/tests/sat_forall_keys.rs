@@ -31,7 +31,7 @@ fn sat_sub(flag: bool, ont: &str, x: &str, y: &str) -> bool {
         if flag {
             std::env::set_var("RUSTDL_SAT_FORALL_KEYS", "1");
         } else {
-            std::env::remove_var("RUSTDL_SAT_FORALL_KEYS");
+            std::env::set_var("RUSTDL_SAT_FORALL_KEYS", "0");
         }
     }
     let (o, _): (SetOntology<RcStr>, _) = read_ofn(
@@ -77,12 +77,31 @@ fn nested_forall_monotonicity_derives_the_subsumption() {
 }
 
 #[test]
-fn the_default_saturator_still_misses_it() {
-    // Pins the flag as opt-in. A future default flip must flip this test, not delete it.
+fn the_default_derives_it_and_eq_0_reverts() {
+    // The flag is default ON. Unset must behave as `=1`, and `=0` must still drop the axioms.
     let ont = koala(":hasRealization", ":EP", ":Plant");
+    let unset = {
+        let _g = ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: `ENV` is held, as in `sat_sub`.
+        unsafe { std::env::remove_var("RUSTDL_SAT_FORALL_KEYS") };
+        let (o, _): (SetOntology<RcStr>, _) = read_ofn(
+            &mut Cursor::new(ont.clone()),
+            ParserConfiguration::default(),
+        )
+        .expect("parse");
+        let internal = convert_ontology(&o).expect("lower");
+        let subsumers = owl_dl_saturation::saturate(&internal);
+        subsumers.contains(
+            internal.vocabulary.class_id(K).expect("K"),
+            internal.vocabulary.class_id(H).expect("H"),
+        )
+    };
+    assert!(unset, "unset (default ON): Koala ⊑ Herbivore");
     assert!(
         !sat_sub(false, &ont, K, H),
-        "flag off: the saturator drops the axioms"
+        "=0: the saturator drops the axioms"
     );
 }
 

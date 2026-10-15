@@ -2902,6 +2902,8 @@ CHANGELOG and not repeated here). All but #267 have their own flag (`=0` reverts
 | #264 | EL saturation (not the wedge): the bounded fixpoint paces its deadline clock by work, not by pops | `RUSTDL_SAT_WORK_CLOCK` |
 | #265 | wedge: a branch restore undoes the NN-rule nominal index with a log instead of cloning it | `RUSTDL_NN_UNDO_LOG` |
 | #267 | wedge: `is_blocked` (the double-blocking branch, the default) rejects most candidate blockers by label count and a 64-bit label signature before the subset walks. −15–20% CPU on the stall cases, `consistent` decides 3 more of 227 stall ontologies, no answer changes | none (verdict-identical by construction) |
+| #269, flipped ON here | EL saturation: `∀R.F` gets a key for any lowerable filler, inside `∃` fillers too, and `F₁ ⊑ F₂` gives `∀R.F₁ ⊑ ∀R.F₂`. `ore_ont_778` MISSED 2 → 0; missed-entailment net FP 0, MISSED 15 → 13 | `RUSTDL_SAT_FORALL_KEYS` |
+| #270 | EL saturation, soundness: `≥n R.X` (n ≥ 2) gets its own key instead of being read as `∃R.X` in a definition's sufficient direction (a false positive at default settings) | none (soundness fix) |
 
 **With the edge pin on, `RUSTDL_RESEED_VERIFY=0` is no longer a harmless perf knob.** Pinning
 narrows which bindings an edge event enumerates, and the #137 net is what recovers the ones no

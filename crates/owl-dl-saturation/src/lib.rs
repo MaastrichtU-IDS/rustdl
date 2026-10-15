@@ -172,12 +172,14 @@ fn el_bot_filler_enabled() -> bool {
 /// #180, `ore_ont_778`: key `∀R.F` for any filler `F` the saturator can lower, not only an
 /// atomic one, including inside `∃` fillers, and derive `Key(R,F₁) ⊑ Key(R,F₂)` whenever
 /// the fixpoint derives `F₁ ⊑ F₂` (`∀` is monotone). Without it a `∀` inside an `∃` filler
-/// makes the lowering return `None` and the whole axiom is dropped. Default **OFF**;
-/// `RUSTDL_SAT_FORALL_KEYS=1` enables. The monotonicity rule is skipped while proofs are
-/// recorded (`prove`), so a proof never cites an unrecorded step.
+/// makes the lowering return `None` and the whole axiom is dropped. **Default ON**;
+/// `RUSTDL_SAT_FORALL_KEYS=0` reverts. Flipped on a missed-entailment net (400 ORE
+/// ontologies: FP 0, MISSED 15 → 13) and a two-arm sweep of the 128 ontologies with a `∀` or
+/// complement inside a filler, with `ore_ont_778` the only answer change. The monotonicity rule
+/// is skipped while proofs are recorded (`prove`), so a proof never cites an unrecorded step.
 #[must_use]
 pub fn sat_forall_keys_enabled() -> bool {
-    std::env::var_os("RUSTDL_SAT_FORALL_KEYS").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_SAT_FORALL_KEYS").is_none_or(|v| v != "0")
 }
 
 /// #180: lower a `∀R.K` key through declared inverses and symmetry into an
@@ -5297,10 +5299,10 @@ fn forall_contains_counting_min(c: ConceptId, pool: &ConceptPool) -> bool {
 /// - it is lowered with no extras and no outer role, so nothing keyed on a role OUTSIDE the
 ///   filler is folded in (chain ranges hold only for an element known to sit under that
 ///   edge). `Range` folding into an `∃S` INSIDE the filler is an equivalence and stays;
-/// - a filler containing `≥n S.X` with `n ≥ 2` is refused, because the body lowerings read it
-///   as the weaker `∃S.X`. Keyed, `∀R.(≥2 s.X)` and `∀R.∃s.X` would share a key, and a
-///   definition using the first would fire on the second (a false positive, refuted by
-///   Konclude and `HermiT`).
+/// - a filler containing `≥n S.X` with `n ≥ 2` is refused. Before #270 the body lowerings
+///   read it as the weaker `∃S.X`, so `∀R.(≥2 s.X)` and `∀R.∃s.X` shared a key and a
+///   definition using the first fired on the second (a false positive, refuted by Konclude and
+///   `HermiT`). #270 keys `≥n` exactly, so this is now a guard rather than the fix.
 ///
 /// The markers that lowering builds (conjunction, equivalent existential, nominal, bot, nested
 /// `∀` key) are two-way. An atomic filler reuses the SP-B2b key, so that path is unchanged.

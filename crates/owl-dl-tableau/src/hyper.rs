@@ -2385,15 +2385,22 @@ impl<'c> HyperEngine<'c> {
                     // unchanged; they only skip walks that would return false.
                     let (ln, lm) = (&self.nodes[n.index()], &self.nodes[m_hnode.index()]);
                     let (lnp, lmp) = (&self.nodes[np.index()], &self.nodes[mp.index()]);
-                    debug_assert_eq!(ln.label_sig, label_sig_of(&ln.labels));
-                    debug_assert_eq!(lm.label_sig, label_sig_of(&lm.labels));
-                    debug_assert_eq!(lnp.label_sig, label_sig_of(&lnp.labels));
-                    debug_assert_eq!(lmp.label_sig, label_sig_of(&lmp.labels));
                     if ln.labels.len() > lm.labels.len()
                         || ln.label_sig & !lm.label_sig != 0
                         || lnp.labels.len() > lmp.labels.len()
                         || lnp.label_sig & !lmp.label_sig != 0
                     {
+                        // A signature out of step with its labels could reject a real
+                        // blocker. Debug builds re-run the walk this skipped, which
+                        // costs what a candidate cost before the prefilter (the walk
+                        // usually exits at the first missing label). Recomputing all
+                        // four signatures here instead scans every label of every
+                        // candidate and made the debug test suite hang in CI.
+                        debug_assert!(
+                            !(subset_sorted(&ln.labels, &lm.labels)
+                                && subset_sorted(&lnp.labels, &lmp.labels)),
+                            "label_sig rejected a real blocker"
+                        );
                         continue;
                     }
                     // Anywhere pair-blocking (Horrocks 1998 / Motik 2009):

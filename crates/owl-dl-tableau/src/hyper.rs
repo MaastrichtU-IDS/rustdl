@@ -433,56 +433,135 @@ impl HyperNode {
 /// list. Measured on `ore_ont_3077` (one chain to branch level 221 over ~7,000
 /// nodes) the deep copy held ~5.4 MB per live snapshot, ~1.2 GB at peak.
 ///
-/// Reads (`Index`, [`Self::iter`]) are a plain deref: no refcount touch, so the
-/// hot readers (`is_blocked`, the subset walks, `enumerate_matches`) pay only the
-/// extra pointer hop. Every write goes through `IndexMut` / [`Self::iter_mut`],
-/// which call `Rc::make_mut`: a node a live snapshot still shares is cloned
-/// whole (labels, deps and `label_sig` together) before the write lands, so the
-/// snapshot never sees it and `label_sig` cannot drift from the labels it
-/// summarises. Mutate labels via [`HyperNode::add`] as before.
+/// Reads (`Index`, [`Self::iter`]) are a plain deref: no refcount touch. Every
+/// write goes through `IndexMut` / [`Self::iter_mut`], which call
+/// `Rc::make_mut`: a node a live snapshot still shares is cloned whole (labels,
+/// deps and `label_sig` together) before the write lands, so the snapshot never
+/// sees it and `label_sig` cannot drift from the labels it summarises. Mutate
+/// labels via [`HyperNode::add`] as before.
+///
+/// `is_blocked` scans many candidate blockers and rejects most on `order`,
+/// `parent`, label count and `label_sig` alone. Behind a pointer per node those
+/// reads cost a cache miss each (`ore_ont_13078`: 1.3 → 2.2 CPU-s), so the four
+/// fields are mirrored in the contiguous [`NodeHdr`] array. A write marks its
+/// node dirty and [`Self::sync`] refreshes dirty headers from their nodes; the
+/// header readers call it first. Since every mutable path marks, a header can
+/// only be read stale through a missing `sync`, which debug builds assert.
 #[derive(Debug, Default)]
-struct Nodes(Vec<std::rc::Rc<HyperNode>>);
+struct Nodes {
+    v: Vec<std::rc::Rc<HyperNode>>,
+    hdr: Vec<NodeHdr>,
+    /// Indices written since the last [`Self::sync`]; `is_dirty` dedupes them.
+    dirty: Vec<u32>,
+    is_dirty: Vec<bool>,
+}
+
+/// The fields of a [`HyperNode`] that `is_blocked` filters on, kept contiguous.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NodeHdr {
+    order: u32,
+    labels_len: u32,
+    parent: Option<HNode>,
+    label_sig: u64,
+}
+
+impl NodeHdr {
+    fn of(n: &HyperNode) -> Self {
+        Self {
+            order: n.order,
+            labels_len: u32::try_from(n.labels.len()).expect("label count fits u32"),
+            parent: n.parent,
+            label_sig: n.label_sig,
+        }
+    }
+}
 
 impl Nodes {
     fn len(&self) -> usize {
-        self.0.len()
+        self.v.len()
     }
 
     fn push(&mut self, n: HyperNode) {
-        self.0.push(std::rc::Rc::new(n));
+        self.hdr.push(NodeHdr::of(&n));
+        self.is_dirty.push(false);
+        self.v.push(std::rc::Rc::new(n));
     }
 
     fn clear(&mut self) {
-        self.0.clear();
+        self.v.clear();
+        self.hdr.clear();
+        self.dirty.clear();
+        self.is_dirty.clear();
     }
 
     fn iter(&self) -> impl Iterator<Item = &HyperNode> {
-        self.0.iter().map(|n| &**n)
+        self.v.iter().map(|n| &**n)
     }
 
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut HyperNode> {
-        self.0.iter_mut().map(std::rc::Rc::make_mut)
+        for i in 0..self.v.len() {
+            self.mark(i);
+        }
+        self.v.iter_mut().map(std::rc::Rc::make_mut)
+    }
+
+    #[inline]
+    fn mark(&mut self, i: usize) {
+        if !self.is_dirty[i] {
+            self.is_dirty[i] = true;
+            self.dirty
+                .push(u32::try_from(i).expect("node index fits u32"));
+        }
+    }
+
+    /// Refresh the headers of the nodes written since the last call.
+    #[inline]
+    fn sync(&mut self) {
+        if self.dirty.is_empty() {
+            return;
+        }
+        for i in std::mem::take(&mut self.dirty) {
+            let i = i as usize;
+            self.hdr[i] = NodeHdr::of(&self.v[i]);
+            self.is_dirty[i] = false;
+        }
+    }
+
+    /// Node `i`'s header. Call [`Self::sync`] after the last write first.
+    #[inline]
+    fn hdr(&self, i: usize) -> &NodeHdr {
+        debug_assert!(!self.is_dirty[i], "node {i} header read before sync");
+        &self.hdr[i]
     }
 
     /// Branch save: share every node (`cow`, `RUSTDL_COW_NODES`) or deep-copy
     /// each one (the pre-CoW cost, kept as the `=0` fallback).
-    fn snapshot(&self, cow: bool) -> Self {
-        if cow {
-            Self(self.0.clone())
+    fn snapshot(&mut self, cow: bool) -> Self {
+        self.sync();
+        let v = if cow {
+            self.v.clone()
         } else {
-            Self(
-                self.0
-                    .iter()
-                    .map(|n| std::rc::Rc::new(HyperNode::clone(n)))
-                    .collect(),
-            )
+            self.v
+                .iter()
+                .map(|n| std::rc::Rc::new(HyperNode::clone(n)))
+                .collect()
+        };
+        Self {
+            v,
+            hdr: self.hdr.clone(),
+            dirty: Vec::new(),
+            is_dirty: vec![false; self.is_dirty.len()],
         }
     }
 }
 
 impl From<Vec<HyperNode>> for Nodes {
     fn from(v: Vec<HyperNode>) -> Self {
-        Self(v.into_iter().map(std::rc::Rc::new).collect())
+        let mut nodes = Self::default();
+        for n in v {
+            nodes.push(n);
+        }
+        nodes
     }
 }
 
@@ -490,14 +569,15 @@ impl std::ops::Index<usize> for Nodes {
     type Output = HyperNode;
     #[inline]
     fn index(&self, i: usize) -> &HyperNode {
-        &self.0[i]
+        &self.v[i]
     }
 }
 
 impl std::ops::IndexMut<usize> for Nodes {
     #[inline]
     fn index_mut(&mut self, i: usize) -> &mut HyperNode {
-        std::rc::Rc::make_mut(&mut self.0[i])
+        self.mark(i);
+        std::rc::Rc::make_mut(&mut self.v[i])
     }
 }
 
@@ -2426,7 +2506,8 @@ impl<'c> HyperEngine<'c> {
     /// the blocking condition here; that refinement is H3).
     fn is_blocked(&mut self, n: HNode) -> bool {
         self.stats.is_blocked_calls += 1;
-        let ln_order = self.nodes[n.index()].order;
+        self.nodes.sync();
+        let ln_order = self.nodes.hdr(n.index()).order;
         if self.double_blocking {
             // HF2 double-blocking (Motik et al. §3.4): require equal
             // labels + equal parent labels + equal incoming-edge role.
@@ -2448,12 +2529,15 @@ impl<'c> HyperEngine<'c> {
             let mut compares: u64 = 0;
             let mut blocked = false;
             if let Some(bucket) = self.block_index.as_ref().and_then(|ix| ix.get(&nr)) {
+                // Candidates are filtered on their contiguous headers; only a
+                // survivor's labels are walked (see [`Nodes`]).
+                let (hn, hnp) = (*self.nodes.hdr(n.index()), *self.nodes.hdr(np.index()));
                 for &m_hnode in bucket {
-                    let m_order = self.nodes[m_hnode.index()].order;
-                    if m_order >= ln_order {
+                    let hm = self.nodes.hdr(m_hnode.index());
+                    if hm.order >= ln_order {
                         continue;
                     }
-                    let Some(mp) = self.nodes[m_hnode.index()].parent else {
+                    let Some(mp) = hm.parent else {
                         continue;
                     };
                     compares += 1;
@@ -2461,13 +2545,14 @@ impl<'c> HyperEngine<'c> {
                     // longer, and its Bloom signature must be covered. Both are
                     // exact consequences of `L(n) ⊆ L(m)`, so the verdict is
                     // unchanged; they only skip walks that would return false.
-                    let (ln, lm) = (&self.nodes[n.index()], &self.nodes[m_hnode.index()]);
-                    let (lnp, lmp) = (&self.nodes[np.index()], &self.nodes[mp.index()]);
-                    if ln.labels.len() > lm.labels.len()
-                        || ln.label_sig & !lm.label_sig != 0
-                        || lnp.labels.len() > lmp.labels.len()
-                        || lnp.label_sig & !lmp.label_sig != 0
+                    let hmp = self.nodes.hdr(mp.index());
+                    if hn.labels_len > hm.labels_len
+                        || hn.label_sig & !hm.label_sig != 0
+                        || hnp.labels_len > hmp.labels_len
+                        || hnp.label_sig & !hmp.label_sig != 0
                     {
+                        let (ln, lm) = (&self.nodes[n.index()], &self.nodes[m_hnode.index()]);
+                        let (lnp, lmp) = (&self.nodes[np.index()], &self.nodes[mp.index()]);
                         // A signature out of step with its labels could reject a real
                         // blocker. Debug builds re-run the walk this skipped, which
                         // costs what a candidate cost before the prefilter (the walk
@@ -2511,7 +2596,7 @@ impl<'c> HyperEngine<'c> {
             // mutating `stats` clean of borrow conflicts.
             let n_nodes = self.nodes.len();
             for i in 0..n_nodes {
-                let m_order = self.nodes[i].order;
+                let m_order = self.nodes.hdr(i).order;
                 if m_order >= ln_order {
                     continue;
                 }
@@ -7144,15 +7229,25 @@ mod tests {
         agree(&mut eng);
     }
 
-    /// Every node's `label_sig` equals a fresh recompute from its labels. Debug
+    /// Every node's `label_sig` equals a fresh recompute from its labels, and every
+    /// synced blocking header matches its node. Debug
     /// builds no longer recompute it on each `is_blocked` comparison (#267), so
     /// the copy-on-write tests check it explicitly.
-    fn assert_label_sigs(eng: &HyperEngine<'_>) {
+    fn assert_label_sigs(eng: &mut HyperEngine<'_>) {
         for (i, n) in eng.nodes.iter().enumerate() {
             assert_eq!(
                 n.label_sig,
                 label_sig_of(&n.labels),
                 "label_sig drifted at node {i}"
+            );
+        }
+        // The contiguous blocking headers mirror their nodes once synced.
+        eng.nodes.sync();
+        for i in 0..eng.nodes.len() {
+            assert_eq!(
+                *eng.nodes.hdr(i),
+                NodeHdr::of(&eng.nodes[i]),
+                "header stale at node {i}"
             );
         }
     }
@@ -7178,14 +7273,14 @@ mod tests {
             eng.add_label(n[1], cb, DepSet::EMPTY);
             eng.nodes[n[1].index()].edges.push((role, n[2]));
             eng.nodes[n[2].index()].preds.push((role, n[1]));
-            assert_label_sigs(&eng);
+            assert_label_sigs(&mut eng);
             let dump_inner = node_dump(&eng);
             let inner = eng.save();
             let n5 = eng.new_node();
             eng.add_label(n5, cc, DepSet::EMPTY);
             eng.add_label(n[0], cc, DepSet::EMPTY);
             eng.add_label(n[1], ca, DepSet::EMPTY);
-            assert_label_sigs(&eng);
+            assert_label_sigs(&mut eng);
             let saved: Vec<String> = inner.nodes.iter().map(|x| format!("{x:?}")).collect();
             assert_eq!(
                 saved, dump_inner,
@@ -7193,22 +7288,22 @@ mod tests {
             );
             if cow {
                 assert!(
-                    std::rc::Rc::ptr_eq(&inner.nodes.0[n[3].index()], &eng.nodes.0[n[3].index()]),
+                    std::rc::Rc::ptr_eq(&inner.nodes.v[n[3].index()], &eng.nodes.v[n[3].index()]),
                     "an untouched node stays shared"
                 );
                 assert!(
-                    !std::rc::Rc::ptr_eq(&inner.nodes.0[n[0].index()], &eng.nodes.0[n[0].index()]),
+                    !std::rc::Rc::ptr_eq(&inner.nodes.v[n[0].index()], &eng.nodes.v[n[0].index()]),
                     "a written node is copied"
                 );
             }
             eng.restore(inner);
             assert_eq!(node_dump(&eng), dump_inner, "cow={cow}: inner restore");
-            assert_label_sigs(&eng);
+            assert_label_sigs(&mut eng);
             eng.add_label(n[3], cb, DepSet::EMPTY);
-            assert_label_sigs(&eng);
+            assert_label_sigs(&mut eng);
             eng.restore(outer);
             assert_eq!(node_dump(&eng), dump_outer, "cow={cow}: outer restore");
-            assert_label_sigs(&eng);
+            assert_label_sigs(&mut eng);
         }
     }
 

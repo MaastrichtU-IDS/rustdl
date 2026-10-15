@@ -45,21 +45,23 @@ All notable changes to rustdl are documented here. Format is based on
   snapshot kept its copy, so peak RSS grew with branch depth. `ore_ont_3077` reaches branch level
   221 over ~7,000 nodes: about 5.4 MB per snapshot, about 1.2 GB at peak. With the flag on, a save
   shares the nodes and a write copies only the node it touches. Reads touch no reference count.
-  `rustdl consistent ore_ont_3077` (single thread, 60 s consistency fallback):
-  peak RSS 1,499 → 119 MB, same verdict, same CPU. Unbudgeted `classify` on 9 ontologies (single
-  thread) gives byte-identical answers. Instructions fall 26–28% on `ore_ont_2182`, `16481`,
-  `6272` and `2313`, and are flat on `10073`, `6792` and `14375`. On wine and `10127` they vary
-  run to run in both arms, with CPU time unchanged. With the default budget, `ore_ont_6272`
-  completes in all 3 runs instead of being incomplete in all 3. Two-arm `classify` sweep over all
-  1,920 ORE (60 s cap, single thread, flag on vs main): every ontology both arms finish gives the
-  same answer, apart from two the per-pair budget truncates in both (`ore_ont_12698`, `8666`). At
-  `--pair-timeout-ms 1000` those agree too, in 3 reps per arm. The 3 outcome flips (`16008`, `934`
-  finish; `8194` times out) were all within 3 s of the cap, and serial reruns give identical
-  answers in both arms. Peak RSS geomean ×0.93. A serial CPU sample of 40 ontologies that take
-  1–15 s gives geomean ×0.975. Known cost: blocking checks now follow a pointer per candidate
-  node, so `ore_ont_13078` (`is_blocked`-bound) goes from 1.2–1.5 to 2.2–2.3 CPU-s, with the flag
-  on or off. `ore_ont_5107` looks 2× slower but runs the same 143G instructions: its hot loop is
-  byte-identical and only its code alignment differs.
+  The fields `is_blocked` filters candidates on (order, parent, label count, `label_sig`) are
+  mirrored in a contiguous array, so blocking checks do not follow a pointer per candidate.
+  `rustdl consistent ore_ont_3077` (single thread, 60 s consistency fallback): peak RSS
+  1,498 → 157 MB, same verdict, same CPU. `classify` CPU-s medians over 3 interleaved reps
+  (single thread, default budget): `ore_ont_2313` ×0.68, `2182` ×0.70, `6272` ×0.73, `14375`
+  ×0.78, `16481` ×0.83, `6792` ×0.90, `13078` ×0.93, `10127` ×0.96, `10073` ×0.98, wine ×1.00.
+  The class hierarchy is identical across all runs of every one, and unbudgeted outputs match
+  main's on all 9 tried. With the default budget, `ore_ont_6272` completes where main stops
+  incomplete. Two-arm `classify` sweep over all 1,920 ORE (60 s cap, single thread, flag on vs
+  main, before the contiguous array was added): every ontology both arms finish gives the same
+  answer, apart from two the per-pair budget truncates in both (`ore_ont_12698`, `8666`). At
+  `--pair-timeout-ms 1000` those agree too, in 3 reps per arm. The 3 outcome flips (`16008`,
+  `934` finish; `8194` times out) were all within 3 s of the cap, and serial reruns give
+  identical answers in both arms. Peak RSS geomean ×0.93. `ore_ont_5107` looks 2× slower in that
+  build but runs the same 143G instructions: its hot loop is byte-identical and only its code
+  alignment differs. With the flag off the nodes are still boxed, so `ore_ont_3077` peaks at
+  1,609 MB, 7% above main.
 
 ### Changed
 - **A branch restore undoes the wedge's NN-rule index with a log instead of a copy (#255

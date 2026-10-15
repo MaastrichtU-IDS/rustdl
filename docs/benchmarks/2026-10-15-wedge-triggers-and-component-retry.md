@@ -1,7 +1,17 @@
 # Wedge trigger dispatch, the #137 net, and the #182 component retry (2026-10-15)
 
-Three questions, all measured on `main` at or near `c588625` (edge pin ON). All three
-answers are negative or explanatory: no code change ships from this note.
+Three questions. All three answers are negative or explanatory: no code change ships from this
+note. The builds differ by section, so each section states its own:
+- §1 and the §3 traces: the root-recovery branch, forked at `091a0d4` (#265). That is before
+  the #266 default flip and the #267 blocking prefilter, so `RUSTDL_HYPER_EDGE_PIN=1` was set
+  by hand and the CPU figures are pre-#267. (#267's own measurement of `classify ore_ont_2313`,
+  9.26 → 7.40 CPU-s, is on a different base.)
+- §2's event-level instrumentation: `c588625` (#267 merged, pin on by default).
+
+**Counting terms.** "Net recoveries" (`RUSTDL_RESEED_PROBE=1`, `stats.reseed_recovered`)
+counts re-seed PASSES that changed the graph fingerprint. "Recovered firings" counts individual
+clause firings that changed something inside those passes, so one recovery is many firings.
+Both vary run to run at a truncating per-pair budget.
 
 ## 1. Root-recovery dispatch: closes the trigger gaps, saves no CPU
 
@@ -14,7 +24,9 @@ answers are negative or explanatory: no code change ships from this note.
 (`succ_trigger`).
 
 A binding whose root `X` sits anywhere else is missed by the drain and left to the #137 net.
-Known shapes:
+Known shapes (the edge ones are named after the `gap_a_*` / `gap_c_*` canaries in
+`crates/owl-dl-tableau/tests/chain_back_trigger.rs`; a third edge shape, an inverse non-first
+leg, was never reproduced):
 - (a) the root is behind an edge stored at the middle node;
 - (c) a three-hop body;
 - a class atom two hops down;
@@ -31,8 +43,9 @@ behaviour:
 
 FP controls stay `Sat`. The whole tableau suite passes with the flag on.
 
-**Cost.** One binary, the flag the only difference, single thread, 5 reps with arm order
-alternated, CPU-s (user + sys). Answers were identical in all 50 runs.
+**Cost.** One binary, the flag the only difference, `RUSTDL_HYPER_EDGE_PIN=1` in both arms,
+single thread, 5 reps with arm order alternated, CPU-s (user + sys), host load ~16–19. Answers
+were identical in all 50 runs.
 
 | case | off: median [range] | on: median [range] | change |
 |---|---|---|---|
@@ -42,8 +55,8 @@ alternated, CPU-s (user + sys). Answers were identical in all 50 runs.
 | `consistent ore_ont_10127`, 60 s budget | 28.94 [25.41–38.65] | 27.49 [23.50–29.91] | −5% |
 | `consistent ore_ont_1182`, 60 s budget | 120.30 [118.28–120.81] | 119.88 [117.84–121.29] | 0% |
 
-**The net still recovers almost as much.** `RUSTDL_RESEED_PROBE=1` counts of net recoveries,
-edge and label root recovery both on:
+**On the stall cases the net still recovers as much.** Net recoveries (passes), single runs, edge
+pin on in both columns, edge and label root recovery both on in the second:
 
 | ontology | default dispatch | root recovery |
 |---|---|---|
@@ -58,19 +71,26 @@ The reason is section 2. Parked, not shipped:
 
 ## 2. What the #137 net recovers: blocking-status changes, not lost events
 
-**Tally by clause shape.** Recovered firings on `classify ore_ont_2313`, edge pin on:
+**Tally by clause shape.** Recovered firings (not passes) on `classify ore_ont_2313`, one run
+of the §1 build with the default dispatch and the edge pin off:
 
 | shape | count |
 |---|---|
-| `C(X) → C(X)` at a blocked node | ~7,300 |
-| `C(X) → ∃` | ~4,600 |
-| `R(X,1) → C(1)` and similar | ~2,400 |
-| multi-hop bodies | ~100 |
+| `C(X) → C(X)` at a blocked node | 8,943 |
+| `C(X) → ∃` at a node not blocked when the net ran | 6,271 |
+| `R(X,1) → C(1)` | 2,418 |
+| `C(X) ∧ R⁻(X,1) ∧ C(1) → C(X)` at a blocked node | 2,375 |
+| `R(X,1) → C(X)` | 169 |
+| two-role chains `R(X,1) ∧ R(1,2) → R` | 84 |
+| other | ~90 |
 
 **Not a deadline artifact.** At `--pair-timeout-ms 1000`, where the run completes
-(`incomplete: false`), the net still recovers 1,886 times. At the default 5 ms it is 1,629.
+(`incomplete: false`), there are still 1,886 net recoveries (passes). A run at the default 5 ms
+on the same build gave 1,629; the 2,083 in §1 is another 5 ms run on a slightly different build,
+so the spread between them is run-to-run variance at a truncating budget.
 
-**Event-level instrumentation** (throwaway build, not committed). Each node records:
+**Event-level instrumentation** (throwaway build on `c588625`, not committed). Its search
+differs from §1's build, so its firing counts do not add up to the tally above. Each node records:
 - the label events the drain processed;
 - each `x_trigger` firing and its outcome;
 - which phase queued each label (drain or net).
@@ -97,7 +117,8 @@ blocked, which is why the `C(X) → C(X)` rows read "at a blocked node".
 
 So the net's real job is blocking-status changes. A complete drain would need an unblock
 trigger, i.e. blocking tracked rather than recomputed lazily. Turning the net off was already
-measured CPU-flat (`ore_ont_2313` 12.2–16.3 CPU-s in both arms), so that is not worth building.
+measured CPU-flat (`ore_ont_2313` 12.2–16.3 CPU-s in both arms, on a pre-#263 build under host
+load, so not comparable with §1's figures), so that is not worth building.
 
 ## 3. The #182 component retry: the cost is genuine stalls
 
@@ -105,8 +126,11 @@ After a wedge stall and a bounded tableau fall-through, `consistent` re-checks t
 batches of connected components (`RUSTDL_CONSISTENCY_COMPONENTS`, for the #182 ECO+GENEPIO
 case).
 
-**Census.** Over the 227-ontology stall population at the default budget, the retry decided
-0 of 96 stalls and cost 973 s in total (median 10 s, max 60 s).
+**Census.** Over the 227-ontology stall population at the default budget, 96 reached the retry.
+It decided 0 of them and cost 973 s in total (median 10 s, max 60 s). 38 of the 96 finished in
+under 1 s and 58 ran at least one stalled batch. The census does not record which of the 38 the
+feasibility gate skipped outright (`prep × batches > 60 s`) and which had only quick,
+consistent batches.
 
 **Traces** (`RUSTDL_TRACE=1`):
 

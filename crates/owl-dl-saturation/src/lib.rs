@@ -5143,7 +5143,7 @@ fn forall_contains_counting_min(c: ConceptId, pool: &ConceptPool) -> bool {
 /// - a filler containing `≥n S.X` with `n ≥ 2` is refused, because the body lowerings read it
 ///   as the weaker `∃S.X`. Keyed, `∀R.(≥2 s.X)` and `∀R.∃s.X` would share a key, and a
 ///   definition using the first would fire on the second (a false positive, refuted by
-///   Konclude and HermiT).
+///   Konclude and `HermiT`).
 ///
 /// The markers that lowering builds (conjunction, equivalent existential, nominal, bot, nested
 /// `∀` key) are two-way. An atomic filler reuses the SP-B2b key, so that path is unchanged.

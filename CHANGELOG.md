@@ -7,6 +7,21 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **The EL saturator reads `∀` through any filler and derives `∀`-monotonicity (#180),
+  `RUSTDL_SAT_FORALL_KEYS`, default OFF (`=1` enables).** A `∀R.F` inside an `∃` filler made the
+  saturator drop the whole axiom, and its `∀` keys took only an atomic `F` with told
+  monotonicity edges. With the flag on, `∀R.F` gets a key for any filler the saturator can
+  lower, inside fillers too. When the fixpoint derives `F₁ ⊑ F₂`, it also derives
+  `∀R.F₁ ⊑ ∀R.F₂`. `∀` is monotone, so the rule only adds entailed subsumptions, provided the
+  filler's class denotes exactly the inner concept: nothing keyed on a role outside the filler is
+  folded in, and a filler containing `≥n` with `n ≥ 2` (which the lowering reads as the weaker
+  `∃`) is not keyed.
+  `ore_ont_778`: `KoalaBear ⊑ HerbivoreAnimal` and `Shark ⊑ CarnivoreAnimal` are now derived by
+  saturation instead of being missed. MISSED goes 2 → 0 and FP stays 0 against the Konclude ∪
+  HermiT oracle (630 = 630); the tableau needs ~44 s per pair there. Two-arm `classify` sweep over
+  the 128 ORE ontologies with a `∀` or complement inside a filler (60 s cap, single thread):
+  109 identical, 17 time out in both arms, `ore_ont_778` the only answer change, and one
+  cap-boundary flip (`ore_ont_934`, 60.1 s). Skipped while proofs are recorded (`prove`).
 - **The wedge pins the new edge into edge-triggered clause matches, `RUSTDL_HYPER_EDGE_PIN`,
   default ON (`=0` reverts).** An edge event re-matched every Horn clause with a body atom on
   the edge's role from scratch. Over 227 ORE ontologies, 94–96% of those bindings did not use

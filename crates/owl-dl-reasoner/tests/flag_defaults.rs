@@ -140,7 +140,7 @@ fn expected() -> Vec<FlagRow> {
         (
             "RUSTDL_SAT_FORALL_KEYS",
             owl_dl_saturation::sat_forall_keys_enabled,
-            false,
+            true,
         ),
         // ── owl-dl-tableau ───────────────────────────────────────────────
         (

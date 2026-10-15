@@ -921,21 +921,31 @@ fn ore_one_closure_matches_oracle() {
 ///   -- --ignored --nocapture ore_10080_bounded_by_explicit_deadline
 /// ```
 #[test]
-#[ignore = "needs ~/data/ore-run/{input,oracle}/ore_ont_10080*; the real deadline-honoring repro (was >40 min DNF, now bounded by an explicit global deadline)"]
+#[ignore = "needs $ORE_RUN/{input,oracle}/ore_ont_10080* (ORE_RUN defaults to ~/rustdl/corpus/ore-run, else ~/data/ore-run); the real deadline-honoring repro (was >40 min DNF, now bounded by an explicit global deadline)"]
 fn ore_10080_bounded_by_explicit_deadline() {
-    let Some(home) = std::env::var_os("HOME") else {
-        eprintln!("[fp0] ore-10080-deadline: NOT VERIFIED (HOME not set)");
-        return;
-    };
-    let input = Path::new(&home).join("data/ore-run/input/ore_ont_10080.ofn");
-    let oracle_path = Path::new(&home).join("data/ore-run/oracle/ore_ont_10080-classified.owx");
-    if !input.exists() || !oracle_path.exists() {
+    // `ORE_RUN` if set; otherwise the coder host's `~/rustdl/corpus/ore-run`, then the older
+    // `~/data/ore-run` other hosts use. The first that holds the fixture wins.
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(r) = std::env::var_os("ORE_RUN") {
+        roots.push(r.into());
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(Path::new(&home).join("rustdl/corpus/ore-run"));
+        roots.push(Path::new(&home).join("data/ore-run"));
+    }
+    let found = roots.into_iter().find(|r| {
+        r.join("input/ore_ont_10080.ofn").exists()
+            && r.join("oracle/ore_ont_10080-classified.owx").exists()
+    });
+    let Some(root) = found else {
         eprintln!(
             "[fp0] ore-10080-deadline: NOT VERIFIED \
              (fixture absent: gitignored corpus, not present locally)"
         );
         return;
-    }
+    };
+    let input = root.join("input/ore_ont_10080.ofn");
+    let oracle_path = root.join("oracle/ore_ont_10080-classified.owx");
 
     // Explicit aggregate deadline — the crux of the fix. 5 s is generous
     // enough for the EL closure + label cache to recover the full hierarchy

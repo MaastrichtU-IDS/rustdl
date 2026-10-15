@@ -82,7 +82,8 @@ of the §1 build with the default dispatch and the edge pin off:
 | `C(X) ∧ R⁻(X,1) ∧ C(1) → C(X)` at a blocked node | 2,375 |
 | `R(X,1) → C(X)` | 169 |
 | two-role chains `R(X,1) ∧ R(1,2) → R` | 84 |
-| other | ~90 |
+
+The six largest shapes; smaller ones were not tallied.
 
 **Not a deadline artifact.** At `--pair-timeout-ms 1000`, where the run completes
 (`incomplete: false`), there are still 1,886 net recoveries (passes). A run at the default 5 ms

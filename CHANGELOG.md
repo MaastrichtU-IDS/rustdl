@@ -106,6 +106,21 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_13233`, `14375`, `14556`, all consistent), none lost, no answer changes.
 
 ### Fixed
+- **`classify` derives `C ⊑ D` through an inverse role into a top-level `∀R.{a₁…aₙ}` (#274),
+  `RUSTDL_SAT_INVERSE_FORALL_NOMINAL`, default ON (`=0` reverts).** With `A ⊑ ∀R.{a}`,
+  `S ≡ R⁻`, `C ⊑ ∃S.A` and `a : D`, `classify` returned no rows and reported
+  `incomplete: false`, while Konclude, HermiT and rustdl's own `subclass` derive `C ⊑ D`. The
+  saturator's inverse-`∀` rule (#180) visited only atomic-filler keys, never the nominal-set key.
+  It now also emits `∃S.Key(R,{a₁…aₙ}) ⊑ c` for each class `c` that every member is asserted to,
+  closed under told subsumption. That weakens the disjunction `{a₁…aₙ}` to what the members
+  share, so it only adds entailed subsumptions; a member with no asserted type emits nothing.
+  Konclude and HermiT agree on 5 probes, including 3 FP guards (a type of one member only, an
+  untyped member, a forward edge), and on 24 review probes (keys seeded through a functional role
+  or `≤1`, symmetric and equivalent-inverse roles, `ObjectHasValue` and range-folded edges), with
+  no false positive. `RUSTDL_SAT_INVERSE_FORALL=0` disables this rule too. Still missed: the same
+  shape over an inverse role, `A ⊑ ∀R⁻.{a}` (pinned as a known miss). Two-arm `classify` sweep over the 26 ORE ontologies with
+  a `∀` over `ObjectOneOf` and a polarity axiom (a superset of where the rule can run), 60 s cap,
+  single thread: 25 identical answers, 1 timeout in both arms, no answer changes; wall flat.
 - **The EL saturator no longer reads `≥n R.X` (n ≥ 2) as `∃R.X` in a definition's
   sufficient direction, a false positive.** With `H ≡ ∃r.(≥2 s.X)` and `Y ⊑ ∃r.∃s.X`,
   `classify` reported `Y ⊑ H` at default settings. Konclude and HermiT both refute it: a `Y`

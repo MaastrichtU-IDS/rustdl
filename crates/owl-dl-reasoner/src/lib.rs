@@ -3848,6 +3848,9 @@ pub fn classify_nominal_same_enabled() -> bool {
 /// most of a connected `ABox` in. Over the 435 ORE ontologies with nominals and an
 /// `ABox` it took 116 from finishing to timing out at 60 s (`ore_ont_13805` 0.07 →
 /// 53.8 CPU-s) for no measured gain. Inert when `RUSTDL_CLASSIFY_NOMINAL_TYPES=0`.
+/// The FORWARD uses of these edges are covered by default and cheaply in the EL
+/// saturator (`owl_dl_saturation::sat_nominal_edges_enabled`); this flag is for the
+/// inverse, `∀` and counting uses only the wedge can read.
 /// Even when on it is not complete, and the miss is SILENT: `{a}` is an ordinary class in
 /// the classify wedge, so blocking can cut a generating cycle such as `a S c`, `c S a`
 /// before a deep enough chain is built, and the run still reports `incomplete: false`.

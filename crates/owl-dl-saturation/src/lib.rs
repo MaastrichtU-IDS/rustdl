@@ -201,6 +201,19 @@ pub fn sat_inverse_forall_nominal_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_INVERSE_FORALL_NOMINAL").is_none_or(|v| v != "0")
 }
 
+/// #279: seed the `ABox` edges of individuals used as nominals into the saturator.
+/// See [`seed_nominal_abox_edges`]. Default **ON**; `RUSTDL_SAT_NOMINAL_EDGES=0`
+/// reverts.
+#[must_use]
+pub fn sat_nominal_edges_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_NOMINAL_EDGES").is_none_or(|v| v != "0")
+}
+
+/// At most this many individuals are reached from the `TBox` nominals by
+/// [`seed_nominal_abox_edges`]; the closure stops growing past it (fewer facts, so
+/// still sound). Each reached individual costs one class in the subsumer matrix.
+const NOMINAL_EDGE_REACH_CAP: usize = 10_000;
+
 /// #180: the functional merge across an inverse edge — `X ⊑ ∃R.T`,
 /// `T ⊑ ∃S.B`, `R⁻ ⊑ F`, `S ⊑ F`, `F` functional ⟹ `X ⊑ B`. Default **ON**;
 /// `RUSTDL_SAT_INVERSE_FUNC_MERGE=0` opts out. See
@@ -3864,6 +3877,9 @@ fn collect_el_rules(
     if !tseitin.nominal_by_ind.is_empty() {
         build_abox_nominal_reach(internal, &mut tseitin, &mut rules);
     }
+    if sat_nominal_edges_enabled() && !tseitin.nominal_by_ind.is_empty() {
+        seed_nominal_abox_edges(internal, role_super, &mut tseitin, &mut rules);
+    }
 
     // Cluster-B path (b) setup: index ForallKey targets by (role, member) and
     // build the NomKey→individual reverse, so `process_fact` can fire
@@ -5169,6 +5185,124 @@ fn atomic_or_tseitin_body(
 /// sound `X ⊑ ∃R.{a}`, `a R⁺ b` ⟹ `X ⊑ ∃R.{b}` propagation in
 /// `process_fact`. No-op unless the ontology has transitive roles with
 /// `ABox` edges.
+/// #279 [`sat_nominal_edges_enabled`]: a `TBox` nominal `{a}` stands for a named
+/// individual, so its `ABox` facts are facts about `NomKey(a)`. Seeds, for every
+/// individual reached from a `TBox` nominal along property assertions and
+/// `SameIndividual` (both directions, up to [`NOMINAL_EDGE_REACH_CAP`]):
+///
+/// * `ObjectPropertyAssertion(S, a, c)` as the fact `NomKey(a) ⊑ ∃S.NomKey(c)`, plus
+///   `NomKey(c) ⊑ Range` for the ranges of `S` and its super-roles (an
+///   inverse-role assertion is read forwards, from `c` to `a`);
+/// * `SameIndividual(a, b)` as `NomKey(a) ⊑ NomKey(b)` and back.
+///
+/// Class assertions of reached individuals are typed later by the nominal typing
+/// pass. Every seeded fact is an asserted fact, so this only adds entailed
+/// subsumptions; the saturator then derives what the edges give through `∃`
+/// triggers and definitions (`X ⊑ ∃R.{a}`, `a S c`, `c : E`, `W ≡ ∃R.∃S.E` gives
+/// `X ⊑ W`). It cannot read `∃S⁻`, so inverse uses of an edge stay with the wedge.
+fn seed_nominal_abox_edges(
+    internal: &InternalOntology,
+    role_super: &HashMap<RoleId, HashSet<RoleId>>,
+    tseitin: &mut TseitinAllocator,
+    rules: &mut ElRules,
+) {
+    let mut adj: HashMap<IndividualId, Vec<IndividualId>> = HashMap::new();
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::ObjectPropertyAssertion {
+                subject, object, ..
+            } => {
+                adj.entry(*subject).or_default().push(*object);
+                adj.entry(*object).or_default().push(*subject);
+            }
+            Axiom::SameIndividual(inds) => {
+                for w in inds.windows(2) {
+                    adj.entry(w[0]).or_default().push(w[1]);
+                    adj.entry(w[1]).or_default().push(w[0]);
+                }
+            }
+            _ => {}
+        }
+    }
+    if adj.is_empty() {
+        return;
+    }
+    let mut seeds: Vec<IndividualId> = tseitin.nominal_by_ind.keys().copied().collect();
+    seeds.sort_unstable();
+    let mut reach: HashSet<IndividualId> = seeds.iter().copied().collect();
+    let mut queue: VecDeque<IndividualId> = seeds.into_iter().collect();
+    while let Some(i) = queue.pop_front() {
+        for &j in adj.get(&i).map_or(&[][..], Vec::as_slice) {
+            if reach.len() >= NOMINAL_EDGE_REACH_CAP {
+                break;
+            }
+            if reach.insert(j) {
+                queue.push_back(j);
+            }
+        }
+    }
+    let ranges_of = |r: RoleId, rules: &ElRules| -> Vec<ClassId> {
+        let mut out: Vec<ClassId> = rules.role_ranges.get(&r).cloned().unwrap_or_default();
+        for s in role_super.get(&r).into_iter().flatten() {
+            out.extend(rules.role_ranges.get(s).into_iter().flatten().copied());
+        }
+        out.sort_unstable_by_key(|c| c.index());
+        out.dedup();
+        out
+    };
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => {
+                let (from, to) = if role.is_inverse() {
+                    (*object, *subject)
+                } else {
+                    (*subject, *object)
+                };
+                if !reach.contains(&from) || !reach.contains(&to) {
+                    continue;
+                }
+                let (n_from, n_to) = (
+                    tseitin.introduce_nominal(from),
+                    tseitin.introduce_nominal(to),
+                );
+                rules.existential_facts.push(ExistentialFact {
+                    sub: n_from,
+                    role: role.role_id(),
+                    target: n_to,
+                });
+                for rng in ranges_of(role.role_id(), rules) {
+                    rules.atomic_subsumptions.push(AtomicSubsumption {
+                        sub: n_to,
+                        sup: rng,
+                    });
+                }
+            }
+            Axiom::SameIndividual(inds) => {
+                for w in inds.windows(2) {
+                    if !reach.contains(&w[0]) || !reach.contains(&w[1]) {
+                        continue;
+                    }
+                    let (x, y) = (
+                        tseitin.introduce_nominal(w[0]),
+                        tseitin.introduce_nominal(w[1]),
+                    );
+                    rules
+                        .atomic_subsumptions
+                        .push(AtomicSubsumption { sub: x, sup: y });
+                    rules
+                        .atomic_subsumptions
+                        .push(AtomicSubsumption { sub: y, sup: x });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn build_abox_nominal_reach(
     internal: &InternalOntology,
     tseitin: &mut TseitinAllocator,

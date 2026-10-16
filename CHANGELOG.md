@@ -106,6 +106,23 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_13233`, `14375`, `14556`, all consistent), none lost, no answer changes.
 
 ### Fixed
+- **`classify` follows property assertions of individuals used as nominals (#279),
+  `RUSTDL_SAT_NOMINAL_EDGES`, default ON (`=0` reverts).** With `X ⊑ ∃R.{a}`, `a S c`,
+  `c : E` and `W ≡ ∃R.∃S.E`, `classify` missed `X ⊑ W` with `incomplete: false`; Konclude and
+  HermiT derive it. #281's wedge clauses for property assertions (`RUSTDL_CLASSIFY_NOMINAL_OPA`)
+  are generating and stay default OFF: on `ore_ont_13805` they cost 0.09 → 5.8 CPU-s even
+  without following edges past the nominal individuals. The EL saturator now reads those edges
+  instead, as `NomKey(a) ⊑ ∃S.NomKey(c)` for every individual reached from a `TBox` nominal along
+  property assertions and `SameIndividual` (up to 10,000 individuals), with the ranges of `S` and
+  its super-roles on `c` and `SameIndividual` as `NomKey(a) ≡ NomKey(b)`. Every seeded fact is
+  asserted, so it only adds entailed subsumptions. It also derives the cyclic case
+  (`a S c`, `c S a`, a deep `∃S.∃S.∃S.E`) that the wedge's blocking cuts. Still missed: inverse
+  uses of an edge (`∃S⁻.E`), which the saturator cannot read. Konclude and HermiT agree on 18
+  probes (0 FP; the one miss is that inverse case). On the 9 ontologies where the wedge clauses
+  were slowest, CPU and answers are unchanged. Two-arm `classify` sweep over the 376 ORE
+  ontologies with a nominal and a property assertion or `SameIndividual`, one binary with the
+  flag the only difference, 60 s cap: 356 identical, 12 time out and 8 fail to parse in both
+  arms, no answer changes; wall flat.
 - **`prove` cites every axiom an existential-trigger step rests on.** Three gaps left a
   proof's axiom list short of a justification. (1) The inverse-`∀` steps (#180, #274) cited none
   of the role axioms that make the edge's role a sub-role of the inverse (`InverseObjectProperties`,

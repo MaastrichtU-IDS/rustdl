@@ -16,10 +16,10 @@
 //! semantic definition. It is cheap (one pass, no fixpoint) and runs only in
 //! tests and on the `prove --verify-proof` flag.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::BuildHasher;
 
-use owl_dl_core::{ClassId, IndividualId, RoleId};
+use owl_dl_core::{ClassId, IndividualId, Role, RoleId};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -135,6 +135,9 @@ pub enum SyntheticDef {
     },
     /// `DKey` (datatype): stands in for a datatype range interval. IRI suffix identifies bucket.
     DKey(String),
+    /// `ForallAtomicKey`: stands in for `∀R.F`, where `F` is a class id (named, or a
+    /// synthetic with its own definition).
+    ForallAtomicKey { role: RoleId, filler: ClassId },
 }
 
 /// Side-table mapping every derived fact to the inference that first produced it.
@@ -175,6 +178,117 @@ pub struct ProofTrace {
     pub(crate) merge_contributors: HashMap<(ClassId, RoleId), Vec<DerivedFact>>,
     /// `ABox` path table: `(role, from_nom_key, to_nom_key)` → `Vec<AxiomRef>`.
     pub(crate) abox_path: HashMap<(RoleId, ClassId, ClassId), Vec<AxiomRef>>,
+    /// Extra axiom provenance for an existential trigger that no single axiom
+    /// produced: trigger index → axiom indices. Filled for the inverse-`∀`
+    /// triggers (#180, #274), which come from a `∀` key plus the role axioms that
+    /// make the trigger's role a sub-role of the inverse, plus (for a nominal-set
+    /// key) the class assertions and told subsumptions behind the head.
+    pub(crate) existential_trigger_extra: HashMap<usize, Vec<usize>>,
+    /// Signed role inclusions, each labelled with the axiom it comes from, so a
+    /// trigger that fires on a sub-role of its own role can cite that inclusion.
+    pub(crate) role_edges: HashMap<Role, Vec<(Role, usize)>>,
+}
+
+impl ProofTrace {
+    /// Every axiom an existential trigger rests on when it fires on an edge of role
+    /// `edge_role`: its own axiom, if any, [`Self::existential_trigger_extra`], and
+    /// the role inclusions that make `edge_role` a sub-role of `trigger_role`.
+    pub(crate) fn trigger_axiom_refs(
+        &self,
+        tidx: usize,
+        edge_role: RoleId,
+        trigger_role: RoleId,
+    ) -> Vec<AxiomRef> {
+        let mut out: Vec<AxiomRef> = self
+            .existential_trigger_axiom
+            .get(tidx)
+            .copied()
+            .flatten()
+            .map(AxiomRef)
+            .into_iter()
+            .collect();
+        if let Some(extra) = self.existential_trigger_extra.get(&tidx) {
+            out.extend(extra.iter().copied().map(AxiomRef));
+        }
+        if edge_role != trigger_role
+            && let Some(path) = signed_role_path(
+                &self.role_edges,
+                Role::named(edge_role),
+                Role::named(trigger_role),
+            )
+        {
+            out.extend(path.into_iter().map(AxiomRef));
+        }
+        out.sort_unstable_by_key(|r| r.0);
+        out.dedup_by_key(|r| r.0);
+        out
+    }
+}
+
+/// Signed role inclusions from `internal`'s role axioms, each labelled with its
+/// axiom index: the same edges `build_signed_role_hierarchy` adds.
+pub(crate) fn signed_role_edges(
+    internal: &owl_dl_core::InternalOntology,
+) -> HashMap<Role, Vec<(Role, usize)>> {
+    use owl_dl_core::{Axiom, SubRolePath};
+    let mut edges: HashMap<Role, Vec<(Role, usize)>> = HashMap::new();
+    let mut add = |x: Role, y: Role, i: usize| {
+        edges.entry(x).or_default().push((y, i));
+        edges.entry(x.flip()).or_default().push((y.flip(), i));
+    };
+    for (i, ax) in internal.axioms.iter().enumerate() {
+        match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Role(sub),
+                sup,
+            } => add(*sub, *sup, i),
+            Axiom::EquivalentObjectProperties(members) => {
+                for (x, y) in members.iter().zip(members.iter().skip(1)) {
+                    add(*x, *y, i);
+                    add(*y, *x, i);
+                }
+            }
+            Axiom::InverseObjectProperties(x, y) => {
+                add(*x, y.flip(), i);
+                add(y.flip(), *x, i);
+            }
+            Axiom::SymmetricRole(r) => {
+                let r = Role::named(r.role_id());
+                add(r, r.flip(), i);
+            }
+            _ => {}
+        }
+    }
+    edges
+}
+
+/// Breadth-first: the axioms of a shortest chain of signed role inclusions from
+/// `from` to `to`, or `None` when there is none. Empty when `from == to`.
+pub(crate) fn signed_role_path(
+    edges: &HashMap<Role, Vec<(Role, usize)>>,
+    from: Role,
+    to: Role,
+) -> Option<Vec<usize>> {
+    let mut parent: HashMap<Role, Option<(Role, usize)>> = HashMap::from([(from, None)]);
+    let mut queue = VecDeque::from([from]);
+    while let Some(x) = queue.pop_front() {
+        if x == to {
+            let mut path = Vec::new();
+            let mut cur = x;
+            while let Some(&Some((prev, i))) = parent.get(&cur) {
+                path.push(i);
+                cur = prev;
+            }
+            return Some(path);
+        }
+        for &(y, i) in edges.get(&x).map_or(&[][..], Vec::as_slice) {
+            if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(y) {
+                e.insert(Some((x, i)));
+                queue.push_back(y);
+            }
+        }
+    }
+    None
 }
 
 impl ProofTrace {
@@ -1213,6 +1327,11 @@ fn render_synthetic_def<S: std::hash::BuildHasher>(
                 "ObjectAllValuesFrom({r_str} ObjectOneOf({}))",
                 mems.join(" ")
             )
+        }
+        SyntheticDef::ForallAtomicKey { role, filler } => {
+            let r_str = render_role(*role, vocab);
+            let f_str = render_class_expanded(*filler, vocab, Some(defs));
+            format!("ObjectAllValuesFrom({r_str} {f_str})")
         }
         SyntheticDef::DKey(iri_suffix) => {
             format!("DataRange({iri_suffix})")

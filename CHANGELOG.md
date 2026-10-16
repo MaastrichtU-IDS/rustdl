@@ -144,6 +144,22 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_12698`), and one gain, `ore_ont_1461`, which now derives a Konclude-confirmed
   subsumption through `X ⊑ {planar}` and `planar : Y`. CPU time is flat on the rows that read
   slower under the parallel sweep.
+- **`classify` reads `SameIndividual` and complex class assertions about nominal individuals
+  (#279), `RUSTDL_CLASSIFY_NOMINAL_SAME`, default ON (`=0` reverts).** With
+  `SameIndividual(a, b)`, `b : E`, `K ≡ ∃R.E` and `X ⊑ ∃R.{a}`, `classify` missed `X ⊑ K` and
+  reported `incomplete: false`, while Konclude, HermiT and rustdl's own `subclass` derive it.
+  The classify wedge now gets `{a} ⊑ {b}` and `{b} ⊑ {a}` for each equality, and the
+  individuals whose facts it reads are those used as nominals plus everyone equal to them. Class
+  assertions are now encoded as the GCI `{a} ⊑ C` before clausifying, as the consistency cache
+  does, so a complex asserted class (`∃S.E`, `¬B`, …) is read too, under
+  `RUSTDL_CLASSIFY_NOMINAL_TYPES`. Property assertions, `{a} ⊑ ∃S.{c}` and `{c} ⊑ ∃S⁻.{a}`, are
+  behind `RUSTDL_CLASSIFY_NOMINAL_OPA`, default OFF (`=1` enables): those clauses generate
+  nodes, and over the same 435 ORE ontologies they took 116 from finishing to timing out at
+  60 s (`ore_ont_13805` 0.07 → 53.8 CPU-s). Konclude and HermiT agree on 8 probes (each form
+  with a control). Two-arm `classify` sweep with the shipped defaults over the 435 ORE
+  ontologies with a nominal and an `ABox` assertion (60 s cap): 402 identical, 24 time out and
+  8 fail to parse in both arms, 1 budget-truncation difference (`ore_ont_12698`, identical at
+  `--pair-timeout-ms 1000`), no outcome changes, CPU flat on a serial recheck.
 - **The EL saturator no longer reads `≥n R.X` (n ≥ 2) as `∃R.X` in a definition's
   sufficient direction, a false positive.** With `H ≡ ∃r.(≥2 s.X)` and `Y ⊑ ∃r.∃s.X`,
   `classify` reported `Y ⊑ H` at default settings. Konclude and HermiT both refute it: a `Y`

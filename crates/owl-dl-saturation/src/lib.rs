@@ -2770,6 +2770,10 @@ impl Subsumers {
 struct ElRules {
     /// Direct named-to-named `A ⊑ B` facts.
     atomic_subsumptions: Vec<AtomicSubsumption>,
+    /// Index of the first inverse-`∀` trigger in `existential_triggers` (#180,
+    /// #274); they are the last triggers pushed. `None` when that lowering did not
+    /// run. Read only by proof provenance.
+    inverse_forall_triggers_from: Option<usize>,
     /// Atomic subsumers of `⊤` (from `SubClassOf(owl:Thing, C)` / `⊤ ⊑ C⊓…`).
     /// Every named class ⊑ each of these (C is Top-equivalent). Broadcast to all
     /// classes in `seed`; empty unless the ontology has a `⊤ ⊑ NamedClass` axiom.
@@ -4000,6 +4004,7 @@ fn collect_el_rules(
     {
         let signed = build_signed_role_hierarchy(internal);
         if sat_inverse_forall_enabled() {
+            rules.inverse_forall_triggers_from = Some(rules.existential_triggers.len());
             lower_inverse_forall_triggers(&mut rules, &tseitin, &signed);
             if sat_inverse_forall_nominal_enabled() {
                 lower_inverse_forall_nominal_triggers(&mut rules, internal, &tseitin, &signed);
@@ -5953,12 +5958,24 @@ fn inverse_trigger_provenance(
     if atomic_keys.is_empty() && set_keys.is_empty() {
         return out;
     }
-    // Told atomic subsumptions, each with the axiom behind it (if recorded).
+    // Told atomic subsumptions, each with the axiom behind it (if recorded). A
+    // monotonicity edge `Key(R,K) ⊑ Key(R,L)` is labelled with the told `K ⊑ L`
+    // it was built from.
+    let labelled: HashMap<(ClassId, ClassId), usize> = rules
+        .atomic_subsumptions
+        .iter()
+        .enumerate()
+        .filter_map(|(j, e)| Some(((e.sub, e.sup), atomic_sub_axiom.get(j).copied().flatten()?)))
+        .collect();
     let mut up: HashMap<ClassId, Vec<(ClassId, Option<usize>)>> = HashMap::new();
     for (j, e) in rules.atomic_subsumptions.iter().enumerate() {
-        up.entry(e.sub)
-            .or_default()
-            .push((e.sup, atomic_sub_axiom.get(j).copied().flatten()));
+        let axiom = atomic_sub_axiom.get(j).copied().flatten().or_else(|| {
+            match (atomic_keys.get(&e.sub), atomic_keys.get(&e.sup)) {
+                (Some(&(r, k)), Some(&(r2, l))) if r == r2 => labelled.get(&(k, l)).copied(),
+                _ => None,
+            }
+        });
+        up.entry(e.sub).or_default().push((e.sup, axiom));
     }
     let mut assertions: HashMap<IndividualId, Vec<(usize, ConceptId)>> = HashMap::new();
     if !set_keys.is_empty() {
@@ -5968,7 +5985,10 @@ fn inverse_trigger_provenance(
             }
         }
     }
-    for (t, trig) in rules.existential_triggers.iter().enumerate() {
+    let Some(from) = rules.inverse_forall_triggers_from else {
+        return out;
+    };
+    for (t, trig) in rules.existential_triggers.iter().enumerate().skip(from) {
         if trigger_axiom.get(t).copied().flatten().is_some() {
             continue;
         }
@@ -5995,7 +6015,10 @@ fn inverse_trigger_provenance(
                 .find_map(|&(i, class)| {
                     atomic_operands_on_right(class, &internal.concepts)
                         .into_iter()
-                        .find_map(|c| told_path(&up, c, trig.head))
+                        .find_map(|c| {
+                            told_path(&up, c, trig.head, true)
+                                .or_else(|| told_path(&up, c, trig.head, false))
+                        })
                         .map(|path| (i, path))
                 });
             if let Some((i, path)) = found {
@@ -6012,10 +6035,14 @@ fn inverse_trigger_provenance(
 
 /// Breadth-first: the recorded axioms of a chain of told atomic subsumptions from
 /// `from` to `to`, or `None` when `to` is not reachable. Empty when `from == to`.
+/// With `labelled_only`, only edges with a recorded axiom are followed, so the
+/// result is a complete citation; the caller falls back to any path, which can then
+/// leave an edge uncited (e.g. one from the enumeration common-subsumer rule).
 fn told_path(
     up: &HashMap<ClassId, Vec<(ClassId, Option<usize>)>>,
     from: ClassId,
     to: ClassId,
+    labelled_only: bool,
 ) -> Option<Vec<usize>> {
     let mut parent: HashMap<ClassId, Option<(ClassId, Option<usize>)>> =
         HashMap::from([(from, None)]);
@@ -6031,6 +6058,9 @@ fn told_path(
             return Some(path);
         }
         for &(y, i) in up.get(&x).map_or(&[][..], Vec::as_slice) {
+            if labelled_only && i.is_none() {
+                continue;
+            }
             if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(y) {
                 e.insert(Some((x, i)));
                 queue.push_back(y);

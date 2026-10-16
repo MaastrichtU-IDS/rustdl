@@ -130,3 +130,42 @@ fn a_trigger_firing_on_a_sub_role_cites_the_inclusion() {
         ])
     );
 }
+
+/// Two told paths from `a`'s class `Y` to `H`: a labelled one (`Y ⊑ M ⊑ N ⊑ H`) and
+/// a shorter one through the enumeration rule's `Y ⊑ X ⊑ H` edge (`X ≡ {h1, h2}`),
+/// which records no axiom. The citation must follow the labelled path; the shorter
+/// one would leave the step unjustified.
+#[test]
+fn a_member_typing_path_prefers_recorded_axioms() {
+    assert_eq!(
+        cited_axioms("prove_trigger_told_path_decoy", "C", "H"),
+        sorted(&[
+            "SubClassOf(:A ObjectAllValuesFrom(:R ObjectOneOf(:a)))",
+            "InverseObjectProperties(:S :R)",
+            "SubClassOf(:C ObjectSomeValuesFrom(:S :A))",
+            "ClassAssertion(:Y :a)",
+            "SubClassOf(:Y :M)",
+            "SubClassOf(:M :N)",
+            "SubClassOf(:N :H)",
+        ])
+    );
+}
+
+/// The head is itself a `∀` key reached through a monotonicity edge
+/// `∀p.K ⊑ ∀p.L`, which must cite the told `K ⊑ L` it was built from.
+#[test]
+fn a_forall_monotonicity_edge_cites_its_told_subsumption() {
+    assert_eq!(
+        cited_axioms("prove_trigger_forall_monotonicity", "C", "D"),
+        sorted(&[
+            "SubClassOf(:A ObjectAllValuesFrom(:R ObjectOneOf(:a)))",
+            "InverseObjectProperties(:S :R)",
+            "SubClassOf(:C ObjectSomeValuesFrom(:S :A))",
+            "ClassAssertion(:Y :a)",
+            "SubClassOf(:Y ObjectAllValuesFrom(:p :K))",
+            "SubClassOf(:K :L)",
+            "EquivalentClasses(:D ObjectIntersectionOf(:Z ObjectAllValuesFrom(:p :L)))",
+            "SubClassOf(:C :Z)",
+        ])
+    );
+}

@@ -2378,6 +2378,11 @@ impl<'c> HyperEngine<'c> {
         } else {
             n
         };
+        // Check through a read first: `add` is a no-op on a present label, and
+        // taking the node mutably would copy it if a snapshot still shares it.
+        if self.nodes[n.index()].has(c) {
+            return false;
+        }
         if self.nodes[n.index()].add(c, deps) {
             if let (Some(holders), Some((start, count))) = (self.nn_holders.as_mut(), self.nominals)
                 && let Some(k) = c.index().checked_sub(start)
@@ -2414,6 +2419,24 @@ impl<'c> HyperEngine<'c> {
     /// label's dep only reduces backjumping, never the reverse. Does NOT
     /// re-enqueue the label (its clauses already fired on first add).
     fn fold_label_dep(&mut self, n: HNode, c: ClassId, extra: DepSet) {
+        // Skip through a read when the fold changes nothing, so a node a
+        // snapshot shares is not copied for a no-op (see [`Nodes`]).
+        {
+            let node = &self.nodes[n.index()];
+            match node.labels.binary_search_by_key(&c.index(), |l| l.index()) {
+                Err(_) => return,
+                Ok(pos) => {
+                    let same = node.label_deps[pos].union(extra) == node.label_deps[pos]
+                        && node
+                            .shadow_label_deps
+                            .get(pos)
+                            .is_none_or(|d| d.union(extra) == *d);
+                    if same {
+                        return;
+                    }
+                }
+            }
+        }
         let node = &mut self.nodes[n.index()];
         if let Ok(pos) = node.labels.binary_search_by_key(&c.index(), |l| l.index()) {
             node.label_deps[pos] = node.label_deps[pos].union(extra);
@@ -4059,7 +4082,11 @@ impl<'c> HyperEngine<'c> {
                             } else {
                                 t0
                             };
-                            self.nodes[t.index()].exclude(c, child_deps);
+                            // Keep-first: an existing exclusion makes this a no-op,
+                            // so skip it through a read (no CoW copy).
+                            if self.nodes[t.index()].is_excluded(c).is_none() {
+                                self.nodes[t.index()].exclude(c, child_deps);
+                            }
                             self.stats.semantic_exclusions += 1;
                         }
                         combined = combined.union(child_deps);
@@ -5718,6 +5745,9 @@ impl<'c> HyperEngine<'c> {
     }
 
     /// Record `a ≠ b` (`HF3a`), resolved to representatives. Idempotent.
+    /// Test-only: production `≠` pairs come from `generate_at_least`, which
+    /// pushes them directly (its successors are fresh, so no scan is needed).
+    #[cfg(test)]
     fn add_neq(&mut self, a: HNode, b: HNode) {
         let (a, b) = (self.resolve(a), self.resolve(b));
         if a == b {
@@ -5816,9 +5846,18 @@ impl<'c> HyperEngine<'c> {
             }
             fresh.push(succ);
         }
+        // The successors were created just above, so they are their own
+        // representatives and no stored pair can mention them: push the pairs
+        // directly. A duplicate scan here is O(|neq|) per pair, which made
+        // a large `≥n` cost O(n² · |neq|) (`ore_ont_5107` spent 97% of a 9 s run
+        // there, overrunning its 5 ms pair deadlines).
+        debug_assert!(fresh.iter().all(|&f| self.resolve(f) == f));
+        self.neq
+            .reserve(fresh.len() * fresh.len().saturating_sub(1) / 2);
         for i in 0..fresh.len() {
             for j in (i + 1)..fresh.len() {
-                self.add_neq(fresh[i], fresh[j]);
+                let (a, b) = (fresh[i], fresh[j]);
+                self.neq.push((a.min(b), a.max(b)));
             }
         }
         FireOutcome::Changed
@@ -7305,6 +7344,39 @@ mod tests {
             assert_eq!(node_dump(&eng), dump_outer, "cow={cow}: outer restore");
             assert_label_sigs(&mut eng);
         }
+    }
+
+    /// A write that changes nothing must not copy a node a snapshot shares:
+    /// re-adding a present label and re-folding a covered dep leave the node
+    /// shared, and a real change still copies. (The semantic-branching exclude
+    /// guard is not reached here; that path is off by default.)
+    #[test]
+    fn cow_no_op_writes_keep_the_node_shared() {
+        let (ca, cb) = (cls(10), cls(11));
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 2);
+        eng.cow_nodes = true;
+        let n = eng.new_node();
+        eng.add_label(n, ca, DepSet::EMPTY);
+        eng.nodes[n.index()].exclude(cb, DepSet::EMPTY);
+        let saved = eng.save();
+        let shared = |eng: &HyperEngine<'_>, saved: &Snapshot| {
+            std::rc::Rc::ptr_eq(&saved.nodes.v[n.index()], &eng.nodes.v[n.index()])
+        };
+        assert!(
+            !eng.add_label(n, ca, DepSet::EMPTY),
+            "label already present"
+        );
+        eng.fold_label_dep(n, ca, DepSet::EMPTY);
+        eng.fold_label_dep(n, cb, DepSet::EMPTY); // absent label: no-op
+        assert!(shared(&eng, &saved), "no-op writes copied the node");
+        assert!(eng.add_label(n, cb, DepSet::EMPTY));
+        assert!(!shared(&eng, &saved), "a real write must copy");
+        assert_label_sigs(&mut eng);
+        eng.restore(saved);
+        assert!(
+            !eng.nodes[n.index()].has(cb),
+            "restore drops the branch's label"
+        );
     }
 
     /// `RUSTDL_NN_UNDO_LOG`: an index first built inside a branch survives that

@@ -69,6 +69,18 @@ All notable changes to rustdl are documented here. Format is based on
   boxed, so `ore_ont_3077` peaks at 1,609 MB, 7% above main.
 
 ### Changed
+- **A large `≥n` no longer costs O(n² · |≠|) in the wedge.** Generating the n fresh successors of
+  a `≥n` head recorded each pair as distinct through a duplicate check that scanned the whole `≠`
+  store, though fresh nodes cannot appear in it. `ore_ont_5107` spent 97% of its run there: at
+  the default 5 ms per-pair budget its timed-out pairs overran their deadlines ~50×, and the run
+  took 8.0–11.4 CPU-s and reported incomplete. It now takes 0.17–0.20 CPU-s and completes, with
+  the same 47 subsumptions. Two-arm `classify` sweep over all 1,920 ORE (60 s cap, single
+  thread): answers identical wherever both arms finish, no other ontology faster or slower on a
+  serial CPU-time recheck of every flagged row.
+- **The wedge skips node writes that change nothing (#272 follow-up).** Re-adding a present label,
+  re-folding a covered dependency and re-excluding an excluded class now check through a read,
+  so a node a branch snapshot shares is not copied for them. Unbudgeted instructions −3.3% on
+  `ore_ont_2313`, flat elsewhere.
 - **A branch restore undoes the wedge's NN-rule index with a log instead of a copy (#255
   follow-up), `RUSTDL_NN_UNDO_LOG`, default ON (`=0` reverts).** Each branch save used to copy
   the whole index, and an index first built inside a branch was thrown away by its restore, so

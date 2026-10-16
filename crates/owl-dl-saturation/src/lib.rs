@@ -194,8 +194,10 @@ fn sat_inverse_forall_enabled() -> bool {
 /// `ForallKey(R, {a₁…aₙ})`. `∃S.∀R.{a₁…aₙ} ⊑ {a₁…aₙ}` for `S ⊑ R⁻`, and the
 /// saturator cannot assert the disjunction, so the trigger is headed by every
 /// class each member is asserted to (closed under told subsumption). Default **ON**;
-/// `RUSTDL_SAT_INVERSE_FORALL_NOMINAL=0` reverts.
-fn sat_inverse_forall_nominal_enabled() -> bool {
+/// `RUSTDL_SAT_INVERSE_FORALL_NOMINAL=0` reverts. It runs inside the
+/// `RUSTDL_SAT_INVERSE_FORALL` rule, so `RUSTDL_SAT_INVERSE_FORALL=0` disables it too.
+#[must_use]
+pub fn sat_inverse_forall_nominal_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_INVERSE_FORALL_NOMINAL").is_none_or(|v| v != "0")
 }
 
@@ -5896,7 +5898,6 @@ fn lower_inverse_forall_nominal_triggers(
             continue;
         }
         heads.sort_unstable_by_key(|c| c.index());
-        heads.dedup();
         for s in signed.signed_sub_roles(Role::inverse(r)) {
             if s.is_inverse() {
                 continue;

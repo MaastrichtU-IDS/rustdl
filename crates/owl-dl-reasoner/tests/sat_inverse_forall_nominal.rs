@@ -55,6 +55,7 @@ impl Drop for SetEnvGuard {
 
 const DECLS: &str = "    Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:D))
     Declaration(Class(:E)) Declaration(Class(:F)) Declaration(Class(:G))
+    Declaration(Class(:B)) Declaration(Class(:Z))
     Declaration(ObjectProperty(:R)) Declaration(ObjectProperty(:S)) Declaration(ObjectProperty(:T))
     Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
 ";
@@ -113,6 +114,41 @@ fn inverse_edge_into_a_set_forall_gets_the_shared_type() {
     assert!(c_subsumed_by(MULTI, "G", &[]));
 }
 
+/// The same key, seeded by path (b) instead of told: `B ⊑ ∃R.{a}` with `R`
+/// functional gives `B ⊑ ∀R.{a}`, so a `C` with an `S`-successor in `B` is `a`.
+#[test]
+fn a_key_seeded_through_a_functional_role_is_used() {
+    let body = "    FunctionalObjectProperty(:R)
+    EquivalentClasses(:Z ObjectAllValuesFrom(:R ObjectOneOf(:a)))
+    SubClassOf(:B ObjectHasValue(:R :a))
+    InverseObjectProperties(:S :R)
+    SubClassOf(:C ObjectSomeValuesFrom(:S :B))
+    ClassAssertion(:D :a)";
+    assert!(c_subsumed_by(body, "D", &[]));
+}
+
+/// Path (b) through `B ⊑ ≤1 R` in place of functionality.
+#[test]
+fn a_key_seeded_through_at_most_one_is_used() {
+    let body = "    EquivalentClasses(:Z ObjectAllValuesFrom(:R ObjectOneOf(:a)))
+    SubClassOf(:B ObjectMaxCardinality(1 :R))
+    SubClassOf(:B ObjectHasValue(:R :a))
+    InverseObjectProperties(:S :R)
+    SubClassOf(:C ObjectSomeValuesFrom(:S :B))
+    ClassAssertion(:D :a)";
+    assert!(c_subsumed_by(body, "D", &[]));
+}
+
+/// A symmetric `R` is its own inverse, so an `R`-edge into the key works too.
+#[test]
+fn a_symmetric_role_is_its_own_inverse() {
+    let body = "    SymmetricObjectProperty(:R)
+    SubClassOf(:A ObjectAllValuesFrom(:R ObjectOneOf(:a)))
+    SubClassOf(:C ObjectSomeValuesFrom(:R :A))
+    ClassAssertion(:D :a)";
+    assert!(c_subsumed_by(body, "D", &[]));
+}
+
 // ---------------------------------------------------------------- negatives
 
 /// FP guard: a type of only ONE member must not be asserted of the source.
@@ -149,4 +185,19 @@ fn flag_off_loses_the_entailments() {
     let off = [("RUSTDL_SAT_INVERSE_FORALL_NOMINAL", "0")];
     assert!(!c_subsumed_by(SINGLE, "D", &off));
     assert!(!c_subsumed_by(MULTI, "G", &off));
+}
+
+// ------------------------------------------------------------- known misses
+
+/// KNOWN MISS, not fixed here: the same shape one polarity over. `A ⊑ ∀R⁻.{a}` and
+/// `C ⊑ ∃R.A` entail `C ⊑ D` (Konclude and HermiT both derive it), but the saturator
+/// does not key a `∀` over an inverse role. This asserts the CURRENT miss; when the
+/// gap closes, FLIP it to `assert!` rather than deleting it.
+#[test]
+fn an_inverse_role_forall_is_a_known_miss() {
+    let body = "    SubClassOf(:A ObjectAllValuesFrom(ObjectInverseOf(:R) ObjectOneOf(:a)))
+    InverseObjectProperties(:S :R)
+    SubClassOf(:C ObjectSomeValuesFrom(:R :A))
+    ClassAssertion(:D :a)";
+    assert!(!c_subsumed_by(body, "D", &[]));
 }

@@ -117,10 +117,25 @@ All notable changes to rustdl are documented here. Format is based on
   Konclude and HermiT agree on 5 probes, including 3 FP guards (a type of one member only, an
   untyped member, a forward edge), and on 24 review probes (keys seeded through a functional role
   or `≤1`, symmetric and equivalent-inverse roles, `ObjectHasValue` and range-folded edges), with
-  no false positive. `RUSTDL_SAT_INVERSE_FORALL=0` disables this rule too. Still missed: the same
-  shape over an inverse role, `A ⊑ ∀R⁻.{a}` (pinned as a known miss). Two-arm `classify` sweep over the 26 ORE ontologies with
+  no false positive. `RUSTDL_SAT_INVERSE_FORALL=0` disables this rule too. The same shape over
+  an inverse role, `A ⊑ ∀R⁻.{a}`, is not keyed by the saturator; the classify wedge derives it
+  since #277. Two-arm `classify` sweep over the 26 ORE ontologies with
   a `∀` over `ObjectOneOf` and a polarity axiom (a superset of where the rule can run), 60 s cap,
   single thread: 25 identical answers, 1 timeout in both arms, no answer changes; wall flat.
+- **`classify` reads class assertions about individuals used as nominals (#277),
+  `RUSTDL_CLASSIFY_NOMINAL_TYPES`, default ON (`=0` reverts).** With `A ⊑ ∀R⁻.{a}`,
+  `C ⊑ ∃R.A` and `a : D`, `classify` returned no rows and reported `incomplete: false`, while
+  Konclude, HermiT and rustdl's own `subclass` derive `C ⊑ D`. The classify wedge's clause set
+  carried no `ClassAssertion`, so a node it labelled `{a}` never got `a`'s types; only the
+  consistency cache encoded them. It now adds `{a} ⊑ C` for every `ClassAssertion(C, a)` whose
+  individual occurs as a nominal in some concept, for `C` atomic, a nominal, or a conjunction of
+  those. That is the assertion itself, so it only adds entailed subsumptions. Konclude and HermiT
+  agree on 24 probes (0 FP, 0 missed). Two-arm `classify` sweep over the 435 ORE ontologies with
+  both a nominal and a class assertion, one binary with the flag the only difference, 60 s cap:
+  401 identical, 24 time out and 8 fail to parse in both arms, 1 budget-truncation difference
+  (`ore_ont_12698`), and one gain, `ore_ont_1461`, which now derives a Konclude-confirmed
+  subsumption through `X ⊑ {planar}` and `planar : Y`. CPU time is flat on the rows that read
+  slower under the parallel sweep.
 - **The EL saturator no longer reads `≥n R.X` (n ≥ 2) as `∃R.X` in a definition's
   sufficient direction, a false positive.** With `H ≡ ∃r.(≥2 s.X)` and `Y ⊑ ∃r.∃s.X`,
   `classify` reported `Y ⊑ H` at default settings. Konclude and HermiT both refute it: a `Y`

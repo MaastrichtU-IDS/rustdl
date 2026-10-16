@@ -179,25 +179,41 @@ fn a_forward_edge_entails_nothing() {
 
 // ------------------------------------------------- the flag is load-bearing
 
-/// `=0` loses both positives, so they are this rule's doing.
+/// `=0` loses both positives, so they are this rule's doing. Since #277 the classify
+/// wedge derives them too, so that is pinned off here; each engine alone derives them.
 #[test]
 fn flag_off_loses_the_entailments() {
-    let off = [("RUSTDL_SAT_INVERSE_FORALL_NOMINAL", "0")];
-    assert!(!c_subsumed_by(SINGLE, "D", &off));
-    assert!(!c_subsumed_by(MULTI, "G", &off));
+    let both_off = [
+        ("RUSTDL_SAT_INVERSE_FORALL_NOMINAL", "0"),
+        ("RUSTDL_CLASSIFY_NOMINAL_TYPES", "0"),
+    ];
+    assert!(!c_subsumed_by(SINGLE, "D", &both_off));
+    assert!(!c_subsumed_by(MULTI, "G", &both_off));
+    let saturator_only = [("RUSTDL_CLASSIFY_NOMINAL_TYPES", "0")];
+    assert!(c_subsumed_by(SINGLE, "D", &saturator_only));
+    assert!(c_subsumed_by(MULTI, "G", &saturator_only));
+    let wedge_only = [("RUSTDL_SAT_INVERSE_FORALL_NOMINAL", "0")];
+    assert!(c_subsumed_by(SINGLE, "D", &wedge_only));
+    assert!(c_subsumed_by(MULTI, "G", &wedge_only));
 }
 
-// ------------------------------------------------------------- known misses
+// ------------------------------------------------- the inverse-role variant
 
-/// KNOWN MISS, not fixed here: the same shape one polarity over. `A ⊑ ∀R⁻.{a}` and
-/// `C ⊑ ∃R.A` entail `C ⊑ D` (Konclude and `HermiT` both derive it), but the saturator
-/// does not key a `∀` over an inverse role. This asserts the CURRENT miss; when the
-/// gap closes, FLIP it to `assert!` rather than deleting it.
+/// The same shape one polarity over (#277): `A ⊑ ∀R⁻.{a}` and `C ⊑ ∃R.A` entail
+/// `C ⊑ D` (Konclude and `HermiT` both derive it). The saturator does not key a `∀`
+/// over an inverse role, so this was a pinned miss; since #277 the classify wedge
+/// derives it from `a`'s class assertion (`RUSTDL_CLASSIFY_NOMINAL_TYPES`). With that
+/// off the miss is back, which pins the attribution.
 #[test]
-fn an_inverse_role_forall_is_a_known_miss() {
+fn an_inverse_role_forall_is_derived_by_the_wedge() {
     let body = "    SubClassOf(:A ObjectAllValuesFrom(ObjectInverseOf(:R) ObjectOneOf(:a)))
     InverseObjectProperties(:S :R)
     SubClassOf(:C ObjectSomeValuesFrom(:R :A))
     ClassAssertion(:D :a)";
-    assert!(!c_subsumed_by(body, "D", &[]));
+    assert!(c_subsumed_by(body, "D", &[]));
+    assert!(!c_subsumed_by(
+        body,
+        "D",
+        &[("RUSTDL_CLASSIFY_NOMINAL_TYPES", "0")]
+    ));
 }

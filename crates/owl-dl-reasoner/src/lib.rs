@@ -3819,6 +3819,68 @@ fn push_different_individuals_disjoint(
     }
 }
 
+/// #277: the classify wedge's clause set carried no `ClassAssertion`, so a node the
+/// wedge labelled `{a}` (e.g. through `∀R⁻.{a}`) never got `a`'s asserted types, and
+/// `C ⊑ D` with `a : D` was missed while `classify` reported itself complete. The
+/// consistency cache already encodes each assertion as the GCI `{a} ⊑ C`; this adds
+/// the same clause, `{a}(X) → C(X)`, to the classify clause set. Default **ON**;
+/// `RUSTDL_CLASSIFY_NOMINAL_TYPES=0` reverts.
+#[must_use]
+pub fn classify_nominal_types_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_NOMINAL_TYPES").is_none_or(|v| v != "0")
+}
+
+/// See [`classify_nominal_types_enabled`]. Only individuals that occur as a nominal
+/// in a concept can label a node in a classify graph, so only their assertions are
+/// added; an ontology with a large `ABox` and no nominals pays nothing. Only atomic
+/// classes, nominals (`{a} ⊑ {b}`, i.e. `a = b`) and conjunctions of them are added,
+/// a sound under-approximation for a complex asserted class. Sound:
+/// `ClassAssertion(C, a)` is exactly `{a} ⊑ C`.
+fn push_nominal_class_assertions(
+    internal: &InternalOntology,
+    num_classes: u32,
+    clauses: &mut Vec<owl_dl_core::clause::DlClause>,
+) {
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_core::ir::{ClassId, ConceptExpr};
+    use owl_dl_core::ontology::Axiom;
+    let pool = &internal.concepts;
+    let nominals: std::collections::HashSet<owl_dl_core::ir::IndividualId> = pool
+        .iter_exprs()
+        .filter_map(|e| match e {
+            ConceptExpr::Nominal(ind) => Some(*ind),
+            _ => None,
+        })
+        .collect();
+    if nominals.is_empty() {
+        return;
+    }
+    for axiom in &internal.axioms {
+        let Axiom::ClassAssertion { class, individual } = axiom else {
+            continue;
+        };
+        if !nominals.contains(individual) {
+            continue;
+        }
+        let nominal = ClassId::new(num_classes + individual.index());
+        let as_class = |c: owl_dl_core::ir::ConceptId| match pool.get(c) {
+            ConceptExpr::Atomic(c) => Some(*c),
+            ConceptExpr::Nominal(b) => Some(ClassId::new(num_classes + b.index())),
+            _ => None,
+        };
+        let heads: Vec<ClassId> = match pool.get(*class) {
+            ConceptExpr::And(ops) => ops.iter().filter_map(|&op| as_class(op)).collect(),
+            _ => as_class(*class).into_iter().collect(),
+        };
+        for head in heads {
+            clauses.push(DlClause {
+                body: vec![Atom::Class(nominal, X)],
+                head: vec![Atom::Class(head, X)],
+            });
+        }
+    }
+}
+
 /// One line per classify on `RUSTDL_ID_STATS=1`, so the shutoff's inputs can be
 /// read off a real run instead of inferred. Diagnostic only — nothing in the
 /// engine reads these counters.
@@ -4074,6 +4136,9 @@ impl HyperCache {
         // in every model (asserted, no UNA needed) — adding an entailed
         // constraint can only reveal real subsumptions, never create one.
         push_different_individuals_disjoint(&internal, num_classes, &mut clauses);
+        if classify_nominal_types_enabled() {
+            push_nominal_class_assertions(&internal, num_classes, &mut clauses);
+        }
         // SP2: build the per-named-class saturated-subsumer table before
         // `build_sup_neg_map` mutates `internal.concepts` (complement additions
         // for ¬sup expansions must not pollute the saturation input).

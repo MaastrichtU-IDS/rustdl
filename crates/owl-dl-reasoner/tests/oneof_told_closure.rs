@@ -73,11 +73,12 @@ ClassAssertion(:Ordering :e) ClassAssertion(:Elementary :e)
 )
 ";
 
-fn ordering_is_education(flag: Option<&str>) -> bool {
+fn ordering_is_education(flag: Option<&str>, nominal_types: Option<&str>) -> bool {
     let _g = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _f = SetEnvGuard::set("RUSTDL_ONEOF_TOLD_CLOSURE", flag);
+    let _n = SetEnvGuard::set("RUSTDL_CLASSIFY_NOMINAL_TYPES", nominal_types);
     let (onto, _): (SetOntology<RcStr>, _) = read_ofn(
         &mut Cursor::new(SHAPE.to_owned()),
         ParserConfiguration::default(),
@@ -94,13 +95,21 @@ fn ordering_is_education(flag: Option<&str>) -> bool {
 
 #[test]
 fn members_meet_at_a_told_superclass() {
-    assert!(ordering_is_education(None));
+    assert!(ordering_is_education(None, None));
 }
 
-/// `=0` pins the default and shows the flag is what derives the pair. If another
-/// engine starts deriving it with the flag off, flip this test rather than
-/// deleting it.
+/// `=0` pins the default and shows the flag is what derives the pair in the
+/// saturator. Since #277 the classify wedge derives it too (it now reads each
+/// member's class assertions), so that is pinned off here as well; if yet another
+/// engine starts deriving it, flip this test rather than deleting it.
 #[test]
 fn asserted_types_alone_do_not_meet() {
-    assert!(!ordering_is_education(Some("0")));
+    assert!(!ordering_is_education(Some("0"), Some("0")));
+}
+
+/// #277: with this rule off, the wedge alone derives the pair from the members'
+/// class assertions (`RUSTDL_CLASSIFY_NOMINAL_TYPES`, default ON).
+#[test]
+fn the_wedge_derives_it_from_the_members_class_assertions() {
+    assert!(ordering_is_education(Some("0"), None));
 }

@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """ddmin over the 52-axiom neighborhood (fast: tiny ontology per test)."""
 import re, subprocess, os, tempfile
+
+# ORE_RUN: the ORE pool's root; defaults to ~/rustdl/corpus/ore-run, else the older ~/data/ore-run.
+ORE_RUN = os.environ.get("ORE_RUN") or next(
+    (d for d in map(os.path.expanduser, ("~/rustdl/corpus/ore-run", "~/data/ore-run")) if os.path.isdir(d)),
+    os.path.expanduser("~/rustdl/corpus/ore-run"),
+)
 RUSTDL="/Users/micheldumontier/code/rustdl/target/release/rustdl"
-SRC=os.path.expanduser("~/data/ore-run/input/ore_ont_9786.ofn")
+SRC=os.path.join(ORE_RUN, "input/ore_ont_9786.ofn")
 SUB="http://semanticscience.org/resource/SIO_000500"
 SUP="http://semanticscience.org/resource/SIO_000441"
 raw=open(SRC).read()
@@ -42,5 +48,5 @@ while len(c)>=2:
         n=min(len(c),n*2)
 print(f"\n=== MINIMAL: {len(c)} axioms ===")
 for a in c: print(a)
-open(os.path.expanduser("~/data/ore-run/min_repro_final.ofn"),"w").write(open(write(c)).read())
-print("\nwrote ~/data/ore-run/min_repro_final.ofn")
+open(os.path.join(ORE_RUN, "min_repro_final.ofn"),"w").write(open(write(c)).read())
+print("\nwrote " + os.path.join(ORE_RUN, "min_repro_final.ofn"))

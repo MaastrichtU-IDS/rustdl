@@ -4,10 +4,13 @@
 #   - ROBOT convert -> .owx, Konclude classify -> $ORACLE/<stem>-classified.owx
 # Usage: LIST=/tmp/ore_sroiq.txt bash scripts/ore-oracle-setup.sh
 set -uo pipefail
-POOL=~/data/ore-run/pool_sample
-INPUT=~/data/ore-run/input
-ORACLE=~/data/ore-run/oracle
-WORK=~/data/ore-run/owx
+# ORE_RUN: the ORE pool's root. Defaults to ~/rustdl/corpus/ore-run, else the older ~/data/ore-run.
+ORE_RUN=${ORE_RUN:-$(for d in "$HOME/rustdl/corpus/ore-run" "$HOME/data/ore-run"; do [ -d "$d" ] && { echo "$d"; break; }; done)}
+ORE_RUN=${ORE_RUN:-$HOME/rustdl/corpus/ore-run}
+POOL=$ORE_RUN/pool_sample
+INPUT=$ORE_RUN/input
+ORACLE=$ORE_RUN/oracle
+WORK=$ORE_RUN/owx
 ROBOT_IMG="${ROBOT_IMAGE:-obolibrary/robot:latest}"
 KON_IMG="konclude/konclude:latest"
 LIST="${LIST:-/tmp/ore_sroiq.txt}"

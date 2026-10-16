@@ -19,10 +19,16 @@ set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BIN="$HOME/.local/bin"
 TOOLCHAIN="$HOME/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin"
-JDK_HOME=${JDK_HOME:-$(ls -d "$HOME"/bench/jdk-17* 2>/dev/null | head -1 || true)}
-KONCLUDE_DIR=${KONCLUDE_DIR:-$(ls -d "$HOME"/peers/Konclude-* 2>/dev/null | head -1 || true)}
-PCRE_LIB=${PCRE_LIB:-$HOME/peers/lib}
-ORE_POOL=${ORE_POOL:-$HOME/data/ore-run/pool_sample/files}
+# Layout: ~/rustdl/{peers,corpus/ore-run} (see ~/rustdl/README.md on the coder host), falling
+# back to the older ~/peers and ~/data/ore-run.
+RUSTDL_HOME=${RUSTDL_HOME:-$HOME/rustdl}
+PEERS=${PEERS:-$(for d in "$RUSTDL_HOME/peers" "$HOME/peers"; do [ -d "$d" ] && { echo "$d"; break; }; done)}
+ORE_RUN=${ORE_RUN:-$(for d in "$RUSTDL_HOME/corpus/ore-run" "$HOME/data/ore-run"; do [ -d "$d" ] && { echo "$d"; break; }; done)}
+ORE_RUN=${ORE_RUN:-$RUSTDL_HOME/corpus/ore-run}
+JDK_HOME=${JDK_HOME:-$(ls -d "$PEERS"/jdk-17* "$HOME"/bench/jdk-17* 2>/dev/null | head -1 || true)}
+KONCLUDE_DIR=${KONCLUDE_DIR:-$(ls -d "$PEERS"/Konclude-* 2>/dev/null | head -1 || true)}
+PCRE_LIB=${PCRE_LIB:-$PEERS/lib}
+ORE_POOL=${ORE_POOL:-$ORE_RUN/pool_sample/files}
 
 say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -64,12 +70,19 @@ fi
 [ -x "$TOOLCHAIN/cargo" ] || { echo "ERROR: pinned toolchain missing at $TOOLCHAIN" >&2; exit 1; }
 MARK_BEGIN="# >>> rustdl install-deps >>>"
 MARK_END="# <<< rustdl install-deps <<<"
-block="$MARK_BEGIN
+# If the host keeps its paths in ~/rustdl/env.sh, the block just sources it, so one file
+# holds the layout. Otherwise it sets the toolchain and JDK directly.
+if [ -f "$RUSTDL_HOME/env.sh" ]; then
+  block="$MARK_BEGIN
+[ -f \"$RUSTDL_HOME/env.sh\" ] && . \"$RUSTDL_HOME/env.sh\""
+else
+  block="$MARK_BEGIN
 export PATH=\"$TOOLCHAIN:\$PATH\""
-if [ -n "$JDK_HOME" ]; then
-  block="$block
+  if [ -n "$JDK_HOME" ]; then
+    block="$block
 export JAVA_HOME=\"$JDK_HOME\"
 export PATH=\"\$JAVA_HOME/bin:\$PATH\""
+  fi
 fi
 block="$block
 $MARK_END"
@@ -105,7 +118,7 @@ EOF
   chmod +x "$BIN/konclude"
   say "wrote $BIN/konclude"
 else
-  echo "WARNING: no Konclude under ~/peers; skipping wrapper and oracle generation" >&2
+  echo "WARNING: no Konclude under ${PEERS:-~/rustdl/peers}; skipping wrapper and oracle generation" >&2
   SKIP_FIXTURES=1
 fi
 
@@ -126,7 +139,7 @@ if [ "${SKIP_FIXTURES:-0}" != 1 ]; then
       [ -s "$out" ] || { echo "ERROR: Konclude produced no oracle for $name" >&2; exit 1; }
     done <<EOF
 bibtex ore_ont_3341.owl $REPO/ontologies/real/bibtex.ofn $REPO/ontologies/real/konclude-input/bibtex-classified.owx
-ore-10080 ore_ont_10080.owl $HOME/data/ore-run/input/ore_ont_10080.ofn $HOME/data/ore-run/oracle/ore_ont_10080-classified.owx
+ore-10080 ore_ont_10080.owl $ORE_RUN/input/ore_ont_10080.ofn $ORE_RUN/oracle/ore_ont_10080-classified.owx
 EOF
   fi
 fi

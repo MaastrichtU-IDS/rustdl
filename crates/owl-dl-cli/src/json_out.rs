@@ -781,6 +781,10 @@ fn synthetic_def_to_class_expression(
                 bce: Box::new(ClassExpression::ObjectOneOf(mems)),
             }
         }
+        SyntheticDef::ForallAtomicKey { role, filler } => ClassExpression::ObjectAllValuesFrom {
+            ope: role_id_to_ope(*role, vocab, build),
+            bce: Box::new(class_id_to_class_expression(*filler, vocab, defs, build)?),
+        },
         // Not reached in practice: `DKey` classes are interned as real named
         // vocabulary entries at conversion time (`owl_dl_core::convert`'s
         // `urn:rustdl-dkey:` classes), so they resolve via the `vocab` branch

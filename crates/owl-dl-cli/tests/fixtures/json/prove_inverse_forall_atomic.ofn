@@ -1,0 +1,10 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/o>
+Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:K)) Declaration(Class(:U))
+Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q)) Declaration(ObjectProperty(:s))
+SubClassOf(:A ObjectAllValuesFrom(:p :K))
+InverseObjectProperties(:p :q)
+SubObjectPropertyOf(:s :q)
+SubClassOf(:X ObjectSomeValuesFrom(:s :A))
+SubClassOf(:U ObjectUnionOf(:A :K))
+)

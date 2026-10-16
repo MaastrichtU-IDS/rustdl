@@ -106,6 +106,14 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_13233`, `14375`, `14556`, all consistent), none lost, no answer changes.
 
 ### Fixed
+- **`prove` cites every axiom an existential-trigger step rests on.** Three gaps left a
+  proof's axiom list short of a justification. (1) The inverse-`∀` steps (#180, #274) cited none
+  of the role axioms that make the edge's role a sub-role of the inverse (`InverseObjectProperties`,
+  `SymmetricObjectProperty`, a sub-role or equivalence), nor, for `∀R.{a₁…aₙ}`, the members'
+  class assertions and the told subsumptions to the derived class. (2) Any trigger firing on an
+  edge of a sub-role of its own role did not cite that inclusion. (3) #180's atomic `∀` key had
+  no definition, so `prove --json` refused to render a proof that used it. Proof recording only;
+  `classify` is unchanged.
 - **`classify` derives `C ⊑ D` through an inverse role into a top-level `∀R.{a₁…aₙ}` (#274),
   `RUSTDL_SAT_INVERSE_FORALL_NOMINAL`, default ON (`=0` reverts).** With `A ⊑ ∀R.{a}`,
   `S ≡ R⁻`, `C ⊑ ∃S.A` and `a : D`, `classify` returned no rows and reported

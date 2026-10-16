@@ -1,0 +1,9 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/o>
+Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:D))
+Declaration(ObjectProperty(:R)) Declaration(ObjectProperty(:S)) Declaration(NamedIndividual(:a))
+SubClassOf(:A ObjectAllValuesFrom(:R ObjectOneOf(:a)))
+InverseObjectProperties(:S :R)
+SubClassOf(:C ObjectSomeValuesFrom(:S :A))
+ClassAssertion(:D :a)
+)

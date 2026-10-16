@@ -117,8 +117,9 @@ All notable changes to rustdl are documented here. Format is based on
   Konclude and HermiT agree on 5 probes, including 3 FP guards (a type of one member only, an
   untyped member, a forward edge), and on 24 review probes (keys seeded through a functional role
   or `≤1`, symmetric and equivalent-inverse roles, `ObjectHasValue` and range-folded edges), with
-  no false positive. `RUSTDL_SAT_INVERSE_FORALL=0` disables this rule too. Still missed: the same
-  shape over an inverse role, `A ⊑ ∀R⁻.{a}` (pinned as a known miss). Two-arm `classify` sweep over the 26 ORE ontologies with
+  no false positive. `RUSTDL_SAT_INVERSE_FORALL=0` disables this rule too. The same shape over
+  an inverse role, `A ⊑ ∀R⁻.{a}`, is not keyed by the saturator; the classify wedge derives it
+  since #277. Two-arm `classify` sweep over the 26 ORE ontologies with
   a `∀` over `ObjectOneOf` and a polarity axiom (a superset of where the rule can run), 60 s cap,
   single thread: 25 identical answers, 1 timeout in both arms, no answer changes; wall flat.
 - **`classify` reads class assertions about individuals used as nominals (#277),

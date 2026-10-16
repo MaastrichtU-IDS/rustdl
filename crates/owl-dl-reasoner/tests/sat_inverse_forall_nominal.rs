@@ -190,7 +190,7 @@ fn flag_off_loses_the_entailments() {
 // ------------------------------------------------------------- known misses
 
 /// KNOWN MISS, not fixed here: the same shape one polarity over. `A ⊑ ∀R⁻.{a}` and
-/// `C ⊑ ∃R.A` entail `C ⊑ D` (Konclude and HermiT both derive it), but the saturator
+/// `C ⊑ ∃R.A` entail `C ⊑ D` (Konclude and `HermiT` both derive it), but the saturator
 /// does not key a `∀` over an inverse role. This asserts the CURRENT miss; when the
 /// gap closes, FLIP it to `assert!` rather than deleting it.
 #[test]

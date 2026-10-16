@@ -169,3 +169,19 @@ fn a_forall_monotonicity_edge_cites_its_told_subsumption() {
         ])
     );
 }
+
+/// #279: the saturator's facts about nominal individuals (`a S c` seeded as
+/// `{a} ⊑ ∃S.{c}`, `c : E` as `{c} ⊑ E`) are pushed after the axiom loop, so they
+/// need their source axioms recorded separately.
+#[test]
+fn a_nominal_individuals_assertions_are_cited() {
+    assert_eq!(
+        cited_axioms("prove_nominal_edge", "X", "W"),
+        sorted(&[
+            "SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))",
+            "ObjectPropertyAssertion(:S :a :c)",
+            "ClassAssertion(:E :c)",
+            "EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:S :E)))",
+        ])
+    );
+}

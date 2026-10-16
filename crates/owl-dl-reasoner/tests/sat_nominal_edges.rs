@@ -5,7 +5,7 @@
 //! can read the edge only through generating clauses, which cost up to 65× on ORE
 //! (`RUSTDL_CLASSIFY_NOMINAL_OPA`, default OFF), so `classify` missed it while
 //! reporting `incomplete: false`. In the saturator the same facts are polynomial.
-//! Konclude and `HermiT` agree with every verdict below (2026-10-16).
+//! `HermiT` agrees with every verdict below (2026-10-16).
 //!
 //! Run: `cargo test -p owl-dl-reasoner --test sat_nominal_edges`
 
@@ -51,7 +51,8 @@ impl Drop for SetEnvGuard {
 }
 
 const DECLS: &str = "    Declaration(Class(:X)) Declaration(Class(:W)) Declaration(Class(:E))
-    Declaration(Class(:F)) Declaration(ObjectProperty(:R)) Declaration(ObjectProperty(:S))
+    Declaration(Class(:F)) Declaration(Class(:B)) Declaration(Class(:C))
+    Declaration(ObjectProperty(:R)) Declaration(ObjectProperty(:S))
     Declaration(ObjectProperty(:T)) Declaration(NamedIndividual(:a))
     Declaration(NamedIndividual(:b)) Declaration(NamedIndividual(:c))
 ";
@@ -68,7 +69,10 @@ fn x_is_w(body: &str, extra: &[(&'static str, &str)]) -> bool {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _flags: Vec<SetEnvGuard> = extra.iter().map(|(k, v)| SetEnvGuard::set(k, v)).collect();
-    let src = format!("Prefix(:=<http://t/>)\nOntology(<http://t/x>\n{DECLS}{body}\n)\n");
+    let src = format!(
+        "Prefix(:=<http://t/>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://t/x>\n{DECLS}{body}\n)\n"
+    );
     let mut reader = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
@@ -129,7 +133,78 @@ fn an_edge_of_a_same_individual_is_followed() {
     assert!(x_is_w(&body, &[]));
 }
 
+/// A functional role merges the two asserted successors, which then carry both
+/// types (`b = c` is entailed). The control without functionality is below.
+const FUNCTIONAL: &str = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    FunctionalObjectProperty(:S)
+    ObjectPropertyAssertion(:S :a :b) ObjectPropertyAssertion(:S :a :c)
+    ClassAssertion(:B :b) ClassAssertion(:C :c)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:S
+      ObjectIntersectionOf(:B :C))))";
+
+#[test]
+fn a_functional_role_merges_the_asserted_successors() {
+    assert!(x_is_w(FUNCTIONAL, &[]));
+}
+
+/// The range of `S` types the target of an assertion written through `S⁻`.
+#[test]
+fn a_range_types_the_target_of_an_inverse_assertion() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    ObjectPropertyAssertion(ObjectInverseOf(:S) :c :a)
+    ObjectPropertyRange(:S :E)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:S :E)))";
+    assert!(x_is_w(body, &[]));
+}
+
+/// A symmetric role's assertion `c S a` is also `a S c`.
+#[test]
+fn a_symmetric_role_edge_holds_both_ways() {
+    let body = FORWARD.replace(
+        "ObjectPropertyAssertion(:S :a :c)",
+        "SymmetricObjectProperty(:S)
+    ObjectPropertyAssertion(:S :c :a)",
+    );
+    assert!(x_is_w(&body, &[]));
+}
+
+/// `⊤ ⊑ E` holds of the edge's target too.
+#[test]
+fn a_top_subsumer_holds_of_every_reached_individual() {
+    let body = FORWARD.replace("ClassAssertion(:E :c)", "SubClassOf(owl:Thing :E)");
+    assert!(x_is_w(&body, &[]));
+}
+
 // ---------------------------------------------------------------- negatives
+
+/// FP guard: without functionality the two successors need not merge.
+#[test]
+fn without_functionality_the_successors_stay_apart() {
+    let body = FUNCTIONAL.replace("    FunctionalObjectProperty(:S)\n", "");
+    assert!(!x_is_w(&body, &[]));
+}
+
+/// FP guard: a range of `S` types the TARGET; for `c S a`, that is `a`, not `c`.
+#[test]
+fn a_range_does_not_type_the_source() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    ObjectPropertyAssertion(:S :c :a)
+    ObjectPropertyRange(:S :E)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:S :E)))";
+    assert!(!x_is_w(body, &[]));
+}
+
+/// FP guard (polarity): `S ⊑ T⁻` with `Range(T, E)` puts `E` on the SOURCE of an
+/// `S`-edge, not its target.
+#[test]
+fn a_range_through_an_inverse_super_role_is_not_on_the_target() {
+    let body = FORWARD.replace(
+        "ClassAssertion(:E :c)",
+        "SubObjectPropertyOf(:S ObjectInverseOf(:T))
+    ObjectPropertyRange(:T :E)",
+    );
+    assert!(!x_is_w(&body, &[]));
+}
 
 /// FP guard: the edge goes the other way (`c S a`), so `a` has no `S`-successor.
 #[test]

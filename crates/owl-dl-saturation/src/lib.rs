@@ -190,6 +190,15 @@ fn sat_inverse_forall_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_INVERSE_FORALL").is_none_or(|v| v != "0")
 }
 
+/// #274: extend [`lower_inverse_forall_triggers`] to the nominal-set key
+/// `ForallKey(R, {a₁…aₙ})`. `∃S.∀R.{a₁…aₙ} ⊑ {a₁…aₙ}` for `S ⊑ R⁻`, and the
+/// saturator cannot assert the disjunction, so the trigger is headed by every
+/// class each member is asserted to (closed under told subsumption). Default **ON**;
+/// `RUSTDL_SAT_INVERSE_FORALL_NOMINAL=0` reverts.
+fn sat_inverse_forall_nominal_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_INVERSE_FORALL_NOMINAL").is_none_or(|v| v != "0")
+}
+
 /// #180: the functional merge across an inverse edge — `X ⊑ ∃R.T`,
 /// `T ⊑ ∃S.B`, `R⁻ ⊑ F`, `S ⊑ F`, `F` functional ⟹ `X ⊑ B`. Default **ON**;
 /// `RUSTDL_SAT_INVERSE_FUNC_MERGE=0` opts out. See
@@ -3979,6 +3988,9 @@ fn collect_el_rules(
         let signed = build_signed_role_hierarchy(internal);
         if sat_inverse_forall_enabled() {
             lower_inverse_forall_triggers(&mut rules, &tseitin, &signed);
+            if sat_inverse_forall_nominal_enabled() {
+                lower_inverse_forall_nominal_triggers(&mut rules, internal, &tseitin, &signed);
+            }
         }
         if sat_inverse_func_merge_enabled() {
             collect_inverse_func_partners(&mut rules, internal, &signed);
@@ -5807,6 +5819,95 @@ fn lower_inverse_forall_triggers(
                 body: key,
                 head: k,
             });
+        }
+    }
+}
+
+/// #274 `RUSTDL_SAT_INVERSE_FORALL_NOMINAL`: the nominal-set sibling of
+/// [`lower_inverse_forall_triggers`]. `ForallKey(R,M)` stands for `∀R.M` with
+/// `M = {a₁…aₙ}`, so for every named `S ⊑ R⁻` an `S`-edge from `x` into the key
+/// puts `x` in `M`. The head `M` is a disjunction, which the saturator cannot
+/// assert, so it is weakened to what every member shares: each class `c` with
+/// `aᵢ : c` asserted for ALL `i` (closed under the told atomic subsumptions),
+/// giving `∃S.Key(R,M) ⊑ c`. A member with no asserted type empties the
+/// intersection, so nothing is emitted.
+///
+/// Sound: `Mᴵ ⊆ cᴵ` for each emitted `c`. Under-approximate: a member's DERIVED
+/// types beyond told atomic subsumption are not used.
+fn lower_inverse_forall_nominal_triggers(
+    rules: &mut ElRules,
+    internal: &InternalOntology,
+    tseitin: &TseitinAllocator,
+    signed: &RoleHierarchy,
+) {
+    if tseitin.forall_key_by_role.is_empty() {
+        return;
+    }
+    let mut keys: Vec<(RoleId, &Vec<IndividualId>, ClassId)> = tseitin
+        .forall_key_by_role
+        .iter()
+        .map(|((r, m), &key)| (*r, m, key))
+        .collect();
+    // HashMap order would make the trigger indices nondeterministic.
+    keys.sort_unstable_by_key(|&(r, _, key)| (r.index(), key.index()));
+    let members: HashSet<IndividualId> = keys
+        .iter()
+        .flat_map(|(_, m, _)| m.iter().copied())
+        .collect();
+    let mut types: HashMap<IndividualId, HashSet<ClassId>> = HashMap::new();
+    for ax in &internal.axioms {
+        if let Axiom::ClassAssertion { class, individual } = ax
+            && members.contains(individual)
+        {
+            types
+                .entry(*individual)
+                .or_default()
+                .extend(atomic_operands_on_right(*class, &internal.concepts));
+        }
+    }
+    let mut up: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+    for e in &rules.atomic_subsumptions {
+        up.entry(e.sub).or_default().push(e.sup);
+    }
+    for set in types.values_mut() {
+        let mut stack: Vec<ClassId> = set.iter().copied().collect();
+        while let Some(c) = stack.pop() {
+            for &s in up.get(&c).map_or(&[][..], Vec::as_slice) {
+                if set.insert(s) {
+                    stack.push(s);
+                }
+            }
+        }
+    }
+    let empty = HashSet::new();
+    for (r, m, key) in keys {
+        let mut heads: Vec<ClassId> = match m.split_first() {
+            None => continue,
+            Some((first, rest)) => {
+                let mut common = types.get(first).unwrap_or(&empty).clone();
+                for ind in rest {
+                    let t = types.get(ind).unwrap_or(&empty);
+                    common.retain(|c| t.contains(c));
+                }
+                common.into_iter().collect()
+            }
+        };
+        if heads.is_empty() {
+            continue;
+        }
+        heads.sort_unstable_by_key(|c| c.index());
+        heads.dedup();
+        for s in signed.signed_sub_roles(Role::inverse(r)) {
+            if s.is_inverse() {
+                continue;
+            }
+            for &head in &heads {
+                rules.existential_triggers.push(ExistentialTrigger {
+                    role: s.role_id(),
+                    body: key,
+                    head,
+                });
+            }
         }
     }
 }

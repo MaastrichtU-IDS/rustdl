@@ -3830,55 +3830,129 @@ pub fn classify_nominal_types_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_NOMINAL_TYPES").is_none_or(|v| v != "0")
 }
 
-/// See [`classify_nominal_types_enabled`]. Only individuals that occur as a nominal
-/// in a concept can label a node in a classify graph, so only their assertions are
-/// added; an ontology with a large `ABox` and no nominals pays nothing. Only atomic
-/// classes, nominals (`{a} ⊑ {b}`, i.e. `a = b`) and conjunctions of them are added,
-/// a sound under-approximation for a complex asserted class. Sound:
-/// `ClassAssertion(C, a)` is exactly `{a} ⊑ C`.
-fn push_nominal_class_assertions(
-    internal: &InternalOntology,
-    num_classes: u32,
-    clauses: &mut Vec<owl_dl_core::clause::DlClause>,
-) {
-    use owl_dl_core::clause::{Atom, DlClause, X};
-    use owl_dl_core::ir::{ClassId, ConceptExpr};
+/// #279: `SameIndividual(a, b)` in the classify wedge, as `{a} ⊑ {b}` and `{b} ⊑ {a}`.
+/// The set of individuals whose facts are added grows from the nominals along these
+/// equalities, so `b`'s types reach a node labelled `{a}` when `a = b`. Without it,
+/// `SameIndividual(a, b)`, `b : E`, `K ≡ ∃R.E` and `X ⊑ ∃R.{a}` missed `X ⊑ K` while
+/// `classify` reported itself complete. The clauses add no nodes, so the cost is a few
+/// clauses per equality. Default **ON**; `RUSTDL_CLASSIFY_NOMINAL_SAME=0` reverts.
+/// Inert when `RUSTDL_CLASSIFY_NOMINAL_TYPES=0`, which turns the whole push off.
+#[must_use]
+pub fn classify_nominal_same_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_NOMINAL_SAME").is_none_or(|v| v != "0")
+}
+
+/// #279: `ObjectPropertyAssertion(R, a, b)` in the classify wedge, as `{a} ⊑ ∃R.{b}`
+/// and `{b} ⊑ ∃R⁻.{a}`, with the individual set also grown along those edges.
+/// Default **OFF** (`=1` enables): the clauses are generating, and the closure pulls
+/// most of a connected `ABox` in. Over the 435 ORE ontologies with nominals and an
+/// `ABox` it took 116 from finishing to timing out at 60 s (`ore_ont_13805` 0.07 →
+/// 53.8 CPU-s) for no measured gain. Inert when `RUSTDL_CLASSIFY_NOMINAL_TYPES=0`.
+/// Even when on it is not complete, and the miss is SILENT: `{a}` is an ordinary class in
+/// the classify wedge, so blocking can cut a generating cycle such as `a S c`, `c S a`
+/// before a deep enough chain is built, and the run still reports `incomplete: false`.
+#[must_use]
+pub fn classify_nominal_opa_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_NOMINAL_OPA").is_some_and(|v| v == "1")
+}
+
+/// Push the `ABox` facts of nominal individuals onto `internal.axioms` as GCIs with
+/// a `{a}` antecedent, the encoding the consistency cache uses, so clausification
+/// handles any asserted class (atomic, complex, nominal) uniformly. Returns the
+/// axiom count before the push: the caller clausifies, then truncates back, so the
+/// other consumers of `internal` see the original axioms while the concept pool
+/// (append-only) stays shared and no concept id can be reused.
+///
+/// Only individuals that can label a classify node get facts: those occurring as a
+/// nominal in a concept, closed under `SameIndividual` (`same`) and property
+/// assertions (`opa`). An ontology without nominals pays nothing. Sound: each GCI is
+/// exactly the assertion it encodes, and the classify wedge is not built
+/// `with_nominals`, so `{a}` is an ordinary class there.
+fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bool) -> usize {
+    use owl_dl_core::ir::{ConceptExpr, IndividualId};
     use owl_dl_core::ontology::Axiom;
-    let pool = &internal.concepts;
-    let nominals: std::collections::HashSet<owl_dl_core::ir::IndividualId> = pool
+    let before = internal.axioms.len();
+    let mut reach: std::collections::HashSet<IndividualId> = internal
+        .concepts
         .iter_exprs()
         .filter_map(|e| match e {
             ConceptExpr::Nominal(ind) => Some(*ind),
             _ => None,
         })
         .collect();
-    if nominals.is_empty() {
-        return;
+    if reach.is_empty() {
+        return before;
     }
-    for axiom in &internal.axioms {
-        let Axiom::ClassAssertion { class, individual } = axiom else {
-            continue;
-        };
-        if !nominals.contains(individual) {
-            continue;
+    if same || opa {
+        // Close under SameIndividual and property assertions, both directions.
+        let mut adj: std::collections::HashMap<IndividualId, Vec<IndividualId>> =
+            std::collections::HashMap::new();
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::SameIndividual(inds) if same => {
+                    for w in inds.windows(2) {
+                        adj.entry(w[0]).or_default().push(w[1]);
+                        adj.entry(w[1]).or_default().push(w[0]);
+                    }
+                }
+                Axiom::ObjectPropertyAssertion {
+                    subject, object, ..
+                } if opa => {
+                    adj.entry(*subject).or_default().push(*object);
+                    adj.entry(*object).or_default().push(*subject);
+                }
+                _ => {}
+            }
         }
-        let nominal = ClassId::new(num_classes + individual.index());
-        let as_class = |c: owl_dl_core::ir::ConceptId| match pool.get(c) {
-            ConceptExpr::Atomic(c) => Some(*c),
-            ConceptExpr::Nominal(b) => Some(ClassId::new(num_classes + b.index())),
-            _ => None,
-        };
-        let heads: Vec<ClassId> = match pool.get(*class) {
-            ConceptExpr::And(ops) => ops.iter().filter_map(|&op| as_class(op)).collect(),
-            _ => as_class(*class).into_iter().collect(),
-        };
-        for head in heads {
-            clauses.push(DlClause {
-                body: vec![Atom::Class(nominal, X)],
-                head: vec![Atom::Class(head, X)],
-            });
+        let mut stack: Vec<IndividualId> = reach.iter().copied().collect();
+        while let Some(i) = stack.pop() {
+            for &j in adj.get(&i).map_or(&[][..], Vec::as_slice) {
+                if reach.insert(j) {
+                    stack.push(j);
+                }
+            }
         }
     }
+    let mut extra: Vec<Axiom> = Vec::new();
+    for ax in &internal.axioms[..before] {
+        match ax {
+            Axiom::ClassAssertion { class, individual } if reach.contains(individual) => {
+                let sub = internal.concepts.nominal(*individual);
+                extra.push(Axiom::SubClassOf { sub, sup: *class });
+            }
+            Axiom::SameIndividual(inds) if same && inds.iter().any(|i| reach.contains(i)) => {
+                for w in inds.windows(2) {
+                    let (x, y) = (
+                        internal.concepts.nominal(w[0]),
+                        internal.concepts.nominal(w[1]),
+                    );
+                    extra.push(Axiom::SubClassOf { sub: x, sup: y });
+                    extra.push(Axiom::SubClassOf { sub: y, sup: x });
+                }
+            }
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } if opa && (reach.contains(subject) || reach.contains(object)) => {
+                let (a, b) = (
+                    internal.concepts.nominal(*subject),
+                    internal.concepts.nominal(*object),
+                );
+                let to_b = internal.concepts.some(*role, b);
+                let to_a = internal.concepts.some(role.flip(), a);
+                extra.push(Axiom::SubClassOf { sub: a, sup: to_b });
+                extra.push(Axiom::SubClassOf { sub: b, sup: to_a });
+            }
+            _ => {}
+        }
+    }
+    // Interning `{x}` above means the pool now holds `Nominal(x)` for individuals that
+    // are not TBox nominals. Anything later in `HyperCache::build` that scans the pool
+    // for nominals (e.g. the sat-seed saturation's enumeration members) sees them too;
+    // that is sound, since every fact pushed for them is asserted.
+    internal.axioms.extend(extra);
+    before
 }
 
 /// One line per classify on `RUSTDL_ID_STATS=1`, so the shutoff's inputs can be
@@ -4104,7 +4178,19 @@ impl HyperCache {
     pub(crate) fn build(internal: &InternalOntology) -> Self {
         use owl_dl_core::ir::ClassId;
         let mut internal = internal.clone();
+        // #277/#279: clausify with the nominal individuals' `ABox` facts as
+        // `{a}`-antecedent GCIs, then drop them again so nothing below sees them.
+        let n_axioms = if classify_nominal_types_enabled() {
+            push_nominal_abox_axioms(
+                &mut internal,
+                classify_nominal_same_enabled(),
+                classify_nominal_opa_enabled(),
+            )
+        } else {
+            internal.axioms.len()
+        };
         let (base, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        internal.axioms.truncate(n_axioms);
         let defs = owl_dl_core::definitions::extract_definitions(&internal);
         // Label-cache back-fold (Task 1): precompute the ∃-bearing defined
         // bodies + genus index. Pure read of `defs`/`internal.concepts` — the
@@ -4136,9 +4222,6 @@ impl HyperCache {
         // in every model (asserted, no UNA needed) — adding an entailed
         // constraint can only reveal real subsumptions, never create one.
         push_different_individuals_disjoint(&internal, num_classes, &mut clauses);
-        if classify_nominal_types_enabled() {
-            push_nominal_class_assertions(&internal, num_classes, &mut clauses);
-        }
         // SP2: build the per-named-class saturated-subsumer table before
         // `build_sup_neg_map` mutates `internal.concepts` (complement additions
         // for ¬sup expansions must not pollute the saturation input).

@@ -5443,14 +5443,16 @@ impl<'c> HyperEngine<'c> {
         let resolve_reads = self.inverse_func_merge;
         let read = |n: HNode| if resolve_reads { self.resolve(n) } else { n };
         let src_data = &self.nodes[src.index()];
+        // Target first: it rules out nearly every edge for the price of a compare,
+        // where `role_matches` is a hierarchy lookup. Same truth value either way.
         src_data
             .edges
             .iter()
-            .any(|(er, t)| role_matches(*er, role, hier) && read(*t) == tgt)
+            .any(|(er, t)| read(*t) == tgt && role_matches(*er, role, hier))
             || src_data
                 .preds
                 .iter()
-                .any(|(er, sp)| role_matches(er.flip(), role, hier) && read(*sp) == tgt)
+                .any(|(er, sp)| read(*sp) == tgt && role_matches(er.flip(), role, hier))
     }
 
     /// Assert the (single, Horn) head atom. `binding` maps the body's

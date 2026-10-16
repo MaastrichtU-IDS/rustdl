@@ -13,6 +13,10 @@ use smallvec::SmallVec;
 
 use crate::ir::{Role, RoleId};
 
+/// Largest signed-role count (`2 × roles`) for which [`RoleHierarchy`] keeps the dense
+/// bit matrix behind `is_signed_sub`: 4,096² bits = 2 MB.
+const SIGNED_BITS_MAX: usize = 4096;
+
 /// Index of a SIGNED role (`Role`) in the signed closure: `2·id + polarity`.
 #[inline]
 fn sidx(r: Role) -> usize {
@@ -236,6 +240,19 @@ impl RoleHierarchyBuilder {
                 v.into_boxed_slice()
             })
             .collect();
+        // Dense copy of `signed_super_closure` for `is_signed_sub`, which the wedge's
+        // matcher calls once per scanned edge. Built from the same lists, so it answers
+        // identically; only for `sn ≤ SIGNED_BITS_MAX` (at most 2 MB).
+        let signed_sub_bits = (sn <= SIGNED_BITS_MAX).then(|| {
+            let words = sn.div_ceil(64);
+            let mut bits = vec![0u64; sn * words];
+            for (r, ups) in signed_super_closure.iter().enumerate() {
+                for &sup in ups.iter() {
+                    bits[r * words + sup as usize / 64] |= 1u64 << (sup % 64);
+                }
+            }
+            (words, bits.into_boxed_slice())
+        });
 
         RoleHierarchy {
             super_closure,
@@ -243,6 +260,7 @@ impl RoleHierarchyBuilder {
             symmetric: self.symmetric.into_boxed_slice(),
             signed_super_closure,
             signed_sub_closure,
+            signed_sub_bits,
             polarity_crossing,
         }
     }
@@ -261,6 +279,10 @@ pub struct RoleHierarchy {
     /// express polarity-crossing inclusions the id-space closure cannot.
     signed_super_closure: Vec<Box<[u32]>>,
     signed_sub_closure: Vec<Box<[u32]>>,
+    /// `signed_super_closure` as a dense bit matrix, `(words per row, bits)`: bit
+    /// `sup` of row `sub` is set iff `sup ∈ signed_super_closure[sub]`. `None` above
+    /// [`SIGNED_BITS_MAX`] signed roles.
+    signed_sub_bits: Option<(usize, Box<[u64]>)>,
     /// True iff some closure inclusion connects DIFFERENT ids at DIFFERENT
     /// polarities — the condition under which a NAMED edge, read backwards,
     /// can satisfy a NAMED body atom (the SWEET mechanism, #177).
@@ -316,8 +338,13 @@ impl RoleHierarchy {
     /// Panics if either role's id is out of range.
     #[must_use]
     pub fn is_signed_sub(&self, sub: Role, sup: Role) -> bool {
-        self.signed_super_closure[sidx(sub)]
-            .binary_search(&u32::try_from(sidx(sup)).expect("signed index fits"))
+        let (r, s) = (sidx(sub), sidx(sup));
+        if let Some((words, bits)) = &self.signed_sub_bits {
+            assert!(r < self.signed_super_closure.len() && s < self.signed_super_closure.len());
+            return bits[r * words + s / 64] & (1u64 << (s % 64)) != 0;
+        }
+        self.signed_super_closure[r]
+            .binary_search(&u32::try_from(s).expect("signed index fits"))
             .is_ok()
     }
 

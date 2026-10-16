@@ -51,7 +51,8 @@ impl Drop for SetEnvGuard {
 }
 
 const DECLS: &str = "    Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:D))
-    Declaration(Class(:E)) Declaration(ObjectProperty(:R))
+    Declaration(Class(:E)) Declaration(Class(:K)) Declaration(Class(:X)) Declaration(Class(:Y))
+    Declaration(ObjectProperty(:R))
     Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
 ";
 
@@ -62,6 +63,11 @@ const INVERSE: &str = "    SubClassOf(:A ObjectAllValuesFrom(ObjectInverseOf(:R)
 
 /// Classify with `extra` env settings and report `C ⊑ sup`.
 fn c_subsumed_by(body: &str, sup: &str, extra: &[(&'static str, &str)]) -> bool {
+    subsumed(body, "C", sup, extra)
+}
+
+/// Classify with `extra` env settings and report `sub ⊑ sup`.
+fn subsumed(body: &str, sub: &str, sup: &str, extra: &[(&'static str, &str)]) -> bool {
     let _lock = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -71,7 +77,7 @@ fn c_subsumed_by(body: &str, sup: &str, extra: &[(&'static str, &str)]) -> bool 
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
     let c = owl_dl_reasoner::classify(&onto).expect("classify");
-    c.is_subclass("http://t/C", &format!("http://t/{sup}"))
+    c.is_subclass(&format!("http://t/{sub}"), &format!("http://t/{sup}"))
 }
 
 // ---------------------------------------------------------------- positives
@@ -92,6 +98,40 @@ fn a_nominal_in_an_asserted_conjunction_is_followed() {
     );
     assert!(c_subsumed_by(&body, "D", &[]));
     assert!(c_subsumed_by(&body, "E", &[]));
+}
+
+/// A bare nominal assertion, `a : {b}` (`a = b`), carries `b`'s types to `a`.
+#[test]
+fn a_bare_nominal_assertion_is_followed() {
+    let body = INVERSE.replace(
+        "ClassAssertion(:D :a)",
+        "ClassAssertion(ObjectOneOf(:b) :a)
+    ClassAssertion(:E :b)
+    SubClassOf(:K ObjectHasValue(:R :b))",
+    );
+    assert!(c_subsumed_by(&body, "E", &[]));
+}
+
+/// `≤1 R` merges the `{a}` and `{b}` successors, and the merged node carries both
+/// members' types: `X ⊑ ∃R.(D ⊓ E) ≡ K`. `Y`, without `≤1 R`, is the control.
+#[test]
+fn a_merge_of_two_nominal_successors_carries_both_types() {
+    let body = "    ClassAssertion(:D :a)
+    ClassAssertion(:E :b)
+    EquivalentClasses(:K ObjectSomeValuesFrom(:R ObjectIntersectionOf(:D :E)))
+    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:b)))
+    SubClassOf(:X ObjectMaxCardinality(1 :R))
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:b)))";
+    assert!(subsumed(body, "X", "K", &[]));
+    assert!(!subsumed(body, "Y", "K", &[]));
+    assert!(!subsumed(
+        body,
+        "X",
+        "K",
+        &[("RUSTDL_CLASSIFY_NOMINAL_TYPES", "0")]
+    ));
 }
 
 // ---------------------------------------------------------------- negatives

@@ -200,17 +200,36 @@ fn a_negated_assertion_of_another_class_is_not_a_clash() {
 
 // ------------------------------------------------- the flags are load-bearing
 
+/// Since the saturator also reads `SameIndividual` of nominal individuals
+/// (`RUSTDL_SAT_NOMINAL_EDGES`), both are pinned off to see the wedge flag alone.
 #[test]
 fn same_flag_off_loses_the_equality() {
-    assert!(!subsumed(SAME, "X", "K", NO_SAME));
+    assert!(!subsumed(
+        SAME,
+        "X",
+        "K",
+        &[
+            ("RUSTDL_CLASSIFY_NOMINAL_SAME", "0"),
+            ("RUSTDL_SAT_NOMINAL_EDGES", "0")
+        ]
+    ));
+    assert!(subsumed(SAME, "X", "K", NO_SAME));
 }
 
-/// Property assertions are opt-in: the default does not follow them.
+/// The wedge's property-assertion clauses are opt-in. A forward edge is still
+/// followed by default, by the saturator (`RUSTDL_SAT_NOMINAL_EDGES`); with that off
+/// the default does not follow it.
 #[test]
-fn property_assertions_are_not_followed_by_default() {
+fn property_assertions_are_not_followed_by_the_wedge_by_default() {
     let fwd =
         format!("    ObjectPropertyAssertion(:S :a :c)\n    ClassAssertion(:E :c)\n    {W_SE}");
-    assert!(!subsumed(&fwd, "X", "W", &[]));
+    assert!(subsumed(&fwd, "X", "W", &[]));
+    assert!(!subsumed(
+        &fwd,
+        "X",
+        "W",
+        &[("RUSTDL_SAT_NOMINAL_EDGES", "0")]
+    ));
 }
 
 #[test]

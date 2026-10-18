@@ -448,6 +448,10 @@ fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Concep
     let graph = ctx.graph();
     for idx in 0..graph.len() {
         let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        // #284: a merged-away node's `≤n` is enforced on its representative.
+        if graph.node(node_id).is_redirected() {
+            continue;
+        }
         for &c in graph.node(node_id).labels() {
             let ConceptExpr::Max(_, role, body) = pool.get(c) else {
                 continue;
@@ -497,6 +501,10 @@ fn first_open_disjunction(
     for idx in 0..graph.len() {
         let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
         let node = graph.node(node_id);
+        // #284: a merged-away node's labels are enforced on its representative.
+        if node.is_redirected() {
+            continue;
+        }
         let labels = node.labels();
         for (pos, &c) in labels.iter().enumerate() {
             if let ConceptExpr::Or(args) = pool.get(c)

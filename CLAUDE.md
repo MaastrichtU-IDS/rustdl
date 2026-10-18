@@ -735,16 +735,14 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `RUSTDL_ANYWHERE_BLOCKING=0`. Same residual shape with a **non-nominal** filler blocks 126
   times and answers in 0 s — that control is what isolates nominality as the cause, not the
   disjunction.
-  **KNOWN RESIDUAL, and it is a DIFFERENT defect (pre-existing, unfixed):** absorbing the
-  antecedent removes this *shape*, not the blocking asymmetry. A nominal `∃`-cycle with **no
-  residual at all** — `Q ⊑ ∃p.{b}` plus `{b} ⊑ Q` — still grows to `RUSTDL_MAX_NODES` and
-  returns *"tableau bailed out without a verdict"* on both the pre-change and post-change
-  binaries, while `RUSTDL_ANYWHERE_BLOCKING=0` answers `sat`. Pinned as the `#[ignore]`d
-  sentinel `residual_free_nominal_cycle_still_exhausts_the_node_cap` (it asserts the DESIRED
-  verdict, so it trips the moment the gap closes). Fixing it means
-  letting `is_blocked_anywhere` fall back to ancestor scope for a nominal `y`, which is a
-  blocking-semantics change and needs its own 152-ontology-style bake-off — do not ship it on
-  this issue's evidence.
+  **The residual this entry recorded is CLOSED (2026-10-18, #284), and its diagnosis was
+  wrong.** A nominal `∃`-cycle with **no residual at all** — `Q ⊑ ∃p.{b}` plus `{b} ⊑ Q` —
+  grew to `RUSTDL_MAX_NODES`, and this entry blamed `is_blocked_anywhere` never blocking a
+  nominal node. The real cause was the saturator firing rules on a node the o-rule had
+  already MERGED AWAY: the witness's `∃p.{b}` looked unsatisfied once its edges had moved, so
+  it generated again. `saturate` now skips redirected nodes, the cycle answers `sat` with no
+  blocking change, and the sentinel is live as `residual_free_nominal_cycle_terminates`. The
+  same fix makes the issue-#35 v4 reproducer converge with `RUSTDL_DOMAIN_ABSORPTION=0`.
   **EVIDENCE, with its limits stated.** The pass is **INERT on all 7 curated fixtures**
   (`tbox-stats` ON vs OFF identical on pizza/ro/sio/sulo/wine/go-basic/family), so a green
   curated closure-diff here demonstrates inertness, NOT correctness — the same trap

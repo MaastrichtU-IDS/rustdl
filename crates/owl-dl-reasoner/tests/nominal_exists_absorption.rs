@@ -150,31 +150,18 @@ fn propagation_runs_to_the_predecessor_not_the_successor() {
     assert_eq!(got, ["http://example.org/b".to_owned()]);
 }
 
-/// SENTINEL for a **different, still-open** defect, kept here because this is
-/// where the evidence lives — absorbing the antecedent removed the residual
-/// *shape*, not the blocking asymmetry underneath it.
+/// A residual-free nominal `∃`-cycle: `Q ⊑ ∃p.{b}` generates a witness, the
+/// o-rule merges it into `{b}`'s node, and `{b} ⊑ Q` puts `Q` back. This ontology
+/// has **zero residual GCIs**, so this file's absorption pass cannot reach it.
 ///
-/// This ontology has **zero residual GCIs** (`tbox-stats` confirms) yet still
-/// builds an unbounded nominal `∃`-cycle: `Q ⊑ ∃p.{b}` generates a nominal
-/// witness, `{b} ⊑ Q` puts `Q` back on it, and it generates again. Because
-/// `is_blocked_anywhere` never blocks a nominal node, the graph grows to
-/// `RUSTDL_MAX_NODES` and the call returns *"tableau bailed out without a
-/// verdict"* — on the pre-fix binary too, so this is not a regression from
-/// #70's fix. `RUSTDL_ANYWHERE_BLOCKING=0` answers `sat` immediately.
-///
-/// WHEN THIS STARTS PASSING: the blocking asymmetry has been closed. Remove the
-/// `#[ignore]` and record which change closed it — do not assume it was this
-/// file's absorption pass, which by construction cannot reach a residual-free
-/// ontology.
-///
-/// Closing it means letting `is_blocked_anywhere` fall back to ancestor scope
-/// for a nominal `y` (`is_blocked_ancestor` has no nominal exclusion and is the
-/// shipped classify default). That is a blocking-semantics change and needs its
-/// own corpus bake-off; it is deliberately NOT bundled with #70.
+/// It was an `#[ignore]`d sentinel recording "anywhere-blocking never blocks a
+/// nominal node, so the graph grows to `RUSTDL_MAX_NODES`". That diagnosis was
+/// wrong. The growth came from the saturator firing rules on the merged-away
+/// witness: its `∃p.{b}` looked unsatisfied once its edges had moved, so it
+/// generated again. #284 skips merged-away nodes, and this now answers `sat`
+/// with no blocking change.
 #[test]
-#[ignore = "open defect: anywhere-blocking never blocks a nominal node, so a \
-            residual-free nominal ∃-cycle grows to RUSTDL_MAX_NODES"]
-fn residual_free_nominal_cycle_still_exhausts_the_node_cap() {
+fn residual_free_nominal_cycle_terminates() {
     const CYCLE: &str = r"Ontology(<http://example.org/o>
     Declaration(ObjectProperty(<http://example.org/p>))
     Declaration(Class(<http://example.org/Q>))

@@ -101,6 +101,17 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
             if !ctx.graph().is_dirty(node) {
                 continue;
             }
+            // #284: a merged-away node is dead — its labels and edges now
+            // live on the representative. Firing rules on it regenerates
+            // the successors the merge moved off it (its `∃` labels look
+            // unsatisfied once its edges are gone), and when the merge
+            // folded an ancestor into a descendant that rebuilt the same
+            // chain forever: `X ⊑ ∃R.T`, `T ⊑ ∃S.B`, `R⁻ ⊑ F`, `S ⊑ F`,
+            // `Func(F)` never terminated.
+            if ctx.graph().node(node).is_redirected() {
+                ctx.graph_mut().set_dirty(node, false);
+                continue;
+            }
             // Clear *before* running rules so that a rule mutating
             // this node (e.g. apply_and adding decomposed children to
             // the same node) re-raises the bit and we revisit on the
@@ -162,6 +173,9 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
                     return SaturationResult::Stalled;
                 }
                 let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+                if ctx.graph().node(node).is_redirected() {
+                    continue;
+                }
                 if apply_deferred_or_residuals(ctx, node) == RuleOutcome::Applied {
                     sweep_changed = true;
                 }

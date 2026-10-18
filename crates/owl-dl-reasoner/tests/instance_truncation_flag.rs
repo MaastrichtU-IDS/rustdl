@@ -107,8 +107,11 @@ fn point_queries_report_whether_a_probe_was_cut() {
     // ── experiment: squeeze the per-pair budget and the probe is cut, so the flag
     // must fire. k is a RELIABILITY parameter — the deadline is per pair, so a
     // larger fixture makes "no probe cut" vanishingly unlikely; see the same
-    // reasoning in realize_incomplete_signal.rs.
-    let dense = onto(&disjunctive(240));
+    // reasoning in realize_incomplete_signal.rs. Was 240 until #284: the tableau
+    // used to branch over the disjunctions still on the merged-away nominal node as
+    // well, ~k branches per probe; it now takes 2, so 240 no longer outlasts 1 ms
+    // in a release build.
+    let dense = onto(&disjunctive(1000));
     let _g = set_budget("1");
     let (_, cut) = owl_dl_reasoner::instances_of_reporting(&dense, "http://t/C0")
         .expect("instances_of_reporting under a 1 ms budget");

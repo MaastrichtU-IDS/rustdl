@@ -111,7 +111,6 @@ fn run_probe() -> (SearchVerdict, usize) {
 /// `disjoint_nodecap.rs` and `individuals_nodecap.rs`.
 #[test]
 fn issue35_v4_reproducer_converges_without_domain_absorption() {
-    let _fix = SetEnvGuard::set("RUSTDL_NOMINAL_FIRST", "1");
     let _cap = SetEnvGuard::set("RUSTDL_MAX_NODES", "10");
     // Pinned off so this keeps exercising the un-absorbed residual
     // `⊤ ⊑ ¬∃r.⊤ ⊔ A`; the default (domain absorption ON) never opens the cycle.

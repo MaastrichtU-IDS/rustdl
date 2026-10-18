@@ -10038,8 +10038,9 @@ where
 // ---------------------------------------------------------------------------
 
 pub use owl_dl_saturation::proof::{
-    AxiomRef, DerivedFact, ElRule, Inference, ProofNode, ProofTrace, ProveResult, SyntheticDef,
-    check_proof, check_proof_with_content, prove_subsumption, render_proof, render_proof_with_defs,
+    AxiomRef, DerivedFact, ElRule, Inference, ProofGap, ProofNode, ProofTrace, ProveResult,
+    SyntheticDef, check_proof, check_proof_with_content, proof_gaps, prove_subsumption,
+    render_proof, render_proof_with_defs,
 };
 pub use owl_dl_saturation::{SaturateConfig, saturate_with_config};
 

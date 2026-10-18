@@ -2203,6 +2203,15 @@ fn main() -> Result<()> {
                             collect_axiom_refs(premise, out);
                         }
                     }
+                    let gaps = owl_dl_reasoner::proof_gaps(root);
+                    if !gaps.is_empty() {
+                        println!(
+                            "# WARNING: proof incomplete: {} gap(s) where the cited axioms do \
+                             not complete the derivation (marked above); the entailment holds \
+                             but this proof does not show every axiom it rests on",
+                            gaps.len()
+                        );
+                    }
                     let mut all_refs: Vec<usize> = Vec::new();
                     collect_axiom_refs(root, &mut all_refs);
                     all_refs.sort_unstable();

@@ -682,6 +682,10 @@ pub(crate) struct ProveJson {
     pub(crate) schema_version: u32,
     pub(crate) entailed: bool,
     pub(crate) has_proof: bool,
+    /// `true` when every proof step cites the axiom its rule applies (or needs none) and
+    /// every premise has a sub-proof; `false` when some step cannot be completed from
+    /// the cited axioms; `null` when there is no proof.
+    pub(crate) proof_complete: Option<bool>,
     pub(crate) proof: Option<ProofNodeJson>,
     /// OFN ontology document (present iff `has_proof` is `false` and
     /// `entailed` is `true`).
@@ -697,7 +701,12 @@ pub(crate) struct ProofNodeJson {
     pub(crate) rule: String,
     /// Source axioms used at this step, each its own OFN ontology document.
     pub(crate) axioms: Vec<String>,
+    /// The rule applies an axiom but none was recorded for this step.
+    pub(crate) axiom_missing: bool,
     pub(crate) premises: Vec<ProofNodeJson>,
+    /// Premises this step used that have no recorded derivation, each a one-axiom OFN
+    /// document like `conclusion`.
+    pub(crate) unproved_premises: Vec<String>,
 }
 
 /// Resolve a class id to a horned-owl `ClassExpression`: a named class if
@@ -884,12 +893,22 @@ fn build_proof_node_json(
         .iter()
         .map(|p| build_proof_node_json(p, internal, defs, pm, build))
         .collect::<Result<Vec<_>>>()?;
+    let unproved_premises = node
+        .unproved_premises
+        .iter()
+        .map(|f| {
+            let c = derived_fact_to_component(f, vocab, defs, build)?;
+            Ok(axioms_to_ofn_doc(std::slice::from_ref(&c), pm))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(ProofNodeJson {
         conclusion,
         rule: node.rule.to_string(),
+        axiom_missing: node.rule.needs_axiom() && axioms.is_empty(),
         axioms,
         premises,
+        unproved_premises,
     })
 }
 
@@ -903,6 +922,15 @@ fn build_proof_node_json(
 /// `class_id_to_class_expression` — propagated here instead of silently
 /// emitting fabricated content, so `prove --json` exits with a real error in
 /// that case.
+/// No node is missing an axiom or a premise's sub-proof. Read off the rendered JSON
+/// so `proof_complete` agrees with the per-node fields by construction (an axiom ref
+/// that fails to resolve counts as missing there too).
+fn proof_is_complete(node: &ProofNodeJson) -> bool {
+    !node.axiom_missing
+        && node.unproved_premises.is_empty()
+        && node.premises.iter().all(proof_is_complete)
+}
+
 pub(crate) fn build_prove_json(
     result: &ProveEntailmentResult,
     internal: &InternalOntology,
@@ -922,6 +950,7 @@ pub(crate) fn build_prove_json(
                 schema_version: SCHEMA_VERSION,
                 entailed: true,
                 has_proof: true,
+                proof_complete: Some(proof_is_complete(&proof)),
                 proof: Some(proof),
                 justification_fallback: None,
             }
@@ -930,6 +959,7 @@ pub(crate) fn build_prove_json(
             schema_version: SCHEMA_VERSION,
             entailed: true,
             has_proof: false,
+            proof_complete: None,
             proof: None,
             justification_fallback: Some(axioms_to_ofn_doc(&j.axioms, pm)),
         },
@@ -937,6 +967,7 @@ pub(crate) fn build_prove_json(
             schema_version: SCHEMA_VERSION,
             entailed: false,
             has_proof: false,
+            proof_complete: None,
             proof: None,
             justification_fallback: None,
         },

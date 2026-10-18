@@ -901,9 +901,27 @@ impl WorklistEngine {
             self.rules.conjunctive_unsat.len(),
             "runtime rule addition must re-index conjunctive_unsat_by_body",
         );
+        // A conjunction minted at runtime is mentioned by no axiom: register its
+        // definition so a proof can render it, and record each projection
+        // `F ⊑ Bi` as definitional, so `prove` does not report it as uncited.
+        if let Some(t) = self.proof_trace.as_mut() {
+            t.synthetic_defs
+                .entry(synthetic)
+                .or_insert_with(|| proof::SyntheticDef::TseitinConj(body_clone.clone()));
+        }
         // Enqueue the F ⊑ Bi atomic subsumptions so existing rules fire on them.
         for added_idx in before_atomic..self.rules.atomic_subsumptions.len() {
             let sub_ax = self.rules.atomic_subsumptions[added_idx];
+            if self.record_proofs && !self.subsumers.contains(sub_ax.sub, sub_ax.sup) {
+                let inf = Inference {
+                    rule: ElRule::SyntheticDefinition,
+                    premise_facts: vec![],
+                    axiom_refs: vec![],
+                };
+                if let Some(t) = self.proof_trace.as_mut() {
+                    t.record(DerivedFact::Sub(sub_ax.sub, sub_ax.sup), inf);
+                }
+            }
             self.push_subsumer(sub_ax.sub, sub_ax.sup);
         }
         synthetic

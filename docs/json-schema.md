@@ -234,6 +234,7 @@ below).
 
 ```json
 { "schema_version": 1, "entailed": bool, "has_proof": bool,
+  "proof_complete": bool | null,
   "proof": ProofNodeJson | null,
   "justification_fallback": ofn_document | null }
 ```
@@ -241,7 +242,8 @@ below).
 ```json
 // ProofNodeJson
 { "conclusion": ofn_document, "rule": rule_name,
-  "axioms": [ofn_document, ...], "premises": [ProofNodeJson, ...] }
+  "axioms": [ofn_document, ...], "axiom_missing": bool,
+  "premises": [ProofNodeJson, ...], "unproved_premises": [ofn_document, ...] }
 ```
 
 Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
@@ -260,9 +262,16 @@ Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
   `"ToldSubsumer"`, `"SubsumerTransitivity(fwd)"`). `axioms` are that step's
   cited source axioms — each `node.axiom_refs` index resolved against the
   same `InternalOntology` the query ran over and reverse-converted to a
-  horned-owl axiom, each its own one-axiom OFN document; empty for a pure
-  transitivity/chain step with no direct axiom. `premises` recurses; a leaf
-  step has `premises: []`.
+  horned-owl axiom, each its own one-axiom OFN document; empty for a step whose
+  rule needs no axiom (reflexivity, transitivity, fact inheritance, the unsat
+  propagations). `axiom_missing` is `true` when the step's rule does apply an
+  axiom but none was recorded for it. `premises` recurses; a leaf step has
+  `premises: []`. `unproved_premises` lists, as one-axiom OFN documents,
+  premises the step used whose own derivation was not recorded, so no
+  sub-proof exists for them. `proof_complete` is `false` when any node has
+  `axiom_missing` or a non-empty `unproved_premises`: the entailment still
+  holds, but the cited axioms do not show every step. It is `null` when there
+  is no step proof.
 - **Justification fallback** (entailment holds, but not via the EL
   saturation fragment — SROIQ-only, e.g. genuine disjunctive/cardinality
   tableau reasoning): `entailed: true, has_proof: false`, `proof: null`,

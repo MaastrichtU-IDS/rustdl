@@ -27,8 +27,23 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::{ClassificationStats, classify};
+use owl_dl_reasoner::{Classification, ClassificationStats, classify, classify_with_timeout};
 use std::io::Cursor;
+
+/// Classify the HYBRID fixture with the CLI's default 5 ms per-pair budget.
+///
+/// NOT the unbounded [`classify`]: on this fixture the unbounded run is tractable
+/// only while every per-class label build finishes inside its wall-clock budget
+/// (30 s with no per-pair timeout), because a class without labels sends its ~120
+/// pairs to unbounded per-pair searches that, on these `∀`/`∃` cycles, do not finish
+/// (release, label cache off: still running after 120 s, where 5 ms pairs take
+/// 20 s). A debug build under heavy host load crossed that budget and ran for
+/// ~32 h at ~1,500% CPU. With a per-pair budget the worst case is bounded by
+/// `pairs × 5 ms`, whatever the load. The phase timers measure the same code
+/// either way.
+fn classify_hybrid(onto: &SetOntology<RcStr>) -> Classification {
+    classify_with_timeout(onto, std::time::Duration::from_millis(5)).expect("classify")
+}
 
 fn parse(src: &str) -> SetOntology<RcStr> {
     let mut reader = Cursor::new(src.to_owned());
@@ -115,7 +130,7 @@ fn hybrid_ontology(k: usize) -> String {
 fn phase_components_sum_to_the_measured_wall() {
     let onto = parse(&hybrid_ontology(60));
     let outer = std::time::Instant::now();
-    let h = classify(&onto).expect("classify");
+    let h = classify_hybrid(&onto);
     let outer_ms = u64::try_from(outer.elapsed().as_millis()).unwrap_or(u64::MAX);
     let s = &h.stats();
 
@@ -165,7 +180,7 @@ fn phase_components_sum_to_the_measured_wall() {
 fn tier_walk_is_not_a_residual_sink() {
     let onto = parse(&hybrid_ontology(60));
     let outer = std::time::Instant::now();
-    let h = classify(&onto).expect("classify");
+    let h = classify_hybrid(&onto);
     let outer_ms = u64::try_from(outer.elapsed().as_millis()).unwrap_or(u64::MAX);
     let s = &h.stats();
     assert!(!s.pure_el_mode, "fixture must take the HYBRID path");

@@ -109,14 +109,16 @@ All notable changes to rustdl are documented here. Format is based on
 - **An unbounded classify no longer depends on host load to finish,
   `RUSTDL_UNBOUNDED_LABEL_CACHE`, default ON (`=0` reverts).** With no per-pair timeout and no
   global deadline (the library's `classify()`, the CLI's `--pair-timeout-ms 0`, Python's
-  `per_pair_timeout_ms=0, global_deadline_ms=0`, and Python's `materialize_*`), each per-class
+  `per_pair_timeout_ms=0, global_deadline_ms=0`, Python's `materialize_*`, and `diagnose`/`report`
+  in the CLI and Python, which classify internally), each per-class
   label build was still capped at 30 s of wall time. A class that missed the cap lost its labels,
   and its pairs fell through to the per-pair search, which in this mode is unbounded and on hard
   inputs far more expensive than the build. So a busy host could turn a fast run into one that
   did not finish: the `phase_attribution` test binary ran for ~32 h at ~1,500% CPU. Label builds
   are now uncapped in a fully unbounded run; a global deadline or `RUSTDL_LABEL_CACHE_TIMEOUT_MS`
   still bounds them. On that test's fixture, the release binary squeezed onto one core with 128
-  threads finishes in 35.9 s with the flag on and is still running at 600 s with it off. Two-arm
+  threads finishes in 35.9 s with the flag on and is still running at 600 s with it off (how much
+  load it takes to cross the cap depends on the host; a review run needed two such instances). Two-arm
   sweep at `--pair-timeout-ms 0` over the 393 missed-net ORE ontologies, 60 s cap: 374
   identical, 17 time out and 2 fail to parse in both arms, no answer changes, wall 1,689 →
   1,597 s.

@@ -12108,6 +12108,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
         assert_eq!(label_cache_ms_for_run(137, None, true, None, true), 30_000);
         assert_eq!(label_cache_ms_for_run(137, pp, false, None, true), 685);
         assert_eq!(label_cache_ms_for_run(137, None, false, Some(42), true), 42);
+        assert_eq!(label_cache_ms_for_run(137, None, false, Some(0), false), 0);
     }
 }
 

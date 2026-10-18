@@ -55,6 +55,9 @@ const DECLS: &str = "    Declaration(Class(:X)) Declaration(Class(:W)) Declarati
     Declaration(ObjectProperty(:R)) Declaration(ObjectProperty(:S))
     Declaration(ObjectProperty(:T)) Declaration(NamedIndividual(:a))
     Declaration(NamedIndividual(:b)) Declaration(NamedIndividual(:c))
+    Declaration(Class(:Y)) Declaration(Class(:A)) Declaration(ObjectProperty(:U))
+    Declaration(NamedIndividual(:d)) Declaration(NamedIndividual(:e))
+    Declaration(NamedIndividual(:f)) Declaration(NamedIndividual(:g))
 ";
 
 /// The forward reproducer.
@@ -65,6 +68,11 @@ const FORWARD: &str = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)
 
 /// Classify with `extra` env settings and report `X ⊑ W`.
 fn x_is_w(body: &str, extra: &[(&'static str, &str)]) -> bool {
+    sub_is_w(body, "X", extra)
+}
+
+/// Classify with `extra` env settings and report `sub ⊑ W`.
+fn sub_is_w(body: &str, sub: &str, extra: &[(&'static str, &str)]) -> bool {
     let _lock = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -77,7 +85,7 @@ fn x_is_w(body: &str, extra: &[(&'static str, &str)]) -> bool {
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
     let c = owl_dl_reasoner::classify(&onto).expect("classify");
-    c.is_subclass("http://t/X", "http://t/W")
+    c.is_subclass(&format!("http://t/{sub}"), "http://t/W")
 }
 
 // ---------------------------------------------------------------- positives
@@ -239,4 +247,133 @@ fn a_type_of_another_individual_entails_nothing() {
 #[test]
 fn flag_off_loses_the_entailment() {
     assert!(!x_is_w(FORWARD, &[("RUSTDL_SAT_NOMINAL_EDGES", "0")]));
+}
+
+// ------------------------------------- reverse facts and forced equalities
+
+/// A declared inverse: `c S a` with `Inverse(S, T)` is `a T c`.
+#[test]
+fn a_declared_inverse_reads_the_edge_backwards() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    ObjectPropertyAssertion(:S :c :a) InverseObjectProperties(:S :T) ClassAssertion(:E :c)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:T :E)))";
+    assert!(x_is_w(body, &[]));
+    // FP guard: `a S c` gives `c T a`, not `a T c`.
+    let body = body.replace(
+        "ObjectPropertyAssertion(:S :c :a)",
+        "ObjectPropertyAssertion(:S :a :c)",
+    );
+    assert!(!x_is_w(&body, &[]));
+}
+
+/// `S ⊑ T⁻` puts `T`'s DOMAIN on the target of an `S`-edge.
+#[test]
+fn a_domain_through_an_inverse_super_role_types_the_target() {
+    let body = FORWARD.replace(
+        "ClassAssertion(:E :c)",
+        "SubObjectPropertyOf(:S ObjectInverseOf(:T))
+    ObjectPropertyDomain(:T :E)",
+    );
+    assert!(x_is_w(&body, &[]));
+}
+
+/// `InverseFunctional(S)`: `a S c`, `b S c` give `a = b`, so `a` has `b`'s types.
+#[test]
+fn an_inverse_functional_role_merges_the_sources() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    InverseFunctionalObjectProperty(:S)
+    ObjectPropertyAssertion(:S :a :c) ObjectPropertyAssertion(:S :b :c)
+    ClassAssertion(:A :b)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R :A))";
+    assert!(x_is_w(body, &[]));
+    let body = body.replace("    InverseFunctionalObjectProperty(:S)\n", "");
+    assert!(!x_is_w(&body, &[]));
+}
+
+/// A functional merge puts the types on the nominal itself: `a S b`, `a S c`,
+/// `Functional(S)`, `b : B` give `c : B`, so `Y ⊑ ∃R.{c}` is `⊑ ∃R.B`.
+#[test]
+fn a_functional_merge_types_the_merged_nominal() {
+    let body = "    FunctionalObjectProperty(:S)
+    ObjectPropertyAssertion(:S :a :b) ObjectPropertyAssertion(:S :a :c)
+    ClassAssertion(:B :b)
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:c)))
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R :B))";
+    assert!(sub_is_w(body, "Y", &[]));
+}
+
+/// A functional SUPER-role merges successors on two different sub-roles.
+#[test]
+fn a_functional_super_role_merges_across_sub_roles() {
+    let body =
+        "    SubObjectPropertyOf(:S :T) SubObjectPropertyOf(:U :T) FunctionalObjectProperty(:T)
+    ObjectPropertyAssertion(:S :a :b) ObjectPropertyAssertion(:U :a :c) ClassAssertion(:E :b)
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:c)))
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R :E))";
+    assert!(sub_is_w(body, "Y", &[]));
+}
+
+/// `S ⊑ T⁻` with `Functional(T)` makes `S` inverse-functional: `b S a`, `c S a`
+/// give `b = c`. Reversed edges (`a S b`, `a S c`) force nothing.
+#[test]
+fn a_functional_inverse_super_role_merges_the_sources() {
+    let body = "    SubObjectPropertyOf(:S ObjectInverseOf(:T)) FunctionalObjectProperty(:T)
+    ObjectPropertyAssertion(:S :b :a) ObjectPropertyAssertion(:S :c :a) ClassAssertion(:E :b)
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:c)))
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R :E))";
+    assert!(sub_is_w(body, "Y", &[]));
+    let body = body
+        .replace(
+            "ObjectPropertyAssertion(:S :b :a)",
+            "ObjectPropertyAssertion(:S :a :b)",
+        )
+        .replace(
+            "ObjectPropertyAssertion(:S :c :a)",
+            "ObjectPropertyAssertion(:S :a :c)",
+        );
+    assert!(!sub_is_w(&body, "Y", &[]));
+}
+
+/// Merges feed each other: `Functional(S)` gives `b = c`, and then
+/// `InverseFunctional(U)` with `d U b`, `e U c` gives `d = e`.
+#[test]
+fn forced_equalities_are_closed_under_each_other() {
+    let body = "    FunctionalObjectProperty(:S) InverseFunctionalObjectProperty(:U)
+    ObjectPropertyAssertion(:S :a :b) ObjectPropertyAssertion(:S :a :c)
+    ObjectPropertyAssertion(:U :d :b) ObjectPropertyAssertion(:U :e :c)
+    ClassAssertion(:E :d)
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:e)))
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R :E))";
+    assert!(sub_is_w(body, "Y", &[]));
+    // Without the functional S, b and c stay apart, and so do d and e.
+    let body = body.replace("FunctionalObjectProperty(:S) ", "");
+    assert!(!sub_is_w(&body, "Y", &[]));
+}
+
+/// Three merges in a chain, each enabled by the previous: `b = c` (functional
+/// `S`), then `d = e` (inverse-functional `U`), then `f = g` (`S` again). Whichever
+/// order the two roles are processed in, one pass cannot finish it.
+#[test]
+fn a_chain_of_forced_equalities_needs_a_fixpoint() {
+    let body = "    FunctionalObjectProperty(:S) InverseFunctionalObjectProperty(:U)
+    ObjectPropertyAssertion(:S :a :b) ObjectPropertyAssertion(:S :a :c)
+    ObjectPropertyAssertion(:U :d :b) ObjectPropertyAssertion(:U :e :c)
+    ObjectPropertyAssertion(:S :d :f) ObjectPropertyAssertion(:S :e :g)
+    ClassAssertion(:E :f)
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:g)))
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R :E))";
+    assert!(sub_is_w(body, "Y", &[]));
+}
+
+/// KNOWN MISS, deliberate: no reverse fact for a role under a transitive role or a
+/// role-chain leg, because it lets the saturator materialise relation closures over
+/// every reached individual (family.ofn: 10 s → 238 s). Entailed, but not derived
+/// here. FLIP this if that cost is ever solved.
+#[test]
+fn a_declared_inverse_of_a_transitive_role_is_not_followed() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    ObjectPropertyAssertion(:S :c :a) InverseObjectProperties(:S :T) ClassAssertion(:E :c)
+    TransitiveObjectProperty(:T)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:T :E)))";
+    assert!(!x_is_w(body, &[]));
 }

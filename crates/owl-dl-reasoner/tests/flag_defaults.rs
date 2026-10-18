@@ -239,6 +239,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_UNBOUNDED_LABEL_CACHE",
+            owl_dl_reasoner::unbounded_label_cache_enabled,
+            true,
+        ),
+        (
             "RUSTDL_CLASSIFY_NOMINAL_TYPES",
             owl_dl_reasoner::classify_nominal_types_enabled,
             true,

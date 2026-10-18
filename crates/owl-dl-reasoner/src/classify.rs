@@ -3998,8 +3998,18 @@ fn classify_top_down_internal_impl(
         // NOT used here — the Phase-8 independence is preserved.
         // Adaptive build-once deadline (2026-06-25): scale to n × per_pair, clamped
         // [1s,30s]; env RUSTDL_LABEL_CACHE_TIMEOUT_MS overrides (0 = unbounded).
-        let cache_ms =
-            crate::adaptive_label_cache_ms(n, per_pair_timeout, crate::label_cache_env_override());
+        // UNBOUNDED RUN (`RUSTDL_UNBOUNDED_LABEL_CACHE`, default ON): with no per-pair
+        // timeout and no global deadline, a label build is not capped either (`0`). A
+        // class that misses its cap loses its labels, and its pairs then go to the
+        // per-pair search, which here is unbounded too; so the cap could only make the
+        // run slower, and by how much depended on host load. See the flag's doc.
+        let cache_ms = crate::label_cache_ms_for_run(
+            n,
+            per_pair_timeout,
+            global_deadline.is_some(),
+            crate::label_cache_env_override(),
+            crate::unbounded_label_cache_enabled(),
+        );
         // ESCALATION PROBE (`RUSTDL_LABEL_CACHE_PROBE`, default OFF).
         //
         // `cache_ms` is `clamp(n × per_pair, 50, 30_000)`, so a SMALL-`n` ontology gets a

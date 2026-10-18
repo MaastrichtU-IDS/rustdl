@@ -3575,6 +3575,24 @@ pub fn label_cache_probe_enabled() -> bool {
 /// budget. Bounded so the scan cannot become an `n`-proportional cost itself.
 pub(crate) const LABEL_CACHE_PROBE_SCAN: usize = 8;
 
+/// An unbounded classify (no per-pair timeout, no global deadline) does not cap a
+/// per-class label build either. Default **ON**; `RUSTDL_UNBOUNDED_LABEL_CACHE=0`
+/// restores the 30 s cap ([`LABEL_CACHE_CEILING_MS`]).
+///
+/// The cap made an unbounded run's work depend on host load. A class whose build
+/// misses it loses its labels, so its pairs go to the per-pair search, unbounded in
+/// this mode and on hard fixtures far more expensive than the build. Measured on the
+/// `phase_attribution` fixture (60 `∀`/`∃`-cycle classes): 43 CPU-s when every build
+/// finishes; with builds capped at 100 ms, still running after 600 s and 9,229
+/// CPU-s. A debug test binary under heavy host load crossed the 30 s cap and ran
+/// for ~32 h. Without the cap the build runs to completion and the work no longer
+/// depends on load. The risk is a single build that never finishes, which unbounded
+/// mode could already hit on a pair.
+#[must_use]
+pub fn unbounded_label_cache_enabled() -> bool {
+    std::env::var_os("RUSTDL_UNBOUNDED_LABEL_CACHE").is_none_or(|v| v != "0")
+}
+
 pub(crate) const LABEL_CACHE_FLOOR_MS: u64 = 50;
 pub(crate) const LABEL_CACHE_CEILING_MS: u64 = 30_000;
 
@@ -3598,6 +3616,24 @@ pub(crate) fn adaptive_label_cache_ms(
     (n as u64)
         .saturating_mul(base)
         .clamp(LABEL_CACHE_FLOOR_MS, LABEL_CACHE_CEILING_MS)
+}
+
+/// The per-class label-cache budget for one classify run, in ms (`0` = unbounded).
+/// An explicit `env_override` always wins. Otherwise, a run with neither a per-pair
+/// timeout nor a global deadline gets `0` when `unbounded` is set
+/// ([`unbounded_label_cache_enabled`]), and [`adaptive_label_cache_ms`] in every
+/// other case.
+pub(crate) fn label_cache_ms_for_run(
+    n: usize,
+    per_pair: Option<std::time::Duration>,
+    has_global_deadline: bool,
+    env_override: Option<u64>,
+    unbounded: bool,
+) -> u64 {
+    if env_override.is_none() && per_pair.is_none() && !has_global_deadline && unbounded {
+        return 0;
+    }
+    adaptive_label_cache_ms(n, per_pair, env_override)
 }
 
 pub(crate) fn label_cache_env_override() -> Option<u64> {
@@ -12056,6 +12092,22 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
         // None per_pair → base = ceiling, then ×n clamps to ceiling
         assert_eq!(adaptive_label_cache_ms(137, None, None), 30_000);
         assert_eq!(adaptive_label_cache_ms(1, None, None), 30_000); // 1*30000=30000
+    }
+
+    /// `RUSTDL_UNBOUNDED_LABEL_CACHE`: only a fully unbounded run (no per-pair
+    /// timeout, no global deadline, no env override) drops the label-build cap.
+    #[test]
+    fn label_cache_ms_for_run_is_unbounded_only_for_an_unbounded_run() {
+        use std::time::Duration;
+        let pp = Some(Duration::from_millis(5));
+        assert_eq!(label_cache_ms_for_run(137, None, false, None, true), 0);
+        assert_eq!(
+            label_cache_ms_for_run(137, None, false, None, false),
+            30_000
+        );
+        assert_eq!(label_cache_ms_for_run(137, None, true, None, true), 30_000);
+        assert_eq!(label_cache_ms_for_run(137, pp, false, None, true), 685);
+        assert_eq!(label_cache_ms_for_run(137, None, false, Some(42), true), 42);
     }
 }
 

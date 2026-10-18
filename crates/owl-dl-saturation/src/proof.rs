@@ -97,9 +97,36 @@ pub enum ElRule {
     UnsatSubclass,
     /// Unsat propagation (`process_unsat`, fact-source): `(D,r,C)`, `C ⊑ ⊥` ⟹ `D ⊑ ⊥`.
     UnsatFactSource,
+    /// `F ⊑ Bᵢ` for a conjunction `F ≡ B₁ ⊓ … ⊓ Bₙ` the saturator introduced at runtime
+    /// (no axiom mentions it): true by `F`'s definition.
+    SyntheticDefinition,
     /// #180 functional merge across an inverse: `(X,R,T)`, `(T,S,B)`, `R⁻ ⊑ F`,
     /// `S ⊑ F`, `F` functional ⟹ `X ⊑ B`.
     InverseFunctionalMerge,
+}
+
+impl ElRule {
+    /// Whether a step by this rule rests on a source axiom. A step that needs one but
+    /// cites none cannot be completed from the ontology by a reader.
+    ///
+    /// Reflexivity, transitivity, fact inheritance and the unsat propagations follow
+    /// from their premises alone; every other rule applies an axiom (a told subsumption,
+    /// trigger, domain, chain, disjointness, functionality or transitivity).
+    #[must_use]
+    pub fn needs_axiom(&self) -> bool {
+        !matches!(
+            self,
+            ElRule::Reflexivity
+                | ElRule::SyntheticDefinition
+                | ElRule::SubsumerTransitivityFwd
+                | ElRule::SubsumerTransitivityBwd
+                | ElRule::UnsatSubsumer
+                | ElRule::FactInheritance
+                | ElRule::UnsatTarget
+                | ElRule::UnsatSubclass
+                | ElRule::UnsatFactSource
+        )
+    }
 }
 
 /// One step in a proof: how a derived fact was produced.
@@ -313,6 +340,54 @@ pub struct ProofNode {
     pub axiom_refs: Vec<AxiomRef>,
     /// The premise sub-proofs.
     pub premises: Vec<ProofNode>,
+    /// Premises the step used whose own derivation was not recorded, so no sub-proof
+    /// could be built for them. Empty for a complete step.
+    pub unproved_premises: Vec<DerivedFact>,
+}
+
+/// Why a proof step cannot be completed from the ontology.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProofGap {
+    /// The step's rule applies an axiom, but no axiom was recorded for it.
+    NoAxiom,
+    /// A premise of the step has no recorded derivation.
+    UnprovedPremise(DerivedFact),
+}
+
+/// Every gap in `node`'s proof tree, as `(conclusion, rule, gap)`, each step once.
+/// Empty means every step either cites its axiom or needs none, and every premise has
+/// a sub-proof.
+#[must_use]
+pub fn proof_gaps(node: &ProofNode) -> Vec<(DerivedFact, ElRule, ProofGap)> {
+    fn walk(
+        node: &ProofNode,
+        seen: &mut std::collections::HashSet<DerivedFact>,
+        out: &mut Vec<(DerivedFact, ElRule, ProofGap)>,
+    ) {
+        if !seen.insert(node.conclusion.clone()) {
+            return;
+        }
+        if node.rule.needs_axiom() && node.axiom_refs.is_empty() {
+            out.push((
+                node.conclusion.clone(),
+                node.rule.clone(),
+                ProofGap::NoAxiom,
+            ));
+        }
+        for p in &node.unproved_premises {
+            out.push((
+                node.conclusion.clone(),
+                node.rule.clone(),
+                ProofGap::UnprovedPremise(p.clone()),
+            ));
+        }
+        for p in &node.premises {
+            walk(p, seen, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut std::collections::HashSet::new(), &mut out);
+    out
 }
 
 /// The result of a `prove_subsumption` call.
@@ -355,17 +430,33 @@ fn prove_fact<S: BuildHasher>(
         return Some(cached.clone());
     }
     let inf = trace.steps.get(fact)?;
-    let premise_nodes: Vec<ProofNode> = inf
-        .premise_facts
-        .iter()
-        .filter_map(|p| prove_fact(trace, p, memo))
-        .collect();
-    // If we couldn't prove all premises (recording gap), include what we have.
+    // A premise with no recorded derivation (a recording gap) is kept on the node
+    // as unproved, so the gap is reported rather than silently dropped.
+    let mut premise_nodes: Vec<ProofNode> = Vec::new();
+    let mut unproved_premises: Vec<DerivedFact> = Vec::new();
+    for p in &inf.premise_facts {
+        match prove_fact(trace, p, memo) {
+            Some(n) => premise_nodes.push(n),
+            // `C ⊑ C` needs no derivation; the saturator just does not record it for
+            // the synthetic classes it introduces (e.g. a Tseitin `B ⊓ P`).
+            None if matches!(p, DerivedFact::Sub(a, b) if a == b) => {
+                premise_nodes.push(ProofNode {
+                    conclusion: p.clone(),
+                    rule: ElRule::Reflexivity,
+                    axiom_refs: Vec::new(),
+                    premises: Vec::new(),
+                    unproved_premises: Vec::new(),
+                });
+            }
+            None => unproved_premises.push(p.clone()),
+        }
+    }
     let node = ProofNode {
         conclusion: fact.clone(),
         rule: inf.rule.clone(),
         axiom_refs: inf.axiom_refs.clone(),
         premises: premise_nodes,
+        unproved_premises,
     };
     memo.insert(fact.clone(), node.clone());
     Some(node)
@@ -1134,6 +1225,7 @@ impl std::fmt::Display for ElRule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
             ElRule::Reflexivity => "Reflexivity",
+            ElRule::SyntheticDefinition => "SyntheticDefinition",
             ElRule::ToldSubsumer => "ToldSubsumer",
             ElRule::ToldFact => "ToldFact",
             ElRule::ToldUnsat => "ToldUnsat",
@@ -1205,6 +1297,8 @@ pub fn render_proof_with_defs<S: std::hash::BuildHasher>(
         out.push_str("  [");
         out.push_str(&refs.join(", "));
         out.push(']');
+    } else if node.rule.needs_axiom() {
+        out.push_str("  [no axiom recorded]");
     }
     out.push('\n');
     for premise in &node.premises {
@@ -1214,6 +1308,11 @@ pub fn render_proof_with_defs<S: std::hash::BuildHasher>(
             synthetic_defs,
             indent + 1,
         ));
+    }
+    for fact in &node.unproved_premises {
+        use std::fmt::Write as _;
+        let f = render_fact_with_defs(fact, vocab, synthetic_defs);
+        let _ = writeln!(out, "{pad}  (unproved) ⊢ {f}  [no recorded derivation]");
     }
     out
 }
@@ -1362,4 +1461,105 @@ fn render_role(id: RoleId, vocab: Option<&owl_dl_core::Vocabulary>) -> String {
             }
         },
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn c(i: u32) -> ClassId {
+        ClassId::new(i)
+    }
+
+    fn step(rule: ElRule, premises: Vec<DerivedFact>, axioms: Vec<usize>) -> Inference {
+        Inference {
+            rule,
+            premise_facts: premises,
+            axiom_refs: axioms.into_iter().map(AxiomRef).collect(),
+        }
+    }
+
+    /// A premise with no recorded derivation is kept and reported, not dropped.
+    #[test]
+    fn an_unrecorded_premise_is_a_gap() {
+        let mut t = ProofTrace::default();
+        t.record(
+            DerivedFact::Sub(c(0), c(2)),
+            step(
+                ElRule::SubsumerTransitivityFwd,
+                vec![DerivedFact::Sub(c(0), c(1)), DerivedFact::Sub(c(1), c(2))],
+                vec![],
+            ),
+        );
+        t.record(
+            DerivedFact::Sub(c(0), c(1)),
+            step(ElRule::ToldSubsumer, vec![], vec![0]),
+        );
+        let root = prove_subsumption(&t, c(0), c(2), &mut HashMap::new()).unwrap();
+        assert_eq!(root.unproved_premises, vec![DerivedFact::Sub(c(1), c(2))]);
+        let gaps = proof_gaps(&root);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(
+            gaps[0].2,
+            ProofGap::UnprovedPremise(DerivedFact::Sub(c(1), c(2)))
+        );
+    }
+
+    /// An axiom-applying step with no axiom is a gap; transitivity without one is not.
+    #[test]
+    fn an_axiom_rule_without_an_axiom_is_a_gap() {
+        let mut t = ProofTrace::default();
+        t.record(
+            DerivedFact::Sub(c(0), c(2)),
+            step(
+                ElRule::SubsumerTransitivityFwd,
+                vec![DerivedFact::Sub(c(0), c(1)), DerivedFact::Sub(c(1), c(2))],
+                vec![],
+            ),
+        );
+        t.record(
+            DerivedFact::Sub(c(0), c(1)),
+            step(ElRule::ToldSubsumer, vec![], vec![0]),
+        );
+        t.record(
+            DerivedFact::Sub(c(1), c(2)),
+            step(ElRule::ToldSubsumer, vec![], vec![]),
+        );
+        let root = prove_subsumption(&t, c(0), c(2), &mut HashMap::new()).unwrap();
+        let gaps = proof_gaps(&root);
+        assert_eq!(
+            gaps,
+            vec![(
+                DerivedFact::Sub(c(1), c(2)),
+                ElRule::ToldSubsumer,
+                ProofGap::NoAxiom
+            )]
+        );
+        assert!(render_proof(&root, None, 0).contains("[no axiom recorded]"));
+    }
+
+    /// An unrecorded `C ⊑ C` premise is reflexivity, not a gap.
+    #[test]
+    fn an_unrecorded_reflexive_premise_is_not_a_gap() {
+        let mut t = ProofTrace::default();
+        t.record(
+            DerivedFact::Sub(c(0), c(1)),
+            step(
+                ElRule::ExistentialTriggerTarget,
+                vec![
+                    DerivedFact::Exist(c(0), RoleId::new(0), c(5)),
+                    DerivedFact::Sub(c(5), c(5)),
+                ],
+                vec![1],
+            ),
+        );
+        t.record(
+            DerivedFact::Exist(c(0), RoleId::new(0), c(5)),
+            step(ElRule::ToldFact, vec![], vec![0]),
+        );
+        let root = prove_subsumption(&t, c(0), c(1), &mut HashMap::new()).unwrap();
+        assert!(proof_gaps(&root).is_empty());
+        assert!(root.premises.iter().any(|p| p.rule == ElRule::Reflexivity));
+    }
 }

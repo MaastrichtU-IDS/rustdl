@@ -131,6 +131,22 @@ All notable changes to rustdl are documented here. Format is based on
   assertion or `SameIndividual`, one binary with the flag the only difference, 60 s cap: 355
   identical, 12 time out and 8 fail to parse in both arms, no answer changes (`ore_ont_8911` read
   269 vs 271 rows under load and is 271 in both arms serially); wall flat.
+- **`prove` flags a proof its cited axioms cannot complete.** A step whose rule applies an
+  axiom but has none recorded, or a premise with no recorded derivation, printed as if the proof
+  were whole. The text output now marks such a step `[no axiom recorded]` or adds an
+  `(unproved)` line, and ends with `# WARNING: proof incomplete`. `prove --json` gains
+  `proof_complete` (`null` without a step proof) and, per node, `axiom_missing` and
+  `unproved_premises`. A missing `C ⊑ C` premise on a class the saturator introduced is
+  reflexivity and is not flagged. Seen in the inverse-functional merge (`X ⊑ ∃R.T`,
+  `T ⊑ ∃S.B`, `R⁻ ⊑ F`, `S ⊑ F`, `F` functional, which never records its axioms), in a
+  told subsumption from a nominal enumeration, and in wine's `∀`-monotonicity steps
+  (`∀hasFood.BlandFish ⊑ ∀hasFood.Fish`): 15 of 60 wine proofs are flagged. 124 proofs over
+  pizza, ro and sulo are complete. Other genuine gaps it now shows: a domain written as a GCI
+  (`∃r.⊤ ⊑ C`), a `⊤ ⊑ C` axiom, and transitive nominal propagation. A conjunction a functional
+  merge creates at runtime is now registered and its projections recorded as the new
+  `SyntheticDefinition` rule, so its proofs render (it printed as `synthetic#N`, and
+  `prove --json` failed on it) and are not flagged. `--verify-proof` checks each step's rule
+  application, not its citations, so it can pass on a proof the new warning marks incomplete.
 - **`prove` cites every axiom an existential-trigger step rests on.** Three gaps left a
   proof's axiom list short of a justification. (1) The inverse-`∀` steps (#180, #274) cited none
   of the role axioms that make the edge's role a sub-role of the inverse (`InverseObjectProperties`,

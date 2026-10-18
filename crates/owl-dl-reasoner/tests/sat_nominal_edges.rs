@@ -377,3 +377,36 @@ fn a_declared_inverse_of_a_transitive_role_is_not_followed() {
     EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:T :E)))";
     assert!(!x_is_w(body, &[]));
 }
+
+/// A symmetric role that is also transitive keeps its own reverse edge: the
+/// composition skip exempts it (it feeds the same role the forward edge feeds).
+#[test]
+fn a_symmetric_transitive_role_keeps_its_reverse_edge() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    SymmetricObjectProperty(:S) TransitiveObjectProperty(:S)
+    ObjectPropertyAssertion(:S :c :a) ClassAssertion(:E :c)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:S :E)))";
+    assert!(x_is_w(body, &[]));
+}
+
+/// A symmetric functional role is read both ways for equalities: `a S b`, `c S b`
+/// are also `b S a`, `b S c`, so `a = c`.
+#[test]
+fn a_symmetric_functional_role_merges_both_ways() {
+    let body = "    SymmetricObjectProperty(:S) FunctionalObjectProperty(:S)
+    ObjectPropertyAssertion(:S :a :b) ObjectPropertyAssertion(:S :c :b) ClassAssertion(:A :a)
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:c)))
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R :A))";
+    assert!(sub_is_w(body, "Y", &[]));
+}
+
+/// An asserted `SameIndividual` feeds the forced equalities: `a = d`, `a S b`,
+/// `d S c`, `Functional(S)` give `b = c`.
+#[test]
+fn an_asserted_same_individual_feeds_functional_merges() {
+    let body = "    FunctionalObjectProperty(:S) SameIndividual(:a :d)
+    ObjectPropertyAssertion(:S :a :b) ObjectPropertyAssertion(:S :d :c) ClassAssertion(:B :b)
+    SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:c)))
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R :B))";
+    assert!(sub_is_w(body, "Y", &[]));
+}

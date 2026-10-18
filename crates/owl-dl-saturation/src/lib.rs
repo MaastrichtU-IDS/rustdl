@@ -5228,14 +5228,16 @@ fn atomic_or_tseitin_body(
 ///
 /// * `ObjectPropertyAssertion(S, a, c)` as the fact `NomKey(a) ⊑ ∃S.NomKey(c)`, plus
 ///   `NomKey(c) ⊑ Range` for the ranges of `S` and its super-roles (an
-///   inverse-role assertion is read forwards, from `c` to `a`); and, for every named
-///   `T` with `S⁻ ⊑ T` (a declared inverse, symmetry, or a sub-role of an inverse),
-///   the reverse fact `NomKey(c) ⊑ ∃T.NomKey(a)`, through which `T`'s domain and
-///   range reach the right individual;
+///   inverse-role assertion is read forwards, from `c` to `a`); and, for each minimal
+///   named `T` with `S⁻ ⊑ T` (a declared inverse, symmetry, or a sub-role of an
+///   inverse), the reverse fact `NomKey(c) ⊑ ∃T.NomKey(a)`, through which `T`'s domain
+///   and range reach the right individual. Not for a `T` under a transitive role or a
+///   role-chain leg (cost; see the inline comment), except a symmetric `S`'s own;
 /// * `SameIndividual(a, b)` as `NomKey(a) ⊑ NomKey(b)` and back;
 /// * the equalities that functional and inverse-functional roles force between
 ///   asserted successors (`a S b`, `a S c`, `S ⊑ F`, `Functional(F)` ⟹ `b = c`),
-///   closed under each other, as `NomKey(b) ≡ NomKey(c)`.
+///   starting from asserted `SameIndividual` and closed under each other, as
+///   `NomKey(b) ≡ NomKey(c)`.
 ///
 /// Class assertions of reached individuals are typed later by the nominal typing
 /// pass. Every seeded fact is an asserted fact, so this only adds entailed
@@ -5341,8 +5343,10 @@ fn seed_nominal_abox_edges(
                     .get(&t)
                     .is_some_and(|sup| sup.iter().any(|s| composing.contains(s)))
         };
-        for v in reverse_of.values_mut() {
-            v.retain(|&t| !feeds_composition(t));
+        // A symmetric role's own reverse edge is exempt: it feeds the same role the
+        // forward edge already does, and #282 seeded it at no measured cost.
+        for (&s_role, v) in &mut reverse_of {
+            v.retain(|&t| t == s_role || !feeds_composition(t));
         }
         // Only the minimal `T`s: `c T a` with `T ⊑ T'` already gives `c T' a` through the
         // saturator's own named role hierarchy, so seeding every super-role as well
@@ -5362,25 +5366,29 @@ fn seed_nominal_abox_edges(
     let push_edge = |from: IndividualId,
                      role: RoleId,
                      to: IndividualId,
-                     i: usize,
+                     i: Option<usize>,
                      tseitin: &mut TseitinAllocator,
                      rules: &mut ElRules| {
         let (n_from, n_to) = (
             tseitin.introduce_nominal(from),
             tseitin.introduce_nominal(to),
         );
-        rules
-            .late_fact_axiom
-            .push((rules.existential_facts.len(), i));
+        if let Some(i) = i {
+            rules
+                .late_fact_axiom
+                .push((rules.existential_facts.len(), i));
+        }
         rules.existential_facts.push(ExistentialFact {
             sub: n_from,
             role,
             target: n_to,
         });
         for rng in ranges_of(role, rules) {
-            rules
-                .late_sub_axiom
-                .push((rules.atomic_subsumptions.len(), i));
+            if let Some(i) = i {
+                rules
+                    .late_sub_axiom
+                    .push((rules.atomic_subsumptions.len(), i));
+            }
             rules.atomic_subsumptions.push(AtomicSubsumption {
                 sub: n_to,
                 sup: rng,
@@ -5388,6 +5396,7 @@ fn seed_nominal_abox_edges(
         }
     };
     let mut edges: Vec<(IndividualId, RoleId, IndividualId)> = Vec::new();
+    let mut same: Vec<(IndividualId, IndividualId)> = Vec::new();
     for (i, ax) in internal.axioms.iter().enumerate() {
         match ax {
             Axiom::ObjectPropertyAssertion {
@@ -5403,12 +5412,15 @@ fn seed_nominal_abox_edges(
                 if !reach.contains(&from) || !reach.contains(&to) {
                     continue;
                 }
-                push_edge(from, role.role_id(), to, i, tseitin, rules);
+                push_edge(from, role.role_id(), to, Some(i), tseitin, rules);
+                // A reverse fact rests on the role axioms too, which no single slot can
+                // cite; leave it unattributed so `prove` flags the step instead of citing
+                // only the assertion.
                 for &t in reverse_of
                     .get(&role.role_id())
                     .map_or(&[][..], Vec::as_slice)
                 {
-                    push_edge(to, t, from, i, tseitin, rules);
+                    push_edge(to, t, from, None, tseitin, rules);
                 }
                 edges.push((from, role.role_id(), to));
             }
@@ -5417,6 +5429,7 @@ fn seed_nominal_abox_edges(
                     if !reach.contains(&w[0]) || !reach.contains(&w[1]) {
                         continue;
                     }
+                    same.push((w[0], w[1]));
                     let (x, y) = (
                         tseitin.introduce_nominal(w[0]),
                         tseitin.introduce_nominal(w[1]),
@@ -5435,7 +5448,7 @@ fn seed_nominal_abox_edges(
         }
     }
     if let Some(h) = signed.as_ref().filter(|_| !functional.is_empty()) {
-        for (x, rep) in functional_equalities(&edges, &functional, h) {
+        for (x, rep) in functional_equalities(&edges, &same, &functional, h) {
             let (nx, nr) = (tseitin.introduce_nominal(x), tseitin.introduce_nominal(rep));
             for (sub, sup) in [(nx, nr), (nr, nx)] {
                 rules
@@ -5465,9 +5478,12 @@ fn seed_nominal_abox_edges(
 /// as `(individual, representative)` pairs for every individual merged into another.
 /// `Functional(F)` (a signed role, so `InverseFunctional(G)` is `Functional(G⁻)`):
 /// two edges `x S y`, `x S' y'` with `S, S' ⊑ F` give `y = y'`, and two edges with
-/// `S⁻, S'⁻ ⊑ F` give `x = x'`. Merges feed each other, so this runs to a fixpoint.
+/// `S⁻, S'⁻ ⊑ F` give `x = x'`; a role that is both (e.g. symmetric and functional)
+/// is read both ways. Asserted `same` pairs start merged. Merges feed each other, so
+/// this runs to a fixpoint.
 fn functional_equalities(
     edges: &[(IndividualId, RoleId, IndividualId)],
+    same: &[(IndividualId, IndividualId)],
     functional: &[Role],
     h: &RoleHierarchy,
 ) -> Vec<(IndividualId, IndividualId)> {
@@ -5505,19 +5521,28 @@ fn functional_equalities(
         bwd.push(bs);
     }
     let mut uf: HashMap<IndividualId, IndividualId> = HashMap::new();
+    for &(left, right) in same {
+        let (left, right) = (find(&mut uf, left), find(&mut uf, right));
+        if left != right {
+            let (keep, merged) = if left.index() < right.index() {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            uf.insert(merged, keep);
+        }
+    }
     loop {
         let mut changed = false;
         for k in 0..functional.len() {
             // key: (functional index, the shared end) → the first other end seen.
             let mut first: HashMap<IndividualId, IndividualId> = HashMap::new();
-            for &(x, r, y) in edges {
-                let (shared, other) = if fwd[k].contains(&r) {
-                    (x, y)
-                } else if bwd[k].contains(&r) {
-                    (y, x)
-                } else {
-                    continue;
-                };
+            let readings = edges.iter().flat_map(|&(x, r, y)| {
+                let f = fwd[k].contains(&r).then_some((x, y));
+                let b = bwd[k].contains(&r).then_some((y, x));
+                f.into_iter().chain(b)
+            });
+            for (shared, other) in readings {
                 let shared = find(&mut uf, shared);
                 let other = find(&mut uf, other);
                 let Some(&seen) = first.get(&shared) else {

@@ -113,10 +113,10 @@ All notable changes to rustdl are documented here. Format is based on
     declared inverse, symmetry, or `S ⊑ T⁻`), so `T`'s domain and range reach the right
     individual. Not for a `T` under a transitive role or a role-chain leg: those facts let the
     saturator materialise relation closures over every reached individual, which took
-    `family.ofn` from 10 s to 238 s;
+    `family.ofn` from 10 s to 238 s (a symmetric `S`'s own reverse edge is kept);
   - the equalities functional and inverse-functional roles force between asserted successors,
-    including through super-roles and `S ⊑ T⁻`, closed under each other, as
-    `NomKey(b) ≡ NomKey(c)`.
+    including through super-roles and `S ⊑ T⁻`, starting from asserted `SameIndividual` and
+    closed under each other, as `NomKey(b) ≡ NomKey(c)`.
 
   Four shapes that `classify` missed with `incomplete: false` are now derived:
   - a domain through an inverse super-role;

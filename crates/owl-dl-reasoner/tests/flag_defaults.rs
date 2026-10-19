@@ -117,6 +117,11 @@ fn expected() -> Vec<FlagRow> {
             false,
         ),
         (
+            "RUSTDL_INVERSE_PAIR_FUNC",
+            owl_dl_core::convert::inverse_pair_functionality_enabled,
+            false,
+        ),
+        (
             "RUSTDL_SUB_ROLE_FUNCTIONAL_MAX",
             owl_dl_core::convert::sub_role_functional_max_enabled,
             true,

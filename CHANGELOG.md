@@ -117,11 +117,10 @@ All notable changes to rustdl are documented here. Format is based on
   `S ⊑ G` with edges into one individual, were wrong the same way and are fixed too; both
   consistent controls stay consistent. The three SIO ontologies convert to byte-identical
   internal ontologies, so they stay excluded.
-  **`RUSTDL_INVERSE_PAIR_FUNC` is retired.** That default-OFF flag derived functionality
-  across a declared inverse pair; its last route that the default missed
-  (`InverseFunctional(R)`, `InverseObjectProperties(R, S)`, assertions on `S`) is this same
-  shape, so every fixture it covered is now decided with no flag, and its code (157 lines) is
-  removed.
+  `RUSTDL_INVERSE_PAIR_FUNC`'s `ABox` fixture (`InverseFunctional(R)`,
+  `InverseObjectProperties(R, S)`, assertions on `S`) is this same shape and is now decided with
+  no flag. The flag stays: with no assertion (`C ⊑ ∃S.A ⊓ ∃S.B`, `A`, `B` disjoint) the gate still
+  declines the bound and the default misses `C`'s unsatisfiability, which the flag finds.
 - **`classify` reads more of the property assertions of individuals used as nominals (#279),
   under `RUSTDL_SAT_NOMINAL_EDGES`.** Two additions to #282's saturator seeding, each adding only
   entailed facts:

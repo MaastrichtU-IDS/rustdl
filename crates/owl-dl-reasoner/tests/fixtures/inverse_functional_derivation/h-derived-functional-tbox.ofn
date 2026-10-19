@@ -1,0 +1,9 @@
+Prefix(:=<http://e#>)
+Ontology(<http://e>
+Declaration(ObjectProperty(:G)) Declaration(ObjectProperty(:S))
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+InverseFunctionalObjectProperty(:G)
+InverseObjectProperties(:G :S)
+SubClassOf(:C ObjectIntersectionOf(ObjectSomeValuesFrom(:S :A) ObjectSomeValuesFrom(:S :B)))
+DisjointClasses(:A :B)
+)

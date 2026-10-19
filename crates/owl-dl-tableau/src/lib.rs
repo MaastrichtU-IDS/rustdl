@@ -2449,6 +2449,36 @@ pub fn forall_first_enabled() -> bool {
     std::env::var_os("RUSTDL_FORALL_FIRST").is_none_or(|v| v != "0")
 }
 
+/// Whether the choice of which `≤n` witnesses to merge is a search branch
+/// (#293, `RUSTDL_MAX_CHOICE_POINT`, **default ON**, `=0` reverts).
+///
+/// The `≤`-rule is don't-know nondeterministic over the pair. `apply_max`
+/// trial-merged pairs inside saturation and committed to the first one that
+/// did not clash at once (#76), so a pair that clashed only later read as
+/// `Unsat` with no other pair tried: `A ⊑ ≤2 s.C` with witnesses `C ⊓ ∀p.X`,
+/// `C ⊓ ∃p.¬X` and a third, harmless one was reported unsatisfiable. With this
+/// on, `apply_max` merges only a forced pair (exactly one candidate) and leaves
+/// two or more to `search`, which branches over them and backtracks.
+#[must_use]
+pub fn max_choice_point_enabled() -> bool {
+    std::env::var_os("RUSTDL_MAX_CHOICE_POINT").is_none_or(|v| v != "0")
+}
+
+/// Whether `search` re-runs `saturate` once more before answering `Sat`
+/// (#294, `RUSTDL_SAT_LEAF_RESATURATE`, **default ON**, `=0` reverts).
+///
+/// A label added to a node does not dirty its neighbours, so within one
+/// `saturate` call a rule that reads a neighbour's labels can miss a late one:
+/// `A ⊑ ≤1 s.C` with two witnesses created as `C ⊓ …` counted no `C`-witness,
+/// because `apply_and` ran on them after `A`. The next `saturate` marks every
+/// node dirty and catches it, but a `Sat` leaf had no next call, so `sat`
+/// answered `sat` for a class `HermiT` calls unsatisfiable. Costs one full pass
+/// per `Sat` leaf.
+#[must_use]
+pub fn sat_leaf_resaturate_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_LEAF_RESATURATE").is_none_or(|v| v != "0")
+}
+
 /// Whether anywhere (pairwise) blocking is enabled for the main tableau.
 ///
 /// Opt-IN: returns `true` only when `RUSTDL_ANYWHERE_BLOCKING=1`. Default

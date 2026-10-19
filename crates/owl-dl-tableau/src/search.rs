@@ -134,6 +134,20 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
         SaturationResult::Stalled => SearchVerdict::DepthLimit,
         SaturationResult::NodeCapped => SearchVerdict::NodeCap,
         SaturationResult::Stable => {
+            // Step 0 (#293): an over-full `≤n` with more than one pair that may
+            // merge. Saturation used to commit to the first pair; which pair
+            // to merge is a real choice, so branch over them here.
+            if let Some((node, pairs, max_deps)) = first_open_max(ctx) {
+                if trace_enabled() {
+                    eprintln!(
+                        "# trace search depth={max_depth} max node={} pairs={} graph_nodes={}",
+                        node.index(),
+                        pairs.len(),
+                        ctx.graph().len()
+                    );
+                }
+                return branch_merge(ctx, max_depth, node, &pairs, &max_deps);
+            }
             // Step 1: ⊔ branching has priority — it's structurally
             // cheaper and keeps the search shape predictable.
             if let Some((node, _or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
@@ -159,6 +173,21 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
                 }
                 return branch(ctx, max_depth, node, &[c, c_neg], &DepSet::new());
             }
+            // #294: `saturate` can stop with work left. A label added to a
+            // node does not dirty its neighbours, so a rule there that reads
+            // it (the `≤n` count at the parent) may not re-run, and only the
+            // next call's mark-all catches it. A `Sat` leaf has no next call,
+            // so run one: if it changes anything, search the new state.
+            if crate::sat_leaf_resaturate_enabled() {
+                let before = ctx.trail().len();
+                match saturate(ctx, SATURATE_ITERS) {
+                    SaturationResult::Stable if ctx.trail().len() == before => {}
+                    SaturationResult::Stable => return search(ctx, max_depth),
+                    SaturationResult::Clash(_, deps) => return SearchVerdict::Unsat(deps),
+                    SaturationResult::Stalled => return SearchVerdict::DepthLimit,
+                    SaturationResult::NodeCapped => return SearchVerdict::NodeCap,
+                }
+            }
             if trace_enabled() {
                 eprintln!(
                     "# trace search depth={max_depth} sat graph_nodes={}",
@@ -167,6 +196,142 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
             }
             SearchVerdict::Sat
         }
+    }
+}
+
+/// An open `≤n` (#293): the node, each mergeable witness pair `(a, b)` with its
+/// merge-condition deps, and the `≤n` label's deps.
+type OpenMax = (NodeId, Vec<(NodeId, NodeId, DepSet)>, DepSet);
+
+/// Find a node whose `≤n R.C` label has more than `n` `C`-witnesses and at
+/// least two pairs that may merge (#293). Returns the node, each pair with its
+/// merge-condition deps, and the `≤n` label's deps. `apply_max` leaves exactly
+/// these to the search when [`crate::max_choice_point_enabled`].
+fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
+    if !crate::max_choice_point_enabled() {
+        return None;
+    }
+    let pool = ctx.pool();
+    let graph = ctx.graph();
+    for idx in 0..graph.len() {
+        let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        let node = graph.node(node_id);
+        if node.is_redirected() || ctx.is_blocked(node_id) {
+            continue;
+        }
+        for (pos, &c) in node.labels().iter().enumerate() {
+            let ConceptExpr::Max(n, role, body) = pool.get(c) else {
+                continue;
+            };
+            if ctx.dkey_range_of(*body).is_some() {
+                continue;
+            }
+            let witnesses = crate::rules::max_witnesses(ctx, node_id, *role, *body);
+            if witnesses.len() <= *n as usize {
+                continue;
+            }
+            let pairs = crate::rules::mergeable_pairs(ctx, &witnesses);
+            if pairs.len() < 2 {
+                continue;
+            }
+            let max_deps = node.label_deps[pos].clone();
+            let pairs = pairs
+                .into_iter()
+                .map(|(a, b)| {
+                    let deps = crate::rules::compute_max_merge_deps(
+                        ctx, node_id, *role, *body, a, b, &max_deps,
+                    );
+                    (a, b, deps)
+                })
+                .collect();
+            return Some((node_id, pairs, max_deps));
+        }
+    }
+    None
+}
+
+/// Branch over which pair of `≤n` witnesses to merge (#293): for each pair,
+/// merge `b` into `a` under a checkpoint and search on. Mirrors [`branch`]:
+/// the merge carries this branch's id, a clash that does not depend on it
+/// back-jumps, and all pairs failing makes the `≤n` unsatisfiable under the
+/// union of the other deps.
+fn branch_merge(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    max_depth: usize,
+    node: NodeId,
+    pairs: &[(NodeId, NodeId, DepSet)],
+    max_deps: &DepSet,
+) -> SearchVerdict {
+    let my_id = ctx.push_branch();
+    let mut combined: DepSet = max_deps.clone();
+    let mut depth_limited = false;
+    let mut early_return: Option<SearchVerdict> = None;
+    let total = pairs.len();
+    for (k, (a, b, pair_deps)) in pairs.iter().enumerate() {
+        if early_return.is_some() {
+            break;
+        }
+        if trace_enabled() {
+            eprintln!(
+                "# trace branch depth={max_depth} my_id={my_id} merge={}/{total} n{} into n{} at n{}",
+                k + 1,
+                b.index(),
+                a.index(),
+                node.index()
+            );
+        }
+        let cp = ctx.checkpoint();
+        let mut deps = pair_deps.clone();
+        if let Err(pos) = deps.binary_search(&my_id) {
+            deps.insert(pos, my_id);
+        }
+        let verdict = if ctx.merge_into_with_deps(*b, *a, deps.as_slice()) {
+            search(ctx, max_depth - 1)
+        } else {
+            // Became distinct since the pair was listed: this option fails on
+            // its own, independent of the other branches.
+            SearchVerdict::Unsat(DepSet::from_slice(&[my_id]))
+        };
+        let definite = matches!(
+            verdict,
+            SearchVerdict::Sat | SearchVerdict::Unsat(_) | SearchVerdict::NodeCap
+        );
+        match verdict {
+            SearchVerdict::Sat => early_return = Some(SearchVerdict::Sat),
+            SearchVerdict::Unsat(clash_deps) => {
+                ctx.rollback_to(cp);
+                if clash_deps.binary_search(&my_id).is_err() {
+                    early_return = Some(SearchVerdict::Unsat(clash_deps));
+                } else {
+                    for &x in &clash_deps {
+                        if x != my_id
+                            && let Err(pos) = combined.binary_search(&x)
+                        {
+                            combined.insert(pos, x);
+                        }
+                    }
+                }
+            }
+            SearchVerdict::DepthLimit => {
+                ctx.rollback_to(cp);
+                depth_limited = true;
+            }
+            SearchVerdict::NodeCap => {
+                ctx.rollback_to(cp);
+                early_return = Some(SearchVerdict::NodeCap);
+            }
+        }
+        if ctx.note_branch_trial(definite) && early_return.is_none() {
+            early_return = Some(SearchVerdict::DepthLimit);
+        }
+    }
+    ctx.pop_branch();
+    if let Some(v) = early_return {
+        v
+    } else if depth_limited {
+        SearchVerdict::DepthLimit
+    } else {
+        SearchVerdict::Unsat(combined)
     }
 }
 

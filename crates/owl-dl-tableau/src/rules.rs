@@ -946,16 +946,15 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     for (n, role, body, max_deps) in maxes {
         // Distinct R-neighbours carrying body (deduped: edges to
         // the same NodeId count once).
-        let mut c_neighbours: Vec<NodeId> = Vec::new();
-        for (seen, w) in ctx.graph().node(node).neighbours() {
-            if ctx.edge_satisfies(seen, role)
-                && ctx.graph().node(w).has_label(body)
-                && !c_neighbours.contains(&w)
-            {
-                c_neighbours.push(w);
-            }
-        }
+        let c_neighbours = max_witnesses(ctx, node, role, body);
         if c_neighbours.len() <= n as usize {
+            continue;
+        }
+        // #293: with two or more pairs that may merge, which one to merge is a
+        // real choice. Leave it to the search, which branches over the pairs
+        // and backtracks (`search::first_open_max`); one pair, or none, is
+        // forced and stays here.
+        if crate::max_choice_point_enabled() && mergeable_pairs(ctx, &c_neighbours).len() >= 2 {
             continue;
         }
         // Find a mergeable pair (not already known distinct).
@@ -1054,6 +1053,42 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     }
 }
 
+/// The distinct `role`-neighbours of `node` that carry `body`: the witnesses a
+/// `≤n role.body` label at `node` counts.
+pub(crate) fn max_witnesses(
+    ctx: &TableauContext<'_, '_, '_>,
+    node: NodeId,
+    role: Role,
+    body: ConceptId,
+) -> Vec<NodeId> {
+    let mut out: Vec<NodeId> = Vec::new();
+    for (seen, w) in ctx.graph().node(node).neighbours() {
+        if ctx.edge_satisfies(seen, role)
+            && ctx.graph().node(w).has_label(body)
+            && !out.contains(&w)
+        {
+            out.push(w);
+        }
+    }
+    out
+}
+
+/// The witness pairs `(a, b)`, in enumeration order, not known to be distinct.
+pub(crate) fn mergeable_pairs(
+    ctx: &TableauContext<'_, '_, '_>,
+    witnesses: &[NodeId],
+) -> Vec<(NodeId, NodeId)> {
+    let mut out = Vec::new();
+    for i in 0..witnesses.len() {
+        for j in (i + 1)..witnesses.len() {
+            if !ctx.are_distinct(witnesses[i], witnesses[j]) {
+                out.push((witnesses[i], witnesses[j]));
+            }
+        }
+    }
+    out
+}
+
 /// Compute the precise [`DepSet`] of branch decisions that licensed
 /// merging neighbours `a` and `b` of `node` under a `≤n R.C`
 /// constraint. The merge depends on: the cardinality label
@@ -1063,7 +1098,7 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
 /// collapse the two witnesses, and it must flow into every label /
 /// edge moved by [`TableauContext::merge_into_with_deps`] so a
 /// post-merge clash carries the branch ids back to back-jumping.
-fn compute_max_merge_deps(
+pub(crate) fn compute_max_merge_deps(
     ctx: &TableauContext<'_, '_, '_>,
     node: NodeId,
     role: Role,

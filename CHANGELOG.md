@@ -106,6 +106,29 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_13233`, `14375`, `14556`, all consistent), none lost, no answer changes.
 
 ### Fixed
+- **`classify` reads more of the property assertions of individuals used as nominals (#279),
+  under `RUSTDL_SAT_NOMINAL_EDGES`.** Two additions to #282's saturator seeding, each adding only
+  entailed facts:
+  - for an edge `a S c`, the reverse fact `c T a` for each minimal named `T` with `S⁻ ⊑ T` (a
+    declared inverse, symmetry, or `S ⊑ T⁻`), so `T`'s domain and range reach the right
+    individual. Not for a `T` under a transitive role or a role-chain leg: those facts let the
+    saturator materialise relation closures over every reached individual, which took
+    `family.ofn` from 10 s to 238 s (a symmetric `S`'s own reverse edge is kept);
+  - the equalities functional and inverse-functional roles force between asserted successors,
+    including through super-roles and `S ⊑ T⁻`, starting from asserted `SameIndividual` and
+    closed under each other, as `NomKey(b) ≡ NomKey(c)`.
+
+  Four shapes that `classify` missed with `incomplete: false` are now derived:
+  - a domain through an inverse super-role;
+  - an inverse-functional merge;
+  - types flowing onto a nominal from a functional merge;
+  - two nominals made equal by a functional role.
+
+  HermiT agrees on 73 probes: 0 FP. Still missed:
+  - inverse uses written with `ObjectInverseOf` (`∃S⁻.E`), which the saturator does not read;
+  - `≥2` over two `DifferentIndividuals` successors, which the saturator does not key for an
+    unqualified `≥n`;
+  - reverse uses of an edge through a role under a transitive role or a chain leg (above).
 - **An unbounded classify no longer depends on host load to finish,
   `RUSTDL_UNBOUNDED_LABEL_CACHE`, default ON (`=0` reverts).** With no per-pair timeout and no
   global deadline (the library's `classify()`, the CLI's `--pair-timeout-ms 0`, Python's
@@ -135,12 +158,7 @@ All notable changes to rustdl are documented here. Format is based on
   entailed directly, so it only adds entailed subsumptions. It also derives the cyclic case
   (`a S c`, `c S a`, a deep `∃S.∃S.∃S.E`) that the wedge's blocking cuts. `prove` cites the
   property and class assertions behind these facts. Only forward existential uses are covered.
-  Still missed, all with `incomplete: false`:
-  - inverse uses of an edge (`∃S⁻.E`);
-  - a domain reached through an inverse super-role;
-  - an inverse-functional merge;
-  - types flowing back onto a nominal from a functional merge;
-  - `≥2` over two `DifferentIndividuals` successors.
+  The remaining misses are listed in the entry below.
   The cap is not reported when it is hit. HermiT agrees on 65 probes: 0 FP, and the misses are
   the ones above. On the 9 ontologies where the wedge clauses were slowest, CPU and answers are
   unchanged. Two-arm `classify` sweep over the 376 ORE ontologies with a nominal and a property

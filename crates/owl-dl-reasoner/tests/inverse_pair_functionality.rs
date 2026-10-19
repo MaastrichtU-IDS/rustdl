@@ -37,10 +37,16 @@
 //! R⁻-edge — no derived characteristic and no materialised edge needed. Verified against
 //! the pinned pre-#177 baseline (`consistent` → `inconsistent` on exactly those three;
 //! controls unmoved), and both peers call all three inconsistent, so the new verdicts are
-//! correct. Those tests now assert detection at BOTH flag settings. **The flag's sole
-//! remaining non-vacuous route is `f`** (`InverseFunctional(R)` ⟹ `Functional(S)`), which
-//! is still missed flag-OFF — that test is what keeps `RUSTDL_INVERSE_PAIR_FUNC`
-//! load-bearing rather than retired.
+//! correct. Those tests now assert detection at BOTH flag settings.
+//!
+//! **#290 (2026-10-19) moved `f` too.** Its `ABox` assertions sit on `S ≡ R⁻`, and the
+//! inverse-functional bound's gate (`inv_func_merge_consumable`) now admits assertions on
+//! any role in `R`'s signed sub-role closure, so `f` is decided flag-OFF. The flag is NOT
+//! redundant: its remaining route is `h`, a `TBox` shape with no assertion at all
+//! (`InverseFunctional(G)` + `Inverse(G,S)` + `C ⊑ ∃S.A ⊓ ∃S.B` + `Disjoint(A,B)`, so `C`
+//! is unsatisfiable; `HermiT` agrees). Flag-OFF the gate declines the bound there, because
+//! the generators are spelled through the declared inverse — the widening the gate
+//! declines on cost grounds.
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -84,6 +90,21 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// `true` == `:C` is reported unsatisfiable by `classify`.
+fn c_is_unsat(name: &str, flag_on: bool) -> bool {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = EnvGuard::set(flag_on);
+    let text = std::fs::read_to_string(fixture(name)).expect("read fixture");
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(text), ParserConfiguration::default()).expect("parse ofn");
+    owl_dl_reasoner::classify(&onto)
+        .expect("classify")
+        .unsatisfiable_classes()
+        .contains(&"http://e#C")
+}
+
 /// `true` == consistent. The flag is set EXPLICITLY in both arms so the ambient
 /// environment cannot decide the result — otherwise a developer with the flag
 /// exported would see these tests pass vacuously.
@@ -113,17 +134,27 @@ fn derived_inverse_functional_is_decided_natively_since_177() {
 }
 
 #[test]
-fn derived_functional_needs_the_flag() {
-    // The reverse: InverseObjectProperties + InverseFunctional(R) => Functional(S).
-    // STILL missed flag-OFF after #177 (measured) — the ≤1 here sits on R⁻'s side and
-    // the engine does not merge predecessors, so signed edge-matching alone cannot
-    // reach it. This test is now the flag's ONLY non-vacuous route: if it starts
-    // failing on its first assertion, the flag has gone redundant — retire it rather
-    // than flipping this test.
-    assert!(is_consistent("f-derived-functional.ofn", false));
+fn derived_functional_abox_is_decided_natively_since_290() {
+    // InverseObjectProperties + InverseFunctional(R) => Functional(S), on an ABox.
+    // Missed flag-OFF until #290 widened the inverse-functional gate to sub-role
+    // assertions; now decided at both settings.
+    for flag in [false, true] {
+        assert!(
+            !is_consistent("f-derived-functional.ofn", flag),
+            "f must be decided at flag={flag}"
+        );
+    }
+}
+
+#[test]
+fn derived_functional_tbox_needs_the_flag() {
+    // The flag's only non-vacuous route since #290: the same derivation with no ABox.
+    // If the first assertion starts failing, the flag has gone redundant: retire it
+    // rather than flipping this test.
+    assert!(!c_is_unsat("h-derived-functional-tbox.ofn", false));
     assert!(
-        !is_consistent("f-derived-functional.ofn", true),
-        "the derivation must run in BOTH directions, not just Functional -> InverseFunctional"
+        c_is_unsat("h-derived-functional-tbox.ofn", true),
+        "Functional(S) derived from InverseFunctional(G) must make C unsatisfiable"
     );
 }
 

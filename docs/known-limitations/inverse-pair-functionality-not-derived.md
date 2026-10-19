@@ -11,7 +11,12 @@ the reverse direction** — `InverseFunctional(R)` ⟹ `Functional(S)`
 (`f-derived-functional.ofn`), still missed flag-OFF because the `≤1` lands on the
 predecessor side, which the engine does not merge; `RUSTDL_INVERSE_PAIR_FUNC` (default
 OFF) remains the fix for that route and is pinned non-vacuous by
-`derived_functional_needs_the_flag`. The full-ontology **performance** DNF also stands.
+`derived_functional_needs_the_flag`. **#290 (2026-10-19) closes `f` at the default** (the
+inverse-functional gate now admits assertions on a signed sub-role, and `S ≡ R⁻` is one), so
+the flag's remaining route is the assertion-free TBox shape `h-derived-functional-tbox.ofn`,
+pinned by `derived_functional_tbox_needs_the_flag`. The same TBox shape written
+`S ⊑ G⁻` instead of an inverse pair is missed at both flag settings. The full-ontology
+**performance** DNF also stands.
 The description below is the pre-#177 state · **Severity:** wrong `consistent` verdict
 **Oracle:** Konclude 0.7.0 **and** HermiT 1.4.3, independently
 **Fixtures:** `crates/owl-dl-reasoner/tests/fixtures/inverse_functional_derivation/`

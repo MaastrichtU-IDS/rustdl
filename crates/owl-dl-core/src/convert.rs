@@ -2955,13 +2955,10 @@ pub fn convert_ontology<A: ForIRI>(
     // clausifier; the tableau's `apply_max`). The `FunctionalRole` axiom is
     // KEPT (the saturator still reads it).
     //
-    // FORWARD ONLY. Inverse-functional (`InverseFunctionalRole(R)`) is NOT
-    // translated: the engine does not perform `≤1 R⁻` predecessor-merge even
-    // for an EXPLICIT `ObjectMaxCardinality(1, R⁻)` (proven — that case still
-    // reports `consistent`), so emitting `∃R⁻.⊤ ⊑ ≤1 R⁻` would be a silent
-    // no-op. Inverse-functional enforcement is a documented sound MISS pending
-    // an engine fix to inverse-role predecessor merging. See
-    // `docs/superpowers/specs/2026-06-15-functional-role-enforcement-design.md`.
+    // Inverse-functional (`InverseFunctionalRole(R)`) gets `∃R⁻.⊤ ⊑ ≤1 R⁻` too
+    // (`RUSTDL_INVERSE_FUNC_MAX`), but only where `inv_func_merge_consumable` admits it;
+    // see that function. (An older note here said the engine could not perform the
+    // `≤1 R⁻` merge; that was corrected 2026-08-18.)
     // Propagate functionality ACROSS a declared inverse pair. Runs **AFTER**
     // `derive_functional_max_cardinality`, and the order is load-bearing.
     //
@@ -3242,6 +3239,35 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         _ => false,
     }) {
         return true;
+    }
+    // #290: an assertion on a SUB-role of `r` or `r⁻` is an `r`-edge too, read one way
+    // or the other (`S ⊑ r⁻` makes `a S b` the edge `b r a`), so two of them can force
+    // the merge just as two `r`-assertions can. Only the exact id was checked, so
+    // `InverseFunctional(G)`, `S ⊑ G⁻`, `a S b`, `a S c`, `DifferentIndividuals(b, c)`
+    // got no `≤1` and was reported consistent. Gated on a polarity or sub-role axiom
+    // existing, so an ontology without one pays only the scan above.
+    if out.axioms.iter().any(|ax| {
+        matches!(
+            ax,
+            Axiom::SubObjectPropertyOf { .. }
+                | Axiom::EquivalentObjectProperties(_)
+                | Axiom::InverseObjectProperties(..)
+                | Axiom::SymmetricRole(_)
+        )
+    }) {
+        // Signed inclusions are mirrored (`s ⊑ t` iff `s⁻ ⊑ t⁻`), so the closure below
+        // `r⁻` is the flip of the one below `r`: one closure covers both readings.
+        let edges = signed_role_edges(out);
+        let below: std::collections::HashSet<crate::ir::RoleId> = signed_closure_below(&edges, r)
+            .into_iter()
+            .map(Role::role_id)
+            .collect();
+        if out.axioms.iter().any(|ax| match ax {
+            Axiom::ObjectPropertyAssertion { role, .. } => below.contains(&role.role_id()),
+            _ => false,
+        }) {
+            return true;
+        }
     }
     // #149, the TBox-aware admission this gate's doc asked for. The emitted GCI
     // is `∃f.⊤ ⊑ ≤1 f` with `f = r⁻`, and it can only ever fire a merge on a

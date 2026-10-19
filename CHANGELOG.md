@@ -106,6 +106,21 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_13233`, `14375`, `14556`, all consistent), none lost, no answer changes.
 
 ### Fixed
+- **An inverse-functional role is enforced when its assertions are on a sub-role (#290).**
+  `InverseFunctional(G)`, `S ⊑ G⁻`, `a S b`, `a S c`, `DifferentIndividuals(b, c)` is
+  inconsistent (`b G a` and `c G a` force `b = c`), and HermiT and Konclude say so; `rustdl
+  consistent` and `classify` both said consistent. The `≤1 G⁻` bound that drives the merge is
+  emitted only where a merge can happen (`inv_func_merge_consumable`, which keeps it off three SIO
+  ontologies it slows 19–47×), and that check looked for assertions on `G` itself only. It now
+  also counts assertions on any role in `G`'s signed sub-role closure (a sub-role of `G` or of
+  `G⁻`, in any spelling). The same KB with the inclusion written `S⁻ ⊑ G`, and the forward
+  `S ⊑ G` with edges into one individual, were wrong the same way and are fixed too; both
+  consistent controls stay consistent. The three SIO ontologies convert to byte-identical
+  internal ontologies, so they stay excluded.
+  `RUSTDL_INVERSE_PAIR_FUNC`'s `ABox` fixture (`InverseFunctional(R)`,
+  `InverseObjectProperties(R, S)`, assertions on `S`) is this same shape and is now decided with
+  no flag. The flag stays: with no assertion (`C ⊑ ∃S.A ⊓ ∃S.B`, `A`, `B` disjoint) the gate still
+  declines the bound and the default misses `C`'s unsatisfiability, which the flag finds.
 - **`classify` reads more of the property assertions of individuals used as nominals (#279),
   under `RUSTDL_SAT_NOMINAL_EDGES`.** Two additions to #282's saturator seeding, each adding only
   entailed facts:

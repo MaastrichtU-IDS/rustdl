@@ -392,6 +392,7 @@ fn reorder_disjuncts(
 ) -> Vec<ConceptId> {
     let pool = ctx.pool();
     let labels = ctx.graph().node(node).labels();
+    let forall_first = ctx.forall_first_enabled();
 
     let score = |d: ConceptId| -> u8 {
         // 3: would clash immediately.
@@ -409,6 +410,11 @@ fn reorder_disjuncts(
             _ => {}
         }
         if is_leaf_compound(pool, d) {
+            return 0;
+        }
+        // #288: a `∀` disjunct generates nothing, so try it before an atomic
+        // one whose definition may (see `forall_first_enabled`).
+        if forall_first && matches!(pool.get(d), ConceptExpr::All(..)) {
             return 0;
         }
         match pool.get(d) {

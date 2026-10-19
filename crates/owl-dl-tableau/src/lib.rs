@@ -123,6 +123,27 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     signed_roles: bool,
     /// Cached [`chain_middle_enabled`] (#213), read once per context.
     chain_middle: bool,
+    /// Cached [`forall_first_enabled`] (#288), read once per context because
+    /// disjunct ordering runs at every branch.
+    forall_first: bool,
+    /// Last [`Self::is_blocked`] answer as `(node, trail generation, blocked)`
+    /// (#288). Six rules ask for the same node in a row, usually with no graph
+    /// change in between, and anywhere-blocking scans every candidate each time.
+    /// Keyed on the trail generation, which changes on every graph mutation and
+    /// rollback, so a hit is exactly the value a fresh call would return.
+    blocked_memo: std::cell::Cell<(NodeId, u64, bool)>,
+    /// Cached [`incremental_saturate_enabled`] (#288).
+    incremental_saturate: bool,
+    /// Nodes whose rules were skipped because they were blocked and that have
+    /// not been processed unblocked since (#288), deduplicated by
+    /// `blocked_seen`. Blocking can lift without dirtying the node (a blocker
+    /// merged away or no longer qualifying), so `saturate` re-checks these
+    /// before calling the graph a fixpoint. Each `StableMark` stores a copy, so
+    /// an incremental call after a rollback starts from the restored state's set.
+    blocked_skips: Vec<NodeId>,
+    blocked_seen: Vec<bool>,
+    /// Cached [`incremental_saturate_verify_enabled`] (#288).
+    incremental_saturate_verify: bool,
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
     /// axiom in the source ontology. Stored symmetrically (both `(r, s)` and
     /// `(s, r)` are pushed) to match `inverse_pairs_set`'s contents. Retained
@@ -334,6 +355,12 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             hierarchy: None,
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
+            forall_first: forall_first_enabled(),
+            blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            incremental_saturate: incremental_saturate_enabled(),
+            blocked_skips: Vec::new(),
+            blocked_seen: Vec::new(),
+            incremental_saturate_verify: incremental_saturate_verify_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -369,6 +396,12 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             hierarchy: None,
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
+            forall_first: forall_first_enabled(),
+            blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            incremental_saturate: incremental_saturate_enabled(),
+            blocked_skips: Vec::new(),
+            blocked_seen: Vec::new(),
+            incremental_saturate_verify: incremental_saturate_verify_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -409,6 +442,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             hierarchy: Some(hierarchy),
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
+            forall_first: forall_first_enabled(),
+            blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            incremental_saturate: incremental_saturate_enabled(),
+            blocked_skips: Vec::new(),
+            blocked_seen: Vec::new(),
+            incremental_saturate_verify: incremental_saturate_verify_enabled(),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -475,6 +514,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// on process-global environment (which is racy under parallel tests).
     pub fn set_anywhere_blocking(&mut self, on: bool) -> &mut Self {
         self.anywhere_blocking = on;
+        // The blocking mode is not on the trail, so drop any memoised answer
+        // computed under the other mode (#288).
+        self.blocked_memo
+            .set((NodeId::new(0), u64::MAX, false));
         // Keep the graph's index-maintenance flag in lockstep and (re)build the
         // index from the current arena so a flip after node creation is still
         // correct — used by tests that toggle the mode on a populated context.
@@ -911,6 +954,156 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.chain_middle
     }
 
+    /// Whether `saturate` may start from the dirty nodes alone (#288).
+    #[must_use]
+    pub fn incremental_saturate_enabled(&self) -> bool {
+        self.incremental_saturate
+    }
+
+    /// Whether an incremental `saturate` re-checks its fixpoint with a full
+    /// pass and panics on any rule firing (#288, a test instrument).
+    #[must_use]
+    pub fn incremental_saturate_verify_enabled(&self) -> bool {
+        self.incremental_saturate_verify
+    }
+
+    /// See [`TableauTrail::labels_only_since_stable`]. A nominal label is not
+    /// local: anywhere-blocking stops using a node as a blocker once it carries
+    /// one, which can unblock a node anywhere in the graph.
+    #[must_use]
+    pub fn labels_only_since_stable(&self) -> bool {
+        let pool = self.pool;
+        self.trail
+            .labels_only_since_stable(|c| !matches!(pool.get(c), ConceptExpr::Nominal(_)))
+    }
+
+    /// Note that a rule skipped `node` because it was blocked (#288).
+    pub fn note_blocked_skip(&mut self, node: NodeId) {
+        let i = node.index() as usize;
+        if self.blocked_seen.len() <= i {
+            self.blocked_seen.resize(i + 1, false);
+        }
+        if !self.blocked_seen[i] {
+            self.blocked_seen[i] = true;
+            self.blocked_skips.push(node);
+        }
+    }
+
+    /// Dirty and drop every noted node that no longer exists as a live blocked
+    /// node; returns whether any was dirtied (#288).
+    pub fn dirty_unblocked_skips(&mut self) -> bool {
+        let mut any = false;
+        let mut keep = Vec::with_capacity(self.blocked_skips.len());
+        for node in std::mem::take(&mut self.blocked_skips) {
+            let i = node.index() as usize;
+            if i >= self.graph.len() || self.graph.node(node).is_redirected() {
+                if i < self.blocked_seen.len() {
+                    self.blocked_seen[i] = false;
+                }
+                continue;
+            }
+            if self.is_blocked(node) {
+                keep.push(node);
+            } else {
+                self.blocked_seen[i] = false;
+                self.graph.set_dirty(node, true);
+                any = true;
+            }
+        }
+        self.blocked_skips = keep;
+        any
+    }
+
+    /// Reset the blocked-skip set: to the copy in the last `StableMark` for an
+    /// incremental call, or empty for a full one, where every node is visited
+    /// and re-noted (#288).
+    pub fn reset_blocked_skips(&mut self, incremental: bool) {
+        for node in std::mem::take(&mut self.blocked_skips) {
+            if let Some(seen) = self.blocked_seen.get_mut(node.index() as usize) {
+                *seen = false;
+            }
+        }
+        if incremental && let Some(blocked) = self.trail.last_stable_blocked() {
+            let blocked = blocked.to_vec();
+            for node in blocked {
+                self.note_blocked_skip(node);
+            }
+        }
+    }
+
+    /// Record that `saturate` reached a fixpoint (#288).
+    pub fn record_stable_mark(&mut self) {
+        let blocked = self.blocked_skips.clone();
+        self.trail.record(TrailEntry::StableMark { blocked });
+    }
+
+    /// Debug summary of trail entries from `from` on (#288 verify mode).
+    #[must_use]
+    pub fn trail_summary_since(&self, from: usize) -> String {
+        self.trail.summary_since(from, &self.graph, self.pool)
+    }
+
+    /// Debug: labels added since the last stable mark, with node parents.
+    #[must_use]
+    pub fn debug_delta(&self) -> String {
+        self.trail
+            .labels_since_stable()
+            .iter()
+            .map(|(n, c)| {
+                format!(
+                    "n{}(parent {:?}, nb {:?}) {:?}",
+                    n.index(),
+                    self.graph.node(*n).parent().map(|p| p.index()),
+                    self.graph.node(*n).neighbours().map(|(_, m)| m.index()).collect::<Vec<_>>(),
+                    self.pool.get(*c)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    /// Debug: parent, neighbours and blocked status of `n`.
+    #[must_use]
+    pub fn debug_node(&self, n: NodeId) -> String {
+        format!(
+            "n{} parent {:?} nb {:?} blocked {} labels {}",
+            n.index(),
+            self.graph.node(n).parent().map(|p| p.index()),
+            self.graph.node(n).neighbours().map(|(_, m)| m.index()).collect::<Vec<_>>(),
+            self.is_blocked_uncached(n),
+            self.graph.node(n).labels().len()
+        )
+    }
+
+    /// Current trail length, for the incremental-saturate verify mode.
+    #[must_use]
+    pub fn trail_len(&self) -> usize {
+        self.trail.len()
+    }
+
+    /// Mark every dirty node's neighbours dirty too (#288). A label added at
+    /// `n` can change a rule at a neighbour (the `≤n` count at `n`'s parent)
+    /// and can unblock `n`'s children; nothing reads it two hops away.
+    pub fn spread_dirty_to_neighbours(&mut self) {
+        let dirty: Vec<NodeId> = (0..self.graph.len())
+            .map(|i| NodeId::new(u32::try_from(i).expect("node count fits u32")))
+            .filter(|&n| self.graph.is_dirty(n))
+            .collect();
+        for n in dirty {
+            let neighbours: Vec<NodeId> =
+                self.graph.node(n).neighbours().map(|(_, m)| m).collect();
+            for m in neighbours {
+                self.graph.set_dirty(m, true);
+            }
+        }
+    }
+
+    /// Whether the search tries `∀` disjuncts first (#288).
+    #[must_use]
+    pub fn forall_first_enabled(&self) -> bool {
+        self.forall_first
+    }
+
     /// Slice of all registered length-2 chain axioms.
     #[must_use]
     pub fn chains(&self) -> &[(Role, Role, Role)] {
@@ -1171,6 +1364,22 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// completion small on large generative `ABox`es.
     #[must_use]
     pub fn is_blocked(&self, y: NodeId) -> bool {
+        let generation = self.trail.generation();
+        let (memo_node, memo_gen, memo_blocked) = self.blocked_memo.get();
+        if memo_node == y && memo_gen == generation {
+            debug_assert_eq!(
+                memo_blocked,
+                self.is_blocked_uncached(y),
+                "is_blocked memo is stale: a graph mutation bypassed the trail"
+            );
+            return memo_blocked;
+        }
+        let blocked = self.is_blocked_uncached(y);
+        self.blocked_memo.set((y, generation, blocked));
+        blocked
+    }
+
+    fn is_blocked_uncached(&self, y: NodeId) -> bool {
         if self.anywhere_blocking {
             self.is_blocked_anywhere(y)
         } else {
@@ -1405,6 +1614,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 // triggers, existentials, cardinality, …) must
                 // re-fire after a new label appears.
                 self.graph.set_dirty(node, true);
+                // #288: a label can change a rule at a neighbour (the `≤n` count
+                // at the parent) or lift the blocking of a child, so with
+                // incremental saturation those must be revisited as well.
+                if self.incremental_saturate {
+                    for k in 0..self.graph.node(node).neighbours().count() {
+                        let m = self
+                            .graph
+                            .node(node)
+                            .neighbours()
+                            .nth(k)
+                            .map(|(_, m)| m)
+                            .expect("index within count");
+                        self.graph.set_dirty(m, true);
+                    }
+                }
                 true
             }
         }
@@ -2385,6 +2609,42 @@ pub fn signed_role_edges_enabled() -> bool {
 #[must_use]
 pub fn chain_middle_enabled() -> bool {
     std::env::var_os("RUSTDL_TABLEAU_CHAIN_MIDDLE").is_none_or(|v| v != "0")
+}
+
+/// Whether `saturate` may start from the dirty nodes and their neighbours
+/// instead of marking every node dirty (#288, `RUSTDL_INCREMENTAL_SATURATE`,
+/// **default ON**, `=0` reverts).
+///
+/// Only when the trail shows a saturation fixpoint followed by label additions
+/// alone: each addition dirtied its node, and a label reaches no rule more than
+/// one hop away. Any other mutation since the fixpoint (edges, nodes, merges,
+/// distinctness, nominals) takes the full path. Every branch decision re-ran
+/// every rule on every node before this; on PMD core that was most of the cost.
+#[must_use]
+pub fn incremental_saturate_enabled() -> bool {
+    std::env::var_os("RUSTDL_INCREMENTAL_SATURATE").is_none_or(|v| v != "0")
+}
+
+/// Test instrument for [`incremental_saturate_enabled`]
+/// (`RUSTDL_INCREMENTAL_SATURATE_VERIFY=1`, default OFF): after an incremental
+/// `saturate` reaches a fixpoint, run one full pass and panic if any rule fires.
+#[must_use]
+pub fn incremental_saturate_verify_enabled() -> bool {
+    std::env::var_os("RUSTDL_INCREMENTAL_SATURATE_VERIFY").is_some_and(|v| v != "0")
+}
+
+/// Whether the search tries a `∀` disjunct before an atomic or generating one
+/// (#288, `RUSTDL_FORALL_FIRST`, **default ON**, `=0` reverts).
+///
+/// A definition `D ≡ ∃R.C` leaves the disjunction `∀R.¬C ⊔ D` on every node.
+/// Trying `D` first fires `D ⊑ ∃R.C`, whose fresh successor carries the same
+/// disjunctions, so the model grows until blocking stops it. The `∀` disjunct
+/// generates nothing and holds outright at a node with no `R`-successor. On a
+/// 6-axiom core of PMD core this took `sat` from 3.9 CPU-s and 361 nodes to
+/// 0.02 CPU-s. It only reorders the branches tried, so verdicts cannot change.
+#[must_use]
+pub fn forall_first_enabled() -> bool {
+    std::env::var_os("RUSTDL_FORALL_FIRST").is_none_or(|v| v != "0")
 }
 
 /// Whether anywhere (pairwise) blocking is enabled for the main tableau.

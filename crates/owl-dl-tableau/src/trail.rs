@@ -100,6 +100,11 @@ pub enum TrailEntry {
     /// takes the [`Checkpoint`] returned by [`TableauTrail::checkpoint`]
     /// and undoes everything after it.
     Checkpoint,
+    /// `saturate` reached a fixpoint here (#288). Not a mutation; undo is a
+    /// no-op. `blocked` lists the nodes whose rules were skipped because they
+    /// were blocked and that were not processed since, at this fixpoint. See
+    /// [`TableauTrail::labels_only_since_stable`].
+    StableMark { blocked: Vec<NodeId> },
 }
 
 /// Opaque handle into the trail returned by [`TableauTrail::checkpoint`].
@@ -119,6 +124,10 @@ pub struct Checkpoint {
 #[derive(Clone, Debug, Default)]
 pub struct TableauTrail {
     entries: Vec<TrailEntry>,
+    /// Bumped on every record, checkpoint and rollback, so it changes whenever
+    /// the graph may have. Unlike `len`, it never repeats after a rollback, which
+    /// makes it a sound cache key for derived state (#288).
+    generation: u64,
 }
 
 impl TableauTrail {
@@ -140,13 +149,105 @@ impl TableauTrail {
     /// Record a checkpoint. The returned handle is the only legal
     /// argument to [`Self::rollback_to`].
     pub fn checkpoint(&mut self) -> Checkpoint {
+        self.generation += 1;
         let position = self.entries.len();
         self.entries.push(TrailEntry::Checkpoint);
         Checkpoint { position }
     }
 
     pub(crate) fn record(&mut self, entry: TrailEntry) {
+        self.generation += 1;
         self.entries.push(entry);
+    }
+
+    /// Whether the graph is a saturation fixpoint plus local label additions
+    /// only: scanning back from the end meets nothing but local
+    /// [`TrailEntry::LabelAdded`]s and [`TrailEntry::Checkpoint`]s before a
+    /// [`TrailEntry::StableMark`].
+    /// A rollback pops entries, so after one the scan sees the restored state.
+    /// `local(c)` must say whether a label `c` only matters to its own node and
+    /// that node's neighbours; any other label also disqualifies.
+    #[must_use]
+    pub fn labels_only_since_stable(&self, local: impl Fn(ConceptId) -> bool) -> bool {
+        for entry in self.entries.iter().rev() {
+            match entry {
+                TrailEntry::StableMark { .. } => return true,
+                TrailEntry::LabelAdded { concept, .. } if local(*concept) => {}
+                TrailEntry::Checkpoint => {}
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Debug summary of entries from `from` on: kind counts plus the first few
+    /// labels with their node's parent and concept.
+    #[must_use]
+    pub fn summary_since(
+        &self,
+        from: usize,
+        graph: &CompletionGraph,
+        pool: &owl_dl_core::ConceptPool,
+    ) -> String {
+        use std::fmt::Write as _;
+        let mut kinds: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        let mut out = String::new();
+        for (i, e) in self.entries[from..].iter().enumerate() {
+            let k = match e {
+                TrailEntry::LabelAdded { node, concept } => {
+                    if i < 12 {
+                        let _ = write!(
+                            out,
+                            " [n{} parent={:?} {:?}]",
+                            node.index(),
+                            graph.node(*node).parent().map(|p| p.index()),
+                            pool.get(*concept)
+                        );
+                    }
+                    "label"
+                }
+                TrailEntry::EdgeAdded { .. } => "edge",
+                TrailEntry::NodeCreated { .. } => "node",
+                TrailEntry::DistinctMarked { .. } => "distinct",
+                TrailEntry::EdgeRemoved { .. } => "edge_removed",
+                TrailEntry::MergedRedirect { .. } => "merge",
+                TrailEntry::ParentRewritten { .. } => "parent",
+                TrailEntry::NominalAssigned { .. } => "nominal",
+                TrailEntry::Checkpoint => "checkpoint",
+                TrailEntry::StableMark { .. } => "stable",
+            };
+            *kinds.entry(k).or_default() += 1;
+        }
+        format!("{kinds:?}{out}")
+    }
+
+    /// The blocked-skip set recorded by the last `StableMark`, if any.
+    #[must_use]
+    pub fn last_stable_blocked(&self) -> Option<&[NodeId]> {
+        self.entries.iter().rev().find_map(|e| match e {
+            TrailEntry::StableMark { blocked } => Some(blocked.as_slice()),
+            _ => None,
+        })
+    }
+
+    /// Debug: the `(node, concept)` labels added since the last `StableMark`.
+    #[must_use]
+    pub fn labels_since_stable(&self) -> Vec<(NodeId, ConceptId)> {
+        let mut out = Vec::new();
+        for entry in self.entries.iter().rev() {
+            match entry {
+                TrailEntry::StableMark { .. } => break,
+                TrailEntry::LabelAdded { node, concept } => out.push((*node, *concept)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// A counter that changes whenever the trail does; see `generation`.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Undo every entry after `cp` in reverse order and drop the
@@ -166,6 +267,7 @@ impl TableauTrail {
             matches!(self.entries[cp.position], TrailEntry::Checkpoint),
             "checkpoint handle does not point at a Checkpoint entry"
         );
+        self.generation += 1;
         while self.entries.len() > cp.position {
             let entry = self.entries.pop().expect("non-empty by loop guard");
             undo(&entry, graph);
@@ -305,6 +407,6 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
                 graph.nominals.remove(&individual);
             }
         },
-        TrailEntry::Checkpoint => {}
+        TrailEntry::Checkpoint | TrailEntry::StableMark { .. } => {}
     }
 }

@@ -67,6 +67,58 @@ pub enum SaturationResult {
 /// The loop exits when a full scan finds nothing dirty (stable) or
 /// a clash surfaces, with `max_iters` as a defensive cap.
 pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
+    // #288: when the graph is a fixpoint plus label additions only, start from
+    // the dirty nodes and their neighbours (see `incremental_saturate_enabled`).
+    let incremental = ctx.incremental_saturate_enabled() && ctx.labels_only_since_stable();
+    ctx.reset_blocked_skips(incremental);
+    let delta = if incremental && ctx.incremental_saturate_verify_enabled() {
+        ctx.debug_delta()
+    } else {
+        String::new()
+    };
+    let result = saturate_from(ctx, max_iters, incremental);
+    if result != SaturationResult::Stable {
+        return result;
+    }
+    if ctx.incremental_saturate_verify_enabled() {
+        let before = ctx.trail_len();
+        let nodes_before = ctx.graph().len();
+        let full = saturate_from(ctx, max_iters, false);
+        if ctx.trail_len() != before {
+            let parents: std::collections::BTreeSet<u32> = (nodes_before..ctx.graph().len())
+                .filter_map(|i| {
+                    ctx.graph()
+                        .node(NodeId::new(u32::try_from(i).expect("fits")))
+                        .parent()
+                        .map(NodeId::index)
+                })
+                .collect();
+            for p in parents {
+                eprintln!("# verify: generator {}", ctx.debug_node(NodeId::new(p)));
+            }
+            eprintln!("# verify: delta since mark: {delta}");
+        }
+        assert!(
+            full == SaturationResult::Stable && ctx.trail_len() == before,
+            "saturate (incremental={incremental}) missed work: a full pass returned \
+             {full:?} and recorded {} trail entries: {}",
+            ctx.trail_len() - before,
+            ctx.trail_summary_since(before)
+        );
+    }
+    ctx.record_stable_mark();
+    SaturationResult::Stable
+}
+
+fn saturate_from(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    max_iters: usize,
+    incremental: bool,
+) -> SaturationResult {
+    if incremental {
+        ctx.spread_dirty_to_neighbours();
+        return saturate_loop(ctx, max_iters);
+    }
     // Conservatively mark everything dirty: between saturate() calls
     // the search has added or rolled back labels, and some state
     // (e.g. `residuals_saturated` memo, nominal-map shape, edge
@@ -79,6 +131,10 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
     // saturate() call still saves the bulk of the work; the entry
     // reset is a single boolean write per node.
     ctx.graph_mut().mark_all_dirty();
+    saturate_loop(ctx, max_iters)
+}
+
+fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
     for _ in 0..max_iters {
         // Cooperative deadline check. A single saturate() call can
         // generate many nodes (e.g. via chain rule expansion under
@@ -153,6 +209,12 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
             }
         }
         if !changed {
+            // #288: a node skipped as blocked may have been unblocked since
+            // (its blocker merged away, or its parent's labels grew) without
+            // being dirtied. Re-check before calling this a fixpoint.
+            if ctx.dirty_unblocked_skips() {
+                continue;
+            }
             // Deterministic rules are stable. Run the lazy-unfolding
             // sweep before declaring Stable: materialise any deferred
             // `Or(_)` residual on nodes that don't already satisfy it.

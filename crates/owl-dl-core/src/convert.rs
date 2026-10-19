@@ -2962,188 +2962,14 @@ pub fn convert_ontology<A: ForIRI>(
     // no-op. Inverse-functional enforcement is a documented sound MISS pending
     // an engine fix to inverse-role predecessor merging. See
     // `docs/superpowers/specs/2026-06-15-functional-role-enforcement-design.md`.
-    // Propagate functionality ACROSS a declared inverse pair. Runs **AFTER**
-    // `derive_functional_max_cardinality`, and the order is load-bearing.
-    //
-    // It originally ran before, so that a newly-derived functional role also picked up
-    // that pass's `∃R.⊤ ⊑ ≤1 R` enforcement GCI. That was measured to be the wrong
-    // choice: a 1,920-ontology sweep found **4 ontologies going from 1–5 s to
-    // non-terminating** (`ore_ont_16372`, `7532`, `9662`, `9786`), each carrying 76–118
-    // inverse pairs and ~21 functional roles, so the derivation marks many roles
-    // functional and every one adds a `≤1` constraint for `apply_max` to police.
-    // Diagnostic: `ore_ont_7532`'s `role_rules_unguarded` went 80 → 81, and none of the
-    // four has a single `ObjectPropertyAssertion`, which rules out the materialisation
-    // half as the cause.
-    //
-    // Running after keeps the cheap win and drops the expensive one: the derived
-    // characteristics still reach `abox_check`'s P5 (which reads axioms, not GCIs), while
-    // no derived-functional role gains an enforcement GCI. The materialisation half is
-    // unaffected because it fires on a role whose functionality is DECLARED, so the `≤1`
-    // GCI it needs already exists.
+    // (`RUSTDL_INVERSE_PAIR_FUNC`, which propagated functionality across a declared
+    // inverse pair, was retired in #290: the signed role hierarchy (#177) and the signed
+    // sub-role admission in `inv_func_merge_consumable` decide every route it covered.)
     if !conversion_cut() {
         derive_functional_max_cardinality(&mut out);
-        derive_inverse_pair_functionality(&mut out);
     }
     out.axioms.sort();
     Ok(out)
-}
-
-/// `RUSTDL_INVERSE_PAIR_FUNC` — derive functionality across a declared inverse
-/// pair. **Default OFF**; `=1` enables.
-#[must_use]
-pub fn inverse_pair_functionality_enabled() -> bool {
-    std::env::var_os("RUSTDL_INVERSE_PAIR_FUNC").is_some_and(|v| v == "1")
-}
-
-/// From `InverseObjectProperties(A, B)` — i.e. `B ≡ A⁻` — derive the functionality
-/// characteristic of each partner from the other:
-///
-/// ```text
-/// Functional(A)        ⟹ InverseFunctional(B)
-/// Functional(B)        ⟹ InverseFunctional(A)
-/// InverseFunctional(A) ⟹ Functional(B)
-/// InverseFunctional(B) ⟹ Functional(A)
-/// ```
-///
-/// **Valid, not heuristic.** `Functional(A)` says every `x` has at most one
-/// `A`-successor. With `B(x,y) ⟺ A(y,x)`, that is precisely "every `y` has at most
-/// one `B`-predecessor", which is what `InverseFunctional(B)` means. The other three
-/// follow by the symmetry of `InverseObjectProperties` and `A ≡ B⁻`.
-///
-/// **Why this is needed** (`docs/known-limitations/inverse-pair-functionality-not-derived.md`):
-/// `abox_check`'s P5 handles a *declared* `InverseFunctionalRole` correctly, but nothing
-/// derived one, so a 5-axiom `ABox` that `Konclude` and `HermiT` both call inconsistent was
-/// reported `consistent`. Delta-debugging `ore_ont_4141` (67,143 axioms → a 7-axiom
-/// core) landed on exactly this.
-///
-/// **Deliberately conservative:** only axioms whose role is `Role::Named` participate.
-/// `Functional(ObjectInverseOf(p))` is *equivalent* to `InverseFunctional(p)` and could
-/// be folded in, but normalising polarity here would widen the change for a shape that
-/// does not occur in the motivating corpus; it stays a documented residual.
-///
-/// **The risk direction is INVERTED from most passes here.** This ADDS characteristics,
-/// making the KB stronger and more clashes derivable, so the failure mode is a FALSE
-/// POSITIVE rather than a miss. It also feeds the `merge_inducing` / `collapse` sets at
-/// the `DKey` gate (`:3066`, `:3169`), where marking extra roles merge-inducing can
-/// re-inflate the O(k²) disjointness seeding that gate exists to suppress — so
-/// `ore_ont_9347` (113 concept rules) and `ore_ont_5368` (18,620,251) are load-bearing
-/// gates for any default flip, not optional extras.
-fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
-    if !inverse_pair_functionality_enabled() {
-        return;
-    }
-    let mut functional: std::collections::HashSet<crate::ir::RoleId> =
-        std::collections::HashSet::new();
-    let mut inverse_functional: std::collections::HashSet<crate::ir::RoleId> =
-        std::collections::HashSet::new();
-    let mut pairs: Vec<(crate::ir::RoleId, crate::ir::RoleId)> = Vec::new();
-    for axiom in &out.axioms {
-        match axiom {
-            Axiom::FunctionalRole(r) if !r.is_inverse() => {
-                functional.insert(r.role_id());
-            }
-            Axiom::InverseFunctionalRole(r) if !r.is_inverse() => {
-                inverse_functional.insert(r.role_id());
-            }
-            Axiom::InverseObjectProperties(a, b) if !a.is_inverse() && !b.is_inverse() => {
-                pairs.push((a.role_id(), b.role_id()));
-            }
-            _ => {}
-        }
-    }
-    // Fixpoint: a derived characteristic can feed another inverse pair (`p⁻ = q`,
-    // `q⁻ = r`), so iterate until nothing new appears rather than making one pass.
-    // Bounded by 2 × |roles| insertions, so it always terminates.
-    let mut added: Vec<Axiom> = Vec::new();
-    loop {
-        let mut grew = false;
-        for &(a, b) in &pairs {
-            for (src, dst) in [(a, b), (b, a)] {
-                if functional.contains(&src) && inverse_functional.insert(dst) {
-                    added.push(Axiom::InverseFunctionalRole(Role::named(dst)));
-                    grew = true;
-                }
-                if inverse_functional.contains(&src) && functional.insert(dst) {
-                    added.push(Axiom::FunctionalRole(Role::named(dst)));
-                    grew = true;
-                }
-            }
-        }
-        if !grew {
-            break;
-        }
-    }
-    out.axioms.extend(added);
-
-    // ---- Part 2: materialise the inverse ABox edges for FUNCTIONAL partners ----
-    //
-    // Deriving the characteristic is necessary but NOT sufficient. The engine cannot
-    // merge PREDECESSORS: `derive_functional_max_cardinality` is deliberately
-    // forward-only because `∃R⁻.⊤ ⊑ ≤1 R⁻` is a measured no-op (see its comment). So
-    // `InverseFunctionalRole(S)` alone still leaves the clash undetected on the
-    // tableau path, which is where the *direct* analogue is actually caught — probes
-    // confirm the direct case is decided even with BOTH ABox pre-checks disabled.
-    //
-    // The fix reuses that proven forward path instead of building predecessor merge:
-    // for a declared pair `(R, S)` where `R` is functional, every asserted `S(a, b)`
-    // entails `R(b, a)`, so materialising it lets the existing
-    // `∃R.⊤ ⊑ ≤1 R` + `apply_max` fire at `b`. Verified by hand-adding the edges to
-    // the reproducer: `consistent` → `inconsistent`.
-    //
-    // Sound: `InverseObjectProperties(R, S)` makes `R(b, a)` an ENTAILED ground fact,
-    // so this adds no model. **Bounded on purpose:** materialisation happens only when
-    // the target role is functional (declared or derived above), so edge growth is
-    // proportional to assertions on the partner of a functional role rather than to the
-    // whole ABox. An unbounded version would double the edge count of every ontology
-    // declaring an inverse pair.
-    let mut inverse_of: std::collections::HashMap<crate::ir::RoleId, Vec<crate::ir::RoleId>> =
-        std::collections::HashMap::new();
-    for &(a, b) in &pairs {
-        inverse_of.entry(a).or_default().push(b);
-        inverse_of.entry(b).or_default().push(a);
-    }
-    let existing: std::collections::HashSet<(crate::ir::RoleId, IndividualId, IndividualId)> = out
-        .axioms
-        .iter()
-        .filter_map(|ax| match ax {
-            Axiom::ObjectPropertyAssertion {
-                role,
-                subject,
-                object,
-            } if !role.is_inverse() => Some((role.role_id(), *subject, *object)),
-            _ => None,
-        })
-        .collect();
-    let mut edges: Vec<Axiom> = Vec::new();
-    let mut seen = existing.clone();
-    for ax in &out.axioms {
-        let Axiom::ObjectPropertyAssertion {
-            role,
-            subject,
-            object,
-        } = ax
-        else {
-            continue;
-        };
-        if role.is_inverse() {
-            continue;
-        }
-        for &partner in inverse_of.get(&role.role_id()).into_iter().flatten() {
-            // Only where it can matter: the partner must be functional, so that the
-            // forward `≤1` constraint exists to fire on the materialised edge.
-            if !functional.contains(&partner) {
-                continue;
-            }
-            if seen.insert((partner, *object, *subject)) {
-                edges.push(Axiom::ObjectPropertyAssertion {
-                    role: Role::named(partner),
-                    subject: *object,
-                    object: *subject,
-                });
-            }
-        }
-    }
-    out.axioms.extend(edges);
 }
 
 /// Whether `InverseFunctionalRole(r)` also derives `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤`
@@ -3242,6 +3068,35 @@ fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
         _ => false,
     }) {
         return true;
+    }
+    // #290: an assertion on a SUB-role of `r` or `r⁻` is an `r`-edge too, read one way
+    // or the other (`S ⊑ r⁻` makes `a S b` the edge `b r a`), so two of them can force
+    // the merge just as two `r`-assertions can. Only the exact id was checked, so
+    // `InverseFunctional(G)`, `S ⊑ G⁻`, `a S b`, `a S c`, `DifferentIndividuals(b, c)`
+    // got no `≤1` and was reported consistent. Gated on a polarity or sub-role axiom
+    // existing, so an ontology without one pays only the scan above.
+    if out.axioms.iter().any(|ax| {
+        matches!(
+            ax,
+            Axiom::SubObjectPropertyOf { .. }
+                | Axiom::EquivalentObjectProperties(_)
+                | Axiom::InverseObjectProperties(..)
+                | Axiom::SymmetricRole(_)
+        )
+    }) {
+        // Signed inclusions are mirrored (`s ⊑ t` iff `s⁻ ⊑ t⁻`), so the closure below
+        // `r⁻` is the flip of the one below `r`: one closure covers both readings.
+        let edges = signed_role_edges(out);
+        let below: std::collections::HashSet<crate::ir::RoleId> = signed_closure_below(&edges, r)
+            .into_iter()
+            .map(Role::role_id)
+            .collect();
+        if out.axioms.iter().any(|ax| match ax {
+            Axiom::ObjectPropertyAssertion { role, .. } => below.contains(&role.role_id()),
+            _ => false,
+        }) {
+            return true;
+        }
     }
     // #149, the TBox-aware admission this gate's doc asked for. The emitted GCI
     // is `∃f.⊤ ⊑ ≤1 f` with `f = r⁻`, and it can only ever fire a merge on a

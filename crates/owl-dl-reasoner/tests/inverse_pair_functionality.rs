@@ -41,6 +41,12 @@
 //! remaining non-vacuous route is `f`** (`InverseFunctional(R)` ⟹ `Functional(S)`), which
 //! is still missed flag-OFF — that test is what keeps `RUSTDL_INVERSE_PAIR_FUNC`
 //! load-bearing rather than retired.
+//!
+//! **RETIRED BY #290 (2026-10-19).** `f` is now decided natively too:
+//! `inv_func_merge_consumable` admits `InverseFunctional(R)`'s `≤1 R⁻` bound when an
+//! assertion is on any role in `R`'s signed sub-role closure, and `S ≡ R⁻` is in it. As
+//! `derived_functional_needs_the_flag` instructed, the flag was retired rather than the
+//! test flipped; every test below now checks the DEFAULT.
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -49,49 +55,14 @@ use horned_owl::ontology::set::SetOntology;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-// Env mutation is process-wide; serialise it and restore on Drop so a value cannot
-// leak between tests or into the rest of the suite.
-static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-struct EnvGuard(Option<std::ffi::OsString>);
-
-impl EnvGuard {
-    #[allow(unsafe_code)]
-    fn set(on: bool) -> Self {
-        let prior = std::env::var_os("RUSTDL_INVERSE_PAIR_FUNC");
-        // SAFETY: every mutation here happens while ENV_MUTEX is held by the caller.
-        unsafe { std::env::set_var("RUSTDL_INVERSE_PAIR_FUNC", if on { "1" } else { "0" }) };
-        Self(prior)
-    }
-}
-
-impl Drop for EnvGuard {
-    #[allow(unsafe_code)]
-    fn drop(&mut self) {
-        // SAFETY: as above — the lock is still held by the test body.
-        unsafe {
-            match self.0.take() {
-                Some(v) => std::env::set_var("RUSTDL_INVERSE_PAIR_FUNC", v),
-                None => std::env::remove_var("RUSTDL_INVERSE_PAIR_FUNC"),
-            }
-        }
-    }
-}
-
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/inverse_functional_derivation")
         .join(name)
 }
 
-/// `true` == consistent. The flag is set EXPLICITLY in both arms so the ambient
-/// environment cannot decide the result — otherwise a developer with the flag
-/// exported would see these tests pass vacuously.
-fn is_consistent(name: &str, flag_on: bool) -> bool {
-    let _lock = ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _g = EnvGuard::set(flag_on);
+/// `true` == consistent, at the default settings.
+fn is_consistent(name: &str) -> bool {
     let text = std::fs::read_to_string(fixture(name)).expect("read fixture");
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut Cursor::new(text), ParserConfiguration::default()).expect("parse ofn");
@@ -100,54 +71,43 @@ fn is_consistent(name: &str, flag_on: bool) -> bool {
 
 #[test]
 fn derived_inverse_functional_is_decided_natively_since_177() {
-    // InverseObjectProperties + Functional(R): decided at BOTH flag settings since the
+    // InverseObjectProperties + Functional(R): decided at the default since the
     // signed role hierarchy (#177) — an S-edge satisfies an R⁻ body, so the forward ≤1
     // fires without deriving InverseFunctional(S). FLIPPED from "needs the flag";
     // pre-#177 the flag-OFF arm was consistent (the recorded miss).
-    for flag in [false, true] {
-        assert!(
-            !is_consistent("a-derived-inverse-functional.ofn", flag),
-            "the inverse-pair functional clash must be found regardless of the flag"
-        );
-    }
-}
-
-#[test]
-fn derived_functional_needs_the_flag() {
-    // The reverse: InverseObjectProperties + InverseFunctional(R) => Functional(S).
-    // STILL missed flag-OFF after #177 (measured) — the ≤1 here sits on R⁻'s side and
-    // the engine does not merge predecessors, so signed edge-matching alone cannot
-    // reach it. This test is now the flag's ONLY non-vacuous route: if it starts
-    // failing on its first assertion, the flag has gone redundant — retire it rather
-    // than flipping this test.
-    assert!(is_consistent("f-derived-functional.ofn", false));
     assert!(
-        !is_consistent("f-derived-functional.ofn", true),
-        "the derivation must run in BOTH directions, not just Functional -> InverseFunctional"
+        !is_consistent("a-derived-inverse-functional.ofn"),
+        "the inverse-pair functional clash must be found"
     );
 }
 
 #[test]
-fn control_direct_role_is_decided_without_the_flag() {
-    // No inverse involved — isolates the gap to the derivation.
-    for flag in [false, true] {
-        assert!(
-            !is_consistent("d-direct-functional-CONTROL.ofn", flag),
-            "a directly asserted functional role must clash regardless of the flag"
-        );
-    }
+fn derived_functional_is_decided_natively_since_290() {
+    // The reverse: InverseObjectProperties(R, S) + InverseFunctional(R), assertions on S.
+    // Missed at the default until #290: the `≤1 R⁻` bound was emitted only for
+    // assertions on R itself, and `S ≡ R⁻` is a different role id. The gate now admits
+    // any role in R's signed sub-role closure. This was the flag's last route, so the
+    // flag was retired (as this test instructed) rather than the test flipped.
+    assert!(!is_consistent("f-derived-functional.ofn"));
 }
 
 #[test]
-fn control_declared_characteristic_is_decided_without_the_flag() {
+fn control_direct_role_is_decided() {
+    // No inverse involved — isolates the gap to the derivation.
+    assert!(
+        !is_consistent("d-direct-functional-CONTROL.ofn"),
+        "a directly asserted functional role must clash"
+    );
+}
+
+#[test]
+fn control_declared_characteristic_is_decided() {
     // Semantically equivalent to fixture `a`, but declared rather than derived.
     // This pair (declared decided / derived missed) is the sharpest statement of the bug.
-    for flag in [false, true] {
-        assert!(
-            !is_consistent("e-declared-inverse-functional-CONTROL.ofn", flag),
-            "a DECLARED InverseFunctionalObjectProperty must clash regardless of the flag"
-        );
-    }
+    assert!(
+        !is_consistent("e-declared-inverse-functional-CONTROL.ofn"),
+        "a DECLARED InverseFunctionalObjectProperty must clash"
+    );
 }
 
 /// A two-link chain: `r ≡ q⁻ ≡ (p⁻)⁻ ≡ p`, so `Functional(p)` should reach
@@ -170,12 +130,10 @@ fn chained_derivation_across_two_inverse_pairs() {
     // FLIPPED by #177: the signed closure composes across BOTH inverse links
     // (r ⊑ q⁻ ⊑ p transitively in the signed graph), so the clash is reached at the
     // default too — the signed transitive closure IS the fixpoint this fixture wanted.
-    for flag in [false, true] {
-        assert!(
-            !is_consistent("g-chained-needs-fixpoint.ofn", flag),
-            "a two-link inverse chain must reach the functional clash regardless of the flag"
-        );
-    }
+    assert!(
+        !is_consistent("g-chained-needs-fixpoint.ofn"),
+        "a two-link inverse chain must reach the functional clash"
+    );
 }
 
 /// The motivating ontology's actual shape, reduced from `ore_ont_4141`'s 67,143 axioms
@@ -192,10 +150,8 @@ fn functional_data_property_route_is_decided_natively_since_177() {
     // FLIPPED by #177: the signed hierarchy makes the forward ≤1 path applicable to the
     // inverse-asserted edge directly, which is exactly what Part 2's edge
     // materialisation existed to arrange — so the core is decided at the default too.
-    for flag in [false, true] {
-        assert!(
-            !is_consistent("ore_ont_4141-7axiom-core.ofn", flag),
-            "the 7-axiom core must be decided regardless of the flag"
-        );
-    }
+    assert!(
+        !is_consistent("ore_ont_4141-7axiom-core.ofn"),
+        "the 7-axiom core must be decided"
+    );
 }

@@ -1,6 +1,6 @@
 # Functionality is not propagated across a declared `InverseObjectProperties` pair
 
-**Found:** 2026-08-05 · **Status:** **MOSTLY CLOSED AT THE DEFAULT by #177 (signed role
+**Found:** 2026-08-05 · **Status:** **CLOSED (2026-10-19, #290), and `RUSTDL_INVERSE_PAIR_FUNC` is retired.** The reverse direction below, `InverseFunctional(R)` with the assertions on its inverse partner `S`, is now decided at the default: `inv_func_merge_consumable` admits the `≤1 R⁻` bound when an assertion is on any role in `R`'s signed sub-role closure, and `S ≡ R⁻` is in it. Every fixture in `inverse_pair_functionality.rs` is decided with no flag. The history below is kept for the record. Earlier status: **MOSTLY CLOSED AT THE DEFAULT by #177 (signed role
 hierarchy, 2026-09-28)** — the `Functional(R)` ⟹ `InverseFunctional(S)` direction, the
 two-link chain, and the `ore_ont_4141` 7-axiom core are all decided **flag OFF** now: the
 signed hierarchy lets `Functional(R)`'s forward `≤1` accept an S-asserted edge as an

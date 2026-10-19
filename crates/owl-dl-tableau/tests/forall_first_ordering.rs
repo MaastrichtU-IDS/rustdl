@@ -88,13 +88,18 @@ fn forall_disjuncts_are_tried_first() {
     // nodes, ~35 s in a debug build). The cap is cached per process, so it is
     // set before either probe; the forall-first arm never comes near it.
     let _cap = EnvGuard::set("RUSTDL_MAX_NODES", "100");
+    assert_eq!(
+        owl_dl_tableau::max_nodes(),
+        Some(100),
+        "the node cap was read before this test set it; the control arm would be uncapped"
+    );
 
     let (verdict, nodes) = {
         let _on = EnvGuard::set("RUSTDL_FORALL_FIRST", "1");
         probe()
     };
     assert!(matches!(verdict, SearchVerdict::Sat), "got {verdict:?}");
-    assert!(nodes <= 2, "expected the root alone, got {nodes} nodes");
+    assert_eq!(nodes, 1, "expected the root alone");
 
     // Control: with the old order the same search generates past the cap, so
     // the assertion above depends on the ordering and not on the fixture alone.

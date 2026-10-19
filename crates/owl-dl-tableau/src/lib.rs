@@ -2427,15 +2427,23 @@ pub fn chain_middle_enabled() -> bool {
     std::env::var_os("RUSTDL_TABLEAU_CHAIN_MIDDLE").is_none_or(|v| v != "0")
 }
 
-/// Whether the search tries a `∀` disjunct before an atomic or generating one
-/// (#288, `RUSTDL_FORALL_FIRST`, **default ON**, `=0` reverts).
+/// Whether the search tries a `∀R` disjunct first at a node with few
+/// `R`-successors (#288, `RUSTDL_FORALL_FIRST`, **default ON**, `=0` reverts).
 ///
 /// A definition `D ≡ ∃R.C` leaves the disjunction `∀R.¬C ⊔ D` on every node.
 /// Trying `D` first fires `D ⊑ ∃R.C`, whose fresh successor carries the same
 /// disjunctions, so the model grows until blocking stops it. The `∀` disjunct
-/// generates nothing and holds outright at a node with no `R`-successor. On a
-/// 6-axiom core of PMD core this took `sat` from 3.9 CPU-s and 361 nodes to
-/// 0.02 CPU-s. It only reorders the branches tried, so verdicts cannot change.
+/// generates nothing. On a 6-axiom core of PMD core this took `sat` from
+/// 3.9 CPU-s and 361 nodes to 0.01 CPU-s. It does push its filler into every
+/// `R`-successor, so a node with more than three keeps the old order: without
+/// that bound, hundreds of role assertions on one individual turned a 1.6 s
+/// `consistent` into a budget `unknown`.
+///
+/// This changes only the order branches are tried in. That is sound, and on a
+/// complete search the verdict is the same either way. It is not order-proof in
+/// practice: budgets cut searches differently, and the `≤n` trial merge (#76)
+/// commits to the first pair that does not clash at once, so a different order
+/// can reach a different committed pair.
 #[must_use]
 pub fn forall_first_enabled() -> bool {
     std::env::var_os("RUSTDL_FORALL_FIRST").is_none_or(|v| v != "0")

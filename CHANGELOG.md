@@ -7,6 +7,17 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **`classify` follows an inverse existential `∃S⁻.E` through property assertions of
+  individuals used as nominals (#296), `RUSTDL_SAT_NOMINAL_INVERSE_EXISTS`, default ON (`=0`
+  reverts).** `X ⊑ ∃R.{a}`, `c S a`, `c : E`, `W ≡ ∃R.∃S⁻.E` entails `X ⊑ W`, and `classify`
+  missed it with `incomplete: false`. The same KB with a named inverse of `S` was derived (#289).
+  The EL saturator did not lower an `ObjectInverseOf` filler, and the wedge does not see these
+  assertions (`RUSTDL_CLASSIFY_NOMINAL_OPA` is off on cost). `∃S⁻.E` inside a filler now gets a
+  stand-in class, derived for `a` from an edge `c S a` (or on a sub-role of `S`) between
+  individuals with `c` in `E`. Only individuals count, on both ends: a class with an `S`-edge to
+  `{a}` may be empty, and a class target has many instances. HermiT agrees on 11 probes: 5
+  positives (sub-role, a derived type, an assertion written through the inverse, two inverse
+  steps) and 6 controls.
 - **The EL saturator derives `≥n R.B` from `n` existentials with provably distinct fillers
   (#297), `RUSTDL_SAT_DISTINCT_MIN`, default ON (`=0` reverts).** `X ⊑ ∃R.{a}`, `a S b`,
   `a S c`, `DifferentIndividuals(b, c)`, `W ≡ ∃R.(≥2 S)` entails `X ⊑ W`, and `classify` missed

@@ -157,6 +157,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_saturation::sat_nominal_edges_enabled,
             true,
         ),
+        (
+            "RUSTDL_SAT_NOMINAL_INVERSE_EXISTS",
+            owl_dl_saturation::sat_nominal_inverse_exists_enabled,
+            true,
+        ),
         // ── owl-dl-tableau ───────────────────────────────────────────────
         (
             "RUSTDL_FIXPOINT_DEADLINE",

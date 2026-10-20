@@ -243,3 +243,29 @@ fn a_told_smaller_min_does_not_give_a_larger_one() {
     EquivalentClasses(:W ObjectMinCardinality(3 :S))";
     assert!(!saturation_sub_is_w(body, "X", "1"));
 }
+
+/// `A ⊑ ¬B` is rewritten to `A ⊓ B ⊑ ⊥` (`RUSTDL_NEG_TO_BOT_GCI`); that counts as
+/// disjointness too.
+#[test]
+fn disjointness_written_as_a_complement_counts() {
+    let body =
+        "    SubClassOf(:X ObjectSomeValuesFrom(:S :A)) SubClassOf(:X ObjectSomeValuesFrom(:S :B))
+    SubClassOf(:A ObjectComplementOf(:B)) EquivalentClasses(:W ObjectMinCardinality(2 :S))";
+    derived_only_by_the_rule(|f| saturation_sub_is_w(body, "X", f));
+}
+
+/// A told qualified `≥3 S.A` is an unqualified `≥2 S`.
+#[test]
+fn a_qualified_min_gives_the_unqualified_one() {
+    let body = "    SubClassOf(:X ObjectMinCardinality(3 :S :A))
+    EquivalentClasses(:W ObjectMinCardinality(2 :S))";
+    derived_only_by_the_rule(|f| saturation_sub_is_w(body, "X", f));
+}
+
+/// FP guard: an unqualified `≥2 S` is not a qualified `≥2 S.A`.
+#[test]
+fn an_unqualified_min_does_not_give_a_qualified_one() {
+    let body = "    SubClassOf(:X ObjectMinCardinality(2 :S))
+    EquivalentClasses(:W ObjectMinCardinality(2 :S :A))";
+    assert!(!saturation_sub_is_w(body, "X", "1"));
+}

@@ -719,11 +719,23 @@ impl WorklistEngine {
         }
         let mut distinct_of: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
         if !rules.min_keys_by_role.is_empty() {
-            for &(a, b) in rules
+            // `A ⊓ B ⊑ ⊥` is disjointness too; `RUSTDL_NEG_TO_BOT_GCI` writes `A ⊑ ¬B` that way.
+            let two_body_unsat =
+                rules
+                    .conjunctive_unsat
+                    .iter()
+                    .filter_map(|u| match u.bodies[..] {
+                        [a, b] if a != b => Some((a, b)),
+                        _ => None,
+                    });
+            let pairs: Vec<(ClassId, ClassId)> = rules
                 .disjoint_pairs
                 .iter()
                 .chain(&rules.distinct_nominal_pairs)
-            {
+                .copied()
+                .chain(two_body_unsat)
+                .collect();
+            for (a, b) in pairs {
                 distinct_of.entry(a).or_default().push(b);
                 distinct_of.entry(b).or_default().push(a);
             }
@@ -4127,6 +4139,30 @@ fn collect_el_rules(
                 .push((*n, *key));
         }
         if sat_distinct_min_enabled() {
+            // A qualified `≥n R.B` is an unqualified `≥m R` for every `m ≤ n`. The
+            // unqualified key's body is `R`'s ⊤-witness, which no class is ever under, so
+            // the body monotonicity below cannot give this edge.
+            for ((n, r, b), key) in &keys {
+                let Some(tw) = tseitin.top_witness_by_role.get(r) else {
+                    continue;
+                };
+                if b == tw {
+                    continue;
+                }
+                for &(m, other) in rules
+                    .min_keys_by_role_body
+                    .get(&(*r, *tw))
+                    .into_iter()
+                    .flatten()
+                {
+                    if *n >= m {
+                        rules.atomic_subsumptions.push(AtomicSubsumption {
+                            sub: *key,
+                            sup: other,
+                        });
+                    }
+                }
+            }
             for ((n, r, b), key) in &keys {
                 let body = (tseitin.top_witness_by_role.get(r) != Some(b)).then_some(*b);
                 rules

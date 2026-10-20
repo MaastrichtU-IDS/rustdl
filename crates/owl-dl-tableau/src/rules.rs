@@ -834,6 +834,7 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         return RuleOutcome::NoChange;
     }
     let mut applied = false;
+    let fresh_only = crate::min_fresh_witnesses_enabled();
     for (n, role, body, min_deps) in mins {
         if n == 0 {
             continue;
@@ -854,6 +855,35 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
             {
                 existing.push(neighbour);
             }
+        }
+        // #304: an existing witness counts only together with `n - 1` others
+        // it is already distinct from. Marking existing witnesses distinct to
+        // meet `≥n` asserts what is not entailed, and a later `≤m` that needed
+        // to merge them read a satisfiable class as unsat. So either `n`
+        // pairwise-distinct witnesses exist, or `n` fresh ones are made, as in
+        // the standard `≥`-rule. Counting witnesses not known distinct would
+        // also answer correctly (a later merge re-fires this rule), but lets
+        // `≥n` and `≤m` trade the same witnesses back and forth.
+        if fresh_only {
+            if has_distinct_witnesses(ctx, &existing, n as usize) {
+                continue;
+            }
+            let mut fresh_witnesses = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                let fresh = match role {
+                    Role::Named(r) => ctx.new_successor_with_deps(node, r, &min_deps),
+                    Role::Inverse(r) => ctx.new_predecessor_with_deps(node, r, &min_deps),
+                };
+                ctx.add_label_with_deps(fresh, body, &min_deps);
+                fresh_witnesses.push(fresh);
+            }
+            for i in 0..fresh_witnesses.len() {
+                for j in (i + 1)..fresh_witnesses.len() {
+                    ctx.mark_distinct(fresh_witnesses[i], fresh_witnesses[j]);
+                }
+            }
+            applied = true;
+            continue;
         }
         let need = (n as usize).saturating_sub(existing.len());
         let mut all_witnesses = existing;
@@ -895,6 +925,49 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     } else {
         RuleOutcome::NoChange
     }
+}
+
+/// Whether `n` of `witnesses` are pairwise distinct (#304). An exact search;
+/// past `MAX_CLIQUE_SEARCH` candidates it answers `false`, which only costs
+/// `n` redundant fresh witnesses.
+fn has_distinct_witnesses(
+    ctx: &TableauContext<'_, '_, '_>,
+    witnesses: &[NodeId],
+    n: usize,
+) -> bool {
+    const MAX_CLIQUE_SEARCH: usize = 32;
+    fn extend(
+        ctx: &TableauContext<'_, '_, '_>,
+        witnesses: &[NodeId],
+        chosen: &mut Vec<NodeId>,
+        from: usize,
+        n: usize,
+    ) -> bool {
+        if chosen.len() == n {
+            return true;
+        }
+        for i in from..witnesses.len() {
+            if witnesses.len() - i < n - chosen.len() {
+                return false;
+            }
+            let w = witnesses[i];
+            if chosen.iter().all(|&c| ctx.are_distinct(c, w)) {
+                chosen.push(w);
+                if extend(ctx, witnesses, chosen, i + 1, n) {
+                    return true;
+                }
+                chosen.pop();
+            }
+        }
+        false
+    }
+    if n <= 1 {
+        return witnesses.len() >= n;
+    }
+    if witnesses.len() < n || witnesses.len() > MAX_CLIQUE_SEARCH {
+        return false;
+    }
+    extend(ctx, witnesses, &mut Vec::with_capacity(n), 0, n)
 }
 
 /// `≤n R.C` rule: for every `Max(n, R, C)` in `L(node)`, ensure at

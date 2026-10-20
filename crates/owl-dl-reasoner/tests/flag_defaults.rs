@@ -229,6 +229,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_MIN_FRESH_WITNESSES",
+            owl_dl_tableau::min_fresh_witnesses_enabled,
+            true,
+        ),
+        (
             "RUSTDL_RESEED_VERIFY",
             owl_dl_tableau::reseed_verify_enabled,
             true,

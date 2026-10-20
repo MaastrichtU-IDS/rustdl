@@ -2464,6 +2464,21 @@ pub fn max_choice_point_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_CHOICE_POINT").is_none_or(|v| v != "0")
 }
 
+/// Whether the `≥n R.C` rule counts existing witnesses only when `n` of them
+/// are already pairwise distinct, and otherwise makes `n` fresh ones (#304,
+/// `RUSTDL_MIN_FRESH_WITNESSES`, **default ON**, `=0` reverts).
+///
+/// `apply_min` used to count every existing `R`-neighbour carrying `C` and mark
+/// up to `n` of them distinct, generating only the shortfall. Distinctness of
+/// two existing witnesses is not entailed by `≥n R.C`, and a later `≤m R.D`
+/// that had to merge them answered unsat for a class `HermiT` calls
+/// satisfiable: `≥2 r.D1` marked two `D1`-carrying witnesses distinct, and the
+/// only model merges them.
+#[must_use]
+pub fn min_fresh_witnesses_enabled() -> bool {
+    std::env::var_os("RUSTDL_MIN_FRESH_WITNESSES").is_none_or(|v| v != "0")
+}
+
 /// Whether `search` re-runs `saturate` once more before answering `Sat`
 /// (#294, `RUSTDL_SAT_LEAF_RESATURATE`, **default ON**, `=0` reverts).
 ///

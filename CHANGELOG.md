@@ -6,6 +6,20 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **The EL saturator derives `≥n R.B` from `n` existentials with provably distinct fillers
+  (#297), `RUSTDL_SAT_DISTINCT_MIN`, default ON (`=0` reverts).** `X ⊑ ∃R.{a}`, `a S b`,
+  `a S c`, `DifferentIndividuals(b, c)`, `W ≡ ∃R.(≥2 S)` entails `X ⊑ W`, and `classify` missed
+  it with `incomplete: false`. Two gaps: an unqualified `≥n R` (n ≥ 2) did not lower at all, so
+  its axiom was dropped; and nothing derived a `≥n` key from successors. Now:
+  - an unqualified `≥n R` gets a `MinKey` like the qualified one (#270);
+  - a left-hand `≥n R.B ⊑ C` (the `⊒` half of `W ≡ ≥2 R`) is lowered;
+  - `x ⊑ ∃r₁.T₁ ⊓ … ⊓ ∃rₙ.Tₙ` with every `rᵢ ⊑ R`, every `Tᵢ ⊑ B` and the `Tᵢ` pairwise
+    distinct gives `x ⊑ ≥n R.B`. Fillers are distinct when some class of one is disjoint from some
+    class of the other, or when they are nominals of `DifferentIndividuals`.
+  HermiT agrees on 17 probes: 9 positives, including qualified, sub-role and `n = 3` cases, and
+  8 controls.
+
 ## [0.4.41] — 2026-10-20
 
 ### Added

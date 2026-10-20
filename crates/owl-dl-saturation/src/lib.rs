@@ -209,6 +209,16 @@ pub fn sat_nominal_edges_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_NOMINAL_EDGES").is_none_or(|v| v != "0")
 }
 
+/// #297: two `R`-facts of a class whose fillers are provably distinct (disjoint
+/// classes, or nominals of `DifferentIndividuals`) give its `≥2 R'.B` key, for a
+/// super-role `R'` and a common filler subsumer `B`; `n` pairwise-distinct fillers give
+/// `≥n`. See [`WorklistEngine::fire_distinct_min`]. Default **ON**;
+/// `RUSTDL_SAT_DISTINCT_MIN=0` reverts.
+#[must_use]
+pub fn sat_distinct_min_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_DISTINCT_MIN").is_none_or(|v| v != "0")
+}
+
 /// At most this many individuals are reached from the `TBox` nominals by
 /// [`seed_nominal_abox_edges`]; the closure stops growing past it (fewer facts, so
 /// still sound). Each reached individual costs one class in the subsumer matrix.
@@ -599,6 +609,9 @@ struct WorklistEngine {
     existential_triggers_by_body: Vec<Vec<usize>>,
     /// Dense per-class list of classes disjoint from each class.
     disjoints_by_class: Vec<Vec<ClassId>>,
+    /// #297: class ↦ classes known distinct from it (disjoint classes and
+    /// `DifferentIndividuals` nominals). Built only when some `MinKey` exists.
+    distinct_of: HashMap<ClassId, Vec<ClassId>>,
 
     /// Number of *user-declared* classes (excluding Tseitin
     /// synthetics). The seeder iterates only this range for
@@ -704,6 +717,29 @@ impl WorklistEngine {
             disjoints_by_class[a.index() as usize].push(b);
             disjoints_by_class[b.index() as usize].push(a);
         }
+        let mut distinct_of: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+        if !rules.min_keys_by_role.is_empty() {
+            // `A ⊓ B ⊑ ⊥` is disjointness too; `RUSTDL_NEG_TO_BOT_GCI` writes `A ⊑ ¬B` that way.
+            let two_body_unsat =
+                rules
+                    .conjunctive_unsat
+                    .iter()
+                    .filter_map(|u| match u.bodies[..] {
+                        [a, b] if a != b => Some((a, b)),
+                        _ => None,
+                    });
+            let pairs: Vec<(ClassId, ClassId)> = rules
+                .disjoint_pairs
+                .iter()
+                .chain(&rules.distinct_nominal_pairs)
+                .copied()
+                .chain(two_body_unsat)
+                .collect();
+            for (a, b) in pairs {
+                distinct_of.entry(a).or_default().push(b);
+                distinct_of.entry(b).or_default().push(a);
+            }
+        }
         let subsumed_by = IdMatrix::with_capacity(num_total_classes);
         // Populate atomic_content_of for all static Tseitin synthetics.
         // The bodies in tseitin.by_body are sorted Vec<ClassId>; we treat
@@ -752,6 +788,7 @@ impl WorklistEngine {
             conjunctive_unsat_by_body,
             existential_triggers_by_body,
             disjoints_by_class,
+            distinct_of,
             num_user_classes,
             num_total_classes,
             tseitin_runtime: tseitin,
@@ -1447,6 +1484,17 @@ impl WorklistEngine {
                 self.enqueue_subsumer(kc, kd);
             }
         }
+        // #297: a filler `c` newly under a `MinKey` body or a class with known-distinct
+        // partners can complete a `≥n` count for the subjects of its facts.
+        if !self.rules.min_keys_by_role.is_empty()
+            && (self.rules.min_keys_by_body.contains_key(&d) || self.distinct_of.contains_key(&d))
+        {
+            let fact_idxs = self.facts_by_target[c.index() as usize].clone();
+            for fi in fact_idxs {
+                let f = self.facts[fi];
+                self.fire_distinct_min(f.sub, f.role);
+            }
+        }
         // `MinKey` monotonicity: `C ⊑ D` and `n ≥ m` give `≥n R.C ⊑ ≥m R.D`. Skipped while
         // recording proofs (no inference is recorded for it).
         if !self.record_proofs
@@ -1954,8 +2002,67 @@ impl WorklistEngine {
         }
     }
 
+    /// #297 ([`sat_distinct_min_enabled`]): `x ⊑ ∃r₁.T₁ ⊓ … ⊓ ∃rₙ.Tₙ` with every `rᵢ ⊑ R`,
+    /// every `Tᵢ ⊑ B` and the `Tᵢ` pairwise provably distinct gives `x ⊑ ≥n R.B`, i.e.
+    /// `x ⊑ MinKey(n, R, B)`. Each `x`-instance has those `n` successors, and distinct
+    /// fillers cannot share one. The `Tᵢ` are picked greedily, which can miss a count
+    /// (never invent one). Skipped while recording proofs (no inference is recorded).
+    fn fire_distinct_min(&mut self, x: ClassId, role: RoleId) {
+        if self.record_proofs {
+            return;
+        }
+        let mut found: Vec<ClassId> = Vec::new();
+        for &s in supers_of(&self.role_super, role) {
+            let Some(keys) = self.rules.min_keys_by_role.get(&s) else {
+                continue;
+            };
+            for &(n, body, key) in keys {
+                if self.subsumers.contains(x, key) {
+                    continue;
+                }
+                let mut picked: Vec<ClassId> = Vec::new();
+                for &fi in &self.facts_by_sub[x.index() as usize] {
+                    let f = self.facts[fi];
+                    let t = f.target;
+                    if !self.role_super_bitset[f.role.index() as usize].contains(s.index() as usize)
+                        || body.is_some_and(|b| t != b && !self.subsumers.contains(t, b))
+                        || picked.contains(&t)
+                    {
+                        continue;
+                    }
+                    if picked.iter().all(|&p| self.provably_distinct(t, p)) {
+                        picked.push(t);
+                        if picked.len() >= n as usize {
+                            break;
+                        }
+                    }
+                }
+                if picked.len() >= n as usize {
+                    found.push(key);
+                }
+            }
+        }
+        for key in found {
+            self.enqueue_subsumer(x, key);
+        }
+    }
+
+    /// `a` and `b` cannot share an instance: some class of `a` is disjoint from (or a
+    /// `DifferentIndividuals` partner of) some class of `b`.
+    fn provably_distinct(&self, a: ClassId, b: ClassId) -> bool {
+        let under_b = |d: ClassId| d == b || self.subsumers.contains(b, d);
+        std::iter::once(a)
+            .chain(self.subsumers.subsumers_of(a))
+            .filter_map(|d1| self.distinct_of.get(&d1))
+            .flatten()
+            .any(|&d2| under_b(d2))
+    }
+
     fn process_fact(&mut self, idx: usize) {
         let fact = self.facts[idx];
+        if !self.rules.min_keys_by_role.is_empty() {
+            self.fire_distinct_min(fact.sub, fact.role);
+        }
         if !self.rules.inverse_func_partners.is_empty() {
             self.fire_inverse_func_merge(fact);
         }
@@ -2872,6 +2979,12 @@ struct ElRules {
     /// `MinKey(n,R,C) ⊑ MinKey(m,R,D)`.
     min_keys_by_body: std::collections::HashMap<ClassId, Vec<(u32, RoleId, ClassId)>>,
     min_keys_by_role_body: std::collections::HashMap<(RoleId, ClassId), Vec<(u32, ClassId)>>,
+    /// #297 ([`sat_distinct_min_enabled`]): role `R` ↦ `[(n, B, MinKey(n,R,B))]`. Empty
+    /// unless the flag is on.
+    /// A `None` body is an unqualified `≥n R` (any filler counts).
+    min_keys_by_role: std::collections::HashMap<RoleId, Vec<(u32, Option<ClassId>, ClassId)>>,
+    /// #297: pairs of `NomKey`s whose individuals are asserted `DifferentIndividuals`.
+    distinct_nominal_pairs: Vec<(ClassId, ClassId)>,
     /// Atomic classes told directly to be unsatisfiable via
     /// `SubClassOf(Atomic(C), Bot)`. Seeded into the unsat worklist
     /// at `seed` time so the standard `process_unsat` propagation
@@ -3936,6 +4049,24 @@ fn collect_el_rules(
     for (&ind, &nomkey) in &tseitin.nominal_by_ind {
         rules.nominal_to_ind.insert(nomkey, ind);
     }
+    // #297: `DifferentIndividuals` makes two nominals' stand-ins distinct.
+    if sat_distinct_min_enabled() && !tseitin.nominal_by_ind.is_empty() {
+        for ax in &internal.axioms {
+            if let Axiom::DifferentIndividuals(inds) = ax {
+                let keys: Vec<ClassId> = inds
+                    .iter()
+                    .filter_map(|i| tseitin.nominal_by_ind.get(i).copied())
+                    .collect();
+                for (i, &a) in keys.iter().enumerate() {
+                    for &b in &keys[i + 1..] {
+                        if a != b {
+                            rules.distinct_nominal_pairs.push((a, b));
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Path (b) ≤1-driven variant: index the `MaxKey(1, R)` markers by role.
     for (&(n, role), &key) in &tseitin.max_key_by_role {
         if n == 1 {
@@ -4006,6 +4137,40 @@ fn collect_el_rules(
                 .entry((*r, *b))
                 .or_default()
                 .push((*n, *key));
+        }
+        if sat_distinct_min_enabled() {
+            // A qualified `≥n R.B` is an unqualified `≥m R` for every `m ≤ n`. The
+            // unqualified key's body is `R`'s ⊤-witness, which no class is ever under, so
+            // the body monotonicity below cannot give this edge.
+            for ((n, r, b), key) in &keys {
+                let Some(tw) = tseitin.top_witness_by_role.get(r) else {
+                    continue;
+                };
+                if b == tw {
+                    continue;
+                }
+                for &(m, other) in rules
+                    .min_keys_by_role_body
+                    .get(&(*r, *tw))
+                    .into_iter()
+                    .flatten()
+                {
+                    if *n >= m {
+                        rules.atomic_subsumptions.push(AtomicSubsumption {
+                            sub: *key,
+                            sup: other,
+                        });
+                    }
+                }
+            }
+            for ((n, r, b), key) in &keys {
+                let body = (tseitin.top_witness_by_role.get(r) != Some(b)).then_some(*b);
+                rules
+                    .min_keys_by_role
+                    .entry(*r)
+                    .or_default()
+                    .push((*n, body, *key));
+            }
         }
         // Same body, larger count: `≥n R.B ⊑ ≥m R.B` for `n > m`.
         for ((n, r, b), key) in &keys {
@@ -4796,6 +4961,20 @@ fn lower_sub_class_of(
                 rules.top_subsumers.push(c);
             }
         }
+        // #297: `≥n R.B ⊑ C` (`n ≥ 2`, e.g. the `⊒` half of `W ≡ ≥2 R`) as `MinKey ⊑ C`.
+        // The key holds only where `≥n R.B` itself is derived, so this is the axiom read
+        // literally.
+        ConceptExpr::Min(n, _, _) if *n >= 2 && sat_distinct_min_enabled() => {
+            if let Some(key) =
+                top_level_min_key(sub, pool, rules, tseitin, effective_ranges, chain_ranges)
+            {
+                for c in atomic_operands_on_right(sup, pool) {
+                    rules
+                        .atomic_subsumptions
+                        .push(AtomicSubsumption { sub: key, sup: c });
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -4961,6 +5140,10 @@ fn top_level_min_key(
         return None;
     }
     let r = role.role_id();
+    if min_top_key_applies(*n, *role, *inner, pool) {
+        let witness = tseitin.introduce_top_witness(r);
+        return Some(tseitin.introduce_min_key(*n, r, witness, rules));
+    }
     let body = atomic_or_tseitin_body_with_extras(
         *inner,
         &nested_extras(effective_ranges, chain_ranges, None, r),
@@ -4972,6 +5155,16 @@ fn top_level_min_key(
         Some(r),
     )?;
     Some(tseitin.introduce_min_key(*n, r, body, rules))
+}
+
+/// #297: an unqualified `≥n R` (`n ≥ 2`) gets a `MinKey` whose body is `R`'s ⊤-witness,
+/// which [`WorklistEngine::fire_distinct_min`] reads as "any filler". Without the flag
+/// the `⊤` filler does not lower and the axiom is dropped, as before.
+fn min_top_key_applies(n: u32, role: Role, inner: ConceptId, pool: &ConceptPool) -> bool {
+    n >= 2
+        && !role.is_inverse()
+        && sat_distinct_min_enabled()
+        && matches!(pool.get(inner), ConceptExpr::Top)
 }
 
 /// `c` itself or its top-level `And` operands.
@@ -5859,6 +6052,12 @@ fn atomic_or_tseitin_body_with_extras(
                 tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
             vec![marker]
         }
+        ConceptExpr::Min(n, role, inner_body)
+            if min_top_key_applies(*n, *role, *inner_body, pool) =>
+        {
+            let witness = tseitin.introduce_top_witness(role.role_id());
+            vec![tseitin.introduce_min_key(*n, role.role_id(), witness, rules)]
+        }
         ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
             // `≥n R.X` as a nested body — sound underapproximation to ∃R.X (same
             // lowering as `atomic_existential_rhs`).
@@ -5948,6 +6147,12 @@ fn atomic_classes_with_existential_markers(
                     rules,
                 );
                 out.push(marker);
+            }
+            ConceptExpr::Min(n, role, inner_body)
+                if min_top_key_applies(*n, *role, *inner_body, pool) =>
+            {
+                let witness = tseitin.introduce_top_witness(role.role_id());
+                out.push(tseitin.introduce_min_key(*n, role.role_id(), witness, rules));
             }
             ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
                 let inner_id = atomic_or_tseitin_body_with_extras(

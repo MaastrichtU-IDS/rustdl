@@ -454,6 +454,13 @@ fn phase2_gate_off_restores_the_miss() {
         std::env::set_var("RUSTDL_COUNTING_PAIR_VERIFY", "0");
     }
     let _guard = RemoveEnvGuard("RUSTDL_COUNTING_PAIR_VERIFY");
+    // Since #297 the EL saturator derives `≥5 p ⊑ ≥3 p` itself (a left-hand `≥n` is
+    // keyed), so it must be off too for the wedge's trusted `Sat` to be observable.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("RUSTDL_SAT_DISTINCT_MIN", "0");
+    }
+    let _guard2 = RemoveEnvGuard("RUSTDL_SAT_DISTINCT_MIN");
     let src = "Prefix(:=<http://t/>)\n\
 Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
 Ontology(<http://t/x>\n\

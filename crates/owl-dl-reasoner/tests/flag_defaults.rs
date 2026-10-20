@@ -148,6 +148,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_SAT_DISTINCT_MIN",
+            owl_dl_saturation::sat_distinct_min_enabled,
+            true,
+        ),
+        (
             "RUSTDL_SAT_NOMINAL_EDGES",
             owl_dl_saturation::sat_nominal_edges_enabled,
             true,

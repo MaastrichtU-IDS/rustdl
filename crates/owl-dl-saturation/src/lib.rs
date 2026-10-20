@@ -219,6 +219,16 @@ pub fn sat_distinct_min_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_DISTINCT_MIN").is_none_or(|v| v != "0")
 }
 
+/// #296: an inverse existential `∃S⁻.E` inside a filler gets a stand-in class
+/// `InvExKey(S, E) ≡ ∃S⁻.E`, derived for a nominal `a` from a fact `N_c ⊑ ∃S.N_a` of a
+/// nominal `c` with `N_c ⊑ E` (`c` exists, so `a` has the `S⁻`-successor `c` in `E`).
+/// Without it the filler does not lower and the axiom is dropped. Default **ON**;
+/// `RUSTDL_SAT_NOMINAL_INVERSE_EXISTS=0` reverts.
+#[must_use]
+pub fn sat_nominal_inverse_exists_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_NOMINAL_INVERSE_EXISTS").is_none_or(|v| v != "0")
+}
+
 /// At most this many individuals are reached from the `TBox` nominals by
 /// [`seed_nominal_abox_edges`]; the closure stops growing past it (fewer facts, so
 /// still sound). Each reached individual costs one class in the subsumer matrix.
@@ -1495,6 +1505,15 @@ impl WorklistEngine {
                 self.fire_distinct_min(f.sub, f.role);
             }
         }
+        // #296: a nominal `c` newly in `E` sends `∃S⁻.E` along its nominal edges.
+        if self.rules.inv_exists_by_body.contains_key(&d)
+            && self.rules.nominal_to_ind.contains_key(&c)
+        {
+            let fact_idxs = self.facts_by_sub[c.index() as usize].clone();
+            for fi in fact_idxs {
+                self.fire_nominal_inverse_exists(self.facts[fi]);
+            }
+        }
         // `MinKey` monotonicity: `C ⊑ D` and `n ≥ m` give `≥n R.C ⊑ ≥m R.D`. Skipped while
         // recording proofs (no inference is recorded for it).
         if !self.record_proofs
@@ -2058,8 +2077,35 @@ impl WorklistEngine {
             .any(|&d2| under_b(d2))
     }
 
+    /// #296: `N_c ⊑ ∃r.N_a` for nominals `c`, `a`, with `r ⊑ S` and `N_c ⊑ E`, gives
+    /// `N_a ⊑ InvExKey(S, E)`: `c` exists, `c S a`, `c ∈ E`, so `a ∈ ∃S⁻.E`. Only for
+    /// nominals on both ends: a class subject might be empty, and a class target has
+    /// many instances. Skipped while recording proofs (no inference is recorded).
+    fn fire_nominal_inverse_exists(&mut self, fact: ExistentialFact) {
+        if self.record_proofs
+            || !self.rules.nominal_to_ind.contains_key(&fact.sub)
+            || !self.rules.nominal_to_ind.contains_key(&fact.target)
+        {
+            return;
+        }
+        let mut found: Vec<ClassId> = Vec::new();
+        for &s in supers_of(&self.role_super, fact.role) {
+            for &(e, key) in self.rules.inv_exists_by_role.get(&s).into_iter().flatten() {
+                if e == fact.sub || self.subsumers.contains(fact.sub, e) {
+                    found.push(key);
+                }
+            }
+        }
+        for key in found {
+            self.enqueue_subsumer(fact.target, key);
+        }
+    }
+
     fn process_fact(&mut self, idx: usize) {
         let fact = self.facts[idx];
+        if !self.rules.inv_exists_by_role.is_empty() {
+            self.fire_nominal_inverse_exists(fact);
+        }
         if !self.rules.min_keys_by_role.is_empty() {
             self.fire_distinct_min(fact.sub, fact.role);
         }
@@ -2979,6 +3025,10 @@ struct ElRules {
     /// `MinKey(n,R,C) ⊑ MinKey(m,R,D)`.
     min_keys_by_body: std::collections::HashMap<ClassId, Vec<(u32, RoleId, ClassId)>>,
     min_keys_by_role_body: std::collections::HashMap<(RoleId, ClassId), Vec<(u32, ClassId)>>,
+    /// #296 ([`sat_nominal_inverse_exists_enabled`]): role `S` ↦ `[(E, InvExKey(S, E))]`,
+    /// and filler `E` ↦ the same keys. Empty unless some `∃S⁻.E` filler was lowered.
+    inv_exists_by_role: std::collections::HashMap<RoleId, Vec<(ClassId, ClassId)>>,
+    inv_exists_by_body: std::collections::HashMap<ClassId, Vec<ClassId>>,
     /// #297 ([`sat_distinct_min_enabled`]): role `R` ↦ `[(n, B, MinKey(n,R,B))]`. Empty
     /// unless the flag is on.
     /// A `None` body is an unqualified `≥n R` (any filler counts).
@@ -3183,6 +3233,9 @@ struct TseitinAllocator {
     /// `MinKey(n, R, B)` for `≥n R.B` with `n ≥ 2` inside a body. See
     /// [`TseitinAllocator::introduce_min_key`].
     min_key_by: HashMap<(u32, RoleId, ClassId), ClassId>,
+    /// `InvExKey(S, E)` for `∃S⁻.E` inside a filler. See
+    /// [`sat_nominal_inverse_exists_enabled`].
+    inv_exists_key_by: HashMap<(RoleId, ClassId), ClassId>,
     /// Stable synthetic atomic class per `∀R.OneOf(S)` universal-over-nominal-set
     /// restriction (`(R, sorted S)`), used as a structural stand-in (cluster-B
     /// lever, wine residual-9). Same opaque-atom discipline as `max_key_by_role`:
@@ -3224,6 +3277,7 @@ impl TseitinAllocator {
             nominal_by_ind: HashMap::new(),
             max_key_by_role: HashMap::new(),
             min_key_by: HashMap::new(),
+            inv_exists_key_by: HashMap::new(),
             forall_key_by_role: HashMap::new(),
             forall_atomic_key_by_role: HashMap::new(),
             top_witness_by_role: HashMap::new(),
@@ -3436,6 +3490,18 @@ impl TseitinAllocator {
     /// `≥n R.B` itself is asserted (or inherited through subsumption), so a trigger on it fires
     /// only on the same restriction. `Key ⊑ ∃R.B` keeps every consequence the old
     /// under-approximation gave an asserted `≥n`.
+    /// Get-or-allocate `InvExKey(S, E)`, the opaque class standing for `∃S⁻.E`. It is
+    /// derived only where `∃S⁻.E` is asserted or by the nominal rule in `process_fact`.
+    fn introduce_inverse_exists_key(&mut self, role: RoleId, body: ClassId) -> ClassId {
+        if let Some(&existing) = self.inv_exists_key_by.get(&(role, body)) {
+            return existing;
+        }
+        let key = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.inv_exists_key_by.insert((role, body), key);
+        key
+    }
+
     fn introduce_min_key(
         &mut self,
         n: u32,
@@ -4066,6 +4132,21 @@ fn collect_el_rules(
                 }
             }
         }
+    }
+    // #296: index the `∃S⁻.E` stand-ins by role and filler.
+    for (&(role, body), &key) in &tseitin.inv_exists_key_by {
+        rules
+            .inv_exists_by_role
+            .entry(role)
+            .or_default()
+            .push((body, key));
+        rules.inv_exists_by_body.entry(body).or_default().push(key);
+    }
+    for v in rules.inv_exists_by_role.values_mut() {
+        v.sort_unstable_by_key(|&(b, k)| (b.index(), k.index()));
+    }
+    for v in rules.inv_exists_by_body.values_mut() {
+        v.sort_unstable_by_key(|k| k.index());
     }
     // Path (b) ≤1-driven variant: index the `MaxKey(1, R)` markers by role.
     for (&(n, role), &key) in &tseitin.max_key_by_role {
@@ -6086,6 +6167,21 @@ fn atomic_or_tseitin_body_with_extras(
             };
             vec![marker]
         }
+        ConceptExpr::Some(role, inner_body)
+            if role.is_inverse() && sat_nominal_inverse_exists_enabled() =>
+        {
+            let inner_id = atomic_or_tseitin_body_with_extras(
+                *inner_body,
+                &[],
+                pool,
+                rules,
+                tseitin,
+                effective_ranges,
+                chain_ranges,
+                None,
+            )?;
+            vec![tseitin.introduce_inverse_exists_key(role.role_id(), inner_id)]
+        }
         ConceptExpr::All(role, inner) if sat_forall_keys_enabled() && !role.is_inverse() => {
             vec![forall_filler_key(
                 role.role_id(),
@@ -6171,6 +6267,21 @@ fn atomic_classes_with_existential_markers(
                     tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules)
                 };
                 out.push(marker);
+            }
+            ConceptExpr::Some(role, inner_body)
+                if role.is_inverse() && sat_nominal_inverse_exists_enabled() =>
+            {
+                let inner_id = atomic_or_tseitin_body_with_extras(
+                    *inner_body,
+                    &[],
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                    chain_ranges,
+                    None,
+                )?;
+                out.push(tseitin.introduce_inverse_exists_key(role.role_id(), inner_id));
             }
             ConceptExpr::All(role, inner) if sat_forall_keys_enabled() && !role.is_inverse() => {
                 out.push(forall_filler_key(

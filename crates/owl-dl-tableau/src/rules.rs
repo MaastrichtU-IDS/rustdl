@@ -999,8 +999,17 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 let b = c_neighbours[j];
                 if !ctx.are_distinct(a, b) {
                     // Compute precise merge-condition deps for this pair.
-                    let merge_deps: DepSet =
-                        compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps);
+                    // The merge also rests on why the other witnesses exist
+                    // and why they are excluded (`DifferentIndividuals`, an
+                    // earlier `≥n`), none of which the pair's own deps carry.
+                    // Without them a later clash in the merged node back-jumped
+                    // past the decision that created another witness and read a
+                    // satisfiable class as unsat (#299 review). Conservative,
+                    // like the `⊥` arm below: every active decision.
+                    let merge_deps: DepSet = union(
+                        &compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps),
+                        &DepSet::from_slice(ctx.active_branches()),
+                    );
                     let cp = trial.then(|| ctx.checkpoint());
                     if ctx.merge_into_with_deps(b, a, merge_deps.as_slice()) {
                         // `b` merged INTO `a`, so `a` is the survivor. A merge

@@ -181,7 +181,7 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
             if crate::sat_leaf_resaturate_enabled() {
                 let before = ctx.trail().len();
                 match saturate(ctx, SATURATE_ITERS) {
-                    SaturationResult::Stable if ctx.trail().len() == before => {}
+                    SaturationResult::Stable if !ctx.trail().mutated_since(before) => {}
                     SaturationResult::Stable => return search(ctx, max_depth),
                     SaturationResult::Clash(_, deps) => {
                         if trace_enabled() {

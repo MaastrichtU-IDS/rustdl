@@ -132,6 +132,19 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// Keyed on the trail generation, which changes on every graph mutation and
     /// rollback, so a hit is exactly the value a fresh call would return.
     blocked_memo: std::cell::Cell<(NodeId, u64, bool)>,
+    /// Cached [`incremental_saturate_enabled`] (#288).
+    incremental_saturate: bool,
+    /// Nodes a full pass would visit again on the next `saturate` call and an
+    /// incremental one must therefore dirty (#288), deduplicated by
+    /// `deferred_seen`: nodes a rule skipped as blocked, and nodes next to a
+    /// mutation that the current scan had already passed. Each `StableMark`
+    /// stores a copy.
+    deferred: Vec<NodeId>,
+    deferred_seen: Vec<bool>,
+    /// While the first scan of a `saturate` call is at node `.0`, the scan
+    /// ends at `.1` (#288). A full pass still visits every node in between,
+    /// so a mutation next to one of them dirties it at once.
+    scan_window: Option<(usize, usize)>,
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
     /// axiom in the source ontology. Stored symmetrically (both `(r, s)` and
     /// `(s, r)` are pushed) to match `inverse_pairs_set`'s contents. Retained
@@ -345,6 +358,10 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            incremental_saturate: incremental_saturate_enabled(),
+            deferred: Vec::new(),
+            deferred_seen: Vec::new(),
+            scan_window: None,
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -382,6 +399,10 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            incremental_saturate: incremental_saturate_enabled(),
+            deferred: Vec::new(),
+            deferred_seen: Vec::new(),
+            scan_window: None,
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -424,6 +445,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            incremental_saturate: incremental_saturate_enabled(),
+            deferred: Vec::new(),
+            deferred_seen: Vec::new(),
+            scan_window: None,
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -927,6 +952,113 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn chain_middle_enabled(&self) -> bool {
         self.chain_middle
+    }
+
+    /// Whether `saturate` may start from the dirty nodes alone (#288).
+    #[must_use]
+    pub fn incremental_saturate_enabled(&self) -> bool {
+        self.incremental_saturate
+    }
+
+    /// The nodes an incremental `saturate` call must dirty, or `None` when it
+    /// must take the full path (#288): the last `StableMark`'s deferred set,
+    /// plus every node that gained a label since and that node's neighbours.
+    /// Read off the trail, so a rollback restores the matching set.
+    #[must_use]
+    pub fn incremental_start(&self) -> Option<Vec<NodeId>> {
+        let pool = self.pool;
+        // A nominal label is not local: anywhere-blocking stops using a node
+        // as a blocker once it carries one, which can unblock a node anywhere.
+        let (labelled, pending) = self
+            .trail
+            .labels_since_stable(|c| !matches!(pool.get(c), ConceptExpr::Nominal(_)))?;
+        let mut start = pending.to_vec();
+        for node in labelled {
+            start.push(node);
+            start.extend(self.graph.node(node).neighbours().map(|(_, m)| m));
+        }
+        Some(start)
+    }
+
+    /// Start a `saturate` call (#288): forget the deferred set, which the
+    /// caller has already read into the start set or does not need.
+    pub fn begin_saturate(&mut self) {
+        for node in std::mem::take(&mut self.deferred) {
+            if let Some(seen) = self.deferred_seen.get_mut(node.index() as usize) {
+                *seen = false;
+            }
+        }
+        self.scan_window = None;
+    }
+
+    /// Set or clear the first-scan window; see `scan_window` (#288).
+    pub fn set_scan_window(&mut self, window: Option<(usize, usize)>) {
+        self.scan_window = window;
+    }
+
+    /// A rule skipped `node` because it was blocked: a full pass visits it
+    /// again on the next call, so the next incremental call must too (#288).
+    pub fn note_blocked_skip(&mut self, node: NodeId) {
+        if self.incremental_saturate {
+            self.defer(node);
+        }
+    }
+
+    fn defer(&mut self, node: NodeId) {
+        let i = node.index() as usize;
+        if self.deferred_seen.len() <= i {
+            self.deferred_seen.resize(i + 1, false);
+        }
+        if !self.deferred_seen[i] {
+            self.deferred_seen[i] = true;
+            self.deferred.push(node);
+        }
+    }
+
+    /// `nodes` changed: they and their neighbours may now have rule work
+    /// (#288). A node the current first scan has yet to reach is dirtied, as a
+    /// full pass would visit it anyway; any other is deferred to the next call,
+    /// which is when a full pass would next visit it.
+    fn touch(&mut self, nodes: &[NodeId]) {
+        if !self.incremental_saturate {
+            return;
+        }
+        for &node in nodes {
+            let neighbours: Vec<NodeId> =
+                self.graph.node(node).neighbours().map(|(_, m)| m).collect();
+            for m in std::iter::once(node).chain(neighbours) {
+                let i = m.index() as usize;
+                match self.scan_window {
+                    Some((pos, end)) if i > pos && i < end => self.graph.set_dirty(m, true),
+                    _ => self.defer(m),
+                }
+            }
+        }
+    }
+
+    /// The nominal map changed, which a node anywhere may read (#288): dirty
+    /// the rest of the first scan and defer everything else.
+    fn touch_all(&mut self) {
+        if !self.incremental_saturate {
+            return;
+        }
+        for i in 0..self.graph.len() {
+            let m = NodeId::new(u32::try_from(i).expect("node count fits u32"));
+            match self.scan_window {
+                Some((pos, end)) if i > pos && i < end => self.graph.set_dirty(m, true),
+                _ => self.defer(m),
+            }
+        }
+    }
+
+    /// Record that `saturate` reached a fixpoint, with the deferred set
+    /// (#288). A no-op unless incremental saturation is on, so `=0` reverts it.
+    pub fn record_stable_mark(&mut self) {
+        if !self.incremental_saturate {
+            return;
+        }
+        let pending = self.deferred.clone();
+        self.trail.record(TrailEntry::StableMark { pending });
     }
 
     /// Whether the search tries `∀` disjuncts first (#288).
@@ -1445,6 +1577,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 // triggers, existentials, cardinality, …) must
                 // re-fire after a new label appears.
                 self.graph.set_dirty(node, true);
+                self.touch(&[node]);
                 true
             }
         }
@@ -1483,6 +1616,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         target_node.in_edge_deps.push(owned);
         self.trail
             .record(TrailEntry::EdgeAdded { from, role, target });
+        self.touch(&[from, target]);
         // Worklist: rules that read edges on either endpoint must
         // re-fire (apply_forall, apply_role_*, apply_role_chains,
         // apply_exists witness check, apply_min/max cardinality
@@ -1503,6 +1637,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.graph.node_mut(a).inequalities.push(b);
         self.graph.node_mut(b).inequalities.push(a);
         self.trail.record(TrailEntry::DistinctMarked { a, b });
+        self.touch(&[a, b]);
     }
 
     /// True iff `a` and `b` are known distinct via a prior
@@ -1523,6 +1658,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.graph.nominals.insert(individual, node);
         self.trail
             .record(TrailEntry::NominalAssigned { individual, prior });
+        self.touch_all();
     }
 
     /// Follow the merge-redirect chain for `node` until an
@@ -1784,6 +1920,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     prior_parent,
                     prior_parent_role,
                 });
+                self.touch(&[nid]);
             }
         }
 
@@ -1795,6 +1932,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             new_target: target,
             prior_redirect: prior,
         });
+        self.touch(&[source, target]);
 
         true
     }
@@ -1824,6 +1962,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             prior_edge_deps,
             prior_in_edge_deps,
         });
+        self.touch(&[from, target]);
         // Edge removal changes the edge set on both endpoints — rules
         // keyed on edges (apply_forall, apply_role_*, apply_exists
         // witness, cardinality counting) need to re-fire.
@@ -2492,6 +2631,24 @@ pub fn min_fresh_witnesses_enabled() -> bool {
 #[must_use]
 pub fn sat_leaf_resaturate_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_LEAF_RESATURATE").is_none_or(|v| v != "0")
+}
+
+/// Whether `saturate` may skip nodes with no rule work (#288,
+/// `RUSTDL_INCREMENTAL_SATURATE`, **default ON**, `=0` reverts).
+///
+/// A full call marks every node dirty and scans them in order. When the trail
+/// shows a saturation fixpoint followed by label additions alone, a call
+/// instead dirties those nodes, their neighbours and the nodes the last call
+/// deferred, and visits nodes in the same order. Every mutation dirties its
+/// nodes and their neighbours that the first scan has yet to reach, and defers
+/// the rest to the next call, which is when a full pass would next visit them.
+/// A label reaches no rule more than one hop away, so the rules fire in the
+/// same order as on the full path and the search makes the same decisions.
+/// Every branch decision re-ran every rule on every node before this; on PMD
+/// core that was most of the cost.
+#[must_use]
+pub fn incremental_saturate_enabled() -> bool {
+    std::env::var_os("RUSTDL_INCREMENTAL_SATURATE").is_none_or(|v| v != "0")
 }
 
 /// Whether anywhere (pairwise) blocking is enabled for the main tableau.

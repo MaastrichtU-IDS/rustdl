@@ -209,6 +209,16 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_MAX_CHOICE_POINT",
+            owl_dl_tableau::max_choice_point_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_SAT_LEAF_RESATURATE",
+            owl_dl_tableau::sat_leaf_resaturate_enabled,
+            true,
+        ),
+        (
             "RUSTDL_RESEED_VERIFY",
             owl_dl_tableau::reseed_verify_enabled,
             true,

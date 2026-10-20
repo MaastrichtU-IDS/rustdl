@@ -134,6 +134,20 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
         SaturationResult::Stalled => SearchVerdict::DepthLimit,
         SaturationResult::NodeCapped => SearchVerdict::NodeCap,
         SaturationResult::Stable => {
+            // Step 0 (#293): an over-full `≤n` with more than one pair that may
+            // merge. Saturation used to commit to the first pair; which pair
+            // to merge is a real choice, so branch over them here.
+            if let Some(open) = first_open_max(ctx) {
+                if trace_enabled() {
+                    eprintln!(
+                        "# trace search depth={max_depth} max pivot={} options={} graph_nodes={}",
+                        open.pivot.index(),
+                        open.partners.len(),
+                        ctx.graph().len()
+                    );
+                }
+                return branch_merge(ctx, max_depth, &open);
+            }
             // Step 1: ⊔ branching has priority — it's structurally
             // cheaper and keeps the search shape predictable.
             if let Some((node, _or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
@@ -159,6 +173,29 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
                 }
                 return branch(ctx, max_depth, node, &[c, c_neg], &DepSet::new());
             }
+            // #294: `saturate` can stop with work left. A label added to a
+            // node does not dirty its neighbours, so a rule there that reads
+            // it (the `≤n` count at the parent) may not re-run, and only the
+            // next call's mark-all catches it. A `Sat` leaf has no next call,
+            // so run one: if it changes anything, search the new state.
+            if crate::sat_leaf_resaturate_enabled() {
+                let before = ctx.trail().len();
+                match saturate(ctx, SATURATE_ITERS) {
+                    SaturationResult::Stable if ctx.trail().len() == before => {}
+                    SaturationResult::Stable => return search(ctx, max_depth),
+                    SaturationResult::Clash(_, deps) => {
+                        if trace_enabled() {
+                            eprintln!(
+                                "# trace search depth={max_depth} clash=sat_leaf_resaturate deps={}",
+                                deps.len()
+                            );
+                        }
+                        return SearchVerdict::Unsat(deps);
+                    }
+                    SaturationResult::Stalled => return SearchVerdict::DepthLimit,
+                    SaturationResult::NodeCapped => return SearchVerdict::NodeCap,
+                }
+            }
             if trace_enabled() {
                 eprintln!(
                     "# trace search depth={max_depth} sat graph_nodes={}",
@@ -167,6 +204,187 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
             }
             SearchVerdict::Sat
         }
+    }
+}
+
+/// An open `≤n R.C` (#293), ready to branch on.
+struct OpenMax {
+    /// The `≤n` label's deps.
+    max_deps: DepSet,
+    /// `n`.
+    bound: usize,
+    /// The first witness (in node order) that may merge with an earlier one.
+    pivot: NodeId,
+    /// The earlier witnesses `pivot` may merge with, each with its
+    /// merge-condition deps.
+    partners: Vec<(NodeId, DepSet)>,
+    /// How many witnesses precede `pivot`. They are pairwise distinct, because
+    /// `pivot` is the first witness with a mergeable earlier one.
+    earlier: usize,
+}
+
+/// Find an over-full `≤n R.C` with at least two pairs that may merge (#293),
+/// which `apply_max` leaves to the search when
+/// [`crate::max_choice_point_enabled`].
+///
+/// Branching over pairs reaches the same final merge in every order, which is
+/// exponential: `≤1 r.C` over k witnesses explored every merge sequence. So the
+/// witnesses are taken in node order and only the first one with a mergeable
+/// earlier witness is decided: it merges into one of those, or is distinct from
+/// all of them. Each way of partitioning the witnesses is then reached once.
+fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
+    if !crate::max_choice_point_enabled() {
+        return None;
+    }
+    let pool = ctx.pool();
+    let graph = ctx.graph();
+    for idx in 0..graph.len() {
+        let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        let node = graph.node(node_id);
+        if node.is_redirected() {
+            continue;
+        }
+        for (pos, &c) in node.labels().iter().enumerate() {
+            let ConceptExpr::Max(n, role, body) = pool.get(c) else {
+                continue;
+            };
+            if ctx.dkey_range_of(*body).is_some() || ctx.is_blocked(node_id) {
+                continue;
+            }
+            let mut witnesses = crate::rules::max_witnesses(ctx, node_id, *role, *body);
+            if witnesses.len() <= *n as usize
+                || crate::rules::mergeable_pairs(ctx, &witnesses).len() < 2
+            {
+                continue;
+            }
+            witnesses.sort_unstable();
+            let max_deps = node.label_deps[pos].clone();
+            for (j, &pivot) in witnesses.iter().enumerate() {
+                let partners: Vec<(NodeId, DepSet)> = witnesses[..j]
+                    .iter()
+                    .filter(|&&w| !ctx.are_distinct(w, pivot))
+                    .map(|&w| {
+                        let deps = crate::rules::compute_max_merge_deps(
+                            ctx, node_id, *role, *body, w, pivot, &max_deps,
+                        );
+                        (w, deps)
+                    })
+                    .collect();
+                if !partners.is_empty() {
+                    return Some(OpenMax {
+                        max_deps,
+                        bound: *n as usize,
+                        pivot,
+                        partners,
+                        earlier: j,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Branch on an open `≤n` (#293): merge the pivot into each mergeable earlier
+/// witness in turn, then try it distinct from all of them. Mirrors [`branch`]:
+/// a merge carries this branch's id, a clash that does not depend on it
+/// back-jumps, and if every option fails the `≤n` is unsatisfiable under every
+/// active decision (the witnesses and the distinctness that rule out other
+/// merges are not tracked precisely, so this stays conservative, as
+/// `apply_max`'s `⊥` arm does).
+fn branch_merge(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    max_depth: usize,
+    open: &OpenMax,
+) -> SearchVerdict {
+    let mut combined: DepSet =
+        crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()));
+    let my_id = ctx.push_branch();
+    let mut depth_limited = false;
+    let mut early_return: Option<SearchVerdict> = None;
+    // The distinct option leaves `earlier + 1` pairwise-distinct witnesses,
+    // which a bound of `earlier` or less cannot accommodate.
+    let try_distinct = open.earlier < open.bound;
+    let total = open.partners.len() + usize::from(try_distinct);
+    for k in 0..total {
+        if early_return.is_some() {
+            break;
+        }
+        let merge_into = open.partners.get(k);
+        if trace_enabled() {
+            match merge_into {
+                Some((w, _)) => eprintln!(
+                    "# trace branch depth={max_depth} my_id={my_id} merge={}/{total} n{} into n{}",
+                    k + 1,
+                    open.pivot.index(),
+                    w.index()
+                ),
+                None => eprintln!(
+                    "# trace branch depth={max_depth} my_id={my_id} merge={}/{total} n{} distinct",
+                    k + 1,
+                    open.pivot.index()
+                ),
+            }
+        }
+        let cp = ctx.checkpoint();
+        let verdict = if let Some((w, pair_deps)) = merge_into {
+            let mut deps = pair_deps.clone();
+            if let Err(pos) = deps.binary_search(&my_id) {
+                deps.insert(pos, my_id);
+            }
+            if ctx.merge_into_with_deps(open.pivot, *w, deps.as_slice()) {
+                search(ctx, max_depth - 1)
+            } else {
+                // Unreachable: the pair was mergeable when listed and nothing
+                // has run since the last rollback.
+                SearchVerdict::Unsat(DepSet::from_slice(&[my_id]))
+            }
+        } else {
+            for (w, _) in &open.partners {
+                ctx.mark_distinct(open.pivot, *w);
+            }
+            search(ctx, max_depth - 1)
+        };
+        let definite = matches!(
+            verdict,
+            SearchVerdict::Sat | SearchVerdict::Unsat(_) | SearchVerdict::NodeCap
+        );
+        match verdict {
+            SearchVerdict::Sat => early_return = Some(SearchVerdict::Sat),
+            SearchVerdict::Unsat(clash_deps) => {
+                ctx.rollback_to(cp);
+                if clash_deps.binary_search(&my_id).is_err() {
+                    early_return = Some(SearchVerdict::Unsat(clash_deps));
+                } else {
+                    for &x in &clash_deps {
+                        if x != my_id
+                            && let Err(pos) = combined.binary_search(&x)
+                        {
+                            combined.insert(pos, x);
+                        }
+                    }
+                }
+            }
+            SearchVerdict::DepthLimit => {
+                ctx.rollback_to(cp);
+                depth_limited = true;
+            }
+            SearchVerdict::NodeCap => {
+                ctx.rollback_to(cp);
+                early_return = Some(SearchVerdict::NodeCap);
+            }
+        }
+        if ctx.note_branch_trial(definite) && early_return.is_none() {
+            early_return = Some(SearchVerdict::DepthLimit);
+        }
+    }
+    ctx.pop_branch();
+    if let Some(v) = early_return {
+        v
+    } else if depth_limited {
+        SearchVerdict::DepthLimit
+    } else {
+        SearchVerdict::Unsat(combined)
     }
 }
 

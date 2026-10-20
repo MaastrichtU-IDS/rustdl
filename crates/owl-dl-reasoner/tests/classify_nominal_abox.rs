@@ -232,6 +232,8 @@ fn property_assertions_are_not_followed_by_the_wedge_by_default() {
     ));
 }
 
+/// Since #302 the saturator also reads complex class assertions of nominal individuals
+/// (`RUSTDL_SAT_NOMINAL_COMPLEX_TYPES`), so both are pinned off to see the wedge flag alone.
 #[test]
 fn types_flag_off_loses_the_complex_assertion() {
     let body = format!("    ClassAssertion(ObjectSomeValuesFrom(:S :E) :a)\n    {W_SE}");
@@ -239,6 +241,9 @@ fn types_flag_off_loses_the_complex_assertion() {
         &body,
         "X",
         "W",
-        &[("RUSTDL_CLASSIFY_NOMINAL_TYPES", "0")]
+        &[
+            ("RUSTDL_CLASSIFY_NOMINAL_TYPES", "0"),
+            ("RUSTDL_SAT_NOMINAL_COMPLEX_TYPES", "0")
+        ]
     ));
 }

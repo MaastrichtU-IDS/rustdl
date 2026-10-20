@@ -229,6 +229,15 @@ pub fn sat_nominal_inverse_exists_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_NOMINAL_INVERSE_EXISTS").is_none_or(|v| v != "0")
 }
 
+/// #302: a `ClassAssertion(C, a)` of an individual used as a nominal is lowered as the
+/// told `N_a ⊑ C`, the same way as `A ⊑ C` for a named `A`: existentials, `≥n`, `∀`
+/// keys and negated atomics, not only the atomic operands. Default **ON**;
+/// `RUSTDL_SAT_NOMINAL_COMPLEX_TYPES=0` reverts.
+#[must_use]
+pub fn sat_nominal_complex_types_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_NOMINAL_COMPLEX_TYPES").is_none_or(|v| v != "0")
+}
+
 /// At most this many individuals are reached from the `TBox` nominals by
 /// [`seed_nominal_abox_edges`]; the closure stops growing past it (fewer facts, so
 /// still sound). Each reached individual costs one class in the subsumer matrix.
@@ -4099,6 +4108,39 @@ fn collect_el_rules(
     if sat_nominal_edges_enabled() && !tseitin.nominal_by_ind.is_empty() {
         seed_nominal_abox_edges(internal, role_super, &mut tseitin, &mut rules);
     }
+    // #302: a nominal individual's class assertion as the told `N_a ⊑ C`. Here, before the
+    // key indexes and `total_classes`, because lowering `C` can mint synthetic classes.
+    // The atomic-only pass below (`RUSTDL_NOMINAL_TYPING`) skips these assertions.
+    if sat_nominal_complex_types_enabled()
+        && std::env::var_os("RUSTDL_NOMINAL_TYPING").is_none_or(|v| v != "0" && !v.is_empty())
+    {
+        for (i, ax) in internal.axioms.iter().enumerate() {
+            if let Axiom::ClassAssertion { class, individual } = ax
+                && let Some(&nomkey) = tseitin.nominal_by_ind.get(individual)
+                && !is_data_value_assertion(*class, internal)
+            {
+                let (b_sub, b_fact) = (
+                    rules.atomic_subsumptions.len(),
+                    rules.existential_facts.len(),
+                );
+                lower_atomic_sub(
+                    nomkey,
+                    *class,
+                    &internal.concepts,
+                    &mut rules,
+                    &mut tseitin,
+                    &effective_ranges,
+                    chain_ranges,
+                );
+                for j in b_sub..rules.atomic_subsumptions.len() {
+                    rules.late_sub_axiom.push((j, i));
+                }
+                for j in b_fact..rules.existential_facts.len() {
+                    rules.late_fact_axiom.push((j, i));
+                }
+            }
+        }
+    }
 
     // Cluster-B path (b) setup: index ForallKey targets by (role, member) and
     // build the NomKey→individual reverse, so `process_fact` can fire
@@ -4332,6 +4374,11 @@ fn collect_el_rules(
             if let Axiom::ClassAssertion { class, individual } = ax
                 && let Some(&nomkey) = tseitin.nominal_by_ind.get(individual)
             {
+                if sat_nominal_complex_types_enabled() && !is_data_value_assertion(*class, internal)
+                {
+                    // Lowered in full, before the key indexes, by the #302 pass above.
+                    continue;
+                }
                 for sup in atomic_operands_on_right(*class, &internal.concepts) {
                     rules
                         .late_sub_axiom
@@ -4499,6 +4546,159 @@ fn collect_el_rules(
     (rules, tseitin, total_classes)
 }
 
+/// The `Atomic(sub) ⊑ sup` arm of [`lower_sub_class_of`], for a class id. Also used for an
+/// individual's stand-in `N_a` and a `ClassAssertion(sup, a)` (#302).
+fn lower_atomic_sub(
+    sub_id: ClassId,
+    sup: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
+) {
+    // Phase D4 (2026-06-03): `Atomic(C) ⊑ Bot` directly marks
+    // C unsatisfiable. Without this branch the saturator's
+    // `atomic_operands_on_right(Bot, _)` returns empty and the
+    // axiom is silently lost — the data-axiom preprocessing
+    // pass's emitted clash axioms (Functional + ≥n, DataMin >
+    // DataMax) wouldn't be picked up. See
+    // `crates/owl-dl-core/src/data_axioms.rs`.
+    if matches!(pool.get(sup), ConceptExpr::Bot) {
+        rules.directly_unsat.push(sub_id);
+        return;
+    }
+    for atomic_sup in atomic_operands_on_right(sup, pool) {
+        rules.atomic_subsumptions.push(AtomicSubsumption {
+            sub: sub_id,
+            sup: atomic_sup,
+        });
+    }
+    // `X ⊑ ∃R.Self` (ObjectHasSelf): X is both source and target of an
+    // R-edge to itself ⟹ `X ⊑ domain(R) ⊓ range(R)`. Without this the
+    // saturator drops SelfRestriction entirely, missing the whole
+    // self-loop → domain/range chain (olia/OBO: cost 461 MISSED on
+    // ore_ont_4827, e.g. AspectFeature ⊑ ∃hasAspect.Self, domain(hasAspect)
+    // = Verb ⟹ AspectFeature ⊑ Verb). Sound under-approximation. Domain /
+    // range tables are fully populated in Pass 1, before this Pass-2
+    // lowering, so reading them here is complete. Subclasses inherit via
+    // the atomic-subsumption closure (Y ⊑ X ⟹ Y ⊑ domain(R)).
+    for r in self_restriction_roles_on_right(sup, pool) {
+        // The self-loop `(x,x) ∈ R` is also an `S`-edge for every super-role
+        // `R ⊑* S`, so `x` lies in `range(S)` for all such `S` — i.e. the
+        // *effective* (super-role-closed) range, not just `range(R)`. Using
+        // `effective_ranges` here closes the ore_ont_4827 pattern
+        // (`ClusivityFeature ⊑ ∃hasClusivity.Self`, `hasClusivity ⊑ hasFeature`,
+        // `range(hasFeature)=Feature` ⟹ `ClusivityFeature ⊑ Feature`). Sound:
+        // the successor coincides with `x`, so the range obligation lands on
+        // `x` itself (unlike general range propagation, deliberately omitted
+        // above — there the range target is a distinct existential body).
+        let heads: Vec<ClassId> = rules
+            .role_domains
+            .get(&r)
+            .into_iter()
+            .chain(effective_ranges.get(&r))
+            .flatten()
+            .copied()
+            .collect();
+        for head in heads {
+            rules.atomic_subsumptions.push(AtomicSubsumption {
+                sub: sub_id,
+                sup: head,
+            });
+        }
+    }
+    // Cluster-C lever: a told unqualified `≤n R` (top-level or an And
+    // operand of the RHS) seeds `sub ⊑ MaxKey(n,R)` — the same opaque
+    // key a defined class's `≤n R` conjunct lowers to, so the
+    // defined-class conjunctive trigger requires the cardinality
+    // conjunct soundly (fires only when an identical told `≤n R` holds).
+    for (n, role) in unqualified_max_operands_on_right(sup, pool) {
+        let key = tseitin.introduce_max_key(n, role);
+        rules.atomic_subsumptions.push(AtomicSubsumption {
+            sub: sub_id,
+            sup: key,
+        });
+    }
+    // A told `≥n R.B` (`n ≥ 2`, top-level or `And` operand) seeds `sub ⊑ MinKey`, the
+    // key a definition's `≥n R.B` trigger waits on. The weak `∃R.B` fact is still
+    // emitted below. Sound: it is the asserted concept itself.
+    for op in self_or_conjuncts(sup, pool) {
+        if let Some(key) =
+            top_level_min_key(op, pool, rules, tseitin, effective_ranges, chain_ranges)
+        {
+            rules.atomic_subsumptions.push(AtomicSubsumption {
+                sub: sub_id,
+                sup: key,
+            });
+        }
+    }
+    // Cluster-B lever: a told `∀R.OneOf(S)` (top-level or And operand)
+    // seeds `sub ⊑ ForallKey(R,S)` — the same opaque key a defined
+    // class's `∀R.OneOf(S)` conjunct lowers to. Sound: `C ⊑ ∀R.OneOf(S)`
+    // is a genuine told (or subsumption-propagated) fact, exact-`S` match.
+    for (role, members) in forall_oneof_operands_on_right(sup, pool) {
+        let key = tseitin.introduce_forall_key(role, members);
+        rules.atomic_subsumptions.push(AtomicSubsumption {
+            sub: sub_id,
+            sup: key,
+        });
+    }
+    // SP-B2b: a told `∀R.Atomic(K)` (top-level or And operand) seeds
+    // `sub ⊑ ForallAtomicKey(R,K)` — the same opaque key a defined class's
+    // `∀R.K` conjunct lowers to. Sound; monotonicity edges (seeded below)
+    // give `∀R.K ⊑ ∀R.L` for told `K ⊑ L`.
+    for (role, k) in forall_atomic_operands_on_right(sup, pool) {
+        let key = tseitin.introduce_forall_atomic_key(role, k);
+        rules.atomic_subsumptions.push(AtomicSubsumption {
+            sub: sub_id,
+            sup: key,
+        });
+    }
+    // `Atomic(X) ⊑ ¬Atomic(Y)` (directly, or as an operand of a
+    // top-level `And` on the right) means `X ⊓ Y ⊑ ⊥`, i.e.
+    // `disjoint(X, Y)`. The saturator otherwise drops the `¬Y`
+    // (a negated atomic is not an atomic subsumer), missing the
+    // unsatisfiability it induces — e.g. `A ⊑ B ⊓ ¬B ⇒ A ⊑ ⊥`.
+    // Register the pair so the existing disjointness→unsat
+    // propagation fires (reflexive `X ⊑ X` is seeded, so the
+    // check at `process_subsumer` triggers). Sound and
+    // monotonic: `X ⊑ ¬Y ⟺ disjoint(X, Y)`, so this only ever
+    // adds a genuine clash, never a false subsumption.
+    for y in not_atomic_operands_on_right(sup, pool) {
+        rules.disjoint_pairs.push((sub_id, y));
+    }
+    // Atomic ⊑ ∃r.Y: existential fact. Tseitin introduces a
+    // synthetic atomic if the body is a compound And, OR if
+    // r has a range constraint that needs to be folded in.
+    if let Some((role, target)) =
+        atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges, chain_ranges)
+            .or_else(|| top_weakened_existential_rhs(sup, pool, tseitin))
+    {
+        rules.existential_facts.push(ExistentialFact {
+            sub: sub_id,
+            role,
+            target,
+        });
+    }
+    // Atomic ⊑ (∃r.Y₁ ⊓ ∃r.Y₂ ⊓ …): pick up each existential
+    // operand of a top-level And on the right.
+    if let ConceptExpr::And(operands) = pool.get(sup) {
+        for op in operands {
+            if let Some((role, target)) =
+                atomic_existential_rhs(*op, pool, rules, tseitin, effective_ranges, chain_ranges)
+                    .or_else(|| top_weakened_existential_rhs(*op, pool, tseitin))
+            {
+                rules.existential_facts.push(ExistentialFact {
+                    sub: sub_id,
+                    role,
+                    target,
+                });
+            }
+        }
+    }
+}
+
 /// Lower a single `SubClassOf(sub, sup)` axiom into atomic facts
 /// and conjunctive triggers. Anything that doesn't fit (existentials,
 /// disjunction, complement, cardinality, ...) is silently dropped —
@@ -4539,152 +4739,15 @@ fn lower_sub_class_of(
     }
     match pool.get(sub) {
         ConceptExpr::Atomic(sub_id) => {
-            // Phase D4 (2026-06-03): `Atomic(C) ⊑ Bot` directly marks
-            // C unsatisfiable. Without this branch the saturator's
-            // `atomic_operands_on_right(Bot, _)` returns empty and the
-            // axiom is silently lost — the data-axiom preprocessing
-            // pass's emitted clash axioms (Functional + ≥n, DataMin >
-            // DataMax) wouldn't be picked up. See
-            // `crates/owl-dl-core/src/data_axioms.rs`.
-            if matches!(pool.get(sup), ConceptExpr::Bot) {
-                rules.directly_unsat.push(*sub_id);
-                return;
-            }
-            for atomic_sup in atomic_operands_on_right(sup, pool) {
-                rules.atomic_subsumptions.push(AtomicSubsumption {
-                    sub: *sub_id,
-                    sup: atomic_sup,
-                });
-            }
-            // `X ⊑ ∃R.Self` (ObjectHasSelf): X is both source and target of an
-            // R-edge to itself ⟹ `X ⊑ domain(R) ⊓ range(R)`. Without this the
-            // saturator drops SelfRestriction entirely, missing the whole
-            // self-loop → domain/range chain (olia/OBO: cost 461 MISSED on
-            // ore_ont_4827, e.g. AspectFeature ⊑ ∃hasAspect.Self, domain(hasAspect)
-            // = Verb ⟹ AspectFeature ⊑ Verb). Sound under-approximation. Domain /
-            // range tables are fully populated in Pass 1, before this Pass-2
-            // lowering, so reading them here is complete. Subclasses inherit via
-            // the atomic-subsumption closure (Y ⊑ X ⟹ Y ⊑ domain(R)).
-            for r in self_restriction_roles_on_right(sup, pool) {
-                // The self-loop `(x,x) ∈ R` is also an `S`-edge for every super-role
-                // `R ⊑* S`, so `x` lies in `range(S)` for all such `S` — i.e. the
-                // *effective* (super-role-closed) range, not just `range(R)`. Using
-                // `effective_ranges` here closes the ore_ont_4827 pattern
-                // (`ClusivityFeature ⊑ ∃hasClusivity.Self`, `hasClusivity ⊑ hasFeature`,
-                // `range(hasFeature)=Feature` ⟹ `ClusivityFeature ⊑ Feature`). Sound:
-                // the successor coincides with `x`, so the range obligation lands on
-                // `x` itself (unlike general range propagation, deliberately omitted
-                // above — there the range target is a distinct existential body).
-                let heads: Vec<ClassId> = rules
-                    .role_domains
-                    .get(&r)
-                    .into_iter()
-                    .chain(effective_ranges.get(&r))
-                    .flatten()
-                    .copied()
-                    .collect();
-                for head in heads {
-                    rules.atomic_subsumptions.push(AtomicSubsumption {
-                        sub: *sub_id,
-                        sup: head,
-                    });
-                }
-            }
-            // Cluster-C lever: a told unqualified `≤n R` (top-level or an And
-            // operand of the RHS) seeds `sub ⊑ MaxKey(n,R)` — the same opaque
-            // key a defined class's `≤n R` conjunct lowers to, so the
-            // defined-class conjunctive trigger requires the cardinality
-            // conjunct soundly (fires only when an identical told `≤n R` holds).
-            for (n, role) in unqualified_max_operands_on_right(sup, pool) {
-                let key = tseitin.introduce_max_key(n, role);
-                rules.atomic_subsumptions.push(AtomicSubsumption {
-                    sub: *sub_id,
-                    sup: key,
-                });
-            }
-            // A told `≥n R.B` (`n ≥ 2`, top-level or `And` operand) seeds `sub ⊑ MinKey`, the
-            // key a definition's `≥n R.B` trigger waits on. The weak `∃R.B` fact is still
-            // emitted below. Sound: it is the asserted concept itself.
-            for op in self_or_conjuncts(sup, pool) {
-                if let Some(key) =
-                    top_level_min_key(op, pool, rules, tseitin, effective_ranges, chain_ranges)
-                {
-                    rules.atomic_subsumptions.push(AtomicSubsumption {
-                        sub: *sub_id,
-                        sup: key,
-                    });
-                }
-            }
-            // Cluster-B lever: a told `∀R.OneOf(S)` (top-level or And operand)
-            // seeds `sub ⊑ ForallKey(R,S)` — the same opaque key a defined
-            // class's `∀R.OneOf(S)` conjunct lowers to. Sound: `C ⊑ ∀R.OneOf(S)`
-            // is a genuine told (or subsumption-propagated) fact, exact-`S` match.
-            for (role, members) in forall_oneof_operands_on_right(sup, pool) {
-                let key = tseitin.introduce_forall_key(role, members);
-                rules.atomic_subsumptions.push(AtomicSubsumption {
-                    sub: *sub_id,
-                    sup: key,
-                });
-            }
-            // SP-B2b: a told `∀R.Atomic(K)` (top-level or And operand) seeds
-            // `sub ⊑ ForallAtomicKey(R,K)` — the same opaque key a defined class's
-            // `∀R.K` conjunct lowers to. Sound; monotonicity edges (seeded below)
-            // give `∀R.K ⊑ ∀R.L` for told `K ⊑ L`.
-            for (role, k) in forall_atomic_operands_on_right(sup, pool) {
-                let key = tseitin.introduce_forall_atomic_key(role, k);
-                rules.atomic_subsumptions.push(AtomicSubsumption {
-                    sub: *sub_id,
-                    sup: key,
-                });
-            }
-            // `Atomic(X) ⊑ ¬Atomic(Y)` (directly, or as an operand of a
-            // top-level `And` on the right) means `X ⊓ Y ⊑ ⊥`, i.e.
-            // `disjoint(X, Y)`. The saturator otherwise drops the `¬Y`
-            // (a negated atomic is not an atomic subsumer), missing the
-            // unsatisfiability it induces — e.g. `A ⊑ B ⊓ ¬B ⇒ A ⊑ ⊥`.
-            // Register the pair so the existing disjointness→unsat
-            // propagation fires (reflexive `X ⊑ X` is seeded, so the
-            // check at `process_subsumer` triggers). Sound and
-            // monotonic: `X ⊑ ¬Y ⟺ disjoint(X, Y)`, so this only ever
-            // adds a genuine clash, never a false subsumption.
-            for y in not_atomic_operands_on_right(sup, pool) {
-                rules.disjoint_pairs.push((*sub_id, y));
-            }
-            // Atomic ⊑ ∃r.Y: existential fact. Tseitin introduces a
-            // synthetic atomic if the body is a compound And, OR if
-            // r has a range constraint that needs to be folded in.
-            if let Some((role, target)) =
-                atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges, chain_ranges)
-                    .or_else(|| top_weakened_existential_rhs(sup, pool, tseitin))
-            {
-                rules.existential_facts.push(ExistentialFact {
-                    sub: *sub_id,
-                    role,
-                    target,
-                });
-            }
-            // Atomic ⊑ (∃r.Y₁ ⊓ ∃r.Y₂ ⊓ …): pick up each existential
-            // operand of a top-level And on the right.
-            if let ConceptExpr::And(operands) = pool.get(sup) {
-                for op in operands {
-                    if let Some((role, target)) = atomic_existential_rhs(
-                        *op,
-                        pool,
-                        rules,
-                        tseitin,
-                        effective_ranges,
-                        chain_ranges,
-                    )
-                    .or_else(|| top_weakened_existential_rhs(*op, pool, tseitin))
-                    {
-                        rules.existential_facts.push(ExistentialFact {
-                            sub: *sub_id,
-                            role,
-                            target,
-                        });
-                    }
-                }
-            }
+            lower_atomic_sub(
+                *sub_id,
+                sup,
+                pool,
+                rules,
+                tseitin,
+                effective_ranges,
+                chain_ranges,
+            );
         }
         ConceptExpr::And(operands) => {
             // EL+ existential-in-conjunction lowering: each `∃R.B`
@@ -5519,6 +5582,42 @@ fn atomic_or_tseitin_body(
 /// triggers and definitions (`X ⊑ ∃R.{a}`, `a S c`, `c : E`, `W ≡ ∃R.∃S.E` gives
 /// `X ⊑ W`). It cannot read `∃S⁻` written with `ObjectInverseOf`, so those uses of an
 /// edge stay with the wedge; a named inverse is covered by the reverse fact.
+/// `c` is `∃p.DKey(v)`, a lowered `DataPropertyAssertion`. #302 leaves these out: on
+/// `ore_ont_10929` (110k data assertions, ~10k individuals reached from one nominal) seeding
+/// them took saturation from 0.3 s to 39 s for an identical answer. Their atomic part is
+/// still seeded by the `RUSTDL_NOMINAL_TYPING` pass, as before.
+fn is_data_value_assertion(c: ConceptId, internal: &InternalOntology) -> bool {
+    match internal.concepts.get(c) {
+        ConceptExpr::Some(_, body) => matches!(
+            internal.concepts.get(*body),
+            ConceptExpr::Atomic(id)
+                if owl_dl_core::convert::is_dkey_iri(internal.vocabulary.class_iri(*id))
+        ),
+        _ => false,
+    }
+}
+
+/// The individuals named by a nominal anywhere inside `c`.
+fn nominals_in(c: ConceptId, pool: &ConceptPool, out: &mut Vec<IndividualId>) {
+    match pool.get(c) {
+        ConceptExpr::Nominal(ind) => out.push(*ind),
+        ConceptExpr::Not(x)
+        | ConceptExpr::Some(_, x)
+        | ConceptExpr::All(_, x)
+        | ConceptExpr::Min(_, _, x)
+        | ConceptExpr::Max(_, _, x) => nominals_in(*x, pool, out),
+        ConceptExpr::And(xs) | ConceptExpr::Or(xs) => {
+            for &x in xs {
+                nominals_in(x, pool, out);
+            }
+        }
+        ConceptExpr::Top
+        | ConceptExpr::Bot
+        | ConceptExpr::Atomic(_)
+        | ConceptExpr::SelfRestriction(_) => {}
+    }
+}
+
 fn seed_nominal_abox_edges(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
@@ -5526,6 +5625,7 @@ fn seed_nominal_abox_edges(
     rules: &mut ElRules,
 ) {
     let mut adj: HashMap<IndividualId, Vec<IndividualId>> = HashMap::new();
+    let mut class_linked: Vec<IndividualId> = Vec::new();
     for ax in &internal.axioms {
         match ax {
             Axiom::ObjectPropertyAssertion {
@@ -5538,6 +5638,19 @@ fn seed_nominal_abox_edges(
                 for w in inds.windows(2) {
                     adj.entry(w[0]).or_default().push(w[1]);
                     adj.entry(w[1]).or_default().push(w[0]);
+                }
+            }
+            // #302: `c : ∃S.{a}` links `c` to `a` the way `c S a` does.
+            Axiom::ClassAssertion { class, individual } if sat_nominal_complex_types_enabled() => {
+                let mut named = Vec::new();
+                nominals_in(*class, &internal.concepts, &mut named);
+                for a in named {
+                    if a != *individual {
+                        class_linked.push(*individual);
+                        class_linked.push(a);
+                        adj.entry(*individual).or_default().push(a);
+                        adj.entry(a).or_default().push(*individual);
+                    }
                 }
             }
             _ => {}
@@ -5558,6 +5671,13 @@ fn seed_nominal_abox_edges(
             if reach.insert(j) {
                 queue.push_back(j);
             }
+        }
+    }
+    // Both ends of a class-assertion link may have no edge to seed, so give them stand-ins
+    // here; their class assertions are lowered after this pass.
+    for &c in &class_linked {
+        if reach.contains(&c) {
+            tseitin.introduce_nominal(c);
         }
     }
     let ranges_of = |r: RoleId, rules: &ElRules| -> Vec<ClassId> {

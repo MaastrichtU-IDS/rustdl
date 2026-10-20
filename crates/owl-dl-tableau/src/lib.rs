@@ -123,6 +123,15 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     signed_roles: bool,
     /// Cached [`chain_middle_enabled`] (#213), read once per context.
     chain_middle: bool,
+    /// Cached [`forall_first_enabled`] (#288), read once per context because
+    /// disjunct ordering runs at every branch.
+    forall_first: bool,
+    /// Last [`Self::is_blocked`] answer as `(node, trail generation, blocked)`
+    /// (#288). Six rules ask for the same node in a row, usually with no graph
+    /// change in between, and anywhere-blocking scans every candidate each time.
+    /// Keyed on the trail generation, which changes on every graph mutation and
+    /// rollback, so a hit is exactly the value a fresh call would return.
+    blocked_memo: std::cell::Cell<(NodeId, u64, bool)>,
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
     /// axiom in the source ontology. Stored symmetrically (both `(r, s)` and
     /// `(s, r)` are pushed) to match `inverse_pairs_set`'s contents. Retained
@@ -334,6 +343,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             hierarchy: None,
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
+            forall_first: forall_first_enabled(),
+            blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -369,6 +380,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             hierarchy: None,
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
+            forall_first: forall_first_enabled(),
+            blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -409,6 +422,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             hierarchy: Some(hierarchy),
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
+            forall_first: forall_first_enabled(),
+            blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -475,6 +490,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// on process-global environment (which is racy under parallel tests).
     pub fn set_anywhere_blocking(&mut self, on: bool) -> &mut Self {
         self.anywhere_blocking = on;
+        // The blocking mode is not on the trail, so drop any memoised answer
+        // computed under the other mode (#288).
+        self.blocked_memo.set((NodeId::new(0), u64::MAX, false));
         // Keep the graph's index-maintenance flag in lockstep and (re)build the
         // index from the current arena so a flip after node creation is still
         // correct — used by tests that toggle the mode on a populated context.
@@ -911,6 +929,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.chain_middle
     }
 
+    /// Whether the search tries `∀` disjuncts first (#288).
+    #[must_use]
+    pub fn forall_first_enabled(&self) -> bool {
+        self.forall_first
+    }
+
     /// Slice of all registered length-2 chain axioms.
     #[must_use]
     pub fn chains(&self) -> &[(Role, Role, Role)] {
@@ -1171,6 +1195,22 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// completion small on large generative `ABox`es.
     #[must_use]
     pub fn is_blocked(&self, y: NodeId) -> bool {
+        let generation = self.trail.generation();
+        let (memo_node, memo_gen, memo_blocked) = self.blocked_memo.get();
+        if memo_node == y && memo_gen == generation {
+            debug_assert_eq!(
+                memo_blocked,
+                self.is_blocked_uncached(y),
+                "is_blocked memo is stale: a graph mutation bypassed the trail"
+            );
+            return memo_blocked;
+        }
+        let blocked = self.is_blocked_uncached(y);
+        self.blocked_memo.set((y, generation, blocked));
+        blocked
+    }
+
+    fn is_blocked_uncached(&self, y: NodeId) -> bool {
         if self.anywhere_blocking {
             self.is_blocked_anywhere(y)
         } else {
@@ -2385,6 +2425,28 @@ pub fn signed_role_edges_enabled() -> bool {
 #[must_use]
 pub fn chain_middle_enabled() -> bool {
     std::env::var_os("RUSTDL_TABLEAU_CHAIN_MIDDLE").is_none_or(|v| v != "0")
+}
+
+/// Whether the search tries a `∀R` disjunct first at a node with few
+/// `R`-successors (#288, `RUSTDL_FORALL_FIRST`, **default ON**, `=0` reverts).
+///
+/// A definition `D ≡ ∃R.C` leaves the disjunction `∀R.¬C ⊔ D` on every node.
+/// Trying `D` first fires `D ⊑ ∃R.C`, whose fresh successor carries the same
+/// disjunctions, so the model grows until blocking stops it. The `∀` disjunct
+/// generates nothing. On a 6-axiom core of PMD core this took `sat` from
+/// 3.9 CPU-s and 361 nodes to 0.01 CPU-s. It does push its filler into every
+/// `R`-successor, so a node with more than three keeps the old order: without
+/// that bound, hundreds of role assertions on one individual turned a 1.6 s
+/// `consistent` into a budget `unknown`.
+///
+/// This changes only the order branches are tried in. That is sound, and on a
+/// complete search the verdict is the same either way. It is not order-proof in
+/// practice: budgets cut searches differently, and the `≤n` trial merge (#76)
+/// commits to the first pair that does not clash at once, so a different order
+/// can reach a different committed pair.
+#[must_use]
+pub fn forall_first_enabled() -> bool {
+    std::env::var_os("RUSTDL_FORALL_FIRST").is_none_or(|v| v != "0")
 }
 
 /// Whether anywhere (pairwise) blocking is enabled for the main tableau.

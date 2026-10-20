@@ -119,6 +119,10 @@ pub struct Checkpoint {
 #[derive(Clone, Debug, Default)]
 pub struct TableauTrail {
     entries: Vec<TrailEntry>,
+    /// Bumped on every record, checkpoint and rollback, so it changes whenever
+    /// the graph may have. Unlike `len`, it never repeats after a rollback, which
+    /// makes it a sound cache key for derived state (#288).
+    generation: u64,
 }
 
 impl TableauTrail {
@@ -140,13 +144,21 @@ impl TableauTrail {
     /// Record a checkpoint. The returned handle is the only legal
     /// argument to [`Self::rollback_to`].
     pub fn checkpoint(&mut self) -> Checkpoint {
+        self.generation += 1;
         let position = self.entries.len();
         self.entries.push(TrailEntry::Checkpoint);
         Checkpoint { position }
     }
 
     pub(crate) fn record(&mut self, entry: TrailEntry) {
+        self.generation += 1;
         self.entries.push(entry);
+    }
+
+    /// A counter that changes whenever the trail does; see `generation`.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Undo every entry after `cp` in reverse order and drop the
@@ -166,6 +178,7 @@ impl TableauTrail {
             matches!(self.entries[cp.position], TrailEntry::Checkpoint),
             "checkpoint handle does not point at a Checkpoint entry"
         );
+        self.generation += 1;
         while self.entries.len() > cp.position {
             let entry = self.entries.pop().expect("non-empty by loop guard");
             undo(&entry, graph);

@@ -204,6 +204,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_FORALL_FIRST",
+            owl_dl_tableau::forall_first_enabled,
+            true,
+        ),
+        (
             "RUSTDL_RESEED_VERIFY",
             owl_dl_tableau::reseed_verify_enabled,
             true,

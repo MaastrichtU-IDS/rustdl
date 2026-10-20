@@ -383,6 +383,13 @@ fn is_leaf_compound(pool: &ConceptPool, c: ConceptId) -> bool {
     }
 }
 
+/// Most `R`-successors a node may have for a `∀R.C` disjunct to be tried first
+/// (#288). Measured on PMD core and on a node with hundreds of role assertions:
+/// allowing 0 or 1, `PMD_0020213` stops finishing within 90 s; allowing 3, it
+/// takes 39 CPU-s, and allowing 7 gains nothing more. With no bound, a
+/// 600-edge individual's `consistent` fell from 1.6 s to a budget `unknown`.
+const FORALL_FIRST_MAX_SUCCESSORS: usize = 3;
+
 /// Stable secondary key on original index keeps the
 /// literal-complements optimisation downstream deterministic.
 fn reorder_disjuncts(
@@ -392,6 +399,7 @@ fn reorder_disjuncts(
 ) -> Vec<ConceptId> {
     let pool = ctx.pool();
     let labels = ctx.graph().node(node).labels();
+    let forall_first = ctx.forall_first_enabled();
 
     let score = |d: ConceptId| -> u8 {
         // 3: would clash immediately.
@@ -409,6 +417,23 @@ fn reorder_disjuncts(
             _ => {}
         }
         if is_leaf_compound(pool, d) {
+            return 0;
+        }
+        // #288: `∀R.C` generates nothing, so at a node with few `R`-successors
+        // try it before an atomic disjunct whose definition may generate (see
+        // `forall_first_enabled`). Its cost is pushing `C` into each
+        // `R`-successor, so past `FORALL_FIRST_MAX_SUCCESSORS` it keeps its old
+        // score.
+        if forall_first
+            && let ConceptExpr::All(role, _) = pool.get(d)
+            && ctx
+                .graph()
+                .node(node)
+                .neighbours()
+                .filter(|(seen, _)| ctx.edge_satisfies(*seen, *role))
+                .nth(FORALL_FIRST_MAX_SUCCESSORS)
+                .is_none()
+        {
             return 0;
         }
         match pool.get(d) {

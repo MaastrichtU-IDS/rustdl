@@ -6,6 +6,8 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.41] — 2026-10-20
+
 ### Added
 - **The EL saturator reads `∀` through any filler and derives `∀`-monotonicity (#180),
   `RUSTDL_SAT_FORALL_KEYS`, default ON (`=0` reverts).** A `∀R.F` inside an `∃` filler made the
@@ -69,6 +71,18 @@ All notable changes to rustdl are documented here. Format is based on
   boxed, so `ore_ont_3077` peaks at 1,609 MB, 7% above main.
 
 ### Changed
+- **The main tableau tries a `∀` disjunct first, `RUSTDL_FORALL_FIRST`, default ON (`=0`
+  reverts) (#288, progress only).** A definition `D ≡ ∃R.C` leaves `∀R.¬C ⊔ D` on every node, and
+  the tableau tried the atomic `D` first. That fires `D ⊑ ∃R.C`, which builds a successor carrying
+  the same disjunctions, so the model grew until blocking stopped it. The `∀` disjunct builds
+  nothing and is now tried first at a node with at most 3 `R`-successors. With more successors it
+  keeps its old place, because it pushes its filler into every one of them. Only the order of
+  branches changes. On #288's 6-axiom PMD core, `sat` of a class with no axioms of its own went
+  from 361 nodes and 3.9 CPU-s to the root alone and 0.01 s; `PMD_0020213` now finishes
+  (39–44 CPU-s), and `PMD_0010100` still does not. `is_blocked` is also memoised per graph
+  state (a counter the trail bumps on every change), about 6% on `PMD_0020213`; debug builds
+  re-check every cache hit. Two-arm ORE sweep, 1,920 ontologies: 4 finish only with the flag on,
+  none only with it off, no answer changes.
 - **A large `≥n` no longer costs O(n² · |≠|) in the wedge.** Generating the n fresh successors of
   a `≥n` head recorded each pair as distinct through a duplicate check that scanned the whole `≠`
   store, though fresh nodes cannot appear in it. `ore_ont_5107` spent 97% of its run there: at
@@ -106,6 +120,14 @@ All notable changes to rustdl are documented here. Format is based on
   (`ore_ont_13233`, `14375`, `14556`, all consistent), none lost, no answer changes.
 
 ### Fixed
+- **The main tableau no longer fires rules on a node a merge has removed (#284).** After a merge
+  the removed node's edges belong to the surviving node, so its `∃`/`≥n` labels looked
+  unsatisfied and it built fresh successors. When the merge folded an ancestor into a
+  descendant, the new chain was merged again, without end. `X ⊑ ∃R.T`, `T ⊑ ∃S.B`, `R⁻ ⊑ F`,
+  `S ⊑ F`, `F` functional made `sat X` and `subclass X T` run indefinitely; both now answer at
+  once. Such nodes are skipped by saturation, the deferred-`⊔` sweep and both branch choices.
+  The same mechanism was behind the issue #35 v4 reproducer with `RUSTDL_DOMAIN_ABSORPTION=0`
+  and the residual-free nominal cycle `Q ⊑ ∃p.{b}`, `{b} ⊑ Q`; both now terminate.
 - **An inverse-functional role is enforced when its assertions are on a sub-role (#290).**
   `InverseFunctional(G)`, `S ⊑ G⁻`, `a S b`, `a S c`, `DifferentIndividuals(b, c)` is
   inconsistent (`b G a` and `c G a` force `b = c`), and HermiT and Konclude say so; `rustdl

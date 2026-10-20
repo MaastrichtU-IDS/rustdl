@@ -993,22 +993,40 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         // over CONCEPTS today, so that needs a new branching primitive).
         // `RUSTDL_MAX_TRIAL_MERGE=0` reverts to the first-pair behaviour.
         let trial = crate::max_trial_merge_enabled();
+        // What every merge here rests on besides its own pair: the other
+        // witnesses, whose existence pushes the count over `n`, and anything
+        // excluding the other pairs. A later clash must carry these, or it
+        // back-jumps past the decision that created a witness and reads a
+        // satisfiable class as unsat (#299 review). Witness edges and qualifier
+        // labels carry precise deps. Distinctness does not (`mark_distinct`
+        // records none), so when any witness pair is distinct this falls back
+        // to every active decision, as the `⊥` arm below does. Taking every
+        // active decision unconditionally cost PMD core its back-jumping on
+        // ordinary functional merges (#288).
+        let mut witness_deps: DepSet = max_deps.clone();
+        for &w in &c_neighbours {
+            witness_deps = union(
+                &witness_deps,
+                &compute_max_merge_deps(ctx, node, role, body, w, w, &max_deps),
+            );
+        }
+        let any_distinct = c_neighbours.iter().enumerate().any(|(i, &a)| {
+            c_neighbours[i + 1..]
+                .iter()
+                .any(|&b| ctx.are_distinct(a, b))
+        });
+        if any_distinct {
+            witness_deps = union(&witness_deps, &DepSet::from_slice(ctx.active_branches()));
+        }
         'pairs: for i in 0..c_neighbours.len() {
             for j in (i + 1)..c_neighbours.len() {
                 let a = c_neighbours[i];
                 let b = c_neighbours[j];
                 if !ctx.are_distinct(a, b) {
-                    // Compute precise merge-condition deps for this pair.
-                    // The merge also rests on why the other witnesses exist
-                    // and why they are excluded (`DifferentIndividuals`, an
-                    // earlier `≥n`), none of which the pair's own deps carry.
-                    // Without them a later clash in the merged node back-jumped
-                    // past the decision that created another witness and read a
-                    // satisfiable class as unsat (#299 review). Conservative,
-                    // like the `⊥` arm below: every active decision.
+                    // The pair's own deps plus `witness_deps` (above).
                     let merge_deps: DepSet = union(
                         &compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps),
-                        &DepSet::from_slice(ctx.active_branches()),
+                        &witness_deps,
                     );
                     let cp = trial.then(|| ctx.checkpoint());
                     if ctx.merge_into_with_deps(b, a, merge_deps.as_slice()) {

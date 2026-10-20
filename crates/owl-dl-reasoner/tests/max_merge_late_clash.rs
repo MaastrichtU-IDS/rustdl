@@ -241,3 +241,33 @@ fn many_witnesses_under_le1_do_not_explode() {
         start.elapsed()
     );
 }
+
+/// `≤1 r.C` with one witness unconditional and the other only under the `B1`
+/// disjunct: under `B1` the merge is forced and clashes after generation, so
+/// `B2` must be tried. The forced merge's deps come from the witnesses' own
+/// edges here (no witness pair is distinct), and the `B1` witness's edge carries
+/// `B1`'s branch id. HermiT: satisfiable; with `B1` unconditional, unsat.
+const LE1_UNDER_DISJUNCT: &str = "Prefix(:=<http://t/>)
+Ontology(
+Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:X)) Declaration(Class(:B1)) Declaration(Class(:B2))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:p))
+SubClassOf(:A ObjectMaxCardinality(1 :r :C))
+SubClassOf(:A ObjectSomeValuesFrom(:r ObjectIntersectionOf(:C ObjectAllValuesFrom(:p :X))))
+SubClassOf(:A ObjectUnionOf(:B1 :B2))
+SubClassOf(:B1 ObjectSomeValuesFrom(:r ObjectIntersectionOf(:C ObjectSomeValuesFrom(:p ObjectComplementOf(:X)))))
+)";
+
+#[test]
+fn a_forced_merge_without_distinctness_keeps_the_disjunct_decision() {
+    for wedge in [false, true] {
+        assert!(
+            sat_raw(LE1_UNDER_DISJUNCT, "http://t/A", wedge),
+            "wedge={wedge}"
+        );
+        let forced = LE1_UNDER_DISJUNCT.replace(
+            "SubClassOf(:A ObjectUnionOf(:B1 :B2))",
+            "SubClassOf(:A :B1)",
+        );
+        assert!(!sat_raw(&forced, "http://t/A", wedge), "wedge={wedge}");
+    }
+}

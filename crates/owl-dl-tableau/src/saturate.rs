@@ -88,7 +88,7 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
         }
         None => saturate_full(ctx, max_iters),
     };
-    ctx.set_scan_window(None);
+    ctx.end_saturate();
     if result == SaturationResult::Stable {
         ctx.record_stable_mark();
     }
@@ -146,7 +146,7 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
                 continue;
             }
             if iter == 0 {
-                ctx.set_scan_window(Some((idx, node_count)));
+                ctx.set_first_scan_at(idx, node_count);
             }
             // Clear *before* running rules so that a rule mutating
             // this node (e.g. apply_and adding decomposed children to
@@ -188,7 +188,7 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
                 changed = true;
             }
         }
-        ctx.set_scan_window(None);
+        ctx.end_first_scan();
         if !changed {
             // Deterministic rules are stable. Run the lazy-unfolding
             // sweep before declaring Stable: materialise any deferred

@@ -97,6 +97,19 @@ use owl_dl_core::{
     RoleId, is_nnf,
 };
 
+/// Where `saturate` is, for incremental saturation's bookkeeping (#288).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScanPhase {
+    /// Between `saturate` calls.
+    Idle,
+    /// The first scan of a call, at node `pos`, ending at `end`. A full pass
+    /// still visits every node in between, so a mutation next to one of them
+    /// dirties it at once.
+    FirstScan { pos: usize, end: usize },
+    /// Inside a call, after its first scan.
+    Later,
+}
+
 /// Coordinator owning the completion graph and trail for one tableau
 /// run.
 ///
@@ -141,10 +154,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// stores a copy.
     deferred: Vec<NodeId>,
     deferred_seen: Vec<bool>,
-    /// While the first scan of a `saturate` call is at node `.0`, the scan
-    /// ends at `.1` (#288). A full pass still visits every node in between,
-    /// so a mutation next to one of them dirties it at once.
-    scan_window: Option<(usize, usize)>,
+    /// Where `saturate` is (#288); see [`ScanPhase`].
+    scan_phase: ScanPhase,
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
     /// axiom in the source ontology. Stored symmetrically (both `(r, s)` and
     /// `(s, r)` are pushed) to match `inverse_pairs_set`'s contents. Retained
@@ -361,7 +372,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
             deferred_seen: Vec::new(),
-            scan_window: None,
+            scan_phase: ScanPhase::Idle,
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -402,7 +413,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
             deferred_seen: Vec::new(),
-            scan_window: None,
+            scan_phase: ScanPhase::Idle,
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -448,7 +459,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
             deferred_seen: Vec::new(),
-            scan_window: None,
+            scan_phase: ScanPhase::Idle,
             inverse_pairs: Vec::new(),
             inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
@@ -988,16 +999,35 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 *seen = false;
             }
         }
-        self.scan_window = None;
+        self.scan_phase = ScanPhase::Later;
     }
 
-    /// Set or clear the first-scan window; see `scan_window` (#288).
-    pub fn set_scan_window(&mut self, window: Option<(usize, usize)>) {
-        self.scan_window = window;
+    /// The first scan of this `saturate` call is at node `pos` and ends at
+    /// `end` (#288).
+    pub fn set_first_scan_at(&mut self, pos: usize, end: usize) {
+        self.scan_phase = ScanPhase::FirstScan { pos, end };
+    }
+
+    /// The first scan of this `saturate` call is over (#288).
+    pub fn end_first_scan(&mut self) {
+        self.scan_phase = ScanPhase::Later;
+    }
+
+    /// The `saturate` call is over (#288). Mutations the search makes between
+    /// calls need no bookkeeping: the next call reads them off the trail.
+    pub fn end_saturate(&mut self) {
+        self.scan_phase = ScanPhase::Idle;
     }
 
     /// A rule skipped `node` because it was blocked: a full pass visits it
     /// again on the next call, so the next incremental call must too (#288).
+    ///
+    /// Load-bearing: blocking reads more than one hop away (ancestors' labels,
+    /// and for anywhere-blocking any blocker's), so a node can become unblocked
+    /// without being touched. A node blocked when last visited therefore stays
+    /// deferred, call after call, until a visit finds it unblocked. A node that
+    /// was not blocked when last visited had all its rules run then, and
+    /// becoming blocked never creates work.
     pub fn note_blocked_skip(&mut self, node: NodeId) {
         if self.incremental_saturate {
             self.defer(node);
@@ -1018,9 +1048,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `nodes` changed: they and their neighbours may now have rule work
     /// (#288). A node the current first scan has yet to reach is dirtied, as a
     /// full pass would visit it anyway; any other is deferred to the next call,
-    /// which is when a full pass would next visit it.
+    /// which is when a full pass would next visit it. Every mutation touches
+    /// both its endpoints, and every rule other than blocking reads at most the
+    /// node it runs at and that node's neighbours (a role chain at `x` reads
+    /// `x → y → z` and fires when `y`, a neighbour of both, is touched).
+    /// Outside a `saturate` call this is a no-op: the next call's start set
+    /// comes from the trail.
     fn touch(&mut self, nodes: &[NodeId]) {
-        if !self.incremental_saturate {
+        if !self.incremental_saturate || self.scan_phase == ScanPhase::Idle {
             return;
         }
         for &node in nodes {
@@ -1028,25 +1063,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 self.graph.node(node).neighbours().map(|(_, m)| m).collect();
             for m in std::iter::once(node).chain(neighbours) {
                 let i = m.index() as usize;
-                match self.scan_window {
-                    Some((pos, end)) if i > pos && i < end => self.graph.set_dirty(m, true),
+                match self.scan_phase {
+                    ScanPhase::FirstScan { pos, end } if i > pos && i < end => {
+                        self.graph.set_dirty(m, true);
+                    }
                     _ => self.defer(m),
                 }
-            }
-        }
-    }
-
-    /// The nominal map changed, which a node anywhere may read (#288): dirty
-    /// the rest of the first scan and defer everything else.
-    fn touch_all(&mut self) {
-        if !self.incremental_saturate {
-            return;
-        }
-        for i in 0..self.graph.len() {
-            let m = NodeId::new(u32::try_from(i).expect("node count fits u32"));
-            match self.scan_window {
-                Some((pos, end)) if i > pos && i < end => self.graph.set_dirty(m, true),
-                _ => self.defer(m),
             }
         }
     }
@@ -1658,7 +1680,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.graph.nominals.insert(individual, node);
         self.trail
             .record(TrailEntry::NominalAssigned { individual, prior });
-        self.touch_all();
+        // Only `apply_nominal_assignment` reads the map, at nodes carrying the
+        // nominal, and those are touched by their own label additions and
+        // merges (#309 review). Touching every node here was O(N²) when the
+        // reasoner seeds an ABox.
+        match prior {
+            Some(prior) => self.touch(&[prior, node]),
+            None => self.touch(&[node]),
+        }
     }
 
     /// Follow the merge-redirect chain for `node` until an
@@ -2642,8 +2671,11 @@ pub fn sat_leaf_resaturate_enabled() -> bool {
 /// deferred, and visits nodes in the same order. Every mutation dirties its
 /// nodes and their neighbours that the first scan has yet to reach, and defers
 /// the rest to the next call, which is when a full pass would next visit them.
-/// A label reaches no rule more than one hop away, so the rules fire in the
-/// same order as on the full path and the search makes the same decisions.
+/// Rules other than blocking read at most a node and its neighbours, and a node
+/// skipped as blocked stays deferred until a visit finds it unblocked (see
+/// `TableauContext::note_blocked_skip`). So without a deadline the rules fire
+/// in the same order as on the full path and the search makes the same
+/// decisions; with one, less work per call can change which probes time out.
 /// Every branch decision re-ran every rule on every node before this; on PMD
 /// core that was most of the cost.
 #[must_use]

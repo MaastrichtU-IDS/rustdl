@@ -20,7 +20,7 @@
 //! `RUSTDL_MAX_MERGE_KEEP_OLDER=0` fails `core_is_satisfiable_without_forall_first`.
 #![allow(clippy::unwrap_used)]
 
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -85,6 +85,10 @@ impl Drop for EnvGuard {
 }
 
 /// Fail rather than hang if `PMD_0010100`'s satisfiability is not decided in time.
+///
+/// On a timeout this ABORTS rather than panics: the stuck worker keeps reading
+/// `RUSTDL_*` on every flag check, and a panic would let the next test take
+/// `ENV_MUTEX` and call `set_var` under it.
 fn pmd_0010100_satisfiable(what: &str) -> bool {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -94,11 +98,23 @@ fn pmd_0010100_satisfiable(what: &str) -> bool {
         )
         .unwrap()
         .0;
-        let _ = tx.send(is_class_satisfiable(&o, "https://w3id.org/pmd/co/PMD_0010100").unwrap());
+        let _ = tx.send(is_class_satisfiable(
+            &o,
+            "https://w3id.org/pmd/co/PMD_0010100",
+        ));
     });
-    rx.recv_timeout(BOUND).unwrap_or_else(|e| {
-        panic!("{what} did not finish within {BOUND:?} ({e}) — issue #288 has regressed")
-    })
+    match rx.recv_timeout(BOUND) {
+        Ok(r) => r.unwrap_or_else(|e| panic!("{what} returned an error: {e:?}")),
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("{what}: the worker panicked"),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Not `eprintln!`: libtest captures it, and the abort discards it.
+            let _ = writeln!(
+                std::io::stderr(),
+                "{what} did not finish within {BOUND:?} — issue #288 has regressed"
+            );
+            std::process::abort();
+        }
+    }
 }
 
 /// Default rule order. Guards `RUSTDL_MAX_PRECISE_BOT`.

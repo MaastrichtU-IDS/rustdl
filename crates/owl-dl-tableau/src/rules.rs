@@ -1138,6 +1138,10 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                     } else {
                         (b, a)
                     };
+                    // Distinct pairs were skipped above, so the merge cannot be
+                    // refused. If it were, this pair would add nothing to
+                    // `rejected_deps` and the `⊥` below would be under-dependent.
+                    debug_assert!(!ctx.are_distinct(source, survivor));
                     let cp = trial.then(|| ctx.checkpoint());
                     if ctx.merge_into_with_deps(source, survivor, merge_deps.as_slice()) {
                         // `source` merged INTO `survivor`. A merge can also

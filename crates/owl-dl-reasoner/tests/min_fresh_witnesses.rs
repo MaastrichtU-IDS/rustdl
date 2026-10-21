@@ -9,6 +9,8 @@
 //!
 //! The wedge is OFF throughout so the main tableau is the engine answering.
 
+#![allow(clippy::doc_markdown)]
+
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;

@@ -126,7 +126,10 @@ fn a_min_past_the_search_cap_terminates() {
         "many existing: got {verdict:?}"
     );
     // The root, the 40, and at most one fresh pair: `apply_min` can fire once
-    // before the 40 carry `C`, which comes from decomposing their filler.
+    // before the 40 carry `C`, which comes from decomposing their filler. This
+    // relies on `saturate` running `apply_exists` before `apply_min` on the
+    // root; if that order changes, re-derive the bound rather than read a
+    // larger graph as the loop coming back.
     assert!(
         nodes <= 43,
         "many existing: expected at most one fresh pair, got {nodes} nodes"

@@ -153,6 +153,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_SAT_NOMINAL_COMPLEX_TYPES",
+            owl_dl_saturation::sat_nominal_complex_types_enabled,
+            true,
+        ),
+        (
             "RUSTDL_SAT_NOMINAL_EDGES",
             owl_dl_saturation::sat_nominal_edges_enabled,
             true,

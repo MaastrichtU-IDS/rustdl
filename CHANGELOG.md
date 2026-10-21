@@ -7,6 +7,17 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **The EL saturator reads class assertions of individuals used as nominals in full (#302),
+  `RUSTDL_SAT_NOMINAL_COMPLEX_TYPES`, default ON (`=0` reverts).** Before, only the atomic
+  operands of `ClassAssertion(C, a)` reached the saturator, and an individual tied to a `TBox`
+  nominal only through a class assertion (`c : ∃S.{a}`) got no stand-in. With
+  `X ⊑ ∃R.{a}`, `c : ∃S.{a}`, `c : E`, `W ≡ ∃R.∃S⁻.E`, `classify` missed `X ⊑ W` with
+  `incomplete: false`. Now `ClassAssertion(C, a)` is lowered as the told `N_a ⊑ C`, exactly
+  like `A ⊑ C` for a named `A`: existentials, `≥n`, `∀` keys and negated atomics. A nominal
+  inside an asserted class links the two individuals for reachability, as a property assertion
+  does. In `classify` the wedge already read most of these shapes (#281); the gain is on the
+  `∃S⁻` route of #296 and in the saturation-only answer. HermiT agrees on 19 probes: 10 positives
+  and 9 controls (unions, `∀`, `≤1`, negated edges, other individuals and fillers).
 - **`classify` follows an inverse existential `∃S⁻.E` through property assertions of
   individuals used as nominals (#296), `RUSTDL_SAT_NOMINAL_INVERSE_EXISTS`, default ON (`=0`
   reverts).** `X ⊑ ∃R.{a}`, `c S a`, `c : E`, `W ≡ ∃R.∃S⁻.E` entails `X ⊑ W`, and `classify`

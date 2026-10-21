@@ -2647,6 +2647,33 @@ pub fn min_fresh_witnesses_enabled() -> bool {
     std::env::var_os("RUSTDL_MIN_FRESH_WITNESSES").is_none_or(|v| v != "0")
 }
 
+/// Whether `apply_max`'s `⊥`, added when every candidate merge is rejected or
+/// excluded, carries precise deps (#288, `RUSTDL_MAX_PRECISE_BOT`, **default
+/// ON**, `=0` reverts): the `≤n` label's, the witnesses' edges and qualifier
+/// labels, and the clash each rejected trial merge produced. A distinct pair
+/// still adds every active decision, since `mark_distinct` records no deps.
+/// The old set, every active decision, stopped back-jumping at each such `⊥`.
+#[must_use]
+pub fn max_precise_bot_enabled() -> bool {
+    std::env::var_os("RUSTDL_MAX_PRECISE_BOT").is_none_or(|v| v != "0")
+}
+
+/// Whether a forced `≤n` merge in `apply_max` keeps the older node (#288,
+/// `RUSTDL_MAX_MERGE_KEEP_OLDER`, **default ON**, `=0` reverts).
+///
+/// `apply_max` merged the later witness in neighbour order into the earlier
+/// one. Neighbour order lists successors before predecessors, so a functional
+/// role reached through an inverse merged the node's predecessor into a fresh
+/// successor. Re-parenting the predecessor's children then made one of them a
+/// root, which is never blocked, and on PMD core `sat PMD_0010100` generated
+/// nodes without end where v0.4.40 answered in 1.2 s. The newer node (higher
+/// index) is now merged into the older one, as the standard `≤`-rule merges a
+/// successor into its predecessor.
+#[must_use]
+pub fn max_merge_keep_older_enabled() -> bool {
+    std::env::var_os("RUSTDL_MAX_MERGE_KEEP_OLDER").is_none_or(|v| v != "0")
+}
+
 /// Whether `search` re-runs `saturate` once more before answering `Sat`
 /// (#294, `RUSTDL_SAT_LEAF_RESATURATE`, **default ON**, `=0` reverts).
 ///

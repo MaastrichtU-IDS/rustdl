@@ -3304,8 +3304,8 @@ pub(crate) fn abox_saturation_inconsistent_bounded(
 /// than inventing a third mechanism:
 ///
 /// 1. **`⊤` is unsatisfiable** — `closure.globally_inconsistent()` (a syntactic
-///    `⊤ ⊑ ⊥`) or `closure.top_is_unsat()` (some `C` with `⊤ ⊑ C` saturated to
-///    `⊥`). This is verbatim the test `classify_pure_el` already applies; the
+///    `⊤ ⊑ ⊥`) or `closure.top_is_unsat()` (some `C` with `⊤ ⊑ C`, or some
+///    individual's nominal stand-in (#307), saturated to `⊥`). This is verbatim the test `classify_pure_el` already applies; the
 ///    hybrid path simply never ran it.
 /// 2. **`ABox`-saturation clash** — [`abox_saturation_inconsistent`], the same
 ///    pre-check `is_consistent` runs before its tableau, here under the

@@ -7,6 +7,13 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **An unsatisfiable individual makes the KB inconsistent in the EL saturator (#307),
+  `RUSTDL_SAT_UNSAT_NOMINAL_INCONSISTENT`, default ON (`=0` reverts).** A named individual exists
+  in every model, so `{a} ⊑ ⊥`, `a : Y ⊓ ¬Y`, `ClassAssertion(owl:Nothing, a)` or `{a}` in two
+  disjoint classes is an inconsistent KB. `--saturation-only` reported `consistent: true` beside
+  a non-empty `unsatisfiable` list; now it reports `consistent: false` with every class
+  unsatisfiable, as it does for `⊤ ⊑ ⊥`. Default `classify` already got these right. HermiT
+  agrees on 6 probes (4 inconsistent, 2 consistent controls).
 - **The EL saturator reads three more things about individuals used as nominals (#302 items
   2–4).** Each is a sound miss that `classify` reported as complete, now derived; HermiT agrees on
   16 probes (7 positives, 9 controls).

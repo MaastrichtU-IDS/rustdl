@@ -219,6 +219,15 @@ pub fn sat_distinct_min_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_DISTINCT_MIN").is_none_or(|v| v != "0")
 }
 
+/// #307: an unsatisfiable nominal stand-in `N_a` marks the KB inconsistent
+/// (`Subsumers::top_is_unsat`), because a named individual exists in every model.
+/// Without it `--saturation-only` reported `consistent: true` beside a non-empty
+/// `unsatisfiable` list. Default **ON**; `RUSTDL_SAT_UNSAT_NOMINAL_INCONSISTENT=0` reverts.
+#[must_use]
+pub fn sat_unsat_nominal_inconsistent_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_UNSAT_NOMINAL_INCONSISTENT").is_none_or(|v| v != "0")
+}
+
 /// #302 item 3: a nominal `{a}` on either side of a class axiom is read through `a`'s
 /// stand-in `N_a`: `{a} ⊑ C` as the told `N_a ⊑ C`, and `Y ⊑ {a}` (top-level or `And`
 /// operand) as `Y ⊑ N_a`. So `EquivalentClasses({a}, Y)` makes `N_a ≡ Y`. Default **ON**;
@@ -1265,7 +1274,15 @@ impl WorklistEngine {
             .rules
             .top_subsumers
             .iter()
-            .any(|&c| self.subsumers.is_unsatisfiable(c));
+            .any(|&c| self.subsumers.is_unsatisfiable(c))
+            // #307: a named individual exists in every model, so an unsat stand-in `N_a`
+            // (`{a} ⊑ ⊥`, `a : Y ⊓ ¬Y`, …) is an inconsistent KB as well.
+            || (sat_unsat_nominal_inconsistent_enabled()
+                && self
+                    .rules
+                    .nominal_to_ind
+                    .keys()
+                    .any(|&k| self.subsumers.is_unsatisfiable(k)));
     }
 
     // -----------------------------------------------------------------------
@@ -2856,7 +2873,8 @@ pub struct Subsumers {
     /// `top_subsumers`, saturation marks `E` unsat, so `top_is_unsat` is set.
     /// Contrast with `{SubClassOf(:A owl:Nothing), SubClassOf(:B owl:Nothing)}`
     /// (no `⊤ ⊑ …` axiom) — `top_subsumers` is empty, this flag stays false,
-    /// and the KB is correctly reported consistent.  Private, set once by
+    /// and the KB is correctly reported consistent.  An unsatisfiable nominal
+    /// stand-in also sets it (#307): an individual cannot be empty.  Private, set once by
     /// `WorklistEngine::run()`; read via [`Subsumers::top_is_unsat`].
     top_is_unsat: bool,
 }
@@ -2962,6 +2980,11 @@ impl Subsumers {
     /// axiom means no class was forced onto `⊤`, so `{A ⊑ ⊥, B ⊑ ⊥}` (every
     /// user class empty, but ⊤ itself satisfiable) leaves this flag false —
     /// correctly reporting the KB as consistent.
+    ///
+    /// **Also set (#307, [`sat_unsat_nominal_inconsistent_enabled`]) when a nominal
+    /// stand-in `N_a` is unsatisfiable.** A named individual exists in every model, so
+    /// `{a} ⊑ ⊥` empties `⊤` too. That is the difference from `{A ⊑ ⊥}` above: `A` may be
+    /// empty in a model, `{a}` may not.
     #[must_use]
     pub fn top_is_unsat(&self) -> bool {
         self.top_is_unsat

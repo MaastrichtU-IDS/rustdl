@@ -1839,6 +1839,8 @@ fn classify_pure_el(
     //    after saturation.  Covers the derived case such as `{⊤ ⊑ E, E ⊑ ⊥}`.
     //    Crucially it does NOT fire for `{A ⊑ ⊥, B ⊑ ⊥}` (consistent KB with
     //    every user class empty but no `⊤ ⊑ …` axiom), avoiding a false positive.
+    //    Since #307 it is also set by an unsatisfiable nominal stand-in: an
+    //    individual exists in every model, so `{a} ⊑ ⊥` is inconsistent.
     //    See `Subsumers::top_is_unsat` for the full soundness argument.
     if closure.globally_inconsistent() || closure.top_is_unsat() {
         stats.inconsistent = true;
@@ -1858,8 +1860,12 @@ fn classify_pure_el(
     // spelled with no cast at all — which is why the source-level guard in that
     // test file did not see it.
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
+    // An inconsistent KB entails `C ⊑ ⊥` for every `C`, as `classify_inconsistent` reports
+    // it. When `⊤` itself is unsat the closure already says so for every class; an unsat
+    // nominal stand-in (#307) does not, so it is applied here.
+    let every_class_unsat = stats.inconsistent;
     for i in 0..n {
-        if closure.is_unsatisfiable(reported.class_id(i)) {
+        if every_class_unsat || closure.is_unsatisfiable(reported.class_id(i)) {
             unsatisfiable_idxs.insert(i);
             stats.saturation_unsat_hits += 1;
         }

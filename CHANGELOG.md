@@ -7,6 +7,19 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **The EL saturator reads three more things about individuals used as nominals (#302 items
+  2–4).** Each is a sound miss that `classify` reported as complete, now derived; HermiT agrees on
+  16 probes (7 positives, 9 controls).
+  - An individual asserted into a class with a told edge to a nominal (`c : Y`,
+    `Y ⊑ ∃S.{a}`, or a told sub-class of such a `Y`) is linked to that nominal, so `c` gets a
+    stand-in and inherits `c S a`. Part of `RUSTDL_SAT_NOMINAL_COMPLEX_TYPES`.
+  - A nominal on either side of a class axiom is read through its stand-in: `{a} ⊑ C` as
+    `N_a ⊑ C`, `Y ⊑ {a}` as `Y ⊑ N_a`, so `EquivalentClasses({a}, Y)` makes them equal.
+    `RUSTDL_SAT_NOMINAL_EQUIV`, default ON (`=0` reverts). A nominal used only this way does
+    not start the nominal reach over the `ABox`: on `ore_ont_15846` one `Subset ≡ {x}` did,
+    taking saturation from 0.1 s to 22 s for an identical answer.
+  - A top-level `∃S⁻.E`, on either side, uses the #296 stand-in `InvExKey(S, E)`. Part of
+    `RUSTDL_SAT_NOMINAL_INVERSE_EXISTS`.
 - **The EL saturator reads class assertions of individuals used as nominals in full (#302),
   `RUSTDL_SAT_NOMINAL_COMPLEX_TYPES`, default ON (`=0` reverts).** Before, only the atomic
   operands of `ClassAssertion(C, a)` reached the saturator, and an individual tied to a `TBox`

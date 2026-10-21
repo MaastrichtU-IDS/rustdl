@@ -163,6 +163,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_SAT_NOMINAL_EQUIV",
+            owl_dl_saturation::sat_nominal_equiv_enabled,
+            true,
+        ),
+        (
             "RUSTDL_SAT_NOMINAL_INVERSE_EXISTS",
             owl_dl_saturation::sat_nominal_inverse_exists_enabled,
             true,

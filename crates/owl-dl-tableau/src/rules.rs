@@ -786,13 +786,16 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
 /// Algorithm:
 /// 1. Collect existing R-witnesses (via inverse-aware traversal,
 ///    sub-role-aware match) that already carry `C`.
-/// 2. If at least `n` exist, no generation is needed but we still
-///    pairwise-mark them distinct so a future `≤m R.C` (Q2) can see
-///    the existing constraint.
-/// 3. Otherwise, generate fresh successors via the exact role (named
+/// 2. If `n` of them are already pairwise distinct, nothing to do (#304,
+///    `RUSTDL_MIN_FRESH_WITNESSES`; see [`has_distinct_witnesses`]).
+/// 3. Otherwise, generate `n` fresh witnesses via the exact role (named
 ///    polarity → `new_successor`; inverse polarity → `new_predecessor`)
-///    until the count reaches `n`. All witnesses (existing ∪ fresh)
-///    are then marked pairwise distinct.
+///    and mark only those pairwise distinct. Existing witnesses are never
+///    marked: their distinctness is not entailed, and a later `≤m R.C`
+///    may need to merge them.
+///
+/// With the flag off, the rule counts existing witnesses, generates the
+/// shortfall and marks up to `n` of all of them pairwise distinct.
 pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_min);
     if ctx.is_blocked(node) {
@@ -927,9 +930,16 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     }
 }
 
-/// Whether `n` of `witnesses` are pairwise distinct (#304). An exact search;
-/// past `MAX_CLIQUE_SEARCH` candidates it answers `false`, which only costs
-/// `n` redundant fresh witnesses.
+/// Whether `n` of `witnesses` are pairwise distinct (#304). An exact search,
+/// newest witnesses first, so the last fresh set is found without first trying
+/// older ones.
+///
+/// Past `MAX_CLIQUE_SEARCH` candidates it only counts them. Answering `false`
+/// there would make `apply_min` generate `n` more witnesses on every pass, each
+/// pass adding candidates, until the node cap (#306 review: `≥33 r.C` alone
+/// never finished). Counting is still sound and complete: every node left
+/// unmerged is its own element, and a merge that brings the count under `n`
+/// re-fires the rule.
 fn has_distinct_witnesses(
     ctx: &TableauContext<'_, '_, '_>,
     witnesses: &[NodeId],
@@ -964,10 +974,14 @@ fn has_distinct_witnesses(
     if n <= 1 {
         return witnesses.len() >= n;
     }
-    if witnesses.len() < n || witnesses.len() > MAX_CLIQUE_SEARCH {
+    if witnesses.len() < n {
         return false;
     }
-    extend(ctx, witnesses, &mut Vec::with_capacity(n), 0, n)
+    if witnesses.len() > MAX_CLIQUE_SEARCH {
+        return true;
+    }
+    let newest_first: Vec<NodeId> = witnesses.iter().rev().copied().collect();
+    extend(ctx, &newest_first, &mut Vec::with_capacity(n), 0, n)
 }
 
 /// `≤n R.C` rule: for every `Max(n, R, C)` in `L(node)`, ensure at

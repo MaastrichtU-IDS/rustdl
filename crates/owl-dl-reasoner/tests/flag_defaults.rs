@@ -239,6 +239,16 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_MAX_MERGE_KEEP_OLDER",
+            owl_dl_tableau::max_merge_keep_older_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_MAX_PRECISE_BOT",
+            owl_dl_tableau::max_precise_bot_enabled,
+            true,
+        ),
+        (
             "RUSTDL_SAT_LEAF_RESATURATE",
             owl_dl_tableau::sat_leaf_resaturate_enabled,
             true,

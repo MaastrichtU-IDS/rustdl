@@ -1112,6 +1112,9 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         if any_distinct {
             witness_deps = union(&witness_deps, &DepSet::from_slice(ctx.active_branches()));
         }
+        let keep_older = crate::max_merge_keep_older_enabled();
+        // What each rejected trial merge clashed on, for a precise `⊥` below.
+        let mut rejected_deps = DepSet::new();
         'pairs: for i in 0..c_neighbours.len() {
             for j in (i + 1)..c_neighbours.len() {
                 let a = c_neighbours[i];
@@ -1122,25 +1125,47 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                         &compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps),
                         &witness_deps,
                     );
+                    // #288: keep the older node and merge the newer into it.
+                    // Neighbour order lists successors before predecessors,
+                    // so `a` is often a fresh successor and `b` the node's
+                    // own predecessor; merging `b` into `a` folded an ancestor
+                    // into its descendant, re-parenting the ancestor's
+                    // children, and a child whose re-parenting would close a
+                    // cycle becomes a root, which is never blocked. On PMD
+                    // core that chain regenerated without end.
+                    let (source, survivor) = if keep_older && b.index() < a.index() {
+                        (a, b)
+                    } else {
+                        (b, a)
+                    };
+                    // Distinct pairs were skipped above, so the merge cannot be
+                    // refused. If it were, this pair would add nothing to
+                    // `rejected_deps` and the `⊥` below would be under-dependent.
+                    debug_assert!(!ctx.are_distinct(source, survivor));
                     let cp = trial.then(|| ctx.checkpoint());
-                    if ctx.merge_into_with_deps(b, a, merge_deps.as_slice()) {
-                        // `b` merged INTO `a`, so `a` is the survivor. A merge
-                        // can also violate a role axiom (asymmetry, disjoint
-                        // roles) through the edges it fuses, and that clash
-                        // lands on `node` or `a`, not only in `a`'s labels — so
+                    if ctx.merge_into_with_deps(source, survivor, merge_deps.as_slice()) {
+                        // `source` merged INTO `survivor`. A merge can also
+                        // violate a role axiom (asymmetry, disjoint roles)
+                        // through the edges it fuses, and that clash lands on
+                        // `node` or `survivor`, not only in its labels — so
                         // check them inside the trial too (#200 review). The
                         // `⊥` it may add is on the trail, so `rollback_to`
                         // undoes it.
                         if trial {
                             apply_role_axioms(ctx, node);
-                            apply_role_axioms(ctx, a);
+                            apply_role_axioms(ctx, survivor);
                         }
-                        if !trial || !(ctx.clash_in(a) || ctx.clash_in(node)) {
+                        if !trial || !(ctx.clash_in(survivor) || ctx.clash_in(node)) {
                             applied = true;
                             merged = true;
                             break 'pairs;
                         }
                         crate::bump_counter!(ctx, max_trial_merge_rejects);
+                        for at in [survivor, node] {
+                            if let Some(d) = ctx.clash_deps_at(at) {
+                                rejected_deps = union(&rejected_deps, &d);
+                            }
+                        }
                     }
                     if let Some(cp) = cp {
                         ctx.rollback_to(cp);
@@ -1149,19 +1174,25 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
             }
         }
         if !merged && let Some(bot) = ctx.pool().bot_id() {
-            // Conservative deps for the clash: union of the Max
-            // label's deps and every active branch decision. The
-            // contributing neighbour edges + their `body` labels also
-            // matter, but `active_branches()` is a strict
-            // over-approximation that subsumes them all and keeps the
-            // soundness invariant — back-jumping may miss prune
-            // opportunities here but will never wrongly propagate.
-            let mut deps = max_deps.clone();
-            for &b in ctx.active_branches() {
-                if let Err(pos) = deps.binary_search(&b) {
-                    deps.insert(pos, b);
+            // #288: every candidate merge was rejected or is excluded. The
+            // clash rests on the `≤n` label, the witnesses (`witness_deps`:
+            // their edges and qualifier labels, plus every active decision
+            // when a pair is distinct, since `mark_distinct` records no
+            // deps), and what each rejected trial merge clashed on. Taking
+            // every active decision instead stopped back-jumping here, and on
+            // PMD core the search retried every earlier decision in turn.
+            // `RUSTDL_MAX_PRECISE_BOT=0` keeps the old conservative set.
+            let deps = if crate::max_precise_bot_enabled() && trial {
+                union(&union(&max_deps, &witness_deps), &rejected_deps)
+            } else {
+                let mut deps = max_deps.clone();
+                for &b in ctx.active_branches() {
+                    if let Err(pos) = deps.binary_search(&b) {
+                        deps.insert(pos, b);
+                    }
                 }
-            }
+                deps
+            };
             if ctx.add_label_with_deps(node, bot, &deps) {
                 applied = true;
             }

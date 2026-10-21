@@ -47,7 +47,7 @@ pub fn disjoint_classes<A: ForIRI>(
     pair_deadline: Option<Duration>,
 ) -> Result<Disjointness, ReasonError> {
     let internal = convert_ontology(onto)?;
-    if crate::abox_saturation::saturate_abox_consistency(&internal).clash {
+    if crate::query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
     // Candidate named classes = declared classes minus unsat/Thing/Nothing.
@@ -133,7 +133,7 @@ pub fn disjoint_object_properties<A: ForIRI>(
     use horned_owl::model::ObjectPropertyExpression as OPE;
 
     let internal = convert_ontology(onto)?;
-    if crate::abox_saturation::saturate_abox_consistency(&internal).clash {
+    if crate::query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
     let mut out: Vec<(String, String)> = Vec::new();
@@ -168,7 +168,7 @@ pub fn disjoint_data_properties<A: ForIRI>(
     use horned_owl::model::Component as C;
 
     let internal = convert_ontology(onto)?;
-    if crate::abox_saturation::saturate_abox_consistency(&internal).clash {
+    if crate::query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
     let mut out: Vec<(String, String)> = Vec::new();

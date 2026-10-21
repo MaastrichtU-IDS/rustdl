@@ -271,6 +271,10 @@ pub fn is_instance_of_reporting_internal(
         // Complete and terminating on this fragment, with no tableau probe, so
         // nothing can be cut: `incomplete` is false by construction here.
         let (subsumers, nominal_by_ind) = saturate_for_realize(internal);
+        // #313: on an inconsistent KB error like `realize`, not answer per pair.
+        if instance_query_inconsistent_fast(internal, &subsumers, &nominal_by_ind) {
+            return Err(ReasonError::Inconsistent);
+        }
         return Ok((
             nominal_by_ind
                 .get(&individual_id)
@@ -280,6 +284,9 @@ pub fn is_instance_of_reporting_internal(
     }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
+    if instance_query_inconsistent_tableau(internal, &closure, &prepared) {
+        return Err(ReasonError::Inconsistent);
+    }
     let pair_deadline = realize_pair_timeout_ms_from_env()
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
     // Single-pair path — the witness is a realize-loop optimization (one
@@ -334,6 +341,10 @@ pub fn is_instance_of_saturation_only_internal(
         .individual_id(individual_iri)
         .ok_or_else(|| ReasonError::UnknownIndividual(individual_iri.to_owned()))?;
     let closure = saturate(internal);
+    // #313: the closure itself proves the KB inconsistent.
+    if crate::query_inconsistency_guard_enabled() && crate::saturation_says_inconsistent(&closure) {
+        return Err(ReasonError::Inconsistent);
+    }
     Ok(instance_check_closure_only(
         internal,
         &closure,
@@ -596,6 +607,10 @@ pub fn instances_of_reporting_internal(
     // `a`'s nominal class (complete + terminating; no tableau).
     if realize_saturation_eligible(internal) {
         let (subsumers, nominal_by_ind) = saturate_for_realize(internal);
+        // #313: on an inconsistent KB error like `realize`.
+        if instance_query_inconsistent_fast(internal, &subsumers, &nominal_by_ind) {
+            return Err(ReasonError::Inconsistent);
+        }
         let mut out = Vec::new();
         for idx in 0..internal.vocabulary.num_individuals() {
             let ind = IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
@@ -614,6 +629,9 @@ pub fn instances_of_reporting_internal(
     }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
+    if instance_query_inconsistent_tableau(internal, &closure, &prepared) {
+        return Err(ReasonError::Inconsistent);
+    }
     let pair_deadline_ms: Option<u64> = realize_pair_timeout_ms_from_env();
     let mut out = Vec::new();
     // Sticky across the loop: ANY cut probe means the returned SET may be short.
@@ -676,6 +694,10 @@ pub fn instances_of_saturation_only_internal(
         .class_id(class_iri)
         .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
     let closure = saturate(internal);
+    // #313: the closure itself proves the KB inconsistent.
+    if crate::query_inconsistency_guard_enabled() && crate::saturation_says_inconsistent(&closure) {
+        return Err(ReasonError::Inconsistent);
+    }
     let mut out = Vec::new();
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
@@ -1128,6 +1150,39 @@ pub(crate) fn realize_via_saturation_internal(
         incomplete: false,
         witness_prune_active: false,
     })
+}
+
+/// #313 for the instance queries, reusing what they compute anyway instead of the
+/// separate [`crate::query_kb_inconsistent`]: the `ABox` saturation, plus the saturator's
+/// signal and an unsat individual stand-in (fast path) or `abox_check` (tableau path).
+fn instance_query_inconsistent_fast(
+    internal: &InternalOntology,
+    subsumers: &owl_dl_saturation::Subsumers,
+    nominal_by_ind: &HashMap<IndividualId, ClassId>,
+) -> bool {
+    crate::query_inconsistency_guard_enabled()
+        && (crate::abox_saturation::saturate_abox_consistency(internal).clash
+            || crate::reflexive_empty_clause_inconsistent(internal)
+            || crate::saturation_says_inconsistent(subsumers)
+            || nominal_by_ind
+                .values()
+                .any(|&n| subsumers.is_unsatisfiable(n)))
+}
+
+/// See [`instance_query_inconsistent_fast`].
+fn instance_query_inconsistent_tableau(
+    internal: &InternalOntology,
+    closure: &owl_dl_saturation::Subsumers,
+    prepared: &PreparedOntology,
+) -> bool {
+    crate::query_inconsistency_guard_enabled()
+        && (crate::abox_saturation::saturate_abox_consistency(internal).clash
+            || crate::reflexive_empty_clause_inconsistent(internal)
+            || crate::saturation_says_inconsistent(closure)
+            || matches!(
+                prepared.abox_verdict(),
+                crate::abox_check::AboxVerdict::Inconsistent { .. }
+            ))
 }
 
 /// True iff the internal ontology contains the axiom `SubClassOf(owl:Thing,

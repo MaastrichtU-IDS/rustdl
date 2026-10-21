@@ -104,7 +104,7 @@ pub fn same_individuals<A: ForIRI>(
 ) -> Result<SameIndividuals, ReasonError> {
     let internal = convert_ontology(onto)?;
     let saturation = crate::abox_saturation::saturate_abox_consistency(&internal);
-    if saturation.clash {
+    if saturation.clash || crate::query_kb_inconsistent_beyond_abox(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
@@ -186,7 +186,7 @@ pub fn different_individuals<A: ForIRI>(
     pair_deadline: Option<Duration>,
 ) -> Result<DifferentIndividuals, ReasonError> {
     let internal = convert_ontology(onto)?;
-    if crate::abox_saturation::saturate_abox_consistency(&internal).clash {
+    if crate::query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 

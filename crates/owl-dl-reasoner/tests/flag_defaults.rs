@@ -136,6 +136,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::sat_inconsistency_all_surfaces_enabled,
             true,
         ),
+        (
+            "RUSTDL_QUERY_INCONSISTENCY_GUARD",
+            owl_dl_reasoner::query_inconsistency_guard_enabled,
+            true,
+        ),
         // ── owl-dl-saturation ────────────────────────────────────────────
         (
             "RUSTDL_SAT_WORK_CLOCK",

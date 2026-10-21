@@ -7,6 +7,17 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **The query surfaces error on a KB that `abox_check` or the EL saturator proves inconsistent
+  (#313), `RUSTDL_QUERY_INCONSISTENCY_GUARD`, default ON (`=0` reverts).** `same`/`different`
+  individuals, `disjoint_*`, the `materialize_*` functions (and so `property-values`), the instance
+  queries and the class-expression queries guarded only on the `ABox` saturation. So on `c : E`,
+  `E ⊑ ⊥` or `{a} ⊑ ⊥` they returned answers while `consistent` said inconsistent. They now
+  return `Inconsistent` (the cheap checks: `ABox` saturation, the saturator's signal, `abox_check`,
+  the reflexive empty clause; the instance queries reuse what they already compute). `justify` and
+  `repair` on an `instance` query treat that as "everything is entailed", as they already did for
+  property assertions. Not covered, unlike `consistent` and `realize`: an inconsistency only the
+  `ABox`-seeded wedge finds (it can spend seconds on a consistent KB, which single queries should
+  not pay), and an asserted non-atomic class with an unsatisfiable filler (`c : ∃R.E`, `E ⊑ ⊥`).
 - **`rustdl consistent`, `realize`, `diagnose` and `justify` agree with `classify` on
   inconsistencies the EL saturator proves (#310), `RUSTDL_SAT_INCONSISTENCY_ALL_SURFACES`, default
   ON (`=0` reverts).** `classify` reads the saturator's `⊤ ⊑ ⊥` / unsat-individual signal; the

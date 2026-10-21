@@ -169,6 +169,10 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     onto: &SetOntology<A>,
     ce: &ClassExpression<A>,
 ) -> Result<CeVerdict, ReasonError> {
+    // #313: the inconsistent-KB guard, on the ontology as given.
+    if crate::query_kb_inconsistent(&owl_dl_core::convert::convert_ontology(onto)?) {
+        return Err(ReasonError::Inconsistent);
+    }
     ensure_fresh(onto, PROBE_IRI)?;
     let mut probed = onto.clone();
     let build: Build<A> = Build::new();
@@ -190,6 +194,10 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     sub_ce: &ClassExpression<A>,
     sup_ce: &ClassExpression<A>,
 ) -> Result<CeVerdict, ReasonError> {
+    // #313: the inconsistent-KB guard, on the ontology as given.
+    if crate::query_kb_inconsistent(&owl_dl_core::convert::convert_ontology(onto)?) {
+        return Err(ReasonError::Inconsistent);
+    }
     ensure_fresh(onto, PROBE_IRI)?;
     ensure_fresh(onto, PROBE_IRI_2)?;
     let mut probed = onto.clone();

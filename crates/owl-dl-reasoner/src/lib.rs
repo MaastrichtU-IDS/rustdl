@@ -3335,6 +3335,21 @@ pub(crate) fn abox_saturation_inconsistent_bounded(
 /// pre-check sets `consistency_undetermined`. A wedge `Sat` decides consistency,
 /// so a cut `ABox` route followed by a wedge `Sat` stays determined. Sound either
 /// way: a skipped or cut route yields no verdict, never an inconsistency.
+/// #310: whether the saturator itself proved the KB inconsistent (`⊤ ⊑ ⊥` syntactically,
+/// or `⊤` / a nominal stand-in derived unsatisfiable). `classify` reads this through
+/// [`classify_inconsistency_precheck`]; `is_consistent` and `realize` read it too, so the
+/// surfaces agree. Default **ON**; `RUSTDL_SAT_INCONSISTENCY_ALL_SURFACES=0` reverts.
+pub(crate) fn saturation_says_inconsistent(closure: &owl_dl_saturation::Subsumers) -> bool {
+    sat_inconsistency_all_surfaces_enabled()
+        && (closure.globally_inconsistent() || closure.top_is_unsat())
+}
+
+/// See [`saturation_says_inconsistent`].
+#[must_use]
+pub fn sat_inconsistency_all_surfaces_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_INCONSISTENCY_ALL_SURFACES").is_none_or(|v| v != "0")
+}
+
 pub(crate) fn classify_inconsistency_precheck(
     internal: &InternalOntology,
     closure: &owl_dl_saturation::Subsumers,
@@ -6742,11 +6757,9 @@ pub fn is_consistent_internal(internal: InternalOntology) -> Result<bool, Reason
 
 /// Stats-returning variant of [`is_consistent`].
 ///
-/// `is_consistent` always goes through the tableau today because the
-/// EL closure can't soundly answer "every model is empty" without
-/// `⊤`-sub-class lowering — so the returned stats will currently
-/// report `answered_by_saturation: false`. Surfacing the field
-/// anyway keeps the API symmetric and ready for a future fast path.
+/// `answered_by_saturation` is `true` when a saturation pre-check decided the answer:
+/// the `ABox` saturation, or (#310) the EL closure proving `⊤` or an individual's
+/// stand-in unsatisfiable. Otherwise the wedge or the tableau answered.
 ///
 /// # Errors
 ///
@@ -6845,6 +6858,14 @@ pub fn is_consistent_internal_bounded(
         return Ok(None);
     }
     let prepared = PreparedOntology::from_internal(internal)?;
+    // #310: as in `is_consistent_internal_full`.
+    if prepared
+        .closure
+        .as_ref()
+        .is_some_and(saturation_says_inconsistent)
+    {
+        return Ok(Some(false));
+    }
     if let abox_check::AboxVerdict::Inconsistent { .. } = prepared.abox_verdict() {
         return Ok(Some(false));
     }
@@ -6903,6 +6924,26 @@ fn is_consistent_internal_full(
     let prep_started = std::time::Instant::now();
     let prepared = PreparedOntology::from_internal(internal)?;
     let prep_elapsed = prep_started.elapsed();
+    // #310: the EL closure `from_internal` already built can prove inconsistency on its
+    // own (`classify` reads the same flags). `None` only for the lazy `ABox`-free case,
+    // a sound miss.
+    if prepared
+        .closure
+        .as_ref()
+        .is_some_and(saturation_says_inconsistent)
+    {
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!("consistency: saturation proves inconsistent");
+        }
+        return Ok((
+            false,
+            QueryStats {
+                answered_by_saturation: true,
+                pure_el_mode: false,
+                incomplete: false,
+            },
+        ));
+    }
     // Sound pre-check: a positive verdict short-circuits the tableau.
     if let abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {
         if std::env::var_os("RUSTDL_TRACE").is_some() {

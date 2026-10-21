@@ -36,11 +36,18 @@ def test_instances_of_simple(fixtures_dir):
 
 
 def test_realize_returns_dict(fixtures_dir):
-    fixture = fixtures_dir / "abox" / "p1_direct_bot.ofn"
+    fixture = fixtures_dir / "abox" / "p1_no_bot.ofn"
     realization = rustdl.realize(str(fixture))
     assert isinstance(realization, dict)
     assert "http://t/a" in realization
-    assert isinstance(realization["http://t/a"], list)
+    assert "http://t/Sat" in realization["http://t/a"]
+
+
+def test_realize_raises_on_an_inconsistent_kb(fixtures_dir):
+    # p1_direct_bot asserts a : Unsat with Unsat ⊑ ⊥ (#310: realize used to answer).
+    fixture = fixtures_dir / "abox" / "p1_direct_bot.ofn"
+    with pytest.raises(rustdl.RustdlError):
+        rustdl.realize(str(fixture))
 
 
 def test_disjoint_classes(tmp_path):

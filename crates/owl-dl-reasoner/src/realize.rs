@@ -833,6 +833,10 @@ pub fn realize_saturation_only_internal(
     internal: &InternalOntology,
 ) -> Result<Realization, ReasonError> {
     let hierarchy = classify_saturation_only_internal(internal)?;
+    // #310: the classification proved the KB inconsistent.
+    if crate::sat_inconsistency_all_surfaces_enabled() && hierarchy.stats().inconsistent {
+        return Err(ReasonError::Inconsistent);
+    }
     // Enumerated over the FULL class-id space, so `enumerate()` below yields a
     // genuine `ClassId` index (the DKey filter that makes `classify`'s report
     // vector shorter is deliberately NOT applied here — applying it before the
@@ -1042,6 +1046,18 @@ pub(crate) fn realize_via_saturation_internal(
     let num_user_classes = internal.vocabulary.num_classes();
 
     let (subsumers, nominal_by_ind) = saturate_for_realize(internal);
+    // #310: the KB is inconsistent if the classification says so, or if an
+    // individual's stand-in is unsatisfiable (`c : E`, `E ⊑ ⊥`): an individual exists
+    // in every model. Without it such a KB realized to an empty answer.
+    if crate::sat_inconsistency_all_surfaces_enabled()
+        && (hierarchy.stats().inconsistent
+            || crate::saturation_says_inconsistent(&subsumers)
+            || nominal_by_ind
+                .values()
+                .any(|&n| subsumers.is_unsatisfiable(n)))
+    {
+        return Err(ReasonError::Inconsistent);
+    }
 
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
@@ -1203,6 +1219,12 @@ pub(crate) fn realize_tableau_internal(
         pair_deadline_ms.map(std::time::Duration::from_millis),
         None,
     )?;
+    // #310: classify's inconsistency pre-check (saturator signal, `ABox` saturation,
+    // the `ABox`-seeded wedge) proved the KB inconsistent; it then marks every class
+    // unsat, so the probe loop below would realize nothing and report it complete.
+    if crate::sat_inconsistency_all_surfaces_enabled() && hierarchy.stats().inconsistent {
+        return Err(ReasonError::Inconsistent);
+    }
     // Full class-id space — see the note in `realize_saturation_only_internal`:
     // `enumerate()` must stay aligned with `ClassId`, so no DKey filter here,
     // and `class_iris` therefore includes `urn:rustdl-dkey:` entries.

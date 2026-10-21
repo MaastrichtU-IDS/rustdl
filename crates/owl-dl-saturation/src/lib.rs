@@ -219,6 +219,15 @@ pub fn sat_distinct_min_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_DISTINCT_MIN").is_none_or(|v| v != "0")
 }
 
+/// #302 item 3: a nominal `{a}` on either side of a class axiom is read through `a`'s
+/// stand-in `N_a`: `{a} ⊑ C` as the told `N_a ⊑ C`, and `Y ⊑ {a}` (top-level or `And`
+/// operand) as `Y ⊑ N_a`. So `EquivalentClasses({a}, Y)` makes `N_a ≡ Y`. Default **ON**;
+/// `RUSTDL_SAT_NOMINAL_EQUIV=0` reverts.
+#[must_use]
+pub fn sat_nominal_equiv_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_NOMINAL_EQUIV").is_none_or(|v| v != "0")
+}
+
 /// #296: an inverse existential `∃S⁻.E` inside a filler gets a stand-in class
 /// `InvExKey(S, E) ≡ ∃S⁻.E`, derived for a nominal `a` from a fact `N_c ⊑ ∃S.N_a` of a
 /// nominal `c` with `N_c ⊑ E` (`c` exists, so `a` has the `S⁻`-successor `c` in `E`).
@@ -3230,6 +3239,8 @@ struct TseitinAllocator {
     /// of two nominal individuals makes their classes mutually subsuming
     /// (`seed_nominal_abox_edges`), never the same id.
     nominal_by_ind: HashMap<IndividualId, ClassId>,
+    /// Stand-ins created only by `introduce_nominal_quiet`; they do not seed the reach.
+    quiet_nominals: HashSet<IndividualId>,
     /// Stable synthetic atomic class per unqualified `≤n R` cardinality
     /// restriction (`(n, R)`), used as a structural stand-in (cluster-C lever,
     /// wine residual-29). Like `nominal_by_ind`: an opaque atom. `C ⊑ MaxKey(n,R)`
@@ -3284,6 +3295,7 @@ impl TseitinAllocator {
             by_existential: HashMap::new(),
             by_union_existential: HashMap::new(),
             nominal_by_ind: HashMap::new(),
+            quiet_nominals: HashSet::new(),
             max_key_by_role: HashMap::new(),
             min_key_by: HashMap::new(),
             inv_exists_key_by: HashMap::new(),
@@ -3336,6 +3348,7 @@ impl TseitinAllocator {
     /// the nominal `{ind}`. Sound: matching is by individual identity
     /// (structural), so `∃R.{a}` folds only against the same `a`.
     fn introduce_nominal(&mut self, ind: IndividualId) -> ClassId {
+        self.quiet_nominals.remove(&ind);
         if let Some(&existing) = self.nominal_by_ind.get(&ind) {
             return existing;
         }
@@ -3343,6 +3356,27 @@ impl TseitinAllocator {
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
         self.nominal_by_ind.insert(ind, synthetic);
         synthetic
+    }
+
+    /// Like [`Self::introduce_nominal`], but a stand-in created here does not seed the
+    /// nominal reach over the `ABox` unless some other use of `{a}` also introduces it.
+    /// For `{a}` on either side of a class axiom (#302 item 3): on `ore_ont_15846` a
+    /// single `Subset ≡ {x}` otherwise switched on `ABox` seeding over ~190k assertions
+    /// (saturation 0.1 s → 22 s) for an identical answer.
+    fn introduce_nominal_quiet(&mut self, ind: IndividualId) -> ClassId {
+        if let Some(&existing) = self.nominal_by_ind.get(&ind) {
+            return existing;
+        }
+        let key = self.introduce_nominal(ind);
+        self.quiet_nominals.insert(ind);
+        key
+    }
+
+    /// Whether some stand-in seeds the nominal reach (see `introduce_nominal_quiet`).
+    fn has_reach_seeds(&self) -> bool {
+        self.nominal_by_ind
+            .keys()
+            .any(|i| !self.quiet_nominals.contains(i))
     }
 
     /// Get-or-allocate the opaque synthetic class standing in for an
@@ -4102,10 +4136,10 @@ fn collect_el_rules(
     // allocates a NomKey per ABox individual, inflating `num_total_classes` and
     // the O(num_total_classes²) subsumer matrix (ore_ont_3914: 570K GAZ
     // individuals ⇒ ~84 GB of dead matrix). Skipping is verdict-identical.
-    if !tseitin.nominal_by_ind.is_empty() {
+    if tseitin.has_reach_seeds() {
         build_abox_nominal_reach(internal, &mut tseitin, &mut rules);
     }
-    if sat_nominal_edges_enabled() && !tseitin.nominal_by_ind.is_empty() {
+    if sat_nominal_edges_enabled() && tseitin.has_reach_seeds() {
         seed_nominal_abox_edges(internal, role_super, &mut tseitin, &mut rules);
     }
     // #302: a nominal individual's class assertion as the told `N_a ⊑ C`. Here, before the
@@ -4668,6 +4702,43 @@ fn lower_atomic_sub(
     for y in not_atomic_operands_on_right(sup, pool) {
         rules.disjoint_pairs.push((sub_id, y));
     }
+    // #302 item 3: `sub ⊑ {a}` (top-level or `And` operand) as `sub ⊑ N_a`.
+    if sat_nominal_equiv_enabled() {
+        for op in self_or_conjuncts(sup, pool) {
+            if let ConceptExpr::Nominal(ind) = pool.get(op) {
+                let n = tseitin.introduce_nominal_quiet(*ind);
+                rules.atomic_subsumptions.push(AtomicSubsumption {
+                    sub: sub_id,
+                    sup: n,
+                });
+            }
+        }
+    }
+    // #302 item 4: a told `sub ⊑ ∃S⁻.E` (top-level or `And` operand) seeds
+    // `sub ⊑ InvExKey(S, E)`: the asserted concept itself (#296).
+    if sat_nominal_inverse_exists_enabled() {
+        for op in self_or_conjuncts(sup, pool) {
+            if let ConceptExpr::Some(role, body) = pool.get(op)
+                && role.is_inverse()
+                && let Some(body_id) = atomic_or_tseitin_body_with_extras(
+                    *body,
+                    &[],
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                    chain_ranges,
+                    None,
+                )
+            {
+                let key = tseitin.introduce_inverse_exists_key(role.role_id(), body_id);
+                rules.atomic_subsumptions.push(AtomicSubsumption {
+                    sub: sub_id,
+                    sup: key,
+                });
+            }
+        }
+    }
     // Atomic ⊑ ∃r.Y: existential fact. Tseitin introduces a
     // synthetic atomic if the body is a compound And, OR if
     // r has a range constraint that needs to be folded in.
@@ -4932,6 +5003,10 @@ fn lower_sub_class_of(
                 }
             }
         }
+        ConceptExpr::Nominal(ind) if sat_nominal_equiv_enabled() => {
+            let n = tseitin.introduce_nominal_quiet(*ind);
+            lower_atomic_sub(n, sup, pool, rules, tseitin, effective_ranges, chain_ranges);
+        }
         ConceptExpr::Some(role, body) => {
             // ∃r.B ⊑ C: existential trigger. Named role only; the
             // body may be atomic, an `And` of atomics (Tseitin-folded),
@@ -4942,6 +5017,27 @@ fn lower_sub_class_of(
             // aren't marked as subsumers of Range(R) — folding the
             // range in would make the trigger never fire.
             if role.is_inverse() {
+                // #302 item 4: `∃S⁻.E ⊑ C` as `InvExKey(S, E) ⊑ C`. The key is `∃S⁻.E`
+                // and is derived only where that holds (#296).
+                if sat_nominal_inverse_exists_enabled()
+                    && let Some(body_id) = atomic_or_tseitin_body_with_extras(
+                        *body,
+                        &[],
+                        pool,
+                        rules,
+                        tseitin,
+                        effective_ranges,
+                        chain_ranges,
+                        None,
+                    )
+                {
+                    let key = tseitin.introduce_inverse_exists_key(role.role_id(), body_id);
+                    for c in atomic_operands_on_right(sup, pool) {
+                        rules
+                            .atomic_subsumptions
+                            .push(AtomicSubsumption { sub: key, sup: c });
+                    }
+                }
                 return;
             }
             // `∃R.⊤ ⊑ C` is exactly the domain axiom domain(R) ⊒ C (semantically
@@ -5656,10 +5752,66 @@ fn seed_nominal_abox_edges(
             _ => {}
         }
     }
+    // #302 item 2: `c : Y` with a told `Y ⊑ ∃S.{a}` (or a told sub-class of such a `Y`)
+    // links `c` to `a`: Phase 2d then gives `N_c` that edge, but only if `c` has a stand-in.
+    if sat_nominal_complex_types_enabled() {
+        let ind_of: HashMap<ClassId, IndividualId> = tseitin
+            .nominal_by_ind
+            .iter()
+            .map(|(&i, &k)| (k, i))
+            .collect();
+        let mut reaches: HashMap<ClassId, Vec<IndividualId>> = HashMap::new();
+        for f in &rules.existential_facts {
+            if let Some(&a) = ind_of.get(&f.target)
+                && !ind_of.contains_key(&f.sub)
+            {
+                reaches.entry(f.sub).or_default().push(a);
+            }
+        }
+        if !reaches.is_empty() {
+            let mut down: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+            for e in &rules.atomic_subsumptions {
+                down.entry(e.sup).or_default().push(e.sub);
+            }
+            let mut stack: Vec<ClassId> = reaches.keys().copied().collect();
+            while let Some(y) = stack.pop() {
+                let targets = reaches[&y].clone();
+                for &z in down.get(&y).map_or(&[][..], Vec::as_slice) {
+                    let e = reaches.entry(z).or_default();
+                    let before = e.len();
+                    e.extend(targets.iter().copied());
+                    e.sort_unstable();
+                    e.dedup();
+                    if e.len() != before {
+                        stack.push(z);
+                    }
+                }
+            }
+            for ax in &internal.axioms {
+                if let Axiom::ClassAssertion { class, individual } = ax {
+                    for y in atomic_operands_on_right(*class, &internal.concepts) {
+                        for &a in reaches.get(&y).map_or(&[][..], Vec::as_slice) {
+                            if a != *individual {
+                                class_linked.push(*individual);
+                                class_linked.push(a);
+                                adj.entry(*individual).or_default().push(a);
+                                adj.entry(a).or_default().push(*individual);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if adj.is_empty() {
         return;
     }
-    let mut seeds: Vec<IndividualId> = tseitin.nominal_by_ind.keys().copied().collect();
+    let mut seeds: Vec<IndividualId> = tseitin
+        .nominal_by_ind
+        .keys()
+        .filter(|i| !tseitin.quiet_nominals.contains(i))
+        .copied()
+        .collect();
     seeds.sort_unstable();
     let mut reach: HashSet<IndividualId> = seeds.iter().copied().collect();
     let mut queue: VecDeque<IndividualId> = seeds.into_iter().collect();

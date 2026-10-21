@@ -67,6 +67,35 @@ pub enum SaturationResult {
 /// The loop exits when a full scan finds nothing dirty (stable) or
 /// a clash surfaces, with `max_iters` as a defensive cap.
 pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
+    // #288: when the graph is a fixpoint plus label additions only, dirty just
+    // the nodes a full pass would find work on (see
+    // `incremental_saturate_enabled`).
+    let start = if ctx.incremental_saturate_enabled() {
+        ctx.incremental_start()
+    } else {
+        None
+    };
+    ctx.begin_saturate();
+    let result = match start {
+        Some(nodes) => {
+            let len = ctx.graph().len();
+            for node in nodes {
+                if (node.index() as usize) < len {
+                    ctx.graph_mut().set_dirty(node, true);
+                }
+            }
+            saturate_loop(ctx, max_iters)
+        }
+        None => saturate_full(ctx, max_iters),
+    };
+    ctx.end_saturate();
+    if result == SaturationResult::Stable {
+        ctx.record_stable_mark();
+    }
+    result
+}
+
+fn saturate_full(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
     // Conservatively mark everything dirty: between saturate() calls
     // the search has added or rolled back labels, and some state
     // (e.g. `residuals_saturated` memo, nominal-map shape, edge
@@ -79,7 +108,11 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
     // saturate() call still saves the bulk of the work; the entry
     // reset is a single boolean write per node.
     ctx.graph_mut().mark_all_dirty();
-    for _ in 0..max_iters {
+    saturate_loop(ctx, max_iters)
+}
+
+fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
+    for iter in 0..max_iters {
         // Cooperative deadline check. A single saturate() call can
         // generate many nodes (e.g. via chain rule expansion under
         // inverse roles) and would otherwise run far past a
@@ -111,6 +144,9 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
             if ctx.graph().node(node).is_redirected() {
                 ctx.graph_mut().set_dirty(node, false);
                 continue;
+            }
+            if iter == 0 {
+                ctx.set_first_scan_at(idx, node_count);
             }
             // Clear *before* running rules so that a rule mutating
             // this node (e.g. apply_and adding decomposed children to
@@ -152,6 +188,7 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
                 changed = true;
             }
         }
+        ctx.end_first_scan();
         if !changed {
             // Deterministic rules are stable. Run the lazy-unfolding
             // sweep before declaring Stable: materialise any deferred

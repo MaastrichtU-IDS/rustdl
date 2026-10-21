@@ -244,6 +244,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_INCREMENTAL_SATURATE",
+            owl_dl_tableau::incremental_saturate_enabled,
+            true,
+        ),
+        (
             "RUSTDL_RESEED_VERIFY",
             owl_dl_tableau::reseed_verify_enabled,
             true,

@@ -711,6 +711,7 @@ fn needs_deferred_or(
 pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_exists);
     if ctx.is_blocked(node) {
+        ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
     // Nominals-first (#35 v4): defer generation while the node still carries a
@@ -799,6 +800,7 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
 pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_min);
     if ctx.is_blocked(node) {
+        ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
     // Nominals-first (#35 v4): defer generation while the node still carries a
@@ -1002,6 +1004,7 @@ fn has_distinct_witnesses(
 pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_max);
     if ctx.is_blocked(node) {
+        ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
     let maxes: Vec<(u32, Role, ConceptId, DepSet)> = {
@@ -1379,6 +1382,7 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         return RuleOutcome::NoChange;
     }
     if ctx.is_blocked(node) {
+        ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
     if ctx.chains().is_empty() {
@@ -1628,6 +1632,7 @@ fn chain_edge_already_present(
 pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_self_restriction);
     if ctx.is_blocked(node) {
+        ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
     // Snapshot the relevant label data; release the immutable borrow
@@ -1718,6 +1723,7 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
 pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_role_axioms);
     if ctx.is_blocked(node) {
+        ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
     if ctx.asymmetric_roles().is_empty() && ctx.disjoint_role_pairs().is_empty() {

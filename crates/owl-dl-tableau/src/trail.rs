@@ -100,6 +100,10 @@ pub enum TrailEntry {
     /// takes the [`Checkpoint`] returned by [`TableauTrail::checkpoint`]
     /// and undoes everything after it.
     Checkpoint,
+    /// `saturate` reached a fixpoint here (#288). Not a mutation; undo is a
+    /// no-op. `pending` lists the nodes a full pass would visit again on the
+    /// next call. See [`TableauTrail::labels_since_stable`].
+    StableMark { pending: Vec<NodeId> },
 }
 
 /// Opaque handle into the trail returned by [`TableauTrail::checkpoint`].
@@ -153,6 +157,41 @@ impl TableauTrail {
     pub(crate) fn record(&mut self, entry: TrailEntry) {
         self.generation += 1;
         self.entries.push(entry);
+    }
+
+    /// If the graph is a saturation fixpoint plus local label additions only,
+    /// the labelled nodes and the last [`TrailEntry::StableMark`]'s deferred
+    /// set: scanning back from the end meets nothing but local
+    /// [`TrailEntry::LabelAdded`]s and [`TrailEntry::Checkpoint`]s before a
+    /// mark. A rollback pops entries, so after one the scan sees the restored
+    /// state. `local(c)` must say whether a label `c` only matters to its own
+    /// node and that node's neighbours; any other label also disqualifies.
+    #[must_use]
+    pub fn labels_since_stable(
+        &self,
+        local: impl Fn(ConceptId) -> bool,
+    ) -> Option<(Vec<NodeId>, &[NodeId])> {
+        let mut labelled = Vec::new();
+        for entry in self.entries.iter().rev() {
+            match entry {
+                TrailEntry::StableMark { pending } => return Some((labelled, pending)),
+                TrailEntry::LabelAdded { node, concept } if local(*concept) => {
+                    labelled.push(*node);
+                }
+                TrailEntry::Checkpoint => {}
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// Whether any entry past `len` mutates the graph: a
+    /// [`TrailEntry::StableMark`] records a fixpoint, not a change (#288).
+    #[must_use]
+    pub fn mutated_since(&self, len: usize) -> bool {
+        self.entries[len.min(self.entries.len())..]
+            .iter()
+            .any(|e| !matches!(e, TrailEntry::StableMark { .. }))
     }
 
     /// A counter that changes whenever the trail does; see `generation`.
@@ -318,6 +357,6 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
                 graph.nominals.remove(&individual);
             }
         },
-        TrailEntry::Checkpoint => {}
+        TrailEntry::Checkpoint | TrailEntry::StableMark { .. } => {}
     }
 }

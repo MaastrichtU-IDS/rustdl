@@ -5750,7 +5750,7 @@ fn nominals_in(c: ConceptId, pool: &ConceptPool, out: &mut Vec<IndividualId>) {
 /// The individuals named by a nominal inside `c` without passing through a disjunction.
 /// `ObjectOneOf` with several members lowers to `Or`, which the saturator reads only through
 /// the common-subsumer under-approximation, so its members' stand-ins never feed a trigger;
-/// counting them would let one enumeration of the ABox individuals name them all (#298).
+/// counting them would let one enumeration of the `ABox` individuals name them all (#298).
 fn reachable_nominals_in(c: ConceptId, pool: &ConceptPool, out: &mut Vec<IndividualId>) {
     match pool.get(c) {
         ConceptExpr::Nominal(ind) => out.push(*ind),
@@ -5776,7 +5776,7 @@ fn reachable_nominals_in(c: ConceptId, pool: &ConceptPool, out: &mut Vec<Individ
 /// disjunction, closed under `SameIndividual` (not every individual that got a stand-in:
 /// `build_abox_nominal_reach` gives one to every individual on a transitive-role edge). Read
 /// from the axioms, not the concept pool, which `HyperCache::build` fills with `{x}` for its
-/// own ABox axioms.
+/// own `ABox` axioms.
 fn nominal_named_individuals(internal: &InternalOntology) -> HashSet<IndividualId> {
     let mut named = Vec::new();
     for ax in &internal.axioms {
@@ -7598,7 +7598,7 @@ Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 
     /// #298 cost bound: a member of a multi-member `ObjectOneOf` is not "named" (a single
-    /// enumeration of the ABox individuals would otherwise name them all and re-create the
+    /// enumeration of the `ABox` individuals would otherwise name them all and re-create the
     /// #289 blow-up); a `∃R.{a}` filler is, and so is its `SameIndividual`.
     #[test]
     fn nominal_named_individuals_skips_enumerations() {

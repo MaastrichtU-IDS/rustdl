@@ -41,26 +41,52 @@ fn fixture_path(rel_to_workspace_root: &str) -> PathBuf {
 ///   defensive belt-and-suspenders for any fixture added later with multiple
 ///   direct/equiv lines: sorting can only ever mask *order*, never a
 ///   dropped/extra line, so it cannot hide a real mismatch.
-fn classify_verdict_lines(ofn: &Path, incremental: bool) -> Vec<String> {
+///
+/// Also returns whether a per-pair deadline cut the run (`# timed-out pairs: N`,
+/// `N > 0`). A cut pair defaults to "not subsumed", so a cut arm can legitimately
+/// differ from an uncut one; that is budget truncation, not a drain bug (#316).
+fn classify_verdict_lines(ofn: &Path, incremental: bool, pair_ms: u64) -> (Vec<String>, bool) {
     let bin = env!("CARGO_BIN_EXE_rustdl");
     let mut c = Command::new(bin);
     c.arg("classify")
         .arg(ofn)
         .arg("--pair-timeout-ms")
-        .arg("1000");
+        .arg(pair_ms.to_string());
     c.env(
         "RUSTDL_HYPER_INCREMENTAL_FIXPOINT",
         if incremental { "1" } else { "0" },
     );
     let out = c.output().expect("run rustdl");
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let cut = stdout.lines().any(|l| {
+        l.strip_prefix("# timed-out pairs: ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse::<u64>().ok())
+            .is_some_and(|n| n > 0)
+    });
     let mut lines: Vec<String> = stdout
         .lines()
         .filter(|l| !l.starts_with('#'))
         .map(str::to_owned)
         .collect();
     lines.sort_unstable();
-    lines
+    (lines, cut)
+}
+
+/// Both arms at the smallest budget where neither is cut, so the comparison is between
+/// complete answers. #316: in a debug build the OFF arm (full re-seed) needed more than
+/// 1000 ms for one `pizza` wedge proof about 2 runs in 3, cut it, and reported a farther
+/// parent; the test then read that truncation as a drain mismatch. Fails if every
+/// budget still cuts, rather than comparing truncated answers.
+fn uncut_arms(path: &Path, rel: &str) -> (Vec<String>, Vec<String>) {
+    for pair_ms in [1_000, 10_000, 60_000] {
+        let (off, off_cut) = classify_verdict_lines(path, false, pair_ms);
+        let (on, on_cut) = classify_verdict_lines(path, true, pair_ms);
+        if !off_cut && !on_cut {
+            return (off, on);
+        }
+    }
+    panic!("{rel}: a per-pair deadline still cuts an arm at 60 s; cannot compare complete answers");
 }
 
 #[test]
@@ -101,8 +127,7 @@ fn incremental_matches_baseline_on_fixtures() {
             panic!("checked-in fixture missing: {rel} (resolved from {path:?})");
         }
 
-        let off = classify_verdict_lines(&path, false);
-        let on = classify_verdict_lines(&path, true);
+        let (off, on) = uncut_arms(&path, rel);
         assert_eq!(off, on, "mismatch on {rel}");
         compared += 1;
     }

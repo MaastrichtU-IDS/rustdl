@@ -1439,6 +1439,100 @@ pub(crate) fn parse_string_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet>
     }
 }
 
+/// `rdfs:Literal`, the top data range (#314).
+pub(crate) const RDFS_LITERAL: &str = "http://www.w3.org/2000/01/rdf-schema#Literal";
+/// `xsd:boolean` (#314).
+pub(crate) const XSD_BOOLEAN: &str = "http://www.w3.org/2001/XMLSchema#boolean";
+/// `xsd:anyURI` (#314).
+pub(crate) const XSD_ANY_URI: &str = "http://www.w3.org/2001/XMLSchema#anyURI";
+
+/// Whether `dr` is `rdfs:Literal`, the top data range: every data value is in
+/// it (#314).
+pub(crate) fn is_rdfs_literal<A: ForIRI>(dr: &DataRange<A>) -> bool {
+    matches!(dr, DataRange::Datatype(dt) if dt.0.as_ref() == RDFS_LITERAL)
+}
+
+/// The value of an `xsd:boolean` literal, as its canonical lexical form
+/// `"true"` or `"false"` (#314). `"1"` and `"0"` are the other two lexical
+/// forms; XSD collapses whitespace first. Anything else is not a boolean
+/// literal and returns `None`, so it drops.
+pub(crate) fn boolean_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<String> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == XSD_BOOLEAN => match xsd_collapse(literal).as_str() {
+            "true" | "1" => Some("true".to_string()),
+            "false" | "0" => Some("false".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// An `xsd:boolean` `DataRange` as a [`StrSet`] of canonical lexical forms
+/// (#314). The value space has two members, so bare `xsd:boolean` is the exact
+/// set `{false, true}`, never `Top`. `Top` is not a subset of any finite set
+/// under [`StrSet::subset`], so `xsd:boolean ⊆ DataOneOf(false, true)` would
+/// be missed. A `DataOneOf` must be all boolean literals, or it drops.
+pub(crate) fn parse_boolean_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet> {
+    match dr {
+        DataRange::Datatype(dt) if dt.0.as_ref() == XSD_BOOLEAN => Some(StrSet::Set(
+            ["false".to_string(), "true".to_string()]
+                .into_iter()
+                .collect(),
+        )),
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                set.insert(boolean_literal_value(l)?);
+            }
+            Some(StrSet::Set(set))
+        }
+        _ => None,
+    }
+}
+
+/// XSD `whiteSpace = collapse`: strip leading and trailing `#x9 #xA #xD #x20`
+/// and fold each internal run of them to one space. Narrower than
+/// `str::trim`, which also strips other Unicode whitespace.
+fn xsd_collapse(s: &str) -> String {
+    let is_ws = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
+    s.split(is_ws)
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The lexical form of an `xsd:anyURI` literal, whitespace-collapsed as its
+/// datatype requires (#314). `anyURI` is equality-typed like `xsd:string` but
+/// a different datatype, so it gets its own bucket.
+pub(crate) fn exact_anyuri_literal<A: ForIRI>(l: &Literal<A>) -> Option<String> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == XSD_ANY_URI => Some(xsd_collapse(literal)),
+        _ => None,
+    }
+}
+
+/// An `xsd:anyURI` `DataRange` as a [`StrSet`] (#314): bare `xsd:anyURI` is
+/// `Top`, and a `DataOneOf` must be all `anyURI` literals, or it drops.
+pub(crate) fn parse_anyuri_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet> {
+    match dr {
+        DataRange::Datatype(dt) if dt.0.as_ref() == XSD_ANY_URI => Some(StrSet::Top),
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                set.insert(exact_anyuri_literal(l)?);
+            }
+            Some(StrSet::Set(set))
+        }
+        _ => None,
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Numeric DataOneOf parsers (Phase D-numeric-oneof)
 //
@@ -2739,8 +2833,10 @@ enum DtFamily {
 
 /// Classify a datatype IRI into a value-space family, or `None` when we
 /// are not certain it is value-space-disjoint from the others (e.g.
-/// `xsd:anyURI`, `rdfs:Literal`, custom datatypes) — `None` is never
-/// flagged, keeping DP-1 a sound under-approximation.
+/// `rdfs:Literal`, custom datatypes) — `None` is never flagged, keeping DP-1 a
+/// sound under-approximation. `xsd:anyURI` is disjoint from the others (#314,
+/// `HermiT` agrees), and conversion's `anyuri` family uses that; it is left
+/// unclassified here only because this pre-check has no need for it.
 fn dt_family(iri: &str) -> Option<DtFamily> {
     const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
     const RDF_LANGSTRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
@@ -2761,7 +2857,7 @@ fn dt_family(iri: &str) -> Option<DtFamily> {
         "dateTime" | "dateTimeStamp" | "date" | "time" | "gYear" | "gYearMonth" | "gMonth"
         | "gDay" | "gMonthDay" | "duration" => DtFamily::Temporal,
         "hexBinary" | "base64Binary" => DtFamily::Binary,
-        // anyURI, rdfs:Literal restrictions, unknown → not certain → skip.
+        // anyURI (see above), rdfs:Literal restrictions, unknown → skip.
         _ => return None,
     })
 }

@@ -508,15 +508,21 @@ fn hex_decode(s: &str) -> Option<String> {
 }
 
 fn str_dkey_iri(set: &StrSet) -> String {
+    strset_dkey_iri(DKEY_STRING_TAG, set)
+}
+
+/// The `StrSet` encoding under `tag`. `xsd:string`, `xsd:boolean` and
+/// `xsd:anyURI` share it, each under its own tag (#314).
+fn strset_dkey_iri(tag: &str, set: &StrSet) -> String {
     match set {
-        StrSet::Top => format!("{DKEY_IRI_PREFIX}{DKEY_STRING_TAG}*"),
+        StrSet::Top => format!("{DKEY_IRI_PREFIX}{tag}*"),
         StrSet::Set(members) => {
             let body = members
                 .iter()
                 .map(|m| hex_encode(m.as_bytes()))
                 .collect::<Vec<_>>()
                 .join(":");
-            format!("{DKEY_IRI_PREFIX}{DKEY_STRING_TAG}{body}")
+            format!("{DKEY_IRI_PREFIX}{tag}{body}")
         }
     }
 }
@@ -530,9 +536,11 @@ pub fn decode_string_dkey(iri: &str) -> Option<StrSet> {
 }
 
 fn parse_string_dkey_iri(iri: &str) -> Option<StrSet> {
-    let rest = iri
-        .strip_prefix(DKEY_IRI_PREFIX)?
-        .strip_prefix(DKEY_STRING_TAG)?;
+    parse_strset_dkey_iri(DKEY_STRING_TAG, iri)
+}
+
+fn parse_strset_dkey_iri(tag: &str, iri: &str) -> Option<StrSet> {
+    let rest = iri.strip_prefix(DKEY_IRI_PREFIX)?.strip_prefix(tag)?;
     if rest == "*" {
         return Some(StrSet::Top);
     }
@@ -551,6 +559,36 @@ fn lower_str_data_to_some(
 ) -> ConceptId {
     let role_id = vocab.intern_role(dp_iri);
     let dkey_class = vocab.intern_class(&str_dkey_iri(set));
+    let filler = pool.atomic(dkey_class);
+    pool.some(Role::named(role_id), filler)
+}
+
+// ── Issue #314: xsd:boolean and xsd:anyURI value-set DKey buckets ────────
+//
+// Both are equality-typed, so they reuse the `StrSet` encoding, each under its
+// own tag: the three datatypes are pairwise disjoint, and a shared bucket would
+// let `"true"^^xsd:boolean` subsume `"true"^^xsd:string`. Boolean members are
+// the canonical lexical forms `"false"` / `"true"`.
+const DKEY_BOOL_TAG: &str = "bool:";
+const DKEY_ANYURI_TAG: &str = "uri:";
+
+fn parse_bool_dkey_iri(iri: &str) -> Option<StrSet> {
+    parse_strset_dkey_iri(DKEY_BOOL_TAG, iri)
+}
+
+fn parse_anyuri_dkey_iri(iri: &str) -> Option<StrSet> {
+    parse_strset_dkey_iri(DKEY_ANYURI_TAG, iri)
+}
+
+fn lower_strset_data_to_some(
+    tag: &str,
+    set: &StrSet,
+    dp_iri: &str,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> ConceptId {
+    let role_id = vocab.intern_role(dp_iri);
+    let dkey_class = vocab.intern_class(&strset_dkey_iri(tag, set));
     let filler = pool.atomic(dkey_class);
     pool.some(Role::named(role_id), filler)
 }
@@ -952,6 +990,13 @@ fn data_range_dkey<A: ForIRI>(
         let dkey_class = vocab.intern_class(&int_set_dkey_iri(&set));
         return Some((role, pool.atomic(dkey_class)));
     }
+    // #314: `rdfs:Literal` is the top data range. Every `p`-successor is a data
+    // value, so `∃p.rdfs:Literal` is `∃p.⊤`, `∀p.rdfs:Literal` is `∀p.⊤`, and
+    // its complement is empty. Exact, so no DKey is needed.
+    if crate::data_axioms::is_rdfs_literal(dr) {
+        let role = Role::named(vocab.intern_role(dp_iri));
+        return Some((role, pool.top()));
+    }
     let iri = if let Some(r) = crate::data_axioms::parse_integer_range(dr) {
         dkey_iri(r)
     } else if let Some(r) = crate::data_axioms::parse_xsd_float_range(dr) {
@@ -974,6 +1019,10 @@ fn data_range_dkey<A: ForIRI>(
         // match a language-tagged member (`exact_string_literal` rejects them),
         // so the two are disjoint by construction rather than by ordering.
         lang_dkey_iri(&s)
+    } else if let Some(s) = crate::data_axioms::parse_boolean_range(dr) {
+        strset_dkey_iri(DKEY_BOOL_TAG, &s)
+    } else if let Some(s) = crate::data_axioms::parse_anyuri_range(dr) {
+        strset_dkey_iri(DKEY_ANYURI_TAG, &s)
     } else if let Some(s) = crate::data_axioms::parse_integer_oneof(dr) {
         int_oneof_iri(&s)
     } else if let Some(s) = crate::data_axioms::parse_xsd_float_oneof(dr) {
@@ -1084,6 +1133,24 @@ fn data_point_some<A: ForIRI>(
         // to the string bucket.
         Some(lower_lang_data_to_some(
             &LangSet::singleton(lex, tag),
+            dp_iri,
+            vocab,
+            pool,
+        ))
+    } else if let Some(b) = crate::data_axioms::boolean_literal_value(l) {
+        // #314. Neither this arm nor the anyURI one can overlap the string
+        // fallback: `exact_string_literal` accepts only `xsd:string`.
+        Some(lower_strset_data_to_some(
+            DKEY_BOOL_TAG,
+            &StrSet::singleton(b),
+            dp_iri,
+            vocab,
+            pool,
+        ))
+    } else if let Some(u) = crate::data_axioms::exact_anyuri_literal(l) {
+        Some(lower_strset_data_to_some(
+            DKEY_ANYURI_TAG,
+            &StrSet::singleton(u),
             dp_iri,
             vocab,
             pool,
@@ -1336,6 +1403,10 @@ pub fn convert_class_expression<A: ForIRI>(
         // correct, but we can't confidently lower it without tableau support
         // for the range-side empty-∀; dropping is safe).
         ClassExpression::DataAllValuesFrom { dp, dr } => {
+            // #314: `∀p.rdfs:Literal` is `⊤`.
+            if data_properties_enabled() && crate::data_axioms::is_rdfs_literal(dr) {
+                return Ok(pool.top());
+            }
             if data_properties_enabled()
                 && let Some(intersection) = parse_data_intersection_dkey(dr)
             {
@@ -1811,18 +1882,12 @@ fn lower_datetime_oneof_data_cardinality<A: ForIRI>(
     }
 }
 
-/// Whether `dr` is exactly the unqualified `rdfs:Literal` data range. Only this
-/// range may fall back to a `⊤` filler for data cardinality — a specific
-/// unrecognized datatype must keep dropping (using `⊤` there over-constrains a
-/// `≤n` restriction → unsound FP).
-fn is_rdfs_literal<A: ForIRI>(dr: &DataRange<A>) -> bool {
-    matches!(dr, DataRange::Datatype(dt)
-        if dt.0.as_ref() == "http://www.w3.org/2000/01/rdf-schema#Literal")
-}
-
 /// Gated fallback for UNQUALIFIED data cardinality (`≥n dp` / `≤n dp` over
 /// `rdfs:Literal`): lower to the same cardinality over the IR `⊤` filler.
 /// `None` ⇒ not applicable (gate off, or range not `rdfs:Literal`) ⇒ caller drops.
+/// Only exactly `rdfs:Literal` may fall back to `⊤`: a specific unrecognized
+/// datatype must keep dropping, since `⊤` there over-constrains a `≤n`
+/// restriction (an unsound FP).
 fn lower_unqualified_data_cardinality<A: ForIRI>(
     n: u32,
     dp: &horned_owl::model::DataProperty<A>,
@@ -1832,7 +1897,7 @@ fn lower_unqualified_data_cardinality<A: ForIRI>(
     want_min: bool,
     want_max: bool,
 ) -> Option<ConceptId> {
-    if !data_properties_enabled() || !is_rdfs_literal(dr) {
+    if !data_properties_enabled() || !crate::data_axioms::is_rdfs_literal(dr) {
         return None;
     }
     let role = Role::named(vocab.intern_role(dp.0.as_ref()));
@@ -2355,6 +2420,12 @@ pub fn convert_component<A: ForIRI>(
         // DataPropertyRange(dp,R) → ObjectPropertyRange with DKey(R) filler (gate-ON).
         // When the gate is OFF, or the range is unrecognized, drop silently (sound).
         C::DataPropertyRange(ax) if data_properties_enabled() => {
+            // #314: a `rdfs:Literal` range is trivially true, so nothing is lost.
+            // Emitting `ObjectPropertyRange(p, ⊤)` instead cost the ABox pre-check
+            // 0.13 → 4.5 s on `ore_ont_1555` for no information.
+            if crate::data_axioms::is_rdfs_literal(&ax.dr) {
+                return Ok(None);
+            }
             // xsd:float is now handled with f32-precision parsing (separate
             // `f:` bucket) so the drop guard is no longer needed.
             //
@@ -3730,6 +3801,17 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         .classes()
         .filter_map(|(cid, iri)| parse_lang_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
+    // #314: `xsd:boolean` and `xsd:anyURI`, each its own bucket.
+    let bool_dkeys: Vec<(ClassId, StrSet)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_bool_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
+    let uri_dkeys: Vec<(ClassId, StrSet)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_anyuri_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
     // ── The six NUMERIC `DataOneOf` buckets (`io:` / `fo:` / `dbo:` / `deo:` /
     // `dao:` / `dto:`) ────────────────────────────────────────────────────────
     // These were minted by `data_range_dkey` but NEVER collected here, so they
@@ -3789,6 +3871,15 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // tiny by comparison (tags are few), so the plain O(k²) walk is correct
     // and cheap; revisit only if a corpus ever shows otherwise.
     seed_bucket(out, &lang_dkeys, LangSet::subset);
+    // #314: same `StrSet` subset relation, so the size index is exact here too.
+    // `uri:` can be as large as `str:` (ORE has ~4,300 distinct anyURI values).
+    if dkey_str_size_index_enabled() {
+        seed_str_bucket_indexed(out, &bool_dkeys);
+        seed_str_bucket_indexed(out, &uri_dkeys);
+    } else {
+        seed_bucket(out, &bool_dkeys, StrSet::subset);
+        seed_bucket(out, &uri_dkeys, StrSet::subset);
+    }
     // Numeric-oneof `⊑`: `DKey(S1) ⊑ DKey(S2)` iff `S1 ⊆ S2` (exact set
     // inclusion — every member of `S1` is a member of `S2`, so any value in
     // `S1` is in `S2`). Empty when the flag is off ⟹ these are no-ops.
@@ -3865,6 +3956,8 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint, comp);
     seed_disjoint_bucket(out, &lang_dkeys, LangSet::disjoint, comp);
+    seed_disjoint_bucket(out, &bool_dkeys, StrSet::disjoint, comp);
+    seed_disjoint_bucket(out, &uri_dkeys, StrSet::disjoint, comp);
 
     // #86 — CROSS-BUCKET disjointness. Within-bucket disjointness (above) has
     // always been seeded; cross-bucket never was, so a value of one numeric
@@ -3928,6 +4021,11 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
             .collect();
         let mut datetime: Vec<ClassId> = dt_dkeys.iter().map(|(c, _)| *c).collect();
         datetime.extend(dt_oneof_dkeys.iter().map(|(c, _)| *c));
+        // #314: `xsd:boolean` and `xsd:anyURI` reuse the `StrSet` encoding but are
+        // their own families. Unlike bare `rdf:langString`, a bare `xsd:anyURI`
+        // range is disjoint from plain strings for `HermiT` too, so no key is left out.
+        let boolean: Vec<ClassId> = bool_dkeys.iter().map(|(c, _)| *c).collect();
+        let any_uri: Vec<ClassId> = uri_dkeys.iter().map(|(c, _)| *c).collect();
         seed_family_disjoint(
             out,
             &[
@@ -3935,6 +4033,8 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
                 ("string", string),
                 ("langstring", lang),
                 ("datetime", datetime),
+                ("boolean", boolean),
+                ("anyuri", any_uri),
             ],
         );
     }
@@ -6657,7 +6757,7 @@ mod tests {
 
     #[test]
     fn convert_records_dropped_data_property_assertion_unrecognized_literal() {
-        // A DataPropertyAssertion whose literal datatype (xsd:anyURI) is not
+        // A DataPropertyAssertion whose literal datatype (xsd:hexBinary) is not
         // DKey-recognized used to be silently dropped as `Ok(None)` — the
         // review found this is CONTENT (an ABox assertion), so it must now
         // be a RECORDED drop, and the axiom must NOT appear in `axioms`.
@@ -6670,7 +6770,7 @@ mod tests {
             Declaration(Class(:A)) Declaration(DataProperty(:dp))
             Declaration(NamedIndividual(:a))
             ClassAssertion(:A :a)
-            DataPropertyAssertion(:dp :a "x"^^xsd:anyURI))"#;
+            DataPropertyAssertion(:dp :a "0F"^^xsd:hexBinary))"#;
         let onto = read_ofn_str(src);
         let internal = convert_ontology(&onto).expect("must not abort");
         assert_eq!(
@@ -6852,6 +6952,14 @@ mod tests {
             // #42 item 1: the `iset:` multi-interval form. Two components, so it
             // cannot degenerate to the untagged encoding.
             ("iset", int_set_dkey_iri(&sample_int_set())),
+            // #314: `bool:` and `uri:` reuse the `StrSet` encoding, so these
+            // pin that the string decoder and each other reject them. Members
+            // the string sample could also hold make a mixed-up tag show.
+            (
+                "bool",
+                strset_dkey_iri(DKEY_BOOL_TAG, &StrSet::singleton("true".to_string())),
+            ),
+            ("uri", strset_dkey_iri(DKEY_ANYURI_TAG, &StrSet::Top)),
         ]
     }
 
@@ -6891,6 +6999,8 @@ mod tests {
                 "str" => parse_string_dkey_iri(iri).is_some(),
                 "lang" => parse_lang_dkey_iri(iri).is_some(),
                 "iset" => parse_int_set_dkey_iri(iri).is_some(),
+                "bool" => parse_bool_dkey_iri(iri).is_some(),
+                "uri" => parse_anyuri_dkey_iri(iri).is_some(),
                 _ => unreachable!(),
             }
         };
@@ -6919,7 +7029,14 @@ mod tests {
     /// (the untagged integer decoder is the risky one: it does no tag check).
     #[test]
     fn no_dkey_decoder_parses_a_family_iri() {
-        for name in ["numeric", "string", "langstring", "datetime"] {
+        for name in [
+            "numeric",
+            "string",
+            "langstring",
+            "datetime",
+            "boolean",
+            "anyuri",
+        ] {
             let iri = format!("{DKEY_IRI_PREFIX}{DKEY_FAMILY_TAG}{name}");
             assert!(parse_dkey_iri(&iri).is_none(), "{iri}");
             assert!(parse_int_set_dkey_iri(&iri).is_none(), "{iri}");
@@ -6936,6 +7053,8 @@ mod tests {
             assert!(parse_decimal_oneof_iri(&iri).is_none(), "{iri}");
             assert!(parse_date_oneof_iri(&iri).is_none(), "{iri}");
             assert!(parse_datetime_oneof_iri(&iri).is_none(), "{iri}");
+            assert!(parse_bool_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_anyuri_dkey_iri(&iri).is_none(), "{iri}");
         }
     }
 
@@ -7017,6 +7136,8 @@ mod tests {
                 "dao" => parse_date_oneof_iri(iri).is_some(),
                 "dto" => parse_datetime_oneof_iri(iri).is_some(),
                 "iset" => parse_int_set_dkey_iri(iri).is_some(),
+                "bool" => parse_bool_dkey_iri(iri).is_some(),
+                "uri" => parse_anyuri_dkey_iri(iri).is_some(),
                 _ => unreachable!(),
             }
         };
@@ -7563,14 +7684,15 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _g = DpGuard::on();
-        // anyURI is not a DKey-recognized datatype ⇒ drop even with gate ON.
+        // hexBinary is not a DKey-recognized datatype ⇒ drop even with gate ON.
+        // (This used anyURI until #314 gave anyURI a bucket.)
         // Issue #43 review: this is CONTENT (an ABox assertion), so it's now
         // a recorded Err rather than a benign Ok(None).
         let c = int_dp_assertion(
             "http://t/dp",
             "http://t/a",
-            "x",
-            "http://www.w3.org/2001/XMLSchema#anyURI",
+            "0F",
+            "http://www.w3.org/2001/XMLSchema#hexBinary",
         );
         let mut o = InternalOntology::new();
         let result = convert_component(&c, &mut o.vocabulary, &mut o.concepts);

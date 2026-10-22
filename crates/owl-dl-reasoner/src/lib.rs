@@ -127,7 +127,7 @@ pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
 ) -> Result<Vec<(String, String, String)>, ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
     let result = abox_saturation::saturate_abox_consistency(&internal);
-    if result.clash {
+    if result.clash || query_kb_inconsistent_beyond_abox(&internal) {
         return Err(ReasonError::Inconsistent);
     }
     let vocab = &internal.vocabulary;
@@ -195,7 +195,7 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     const LANG_STRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
 
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
-    if abox_saturation::saturate_abox_consistency(&internal).clash {
+    if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
@@ -332,7 +332,7 @@ pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
     use std::collections::{BTreeMap, BTreeSet};
 
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
-    if abox_saturation::saturate_abox_consistency(&internal).clash {
+    if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
@@ -432,7 +432,7 @@ pub fn materialize_subobjectproperty_axioms<A: horned_owl::model::ForIRI>(
     use std::collections::BTreeSet;
 
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
-    if abox_saturation::saturate_abox_consistency(&internal).clash {
+    if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
@@ -529,7 +529,7 @@ pub fn materialize_subdataproperty_axioms<A: horned_owl::model::ForIRI>(
     use std::collections::BTreeSet;
 
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
-    if abox_saturation::saturate_abox_consistency(&internal).clash {
+    if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
@@ -3342,6 +3342,49 @@ pub(crate) fn abox_saturation_inconsistent_bounded(
 pub(crate) fn saturation_says_inconsistent(closure: &owl_dl_saturation::Subsumers) -> bool {
     sat_inconsistency_all_surfaces_enabled()
         && (closure.globally_inconsistent() || closure.top_is_unsat())
+}
+
+/// #313: the inconsistency guard of the query surfaces (`same`/`different`
+/// individuals, `disjoint_*`, `materialize_*` and so `property-values`, the
+/// class-expression queries, the instance queries). They checked only the `ABox`
+/// saturation; this adds the EL saturator's signal ([`saturation_says_inconsistent`]),
+/// `abox_check` on that closure and the reflexive empty-clause check, so `c : E`,
+/// `E ⊑ ⊥` or `{a} ⊑ ⊥` errors as `Inconsistent`. Still missed, unlike `consistent`
+/// and `realize`: an inconsistency only the `ABox`-seeded wedge finds (that route can
+/// spend seconds even on a consistent KB, which these single queries should not pay),
+/// and an asserted non-atomic class with an unsatisfiable filler
+/// (`c : ∃R.E`, `E ⊑ ⊥`), which neither cheap check sees. Default **ON**;
+/// `RUSTDL_QUERY_INCONSISTENCY_GUARD=0` reverts to the `ABox`-saturation check alone.
+pub(crate) fn query_kb_inconsistent(internal: &InternalOntology) -> bool {
+    abox_saturation::saturate_abox_consistency(internal).clash
+        || query_kb_inconsistent_beyond_abox(internal)
+}
+
+/// The part of [`query_kb_inconsistent`] beyond the `ABox` saturation, for callers that
+/// already ran that saturation and use its result.
+pub(crate) fn query_kb_inconsistent_beyond_abox(internal: &InternalOntology) -> bool {
+    if !query_inconsistency_guard_enabled() {
+        return false;
+    }
+    if reflexive_empty_clause_inconsistent(internal) {
+        return true;
+    }
+    let closure = owl_dl_saturation::saturate(internal);
+    if saturation_says_inconsistent(&closure) {
+        return true;
+    }
+    abox_check_enabled()
+        && classify::has_abox_axioms(internal)
+        && matches!(
+            abox_check::check(&build_abox_check_inputs(internal).as_inputs(&closure)),
+            abox_check::AboxVerdict::Inconsistent { .. }
+        )
+}
+
+/// See [`query_kb_inconsistent`].
+#[must_use]
+pub fn query_inconsistency_guard_enabled() -> bool {
+    std::env::var_os("RUSTDL_QUERY_INCONSISTENCY_GUARD").is_none_or(|v| v != "0")
 }
 
 /// See [`saturation_says_inconsistent`].

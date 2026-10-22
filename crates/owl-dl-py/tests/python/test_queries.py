@@ -24,15 +24,24 @@ def test_is_class_satisfiable_unknown_class_raises(fixtures_dir):
 
 
 def test_is_instance_of_simple(fixtures_dir):
-    # p1_direct_bot has ClassAssertion(:Unsat :a)
-    fixture = fixtures_dir / "abox" / "p1_direct_bot.ofn"
-    assert rustdl.is_instance_of(str(fixture), "http://t/Unsat", "http://t/a") is True
+    # p1_no_bot has ClassAssertion(:Sat :a)
+    fixture = fixtures_dir / "abox" / "p1_no_bot.ofn"
+    assert rustdl.is_instance_of(str(fixture), "http://t/Sat", "http://t/a") is True
 
 
 def test_instances_of_simple(fixtures_dir):
-    fixture = fixtures_dir / "abox" / "p1_direct_bot.ofn"
-    instances = rustdl.instances_of(str(fixture), "http://t/Unsat")
+    fixture = fixtures_dir / "abox" / "p1_no_bot.ofn"
+    instances = rustdl.instances_of(str(fixture), "http://t/Sat")
     assert "http://t/a" in instances
+
+
+def test_instance_queries_raise_on_an_inconsistent_kb(fixtures_dir):
+    # p1_direct_bot asserts a : Unsat with Unsat ⊑ ⊥ (#313: these used to answer).
+    fixture = str(fixtures_dir / "abox" / "p1_direct_bot.ofn")
+    with pytest.raises(rustdl.RustdlError):
+        rustdl.is_instance_of(fixture, "http://t/Unsat", "http://t/a")
+    with pytest.raises(rustdl.RustdlError):
+        rustdl.instances_of(fixture, "http://t/Unsat")
 
 
 def test_realize_returns_dict(fixtures_dir):

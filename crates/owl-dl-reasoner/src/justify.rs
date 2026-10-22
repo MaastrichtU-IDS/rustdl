@@ -305,7 +305,12 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
         Entailment::Unsatisfiable { class } => Ok(!crate::is_class_satisfiable(onto, class)?),
         // is_instance_of is (class, individual) — class first.
         Entailment::InstanceOf { individual, class } => {
-            crate::is_instance_of(onto, class, individual)
+            match crate::is_instance_of(onto, class, individual) {
+                // Inconsistent ⇒ everything is entailed, as for property assertions above;
+                // QuickXplain then returns the inconsistency core (#313).
+                Err(ReasonError::Inconsistent) => Ok(true),
+                r => r,
+            }
         }
         Entailment::Inconsistent => {
             let sat_mode = SATURATION_ORACLE.with(std::cell::Cell::get);

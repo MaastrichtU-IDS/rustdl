@@ -1377,6 +1377,37 @@ impl LangSet {
 pub(crate) fn exact_lang_literal<A: ForIRI>(l: &Literal<A>) -> Option<(String, String)> {
     match l {
         Literal::Language { literal, lang } => Some((literal.clone(), lang.to_ascii_lowercase())),
+        // #322: `"x@en"^^rdf:PlainLiteral` is the language-tagged literal `"x"@en`.
+        _ => match plain_literal_parts(l)? {
+            (lex, tag) if !tag.is_empty() => Some((lex, tag.to_ascii_lowercase())),
+            _ => None,
+        },
+    }
+}
+
+/// `rdf:PlainLiteral` (#322): the union of the `xsd:string` and `rdf:langString`
+/// value spaces.
+pub(crate) const RDF_PLAIN_LITERAL: &str =
+    "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral";
+
+/// Whether `dr` is the datatype `rdf:PlainLiteral`.
+pub(crate) fn is_rdf_plain_literal<A: ForIRI>(dr: &DataRange<A>) -> bool {
+    matches!(dr, DataRange::Datatype(dt) if dt.0.as_ref() == RDF_PLAIN_LITERAL)
+}
+
+/// The parts of a literal typed `rdf:PlainLiteral` (#322). Its lexical form is
+/// the text, then `@`, then a language tag that may be empty, so it splits at
+/// the LAST `@`: `"a@b@en"` is `("a@b", "en")` and `"x@"` is `("x", "")`. A form
+/// with no `@` is ill-formed and returns `None`, so it drops.
+fn plain_literal_parts<A: ForIRI>(l: &Literal<A>) -> Option<(String, String)> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == RDF_PLAIN_LITERAL => {
+            let (lex, tag) = literal.rsplit_once('@')?;
+            Some((lex.to_string(), tag.to_string()))
+        }
         _ => None,
     }
 }
@@ -1416,7 +1447,11 @@ pub(crate) fn exact_string_literal<A: ForIRI>(l: &Literal<A>) -> Option<String> 
             literal,
             datatype_iri,
         } if datatype_iri.as_ref() == XSD_STRING => Some(literal.clone()),
-        _ => None,
+        // #322: `"x@"^^rdf:PlainLiteral` (empty tag) is the plain string `"x"`.
+        _ => match plain_literal_parts(l)? {
+            (lex, tag) if tag.is_empty() => Some(lex),
+            _ => None,
+        },
     }
 }
 

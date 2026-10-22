@@ -563,6 +563,22 @@ fn lower_str_data_to_some(
     pool.some(Role::named(role_id), filler)
 }
 
+// ── Issue #322: rdf:PlainLiteral ─────────────────────────────────────────
+//
+// `rdf:PlainLiteral` is `xsd:string` ∪ `rdf:langString`. It gets ONE key, `P`,
+// with every string and langString key `⊑ P` and, under the family flag, `P`
+// disjoint from the numeric, dateTime, boolean and anyURI keys. It has no
+// `P ⊑ string ⊔ langString`, so it can miss an entailment, never add a wrong one.
+const DKEY_PLAIN_TAG: &str = "plain:";
+
+fn plain_dkey_iri() -> String {
+    format!("{DKEY_IRI_PREFIX}{DKEY_PLAIN_TAG}*")
+}
+
+fn is_plain_dkey_iri(iri: &str) -> bool {
+    iri == plain_dkey_iri()
+}
+
 // ── Issue #314: xsd:boolean and xsd:anyURI value-set DKey buckets ────────
 //
 // Both are equality-typed, so they reuse the `StrSet` encoding, each under its
@@ -1022,6 +1038,11 @@ fn data_range_dkey<A: ForIRI>(
     if crate::data_axioms::is_rdfs_literal(dr) {
         let role = Role::named(vocab.intern_role(dp_iri));
         return Some((role, pool.top()));
+    }
+    if crate::data_axioms::is_rdf_plain_literal(dr) {
+        let role = Role::named(vocab.intern_role(dp_iri));
+        let plain = vocab.intern_class(&plain_dkey_iri());
+        return Some((role, pool.atomic(plain)));
     }
     let iri = if let Some(r) = crate::data_axioms::parse_integer_range(dr) {
         dkey_iri(r)
@@ -4093,6 +4114,23 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // seeding would be O(kₐ·k_b) in distinct literals, which `ABox` data makes large.
     // `xsd:date` is left out: it is not in the OWL 2 datatype map, and `HermiT` rejects
     // it, so no oracle can adjudicate a `date` clash.
+    // #322: every string and langString key is a `rdf:PlainLiteral` value. Only
+    // when some axiom mentions `rdf:PlainLiteral`, so the pass is inert otherwise.
+    let plain_key = out
+        .vocabulary
+        .classes()
+        .find_map(|(cid, iri)| is_plain_dkey_iri(iri).then_some(cid));
+    if let Some(p) = plain_key {
+        let sup = out.concepts.atomic(p);
+        for &(k, _) in &str_dkeys {
+            let sub = out.concepts.atomic(k);
+            out.axioms.push(Axiom::SubClassOf { sub, sup });
+        }
+        for (k, _) in &lang_dkeys {
+            let sub = out.concepts.atomic(*k);
+            out.axioms.push(Axiom::SubClassOf { sub, sup });
+        }
+    }
     if dkey_family_disjoint_enabled() {
         let mut numeric: Vec<ClassId> = Vec::new();
         numeric.extend(int_dkeys.iter().map(|(c, _)| *c));
@@ -4121,6 +4159,20 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         // range is disjoint from plain strings for `HermiT` too, so no key is left out.
         let boolean: Vec<ClassId> = bool_dkeys.iter().map(|(c, _)| *c).collect();
         let any_uri: Vec<ClassId> = uri_dkeys.iter().map(|(c, _)| *c).collect();
+        // #322: `P` is disjoint from every family it does not contain. Pairwise
+        // with each key, which is linear because `P` is a single key.
+        if let Some(p) = plain_key {
+            let cp = out.concepts.atomic(p);
+            for &k in numeric
+                .iter()
+                .chain(&datetime)
+                .chain(&boolean)
+                .chain(&any_uri)
+            {
+                let ck = out.concepts.atomic(k);
+                out.axioms.push(Axiom::DisjointClasses(vec![cp, ck]));
+            }
+        }
         seed_family_disjoint(
             out,
             &[
@@ -7055,6 +7107,8 @@ mod tests {
                 strset_dkey_iri(DKEY_BOOL_TAG, &StrSet::singleton("true".to_string())),
             ),
             ("uri", strset_dkey_iri(DKEY_ANYURI_TAG, &StrSet::Top)),
+            // #322: the single `rdf:PlainLiteral` key.
+            ("plain", plain_dkey_iri()),
         ]
     }
 
@@ -7096,6 +7150,7 @@ mod tests {
                 "iset" => parse_int_set_dkey_iri(iri).is_some(),
                 "bool" => parse_bool_dkey_iri(iri).is_some(),
                 "uri" => parse_anyuri_dkey_iri(iri).is_some(),
+                "plain" => is_plain_dkey_iri(iri),
                 _ => unreachable!(),
             }
         };
@@ -7233,6 +7288,7 @@ mod tests {
                 "iset" => parse_int_set_dkey_iri(iri).is_some(),
                 "bool" => parse_bool_dkey_iri(iri).is_some(),
                 "uri" => parse_anyuri_dkey_iri(iri).is_some(),
+                "plain" => is_plain_dkey_iri(iri),
                 _ => unreachable!(),
             }
         };

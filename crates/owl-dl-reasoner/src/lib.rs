@@ -8087,6 +8087,18 @@ fn build_dkey_range_map(
                 owl_dl_core::StrSet::Set(s) => owl_dl_datatypes::FiniteSet::Set(s),
             };
             map.insert(class_id, owl_dl_datatypes::CardRange::Str(fs));
+        } else if let Some(bs) = owl_dl_core::decode_bool_dkey(iri) {
+            // #325: its own variant, so booleans are never counted as strings.
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::Bool(owl_dl_datatypes::FiniteSet::Set(bs)),
+            );
+        } else if let Some(us) = owl_dl_core::decode_anyuri_dkey(iri) {
+            let fs = match us {
+                owl_dl_core::StrSet::Top => owl_dl_datatypes::FiniteSet::Top,
+                owl_dl_core::StrSet::Set(s) => owl_dl_datatypes::FiniteSet::Set(s),
+            };
+            map.insert(class_id, owl_dl_datatypes::CardRange::Uri(fs));
         } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_float_dkey(iri) {
             // Bridge FloatRange → DenseInterval<OrdF64>: wrap each f64 bound
             // in OrdF64. Inclusivity flags copied 1:1 — no normalization.

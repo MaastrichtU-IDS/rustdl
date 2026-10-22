@@ -75,6 +75,13 @@ pub enum CardRange {
     DateSet(FiniteSet<DateKey>),
     /// `DataOneOf`-of-`xsd:dateTime` values (finite set; timezone-free, integer-second).
     DateTimeSet(FiniteSet<DateTimeKey>),
+    /// `xsd:boolean` values (#325). Never `Top`: bare `xsd:boolean` is the exact
+    /// set `{false, true}`, which is what gives `≥3 p.xsd:boolean` no room.
+    Bool(FiniteSet<bool>),
+    /// `xsd:anyURI` values (#325): bare `xsd:anyURI` is `Top`, an enumeration a
+    /// finite set. Its own variant, never `Str`: a URI is not a string, and
+    /// counting both in one bucket would put them under each other's `≤n`.
+    Uri(FiniteSet<String>),
 }
 
 impl CardRange {
@@ -92,7 +99,9 @@ impl CardRange {
             | CardRange::FloatSet(_)
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
-            | CardRange::DateTimeSet(_) => None,
+            | CardRange::DateTimeSet(_)
+            | CardRange::Bool(_)
+            | CardRange::Uri(_) => None,
         }
     }
 
@@ -110,7 +119,9 @@ impl CardRange {
             | CardRange::FloatSet(_)
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
-            | CardRange::DateTimeSet(_) => None,
+            | CardRange::DateTimeSet(_)
+            | CardRange::Bool(_)
+            | CardRange::Uri(_) => None,
         }
     }
 
@@ -128,7 +139,9 @@ impl CardRange {
             | CardRange::FloatSet(_)
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
-            | CardRange::DateTimeSet(_) => None,
+            | CardRange::DateTimeSet(_)
+            | CardRange::Bool(_)
+            | CardRange::Uri(_) => None,
         }
     }
 
@@ -146,7 +159,9 @@ impl CardRange {
             | CardRange::FloatSet(_)
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
-            | CardRange::DateTimeSet(_) => None,
+            | CardRange::DateTimeSet(_)
+            | CardRange::Bool(_)
+            | CardRange::Uri(_) => None,
         }
     }
 
@@ -164,7 +179,9 @@ impl CardRange {
             | CardRange::FloatSet(_)
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
-            | CardRange::DateTimeSet(_) => None,
+            | CardRange::DateTimeSet(_)
+            | CardRange::Bool(_)
+            | CardRange::Uri(_) => None,
         }
     }
 
@@ -182,7 +199,9 @@ impl CardRange {
             | CardRange::FloatSet(_)
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
-            | CardRange::DateTimeSet(_) => None,
+            | CardRange::DateTimeSet(_)
+            | CardRange::Bool(_)
+            | CardRange::Uri(_) => None,
         }
     }
 

@@ -1590,16 +1590,7 @@ pub(crate) fn parse_integer_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeS
         DataRange::DataOneOf(lits) if !lits.is_empty() => {
             let mut set = BTreeSet::new();
             for l in lits {
-                let v = match l {
-                    Literal::Datatype {
-                        literal,
-                        datatype_iri,
-                    } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
-                        literal.parse::<i64>().ok()?
-                    }
-                    _ => return None,
-                };
-                set.insert(v);
+                set.insert(integer_family_literal_value(l)?);
             }
             Some(set)
         }
@@ -2181,6 +2172,26 @@ fn xsd_integer_derived_range(local: &str) -> Option<IntegerRange> {
         _ => return None,
     };
     Some(IntegerRange { min, max })
+}
+
+/// The value of a literal of `xsd:integer` or of one of its derived types (#323), which
+/// share its value space: `"5"^^xsd:nonNegativeInteger` is the integer 5. The value must lie
+/// in the type's own range, so an ill-formed `"-1"^^xsd:nonNegativeInteger` returns `None`
+/// and stays dropped rather than being clamped; so does `xsd:unsignedLong`, which
+/// [`xsd_integer_derived_range`] cannot express exactly.
+pub(crate) fn integer_family_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<i64> {
+    let Literal::Datatype {
+        literal,
+        datatype_iri,
+    } = l
+    else {
+        return None;
+    };
+    let local = datatype_iri
+        .as_ref()
+        .strip_prefix("http://www.w3.org/2001/XMLSchema#")?;
+    let v = literal.parse::<i64>().ok()?;
+    xsd_integer_derived_range(local)?.contains(v).then_some(v)
 }
 
 pub(crate) fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<IntegerRange> {
@@ -2998,7 +3009,7 @@ pub fn literal_provably_outside_range<A: ForIRI>(range: &DataRange<A>, lit: &Lit
     // Integer bucket: both must parse to i64 in the xsd:integer value space.
     if let Some(r) = parse_integer_range(range) {
         // Only fire when the literal is also xsd:integer-typed.
-        let Some(v) = integer_literal_value_pub(lit) else {
+        let Some(v) = integer_family_literal_value(lit) else {
             return false;
         };
         // v ∈ r  ⟺  point(v).subset(r). NOT in range ⟺ NOT subset.
@@ -3066,18 +3077,6 @@ pub fn literal_provably_outside_range<A: ForIRI>(range: &DataRange<A>, lit: &Lit
 // literal parsers re-exposed so `literal_provably_outside_range` can call
 // them without duplicating logic. Named `*_pub` to avoid colliding with the
 // private helpers that also live in `convert.rs`.
-
-fn integer_literal_value_pub<A: ForIRI>(l: &Literal<A>) -> Option<i64> {
-    match l {
-        Literal::Datatype {
-            literal,
-            datatype_iri,
-        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
-            literal.parse::<i64>().ok()
-        }
-        _ => None,
-    }
-}
 
 /// xsd:double value literal → exact f64. `xsd:float` is intentionally NOT
 /// accepted (see the soundness note in `literal_provably_outside_range`):
@@ -3270,15 +3269,12 @@ enum DistinctVal {
 /// the count — the sound under-approximation.
 fn literal_to_distinct_val<A: ForIRI>(l: &Literal<A>) -> Option<DistinctVal> {
     match l {
-        // ── Num bucket: xsd:integer and xsd:decimal both normalise via
+        // ── Num bucket: the xsd:integer family (#323) and xsd:decimal both normalise via
         // `parse_decimal`. An integer literal "01" and decimal "1" must
         // map to the SAME Decimal (normalisation strips leading zeros).
-        // `integer_literal_value_pub` gives i64 but can't normalise across
+        // `integer_family_literal_value` gives i64 but can't normalise across
         // the two types; `parse_decimal` does: "1" → Decimal{int:"1",…}.
-        Literal::Datatype {
-            literal,
-            datatype_iri,
-        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
+        Literal::Datatype { literal, .. } if integer_family_literal_value(l).is_some() => {
             // Parse via decimal so "1" and "01" share the same normalised key,
             // and so the value is deduped against any xsd:decimal "1" assertion.
             parse_decimal(literal).map(DistinctVal::Num)
@@ -3359,10 +3355,7 @@ enum DjLiteralKey {
 fn literal_to_dj_key<A: ForIRI>(l: &Literal<A>) -> Option<DjLiteralKey> {
     match l {
         // ── Num bucket: xsd:integer and xsd:decimal both via parse_decimal.
-        Literal::Datatype {
-            literal,
-            datatype_iri,
-        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
+        Literal::Datatype { literal, .. } if integer_family_literal_value(l).is_some() => {
             parse_decimal(literal).map(DjLiteralKey::Num)
         }
         Literal::Datatype {
@@ -4633,6 +4626,33 @@ Ontology(<http://t/x>
                 })
                 .collect(),
         )
+    }
+
+    /// #323: the ABox pre-checks key a derived-integer literal by its value, so
+    /// `"5"^^xsd:int`, `"05"^^xsd:long` and `"5"^^xsd:integer` are one value (keying
+    /// them apart would over-count values for a functional property, a false
+    /// inconsistency), and an out-of-range form stays unread.
+    #[test]
+    fn derived_integer_literals_key_by_value() {
+        let lits = [("5", "integer"), ("5", "int"), ("05", "long")];
+        let dv: Vec<_> = lits
+            .iter()
+            .map(|(v, t)| literal_to_distinct_val(&vir_dt_lit(v, t)).expect("parses"))
+            .collect();
+        assert!(dv.iter().all(|k| *k == dv[0]));
+        let dj: Vec<_> = lits
+            .iter()
+            .map(|(v, t)| literal_to_dj_key(&vir_dt_lit(v, t)).expect("parses"))
+            .collect();
+        assert!(dj.iter().all(|k| *k == dj[0]));
+        let ill = vir_dt_lit("-1", "nonNegativeInteger");
+        assert!(literal_to_distinct_val(&ill).is_none());
+        assert!(literal_to_dj_key(&ill).is_none());
+        assert_eq!(integer_family_literal_value(&ill), None);
+        assert_eq!(
+            integer_family_literal_value(&vir_dt_lit("5", "unsignedLong")),
+            None
+        );
     }
 
     // ── value_in_range unit tests ──────────────────────────────────────────

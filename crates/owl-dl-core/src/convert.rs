@@ -1130,7 +1130,7 @@ fn data_point_some<A: ForIRI>(
     vocab: &mut Vocabulary,
     pool: &mut ConceptPool,
 ) -> Option<ConceptId> {
-    if let Some(v) = integer_literal_value(l) {
+    if let Some(v) = crate::data_axioms::integer_family_literal_value(l) {
         Some(lower_data_to_some(
             IntegerRange::point(v),
             dp_iri,
@@ -2028,23 +2028,6 @@ fn lower_unqualified_data_cardinality<A: ForIRI>(
         }
         (false, false) => unreachable!("at least one of min/max requested"),
     })
-}
-
-/// Extract an `xsd:integer`-typed literal's value. Returns `None` for
-/// any other literal kind (`Simple` = `xsd:string`, `Language`, or a
-/// `Datatype` whose IRI is not exactly `xsd:integer`) or an unparseable
-/// value — sound under-approximation (a dropped restriction is a miss,
-/// never an FP).
-fn integer_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<i64> {
-    match l {
-        Literal::Datatype {
-            literal,
-            datatype_iri,
-        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
-            literal.parse::<i64>().ok()
-        }
-        _ => None,
-    }
 }
 
 /// A float-family literal value paired with its `DKey` tag so the caller

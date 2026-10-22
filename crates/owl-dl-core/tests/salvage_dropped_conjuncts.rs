@@ -2,8 +2,9 @@
 //! because one conjunct cannot be converted keeps its NECESSARY-side consequences
 //! for the conjuncts that do convert.
 //!
-//! The unconvertible conjunct here is `DataAllValuesFrom(:dp xsd:boolean)`
-//! (`xsd:boolean` has no `DKey` bucket), the `ore_ont_14379` shape.
+//! The unconvertible conjunct here is `DataAllValuesFrom(:dp xsd:hexBinary)`
+//! (`xsd:hexBinary` has no `DKey` bucket). It was `xsd:boolean`, the
+//! `ore_ont_14379` shape, until #314 gave `xsd:boolean` a bucket.
 //!
 //! **Direction of risk is a false positive**: keeping a conjunct on a LEFT side
 //! would strengthen the axiom. The negatives pin that nothing is kept from a
@@ -23,7 +24,7 @@ use std::sync::Mutex;
 
 static ENV: Mutex<()> = Mutex::new(());
 
-const BOOL: &str = "DataAllValuesFrom(:dp xsd:boolean)";
+const UNCONVERTIBLE: &str = "DataAllValuesFrom(:dp xsd:hexBinary)";
 
 fn convert_unlocked(body: &str) -> InternalOntology {
     let src = format!(
@@ -102,7 +103,9 @@ fn class_axioms(o: &InternalOntology) -> Vec<String> {
 /// `B ⊓ U ⊑ A` does not give `B ⊑ A`.
 #[test]
 fn nothing_is_kept_from_a_subclass_position() {
-    let o = convert(&format!("SubClassOf(ObjectIntersectionOf(:B {BOOL}) :A)"));
+    let o = convert(&format!(
+        "SubClassOf(ObjectIntersectionOf(:B {UNCONVERTIBLE}) :A)"
+    ));
     assert_eq!(o.dropped.total(), 1, "precondition: the axiom is dropped");
     assert!(class_axioms(&o).is_empty(), "{:?}", class_axioms(&o));
 }
@@ -112,7 +115,7 @@ fn nothing_is_kept_from_a_subclass_position() {
 #[test]
 fn the_sufficient_direction_of_an_equivalence_is_not_kept() {
     let o = convert(&format!(
-        "EquivalentClasses(:A ObjectIntersectionOf(:B {BOOL}))"
+        "EquivalentClasses(:A ObjectIntersectionOf(:B {UNCONVERTIBLE}))"
     ));
     assert_eq!(o.dropped.total(), 1, "precondition: the axiom is dropped");
     assert_eq!(class_axioms(&o), ["A⊑B"]);
@@ -121,7 +124,9 @@ fn the_sufficient_direction_of_an_equivalence_is_not_kept() {
 /// The axiom is still reported as dropped: part of it is still lost.
 #[test]
 fn a_salvaged_axiom_is_still_counted_as_dropped() {
-    let o = convert(&format!("SubClassOf(:A ObjectIntersectionOf(:B {BOOL}))"));
+    let o = convert(&format!(
+        "SubClassOf(:A ObjectIntersectionOf(:B {UNCONVERTIBLE}))"
+    ));
     assert_eq!(o.dropped.total(), 1);
 }
 
@@ -129,15 +134,18 @@ fn a_salvaged_axiom_is_still_counted_as_dropped() {
 
 #[test]
 fn a_subclass_keeps_its_convertible_conjuncts() {
-    let o = convert(&format!("SubClassOf(:A ObjectIntersectionOf(:B {BOOL}))"));
+    let o = convert(&format!(
+        "SubClassOf(:A ObjectIntersectionOf(:B {UNCONVERTIBLE}))"
+    ));
     assert!(has_edge(&o, "A", "B"));
 }
 
-/// The `ore_ont_14379` shape: `ObservationEvent ≡ Event ⊓ … ⊓ ∀p.xsd:boolean`.
+/// The `ore_ont_14379` shape (`ObservationEvent ≡ Event ⊓ … ⊓ ∀p.xsd:boolean`), with
+/// a conjunct that still does not convert.
 #[test]
 fn an_equivalence_keeps_its_necessary_conjuncts() {
     let o = convert(&format!(
-        "EquivalentClasses(:A ObjectIntersectionOf(:B {BOOL}))"
+        "EquivalentClasses(:A ObjectIntersectionOf(:B {UNCONVERTIBLE}))"
     ));
     assert!(has_edge(&o, "A", "B"));
 }
@@ -146,7 +154,7 @@ fn an_equivalence_keeps_its_necessary_conjuncts() {
 #[test]
 fn nested_intersections_are_flattened() {
     let o = convert(&format!(
-        "SubClassOf(:A ObjectIntersectionOf(:B ObjectIntersectionOf(:C {BOOL})))"
+        "SubClassOf(:A ObjectIntersectionOf(:B ObjectIntersectionOf(:C {UNCONVERTIBLE})))"
     ));
     assert!(has_edge(&o, "A", "B") && has_edge(&o, "A", "C"));
 }
@@ -156,7 +164,7 @@ fn nested_intersections_are_flattened() {
 #[test]
 fn a_three_member_equivalence_keeps_the_rest() {
     let o = convert(&format!(
-        "EquivalentClasses(:A :D ObjectIntersectionOf(:B {BOOL}))"
+        "EquivalentClasses(:A :D ObjectIntersectionOf(:B {UNCONVERTIBLE}))"
     ));
     assert_eq!(class_axioms(&o), ["A≡D", "A⊑B", "D⊑B"]);
 }
@@ -169,7 +177,9 @@ fn the_flag_restores_the_whole_drop() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: every env access in this binary holds `ENV`.
     unsafe { std::env::set_var("RUSTDL_SALVAGE_DROPPED_CONJUNCTS", "0") };
-    let o = convert_unlocked(&format!("SubClassOf(:A ObjectIntersectionOf(:B {BOOL}))"));
+    let o = convert_unlocked(&format!(
+        "SubClassOf(:A ObjectIntersectionOf(:B {UNCONVERTIBLE}))"
+    ));
     // SAFETY: as above.
     unsafe { std::env::remove_var("RUSTDL_SALVAGE_DROPPED_CONJUNCTS") };
     assert!(!has_edge(&o, "A", "B"));

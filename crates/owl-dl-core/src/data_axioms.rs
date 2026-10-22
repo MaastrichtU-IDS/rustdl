@@ -1439,6 +1439,89 @@ pub(crate) fn parse_string_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet>
     }
 }
 
+/// `rdfs:Literal`, the top data range (#314).
+pub(crate) const RDFS_LITERAL: &str = "http://www.w3.org/2000/01/rdf-schema#Literal";
+/// `xsd:boolean` (#314).
+pub(crate) const XSD_BOOLEAN: &str = "http://www.w3.org/2001/XMLSchema#boolean";
+/// `xsd:anyURI` (#314).
+pub(crate) const XSD_ANY_URI: &str = "http://www.w3.org/2001/XMLSchema#anyURI";
+
+/// Whether `dr` is `rdfs:Literal`, the top data range: every data value is in
+/// it (#314).
+pub(crate) fn is_rdfs_literal<A: ForIRI>(dr: &DataRange<A>) -> bool {
+    matches!(dr, DataRange::Datatype(dt) if dt.0.as_ref() == RDFS_LITERAL)
+}
+
+/// The value of an `xsd:boolean` literal, as its canonical lexical form
+/// `"true"` or `"false"` (#314). `"1"` and `"0"` are the other two lexical
+/// forms; XSD collapses whitespace first. Anything else is not a boolean
+/// literal and returns `None`, so it drops.
+pub(crate) fn boolean_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<String> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == XSD_BOOLEAN => match literal.trim() {
+            "true" | "1" => Some("true".to_string()),
+            "false" | "0" => Some("false".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// An `xsd:boolean` `DataRange` as a [`StrSet`] of canonical lexical forms
+/// (#314). The value space has two members, so bare `xsd:boolean` is the exact
+/// set `{false, true}`, never `Top`. `Top` is not a subset of any finite set
+/// under [`StrSet::subset`], so `xsd:boolean ⊆ DataOneOf(false, true)` would
+/// be missed. A `DataOneOf` must be all boolean literals, or it drops.
+pub(crate) fn parse_boolean_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet> {
+    match dr {
+        DataRange::Datatype(dt) if dt.0.as_ref() == XSD_BOOLEAN => Some(StrSet::Set(
+            ["false".to_string(), "true".to_string()]
+                .into_iter()
+                .collect(),
+        )),
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                set.insert(boolean_literal_value(l)?);
+            }
+            Some(StrSet::Set(set))
+        }
+        _ => None,
+    }
+}
+
+/// The lexical form of an `xsd:anyURI` literal (#314). `anyURI` is
+/// equality-typed like `xsd:string` but a different datatype, so it gets its
+/// own bucket.
+pub(crate) fn exact_anyuri_literal<A: ForIRI>(l: &Literal<A>) -> Option<String> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == XSD_ANY_URI => Some(literal.clone()),
+        _ => None,
+    }
+}
+
+/// An `xsd:anyURI` `DataRange` as a [`StrSet`] (#314): bare `xsd:anyURI` is
+/// `Top`, and a `DataOneOf` must be all `anyURI` literals, or it drops.
+pub(crate) fn parse_anyuri_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet> {
+    match dr {
+        DataRange::Datatype(dt) if dt.0.as_ref() == XSD_ANY_URI => Some(StrSet::Top),
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                set.insert(exact_anyuri_literal(l)?);
+            }
+            Some(StrSet::Set(set))
+        }
+        _ => None,
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Numeric DataOneOf parsers (Phase D-numeric-oneof)
 //

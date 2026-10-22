@@ -86,7 +86,7 @@ fn horn_clause_shape_does_not_guarantee_completeness() {
 }
 
 /// #246: a dropped axiom voids the guarantee. The ontology is pure-EL once the
-/// unsupported `DataAllValuesFrom(:dp xsd:boolean)` axiom is dropped, and the
+/// unsupported `DataAllValuesFrom(:dp xsd:hexBinary)` axiom is dropped, and the
 /// saturator is complete on what remains, but `A ⊑ ∃r.(B ⊓ U) ⊑ ∃r.B ⊑ E` is
 /// entailed by the INPUT and missed. Before the fix this reported
 /// `completeness_guaranteed() == true` with `A ⊑ E` absent.
@@ -97,7 +97,7 @@ fn a_dropped_axiom_voids_the_guarantee() {
          Declaration(DataProperty(:dp)) Declaration(ObjectProperty(:r))\n\
          Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:E))\n\
          SubClassOf(:A ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B \
-         DataAllValuesFrom(:dp xsd:boolean))))\n\
+         DataAllValuesFrom(:dp xsd:hexBinary))))\n\
          SubClassOf(ObjectSomeValuesFrom(:r :B) :E)\n)",
     );
     assert!(

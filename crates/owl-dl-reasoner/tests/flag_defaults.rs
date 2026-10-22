@@ -178,6 +178,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_SAT_NOMINAL_COMPOSING_REVERSE",
+            owl_dl_saturation::sat_nominal_composing_reverse_enabled,
+            true,
+        ),
+        (
             "RUSTDL_SAT_UNSAT_NOMINAL_INCONSISTENT",
             owl_dl_saturation::sat_unsat_nominal_inconsistent_enabled,
             true,

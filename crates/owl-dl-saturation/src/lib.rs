@@ -228,6 +228,16 @@ pub fn sat_unsat_nominal_inconsistent_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_UNSAT_NOMINAL_INCONSISTENT").is_none_or(|v| v != "0")
 }
 
+/// #298: a reverse fact through a role under a transitive role or a role-chain leg
+/// (skipped since #289 on cost) is seeded when its SUBJECT is an individual named by a
+/// nominal `{a}` in some concept. Those are few, so the closures the saturator then
+/// builds start from them only. Default **ON**; `RUSTDL_SAT_NOMINAL_COMPOSING_REVERSE=0`
+/// reverts.
+#[must_use]
+pub fn sat_nominal_composing_reverse_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_NOMINAL_COMPOSING_REVERSE").is_none_or(|v| v != "0")
+}
+
 /// #302 item 3: a nominal `{a}` on either side of a class axiom is read through `a`'s
 /// stand-in `N_a`: `{a} ⊑ C` as the told `N_a ⊑ C`, and `Y ⊑ {a}` (top-level or `And`
 /// operand) as `Y ⊑ N_a`. So `EquivalentClasses({a}, Y)` makes `N_a ≡ Y`. Default **ON**;
@@ -5878,6 +5888,18 @@ fn seed_nominal_abox_edges(
     let signed = (has_polarity_axioms(internal) || !functional.is_empty())
         .then(|| build_signed_role_hierarchy(internal));
     let mut reverse_of: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
+    let mut composing_reverse_of: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
+    // #298: individuals named by a nominal `{a}` in some concept (not every individual
+    // that got a stand-in: `build_abox_nominal_reach` gives one to every individual on a
+    // transitive-role edge).
+    let named_by_nominal: HashSet<IndividualId> = internal
+        .concepts
+        .iter_with_ids()
+        .filter_map(|(_, c)| match c {
+            ConceptExpr::Nominal(ind) => Some(*ind),
+            _ => None,
+        })
+        .collect();
     if let Some(h) = signed.as_ref().filter(|_| has_polarity_axioms(internal)) {
         let num_roles = u32::try_from(internal.vocabulary.num_roles()).unwrap_or(u32::MAX);
         for t in 0..num_roles {
@@ -5912,6 +5934,19 @@ fn seed_nominal_abox_edges(
                     .get(&t)
                     .is_some_and(|sup| sup.iter().any(|s| composing.contains(s)))
         };
+        // #298: the composing ones are kept aside, for subjects named by a nominal.
+        if sat_nominal_composing_reverse_enabled() {
+            for (&s_role, v) in &reverse_of {
+                let held: Vec<RoleId> = v
+                    .iter()
+                    .copied()
+                    .filter(|&t| t != s_role && feeds_composition(t))
+                    .collect();
+                if !held.is_empty() {
+                    composing_reverse_of.insert(s_role, held);
+                }
+            }
+        }
         // A symmetric role's own reverse edge is exempt: it feeds the same role the
         // forward edge already does, and #282 seeded it at no measured cost.
         for (&s_role, v) in &mut reverse_of {
@@ -5922,7 +5957,10 @@ fn seed_nominal_abox_edges(
         // multiplied the facts (family.ofn: 1,482 → 9,057 facts, 10 s → 238 s). Of a set
         // of equivalent roles only the lowest id is kept.
         let below = |x: RoleId, y: RoleId| role_super.get(&x).is_some_and(|sup| sup.contains(&y));
-        for v in reverse_of.values_mut() {
+        for v in reverse_of
+            .values_mut()
+            .chain(composing_reverse_of.values_mut())
+        {
             v.sort_unstable_by_key(|r| r.index());
             v.dedup();
             let all = v.clone();
@@ -5990,6 +6028,15 @@ fn seed_nominal_abox_edges(
                     .map_or(&[][..], Vec::as_slice)
                 {
                     push_edge(to, t, from, None, tseitin, rules);
+                }
+                // #298: a composing role's reverse fact, from a nominal-named subject only.
+                if named_by_nominal.contains(&to) {
+                    for &t in composing_reverse_of
+                        .get(&role.role_id())
+                        .map_or(&[][..], Vec::as_slice)
+                    {
+                        push_edge(to, t, from, None, tseitin, rules);
+                    }
                 }
                 edges.push((from, role.role_id(), to));
             }

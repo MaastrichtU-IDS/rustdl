@@ -365,15 +365,51 @@ fn a_chain_of_forced_equalities_needs_a_fixpoint() {
     assert!(sub_is_w(body, "Y", &[]));
 }
 
-/// KNOWN MISS, deliberate: no reverse fact for a role under a transitive role or a
-/// role-chain leg, because it lets the saturator materialise relation closures over
-/// every reached individual (family.ofn: 10 s → 238 s). Entailed, but not derived
-/// here. FLIP this if that cost is ever solved.
+/// #298: a reverse fact through a role under a transitive role or a role-chain leg is
+/// followed when its subject (`a`, here) is named by a nominal. It used to be skipped
+/// for every individual (family.ofn: 10 s → 238 s); seeding it only from nominal-named
+/// subjects keeps family.ofn flat.
 #[test]
-fn a_declared_inverse_of_a_transitive_role_is_not_followed() {
+fn a_declared_inverse_of_a_transitive_role_is_followed_from_a_nominal() {
     let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
     ObjectPropertyAssertion(:S :c :a) InverseObjectProperties(:S :T) ClassAssertion(:E :c)
     TransitiveObjectProperty(:T)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:T :E)))";
+    assert!(x_is_w(body, &[]));
+    assert!(!x_is_w(
+        body,
+        &[("RUSTDL_SAT_NOMINAL_COMPOSING_REVERSE", "0")]
+    ));
+}
+
+/// The same through a role-chain leg (`T ∘ T ⊑ T`).
+#[test]
+fn a_declared_inverse_of_a_chain_leg_is_followed_from_a_nominal() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    ObjectPropertyAssertion(:S :c :a) InverseObjectProperties(:S :T) ClassAssertion(:E :c)
+    SubObjectPropertyOf(ObjectPropertyChain(:T :T) :T)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:T :E)))";
+    assert!(x_is_w(body, &[]));
+}
+
+/// FP guard: `a S c` gives `a` an `S`-successor; its `T`-successor needs `c S a`.
+#[test]
+fn a_forward_edge_is_not_read_backwards_for_a_transitive_inverse() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    ObjectPropertyAssertion(:S :a :c) InverseObjectProperties(:S :T) ClassAssertion(:E :c)
+    TransitiveObjectProperty(:T)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:T :E)))";
+    assert!(!x_is_w(body, &[]));
+}
+
+/// KNOWN MISS, deliberate (the #298 cost bound): the second hop runs through `c`, which
+/// no nominal names, so `c`'s own reverse fact `c T d` is not seeded and `a T d` is not
+/// derived. Entailed (`HermiT`). FLIP this if reverse facts are ever seeded more widely.
+#[test]
+fn a_second_hop_through_an_unnamed_individual_is_not_followed() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+    ObjectPropertyAssertion(:S :c :a) ObjectPropertyAssertion(:S :d :c)
+    InverseObjectProperties(:S :T) ClassAssertion(:E :d) TransitiveObjectProperty(:T)
     EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:T :E)))";
     assert!(!x_is_w(body, &[]));
 }

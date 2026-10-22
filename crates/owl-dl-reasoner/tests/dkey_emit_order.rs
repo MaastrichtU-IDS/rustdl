@@ -306,14 +306,13 @@ SubClassOf(:Direct DataHasValue(:p \"3\"^^xsd:integer))
     assert_eq!(unsat_on(&body), unsat_off(&body));
 }
 
-/// NEGATIVE — the cross-datatype FP hazard, pinned as a DELIBERATE MISS.
-/// `∀p.xsd:integer[0,5]` with `p = "9"^^xsd:string` IS unsatisfiable, but rustdl
-/// declines it by design: `seed_disjoint_bucket` is invoked once PER datatype bucket
-/// with only that bucket's keys, so an int↔string pair is structurally unconstructible.
-/// The lever changes WHEN a pair is claimed, never WHICH keys are in a bucket — this
-/// must stay a MISS rather than become an (here accidentally correct) unsat.
+/// The cross-datatype case. `∀p.xsd:integer[0,5]` with `p = "9"^^xsd:string` IS
+/// unsatisfiable. It used to be a deliberate miss here; since #315 the datatype-FAMILY
+/// disjointness (`RUSTDL_DKEY_FAMILY_DISJOINT`) derives it. What this test pins for
+/// THIS lever is unchanged: it changes WHEN a pair is claimed, never WHICH keys are in
+/// a bucket, so on == off for the cross-bucket answer.
 #[test]
-fn cross_datatype_stays_a_deliberate_miss() {
+fn cross_datatype_is_decided_by_the_family_rule_not_this_lever() {
     let body = format!(
         "SubClassOf(:Direct DataAllValuesFrom(:p {R05}))
 SubClassOf(:Direct DataHasValue(:p \"9\"^^xsd:string))
@@ -321,8 +320,8 @@ SubClassOf(:Direct DataHasValue(:p \"9\"^^xsd:string))
         q_decoy()
     );
     assert!(
-        unsat_on(&body).is_empty(),
-        "DKey buckets are strictly disjoint — this clash is a documented MISS"
+        !unsat_on(&body).is_empty(),
+        "#315: integer and string are disjoint"
     );
     assert_eq!(unsat_on(&body), unsat_off(&body));
 }

@@ -7,6 +7,20 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **Disjoint datatype families clash across a range, `∀` or value and a `DataSomeValuesFrom` on
+  the same property (#315), `RUSTDL_DKEY_FAMILY_DISJOINT`, default ON (`=0` reverts).** OWL 2 gives
+  the numeric datatypes, `xsd:string`, `rdf:langString` and `xsd:dateTime` pairwise disjoint value
+  spaces, but only the IEEE-vs-exact numeric pairs were seeded. So `DataPropertyRange(p,
+  xsd:integer)` with `C ⊑ ∃p.xsd:string` left `C` satisfiable with `completeness_guaranteed: true`
+  (also string/integer, integer/dateTime, and `∀p.xsd:integer` against `∃p.xsd:string`). Each
+  family now gets one synthetic class, every datatype key `DKey ⊑ Family`, and each family pair a
+  `DisjointClasses`: linear in the number of keys rather than pairwise. `xsd:integer ⊂ xsd:decimal`
+  stays one family. A bare `rdf:langString` range stays out of the language-string family: HermiT
+  and Konclude both read it as containing plain strings. A string range against a language-tagged
+  value still clashes. Not covered: `xsd:date`, which is not in the OWL 2 datatype map and which
+  HermiT rejects, and `rdf:PlainLiteral`, which is still dropped. HermiT agrees on 18 probes (12
+  positives incl. values, enumerations, a facet restriction, a language-tagged literal and an
+  `ABox` assertion, and 6 controls); three tests that pinned the old miss are flipped or retargeted.
 - **The query surfaces error on a KB that `abox_check` or the EL saturator proves inconsistent
   (#313), `RUSTDL_QUERY_INCONSISTENCY_GUARD`, default ON (`=0` reverts).** `same`/`different`
   individuals, `disjoint_*`, the `materialize_*` functions (and so `property-values`), the instance

@@ -15,7 +15,9 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::{classify_top_down_with_timeout, dropped_axioms, is_class_satisfiable};
+use owl_dl_reasoner::{
+    classify_top_down_with_timeout, dropped_axioms, is_class_satisfiable, is_consistent,
+};
 use std::io::Cursor;
 use std::time::Duration;
 
@@ -171,5 +173,39 @@ fn the_complement_contains_no_string() {
     assert!(!c_satisfiable(
         "SubClassOf(:C DataSomeValuesFrom(:p DataComplementOf(rdf:PlainLiteral))) \
          SubClassOf(:C DataAllValuesFrom(:p xsd:string))"
+    ));
+}
+
+/// An `ABox` assertion: an asserted `"x@"^^rdf:PlainLiteral` is the string `"x"`, so it
+/// violates a `{"y"}` range and satisfies an `{"x"}` one.
+#[test]
+fn an_asserted_typed_plain_literal_is_checked_against_the_range() {
+    let kb = |allowed: &str| {
+        onto(&format!(
+            "Declaration(NamedIndividual(:a)) \
+             DataPropertyRange(:p DataOneOf({allowed})) \
+             DataPropertyAssertion(:p :a \"x@\"^^rdf:PlainLiteral)"
+        ))
+    };
+    assert!(!is_consistent(&kb("\"y\"")).unwrap());
+    assert!(is_consistent(&kb("\"x\"")).unwrap());
+}
+
+/// A literal typed `rdf:PlainLiteral` with no `@` is ill-formed and drops,
+/// visibly.
+#[test]
+fn a_typed_plain_literal_without_an_at_sign_drops_visibly() {
+    let o = onto("SubClassOf(:C DataHasValue(:p \"x\"^^rdf:PlainLiteral))");
+    assert!(!dropped_axioms(&o).unwrap().is_empty());
+}
+
+/// `HermiT` reads a bare `rdf:langString` range as admitting plain strings, and
+/// #315 keeps that key out of the langString family, so a plain string typed
+/// `rdf:PlainLiteral` stays satisfiable under it.
+#[test]
+fn a_bare_lang_string_range_admits_a_typed_plain_string() {
+    assert!(c_satisfiable(
+        "DataPropertyRange(:p rdf:langString) \
+         SubClassOf(:C DataHasValue(:p \"x@\"^^rdf:PlainLiteral))"
     ));
 }

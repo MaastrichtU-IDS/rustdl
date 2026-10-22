@@ -1882,18 +1882,12 @@ fn lower_datetime_oneof_data_cardinality<A: ForIRI>(
     }
 }
 
-/// Whether `dr` is exactly the unqualified `rdfs:Literal` data range. Only this
-/// range may fall back to a `⊤` filler for data cardinality — a specific
-/// unrecognized datatype must keep dropping (using `⊤` there over-constrains a
-/// `≤n` restriction → unsound FP).
-fn is_rdfs_literal<A: ForIRI>(dr: &DataRange<A>) -> bool {
-    matches!(dr, DataRange::Datatype(dt)
-        if dt.0.as_ref() == "http://www.w3.org/2000/01/rdf-schema#Literal")
-}
-
 /// Gated fallback for UNQUALIFIED data cardinality (`≥n dp` / `≤n dp` over
 /// `rdfs:Literal`): lower to the same cardinality over the IR `⊤` filler.
 /// `None` ⇒ not applicable (gate off, or range not `rdfs:Literal`) ⇒ caller drops.
+/// Only exactly `rdfs:Literal` may fall back to `⊤`: a specific unrecognized
+/// datatype must keep dropping, since `⊤` there over-constrains a `≤n`
+/// restriction (an unsound FP).
 fn lower_unqualified_data_cardinality<A: ForIRI>(
     n: u32,
     dp: &horned_owl::model::DataProperty<A>,
@@ -1903,7 +1897,7 @@ fn lower_unqualified_data_cardinality<A: ForIRI>(
     want_min: bool,
     want_max: bool,
 ) -> Option<ConceptId> {
-    if !data_properties_enabled() || !is_rdfs_literal(dr) {
+    if !data_properties_enabled() || !crate::data_axioms::is_rdfs_literal(dr) {
         return None;
     }
     let role = Role::named(vocab.intern_role(dp.0.as_ref()));

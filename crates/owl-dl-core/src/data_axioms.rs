@@ -1461,7 +1461,7 @@ pub(crate) fn boolean_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<String>
         Literal::Datatype {
             literal,
             datatype_iri,
-        } if datatype_iri.as_ref() == XSD_BOOLEAN => match literal.trim() {
+        } if datatype_iri.as_ref() == XSD_BOOLEAN => match xsd_collapse(literal).as_str() {
             "true" | "1" => Some("true".to_string()),
             "false" | "0" => Some("false".to_string()),
             _ => None,
@@ -1493,15 +1493,26 @@ pub(crate) fn parse_boolean_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet
     }
 }
 
-/// The lexical form of an `xsd:anyURI` literal (#314). `anyURI` is
-/// equality-typed like `xsd:string` but a different datatype, so it gets its
-/// own bucket.
+/// XSD `whiteSpace = collapse`: strip leading and trailing `#x9 #xA #xD #x20`
+/// and fold each internal run of them to one space. Narrower than
+/// `str::trim`, which also strips other Unicode whitespace.
+fn xsd_collapse(s: &str) -> String {
+    let is_ws = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
+    s.split(is_ws)
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The lexical form of an `xsd:anyURI` literal, whitespace-collapsed as its
+/// datatype requires (#314). `anyURI` is equality-typed like `xsd:string` but
+/// a different datatype, so it gets its own bucket.
 pub(crate) fn exact_anyuri_literal<A: ForIRI>(l: &Literal<A>) -> Option<String> {
     match l {
         Literal::Datatype {
             literal,
             datatype_iri,
-        } if datatype_iri.as_ref() == XSD_ANY_URI => Some(literal.clone()),
+        } if datatype_iri.as_ref() == XSD_ANY_URI => Some(xsd_collapse(literal)),
         _ => None,
     }
 }
@@ -2822,8 +2833,10 @@ enum DtFamily {
 
 /// Classify a datatype IRI into a value-space family, or `None` when we
 /// are not certain it is value-space-disjoint from the others (e.g.
-/// `xsd:anyURI`, `rdfs:Literal`, custom datatypes) — `None` is never
-/// flagged, keeping DP-1 a sound under-approximation.
+/// `rdfs:Literal`, custom datatypes) — `None` is never flagged, keeping DP-1 a
+/// sound under-approximation. `xsd:anyURI` is disjoint from the others (#314,
+/// `HermiT` agrees), and conversion's `anyuri` family uses that; it is left
+/// unclassified here only because this pre-check has no need for it.
 fn dt_family(iri: &str) -> Option<DtFamily> {
     const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
     const RDF_LANGSTRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
@@ -2844,7 +2857,7 @@ fn dt_family(iri: &str) -> Option<DtFamily> {
         "dateTime" | "dateTimeStamp" | "date" | "time" | "gYear" | "gYearMonth" | "gMonth"
         | "gDay" | "gMonthDay" | "duration" => DtFamily::Temporal,
         "hexBinary" | "base64Binary" => DtFamily::Binary,
-        // anyURI, rdfs:Literal restrictions, unknown → not certain → skip.
+        // anyURI (see above), rdfs:Literal restrictions, unknown → skip.
         _ => return None,
     })
 }

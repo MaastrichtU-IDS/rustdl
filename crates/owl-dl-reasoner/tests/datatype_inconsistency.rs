@@ -173,11 +173,12 @@ fn value_in_string_oneof_is_consistent() {
     ));
 }
 
-/// NEGATIVE: a non-string value against a string enumeration is NOT handled
-/// (DP-1b is string-only) ⇒ must NOT flag (under-approximation, sound).
+/// A non-string value against a string enumeration. DP-1b alone is string-only, so
+/// this was a deliberate miss; since #315 the datatype-family disjointness (integer vs
+/// string) makes it inconsistent, as `HermiT` says.
 #[test]
-fn nonstring_value_on_string_oneof_is_consistent() {
-    assert!(consistent(
+fn nonstring_value_on_string_oneof_is_inconsistent() {
+    assert!(!consistent(
         r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
     DataPropertyRange(:p DataOneOf("all" "driver"))
     DataPropertyAssertion(:p :a "5"^^xsd:integer)"#

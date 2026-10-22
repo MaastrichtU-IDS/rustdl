@@ -97,6 +97,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_DKEY_FAMILY_DISJOINT",
+            owl_dl_core::convert::dkey_family_disjoint_enabled as fn() -> bool,
+            true,
+        ),
+        (
             "RUSTDL_DKEY_INT_WITHIN_DECIMAL",
             owl_dl_core::convert::dkey_int_within_decimal_enabled as fn() -> bool,
             true,

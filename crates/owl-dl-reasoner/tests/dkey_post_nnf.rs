@@ -168,22 +168,22 @@ fn out_of_range_on_unrelated_property_stays_satisfiable() {
     assert_eq!(unsat_on(&body), unsat_off(&body));
 }
 
-/// NEGATIVE — the cross-datatype FP hazard, pinned as a DELIBERATE MISS.
-/// `∀q.xsd:integer[0,5]` with `q = "9"^^xsd:string` IS unsatisfiable (Konclude and
-/// `HermiT` both say so), but rustdl declines it by design: `seed_dkey_subsumptions`
-/// buckets by datatype and NEVER seeds an edge across buckets, because an int↔float
-/// or int↔string cross-subsumption would be a false positive. This test pins that
-/// the wider role classification does not leak a cross-bucket pair — it must stay a
-/// MISS, not become a (here accidentally correct) unsat.
+/// The cross-datatype case. `∀q.xsd:integer[0,5]` with `q = "9"^^xsd:string` IS
+/// unsatisfiable (Konclude and `HermiT` both say so). It used to be a deliberate miss
+/// here; since #315 the datatype-FAMILY disjointness (`RUSTDL_DKEY_FAMILY_DISJOINT`)
+/// derives it. What this test pins for THIS lever is unchanged: the wider role
+/// classification does not change the cross-bucket answer either way (on == off), so
+/// it never leaks a cross-bucket pair of its own.
 #[test]
-fn cross_datatype_stays_a_deliberate_miss() {
+fn cross_datatype_is_decided_by_the_family_rule_not_this_lever() {
     let body = format!(
         "{}\nSubClassOf(:Negated DataHasValue(:q \"9\"^^xsd:string))",
         nnf_forall_q()
     );
-    assert!(
-        unsat_on(&body).is_empty(),
-        "DKey buckets are strictly disjoint — this clash is a documented MISS"
+    assert_eq!(
+        unsat_on(&body),
+        negated(),
+        "#315: integer and string are disjoint"
     );
     assert_eq!(unsat_on(&body), unsat_off(&body));
 }

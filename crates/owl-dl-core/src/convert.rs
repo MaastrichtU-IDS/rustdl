@@ -3896,6 +3896,48 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         // NOT (ints, decs) blanket — xsd:integer ⊂ xsd:decimal. Integer/decimal
         // pairs whose VALUES do not meet are seeded below, per pair (#247).
     }
+    // #315 — disjointness BETWEEN DATATYPE FAMILIES. The numeric types, `xsd:string`,
+    // `rdf:langString` and `xsd:dateTime` have pairwise disjoint value spaces in OWL 2,
+    // but only the IEEE-vs-exact numeric pairs above were ever seeded, so
+    // `DataPropertyRange(p, xsd:integer)` with `C ⊑ ∃p.xsd:string` left `C` satisfiable.
+    // Linear, not pairwise: each family gets one synthetic class `Family`, every key
+    // gets `DKey ⊑ Family`, and each family pair one `DisjointClasses`. A pairwise
+    // seeding would be O(kₐ·k_b) in distinct literals, which `ABox` data makes large.
+    // `xsd:date` is left out: it is not in the OWL 2 datatype map, and `HermiT` rejects
+    // it, so no oracle can adjudicate a `date` clash.
+    if dkey_family_disjoint_enabled() {
+        let mut numeric: Vec<ClassId> = Vec::new();
+        numeric.extend(int_dkeys.iter().map(|(c, _)| *c));
+        numeric.extend(float_dkeys.iter().map(|(c, _)| *c));
+        numeric.extend(double_dkeys.iter().map(|(c, _)| *c));
+        numeric.extend(dec_dkeys.iter().map(|(c, _)| *c));
+        numeric.extend(int_oneof_dkeys.iter().map(|(c, _)| *c));
+        numeric.extend(float_oneof_dkeys.iter().map(|(c, _)| *c));
+        numeric.extend(double_oneof_dkeys.iter().map(|(c, _)| *c));
+        numeric.extend(dec_oneof_dkeys.iter().map(|(c, _)| *c));
+        let string: Vec<ClassId> = str_dkeys.iter().map(|(c, _)| *c).collect();
+        // Language-tagged VALUES only. A bare `rdf:langString` range (the `Top` key) is
+        // left out: HermiT and Konclude both read it OWL-2-style as containing plain
+        // strings, so `Range(p, rdf:langString)` with a plain string value is
+        // satisfiable for them. The uncontested direction, a string range against a
+        // language-tagged value, still clashes.
+        let lang: Vec<ClassId> = lang_dkeys
+            .iter()
+            .filter(|(_, r)| !matches!(r, crate::data_axioms::LangSet::Top))
+            .map(|(c, _)| *c)
+            .collect();
+        let mut datetime: Vec<ClassId> = dt_dkeys.iter().map(|(c, _)| *c).collect();
+        datetime.extend(dt_oneof_dkeys.iter().map(|(c, _)| *c));
+        seed_family_disjoint(
+            out,
+            &[
+                ("numeric", numeric),
+                ("string", string),
+                ("langstring", lang),
+                ("datetime", datetime),
+            ],
+        );
+    }
     // Numeric-oneof disjointness. FP-CRITICAL DIRECTION: emitting a
     // `DisjointClasses` ADDS clashes, so a wrong "disjoint" is a false UNSAT,
     // not a miss. `BTreeSet::is_disjoint` is exact here because every bucket's
@@ -4643,6 +4685,51 @@ fn dkey_emit_order_enabled() -> bool {
 /// numeric bucket ⇒ disjoint" would turn a MISS into a false UNSAT. See
 /// `integer_value_in_decimal_range_is_consistent` in
 /// `crates/owl-dl-reasoner/tests/dkey_cross_bucket_disjointness.rs`.
+/// #315: seed disjointness between datatype families (numeric, `xsd:string`,
+/// `rdf:langString`, `xsd:dateTime`). See [`seed_family_disjoint`]. Default **ON**;
+/// `RUSTDL_DKEY_FAMILY_DISJOINT=0` reverts.
+#[must_use]
+pub fn dkey_family_disjoint_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_FAMILY_DISJOINT").is_none_or(|v| v != "0")
+}
+
+/// IRI tag of a datatype family's synthetic class, `urn:rustdl-dkey:family:<name>`.
+/// Under [`DKEY_IRI_PREFIX`], so it is never reported; no `DKey` decoder parses it.
+pub const DKEY_FAMILY_TAG: &str = "family:";
+
+/// For the families that have keys, when at least two do: `DKey ⊑ Family` for every
+/// key and `DisjointClasses(Familyₐ, Family_b)` for every pair. Sound because the
+/// families' value spaces are pairwise disjoint and each key's values lie in its own
+/// family.
+fn seed_family_disjoint(out: &mut InternalOntology, families: &[(&str, Vec<ClassId>)]) {
+    let present: Vec<&(&str, Vec<ClassId>)> = families
+        .iter()
+        .filter(|(_, keys)| !keys.is_empty())
+        .collect();
+    if present.len() < 2 {
+        return;
+    }
+    let mut family_ids: Vec<ClassId> = Vec::with_capacity(present.len());
+    for (name, keys) in &present {
+        let fam = out
+            .vocabulary
+            .intern_class(&format!("{DKEY_IRI_PREFIX}{DKEY_FAMILY_TAG}{name}"));
+        let sup = out.concepts.atomic(fam);
+        for &k in keys {
+            let sub = out.concepts.atomic(k);
+            out.axioms.push(Axiom::SubClassOf { sub, sup });
+        }
+        family_ids.push(fam);
+    }
+    for (i, &a) in family_ids.iter().enumerate() {
+        for &b in &family_ids[i + 1..] {
+            let ca = out.concepts.atomic(a);
+            let cb = out.concepts.atomic(b);
+            out.axioms.push(Axiom::DisjointClasses(vec![ca, cb]));
+        }
+    }
+}
+
 fn dkey_cross_bucket_disjoint_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_CROSS_BUCKET_DISJOINT").is_none_or(|v| v != "0")
 }
@@ -6824,6 +6911,31 @@ mod tests {
                     "decoder {decoder} on {bucket} IRI {iri:?}: expected {expected}"
                 );
             }
+        }
+    }
+
+    /// #315: a datatype family's class lives under `DKEY_IRI_PREFIX` but is NOT a key.
+    /// Every decoder must reject it, or the family class would be read as a value range
+    /// (the untagged integer decoder is the risky one: it does no tag check).
+    #[test]
+    fn no_dkey_decoder_parses_a_family_iri() {
+        for name in ["numeric", "string", "langstring", "datetime"] {
+            let iri = format!("{DKEY_IRI_PREFIX}{DKEY_FAMILY_TAG}{name}");
+            assert!(parse_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_int_set_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_float_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_double_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_decimal_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_date_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_datetime_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_string_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_lang_dkey_iri(&iri).is_none(), "{iri}");
+            assert!(parse_int_oneof_iri(&iri).is_none(), "{iri}");
+            assert!(parse_float_oneof_iri(&iri).is_none(), "{iri}");
+            assert!(parse_double_oneof_iri(&iri).is_none(), "{iri}");
+            assert!(parse_decimal_oneof_iri(&iri).is_none(), "{iri}");
+            assert!(parse_date_oneof_iri(&iri).is_none(), "{iri}");
+            assert!(parse_datetime_oneof_iri(&iri).is_none(), "{iri}");
         }
     }
 

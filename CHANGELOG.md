@@ -7,6 +7,17 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **`rustdl consistent`, `realize`, `diagnose` and `justify` agree with `classify` on
+  inconsistencies the EL saturator proves (#310), `RUSTDL_SAT_INCONSISTENCY_ALL_SURFACES`, default
+  ON (`=0` reverts).** `classify` reads the saturator's `⊤ ⊑ ⊥` / unsat-individual signal; the
+  other surfaces did not. On `InverseFunctional(r)`, `s ⊑ r⁻`, `{a} ⊑ ∃r.Y`, `Y ⊑ ∃s.Z`,
+  `{a} ⊑ W`, `Disjoint(W, Z)` (inconsistent per HermiT) `classify` said inconsistent while
+  `consistent` said consistent, `diagnose` blamed a class and `justify … inconsistent` found
+  nothing; and `realize` on `{a} ⊑ ⊥`, or on `c : E`, `E ⊑ ⊥`, returned an empty realization.
+  `is_consistent` and `is_consistent_with_timeout` now read the closure they already build, and
+  `realize` errors when the classification it already runs is inconsistent (on the saturation
+  fast path, also when an individual's stand-in is unsat); no extra saturation. Still not
+  covered: `individuals`, `property-values`, `instances-expr` and the instance queries (#313).
 - **An unsatisfiable individual makes the KB inconsistent in the EL saturator (#307),
   `RUSTDL_SAT_UNSAT_NOMINAL_INCONSISTENT`, default ON (`=0` reverts).** A named individual exists
   in every model, so `{a} ⊑ ⊥`, `a : Y ⊓ ¬Y`, `ClassAssertion(owl:Nothing, a)` or `{a}` in two

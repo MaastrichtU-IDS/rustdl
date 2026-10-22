@@ -104,9 +104,9 @@ fn exactly_one_boolean_with_both_values_is_a_known_miss() {
     )));
 }
 
-/// Exactly two booleans, all of them `true`: only one value is left.
+/// At least two booleans, all of them `true`: only one value is left.
 #[test]
-fn exactly_two_booleans_all_true_is_unsat() {
+fn at_least_two_booleans_all_true_is_unsat() {
     assert!(!c_satisfiable(&format!(
         "SubClassOf(:C ObjectIntersectionOf(DataMinCardinality(2 :p xsd:boolean) \
          DataAllValuesFrom(:p DataOneOf({T}))))"

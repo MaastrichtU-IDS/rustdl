@@ -572,6 +572,32 @@ fn lower_str_data_to_some(
 const DKEY_BOOL_TAG: &str = "bool:";
 const DKEY_ANYURI_TAG: &str = "uri:";
 
+/// Public decode of a BOOLEAN `DKey` IRI into its value set (#325). `None` for
+/// any other bucket, a malformed IRI, or a member that is not a canonical
+/// boolean lexical form (`Top` never occurs: bare `xsd:boolean` keys to the
+/// exact set).
+#[must_use]
+pub fn decode_bool_dkey(iri: &str) -> Option<std::collections::BTreeSet<bool>> {
+    match parse_bool_dkey_iri(iri)? {
+        StrSet::Top => None,
+        StrSet::Set(members) => members
+            .iter()
+            .map(|m| match m.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
+/// Public decode of an `xsd:anyURI` `DKey` IRI into its [`StrSet`] (#325).
+/// `None` for any other bucket or a malformed IRI.
+#[must_use]
+pub fn decode_anyuri_dkey(iri: &str) -> Option<StrSet> {
+    parse_anyuri_dkey_iri(iri)
+}
+
 fn parse_bool_dkey_iri(iri: &str) -> Option<StrSet> {
     parse_strset_dkey_iri(DKEY_BOOL_TAG, iri)
 }
@@ -1459,6 +1485,8 @@ pub fn convert_class_expression<A: ForIRI>(
             let dr = flat.as_ref().unwrap_or(dr);
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, false)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, true, false))
+                .or_else(|_| lower_bool_data_cardinality(*n, dp, dr, vocab, pool, true, false))
+                .or_else(|_| lower_uri_data_cardinality(*n, dp, dr, vocab, pool, true, false))
                 .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, true, false))
                 .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, true, false))
                 .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, true, false))
@@ -1489,6 +1517,8 @@ pub fn convert_class_expression<A: ForIRI>(
             let dr = flat.as_ref().unwrap_or(dr);
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, false, true)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, false, true))
+                .or_else(|_| lower_bool_data_cardinality(*n, dp, dr, vocab, pool, false, true))
+                .or_else(|_| lower_uri_data_cardinality(*n, dp, dr, vocab, pool, false, true))
                 .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, false, true))
                 .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, false, true))
                 .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, false, true))
@@ -1519,6 +1549,8 @@ pub fn convert_class_expression<A: ForIRI>(
             let dr = flat.as_ref().unwrap_or(dr);
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, true)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| lower_bool_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| lower_uri_data_cardinality(*n, dp, dr, vocab, pool, true, true))
                 .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, true, true))
                 .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, true, true))
                 .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, true, true))
@@ -1597,6 +1629,69 @@ fn lower_str_data_cardinality<A: ForIRI>(
             let lo = pool.min(n, role, filler);
             let hi = pool.max(n, role, filler);
             Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower an `xsd:boolean`-qualified data cardinality restriction (#325) to
+/// object `Min`/`Max` over the boolean `DKey` filler, which the tableau's
+/// concrete-domain check counts as a set of at most two values. Returns
+/// `UnsupportedDataRange` for any other qualifier — mirrors
+/// [`lower_str_data_cardinality`].
+fn lower_bool_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_boolean_range(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    Ok(card_concept(pool, n, role, filler, want_min, want_max))
+}
+
+/// Lower an `xsd:anyURI`-qualified data cardinality restriction (#325). Only an
+/// enumeration bounds the count; bare `xsd:anyURI` is infinite. Mirrors
+/// [`lower_bool_data_cardinality`].
+fn lower_uri_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_anyuri_range(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    Ok(card_concept(pool, n, role, filler, want_min, want_max))
+}
+
+/// `≥n role.filler`, `≤n role.filler`, or both, as asked.
+fn card_concept(
+    pool: &mut ConceptPool,
+    n: u32,
+    role: Role,
+    filler: ConceptId,
+    want_min: bool,
+    want_max: bool,
+) -> ConceptId {
+    match (want_min, want_max) {
+        (true, false) => pool.min(n, role, filler),
+        (false, true) => pool.max(n, role, filler),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            pool.and([lo, hi])
         }
         (false, false) => unreachable!("at least one of min/max requested"),
     }

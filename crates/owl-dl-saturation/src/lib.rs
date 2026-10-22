@@ -5747,6 +5747,79 @@ fn nominals_in(c: ConceptId, pool: &ConceptPool, out: &mut Vec<IndividualId>) {
     }
 }
 
+/// The individuals named by a nominal inside `c` without passing through a disjunction.
+/// `ObjectOneOf` with several members lowers to `Or`, which the saturator reads only through
+/// the common-subsumer under-approximation, so its members' stand-ins never feed a trigger;
+/// counting them would let one enumeration of the ABox individuals name them all (#298).
+fn reachable_nominals_in(c: ConceptId, pool: &ConceptPool, out: &mut Vec<IndividualId>) {
+    match pool.get(c) {
+        ConceptExpr::Nominal(ind) => out.push(*ind),
+        ConceptExpr::Not(x)
+        | ConceptExpr::Some(_, x)
+        | ConceptExpr::All(_, x)
+        | ConceptExpr::Min(_, _, x)
+        | ConceptExpr::Max(_, _, x) => reachable_nominals_in(*x, pool, out),
+        ConceptExpr::And(xs) => {
+            for &x in xs {
+                reachable_nominals_in(x, pool, out);
+            }
+        }
+        ConceptExpr::Or(_)
+        | ConceptExpr::Top
+        | ConceptExpr::Bot
+        | ConceptExpr::Atomic(_)
+        | ConceptExpr::SelfRestriction(_) => {}
+    }
+}
+
+/// #298: the individuals named by a nominal `{a}` the saturator can reach, outside any
+/// disjunction, closed under `SameIndividual` (not every individual that got a stand-in:
+/// `build_abox_nominal_reach` gives one to every individual on a transitive-role edge). Read
+/// from the axioms, not the concept pool, which `HyperCache::build` fills with `{x}` for its
+/// own ABox axioms.
+fn nominal_named_individuals(internal: &InternalOntology) -> HashSet<IndividualId> {
+    let mut named = Vec::new();
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                reachable_nominals_in(*sub, &internal.concepts, &mut named);
+                reachable_nominals_in(*sup, &internal.concepts, &mut named);
+            }
+            Axiom::ClassAssertion { class, .. } => {
+                reachable_nominals_in(*class, &internal.concepts, &mut named);
+            }
+            Axiom::EquivalentClasses(cs) => {
+                for &c in cs {
+                    reachable_nominals_in(c, &internal.concepts, &mut named);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut named: HashSet<IndividualId> = named.into_iter().collect();
+    // `SameIndividual(a b)` with `a` named: `b`'s edges are `a`'s too.
+    let groups: Vec<&Vec<IndividualId>> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::SameIndividual(inds) => Some(inds),
+            _ => None,
+        })
+        .collect();
+    let mut grew = !named.is_empty();
+    while grew {
+        grew = false;
+        for inds in &groups {
+            if inds.iter().any(|i| named.contains(i)) {
+                for &i in *inds {
+                    grew |= named.insert(i);
+                }
+            }
+        }
+    }
+    named
+}
+
 fn seed_nominal_abox_edges(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
@@ -5889,17 +5962,7 @@ fn seed_nominal_abox_edges(
         .then(|| build_signed_role_hierarchy(internal));
     let mut reverse_of: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
     let mut composing_reverse_of: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
-    // #298: individuals named by a nominal `{a}` in some concept (not every individual
-    // that got a stand-in: `build_abox_nominal_reach` gives one to every individual on a
-    // transitive-role edge).
-    let named_by_nominal: HashSet<IndividualId> = internal
-        .concepts
-        .iter_with_ids()
-        .filter_map(|(_, c)| match c {
-            ConceptExpr::Nominal(ind) => Some(*ind),
-            _ => None,
-        })
-        .collect();
+    let named_by_nominal = nominal_named_individuals(internal);
     if let Some(h) = signed.as_ref().filter(|_| has_polarity_axioms(internal)) {
         let num_roles = u32::try_from(internal.vocabulary.num_roles()).unwrap_or(u32::MAX);
         for t in 0..num_roles {
@@ -7533,6 +7596,29 @@ mod tests {
     const HEADER: &str = "\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// #298 cost bound: a member of a multi-member `ObjectOneOf` is not "named" (a single
+    /// enumeration of the ABox individuals would otherwise name them all and re-create the
+    /// #289 blow-up); a `∃R.{a}` filler is, and so is its `SameIndividual`.
+    #[test]
+    fn nominal_named_individuals_skips_enumerations() {
+        let internal = parse_internal(&format!(
+            "{HEADER}Ontology(
+            SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+            SameIndividual(:a :d)
+            EquivalentClasses(:All ObjectOneOf(:a :b :c))
+            SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:b :c)))
+            ObjectPropertyAssertion(:R :b :c))"
+        ));
+        let ind = |l: &str| {
+            internal
+                .vocabulary
+                .individual_id(&format!("http://rustdl.test/{l}"))
+                .expect("individual")
+        };
+        let named = nominal_named_individuals(&internal);
+        assert_eq!(named, [ind("a"), ind("d")].into_iter().collect());
+    }
 
     fn class(internal: &InternalOntology, local: &str) -> ClassId {
         internal

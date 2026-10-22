@@ -392,6 +392,16 @@ fn a_declared_inverse_of_a_chain_leg_is_followed_from_a_nominal() {
     assert!(x_is_w(body, &[]));
 }
 
+/// The same when the edge is on `b` and only `a`, its `SameIndividual`, is named.
+#[test]
+fn a_transitive_inverse_is_followed_through_same_individual() {
+    let body = "    SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a))) SameIndividual(:a :b)
+    ObjectPropertyAssertion(:S :c :b) InverseObjectProperties(:S :T) ClassAssertion(:E :c)
+    TransitiveObjectProperty(:T)
+    EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:T :E)))";
+    assert!(x_is_w(body, &[]));
+}
+
 /// FP guard: `a S c` gives `a` an `S`-successor; its `T`-successor needs `c S a`.
 #[test]
 fn a_forward_edge_is_not_read_backwards_for_a_transitive_inverse() {

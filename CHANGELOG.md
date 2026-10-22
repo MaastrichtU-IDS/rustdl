@@ -7,6 +7,16 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **A reverse fact through a transitive role or a role-chain leg is followed from an individual
+  named by a nominal (#298), `RUSTDL_SAT_NOMINAL_COMPOSING_REVERSE`, default ON (`=0` reverts).**
+  `X ⊑ ∃R.{a}`, `c S a`, `S ≡ T⁻`, `T` transitive, `c : E`, `W ≡ ∃R.∃T.E` entails `X ⊑ W`, and
+  `classify` missed it with `incomplete: false`. #289 skipped such reverse facts for every
+  individual because seeding them took `family.ofn` from about 9 to about 285 CPU-s. They are now
+  seeded only when the subject (`a`) is named by a nominal `{a}` in a class axiom, outside any
+  disjunction, or is the `SameIndividual` of one. A multi-member `ObjectOneOf` does not count:
+  one enumeration of every ABox individual would otherwise name them all and bring the
+  blow-up back. A second hop through an individual no nominal names is still missed (pinned).
+  HermiT agrees on all 19 probes.
 - **Disjoint datatype families clash across a range, `∀` or value and a `DataSomeValuesFrom` on
   the same property (#315), `RUSTDL_DKEY_FAMILY_DISJOINT`, default ON (`=0` reverts).** OWL 2 gives
   the numeric datatypes, `xsd:string`, `rdf:langString` and `xsd:dateTime` pairwise disjoint value

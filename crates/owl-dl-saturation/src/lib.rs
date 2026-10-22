@@ -228,6 +228,16 @@ pub fn sat_unsat_nominal_inconsistent_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_UNSAT_NOMINAL_INCONSISTENT").is_none_or(|v| v != "0")
 }
 
+/// #298: a reverse fact through a role under a transitive role or a role-chain leg
+/// (skipped since #289 on cost) is seeded when its SUBJECT is an individual named by a
+/// nominal `{a}` in some concept. Those are few, so the closures the saturator then
+/// builds start from them only. Default **ON**; `RUSTDL_SAT_NOMINAL_COMPOSING_REVERSE=0`
+/// reverts.
+#[must_use]
+pub fn sat_nominal_composing_reverse_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_NOMINAL_COMPOSING_REVERSE").is_none_or(|v| v != "0")
+}
+
 /// #302 item 3: a nominal `{a}` on either side of a class axiom is read through `a`'s
 /// stand-in `N_a`: `{a} ⊑ C` as the told `N_a ⊑ C`, and `Y ⊑ {a}` (top-level or `And`
 /// operand) as `Y ⊑ N_a`. So `EquivalentClasses({a}, Y)` makes `N_a ≡ Y`. Default **ON**;
@@ -5737,6 +5747,79 @@ fn nominals_in(c: ConceptId, pool: &ConceptPool, out: &mut Vec<IndividualId>) {
     }
 }
 
+/// The individuals named by a nominal inside `c` without passing through a disjunction.
+/// `ObjectOneOf` with several members lowers to `Or`, which the saturator reads only through
+/// the common-subsumer under-approximation, so its members' stand-ins never feed a trigger;
+/// counting them would let one enumeration of the `ABox` individuals name them all (#298).
+fn reachable_nominals_in(c: ConceptId, pool: &ConceptPool, out: &mut Vec<IndividualId>) {
+    match pool.get(c) {
+        ConceptExpr::Nominal(ind) => out.push(*ind),
+        ConceptExpr::Not(x)
+        | ConceptExpr::Some(_, x)
+        | ConceptExpr::All(_, x)
+        | ConceptExpr::Min(_, _, x)
+        | ConceptExpr::Max(_, _, x) => reachable_nominals_in(*x, pool, out),
+        ConceptExpr::And(xs) => {
+            for &x in xs {
+                reachable_nominals_in(x, pool, out);
+            }
+        }
+        ConceptExpr::Or(_)
+        | ConceptExpr::Top
+        | ConceptExpr::Bot
+        | ConceptExpr::Atomic(_)
+        | ConceptExpr::SelfRestriction(_) => {}
+    }
+}
+
+/// #298: the individuals named by a nominal `{a}` the saturator can reach, outside any
+/// disjunction, closed under `SameIndividual` (not every individual that got a stand-in:
+/// `build_abox_nominal_reach` gives one to every individual on a transitive-role edge). Read
+/// from the axioms, not the concept pool, which `HyperCache::build` fills with `{x}` for its
+/// own `ABox` axioms.
+fn nominal_named_individuals(internal: &InternalOntology) -> HashSet<IndividualId> {
+    let mut named = Vec::new();
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                reachable_nominals_in(*sub, &internal.concepts, &mut named);
+                reachable_nominals_in(*sup, &internal.concepts, &mut named);
+            }
+            Axiom::ClassAssertion { class, .. } => {
+                reachable_nominals_in(*class, &internal.concepts, &mut named);
+            }
+            Axiom::EquivalentClasses(cs) => {
+                for &c in cs {
+                    reachable_nominals_in(c, &internal.concepts, &mut named);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut named: HashSet<IndividualId> = named.into_iter().collect();
+    // `SameIndividual(a b)` with `a` named: `b`'s edges are `a`'s too.
+    let groups: Vec<&Vec<IndividualId>> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::SameIndividual(inds) => Some(inds),
+            _ => None,
+        })
+        .collect();
+    let mut grew = !named.is_empty();
+    while grew {
+        grew = false;
+        for inds in &groups {
+            if inds.iter().any(|i| named.contains(i)) {
+                for &i in *inds {
+                    grew |= named.insert(i);
+                }
+            }
+        }
+    }
+    named
+}
+
 fn seed_nominal_abox_edges(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
@@ -5878,6 +5961,8 @@ fn seed_nominal_abox_edges(
     let signed = (has_polarity_axioms(internal) || !functional.is_empty())
         .then(|| build_signed_role_hierarchy(internal));
     let mut reverse_of: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
+    let mut composing_reverse_of: HashMap<RoleId, Vec<RoleId>> = HashMap::new();
+    let named_by_nominal = nominal_named_individuals(internal);
     if let Some(h) = signed.as_ref().filter(|_| has_polarity_axioms(internal)) {
         let num_roles = u32::try_from(internal.vocabulary.num_roles()).unwrap_or(u32::MAX);
         for t in 0..num_roles {
@@ -5912,6 +5997,19 @@ fn seed_nominal_abox_edges(
                     .get(&t)
                     .is_some_and(|sup| sup.iter().any(|s| composing.contains(s)))
         };
+        // #298: the composing ones are kept aside, for subjects named by a nominal.
+        if sat_nominal_composing_reverse_enabled() {
+            for (&s_role, v) in &reverse_of {
+                let held: Vec<RoleId> = v
+                    .iter()
+                    .copied()
+                    .filter(|&t| t != s_role && feeds_composition(t))
+                    .collect();
+                if !held.is_empty() {
+                    composing_reverse_of.insert(s_role, held);
+                }
+            }
+        }
         // A symmetric role's own reverse edge is exempt: it feeds the same role the
         // forward edge already does, and #282 seeded it at no measured cost.
         for (&s_role, v) in &mut reverse_of {
@@ -5922,7 +6020,10 @@ fn seed_nominal_abox_edges(
         // multiplied the facts (family.ofn: 1,482 → 9,057 facts, 10 s → 238 s). Of a set
         // of equivalent roles only the lowest id is kept.
         let below = |x: RoleId, y: RoleId| role_super.get(&x).is_some_and(|sup| sup.contains(&y));
-        for v in reverse_of.values_mut() {
+        for v in reverse_of
+            .values_mut()
+            .chain(composing_reverse_of.values_mut())
+        {
             v.sort_unstable_by_key(|r| r.index());
             v.dedup();
             let all = v.clone();
@@ -5990,6 +6091,15 @@ fn seed_nominal_abox_edges(
                     .map_or(&[][..], Vec::as_slice)
                 {
                     push_edge(to, t, from, None, tseitin, rules);
+                }
+                // #298: a composing role's reverse fact, from a nominal-named subject only.
+                if named_by_nominal.contains(&to) {
+                    for &t in composing_reverse_of
+                        .get(&role.role_id())
+                        .map_or(&[][..], Vec::as_slice)
+                    {
+                        push_edge(to, t, from, None, tseitin, rules);
+                    }
                 }
                 edges.push((from, role.role_id(), to));
             }
@@ -7486,6 +7596,29 @@ mod tests {
     const HEADER: &str = "\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// #298 cost bound: a member of a multi-member `ObjectOneOf` is not "named" (a single
+    /// enumeration of the `ABox` individuals would otherwise name them all and re-create the
+    /// #289 blow-up); a `∃R.{a}` filler is, and so is its `SameIndividual`.
+    #[test]
+    fn nominal_named_individuals_skips_enumerations() {
+        let internal = parse_internal(&format!(
+            "{HEADER}Ontology(
+            SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
+            SameIndividual(:a :d)
+            EquivalentClasses(:All ObjectOneOf(:a :b :c))
+            SubClassOf(:Y ObjectSomeValuesFrom(:R ObjectOneOf(:b :c)))
+            ObjectPropertyAssertion(:R :b :c))"
+        ));
+        let ind = |l: &str| {
+            internal
+                .vocabulary
+                .individual_id(&format!("http://rustdl.test/{l}"))
+                .expect("individual")
+        };
+        let named = nominal_named_individuals(&internal);
+        assert_eq!(named, [ind("a"), ind("d")].into_iter().collect());
+    }
 
     fn class(internal: &InternalOntology, local: &str) -> ClassId {
         internal

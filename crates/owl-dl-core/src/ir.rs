@@ -201,6 +201,10 @@ pub struct ConceptPool {
     /// by the structural canary to confirm the cache is consulted.
     /// `AtomicU64` (not `Cell`) for `Sync` across rayon threads.
     bot_id_cache_hits: std::sync::atomic::AtomicU64,
+    /// #288: the ids of every interned `ConceptExpr::Nominal`, ascending.
+    /// Built on the first `nominal_ids()` call and cleared whenever a new
+    /// nominal is interned, so it always equals a fresh scan.
+    nominal_ids_cache: std::sync::OnceLock<Vec<ConceptId>>,
 }
 
 impl Clone for ConceptPool {
@@ -213,6 +217,7 @@ impl Clone for ConceptPool {
                 self.bot_id_cache_hits
                     .load(std::sync::atomic::Ordering::Relaxed),
             ),
+            nominal_ids_cache: self.nominal_ids_cache.clone(),
         }
     }
 }
@@ -306,9 +311,26 @@ impl ConceptPool {
         }
         let id =
             ConceptId(u32::try_from(self.by_id.len()).expect("ConceptPool size exceeds u32::MAX"));
+        if matches!(expr, ConceptExpr::Nominal(_)) {
+            self.nominal_ids_cache = std::sync::OnceLock::new();
+        }
         self.by_expr.insert(expr.clone(), id);
         self.by_id.push(expr);
         id
+    }
+
+    /// The ids of every interned `ConceptExpr::Nominal`, in ascending order.
+    ///
+    /// Cached: the first call scans the pool, and interning a new nominal
+    /// clears the cache, so the result always matches a fresh scan.
+    #[must_use]
+    pub fn nominal_ids(&self) -> &[ConceptId] {
+        self.nominal_ids_cache.get_or_init(|| {
+            self.iter_with_ids()
+                .filter(|(_, e)| matches!(e, ConceptExpr::Nominal(_)))
+                .map(|(id, _)| id)
+                .collect()
+        })
     }
 
     pub fn top(&mut self) -> ConceptId {
@@ -425,6 +447,24 @@ impl ConceptPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nominal_ids_tracks_nominals_interned_after_the_first_call() {
+        let mut pool = ConceptPool::new();
+        let _a = pool.atomic(ClassId::new(0));
+        let n0 = pool.nominal(IndividualId::new(0));
+        assert_eq!(pool.nominal_ids(), &[n0]);
+        // A later nominal must appear: a stale cache would let a nominal
+        // node be blocked.
+        let n1 = pool.nominal(IndividualId::new(1));
+        assert_eq!(pool.nominal_ids(), &[n0, n1]);
+        // Re-interning an existing nominal and adding a non-nominal change
+        // nothing.
+        assert_eq!(pool.nominal(IndividualId::new(0)), n0);
+        let _b = pool.atomic(ClassId::new(1));
+        assert_eq!(pool.nominal_ids(), &[n0, n1]);
+        assert_eq!(pool.clone().nominal_ids(), &[n0, n1]);
+    }
 
     #[test]
     fn intern_dedups_atomics() {

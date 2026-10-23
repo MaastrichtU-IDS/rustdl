@@ -1494,11 +1494,18 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// node whose extension is forced to a single named individual.
     #[must_use]
     fn node_is_nominal(&self, node: NodeId) -> bool {
-        self.graph
-            .node(node)
-            .labels
-            .iter()
-            .any(|&c| matches!(self.pool.get(c), owl_dl_core::ConceptExpr::Nominal(_)))
+        let labels = &self.graph.node(node).labels;
+        // #288: an ontology has few nominal concepts, so look each one up in
+        // the sorted labels instead of reading every label's expression. The
+        // two branches return the same answer.
+        let nominals = self.pool.nominal_ids();
+        if nominals.len() <= labels.len() {
+            nominals.iter().any(|n| labels.binary_search(n).is_ok())
+        } else {
+            labels
+                .iter()
+                .any(|&c| matches!(self.pool.get(c), owl_dl_core::ConceptExpr::Nominal(_)))
+        }
     }
 
     /// Anywhere-scoped pair blocking (Motik/Shearer/Horrocks). `y` is blocked

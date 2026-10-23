@@ -99,7 +99,7 @@ pub fn derive_data_axioms<A: ForIRI>(
 
 /// DP-2: a data-CARDINALITY violation ⇒ global inconsistency.
 /// `ClassAssertion(C₀, a)` with `C₀ ⊑* C` and `C ⊑ ≤n dp` (a `DataMax`/
-/// `DataExact` constraint, captured in `class_max`) forces `a` to have at most
+/// `DataExact` constraint, captured in `class_max_string`) forces `a` to have at most
 /// `n` distinct `dp`-fillers. When `a` is asserted **more than `n` distinct
 /// `xsd:string` values** for `dp` (directly or via a sub-data-property
 /// `dp' ⊑ dp`), the ABox has no model ⇒ emit `Top ⊑ Bot`. Closes
@@ -405,18 +405,19 @@ fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Fa
                         changed = true;
                     }
                 }
-                // Max bounds: take parent's max if smaller.
-                let parent_maxes: Vec<((String, String), u32)> = facts
-                    .class_max
-                    .iter()
-                    .filter(|((c, _), _)| c == parent)
-                    .map(|((_, dp), n)| ((owner.clone(), dp.clone()), *n))
-                    .collect();
-                for (key, n) in parent_maxes {
-                    let entry = facts.class_max.entry(key).or_insert(u32::MAX);
-                    if n < *entry {
-                        *entry = n;
-                        changed = true;
+                // Ranged bounds (#336): the owner gets every bound of its parents.
+                for map in [&mut facts.class_min_ranged, &mut facts.class_max_ranged] {
+                    let inherited: Vec<((String, String), (u32, BoundRange))> = map
+                        .iter()
+                        .filter(|((c, _), _)| c == parent)
+                        .flat_map(|((_, dp), bounds)| {
+                            bounds
+                                .iter()
+                                .map(|b| ((owner.clone(), dp.clone()), b.clone()))
+                        })
+                        .collect();
+                    for (key, (n, r)) in inherited {
+                        changed |= push_bound(map, key, n, r);
                     }
                 }
                 // DataSome: inherit too (for domain inference).
@@ -1818,9 +1819,14 @@ struct Facts {
     /// Also accumulates bounds from `EquivalentClasses(C, ObjectIntersectionOf(...))`
     /// when an Intersection conjunct is a data-cardinality restriction.
     class_min: BTreeMap<(String, String), u32>,
-    /// `SubClassOf(C, ≤m dp)` or `SubClassOf(C, =m dp)` (the Max half
-    /// of Exact). Keyed `(class_iri, dp_iri)` → min-over-all of `m`.
-    class_max: BTreeMap<(String, String), u32>,
+    /// Every `≥n dp.D` (and the Min half of `=n dp.D`) per `(class_iri, dp_iri)`,
+    /// with `D` summarised as a [`BoundRange`]. Read by Pattern 2 (#336).
+    class_min_ranged: BTreeMap<(String, String), Vec<(u32, BoundRange)>>,
+    /// Every `≤m dp.D` (and the Max half of `=m dp.D`), likewise. Pattern 2 pairs
+    /// a demand with a limit only when the demand's range lies inside the
+    /// limit's: `≥2 dp.xsd:integer` and `≤1 dp.xsd:string` are satisfiable
+    /// together (#336).
+    class_max_ranged: BTreeMap<(String, String), Vec<(u32, BoundRange)>>,
     /// `DataPropertyDomain(dp, D)` → dp_iri → domain class iri.
     /// Note: multiple domain axioms on the same dp produce a single
     /// class iri (last-write-wins). True OWL semantics intersect the
@@ -1883,8 +1889,8 @@ struct Facts {
     /// qualifier admits string values** (`rdfs:Literal`/unqualified or a
     /// string datatype). A numeric/other qualifier is excluded — its `≤n`
     /// bounds non-string fillers, so counting string values against it would
-    /// be unsound (false `Inconsistent`). Separate from `class_max` (which is
-    /// qualifier-agnostic and feeds the D4 single-class clash patterns).
+    /// be unsound (false `Inconsistent`). Separate from `class_max_ranged`
+    /// (which feeds the D4 single-class clash patterns).
     class_max_string: BTreeMap<(String, String), u32>,
     /// DP-DJ: `DisjointDataProperties(dp1, dp2, …)` — recorded as all
     /// pairwise unordered pairs `(a, b)` with `a < b` (lexicographic).
@@ -2057,15 +2063,15 @@ fn scan_subclass_axiom<A: ForIRI>(
 /// soundly).
 fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f: &mut Facts) {
     match ce {
-        ClassExpression::DataMinCardinality { n, dp, .. } => {
+        ClassExpression::DataMinCardinality { n, dp, dr } => {
             let key = (class_iri.to_string(), dpe_iri(dp));
+            push_bound(&mut f.class_min_ranged, key.clone(), *n, bound_range(dr));
             let entry = f.class_min.entry(key).or_insert(0);
             *entry = (*entry).max(*n);
         }
         ClassExpression::DataMaxCardinality { n, dp, dr } => {
             let key = (class_iri.to_string(), dpe_iri(dp));
-            let entry = f.class_max.entry(key.clone()).or_insert(u32::MAX);
-            *entry = (*entry).min(*n);
+            push_bound(&mut f.class_max_ranged, key.clone(), *n, bound_range(dr));
             if dr_admits_strings(dr) {
                 let e = f.class_max_string.entry(key).or_insert(u32::MAX);
                 *e = (*e).min(*n);
@@ -2075,8 +2081,8 @@ fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f:
             let key = (class_iri.to_string(), dpe_iri(dp));
             let min_entry = f.class_min.entry(key.clone()).or_insert(0);
             *min_entry = (*min_entry).max(*n);
-            let max_entry = f.class_max.entry(key.clone()).or_insert(u32::MAX);
-            *max_entry = (*max_entry).min(*n);
+            push_bound(&mut f.class_min_ranged, key.clone(), *n, bound_range(dr));
+            push_bound(&mut f.class_max_ranged, key.clone(), *n, bound_range(dr));
             if dr_admits_strings(dr) {
                 let e = f.class_max_string.entry(key).or_insert(u32::MAX);
                 *e = (*e).min(*n);
@@ -2721,12 +2727,18 @@ fn emit_clashes(
             });
         }
     }
-    // Pattern 2: min > max on same (class, dp) → unsat.
-    for ((class_iri, dp_iri), min) in &f.class_min {
-        if let Some(max) = f.class_max.get(&(class_iri.clone(), dp_iri.clone()))
-            && min > max
-            && let Some(cid) = vocab.class_id(class_iri)
-        {
+    // Pattern 2: a `≥n dp.D1` and a `≤m dp.D2` on the same (class, dp) with
+    // `n > m` → unsat, but only when `D1 ⊆ D2` provably: otherwise the demand's
+    // values need not count against the limit (#336).
+    for (key @ (class_iri, _), mins) in &f.class_min_ranged {
+        let Some(maxs) = f.class_max_ranged.get(key) else {
+            continue;
+        };
+        let clash = mins.iter().any(|(n, d1)| {
+            maxs.iter()
+                .any(|(m, d2)| n > m && bound_range_within(d1, d2))
+        });
+        if clash && let Some(cid) = vocab.class_id(class_iri) {
             out.push(Axiom::SubClassOf {
                 sub: atomic_id(cid),
                 sup: bot_id,
@@ -2929,6 +2941,72 @@ fn data_range_family<A: ForIRI>(dr: &DataRange<A>) -> Option<DtFamily> {
         DataRange::Datatype(dt) | DataRange::DatatypeRestriction(dt, _) => dt_family(dt.0.as_ref()),
         _ => None,
     }
+}
+
+/// A data range as far as Pattern 2 needs to compare two (#336). `Other` is any
+/// range not summarised here; it is inside only `Literal`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BoundRange {
+    /// `rdfs:Literal`: the whole data domain (what an unqualified cardinality has).
+    Literal,
+    /// An `xsd:integer`-family interval (#121): a bare type or a facet restriction.
+    Int(IntegerRange),
+    /// A `DataOneOf` of integer-family literals.
+    IntSet(BTreeSet<i64>),
+    /// Any other bare datatype, by IRI.
+    Datatype(String),
+    Other,
+}
+
+fn bound_range<A: ForIRI>(dr: &DataRange<A>) -> BoundRange {
+    const RDFS_LITERAL: &str = "http://www.w3.org/2000/01/rdf-schema#Literal";
+    if let Some(s) = parse_integer_oneof(dr) {
+        return BoundRange::IntSet(s);
+    }
+    if let Some(r) = parse_integer_range(dr) {
+        return BoundRange::Int(r);
+    }
+    match dr {
+        DataRange::Datatype(dt) if dt.0.as_ref() == RDFS_LITERAL => BoundRange::Literal,
+        DataRange::Datatype(dt) => BoundRange::Datatype(dt.0.to_string()),
+        _ => BoundRange::Other,
+    }
+}
+
+/// Whether every value of `d1` is a value of `d2`. `false` when unsure, which can
+/// only miss a Pattern 2 clash, never invent one.
+fn bound_range_within(d1: &BoundRange, d2: &BoundRange) -> bool {
+    const XSD_DECIMAL: &str = "http://www.w3.org/2001/XMLSchema#decimal";
+    const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+    const RDF_LANG_STRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
+    const RDF_PLAIN_LITERAL: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral";
+    match (d1, d2) {
+        (_, BoundRange::Literal) => true,
+        (BoundRange::Int(a), BoundRange::Int(b)) => a.subset(*b),
+        (BoundRange::IntSet(s), BoundRange::Int(r)) => s.iter().all(|&v| r.contains(v)),
+        (BoundRange::IntSet(a), BoundRange::IntSet(b)) => a.is_subset(b),
+        // The integers are decimals (OWL 2 §4.1); floats and doubles are not.
+        (BoundRange::Int(_) | BoundRange::IntSet(_), BoundRange::Datatype(d)) => d == XSD_DECIMAL,
+        (BoundRange::Datatype(a), BoundRange::Datatype(b)) => {
+            a == b || (b == RDF_PLAIN_LITERAL && (a == XSD_STRING || a == RDF_LANG_STRING))
+        }
+        _ => false,
+    }
+}
+
+/// Insert `(n, r)` into `map[key]` unless already there; whether it was new.
+fn push_bound(
+    map: &mut BTreeMap<(String, String), Vec<(u32, BoundRange)>>,
+    key: (String, String),
+    n: u32,
+    r: BoundRange,
+) -> bool {
+    let bounds = map.entry(key).or_default();
+    if bounds.iter().any(|(m, q)| *m == n && *q == r) {
+        return false;
+    }
+    bounds.push((n, r));
+    true
 }
 
 /// Whether a data-cardinality qualifier `dr` admits `xsd:string` fillers —

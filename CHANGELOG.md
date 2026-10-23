@@ -7,6 +7,21 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **`≥n p.D1` with `≤m p.D2` is no longer reported unsatisfiable when `D1` is not inside `D2`
+  (#336). A false positive at default settings.** The D4 preprocessing compared the two counts
+  per (class, property) and ignored the ranges. So `≥2 p.xsd:integer` with `≤1 p.xsd:string`
+  was unsatisfiable, where HermiT says satisfiable: the limit counts no integer. It now pairs a
+  demand with a limit only when the demand's range provably lies inside the limit's. Cases that
+  qualify:
+  - the limit is `rdfs:Literal`;
+  - an integer interval or enumeration inside another;
+  - integer-family types inside `xsd:decimal`;
+  - the same datatype;
+  - `xsd:string` or `rdf:langString` inside `rdf:PlainLiteral`.
+
+  This keeps the genuine cases that only this pattern catches. HermiT agrees on 24 of 25 probes.
+  The 25th, `≥2 p.xsd:double ⊓ ≤1 p.xsd:float`, is #332 (float and double counted in one
+  bucket), not this.
 - **A data `∀` from a separate axiom, or from `DataPropertyRange`, now bounds a data cardinality
   (#327).** `C ⊑ ≥2 p.xsd:string` with `C ⊑ ∀p.DataOneOf("a")` is unsatisfiable, and the
   tableau found it only when both sat in one `ObjectIntersectionOf`. Absorption turns a told

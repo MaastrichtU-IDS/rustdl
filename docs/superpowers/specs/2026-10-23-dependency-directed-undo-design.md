@@ -93,6 +93,7 @@ entries that lack deps instead (§5). Give each the deps listed:
 | merge (`MergedRedirect`, `ParentRewritten`, the root-breaking case `lib.rs:1969-1978`, and the `EdgeRemoved`/`EdgeAdded`/label moves it performs) | recorded as one **merge unit** (begin/end markers) carrying the merge deps. Everything a merge moves already carries deps ⊇ the merge deps (`lib.rs:1823-1826`). `EdgeRemoved` is tagged with the merge deps, not `prior_edge_deps` (which is often `∅`). |
 | `NominalAssigned` | deps of the `Nominal` label **∪ the node's existence deps** (§4.3). |
 | `NodeCreated` | the node's **existence deps** (§4.3), not just the creating edge's deps. |
+| labels and edges derived across an edge (§4.3, "Facts derived across an edge") | the source node's existence deps, in the separate `origin_deps` set; the deps backjumping reads are unchanged. |
 
 1c only records these. Nothing reads them before step 4.
 
@@ -194,10 +195,19 @@ edge from a dead node to a live one (a nominal target, a chain or transitive edg
 inverse edge to the parent) the `EdgeAdded` entry is undone, because it references the
 dead node, but the propagated label at the live node is kept: a false `Unsat` can follow.
 Rule: every rule that derives a fact at node `n` from a fact or edge at node `m ≠ n`
-(`∀` and inverse `∀`, role rules, domain/range, chains, the `≤n` merges, the NN rule) adds
-`m`'s existence deps (§4.3) to the derived fact's deps. With node existence deps stored
-per node (step 1c), this is one union at each rule site. Step 1c's sabotage list (§7)
-includes removing it at one site.
+(`∀` and inverse `∀` in `apply_forall`, role rules including domain/range in
+`apply_role_rules`, `apply_role_chains`, and every `merge_into_with_deps` source: the
+`≤n` merges and the nominal-assignment merges of `apply_nominal_assignment`) records
+`m`'s existence deps (§4.3) for the derived fact.
+
+**They are recorded in a separate per-label (and per-edge) set, `origin_deps`, that only
+selective undo reads.** Adding them to the label deps that clashes report would change
+backjumping today: `m`'s existence can contain an id above every id in the clash deps
+(e.g. a universal `∀R.C` at `m`, `m` created under decision 9, a clash otherwise
+depending on decision 3), which moves the backjump target from 3 to 9. That would break
+step 1's trace identity and could cost search. Keeping `origin_deps` separate leaves
+backjumping unchanged and gives step 4 what it needs. This lands with step 1c (table row
+below).
 
 ### 4.4 Failure records and the flip (dynamic backtracking)
 
@@ -215,9 +225,13 @@ Then `T` moves to its next option on top of the kept state; kept frames are re-o
 below it.
 
 **Option iteration is record-driven.** A frame's next option is the first option with no
-surviving failure record, not a stored index: after a deletion, an option with an index
-below the old "next" must be retried, or the frame can exhaust on the rest and return a
-false `Unsat`. The complements asserted before an option are exactly the surviving
+surviving failure record and no **inconclusive** marker, not a stored index. An option that
+returned `DepthLimit` leaves no failure record today (it only sets `depth_limited`), so it
+needs an explicit inconclusive marker, or record-driven iteration would retry it forever;
+a flip deletes inconclusive markers too, since the bound that cut the option was reached
+under `T`'s old option. A stored index would be wrong: after a deletion, an option with
+an index below the old "next" must be retried, or the frame can exhaust on the rest and
+return a false `Unsat`. The complements asserted before an option are exactly the surviving
 records' complements (re-adding a present label is a no-op).
 
 **Complement labels and records may diverge, harmlessly.** Because labels keep the first
@@ -307,11 +321,11 @@ Instrument: `RUSTDL_GONOGO=1` on `diag/288-gonogo` (commit 0043e9a5, backed up a
 frames are never kept; labels at a node next to a dead node or on a merge survivor count
 as dependent; merge-frame exhaustions are not measured. Thread CPU time, single thread.
 
-| case | jumps ≥ 50 | levels undone | independent entries | pessimistic ceiling | without window-end charge | bar |
-|---|---|---|---|---|---|---|
-| core3, complete run | 462 | 226,737 of 230,299 decisions | 97.7% | **16.3×** | 16.3× | 3× |
-| `PMD_0010100`, 150 s | 4 | 21,176 | 91.7% | **2.54×** | 2.14× | 2.5× |
-| `PMD_0010100`, 300 s | 10 | 41,735 | 84.7% | **2.87×** | 2.25× | 2.5× |
+| case | jumps ≥ 50 | levels undone | independent entries | pessimistic ceiling | optimistic | pessimistic, without window-end charge | bar |
+|---|---|---|---|---|---|---|---|
+| core3, complete run (nothing to charge) | 462 | 226,737 of 230,299 decisions | 97.7% | **16.3×** | 16.3× | 16.3× | 3× |
+| `PMD_0010100`, 150 s | 4 | 21,176 | 91.7% | **2.54×** | 2.86× | 2.14× | 2.5× |
+| `PMD_0010100`, 300 s | 10 | 41,735 | 84.7% | **2.87×** | 3.55× | 2.25× | 2.5× |
 
 **`PMD_0010100` passes only because of the window-end charge.** §5 prescribes charging the
 last, unfinished rebuild to the end of the window; without that charge the ceiling is
@@ -343,8 +357,9 @@ invalidation after a selective undo (§4.5) cost something the trace cannot see.
   from `T`'s checkpoint by replaying the kept frames' picks, and assert identity of labels
   with deps, edges, inequalities and the nominal map. (`replay.rs` is the wedge snapshot
   path and is not reusable.) Run it in the fuzz, not in the hot path of release builds.
-- **Sabotage.** For each of 1a, 1b, 1c, §4.3, §4.4 (deletion and record-driven
-  iteration), §4.4a and the sorted `active_branches` of step 3, revert it with the flag on and
+- **Sabotage.** For each of 1a, 1b, 1c, §4.3 (closure, and removing the `origin_deps`
+  union at one cross-edge rule site), §4.4 (deletion, record-driven iteration, inconclusive
+  markers), §4.4a and the sorted `active_branches` of step 3, revert it with the flag on and
   confirm the fuzz or the debug oracle reports a false `Unsat` or a mismatch. A rule
   whose removal nothing notices is not guarded.
 - **Trace identity** for step 3.

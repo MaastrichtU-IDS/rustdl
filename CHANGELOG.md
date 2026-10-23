@@ -7,6 +7,14 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **A data `∀` from a separate axiom, or from `DataPropertyRange`, now bounds a data cardinality
+  (#327).** `C ⊑ ≥2 p.xsd:string` with `C ⊑ ∀p.DataOneOf("a")` is unsatisfiable, and the
+  tableau found it only when both sat in one `ObjectIntersectionOf`. Absorption turns a told
+  `G ⊑ ∀p.D` into a role rule that fires at `p`-successors, so the `∀` never reached `C`'s label,
+  which is all `concrete_domain_clash` reads. It now also reads the role rules that hold at the
+  node: unguarded ones everywhere, guarded ones where the guard is in the label. HermiT agrees on
+  15 of 18 probes; the other 3 are a separate, pre-existing miss (an integer range demand
+  against an integer enumeration, which are counted in different buckets), pinned as known.
 - **Literals of the integer-derived datatypes (`"5"^^xsd:nonNegativeInteger`, `xsd:int`, …) are
   read as integers (#323).** #121 made those types work as data ranges, but every literal parser
   still matched the exact `xsd:integer` IRI, so `DataHasValue`, `DataOneOf` members and

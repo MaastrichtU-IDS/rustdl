@@ -2191,21 +2191,69 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let mut decimal_set_by_role: HashMap<RoleId, DecimalSetAcc> = HashMap::new();
         let mut date_set_by_role: HashMap<RoleId, DateSetAcc> = HashMap::new();
         let mut datetime_set_by_role: HashMap<RoleId, DateTimeSetAcc> = HashMap::new();
+        // (role, filler, kind 0=∃ 1=∀ 2=≥ 3=≤, n, deps)
+        let mut items: Vec<(Role, ConceptId, u8, u32, &crate::graph::DepSet)> = Vec::new();
         for (pos, &c) in labels.iter().enumerate() {
-            // (role, filler, kind 0=∃ 1=∀ 2=≥ 3=≤, n)
-            let (role, filler, kind, count): (&Role, ConceptId, u8, u32) = match self.pool.get(c) {
-                ConceptExpr::Some(r, f) => (r, *f, 0, 1),
-                ConceptExpr::All(r, f) => (r, *f, 1, 0),
-                ConceptExpr::Min(k, r, f) => (r, *f, 2, *k),
-                ConceptExpr::Max(k, r, f) => (r, *f, 3, *k),
+            let (role, filler, kind, count) = match self.pool.get(c) {
+                ConceptExpr::Some(r, f) => (*r, *f, 0, 1),
+                ConceptExpr::All(r, f) => (*r, *f, 1, 0),
+                ConceptExpr::Min(k, r, f) => (*r, *f, 2, *k),
+                ConceptExpr::Max(k, r, f) => (*r, *f, 3, *k),
                 _ => continue,
             };
+            items.push((role, filler, kind, count, &n.label_deps[pos]));
+        }
+        // #327: absorption turns a told `G ⊑ ∀p.DKey(U)` into a role rule that fires
+        // at successors, so the `∀` never reaches this node's label. Read the rules
+        // that hold here as universal filters too: an unguarded one (`⊤ ⊑ ∀p.D`, e.g.
+        // a data range) everywhere, a guarded one where its guard is in the label.
+        let no_deps = crate::graph::DepSet::new();
+        if let Some(tbox) = self.tbox.filter(|t| !t.role_rules.is_empty()) {
+            let indexed = !(tbox.unguarded_role_rules.is_empty()
+                && tbox.guarded_role_rules_by_guard.is_empty());
+            let mut push_rule = |rule: &owl_dl_core::RoleRule, deps| {
+                if self.dkey_range_of(rule.target_label).is_some() {
+                    items.push((rule.role, rule.target_label, 1, 0, deps));
+                }
+            };
+            let guard_deps = |g: owl_dl_core::ClassId| {
+                labels.iter().enumerate().find_map(|(pos, &c)| {
+                    matches!(self.pool.get(c), ConceptExpr::Atomic(a) if *a == g)
+                        .then(|| &n.label_deps[pos])
+                })
+            };
+            if indexed {
+                for rule in &tbox.unguarded_role_rules {
+                    push_rule(rule, &no_deps);
+                }
+                for (pos, &c) in labels.iter().enumerate() {
+                    if let ConceptExpr::Atomic(g) = self.pool.get(c)
+                        && let Some(rules) = tbox.guarded_role_rules_by_guard.get(g)
+                    {
+                        for rule in rules {
+                            push_rule(rule, &n.label_deps[pos]);
+                        }
+                    }
+                }
+            } else {
+                for rule in &tbox.role_rules {
+                    match rule.guard {
+                        None => push_rule(rule, &no_deps),
+                        Some(g) => {
+                            if let Some(d) = guard_deps(g) {
+                                push_rule(rule, d);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (role, filler, kind, count, dep_label) in items {
             // Data-property roles are never inverse; skip inverse roles.
             let rid = match role {
-                Role::Named(rid) => *rid,
+                Role::Named(rid) => rid,
                 Role::Inverse(_) => continue,
             };
-            let dep_label = &n.label_deps[pos];
             match self.dkey_range_of(filler) {
                 Some(CardRange::Int(iv)) => {
                     let iv = *iv;

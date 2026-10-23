@@ -7,6 +7,17 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **`≤n p.D` with a string-type `D` narrower than `xsd:string` no longer counts every string
+  value (#337). A false inconsistency at default settings.** The DP-2 ABox pre-check counted an
+  individual's string values against any string-family limit. `xsd:token`, `xsd:NCName`,
+  `xsd:language` and facet-restricted strings are proper subsets of `xsd:string`, so
+  `≤1 p.xsd:token` with `"x  y"` and `"z  w"` (not tokens) was reported inconsistent, where
+  HermiT says consistent. Strings are now counted only against `rdfs:Literal`, `xsd:string` and
+  `rdf:PlainLiteral`.
+
+  `rdf:PlainLiteral` is new: `≤1 p.rdf:PlainLiteral` with two plain strings is now inconsistent,
+  which HermiT and Konclude both confirm. Values that do lie in a narrower type are no longer
+  counted against it, a sound miss, pinned.
 - **`≥n p.D1` with `≤m p.D2` is no longer reported unsatisfiable when `D1` is not inside `D2`
   (#336). A false positive at default settings.** The D4 preprocessing compared the two counts
   per (class, property) and ignored the ranges. So `≥2 p.xsd:integer` with `≤1 p.xsd:string`

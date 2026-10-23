@@ -1888,11 +1888,11 @@ struct Facts {
     /// `(ind_iri, dp_iri) → {value …}` (for data-cardinality counting).
     ind_string_values: BTreeMap<(String, String), BTreeSet<String>>,
     /// DP-2: `C ⊑ ≤n dp` (`DataMax`/`DataExact` Max-half) keyed
-    /// `(class_iri, dp_iri) → min-n`, **only when the cardinality's data-range
-    /// qualifier admits string values** (`rdfs:Literal`/unqualified or a
-    /// string datatype). A numeric/other qualifier is excluded — its `≤n`
-    /// bounds non-string fillers, so counting string values against it would
-    /// be unsound (false `Inconsistent`). Separate from `class_max_ranged`
+    /// `(class_iri, dp_iri) → min-n`, **only when every string lies in the
+    /// cardinality's data range** ([`range_contains_all_strings`]: `rdfs:Literal`
+    /// /unqualified, `xsd:string`, `rdf:PlainLiteral`). Any other qualifier is
+    /// excluded: counting a string against a `≤n` over a range it is not in
+    /// would be a false `Inconsistent` (#337). Separate from `class_max_ranged`
     /// (which feeds the D4 single-class clash patterns).
     class_max_string: BTreeMap<(String, String), u32>,
     /// DP-DJ: `DisjointDataProperties(dp1, dp2, …)` — recorded as all
@@ -2087,7 +2087,7 @@ fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f:
                 bound_range(dr),
                 false,
             );
-            if dr_admits_strings(dr) {
+            if range_contains_all_strings(dr) {
                 let e = f.class_max_string.entry(key).or_insert(u32::MAX);
                 *e = (*e).min(*n);
             }
@@ -2110,7 +2110,7 @@ fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f:
                 bound_range(dr),
                 false,
             );
-            if dr_admits_strings(dr) {
+            if range_contains_all_strings(dr) {
                 let e = f.class_max_string.entry(key).or_insert(u32::MAX);
                 *e = (*e).min(*n);
             }
@@ -3045,20 +3045,20 @@ fn push_bound(
     true
 }
 
-/// Whether a data-cardinality qualifier `dr` admits `xsd:string` fillers —
-/// i.e. counting an individual's string values against a `≤n dp dr` bound is
-/// sound. True for the unqualified case (`rdfs:Literal`, where every value
-/// counts) and for a string-family datatype; false for numeric/temporal/etc.
-/// qualifiers (strings are not in `dr`, so must not be counted) and for
-/// unions/unknown (uncertain → excluded). Gates DP-2.
-fn dr_admits_strings<A: ForIRI>(dr: &DataRange<A>) -> bool {
-    const RDFS_LITERAL: &str = "http://www.w3.org/2000/01/rdf-schema#Literal";
-    if let DataRange::Datatype(dt) = dr
-        && dt.0.as_ref() == RDFS_LITERAL
-    {
-        return true;
-    }
-    data_range_family(dr) == Some(DtFamily::TextPlain)
+/// Whether every `xsd:string` value lies in `dr`, so that DP-2 may count any
+/// individual's string values against a `≤n dp dr` limit. True exactly for
+/// `rdfs:Literal` (unqualified), bare `xsd:string` and bare `rdf:PlainLiteral`.
+/// A narrower string type (`xsd:token`, `xsd:NCName`, …), a facet restriction,
+/// an enumeration or a union is false: a string outside it would be counted
+/// against a limit it does not fall under, a false inconsistency (#337).
+/// Enumerations are counted exactly by DP-2b instead (direct `SubClassOf` limits
+/// only).
+fn range_contains_all_strings<A: ForIRI>(dr: &DataRange<A>) -> bool {
+    const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+    bound_range_within(
+        &BoundRange::Datatype(XSD_STRING.to_string()),
+        &bound_range(dr),
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -4821,6 +4821,48 @@ Ontology(<http://t/x>
         ];
         for (d1, d2) in not_within {
             assert!(!bound_range_within(d1, d2), "{d1:?} ⊄ {d2:?}");
+        }
+    }
+
+    /// #337: DP-2 counts strings only against a range holding every string.
+    #[test]
+    fn range_contains_all_strings_rows() {
+        use horned_owl::model::Build;
+        let b = Build::new_rc();
+        let dt = |iri: &str| DataRange::Datatype(b.datatype(iri));
+        let x = |local: &str| DataRange::Datatype(vir_dt(local));
+        let lit = |v: &str| horned_owl::model::Literal::Simple {
+            literal: v.to_string(),
+        };
+        let yes = [
+            dt("http://www.w3.org/2000/01/rdf-schema#Literal"),
+            x("string"),
+            dt("http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral"),
+        ];
+        for dr in &yes {
+            assert!(range_contains_all_strings(dr), "{dr:?}");
+        }
+        let no = [
+            x("token"),
+            x("normalizedString"),
+            x("NCName"),
+            x("language"),
+            x("integer"),
+            dt("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString"),
+            DataRange::DatatypeRestriction(
+                vir_dt("string"),
+                vec![FacetRestriction {
+                    f: Facet::MinLength,
+                    l: vir_dt_lit("5", "integer"),
+                }],
+            ),
+            DataRange::DataOneOf(vec![lit("a"), lit("b")]),
+            DataRange::DataUnionOf(vec![x("string"), x("integer")]),
+            DataRange::DataIntersectionOf(vec![x("string"), x("token")]),
+            DataRange::DataComplementOf(Box::new(x("integer"))),
+        ];
+        for dr in &no {
+            assert!(!range_contains_all_strings(dr), "{dr:?}");
         }
     }
 

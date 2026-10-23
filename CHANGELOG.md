@@ -19,9 +19,8 @@ All notable changes to rustdl are documented here. Format is based on
   - the same datatype;
   - `xsd:string` or `rdf:langString` inside `rdf:PlainLiteral`.
 
-  This keeps the genuine cases that only this pattern catches. HermiT agrees on 24 of 25 probes.
-  The 25th, `≥2 p.xsd:double ⊓ ≤1 p.xsd:float`, is #332 (float and double counted in one
-  bucket), not this.
+  This keeps the genuine cases that only this pattern catches. HermiT agrees on all 25 probes,
+  including `≥2 p.xsd:double ⊓ ≤1 p.xsd:float`, which also needed #332's fix.
 - **A data `∀` from a separate axiom, or from `DataPropertyRange`, now bounds a data cardinality
   (#327).** `C ⊑ ≥2 p.xsd:string` with `C ⊑ ∀p.DataOneOf("a")` is unsatisfiable, and the
   tableau found it only when both sat in one `ObjectIntersectionOf`. Absorption turns a told

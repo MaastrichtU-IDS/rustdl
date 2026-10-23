@@ -168,7 +168,7 @@ fn a_range_on_a_super_property_is_a_known_miss() {
 
 /// KNOWN MISS, not #327: an integer RANGE demand (`≥2 p.xsd:integer`) against an
 /// integer ENUMERATION filter is not counted together, in one axiom or two; integer
-/// ranges and integer enumerations are separate `card_sat` buckets. `HermiT` says
+/// ranges and integer enumerations are separate `card_sat` buckets (#334). `HermiT` says
 /// unsat. FLIP these when the two buckets are counted together.
 #[test]
 fn an_integer_range_demand_against_an_enumeration_is_a_known_miss() {

@@ -129,7 +129,7 @@ fn the_same_value_in_two_integer_types_is_one_value() {
     assert!(!is_consistent(&onto(&body("6"))).expect("consistent"));
 }
 
-/// The ABox pre-checks key a derived literal by value end to end: a shared value
+/// The `ABox` pre-checks key a derived literal by value end to end: a shared value
 /// under `DisjointDataProperties` clashes, and two distinct in-range values break a
 /// `≤1` over a derived qualifier, while a value outside the qualifier does not count.
 #[test]
@@ -155,7 +155,7 @@ fn abox_checks_read_derived_literals_by_value() {
 }
 
 /// `NegativeDataPropertyAssertion` on `"5"^^xsd:int` contradicts an assertion of
-/// `"5"^^xsd:integer`, the same value. Konclude agrees; HermiT 1.4.5 calls this
+/// `"5"^^xsd:integer`, the same value. Konclude agrees; `HermiT` 1.4.5 calls this
 /// consistent (while calling the identical-literal case inconsistent), so it is not
 /// the oracle here.
 #[test]

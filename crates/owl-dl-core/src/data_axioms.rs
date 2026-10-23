@@ -406,10 +406,13 @@ fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Fa
                     }
                 }
                 // Ranged bounds (#336): the owner gets every bound of its parents.
-                for map in [&mut facts.class_min_ranged, &mut facts.class_max_ranged] {
+                for (map, keep_max) in [
+                    (&mut facts.class_min_ranged, true),
+                    (&mut facts.class_max_ranged, false),
+                ] {
                     let inherited: Vec<((String, String), (u32, BoundRange))> = map
-                        .iter()
-                        .filter(|((c, _), _)| c == parent)
+                        .range((parent.clone(), String::new())..)
+                        .take_while(|((c, _), _)| c == parent)
                         .flat_map(|((_, dp), bounds)| {
                             bounds
                                 .iter()
@@ -417,7 +420,7 @@ fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Fa
                         })
                         .collect();
                     for (key, (n, r)) in inherited {
-                        changed |= push_bound(map, key, n, r);
+                        changed |= push_bound(map, key, n, r, keep_max);
                     }
                 }
                 // DataSome: inherit too (for domain inference).
@@ -2065,13 +2068,25 @@ fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f:
     match ce {
         ClassExpression::DataMinCardinality { n, dp, dr } => {
             let key = (class_iri.to_string(), dpe_iri(dp));
-            push_bound(&mut f.class_min_ranged, key.clone(), *n, bound_range(dr));
+            push_bound(
+                &mut f.class_min_ranged,
+                key.clone(),
+                *n,
+                bound_range(dr),
+                true,
+            );
             let entry = f.class_min.entry(key).or_insert(0);
             *entry = (*entry).max(*n);
         }
         ClassExpression::DataMaxCardinality { n, dp, dr } => {
             let key = (class_iri.to_string(), dpe_iri(dp));
-            push_bound(&mut f.class_max_ranged, key.clone(), *n, bound_range(dr));
+            push_bound(
+                &mut f.class_max_ranged,
+                key.clone(),
+                *n,
+                bound_range(dr),
+                false,
+            );
             if dr_admits_strings(dr) {
                 let e = f.class_max_string.entry(key).or_insert(u32::MAX);
                 *e = (*e).min(*n);
@@ -2081,8 +2096,20 @@ fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f:
             let key = (class_iri.to_string(), dpe_iri(dp));
             let min_entry = f.class_min.entry(key.clone()).or_insert(0);
             *min_entry = (*min_entry).max(*n);
-            push_bound(&mut f.class_min_ranged, key.clone(), *n, bound_range(dr));
-            push_bound(&mut f.class_max_ranged, key.clone(), *n, bound_range(dr));
+            push_bound(
+                &mut f.class_min_ranged,
+                key.clone(),
+                *n,
+                bound_range(dr),
+                true,
+            );
+            push_bound(
+                &mut f.class_max_ranged,
+                key.clone(),
+                *n,
+                bound_range(dr),
+                false,
+            );
             if dr_admits_strings(dr) {
                 let e = f.class_max_string.entry(key).or_insert(u32::MAX);
                 *e = (*e).min(*n);
@@ -2994,16 +3021,25 @@ fn bound_range_within(d1: &BoundRange, d2: &BoundRange) -> bool {
     }
 }
 
-/// Insert `(n, r)` into `map[key]` unless already there; whether it was new.
+/// Record the bound `n` over range `r` in `map[key]`; whether anything changed.
+/// One bound per range is kept: the largest for a demand (`keep_max`), the
+/// smallest for a limit. That is exact for Pattern 2's `n > m` test and keeps
+/// each list as short as the number of distinct ranges, however many classes
+/// a bound is inherited through.
 fn push_bound(
     map: &mut BTreeMap<(String, String), Vec<(u32, BoundRange)>>,
     key: (String, String),
     n: u32,
     r: BoundRange,
+    keep_max: bool,
 ) -> bool {
     let bounds = map.entry(key).or_default();
-    if bounds.iter().any(|(m, q)| *m == n && *q == r) {
-        return false;
+    if let Some((m, _)) = bounds.iter_mut().find(|(_, q)| *q == r) {
+        let tighter = if keep_max { n > *m } else { n < *m };
+        if tighter {
+            *m = n;
+        }
+        return tighter;
     }
     bounds.push((n, r));
     true
@@ -4731,6 +4767,61 @@ Ontology(<http://t/x>
             integer_family_literal_value(&vir_dt_lit("5", "unsignedLong")),
             None
         );
+    }
+
+    /// #336: Pattern 2's containment test, row by row, both directions.
+    #[test]
+    fn bound_range_within_rows() {
+        use horned_owl::model::Build;
+        let b = Build::new_rc();
+        let dt = |iri: &str| bound_range(&DataRange::Datatype(b.datatype(iri)));
+        let x = |local: &str| bound_range(&DataRange::Datatype(vir_dt(local)));
+        let literal = dt("http://www.w3.org/2000/01/rdf-schema#Literal");
+        let plain = dt("http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral");
+        let lang = dt("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString");
+        let r13 = bound_range(&vir_restriction(
+            "integer",
+            &[
+                ("minInclusive", "1", "integer"),
+                ("maxInclusive", "3", "integer"),
+            ],
+        ));
+        let set = |vals: &[&str]| {
+            bound_range(&DataRange::DataOneOf(
+                vals.iter().map(|v| vir_dt_lit(v, "integer")).collect(),
+            ))
+        };
+        assert_eq!(literal, BoundRange::Literal);
+        assert!(matches!(x("int"), BoundRange::Int(_)));
+        assert!(matches!(set(&["1"]), BoundRange::IntSet(_)));
+        let within = [
+            (&x("string"), &literal),
+            (&x("int"), &x("long")),
+            (&set(&["1", "2"]), &r13),
+            (&set(&["1"]), &set(&["1", "2"])),
+            (&x("int"), &x("decimal")),
+            (&set(&["1"]), &x("decimal")),
+            (&x("string"), &plain),
+            (&lang, &plain),
+            (&x("double"), &x("double")),
+        ];
+        for (d1, d2) in within {
+            assert!(bound_range_within(d1, d2), "{d1:?} ⊆ {d2:?}");
+        }
+        let not_within = [
+            (&literal, &x("string")),
+            (&x("long"), &x("int")),
+            (&set(&["1", "5"]), &r13),
+            (&x("decimal"), &x("integer")),
+            (&x("float"), &x("decimal")),
+            (&x("double"), &x("float")),
+            (&plain, &x("string")),
+            (&x("integer"), &x("string")),
+            (&BoundRange::Other, &x("string")),
+        ];
+        for (d1, d2) in not_within {
+            assert!(!bound_range_within(d1, d2), "{d1:?} ⊄ {d2:?}");
+        }
     }
 
     // ── value_in_range unit tests ──────────────────────────────────────────

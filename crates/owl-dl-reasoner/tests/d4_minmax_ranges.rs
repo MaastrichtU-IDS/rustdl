@@ -28,6 +28,7 @@ fn onto(body: &str) -> SetOntology<RcStr> {
         "Prefix(:=<http://ex.org/>)\n\
          Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
          Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)\n\
+         Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)\n\
          Ontology(<http://ex.org/o>\n\
          Declaration(Class(:C)) Declaration(Class(:A)) Declaration(Class(:B))\n\
          Declaration(DataProperty(:p))\n{body}\n)\n"
@@ -71,6 +72,10 @@ fn a_limit_over_another_range_does_not_clash() {
         ("xsd:float", "xsd:decimal"),
         ("xsd:decimal", "xsd:integer"),
         ("rdf:PlainLiteral", "xsd:string"),
+        // Containment runs one way: `xsd:int` ⊆ `xsd:long`, not the reverse.
+        ("xsd:long", "xsd:int"),
+        // The whole domain as the DEMAND is inside no narrower limit.
+        ("rdfs:Literal", "xsd:integer"),
     ] {
         assert!(!c_unsat(&min_max(2, d1, 1, d2)), "≥2 p.{d1} ⊓ ≤1 p.{d2}");
     }
@@ -131,4 +136,69 @@ fn inherited_bounds_compare_ranges() {
     };
     assert!(!c_unsat(&body("xsd:string")));
     assert!(c_unsat(&body("xsd:decimal")));
+}
+
+/// Exact cardinality on both sides, a zero limit, and an explicit `rdfs:Literal`
+/// limit.
+#[test]
+fn exact_zero_and_literal_bounds() {
+    let exact = |d2: &str| {
+        format!(
+            "SubClassOf(:C ObjectIntersectionOf(DataExactCardinality(2 :p xsd:integer) \
+             DataExactCardinality(1 :p {d2})))"
+        )
+    };
+    assert!(!c_unsat(&exact("xsd:string")));
+    assert!(c_unsat(&exact("xsd:decimal")));
+    assert!(c_unsat(&min_max(1, "xsd:integer", 0, "xsd:decimal")));
+    assert!(!c_unsat(&min_max(1, "xsd:integer", 0, "xsd:string")));
+    assert!(c_unsat(&min_max(2, "xsd:string", 1, "rdfs:Literal")));
+}
+
+/// A bound inherited through a deep chain of definitions keeps one entry per
+/// range (the tightest), so the inheritance fixpoint stays cheap; the verdict
+/// at the bottom is still found.
+#[test]
+fn a_bound_inherited_through_a_long_chain() {
+    let mut body = String::new();
+    let depth = 200;
+    for i in 0..depth {
+        body.push_str(&format!(
+            "Declaration(Class(:K{i})) Declaration(Class(:D{i}))\n\
+             EquivalentClasses(:K{i} ObjectIntersectionOf(:K{j} :D{i}))\n\
+             SubClassOf(:D{i} DataMinCardinality({n} :p xsd:int))\n",
+            j = i + 1,
+            n = i + 1
+        ));
+    }
+    body.push_str(&format!(
+        "Declaration(Class(:K{depth}))\n\
+         SubClassOf(:K{depth} DataMaxCardinality(1 :p xsd:decimal))\n\
+         SubClassOf(:C :K0)"
+    ));
+    let start = std::time::Instant::now();
+    assert!(c_unsat(&body));
+    assert!(
+        start.elapsed() < Duration::from_secs(60),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+/// Two inherited bounds over the same range: only the tightest one clashes, so it
+/// must be the one kept (the largest demand, the smallest limit).
+#[test]
+fn the_tightest_inherited_bound_is_kept() {
+    assert!(c_unsat(
+        "EquivalentClasses(:C ObjectIntersectionOf(:A :B))\n\
+         SubClassOf(:A DataMinCardinality(1 :p xsd:integer))\n\
+         SubClassOf(:B DataMinCardinality(2 :p xsd:integer))\n\
+         SubClassOf(:C DataMaxCardinality(1 :p xsd:decimal))"
+    ));
+    assert!(c_unsat(
+        "EquivalentClasses(:C ObjectIntersectionOf(:A :B))\n\
+         SubClassOf(:A DataMaxCardinality(2 :p xsd:decimal))\n\
+         SubClassOf(:B DataMaxCardinality(1 :p xsd:decimal))\n\
+         SubClassOf(:C DataMinCardinality(2 :p xsd:integer))"
+    ));
 }

@@ -2176,16 +2176,20 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
         // #325: `xsd:boolean` and `xsd:anyURI`, each its own bucket so neither is
         // ever counted under the other's (or `xsd:string`'s) `≤n`.
-        struct SetAcc<T: Ord> {
-            mins: Vec<Card<FiniteSet<T>>>,
-            maxs: Vec<Card<FiniteSet<T>>>,
-            universal: Option<FiniteSet<T>>,
+        // One accumulator per bucket for the buckets added since #325, generic
+        // over the range type: `xsd:boolean`/`xsd:anyURI` sets, and (#332)
+        // `xsd:double` ranges and enumerations, each kept apart from its
+        // `xsd:float` counterpart.
+        struct SetAcc<R> {
+            mins: Vec<Card<R>>,
+            maxs: Vec<Card<R>>,
+            universal: Option<R>,
             deps: crate::graph::DepSet,
         }
-        fn add_set<T: Ord + Clone>(
-            by_role: &mut HashMap<RoleId, SetAcc<T>>,
+        fn add_set<R: ValueRange>(
+            by_role: &mut HashMap<RoleId, SetAcc<R>>,
             rid: RoleId,
-            fs: &FiniteSet<T>,
+            fs: &R,
             kind: u8,
             count: u32,
             dep_label: &crate::graph::DepSet,
@@ -2214,8 +2218,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
         let n = self.graph.node(node);
         let labels = n.labels();
-        let mut bool_by_role: HashMap<RoleId, SetAcc<bool>> = HashMap::new();
-        let mut uri_by_role: HashMap<RoleId, SetAcc<String>> = HashMap::new();
+        let mut bool_by_role: HashMap<RoleId, SetAcc<FiniteSet<bool>>> = HashMap::new();
+        let mut uri_by_role: HashMap<RoleId, SetAcc<FiniteSet<String>>> = HashMap::new();
+        let mut double_by_role: HashMap<RoleId, SetAcc<DenseInterval<OrdF64>>> = HashMap::new();
+        let mut double_set_by_role: HashMap<RoleId, SetAcc<FiniteSet<OrdF64>>> = HashMap::new();
         let mut int_by_role: HashMap<RoleId, IntAcc> = HashMap::new();
         let mut str_by_role: HashMap<RoleId, StrAcc> = HashMap::new();
         let mut float_by_role: HashMap<RoleId, FloatAcc> = HashMap::new();
@@ -2548,6 +2554,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 Some(CardRange::Uri(fs)) => {
                     add_set(&mut uri_by_role, rid, fs, kind, count, dep_label);
                 }
+                Some(CardRange::Double(di)) => {
+                    add_set(&mut double_by_role, rid, di, kind, count, dep_label);
+                }
+                Some(CardRange::DoubleSet(fs)) => {
+                    add_set(&mut double_set_by_role, rid, fs, kind, count, dep_label);
+                }
                 None => {}
             }
         }
@@ -2633,6 +2645,19 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
         for acc in bool_by_role.into_values() {
             if card_sat::<FiniteSet<bool>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat {
+                return Some(acc.deps);
+            }
+        }
+        for acc in double_by_role.into_values() {
+            if card_sat::<DenseInterval<OrdF64>>(acc.universal, &acc.mins, &acc.maxs)
+                == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        for acc in double_set_by_role.into_values() {
+            if card_sat::<FiniteSet<OrdF64>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat
+            {
                 return Some(acc.deps);
             }
         }

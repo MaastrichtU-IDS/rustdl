@@ -216,8 +216,8 @@ struct OpenMax {
     /// The first witness (in node order) that may merge with an earlier one.
     pivot: NodeId,
     /// The earlier witnesses `pivot` may merge with, each with its
-    /// merge-condition deps. These include every witness's deps, not only the
-    /// pair's: the merge is forced because all of them exist (#288).
+    /// merge-condition deps: every witness's deps, not only the pair's, since
+    /// the merge is forced because all of them exist (#288).
     partners: Vec<(NodeId, DepSet)>,
     /// How many witnesses precede `pivot`. They are pairwise distinct, because
     /// `pivot` is the first witness with a mergeable earlier one.
@@ -277,12 +277,9 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                 let partners: Vec<(NodeId, DepSet)> = witnesses[..j]
                     .iter()
                     .filter(|&&w| !ctx.are_distinct(w, pivot))
-                    .map(|&w| {
-                        let deps = crate::rules::compute_max_merge_deps(
-                            ctx, node_id, *role, *body, w, pivot, &max_deps,
-                        );
-                        (w, crate::deps::union(&deps, &witness_deps))
-                    })
+                    // A pair's own merge deps are a subset of `witness_deps`
+                    // (the same per-witness edge and body-label deps).
+                    .map(|&w| (w, witness_deps.clone()))
                     .collect();
                 if !partners.is_empty() {
                     return Some(OpenMax {

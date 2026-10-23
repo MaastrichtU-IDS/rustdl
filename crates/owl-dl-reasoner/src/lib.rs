@@ -8063,9 +8063,10 @@ pub(crate) struct PreparedOntology {
 
 /// Build the concrete-domain solver's `ClassId → CardRange` side-map by
 /// decoding every synthetic `DKey` filler class's IRI. Done where the
-/// vocabulary is available so the tableau need not carry IRIs. All six
-/// datatype buckets (integer, string, float, decimal, date, dateTime) are
-/// decoded; the `DenseInterval` for dense types preserves inclusivity exactly
+/// vocabulary is available so the tableau need not carry IRIs. Each datatype
+/// gets its own bucket (integer, string, float, double, decimal, date,
+/// dateTime, boolean, anyURI, and the enumeration buckets) so that no `≤n` over
+/// one datatype counts another's values (#332); the `DenseInterval` for dense types preserves inclusivity exactly
 /// (field-for-field copy, zero normalization) — a soundness requirement.
 fn build_dkey_range_map(
     internal: &InternalOntology,
@@ -8117,11 +8118,12 @@ fn build_dkey_range_map(
             );
         } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_double_dkey(iri) {
             // xsd:double uses the same DenseInterval<OrdF64> carrier as xsd:float
-            // but a separate `db:` DKey bucket — never cross-subsumes with `f:`.
-            // Bridge is identical: wrap f64 bounds in OrdF64 (signed-zero-safe).
+            // but its own `Double` bucket (#332): a float value must never count
+            // against a `≤n` over doubles. Bridge is identical: wrap f64 bounds in
+            // OrdF64 (signed-zero-safe).
             map.insert(
                 class_id,
-                owl_dl_datatypes::CardRange::Float(DenseInterval {
+                owl_dl_datatypes::CardRange::Double(DenseInterval {
                     min: min.map(OrdF64::new),
                     min_incl,
                     max: max.map(OrdF64::new),
@@ -8174,14 +8176,14 @@ fn build_dkey_range_map(
                 owl_dl_datatypes::CardRange::FloatSet(owl_dl_datatypes::FiniteSet::Set(set)),
             );
         } else if let Some(set) = owl_dl_core::decode_double_oneof_dkey(iri) {
-            // Double-oneof (`dbo:`): a SEPARATE DKey bucket from `fo:` (disjoint
-            // OWL value spaces), but the same `FiniteSet<OrdF64>` counting
-            // representation here — cardinality counting only ever MERGES
-            // representatives, which under-counts distinct values and so can
-            // only MISS a counting clash, never invent one.
+            // Double-oneof (`dbo:`): its own `DoubleSet` bucket, never `FloatSet`
+            // (#332). Sharing one was wrong: a double LIMIT's range constrains
+            // every float demand inside it, so `≤0 p.xsd:double` with a float
+            // value came back unsat. The float and double value spaces are
+            // disjoint.
             map.insert(
                 class_id,
-                owl_dl_datatypes::CardRange::FloatSet(owl_dl_datatypes::FiniteSet::Set(set)),
+                owl_dl_datatypes::CardRange::DoubleSet(owl_dl_datatypes::FiniteSet::Set(set)),
             );
         } else if let Some(set) = owl_dl_core::decode_decimal_oneof_dkey(iri) {
             map.insert(

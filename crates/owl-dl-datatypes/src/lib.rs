@@ -47,16 +47,17 @@ pub enum CardSat {
 /// bucket; the tableau groups a node's data constraints by `(property, bucket)`
 /// before deciding. Integer and string buckets are discrete/finite-set;
 /// float/decimal/date/dateTime are dense intervals (infinite capacity except
-/// for a single inclusive point). The five `*Set` variants are finite enumerations
-/// of numeric values (from `DataOneOf`); capacity = |distinct values|.
+/// for a single inclusive point). The `*Set` variants are finite enumerations
+/// (from `DataOneOf`); capacity = |distinct values|. Every variant is one
+/// datatype's value space, so no `≤n` over one can constrain another's values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CardRange {
     /// `xsd:integer` and its subtypes (discrete interval).
     Int(IntInterval),
     /// `xsd:string` / `DataOneOf`-of-strings (finite-set; equality-typed, no ordering).
     Str(FiniteSet<String>),
-    /// `xsd:float` / `xsd:double` (dense; infinite capacity except a single
-    /// inclusive point). Uses [`OrdF64`] so the bound has a total order.
+    /// `xsd:float` (dense; infinite capacity except a single inclusive point).
+    /// Uses [`OrdF64`] so the bound has a total order. `xsd:double` is `Double`.
     Float(DenseInterval<OrdF64>),
     /// `xsd:decimal` (dense; exact lexical representation, never `f64`).
     Decimal(DenseInterval<Decimal>),
@@ -66,8 +67,8 @@ pub enum CardRange {
     DateTime(DenseInterval<DateTimeKey>),
     /// `DataOneOf`-of-`xsd:integer` values (finite set; capacity = |distinct values|).
     IntSet(FiniteSet<i64>),
-    /// `DataOneOf`-of-`xsd:float`/`xsd:double` values (finite set; signed-zero
-    /// normalized via [`OrdF64`]).
+    /// `DataOneOf`-of-`xsd:float` values (finite set; signed-zero normalized via
+    /// [`OrdF64`]). `xsd:double` enumerations are `DoubleSet`.
     FloatSet(FiniteSet<OrdF64>),
     /// `DataOneOf`-of-`xsd:decimal` values (finite set; exact lexical equality).
     DecimalSet(FiniteSet<Decimal>),
@@ -75,6 +76,13 @@ pub enum CardRange {
     DateSet(FiniteSet<DateKey>),
     /// `DataOneOf`-of-`xsd:dateTime` values (finite set; timezone-free, integer-second).
     DateTimeSet(FiniteSet<DateTimeKey>),
+    /// `xsd:double` ranges (#332). Its own variant, never `Float`: the two
+    /// value spaces are disjoint, and a shared bucket put float values under a
+    /// `≤n` over doubles, a false unsat.
+    Double(DenseInterval<OrdF64>),
+    /// `DataOneOf`-of-`xsd:double` values (#332), separate from `FloatSet` for
+    /// the same reason.
+    DoubleSet(FiniteSet<OrdF64>),
     /// `xsd:boolean` values (#325). Never `Top`: bare `xsd:boolean` is the exact
     /// set `{false, true}`, which is what gives `≥3 p.xsd:boolean` no room.
     Bool(FiniteSet<bool>),
@@ -100,6 +108,8 @@ impl CardRange {
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
             | CardRange::DateTimeSet(_)
+            | CardRange::Double(_)
+            | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
             | CardRange::Uri(_) => None,
         }
@@ -120,6 +130,8 @@ impl CardRange {
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
             | CardRange::DateTimeSet(_)
+            | CardRange::Double(_)
+            | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
             | CardRange::Uri(_) => None,
         }
@@ -140,6 +152,8 @@ impl CardRange {
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
             | CardRange::DateTimeSet(_)
+            | CardRange::Double(_)
+            | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
             | CardRange::Uri(_) => None,
         }
@@ -160,6 +174,8 @@ impl CardRange {
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
             | CardRange::DateTimeSet(_)
+            | CardRange::Double(_)
+            | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
             | CardRange::Uri(_) => None,
         }
@@ -180,6 +196,8 @@ impl CardRange {
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
             | CardRange::DateTimeSet(_)
+            | CardRange::Double(_)
+            | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
             | CardRange::Uri(_) => None,
         }
@@ -200,6 +218,8 @@ impl CardRange {
             | CardRange::DecimalSet(_)
             | CardRange::DateSet(_)
             | CardRange::DateTimeSet(_)
+            | CardRange::Double(_)
+            | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
             | CardRange::Uri(_) => None,
         }

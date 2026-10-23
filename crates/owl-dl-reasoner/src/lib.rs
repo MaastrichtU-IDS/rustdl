@@ -3432,8 +3432,16 @@ pub(crate) fn classify_inconsistency_precheck(
     // Route 2: the ABox-seeded wedge (#89).
     match classify_wedge_consistency(internal, route_deadline()) {
         Some(HyperResult::Unsat) => return true,
-        // A wedge model decides consistency, whatever route 1 did.
-        Some(HyperResult::Sat) => cut = false,
+        // A wedge model decides consistency, whatever route 1 did, unless the
+        // ontology counts data values, which the wedge does not (#344): then
+        // classify's consistency probe decides.
+        Some(HyperResult::Sat) => {
+            if !(consistency_data_counting_verify_enabled()
+                && pool_has_dkey_counting(&internal.concepts, &build_dkey_range_map(internal)))
+            {
+                cut = false;
+            }
+        }
         Some(HyperResult::Stalled) => cut = true,
         None => {}
     }
@@ -5323,6 +5331,37 @@ pub fn wedge_consistency_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_CONSISTENCY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// #344: whether a wedge `Sat` on consistency is NOT trusted when the ontology
+/// counts data values (a `≥n`/`≤n` over a `DKey` filler anywhere). The wedge does
+/// no concrete-domain counting, so its `Sat` says nothing about such a limit:
+/// `≤1 p.DataOneOf(1 2)` on an individual with values 1 and 2 was reported
+/// consistent. Under the flag the check falls through to the main tableau, whose
+/// `concrete_domain_clash` counts; a give-up there is reported as undetermined
+/// (`unknown` from `rustdl consistent`, `Ok(None)` from the bounded API,
+/// `consistency_undetermined` from classify) rather than as `consistent`.
+///
+/// **Default ON** (`=0` reverts).
+#[must_use]
+pub fn consistency_data_counting_verify_enabled() -> bool {
+    std::env::var_os("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY").is_none_or(|v| v != "0")
+}
+
+/// Whether some `≥n`/`≤n` anywhere in `pool` counts values of a `DKey` range
+/// (#344). Position-independent, so a constraint on a complex `ClassAssertion`, a
+/// domain filler or a complex-LHS GCI counts too; a superset of where one can apply.
+fn pool_has_dkey_counting(
+    pool: &ConceptPool,
+    dkey_ranges: &std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
+) -> bool {
+    !dkey_ranges.is_empty()
+        && pool.iter_exprs().any(|c| match c {
+            ConceptExpr::Min(_, _, f) | ConceptExpr::Max(_, _, f) => {
+                matches!(pool.get(*f), ConceptExpr::Atomic(id) if dkey_ranges.contains_key(id))
+            }
+            _ => false,
+        })
+}
+
 /// Lever A (2026-07-20): when the ontology uses NO nominals, the `ABox` is
 /// irrelevant to class subsumption, so the per-pair classification tableau
 /// probes do NOT seed it. This eliminates the `ABox`-driven completion-graph
@@ -6923,8 +6962,16 @@ pub fn is_consistent_internal_bounded(
     let wedge_deadline = wedge_cap.min(deadline);
     match prepared.consistency_wedge(Some(wedge_deadline)) {
         Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return Ok(Some(false)),
-        Some(owl_dl_tableau::hyper::HyperResult::Sat) => return Ok(Some(true)),
-        Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
+        // #344: a `Sat` says nothing about data counting; the tableau below decides.
+        Some(owl_dl_tableau::hyper::HyperResult::Sat)
+            if !prepared.wedge_sat_skips_data_counting =>
+        {
+            return Ok(Some(true));
+        }
+        Some(
+            owl_dl_tableau::hyper::HyperResult::Sat | owl_dl_tableau::hyper::HyperResult::Stalled,
+        )
+        | None => {}
     }
     if std::time::Instant::now() >= deadline {
         return Ok(None);
@@ -7023,6 +7070,16 @@ fn is_consistent_internal_full(
                     incomplete: false,
                 },
             ));
+        }
+        // #344: when the ontology counts data values, a wedge `Sat` (which counts
+        // none) falls through to the bounded main tableau like a `Stalled`.
+        Some(owl_dl_tableau::hyper::HyperResult::Sat) if prepared.wedge_sat_skips_data_counting => {
+            if trace {
+                eprintln!(
+                    "consistency: wedge Sat, but data counting is unchecked — bounded tableau \
+                     fall-through"
+                );
+            }
         }
         Some(owl_dl_tableau::hyper::HyperResult::Sat) => {
             // Trusted consistent (like classify's trust_sat). The wedge
@@ -8046,6 +8103,11 @@ pub(crate) struct PreparedOntology {
     /// as `data_counting_classes`. Empty unless the ontology authors `Min`/`Max` over a
     /// nominal-bounded class.
     pub(crate) nominal_counting_classes: std::collections::HashSet<owl_dl_core::ir::ClassId>,
+    /// #344: a wedge consistency `Sat` must not be trusted, because the ontology
+    /// counts data values the wedge does not count. `true` iff the wedge route is
+    /// built, [`consistency_data_counting_verify_enabled`], and
+    /// [`pool_has_dkey_counting`].
+    pub(crate) wedge_sat_skips_data_counting: bool,
     /// `ABox`-seeded wedge consistency state. `Some` iff
     /// [`wedge_consistency_enabled`] and the ontology has `ABox` axioms;
     /// `None` otherwise (`ABox`-free inputs pay nothing, classify
@@ -8665,6 +8727,9 @@ impl PreparedOntology {
         // nominal/role id is matched-by-construction with the clause set.
         let consistency = (wedge_consistency_enabled() && internal_has_individuals(&internal))
             .then(|| ConsistencyCache::build(&internal));
+        let wedge_sat_skips_data_counting = consistency.is_some()
+            && consistency_data_counting_verify_enabled()
+            && pool_has_dkey_counting(&internal.concepts, &dkey_ranges);
         // Phase 1b: build the snapshot cache from the same un-mutated
         // ontology, iff `RUSTDL_SNAPSHOT_CAPTURE` is ON. The cache's
         // `clausify_with_stats` + `BackPropRisk::classify_ontology`
@@ -8750,6 +8815,7 @@ impl PreparedOntology {
             data_counting_classes,
             nominal_counting_classes,
             complex_qualifier_counting_classes,
+            wedge_sat_skips_data_counting,
             consistency,
             tableau_id: TableauIdBudget::default(),
         }))

@@ -1973,7 +1973,10 @@ fn probe_says_inconsistent(
     // there — a large `NoVerdict` share of the label cache, the same "did not look
     // long enough" species `incomplete_abox` already admits on. Always `false` at
     // the post-walk call site, which therefore behaves exactly as before.
-    if unsatisfiable_idxs.is_empty() && !incomplete_abox && !extra_admission {
+    // #344: an ontology that counts data values gets the probe whatever the unsat
+    // set says, since the wedge's `Sat` (the cheap layer 2) does not count them.
+    let counting = prepared.wedge_sat_skips_data_counting;
+    if unsatisfiable_idxs.is_empty() && !incomplete_abox && !extra_admission && !counting {
         return false;
     }
     // (1) ASSERTED INSTANCE OF AN UNSATISFIABLE CLASS ⟹ inconsistent.
@@ -2057,6 +2060,7 @@ fn probe_says_inconsistent(
     // not been computed yet rather than on one that came back small.
     if !incomplete_abox
         && !extra_admission
+        && !counting
         && unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * min_permille
     {
         return false;
@@ -2067,7 +2071,7 @@ fn probe_says_inconsistent(
     // (2) Wedge consistency route — the cheap one `is_consistent` tries first.
     match prepared.consistency_wedge(Some(std::time::Instant::now() + budget)) {
         Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return true,
-        Some(owl_dl_tableau::hyper::HyperResult::Sat) => return false,
+        Some(owl_dl_tableau::hyper::HyperResult::Sat) if !counting => return false,
         _ => {}
     }
     // (3) ONE BOUNDED `⊤`-satisfiability probe, mirroring `is_consistent`'s
@@ -2087,7 +2091,16 @@ fn probe_says_inconsistent(
     // Sound: `Some(false)` is a real `⊤`-unsatisfiability. A timeout yields `None` ⇒
     // no verdict ⇒ today's behaviour, which is the trusted direction.
     let dl = std::time::Instant::now() + budget;
-    matches!(prepared.decide_consistency(Some(dl)), Ok(Some(false)))
+    match prepared.decide_consistency(Some(dl)) {
+        Ok(Some(false)) => true,
+        // #344: the wedge's `Sat` was not trusted, so a give-up here leaves the
+        // verdict open rather than "consistent".
+        Ok(None) if counting => {
+            crate::mark_consistency_undetermined();
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Build a `Classification` representing an inconsistent ontology:

@@ -7,6 +7,16 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **An integer range and an integer enumeration on one data property are counted together
+  (#334).** They were counted in separate `card_sat` buckets. So `≥2 p.xsd:integer` with
+  `∀p.DataOneOf(1)` was satisfiable with nothing dropped, where HermiT says unsatisfiable. So was
+  `≤1 p.DataOneOf(1 2)` with `DataHasValue(p, 1)` and `DataHasValue(p, 2)`, since `DataHasValue`
+  lowers to a range point. `concrete_domain_clash` now also counts the two over `IntUnion`, a
+  normalised union of integer intervals, for a property with items in both buckets.
+
+  An enumeration mixing datatypes (still dropped) and an integer against an `xsd:decimal` limit
+  remain pinned known misses. The float, decimal and date range-versus-enumeration pairs have the
+  same split and are not covered by this change.
 - **`≤n p.D` with a string-type `D` narrower than `xsd:string` no longer counts every string
   value (#337). A false inconsistency at default settings.** The DP-2 ABox pre-check counted an
   individual's string values against any string-family limit. `xsd:token`, `xsd:NCName`,

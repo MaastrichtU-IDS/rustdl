@@ -1,0 +1,17 @@
+# `≤1 p.xsd:decimal` with two DataHasValue witnesses of xsd:integer (1 and 2).
+# The integers are decimals (OWL 2 §4.1), so A has two distinct values under a
+# ≤1 over decimals — UNSATISFIABLE. rustdl reports A satisfiable with
+# `incomplete: false` and `dropped: {}`: integer and decimal values are counted
+# in separate card_sat buckets and never against each other.
+#
+# Adjudicated: HermiT 1.4.5 calls A unsatisfiable. Konclude is NOT used here: it
+# treats integer and decimal as one value space (recorded in CLAUDE.md), so its
+# agreement would not be independent.
+#
+# This fixture took over the acceptance set's detection when #334 made
+# `dkey-maxcard-oneof` agree with its oracle (the guard's FIFTH firing:
+# chainrange -> chaincompose -> invfunc-inverse -> dkey-maxcard-oneof -> this).
+# Verified on the harness's own surface before committing: `unsat=[]`,
+# `dropped={}`, `incomplete=false`.
+provenance: hermit   # HermiT 1.4.5, #334 work (2026-10-23)
+unsatisfiable: A

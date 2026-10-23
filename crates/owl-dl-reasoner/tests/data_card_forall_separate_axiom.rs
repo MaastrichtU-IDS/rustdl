@@ -12,8 +12,7 @@
 //! read is an axiom (`G ⊑ ∀p.D`, or `⊤ ⊑ ∀p.D`) whose guard is on the node, so the
 //! filter is entailed there; the controls carry the weight.
 //!
-//! ORACLE: `HermiT` 1.4.5 agrees on every verdict below except the two pinned known
-//! misses.
+//! ORACLE: `HermiT` 1.4.5 agrees on every verdict below except the pinned known miss.
 
 #![allow(clippy::unwrap_used)]
 
@@ -166,17 +165,16 @@ fn a_range_on_a_super_property_is_a_known_miss() {
     ));
 }
 
-/// KNOWN MISS, not #327: an integer RANGE demand (`≥2 p.xsd:integer`) against an
-/// integer ENUMERATION filter is not counted together, in one axiom or two; integer
-/// ranges and integer enumerations are separate `card_sat` buckets (#334). `HermiT` says
-/// unsat. FLIP these when the two buckets are counted together.
+/// An integer RANGE demand (`≥2 p.xsd:integer`) against an integer ENUMERATION
+/// filter, in one axiom or two. Integer ranges and integer enumerations are separate
+/// `card_sat` buckets; since #334 they are also counted together. `HermiT` says unsat.
 #[test]
-fn an_integer_range_demand_against_an_enumeration_is_a_known_miss() {
-    assert!(!c_unsat(
+fn an_integer_range_demand_against_an_enumeration_clashes() {
+    assert!(c_unsat(
         "SubClassOf(:C DataMinCardinality(2 :p xsd:integer))\n\
          SubClassOf(:C DataAllValuesFrom(:p DataOneOf(\"1\"^^xsd:integer)))"
     ));
-    assert!(!c_unsat(
+    assert!(c_unsat(
         "SubClassOf(:C ObjectIntersectionOf(DataMinCardinality(2 :p xsd:integer) \
          DataAllValuesFrom(:p DataOneOf(\"1\"^^xsd:integer))))"
     ));

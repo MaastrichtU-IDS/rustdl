@@ -506,6 +506,103 @@ pub fn integer_sat(
     card_sat(universal, min_demands, max_limits)
 }
 
+/// A finite union of integer intervals (#334): the common type for counting an
+/// integer RANGE (`IntInterval`) and an integer ENUMERATION (`FiniteSet<i64>`)
+/// on one property together. Kept normalised: pieces sorted, non-empty, and
+/// merged when they overlap or are adjacent, so `subset_of` is exact (every gap
+/// between pieces is a missing integer).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntUnion {
+    pieces: Vec<IntInterval>,
+}
+
+impl IntUnion {
+    /// The union holding exactly the integers of `iv`.
+    #[must_use]
+    pub fn from_interval(iv: IntInterval) -> Self {
+        Self::normalised(vec![iv])
+    }
+
+    /// The union holding exactly the values of `fs` (`Top` is every integer).
+    #[must_use]
+    pub fn from_points(fs: &FiniteSet<i64>) -> Self {
+        match fs {
+            FiniteSet::Top => Self::universe(),
+            FiniteSet::Set(vals) => {
+                Self::normalised(vals.iter().map(|&v| IntInterval::point(v)).collect())
+            }
+        }
+    }
+
+    /// The pieces, sorted and pairwise separated by at least one missing integer.
+    #[must_use]
+    pub fn pieces(&self) -> &[IntInterval] {
+        &self.pieces
+    }
+
+    fn normalised(mut pieces: Vec<IntInterval>) -> Self {
+        pieces.retain(|p| !p.is_empty());
+        // `None` (−∞) sorts first.
+        pieces.sort_by_key(|p| p.min);
+        let mut out: Vec<IntInterval> = Vec::with_capacity(pieces.len());
+        for p in pieces {
+            if let Some(last) = out.last_mut() {
+                // `last` reaches `p` when it is unbounded above, or its end + 1 is at
+                // or past `p`'s start (an unbounded-below `p` sorts first, so it is
+                // never the later piece here).
+                let reaches = match (last.max, p.min) {
+                    (Some(hi), Some(lo)) => hi.checked_add(1).is_none_or(|next| next >= lo),
+                    (None, _) | (Some(_), None) => true,
+                };
+                if reaches {
+                    last.max = match (last.max, p.max) {
+                        (None, _) | (_, None) => None,
+                        (Some(a), Some(b)) => Some(a.max(b)),
+                    };
+                    continue;
+                }
+            }
+            out.push(p);
+        }
+        Self { pieces: out }
+    }
+}
+
+impl ValueRange for IntUnion {
+    fn is_empty(&self) -> bool {
+        self.pieces.is_empty()
+    }
+    fn intersect(&self, other: &Self) -> Self {
+        let mut out = Vec::new();
+        for a in &self.pieces {
+            for b in &other.pieces {
+                let c = a.intersect(b);
+                if !c.is_empty() {
+                    out.push(c);
+                }
+            }
+        }
+        Self::normalised(out)
+    }
+    fn subset_of(&self, other: &Self) -> bool {
+        // Exact on normalised operands: a piece of `self` cannot straddle a gap of
+        // `other`, since that gap holds an integer `self` contains.
+        self.pieces
+            .iter()
+            .all(|a| other.pieces.iter().any(|b| a.subset_of(b)))
+    }
+    fn capacity(&self) -> Option<u128> {
+        self.pieces
+            .iter()
+            .try_fold(0u128, |sum, p| p.capacity().map(|c| sum.saturating_add(c)))
+    }
+    fn universe() -> Self {
+        Self {
+            pieces: vec![IntInterval::all()],
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Dense domain: xsd:float / double / decimal / date / dateTime
 // ─────────────────────────────────────────────────────────────────────
@@ -1291,5 +1388,103 @@ mod fuzz {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod int_union_tests {
+    use super::*;
+
+    fn u(pieces: &[(Option<i64>, Option<i64>)]) -> IntUnion {
+        IntUnion::normalised(
+            pieces
+                .iter()
+                .map(|&(min, max)| IntInterval { min, max })
+                .collect(),
+        )
+    }
+    fn pts(vals: &[i64]) -> IntUnion {
+        IntUnion::from_points(&FiniteSet::Set(vals.iter().copied().collect()))
+    }
+
+    #[test]
+    fn normalises_overlap_adjacency_and_the_ends() {
+        assert_eq!(pts(&[1, 2, 3]), u(&[(Some(1), Some(3))]));
+        assert_eq!(pts(&[1, 3]).pieces().len(), 2);
+        assert_eq!(
+            u(&[(Some(5), Some(9)), (Some(1), Some(6))]),
+            u(&[(Some(1), Some(9))])
+        );
+        assert_eq!(
+            u(&[
+                (Some(i64::MAX), Some(i64::MAX)),
+                (Some(i64::MAX - 1), Some(i64::MAX - 1))
+            ]),
+            u(&[(Some(i64::MAX - 1), Some(i64::MAX))])
+        );
+        assert_eq!(u(&[(None, Some(0)), (Some(1), None)]), IntUnion::universe());
+        assert_eq!(
+            u(&[
+                (Some(i64::MIN + 1), Some(i64::MIN + 1)),
+                (Some(i64::MIN), Some(i64::MIN))
+            ]),
+            u(&[(Some(i64::MIN), Some(i64::MIN + 1))])
+        );
+        assert!(u(&[(Some(3), Some(1))]).is_empty());
+        assert_eq!(IntUnion::from_points(&FiniteSet::Top), IntUnion::universe());
+    }
+
+    #[test]
+    fn subset_is_exact_and_capacity_counts() {
+        let r12 = IntUnion::from_interval(IntInterval::closed(1, 2));
+        assert!(r12.subset_of(&pts(&[1, 2])));
+        assert!(!IntUnion::from_interval(IntInterval::closed(1, 3)).subset_of(&pts(&[1, 3])));
+        assert!(pts(&[1, 7]).subset_of(&IntUnion::from_interval(IntInterval::closed(0, 9))));
+        assert_eq!(pts(&[1, 2, 7]).capacity(), Some(3));
+        assert_eq!(IntUnion::universe().capacity(), None);
+        let i = IntUnion::from_interval(IntInterval::closed(1, 5)).intersect(&pts(&[1, 2, 7]));
+        assert_eq!(i, pts(&[1, 2]));
+        assert!(pts(&[1]).disjoint(&pts(&[2])));
+        // Unbounded pieces.
+        let nonneg = u(&[(Some(0), None)]);
+        assert!(nonneg.subset_of(&IntUnion::universe()));
+        assert!(!IntUnion::universe().subset_of(&pts(&[1])));
+        assert!(!IntUnion::universe().subset_of(&nonneg));
+        assert_eq!(nonneg.intersect(&pts(&[-1, 3])), pts(&[3]));
+        assert_eq!(nonneg.capacity(), None);
+    }
+
+    #[test]
+    fn counts_a_range_demand_against_an_enumeration() {
+        let all = IntUnion::universe();
+        // ≥2 p.xsd:integer ⊓ ∀p.{1}
+        assert_eq!(
+            card_sat(Some(pts(&[1])), &[Card::new(all.clone(), 2)], &[]),
+            CardSat::Unsat
+        );
+        // ≥2 p.xsd:integer ⊓ ∀p.{1,2}
+        assert_eq!(
+            card_sat(Some(pts(&[1, 2])), &[Card::new(all.clone(), 2)], &[]),
+            CardSat::Sat
+        );
+        // ≥3 p.[1,5] ⊓ ∀p.{1,2,7}
+        let r15 = IntUnion::from_interval(IntInterval::closed(1, 5));
+        assert_eq!(
+            card_sat(Some(pts(&[1, 2, 7])), &[Card::new(r15.clone(), 3)], &[]),
+            CardSat::Unsat
+        );
+        assert_eq!(
+            card_sat(Some(pts(&[1, 2, 7])), &[Card::new(r15, 2)], &[]),
+            CardSat::Sat
+        );
+        // ≤1 p.xsd:integer ⊓ ∃p.{1} ⊓ ∃p.{2}
+        assert_eq!(
+            card_sat(
+                None,
+                &[Card::new(pts(&[1]), 1), Card::new(pts(&[2]), 1)],
+                &[Card::new(all, 1)]
+            ),
+            CardSat::Unsat
+        );
     }
 }

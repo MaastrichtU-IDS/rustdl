@@ -208,11 +208,15 @@ fn instrument_never_verifies_a_classification_that_disagrees_with_the_oracle() {
         "invfunc-inverse",
         // Added when #149's fix emptied the detection set AGAIN (fourth
         // firing). The DKey bucket-split silent miss from the #42 work:
-        // `≤1 p.DataOneOf(1 2)` never sees its two DataHasValue witnesses
-        // (range vs enumeration bucket), three peer reasoners say unsat, and
-        // the miss exists on THIS harness's own surface (`classify_internal`)
-        // — a first candidate was rejected for being top-down-driver-only.
+        // `≤1 p.DataOneOf(1 2)` never saw its two DataHasValue witnesses
+        // (range vs enumeration bucket). CLOSED by #334, which counts the two
+        // integer buckets together — kept as an agreement fixture, with
+        // `dkey-maxcard-decimal-int` (below) taking over detection.
         "dkey-maxcard-oneof",
+        // Added when #334's fix emptied the detection set (fifth firing): an
+        // integer value counted against an `xsd:decimal` limit, a different
+        // bucket. HermiT says unsat; the miss is silent on `classify_internal`.
+        "dkey-maxcard-decimal-int",
         "unsatconj",
         "flat-mono",
         "label-closure-range-sub",
@@ -376,6 +380,7 @@ fn the_detection_set_has_not_silently_gone_vacuous() {
         "chaincompose",
         "invfunc-inverse",
         "dkey-maxcard-oneof",
+        "dkey-maxcard-decimal-int",
         "unsatconj",
         "flat-mono",
         "label-closure-range-sub",
@@ -445,6 +450,24 @@ fn invfunc_inverse_now_agrees_with_its_oracle() {
         classification_matches_oracle(&internal, &oracle),
         "#149's polarity normalization makes A unsatisfiable here; losing it \
          again is a conversion regression"
+    );
+}
+
+/// `dkey-maxcard-oneof.ofn`'s role change (#334), pinned cascade-style.
+///
+/// It was the detection fixture from the #149 succession until #334 counted an
+/// integer range (its `DataHasValue` witnesses lower to range points) and an
+/// integer enumeration (its `≤1` limit) together, whereupon `classify_internal`
+/// derives A's unsatisfiability and rustdl AGREES with the oracle. Fails loudly
+/// if that combined count regresses.
+#[test]
+fn dkey_maxcard_oneof_now_agrees_with_its_oracle() {
+    let internal = load_fixture("dkey-maxcard-oneof");
+    let oracle = load_oracle("dkey-maxcard-oneof");
+    assert!(
+        classification_matches_oracle(&internal, &oracle),
+        "#334 counts the integer range and enumeration buckets together; losing \
+         A's unsatisfiability again means that combined count regressed"
     );
 }
 

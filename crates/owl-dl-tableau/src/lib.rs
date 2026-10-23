@@ -2105,7 +2105,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     fn concrete_domain_clash(&self, node: NodeId) -> Option<crate::graph::DepSet> {
         use owl_dl_datatypes::{
             Card, CardRange, CardSat, DateKey, DateTimeKey, Decimal, DenseInterval, FiniteSet,
-            IntInterval, OrdF64, ValueRange, card_sat, integer_sat,
+            IntInterval, IntUnion, OrdF64, ValueRange, card_sat, integer_sat,
         };
         if self.dkey_ranges.is_empty() {
             return None;
@@ -2146,11 +2146,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             universal: Option<DenseInterval<DateTimeKey>>,
             deps: crate::graph::DepSet,
         }
-        // Numeric-oneof buckets: each uses FiniteSet<T> (capacity = |set|).
-        // No `∀` (universal filter) for DataOneOf — a DataAllValuesFrom over a
-        // DataOneOf produces a dense-bucket key, not an oneof key — so `universal`
-        // is always `None` for these accumulators. The field is retained for
-        // structural uniformity so `card_sat` can be called uniformly.
+        // Numeric-oneof buckets: each uses FiniteSet<T> (capacity = |set|). A `∀`
+        // over a `DataOneOf` lands here too, as the accumulator's `universal`.
         struct IntSetAcc {
             mins: Vec<Card<FiniteSet<i64>>>,
             maxs: Vec<Card<FiniteSet<i64>>>,
@@ -2571,9 +2568,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             }
         }
         // Check integer bucket first (keeps the fast path byte-identical).
-        for acc in int_by_role.into_values() {
+        for acc in int_by_role.values() {
             if integer_sat(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat {
-                return Some(acc.deps);
+                return Some(acc.deps.clone());
             }
         }
         // Check string bucket.
@@ -2616,9 +2613,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             }
         }
         // Check integer-oneof bucket (FiniteSet<i64>).
-        for acc in int_set_by_role.into_values() {
-            if card_sat::<FiniteSet<i64>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat {
-                return Some(acc.deps);
+        for acc in int_set_by_role.values() {
+            if card_sat::<FiniteSet<i64>>(acc.universal.clone(), &acc.mins, &acc.maxs)
+                == CardSat::Unsat
+            {
+                return Some(acc.deps.clone());
             }
         }
         // Check float-oneof bucket (FiniteSet<OrdF64>).
@@ -2672,6 +2671,41 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             if card_sat::<FiniteSet<String>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat
             {
                 return Some(acc.deps);
+            }
+        }
+        // #334: an integer range and an integer enumeration on one property are
+        // counted in separate buckets above, so `≥2 p.xsd:integer` never met
+        // `∀p.{1}`. Count both together over their union type. Only a property
+        // with items in both buckets gets here, and each per-bucket clash was
+        // already checked with its own (tighter) deps.
+        for (rid, ia) in &int_by_role {
+            let Some(sa) = int_set_by_role.get(rid) else {
+                continue;
+            };
+            let iv = |c: &Card<IntInterval>| Card::new(IntUnion::from_interval(c.range), c.n);
+            let fs = |c: &Card<FiniteSet<i64>>| Card::new(IntUnion::from_points(&c.range), c.n);
+            let mins: Vec<Card<IntUnion>> = ia
+                .mins
+                .iter()
+                .map(iv)
+                .chain(sa.mins.iter().map(fs))
+                .collect();
+            let maxs: Vec<Card<IntUnion>> = ia
+                .maxs
+                .iter()
+                .map(iv)
+                .chain(sa.maxs.iter().map(fs))
+                .collect();
+            let universal = match (ia.universal, &sa.universal) {
+                (None, None) => None,
+                (Some(u), None) => Some(IntUnion::from_interval(u)),
+                (None, Some(u)) => Some(IntUnion::from_points(u)),
+                (Some(a), Some(b)) => {
+                    Some(IntUnion::from_interval(a).intersect(&IntUnion::from_points(b)))
+                }
+            };
+            if card_sat::<IntUnion>(universal, &mins, &maxs) == CardSat::Unsat {
+                return Some(crate::deps::union(&ia.deps, &sa.deps));
             }
         }
         None

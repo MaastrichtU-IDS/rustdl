@@ -61,8 +61,8 @@ fn unsat(body: &str) -> bool {
 }
 
 /// Two DISTINCT witnesses, as `DataSomeValuesFrom(p, DataOneOf(v))` — see
-/// `max_cardinality_below_the_union_size_is_unsatisfiable` for why `DataHasValue`
-/// cannot be used here.
+/// `max_cardinality_below_the_union_size_is_unsatisfiable` for why this spelling
+/// was chosen over `DataHasValue`.
 const WITNESSES: &str = "SubClassOf(:A DataSomeValuesFrom(:p DataOneOf(\"1\"^^xsd:integer)))\n\
      SubClassOf(:A DataSomeValuesFrom(:p DataOneOf(\"2\"^^xsd:integer)))";
 
@@ -139,13 +139,10 @@ fn max_cardinality_below_the_union_size_is_unsatisfiable() {
     // ONLY left all 21 tests across three files green, because every canary here
     // was `DataMinCardinality`.
     //
-    // WITNESSES MUST BE `DataSomeValuesFrom(p, DataOneOf(v))`, NOT `DataHasValue`.
-    // `DataHasValue` lowers to the RANGE bucket `[v,v]` while `≤n`-over-enumeration
-    // lands in the `io:` bucket, and `concrete_domain_clash` checks buckets
-    // independently — so the `DataHasValue` spelling is SATISFIABLE on correct code
-    // (a pre-existing SILENT miss: `incomplete: false`, `dropped: {}`, while all
-    // three peers say unsat). Writing this canary the obvious way would fail against
-    // a correct engine and invite "fixing" the implementation to match.
+    // The witnesses are `DataSomeValuesFrom(p, DataOneOf(v))`. A `DataHasValue`
+    // witness lowers to the RANGE bucket `[v,v]` while `≤n`-over-enumeration lands
+    // in the `io:` bucket; until #334 counted the two together, that spelling was a
+    // silent miss. It is now caught too (`tests/data_card_int_range_vs_enum.rs`).
     //
     // Oracle: Konclude and JFact. `HermiT` says SATISFIABLE here — see the header.
     assert!(

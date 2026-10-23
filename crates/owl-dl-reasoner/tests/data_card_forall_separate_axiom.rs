@@ -12,7 +12,8 @@
 //! read is an axiom (`G ⊑ ∀p.D`, or `⊤ ⊑ ∀p.D`) whose guard is on the node, so the
 //! filter is entailed there; the controls carry the weight.
 //!
-//! ORACLE: `HermiT` 1.4.5 agrees on every verdict below except the pinned known miss.
+//! ORACLE: `HermiT` 1.4.5 agrees on every verdict below except the two pinned known
+//! misses.
 
 #![allow(clippy::unwrap_used)]
 
@@ -126,6 +127,42 @@ fn a_forall_that_does_not_hold_here_is_not_counted() {
         "SubClassOf(:C DataMinCardinality(2 :p xsd:string))\n\
          SubClassOf(:C DataAllValuesFrom(:q DataOneOf(\"x\")))\n\
          SubClassOf(:G DataAllValuesFrom(:p DataOneOf(\"a\")))"
+    ));
+}
+
+/// Backjumping: the guard `G` is reached through the `⊒` half of `G ≡ ∀p.{"a"}`,
+/// a disjunction; the branch that puts `G` on `C` clashes and the search must
+/// backjump to the other one, which only correct deps on the `∀` allow. And an
+/// unbounded range (`xsd:string`) bounds nothing.
+#[test]
+fn a_forall_reached_by_branching_or_unbounded_does_not_clash() {
+    assert!(!c_unsat(
+        "EquivalentClasses(:G DataAllValuesFrom(:p DataOneOf(\"a\")))\n\
+         SubClassOf(:C DataMinCardinality(2 :p xsd:string))"
+    ));
+    assert!(!c_unsat(
+        "DataPropertyRange(:p DataOneOf(\"a\"))\n\
+         SubClassOf(:C ObjectUnionOf(DataMinCardinality(2 :p xsd:string) :G))"
+    ));
+    assert!(!c_unsat(
+        "DataPropertyRange(:p xsd:string)\n\
+         SubClassOf(:C DataMinCardinality(2 :p xsd:string))"
+    ));
+}
+
+/// KNOWN MISS, not #327: the count is keyed on the exact property, so a range on
+/// `p` does not bound a demand on a sub-property `q ⊑ p`. `HermiT` says unsat.
+/// FLIP when the count follows the property hierarchy. The reverse (range on the
+/// sub-property) is genuinely satisfiable.
+#[test]
+fn a_range_on_a_super_property_is_a_known_miss() {
+    assert!(!c_unsat(
+        "SubDataPropertyOf(:q :p) DataPropertyRange(:p DataOneOf(\"a\"))\n\
+         SubClassOf(:C DataMinCardinality(2 :q xsd:string))"
+    ));
+    assert!(!c_unsat(
+        "SubDataPropertyOf(:q :p) DataPropertyRange(:q DataOneOf(\"a\"))\n\
+         SubClassOf(:C DataMinCardinality(2 :p xsd:string))"
     ));
 }
 

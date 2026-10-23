@@ -254,6 +254,12 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// fillers — the counting is done by `card_sat`, and expanding a large
     /// `≥n` over a `DKey` would not terminate).
     dkey_ranges: HashMap<ClassId, owl_dl_datatypes::CardRange>,
+    /// #327: the `TBox` role rules whose target is a `DKey`, i.e. the told data `∀`s
+    /// that absorption moved off the node label: unguarded ones (`⊤ ⊑ ∀p.D`) by
+    /// role, guarded ones (`G ⊑ ∀p.D`) by guard. Built by [`Self::set_dkey_ranges`]
+    /// so `concrete_domain_clash` never scans the full rule list.
+    dkey_unguarded_rules: HashMap<RoleId, Vec<ConceptId>>,
+    dkey_guarded_rules: HashMap<ClassId, Vec<(RoleId, ConceptId)>>,
     /// Anywhere (pairwise) blocking toggle. When `true`, [`Self::is_blocked`]
     /// scopes the pair-blocking candidate `x'` to ANY earlier-created
     /// non-excluded node instead of only tree-ancestors of `y`. Cached once at
@@ -388,6 +394,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
+            dkey_unguarded_rules: HashMap::new(),
+            dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -429,6 +437,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
+            dkey_unguarded_rules: HashMap::new(),
+            dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -475,6 +485,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
+            dkey_unguarded_rules: HashMap::new(),
+            dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -492,6 +504,30 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         ranges: HashMap<ClassId, owl_dl_datatypes::CardRange>,
     ) -> &mut Self {
         self.dkey_ranges = ranges;
+        self.dkey_unguarded_rules.clear();
+        self.dkey_guarded_rules.clear();
+        if let Some(tbox) = self.tbox {
+            for rule in &tbox.role_rules {
+                let Role::Named(rid) = rule.role else {
+                    continue;
+                };
+                if self.dkey_range_of(rule.target_label).is_none() {
+                    continue;
+                }
+                match rule.guard {
+                    None => self
+                        .dkey_unguarded_rules
+                        .entry(rid)
+                        .or_default()
+                        .push(rule.target_label),
+                    Some(g) => self
+                        .dkey_guarded_rules
+                        .entry(g)
+                        .or_default()
+                        .push((rid, rule.target_label)),
+                }
+            }
+        }
         self
     }
 
@@ -2191,21 +2227,63 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let mut decimal_set_by_role: HashMap<RoleId, DecimalSetAcc> = HashMap::new();
         let mut date_set_by_role: HashMap<RoleId, DateSetAcc> = HashMap::new();
         let mut datetime_set_by_role: HashMap<RoleId, DateTimeSetAcc> = HashMap::new();
+        // (role, filler, kind 0=∃ 1=∀ 2=≥ 3=≤, n, deps)
+        let mut items: Vec<(Role, ConceptId, u8, u32, &crate::graph::DepSet)> = Vec::new();
         for (pos, &c) in labels.iter().enumerate() {
-            // (role, filler, kind 0=∃ 1=∀ 2=≥ 3=≤, n)
-            let (role, filler, kind, count): (&Role, ConceptId, u8, u32) = match self.pool.get(c) {
-                ConceptExpr::Some(r, f) => (r, *f, 0, 1),
-                ConceptExpr::All(r, f) => (r, *f, 1, 0),
-                ConceptExpr::Min(k, r, f) => (r, *f, 2, *k),
-                ConceptExpr::Max(k, r, f) => (r, *f, 3, *k),
+            let (role, filler, kind, count) = match self.pool.get(c) {
+                ConceptExpr::Some(r, f) => (*r, *f, 0, 1),
+                ConceptExpr::All(r, f) => (*r, *f, 1, 0),
+                ConceptExpr::Min(k, r, f) => (*r, *f, 2, *k),
+                ConceptExpr::Max(k, r, f) => (*r, *f, 3, *k),
                 _ => continue,
             };
+            items.push((role, filler, kind, count, &n.label_deps[pos]));
+        }
+        // A `∀` or `≤n` alone never clashes: only a node that demands values does.
+        if !items
+            .iter()
+            .any(|&(_, _, kind, _, _)| kind == 0 || kind == 2)
+        {
+            return None;
+        }
+        // #327: absorption turns a told `G ⊑ ∀p.DKey(U)` (and a data range, `⊤ ⊑ ∀p.D`)
+        // into a role rule that fires at successors, so the `∀` never reaches this
+        // node's label. Read the ones that hold here as universal filters, for the
+        // roles this node demands values on.
+        let no_deps = crate::graph::DepSet::new();
+        if !(self.dkey_unguarded_rules.is_empty() && self.dkey_guarded_rules.is_empty()) {
+            let demanded: Vec<RoleId> = items
+                .iter()
+                .filter_map(|&(role, _, kind, _, _)| match role {
+                    Role::Named(rid) if kind == 0 || kind == 2 => Some(rid),
+                    _ => None,
+                })
+                .collect();
+            for &rid in &demanded {
+                for &target in self.dkey_unguarded_rules.get(&rid).into_iter().flatten() {
+                    items.push((Role::Named(rid), target, 1, 0, &no_deps));
+                }
+            }
+            if !self.dkey_guarded_rules.is_empty() {
+                for (pos, &c) in labels.iter().enumerate() {
+                    if let ConceptExpr::Atomic(g) = self.pool.get(c)
+                        && let Some(rules) = self.dkey_guarded_rules.get(g)
+                    {
+                        for &(rid, target) in rules {
+                            if demanded.contains(&rid) {
+                                items.push((Role::Named(rid), target, 1, 0, &n.label_deps[pos]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (role, filler, kind, count, dep_label) in items {
             // Data-property roles are never inverse; skip inverse roles.
             let rid = match role {
-                Role::Named(rid) => *rid,
+                Role::Named(rid) => rid,
                 Role::Inverse(_) => continue,
             };
-            let dep_label = &n.label_deps[pos];
             match self.dkey_range_of(filler) {
                 Some(CardRange::Int(iv)) => {
                     let iv = *iv;

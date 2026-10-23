@@ -216,7 +216,8 @@ struct OpenMax {
     /// The first witness (in node order) that may merge with an earlier one.
     pivot: NodeId,
     /// The earlier witnesses `pivot` may merge with, each with its
-    /// merge-condition deps.
+    /// merge-condition deps. These include every witness's deps, not only the
+    /// pair's: the merge is forced because all of them exist (#288).
     partners: Vec<(NodeId, DepSet)>,
     /// How many witnesses precede `pivot`. They are pairwise distinct, because
     /// `pivot` is the first witness with a mergeable earlier one.
@@ -259,6 +260,19 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
             }
             witnesses.sort_unstable();
             let max_deps = node.label_deps[pos].clone();
+            // #288: the `≤n` is over-full because every witness exists, so a
+            // merge depends on all of them, as in `apply_max`. Pairwise deps
+            // were enough only because `branch_merge` reports exhaustion
+            // under every active decision; selective undo needs them exact.
+            let mut witness_deps = max_deps.clone();
+            for &w in &witnesses {
+                witness_deps = crate::deps::union(
+                    &witness_deps,
+                    &crate::rules::compute_max_merge_deps(
+                        ctx, node_id, *role, *body, w, w, &max_deps,
+                    ),
+                );
+            }
             for (j, &pivot) in witnesses.iter().enumerate() {
                 let partners: Vec<(NodeId, DepSet)> = witnesses[..j]
                     .iter()
@@ -267,7 +281,7 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                         let deps = crate::rules::compute_max_merge_deps(
                             ctx, node_id, *role, *body, w, pivot, &max_deps,
                         );
-                        (w, deps)
+                        (w, crate::deps::union(&deps, &witness_deps))
                     })
                     .collect();
                 if !partners.is_empty() {
@@ -289,9 +303,9 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
 /// witness in turn, then try it distinct from all of them. Mirrors [`branch`]:
 /// a merge carries this branch's id, a clash that does not depend on it
 /// back-jumps, and if every option fails the `≤n` is unsatisfiable under every
-/// active decision (the witnesses and the distinctness that rule out other
-/// merges are not tracked precisely, so this stays conservative, as
-/// `apply_max`'s `⊥` arm does).
+/// active decision (the distinctness that rules out other merges is not
+/// tracked precisely, so this stays conservative, as `apply_max`'s `⊥` arm
+/// does). Each merge's deps cover every witness (see [`first_open_max`]).
 fn branch_merge(
     ctx: &mut TableauContext<'_, '_, '_>,
     max_depth: usize,
@@ -406,7 +420,10 @@ fn branch(
     // complements (Or, quantified) are *not* carried forward — they
     // would inflate the label set without back-jumping enough subtree
     // to pay for themselves (see `docs/phase4-backjumping-plan.md`).
-    let mut literal_complements: Vec<ConceptId> = Vec::new();
+    // Each with the clash deps of the disjunct whose failure justifies it
+    // (#288): `¬d_j` holds because `d_j` failed, so it depends on exactly what
+    // that failure depended on.
+    let mut literal_complements: Vec<(ConceptId, DepSet)> = Vec::new();
 
     // Reorder disjuncts: try first those that don't *obviously* clash
     // with an existing label at `node`. A disjunct is "obvious clash"
@@ -461,8 +478,18 @@ fn branch(
             d
         };
         // Assert prior failed disjuncts' literal complements.
-        for &comp in &literal_complements {
-            ctx.add_label_with_deps(node, comp, combined_deps.as_slice());
+        for (comp, comp_deps) in &literal_complements {
+            // The failed disjunct carried `combined_deps`, and every set that
+            // contains `my_id` got it from there, so its clash deps contain
+            // them. If this ever fails, the tags would be narrower than before
+            // and backjumping could change.
+            debug_assert!(
+                combined_deps
+                    .iter()
+                    .all(|x| comp_deps.binary_search(x).is_ok()),
+                "complement deps {comp_deps:?} miss part of {combined_deps:?}"
+            );
+            ctx.add_label_with_deps(node, *comp, comp_deps.as_slice());
         }
         // CDBL Phase 1 (docs/cdbl-plan.md): record which disjunct
         // concept this branch is asserting, so a downstream clash's
@@ -519,7 +546,7 @@ fn branch(
                     if let Some(comp) = ctx.complement_of(*d)
                         && is_literal(ctx, comp)
                     {
-                        literal_complements.push(comp);
+                        literal_complements.push((comp, clash_deps));
                     }
                 }
             }
@@ -1150,5 +1177,123 @@ mod early_abandon_tests {
             let (armed2, _) = run(sat_behind_a_deep_option(), cap, Some(0));
             assert_eq!(unarmed2, armed2, "cap {cap} (sat fixture)");
         }
+    }
+}
+
+/// #288 step 1: the deps a merge and a failed-disjunct complement carry.
+///
+/// Today both widenings are trace-identical (every clash that reaches the
+/// frame is absorbed into its `combined`), so only these tests see them. They
+/// pin the dep content selective undo will rely on.
+#[cfg(test)]
+mod dep_tests {
+    use super::{SearchVerdict, first_open_max, search};
+    use crate::TableauContext;
+    use owl_dl_core::{AbsorbedTBox, ClassId, ConceptPool, ConceptRule, Role, RoleId};
+
+    /// Three witnesses of `≤1 r.C`, each created under its own decision.
+    /// Every merge must depend on all three, not only the merged pair.
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn a_choice_point_merge_depends_on_every_witness() {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(0));
+        let d = pool.atomic(ClassId::new(1));
+        let at_most_one = pool.max(1, Role::Named(r), c);
+
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        ctx.add_label_with_deps(n, at_most_one, &[]);
+        let ids: Vec<u32> = (0..3).map(|_| ctx.push_branch()).collect();
+        let witnesses: Vec<_> = ids
+            .iter()
+            .map(|&b| {
+                let w = ctx.new_successor_with_deps(n, r, &[b]);
+                ctx.add_label_with_deps(w, c, &[b]);
+                w
+            })
+            .collect();
+        // A marker on the pivot (the second witness), moved by the merge.
+        ctx.add_label_with_deps(witnesses[1], d, &[]);
+
+        let open = first_open_max(&ctx).expect("an open ≤1 with three mergeable pairs");
+        for (_, deps) in &open.partners {
+            for b in &ids {
+                assert!(
+                    deps.contains(b),
+                    "merge deps {deps:?} miss witness decision {b}"
+                );
+            }
+        }
+
+        assert!(matches!(search(&mut ctx, 64), SearchVerdict::Sat));
+        let holder = (0..ctx.graph().len())
+            .map(|i| crate::NodeId::new(u32::try_from(i).expect("node count fits u32")))
+            .find(|&x| {
+                !ctx.graph().node(x).is_redirected()
+                    && ctx.graph().node(x).labels().binary_search(&d).is_ok()
+            })
+            .expect("the marker survives the merges");
+        let deps = ctx.label_deps_of(holder, d).expect("marker deps");
+        for b in &ids {
+            assert!(
+                deps.contains(b),
+                "moved label deps {deps:?} miss witness decision {b}"
+            );
+        }
+    }
+
+    /// `A ⊔ B` at a node holding `E`, with `A ⊑ ¬E`. `A` fails on the rule, so
+    /// `¬A`, asserted for `B`, must carry `A`'s clash deps. With `outer`, a
+    /// decision placed `E`: the complement must then carry it too, where
+    /// tagging with the branch's own deps alone would lose it. Returns the
+    /// complement's deps and the outer decision's id.
+    fn complement_deps(outer: bool) -> (Vec<u32>, Option<u32>) {
+        let mut pool = ConceptPool::new();
+        let a_cls = ClassId::new(0);
+        let a = pool.atomic(a_cls);
+        let b = pool.atomic(ClassId::new(1));
+        let e = pool.atomic(ClassId::new(2));
+        let not_a = pool.not(a);
+        let not_e = pool.not(e);
+        let a_or_b = pool.or([a, b]);
+        let mut tbox = AbsorbedTBox {
+            concept_rules: vec![ConceptRule {
+                trigger: a_cls,
+                conclusion: not_e,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        tbox.finalize();
+
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        ctx.set_complement(a, not_a);
+        let n = ctx.new_node();
+        let outer_id = outer.then(|| ctx.push_branch());
+        ctx.add_label_with_deps(n, e, outer_id.as_slice());
+        ctx.add_label_with_deps(n, a_or_b, &[]);
+        assert!(matches!(search(&mut ctx, 64), SearchVerdict::Sat));
+        assert!(
+            ctx.graph().node(n).labels().binary_search(&b).is_ok(),
+            "the search settles on B"
+        );
+        let deps = ctx.label_deps_of(n, not_a).expect("¬A is asserted for B");
+        (deps.to_vec(), outer_id)
+    }
+
+    #[test]
+    fn a_failed_disjuncts_complement_carries_its_clash_deps() {
+        // Control: only the branch itself caused the clash.
+        let (deps, _) = complement_deps(false);
+        assert_eq!(deps.len(), 1, "control complement deps {deps:?}");
+
+        let (deps, outer) = complement_deps(true);
+        let outer = outer.expect("outer decision");
+        assert!(
+            deps.contains(&outer),
+            "complement deps {deps:?} miss decision {outer}"
+        );
+        assert_eq!(deps.len(), 2, "complement deps {deps:?}");
     }
 }

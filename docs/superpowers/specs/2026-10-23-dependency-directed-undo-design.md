@@ -3,6 +3,8 @@
 Status: **spec only, for review.** No engine code until the review is addressed.
 Issue: #288. Evidence: the issue comments of 2026-10-23.
 Revision 3: addresses the first Fable review (B1–B5, S1–S7) and the second (N1–N2, S1–S5, nits).
+Revision 4 (2026-10-23): step 1 merged (#342); step 2 measured, GO (§5.1); the §4.3 gap
+found while reviewing the step-2 instrument is added (§4.3, "Facts derived across an edge").
 
 ## 1. Problem
 
@@ -185,6 +187,18 @@ Equivalently: tombstone the parent-forest subtree of every dead node. The rule "
 that references a dead node is undone regardless of its deps" makes this robust to a
 missed dep anywhere else.
 
+**Facts derived across an edge.** That rule does not cover a fact that a dead node caused
+at a live node. `∀` propagation (`rules.rs:117-129`) tags the propagated label with the
+`∀` label's deps ∪ the edge's deps, never the source node's existence. Across a non-tree
+edge from a dead node to a live one (a nominal target, a chain or transitive edge, an
+inverse edge to the parent) the `EdgeAdded` entry is undone, because it references the
+dead node, but the propagated label at the live node is kept: a false `Unsat` can follow.
+Rule: every rule that derives a fact at node `n` from a fact or edge at node `m ≠ n`
+(`∀` and inverse `∀`, role rules, domain/range, chains, the `≤n` merges, the NN rule) adds
+`m`'s existence deps (§4.3) to the derived fact's deps. With node existence deps stored
+per node (step 1c), this is one union at each rule site. Step 1c's sabotage list (§7)
+includes removing it at one site.
+
 ### 4.4 Failure records and the flip (dynamic backtracking)
 
 Branch ids are per frame, not per option (`push_branch` once, `search.rs:398`;
@@ -285,6 +299,26 @@ advance.
 
 The ceiling is computed over undone trail entries on a 150 s window of an unfinished
 run, so a pass is weak evidence and a fail is strong evidence.
+
+### 5.1 Result (2026-10-23): GO, narrowly on `PMD_0010100`
+
+Instrument: `RUSTDL_GONOGO=1` on `diag/288-gonogo` (commit 0043e9a5, backed up at
+`refs/archive/heads/diag/288-gonogo`), on `main` after step 1. Pessimistic choices: choose
+frames are never kept; labels at a node next to a dead node or on a merge survivor count
+as dependent; merge-frame exhaustions are not measured. Thread CPU time, single thread.
+
+| case | jumps ≥ 50 | levels undone | independent entries | pessimistic ceiling | without window-end charge | bar |
+|---|---|---|---|---|---|---|
+| core3, complete run | 462 | 226,737 of 230,299 decisions | 97.7% | **16.3×** | 16.3× | 3× |
+| `PMD_0010100`, 150 s | 4 | 21,176 | 91.7% | **2.54×** | 2.14× | 2.5× |
+| `PMD_0010100`, 300 s | 10 | 41,735 | 84.7% | **2.87×** | 2.25× | 2.5× |
+
+**`PMD_0010100` passes only because of the window-end charge.** §5 prescribes charging the
+last, unfinished rebuild to the end of the window; without that charge the ceiling is
+below the bar in both windows. The run never finishes, so this pass is weak evidence.
+core3 passes clearly, so step 3, which changes no behaviour, goes ahead. **Before step 4,
+re-run this measurement on top of step 3; if `PMD_0010100` falls under 2.5×, stop and
+report.**
 
 Quote the result as a ceiling, never as the expected value: re-saturation and cache
 invalidation after a selective undo (§4.5) cost something the trace cannot see.

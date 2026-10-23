@@ -3051,7 +3051,8 @@ fn push_bound(
 /// A narrower string type (`xsd:token`, `xsd:NCName`, …), a facet restriction,
 /// an enumeration or a union is false: a string outside it would be counted
 /// against a limit it does not fall under, a false inconsistency (#337).
-/// Enumerations are counted exactly by DP-2b instead.
+/// Enumerations are counted exactly by DP-2b instead (direct `SubClassOf` limits
+/// only).
 fn range_contains_all_strings<A: ForIRI>(dr: &DataRange<A>) -> bool {
     const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
     bound_range_within(

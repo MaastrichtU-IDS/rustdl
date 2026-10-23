@@ -11,7 +11,7 @@
 //!
 //! ORACLE: `HermiT` 1.4.5. Konclude treats the named derived string types
 //! (`xsd:token`, `NCName`, `language`) as `xsd:string` and is not an oracle for
-//! them; HermiT is off on `≤n` over `rdf:langString` and over `DataUnionOf`, so
+//! them; `HermiT` is off on `≤n` over `rdf:langString` and over `DataUnionOf`, so
 //! no test here relies on those.
 
 #![allow(clippy::unwrap_used)]
@@ -60,6 +60,8 @@ fn values_outside_a_narrower_string_limit_are_not_counted() {
             "\"not a language tag!\"",
             "\"nor this one!\"",
         ),
+        ("xsd:Name", "\"a b\"", "\"c d\""),
+        ("xsd:NMTOKEN", "\"a b\"", "\"c d\""),
         (
             "DatatypeRestriction(xsd:string xsd:minLength \"5\"^^xsd:integer)",
             "\"ab\"",
@@ -167,4 +169,32 @@ fn an_enumeration_limit_inside_an_intersection_is_a_known_miss() {
          ClassAssertion(:C :a)\n\
          DataPropertyAssertion(:p :a \"a\") DataPropertyAssertion(:p :a \"b\")"
     ));
+}
+
+/// FP guards for the `rdf:PlainLiteral` row: one value written three ways is one
+/// value, and a language-tagged `rdf:PlainLiteral` is not read as an `xsd:string`.
+#[test]
+fn plain_literal_spellings_are_one_value_and_tags_are_not_strings() {
+    assert!(consistent(
+        "SubClassOf(:C DataMaxCardinality(1 :p rdf:PlainLiteral)) ClassAssertion(:C :a)\n\
+         DataPropertyAssertion(:p :a \"ab\") DataPropertyAssertion(:p :a \"ab\"^^xsd:string)\n\
+         DataPropertyAssertion(:p :a \"ab@\"^^rdf:PlainLiteral)"
+    ));
+    assert!(consistent(&limit(
+        "xsd:string",
+        "\"ab\"",
+        "\"cd@en\"^^rdf:PlainLiteral"
+    )));
+}
+
+/// KNOWN MISS, sound: language-tagged values are not read as strings, so they are
+/// not counted against an `rdf:PlainLiteral` limit, which they do fall under.
+/// `HermiT` says inconsistent. FLIP when DP-2 counts tagged values.
+#[test]
+fn tagged_values_against_a_plain_literal_limit_are_a_known_miss() {
+    assert!(consistent(&limit(
+        "rdf:PlainLiteral",
+        "\"ab\"",
+        "\"cd\"@en"
+    )));
 }

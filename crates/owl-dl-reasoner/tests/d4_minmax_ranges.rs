@@ -18,6 +18,7 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{classify_top_down_with_timeout, is_class_satisfiable};
+use std::fmt::Write as _;
 use std::io::Cursor;
 use std::time::Duration;
 
@@ -163,19 +164,23 @@ fn a_bound_inherited_through_a_long_chain() {
     let mut body = String::new();
     let depth = 200;
     for i in 0..depth {
-        body.push_str(&format!(
+        write!(
+            body,
             "Declaration(Class(:K{i})) Declaration(Class(:D{i}))\n\
              EquivalentClasses(:K{i} ObjectIntersectionOf(:K{j} :D{i}))\n\
              SubClassOf(:D{i} DataMinCardinality({n} :p xsd:int))\n",
             j = i + 1,
             n = i + 1
-        ));
+        )
+        .unwrap();
     }
-    body.push_str(&format!(
+    write!(
+        body,
         "Declaration(Class(:K{depth}))\n\
          SubClassOf(:K{depth} DataMaxCardinality(1 :p xsd:decimal))\n\
          SubClassOf(:C :K0)"
-    ));
+    )
+    .unwrap();
     let start = std::time::Instant::now();
     assert!(c_unsat(&body));
     assert!(

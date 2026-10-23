@@ -89,16 +89,12 @@ fn at_most_one_boolean_with_both_values_is_unsat() {
     )));
 }
 
-/// KNOWN MISS, not specific to booleans: with `=1` the same shape stays
-/// satisfiable, where `HermiT` says unsat. `=1` adds a `≥1 p.{false,true}` demand,
-/// and `card_sat`'s greedy disjoint-packing step takes demands in input order: it
-/// picks that broad demand first, which overlaps both `{true}` and `{false}`, so
-/// neither joins and the sum never exceeds the limit. The integer-enumeration
-/// form misses identically on `main` before #325; tracked as #326. FLIP this
-/// assertion (do not delete the test) when #326 is fixed.
+/// The same with `=1`. It used to stay satisfiable: `=1` adds a `≥1
+/// p.{false,true}` demand, and `card_sat`'s packing took that broad demand
+/// first, which blocked both `{true}` and `{false}`. Fixed by #326.
 #[test]
-fn exactly_one_boolean_with_both_values_is_a_known_miss() {
-    assert!(c_satisfiable(&format!(
+fn exactly_one_boolean_with_both_values_is_unsat() {
+    assert!(!c_satisfiable(&format!(
         "SubClassOf(:C ObjectIntersectionOf(DataExactCardinality(1 :p xsd:boolean) \
          DataHasValue(:p {T}) DataHasValue(:p {F})))"
     )));

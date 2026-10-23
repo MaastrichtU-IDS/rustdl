@@ -346,21 +346,45 @@ pub fn card_sat<R: ValueRange>(
     // range, any pairwise-disjoint subset needs distinct values, so its n-sum
     // must fit under the limit. Domain-agnostic greedy — any disjoint subset
     // whose sum exceeds the limit proves infeasibility (sound; not maximal).
+    //
+    // Two greedy passes (#326): input order, then smallest capacity first. A
+    // broad demand taken first can block the narrow disjoint ones: `=1 p.{1,2}`
+    // with `∃p.{1}` and `∃p.{2}` puts `≥1 p.{1,2}` ahead of both, and input
+    // order then never sums past 1. Each pass is a sound proof on its own, so
+    // the second can only add clashes the first missed.
     for l in &maxs {
-        let mut chosen: Vec<&R> = Vec::new();
-        let mut sum: u64 = 0;
-        for d in mins.iter().filter(|d| d.range.subset_of(&l.range)) {
-            if chosen.iter().all(|c| c.disjoint(&d.range)) {
-                chosen.push(&d.range);
-                sum += u64::from(d.n);
-                if sum > u64::from(l.n) {
-                    return CardSat::Unsat;
-                }
-            }
+        let mut inside: Vec<&Card<R>> = mins
+            .iter()
+            .filter(|d| d.range.subset_of(&l.range))
+            .collect();
+        if packing_exceeds(&inside, l.n) {
+            return CardSat::Unsat;
+        }
+        inside.sort_by_key(|d| d.range.capacity().unwrap_or(u128::MAX));
+        if packing_exceeds(&inside, l.n) {
+            return CardSat::Unsat;
         }
     }
 
     CardSat::Sat
+}
+
+/// Greedily pack pairwise-disjoint demands in the given order; whether their
+/// `n`-sum exceeds `limit`. A `true` is a sound proof of infeasibility under
+/// that limit, whatever the order.
+fn packing_exceeds<R: ValueRange>(demands: &[&Card<R>], limit: u32) -> bool {
+    let mut chosen: Vec<&R> = Vec::new();
+    let mut sum: u64 = 0;
+    for d in demands {
+        if chosen.iter().all(|c| c.disjoint(&d.range)) {
+            chosen.push(&d.range);
+            sum += u64::from(d.n);
+            if sum > u64::from(limit) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -861,6 +885,44 @@ mod tests {
     fn set(items: &[&str]) -> FiniteSet<String> {
         FiniteSet::Set(items.iter().map(|s| (*s).to_string()).collect())
     }
+    /// #326: `=1 p.{a,b}` with `∃p.{a}` and `∃p.{b}`. The broad `≥1 p.{a,b}`
+    /// demand comes first; input-order packing takes it and blocks both narrow
+    /// ones, so only the capacity-ordered pass finds the clash.
+    #[test]
+    fn packing_does_not_depend_on_demand_order() {
+        let demands = [
+            Card::new(set(&["a", "b"]), 1),
+            Card::new(set(&["a"]), 1),
+            Card::new(set(&["b"]), 1),
+        ];
+        let limits = [Card::new(set(&["a", "b"]), 1)];
+        assert_eq!(card_sat(None, &demands, &limits), CardSat::Unsat);
+        let mut reversed = demands.to_vec();
+        reversed.reverse();
+        assert_eq!(card_sat(None, &reversed, &limits), CardSat::Unsat);
+    }
+
+    /// The same with an unbounded (`Top`) demand first: `Top` sorts last.
+    #[test]
+    fn packing_puts_unbounded_demands_last() {
+        let demands = [
+            Card::new(FiniteSet::<String>::Top, 1),
+            Card::new(set(&["a"]), 1),
+            Card::new(set(&["b"]), 1),
+        ];
+        let limits = [Card::new(FiniteSet::<String>::Top, 1)];
+        assert_eq!(card_sat(None, &demands, &limits), CardSat::Unsat);
+    }
+
+    /// FP guard: one value `a` satisfies both `≥1 p.{a,b}` and `≥1 p.{a}`, so
+    /// `≤1` is satisfiable. Neither pass may sum overlapping demands.
+    #[test]
+    fn overlapping_demands_fit_under_one() {
+        let demands = [Card::new(set(&["a", "b"]), 1), Card::new(set(&["a"]), 1)];
+        let limits = [Card::new(set(&["a", "b"]), 1)];
+        assert_eq!(card_sat(None, &demands, &limits), CardSat::Sat);
+    }
+
     #[test]
     fn string_enum_counting_clash() {
         // ≥3 over a 2-element enumeration. UNSAT.

@@ -42,7 +42,8 @@ hypertableau wedge. The wedge is untouched.
 
 | step | content | merges on its own? |
 |---|---|---|
-| 1 | dependency under-recording fixes, behaviour-preserving today | yes |
+| 1 | dependency under-recording fixes 1a and 1b, trace-identical today | yes |
+| 1c | deps for mutations that record none | lands before step 4 if step 2 says go, or during step 2 if its bounds straddle the bar (§5) |
 | 2 | go/no-go measurement, diagnostic branch only | no code to merge |
 | 3 | explicit decision stack, chronological undo, trace-identical | only if step 2 says go |
 | 4 | selective undo behind `RUSTDL_SELECTIVE_UNDO` (default OFF) | only if step 2 says go |
@@ -51,8 +52,9 @@ hypertableau wedge. The wedge is untouched.
 ### Step 1 — dependency under-recording fixes
 
 Each fix only widens or adds a dep set. Under chronological backtracking that can only
-make backjumping more conservative, so it cannot introduce a false `Unsat`; it can cost
-backjumping precision, so step 1 is gated on CPU as well as verdicts (§3.1 gate).
+make backjumping more conservative, so it cannot introduce a false `Unsat`. For 1a and 1b
+it does not change backjumping at all (see below); §3.1 still checks CPU, because the
+added dep computation costs something.
 
 **1a. The `≤n` choice point (`first_open_max` / `branch_merge`).** `apply_max` already
 unions every counted witness's deps into the merge (`witness_deps`, `rules.rs:1100-1105`,
@@ -61,9 +63,9 @@ used at `:1123-1126` and in the `⊥` arm). The gap is the #293 choice point:
 merges with `pair_deps ∪ {my_id}` (`search.rs:330-335`). The witness that made the `≤n`
 over-full is not in the merge's deps; today `combined` starting from all active branches
 (`search.rs:300-301`) masks it. Fix: compute `witness_deps` once in `first_open_max` over
-`witnesses` (the same per-witness `compute_max_merge_deps(w, w)` union `apply_max` uses),
-store it on `OpenMax`, and union it into every merge option's deps. It is also the merge
-frame's precondition set (§4.2).
+`witnesses` (the same per-witness `compute_max_merge_deps(w, w)` union `apply_max` uses)
+and give it to every merge option as its deps; a pair's own merge deps are a subset of it.
+It is also the merge frame's precondition set (§4.2).
 
 **1b. Failed-disjunct complements** (`search.rs`, the `literal_complements` loop). `¬d_j`
 is added to later siblings with `combined_deps` (parent `⊔` deps ∪ `my_id`). Its real
@@ -79,18 +81,27 @@ set. A differential fuzz (complements on vs off, 2,100 cases, HermiT adjudicatio
 found no divergence. Under selective undo, a kept `¬d_j` whose refutation needed `T`
 would be wrong, so 1b is a prerequisite for step 4, not a bug fix.
 
-**1c. Deps for mutations that record none.** Give each the deps listed:
+**1c. Deps for mutations that record none.** Deferred: nothing reads these deps until
+step 4, so they land just before it, and only if step 2 says go. Step 2 bounds the
+entries that lack deps instead (§5). Give each the deps listed:
 
 | mutation | deps |
 |---|---|
-| `DistinctMarked` (store a parallel `inequality_deps`; `inequalities` is a bare `Vec<NodeId>`, `lib.rs:1695`) | `apply_min`: `min_deps`; `branch_merge` distinct arm: `{my_id}` ∪ `max_deps` ∪ partner deps (`search.rs:343-345`); merge step 4 (`lib.rs:1930-1935`): merge deps ∪ the original mark's deps. First writer wins, as for labels. |
+| `DistinctMarked` (store a parallel `inequality_deps`; `inequalities` is a bare `Vec<NodeId>`, `lib.rs:1695`) | `apply_min`: `min_deps`; `branch_merge` distinct arm: `{my_id}` ∪ witness deps (`search.rs:343-345`); merge step 4 (`lib.rs:1930-1935`): merge deps ∪ the original mark's deps. First writer wins, as for labels. |
 | merge (`MergedRedirect`, `ParentRewritten`, the root-breaking case `lib.rs:1969-1978`, and the `EdgeRemoved`/`EdgeAdded`/label moves it performs) | recorded as one **merge unit** (begin/end markers) carrying the merge deps. Everything a merge moves already carries deps ⊇ the merge deps (`lib.rs:1823-1826`). `EdgeRemoved` is tagged with the merge deps, not `prior_edge_deps` (which is often `∅`). |
 | `NominalAssigned` | deps of the `Nominal` label **∪ the node's existence deps** (§4.3). |
 | `NodeCreated` | the node's **existence deps** (§4.3), not just the creating edge's deps. |
 
-Step 1 only records these. Nothing reads them yet, so verdicts are unchanged by
-construction. 1a and 1b both widen deps that backjumping reads (complement tags gain the
-failed disjunct's ancestor ids), which is why §3.1 gates on CPU.
+1c only records these. Nothing reads them before step 4.
+
+**1a and 1b are trace-identical under today's chronological backtracking.** Every id they
+add lies below some frame id already in the set, and any set carrying it is absorbed into
+that frame's `combined`, which already holds the added ids (for a `⊔` frame, from the
+failed disjunct's clash deps; for a merge frame, because `combined` starts from all
+active branches). So no frame's `binary_search(&my_id)` changes. Early-returned sets can
+be wider, so `deps=N` in trace lines may differ while decisions do not. A
+`debug_assert!` at the complement site checks the premise the argument needs:
+`combined_deps ⊆ clash_deps(d_j)`.
 
 Not a prerequisite: the choose rule's empty `DepSet` (`search.rs`, `first_open_choose`).
 The split `C ⊔ ¬C` is a tautology, so its labels' only dep is the branch's own `my_id`.
@@ -98,7 +109,9 @@ The choose *frame* still needs a precondition set for step 4 (§4.2).
 
 #### 3.1 Step 1 gate
 
-- Unit tests asserting the dep content at each fixed site.
+- Unit tests asserting the dep content of 1a and 1b, each failing when its fix is reverted.
+- Trace identity: decision traces (with `deps=` stripped) identical to `main` on core3,
+  the five finishing PMD classes, `≤n`-heavy fixtures and a random ALCHIQ fuzz.
 - Verdict identity on the curated corpus, core3 and the six PMD classes.
 - **CPU**: core3 and the five finishing PMD classes, interleaved, ≥ 3 reps; no class
   slower than 1.1× `main` (#312 showed PMD performance hinges on precise deps).
@@ -156,7 +169,7 @@ reverse-chronological order among the undone entries.
 |---|---|
 | `⊔` | the `⊔` label's deps ∪ the node's existence deps |
 | choose | the `≤n` label's deps ∪ the existence deps of the node and the neighbour ∪ the edge's deps (the `DepSet::new()` at `search.rs:174` is fine for the asserted labels, not for keeping the frame) |
-| merge | `OpenMax.witness_deps` (1a) ∪ every witness's existence deps |
+| merge | the witness deps every partner carries (1a) ∪ every witness's existence deps |
 
 ### 4.3 Node existence is a closure
 
@@ -252,7 +265,11 @@ dependence test:
    included) and the fraction of undone trail **entries** that are not dependent. The
    existence closure needs each node's creator and creating-edge deps, which the decision
    trace does not print: compute `K` in-process from `graph` at the jump (a diagnostic hook
-   on the branch), which also yields per-entry deps once 1c lands.
+   on the branch). Entries that 1c would tag (`DistinctMarked`, merge entries,
+   `NominalAssigned`, `NodeCreated`) carry no deps yet. Classify node-referencing entries
+   by the existence closure; bound the rest both ways: **pessimistic** (dependent) and
+   **optimistic** (independent). Go only if the pessimistic ceiling clears the bar; no-go
+   only if the optimistic one fails; otherwise land 1c and re-measure.
 2. Charge CPU from the jump until the trail length regains its pre-jump value (a monotone
    CPU counter; no id matching needed). If it never does within the window, charge to the
    end of the window.

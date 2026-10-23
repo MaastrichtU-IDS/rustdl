@@ -82,11 +82,12 @@ fn enumerations_of_one_type_do_not_count_under_the_other() {
     )));
 }
 
-/// The reverse direction: a double does not count against a float limit.
+/// The reverse direction, the exact mirror of the issue: a double value does
+/// not count against `≤0` floats. (`main` got this wrong too.)
 #[test]
-fn a_double_value_does_not_count_against_a_float_limit() {
+fn a_double_value_does_not_count_against_at_most_zero_floats() {
     assert!(c_satisfiable(&format!(
-        "DataMaxCardinality(1 :p xsd:float) DataHasValue(:p {F1}) DataHasValue(:p {D1})"
+        "DataMaxCardinality(0 :p xsd:float) DataHasValue(:p {D1})"
     )));
 }
 

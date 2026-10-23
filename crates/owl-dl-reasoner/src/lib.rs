@@ -8063,9 +8063,10 @@ pub(crate) struct PreparedOntology {
 
 /// Build the concrete-domain solver's `ClassId → CardRange` side-map by
 /// decoding every synthetic `DKey` filler class's IRI. Done where the
-/// vocabulary is available so the tableau need not carry IRIs. All six
-/// datatype buckets (integer, string, float, decimal, date, dateTime) are
-/// decoded; the `DenseInterval` for dense types preserves inclusivity exactly
+/// vocabulary is available so the tableau need not carry IRIs. Each datatype
+/// gets its own bucket (integer, string, float, double, decimal, date,
+/// dateTime, boolean, anyURI, and the enumeration buckets) so that no `≤n` over
+/// one datatype counts another's values (#332); the `DenseInterval` for dense types preserves inclusivity exactly
 /// (field-for-field copy, zero normalization) — a soundness requirement.
 fn build_dkey_range_map(
     internal: &InternalOntology,

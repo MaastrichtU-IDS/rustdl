@@ -7,6 +7,15 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **Literals of the integer-derived datatypes (`"5"^^xsd:nonNegativeInteger`, `xsd:int`, …) are
+  read as integers (#323).** #121 made those types work as data ranges, but every literal parser
+  still matched the exact `xsd:integer` IRI, so `DataHasValue`, `DataOneOf` members and
+  `DataPropertyAssertion`s carrying one dropped. `ore_ont_10391` alone dropped 1,893
+  assertions; it now drops none, with an identical answer. The parsers now share
+  `integer_family_literal_value`: the derived types share the integer value space, so
+  `"5"^^xsd:int` and `"5"^^xsd:integer` are one value. A lexical form outside its type's range
+  (`"-1"^^xsd:nonNegativeInteger`) is ill-formed and still drops, as does `xsd:unsignedLong`.
+  HermiT agrees on all 12 probes rustdl decides.
 - **A reverse fact through a transitive role or a role-chain leg is followed from an individual
   named by a nominal (#298), `RUSTDL_SAT_NOMINAL_COMPOSING_REVERSE`, default ON (`=0` reverts).**
   `X ⊑ ∃R.{a}`, `c S a`, `S ≡ T⁻`, `T` transitive, `c : E`, `W ≡ ∃R.∃T.E` entails `X ⊑ W`, and

@@ -155,12 +155,22 @@ fn containment_follows_the_values() {
 /// Backjumping: `G ≡ ∀p.{1}` puts the filter on `C` only in one branch of the `⊒`
 /// half; that branch clashes and the search must backjump to the other, which
 /// needs the clash's deps to include the filter's.
+/// The told variants (`C ⊑ G`) clash, so the check does fire on that branch; and
+/// the mirror, with the DEMAND reached by branching, is guarded the same way.
 #[test]
 fn a_filter_reached_by_branching_does_not_clash() {
-    assert!(!c_unsat(&format!(
+    let filter_g = format!(
         "EquivalentClasses(:G DataAllValuesFrom(:p {ONE}))\n\
          SubClassOf(:C DataMinCardinality(2 :p xsd:integer))"
-    )));
+    );
+    assert!(!c_unsat(&filter_g));
+    assert!(c_unsat(&format!("{filter_g}\nSubClassOf(:C :G)")));
+    let demand_g = format!(
+        "EquivalentClasses(:G DataMinCardinality(2 :p xsd:integer))\n\
+         SubClassOf(:C DataAllValuesFrom(:p {ONE}))"
+    );
+    assert!(!c_unsat(&demand_g));
+    assert!(c_unsat(&format!("{demand_g}\nSubClassOf(:C :G)")));
 }
 
 /// KNOWN MISSES, sound. An enumeration mixing datatypes is dropped whole (visibly);

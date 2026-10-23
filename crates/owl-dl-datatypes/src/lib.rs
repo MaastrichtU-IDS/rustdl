@@ -551,9 +551,8 @@ impl IntUnion {
                 // or past `p`'s start (an unbounded-below `p` sorts first, so it is
                 // never the later piece here).
                 let reaches = match (last.max, p.min) {
-                    (None, _) => true,
                     (Some(hi), Some(lo)) => hi.checked_add(1).is_none_or(|next| next >= lo),
-                    (Some(_), None) => true,
+                    (None, _) | (Some(_), None) => true,
                 };
                 if reaches {
                     last.max = match (last.max, p.max) {
@@ -1424,6 +1423,13 @@ mod int_union_tests {
             u(&[(Some(i64::MAX - 1), Some(i64::MAX))])
         );
         assert_eq!(u(&[(None, Some(0)), (Some(1), None)]), IntUnion::universe());
+        assert_eq!(
+            u(&[
+                (Some(i64::MIN + 1), Some(i64::MIN + 1)),
+                (Some(i64::MIN), Some(i64::MIN))
+            ]),
+            u(&[(Some(i64::MIN), Some(i64::MIN + 1))])
+        );
         assert!(u(&[(Some(3), Some(1))]).is_empty());
         assert_eq!(IntUnion::from_points(&FiniteSet::Top), IntUnion::universe());
     }
@@ -1439,6 +1445,13 @@ mod int_union_tests {
         let i = IntUnion::from_interval(IntInterval::closed(1, 5)).intersect(&pts(&[1, 2, 7]));
         assert_eq!(i, pts(&[1, 2]));
         assert!(pts(&[1]).disjoint(&pts(&[2])));
+        // Unbounded pieces.
+        let nonneg = u(&[(Some(0), None)]);
+        assert!(nonneg.subset_of(&IntUnion::universe()));
+        assert!(!IntUnion::universe().subset_of(&pts(&[1])));
+        assert!(!IntUnion::universe().subset_of(&nonneg));
+        assert_eq!(nonneg.intersect(&pts(&[-1, 3])), pts(&[3]));
+        assert_eq!(nonneg.capacity(), None);
     }
 
     #[test]

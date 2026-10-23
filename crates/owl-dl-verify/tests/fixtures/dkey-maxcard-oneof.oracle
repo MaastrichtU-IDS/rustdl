@@ -9,6 +9,10 @@
 #
 # Adjudicated during that work: HermiT, Konclude AND JFact all call it unsat.
 #
+# CLOSED by #334 (2026-10-23): the integer range and enumeration buckets are now
+# counted together, so rustdl derives A unsatisfiable and AGREES with this
+# oracle; `dkey-maxcard-decimal-int` took over detection.
+#
 # This fixture took over the acceptance set's detection when #149's fix made
 # `invfunc-inverse` agree with its oracle (the guard's FOURTH firing:
 # chainrange -> chaincompose -> invfunc-inverse -> this). A first replacement

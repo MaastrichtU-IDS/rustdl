@@ -266,8 +266,8 @@ decisions, so by decision count the ceiling is about 3×, and the window underco
 unfinished search. A bar above what the data can show would be a decision made in
 advance.
 
-The ceiling is computed by decision count on a 150 s window of an unfinished run, so a
-pass is weak evidence and a fail is strong evidence.
+The ceiling is computed over undone trail entries on a 150 s window of an unfinished
+run, so a pass is weak evidence and a fail is strong evidence.
 
 Quote the result as a ceiling, never as the expected value: re-saturation and cache
 invalidation after a selective undo (§4.5) cost something the trace cannot see.

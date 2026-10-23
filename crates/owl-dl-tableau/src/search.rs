@@ -103,6 +103,7 @@ fn trace_enabled() -> bool {
 
 /// Drive deterministic saturation interleaved with `⊔` branching.
 pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchVerdict {
+    crate::gonogo::tick(ctx);
     if max_depth == 0 {
         // Genuine depth-cap bottom-out — the harm the adaptive early-abandon
         // meters. Kept FIRST so `check_deadline`'s sticky side effect stays
@@ -129,6 +130,7 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
                     deps.len()
                 );
             }
+            crate::gonogo::jump(ctx, &deps);
             SearchVerdict::Unsat(deps)
         }
         SaturationResult::Stalled => SearchVerdict::DepthLimit,
@@ -171,6 +173,7 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
                         ctx.graph().len()
                     );
                 }
+                ctx.gonogo.next_choose = true;
                 return branch(ctx, max_depth, node, &[c, c_neg], &DepSet::new());
             }
             // #294: `saturate` can stop with work left. A label added to a
@@ -190,6 +193,7 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
                                 deps.len()
                             );
                         }
+                        crate::gonogo::jump(ctx, &deps);
                         return SearchVerdict::Unsat(deps);
                     }
                     SaturationResult::Stalled => return SearchVerdict::DepthLimit,
@@ -337,6 +341,19 @@ fn branch_merge(
                 ),
             }
         }
+        if crate::gonogo::enabled() {
+            let mut memo = std::collections::HashMap::new();
+            let mut pre = open
+                .partners
+                .first()
+                .map(|(_, d)| d.clone())
+                .unwrap_or_default();
+            for n in std::iter::once(open.pivot).chain(open.partners.iter().map(|(w, _)| *w)) {
+                pre = crate::deps::union(&pre, &crate::gonogo::existence(ctx, n, &mut memo));
+            }
+            let at = ctx.trail().len();
+            crate::gonogo::frame(ctx, my_id, at, pre, 'm');
+        }
         let cp = ctx.checkpoint();
         let verdict = if let Some((w, pair_deps)) = merge_into {
             let mut deps = pair_deps.clone();
@@ -395,6 +412,7 @@ fn branch_merge(
     } else if depth_limited {
         SearchVerdict::DepthLimit
     } else {
+        crate::gonogo::jump(ctx, &combined);
         SearchVerdict::Unsat(combined)
     }
 }
@@ -406,6 +424,7 @@ fn branch(
     options: &[ConceptId],
     parent_deps: &[u32],
 ) -> SearchVerdict {
+    let is_choose = std::mem::take(&mut ctx.gonogo.next_choose);
     let my_id = ctx.push_branch();
     let mut combined: DepSet = DepSet::new();
     let mut depth_limited = false;
@@ -460,6 +479,14 @@ fn branch(
         // explaining label sub-set is the principled choice but
         // requires deps on labels-as-evidence the current trail
         // doesn't track.)
+        if crate::gonogo::enabled() {
+            let mut memo = std::collections::HashMap::new();
+            let pre =
+                crate::deps::union(parent_deps, &crate::gonogo::existence(ctx, node, &mut memo));
+            let at = ctx.trail().len();
+            let kind = if is_choose { 'c' } else { 'o' };
+            crate::gonogo::frame(ctx, my_id, at, pre, kind);
+        }
         let cp = ctx.checkpoint();
         // Each disjunct carries: (a) the parent disjunction's deps —
         // without them an inner clash returns `clash_deps` missing
@@ -589,6 +616,7 @@ fn branch(
         // Every option clashed and every clash depended on `my_id`.
         // The disjunction itself is therefore unsat under the union
         // of ancestor deps in `combined`.
+        crate::gonogo::jump(ctx, &combined);
         SearchVerdict::Unsat(combined)
     }
 }

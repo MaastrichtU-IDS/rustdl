@@ -145,6 +145,11 @@ impl TableauTrail {
         self.entries.is_empty()
     }
 
+    /// Entries from `start` to the end (#288 go/no-go diagnostic).
+    pub(crate) fn entries_from(&self, start: usize) -> &[TrailEntry] {
+        &self.entries[start.min(self.entries.len())..]
+    }
+
     /// Record a checkpoint. The returned handle is the only legal
     /// argument to [`Self::rollback_to`].
     pub fn checkpoint(&mut self) -> Checkpoint {

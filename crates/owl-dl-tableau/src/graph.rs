@@ -88,6 +88,10 @@ pub struct Node {
     pub(crate) edges: SmallVec<[(RoleId, NodeId); 4]>,
     /// Per-out-edge `DepSet`, parallel to [`Self::edges`].
     pub(crate) edge_deps: Vec<DepSet>,
+    /// Per-out-edge instance id, parallel to [`Self::edges`] (#288 step 4b):
+    /// one id per added edge, shared with its in-edge mirror, so a keyed undo
+    /// removes exactly that edge even when `(role, target)` repeats.
+    pub(crate) edge_ids: SmallVec<[u32; 4]>,
     /// Incoming forward edges — for any edge `y —r→ self` somewhere
     /// in the graph, `(r, y)` lives here. Maintained as a redundant
     /// index of [`Self::edges`] across the graph so inverse-aware
@@ -96,6 +100,9 @@ pub struct Node {
     /// Per-in-edge `DepSet`, parallel to [`Self::in_edges`]. Mirrors
     /// the matching `edge_deps` entry on the source node.
     pub(crate) in_edge_deps: Vec<DepSet>,
+    /// Per-in-edge instance id, parallel to [`Self::in_edges`]; equal to the
+    /// id of the mirrored out-edge.
+    pub(crate) in_edge_ids: SmallVec<[u32; 2]>,
     /// Pairwise inequality assertions: every [`NodeId`] in this list
     /// is known to denote a *different* individual than this node.
     /// Symmetric — if `a ∈ b.inequalities` then `b ∈ a.inequalities`.
@@ -208,6 +215,14 @@ impl Node {
         Some(&self.edge_deps[pos])
     }
 
+    /// The [`DepSet`] of the out-edge with instance id `id` (#288 step 4b),
+    /// unlike [`Self::deps_of_edge`], which returns the first duplicate.
+    #[must_use]
+    pub fn deps_of_edge_instance(&self, id: u32) -> Option<&DepSet> {
+        let pos = self.edge_ids.iter().position(|&e| e == id)?;
+        Some(&self.edge_deps[pos])
+    }
+
     /// Iterate every role-tagged neighbour of this node, with each
     /// neighbour decorated by the [`Role`] expression *as seen from
     /// this node*:
@@ -300,6 +315,15 @@ pub struct CompletionGraph {
     /// Set from the context's `anywhere_blocking` flag so the ancestor-only
     /// default path pays nothing (the index stays empty and unread).
     pub(crate) block_index_enabled: bool,
+    /// Per-node: `false` once selective undo (#288 step 4) has tombstoned the
+    /// node. Only ever cleared under `RUSTDL_SELECTIVE_UNDO=1`; a tombstoned
+    /// node is emptied (see [`Self::tombstone`]) and never revived.
+    pub(crate) alive: Vec<bool>,
+    /// Number of `false` entries in [`Self::alive`].
+    pub(crate) dead: usize,
+    /// Next edge instance id (#288 step 4b). Monotone: never reused, and not
+    /// restored by rollback.
+    pub(crate) next_edge_id: u32,
 }
 
 impl CompletionGraph {
@@ -351,6 +375,49 @@ impl CompletionGraph {
     #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Nodes not tombstoned by selective undo (#288 step 4b).
+    #[must_use]
+    pub fn live_len(&self) -> usize {
+        self.nodes.len() - self.dead
+    }
+
+    /// Whether `id` has not been tombstoned (#288 step 4b).
+    #[must_use]
+    pub fn is_alive(&self, id: NodeId) -> bool {
+        self.alive[id.0 as usize]
+    }
+
+    /// Tombstone `id` (#288 step 4b): selective undo removed the decision its
+    /// existence depended on. Its labels, edges and inequalities must already
+    /// be gone; this empties what is left so every scan finds nothing to do
+    /// there, and the node is never revived.
+    pub(crate) fn tombstone(&mut self, id: NodeId) {
+        let i = id.0 as usize;
+        debug_assert!(self.alive[i], "tombstone({id:?}): already dead");
+        let n = &mut self.nodes[i];
+        debug_assert!(
+            n.labels.is_empty()
+                && n.edges.is_empty()
+                && n.in_edges.is_empty()
+                && n.inequalities.is_empty(),
+            "tombstone({id:?}): node still has labels, edges or inequalities"
+        );
+        n.parent = None;
+        n.merged_into = None;
+        self.blocking[i] = BlockingSummary::default();
+        self.residuals_saturated[i] = true;
+        self.dirty[i] = false;
+        self.alive[i] = false;
+        self.dead += 1;
+    }
+
+    /// A fresh edge instance id (#288 step 4b).
+    pub(crate) fn fresh_edge_id(&mut self) -> u32 {
+        let id = self.next_edge_id;
+        self.next_edge_id += 1;
+        id
     }
 
     #[must_use]
@@ -406,6 +473,7 @@ impl CompletionGraph {
         // least once to apply rules over their initial labels/edges.
         self.dirty.push(true);
         self.had_child.push(false);
+        self.alive.push(true);
         if let Some(p) = parent {
             self.had_child[p.0 as usize] = true;
         }
@@ -422,6 +490,10 @@ impl CompletionGraph {
         self.residuals_saturated.truncate(new_len);
         self.dirty.truncate(new_len);
         self.had_child.truncate(new_len);
+        if self.dead > 0 && new_len < self.alive.len() {
+            self.dead -= self.alive[new_len..].iter().filter(|a| !**a).count();
+        }
+        self.alive.truncate(new_len);
         // Drop anywhere-blocking index entries for nodes that no longer exist.
         // Buckets are ascending, so the entries to remove are a contiguous
         // tail (`id >= new_len`); `retain` is O(bucket) and trivially correct.
@@ -462,7 +534,14 @@ impl CompletionGraph {
     /// edges unchanged) and intra-saturate iterations honour the
     /// fine-grained worklist.
     pub(crate) fn mark_all_dirty(&mut self) {
-        self.dirty.iter_mut().for_each(|d| *d = true);
+        if self.dead == 0 {
+            self.dirty.iter_mut().for_each(|d| *d = true);
+        } else {
+            // A tombstoned node has nothing to saturate (#288 step 4b).
+            for (d, a) in self.dirty.iter_mut().zip(&self.alive) {
+                *d = *a;
+            }
+        }
     }
 
     /// Read accessor for the residual-saturation memo.

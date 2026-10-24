@@ -87,7 +87,7 @@ pub use rules::{
 pub use saturate::{SaturationResult, saturate, verify_node_local_clash};
 pub use search::{SearchVerdict, search};
 pub use snapshot::{BackPropRisk, GraphSnapshot, SnapshotNodeId, UnsafeReason};
-pub use trail::{Checkpoint, TableauTrail, TrailEntry};
+pub use trail::{Checkpoint, EntryAction, TableauTrail, TrailEntry, TrailRemap};
 
 use std::collections::HashMap;
 
@@ -392,7 +392,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
-            trail: TableauTrail::new(),
+            trail: TableauTrail::keyed_if(selective_undo_enabled()),
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
@@ -437,7 +437,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
-            trail: TableauTrail::new(),
+            trail: TableauTrail::keyed_if(selective_undo_enabled()),
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
@@ -487,7 +487,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
-            trail: TableauTrail::new(),
+            trail: TableauTrail::keyed_if(selective_undo_enabled()),
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
@@ -856,7 +856,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// resulting `NodeCap` verdict as a clean "no verdict" (sound under-approx).
     #[must_use]
     pub fn node_cap_exceeded(&self) -> bool {
-        crate::max_nodes().is_some_and(|cap| self.graph().len() > cap)
+        crate::max_nodes().is_some_and(|cap| self.graph().live_len() > cap)
     }
 
     #[must_use]
@@ -1052,6 +1052,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         for node in labelled {
             start.push(node);
             start.extend(self.graph.node(node).neighbours().map(|(_, m)| m));
+        }
+        if self.graph.dead > 0 {
+            // A tombstoned node has nothing to saturate (#288 step 4b).
+            start.retain(|&n| self.graph.is_alive(n));
         }
         Some(start)
     }
@@ -1407,6 +1411,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// it on turns the existence fold on too.
     pub fn set_selective_undo(&mut self, on: bool) {
         self.selective = on;
+        self.trail.set_keyed(on);
         if on {
             self.exist_fold = true;
         }
@@ -1416,6 +1421,31 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn selective_undo(&self) -> bool {
         self.selective
+    }
+
+    /// Selectively undo the trail from `cp` on (#288 step 4b): `actions[i]`
+    /// says what to do with the entry `i` places after `cp` (`cp`'s own entry
+    /// first). See [`TableauTrail::selective_undo`]. Then resets the state the
+    /// trail does not describe (spec §4.5): the residual memo on every live
+    /// node an undone entry touched, the deferred set, every live node's dirty
+    /// bit and the generation. The next `saturate` takes the full path.
+    pub fn selective_undo_from(&mut self, cp: Checkpoint, actions: &[EntryAction]) -> TrailRemap {
+        let (remap, touched) =
+            self.trail
+                .selective_undo(TableauTrail::position(cp), actions, &mut self.graph);
+        for n in touched {
+            if (n.index() as usize) < self.graph.len() && self.graph.is_alive(n) {
+                self.graph.set_residuals_saturated(n, false);
+            }
+        }
+        for node in std::mem::take(&mut self.deferred) {
+            if let Some(seen) = self.deferred_seen.get_mut(node.index() as usize) {
+                *seen = false;
+            }
+        }
+        self.graph.mark_all_dirty();
+        self.trail.bump_generation();
+        remap
     }
 
     /// The deps of the mark that `a` and `b` are distinct, if they are
@@ -1771,14 +1801,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let mut owned: crate::graph::DepSet = crate::graph::DepSet::from_slice(deps);
         owned.sort_unstable();
         owned.dedup();
+        let id = self.graph.fresh_edge_id();
         let from_node = self.graph.node_mut(from);
         from_node.edges.push((role, target));
         from_node.edge_deps.push(owned.clone());
+        from_node.edge_ids.push(id);
         let target_node = self.graph.node_mut(target);
         target_node.in_edges.push((role, from));
         target_node.in_edge_deps.push(owned);
-        self.trail
-            .record(TrailEntry::EdgeAdded { from, role, target });
+        target_node.in_edge_ids.push(id);
+        self.trail.record(TrailEntry::EdgeAdded {
+            from,
+            role,
+            target,
+            id,
+        });
         self.touch(&[from, target]);
         // Worklist: rules that read edges on either endpoint must
         // re-fire (apply_forall, apply_role_*, apply_role_chains,
@@ -2166,16 +2203,20 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let removed = from_node.edges.remove(position);
         debug_assert_eq!(removed, (role, target));
         let prior_edge_deps = from_node.edge_deps.remove(position);
+        let id = from_node.edge_ids.remove(position);
         let target_node = self.graph.node_mut(target);
         let mirror = target_node.in_edges.remove(in_position);
         debug_assert_eq!(mirror, (role, from));
         let prior_in_edge_deps = target_node.in_edge_deps.remove(in_position);
+        let in_id = target_node.in_edge_ids.remove(in_position);
+        debug_assert_eq!(in_id, id, "edge and in-edge mirror carry different ids");
         self.trail.record(TrailEntry::EdgeRemoved {
             from,
             role,
             target,
             position,
             in_position,
+            id,
             prior_edge_deps,
             prior_in_edge_deps,
         });
@@ -5021,6 +5062,326 @@ pub fn reseed_verify_enabled() -> bool {
 #[must_use]
 pub fn reseed_at_leaf_enabled() -> bool {
     std::env::var_os("RUSTDL_RESEED_AT_LEAF").is_none_or(|v| v != "0")
+}
+
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod step4b_selective_undo {
+    use super::*;
+    use owl_dl_core::{AbsorbedTBox, ClassId, IndividualId, RoleHierarchyBuilder, RoleId};
+
+    struct Fixture {
+        pool: ConceptPool,
+        tbox: AbsorbedTBox,
+        hierarchy: owl_dl_core::RoleHierarchy,
+        a: ConceptId,
+        b: ConceptId,
+        c: ConceptId,
+        nom: ConceptId,
+    }
+
+    fn fixture() -> Fixture {
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let c = pool.atomic(ClassId::new(2));
+        let nom = pool.nominal(IndividualId::new(0));
+        let mut tbox = AbsorbedTBox::default();
+        tbox.finalize();
+        let hierarchy = RoleHierarchyBuilder::with_roles(2).build();
+        Fixture {
+            pool,
+            tbox,
+            hierarchy,
+            a,
+            b,
+            c,
+            nom,
+        }
+    }
+
+    /// Every node's state, in id order; HashMap-free so two contexts compare.
+    fn dump(ctx: &TableauContext<'_, '_, '_>) -> String {
+        let g = ctx.graph();
+        let mut nominals: Vec<_> = g.nominals.iter().collect();
+        nominals.sort();
+        format!("{:?} {:?} {:?} {nominals:?}", g.nodes, g.alive, g.blocking)
+    }
+
+    /// A history with every entry kind: labels, nodes, edges (incl. a
+    /// duplicate), a distinct mark, a nominal assignment, then (behind a second
+    /// checkpoint) a merge that removes several edges from the same position,
+    /// re-adds and re-parents. Returns that second checkpoint.
+    fn script(ctx: &mut TableauContext<'_, '_, '_>, f: &Fixture) -> Checkpoint {
+        let r0 = RoleId::new(0);
+        let r1 = RoleId::new(1);
+        let root = NodeId::new(0);
+        ctx.add_label_with_deps(root, f.a, &[1]);
+        let x = ctx.new_successor_with_deps(root, r0, &[1]);
+        let y = ctx.new_successor_with_deps(root, r0, &[2]);
+        let z = ctx.new_successor_with_deps(x, r1, &[2]);
+        ctx.add_edge_with_deps(x, r1, y, &[1]);
+        ctx.add_edge_with_deps(x, r1, y, &[2]);
+        ctx.add_label_with_deps(y, f.b, &[2]);
+        ctx.add_label_with_deps(z, f.c, &[1, 2]);
+        ctx.mark_distinct_with_deps(x, z, &[1]);
+        ctx.add_label_with_deps(y, f.nom, &[2]);
+        ctx.assign_nominal_with_deps(IndividualId::new(0), y, &[2]);
+        ctx.add_edge_with_deps(y, r0, z, &[2]);
+        ctx.add_edge_with_deps(y, r1, root, &[1]);
+        ctx.add_edge_with_deps(y, r0, root, &[2]);
+        let w = ctx.new_successor_with_deps(y, r1, &[1]);
+        ctx.add_label_with_deps(w, f.a, &[1]);
+        let cp = ctx.checkpoint();
+        assert!(ctx.merge_into_with_deps(y, x, &[2]));
+        cp
+    }
+
+    fn new_ctx(f: &Fixture, keyed: bool) -> TableauContext<'_, '_, '_> {
+        let mut ctx = TableauContext::with_tbox_and_hierarchy(&f.pool, &f.tbox, &f.hierarchy);
+        ctx.set_selective_undo(keyed);
+        ctx.new_node();
+        ctx
+    }
+
+    /// On a chronological history, keyed rollback restores the same graph as
+    /// LIFO rollback, and both restore the checkpointed state.
+    #[test]
+    fn keyed_rollback_matches_lifo_rollback() {
+        let f = fixture();
+        let mut lifo = new_ctx(&f, false);
+        let mut keyed = new_ctx(&f, true);
+        let before = dump(&lifo);
+        assert_eq!(before, dump(&keyed));
+        let cp_l = lifo.checkpoint();
+        let cp_k = keyed.checkpoint();
+        let inner_l = script(&mut lifo, &f);
+        let inner_k = script(&mut keyed, &f);
+        assert_eq!(dump(&lifo), dump(&keyed));
+        // Inside the history: the merge's removals come back in place.
+        lifo.rollback_to(inner_l);
+        keyed.rollback_to(inner_k);
+        assert_eq!(dump(&lifo), dump(&keyed));
+        lifo.rollback_to(cp_l);
+        keyed.rollback_to(cp_k);
+        assert_eq!(dump(&lifo), before);
+        assert_eq!(dump(&keyed), before);
+    }
+
+    /// Undoing everything that depends on decision 2 leaves exactly the
+    /// decision-1 work: the dead nodes are tombstoned, kept edges and labels
+    /// stay, and a kept checkpoint still rolls back correctly afterwards.
+    #[test]
+    fn selective_undo_keeps_independent_work() {
+        let f = fixture();
+        let mut ctx = new_ctx(&f, true);
+        let r0 = RoleId::new(0);
+        let r1 = RoleId::new(1);
+        let root = NodeId::new(0);
+        let cp_t = ctx.checkpoint();
+        ctx.add_label_with_deps(root, f.a, &[1]);
+        let x = ctx.new_successor_with_deps(root, r0, &[1]);
+        let y = ctx.new_successor_with_deps(root, r0, &[2]);
+        ctx.add_label_with_deps(y, f.b, &[2]);
+        let cp_k = ctx.checkpoint();
+        ctx.add_label_with_deps(x, f.c, &[1]);
+        ctx.add_edge_with_deps(x, r1, y, &[1]);
+        ctx.add_edge_with_deps(x, r1, root, &[2]);
+        ctx.mark_distinct_with_deps(x, y, &[1]);
+        // Undo: deps meet {2}, or the entry names the dead node y.
+        let start = TableauTrail::position(cp_t);
+        let mut actions: Vec<EntryAction> = ctx
+            .trail()
+            .entries_from(start)
+            .iter()
+            .enumerate()
+            .map(|(i, e)| match e {
+                TrailEntry::Checkpoint if i == 0 => EntryAction::Drop,
+                TrailEntry::LabelAdded { node, concept } => {
+                    let d = ctx
+                        .graph()
+                        .node(*node)
+                        .deps_of_label(*concept)
+                        .expect("label");
+                    if d.contains(&2) || *node == y {
+                        EntryAction::Undo
+                    } else {
+                        EntryAction::Keep
+                    }
+                }
+                TrailEntry::EdgeAdded {
+                    from, target, id, ..
+                } => {
+                    let n = ctx.graph().node(*from);
+                    let pos = n.edge_ids.iter().position(|e| e == id).expect("edge");
+                    if n.edge_deps[pos].contains(&2) || *target == y || *from == y {
+                        EntryAction::Undo
+                    } else {
+                        EntryAction::Keep
+                    }
+                }
+                TrailEntry::NodeCreated { prior_len } if *prior_len == y.index() as usize => {
+                    EntryAction::Undo
+                }
+                TrailEntry::DistinctMarked { a, b } if *a == y || *b == y => EntryAction::Undo,
+                _ => EntryAction::Keep,
+            })
+            .collect();
+        ctx.trail()
+            .drop_removals_of_undone_edges(start, &mut actions);
+        let remap = ctx.selective_undo_from(cp_t, &actions);
+        let g = ctx.graph();
+        assert!(!g.is_alive(y));
+        assert_eq!(g.live_len(), 2);
+        assert_eq!(g.node(root).labels(), &[f.a]);
+        assert_eq!(g.node(root).edges(), &[(r0, x)]);
+        assert_eq!(g.node(x).labels(), &[f.c]);
+        assert_eq!(g.node(x).edges(), &[]);
+        assert!(g.node(x).inequalities().is_empty());
+        assert!(g.node(root).in_edges().is_empty());
+        assert!(cp_t.remap(&remap).is_none());
+        let cp_k = cp_k.remap(&remap).expect("kept checkpoint survives");
+        assert!(matches!(
+            ctx.trail().entries_from(start)[0],
+            TrailEntry::SelectiveBarrier
+        ));
+        // The barrier forces the next saturate onto the full path.
+        assert!(ctx.incremental_start().is_none());
+        // A kept frame's rollback still works over the rebuilt trail.
+        ctx.rollback_to(cp_k);
+        let g = ctx.graph();
+        assert!(g.node(x).labels().is_empty());
+        assert_eq!(g.node(root).labels(), &[f.a]);
+        assert_eq!(g.node(root).edges(), &[(r0, x)]);
+        assert_eq!(g.live_len(), 2);
+        assert_eq!(g.len(), 3, "the tombstone stays; ids are stable");
+    }
+
+    /// A merge moves an edge (remove + re-add). When the original edge is
+    /// undone, its removal is dropped rather than undone, and the keyed undo
+    /// of an edge that is already gone is a no-op.
+    #[test]
+    fn removal_of_an_undone_edge_is_dropped() {
+        let f = fixture();
+        let mut ctx = new_ctx(&f, true);
+        let r0 = RoleId::new(0);
+        let root = NodeId::new(0);
+        let x = ctx.new_successor_with_deps(root, r0, &[]);
+        let y = ctx.new_successor_with_deps(root, r0, &[]);
+        let w = ctx.new_node();
+        let cp = ctx.checkpoint();
+        ctx.add_edge_with_deps(y, r0, w, &[2]);
+        assert!(ctx.merge_into_with_deps(y, x, &[1]));
+        let start = TableauTrail::position(cp);
+        // Undo the decision-2 edge and its moved copy; keep the rest.
+        let mut actions: Vec<EntryAction> = ctx
+            .trail()
+            .entries_from(start)
+            .iter()
+            .enumerate()
+            .map(|(i, e)| match e {
+                _ if i == 0 => EntryAction::Drop,
+                TrailEntry::EdgeAdded { target, .. } if *target == w => EntryAction::Undo,
+                _ => EntryAction::Keep,
+            })
+            .collect();
+        ctx.trail()
+            .drop_removals_of_undone_edges(start, &mut actions);
+        assert!(ctx.trail().entries_from(start).iter().zip(&actions).any(
+            |(e, a)| matches!(e, TrailEntry::EdgeRemoved { target, .. } if *target == w)
+                && *a == EntryAction::Drop
+        ));
+        ctx.selective_undo_from(cp, &actions);
+        let g = ctx.graph();
+        assert!(g.node(w).in_edges().is_empty());
+        assert!(g.node(x).edges().iter().all(|&(_, t)| t != w));
+        assert!(g.node(y).edges().iter().all(|&(_, t)| t != w));
+        assert_eq!(g.node(y).merged_into(), Some(x), "the merge itself is kept");
+    }
+
+    /// Review B-1: merge S into T1 (undone), then T1 into T2 (kept). Both
+    /// re-parent S's child N. The chain rule undoes the kept rewrite too, so
+    /// N's parent is S, and a later rollback through the kept merge leaves it
+    /// there instead of restoring T1, a parent the kept history never had.
+    #[test]
+    fn prior_value_chains_are_undone_together() {
+        let f = fixture();
+        let mut ctx = new_ctx(&f, true);
+        let s_node = NodeId::new(0);
+        let t1 = ctx.new_node();
+        let t2 = ctx.new_node();
+        let n = ctx.new_successor_with_deps(s_node, RoleId::new(0), &[]);
+        let cp_t = ctx.checkpoint();
+        assert!(ctx.merge_into_with_deps(s_node, t1, &[2]));
+        assert_eq!(ctx.graph().node(n).parent(), Some(t1));
+        let cp_k = ctx.checkpoint();
+        assert!(ctx.merge_into_with_deps(t1, t2, &[1]));
+        assert_eq!(ctx.graph().node(n).parent(), Some(t2));
+        let start = TableauTrail::position(cp_t);
+        let k = TableauTrail::position(cp_k) - start;
+        let mut actions: Vec<EntryAction> = ctx
+            .trail()
+            .entries_from(start)
+            .iter()
+            .enumerate()
+            .map(|(i, e)| match e {
+                _ if i == 0 => EntryAction::Drop,
+                _ if i < k => EntryAction::Undo,
+                TrailEntry::EdgeAdded { from, id, .. } => {
+                    let d = ctx.graph().node(*from).deps_of_edge_instance(*id);
+                    if d.is_some_and(|d| d.contains(&2)) {
+                        EntryAction::Undo
+                    } else {
+                        EntryAction::Keep
+                    }
+                }
+                _ => EntryAction::Keep,
+            })
+            .collect();
+        ctx.trail()
+            .drop_removals_of_undone_edges(start, &mut actions);
+        ctx.trail().undo_later_writes(start, &mut actions);
+        let remap = ctx.selective_undo_from(cp_t, &actions);
+        assert_eq!(ctx.graph().node(n).parent(), Some(s_node));
+        assert_eq!(ctx.graph().node(s_node).edges(), &[(RoleId::new(0), n)]);
+        assert_eq!(ctx.graph().node(t1).merged_into(), Some(t2));
+        ctx.rollback_to(cp_k.remap(&remap).expect("kept"));
+        assert_eq!(ctx.graph().node(n).parent(), Some(s_node));
+        assert_eq!(ctx.graph().node(t1).merged_into(), None);
+    }
+
+    /// Rolling back past a tombstoned node's creator truncates it and keeps
+    /// the dead count right.
+    #[test]
+    fn truncation_after_tombstone_keeps_counts() {
+        let f = fixture();
+        let mut ctx = new_ctx(&f, true);
+        let root = NodeId::new(0);
+        let cp0 = ctx.checkpoint();
+        let x = ctx.new_successor_with_deps(root, RoleId::new(0), &[1]);
+        let cp1 = ctx.checkpoint();
+        let y = ctx.new_successor_with_deps(x, RoleId::new(0), &[2]);
+        let start = TableauTrail::position(cp1);
+        let actions: Vec<EntryAction> = ctx
+            .trail()
+            .entries_from(start)
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                if i == 0 {
+                    EntryAction::Drop
+                } else {
+                    EntryAction::Undo
+                }
+            })
+            .collect();
+        ctx.selective_undo_from(cp1, &actions);
+        assert!(!ctx.graph().is_alive(y));
+        assert_eq!(ctx.graph().live_len(), 2);
+        ctx.rollback_to(cp0);
+        assert_eq!(ctx.graph().len(), 1);
+        assert_eq!(ctx.graph().live_len(), 1);
+    }
 }
 
 #[cfg(test)]

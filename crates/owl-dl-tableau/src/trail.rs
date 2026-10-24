@@ -40,11 +40,13 @@ pub enum TrailEntry {
     LabelAdded { node: NodeId, concept: ConceptId },
     /// `(role, target)` was appended to `from`'s edge list. Undo: pop
     /// the last edge from `from`. Edges are append-only between
-    /// checkpoints, so the last entry is the right one.
+    /// checkpoints, so the last entry is the right one. `id` is the edge's
+    /// instance id (#288 step 4b), which a keyed undo removes by.
     EdgeAdded {
         from: NodeId,
         role: RoleId,
         target: NodeId,
+        id: u32,
     },
     /// A new node was allocated. `prior_len` is the node-arena length
     /// *before* this allocation; rollback truncates back to that
@@ -72,6 +74,8 @@ pub enum TrailEntry {
         target: NodeId,
         position: usize,
         in_position: usize,
+        /// The removed edge's instance id (#288 step 4b).
+        id: u32,
         prior_edge_deps: crate::graph::DepSet,
         prior_in_edge_deps: crate::graph::DepSet,
     },
@@ -125,6 +129,40 @@ pub enum TrailEntry {
     /// no-op. `pending` lists the nodes a full pass would visit again on the
     /// next call. See [`TableauTrail::labels_since_stable`].
     StableMark { pending: Vec<NodeId> },
+    /// A selective undo (#288 step 4) rebuilt the trail from here. Not a
+    /// mutation; undo is a no-op. The `StableMark`s above it were dropped, and
+    /// [`TableauTrail::labels_since_stable`] stops here, so the next `saturate`
+    /// takes the full path.
+    SelectiveBarrier,
+}
+
+/// What [`TableauTrail::selective_undo`] does with one entry (#288 step 4b).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EntryAction {
+    /// Stays on the trail, effect kept.
+    Keep,
+    /// Undone by key, then removed from the trail.
+    Undo,
+    /// Removed from the trail without undoing: markers, and an
+    /// `EdgeRemoved` whose edge's `EdgeAdded` is undone.
+    Drop,
+}
+
+/// Where the entries kept by a [`TableauTrail::selective_undo`] moved to.
+#[derive(Clone, Debug)]
+pub struct TrailRemap {
+    start: usize,
+    /// For entry `start + i`, its new index, or `None` if it was removed.
+    moved: Vec<Option<usize>>,
+}
+
+/// How a keyed undo treats [`TrailEntry::NodeCreated`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum NodeUndo {
+    /// Rollback: truncate the arena back to `prior_len`.
+    Truncate,
+    /// Selective undo: tombstone the node, keeping ids stable.
+    Tombstone,
 }
 
 /// Opaque handle into the trail returned by [`TableauTrail::checkpoint`].
@@ -135,6 +173,22 @@ pub enum TrailEntry {
 pub struct Checkpoint {
     /// Index of the [`TrailEntry::Checkpoint`] entry in the trail.
     position: usize,
+}
+
+impl Checkpoint {
+    /// This checkpoint after `remap`, or `None` if its entry was removed.
+    #[must_use]
+    pub fn remap(self, remap: &TrailRemap) -> Option<Self> {
+        if self.position < remap.start {
+            return Some(self);
+        }
+        remap
+            .moved
+            .get(self.position - remap.start)
+            .copied()
+            .flatten()
+            .map(|position| Self { position })
+    }
 }
 
 /// Append-only log of [`TrailEntry`]s, plus rollback.
@@ -148,12 +202,26 @@ pub struct TableauTrail {
     /// the graph may have. Unlike `len`, it never repeats after a rollback, which
     /// makes it a sound cache key for derived state (#288).
     generation: u64,
+    /// Roll back with keyed undo (#288 step 4b; set under
+    /// `RUSTDL_SELECTIVE_UNDO=1`). After a selective undo, entries recorded
+    /// before it no longer match the graph positionally, so a later rollback
+    /// over them must find each item by key rather than pop the last one.
+    keyed: bool,
 }
 
 impl TableauTrail {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A trail that rolls back with keyed undo iff `keyed` (#288 step 4b).
+    #[must_use]
+    pub fn keyed_if(keyed: bool) -> Self {
+        Self {
+            keyed,
+            ..Self::default()
+        }
     }
 
     #[must_use]
@@ -223,7 +291,9 @@ impl TableauTrail {
 
     /// Undo every entry after `cp` in reverse order and drop the
     /// checkpoint itself. The graph is restored bit-for-bit to its
-    /// state at the moment [`Self::checkpoint`] returned.
+    /// state at the moment [`Self::checkpoint`] returned — except after a
+    /// selective undo (#288 step 4), where nodes tombstoned since may stay in
+    /// the arena as dead slots and kept edges may sit at other positions.
     ///
     /// # Panics
     ///
@@ -241,8 +311,256 @@ impl TableauTrail {
         self.generation += 1;
         while self.entries.len() > cp.position {
             let entry = self.entries.pop().expect("non-empty by loop guard");
-            undo(&entry, graph);
+            if self.keyed {
+                undo_keyed(&entry, graph, NodeUndo::Truncate);
+            } else {
+                undo(&entry, graph);
+            }
         }
+    }
+
+    /// Roll back with keyed undo from now on (#288 step 4b).
+    pub fn set_keyed(&mut self, keyed: bool) {
+        self.keyed = keyed;
+    }
+
+    /// Bump the generation without recording anything: state the trail does
+    /// not describe changed (#288 step 4b).
+    pub(crate) fn bump_generation(&mut self) {
+        self.generation += 1;
+    }
+
+    /// The entries from `start` on (#288 step 4b).
+    #[must_use]
+    pub fn entries_from(&self, start: usize) -> &[TrailEntry] {
+        &self.entries[start..]
+    }
+
+    /// The trail position of `cp` (#288 step 4b).
+    #[must_use]
+    pub fn position(cp: Checkpoint) -> usize {
+        cp.position
+    }
+
+    /// Turn `Keep`/`Undo` on an [`TrailEntry::EdgeRemoved`] into `Drop` when
+    /// the same edge instance's [`TrailEntry::EdgeAdded`] (from `start` on) is
+    /// undone (plan B3): the edge it removed never existed.
+    pub fn drop_removals_of_undone_edges(&self, start: usize, actions: &mut [EntryAction]) {
+        let undone: std::collections::HashSet<u32> = self.entries[start..]
+            .iter()
+            .zip(actions.iter())
+            .filter_map(|(e, a)| match (e, a) {
+                (TrailEntry::EdgeAdded { id, .. }, EntryAction::Undo) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        if undone.is_empty() {
+            return;
+        }
+        for (e, a) in self.entries[start..].iter().zip(actions.iter_mut()) {
+            if let TrailEntry::EdgeRemoved { id, .. } = e
+                && undone.contains(id)
+            {
+                *a = EntryAction::Drop;
+            }
+        }
+    }
+
+    /// Extend `Undo` along prior-value chains (#288 step 4b, review B-1).
+    /// `ParentRewritten` and `MergedRedirect` (per node) and `NominalAssigned`
+    /// (per individual) undo by restoring the value the previous entry for the
+    /// same key wrote. If an earlier entry for a key is undone and a later one
+    /// kept, a later rollback through the kept one would restore a value the
+    /// kept history never had. So every entry after an undone one, for the
+    /// same key, is undone too; walking backwards then restores the right
+    /// value.
+    pub fn undo_later_writes(&self, start: usize, actions: &mut [EntryAction]) {
+        let mut undone: std::collections::HashSet<WriteKey> = std::collections::HashSet::new();
+        for (e, a) in self.entries[start..].iter().zip(actions.iter_mut()) {
+            let Some(key) = write_key(e) else { continue };
+            if *a == EntryAction::Undo {
+                undone.insert(key);
+            } else if undone.contains(&key) {
+                *a = EntryAction::Undo;
+            }
+        }
+    }
+
+    /// Selective undo (#288 step 4b). `actions[i]` says what to do with entry
+    /// `start + i`. Undoes the `Undo` entries by key in reverse order
+    /// (tombstoning created nodes), then rebuilds the trail from `start` as a
+    /// [`TrailEntry::SelectiveBarrier`] followed by the `Keep` entries in their
+    /// order. Returns where kept entries moved, and the nodes the undone
+    /// entries touched.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `actions` does not cover exactly the entries from `start`.
+    pub fn selective_undo(
+        &mut self,
+        start: usize,
+        actions: &[EntryAction],
+        graph: &mut CompletionGraph,
+    ) -> (TrailRemap, Vec<NodeId>) {
+        assert_eq!(
+            actions.len(),
+            self.entries.len() - start,
+            "selective_undo: one action per entry from start"
+        );
+        debug_assert!(
+            {
+                let mut a = actions.to_vec();
+                self.undo_later_writes(start, &mut a);
+                a == actions
+            },
+            "selective_undo: a kept prior-value write follows an undone one"
+        );
+        self.generation += 1;
+        let mut touched = Vec::new();
+        for (entry, action) in self.entries[start..].iter().zip(actions).rev() {
+            if *action == EntryAction::Undo {
+                entry_nodes(entry, &mut touched);
+                undo_keyed(entry, graph, NodeUndo::Tombstone);
+            }
+        }
+        let tail = self.entries.split_off(start);
+        self.entries.push(TrailEntry::SelectiveBarrier);
+        let mut moved = Vec::with_capacity(tail.len());
+        for (entry, action) in tail.into_iter().zip(actions) {
+            if *action == EntryAction::Keep {
+                moved.push(Some(self.entries.len()));
+                self.entries.push(entry);
+            } else {
+                moved.push(None);
+            }
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        (TrailRemap { start, moved }, touched)
+    }
+}
+
+/// The key a prior-value entry writes, for [`TableauTrail::undo_later_writes`].
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+enum WriteKey {
+    Parent(NodeId),
+    Redirect(NodeId),
+    Nominal(IndividualId),
+}
+
+fn write_key(entry: &TrailEntry) -> Option<WriteKey> {
+    match *entry {
+        TrailEntry::ParentRewritten { node, .. } => Some(WriteKey::Parent(node)),
+        TrailEntry::MergedRedirect { node, .. } => Some(WriteKey::Redirect(node)),
+        TrailEntry::NominalAssigned { individual, .. } => Some(WriteKey::Nominal(individual)),
+        _ => None,
+    }
+}
+
+/// The nodes `entry` mutates.
+fn entry_nodes(entry: &TrailEntry, out: &mut Vec<NodeId>) {
+    match *entry {
+        TrailEntry::LabelAdded { node, .. }
+        | TrailEntry::ParentRewritten { node, .. }
+        | TrailEntry::MergedRedirect { node, .. } => out.push(node),
+        TrailEntry::EdgeAdded { from, target, .. }
+        | TrailEntry::EdgeRemoved { from, target, .. } => {
+            out.extend([from, target]);
+        }
+        TrailEntry::DistinctMarked { a, b } => out.extend([a, b]),
+        TrailEntry::NodeCreated { prior_len } => {
+            out.push(NodeId::new(
+                u32::try_from(prior_len).expect("node count fits u32"),
+            ));
+        }
+        TrailEntry::NominalAssigned { node, prior, .. } => {
+            out.push(node);
+            out.extend(prior);
+        }
+        TrailEntry::MergeBegin { .. }
+        | TrailEntry::MergeEnd
+        | TrailEntry::Checkpoint
+        | TrailEntry::StableMark { .. }
+        | TrailEntry::SelectiveBarrier => {}
+    }
+}
+
+/// Undo `entry` by key (#288 step 4b): find what it added wherever it now is,
+/// rather than assume it is the last item. On a purely chronological history
+/// this gives the same graph as [`undo`].
+fn undo_keyed(entry: &TrailEntry, graph: &mut CompletionGraph, nodes: NodeUndo) {
+    match *entry {
+        TrailEntry::EdgeAdded {
+            from, target, id, ..
+        } => {
+            let from_node = graph.node_mut(from);
+            let Some(pos) = from_node.edge_ids.iter().position(|&e| e == id) else {
+                // Already removed (its removal was dropped, plan B3).
+                return;
+            };
+            from_node.edges.remove(pos);
+            from_node.edge_deps.remove(pos);
+            from_node.edge_ids.remove(pos);
+            let target_node = graph.node_mut(target);
+            let in_pos = target_node
+                .in_edge_ids
+                .iter()
+                .position(|&e| e == id)
+                .expect("EdgeAdded keyed undo: in-edge mirror missing");
+            target_node.in_edges.remove(in_pos);
+            target_node.in_edge_deps.remove(in_pos);
+            target_node.in_edge_ids.remove(in_pos);
+        }
+        TrailEntry::EdgeRemoved {
+            from,
+            role,
+            target,
+            position,
+            in_position,
+            id,
+            ref prior_edge_deps,
+            ref prior_in_edge_deps,
+        } => {
+            let from_node = graph.node_mut(from);
+            let pos = position.min(from_node.edges.len());
+            from_node.edges.insert(pos, (role, target));
+            from_node.edge_deps.insert(pos, prior_edge_deps.clone());
+            from_node.edge_ids.insert(pos, id);
+            let target_node = graph.node_mut(target);
+            let in_pos = in_position.min(target_node.in_edges.len());
+            target_node.in_edges.insert(in_pos, (role, from));
+            target_node
+                .in_edge_deps
+                .insert(in_pos, prior_in_edge_deps.clone());
+            target_node.in_edge_ids.insert(in_pos, id);
+        }
+        TrailEntry::DistinctMarked { a, b } => {
+            for (x, y) in [(a, b), (b, a)] {
+                let n = graph.node_mut(x);
+                let pos = n
+                    .inequalities
+                    .iter()
+                    .position(|&m| m == y)
+                    .expect("DistinctMarked keyed undo: mark missing");
+                n.inequalities.remove(pos);
+                n.inequality_deps.remove(pos);
+            }
+        }
+        TrailEntry::NodeCreated { prior_len } => match nodes {
+            NodeUndo::Truncate => graph.truncate_nodes(prior_len),
+            NodeUndo::Tombstone => graph.tombstone(NodeId::new(
+                u32::try_from(prior_len).expect("node count fits u32"),
+            )),
+        },
+        TrailEntry::LabelAdded { .. }
+        | TrailEntry::MergedRedirect { .. }
+        | TrailEntry::ParentRewritten { .. }
+        | TrailEntry::NominalAssigned { .. }
+        | TrailEntry::MergeBegin { .. }
+        | TrailEntry::MergeEnd
+        | TrailEntry::Checkpoint
+        | TrailEntry::StableMark { .. }
+        | TrailEntry::SelectiveBarrier => undo(entry, graph),
     }
 }
 
@@ -279,7 +597,9 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             // present, real insert for the one(s) just rolled back).
             graph.set_residuals_saturated(node, false);
         }
-        TrailEntry::EdgeAdded { from, role, target } => {
+        TrailEntry::EdgeAdded {
+            from, role, target, ..
+        } => {
             // Pop the outgoing edge at `from`.
             let from_node = graph.node_mut(from);
             let last = from_node
@@ -297,6 +617,7 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
                 .edge_deps
                 .pop()
                 .expect("EdgeAdded undo: edge_deps empty");
+            from_node.edge_ids.pop();
             // Pop the mirror in-edge at `target` plus its dep
             // mirror. Every EdgeAdded entry on the trail corresponds
             // to one push on each side.
@@ -314,6 +635,7 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
                 .in_edge_deps
                 .pop()
                 .expect("EdgeAdded undo: target in_edge_deps empty");
+            target_node.in_edge_ids.pop();
         }
         TrailEntry::NodeCreated { prior_len } => {
             graph.truncate_nodes(prior_len);
@@ -340,6 +662,7 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             target,
             position,
             in_position,
+            id,
             ref prior_edge_deps,
             ref prior_in_edge_deps,
         } => {
@@ -349,12 +672,14 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             from_node
                 .edge_deps
                 .insert(position, prior_edge_deps.clone());
+            from_node.edge_ids.insert(position, id);
             // Re-insert the mirror in-edge.
             let target_node = graph.node_mut(target);
             target_node.in_edges.insert(in_position, (role, from));
             target_node
                 .in_edge_deps
                 .insert(in_position, prior_in_edge_deps.clone());
+            target_node.in_edge_ids.insert(in_position, id);
         }
         TrailEntry::MergedRedirect {
             node,
@@ -388,6 +713,7 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
         },
         TrailEntry::Checkpoint
         | TrailEntry::StableMark { .. }
+        | TrailEntry::SelectiveBarrier
         | TrailEntry::MergeBegin { .. }
         | TrailEntry::MergeEnd => {}
     }

@@ -131,6 +131,7 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
                 return SaturationResult::Stalled;
             }
             let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+            // A tombstoned node is never dirty (#288 step 4b).
             if !ctx.graph().is_dirty(node) {
                 continue;
             }
@@ -210,7 +211,7 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
                     return SaturationResult::Stalled;
                 }
                 let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
-                if ctx.graph().node(node).is_redirected() {
+                if ctx.graph().node(node).is_redirected() || !ctx.graph().is_alive(node) {
                     continue;
                 }
                 if apply_deferred_or_residuals(ctx, node) == RuleOutcome::Applied {

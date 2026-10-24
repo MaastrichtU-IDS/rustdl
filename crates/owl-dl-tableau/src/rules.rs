@@ -1089,7 +1089,7 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         // back-jumps past the decision that created a witness and reads a
         // satisfiable class as unsat (#299 review). Witness edges and qualifier
         // labels carry precise deps. Distinctness does not (`mark_distinct`
-        // records none), yet `apply_min` and `branch_merge`'s distinct option
+        // records none), yet `apply_min` and `Frame::merge`'s distinct option
         // both mark pairs distinct on a branch decision; so when any witness
         // pair is distinct this falls back to every active decision, as the `⊥`
         // arm below does. With the choice point on (the default) this merge is

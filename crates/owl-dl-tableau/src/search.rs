@@ -8,7 +8,7 @@
 //!
 //! Each `⊔`-branching decision is identified by a unique `branch_id`
 //! allocated by [`crate::TableauContext::push_branch`]. When the
-//! recursive search detects a clash, [`crate::saturate`] returns the
+//! search detects a clash, [`crate::saturate`] returns the
 //! [`crate::SaturationResult::Clash`] variant carrying the
 //! [`crate::DepSet`] of the offending complementary labels. Each
 //! rule propagates this `DepSet` to its conclusions during saturation
@@ -45,7 +45,7 @@ const SATURATE_ITERS: usize = 4096;
 /// Generalises the previous `Option<bool>` API: `Sat` is what
 /// callers want for a model existence check; `Unsat` carries the
 /// `DepSet` so a search frame can decide whether the failure depends on
-/// its own decision; `DepthLimit` covers both the recursion cap and
+/// its own decision; `DepthLimit` covers both the frame-depth cap and
 /// the cooperative deadline (callers disambiguate via
 /// [`TableauContext::deadline_reached`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +59,7 @@ pub enum SearchVerdict {
     /// the failure depends on. Empty `DepSet` ⇒ the failure is
     /// independent of any branch (unsat under the root context).
     Unsat(DepSet),
-    /// Either the recursion depth cap was reached or the cooperative
+    /// Either the frame-depth cap was reached or the cooperative
     /// deadline elapsed. Callers distinguish via
     /// [`TableauContext::deadline_reached`].
     DepthLimit,
@@ -324,7 +324,7 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
             let max_deps = node.label_deps[pos].clone();
             // #288: the `≤n` is over-full because every witness exists, so a
             // merge depends on all of them, as in `apply_max`. Pairwise deps
-            // were enough only because `branch_merge` reports exhaustion
+            // were enough only because `Frame::merge` reports exhaustion
             // under every active decision; selective undo needs them exact.
             let mut witness_deps = max_deps.clone();
             for &w in &witnesses {
@@ -807,7 +807,7 @@ fn reorder_disjuncts(
 }
 
 /// True iff `c` is a cheap literal — atomic, nominal,
-/// self-restriction, or `Not(_)` of one. Used by `branch()` to
+/// self-restriction, or `Not(_)` of one. Used by `Frame::or` to
 /// decide whether to carry a disjunct's complement forward in
 /// restricted semantic branching.
 fn is_literal(ctx: &TableauContext<'_, '_, '_>, c: ConceptId) -> bool {

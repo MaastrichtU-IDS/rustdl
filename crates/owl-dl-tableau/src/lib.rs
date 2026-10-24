@@ -547,7 +547,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     /// Cap the search at a wall-clock instant. The driver in
-    /// [`crate::search`] consults it on every recursion and bails out
+    /// [`crate::search`] consults it on every expansion and bails out
     /// (returning `None`) the moment the deadline has passed. Use this
     /// to bound per-pair tableau time in higher-level classifiers
     /// without resorting to OS-thread cancellation.
@@ -685,7 +685,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
 
     /// Allocate the next fresh `branch_id` and push it onto the
     /// active-branches stack. Returns the freshly issued id.
-    /// `branch()` calls this on entry, [`Self::pop_branch`] on exit.
+    /// `Frame::or` and `Frame::merge` call this on entry; `Frame::finish`
+    /// calls [`Self::pop_branch`] on exit.
     #[doc(hidden)]
     pub fn push_branch(&mut self) -> u32 {
         let id = self.next_branch_id;
@@ -3868,7 +3869,7 @@ mod tests {
     #[test]
     fn backjumping_unsat_inside_branch_keeps_state_clean() {
         // L(x) = {A, ¬A, A ⊔ B}. The clash on `{A, ¬A}` is
-        // pre-branch — even after `branch()` allocates a `branch_id`
+        // pre-branch — even after `Frame::or` allocates a `branch_id`
         // and tries adding A, the saturation finds the clash with
         // *zero* deps (neither label depends on `branch_id`). Because
         // `branch_id ∉ {}`, back-jumping fires: branch() returns

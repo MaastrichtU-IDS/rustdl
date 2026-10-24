@@ -425,6 +425,16 @@ pub struct ClassificationStats {
     /// (`RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`). It does NOT set `incomplete`, which
     /// means only "a deadline fired". 0 when there is no wedge.
     pub wedge_clauses_refused: usize,
+    /// #354: individual equalities the KB forces that classify found and gave the
+    /// classify wedge (`RUSTDL_CLASSIFY_DERIVED_SAME`).
+    pub derived_same: usize,
+    /// #354: candidate individual equalities classify did not decide (a probe was cut
+    /// by its budget or the global deadline, or the probe cap was reached). Each is an
+    /// equality classify may be missing, as it always did before #354, so
+    /// [`Classification::completeness_guaranteed`] is false when this is non-zero and
+    /// `classify --json` reports it. It does NOT set `incomplete`, which means only "a
+    /// deadline fired" on a class pair.
+    pub derived_same_undecided: usize,
     /// Axioms dropped during conversion, tallied by diagnostic kind (issue
     /// #43). Carried here so a caller that wants the tally does NOT have to
     /// re-run `convert_ontology` to get it: the CLI used to, which cost a
@@ -990,6 +1000,7 @@ impl Classification {
             && self.stats.timed_out_pairs == 0
             && !self.stats.wedge_hierarchy_blind
             && self.stats.wedge_clauses_refused == 0
+            && self.stats.derived_same_undecided == 0
             && !self.stats.consistency_undetermined
             && self.stats.dropped.is_empty()
     }
@@ -1483,8 +1494,9 @@ fn classify_internal_with_timeout_impl(
     // inconsistency signal). This is the fix for `classify --json family.ofn`
     // reporting `"consistent": true` where `rustdl consistent` reports
     // `inconsistent`.
+    let mut wedge_cache = None;
     if crate::classify_inconsistency_enabled()
-        && crate::classify_inconsistency_precheck(internal, &closure, None)
+        && crate::classify_inconsistency_precheck(internal, &closure, None, &mut wedge_cache)
     {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("classify: KB inconsistent (pre-check)");
@@ -1549,10 +1561,19 @@ fn classify_internal_with_timeout_impl(
         ));
     }
 
+    // #354: individual equalities the KB forces, added as `SameIndividual` so the
+    // classify wedge sees them.
+    let derived = crate::derive_nominal_same(internal, wedge_cache, None);
+    let prep_internal = if derived.pairs.is_empty() {
+        internal.clone()
+    } else {
+        crate::with_derived_same(internal, &derived.pairs)
+    };
+
     // Prepare the tableau-side pipeline once. Every subsequent
     // tableau query reuses the absorbed TBox, role-side metadata,
     // ABox seed, and pool — only the test concept varies.
-    let prepared = PreparedOntology::from_internal(internal.clone())?;
+    let prepared = PreparedOntology::from_internal(prep_internal)?;
 
     // First pass: which classes are individually unsatisfiable? An
     // unsat class `C` is `⊑ ⊥` and therefore `⊑ D` for every `D` —
@@ -1566,6 +1587,8 @@ fn classify_internal_with_timeout_impl(
         per_class_unsafe_count: prepared.per_class_unsafe_count(),
         wedge_hierarchy_blind: wedge_hierarchy_blind(&prepared),
         wedge_clauses_refused: wedge_clauses_refused(&prepared),
+        derived_same: derived.pairs.len(),
+        derived_same_undecided: derived.undecided,
         ..ClassificationStats::default()
     };
     let cut_probes = std::sync::Mutex::new(Vec::new());
@@ -3863,8 +3886,14 @@ fn classify_top_down_internal_impl(
     // inconsistency signal). This is the fix for `classify --json family.ofn`
     // reporting `"consistent": true` where `rustdl consistent` reports
     // `inconsistent`.
+    let mut wedge_cache = None;
     if crate::classify_inconsistency_enabled()
-        && crate::classify_inconsistency_precheck(internal, &closure, global_deadline)
+        && crate::classify_inconsistency_precheck(
+            internal,
+            &closure,
+            global_deadline,
+            &mut wedge_cache,
+        )
     {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("classify: KB inconsistent (pre-check)");
@@ -3941,14 +3970,23 @@ fn classify_top_down_internal_impl(
     // Second half of the prep-deadline fix: `from_internal` was the single
     // largest unbudgeted phase (26 of the 252 DNF ontologies never finished it
     // at all). `from_internal_with_deadline(.., None)` is the pre-change call.
+    // #354: individual equalities the KB forces, added as `SameIndividual` so the
+    // classify wedge sees them. The closure above is over the ontology without
+    // them, so it is handed over only when none were added.
+    let derived = crate::derive_nominal_same(internal, wedge_cache, global_deadline);
+    let (prep_internal, prep_closure) = if derived.pairs.is_empty() {
+        (internal.clone(), Some(closure.clone()))
+    } else {
+        (crate::with_derived_same(internal, &derived.pairs), None)
+    };
     let t_prepare = Instant::now();
     let Some(prepared) = PreparedOntology::from_internal_with_deadline(
-        internal.clone(),
+        prep_internal,
         prep_deadline,
         // Hand over the closure computed above instead of re-saturating: the
         // same fixpoint over the same unmutated ontology. `sat_aborted` returns
         // early above, so this closure is complete.
-        Some(closure.clone()),
+        prep_closure,
     )?
     else {
         return Ok(classify_prep_timeout(
@@ -3988,6 +4026,8 @@ fn classify_top_down_internal_impl(
         prepare_wall_ms: prepare_ms,
         wedge_hierarchy_blind: wedge_hierarchy_blind(&prepared),
         wedge_clauses_refused: wedge_clauses_refused(&prepared),
+        derived_same: derived.pairs.len(),
+        derived_same_undecided: derived.undecided,
         ..ClassificationStats::default()
     };
 

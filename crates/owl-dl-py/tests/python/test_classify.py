@@ -135,6 +135,35 @@ def test_wedge_clauses_refused_is_its_own_signal(tmp_path, monkeypatch):
     assert r.is_subclass("http://ex.org/A", "http://ex.org/G")
 
 
+def test_derived_same_undecided_is_its_own_signal(tmp_path, monkeypatch):
+    # #354: a candidate individual equality past the probe cap is reported by
+    # `derived_same_undecided` and warned about once, while `complete` keeps
+    # meaning "no timeout fired". With the cap lifted, the equality is used.
+    import warnings
+    fixture = tmp_path / "eq.ofn"
+    fixture.write_text(
+        "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/o>\n"
+        "EquivalentClasses(:C1 ObjectHasValue(:p :a))\n"
+        "EquivalentClasses(:C2 ObjectHasValue(:p :b))\n"
+        "ClassAssertion(:W :x) SubClassOf(:W ObjectMaxCardinality(1 :f))\n"
+        "ObjectPropertyAssertion(:f :x :a) ObjectPropertyAssertion(:f :x :b)\n)\n"
+    )
+    monkeypatch.setenv("RUSTDL_CLASSIFY_DERIVED_SAME_MAX", "0")
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.derived_same_undecided == 1
+    assert r.complete is True
+    assert sum(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning) for w in rec
+    ) == 1
+
+    monkeypatch.delenv("RUSTDL_CLASSIFY_DERIVED_SAME_MAX")
+    r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.derived_same_undecided == 0
+    assert r.is_subclass("http://ex.org/C1", "http://ex.org/C2")
+
+
 def test_prep_timed_out_is_its_own_signal(tmp_path, monkeypatch):
     # #162: a preparation cut by the global deadline is reported by
     # `prep_timed_out` and warned about once as a cut preparation, not as a

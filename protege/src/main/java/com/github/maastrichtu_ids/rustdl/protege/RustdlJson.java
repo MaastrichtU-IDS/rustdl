@@ -23,6 +23,12 @@ public final class RustdlJson {
          * means only "a deadline fired". Absent in output from rustdl before 0.4.42, read as 0.
          */
         public int wedge_clauses_refused;
+        /**
+         * How many candidate individual equalities rustdl did not decide (#354): a probe was
+         * cut or the probe cap was reached, so entailments that need them may be missing.
+         * Separate from {@code incomplete}. Absent in output from rustdl before 0.4.42, read as 0.
+         */
+        public int derived_same_undecided;
         public List<String> unsatisfiable;
         public List<List<String>> equivalent_groups;
         public List<List<String>> direct_subsumptions;

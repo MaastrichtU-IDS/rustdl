@@ -63,6 +63,11 @@ class Classification:
         """How many clauses the wedge cannot match. A refused clause never
         fires, so entailments that need it may be missing (#353)."""
         ...
+    @property
+    def derived_same_undecided(self) -> int:
+        """How many candidate individual equalities classify did not decide,
+        so entailments that need them may be missing (#354)."""
+        ...
     def is_subclass(self, sub: str, sup: str) -> bool:
         """True iff `sub ⊑ sup` is entailed."""
         ...
@@ -83,8 +88,10 @@ class Classification:
 class IncompleteClassificationWarning(UserWarning):
     """Emitted when the hierarchy may be missing subsumptions (sound but
     possibly incomplete): a timeout fired, the wedge ran without
-    role-hierarchy matching (`Classification.wedge_hierarchy_blind`), or the
-    wedge refused clauses (`Classification.wedge_clauses_refused`)."""
+    role-hierarchy matching (`Classification.wedge_hierarchy_blind`), the
+    wedge refused clauses (`Classification.wedge_clauses_refused`), or
+    candidate individual equalities went undecided
+    (`Classification.derived_same_undecided`)."""
 
 class IncompleteQueryWarning(UserWarning):
     """Emitted by the budgeted inferred queries (`disjoint_classes`,

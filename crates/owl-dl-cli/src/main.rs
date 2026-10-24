@@ -1476,6 +1476,19 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.wedge_clauses_refused
         )?;
     }
+    if stats.derived_same > 0 || stats.derived_same_undecided > 0 {
+        writeln!(
+            out,
+            "# derived individual equalities: {} used, {} undecided{}",
+            stats.derived_same,
+            stats.derived_same_undecided,
+            if stats.derived_same_undecided > 0 {
+                ": completeness not guaranteed"
+            } else {
+                ""
+            }
+        )?;
+    }
     let tsr = json_out::trusted_sat_risk(&stats);
     if tsr > 0 {
         writeln!(

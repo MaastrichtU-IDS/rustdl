@@ -67,6 +67,20 @@ public class RustdlProcessTest {
         assertEquals(0, c.wedge_clauses_refused);
     }
 
+    @Test public void parsesDerivedSameUndecidedAsItsOwnSignal() throws Exception {
+        RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_derived_same.json"));
+        assertEquals(3, c.derived_same_undecided);
+        assertFalse(c.incomplete);
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(1, w.size());
+        assertTrue(w.get(0).contains("did not decide 3 candidate"));
+    }
+
+    @Test public void derivedSameUndecidedDefaultsToZeroWhenAbsent() throws Exception {
+        RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_blind.json"));
+        assertEquals(0, c.derived_same_undecided);
+    }
+
     @Test public void parsesConsistent() throws Exception {
         RustdlJson.ConsistentJson c = RustdlProcess.parseConsistent(fixture("inconsistent.json"));
         assertFalse(c.consistent);

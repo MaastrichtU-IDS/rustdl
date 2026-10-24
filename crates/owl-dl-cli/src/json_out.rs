@@ -155,6 +155,10 @@ pub(crate) struct ClassifyJson {
     /// entailments that need them may be missing. A SEPARATE field for the same
     /// reason as `wedge_hierarchy_blind`: no deadline fired. 0 when there is none.
     pub(crate) wedge_clauses_refused: usize,
+    /// #354: candidate individual equalities classify did not decide (budget, the
+    /// global deadline or the probe cap), so it may be missing entailments that need
+    /// them. A SEPARATE field: no class pair's deadline fired.
+    pub(crate) derived_same_undecided: usize,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
@@ -358,6 +362,7 @@ pub(crate) fn build_classify_json(
         completeness_guaranteed: h.completeness_guaranteed(),
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
         wedge_clauses_refused: stats.wedge_clauses_refused,
+        derived_same_undecided: stats.derived_same_undecided,
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,
@@ -383,6 +388,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         completeness_guaranteed: false,
         wedge_hierarchy_blind: false,
         wedge_clauses_refused: 0,
+        derived_same_undecided: 0,
         unsatisfiable: Vec::new(),
         equivalent_groups: Vec::new(),
         direct_subsumptions: Vec::new(),

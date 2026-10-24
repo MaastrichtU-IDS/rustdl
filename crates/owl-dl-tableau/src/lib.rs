@@ -1408,7 +1408,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     /// Override [`selective_undo_enabled`] for this context (tests). Turning
-    /// it on turns the existence fold on too.
+    /// it on turns the existence fold on too. Do not turn it off after a
+    /// selective undo: LIFO rollback over the rebuilt trail is wrong.
     pub fn set_selective_undo(&mut self, on: bool) {
         self.selective = on;
         self.trail.set_keyed(on);
@@ -1430,6 +1431,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// node an undone entry touched, the deferred set, every live node's dirty
     /// bit and the generation. The next `saturate` takes the full path.
     pub fn selective_undo_from(&mut self, cp: Checkpoint, actions: &[EntryAction]) -> TrailRemap {
+        debug_assert!(self.selective, "selective undo on a LIFO trail");
+        debug_assert!(matches!(
+            self.trail.entries_from(TableauTrail::position(cp)).first(),
+            Some(TrailEntry::Checkpoint)
+        ));
         let (remap, touched) =
             self.trail
                 .selective_undo(TableauTrail::position(cp), actions, &mut self.graph);
@@ -5188,6 +5194,10 @@ mod step4b_selective_undo {
         ctx.add_edge_with_deps(x, r1, y, &[1]);
         ctx.add_edge_with_deps(x, r1, root, &[2]);
         ctx.mark_distinct_with_deps(x, y, &[1]);
+        // A fixpoint recorded before the undo. Its action is Keep below, but
+        // selective undo must remove it anyway.
+        ctx.trail.record(TrailEntry::StableMark { pending: vec![] });
+        assert!(ctx.incremental_start().is_some());
         // Undo: deps meet {2}, or the entry names the dead node y.
         let start = TableauTrail::position(cp_t);
         let mut actions: Vec<EntryAction> = ctx
@@ -5245,7 +5255,14 @@ mod step4b_selective_undo {
             ctx.trail().entries_from(start)[0],
             TrailEntry::SelectiveBarrier
         ));
-        // The barrier forces the next saturate onto the full path.
+        // The pre-undo fixpoint is gone and the barrier forces the next
+        // saturate onto the full path.
+        assert!(
+            !ctx.trail()
+                .entries_from(start)
+                .iter()
+                .any(|e| matches!(e, TrailEntry::StableMark { .. }))
+        );
         assert!(ctx.incremental_start().is_none());
         // A kept frame's rollback still works over the rebuilt trail.
         ctx.rollback_to(cp_k);
@@ -5348,6 +5365,102 @@ mod step4b_selective_undo {
         ctx.rollback_to(cp_k.remap(&remap).expect("kept"));
         assert_eq!(ctx.graph().node(n).parent(), Some(s_node));
         assert_eq!(ctx.graph().node(t1).merged_into(), None);
+    }
+
+    /// Keyed rollback over a rebuilt trail: an earlier edge on `root` is
+    /// undone, so a kept removal recorded at position 1 is re-inserted at the
+    /// clamped position 0, and the kept edge is then removed by id.
+    #[test]
+    fn keyed_rollback_over_rebuilt_trail_clamps_positions() {
+        let f = fixture();
+        let mut ctx = new_ctx(&f, true);
+        let r0 = RoleId::new(0);
+        let root = NodeId::new(0);
+        let w = ctx.new_node();
+        let s_node = ctx.new_node();
+        let t = ctx.new_node();
+        let cp_t = ctx.checkpoint();
+        ctx.add_edge_with_deps(root, r0, w, &[2]);
+        let cp_k = ctx.checkpoint();
+        ctx.add_edge_with_deps(root, r0, s_node, &[1]);
+        assert_eq!(ctx.graph().node(root).edges(), &[(r0, w), (r0, s_node)]);
+        // Moves root -> s (at position 1) to root -> t.
+        assert!(ctx.merge_into_with_deps(s_node, t, &[1]));
+        assert!(ctx.trail().entries_from(0).iter().any(|e| matches!(
+            e,
+            TrailEntry::EdgeRemoved { from, position: 1, .. } if *from == root
+        )));
+        let start = TableauTrail::position(cp_t);
+        let actions: Vec<EntryAction> = ctx
+            .trail()
+            .entries_from(start)
+            .iter()
+            .enumerate()
+            .map(|(i, e)| match e {
+                _ if i == 0 => EntryAction::Drop,
+                TrailEntry::EdgeAdded { target, .. } if *target == w => EntryAction::Undo,
+                _ => EntryAction::Keep,
+            })
+            .collect();
+        let remap = ctx.selective_undo_from(cp_t, &actions);
+        assert_eq!(ctx.graph().node(root).edges(), &[(r0, t)]);
+        ctx.rollback_to(cp_k.remap(&remap).expect("kept"));
+        let g = ctx.graph();
+        assert!(g.node(root).edges().is_empty());
+        assert!(g.node(root).in_edges().is_empty());
+        assert!(g.node(s_node).in_edges().is_empty());
+        assert!(g.node(t).in_edges().is_empty());
+        assert!(g.node(w).in_edges().is_empty());
+        assert_eq!(g.node(s_node).merged_into(), None);
+    }
+
+    /// The chain rule covers every prior-value key, not just parents.
+    #[test]
+    fn chain_rule_covers_redirects_and_nominals() {
+        let f = fixture();
+        let mut ctx = new_ctx(&f, true);
+        let a = ctx.new_node();
+        let b = ctx.new_node();
+        let ind = IndividualId::new(0);
+        let cp = ctx.checkpoint();
+        // Only classified, never undone, so the values need not be real.
+        let redirect = |node, prior| TrailEntry::MergedRedirect {
+            node,
+            new_target: b,
+            prior_redirect: prior,
+        };
+        let nominal = |prior| TrailEntry::NominalAssigned {
+            individual: ind,
+            prior,
+            node: a,
+            deps: crate::graph::DepSet::default(),
+        };
+        ctx.trail.record(redirect(a, None));
+        ctx.trail.record(nominal(None));
+        ctx.trail.record(redirect(b, None));
+        ctx.trail.record(redirect(a, Some(b)));
+        ctx.trail.record(nominal(Some(a)));
+        let start = TableauTrail::position(cp);
+        let mut actions = vec![
+            EntryAction::Drop,
+            EntryAction::Undo,
+            EntryAction::Undo,
+            EntryAction::Keep,
+            EntryAction::Keep,
+            EntryAction::Keep,
+        ];
+        ctx.trail().undo_later_writes(start, &mut actions);
+        assert_eq!(
+            actions,
+            [
+                EntryAction::Drop,
+                EntryAction::Undo,
+                EntryAction::Undo,
+                EntryAction::Keep,
+                EntryAction::Undo,
+                EntryAction::Undo,
+            ]
+        );
     }
 
     /// Rolling back past a tombstoned node's creator truncates it and keeps

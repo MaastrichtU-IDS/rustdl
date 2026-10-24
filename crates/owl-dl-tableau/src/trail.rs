@@ -144,7 +144,9 @@ pub enum EntryAction {
     /// Undone by key, then removed from the trail.
     Undo,
     /// Removed from the trail without undoing: markers, and an
-    /// `EdgeRemoved` whose edge's `EdgeAdded` is undone.
+    /// `EdgeRemoved` whose edge's `EdgeAdded` is undone. A `StableMark` is
+    /// always removed, whatever its action: the fixpoint it records predates
+    /// the undo (plan B4).
     Drop,
 }
 
@@ -177,11 +179,16 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     /// This checkpoint after `remap`, or `None` if its entry was removed.
+    /// `self` must predate the selective undo.
     #[must_use]
     pub fn remap(self, remap: &TrailRemap) -> Option<Self> {
         if self.position < remap.start {
             return Some(self);
         }
+        debug_assert!(
+            self.position < remap.start + remap.moved.len(),
+            "Checkpoint::remap: checkpoint taken after the selective undo"
+        );
         remap
             .moved
             .get(self.position - remap.start)
@@ -415,6 +422,21 @@ impl TableauTrail {
             },
             "selective_undo: a kept prior-value write follows an undone one"
         );
+        debug_assert!(
+            {
+                let mut a = actions.to_vec();
+                self.drop_removals_of_undone_edges(start, &mut a);
+                a == actions
+            },
+            "selective_undo: a removal of an undone edge is not dropped"
+        );
+        debug_assert!(
+            self.entries[start..]
+                .iter()
+                .zip(actions)
+                .all(|(e, a)| *a != EntryAction::Drop || droppable(e)),
+            "selective_undo: Drop on an entry that changed the graph"
+        );
         self.generation += 1;
         let mut touched = Vec::new();
         for (entry, action) in self.entries[start..].iter().zip(actions).rev() {
@@ -427,7 +449,7 @@ impl TableauTrail {
         self.entries.push(TrailEntry::SelectiveBarrier);
         let mut moved = Vec::with_capacity(tail.len());
         for (entry, action) in tail.into_iter().zip(actions) {
-            if *action == EntryAction::Keep {
+            if *action == EntryAction::Keep && !matches!(entry, TrailEntry::StableMark { .. }) {
                 moved.push(Some(self.entries.len()));
                 self.entries.push(entry);
             } else {
@@ -438,6 +460,21 @@ impl TableauTrail {
         touched.dedup();
         (TrailRemap { start, moved }, touched)
     }
+}
+
+/// Whether `entry` may be dropped without undoing it: it records no graph
+/// change, or it is an `EdgeRemoved` (whose `EdgeAdded` must be undone, which
+/// the removal-rule assertion checks).
+fn droppable(entry: &TrailEntry) -> bool {
+    matches!(
+        entry,
+        TrailEntry::Checkpoint
+            | TrailEntry::StableMark { .. }
+            | TrailEntry::MergeBegin { .. }
+            | TrailEntry::MergeEnd
+            | TrailEntry::SelectiveBarrier
+            | TrailEntry::EdgeRemoved { .. }
+    )
 }
 
 /// The key a prior-value entry writes, for [`TableauTrail::undo_later_writes`].
@@ -496,6 +533,10 @@ fn undo_keyed(entry: &TrailEntry, graph: &mut CompletionGraph, nodes: NodeUndo) 
             let from_node = graph.node_mut(from);
             let Some(pos) = from_node.edge_ids.iter().position(|&e| e == id) else {
                 // Already removed (its removal was dropped, plan B3).
+                debug_assert!(
+                    !graph.node(target).in_edge_ids.contains(&id),
+                    "EdgeAdded keyed undo: in-edge mirror without its out-edge"
+                );
                 return;
             };
             from_node.edges.remove(pos);

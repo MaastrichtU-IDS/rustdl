@@ -404,6 +404,11 @@ impl CompletionGraph {
                 && n.inequalities.is_empty(),
             "tombstone({id:?}): node still has labels, edges or inequalities"
         );
+        // Free when empty. In release, a misclassified node at least does not
+        // keep labels outside its (reset) label signature. Edges and marks are
+        // left alone: clearing one side would orphan its mirror.
+        n.labels.clear();
+        n.label_deps.clear();
         n.parent = None;
         n.merged_into = None;
         self.blocking[i] = BlockingSummary::default();

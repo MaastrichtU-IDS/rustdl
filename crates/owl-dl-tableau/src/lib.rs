@@ -44,6 +44,7 @@
 #[cfg(feature = "counters")]
 mod counters;
 mod deps;
+mod gonogo;
 mod graph;
 pub mod hyper;
 pub mod replay;
@@ -217,6 +218,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// #288 step 1c (E'): fold the existence deps of a derived fact's origin
     /// nodes into its ordinary deps. `RUSTDL_EXIST_DEPS_FOLD=1`, default OFF.
     exist_fold: bool,
+    /// #288 go/no-go diagnostic state (`RUSTDL_GONOGO=1`).
+    pub(crate) gonogo: crate::gonogo::State,
     /// Monotonic counter handing out the next `branch_id`. Reset to
     /// zero per tableau run; lives as long as the context.
     next_branch_id: u32,
@@ -397,6 +400,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
+            gonogo: crate::gonogo::State::default(),
             dkey_ranges: HashMap::new(),
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),
@@ -441,6 +445,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
+            gonogo: crate::gonogo::State::default(),
             dkey_ranges: HashMap::new(),
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),
@@ -490,6 +495,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
+            gonogo: crate::gonogo::State::default(),
             dkey_ranges: HashMap::new(),
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),

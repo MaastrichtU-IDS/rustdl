@@ -152,6 +152,7 @@ enum Expanded {
 /// next decision to branch on (#288 step 3b).
 fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
     loop {
+        crate::gonogo::tick(ctx);
         if max_depth == 0 {
             // Genuine depth-cap bottom-out — the harm the adaptive early-abandon
             // meters. Kept FIRST so `check_deadline`'s sticky side effect stays
@@ -178,6 +179,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                         deps.len()
                     );
                 }
+                crate::gonogo::jump(ctx, &deps);
                 SearchVerdict::Unsat(deps)
             }
             SaturationResult::Stalled => SearchVerdict::DepthLimit,
@@ -220,6 +222,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    ctx.gonogo.next_choose = true;
                     return Expanded::Open(Frame::or(
                         ctx,
                         max_depth,
@@ -246,6 +249,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                                     deps.len()
                                 );
                             }
+                            crate::gonogo::jump(ctx, &deps);
                             return Expanded::Done(SearchVerdict::Unsat(deps));
                         }
                         SaturationResult::Stalled => {
@@ -401,6 +405,8 @@ struct Frame {
     refuted: Vec<DepSet>,
     depth_limited: bool,
     early_return: Option<SearchVerdict>,
+    /// #288 go/no-go: this `Or` frame is the choose rule's.
+    gonogo_choose: bool,
 }
 
 /// What [`Frame::start_option`] did.
@@ -425,6 +431,7 @@ impl Frame {
         // Read before this frame's own id is pushed.
         let initial =
             crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()));
+        let gonogo_choose = false;
         let my_id = ctx.push_branch();
         // The distinct option leaves `earlier + 1` pairwise-distinct witnesses,
         // which a bound of `earlier` or less cannot accommodate.
@@ -440,6 +447,7 @@ impl Frame {
             refuted: Vec::new(),
             depth_limited: false,
             early_return: None,
+            gonogo_choose,
         }
     }
 
@@ -450,6 +458,7 @@ impl Frame {
         options: &[ConceptId],
         parent_deps: &[u32],
     ) -> Self {
+        let gonogo_choose = std::mem::take(&mut ctx.gonogo.next_choose);
         let my_id = ctx.push_branch();
         // Reorder disjuncts: try first those that don't *obviously* clash
         // with an existing label at `node`. A disjunct is "obvious clash"
@@ -478,6 +487,7 @@ impl Frame {
             refuted: Vec::new(),
             depth_limited: false,
             early_return: None,
+            gonogo_choose,
         }
     }
 
@@ -489,6 +499,7 @@ impl Frame {
         let k = self.next;
         self.next += 1;
         let (my_id, max_depth, total) = (self.my_id, self.max_depth, self.total);
+        let gonogo_choose = self.gonogo_choose;
         match &self.kind {
             FrameKind::Merge { open } => {
                 let merge_into = open.partners.get(k);
@@ -506,6 +517,22 @@ impl Frame {
                             open.pivot.index()
                         ),
                     }
+                }
+                if crate::gonogo::enabled() {
+                    let mut memo = std::collections::HashMap::new();
+                    let mut pre = open
+                        .partners
+                        .first()
+                        .map(|(_, d)| d.clone())
+                        .unwrap_or_default();
+                    for n in
+                        std::iter::once(open.pivot).chain(open.partners.iter().map(|(w, _)| *w))
+                    {
+                        pre =
+                            crate::deps::union(&pre, &crate::gonogo::existence(ctx, n, &mut memo));
+                    }
+                    let at = ctx.trail().len();
+                    crate::gonogo::frame(ctx, my_id, at, pre, 'm');
                 }
                 let cp = ctx.checkpoint();
                 if let Some((w, pair_deps)) = merge_into {
@@ -562,6 +589,16 @@ impl Frame {
                 // explaining label sub-set is the principled choice but
                 // requires deps on labels-as-evidence the current trail
                 // doesn't track.)
+                if crate::gonogo::enabled() {
+                    let mut memo = std::collections::HashMap::new();
+                    let pre = crate::deps::union(
+                        parent_deps,
+                        &crate::gonogo::existence(ctx, *node, &mut memo),
+                    );
+                    let at = ctx.trail().len();
+                    let kind = if gonogo_choose { 'c' } else { 'o' };
+                    crate::gonogo::frame(ctx, my_id, at, pre, kind);
+                }
                 let cp = ctx.checkpoint();
                 // Each disjunct carries: (a) the parent disjunction's deps —
                 // without them an inner clash returns `clash_deps` missing
@@ -710,6 +747,7 @@ impl Frame {
                     }
                 }
             }
+            crate::gonogo::jump(ctx, &combined);
             SearchVerdict::Unsat(combined)
         }
     }

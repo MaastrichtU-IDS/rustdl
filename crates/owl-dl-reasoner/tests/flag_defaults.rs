@@ -517,6 +517,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::wedge_consistency_enabled,
             true,
         ),
+        (
+            "RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY",
+            owl_dl_reasoner::consistency_data_counting_verify_enabled,
+            true,
+        ),
     ]
 }
 

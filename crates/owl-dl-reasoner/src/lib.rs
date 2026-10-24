@@ -5323,6 +5323,50 @@ pub fn wedge_consistency_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_CONSISTENCY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// #344: whether a wedge `Sat` on consistency is NOT trusted when the ontology
+/// counts data values (a `≥n`/`≤n` over a `DKey` filler anywhere). The wedge does
+/// no concrete-domain counting, so its `Sat` says nothing about such a limit:
+/// `≤1 p.DataOneOf(1 2)` on an individual with values 1 and 2 was reported
+/// consistent. Under the flag the `Sat` is verified by one main-tableau run, whose
+/// `concrete_domain_clash` counts, bounded by
+/// [`consistency_data_counting_verify_ms`]. A clash found there is an
+/// inconsistency; a give-up keeps the wedge's answer (`consistent`), so the check
+/// can only turn a wrong `consistent` into `inconsistent`, never cost an answer.
+///
+/// **Default ON** (`=0` reverts).
+#[must_use]
+pub fn consistency_data_counting_verify_enabled() -> bool {
+    std::env::var_os("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY").is_none_or(|v| v != "0")
+}
+
+/// Budget in ms for the #344 verification run. **Default 1000.** The counting
+/// clashes it exists for decide in milliseconds; a run that needs longer is on a
+/// large `ABox` where the tableau would not finish anyway (`ore_ont_6132` and
+/// `ore_ont_6934` do not finish in 100 s), and its give-up costs only this budget.
+#[must_use]
+pub fn consistency_data_counting_verify_ms() -> u64 {
+    std::env::var("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000)
+}
+
+/// Whether some `≥n`/`≤n` anywhere in `pool` counts values of a `DKey` range
+/// (#344). Position-independent, so a constraint on a complex `ClassAssertion`, a
+/// domain filler or a complex-LHS GCI counts too; a superset of where one can apply.
+fn pool_has_dkey_counting(
+    pool: &ConceptPool,
+    dkey_ranges: &std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
+) -> bool {
+    !dkey_ranges.is_empty()
+        && pool.iter_exprs().any(|c| match c {
+            ConceptExpr::Min(_, _, f) | ConceptExpr::Max(_, _, f) => {
+                matches!(pool.get(*f), ConceptExpr::Atomic(id) if dkey_ranges.contains_key(id))
+            }
+            _ => false,
+        })
+}
+
 /// Lever A (2026-07-20): when the ontology uses NO nominals, the `ABox` is
 /// irrelevant to class subsumption, so the per-pair classification tableau
 /// probes do NOT seed it. This eliminates the `ABox`-driven completion-graph
@@ -6923,7 +6967,11 @@ pub fn is_consistent_internal_bounded(
     let wedge_deadline = wedge_cap.min(deadline);
     match prepared.consistency_wedge(Some(wedge_deadline)) {
         Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return Ok(Some(false)),
-        Some(owl_dl_tableau::hyper::HyperResult::Sat) => return Ok(Some(true)),
+        // #344: verify a `Sat` the wedge reached without counting data values; a
+        // give-up keeps the wedge's answer.
+        Some(owl_dl_tableau::hyper::HyperResult::Sat) => {
+            return Ok(Some(prepared.verify_wedge_sat(Some(deadline))?));
+        }
         Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
     }
     if std::time::Instant::now() >= deadline {
@@ -7017,6 +7065,24 @@ fn is_consistent_internal_full(
             }
             return Ok((
                 false,
+                QueryStats {
+                    answered_by_saturation: false,
+                    pure_el_mode: false,
+                    incomplete: false,
+                },
+            ));
+        }
+        // #344: when the ontology counts data values, verify the wedge's `Sat` (it
+        // counts none) on the main tableau; a give-up keeps the wedge's answer.
+        Some(owl_dl_tableau::hyper::HyperResult::Sat) if prepared.wedge_sat_skips_data_counting => {
+            let consistent = prepared.verify_wedge_sat(None)?;
+            if trace {
+                eprintln!(
+                    "consistency: wedge Sat, data counting verified: consistent={consistent}"
+                );
+            }
+            return Ok((
+                consistent,
                 QueryStats {
                     answered_by_saturation: false,
                     pure_el_mode: false,
@@ -8046,6 +8112,11 @@ pub(crate) struct PreparedOntology {
     /// as `data_counting_classes`. Empty unless the ontology authors `Min`/`Max` over a
     /// nominal-bounded class.
     pub(crate) nominal_counting_classes: std::collections::HashSet<owl_dl_core::ir::ClassId>,
+    /// #344: a wedge consistency `Sat` must not be trusted, because the ontology
+    /// counts data values the wedge does not count. `true` iff the wedge route is
+    /// built, [`consistency_data_counting_verify_enabled`], and
+    /// [`pool_has_dkey_counting`].
+    pub(crate) wedge_sat_skips_data_counting: bool,
     /// `ABox`-seeded wedge consistency state. `Some` iff
     /// [`wedge_consistency_enabled`] and the ontology has `ABox` axioms;
     /// `None` otherwise (`ABox`-free inputs pay nothing, classify
@@ -8665,6 +8736,9 @@ impl PreparedOntology {
         // nominal/role id is matched-by-construction with the clause set.
         let consistency = (wedge_consistency_enabled() && internal_has_individuals(&internal))
             .then(|| ConsistencyCache::build(&internal));
+        let wedge_sat_skips_data_counting = consistency.is_some()
+            && consistency_data_counting_verify_enabled()
+            && pool_has_dkey_counting(&internal.concepts, &dkey_ranges);
         // Phase 1b: build the snapshot cache from the same un-mutated
         // ontology, iff `RUSTDL_SNAPSHOT_CAPTURE` is ON. The cache's
         // `clausify_with_stats` + `BackPropRisk::classify_ontology`
@@ -8750,9 +8824,34 @@ impl PreparedOntology {
             data_counting_classes,
             nominal_counting_classes,
             complex_qualifier_counting_classes,
+            wedge_sat_skips_data_counting,
             consistency,
             tableau_id: TableauIdBudget::default(),
         }))
+    }
+
+    /// The consistency answer after a wedge `Sat` (#344). When the ontology counts
+    /// data values the wedge does not, one main-tableau run bounded by
+    /// [`consistency_data_counting_verify_ms`] (and `deadline`) checks it: a clash
+    /// is `false`. Otherwise, and on a give-up, the wedge's `true` stands.
+    pub(crate) fn verify_wedge_sat(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<bool, ReasonError> {
+        if !self.wedge_sat_skips_data_counting {
+            return Ok(true);
+        }
+        let own = std::time::Instant::now()
+            + std::time::Duration::from_millis(consistency_data_counting_verify_ms());
+        let dl = deadline.map_or(own, |d| d.min(own));
+        let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
+        match self.decide_consistency(Some(dl)) {
+            Ok(Some(consistent)) => Ok(consistent),
+            // A give-up (deadline, node cap, or the search-depth bail-out the tableau
+            // reports as `NoVerdict`) keeps the wedge's answer.
+            Ok(None) | Err(ReasonError::NoVerdict) => Ok(true),
+            Err(e) => Err(e),
+        }
     }
 
     /// `ABox`-seeded wedge consistency verdict, or `None` when the wedge

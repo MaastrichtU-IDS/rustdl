@@ -7,6 +7,20 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **`consistent` no longer trusts the hypertableau's "satisfiable" when the ontology counts
+  data values (#344), `RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY`, default ON (`=0` reverts).**
+  `a : P`, `P ⊑ ≤1 p.DataOneOf(1 2)`, `p(a,1)` and `p(a,2)` was reported consistent, where
+  HermiT says inconsistent: the wedge, which answers consistency first, counts no data values.
+  When some `≥n`/`≤n` over a data range occurs anywhere in the ontology, a wedge `Sat` is now
+  verified by one main-tableau run, which counts, bounded by
+  `RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS` (default 1000). A clash there means inconsistent;
+  a give-up keeps the wedge's `consistent`, so no answer is lost. Classify's consistency probe
+  does the same. On the three ORE ontologies where the run gives up (`ore_ont_9899`, `6132` and
+  `6934`, all consistent per HermiT and Konclude) the answer is unchanged, at +1.0 to +2.2 CPU-s.
+
+  Still missed, pinned, because the tableau does not count them either: values on a
+  sub-property, decimal, double and dateTime enumeration limits, and an unqualified `≥n`
+  against a range enumeration.
 - **An integer range and an integer enumeration on one data property are counted together
   (#334).** They were counted in separate `card_sat` buckets. So `≥2 p.xsd:integer` with
   `∀p.DataOneOf(1)` was satisfiable with nothing dropped, where HermiT says unsatisfiable. So was

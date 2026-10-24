@@ -14,7 +14,7 @@
 //! rule propagates this `DepSet` to its conclusions during saturation
 //! (see [`crate::deps`] + the per-rule plumbing in [`crate::rules`]).
 //!
-//! [`branch`] reads the clash deps. If its own `branch_id` is *not*
+//! A search frame reads the clash deps. If its own `branch_id` is *not*
 //! in there, this disjunction's choice didn't contribute to the clash
 //! — every sibling disjunct would clash for the same upstream
 //! reason, so we propagate the [`SearchVerdict::Unsat`] (with the
@@ -40,11 +40,11 @@ use owl_dl_core::{ConceptExpr, ConceptId, ConceptPool};
 /// defensive against rule bugs.
 const SATURATE_ITERS: usize = 4096;
 
-/// Outcome of one call to [`search`] or [`branch`].
+/// Outcome of a search, or of one decision frame within it.
 ///
 /// Generalises the previous `Option<bool>` API: `Sat` is what
 /// callers want for a model existence check; `Unsat` carries the
-/// `DepSet` so [`branch`] can decide whether the failure depends on
+/// `DepSet` so a search frame can decide whether the failure depends on
 /// its own decision; `DepthLimit` covers both the recursion cap and
 /// the cooperative deadline (callers disambiguate via
 /// [`TableauContext::deadline_reached`]).
@@ -103,108 +103,169 @@ fn trace_enabled() -> bool {
 }
 
 /// Drive deterministic saturation interleaved with `⊔` branching.
+///
+/// A depth-first walk over decisions (#288 step 3b): an explicit stack of
+/// [`Frame`]s, each with the option it is trying and that option's checkpoint,
+/// stands in for recursion. Every side effect happens in the order the
+/// recursive version had.
 pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchVerdict {
-    if max_depth == 0 {
-        // Genuine depth-cap bottom-out — the harm the adaptive early-abandon
-        // meters. Kept FIRST so `check_deadline`'s sticky side effect stays
-        // short-circuited exactly as before.
-        ctx.note_depth_cap_hit();
-        if trace_enabled() {
-            eprintln!("# trace search depth=0_or_deadline");
-        }
-        return SearchVerdict::DepthLimit;
-    }
-    // `early_abandoned` is a latched flag and is `false` whenever the lever is
-    // unarmed, so flag-OFF this is verbatim the previous predicate.
-    if ctx.check_deadline() || ctx.early_abandoned() {
-        if trace_enabled() {
-            eprintln!("# trace search depth=0_or_deadline");
-        }
-        return SearchVerdict::DepthLimit;
-    }
-    match saturate(ctx, SATURATE_ITERS) {
-        SaturationResult::Clash(_, deps) => {
-            if trace_enabled() {
-                eprintln!(
-                    "# trace search depth={max_depth} clash=immediate deps={}",
-                    deps.len()
-                );
-            }
-            SearchVerdict::Unsat(deps)
-        }
-        SaturationResult::Stalled => SearchVerdict::DepthLimit,
-        SaturationResult::NodeCapped => SearchVerdict::NodeCap,
-        SaturationResult::Stable => {
-            // Step 0 (#293): an over-full `≤n` with more than one pair that may
-            // merge. Saturation used to commit to the first pair; which pair
-            // to merge is a real choice, so branch over them here.
-            if let Some(open) = first_open_max(ctx) {
-                if trace_enabled() {
-                    eprintln!(
-                        "# trace search depth={max_depth} max pivot={} options={} graph_nodes={}",
-                        open.pivot.index(),
-                        open.partners.len(),
-                        ctx.graph().len()
-                    );
-                }
-                return branch_merge(ctx, max_depth, open);
-            }
-            // Step 1: ⊔ branching has priority — it's structurally
-            // cheaper and keeps the search shape predictable.
-            if let Some((node, _or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
-                if trace_enabled() {
-                    eprintln!(
-                        "# trace search depth={max_depth} disj node={} options={} graph_nodes={}",
-                        node.index(),
-                        disjuncts.len(),
-                        ctx.graph().len()
-                    );
-                }
-                return branch(ctx, max_depth, node, &disjuncts, &or_deps);
-            }
-            // Step 2: choose rule for `≤n R.C` — pick a neighbour
-            // that doesn't yet have `C` or `¬C` and branch.
-            if let Some((node, c, c_neg)) = first_open_choose(ctx) {
-                if trace_enabled() {
-                    eprintln!(
-                        "# trace search depth={max_depth} choose node={} graph_nodes={}",
-                        node.index(),
-                        ctx.graph().len()
-                    );
-                }
-                return branch(ctx, max_depth, node, &[c, c_neg], &DepSet::new());
-            }
-            // #294: `saturate` can stop with work left. A label added to a
-            // node does not dirty its neighbours, so a rule there that reads
-            // it (the `≤n` count at the parent) may not re-run, and only the
-            // next call's mark-all catches it. A `Sat` leaf has no next call,
-            // so run one: if it changes anything, search the new state.
-            if crate::sat_leaf_resaturate_enabled() {
-                let before = ctx.trail().len();
-                match saturate(ctx, SATURATE_ITERS) {
-                    SaturationResult::Stable if !ctx.trail().mutated_since(before) => {}
-                    SaturationResult::Stable => return search(ctx, max_depth),
-                    SaturationResult::Clash(_, deps) => {
-                        if trace_enabled() {
-                            eprintln!(
-                                "# trace search depth={max_depth} clash=sat_leaf_resaturate deps={}",
-                                deps.len()
-                            );
-                        }
-                        return SearchVerdict::Unsat(deps);
+    // Each open frame, with the option it is trying and that option's checkpoint.
+    let mut stack: Vec<(Frame, usize, Checkpoint)> = Vec::new();
+    let mut next = expand(ctx, max_depth);
+    loop {
+        // Run frames until one needs a child search or a verdict is reached.
+        let verdict = loop {
+            match next {
+                Expanded::Done(v) => break v,
+                Expanded::Open(mut frame) => match frame.start_option(ctx) {
+                    Start::Exhausted => break frame.finish(ctx),
+                    Start::Child(k, cp) => {
+                        let depth = frame.max_depth - 1;
+                        stack.push((frame, k, cp));
+                        next = expand(ctx, depth);
                     }
-                    SaturationResult::Stalled => return SearchVerdict::DepthLimit,
-                    SaturationResult::NodeCapped => return SearchVerdict::NodeCap,
-                }
+                    Start::Decided(k, cp, v) => {
+                        frame.on_child(ctx, k, cp, v);
+                        next = Expanded::Open(frame);
+                    }
+                },
             }
+        };
+        // Hand the verdict to the frame that asked for it.
+        let Some((mut frame, k, cp)) = stack.pop() else {
+            return verdict;
+        };
+        frame.on_child(ctx, k, cp, verdict);
+        next = Expanded::Open(frame);
+    }
+}
+
+/// What [`expand`] found.
+enum Expanded {
+    /// A verdict for this point of the search.
+    Done(SearchVerdict),
+    /// A decision to branch on.
+    Open(Frame),
+}
+
+/// Saturate at depth `max_depth` and find what to do next: a verdict, or the
+/// next decision to branch on (#288 step 3b).
+fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
+    loop {
+        if max_depth == 0 {
+            // Genuine depth-cap bottom-out — the harm the adaptive early-abandon
+            // meters. Kept FIRST so `check_deadline`'s sticky side effect stays
+            // short-circuited exactly as before.
+            ctx.note_depth_cap_hit();
             if trace_enabled() {
-                eprintln!(
-                    "# trace search depth={max_depth} sat graph_nodes={}",
-                    ctx.graph().len()
-                );
+                eprintln!("# trace search depth=0_or_deadline");
             }
-            SearchVerdict::Sat
+            return Expanded::Done(SearchVerdict::DepthLimit);
         }
+        // `early_abandoned` is a latched flag and is `false` whenever the lever is
+        // unarmed, so flag-OFF this is verbatim the previous predicate.
+        if ctx.check_deadline() || ctx.early_abandoned() {
+            if trace_enabled() {
+                eprintln!("# trace search depth=0_or_deadline");
+            }
+            return Expanded::Done(SearchVerdict::DepthLimit);
+        }
+        let verdict = match saturate(ctx, SATURATE_ITERS) {
+            SaturationResult::Clash(_, deps) => {
+                if trace_enabled() {
+                    eprintln!(
+                        "# trace search depth={max_depth} clash=immediate deps={}",
+                        deps.len()
+                    );
+                }
+                SearchVerdict::Unsat(deps)
+            }
+            SaturationResult::Stalled => SearchVerdict::DepthLimit,
+            SaturationResult::NodeCapped => SearchVerdict::NodeCap,
+            SaturationResult::Stable => {
+                // Step 0 (#293): an over-full `≤n` with more than one pair that may
+                // merge. Saturation used to commit to the first pair; which pair
+                // to merge is a real choice, so branch over them here.
+                if let Some(open) = first_open_max(ctx) {
+                    if trace_enabled() {
+                        eprintln!(
+                            "# trace search depth={max_depth} max pivot={} options={} graph_nodes={}",
+                            open.pivot.index(),
+                            open.partners.len(),
+                            ctx.graph().len()
+                        );
+                    }
+                    return Expanded::Open(Frame::merge(ctx, max_depth, open));
+                }
+                // Step 1: ⊔ branching has priority — it's structurally
+                // cheaper and keeps the search shape predictable.
+                if let Some((node, _or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
+                    if trace_enabled() {
+                        eprintln!(
+                            "# trace search depth={max_depth} disj node={} options={} graph_nodes={}",
+                            node.index(),
+                            disjuncts.len(),
+                            ctx.graph().len()
+                        );
+                    }
+                    return Expanded::Open(Frame::or(ctx, max_depth, node, &disjuncts, &or_deps));
+                }
+                // Step 2: choose rule for `≤n R.C` — pick a neighbour
+                // that doesn't yet have `C` or `¬C` and branch.
+                if let Some((node, c, c_neg)) = first_open_choose(ctx) {
+                    if trace_enabled() {
+                        eprintln!(
+                            "# trace search depth={max_depth} choose node={} graph_nodes={}",
+                            node.index(),
+                            ctx.graph().len()
+                        );
+                    }
+                    return Expanded::Open(Frame::or(
+                        ctx,
+                        max_depth,
+                        node,
+                        &[c, c_neg],
+                        &DepSet::new(),
+                    ));
+                }
+                // #294: `saturate` can stop with work left. A label added to a
+                // node does not dirty its neighbours, so a rule there that reads
+                // it (the `≤n` count at the parent) may not re-run, and only the
+                // next call's mark-all catches it. A `Sat` leaf has no next call,
+                // so run one: if it changes anything, search the new state.
+                if crate::sat_leaf_resaturate_enabled() {
+                    let before = ctx.trail().len();
+                    match saturate(ctx, SATURATE_ITERS) {
+                        SaturationResult::Stable if !ctx.trail().mutated_since(before) => {}
+                        // Search the new state at the same depth.
+                        SaturationResult::Stable => continue,
+                        SaturationResult::Clash(_, deps) => {
+                            if trace_enabled() {
+                                eprintln!(
+                                    "# trace search depth={max_depth} clash=sat_leaf_resaturate deps={}",
+                                    deps.len()
+                                );
+                            }
+                            return Expanded::Done(SearchVerdict::Unsat(deps));
+                        }
+                        SaturationResult::Stalled => {
+                            return Expanded::Done(SearchVerdict::DepthLimit);
+                        }
+                        SaturationResult::NodeCapped => {
+                            return Expanded::Done(SearchVerdict::NodeCap);
+                        }
+                    }
+                }
+                if trace_enabled() {
+                    eprintln!(
+                        "# trace search depth={max_depth} sat graph_nodes={}",
+                        ctx.graph().len()
+                    );
+                }
+                SearchVerdict::Sat
+            }
+        };
+        return Expanded::Done(verdict);
     }
 }
 
@@ -297,48 +358,6 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
     None
 }
 
-/// Branch on an open `≤n` (#293): merge the pivot into each mergeable earlier
-/// witness in turn, then try it distinct from all of them. Mirrors [`branch`]:
-/// a merge carries this branch's id, a clash that does not depend on it
-/// back-jumps, and if every option fails the `≤n` is unsatisfiable under every
-/// active decision (the distinctness that rules out other merges is not
-/// tracked precisely, so this stays conservative, as `apply_max`'s `⊥` arm
-/// does). Each merge's deps cover every witness (see [`first_open_max`]).
-fn branch_merge(
-    ctx: &mut TableauContext<'_, '_, '_>,
-    max_depth: usize,
-    open: OpenMax,
-) -> SearchVerdict {
-    let frame = Frame::merge(ctx, max_depth, open);
-    run_frame(ctx, frame)
-}
-
-fn branch(
-    ctx: &mut TableauContext<'_, '_, '_>,
-    max_depth: usize,
-    node: NodeId,
-    options: &[ConceptId],
-    parent_deps: &[u32],
-) -> SearchVerdict {
-    let frame = Frame::or(ctx, max_depth, node, options, parent_deps);
-    run_frame(ctx, frame)
-}
-
-/// Try a frame's options in order, searching below each, until one is
-/// satisfiable, a clash back-jumps past the frame, or the options run out.
-fn run_frame(ctx: &mut TableauContext<'_, '_, '_>, mut frame: Frame) -> SearchVerdict {
-    loop {
-        match frame.start_option(ctx) {
-            Start::Exhausted => return frame.finish(ctx),
-            Start::Child(k, cp) => {
-                let verdict = search(ctx, frame.max_depth - 1);
-                frame.on_child(ctx, k, cp, verdict);
-            }
-            Start::Decided(k, cp, verdict) => frame.on_child(ctx, k, cp, verdict),
-        }
-    }
-}
-
 /// What a frame chooses between (#288 step 3).
 enum FrameKind {
     /// A `⊔` label, or the choose rule's `C ⊔ ¬C`, at `node`.
@@ -393,6 +412,13 @@ enum Start {
 }
 
 impl Frame {
+    /// Branch on an open `≤n` (#293): merge the pivot into each mergeable
+    /// earlier witness in turn, then try it distinct from all of them. A merge
+    /// carries this frame's id, a clash that does not depend on it back-jumps,
+    /// and if every option fails the `≤n` is unsatisfiable under every active
+    /// decision (the distinctness that rules out other merges is not tracked
+    /// precisely, so this stays conservative, as `apply_max`'s `⊥` arm does).
+    /// Each merge's deps cover every witness (see [`first_open_max`]).
     fn merge(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize, open: OpenMax) -> Self {
         // Read before this frame's own id is pushed.
         let initial =

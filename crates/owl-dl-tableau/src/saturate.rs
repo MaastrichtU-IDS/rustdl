@@ -38,7 +38,7 @@ pub enum SaturationResult {
     /// A clash was found at some node, with the [`DepSet`] of the
     /// offending complementary labels. The expansion is closed —
     /// for a satisfiability check this means *unsatisfiable* along
-    /// the current branch. The deps tell `search::branch` which
+    /// the current branch. The deps tell a search frame (`search.rs`) which
     /// branch decisions the clash actually depended on, enabling
     /// dependency-directed back-jumping.
     Clash(NodeId, DepSet),

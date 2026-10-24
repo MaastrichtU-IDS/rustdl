@@ -208,7 +208,7 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// search returns to distinguish "depth-limited" from "timed out".
     deadline_hit: bool,
     /// Stack of `branch_id`s currently in scope (outer-most first).
-    /// [`crate::search::branch`] pushes a fresh id when it enters a
+    /// a search frame (`crate::search`) pushes a fresh id when it enters a
     /// disjunction and pops it on the way out. Rules use the stack
     /// to tag derived labels' [`crate::DepSet`]s with the active
     /// branch decisions. Phase 4 DDB — see
@@ -223,7 +223,7 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// after subtracting the trying branch's own `my_id` — were
     /// `preconditions`. The implication: whenever `preconditions ⊆
     /// active_branches`, asserting `bad_disjunct` at `node` is known
-    /// unsat under the current context, so [`crate::search::branch`]
+    /// unsat under the current context, so a search frame (`crate::search`)
     /// skips it without paying for the checkpoint/recurse/rollback.
     ///
     /// Persists across rollbacks (that's the whole point — learning
@@ -693,6 +693,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             "TableauContext: branch id counter overflowed u32 — \
              pathological search tree",
         );
+        // Ids only grow and frames close in reverse order, so the active set
+        // stays sorted, which the clash-dep unions rely on (#288).
+        debug_assert!(
+            self.active_branches.last().is_none_or(|&last| last < id),
+            "active branch ids must stay sorted"
+        );
         self.active_branches.push(id);
         id
     }
@@ -716,7 +722,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Returns `Some(preconditions)` if any learned entry's
     /// preconditions are a subset of the current `active_branches`,
     /// meaning the disjunct is known unsat in this context and
-    /// [`crate::search::branch`] can skip it. Returns `None` if no
+    /// a search frame (`crate::search`) can skip it. Returns `None` if no
     /// applicable no-good exists.
     #[doc(hidden)]
     pub fn nogood_blocks(
@@ -738,7 +744,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     /// Record a conflict-driven no-good. Called by
-    /// [`crate::search::branch`] when a disjunct's failure carries
+    /// a search frame (`crate::search`) when a disjunct's failure carries
     /// `clash_deps` that include the trying branch's `my_id`; the
     /// stored `preconditions` are `clash_deps − {my_id}` (the
     /// ancestor branch decisions that the failure additionally
@@ -757,7 +763,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
 
     /// CDBL Phase 1: record that branch `branch_id` asserted
     /// disjunct concept `disjunct` at `node`. Called by
-    /// [`crate::search::branch`] just before it asserts each
+    /// a search frame (`crate::search`) just before it asserts each
     /// disjunct, so the latest entry for a branch id reflects the
     /// choice currently under trial. The `decision_labels` vector
     /// is indexed by branch id and grown on demand.

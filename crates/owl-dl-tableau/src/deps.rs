@@ -6,7 +6,7 @@
 //! 1. **Union** — when a conclusion is derived from two antecedents
 //!    (an `∀R.C` label *and* an R-edge, say), the conclusion's deps
 //!    are the union of both antecedents' deps.
-//! 2. **Membership** — `branch()` checks whether a clash deps set
+//! 2. **Membership** — a search frame checks whether a clash deps set
 //!    contains its own `branch_id` to decide whether to keep trying
 //!    options or jump back.
 //!

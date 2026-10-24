@@ -208,7 +208,7 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// search returns to distinguish "depth-limited" from "timed out".
     deadline_hit: bool,
     /// Stack of `branch_id`s currently in scope (outer-most first).
-    /// [`crate::search::branch`] pushes a fresh id when it enters a
+    /// a search frame (`crate::search`) pushes a fresh id when it enters a
     /// disjunction and pops it on the way out. Rules use the stack
     /// to tag derived labels' [`crate::DepSet`]s with the active
     /// branch decisions. Phase 4 DDB — see
@@ -223,7 +223,7 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// after subtracting the trying branch's own `my_id` — were
     /// `preconditions`. The implication: whenever `preconditions ⊆
     /// active_branches`, asserting `bad_disjunct` at `node` is known
-    /// unsat under the current context, so [`crate::search::branch`]
+    /// unsat under the current context, so a search frame (`crate::search`)
     /// skips it without paying for the checkpoint/recurse/rollback.
     ///
     /// Persists across rollbacks (that's the whole point — learning
@@ -547,7 +547,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     /// Cap the search at a wall-clock instant. The driver in
-    /// [`crate::search`] consults it on every recursion and bails out
+    /// [`crate::search`] consults it on every expansion and bails out
     /// (returning `None`) the moment the deadline has passed. Use this
     /// to bound per-pair tableau time in higher-level classifiers
     /// without resorting to OS-thread cancellation.
@@ -685,13 +685,20 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
 
     /// Allocate the next fresh `branch_id` and push it onto the
     /// active-branches stack. Returns the freshly issued id.
-    /// `branch()` calls this on entry, [`Self::pop_branch`] on exit.
+    /// `Frame::or` and `Frame::merge` call this on entry; `Frame::finish`
+    /// calls [`Self::pop_branch`] on exit.
     #[doc(hidden)]
     pub fn push_branch(&mut self) -> u32 {
         let id = self.next_branch_id;
         self.next_branch_id = self.next_branch_id.checked_add(1).expect(
             "TableauContext: branch id counter overflowed u32 — \
              pathological search tree",
+        );
+        // Ids only grow and frames close in reverse order, so the active set
+        // stays sorted, which the clash-dep unions rely on (#288).
+        debug_assert!(
+            self.active_branches.last().is_none_or(|&last| last < id),
+            "active branch ids must stay sorted"
         );
         self.active_branches.push(id);
         id
@@ -716,7 +723,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Returns `Some(preconditions)` if any learned entry's
     /// preconditions are a subset of the current `active_branches`,
     /// meaning the disjunct is known unsat in this context and
-    /// [`crate::search::branch`] can skip it. Returns `None` if no
+    /// a search frame (`crate::search`) can skip it. Returns `None` if no
     /// applicable no-good exists.
     #[doc(hidden)]
     pub fn nogood_blocks(
@@ -738,7 +745,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     /// Record a conflict-driven no-good. Called by
-    /// [`crate::search::branch`] when a disjunct's failure carries
+    /// a search frame (`crate::search`) when a disjunct's failure carries
     /// `clash_deps` that include the trying branch's `my_id`; the
     /// stored `preconditions` are `clash_deps − {my_id}` (the
     /// ancestor branch decisions that the failure additionally
@@ -757,7 +764,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
 
     /// CDBL Phase 1: record that branch `branch_id` asserted
     /// disjunct concept `disjunct` at `node`. Called by
-    /// [`crate::search::branch`] just before it asserts each
+    /// a search frame (`crate::search`) just before it asserts each
     /// disjunct, so the latest entry for a branch id reflects the
     /// choice currently under trial. The `decision_labels` vector
     /// is indexed by branch id and grown on demand.
@@ -3862,7 +3869,7 @@ mod tests {
     #[test]
     fn backjumping_unsat_inside_branch_keeps_state_clean() {
         // L(x) = {A, ¬A, A ⊔ B}. The clash on `{A, ¬A}` is
-        // pre-branch — even after `branch()` allocates a `branch_id`
+        // pre-branch — even after `Frame::or` allocates a `branch_id`
         // and tries adding A, the saturation finds the clash with
         // *zero* deps (neither label depends on `branch_id`). Because
         // `branch_id ∉ {}`, back-jumping fires: branch() returns

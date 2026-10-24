@@ -154,17 +154,18 @@ fn values_inside_a_narrower_limit_are_a_known_miss() {
     )));
 }
 
-/// KNOWN MISS, pre-existing: an enumeration limit inside an intersection is not
-/// counted (DP-2b reads only direct `SubClassOf` limits). `HermiT` and Konclude
-/// say inconsistent. The direct form is counted.
+/// An enumeration limit inside an intersection. DP-2b reads only direct
+/// `SubClassOf` limits, so this was a miss; since #344 the main tableau verifies
+/// the consistency answer of an ontology that counts data values, and catches it.
+/// `HermiT` and Konclude say inconsistent. The direct form is counted by DP-2b.
 #[test]
-fn an_enumeration_limit_inside_an_intersection_is_a_known_miss() {
+fn an_enumeration_limit_inside_an_intersection_is_counted() {
     assert!(!consistent(&limit(
         "DataOneOf(\"a\" \"b\")",
         "\"a\"",
         "\"b\""
     )));
-    assert!(consistent(
+    assert!(!consistent(
         "EquivalentClasses(:C ObjectIntersectionOf(:A DataMaxCardinality(1 :p DataOneOf(\"a\" \"b\"))))\n\
          ClassAssertion(:C :a)\n\
          DataPropertyAssertion(:p :a \"a\") DataPropertyAssertion(:p :a \"b\")"

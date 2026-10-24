@@ -4974,3 +4974,44 @@ pub fn reseed_verify_enabled() -> bool {
 pub fn reseed_at_leaf_enabled() -> bool {
     std::env::var_os("RUSTDL_RESEED_AT_LEAF").is_none_or(|v| v != "0")
 }
+
+#[cfg(test)]
+mod step1c_fold_canary {
+    use super::*;
+    use owl_dl_core::{AbsorbedTBox, ClassId, Role, RoleHierarchyBuilder, RoleId};
+
+    /// #288 step 1c (E'): `A ⊓ B` reaches a live root `p` from `m`, which
+    /// exists only under decision 9, over a non-tree edge; `apply_and` then
+    /// derives `A` at `p`. Selective undo must remove `A` when `m` dies, so
+    /// `A`'s deps must carry `m`'s existence. Returns `A`'s deps at `p`.
+    fn and_leak(fold: bool) -> DepSet {
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let ab = pool.and([a, b]);
+        let all = pool.all(Role::Named(RoleId::new(1)), ab);
+        let mut tbox = AbsorbedTBox::default();
+        tbox.finalize();
+        let hierarchy = RoleHierarchyBuilder::with_roles(2).build();
+        let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
+        ctx.set_exist_deps_fold(fold);
+        let root = ctx.new_node();
+        let m = ctx.new_successor_with_deps(root, RoleId::new(0), &[9]);
+        let p = ctx.new_node();
+        ctx.add_edge_with_deps(m, RoleId::new(1), p, &[]);
+        ctx.add_label_with_deps(m, all, &[]);
+        crate::rules::apply_forall(&mut ctx, m);
+        crate::rules::apply_and(&mut ctx, p);
+        ctx.label_deps_of(p, a).expect("A derived at p").clone()
+    }
+
+    #[test]
+    fn fold_carries_origin_existence_through_same_node_rules() {
+        assert_eq!(and_leak(true).as_slice(), &[9]);
+    }
+
+    #[test]
+    fn without_fold_the_same_node_consequence_leaks() {
+        assert!(and_leak(false).is_empty());
+    }
+}

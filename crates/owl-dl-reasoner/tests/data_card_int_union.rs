@@ -61,14 +61,13 @@ fn c_unsat(body: &str) -> bool {
 
 /// `[lo,hi]` as an `xsd:integer` restriction; `None` leaves that end open.
 fn r(lo: Option<i64>, hi: Option<i64>) -> String {
-    let mut facets = String::new();
-    if let Some(v) = lo {
-        facets.push_str(&format!(" xsd:minInclusive \"{v}\"^^xsd:integer"));
-    }
-    if let Some(v) = hi {
-        facets.push_str(&format!(" xsd:maxInclusive \"{v}\"^^xsd:integer"));
-    }
-    format!("DatatypeRestriction(xsd:integer{facets})")
+    let min = lo.map_or_else(String::new, |v| {
+        format!(" xsd:minInclusive \"{v}\"^^xsd:integer")
+    });
+    let max = hi.map_or_else(String::new, |v| {
+        format!(" xsd:maxInclusive \"{v}\"^^xsd:integer")
+    });
+    format!("DatatypeRestriction(xsd:integer{min}{max})")
 }
 
 fn union(pieces: &[(Option<i64>, Option<i64>)]) -> String {
@@ -196,6 +195,27 @@ fn an_unbounded_piece_is_infinite() {
     ))));
 }
 
+/// Universals from all three integer buckets at once: `∀p.[0,20]` (range),
+/// `∀p.{0,1,2,3,10,11,12,30}` (enumeration) and `∀p.([0,5] ⊔ [10,15])` (union)
+/// leave `{0,1,2,3,10,11,12}`, seven integers.
+#[test]
+fn universals_from_all_three_buckets_intersect() {
+    let body = |n: u32| {
+        on_c(&format!(
+            "DataMinCardinality({n} :p xsd:integer)\n\
+             DataAllValuesFrom(:p {})\n\
+             DataAllValuesFrom(:p DataOneOf(\"0\"^^xsd:integer \"1\"^^xsd:integer \
+             \"2\"^^xsd:integer \"3\"^^xsd:integer \"10\"^^xsd:integer \"11\"^^xsd:integer \
+             \"12\"^^xsd:integer \"30\"^^xsd:integer))\n\
+             DataAllValuesFrom(:p {})",
+            r(Some(0), Some(20)),
+            u0510()
+        ))
+    };
+    assert!(!c_unsat(&body(7)));
+    assert!(c_unsat(&body(8)));
+}
+
 /// Controls that must not move: a union whose pieces touch or overlap is one
 /// interval and was counted before #343.
 #[test]
@@ -235,7 +255,7 @@ fn a_union_reached_by_branching_does_not_clash() {
     assert!(c_unsat(&format!("{demand_g}\nSubClassOf(:C :G)")));
 }
 
-/// ABox: two asserted values inside a `≤1` union are inconsistent; outside it, not.
+/// `ABox`: two asserted values inside a `≤1` union are inconsistent; outside it, not.
 /// Konclude agrees on both; `HermiT` is inverted here.
 #[test]
 fn asserted_values_are_counted_against_a_union_limit() {

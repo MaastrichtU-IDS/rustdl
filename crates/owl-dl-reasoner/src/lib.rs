@@ -10722,6 +10722,37 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         );
     }
 
+    /// #343: an interval-set (`iset:`) key gets an exact `CardRange::IntUnion` entry.
+    #[test]
+    fn prepared_builds_integer_union_dkey_range_map() {
+        let src = format!(
+            "{HEADER}Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\nOntology(\n\
+             Declaration(Class(:C)) Declaration(DataProperty(:p))\n\
+             SubClassOf(:C DataAllValuesFrom(:p DataUnionOf(\
+             DatatypeRestriction(xsd:integer xsd:minInclusive \"0\"^^xsd:integer \
+             xsd:maxInclusive \"5\"^^xsd:integer) \
+             DatatypeRestriction(xsd:integer xsd:minInclusive \"10\"^^xsd:integer))))\n)\n"
+        );
+        let internal = convert_ontology(&parse(&src)).expect("converts");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        let unions: Vec<_> = prepared
+            .dkey_ranges
+            .values()
+            .filter_map(|r| match r {
+                owl_dl_datatypes::CardRange::IntUnion(u) => Some(u.clone()),
+                _ => None,
+            })
+            .collect();
+        let want = owl_dl_datatypes::IntUnion::from_intervals(vec![
+            owl_dl_datatypes::IntInterval::closed(0, 5),
+            owl_dl_datatypes::IntInterval {
+                min: Some(10),
+                max: None,
+            },
+        ]);
+        assert_eq!(unions, vec![want]);
+    }
+
     /// T3 termination acceptance for anywhere blocking (plan
     /// `docs/superpowers/plans/2026-06-15-anywhere-pairwise-blocking.md`).
     ///

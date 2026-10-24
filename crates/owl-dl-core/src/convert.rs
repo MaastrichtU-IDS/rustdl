@@ -7355,6 +7355,21 @@ mod tests {
             Some(vec![(Some(0), Some(5)), (Some(10), Some(15))])
         );
         assert_eq!(decode_int_set_dkey(&dkey_iri(IntegerRange::point(3))), None);
+        let unb = IntSet::normalized(vec![
+            IntegerRange {
+                min: None,
+                max: Some(5),
+            },
+            IntegerRange {
+                min: Some(10),
+                max: None,
+            },
+        ])
+        .expect("two components");
+        assert_eq!(
+            decode_int_set_dkey(&int_set_dkey_iri(&unb)),
+            Some(vec![(None, Some(5)), (Some(10), None)])
+        );
         assert_eq!(parse_int_set_dkey_iri(&int_set_dkey_iri(&two)), Some(two));
 
         // Unbounded ends on both sides.

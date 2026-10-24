@@ -2091,8 +2091,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             }
         }
         // Concrete-domain solver (P3): an additive, refute-only clash from a
-        // node's data constraints (integer bucket). Reads only the node's own
-        // labels (no role-hierarchy propagation), so the constraint set is a
+        // node's data constraints. Reads the node's own labels, the role-rule
+        // universals of its demanded roles (#327) and their copies along the
+        // data-property hierarchy (#349), all entailed, so the constraint set is a
         // SUBSET of the truth — and `card_sat` is monotone, so an `Unsat` on a
         // subset is `Unsat` on the full set ⇒ sound (under-collection only
         // misses clashes, never false-clashes).
@@ -2106,7 +2107,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `DKey` (integer, string, float, decimal, date, or dateTime bucket),
     /// and runs the matching `card_sat`. Each bucket is checked independently
     /// (the type system enforces no cross-bucket interaction — each `card_sat`
-    /// call is monomorphic). Returns the union of the contributing labels'
+    /// call is monomorphic; the integer buckets are also counted together, #334).
+    /// With the role hierarchy attached (#349), a `∀` on a role also filters its
+    /// sub-roles and a sub-role's demand, narrowed by its filter, is also a demand
+    /// on each super-role; limits are never copied. Returns the union of the contributing labels'
     /// `DepSet`s (a sound superset for backjumping) when the constraints are
     /// unsatisfiable, else `None`. Empty `dkey_ranges` ⇒ instant `None`.
     fn concrete_domain_clash(&self, node: NodeId) -> Option<crate::graph::DepSet> {
@@ -2117,74 +2121,20 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         if self.dkey_ranges.is_empty() {
             return None;
         }
-        struct IntAcc {
-            mins: Vec<Card<IntInterval>>,
-            maxs: Vec<Card<IntInterval>>,
-            universal: Option<IntInterval>,
-            deps: crate::graph::DepSet,
-        }
-        struct StrAcc {
-            mins: Vec<Card<FiniteSet<String>>>,
-            maxs: Vec<Card<FiniteSet<String>>>,
-            universal: Option<FiniteSet<String>>,
-            deps: crate::graph::DepSet,
-        }
-        struct FloatAcc {
-            mins: Vec<Card<DenseInterval<OrdF64>>>,
-            maxs: Vec<Card<DenseInterval<OrdF64>>>,
-            universal: Option<DenseInterval<OrdF64>>,
-            deps: crate::graph::DepSet,
-        }
-        struct DecimalAcc {
-            mins: Vec<Card<DenseInterval<Decimal>>>,
-            maxs: Vec<Card<DenseInterval<Decimal>>>,
-            universal: Option<DenseInterval<Decimal>>,
-            deps: crate::graph::DepSet,
-        }
-        struct DateAcc {
-            mins: Vec<Card<DenseInterval<DateKey>>>,
-            maxs: Vec<Card<DenseInterval<DateKey>>>,
-            universal: Option<DenseInterval<DateKey>>,
-            deps: crate::graph::DepSet,
-        }
-        struct DateTimeAcc {
-            mins: Vec<Card<DenseInterval<DateTimeKey>>>,
-            maxs: Vec<Card<DenseInterval<DateTimeKey>>>,
-            universal: Option<DenseInterval<DateTimeKey>>,
-            deps: crate::graph::DepSet,
-        }
+        // One accumulator shape for every bucket, over the bucket's range type.
+        type IntAcc = SetAcc<IntInterval>;
+        type StrAcc = SetAcc<FiniteSet<String>>;
+        type FloatAcc = SetAcc<DenseInterval<OrdF64>>;
+        type DecimalAcc = SetAcc<DenseInterval<Decimal>>;
+        type DateAcc = SetAcc<DenseInterval<DateKey>>;
+        type DateTimeAcc = SetAcc<DenseInterval<DateTimeKey>>;
         // Numeric-oneof buckets: each uses FiniteSet<T> (capacity = |set|). A `∀`
         // over a `DataOneOf` lands here too, as the accumulator's `universal`.
-        struct IntSetAcc {
-            mins: Vec<Card<FiniteSet<i64>>>,
-            maxs: Vec<Card<FiniteSet<i64>>>,
-            universal: Option<FiniteSet<i64>>,
-            deps: crate::graph::DepSet,
-        }
-        struct FloatSetAcc {
-            mins: Vec<Card<FiniteSet<OrdF64>>>,
-            maxs: Vec<Card<FiniteSet<OrdF64>>>,
-            universal: Option<FiniteSet<OrdF64>>,
-            deps: crate::graph::DepSet,
-        }
-        struct DecimalSetAcc {
-            mins: Vec<Card<FiniteSet<Decimal>>>,
-            maxs: Vec<Card<FiniteSet<Decimal>>>,
-            universal: Option<FiniteSet<Decimal>>,
-            deps: crate::graph::DepSet,
-        }
-        struct DateSetAcc {
-            mins: Vec<Card<FiniteSet<DateKey>>>,
-            maxs: Vec<Card<FiniteSet<DateKey>>>,
-            universal: Option<FiniteSet<DateKey>>,
-            deps: crate::graph::DepSet,
-        }
-        struct DateTimeSetAcc {
-            mins: Vec<Card<FiniteSet<DateTimeKey>>>,
-            maxs: Vec<Card<FiniteSet<DateTimeKey>>>,
-            universal: Option<FiniteSet<DateTimeKey>>,
-            deps: crate::graph::DepSet,
-        }
+        type IntSetAcc = SetAcc<FiniteSet<i64>>;
+        type FloatSetAcc = SetAcc<FiniteSet<OrdF64>>;
+        type DecimalSetAcc = SetAcc<FiniteSet<Decimal>>;
+        type DateSetAcc = SetAcc<FiniteSet<DateKey>>;
+        type DateTimeSetAcc = SetAcc<FiniteSet<DateTimeKey>>;
         // #325: `xsd:boolean` and `xsd:anyURI`, each its own bucket so neither is
         // ever counted under the other's (or `xsd:string`'s) `≤n`.
         // One accumulator per bucket for the buckets added since #325, generic
@@ -2227,6 +2177,78 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             }
             entry.deps = crate::deps::union(&entry.deps, dep_label);
         }
+        /// #349: fold the data-property hierarchy into one bucket. With `q ⊑ p`, a
+        /// `∀` on `p` holds for `q` (copied down), and a demand on `q`, narrowed by
+        /// `q`'s filter (own and inherited), is a demand on `p` (copied up). Limits
+        /// are not copied: up is not entailed, and down adds nothing once demands
+        /// come up narrowed. A no-op unless two roles of the bucket are related.
+        fn lift_through_hierarchy<R: ValueRange>(
+            by_role: &mut HashMap<RoleId, SetAcc<R>>,
+            h: &RoleHierarchy,
+        ) {
+            if by_role.len() < 2 {
+                return;
+            }
+            let mut roles: Vec<RoleId> = by_role.keys().copied().collect();
+            roles.sort_unstable();
+            let strict_supers =
+                |q: RoleId| h.super_roles(q).iter().copied().filter(move |&p| p != q);
+            // Down: each role takes the universals of its present super-roles.
+            let mut inherited: Vec<(RoleId, R, crate::graph::DepSet)> = Vec::new();
+            for &q in &roles {
+                for p in strict_supers(q) {
+                    if let Some(a) = by_role.get(&p)
+                        && let Some(u) = &a.universal
+                    {
+                        inherited.push((q, u.clone(), a.deps.clone()));
+                    }
+                }
+            }
+            for (q, u, d) in inherited {
+                let acc = by_role.get_mut(&q).expect("collected from the map");
+                acc.universal = Some(
+                    acc.universal
+                        .take()
+                        .map_or_else(|| u.clone(), |x| x.intersect(&u)),
+                );
+                acc.deps = crate::deps::union(&acc.deps, &d);
+            }
+            // Up: each role's demands, narrowed by its filter, go to its super-roles.
+            let mut lifted: Vec<(RoleId, Vec<Card<R>>, crate::graph::DepSet)> = Vec::new();
+            for &q in &roles {
+                let a = &by_role[&q];
+                if a.mins.is_empty() {
+                    continue;
+                }
+                let narrowed: Vec<Card<R>> = a
+                    .mins
+                    .iter()
+                    .map(|c| {
+                        let range = a
+                            .universal
+                            .as_ref()
+                            .map_or_else(|| c.range.clone(), |u| c.range.intersect(u));
+                        Card::new(range, c.n)
+                    })
+                    .collect();
+                for p in strict_supers(q) {
+                    lifted.push((p, narrowed.clone(), a.deps.clone()));
+                }
+            }
+            for (p, mins, d) in lifted {
+                let acc = by_role.entry(p).or_insert_with(|| SetAcc {
+                    mins: Vec::new(),
+                    maxs: Vec::new(),
+                    universal: None,
+                    deps: crate::graph::DepSet::new(),
+                });
+                acc.mins.extend(mins);
+                acc.deps = crate::deps::union(&acc.deps, &d);
+            }
+        }
+        let hierarchy = self
+            .hierarchy
+            .filter(|_| crate::data_counting_role_hierarchy_enabled());
         let n = self.graph.node(node);
         let labels = n.labels();
         let mut bool_by_role: HashMap<RoleId, SetAcc<FiniteSet<bool>>> = HashMap::new();
@@ -2272,13 +2294,24 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         // roles this node demands values on.
         let no_deps = crate::graph::DepSet::new();
         if !(self.dkey_unguarded_rules.is_empty() && self.dkey_guarded_rules.is_empty()) {
-            let demanded: Vec<RoleId> = items
+            let mut demanded: Vec<RoleId> = items
                 .iter()
                 .filter_map(|&(role, _, kind, _, _)| match role {
                     Role::Named(rid) if kind == 0 || kind == 2 => Some(rid),
                     _ => None,
                 })
                 .collect();
+            // #349: a demand on `q` is also one on each super-role of `q`, whose
+            // role-rule universals must then be read too.
+            if let Some(h) = hierarchy {
+                for q in demanded.clone() {
+                    for &p in h.super_roles(q) {
+                        if !demanded.contains(&p) {
+                            demanded.push(p);
+                        }
+                    }
+                }
+            }
             for &rid in &demanded {
                 for &target in self.dkey_unguarded_rules.get(&rid).into_iter().flatten() {
                     items.push((Role::Named(rid), target, 1, 0, &no_deps));
@@ -2580,6 +2613,25 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 None => {}
             }
         }
+        // #349: fold the data-property hierarchy into every non-integer bucket; the
+        // integer buckets are folded together, over `IntUnion`, in the combined
+        // check at the end, so a filter in one integer bucket narrows a demand in
+        // another.
+        if let Some(h) = hierarchy {
+            lift_through_hierarchy(&mut str_by_role, h);
+            lift_through_hierarchy(&mut float_by_role, h);
+            lift_through_hierarchy(&mut decimal_by_role, h);
+            lift_through_hierarchy(&mut date_by_role, h);
+            lift_through_hierarchy(&mut datetime_by_role, h);
+            lift_through_hierarchy(&mut float_set_by_role, h);
+            lift_through_hierarchy(&mut decimal_set_by_role, h);
+            lift_through_hierarchy(&mut date_set_by_role, h);
+            lift_through_hierarchy(&mut datetime_set_by_role, h);
+            lift_through_hierarchy(&mut bool_by_role, h);
+            lift_through_hierarchy(&mut uri_by_role, h);
+            lift_through_hierarchy(&mut double_by_role, h);
+            lift_through_hierarchy(&mut double_set_by_role, h);
+        }
         // Check integer bucket first (keeps the fast path byte-identical).
         for acc in int_by_role.values() {
             if integer_sat(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat {
@@ -2699,51 +2751,65 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             .chain(int_union_by_role.keys())
             .copied()
             .collect();
+        // #349: with the hierarchy folded in, a role with items in one bucket can
+        // still clash through a related role, so every integer role takes part.
+        let fold = hierarchy.filter(|_| roles.len() >= 2);
+        let mut combined: HashMap<RoleId, SetAcc<IntUnion>> = HashMap::new();
         for rid in roles {
             let ia = int_by_role.get(&rid);
             let sa = int_set_by_role.get(&rid);
             let ua = int_union_by_role.get(&rid);
-            if ua.is_none() && (ia.is_none() || sa.is_none()) {
+            if fold.is_none() && ua.is_none() && (ia.is_none() || sa.is_none()) {
                 continue;
             }
             let iv = |c: &Card<IntInterval>| Card::new(IntUnion::from_interval(c.range), c.n);
             let fs = |c: &Card<FiniteSet<i64>>| Card::new(IntUnion::from_points(&c.range), c.n);
-            let mut mins: Vec<Card<IntUnion>> = Vec::new();
-            let mut maxs: Vec<Card<IntUnion>> = Vec::new();
-            let mut universal: Option<IntUnion> = None;
-            let mut deps = crate::graph::DepSet::new();
-            let mut restrict = |u: IntUnion| {
-                universal = Some(match universal.take() {
+            let mut acc = SetAcc {
+                mins: Vec::new(),
+                maxs: Vec::new(),
+                universal: None,
+                deps: crate::graph::DepSet::new(),
+            };
+            let restrict = |universal: &mut Option<IntUnion>, u: IntUnion| {
+                *universal = Some(match universal.take() {
                     Some(prev) => prev.intersect(&u),
                     None => u,
                 });
             };
             if let Some(a) = ia {
-                mins.extend(a.mins.iter().map(iv));
-                maxs.extend(a.maxs.iter().map(iv));
+                acc.mins.extend(a.mins.iter().map(iv));
+                acc.maxs.extend(a.maxs.iter().map(iv));
                 if let Some(u) = a.universal {
-                    restrict(IntUnion::from_interval(u));
+                    restrict(&mut acc.universal, IntUnion::from_interval(u));
                 }
-                deps = crate::deps::union(&deps, &a.deps);
+                acc.deps = crate::deps::union(&acc.deps, &a.deps);
             }
             if let Some(a) = sa {
-                mins.extend(a.mins.iter().map(fs));
-                maxs.extend(a.maxs.iter().map(fs));
+                acc.mins.extend(a.mins.iter().map(fs));
+                acc.maxs.extend(a.maxs.iter().map(fs));
                 if let Some(u) = &a.universal {
-                    restrict(IntUnion::from_points(u));
+                    restrict(&mut acc.universal, IntUnion::from_points(u));
                 }
-                deps = crate::deps::union(&deps, &a.deps);
+                acc.deps = crate::deps::union(&acc.deps, &a.deps);
             }
             if let Some(a) = ua {
-                mins.extend(a.mins.iter().cloned());
-                maxs.extend(a.maxs.iter().cloned());
+                acc.mins.extend(a.mins.iter().cloned());
+                acc.maxs.extend(a.maxs.iter().cloned());
                 if let Some(u) = &a.universal {
-                    restrict(u.clone());
+                    restrict(&mut acc.universal, u.clone());
                 }
-                deps = crate::deps::union(&deps, &a.deps);
+                acc.deps = crate::deps::union(&acc.deps, &a.deps);
             }
-            if card_sat::<IntUnion>(universal, &mins, &maxs) == CardSat::Unsat {
-                return Some(deps);
+            combined.insert(rid, acc);
+        }
+        if let Some(h) = fold {
+            lift_through_hierarchy(&mut combined, h);
+        }
+        let mut combined: Vec<(RoleId, SetAcc<IntUnion>)> = combined.into_iter().collect();
+        combined.sort_unstable_by_key(|(rid, _)| *rid);
+        for (_, acc) in combined {
+            if card_sat::<IntUnion>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat {
+                return Some(acc.deps);
             }
         }
         None
@@ -2832,6 +2898,20 @@ pub fn signed_role_edges_enabled() -> bool {
 #[must_use]
 pub fn chain_middle_enabled() -> bool {
     std::env::var_os("RUSTDL_TABLEAU_CHAIN_MIDDLE").is_none_or(|v| v != "0")
+}
+
+/// Whether the concrete-domain count follows the data-property hierarchy (#349,
+/// `RUSTDL_DATA_COUNTING_ROLE_HIERARCHY`, **default ON**, `=0` reverts).
+///
+/// With `q ⊑ p` every `q`-value is a `p`-value. The count keyed demands, limits
+/// and `∀` filters on the exact property, so `≤1 p.{1,2}` never counted values
+/// asserted on `q`, a miss `HermiT` and Konclude both report as inconsistent. Under
+/// the flag a `∀` on `p` also filters `q`, and a demand on `q`, narrowed by `q`'s
+/// own filter, is also a demand on `p`. Both are entailed, so this only adds
+/// clashes that hold.
+#[must_use]
+pub fn data_counting_role_hierarchy_enabled() -> bool {
+    std::env::var_os("RUSTDL_DATA_COUNTING_ROLE_HIERARCHY").is_none_or(|v| v != "0")
 }
 
 /// Whether the search tries a `∀R` disjunct first at a node with few

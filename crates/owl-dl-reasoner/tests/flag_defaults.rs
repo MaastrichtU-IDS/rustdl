@@ -249,6 +249,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_DATA_COUNTING_ROLE_HIERARCHY",
+            owl_dl_tableau::data_counting_role_hierarchy_enabled,
+            true,
+        ),
+        (
             "RUSTDL_FORALL_FIRST",
             owl_dl_tableau::forall_first_enabled,
             true,

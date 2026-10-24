@@ -149,13 +149,12 @@ fn a_forall_reached_by_branching_or_unbounded_does_not_clash() {
     ));
 }
 
-/// KNOWN MISS, not #327: the count is keyed on the exact property, so a range on
-/// `p` does not bound a demand on a sub-property `q ⊑ p`. `HermiT` says unsat.
-/// FLIP when the count follows the property hierarchy. The reverse (range on the
-/// sub-property) is genuinely satisfiable.
+/// A range on `p` bounds a demand on a sub-property `q ⊑ p` (#349: the count
+/// follows the property hierarchy; this was a pinned known miss). `HermiT` says
+/// unsat. The reverse (range on the sub-property) is genuinely satisfiable.
 #[test]
-fn a_range_on_a_super_property_is_a_known_miss() {
-    assert!(!c_unsat(
+fn a_range_on_a_super_property_bounds_a_sub_property_demand() {
+    assert!(c_unsat(
         "SubDataPropertyOf(:q :p) DataPropertyRange(:p DataOneOf(\"a\"))\n\
          SubClassOf(:C DataMinCardinality(2 :q xsd:string))"
     ));

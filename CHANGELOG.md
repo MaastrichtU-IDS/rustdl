@@ -7,6 +7,15 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **Data counting follows the data-property hierarchy (#349),
+  `RUSTDL_DATA_COUNTING_ROLE_HIERARCHY`, default ON (`=0` reverts).** The tableau counted data
+  values per exact property, so with `SubDataPropertyOf(q, p)`, `P ⊑ ≤1 p.DataOneOf(1 2)`,
+  `a : P`, `q(a,1)` and `q(a,2)` was consistent, and a `DataPropertyRange` on `p` did not bound
+  `≥2 q.xsd:string`. HermiT reports both. Now a `∀` or range on a property also filters its
+  sub-properties, and a demand on a sub-property, narrowed by its own filters, also counts
+  against each super-property. Limits are not copied. Still missed: a decimal, double or
+  dateTime value asserted against an enumeration limit (with or without a hierarchy), and
+  `DisjointDataProperties` between sibling sub-properties.
 - **A union of `xsd:integer` intervals is counted under data cardinality (#343).** #42 lowered
   `∀p.([0,5] ⊔ [10,15])` to an interval-set key that the counting check never decoded. So
   `≥3 p.xsd:integer ⊓ ∀p.({1} ⊔ {5})` was satisfiable with nothing dropped (also the two-axiom
@@ -26,9 +35,9 @@ All notable changes to rustdl are documented here. Format is based on
   does the same. On the three ORE ontologies where the run gives up (`ore_ont_9899`, `6132` and
   `6934`, all consistent per HermiT and Konclude) the answer is unchanged, at +1.0 to +2.2 CPU-s.
 
-  Still missed, pinned, because the tableau does not count them either: values on a
-  sub-property, decimal, double and dateTime enumeration limits, and an unqualified `≥n`
-  against a range enumeration.
+  Still missed, pinned, because the tableau does not count them either: decimal, double and
+  dateTime enumeration limits, and an unqualified `≥n` against a range enumeration. (Values on
+  a sub-property, also missed here at first, are counted since #349.)
 - **An integer range and an integer enumeration on one data property are counted together
   (#334).** They were counted in separate `card_sat` buckets. So `≥2 p.xsd:integer` with
   `∀p.DataOneOf(1)` was satisfiable with nothing dropped, where HermiT says unsatisfiable. So was

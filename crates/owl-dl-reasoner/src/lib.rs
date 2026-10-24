@@ -8845,7 +8845,13 @@ impl PreparedOntology {
             + std::time::Duration::from_millis(consistency_data_counting_verify_ms());
         let dl = deadline.map_or(own, |d| d.min(own));
         let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
-        Ok(self.decide_consistency(Some(dl))?.unwrap_or(true))
+        match self.decide_consistency(Some(dl)) {
+            Ok(Some(consistent)) => Ok(consistent),
+            // A give-up (deadline, node cap, or the search-depth bail-out the tableau
+            // reports as `NoVerdict`) keeps the wedge's answer.
+            Ok(None) | Err(ReasonError::NoVerdict) => Ok(true),
+            Err(e) => Err(e),
+        }
     }
 
     /// `ABox`-seeded wedge consistency verdict, or `None` when the wedge

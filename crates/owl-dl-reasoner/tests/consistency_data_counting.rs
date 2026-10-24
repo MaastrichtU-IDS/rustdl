@@ -31,6 +31,39 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Sets an env var for one test and restores it on drop (the `adaptive_budget.rs`
+/// pattern); callers hold [`lock`].
+struct SetEnvGuard {
+    key: &'static str,
+    prior: Option<std::ffi::OsString>,
+}
+
+impl SetEnvGuard {
+    #[allow(unsafe_code)]
+    fn set(key: &'static str, value: &str) -> Self {
+        let prior = std::env::var_os(key);
+        // SAFETY: set_var is unsafe under edition 2024. Held only for one test,
+        // serialised via ENV_MUTEX, restored on Drop.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, prior }
+    }
+}
+
+impl Drop for SetEnvGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: see SetEnvGuard::set.
+        unsafe {
+            match &self.prior {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 fn onto(body: &str) -> SetOntology<RcStr> {
     let ofn = format!(
         "Prefix(:=<http://ex.org/>)\n\
@@ -180,12 +213,12 @@ fn values_the_limit_does_not_count_are_consistent() {
 fn the_flag_reverts() {
     let _g = lock();
     let body = format!("SubClassOf(:P {LIMIT}) ClassAssertion(:P :a)\n{TWO_VALUES}");
-    // SAFETY: the env mutex serialises every test in this file.
-    unsafe { std::env::set_var("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY", "0") };
-    let reverted = is_consistent_with_stats(&onto(&body))
-        .expect("consistent")
-        .0;
-    unsafe { std::env::remove_var("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY") };
+    let reverted = {
+        let _env = SetEnvGuard::set("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY", "0");
+        is_consistent_with_stats(&onto(&body))
+            .expect("consistent")
+            .0
+    };
     assert!(reverted, "=0 must restore the trusted wedge Sat");
     assert!(!consistent(&body));
 }
@@ -197,12 +230,13 @@ fn the_flag_reverts() {
 fn a_verification_give_up_keeps_the_old_answer() {
     let _g = lock();
     let body = format!("SubClassOf(:P {LIMIT}) ClassAssertion(:P :a)\n{TWO_VALUES}");
-    // SAFETY: the env mutex serialises every test in this file.
-    unsafe { std::env::set_var("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS", "0") };
     let o = onto(&body);
-    let (verdict, stats) = is_consistent_with_stats(&o).expect("consistent");
-    let bounded = is_consistent_with_timeout(&o, Duration::from_secs(60)).expect("bounded");
-    unsafe { std::env::remove_var("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS") };
+    let (verdict, stats, bounded) = {
+        let _env = SetEnvGuard::set("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS", "0");
+        let (verdict, stats) = is_consistent_with_stats(&o).expect("consistent");
+        let bounded = is_consistent_with_timeout(&o, Duration::from_secs(60)).expect("bounded");
+        (verdict, stats, bounded)
+    };
     assert!(verdict && !stats.incomplete, "a give-up keeps `consistent`");
     assert_eq!(
         bounded,
@@ -258,4 +292,44 @@ fn shapes_the_tableau_does_not_count_are_known_misses() {
     ] {
         assert!(consistent(&body), "{body}");
     }
+}
+
+/// The tableau can bail out at its search-depth limit before the verification
+/// budget ends; that is a give-up too and keeps `consistent`, not an error. Here
+/// `a : C0` walks 257 nested `C_i ⊑ C_{i+1} ⊔ X_i` choices, each `X_i` contradicting
+/// `C0`, past the depth limit; the counting constraint is unrelated. `HermiT`:
+/// consistent.
+#[test]
+fn a_depth_bail_out_keeps_the_old_answer() {
+    use std::fmt::Write as _;
+    let _g = lock();
+    let mut body = String::new();
+    for i in 0..257 {
+        writeln!(
+            body,
+            "SubClassOf(:C{i} ObjectUnionOf(:C{j} :X{i})) SubClassOf(:X{i} ObjectComplementOf(:C0))",
+            j = i + 1
+        )
+        .unwrap();
+    }
+    write!(
+        body,
+        "SubClassOf(:Q {LIMIT}) ClassAssertion(:C0 :a)\n\
+         DataPropertyAssertion(:p :a \"1\"^^xsd:integer)"
+    )
+    .unwrap();
+    assert!(consistent(&body));
+}
+
+/// Scope of the gate: an unqualified data cardinality (no data range to count) does
+/// not turn it on, and the budget defaults to 1000 ms.
+#[test]
+fn the_gate_needs_a_counted_data_range() {
+    let _g = lock();
+    assert_eq!(owl_dl_reasoner::consistency_data_counting_verify_ms(), 1000);
+    assert!(!consistent(
+        "SubClassOf(:P DataMaxCardinality(1 :p)) ClassAssertion(:P :a)\n\
+         DataPropertyAssertion(:p :a \"1\"^^xsd:integer)\n\
+         DataPropertyAssertion(:p :a \"2\"^^xsd:integer)"
+    ));
 }

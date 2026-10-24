@@ -217,6 +217,9 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// #288 step 1c (E'): fold the existence deps of a derived fact's origin
     /// nodes into its ordinary deps. `RUSTDL_EXIST_DEPS_FOLD=1`, default OFF.
     exist_fold: bool,
+    /// #288 step 4: selective undo on backjumps. `RUSTDL_SELECTIVE_UNDO=1`,
+    /// default OFF; implies `exist_fold`.
+    selective: bool,
     /// Monotonic counter handing out the next `branch_id`. Reset to
     /// zero per tableau run; lives as long as the context.
     next_branch_id: u32,
@@ -393,7 +396,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
-            exist_fold: exist_deps_fold_enabled(),
+            exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
+            selective: selective_undo_enabled(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -437,7 +441,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
-            exist_fold: exist_deps_fold_enabled(),
+            exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
+            selective: selective_undo_enabled(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -486,7 +491,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
-            exist_fold: exist_deps_fold_enabled(),
+            exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
+            selective: selective_undo_enabled(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -715,6 +721,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[doc(hidden)]
     pub fn pop_branch(&mut self) {
         self.active_branches.pop();
+    }
+
+    /// Drop branch `id` from the active set wherever it sits (#288 step 4:
+    /// a selective backjump abandons frames that are not on top).
+    pub fn remove_branch(&mut self, id: u32) {
+        if let Ok(pos) = self.active_branches.binary_search(&id) {
+            self.active_branches.remove(pos);
+        }
     }
 
     /// Snapshot of the currently active branch decisions, outer-most
@@ -1385,6 +1399,30 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Override [`exist_deps_fold_enabled`] for this context (tests).
     pub fn set_exist_deps_fold(&mut self, on: bool) {
         self.exist_fold = on;
+    }
+
+    /// Override [`selective_undo_enabled`] for this context (tests). Turning
+    /// it on turns the existence fold on too.
+    pub fn set_selective_undo(&mut self, on: bool) {
+        self.selective = on;
+        if on {
+            self.exist_fold = true;
+        }
+    }
+
+    /// Whether selective undo is on for this context (#288 step 4).
+    #[must_use]
+    pub fn selective_undo(&self) -> bool {
+        self.selective
+    }
+
+    /// The deps of the mark that `a` and `b` are distinct, if they are
+    /// (#288 step 1c).
+    #[must_use]
+    pub fn inequality_deps_of(&self, a: NodeId, b: NodeId) -> Option<&DepSet> {
+        let n = self.graph.node(a);
+        let pos = n.inequalities.iter().position(|&x| x == b)?;
+        n.inequality_deps.get(pos)
     }
 
     /// With the fold on (#288 step 1c, [`exist_deps_fold_enabled`]), add to
@@ -2978,6 +3016,14 @@ pub fn max_precise_bot_enabled() -> bool {
 #[must_use]
 pub fn max_merge_keep_older_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_MERGE_KEEP_OLDER").is_none_or(|v| v != "0")
+}
+
+/// Whether a backjump undoes only what depends on the decisions it abandons
+/// (#288 step 4, `RUSTDL_SELECTIVE_UNDO=1`, **default OFF**). Turns on the
+/// existence fold too, which selective undo needs to be sound.
+#[must_use]
+pub fn selective_undo_enabled() -> bool {
+    std::env::var_os("RUSTDL_SELECTIVE_UNDO").is_some_and(|v| v == "1")
 }
 
 /// Whether derived facts carry their origin nodes' existence deps in their

@@ -32,6 +32,7 @@ use crate::graph::{DepSet, NodeId};
 use crate::saturate::{SaturationResult, saturate};
 use crate::trail::Checkpoint;
 use owl_dl_core::{ConceptExpr, ConceptId, ConceptPool};
+use smallvec::SmallVec;
 
 /// Hard cap on the saturation fixed-point loop within each
 /// deterministic phase. Phase 2 pre-blocking has no real risk of
@@ -141,6 +142,9 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
 }
 
 /// What [`expand`] found.
+// Short-lived return value moved straight onto the frame stack; boxing the
+// frame would cost an allocation per decision.
+#[allow(clippy::large_enum_variant)]
 enum Expanded {
     /// A verdict for this point of the search.
     Done(SearchVerdict),
@@ -208,11 +212,15 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
-                    return Expanded::Open(Frame::or(ctx, max_depth, node, &disjuncts, &or_deps));
+                    let pre = or_pre(ctx, node, &or_deps);
+                    return Expanded::Open(Frame::or(
+                        ctx, max_depth, node, &disjuncts, &or_deps, pre,
+                    ));
                 }
                 // Step 2: choose rule for `≤n R.C` — pick a neighbour
                 // that doesn't yet have `C` or `¬C` and branch.
-                if let Some((node, c, c_neg)) = first_open_choose(ctx) {
+                if let Some(open) = first_open_choose(ctx) {
+                    let (node, c, c_neg) = (open.neighbour, open.body, open.complement);
                     if trace_enabled() {
                         eprintln!(
                             "# trace search depth={max_depth} choose node={} graph_nodes={}",
@@ -220,12 +228,14 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    let pre = choose_pre(ctx, &open);
                     return Expanded::Open(Frame::or(
                         ctx,
                         max_depth,
                         node,
                         &[c, c_neg],
                         &DepSet::new(),
+                        pre,
                     ));
                 }
                 // #294: `saturate` can stop with work left. A label added to a
@@ -271,6 +281,8 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
 
 /// An open `≤n R.C` (#293), ready to branch on.
 struct OpenMax {
+    /// The node carrying the `≤n` label.
+    holder: NodeId,
     /// The `≤n` label's deps.
     max_deps: DepSet,
     /// `n`.
@@ -284,6 +296,9 @@ struct OpenMax {
     /// How many witnesses precede `pivot`. They are pairwise distinct, because
     /// `pivot` is the first witness with a mergeable earlier one.
     earlier: usize,
+    /// The deps of every distinctness mark among the witnesses up to `pivot`
+    /// (#288 step 4). Empty unless selective undo is on.
+    distinct_deps: DepSet,
 }
 
 /// Find an over-full `≤n R.C` with at least two pairs that may merge (#293),
@@ -347,11 +362,17 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                     .collect();
                 if !partners.is_empty() {
                     return Some(OpenMax {
+                        holder: node_id,
                         max_deps,
                         bound: *n as usize,
                         pivot,
                         partners,
                         earlier: j,
+                        distinct_deps: if ctx.selective_undo() {
+                            distinct_marks_deps(ctx, &witnesses[..=j])
+                        } else {
+                            DepSet::new()
+                        },
                     });
                 }
             }
@@ -369,37 +390,36 @@ enum FrameKind {
         ordered: Vec<ConceptId>,
         /// The `⊔` label's deps (empty for the choose rule).
         parent_deps: DepSet,
-        /// Restricted semantic branching companion. When option `d_j`
-        /// failed and `¬d_j` is registered as a cheap literal complement,
-        /// assert `¬d_j` in every subsequent branch so any rule that
-        /// tries to re-derive `d_j` clashes immediately. Compound
-        /// complements (Or, quantified) are *not* carried forward — they
-        /// would inflate the label set without back-jumping enough subtree
-        /// to pay for themselves (see `docs/phase4-backjumping-plan.md`).
-        /// Each with the clash deps of the disjunct whose failure justifies it
-        /// (#288): `¬d_j` holds because `d_j` failed, so it depends on exactly what
-        /// that failure depended on.
-        literal_complements: Vec<(ConceptId, DepSet)>,
     },
     /// An over-full `≤n` (#293): merge the pivot into each partner, then
     /// (if the bound allows) keep it distinct from all of them.
     Merge { open: OpenMax },
 }
 
-/// One decision of the search: its options, which one is being tried, and
-/// what the refuted ones said (#288 step 3).
+/// What a tried option of a frame concluded (#288 step 4).
+enum Record {
+    /// The option clashed with these deps, which contain the frame's id.
+    Refuted(DepSet),
+    /// The option hit the depth cap or the deadline.
+    Inconclusive,
+}
+
+/// One decision of the search: its options and what each tried one
+/// concluded (#288 steps 3 and 4).
 struct Frame {
     kind: FrameKind,
     my_id: u32,
     max_depth: usize,
-    total: usize,
-    /// The option `start_option` tries next.
-    next: usize,
+    /// Per option, in try order: `None` until tried. The next option is the
+    /// first without a record, so a record deleted by a selective backjump
+    /// makes its option live again (spec §4.4).
+    records: SmallVec<[Option<Record>; 4]>,
     /// Deps the frame reports on exhaustion besides its refuted options'.
     initial: DepSet,
-    /// Clash deps of each refuted option; every one contains `my_id`.
-    refuted: Vec<DepSet>,
-    depth_limited: bool,
+    /// What the frame's existence rests on (spec §4.2): a selective backjump
+    /// keeps the frame only if this is disjoint from the abandoned decisions.
+    /// Empty unless selective undo is on.
+    pre: DepSet,
     early_return: Option<SearchVerdict>,
 }
 
@@ -422,9 +442,19 @@ impl Frame {
     /// precisely, so this stays conservative, as `apply_max`'s `⊥` arm does).
     /// Each merge's deps cover every witness (see [`first_open_max`]).
     fn merge(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize, open: OpenMax) -> Self {
-        // Read before this frame's own id is pushed.
-        let initial =
-            crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()));
+        let pre = if ctx.selective_undo() {
+            merge_pre(ctx, &open)
+        } else {
+            DepSet::new()
+        };
+        // Read before this frame's own id is pushed. With selective undo the
+        // distinctness that rules out other merges is recorded (step 1c), so
+        // the exhaustion deps are exact rather than every active decision.
+        let initial = if ctx.selective_undo() {
+            crate::deps::union(&open.max_deps, &pre)
+        } else {
+            crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()))
+        };
         let my_id = ctx.push_branch();
         // The distinct option leaves `earlier + 1` pairwise-distinct witnesses,
         // which a bound of `earlier` or less cannot accommodate.
@@ -434,11 +464,9 @@ impl Frame {
             kind: FrameKind::Merge { open },
             my_id,
             max_depth,
-            total,
-            next: 0,
+            records: (0..total).map(|_| None).collect(),
             initial,
-            refuted: Vec::new(),
-            depth_limited: false,
+            pre,
             early_return: None,
         }
     }
@@ -449,6 +477,7 @@ impl Frame {
         node: NodeId,
         options: &[ConceptId],
         parent_deps: &[u32],
+        pre: DepSet,
     ) -> Self {
         let my_id = ctx.push_branch();
         // Reorder disjuncts: try first those that don't *obviously* clash
@@ -468,27 +497,27 @@ impl Frame {
                 node,
                 ordered,
                 parent_deps: DepSet::from_slice(parent_deps),
-                literal_complements: Vec::new(),
             },
             my_id,
             max_depth,
-            total,
-            next: 0,
+            records: (0..total).map(|_| None).collect(),
             initial: DepSet::new(),
-            refuted: Vec::new(),
-            depth_limited: false,
+            pre,
             early_return: None,
         }
     }
 
     /// Assert the next option behind a fresh checkpoint.
     fn start_option(&mut self, ctx: &mut TableauContext<'_, '_, '_>) -> Start {
-        if self.early_return.is_some() || self.next >= self.total {
+        if self.early_return.is_some() {
             return Start::Exhausted;
         }
-        let k = self.next;
-        self.next += 1;
-        let (my_id, max_depth, total) = (self.my_id, self.max_depth, self.total);
+        // Record-driven (spec §4.4): the first option nothing has concluded on.
+        // Without selective undo records fill in order, so this is the next index.
+        let Some(k) = self.records.iter().position(Option::is_none) else {
+            return Start::Exhausted;
+        };
+        let (my_id, max_depth, total) = (self.my_id, self.max_depth, self.records.len());
         match &self.kind {
             FrameKind::Merge { open } => {
                 let merge_into = open.partners.get(k);
@@ -538,7 +567,6 @@ impl Frame {
                 node,
                 ordered,
                 parent_deps,
-                literal_complements,
             } => {
                 let d = ordered[k];
                 if trace_enabled() {
@@ -572,8 +600,25 @@ impl Frame {
                 if let Err(pos) = combined_deps.binary_search(&my_id) {
                     combined_deps.insert(pos, my_id);
                 }
-                // Assert prior failed disjuncts' literal complements.
-                for (comp, comp_deps) in literal_complements {
+                // Restricted semantic branching: assert `¬d_j` for every refuted
+                // option `d_j` whose complement is a cheap literal, so a rule that
+                // tries to re-derive `d_j` clashes at once. Compound complements
+                // (Or, quantified) are not carried forward; they would inflate the
+                // label set without back-jumping enough subtree to pay for
+                // themselves (see `docs/phase4-backjumping-plan.md`). `¬d_j` holds
+                // because `d_j` failed, so it carries that failure's clash deps
+                // (#288). Derived from the records, so a record a selective
+                // backjump deletes takes its complement with it (spec §4.4).
+                for (j, record) in self.records.iter().enumerate() {
+                    let Some(Record::Refuted(comp_deps)) = record else {
+                        continue;
+                    };
+                    let Some(comp) = ctx.complement_of(ordered[j]) else {
+                        continue;
+                    };
+                    if !is_literal(ctx, comp) {
+                        continue;
+                    }
                     // The failed disjunct carried `combined_deps`, and every
                     // set that contains `my_id` got it from there, so its clash
                     // deps contain them. If this ever fails, the tags would be
@@ -584,7 +629,7 @@ impl Frame {
                             .all(|x| comp_deps.binary_search(x).is_ok()),
                         "complement deps {comp_deps:?} miss part of {combined_deps:?}"
                     );
-                    ctx.add_label_with_deps(*node, *comp, comp_deps.as_slice());
+                    ctx.add_label_with_deps(*node, comp, comp_deps.as_slice());
                 }
                 // CDBL Phase 1 (docs/cdbl-plan.md): record which disjunct
                 // concept this branch is asserting, so a downstream clash's
@@ -634,30 +679,20 @@ impl Frame {
                     self.early_return = Some(SearchVerdict::Unsat(clash_deps));
                 } else {
                     // This decision mattered. Keep its deps for the "all
-                    // options exhausted" case. (Recording side of
-                    // conflict-driven learning is wired but the lookup is
-                    // unsound, so the recording would be free-allocated
+                    // options exhausted" case; `start_option` asserts the
+                    // option's literal complement from this record. (Recording
+                    // side of conflict-driven learning is wired but the lookup
+                    // is unsound, so the recording would be free-allocated
                     // garbage. See the comment on the lookup side in
-                    // `start_option`.) Carry forward the failed
-                    // disjunct's literal complement (if it has one registered)
-                    // so the next iteration short-circuits any rebirth of
-                    // `d` in the model.
-                    if let FrameKind::Or {
-                        ordered,
-                        literal_complements,
-                        ..
-                    } = &mut self.kind
-                        && let Some(comp) = ctx.complement_of(ordered[k])
-                        && is_literal(ctx, comp)
-                    {
-                        literal_complements.push((comp, clash_deps.clone()));
-                    }
-                    self.refuted.push(clash_deps);
+                    // `start_option`.)
+                    self.records[k] = Some(Record::Refuted(clash_deps));
                 }
             }
             SearchVerdict::DepthLimit => {
                 ctx.rollback_to(cp);
-                self.depth_limited = true;
+                // An explicit marker, so record-driven iteration does not retry
+                // the option (spec §4.4).
+                self.records[k] = Some(Record::Inconclusive);
             }
             SearchVerdict::NodeCap => {
                 // Hard early-return: a global node-cap trip means the
@@ -690,10 +725,25 @@ impl Frame {
 
     /// The frame's verdict once no option is left to try.
     fn finish(self, ctx: &mut TableauContext<'_, '_, '_>) -> SearchVerdict {
+        // Spec §7 oracle (a): what a frame rests on is still decided while it
+        // is open. A selective backjump that kept a frame whose precondition
+        // it had undone would break this.
+        debug_assert!(
+            self.pre
+                .iter()
+                .all(|x| ctx.active_branches().binary_search(x).is_ok()),
+            "frame {} precondition {:?} names an inactive decision",
+            self.my_id,
+            self.pre
+        );
         ctx.pop_branch();
         if let Some(v) = self.early_return {
             v
-        } else if self.depth_limited {
+        } else if self
+            .records
+            .iter()
+            .any(|r| matches!(r, Some(Record::Inconclusive)))
+        {
             SearchVerdict::DepthLimit
         } else {
             // Every option clashed and every clash depended on `my_id`.
@@ -701,7 +751,10 @@ impl Frame {
             // the other deps of its refuted options (plus, for a merge,
             // every active decision).
             let mut combined = self.initial;
-            for deps in &self.refuted {
+            for record in &self.records {
+                let Some(Record::Refuted(deps)) = record else {
+                    continue;
+                };
                 for &x in deps {
                     if x != self.my_id
                         && let Err(pos) = combined.binary_search(&x)
@@ -713,6 +766,72 @@ impl Frame {
             SearchVerdict::Unsat(combined)
         }
     }
+}
+
+/// A `⊔` frame's precondition (spec §4.2): the `⊔` label's deps (which, with
+/// the existence fold on, carry its origins') and the node's existence. Empty
+/// unless selective undo is on.
+fn or_pre(ctx: &TableauContext<'_, '_, '_>, node: NodeId, or_deps: &[u32]) -> DepSet {
+    if !ctx.selective_undo() {
+        return DepSet::new();
+    }
+    crate::deps::union(or_deps, ctx.exist_deps_of(node))
+}
+
+/// A choose frame's precondition (spec §4.2): the `≤n` label's deps, the
+/// existence of the holder and the neighbour, and the deps of every edge
+/// between them. Empty unless selective undo is on.
+fn choose_pre(ctx: &TableauContext<'_, '_, '_>, open: &OpenChoose) -> DepSet {
+    if !ctx.selective_undo() {
+        return DepSet::new();
+    }
+    let graph = ctx.graph();
+    let mut pre = graph
+        .node(open.holder)
+        .deps_of_label(open.max_label)
+        .cloned()
+        .unwrap_or_default();
+    pre = crate::deps::union(&pre, ctx.exist_deps_of(open.holder));
+    pre = crate::deps::union(&pre, ctx.exist_deps_of(open.neighbour));
+    for (from, to) in [(open.holder, open.neighbour), (open.neighbour, open.holder)] {
+        let n = graph.node(from);
+        for (pos, &(_, t)) in n.edges.iter().enumerate() {
+            if t == to {
+                pre = crate::deps::union(&pre, &n.edge_deps[pos]);
+            }
+        }
+    }
+    pre
+}
+
+/// The union of the deps of every distinctness mark among `nodes`.
+fn distinct_marks_deps(ctx: &TableauContext<'_, '_, '_>, nodes: &[NodeId]) -> DepSet {
+    let mut out = DepSet::new();
+    for (i, &a) in nodes.iter().enumerate() {
+        for &b in &nodes[i + 1..] {
+            if let Some(d) = ctx.inequality_deps_of(a, b) {
+                out = crate::deps::union(&out, d);
+            }
+        }
+    }
+    out
+}
+
+/// A merge frame's precondition (spec §4.2): the witness deps every partner
+/// carries (1a, with the existence fold), the existence of the holder, the
+/// pivot and its partners, and the marks that keep any two of them distinct
+/// (they decide which merges the frame offers).
+fn merge_pre(ctx: &TableauContext<'_, '_, '_>, open: &OpenMax) -> DepSet {
+    let mut pre = open
+        .partners
+        .first()
+        .map_or_else(|| open.max_deps.clone(), |(_, d)| d.clone());
+    pre = crate::deps::union(&pre, ctx.exist_deps_of(open.holder));
+    pre = crate::deps::union(&pre, &open.distinct_deps);
+    for n in std::iter::once(open.pivot).chain(open.partners.iter().map(|(w, _)| *w)) {
+        pre = crate::deps::union(&pre, ctx.exist_deps_of(n));
+    }
+    pre
 }
 
 /// Reorder the disjuncts of an open `Or` to try the *cheapest* one
@@ -832,7 +951,19 @@ fn is_literal(ctx: &TableauContext<'_, '_, '_>, c: ConceptId) -> bool {
 /// Find the first `Max(n, R, C)` label whose R-neighbour at the
 /// owning node is unlabelled for both `C` and `¬C`. Returns
 /// `(neighbour, C, ¬C)` — the two labels the search will branch on.
-fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, ConceptId, ConceptId)> {
+/// An open choose rule: `neighbour` of the `≤n` holder lacks both `body` and
+/// its complement.
+struct OpenChoose {
+    neighbour: NodeId,
+    body: ConceptId,
+    complement: ConceptId,
+    /// The node carrying the `≤n` label `max_label` (#288 step 4: the choose
+    /// frame's precondition reads them).
+    holder: NodeId,
+    max_label: ConceptId,
+}
+
+fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenChoose> {
     let pool = ctx.pool();
     let graph = ctx.graph();
     for idx in 0..graph.len() {
@@ -860,7 +991,13 @@ fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Concep
                 let has_body = nlabels.binary_search(body).is_ok();
                 let has_comp = nlabels.binary_search(&complement).is_ok();
                 if !has_body && !has_comp {
-                    return Some((neighbour, *body, complement));
+                    return Some(OpenChoose {
+                        neighbour,
+                        body: *body,
+                        complement,
+                        holder: node_id,
+                        max_label: c,
+                    });
                 }
             }
         }

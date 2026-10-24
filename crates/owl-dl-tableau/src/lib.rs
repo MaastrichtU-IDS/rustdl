@@ -214,6 +214,9 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// branch decisions. Phase 4 DDB — see
     /// `docs/phase4-backjumping-plan.md`.
     active_branches: Vec<u32>,
+    /// #288 step 1c (E'): fold the existence deps of a derived fact's origin
+    /// nodes into its ordinary deps. `RUSTDL_EXIST_DEPS_FOLD=1`, default OFF.
+    exist_fold: bool,
     /// Monotonic counter handing out the next `branch_id`. Reset to
     /// zero per tableau run; lives as long as the context.
     next_branch_id: u32,
@@ -390,6 +393,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
+            exist_fold: exist_deps_fold_enabled(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -433,6 +437,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
+            exist_fold: exist_deps_fold_enabled(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -481,6 +486,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
+            exist_fold: exist_deps_fold_enabled(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -1341,6 +1347,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let id = self
             .graph
             .push_node_with_parent(Some(from), Some(Role::Named(role)));
+        self.set_exist_deps(id, from, deps);
         self.trail.record(TrailEntry::NodeCreated { prior_len });
         self.add_edge_inner(from, role, id, deps);
         id
@@ -1362,9 +1369,53 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let id = self
             .graph
             .push_node_with_parent(Some(to), Some(Role::Inverse(role)));
+        self.set_exist_deps(id, to, deps);
         self.trail.record(TrailEntry::NodeCreated { prior_len });
         self.add_edge_inner(id, role, to, deps);
         id
+    }
+
+    /// Record a fresh node's existence deps (#288 step 1c): the creating
+    /// edge's `deps` ∪ the creator's existence deps.
+    fn set_exist_deps(&mut self, id: NodeId, creator: NodeId, deps: &[u32]) {
+        let exist = crate::deps::union(deps, &self.graph.node(creator).exist_deps);
+        self.graph.node_mut(id).exist_deps = exist;
+    }
+
+    /// Override [`exist_deps_fold_enabled`] for this context (tests).
+    pub fn set_exist_deps_fold(&mut self, on: bool) {
+        self.exist_fold = on;
+    }
+
+    /// With the fold on (#288 step 1c, [`exist_deps_fold_enabled`]), add to
+    /// `deps` the existence deps of every node in `origins` that a fact
+    /// living at the nodes in `at` does not already die with: ids in some
+    /// `at` node's existence deps are left out, since that node's death
+    /// removes the fact anyway. A no-op with the fold off.
+    pub(crate) fn fold_exist(&self, deps: &mut DepSet, origins: &[NodeId], at: &[NodeId]) {
+        if !self.exist_fold {
+            return;
+        }
+        for &o in origins {
+            for &x in &self.graph.node(o).exist_deps {
+                if at
+                    .iter()
+                    .any(|&a| self.graph.node(a).exist_deps.binary_search(&x).is_ok())
+                {
+                    continue;
+                }
+                if let Err(pos) = deps.binary_search(&x) {
+                    deps.insert(pos, x);
+                }
+            }
+        }
+    }
+
+    /// The decisions `node`'s existence depends on (#288 step 1c, spec
+    /// §4.3). Recorded only; nothing reads it before selective undo.
+    #[must_use]
+    pub fn exist_deps_of(&self, node: NodeId) -> &[u32] {
+        &self.graph.node(node).exist_deps
     }
 
     /// Pair blocking (a.k.a. double blocking).
@@ -1703,11 +1754,22 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Idempotent: a no-op if the pair is already marked. Records a
     /// [`TrailEntry::DistinctMarked`] when the mark is fresh.
     pub fn mark_distinct(&mut self, a: NodeId, b: NodeId) {
+        self.mark_distinct_with_deps(a, b, &[]);
+    }
+
+    /// Like [`Self::mark_distinct`], recording what the mark depends on
+    /// (#288 step 1c). The first mark of a pair wins, as for labels.
+    pub fn mark_distinct_with_deps(&mut self, a: NodeId, b: NodeId, deps: &[u32]) {
         if a == b || self.are_distinct(a, b) {
             return;
         }
-        self.graph.node_mut(a).inequalities.push(b);
-        self.graph.node_mut(b).inequalities.push(a);
+        let deps = crate::graph::DepSet::from_slice(deps);
+        let na = self.graph.node_mut(a);
+        na.inequalities.push(b);
+        na.inequality_deps.push(deps.clone());
+        let nb = self.graph.node_mut(b);
+        nb.inequalities.push(a);
+        nb.inequality_deps.push(deps);
         self.trail.record(TrailEntry::DistinctMarked { a, b });
         self.touch(&[a, b]);
     }
@@ -1723,13 +1785,29 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Idempotent: a no-op if already set to `node`. Records a
     /// [`TrailEntry::NominalAssigned`] when the mapping changes.
     pub fn assign_nominal(&mut self, individual: IndividualId, node: NodeId) {
+        self.assign_nominal_with_deps(individual, node, &[]);
+    }
+
+    /// Like [`Self::assign_nominal`], recording what the assignment depends
+    /// on (#288 step 1c); the node's existence deps are added here.
+    pub fn assign_nominal_with_deps(
+        &mut self,
+        individual: IndividualId,
+        node: NodeId,
+        deps: &[u32],
+    ) {
         let prior = self.graph.nominals.get(&individual).copied();
         if prior == Some(node) {
             return;
         }
         self.graph.nominals.insert(individual, node);
-        self.trail
-            .record(TrailEntry::NominalAssigned { individual, prior });
+        let deps = crate::deps::union(deps, &self.graph.node(node).exist_deps);
+        self.trail.record(TrailEntry::NominalAssigned {
+            individual,
+            prior,
+            node,
+            deps,
+        });
         // Only `apply_nominal_assignment` reads the map, at nodes carrying the
         // nominal, and those are touched by their own label additions and
         // merges (#309 review). Touching every node here was O(N²) when the
@@ -1819,6 +1897,18 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         if self.are_distinct(source, target) {
             return false;
         }
+        // With the fold on, everything the merge moves also depends on the
+        // source existing (#288 step 1c).
+        let mut folded = crate::graph::DepSet::from_slice(merge_deps);
+        self.fold_exist(&mut folded, &[source], &[target]);
+        let merge_deps: &[u32] = &folded;
+        // #288 step 1c: everything up to `MergeEnd` is one merge unit. Pushed
+        // after the refusal above, so a refused merge records nothing.
+        self.trail.record(TrailEntry::MergeBegin {
+            source,
+            target,
+            deps: crate::graph::DepSet::from_slice(merge_deps),
+        });
         // The target absorbs everything from the source — labels,
         // edges, inequalities, child parent-pointers. All of those
         // are downstream mutations that mark target dirty themselves;
@@ -1852,7 +1942,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         };
         let source_out: Vec<(RoleId, NodeId)> = self.graph.node(source).edges.to_vec();
         let source_in: Vec<(RoleId, NodeId)> = self.graph.node(source).in_edges.to_vec();
-        let source_ineq: Vec<NodeId> = self.graph.node(source).inequalities.to_vec();
+        let source_ineq: Vec<(NodeId, crate::graph::DepSet)> = {
+            let n = self.graph.node(source);
+            n.inequalities
+                .iter()
+                .copied()
+                .zip(n.inequality_deps.iter().cloned())
+                .collect()
+        };
 
         // 1. Replay labels on target with their deps so back-jumping
         //    can identify which branch the merge-clash depends on.
@@ -1942,9 +2039,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
 
         // 4. Carry inequalities. mark_distinct is symmetric and
         //    idempotent.
-        for other in source_ineq {
+        for (other, mark_deps) in source_ineq {
             if other != target && other != source {
-                self.mark_distinct(target, other);
+                self.mark_distinct_with_deps(target, other, &with_merge(&mark_deps));
             }
         }
 
@@ -2011,6 +2108,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             new_target: target,
             prior_redirect: prior,
         });
+        self.trail.record(TrailEntry::MergeEnd);
         self.touch(&[source, target]);
 
         true
@@ -2880,6 +2978,19 @@ pub fn max_precise_bot_enabled() -> bool {
 #[must_use]
 pub fn max_merge_keep_older_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_MERGE_KEEP_OLDER").is_none_or(|v| v != "0")
+}
+
+/// Whether derived facts carry their origin nodes' existence deps in their
+/// ordinary deps (#288 step 1c, `RUSTDL_EXIST_DEPS_FOLD=1`, **default OFF**).
+///
+/// Selective undo needs a fact that node `m` caused at another node to go when
+/// `m` dies, and so must everything later derived from that fact, at any node.
+/// Ordinary deps already flow through every rule, so folding `m`'s existence
+/// into them makes that transitive. It also makes backjumping more
+/// conservative, which is why it is off until selective undo needs it.
+#[must_use]
+pub fn exist_deps_fold_enabled() -> bool {
+    std::env::var_os("RUSTDL_EXIST_DEPS_FOLD").is_some_and(|v| v == "1")
 }
 
 /// Whether `search` re-runs `saturate` once more before answering `Sat`

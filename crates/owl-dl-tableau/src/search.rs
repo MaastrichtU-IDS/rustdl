@@ -335,6 +335,8 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                     ),
                 );
             }
+            // The `≤n` is over-full only while every witness exists (#288 step 1c).
+            ctx.fold_exist(&mut witness_deps, &witnesses, &[node_id]);
             for (j, &pivot) in witnesses.iter().enumerate() {
                 let partners: Vec<(NodeId, DepSet)> = witnesses[..j]
                     .iter()
@@ -519,8 +521,15 @@ impl Frame {
                         Start::Decided(k, cp, SearchVerdict::Unsat(DepSet::from_slice(&[my_id])))
                     }
                 } else {
-                    for (w, _) in &open.partners {
-                        ctx.mark_distinct(open.pivot, *w);
+                    // #288 step 1c: the mark depends on this decision and on
+                    // what made the `≤n` over-full (every partner carries the
+                    // same witness deps, see `first_open_max`).
+                    for (w, witness_deps) in &open.partners {
+                        let mut deps = witness_deps.clone();
+                        if let Err(pos) = deps.binary_search(&my_id) {
+                            deps.insert(pos, my_id);
+                        }
+                        ctx.mark_distinct_with_deps(open.pivot, *w, &deps);
                     }
                     Start::Child(k, cp)
                 }

@@ -129,7 +129,8 @@ pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         out
     };
     let mut applied = false;
-    for (target, body, deps) in pending {
+    for (target, body, mut deps) in pending {
+        ctx.fold_exist(&mut deps, &[node], &[target]);
         if ctx.add_label_with_deps(target, body, &deps) {
             applied = true;
         }
@@ -394,7 +395,8 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
         out
     };
     let mut applied = false;
-    for (target, c, deps) in pending {
+    for (target, c, mut deps) in pending {
+        ctx.fold_exist(&mut deps, &[node], &[target]);
         if ctx.add_label_with_deps(target, c, &deps) {
             applied = true;
         }
@@ -884,7 +886,7 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
             }
             for i in 0..fresh_witnesses.len() {
                 for j in (i + 1)..fresh_witnesses.len() {
-                    ctx.mark_distinct(fresh_witnesses[i], fresh_witnesses[j]);
+                    ctx.mark_distinct_with_deps(fresh_witnesses[i], fresh_witnesses[j], &min_deps);
                 }
             }
             applied = true;
@@ -919,7 +921,7 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         for i in 0..commit_count {
             for j in (i + 1)..commit_count {
                 if !ctx.are_distinct(all_witnesses[i], all_witnesses[j]) {
-                    ctx.mark_distinct(all_witnesses[i], all_witnesses[j]);
+                    ctx.mark_distinct_with_deps(all_witnesses[i], all_witnesses[j], &min_deps);
                     applied = true;
                 }
             }
@@ -1112,6 +1114,8 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         if any_distinct {
             witness_deps = union(&witness_deps, &DepSet::from_slice(ctx.active_branches()));
         }
+        // The `≤n` is over-full only while every witness exists (#288 step 1c).
+        ctx.fold_exist(&mut witness_deps, &c_neighbours, &[node]);
         let keep_older = crate::max_merge_keep_older_enabled();
         // What each rejected trial merge clashed on, for a precise `⊥` below.
         let mut rejected_deps = DepSet::new();
@@ -1329,7 +1333,7 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
     for (ind, here_nom_deps) in individuals {
         match ctx.graph().nominal_node(ind) {
             None => {
-                ctx.assign_nominal(ind, resolved_node);
+                ctx.assign_nominal_with_deps(ind, resolved_node, &here_nom_deps);
                 applied = true;
             }
             Some(other) => {
@@ -1367,7 +1371,7 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                     }
                     // After merging, update the nominal map so
                     // subsequent lookups skip the resolve chain.
-                    ctx.assign_nominal(ind, resolved_node);
+                    ctx.assign_nominal_with_deps(ind, resolved_node, &merge_deps);
                     applied = true;
                 }
             }
@@ -1454,7 +1458,8 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
                         if chain_edge_already_present(ctx, head_res, sup, tail_res) {
                             continue;
                         }
-                        let combined = union(head_deps, tail_deps);
+                        let mut combined = union(head_deps, tail_deps);
+                        ctx.fold_exist(&mut combined, &[node, *head, *tail], &[head_res, tail_res]);
                         pending
                             .entry((head_res, sup, tail_res))
                             .and_modify(|d| *d = union(d, &combined))
@@ -1483,7 +1488,8 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
                 if chain_edge_already_present(ctx, node, sup, tail_res) {
                     continue;
                 }
-                let combined = union(&head_deps, &tail_deps);
+                let mut combined = union(&head_deps, &tail_deps);
+                ctx.fold_exist(&mut combined, &[mid, mid_res, tail], &[node, tail_res]);
                 pending
                     .entry((node, sup, tail_res))
                     .and_modify(|d| *d = union(d, &combined))

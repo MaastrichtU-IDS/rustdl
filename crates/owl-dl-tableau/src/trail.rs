@@ -49,10 +49,13 @@ pub enum TrailEntry {
     /// A new node was allocated. `prior_len` is the node-arena length
     /// *before* this allocation; rollback truncates back to that
     /// length, dropping this node and any nodes created after it.
+    /// The node's id is `prior_len`; its deps (#288 step 1c) are the
+    /// node's `exist_deps`, stored on the node rather than here.
     NodeCreated { prior_len: usize },
     /// `a` and `b` were marked pairwise distinct. Undo removes the
     /// last entry on each node's `inequalities` list (append-only
-    /// discipline between checkpoints lets us pop without scanning).
+    /// discipline between checkpoints lets us pop without scanning),
+    /// with its `inequality_deps` entry.
     DistinctMarked { a: NodeId, b: NodeId },
     /// An out-edge `(role, target)` was removed from `from`'s edge
     /// list at position `position`. The mirror in-edge at `target`
@@ -92,10 +95,28 @@ pub enum TrailEntry {
     /// was changed. Stored on the [`crate::TableauContext`], outside
     /// the graph itself; the trail entry holds the prior mapping so
     /// undo restores it.
+    ///
+    /// `node` is the new canonical node and `deps` what the assignment
+    /// depends on (#288 step 1c): the `{a}` label's deps ∪ the node's
+    /// existence deps (∪ the merge's, after a nominal merge). Recorded
+    /// only; undo does not read them.
     NominalAssigned {
         individual: IndividualId,
         prior: Option<NodeId>,
+        node: NodeId,
+        deps: crate::graph::DepSet,
     },
+    /// Start of a merge unit (#288 step 1c): every entry up to the matching
+    /// [`TrailEntry::MergeEnd`] was pushed by merging `source` into `target`
+    /// and depends on `deps`, the merge's deps. Units never nest. Undo is a
+    /// no-op; the entries inside undo themselves.
+    MergeBegin {
+        source: NodeId,
+        target: NodeId,
+        deps: crate::graph::DepSet,
+    },
+    /// End of the merge unit opened by the last [`TrailEntry::MergeBegin`].
+    MergeEnd,
     /// Marker recording a position in the trail. [`TableauTrail::rollback_to`]
     /// takes the [`Checkpoint`] returned by [`TableauTrail::checkpoint`]
     /// and undoes everything after it.
@@ -303,9 +324,15 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             let ineq_a = &mut graph.node_mut(a).inequalities;
             let last = ineq_a.pop().expect("DistinctMarked undo: a empty");
             debug_assert_eq!(last, b, "DistinctMarked undo: a/b mismatch");
+            graph.node_mut(a).inequality_deps.pop();
             let ineq_b = &mut graph.node_mut(b).inequalities;
             let last = ineq_b.pop().expect("DistinctMarked undo: b empty");
             debug_assert_eq!(last, a, "DistinctMarked undo: b/a mismatch");
+            graph.node_mut(b).inequality_deps.pop();
+            debug_assert_eq!(
+                graph.node(a).inequalities.len(),
+                graph.node(a).inequality_deps.len()
+            );
         }
         TrailEntry::EdgeRemoved {
             from,
@@ -349,7 +376,9 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             b.parent = prior_parent;
             b.parent_role = prior_parent_role;
         }
-        TrailEntry::NominalAssigned { individual, prior } => match prior {
+        TrailEntry::NominalAssigned {
+            individual, prior, ..
+        } => match prior {
             Some(node) => {
                 graph.nominals.insert(individual, node);
             }
@@ -357,6 +386,9 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
                 graph.nominals.remove(&individual);
             }
         },
-        TrailEntry::Checkpoint | TrailEntry::StableMark { .. } => {}
+        TrailEntry::Checkpoint
+        | TrailEntry::StableMark { .. }
+        | TrailEntry::MergeBegin { .. }
+        | TrailEntry::MergeEnd => {}
     }
 }

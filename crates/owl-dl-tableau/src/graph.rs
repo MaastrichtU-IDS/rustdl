@@ -100,6 +100,15 @@ pub struct Node {
     /// is known to denote a *different* individual than this node.
     /// Symmetric — if `a ∈ b.inequalities` then `b ∈ a.inequalities`.
     pub(crate) inequalities: SmallVec<[NodeId; 2]>,
+    /// Per-inequality `DepSet`, parallel to [`Self::inequalities`] (#288
+    /// step 1c): the decisions the mark depends on. Recorded only; nothing
+    /// reads it before selective undo.
+    pub(crate) inequality_deps: SmallVec<[DepSet; 2]>,
+    /// The decisions this node's existence depends on (#288 step 1c, spec
+    /// §4.3): its creating edge's deps ∪ its creator's `exist_deps`, so the
+    /// closure is transitive. Set once at creation; merges and parent
+    /// rewrites leave it unchanged. Roots have `∅`. Recorded only.
+    pub(crate) exist_deps: DepSet,
     /// `Some(t)` if this node has been merged into `t` by
     /// `apply_max`. All meaningful state has been transferred to
     /// `t`; this node is a redirect. Resolved through chains via

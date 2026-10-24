@@ -188,7 +188,10 @@ pub(crate) fn jump(ctx: &mut TableauContext<'_, '_, '_>, deps: &[u32]) {
         .collect();
     for entry in ctx.trail().entries_from(cp_len) {
         let verdict = match entry {
-            TrailEntry::Checkpoint | TrailEntry::StableMark { .. } => continue,
+            TrailEntry::Checkpoint
+            | TrailEntry::StableMark { .. }
+            | TrailEntry::MergeBegin { .. }
+            | TrailEntry::MergeEnd => continue,
             TrailEntry::LabelAdded { node, concept } => {
                 if node_dead(ctx, *node) {
                     false

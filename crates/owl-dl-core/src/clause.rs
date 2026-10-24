@@ -1615,14 +1615,14 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         use std::fmt::Write as _;
         let mut lhs = String::new();
         for i in 1..=n {
-            write!(lhs, " ObjectSomeValuesFrom(:s{i} :S{i})").unwrap();
+            write!(lhs, " ObjectSomeValuesFrom(:s{i} :S{i})").expect("write to String");
         }
         let mut other = String::new();
         for i in 1..=shared {
-            write!(other, " ObjectSomeValuesFrom(:s{i} :S{i})").unwrap();
+            write!(other, " ObjectSomeValuesFrom(:s{i} :S{i})").expect("write to String");
         }
         for i in shared + 1..=n {
-            write!(other, " ObjectSomeValuesFrom(:t{i} :T{i})").unwrap();
+            write!(other, " ObjectSomeValuesFrom(:t{i} :T{i})").expect("write to String");
         }
         format!(
             "{HEADER}Ontology(<http://x/o>\n\

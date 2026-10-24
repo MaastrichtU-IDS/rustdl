@@ -40,20 +40,20 @@ use std::time::Instant;
 /// homomorphism of the body's variable-tree into the graph.
 type Binding = SmallVec<[(Var, HNode); 4]>;
 
-/// Defensive cap on the number of body variables `match_body` will
-/// bind; bodies above it are treated as unsupported (deferred). Real
-/// clausifier bodies are 1–3 vars; this guards pathological inputs.
-///
-/// **This cap is NOT a work budget — it deletes inferences.** A body over
-/// the cap makes [`eval_order`] refuse, which `match_body` reports as `None` —
-/// "unsupported", and all three consumers then *skip the clause entirely*.
-/// The consequence is a **silent MISS**: a completeness loss with no
-/// `incomplete` signal. See `docs/2026-08-03-max-body-vars.md`.
-///
-/// The cap itself is [`MAX_BODY_VARS`], defined in `owl_dl_core::clause` (#353) so
-/// that the clausifier, which splits over-cap bodies into named branches before
-/// they reach this matcher, and this matcher share one value. Since that split,
-/// `RUSTDL_WIDE_BODY_VARS` only affects bodies the clausifier could not split.
+// Defensive cap on the number of body variables `match_body` will
+// bind; bodies above it are treated as unsupported (deferred). Real
+// clausifier bodies are 1–3 vars; this guards pathological inputs.
+//
+// **This cap is NOT a work budget — it deletes inferences.** A body over
+// the cap makes [`eval_order`] refuse, which `match_body` reports as `None` —
+// "unsupported", and all three consumers then *skip the clause entirely*.
+// The consequence is a **silent MISS**: a completeness loss with no
+// `incomplete` signal. See `docs/2026-08-03-max-body-vars.md`.
+//
+// The cap itself is [`MAX_BODY_VARS`], defined in `owl_dl_core::clause` (#353) so
+// that the clausifier, which splits over-cap bodies into named branches before
+// they reach this matcher, and this matcher share one value. Since that split,
+// `RUSTDL_WIDE_BODY_VARS` only affects bodies the clausifier could not split.
 
 /// The raised cap selected by `RUSTDL_WIDE_BODY_VARS=1` (default OFF).
 /// 16 is the value `docs/2026-08-03-constant-audit.md` §6 measured as

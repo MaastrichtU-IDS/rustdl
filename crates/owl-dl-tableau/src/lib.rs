@@ -126,7 +126,7 @@ enum ScanPhase {
 // because the rules that consult them are on the hot path), not a state
 // machine; grouping them would only move the count.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TableauContext<'pool, 'tbox, 'hier> {
     pool: &'pool ConceptPool,
     tbox: Option<&'tbox AbsorbedTBox>,
@@ -220,6 +220,15 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// #288 step 4: selective undo on backjumps. `RUSTDL_SELECTIVE_UNDO=1`,
     /// default OFF; implies `exist_fold`.
     selective: bool,
+    /// The fewest frames a back-jump must skip to be done selectively
+    /// (#288 step 4, [`selective_min_skip`]); per context so a shadow search
+    /// can run chronologically next to the main one.
+    selective_min_skip: usize,
+    /// Selective backjumps taken so far, and the frames above their targets
+    /// they kept and dropped (#288 step 4c).
+    selective_jumps: u64,
+    selective_kept: u64,
+    selective_dead: u64,
     /// Monotonic counter handing out the next `branch_id`. Reset to
     /// zero per tableau run; lives as long as the context.
     next_branch_id: u32,
@@ -398,6 +407,10 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             active_branches: Vec::new(),
             exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
             selective: selective_undo_enabled(),
+            selective_min_skip: selective_min_skip(),
+            selective_jumps: 0,
+            selective_kept: 0,
+            selective_dead: 0,
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -443,6 +456,10 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             active_branches: Vec::new(),
             exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
             selective: selective_undo_enabled(),
+            selective_min_skip: selective_min_skip(),
+            selective_jumps: 0,
+            selective_kept: 0,
+            selective_dead: 0,
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -493,6 +510,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             active_branches: Vec::new(),
             exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
             selective: selective_undo_enabled(),
+            selective_min_skip: selective_min_skip(),
+            selective_jumps: 0,
+            selective_kept: 0,
+            selective_dead: 0,
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
@@ -597,6 +618,16 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn deadline_reached(&self) -> bool {
         self.deadline_hit
+    }
+
+    /// Prepare a clone of this context for a shadow search (#288 step 4c,
+    /// oracle (c)): chronological backjumps only, no deadline, no
+    /// early-abandon, so its verdict depends on the logic alone.
+    pub(crate) fn make_shadow(&mut self) {
+        self.selective_min_skip = usize::MAX;
+        self.deadline = None;
+        self.deadline_hit = false;
+        self.early_abandon = None;
     }
 
     /// Clear the sticky [`Self::deadline_reached`] flag.
@@ -1324,6 +1355,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         &self.trail
     }
 
+    /// The trail, for the selective backjump's splice (#288 step 4c).
+    pub(crate) fn trail_mut(&mut self) -> &mut TableauTrail {
+        &mut self.trail
+    }
+
     /// Take a checkpoint that can later be passed to [`Self::rollback_to`]
     /// to undo every mutation made after this call.
     pub fn checkpoint(&mut self) -> Checkpoint {
@@ -1422,6 +1458,35 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn selective_undo(&self) -> bool {
         self.selective
+    }
+
+    /// See [`selective_min_skip`].
+    #[must_use]
+    pub fn selective_min_skip(&self) -> usize {
+        self.selective_min_skip
+    }
+
+    /// Selective backjumps taken so far (#288 step 4c).
+    #[must_use]
+    pub fn selective_jumps(&self) -> u64 {
+        self.selective_jumps
+    }
+
+    /// Frames kept and dropped over all selective backjumps so far.
+    #[must_use]
+    pub fn selective_frame_counts(&self) -> (u64, u64) {
+        (self.selective_kept, self.selective_dead)
+    }
+
+    pub(crate) fn note_selective_jump(&mut self, kept: usize, dead: usize) {
+        self.selective_jumps += 1;
+        self.selective_kept += kept as u64;
+        self.selective_dead += dead as u64;
+    }
+
+    /// Override [`selective_min_skip`] for this context.
+    pub fn set_selective_min_skip(&mut self, n: usize) {
+        self.selective_min_skip = n.max(1);
     }
 
     /// Selectively undo the trail from `cp` on (#288 step 4b): `actions[i]`
@@ -1855,6 +1920,54 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         nb.inequality_deps.push(deps);
         self.trail.record(TrailEntry::DistinctMarked { a, b });
         self.touch(&[a, b]);
+    }
+
+    /// Put `c` at `node` with `deps`, replacing the deps if it is there,
+    /// without recording (#288 step 4c, plan Revision 2 B-A: the caller
+    /// splices the matching `LabelAdded` into the trail itself).
+    pub(crate) fn put_label_unrecorded(&mut self, node: NodeId, c: ConceptId, deps: DepSet) {
+        let n = self.graph.node_mut(node);
+        match n.labels.binary_search(&c) {
+            Ok(pos) => n.label_deps[pos] = deps,
+            Err(pos) => {
+                n.labels.insert(pos, c);
+                n.label_deps.insert(pos, deps);
+                self.graph.blocking_mut(node).label_sig |= crate::graph::label_sig_bit(c);
+            }
+        }
+        self.graph.set_dirty(node, true);
+    }
+
+    /// Mark `a` and `b` distinct with `deps`, replacing the deps if they are,
+    /// without recording (#288 step 4c; see [`Self::put_label_unrecorded`]).
+    pub(crate) fn put_mark_unrecorded(&mut self, a: NodeId, b: NodeId, deps: &DepSet) {
+        for (x, y) in [(a, b), (b, a)] {
+            let n = self.graph.node_mut(x);
+            if let Some(pos) = n.inequalities.iter().position(|&m| m == y) {
+                n.inequality_deps[pos].clone_from(deps);
+            } else {
+                n.inequalities.push(y);
+                n.inequality_deps.push(deps.clone());
+            }
+            self.graph.set_dirty(x, true);
+        }
+    }
+
+    /// Whether `node` names a live node whose representative carries `{ind}`
+    /// (#288 step 4, plan S3: the validated read of the nominal map).
+    #[must_use]
+    pub fn carries_nominal(&self, node: NodeId, ind: owl_dl_core::IndividualId) -> bool {
+        if (node.index() as usize) >= self.graph.len() || !self.graph.is_alive(node) {
+            return false;
+        }
+        let rep = self.resolve(node);
+        self.graph.is_alive(rep)
+            && self
+                .graph
+                .node(rep)
+                .labels()
+                .iter()
+                .any(|&c| matches!(self.pool.get(c), ConceptExpr::Nominal(i) if *i == ind))
     }
 
     /// True iff `a` and `b` are known distinct via a prior
@@ -3073,6 +3186,20 @@ pub fn max_merge_keep_older_enabled() -> bool {
 #[must_use]
 pub fn selective_undo_enabled() -> bool {
     std::env::var_os("RUSTDL_SELECTIVE_UNDO").is_some_and(|v| v == "1")
+}
+
+/// The fewest frames a back-jump must skip before it is done selectively
+/// (#288 step 4, `RUSTDL_SELECTIVE_MIN_SKIP`, default 1 = every skipping
+/// back-jump; `inf` = never, which with the flag on gives oracle (d)'s
+/// chronological arm).
+#[must_use]
+pub fn selective_min_skip() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| match std::env::var("RUSTDL_SELECTIVE_MIN_SKIP") {
+        Ok(v) if v == "inf" => usize::MAX,
+        Ok(v) => v.parse().unwrap_or(1).max(1),
+        Err(_) => 1,
+    })
 }
 
 /// Whether derived facts carry their origin nodes' existence deps in their

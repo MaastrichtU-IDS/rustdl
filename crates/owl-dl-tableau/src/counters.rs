@@ -18,7 +18,7 @@ use std::cell::Cell;
 
 /// Lightweight per-context counter bag. All counters are `Cell<u64>`
 /// to allow bumping from `&self` callers (`is_blocked`).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RuleCounters {
     pub(crate) apply_and: Cell<u64>,
     pub(crate) apply_forall: Cell<u64>,

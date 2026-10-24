@@ -45,6 +45,20 @@ pub(crate) fn union(a: &[u32], b: &[u32]) -> DepSet {
     out
 }
 
+/// Whether two sorted [`DepSet`]s share an element. O(|a| + |b|).
+#[must_use]
+pub(crate) fn meets(a: &[u32], b: &[u32]) -> bool {
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -462,6 +462,58 @@ impl TableauTrail {
     }
 }
 
+impl TableauTrail {
+    /// Rebuild the trail from `start` with `inserts` placed just before the
+    /// entry at their position (in list order for one position) and without
+    /// the entries at `removes` (#288 step 4c, plan Revision 2 B-A: the merge
+    /// re-copy). The graph is the caller's to update. Returns where the
+    /// surviving entries moved; `Checkpoint` entries are never inserted or
+    /// removed, so every checkpoint survives.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an insert position is before `start` or past the end.
+    pub(crate) fn splice(
+        &mut self,
+        start: usize,
+        mut inserts: Vec<(usize, TrailEntry)>,
+        removes: &std::collections::HashSet<usize>,
+    ) -> TrailRemap {
+        debug_assert!(
+            removes.iter().all(|&p| p >= start
+                && matches!(
+                    self.entries[p],
+                    TrailEntry::LabelAdded { .. } | TrailEntry::DistinctMarked { .. }
+                )),
+            "splice: removes only label and mark entries from start on"
+        );
+        inserts.sort_by_key(|(p, _)| *p);
+        self.generation += 1;
+        let tail = self.entries.split_off(start);
+        let mut moved = Vec::with_capacity(tail.len());
+        let mut ins = inserts.into_iter().peekable();
+        for (i, entry) in tail.into_iter().enumerate() {
+            let old = start + i;
+            while let Some((_, e)) = ins.next_if(|(p, _)| *p == old) {
+                self.entries.push(e);
+            }
+            if removes.contains(&old) {
+                moved.push(None);
+            } else {
+                moved.push(Some(self.entries.len()));
+                self.entries.push(entry);
+            }
+        }
+        // Inserts at the end of the trail go last.
+        let end = start + moved.len();
+        for (p, e) in ins {
+            assert_eq!(p, end, "splice: insert position past the trail");
+            self.entries.push(e);
+        }
+        TrailRemap { start, moved }
+    }
+}
+
 /// Whether `entry` may be dropped without undoing it: it records no graph
 /// change, or it is an `EdgeRemoved` (whose `EdgeAdded` must be undone, which
 /// the removal-rule assertion checks).

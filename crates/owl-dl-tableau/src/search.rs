@@ -34,6 +34,18 @@ use crate::trail::Checkpoint;
 use owl_dl_core::{ConceptExpr, ConceptId, ConceptPool};
 use smallvec::SmallVec;
 
+mod selective;
+
+/// Whether oracle (a) runs after every selective backjump (#288 step 4c,
+/// plan C9): always in debug builds, and with `RUSTDL_SELECTIVE_CHECK=1` in
+/// release so the fuzz binary can run it.
+fn selective_check_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    cfg!(debug_assertions)
+        || *ON.get_or_init(|| std::env::var_os("RUSTDL_SELECTIVE_CHECK").is_some_and(|v| v == "1"))
+}
+
 /// Hard cap on the saturation fixed-point loop within each
 /// deterministic phase. Phase 2 pre-blocking has no real risk of
 /// unbounded growth (labels are sub-expressions of the input,
@@ -110,9 +122,39 @@ fn trace_enabled() -> bool {
 /// stands in for recursion. Every side effect happens in the order the
 /// recursive version had.
 pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchVerdict {
-    // Each open frame, with the option it is trying and that option's checkpoint.
-    let mut stack: Vec<(Frame, usize, Checkpoint)> = Vec::new();
-    let mut next = expand(ctx, max_depth);
+    // Iterative deepening calls `search` again on the same context, after
+    // earlier selective backjumps may have left tombstones and barriers.
+    if ctx.selective_undo() && selective_check_enabled() {
+        selective::check_invariants(ctx, &[], None);
+    }
+    let next = expand(ctx, max_depth);
+    let mut shadows = Vec::new();
+    let verdict = drive(ctx, Vec::new(), next, &mut shadows);
+    // Oracle (c): every shadow re-ran the rest of the search chronologically
+    // from just before a selective backjump; a definite answer must agree.
+    for (event, shadow) in shadows {
+        let definite =
+            |v: &SearchVerdict| matches!(v, SearchVerdict::Sat | SearchVerdict::Unsat(_));
+        assert!(
+            !definite(&verdict)
+                || !definite(&shadow)
+                || matches!(verdict, SearchVerdict::Sat) == matches!(shadow, SearchVerdict::Sat),
+            "selective shadow: jump {event} gives {verdict:?}, chronological gives {shadow:?}"
+        );
+    }
+    verdict
+}
+
+/// Run frames from `stack` and `next` until the stack is empty (#288 step
+/// 3b's loop). Each open frame sits on the stack with the option it is trying
+/// and that option's checkpoint. `shadows` collects oracle (c)'s verdicts.
+fn drive(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    mut stack: Vec<selective::Stacked>,
+    mut next: Expanded,
+    shadows: &mut Vec<(usize, SearchVerdict)>,
+) -> SearchVerdict {
+    let mut jumps = 0;
     loop {
         // Run frames until one needs a child search or a verdict is reached.
         let verdict = loop {
@@ -132,6 +174,28 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
                 },
             }
         };
+        // #288 step 4c: a clash that skips frames is caught selectively.
+        if let SearchVerdict::Unsat(deps) = &verdict
+            && let Some(t) = selective::target(ctx, &stack, deps)
+        {
+            if selective::shadow_wanted() {
+                let mut shadow = ctx.clone();
+                shadow.make_shadow();
+                let v = drive(
+                    &mut shadow,
+                    stack.clone(),
+                    Expanded::Done(verdict.clone()),
+                    &mut Vec::new(),
+                );
+                shadows.push((jumps, v));
+            }
+            jumps += 1;
+            let SearchVerdict::Unsat(deps) = verdict else {
+                unreachable!()
+            };
+            next = Expanded::Open(selective::backjump(ctx, &mut stack, t, deps));
+            continue;
+        }
         // Hand the verdict to the frame that asked for it.
         let Some((mut frame, k, cp)) = stack.pop() else {
             return verdict;
@@ -280,6 +344,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
 }
 
 /// An open `≤n R.C` (#293), ready to branch on.
+#[derive(Clone)]
 struct OpenMax {
     /// The node carrying the `≤n` label.
     holder: NodeId,
@@ -382,6 +447,7 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
 }
 
 /// What a frame chooses between (#288 step 3).
+#[derive(Clone)]
 enum FrameKind {
     /// A `⊔` label, or the choose rule's `C ⊔ ¬C`, at `node`.
     Or {
@@ -397,6 +463,7 @@ enum FrameKind {
 }
 
 /// What a tried option of a frame concluded (#288 step 4).
+#[derive(Clone)]
 enum Record {
     /// The option clashed with these deps, which contain the frame's id.
     Refuted(DepSet),
@@ -406,6 +473,7 @@ enum Record {
 
 /// One decision of the search: its options and what each tried one
 /// concluded (#288 steps 3 and 4).
+#[derive(Clone)]
 struct Frame {
     kind: FrameKind,
     my_id: u32,
@@ -421,6 +489,18 @@ struct Frame {
     /// Empty unless selective undo is on.
     pre: DepSet,
     early_return: Option<SearchVerdict>,
+    /// The decision is moot (plan 4c C7, flag on): a selective backjump left
+    /// the frame's node redirected or already carrying an option. It asserts
+    /// nothing and passes its one child's verdict up.
+    retired: bool,
+}
+
+/// Whether an option still needs deciding ([`Frame::moot`]).
+enum Moot {
+    No,
+    Retire,
+    /// Already refuted by a distinctness mark, with these deps.
+    Refuted(DepSet),
 }
 
 /// What [`Frame::start_option`] did.
@@ -468,6 +548,7 @@ impl Frame {
             initial,
             pre,
             early_return: None,
+            retired: false,
         }
     }
 
@@ -504,6 +585,7 @@ impl Frame {
             initial: DepSet::new(),
             pre,
             early_return: None,
+            retired: false,
         }
     }
 
@@ -529,8 +611,39 @@ impl Frame {
         }
         // Record-driven (spec §4.4): the first option nothing has concluded on.
         // Without selective undo records fill in order, so this is the next index.
-        let Some(k) = self.records.iter().position(Option::is_none) else {
-            return Start::Exhausted;
+        let k = loop {
+            let Some(k) = self.records.iter().position(Option::is_none) else {
+                return Start::Exhausted;
+            };
+            if !ctx.selective_undo() {
+                break k;
+            }
+            match self.moot(ctx, k) {
+                Moot::No => break k,
+                Moot::Retire => {
+                    if trace_enabled() {
+                        eprintln!(
+                            "# trace branch depth={} my_id={} retire",
+                            self.max_depth, self.my_id
+                        );
+                    }
+                    self.retired = true;
+                    let cp = ctx.checkpoint();
+                    return Start::Child(k, cp);
+                }
+                Moot::Refuted(deps) => {
+                    if trace_enabled() {
+                        eprintln!(
+                            "# trace branch depth={} my_id={} merge={}/{} refuted_by_mark",
+                            self.max_depth,
+                            self.my_id,
+                            k + 1,
+                            self.records.len()
+                        );
+                    }
+                    self.records[k] = Some(Record::Refuted(deps));
+                }
+            }
         };
         let (my_id, max_depth, total) = (self.my_id, self.max_depth, self.records.len());
         match &self.kind {
@@ -662,6 +775,49 @@ impl Frame {
         }
     }
 
+    /// Whether option `k` still needs deciding (plan 4c C7, flag on). Only a
+    /// frame re-numbered by a selective backjump starts an option without
+    /// everything above its checkpoint rolled back, so only it can find its
+    /// node redirected or its choice already made. Then the decision is moot:
+    /// a fresh frame re-found at the representative computes its precondition
+    /// from the redirected state.
+    fn moot(&self, ctx: &TableauContext<'_, '_, '_>, k: usize) -> Moot {
+        match &self.kind {
+            FrameKind::Or { node, ordered, .. } => {
+                let n = ctx.resolve(*node);
+                let labels = ctx.graph().node(n).labels();
+                if n != *node || ordered.iter().any(|d| labels.binary_search(d).is_ok()) {
+                    Moot::Retire
+                } else {
+                    Moot::No
+                }
+            }
+            FrameKind::Merge { open } => {
+                if ctx.resolve(open.pivot) != open.pivot
+                    || open.partners.iter().any(|(w, _)| ctx.resolve(*w) != *w)
+                {
+                    return Moot::Retire;
+                }
+                match open.partners.get(k) {
+                    Some((w, _)) if ctx.are_distinct(open.pivot, *w) => {
+                        // Nothing is redirected, so the mark's deps are exact.
+                        // The id is required: without it `on_child` would read
+                        // the refutation as a back-jump past this frame.
+                        let mut deps = ctx
+                            .inequality_deps_of(open.pivot, *w)
+                            .cloned()
+                            .unwrap_or_default();
+                        if let Err(pos) = deps.binary_search(&self.my_id) {
+                            deps.insert(pos, self.my_id);
+                        }
+                        Moot::Refuted(deps)
+                    }
+                    _ => Moot::No,
+                }
+            }
+        }
+    }
+
     /// Take the verdict of option `k`, the one `start_option` last asserted.
     fn on_child(
         &mut self,
@@ -670,6 +826,25 @@ impl Frame {
         cp: Checkpoint,
         verdict: SearchVerdict,
     ) {
+        if self.retired {
+            // A retired frame asserted nothing, so its child's verdict is its
+            // own. Its id can still reach a clash through a fallback that tags
+            // `⊥` with every active decision; that over-approximates, so drop it.
+            let verdict = match verdict {
+                SearchVerdict::Unsat(mut d) => {
+                    if let Ok(pos) = d.binary_search(&self.my_id) {
+                        d.remove(pos);
+                    }
+                    SearchVerdict::Unsat(d)
+                }
+                v => v,
+            };
+            if verdict != SearchVerdict::Sat {
+                ctx.rollback_to(cp);
+            }
+            self.early_return = Some(verdict);
+            return;
+        }
         // Whether the child concluded. Feeds the early-abandon telemetry (the
         // criterion itself is the cumulative depth-cap-hit count, latched in
         // `note_depth_cap_hit`). Flag-OFF `note_branch_trial` is a single
@@ -1447,6 +1622,136 @@ mod early_abandon_tests {
 /// Today both widenings are trace-identical (every clash that reaches the
 /// frame is absorbed into its `combined`), so only these tests see them. They
 /// pin the dep content selective undo will rely on.
+#[cfg(test)]
+mod selective_tests {
+    use super::{Frame, Record, SearchVerdict, Start, search};
+    use crate::TableauContext;
+    use crate::graph::DepSet;
+    use owl_dl_core::{ClassId, ConceptId, ConceptPool};
+
+    /// `(a1 ⊔ b1) ⊓ (a2 ⊔ b2) ⊓ ((¬a1 ⊓ p) ⊔ (¬a1 ⊓ q))`. Both options of the
+    /// third decision clash with `a1` only after expansion, so the third frame
+    /// fails under the first decision alone and the clash skips the second.
+    fn skipping_clash() -> (ConceptPool, ConceptId) {
+        let mut pool = ConceptPool::new();
+        let atom = |pool: &mut ConceptPool, i| pool.atomic(ClassId::new(i));
+        let (a1, b1, a2, b2, p, q) = (
+            atom(&mut pool, 0),
+            atom(&mut pool, 1),
+            atom(&mut pool, 2),
+            atom(&mut pool, 3),
+            atom(&mut pool, 4),
+            atom(&mut pool, 5),
+        );
+        let or1 = pool.or([a1, b1]);
+        let or2 = pool.or([a2, b2]);
+        let not_a1 = pool.not(a1);
+        let x = pool.and([not_a1, p]);
+        let y = pool.and([not_a1, q]);
+        let or3 = pool.or([x, y]);
+        let root = pool.and([or1, or2, or3]);
+        (pool, root)
+    }
+
+    /// The verdict, the selective jumps taken, and the frames they kept and
+    /// dropped.
+    fn run(
+        pool: &ConceptPool,
+        root: ConceptId,
+        selective: bool,
+    ) -> (SearchVerdict, u64, (u64, u64)) {
+        let mut ctx = TableauContext::new(pool);
+        ctx.set_selective_undo(selective);
+        let n = ctx.new_node();
+        ctx.add_label(n, root);
+        let v = search(&mut ctx, 40);
+        (v, ctx.selective_jumps(), ctx.selective_frame_counts())
+    }
+
+    /// The skipped second decision survives a selective backjump, and the
+    /// answer is the chronological one.
+    #[test]
+    fn a_skipping_clash_is_caught_selectively() {
+        let (pool, root) = skipping_clash();
+        let (off, jumps_off, _) = run(&pool, root, false);
+        let (on, jumps_on, frames) = run(&pool, root, true);
+        assert_eq!(off, SearchVerdict::Sat);
+        assert_eq!(on, SearchVerdict::Sat);
+        assert_eq!(jumps_off, 0);
+        assert_eq!(jumps_on, 1, "the third frame's clash skips the second");
+        assert_eq!(
+            frames,
+            (1, 0),
+            "the second frame does not rest on the first"
+        );
+    }
+
+    /// `((E ⊓ ∃r.(w ⊓ (x ⊔ y) ⊓ ((¬w ⊓ p) ⊔ (¬w ⊓ q)))) ⊔ ∃r.b1) ⊓ (a2 ⊔ b2)`.
+    /// The first decision's option creates the successor, so the `x ⊔ y` frame
+    /// there rests on it; the `a2 ⊔ b2` frame does not. The last frame's
+    /// options both clash with `w`, which only the first decision put there.
+    #[allow(clippy::many_single_char_names)]
+    fn kept_and_dead() -> (ConceptPool, ConceptId) {
+        let mut pool = ConceptPool::new();
+        let mut atom = |i| pool.atomic(ClassId::new(i));
+        let (e, b1, w, x, y, p, q, a2, b2) = (
+            atom(0),
+            atom(1),
+            atom(2),
+            atom(3),
+            atom(4),
+            atom(5),
+            atom(6),
+            atom(7),
+            atom(8),
+        );
+        let r = owl_dl_core::Role::Named(owl_dl_core::RoleId::new(0));
+        let x_or_y = pool.or([x, y]);
+        let not_w = pool.not(w);
+        let z1 = pool.and([not_w, p]);
+        let z2 = pool.and([not_w, q]);
+        let z = pool.or([z1, z2]);
+        let inner = pool.and([w, x_or_y, z]);
+        let succ = pool.some(r, inner);
+        let opt_a = pool.and([e, succ]);
+        let opt_b = pool.some(r, b1);
+        let or1 = pool.or([opt_a, opt_b]);
+        let or2 = pool.or([a2, b2]);
+        let root = pool.and([or1, or2]);
+        (pool, root)
+    }
+
+    /// A frame resting on the abandoned decision is dropped, an independent
+    /// one is kept.
+    #[test]
+    fn a_frame_resting_on_the_target_is_dropped() {
+        let (pool, root) = kept_and_dead();
+        let (off, _, _) = run(&pool, root, false);
+        let (on, jumps, frames) = run(&pool, root, true);
+        assert_eq!(off, SearchVerdict::Sat);
+        assert_eq!(on, SearchVerdict::Sat);
+        assert_eq!(jumps, 1);
+        assert_eq!(frames, (1, 1));
+    }
+
+    /// Plan 4a review: clearing a record makes its option live again
+    /// (record-driven iteration, spec §4.4).
+    #[test]
+    fn clearing_a_record_reopens_its_option() {
+        let mut pool = ConceptPool::new();
+        let opts = [pool.atomic(ClassId::new(0)), pool.atomic(ClassId::new(1))];
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_selective_undo(true);
+        let n = ctx.new_node();
+        let mut frame = Frame::or(&mut ctx, 10, n, &opts, &[], DepSet::new());
+        frame.records[0] = Some(Record::Refuted(DepSet::from_slice(&[frame.my_id])));
+        frame.records[1] = Some(Record::Inconclusive);
+        assert!(matches!(frame.start_option(&mut ctx), Start::Exhausted));
+        frame.records[0] = None;
+        assert!(matches!(frame.start_option(&mut ctx), Start::Child(0, _)));
+    }
+}
+
 #[cfg(test)]
 mod dep_tests {
     use super::{SearchVerdict, first_open_max, search};

@@ -841,7 +841,9 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         return RuleOutcome::NoChange;
     }
     let mut applied = false;
-    let fresh_only = crate::min_fresh_witnesses_enabled();
+    // #288 step 4 (plan S4): the legacy path marks existing witnesses distinct
+    // with `min_deps` only, which a selective backjump cannot trust.
+    let fresh_only = crate::min_fresh_witnesses_enabled() || ctx.selective_undo();
     for (n, role, body, min_deps) in mins {
         if n == 0 {
             continue;
@@ -1112,7 +1114,20 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 .any(|&b| ctx.are_distinct(a, b))
         });
         if any_distinct {
-            witness_deps = union(&witness_deps, &DepSet::from_slice(ctx.active_branches()));
+            // #288 step 4 (plan B2): the marks record their deps (step 1c).
+            // Exact only with the choice point on: this merge is then forced
+            // (one mergeable pair), not a pick among several.
+            if ctx.selective_undo() && crate::max_choice_point_enabled() {
+                for (i, &a) in c_neighbours.iter().enumerate() {
+                    for &b in &c_neighbours[i + 1..] {
+                        if let Some(d) = ctx.inequality_deps_of(a, b) {
+                            witness_deps = union(&witness_deps, d);
+                        }
+                    }
+                }
+            } else {
+                witness_deps = union(&witness_deps, &DepSet::from_slice(ctx.active_branches()));
+            }
         }
         // The `≤n` is over-full only while every witness exists (#288 step 1c).
         ctx.fold_exist(&mut witness_deps, &c_neighbours, &[node]);
@@ -1125,10 +1140,16 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 let b = c_neighbours[j];
                 if !ctx.are_distinct(a, b) {
                     // The pair's own deps plus `witness_deps` (above).
-                    let merge_deps: DepSet = union(
+                    let mut merge_deps: DepSet = union(
                         &compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps),
                         &witness_deps,
                     );
+                    if ctx.selective_undo() {
+                        // #288 step 4 (4a review): the merge rests on the
+                        // holder's `≤n`, so it dies with the holder unless it
+                        // dies with the pair anyway.
+                        ctx.fold_exist(&mut merge_deps, &[node], &[a, b]);
+                    }
                     // #288: keep the older node and merge the newer into it.
                     // Neighbour order lists successors before predecessors,
                     // so `a` is often a fresh successor and `b` the node's
@@ -1331,7 +1352,15 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
     let mut applied = false;
     let resolved_node = ctx.resolve(node);
     for (ind, here_nom_deps) in individuals {
-        match ctx.graph().nominal_node(ind) {
+        let mapped = ctx.graph().nominal_node(ind);
+        // #288 step 4 (plan S3): after a selective undo the map may name a
+        // dead node or one that no longer carries `{ind}`; treat it as absent.
+        let mapped = if ctx.selective_undo() {
+            mapped.filter(|&m| ctx.carries_nominal(m, ind))
+        } else {
+            mapped
+        };
+        match mapped {
             None => {
                 ctx.assign_nominal_with_deps(ind, resolved_node, &here_nom_deps);
                 applied = true;

@@ -3620,6 +3620,10 @@ pub(crate) struct DerivedSame {
     /// (over the probe cap, or the global deadline had passed). Each is a possible
     /// equality classify does not use, as before #354.
     pub(crate) undecided: usize,
+    /// Candidate pairs considered, over all rounds.
+    pub(crate) candidates: usize,
+    /// Probes run.
+    pub(crate) probes: usize,
 }
 
 /// #354: individual equalities the KB forces, for the classify wedge.
@@ -3788,6 +3792,8 @@ pub(crate) fn derive_nominal_same(
             if probes >= max {
                 out.undecided += cands.len() - k;
                 trace(&out, seen_candidates, probes);
+                out.candidates = seen_candidates;
+                out.probes = probes;
                 return out;
             }
             let now = std::time::Instant::now();
@@ -3817,6 +3823,8 @@ pub(crate) fn derive_nominal_same(
         }
     }
     trace(&out, seen_candidates, probes);
+    out.candidates = seen_candidates;
+    out.probes = probes;
     out
 }
 

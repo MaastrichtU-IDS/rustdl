@@ -435,6 +435,10 @@ pub struct ClassificationStats {
     /// `classify --json` reports it. It does NOT set `incomplete`, which means only "a
     /// deadline fired" on a class pair.
     pub derived_same_undecided: usize,
+    /// #354: candidate pairs considered and probes run (cost telemetry).
+    pub derived_same_candidates: usize,
+    /// See [`ClassificationStats::derived_same_candidates`].
+    pub derived_same_probes: usize,
     /// Axioms dropped during conversion, tallied by diagnostic kind (issue
     /// #43). Carried here so a caller that wants the tally does NOT have to
     /// re-run `convert_ontology` to get it: the CLI used to, which cost a
@@ -1589,6 +1593,8 @@ fn classify_internal_with_timeout_impl(
         wedge_clauses_refused: wedge_clauses_refused(&prepared),
         derived_same: derived.pairs.len(),
         derived_same_undecided: derived.undecided,
+        derived_same_candidates: derived.candidates,
+        derived_same_probes: derived.probes,
         ..ClassificationStats::default()
     };
     let cut_probes = std::sync::Mutex::new(Vec::new());
@@ -4028,6 +4034,8 @@ fn classify_top_down_internal_impl(
         wedge_clauses_refused: wedge_clauses_refused(&prepared),
         derived_same: derived.pairs.len(),
         derived_same_undecided: derived.undecided,
+        derived_same_candidates: derived.candidates,
+        derived_same_probes: derived.probes,
         ..ClassificationStats::default()
     };
 

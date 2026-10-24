@@ -7,6 +7,14 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **A union of `xsd:integer` intervals is counted under data cardinality (#343).** #42 lowered
+  `∀p.([0,5] ⊔ [10,15])` to an interval-set key that the counting check never decoded. So
+  `≥3 p.xsd:integer ⊓ ∀p.({1} ⊔ {5})` was satisfiable with nothing dropped (also the two-axiom
+  and `DataPropertyRange` forms), and as a cardinality qualifier the union dropped the axiom.
+  The key now decodes to an exact union of intervals, counted with the integer range and
+  enumeration buckets, and the qualifier lowers to the same key. A union with a member of
+  another datatype still drops visibly. HermiT and Konclude split on these shapes, so the
+  counting semantics adjudicate.
 - **`consistent` no longer trusts the hypertableau's "satisfiable" when the ontology counts
   data values (#344), `RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY`, default ON (`=0` reverts).**
   `a : P`, `P ⊑ ≤1 p.DataOneOf(1 2)`, `p(a,1)` and `p(a,2)` was reported consistent, where

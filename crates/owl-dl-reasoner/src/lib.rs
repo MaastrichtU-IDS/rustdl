@@ -8272,18 +8272,19 @@ fn build_dkey_range_map(
                 owl_dl_datatypes::CardRange::DateTimeSet(owl_dl_datatypes::FiniteSet::Set(set)),
             );
         }
-        // DELIBERATE FALL-THROUGH, not an omission: a multi-interval `iset:` key
-        // (#42 item 1, `xsd:integer` interval sets) matches NO decoder above — the
-        // untagged integer decoder rejects the tag — so it gets no side-map entry.
-        // `CardRange` carries ONE interval per variant and cannot express a union, and
-        // inventing a hull `[0,15]` for `{[0,5],[10,15]}` would over-state the
-        // concrete-domain capacity in the false-POSITIVE direction. No entry means
-        // `concept_has_dkey_counting` does not flag such a filler and no counting clash
-        // is derived from it — a sound MISS, and the same one already recorded for
-        // qualified data cardinality over a union. The DISJOINTNESS the interval-set
-        // representation exists for is seeded as native `DisjointClasses` axioms in
-        // `convert.rs` and does not come through this map. If you add a decoder here,
-        // leave this absence intentional or widen `CardRange` first.
+        // A multi-interval `iset:` key (#42 item 1) decodes to an exact union of
+        // intervals (#343); the untagged single-interval form was decoded above.
+        else if let Some(pieces) = owl_dl_core::decode_int_set_dkey(iri) {
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::IntUnion(owl_dl_datatypes::IntUnion::from_intervals(
+                    pieces
+                        .into_iter()
+                        .map(|(min, max)| owl_dl_datatypes::IntInterval { min, max })
+                        .collect(),
+                )),
+            );
+        }
     }
     map
 }
@@ -10719,6 +10720,37 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 .any(|i| i.min == Some(37) && i.max == Some(100)),
             "expected CardRange::Int([37,100]) in the side-map, got {ranges:?}"
         );
+    }
+
+    /// #343: an interval-set (`iset:`) key gets an exact `CardRange::IntUnion` entry.
+    #[test]
+    fn prepared_builds_integer_union_dkey_range_map() {
+        let src = format!(
+            "{HEADER}Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\nOntology(\n\
+             Declaration(Class(:C)) Declaration(DataProperty(:p))\n\
+             SubClassOf(:C DataAllValuesFrom(:p DataUnionOf(\
+             DatatypeRestriction(xsd:integer xsd:minInclusive \"0\"^^xsd:integer \
+             xsd:maxInclusive \"5\"^^xsd:integer) \
+             DatatypeRestriction(xsd:integer xsd:minInclusive \"10\"^^xsd:integer))))\n)\n"
+        );
+        let internal = convert_ontology(&parse(&src)).expect("converts");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        let unions: Vec<_> = prepared
+            .dkey_ranges
+            .values()
+            .filter_map(|r| match r {
+                owl_dl_datatypes::CardRange::IntUnion(u) => Some(u.clone()),
+                _ => None,
+            })
+            .collect();
+        let want = owl_dl_datatypes::IntUnion::from_intervals(vec![
+            owl_dl_datatypes::IntInterval::closed(0, 5),
+            owl_dl_datatypes::IntInterval {
+                min: Some(10),
+                max: None,
+            },
+        ]);
+        assert_eq!(unions, vec![want]);
     }
 
     /// T3 termination acceptance for anywhere blocking (plan

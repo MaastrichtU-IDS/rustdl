@@ -231,7 +231,8 @@ public class RustdlReasoner extends OWLReasonerBase {
     /**
      * The warnings a classify result warrants, one per signal. Each signal has its own
      * message because they mean different things: {@code incomplete} says a deadline
-     * fired, {@code wedge_hierarchy_blind} says role-hierarchy reasoning was skipped.
+     * fired, {@code wedge_hierarchy_blind} says role-hierarchy reasoning was skipped,
+     * {@code wedge_clauses_refused} says some clauses could not be matched and never fire.
      * Either way the hierarchy stays sound and may miss subsumptions.
      */
     static List<String> classifyWarnings(RustdlJson.ClassifyJson c) {
@@ -245,6 +246,11 @@ public class RustdlReasoner extends OWLReasonerBase {
                 + "(the role closure exceeded RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE, or "
                 + "RUSTDL_CLASSIFY_ROLE_HIERARCHY=0); subsumptions that need sub-role, inverse "
                 + "or symmetric reasoning may be missing. The hierarchy is a sound under-approximation.");
+        }
+        if (c.wedge_clauses_refused > 0) {
+            out.add("rustdl's wedge engine cannot match the body of " + c.wedge_clauses_refused
+                + " clause(s), so they never fire and subsumptions that need them may be missing. "
+                + "The hierarchy is a sound under-approximation.");
         }
         return out;
     }

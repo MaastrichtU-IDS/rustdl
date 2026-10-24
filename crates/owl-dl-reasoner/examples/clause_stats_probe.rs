@@ -47,6 +47,14 @@ fn main() {
         stats.deferred,
         clauses.len()
     );
+    // #353: over-cap bodies split into named branches, and over-cap bodies left.
+    // Both use the wedge's own predicate (`owl_dl_core::clause::MAX_BODY_VARS`), so
+    // they cannot drift from it. With `RUSTDL_WEDGE_BODY_DECOMPOSE=0`, `VARCAP` is
+    // the pre-#353 census of bodies the wedge refuses for the variable cap.
+    println!(
+        "{path}\tDECOMPOSED={}\tVARCAP={}",
+        stats.decomposed, stats.refused
+    );
 }
 
 /// For each clause body, run the same greedy tree walk `hyper::eval_order` runs and

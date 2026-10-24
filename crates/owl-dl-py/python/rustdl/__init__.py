@@ -103,7 +103,9 @@ class IncompleteClassificationWarning(UserWarning):
       (`result.wedge_hierarchy_blind is True`): Layer A was off, by
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` or because the role closure exceeded
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`; raising that cap trades
-      time for the missing entailments.
+      time for the missing entailments;
+    * the wedge cannot match some clauses' bodies
+      (`result.wedge_clauses_refused > 0`): those clauses never fire (#353).
 
     `result.consistency_undetermined` is reported but not warned about, matching
     the CLI, which notes it only in the banner.
@@ -157,6 +159,17 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             "RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE), so entailments that need "
             "sub-role, inverse or symmetric reasoning may be missing. It is still "
             "sound (no false subsumptions); check result.wedge_hierarchy_blind.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    if result.wedge_clauses_refused:
+        # #353: refused clauses never fire, so completeness is not guaranteed even
+        # with no timeout.
+        _warnings.warn(
+            f"the wedge cannot match the body of {result.wedge_clauses_refused} "
+            "clause(s), so they never fire and entailments that need them may be "
+            "missing. It is still sound (no false subsumptions); check "
+            "result.wedge_clauses_refused.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )

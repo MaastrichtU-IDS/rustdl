@@ -314,6 +314,16 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED",
+            owl_dl_reasoner::report_wedge_clauses_refused_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_WEDGE_BODY_DECOMPOSE",
+            owl_dl_core::clause::body_decompose_enabled,
+            true,
+        ),
+        (
             "RUSTDL_CLASSIFY_NOMINAL_OPA",
             owl_dl_reasoner::classify_nominal_opa_enabled,
             false,

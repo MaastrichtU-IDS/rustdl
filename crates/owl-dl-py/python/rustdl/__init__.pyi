@@ -58,6 +58,11 @@ class Classification:
         off) over a non-trivial role hierarchy, so entailments needing
         sub-role, inverse or symmetric reasoning may be missing (#214)."""
         ...
+    @property
+    def wedge_clauses_refused(self) -> int:
+        """How many clauses the wedge cannot match. A refused clause never
+        fires, so entailments that need it may be missing (#353)."""
+        ...
     def is_subclass(self, sub: str, sup: str) -> bool:
         """True iff `sub ⊑ sup` is entailed."""
         ...
@@ -77,8 +82,9 @@ class Classification:
 
 class IncompleteClassificationWarning(UserWarning):
     """Emitted when the hierarchy may be missing subsumptions (sound but
-    possibly incomplete): a timeout fired, or the wedge ran without
-    role-hierarchy matching (`Classification.wedge_hierarchy_blind`)."""
+    possibly incomplete): a timeout fired, the wedge ran without
+    role-hierarchy matching (`Classification.wedge_hierarchy_blind`), or the
+    wedge refused clauses (`Classification.wedge_clauses_refused`)."""
 
 class IncompleteQueryWarning(UserWarning):
     """Emitted by the budgeted inferred queries (`disjoint_classes`,

@@ -2979,6 +2979,21 @@ pub fn report_wedge_hierarchy_blind_enabled() -> bool {
     std::env::var_os("RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND").is_none_or(|v| v != "0")
 }
 
+/// Whether classify records [`crate::classify::ClassificationStats::wedge_clauses_refused`]
+/// (#353, `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`, **default ON**, `=0` reverts).
+///
+/// A clause whose body the wedge's matcher refuses never fires, so the wedge's
+/// trusted `Sat` can miss an entailment that needs it, with no deadline involved.
+/// The clausifier splits over-cap bodies into named branches
+/// (`RUSTDL_WEDGE_BODY_DECOMPOSE`), so this counts what it could not split. Like
+/// `wedge_hierarchy_blind` it is a SEPARATE field, not `incomplete`, which keeps
+/// meaning "a deadline fired", and `completeness_guaranteed()` is false when it is
+/// non-zero. Reporting only: no answer changes.
+#[must_use]
+pub fn report_wedge_clauses_refused_enabled() -> bool {
+    std::env::var_os("RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED").is_none_or(|v| v != "0")
+}
+
 /// Whether classify takes same-tier sweep candidates from the MAIN TABLEAU's
 /// per-class model when the wedge gave no label (#192,
 /// `RUSTDL_CLASSIFY_TABLEAU_LABELS`, **default ON**, `=0` reverts).
@@ -4269,6 +4284,11 @@ impl HyperCache {
     /// another (the signed closure is larger than the reflexive one).
     pub(crate) fn hierarchy_blind(&self) -> bool {
         !self.layer_a && self.sub_roles.signed_max_closure() > 1
+    }
+
+    /// #353: clauses the wedge's matcher refuses, which therefore never fire.
+    pub(crate) fn clauses_refused(&self) -> usize {
+        self.base_indexes.refused_clauses()
     }
 
     /// Clausify `internal` and pre-compute the `¬sup` expansions once.
@@ -8985,6 +9005,11 @@ impl PreparedOntology {
     /// cannot see role-hierarchy reasoning.
     pub(crate) fn wedge_hierarchy_blind(&self) -> bool {
         self.hyper.as_ref().is_some_and(HyperCache::hierarchy_blind)
+    }
+
+    /// #353: how many clauses the wedge refuses (0 when there is no wedge).
+    pub(crate) fn wedge_clauses_refused(&self) -> usize {
+        self.hyper.as_ref().map_or(0, HyperCache::clauses_refused)
     }
 
     pub(crate) fn hyper_decide(

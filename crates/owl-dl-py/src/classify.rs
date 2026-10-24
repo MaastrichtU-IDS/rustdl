@@ -99,6 +99,14 @@ impl PyClassification {
         self.inner.stats().wedge_hierarchy_blind
     }
 
+    /// How many clauses the wedge cannot match (#353). A refused clause never
+    /// fires, so entailments that need it may be missing even though `complete`
+    /// (no timeout) is `True`. 0 when there is no wedge.
+    #[getter]
+    fn wedge_clauses_refused(&self) -> usize {
+        self.inner.stats().wedge_clauses_refused
+    }
+
     /// True iff `sub ⊑ sup` is entailed.
     fn is_subclass(&self, sub: &str, sup: &str) -> bool {
         self.inner.is_subclass(sub, sup)

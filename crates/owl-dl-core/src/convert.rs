@@ -200,6 +200,18 @@ pub fn decode_integer_dkey(iri: &str) -> Option<(Option<i64>, Option<i64>)> {
     parse_dkey_iri(iri).map(|r| (r.min, r.max))
 }
 
+/// Decode a multi-interval `xsd:integer` `DKey` IRI (the `iset:` form, #42 item 1)
+/// into its intervals as `(min, max)` pairs, `None` meaning unbounded (#343). Only the
+/// TAGGED form: an untagged single-interval key is [`decode_integer_dkey`]'s, so no
+/// key is decoded twice.
+#[must_use]
+pub fn decode_int_set_dkey(iri: &str) -> Option<Vec<(Option<i64>, Option<i64>)>> {
+    iri.strip_prefix(DKEY_IRI_PREFIX)?
+        .strip_prefix(DKEY_INT_SET_TAG)?;
+    let set = parse_int_set_dkey_iri(iri)?;
+    Some(set.ranges().iter().map(|r| (r.min, r.max)).collect())
+}
+
 /// Parse a `DKey` IRI back into its INTEGER range. Returns `None` for
 /// any IRI that is not a well-formed integer `DKey` IRI (including all
 /// float-tagged keys — the `f:` tag's `"f"` token fails the i64 parse).
@@ -1608,7 +1620,11 @@ fn lower_int_data_cardinality<A: ForIRI>(
     want_min: bool,
     want_max: bool,
 ) -> Result<ConceptId, ConversionError> {
-    if crate::data_axioms::parse_integer_range(dr).is_none() {
+    // A union of integer intervals (#343) lowers through `data_range_dkey` to the same
+    // interval-set key a `∀` over it gets, so qualifier and filter count together.
+    if crate::data_axioms::parse_integer_range(dr).is_none()
+        && crate::data_axioms::parse_integer_interval_set(dr).is_none()
+    {
         return Err(ConversionError::UnsupportedDataRange);
     }
     let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
@@ -7332,6 +7348,13 @@ mod tests {
     fn interval_set_iri_round_trips_and_canonicalises() {
         let two = sample_int_set();
         assert_eq!(int_set_dkey_iri(&two), "urn:rustdl-dkey:iset:0:5;10:15");
+        // #343: the public decoder returns the tagged form's intervals and leaves the
+        // untagged single-interval form to `decode_integer_dkey`.
+        assert_eq!(
+            decode_int_set_dkey(&int_set_dkey_iri(&two)),
+            Some(vec![(Some(0), Some(5)), (Some(10), Some(15))])
+        );
+        assert_eq!(decode_int_set_dkey(&dkey_iri(IntegerRange::point(3))), None);
         assert_eq!(parse_int_set_dkey_iri(&int_set_dkey_iri(&two)), Some(two));
 
         // Unbounded ends on both sides.

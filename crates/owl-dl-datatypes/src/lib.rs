@@ -90,6 +90,9 @@ pub enum CardRange {
     /// finite set. Its own variant, never `Str`: a URI is not a string, and
     /// counting both in one bucket would put them under each other's `≤n`.
     Uri(FiniteSet<String>),
+    /// A union of `xsd:integer` intervals, from an interval-set (`iset:`) key
+    /// (#343): `∀p.([0,5] ⊔ [10,15])`, or a qualifier over such a union.
+    IntUnion(IntUnion),
 }
 
 impl CardRange {
@@ -111,7 +114,8 @@ impl CardRange {
             | CardRange::Double(_)
             | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
-            | CardRange::Uri(_) => None,
+            | CardRange::Uri(_)
+            | CardRange::IntUnion(_) => None,
         }
     }
 
@@ -133,7 +137,8 @@ impl CardRange {
             | CardRange::Double(_)
             | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
-            | CardRange::Uri(_) => None,
+            | CardRange::Uri(_)
+            | CardRange::IntUnion(_) => None,
         }
     }
 
@@ -155,7 +160,8 @@ impl CardRange {
             | CardRange::Double(_)
             | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
-            | CardRange::Uri(_) => None,
+            | CardRange::Uri(_)
+            | CardRange::IntUnion(_) => None,
         }
     }
 
@@ -177,7 +183,8 @@ impl CardRange {
             | CardRange::Double(_)
             | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
-            | CardRange::Uri(_) => None,
+            | CardRange::Uri(_)
+            | CardRange::IntUnion(_) => None,
         }
     }
 
@@ -199,7 +206,8 @@ impl CardRange {
             | CardRange::Double(_)
             | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
-            | CardRange::Uri(_) => None,
+            | CardRange::Uri(_)
+            | CardRange::IntUnion(_) => None,
         }
     }
 
@@ -221,7 +229,8 @@ impl CardRange {
             | CardRange::Double(_)
             | CardRange::DoubleSet(_)
             | CardRange::Bool(_)
-            | CardRange::Uri(_) => None,
+            | CardRange::Uri(_)
+            | CardRange::IntUnion(_) => None,
         }
     }
 
@@ -538,6 +547,13 @@ impl IntUnion {
     #[must_use]
     pub fn pieces(&self) -> &[IntInterval] {
         &self.pieces
+    }
+
+    /// The union of `pieces`, normalised (empty pieces dropped, overlapping and
+    /// adjacent ones merged).
+    #[must_use]
+    pub fn from_intervals(pieces: Vec<IntInterval>) -> Self {
+        Self::normalised(pieces)
     }
 
     fn normalised(mut pieces: Vec<IntInterval>) -> Self {

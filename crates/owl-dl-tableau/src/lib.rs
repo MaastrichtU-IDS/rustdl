@@ -2230,6 +2230,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let n = self.graph.node(node);
         let labels = n.labels();
         let mut bool_by_role: HashMap<RoleId, SetAcc<FiniteSet<bool>>> = HashMap::new();
+        // #343: integer interval unions (`iset:` keys), counted only in the combined
+        // integer check below.
+        let mut int_union_by_role: HashMap<RoleId, SetAcc<IntUnion>> = HashMap::new();
         let mut uri_by_role: HashMap<RoleId, SetAcc<FiniteSet<String>>> = HashMap::new();
         let mut double_by_role: HashMap<RoleId, SetAcc<DenseInterval<OrdF64>>> = HashMap::new();
         let mut double_set_by_role: HashMap<RoleId, SetAcc<FiniteSet<OrdF64>>> = HashMap::new();
@@ -2562,6 +2565,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 Some(CardRange::Bool(fs)) => {
                     add_set(&mut bool_by_role, rid, fs, kind, count, dep_label);
                 }
+                Some(CardRange::IntUnion(u)) => {
+                    add_set(&mut int_union_by_role, rid, u, kind, count, dep_label);
+                }
                 Some(CardRange::Uri(fs)) => {
                     add_set(&mut uri_by_role, rid, fs, kind, count, dep_label);
                 }
@@ -2680,39 +2686,64 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 return Some(acc.deps);
             }
         }
-        // #334: an integer range and an integer enumeration on one property are
-        // counted in separate buckets above, so `≥2 p.xsd:integer` never met
-        // `∀p.{1}`. Count both together over their union type. Only a property
-        // with items in both buckets gets here, and each per-bucket clash was
-        // already checked with its own (tighter) deps.
-        for (rid, ia) in &int_by_role {
-            let Some(sa) = int_set_by_role.get(rid) else {
+        // #334/#343: integer ranges, integer enumerations and integer interval unions
+        // on one property are kept in separate buckets above, so `≥2 p.xsd:integer`
+        // never met `∀p.{1}` or `∀p.([0,5] ⊔ [10,15])`. Count them together over
+        // `IntUnion`, which embeds the other two exactly, for a property with any union
+        // item or with items in two buckets. The `int` and `int_set` per-bucket checks
+        // ran first with their own (tighter) deps; unifying the buckets would attach
+        // unrelated labels' deps to those clashes, so it stays a later refactor.
+        let roles: std::collections::BTreeSet<RoleId> = int_by_role
+            .keys()
+            .chain(int_set_by_role.keys())
+            .chain(int_union_by_role.keys())
+            .copied()
+            .collect();
+        for rid in roles {
+            let ia = int_by_role.get(&rid);
+            let sa = int_set_by_role.get(&rid);
+            let ua = int_union_by_role.get(&rid);
+            if ua.is_none() && (ia.is_none() || sa.is_none()) {
                 continue;
-            };
+            }
             let iv = |c: &Card<IntInterval>| Card::new(IntUnion::from_interval(c.range), c.n);
             let fs = |c: &Card<FiniteSet<i64>>| Card::new(IntUnion::from_points(&c.range), c.n);
-            let mins: Vec<Card<IntUnion>> = ia
-                .mins
-                .iter()
-                .map(iv)
-                .chain(sa.mins.iter().map(fs))
-                .collect();
-            let maxs: Vec<Card<IntUnion>> = ia
-                .maxs
-                .iter()
-                .map(iv)
-                .chain(sa.maxs.iter().map(fs))
-                .collect();
-            let universal = match (ia.universal, &sa.universal) {
-                (None, None) => None,
-                (Some(u), None) => Some(IntUnion::from_interval(u)),
-                (None, Some(u)) => Some(IntUnion::from_points(u)),
-                (Some(a), Some(b)) => {
-                    Some(IntUnion::from_interval(a).intersect(&IntUnion::from_points(b)))
-                }
+            let mut mins: Vec<Card<IntUnion>> = Vec::new();
+            let mut maxs: Vec<Card<IntUnion>> = Vec::new();
+            let mut universal: Option<IntUnion> = None;
+            let mut deps = crate::graph::DepSet::new();
+            let mut restrict = |u: IntUnion| {
+                universal = Some(match universal.take() {
+                    Some(prev) => prev.intersect(&u),
+                    None => u,
+                });
             };
+            if let Some(a) = ia {
+                mins.extend(a.mins.iter().map(iv));
+                maxs.extend(a.maxs.iter().map(iv));
+                if let Some(u) = a.universal {
+                    restrict(IntUnion::from_interval(u));
+                }
+                deps = crate::deps::union(&deps, &a.deps);
+            }
+            if let Some(a) = sa {
+                mins.extend(a.mins.iter().map(fs));
+                maxs.extend(a.maxs.iter().map(fs));
+                if let Some(u) = &a.universal {
+                    restrict(IntUnion::from_points(u));
+                }
+                deps = crate::deps::union(&deps, &a.deps);
+            }
+            if let Some(a) = ua {
+                mins.extend(a.mins.iter().cloned());
+                maxs.extend(a.maxs.iter().cloned());
+                if let Some(u) = &a.universal {
+                    restrict(u.clone());
+                }
+                deps = crate::deps::union(&deps, &a.deps);
+            }
             if card_sat::<IntUnion>(universal, &mins, &maxs) == CardSat::Unsat {
-                return Some(crate::deps::union(&ia.deps, &sa.deps));
+                return Some(deps);
             }
         }
         None

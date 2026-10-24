@@ -86,8 +86,21 @@ struct Stats {
     dead: usize,
     undone: usize,
     kept_entries: usize,
-    recopied: usize,
-    deleted_records: usize,
+    recopied: Recopied,
+    deleted_refuted: usize,
+    deleted_inconclusive: usize,
+}
+
+/// What [`recopy_kept_units`] spliced, for the trace (plan 4d B3: each
+/// sabotage row reports how often its rule had something to do).
+#[derive(Default)]
+struct Recopied {
+    /// Facts re-copied onto a kept merge unit's target (`Event::Unit`).
+    units: usize,
+    /// Kept frames' current options restored (`Event::Frame`).
+    frames: usize,
+    /// Later duplicate entries removed by the splice.
+    removed: usize,
 }
 
 /// Catch `Unsat(deps)` at `stack[t]` selectively. Pops T and every frame above
@@ -159,14 +172,16 @@ pub(super) fn backjump(
     target.records[k_t] = Some(Record::Refuted(deps));
     for (frame, _, _) in &mut kept {
         for record in &mut frame.records {
-            let stale = match record {
-                Some(Record::Refuted(d)) => meets(d, &gone),
-                Some(Record::Inconclusive) => true,
-                None => false,
-            };
-            if stale {
-                *record = None;
-                stats.deleted_records += 1;
+            match record {
+                Some(Record::Refuted(d)) if meets(d, &gone) => {
+                    *record = None;
+                    stats.deleted_refuted += 1;
+                }
+                Some(Record::Inconclusive) => {
+                    *record = None;
+                    stats.deleted_inconclusive += 1;
+                }
+                _ => {}
             }
         }
     }
@@ -212,13 +227,18 @@ pub(super) fn backjump(
     if trace_enabled() {
         let exhausted = target.records.iter().all(Option::is_some);
         eprintln!(
-            "# trace selective t_id={old_id} new_id={new_id} kept={} dead={} undone={} kept_entries={} recopied={} deleted_records={} t_exhausted={}",
+            "# trace selective t_id={old_id} new_id={new_id} kept={} dead={} undone={} kept_entries={} recopied={} recopied_units={} recopied_frames={} dup_removed={} deleted_records={} deleted_refuted={} deleted_inconclusive={} t_exhausted={}",
             stats.kept,
             stats.dead,
             stats.undone,
             stats.kept_entries,
-            stats.recopied,
-            stats.deleted_records,
+            stats.recopied.units + stats.recopied.frames,
+            stats.recopied.units,
+            stats.recopied.frames,
+            stats.recopied.removed,
+            stats.deleted_refuted + stats.deleted_inconclusive,
+            stats.deleted_refuted,
+            stats.deleted_inconclusive,
             u8::from(exhausted)
         );
     }
@@ -411,8 +431,9 @@ fn recopy_kept_units(
     ctx: &mut TableauContext<'_, '_, '_>,
     start: usize,
     kept: &mut [Stacked],
-) -> usize {
+) -> Recopied {
     let mut r = Restore::default();
+    let mut counts = Recopied::default();
     // Events in trail order: (doubled position, unit or frame index).
     let mut events: Vec<(usize, Event)> = Vec::new();
     {
@@ -460,6 +481,8 @@ fn recopy_kept_units(
     }
     events.sort_by_key(|(k, _)| *k);
     for (_, event) in events {
+        let before_event = r.inserts.len();
+        let is_unit = matches!(event, Event::Unit { .. });
         match event {
             Event::Unit { b, e, x, y, z } => {
                 let source = ctx.graph().node(x);
@@ -525,15 +548,21 @@ fn recopy_kept_units(
                 }
             }
         }
+        let added = r.inserts.len() - before_event;
+        if is_unit {
+            counts.units += added;
+        } else {
+            counts.frames += added;
+        }
     }
-    let recopied = r.inserts.len();
-    if recopied > 0 {
+    counts.removed = r.removes.len();
+    if !r.inserts.is_empty() {
         let remap = ctx.trail_mut().splice(start, r.inserts, &r.removes);
         for (_, _, cp) in kept {
             *cp = cp.remap(&remap).expect("a splice keeps every checkpoint");
         }
     }
-    recopied
+    counts
 }
 
 /// What [`recopy_kept_units`] walks.
@@ -953,7 +982,8 @@ mod tests {
             "the hole B-A closes"
         );
         let mut kept = [];
-        assert_eq!(recopy_kept_units(&mut ctx, start, &mut kept), 1);
+        let copied = recopy_kept_units(&mut ctx, start, &mut kept);
+        assert_eq!((copied.units, copied.frames), (1, 0));
         assert_eq!(
             ctx.graph()
                 .node(y)

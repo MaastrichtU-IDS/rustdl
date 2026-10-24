@@ -330,11 +330,11 @@ fn run_frame(ctx: &mut TableauContext<'_, '_, '_>, mut frame: Frame) -> SearchVe
     loop {
         match frame.start_option(ctx) {
             Start::Exhausted => return frame.finish(ctx),
-            Start::Child(cp) => {
+            Start::Child(k, cp) => {
                 let verdict = search(ctx, frame.max_depth - 1);
-                frame.on_child(ctx, cp, verdict);
+                frame.on_child(ctx, k, cp, verdict);
             }
-            Start::Decided(cp, verdict) => frame.on_child(ctx, cp, verdict),
+            Start::Decided(k, cp, verdict) => frame.on_child(ctx, k, cp, verdict),
         }
     }
 }
@@ -386,10 +386,10 @@ struct Frame {
 enum Start {
     /// No option left to try, or the frame has already concluded.
     Exhausted,
-    /// The option is asserted; search below it.
-    Child(Checkpoint),
-    /// The option concluded without a search.
-    Decided(Checkpoint, SearchVerdict),
+    /// Option `k` is asserted; search below it.
+    Child(usize, Checkpoint),
+    /// Option `k` concluded without a search.
+    Decided(usize, Checkpoint, SearchVerdict),
 }
 
 impl Frame {
@@ -486,17 +486,17 @@ impl Frame {
                         deps.insert(pos, my_id);
                     }
                     if ctx.merge_into_with_deps(open.pivot, *w, deps.as_slice()) {
-                        Start::Child(cp)
+                        Start::Child(k, cp)
                     } else {
                         // Unreachable: the pair was mergeable when listed and
                         // nothing has run since the last rollback.
-                        Start::Decided(cp, SearchVerdict::Unsat(DepSet::from_slice(&[my_id])))
+                        Start::Decided(k, cp, SearchVerdict::Unsat(DepSet::from_slice(&[my_id])))
                     }
                 } else {
                     for (w, _) in &open.partners {
                         ctx.mark_distinct(open.pivot, *w);
                     }
-                    Start::Child(cp)
+                    Start::Child(k, cp)
                 }
             }
             FrameKind::Or {
@@ -562,15 +562,16 @@ impl Frame {
                 // The labelled disjunct depends on *this* branch decision and
                 // every reason the parent disjunction was at this node.
                 ctx.add_label_with_deps(*node, d, combined_deps.as_slice());
-                Start::Child(cp)
+                Start::Child(k, cp)
             }
         }
     }
 
-    /// Take the verdict of the option `start_option` last asserted.
+    /// Take the verdict of option `k`, the one `start_option` last asserted.
     fn on_child(
         &mut self,
         ctx: &mut TableauContext<'_, '_, '_>,
+        k: usize,
         cp: Checkpoint,
         verdict: SearchVerdict,
     ) {
@@ -598,7 +599,11 @@ impl Frame {
                     self.early_return = Some(SearchVerdict::Unsat(clash_deps));
                 } else {
                     // This decision mattered. Keep its deps for the "all
-                    // options exhausted" case, and carry forward the failed
+                    // options exhausted" case. (Recording side of
+                    // conflict-driven learning is wired but the lookup is
+                    // unsound, so the recording would be free-allocated
+                    // garbage. See the comment on the lookup side in
+                    // `start_option`.) Carry forward the failed
                     // disjunct's literal complement (if it has one registered)
                     // so the next iteration short-circuits any rebirth of
                     // `d` in the model.
@@ -607,7 +612,7 @@ impl Frame {
                         literal_complements,
                         ..
                     } = &mut self.kind
-                        && let Some(comp) = ctx.complement_of(ordered[self.next - 1])
+                        && let Some(comp) = ctx.complement_of(ordered[k])
                         && is_literal(ctx, comp)
                     {
                         literal_complements.push((comp, clash_deps.clone()));

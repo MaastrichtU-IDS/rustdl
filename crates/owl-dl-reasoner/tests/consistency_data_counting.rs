@@ -2,8 +2,9 @@
 //! data-value counting: `a : P`, `P ⊑ ≤1 p.DataOneOf(1 2)`, `p(a,1)`, `p(a,2)` was
 //! reported consistent. When the ontology has a `≥n`/`≤n` over a data range anywhere,
 //! a wedge `Sat` is now verified on the main tableau, whose `concrete_domain_clash`
-//! counts (`RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY`, default ON). Classify's
-//! consistency probe does the same.
+//! counts (`RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY`, default ON), bounded by its own
+//! budget; a give-up keeps the wedge's `consistent`. Classify's consistency probe
+//! does the same.
 //!
 //! ORACLE: `HermiT` 1.4.5 agrees on every verdict below except the pinned misses.
 //! No `xsd:date` case: `HermiT` does not decide those.
@@ -187,6 +188,27 @@ fn the_flag_reverts() {
     unsafe { std::env::remove_var("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY") };
     assert!(reverted, "=0 must restore the trusted wedge Sat");
     assert!(!consistent(&body));
+}
+
+/// A verification that gives up keeps the wedge's answer rather than reporting
+/// `unknown`: with a zero budget the reproducer reads consistent, as on `main`, and
+/// is not marked incomplete.
+#[test]
+fn a_verification_give_up_keeps_the_old_answer() {
+    let _g = lock();
+    let body = format!("SubClassOf(:P {LIMIT}) ClassAssertion(:P :a)\n{TWO_VALUES}");
+    // SAFETY: the env mutex serialises every test in this file.
+    unsafe { std::env::set_var("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS", "0") };
+    let o = onto(&body);
+    let (verdict, stats) = is_consistent_with_stats(&o).expect("consistent");
+    let bounded = is_consistent_with_timeout(&o, Duration::from_secs(60)).expect("bounded");
+    unsafe { std::env::remove_var("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS") };
+    assert!(verdict && !stats.incomplete, "a give-up keeps `consistent`");
+    assert_eq!(
+        bounded,
+        Some(true),
+        "a give-up keeps `consistent` on the bounded path"
+    );
 }
 
 /// Classify agrees: the reproducer is inconsistent there too.

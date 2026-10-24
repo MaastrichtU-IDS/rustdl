@@ -1975,6 +1975,7 @@ fn probe_says_inconsistent(
     // the post-walk call site, which therefore behaves exactly as before.
     // #344: an ontology that counts data values gets the probe whatever the unsat
     // set says, since the wedge's `Sat` (the cheap layer 2) does not count them.
+    // A layer-3 give-up keeps the old answer, as everywhere else in this probe.
     let counting = prepared.wedge_sat_skips_data_counting;
     if unsatisfiable_idxs.is_empty() && !incomplete_abox && !extra_admission && !counting {
         return false;
@@ -2091,16 +2092,7 @@ fn probe_says_inconsistent(
     // Sound: `Some(false)` is a real `⊤`-unsatisfiability. A timeout yields `None` ⇒
     // no verdict ⇒ today's behaviour, which is the trusted direction.
     let dl = std::time::Instant::now() + budget;
-    match prepared.decide_consistency(Some(dl)) {
-        Ok(Some(false)) => true,
-        // #344: the wedge's `Sat` was not trusted, so a give-up here leaves the
-        // verdict open rather than "consistent".
-        Ok(None) if counting => {
-            crate::mark_consistency_undetermined();
-            false
-        }
-        _ => false,
-    }
+    matches!(prepared.decide_consistency(Some(dl)), Ok(Some(false)))
 }
 
 /// Build a `Classification` representing an inconsistent ontology:

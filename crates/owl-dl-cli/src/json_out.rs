@@ -151,6 +151,10 @@ pub(crate) struct ClassifyJson {
     /// A SEPARATE field for the same reason as `consistency_undetermined`: no
     /// deadline fired, and `incomplete` means exactly that.
     pub(crate) wedge_hierarchy_blind: bool,
+    /// #353: clauses the wedge's matcher refuses, which therefore never fire, so
+    /// entailments that need them may be missing. A SEPARATE field for the same
+    /// reason as `wedge_hierarchy_blind`: no deadline fired. 0 when there is none.
+    pub(crate) wedge_clauses_refused: usize,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
@@ -348,6 +352,7 @@ pub(crate) fn build_classify_json(
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
+        wedge_clauses_refused: stats.wedge_clauses_refused,
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,
@@ -372,6 +377,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         trusted_sat_refutations: 0,
         completeness_guaranteed: false,
         wedge_hierarchy_blind: false,
+        wedge_clauses_refused: 0,
         unsatisfiable: Vec::new(),
         equivalent_groups: Vec::new(),
         direct_subsumptions: Vec::new(),

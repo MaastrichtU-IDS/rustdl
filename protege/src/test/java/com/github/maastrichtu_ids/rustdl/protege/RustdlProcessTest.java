@@ -50,6 +50,23 @@ public class RustdlProcessTest {
         assertTrue(w.get(0).contains("timed out"));
     }
 
+    @Test public void parsesWedgeClausesRefusedAsItsOwnSignal() throws Exception {
+        RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_refused.json"));
+        assertEquals(2, c.wedge_clauses_refused);
+        assertFalse(c.incomplete);
+        // One warning, the refused one: no deadline fired and the hierarchy was not skipped.
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(1, w.size());
+        assertTrue(w.get(0).contains("cannot match the body of 2 clause(s)"));
+        assertFalse(w.get(0).contains("timed out"));
+    }
+
+    @Test public void wedgeClausesRefusedDefaultsToZeroWhenAbsent() throws Exception {
+        // Output from rustdl before 0.4.42 has no such field.
+        RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_blind.json"));
+        assertEquals(0, c.wedge_clauses_refused);
+    }
+
     @Test public void parsesConsistent() throws Exception {
         RustdlJson.ConsistentJson c = RustdlProcess.parseConsistent(fixture("inconsistent.json"));
         assertFalse(c.consistent);

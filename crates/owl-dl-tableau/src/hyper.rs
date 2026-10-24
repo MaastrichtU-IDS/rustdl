@@ -26,7 +26,7 @@
 //! `docs/hypertableau-scoping.md` §H0).
 
 use owl_dl_core::RoleHierarchy;
-use owl_dl_core::clause::{Atom, DlClause, Var, X};
+use owl_dl_core::clause::{Atom, DlClause, MAX_BODY_VARS, Var, X};
 use owl_dl_core::ir::{ClassId, Role};
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
@@ -40,16 +40,18 @@ use std::time::Instant;
 /// homomorphism of the body's variable-tree into the graph.
 type Binding = SmallVec<[(Var, HNode); 4]>;
 
-/// Defensive cap on the number of body variables `match_body` will
-/// bind; bodies above it are treated as unsupported (deferred). Real
-/// clausifier bodies are 1–3 vars; this guards pathological inputs.
-///
-/// **This cap is NOT a work budget — it deletes inferences.** A body over
-/// the cap makes [`eval_order`] refuse, which `match_body` reports as `None` —
-/// "unsupported", and all three consumers then *skip the clause entirely*.
-/// The consequence is a **silent MISS**: a completeness loss with no
-/// `incomplete` signal. See `docs/2026-08-03-max-body-vars.md`.
-const MAX_BODY_VARS: usize = 8;
+// The body-variable cap `match_body` enforces. **It is NOT a work budget — it
+// deletes inferences.** A body over the cap makes [`eval_order`] refuse, which
+// `match_body` reports as `None`, and all three consumers then *skip the clause
+// entirely*: the clause never fires. Such clauses are counted
+// (`ClauseIndexes::refused_clauses`, reported as `wedge_clauses_refused`), which
+// is the only signal; `incomplete` does not cover it. See
+// `docs/2026-08-03-max-body-vars.md`.
+//
+// The cap itself is [`MAX_BODY_VARS`], defined in `owl_dl_core::clause` (#353) so
+// that the clausifier, which splits over-cap bodies into named branches before
+// they reach this matcher, and this matcher share one value. Since that split,
+// `RUSTDL_WIDE_BODY_VARS` only affects bodies the clausifier could not split.
 
 /// The raised cap selected by `RUSTDL_WIDE_BODY_VARS=1` (default OFF).
 /// 16 is the value `docs/2026-08-03-constant-audit.md` §6 measured as
@@ -1415,6 +1417,17 @@ fn push_dense(v: &mut Vec<Vec<usize>>, key: usize, ci: usize) {
     }
     if v[key].last() != Some(&ci) {
         v[key].push(ci);
+    }
+}
+
+impl ClauseIndexes {
+    /// Clauses with no match plan: the matcher refuses their body (over the
+    /// variable cap, disconnected, or an equality atom), so they never fire and
+    /// their constraint is not enforced (#353). The clausifier splits over-cap
+    /// bodies first, so this counts only what it could not split.
+    #[must_use]
+    pub fn refused_clauses(&self) -> usize {
+        self.match_plans.iter().filter(|p| p.is_none()).count()
     }
 }
 
@@ -6075,17 +6088,9 @@ enum OrderReject {
 /// Total distinct variables a body mentions, counting `X`. Used only by the
 /// `RUSTDL_TRACE_BODY_VARS` diagnostic, which needs the body's *full*
 /// requirement rather than the cap-truncated count [`OrderReject::VarCap`]
-/// carries.
+/// carries. The same count the clausifier uses (`owl_dl_core::clause::distinct_vars`).
 fn distinct_body_vars(role_atoms: &[(Role, Var, Var)]) -> usize {
-    let mut seen: SmallVec<[Var; 16]> = smallvec![X];
-    for (_, u, v) in role_atoms {
-        for w in [*u, *v] {
-            if !seen.contains(&w) {
-                seen.push(w);
-            }
-        }
-    }
-    seen.len()
+    owl_dl_core::clause::distinct_vars(role_atoms.iter().map(|(_, u, v)| (*u, *v)))
 }
 
 /// Order role atoms so every atom's source variable is bound before

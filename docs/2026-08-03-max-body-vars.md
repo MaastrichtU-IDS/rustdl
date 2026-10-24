@@ -1,5 +1,17 @@
 # `MAX_BODY_VARS = 8` — a real silent MISS, and raising it is a hard stop
 
+> **SUPERSEDED 2026-10-24 (#353).** The cap is still 8, but over-cap bodies no longer reach it:
+> the clausifier now splits each one into named branches (`RUSTDL_WEDGE_BODY_DECOMPOSE`, default
+> ON), so matching costs the sum of the branches, not their product. That avoids the cross-product
+> blowup recorded here, which made raising the cap a dead end. It is neither of the two shapes
+> considered here (raise the cap, or admit wide Horn bodies only). `ore_ont_16461` is a real
+> ontology where a refused body changed an answer (`Patient1 ⊑ Systemic_JIA_Patient`, derived by
+> HermiT and Konclude); the three completers raising the cap destroyed (`16461`, `7775`, `15491`)
+> are unaffected by the split. Over all 1,920 ORE ontologies, 52 had refused bodies (9,506
+> clauses), and 0 remain refused after the split. What the wedge still refuses is reported as
+> `wedge_clauses_refused`.
+
+
 **Date:** 2026-08-03 · **Base:** v0.4.13 (`e2ba481`) · **Subject:** row 2 of
 `docs/2026-08-03-constant-audit.md`, the one candidate that audit could not close.
 

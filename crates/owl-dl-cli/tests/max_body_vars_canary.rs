@@ -36,6 +36,13 @@
 //! The flag is read through a `OnceLock`, so the two arms cannot coexist in one
 //! process; these tests therefore drive the built `rustdl` binary in a
 //! subprocess, the same idiom as `incremental_fixpoint_identity.rs`.
+//!
+//! **#353: the clausifier now splits an over-cap body into named branches**
+//! (`RUSTDL_WEDGE_BODY_DECOMPOSE`, default ON), so the 12-variable body never
+//! reaches the matcher and the default DERIVES `X ⊑ C`. The cap tests below pin
+//! `RUSTDL_WEDGE_BODY_DECOMPOSE=0` to keep exercising the refusal itself, and the
+//! test that pinned the default's miss now pins the derivation instead, with the
+//! miss kept on the `=0` arm.
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
@@ -52,10 +59,16 @@ fn fixture(name: &str) -> PathBuf {
 
 /// `classify` the fixture, returning `(verdict lines, stderr)`. `wide` selects
 /// the flag arm; `None` leaves `RUSTDL_WIDE_BODY_VARS` unset so the shipped
-/// default is exercised rather than an explicit `0`.
-fn classify(ofn: &Path, wide: Option<bool>, trace: bool) -> (Vec<String>, String) {
+/// default is exercised rather than an explicit `0`. `decompose: false` sets
+/// `RUSTDL_WEDGE_BODY_DECOMPOSE=0`, so the over-cap body reaches the matcher.
+fn classify(ofn: &Path, wide: Option<bool>, trace: bool, decompose: bool) -> (Vec<String>, String) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_rustdl"));
     c.arg("classify").arg(ofn);
+    if decompose {
+        c.env_remove("RUSTDL_WEDGE_BODY_DECOMPOSE");
+    } else {
+        c.env("RUSTDL_WEDGE_BODY_DECOMPOSE", "0");
+    }
     match wide {
         Some(true) => {
             c.env("RUSTDL_WIDE_BODY_VARS", "1");
@@ -85,7 +98,7 @@ fn classify(ofn: &Path, wide: Option<bool>, trace: bool) -> (Vec<String>, String
 /// refuse a body that raising the cap cannot address.
 #[test]
 fn wide_body_trips_the_variable_cap_specifically() {
-    let (_, err) = classify(&fixture("wide-body-12vars.ofn"), None, true);
+    let (_, err) = classify(&fixture("wide-body-12vars.ofn"), None, true, false);
     let refused: Vec<&str> = err
         .lines()
         .filter(|l| l.starts_with("[mbv] refused body:"))
@@ -108,20 +121,33 @@ fn wide_body_trips_the_variable_cap_specifically() {
     );
 }
 
-/// The silent MISS itself, at the SHIPPED default. `X ⊑ C` is entailed
-/// (Konclude and `HermiT` both derive it) and rustdl does not report it.
-///
-/// This assertion is deliberately phrased as "the default misses it" rather
-/// than "rustdl is incomplete here": if the default is ever flipped, this test
-/// fails and must be re-pointed at an explicit `RUSTDL_WIDE_BODY_VARS=0`,
-/// which is the intended signal.
+/// The silent MISS itself, which the shipped default had until #353. `X ⊑ C` is
+/// entailed (Konclude and `HermiT` both derive it). With the clausifier's split
+/// reverted (`RUSTDL_WEDGE_BODY_DECOMPOSE=0`) the body is refused and the pair is
+/// missed; this was the shipped default's behaviour, pinned here as a known miss.
 #[test]
-fn shipped_default_silently_misses_the_wide_body_entailment() {
-    let (lines, _) = classify(&fixture("wide-body-12vars.ofn"), None, false);
+fn without_decomposition_the_default_cap_silently_misses_the_wide_body_entailment() {
+    let (lines, _) = classify(&fixture("wide-body-12vars.ofn"), None, false, false);
     assert!(
         !lines.iter().any(|l| l == WIDE_PAIR),
-        "the default cap no longer misses X ⊑ C — if MAX_BODY_VARS or the default \
-         flag state changed, re-point this test at RUSTDL_WIDE_BODY_VARS=0.\n\
+        "with RUSTDL_WEDGE_BODY_DECOMPOSE=0 the default cap no longer misses X ⊑ C — \
+         if MAX_BODY_VARS changed, re-point this test.\nlines: {lines:?}"
+    );
+}
+
+/// #353: at the shipped default the clausifier splits the 12-variable body into
+/// named branches, nothing is refused, and `X ⊑ C` is derived without raising the
+/// cap (this pinned the miss before).
+#[test]
+fn shipped_default_decomposes_the_wide_body_and_derives_the_entailment() {
+    let (lines, err) = classify(&fixture("wide-body-12vars.ofn"), None, true, true);
+    assert!(
+        !err.lines().any(|l| l.starts_with("[mbv] refused body:")),
+        "a body is still refused at the default.\nstderr:\n{err}"
+    );
+    assert!(
+        lines.iter().any(|l| l == WIDE_PAIR),
+        "the default does not derive X ⊑ C, which Konclude and HermiT both derive.\n\
          lines: {lines:?}"
     );
 }
@@ -130,7 +156,7 @@ fn shipped_default_silently_misses_the_wide_body_entailment() {
 /// exists (the flag is ignored, so this arm equals the default arm above).
 #[test]
 fn wide_body_vars_recovers_the_entailment() {
-    let (lines, err) = classify(&fixture("wide-body-12vars.ofn"), Some(true), true);
+    let (lines, err) = classify(&fixture("wide-body-12vars.ofn"), Some(true), true, false);
     assert!(
         err.lines()
             .any(|l| l.starts_with("[mbv] accepted body:") && l.contains("vars=12")),
@@ -151,8 +177,8 @@ fn wide_body_vars_recovers_the_entailment() {
 /// are broken for some unrelated reason".
 #[test]
 fn narrow_body_is_found_at_both_cap_settings() {
-    let (off, _) = classify(&fixture("narrow-body-8vars.ofn"), None, false);
-    let (on, _) = classify(&fixture("narrow-body-8vars.ofn"), Some(true), false);
+    let (off, _) = classify(&fixture("narrow-body-8vars.ofn"), None, false, true);
+    let (on, _) = classify(&fixture("narrow-body-8vars.ofn"), Some(true), false, true);
     assert!(
         off.iter().any(|l| l == WIDE_PAIR),
         "the 8-variable control is NOT found at the default cap, so the fixture pair \
@@ -175,7 +201,7 @@ fn narrow_body_is_found_at_both_cap_settings() {
 #[test]
 fn wide_body_fires_without_inventing_a_subsumption() {
     let f = fixture("wide-body-12vars-no-entailment.ofn");
-    let (lines, err) = classify(&f, Some(true), true);
+    let (lines, err) = classify(&f, Some(true), true, false);
     assert!(
         err.lines()
             .any(|l| l.starts_with("[mbv] accepted body:") && l.contains("vars=12")),
@@ -191,10 +217,17 @@ fn wide_body_fires_without_inventing_a_subsumption() {
          entails — this is an FP.\nrows: {x_rows:?}"
     );
     // And the flag genuinely changed nothing here, per the same oracle.
-    let (off, _) = classify(&f, None, false);
+    let (off, _) = classify(&f, None, false, false);
     assert_eq!(
         off, lines,
         "the flag changed a non-entailment fixture's answer"
+    );
+    // #353: the clausifier's split makes the same clause fire at the default. It
+    // must not invent a subsumption either.
+    let (split, _) = classify(&f, None, false, true);
+    assert_eq!(
+        split, lines,
+        "decomposing the wide body changed a non-entailment fixture's answer"
     );
 }
 

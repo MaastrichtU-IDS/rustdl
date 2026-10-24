@@ -162,7 +162,7 @@ the decisions chronological undo would remove. Build the kept set `K` **bottom-u
 `U ∖ K`. Walking bottom-up is what catches transitive dependence through a candidate
 that is itself undone.
 
-An entry on the trail above `T`'s checkpoint is **dependent** iff its deps intersect
+An entry on the trail above `T`'s checkpoint is **dependent** iff its deps ∪ its `origin_deps` (§4.3) intersect
 `U ∖ K`, **or it references a dead node** (§4.3). Undo every dependent entry, in strict
 reverse-chronological order among the undone entries.
 
@@ -170,8 +170,8 @@ reverse-chronological order among the undone entries.
 
 | frame | precondition set |
 |---|---|
-| `⊔` | the `⊔` label's deps ∪ the node's existence deps |
-| choose | the `≤n` label's deps ∪ the existence deps of the node and the neighbour ∪ the edge's deps (the `DepSet::new()` at `search.rs:174` is fine for the asserted labels, not for keeping the frame) |
+| `⊔` | the `⊔` label's deps ∪ its `origin_deps` ∪ the node's existence deps (a `⊔` propagated from a dead node must not be kept) |
+| choose | the `≤n` label's deps ∪ its `origin_deps` ∪ the existence deps of the node and the neighbour ∪ the edge's deps (the `DepSet::new()` at `search.rs:174` is fine for the asserted labels, not for keeping the frame) |
 | merge | the witness deps every partner carries (1a) ∪ every witness's existence deps |
 
 ### 4.3 Node existence is a closure

@@ -726,7 +726,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Drop branch `id` from the active set wherever it sits (#288 step 4:
     /// a selective backjump abandons frames that are not on top).
     pub fn remove_branch(&mut self, id: u32) {
-        if let Ok(pos) = self.active_branches.binary_search(&id) {
+        let pos = self.active_branches.binary_search(&id);
+        debug_assert!(pos.is_ok(), "remove_branch({id}): not an active decision");
+        if let Ok(pos) = pos {
             self.active_branches.remove(pos);
         }
     }
@@ -5019,6 +5021,44 @@ pub fn reseed_verify_enabled() -> bool {
 #[must_use]
 pub fn reseed_at_leaf_enabled() -> bool {
     std::env::var_os("RUSTDL_RESEED_AT_LEAF").is_none_or(|v| v != "0")
+}
+
+#[cfg(test)]
+mod step4a_remove_branch {
+    use super::*;
+    use owl_dl_core::{AbsorbedTBox, RoleHierarchyBuilder};
+
+    /// #288 step 4a: removing a middle decision keeps the rest sorted, so a
+    /// later push and pops stay consistent (what 4c's reorder relies on).
+    #[test]
+    fn middle_removal_keeps_order() {
+        let pool = ConceptPool::new();
+        let mut tbox = AbsorbedTBox::default();
+        tbox.finalize();
+        let hierarchy = RoleHierarchyBuilder::with_roles(1).build();
+        let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
+        let b0 = ctx.push_branch();
+        let b1 = ctx.push_branch();
+        let b2 = ctx.push_branch();
+        ctx.remove_branch(b1);
+        assert_eq!(ctx.active_branches(), &[b0, b2]);
+        let b3 = ctx.push_branch();
+        assert_eq!(ctx.active_branches(), &[b0, b2, b3]);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "not an active decision")]
+    fn double_removal_is_caught() {
+        let pool = ConceptPool::new();
+        let mut tbox = AbsorbedTBox::default();
+        tbox.finalize();
+        let hierarchy = RoleHierarchyBuilder::with_roles(1).build();
+        let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
+        let b0 = ctx.push_branch();
+        ctx.remove_branch(b0);
+        ctx.remove_branch(b0);
+    }
 }
 
 #[cfg(test)]

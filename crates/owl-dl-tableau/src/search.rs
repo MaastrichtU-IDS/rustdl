@@ -507,8 +507,23 @@ impl Frame {
         }
     }
 
+    /// Every decision in `pre` is still open (spec §4.2).
+    fn debug_assert_pre_active(&self, ctx: &TableauContext<'_, '_, '_>) {
+        debug_assert!(
+            self.pre
+                .iter()
+                .all(|x| ctx.active_branches().binary_search(x).is_ok()),
+            "frame {} precondition {:?} names an inactive decision",
+            self.my_id,
+            self.pre
+        );
+    }
+
     /// Assert the next option behind a fresh checkpoint.
     fn start_option(&mut self, ctx: &mut TableauContext<'_, '_, '_>) -> Start {
+        // A kept frame resumes here after a selective backjump; catch a stale
+        // precondition before the frame asserts anything on it.
+        self.debug_assert_pre_active(ctx);
         if self.early_return.is_some() {
             return Start::Exhausted;
         }
@@ -728,14 +743,7 @@ impl Frame {
         // Spec §7 oracle (a): what a frame rests on is still decided while it
         // is open. A selective backjump that kept a frame whose precondition
         // it had undone would break this.
-        debug_assert!(
-            self.pre
-                .iter()
-                .all(|x| ctx.active_branches().binary_search(x).is_ok()),
-            "frame {} precondition {:?} names an inactive decision",
-            self.my_id,
-            self.pre
-        );
+        self.debug_assert_pre_active(ctx);
         ctx.pop_branch();
         if let Some(v) = self.early_return {
             v
@@ -822,10 +830,8 @@ fn distinct_marks_deps(ctx: &TableauContext<'_, '_, '_>, nodes: &[NodeId]) -> De
 /// pivot and its partners, and the marks that keep any two of them distinct
 /// (they decide which merges the frame offers).
 fn merge_pre(ctx: &TableauContext<'_, '_, '_>, open: &OpenMax) -> DepSet {
-    let mut pre = open
-        .partners
-        .first()
-        .map_or_else(|| open.max_deps.clone(), |(_, d)| d.clone());
+    // `partners` is non-empty by construction (`first_open_max`).
+    let mut pre = open.partners[0].1.clone();
     pre = crate::deps::union(&pre, ctx.exist_deps_of(open.holder));
     pre = crate::deps::union(&pre, &open.distinct_deps);
     for n in std::iter::once(open.pivot).chain(open.partners.iter().map(|(w, _)| *w)) {
@@ -948,9 +954,6 @@ fn is_literal(ctx: &TableauContext<'_, '_, '_>, c: ConceptId) -> bool {
     )
 }
 
-/// Find the first `Max(n, R, C)` label whose R-neighbour at the
-/// owning node is unlabelled for both `C` and `¬C`. Returns
-/// `(neighbour, C, ¬C)` — the two labels the search will branch on.
 /// An open choose rule: `neighbour` of the `≤n` holder lacks both `body` and
 /// its complement.
 struct OpenChoose {
@@ -963,6 +966,9 @@ struct OpenChoose {
     max_label: ConceptId,
 }
 
+/// Find the first `Max(n, R, C)` label whose R-neighbour at the owning node
+/// is unlabelled for both `C` and `¬C`: the two labels the search will branch
+/// on.
 fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenChoose> {
     let pool = ctx.pool();
     let graph = ctx.graph();

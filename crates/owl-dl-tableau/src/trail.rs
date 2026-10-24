@@ -236,6 +236,13 @@ impl TableauTrail {
         self.entries.len()
     }
 
+    /// Remove and return the entries from `from` on (#288 4d F2: the
+    /// entries a replayed merge move just recorded, to be spliced into
+    /// their unit).
+    pub(crate) fn take_from(&mut self, from: usize) -> Vec<TrailEntry> {
+        self.entries.split_off(from)
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()

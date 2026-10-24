@@ -40,10 +40,7 @@ mod selective;
 /// plan C9): always in debug builds, and with `RUSTDL_SELECTIVE_CHECK=1` in
 /// release so the fuzz binary can run it.
 fn selective_check_enabled() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    cfg!(debug_assertions)
-        || *ON.get_or_init(|| std::env::var_os("RUSTDL_SELECTIVE_CHECK").is_some_and(|v| v == "1"))
+    crate::selective_check_enabled()
 }
 
 /// Hard cap on the saturation fixed-point loop within each

@@ -2136,8 +2136,6 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 .map(|(c, d)| (*c, d.clone()))
                 .collect()
         };
-        let source_out: Vec<(RoleId, NodeId)> = self.graph.node(source).edges.to_vec();
-        let source_in: Vec<(RoleId, NodeId)> = self.graph.node(source).in_edges.to_vec();
         let source_ineq: Vec<(NodeId, crate::graph::DepSet)> = {
             let n = self.graph.node(source);
             n.inequalities
@@ -2157,81 +2155,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             self.add_label_with_deps(target, c, final_deps.as_slice());
         }
 
-        // 2. Re-anchor outgoing edges: for each (r, x) in source.edges,
-        //    remove it and add (r, x) on target carrying the same
-        //    DepSet — dropping it here is the edge-side analogue of the
-        //    label-deps bug fixed in step 1 (pizza regression).
-        for (role, x) in source_out {
-            let from_pos = self
-                .graph
-                .node(source)
-                .edges
-                .iter()
-                .position(|&e| e == (role, x))
-                .expect("edge present at merge time");
-            let in_pos = self
-                .graph
-                .node(x)
-                .in_edges
-                .iter()
-                .position(|&e| e == (role, source))
-                .expect("mirror in-edge present at merge time");
-            // Capture the edge's DepSet before we remove it.
-            let prior_edge_deps = self
-                .graph
-                .node(source)
-                .edge_deps
-                .get(from_pos)
-                .cloned()
-                .unwrap_or_default();
-            self.remove_edge_recorded(source, role, x, from_pos, in_pos);
-            let new_target = if x == source { target } else { x };
-            let final_deps = with_merge(&prior_edge_deps);
-            self.add_edge_inner(target, role, new_target, final_deps.as_slice());
-        }
-
-        // 3. Re-anchor incoming edges with their DepSets (same fix as
-        //    step 2 on the inverse side).
-        for (role, y) in source_in {
-            let y_eff = self.resolve(y);
-            if y_eff == source {
-                continue;
-            }
-            let from_pos = self
-                .graph
-                .node(y_eff)
-                .edges
-                .iter()
-                .position(|&e| e == (role, source));
-            let Some(from_pos) = from_pos else { continue };
-            // The forward edge was located on `y_eff` (the union-find
-            // representative), so its mirror on `source.in_edges` is
-            // `(role, y_eff)` — the pair `add_edge` always maintains. Search
-            // for `(role, y_eff)`, NOT the unresolved snapshot node `(role, y)`:
-            // when `y` has since merged into `y_eff`, `source.in_edges` can
-            // carry BOTH a stale `(role, y)` (orphaned by that earlier merge)
-            // and the live `(role, y_eff)`, and matching `(role, y)` removes the
-            // wrong mirror — `remove_edge_recorded`'s `(role, from == y_eff)`
-            // assertion then fires (issue #38), or in release silently corrupts
-            // the edge set. `y == y_eff` reduces to the original lookup.
-            let in_pos = self
-                .graph
-                .node(source)
-                .in_edges
-                .iter()
-                .position(|&e| e == (role, y_eff))
-                .expect("source in-edge present at merge time");
-            let prior_edge_deps = self
-                .graph
-                .node(y_eff)
-                .edge_deps
-                .get(from_pos)
-                .cloned()
-                .unwrap_or_default();
-            self.remove_edge_recorded(y_eff, role, source, from_pos, in_pos);
-            let final_deps = with_merge(&prior_edge_deps);
-            self.add_edge_inner(y_eff, role, target, final_deps.as_slice());
-        }
+        // 2-3. Re-anchor outgoing and incoming edges.
+        self.move_edges(source, target, merge_deps);
 
         // 4. Carry inequalities. mark_distinct is symmetric and
         //    idempotent.
@@ -2241,10 +2166,111 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             }
         }
 
-        // 5. Rewrite children-parent pointers: any node whose
-        //    parent equals source becomes parented at target.
-        //    Iterate through the node arena. Skip the source itself, and
-        //    skip the scan when no node has ever had `source` as parent.
+        // 5. Rewrite children-parent pointers.
+        self.reparent_children(source, target);
+
+        // 6. Mark source as redirected.
+        let prior = self.graph.node(source).merged_into();
+        self.graph.node_mut(source).merged_into = Some(target);
+        self.trail.record(TrailEntry::MergedRedirect {
+            node: source,
+            new_target: target,
+            prior_redirect: prior,
+        });
+        self.trail.record(TrailEntry::MergeEnd);
+        self.touch(&[source, target]);
+
+        true
+    }
+
+    /// Steps 2-3 of [`Self::merge_into_with_deps`]: move every edge at
+    /// `source` (out and in) to `target`, each carrying its deps ∪
+    /// `merge_deps`. Also replays a kept merge unit's move over edges a
+    /// selective backjump restored onto its source (#288 4d F2).
+    pub(crate) fn move_edges(&mut self, source: NodeId, target: NodeId, merge_deps: &[u32]) {
+        let with_merge = |elt_deps: &crate::graph::DepSet| -> crate::graph::DepSet {
+            crate::deps::union(elt_deps, &crate::graph::DepSet::from_slice(merge_deps))
+        };
+        let source_out: Vec<(RoleId, NodeId, u32)> = {
+            let n = self.graph.node(source);
+            n.edges
+                .iter()
+                .zip(&n.edge_ids)
+                .map(|(&(r, x), &id)| (r, x, id))
+                .collect()
+        };
+        let source_in: Vec<(RoleId, NodeId, u32)> = {
+            let n = self.graph.node(source);
+            n.in_edges
+                .iter()
+                .zip(&n.in_edge_ids)
+                .map(|(&(r, y), &id)| (r, y, id))
+                .collect()
+        };
+
+        // 2. Re-anchor outgoing edges: for each (r, x) in source.edges,
+        //    remove it and add (r, x) on target carrying the same
+        //    DepSet — dropping it here is the edge-side analogue of the
+        //    label-deps bug fixed in step 1 (pizza regression). Both halves
+        //    are found by edge id (#288 4d F1): with two `(role, x)`
+        //    instances a by-value match can pair one instance's out-edge
+        //    with the other's mirror.
+        for (role, x, eid) in source_out {
+            let from_pos = self
+                .graph
+                .node(source)
+                .edge_ids
+                .iter()
+                .position(|&e| e == eid)
+                .expect("edge present at merge time");
+            let in_pos = self
+                .graph
+                .node(x)
+                .in_edge_ids
+                .iter()
+                .position(|&e| e == eid)
+                .expect("mirror in-edge present at merge time");
+            let prior_edge_deps = self.graph.node(source).edge_deps[from_pos].clone();
+            self.remove_edge_recorded(source, role, x, from_pos, in_pos);
+            let new_target = if x == source { target } else { x };
+            let final_deps = with_merge(&prior_edge_deps);
+            self.add_edge_inner(target, role, new_target, final_deps.as_slice());
+        }
+
+        // 3. Re-anchor incoming edges with their DepSets (same fix as
+        //    step 2 on the inverse side). The out-edge half lives on the node
+        //    the in-edge names (the mirror invariant), found by id: never on
+        //    `resolve(y)`, which after a selective backjump can be a node a
+        //    later kept merge unit redirects `y` into (#288 4d F2). Self-loops
+        //    moved in step 2 are gone from `source.in_edges` by now.
+        for (role, y, eid) in source_in {
+            if y == source {
+                continue;
+            }
+            let Some(in_pos) = self
+                .graph
+                .node(source)
+                .in_edge_ids
+                .iter()
+                .position(|&e| e == eid)
+            else {
+                continue;
+            };
+            let Some(from_pos) = self.graph.node(y).edge_ids.iter().position(|&e| e == eid) else {
+                continue;
+            };
+            let prior_edge_deps = self.graph.node(y).edge_deps[from_pos].clone();
+            self.remove_edge_recorded(y, role, source, from_pos, in_pos);
+            let final_deps = with_merge(&prior_edge_deps);
+            self.add_edge_inner(y, role, target, final_deps.as_slice());
+        }
+    }
+
+    /// Step 5 of [`Self::merge_into_with_deps`]: every node whose parent is
+    /// `source` becomes parented at `target`.
+    pub(crate) fn reparent_children(&mut self, source: NodeId, target: NodeId) {
+        // Iterate through the node arena. Skip the source itself, and
+        // skip the scan when no node has ever had `source` as parent.
         let node_count = if self.graph.had_child(source) {
             self.graph.len()
         } else {
@@ -2295,19 +2321,6 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 self.touch(&[nid]);
             }
         }
-
-        // 6. Mark source as redirected.
-        let prior = self.graph.node(source).merged_into();
-        self.graph.node_mut(source).merged_into = Some(target);
-        self.trail.record(TrailEntry::MergedRedirect {
-            node: source,
-            new_target: target,
-            prior_redirect: prior,
-        });
-        self.trail.record(TrailEntry::MergeEnd);
-        self.touch(&[source, target]);
-
-        true
     }
 
     fn remove_edge_recorded(
@@ -2328,7 +2341,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         debug_assert_eq!(mirror, (role, from));
         let prior_in_edge_deps = target_node.in_edge_deps.remove(in_position);
         let in_id = target_node.in_edge_ids.remove(in_position);
-        debug_assert_eq!(in_id, id, "edge and in-edge mirror carry different ids");
+        // A hard check in the fuzz builds (#288 4d: as a debug_assert it let a
+        // mispaired mirror through every release-mode fuzz run).
+        if selective_check_enabled() {
+            assert_eq!(in_id, id, "edge {id} and its in-edge mirror {in_id} differ");
+        }
         self.trail.record(TrailEntry::EdgeRemoved {
             from,
             role,
@@ -3186,6 +3203,15 @@ pub fn max_merge_keep_older_enabled() -> bool {
 #[must_use]
 pub fn selective_undo_enabled() -> bool {
     std::env::var_os("RUSTDL_SELECTIVE_UNDO").is_some_and(|v| v == "1")
+}
+
+/// Whether the #288 selective-undo oracles run: always in debug builds,
+/// and in release with `RUSTDL_SELECTIVE_CHECK=1` (the fuzz builds).
+pub(crate) fn selective_check_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    cfg!(debug_assertions)
+        || *ON.get_or_init(|| std::env::var_os("RUSTDL_SELECTIVE_CHECK").is_some_and(|v| v == "1"))
 }
 
 /// The fewest frames a back-jump must skip before it is done selectively

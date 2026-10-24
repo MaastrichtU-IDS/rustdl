@@ -101,6 +101,10 @@ struct Recopied {
     frames: usize,
     /// Later duplicate entries removed by the splice.
     removed: usize,
+    /// Edges a kept unit's replayed move re-anchored at its target (F2).
+    edges: usize,
+    /// Children a kept unit's replayed move re-parented (F2).
+    reparented: usize,
 }
 
 /// Catch `Unsat(deps)` at `stack[t]` selectively. Pops T and every frame above
@@ -227,7 +231,7 @@ pub(super) fn backjump(
     if trace_enabled() {
         let exhausted = target.records.iter().all(Option::is_some);
         eprintln!(
-            "# trace selective t_id={old_id} new_id={new_id} kept={} dead={} undone={} kept_entries={} recopied={} recopied_units={} recopied_frames={} dup_removed={} deleted_records={} deleted_refuted={} deleted_inconclusive={} t_exhausted={}",
+            "# trace selective t_id={old_id} new_id={new_id} kept={} dead={} undone={} kept_entries={} recopied={} recopied_units={} recopied_frames={} dup_removed={} moved_edges={} reparented={} deleted_records={} deleted_refuted={} deleted_inconclusive={} t_exhausted={}",
             stats.kept,
             stats.dead,
             stats.undone,
@@ -236,6 +240,8 @@ pub(super) fn backjump(
             stats.recopied.units,
             stats.recopied.frames,
             stats.recopied.removed,
+            stats.recopied.edges,
+            stats.recopied.reparented,
             stats.deleted_refuted + stats.deleted_inconclusive,
             stats.deleted_refuted,
             stats.deleted_inconclusive,
@@ -506,6 +512,21 @@ fn recopy_kept_units(
                 for (o, d) in x_marks {
                     r.ensure_mark(ctx, y, o, &d, e, 2 * e);
                 }
+                // F2 (plan 4d): a merge moves the source's edges and
+                // children, and the undo may have restored some onto `x`
+                // (an undone earlier unit had moved them away when this one
+                // ran). Replay the move, spliced into this unit.
+                let mark = ctx.trail().len();
+                ctx.move_edges(x, y, &z);
+                ctx.reparent_children(x, y);
+                for entry in ctx.trail_mut().take_from(mark) {
+                    match entry {
+                        TrailEntry::EdgeAdded { .. } => counts.edges += 1,
+                        TrailEntry::ParentRewritten { .. } => counts.reparented += 1,
+                        _ => {}
+                    }
+                    r.inserts.push((e, entry));
+                }
             }
             Event::Frame(i) => {
                 let (frame, k, cp) = &kept[i];
@@ -549,8 +570,20 @@ fn recopy_kept_units(
             }
         }
         let added = r.inserts.len() - before_event;
+        // EdgeRemoved entries of the replayed move count with their EdgeAdded.
+        let moved_now = r.inserts[before_event..]
+            .iter()
+            .filter(|(_, e)| {
+                matches!(
+                    e,
+                    TrailEntry::EdgeAdded { .. }
+                        | TrailEntry::EdgeRemoved { .. }
+                        | TrailEntry::ParentRewritten { .. }
+                )
+            })
+            .count();
         if is_unit {
-            counts.units += added;
+            counts.units += added - moved_now;
         } else {
             counts.frames += added;
         }
@@ -671,6 +704,9 @@ pub(super) fn check_invariants(
     let active = ctx.active_branches();
     let in_active = |d: &[u32]| d.iter().all(|x| active.binary_search(x).is_ok());
     let graph = ctx.graph();
+    // Edge ids are unique across the graph (plan 4d S4): a restored removal
+    // of an id that also lives elsewhere would be a duplicate instance.
+    let mut edge_ids = HashSet::new();
     for i in 0..graph.len() {
         let id = NodeId::new(u32::try_from(i).expect("node id fits u32"));
         let n = graph.node(id);
@@ -689,17 +725,26 @@ pub(super) fn check_invariants(
             "oracle: {id:?} exists under an inactive decision"
         );
         // Spec §4.3: a child outliving its creator would keep a parent
-        // pointer to a tombstone and no edge from it.
-        if let Some(p) = n.parent() {
+        // pointer to a tombstone and no edge from it. Plan 4d F2: a merge
+        // moves its source's edges and children, so a redirected node holds
+        // no edge and parents nothing live.
+        if n.merged_into().is_some() {
+            assert!(
+                n.edges.is_empty() && n.in_edges.is_empty(),
+                "oracle: redirected {id:?} keeps edges {:?} / in-edges {:?}",
+                n.edges,
+                n.in_edges
+            );
+        } else if let Some(p) = n.parent() {
             assert!(graph.is_alive(p), "oracle: {id:?} has dead parent {p:?}");
-            if n.merged_into().is_none() {
-                let q = ctx.resolve(p);
-                assert!(
-                    n.in_edges.iter().any(|&(_, s)| s == p || s == q)
-                        || n.edges.iter().any(|&(_, t)| t == p || t == q),
-                    "oracle: {id:?} has no edge to its parent {p:?} (resolves to {q:?})"
-                );
-            }
+            assert!(
+                graph.node(p).merged_into().is_none(),
+                "oracle: {id:?} has redirected parent {p:?}"
+            );
+            assert!(
+                n.in_edges.iter().any(|&(_, s)| s == p) || n.edges.iter().any(|&(_, t)| t == p),
+                "oracle: {id:?} has no edge to its parent {p:?}"
+            );
         }
         assert_eq!(
             n.labels.len(),
@@ -725,10 +770,12 @@ pub(super) fn check_invariants(
                 "oracle: a label at {id:?} rests on an inactive decision"
             );
         }
-        let mut ids = HashSet::new();
         for (pos, &(role, t)) in n.edges.iter().enumerate() {
             let eid = n.edge_ids[pos];
-            assert!(ids.insert(eid), "oracle: duplicate edge id {eid} at {id:?}");
+            assert!(
+                edge_ids.insert(eid),
+                "oracle: duplicate edge id {eid} at {id:?}"
+            );
             assert!(graph.is_alive(t), "oracle: edge {id:?} -> dead {t:?}");
             assert!(
                 in_active(&n.edge_deps[pos]),
@@ -741,6 +788,18 @@ pub(super) fn check_invariants(
                     |p| m.in_edges[p] == (role, id) && m.in_edge_deps[p] == n.edge_deps[pos]
                 ),
                 "oracle: edge {id:?} -{role:?}-> {t:?} has no matching mirror"
+            );
+        }
+        // The reverse direction: every in-edge has its out-edge by id.
+        for (pos, &(role, src)) in n.in_edges.iter().enumerate() {
+            let eid = n.in_edge_ids[pos];
+            let m = graph.node(src);
+            let fwd = m.edge_ids.iter().position(|&e| e == eid);
+            assert!(
+                fwd.is_some_and(
+                    |q| m.edges[q] == (role, id) && m.edge_deps[q] == n.in_edge_deps[pos]
+                ),
+                "oracle: in-edge {src:?} -{role:?}-> {id:?} has no matching out-edge"
             );
         }
         for (pos, &other) in n.inequalities.iter().enumerate() {
@@ -941,10 +1000,10 @@ pub(super) fn check_invariants(
 
 #[cfg(test)]
 mod tests {
-    use super::recopy_kept_units;
+    use super::{classify, recopy_kept_units};
     use crate::TableauContext;
     use crate::trail::{EntryAction, TableauTrail, TrailEntry};
-    use owl_dl_core::{ClassId, ConceptPool};
+    use owl_dl_core::{ClassId, ConceptPool, RoleId};
 
     /// Plan 4c Revision 2, B-A: `c` reaches `y` first under T (deps {2}), so
     /// the kept merge `x → y` (deps {1}) copies nothing. Undoing T's label
@@ -1008,5 +1067,95 @@ mod tests {
             ctx.trail().entries_from(cp_k)[0],
             TrailEntry::Checkpoint
         ));
+    }
+
+    /// Classify the window from `cp` with `gone`, undo, and re-copy, as a
+    /// backjump with no kept frame does.
+    fn jump_with_no_kept_frame(
+        ctx: &mut TableauContext<'_, '_, '_>,
+        cp: crate::trail::Checkpoint,
+        gone: &[u32],
+    ) -> super::Recopied {
+        let start = TableauTrail::position(cp);
+        let gone = crate::graph::DepSet::from_slice(gone);
+        let actions = classify(ctx, start, &gone, &std::collections::HashSet::new());
+        ctx.selective_undo_from(cp, &actions);
+        let mut kept = [];
+        recopy_kept_units(ctx, start, &mut kept)
+    }
+
+    /// Plan 4d F2, as found on o0138: an undone unit (deps {2}) moved the
+    /// edge `r → a` to `r → t`; the later kept unit `r → b` (deps {1}) moved
+    /// `r`'s edges and children. The undo restores `r → a` onto `r`, which
+    /// stays redirected; the replayed move puts it at `b`, `a`'s new parent.
+    #[test]
+    fn a_kept_merge_moves_an_edge_the_undo_restores_onto_its_source() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_selective_undo(true);
+        let role = RoleId::new(0);
+        let r = ctx.new_node();
+        let a = ctx.new_successor(r, role);
+        let b = ctx.new_successor(r, role);
+        let t = ctx.new_node();
+        let cp_t = ctx.checkpoint();
+        assert!(ctx.merge_into_with_deps(a, t, &[2]));
+        assert!(ctx.merge_into_with_deps(r, b, &[1]));
+        let moved = jump_with_no_kept_frame(&mut ctx, cp_t, &[2]);
+        assert_eq!(ctx.graph().node(a).merged_into(), None, "U1 undone");
+        assert_eq!(ctx.graph().node(r).merged_into(), Some(b), "U2 kept");
+        assert!(moved.edges > 0, "the replay moved the restored edge");
+        assert!(ctx.graph().node(r).edges().is_empty(), "nothing left on r");
+        assert_eq!(ctx.graph().node(a).parent(), Some(b));
+        assert!(
+            ctx.graph().node(a).in_edges().iter().any(|&(_, s)| s == b),
+            "a's parent b has an edge to it"
+        );
+        // The replayed move sits inside the kept unit, before its end.
+        let window = ctx.trail().entries_from(TableauTrail::position(cp_t));
+        let end = window
+            .iter()
+            .position(|e| matches!(e, TrailEntry::MergeEnd))
+            .expect("unit kept");
+        assert!(window[..end].iter().any(
+            |e| matches!(e, TrailEntry::EdgeAdded { from, target, .. } if *from == b && *target == a)
+        ));
+    }
+
+    /// The in-edge side of F2: the undone unit `s → t` (deps {2}) moved
+    /// `s → x` to `t → x`; the kept unit `x → y` moved that in-edge to
+    /// `t → y`. The undo restores `s → x`; the replay moves it to `s → y`.
+    /// (A restored in-edge is owned by an undone unit's source, which no
+    /// later kept unit can have merged: nothing merges a redirected node.)
+    #[test]
+    fn a_kept_merge_moves_an_in_edge_the_undo_restores() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_selective_undo(true);
+        let role = RoleId::new(0);
+        let s = ctx.new_node();
+        let x = ctx.new_successor(s, role);
+        let t = ctx.new_node();
+        let y = ctx.new_node();
+        let cp_t = ctx.checkpoint();
+        assert!(ctx.merge_into_with_deps(s, t, &[2]));
+        assert!(ctx.merge_into_with_deps(x, y, &[1]));
+        let moved = jump_with_no_kept_frame(&mut ctx, cp_t, &[2]);
+        assert!(moved.edges > 0);
+        let graph = ctx.graph();
+        assert_eq!(graph.node(s).merged_into(), None, "U1 undone");
+        assert!(
+            graph.node(x).edges().is_empty() && graph.node(x).in_edges().is_empty(),
+            "redirected x keeps {:?}",
+            graph.node(x).in_edges()
+        );
+        assert!(
+            graph
+                .node(s)
+                .edges()
+                .iter()
+                .any(|&(r, n)| r == role && n == y),
+            "the restored edge ends at s -> y"
+        );
     }
 }

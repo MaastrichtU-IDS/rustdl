@@ -12,10 +12,11 @@ All notable changes to rustdl are documented here. Format is based on
   values per exact property, so with `SubDataPropertyOf(q, p)`, `P ⊑ ≤1 p.DataOneOf(1 2)`,
   `a : P`, `q(a,1)` and `q(a,2)` was consistent, and a `DataPropertyRange` on `p` did not bound
   `≥2 q.xsd:string`. HermiT reports both. Now a `∀` or range on a property also filters its
-  sub-properties, and a demand on a sub-property, narrowed by its own filters, also counts
-  against each super-property. Limits are not copied. Still missed: a decimal, double or
-  dateTime value asserted against an enumeration limit (with or without a hierarchy), and
-  `DisjointDataProperties` between sibling sub-properties.
+  sub-properties, and a demand on a sub-property, narrowed by its filters (its own and those
+  inherited from its super-properties), also counts against each super-property. Limits are not
+  copied. Still missed: a decimal, double or dateTime value asserted against an enumeration
+  limit (with or without a hierarchy), and `DisjointDataProperties` between sibling
+  sub-properties.
 - **A union of `xsd:integer` intervals is counted under data cardinality (#343).** #42 lowered
   `∀p.([0,5] ⊔ [10,15])` to an interval-set key that the counting check never decoded. So
   `≥3 p.xsd:integer ⊓ ∀p.({1} ⊔ {5})` was satisfiable with nothing dropped (also the two-axiom

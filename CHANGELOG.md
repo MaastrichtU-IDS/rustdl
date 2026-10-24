@@ -14,8 +14,9 @@ All notable changes to rustdl are documented here. Format is based on
   `incomplete: false`. Example: `ore_ont_16461` missed `Patient1 ⊑ Systemic_JIA_Patient`, from a
   sufficient condition with 15 existentials and a `≥4`. HermiT and Konclude both derive it. The
   clausifier now names each independent branch of such a body with a fresh class and rewrites the
-  clause over those names. A clausifier body is a tree, so the rewrite is exact, and matching costs
-  the sum of the branches rather than their product (the reason raising the cap was a dead end).
+  clause over those names. Where the body is a tree from its root, the rewrite is exact (any other
+  shape is left alone and counted), and matching costs the sum of the branches rather than their
+  product (the reason raising the cap was a dead end).
   Over the 1,920 ORE ontologies, 52 had such clauses (9,506 clauses); after the split, none remains
   refused. Whatever the wedge still cannot match is reported as `wedge_clauses_refused` in
   `classify --json`, the CLI, Python and the Protégé plugin

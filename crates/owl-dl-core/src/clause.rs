@@ -1145,6 +1145,12 @@ fn head_vars(head: &[Atom]) -> Vec<Var> {
 /// inline. Returns `None`, and leaves the caller's clause untouched, when the body
 /// is not a tree from `root`, when an atom spans two subtrees, or when nothing was
 /// named.
+///
+/// Not every over-cap body ends under the cap. An inline (head-variable) subtree is
+/// not split further, nor is a subtree whose root has a second edge from `root` or
+/// whose atoms mention `root` below its first level. Such a clause is still pushed;
+/// the wedge refuses it, and it is counted in [`ClauseStats::refused`], a MISS, never
+/// a false positive.
 fn name_branches(
     atoms: &[Atom],
     root: Var,
@@ -1555,7 +1561,10 @@ pub struct ClauseStats {
     /// Clauses whose over-cap body was split into named branches (#353).
     pub decomposed: usize,
     /// Clauses whose body is still over [`MAX_BODY_VARS`] after that pass. The
-    /// wedge refuses them, so their constraint is not enforced.
+    /// wedge refuses them, so their constraint is not enforced. A clause the pass
+    /// rewrote but could not bring under the cap counts in both fields. This uses
+    /// the shipped cap even under `RUSTDL_WIDE_BODY_VARS=1`, which lets the wedge
+    /// accept up to 16 variables.
     pub refused: usize,
 }
 

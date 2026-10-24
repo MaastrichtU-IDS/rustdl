@@ -659,6 +659,19 @@ pub(super) fn check_invariants(
             in_active(&n.exist_deps),
             "oracle: {id:?} exists under an inactive decision"
         );
+        // Spec §4.3: a child outliving its creator would keep a parent
+        // pointer to a tombstone and no edge from it.
+        if let Some(p) = n.parent() {
+            assert!(graph.is_alive(p), "oracle: {id:?} has dead parent {p:?}");
+            if n.merged_into().is_none() {
+                let q = ctx.resolve(p);
+                assert!(
+                    n.in_edges.iter().any(|&(_, s)| s == p || s == q)
+                        || n.edges.iter().any(|&(_, t)| t == p || t == q),
+                    "oracle: {id:?} has no edge to its parent {p:?} (resolves to {q:?})"
+                );
+            }
+        }
         assert_eq!(
             n.labels.len(),
             n.label_deps.len(),
@@ -723,7 +736,22 @@ pub(super) fn check_invariants(
     // would show here, not later inside some frame's rollback).
     let entries = ctx.trail().entries_from(0);
     let mut open = false;
+    // A fact recorded twice would be undone by the higher entry while a lower
+    // frame still needs it (plan 4d sabotage 22).
+    let mut seen_labels = HashSet::new();
+    let mut seen_marks = HashSet::new();
     for e in entries {
+        match *e {
+            TrailEntry::LabelAdded { node, concept } => assert!(
+                seen_labels.insert((node, concept)),
+                "oracle: trail records {concept:?} at {node:?} twice"
+            ),
+            TrailEntry::DistinctMarked { a, b } => assert!(
+                seen_marks.insert(pair(a, b)),
+                "oracle: trail records {a:?} != {b:?} twice"
+            ),
+            _ => {}
+        }
         match *e {
             TrailEntry::LabelAdded { node, concept } => assert!(
                 graph.node(node).labels().binary_search(&concept).is_ok(),
@@ -774,6 +802,32 @@ pub(super) fn check_invariants(
             in_active(&frame.pre),
             "oracle: frame {} rests on an inactive decision",
             frame.my_id
+        );
+        for r in frame.records.iter().flatten() {
+            if let Record::Refuted(d) = r {
+                assert!(
+                    in_active(d),
+                    "oracle: frame {} keeps a record resting on an inactive decision",
+                    frame.my_id
+                );
+            }
+        }
+    }
+    // The stack is id-sorted (plan 4c S-1) and, with the frame about to
+    // start, is exactly the active decisions.
+    let ids: Vec<u32> = stack
+        .iter()
+        .map(|(f, _, _)| f.my_id)
+        .chain(next.map(|f| f.my_id))
+        .collect();
+    assert!(
+        ids.windows(2).all(|w| w[0] < w[1]),
+        "oracle: stack ids out of order: {ids:?}"
+    );
+    if next.is_some() {
+        assert_eq!(
+            ids, active,
+            "oracle: stack ids differ from the active decisions"
         );
     }
     // Every merge unit's target carries what its source had before it (plan

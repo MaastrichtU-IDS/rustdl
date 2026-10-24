@@ -7,6 +7,21 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **A clause body over the wedge's variable cap is split into named branches instead of being
+  silently ignored (#353), `RUSTDL_WEDGE_BODY_DECOMPOSE`, default ON (`=0` reverts).** The
+  hypertableau wedge refuses a clause body with more than 8 variables, and a refused clause never
+  fires, so its constraint went unenforced and `classify` could miss a subsumption with
+  `incomplete: false`. Example: `ore_ont_16461` missed `Patient1 ⊑ Systemic_JIA_Patient`, from a
+  sufficient condition with 15 existentials and a `≥4`. HermiT and Konclude both derive it. The
+  clausifier now names each independent branch of such a body with a fresh class and rewrites the
+  clause over those names. A clausifier body is a tree, so the rewrite is exact, and matching costs
+  the sum of the branches rather than their product (the reason raising the cap was a dead end).
+  Over the 1,920 ORE ontologies, 52 had such clauses (9,506 clauses); after the split, none remains
+  refused. Whatever the wedge still cannot match is reported as `wedge_clauses_refused` in
+  `classify --json`, the CLI, Python and the Protégé plugin
+  (`RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`), separately from `incomplete`. Cost: definitions the
+  wedge used to skip now run in every class's label-cache build. On `ore_ont_4903` (NEMO, 59
+  definitions with 8+ nested existentials) that doubles classify CPU, with the same answers.
 - **Data counting follows the data-property hierarchy (#349),
   `RUSTDL_DATA_COUNTING_ROLE_HIERARCHY`, default ON (`=0` reverts).** The tableau counted data
   values per exact property, so with `SubDataPropertyOf(q, p)`, `P ⊑ ≤1 p.DataOneOf(1 2)`,

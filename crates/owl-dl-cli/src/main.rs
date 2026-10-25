@@ -1583,9 +1583,15 @@ fn main() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_consistent_json(
-                        verdict, incomplete, dropped
+                        verdict,
+                        incomplete,
+                        stats.wedge_clauses_refused,
+                        dropped
                     ))?
                 );
+                if verdict {
+                    warn_if_clauses_refused(stats.wedge_clauses_refused);
+                }
                 if incomplete {
                     std::process::exit(3);
                 }
@@ -1613,6 +1619,9 @@ fn main() -> Result<()> {
                     "inconsistent"
                 }
             );
+            if verdict {
+                warn_if_clauses_refused(stats.wedge_clauses_refused);
+            }
             warn_if_dropped(&dropped);
         }
         Command::Disjoint {

@@ -232,3 +232,36 @@ fn the_report_flag_off_reports_zero() {
     assert_eq!(c.stats().wedge_clauses_refused, 0);
     assert!(!c.is_subclass(A, G));
 }
+
+/// `consistent`'s stats (#357): the consistency wedge's refused clauses are
+/// reported the same way, as a separate field, not `incomplete`. An individual
+/// makes the consistency wedge run.
+#[test]
+fn the_consistency_wedge_reports_refused_clauses() {
+    let _g = lock();
+    let ofn = format!(
+        "Prefix(:=<http://ex.org/>)\n\
+         Ontology(<http://ex.org/o>\n\
+         Declaration(Class(:A)) Declaration(Class(:G)) Declaration(NamedIndividual(:i))\n\
+         ClassAssertion(:A :i)\n{}\n)\n",
+        star(8, |_| true)
+    );
+    let onto = |s: &str| -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(s.to_owned());
+        read_ofn(&mut reader, ParserConfiguration::default())
+            .expect("parse ofn")
+            .0
+    };
+    let refused = || {
+        let (consistent, stats) =
+            owl_dl_reasoner::is_consistent_with_stats(&onto(&ofn)).expect("consistent");
+        assert!(consistent);
+        assert!(!stats.incomplete);
+        stats.wedge_clauses_refused
+    };
+    assert_eq!(refused(), 0, "the split leaves nothing refused");
+    let _env = SetEnvGuard::set("RUSTDL_WEDGE_BODY_DECOMPOSE", "0");
+    assert_eq!(refused(), 1, "without the split the body is refused");
+    let _rep = SetEnvGuard::set("RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED", "0");
+    assert_eq!(refused(), 0, "the report flag turns the count off");
+}

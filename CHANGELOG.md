@@ -7,6 +7,13 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **`consistent --json` reports `wedge_clauses_refused` (#357).** #353 added this field to
+  `classify --json`: the number of clauses the hypertableau wedge cannot match, which never fire.
+  The consistency wedge uses the same clausifier, so a clause it refuses could leave a
+  `consistent: true` with no signal. `consistent --json` now carries the same field, counted on the
+  consistency wedge's clauses, separately from `incomplete` (a give-up), and the CLI warns when it
+  is non-zero. Same flag, `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`. After #353's split no ORE ontology
+  has a refused clause, so this guards against a latent gap.
 - **A clause body over the wedge's variable cap is split into named branches instead of being
   silently ignored (#353), `RUSTDL_WEDGE_BODY_DECOMPOSE`, default ON (`=0` reverts).** The
   hypertableau wedge refuses a clause body with more than 8 variables, and a refused clause never

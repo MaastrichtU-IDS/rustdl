@@ -6659,6 +6659,11 @@ pub struct QueryStats {
     /// the soundness contract names ("a sound under-approximation the
     /// caller cannot see").
     pub incomplete: bool,
+    /// #357: clauses the consistency wedge cannot match, which therefore never
+    /// fire; 0 when no wedge ran or `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`. A
+    /// wedge `consistent` can then miss a clash, so this is a completeness signal,
+    /// separate from `incomplete` (which means a give-up).
+    pub wedge_clauses_refused: usize,
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -6817,6 +6822,7 @@ fn is_class_satisfiable_internal_full(
                 answered_by_saturation: true,
                 pure_el_mode: pure_el,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -6827,6 +6833,7 @@ fn is_class_satisfiable_internal_full(
                 answered_by_saturation: true,
                 pure_el_mode: true,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -6837,6 +6844,7 @@ fn is_class_satisfiable_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete: false,
+            wedge_clauses_refused: 0,
         },
     ))
 }
@@ -7021,6 +7029,7 @@ fn is_consistent_internal_full(
                 answered_by_saturation: true,
                 pure_el_mode: false,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -7052,6 +7061,7 @@ fn is_consistent_internal_full(
                 answered_by_saturation: true,
                 pure_el_mode: false,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -7066,10 +7076,12 @@ fn is_consistent_internal_full(
                 answered_by_saturation: false,
                 pure_el_mode: false,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
     let trace = std::env::var_os("RUSTDL_TRACE").is_some();
+    let refused = prepared.consistency_wedge_clauses_refused();
     // ABox-seeded wedge route (default on; kills the `decide(Top)` hang
     // on out-of-EL ABoxes). `Some` only when enabled AND an individual is
     // named (ABox or TBox nominal); otherwise fall straight through to the
@@ -7089,6 +7101,7 @@ fn is_consistent_internal_full(
                     answered_by_saturation: false,
                     pure_el_mode: false,
                     incomplete: false,
+                    wedge_clauses_refused: refused,
                 },
             ));
         }
@@ -7107,6 +7120,7 @@ fn is_consistent_internal_full(
                     answered_by_saturation: false,
                     pure_el_mode: false,
                     incomplete: false,
+                    wedge_clauses_refused: refused,
                 },
             ));
         }
@@ -7123,6 +7137,7 @@ fn is_consistent_internal_full(
                     answered_by_saturation: false,
                     pure_el_mode: false,
                     incomplete: false,
+                    wedge_clauses_refused: refused,
                 },
             ));
         }
@@ -7196,6 +7211,7 @@ fn is_consistent_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete,
+            wedge_clauses_refused: refused,
         },
     ))
 }
@@ -7562,6 +7578,7 @@ fn is_subclass_of_internal_full(
         answered_by_saturation: true,
         pure_el_mode: pure_el,
         incomplete: false,
+        wedge_clauses_refused: 0,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -7599,6 +7616,7 @@ fn is_subclass_of_internal_full(
                 answered_by_saturation: false,
                 pure_el_mode: false,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -7616,6 +7634,7 @@ fn is_subclass_of_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete: false,
+            wedge_clauses_refused: 0,
         },
     ))
 }
@@ -8883,6 +8902,17 @@ impl PreparedOntology {
         deadline: Option<std::time::Instant>,
     ) -> Option<owl_dl_tableau::hyper::HyperResult> {
         self.consistency.as_ref().map(|c| c.decide(deadline))
+    }
+
+    /// #357: clauses the consistency wedge refuses (0 when there is no wedge or
+    /// the report flag is off).
+    pub(crate) fn consistency_wedge_clauses_refused(&self) -> usize {
+        if !report_wedge_clauses_refused_enabled() {
+            return 0;
+        }
+        self.consistency.as_ref().map_or(0, |c| {
+            owl_dl_tableau::hyper::refused_clause_count(&c.clauses)
+        })
     }
 
     /// One `ABox` witness model's per-individual COMPLETE type sets, or `None`

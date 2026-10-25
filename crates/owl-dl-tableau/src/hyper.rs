@@ -1420,6 +1420,16 @@ fn push_dense(v: &mut Vec<Vec<usize>>, key: usize, ci: usize) {
     }
 }
 
+/// How many of `clauses` the matcher refuses (no match plan, so they never fire):
+/// [`ClauseIndexes::refused_clauses`] without building the indexes (#357).
+#[must_use]
+pub fn refused_clause_count(clauses: &[DlClause]) -> usize {
+    clauses
+        .iter()
+        .filter(|c| build_clause_match_plan(c).is_none())
+        .count()
+}
+
 impl ClauseIndexes {
     /// Clauses with no match plan: the matcher refuses their body (over the
     /// variable cap, disconnected, or an equality atom), so they never fire and

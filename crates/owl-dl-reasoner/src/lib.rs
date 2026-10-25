@@ -6660,7 +6660,9 @@ pub struct QueryStats {
     /// caller cannot see").
     pub incomplete: bool,
     /// #357: clauses the consistency wedge cannot match, which therefore never
-    /// fire; 0 when no wedge ran or `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`. A
+    /// fire. Counted whenever the consistency wedge was consulted, even when the
+    /// main tableau then decided (a conservative over-report); 0 when it was not,
+    /// or with `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`. A
     /// wedge `consistent` can then miss a clash, so this is a completeness signal,
     /// separate from `incomplete` (which means a give-up).
     pub wedge_clauses_refused: usize,

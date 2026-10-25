@@ -170,7 +170,8 @@ pub(crate) struct ConsistentJson {
     pub(crate) incomplete: bool,
     /// #357: clauses the consistency wedge cannot match, which therefore never fire,
     /// so a `consistent: true` from the wedge may miss a clash. A SEPARATE field from
-    /// `incomplete` (a give-up), as in `classify --json`. 0 when no wedge ran.
+    /// `incomplete` (a give-up), as in `classify --json`. Counted whenever the
+    /// consistency wedge was consulted; 0 when it was not.
     pub(crate) wedge_clauses_refused: usize,
     pub(crate) dropped: BTreeMap<String, u64>,
 }

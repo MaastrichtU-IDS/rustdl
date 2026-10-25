@@ -827,13 +827,13 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         );
         warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
-        warn_if_clauses_refused(h.stats().wedge_clauses_refused);
+        warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
         return Ok(());
     }
     print_classification(&h);
     warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
     warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
-    warn_if_clauses_refused(h.stats().wedge_clauses_refused);
+    warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
     warn_if_dropped(&dropped);
     Ok(())
 }
@@ -914,13 +914,14 @@ fn warn_if_hierarchy_blind(blind: bool) {
     }
 }
 
-fn warn_if_clauses_refused(refused: usize) {
+/// `off_flag` is the setting that decides without the wedge in question:
+/// `RUSTDL_HYPERTABLEAU=0` for classify, `RUSTDL_WEDGE_CONSISTENCY=0` for consistency.
+fn warn_if_clauses_refused(refused: usize, off_flag: &str) {
     if refused > 0 {
         eprintln!(
             "\n⚠  NOT GUARANTEED COMPLETE: the wedge cannot match the body of {refused} \
              clause(s), so they never fire and entailments that need them may be \
-             missing (#353). RUSTDL_HYPERTABLEAU=0 decides without the wedge, at a \
-             time cost."
+             missing (#353). {off_flag} decides without the wedge, at a time cost."
         );
     }
 }
@@ -1590,7 +1591,10 @@ fn main() -> Result<()> {
                     ))?
                 );
                 if verdict {
-                    warn_if_clauses_refused(stats.wedge_clauses_refused);
+                    warn_if_clauses_refused(
+                        stats.wedge_clauses_refused,
+                        "RUSTDL_WEDGE_CONSISTENCY=0",
+                    );
                 }
                 if incomplete {
                     std::process::exit(3);
@@ -1620,7 +1624,7 @@ fn main() -> Result<()> {
                 }
             );
             if verdict {
-                warn_if_clauses_refused(stats.wedge_clauses_refused);
+                warn_if_clauses_refused(stats.wedge_clauses_refused, "RUSTDL_WEDGE_CONSISTENCY=0");
             }
             warn_if_dropped(&dropped);
         }

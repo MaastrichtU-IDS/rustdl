@@ -168,6 +168,11 @@ pub(crate) struct ConsistentJson {
     /// #182: `true` when `consistent` is a GIVE-UP reported in its sound
     /// direction (fall-through deadline / node cap), not a witnessed verdict.
     pub(crate) incomplete: bool,
+    /// #357: clauses the consistency wedge cannot match, which therefore never fire,
+    /// so a `consistent: true` from the wedge may miss a clash. A SEPARATE field from
+    /// `incomplete` (a give-up), as in `classify --json`. Counted whenever the
+    /// consistency wedge was consulted; 0 when it was not.
+    pub(crate) wedge_clauses_refused: usize,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
 
@@ -401,12 +406,14 @@ fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool, 
 pub(crate) fn build_consistent_json(
     consistent: bool,
     incomplete: bool,
+    wedge_clauses_refused: usize,
     dropped: BTreeMap<String, u64>,
 ) -> ConsistentJson {
     ConsistentJson {
         schema_version: SCHEMA_VERSION,
         consistent,
         incomplete,
+        wedge_clauses_refused,
         dropped,
     }
 }

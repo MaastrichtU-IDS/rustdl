@@ -242,21 +242,28 @@ All notable changes to rustdl are documented here. Format is based on
 - **`xsd:boolean` and `xsd:anyURI` are counted under data cardinality (#325).** `≥3 p.xsd:boolean`
   is unsatisfiable, as HermiT says. Each has its own counting bucket, so neither is counted
   against a `≤n` over strings.
+- **`xsd:double` is counted apart from `xsd:float` under data cardinality (#332).** Soundness
+  fix (false unsat). Both datatypes shared one counting bucket, so a `≤n` over `xsd:double` also
+  limited `xsd:float` values: `≤0 p.xsd:double` with a float value came back unsatisfiable through
+  `sat` and `classify`, where HermiT says satisfiable. The two value spaces are disjoint in OWL 2;
+  each now has its own interval and enumeration buckets.
 - **`card_sat`'s packing no longer depends on demand order (#326).** With `=1 p.{1,2}`, `∃p.{1}`
   and `∃p.{2}`, a broad demand taken first hid the two disjoint ones, and the class came back
   satisfiable. A second greedy pass, smallest capacity first, now runs under each limit; each pass
   is sound alone.
 
 ### Performance
-- **Main tableau, toward dependency-directed undo (#288).** None of these change an answer:
+- **Main tableau, toward dependency-directed undo (#288).** None of these change an answer, except
+  that under a deadline, less work per call can change which probes time out:
   - forced `≤n` merges carry precise deps unless a witness pair is distinct, which restores
     back-jumping across them (PMD core `PMD_0020213`: no answer in 300 s → 48 CPU-s);
   - `saturate` re-runs rules only on nodes a full pass could find work on, in the full pass's
     order (`RUSTDL_INCREMENTAL_SATURATE`, default ON, `=0` reverts);
   - the blocking check looks up nominal concepts instead of scanning labels (−3 to −5.5%
     instructions on PMD);
-  - choice-point merges and failed-disjunct complements record full deps, and the search runs on
-    an explicit frame stack (decision traces identical to before).
+  - preparation for selective undo, with decision traces identical to before: choice-point merges
+    and failed-disjunct complements record full deps (+0.6 to +2.4% instructions), and the search
+    runs on an explicit frame stack.
 
 ## [0.4.41] — 2026-10-20
 

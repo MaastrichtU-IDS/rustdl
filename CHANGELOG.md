@@ -6,6 +6,8 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.42] — 2026-10-25
+
 ### Fixed
 - **`consistent --json` reports `wedge_clauses_refused` (#357).** #353 added this field to
   `classify --json`: the number of clauses the hypertableau wedge cannot match, which never fire.
@@ -214,6 +216,47 @@ All notable changes to rustdl are documented here. Format is based on
     class of the other, or when they are nominals of `DifferentIndividuals`.
   HermiT agrees on 17 probes: 9 positives, including qualified, sub-role and `n = 3` cases, and
   8 controls.
+- **The main tableau re-saturates at a `Sat` leaf and branches over `≤n` merge pairs (#294,
+  #293), `RUSTDL_SAT_LEAF_RESATURATE` and `RUSTDL_MAX_CHOICE_POINT`, both default ON (`=0`
+  reverts).** `apply_max` counted `≤n` witnesses before they carried the qualifier, and a search
+  ending with no further pass returned `Sat`. So `A ⊑ ≤1 s.C ⊓ ∃s.(C ⊓ ∀p.X) ⊓ ∃s.(C ⊓ ∃p.¬X)`
+  was reported satisfiable; HermiT says unsat. Fixing that exposed the second bug: `apply_max`
+  committed to the first merge pair that did not clash at once, so a pair that clashed only after
+  generation made a satisfiable class read unsat. The two fixes ship together because either
+  alone is wrong.
+- **`≥n R.C` counts existing witnesses only if they are already pairwise distinct (#304),
+  `RUSTDL_MIN_FRESH_WITNESSES`, default ON (`=0` reverts).** Otherwise it makes `n` fresh
+  witnesses. Before, a later `≤m` that had to merge two counted witnesses read a satisfiable class
+  as unsat. Past 32 candidate witnesses the rule only counts.
+- **`apply_max` merges the newer node into the older one and gives its `⊥` precise deps (#288),
+  `RUSTDL_MAX_MERGE_KEEP_OLDER` and `RUSTDL_MAX_PRECISE_BOT`, default ON (`=0` reverts).** A
+  regression since v0.4.40: `sat PMD_0010100` on a 10-axiom PMD core no longer terminated. A
+  functional role reached through an inverse merged a predecessor into a fresh successor, which
+  made a node a never-blocked root. The `⊥` from a fully rejected trial merge also carried every
+  active decision, so no back-jump could pass it.
+- **`rdfs:Literal`, `xsd:boolean` and `xsd:anyURI` data ranges are no longer dropped (#314).**
+  `rdfs:Literal` is the top data range. `xsd:boolean` and `xsd:anyURI` get their own value buckets
+  (bare `xsd:boolean` is exactly `{false, true}`) and join the datatype families of #315.
+- **`rdf:PlainLiteral` data ranges and literals are no longer dropped (#322).** It is read as
+  `xsd:string ∪ rdf:langString`; a literal typed `rdf:PlainLiteral` splits at its last `@`.
+- **`xsd:boolean` and `xsd:anyURI` are counted under data cardinality (#325).** `≥3 p.xsd:boolean`
+  is unsatisfiable, as HermiT says. Each has its own counting bucket, so neither is counted
+  against a `≤n` over strings.
+- **`card_sat`'s packing no longer depends on demand order (#326).** With `=1 p.{1,2}`, `∃p.{1}`
+  and `∃p.{2}`, a broad demand taken first hid the two disjoint ones, and the class came back
+  satisfiable. A second greedy pass, smallest capacity first, now runs under each limit; each pass
+  is sound alone.
+
+### Performance
+- **Main tableau, toward dependency-directed undo (#288).** None of these change an answer:
+  - forced `≤n` merges carry precise deps unless a witness pair is distinct, which restores
+    back-jumping across them (PMD core `PMD_0020213`: no answer in 300 s → 48 CPU-s);
+  - `saturate` re-runs rules only on nodes a full pass could find work on, in the full pass's
+    order (`RUSTDL_INCREMENTAL_SATURATE`, default ON, `=0` reverts);
+  - the blocking check looks up nominal concepts instead of scanning labels (−3 to −5.5%
+    instructions on PMD);
+  - choice-point merges and failed-disjunct complements record full deps, and the search runs on
+    an explicit frame stack (decision traces identical to before).
 
 ## [0.4.41] — 2026-10-20
 

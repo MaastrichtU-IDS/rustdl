@@ -641,6 +641,13 @@ impl Restore {
             return;
         }
         if present {
+            // Plan 4d-G (s22): believed unreachable. A kept unit copies a
+            // fact only where its target lacked it, and a frame's option sits
+            // before `limit`, so no later original entry can hold it.
+            assert!(
+                !crate::selective_check_enabled(),
+                "oracle: a re-copied label is also recorded later in the window"
+            );
             let q = self.labels[&(node, c)];
             debug_assert!(
                 q.is_multiple_of(2),
@@ -670,6 +677,13 @@ impl Restore {
             return;
         }
         if present {
+            // Plan 4d-G (s22): believed unreachable. A kept unit copies a
+            // fact only where its target lacked it, and a frame's option sits
+            // before `limit`, so no later original entry can hold it.
+            assert!(
+                !crate::selective_check_enabled(),
+                "oracle: a re-copied mark is also recorded later in the window"
+            );
             let q = self.marks[&pair(a, b)];
             debug_assert!(
                 q.is_multiple_of(2),
@@ -818,6 +832,15 @@ pub(super) fn check_invariants(
                 "oracle: mark {id:?} != {other:?} is not symmetric"
             );
         }
+    }
+    // Plan 4d-G (s19): every nominal-map entry names a live node whose
+    // representative carries `{ind}`, so the validated read in the nominal
+    // rule never has anything to filter.
+    for (&ind, &m) in &graph.nominals {
+        assert!(
+            ctx.carries_nominal(m, ind),
+            "oracle: nominal map sends {ind:?} to {m:?}, which does not carry it"
+        );
     }
     // Merge units balanced; frame checkpoints are checkpoints, ascending;
     // every recorded fact still holds in the graph (a wrong splice or removal

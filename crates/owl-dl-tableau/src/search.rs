@@ -34,6 +34,7 @@ use crate::trail::Checkpoint;
 use owl_dl_core::{ConceptExpr, ConceptId, ConceptPool};
 use smallvec::SmallVec;
 
+mod dectrace;
 mod selective;
 
 /// Whether oracle (a) runs after every selective backjump (#288 step 4c,
@@ -124,9 +125,13 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
     if ctx.selective_undo() && selective_check_enabled() {
         selective::check_invariants(ctx, &[], None);
     }
+    let mut tracer = dectrace::Tracer::new();
     let next = expand(ctx, max_depth);
     let mut shadows = Vec::new();
-    let verdict = drive(ctx, Vec::new(), next, &mut shadows);
+    let verdict = drive(ctx, Vec::new(), next, &mut shadows, &mut tracer);
+    if let Some(tr) = tracer.as_mut() {
+        tr.flush();
+    }
     // Oracle (c): every shadow re-ran the rest of the search chronologically
     // from just before a selective backjump; a definite answer must agree.
     for (event, shadow) in shadows {
@@ -150,6 +155,7 @@ fn drive(
     mut stack: Vec<selective::Stacked>,
     mut next: Expanded,
     shadows: &mut Vec<(usize, SearchVerdict)>,
+    tracer: &mut Option<dectrace::Tracer>,
 ) -> SearchVerdict {
     let mut jumps = 0;
     loop {
@@ -161,15 +167,26 @@ fn drive(
                     Start::Exhausted => break frame.finish(ctx),
                     Start::Child(k, cp) => {
                         let depth = frame.max_depth - 1;
+                        if let Some(tr) = tracer.as_mut() {
+                            tr.dec(&mut frame, k, stack.len());
+                        }
                         stack.push((frame, k, cp));
                         next = expand(ctx, depth);
                     }
                     Start::Decided(k, cp, v) => {
+                        if let Some(tr) = tracer.as_mut() {
+                            tr.decided();
+                        }
                         frame.on_child(ctx, k, cp, v);
                         next = Expanded::Open(frame);
                     }
                 },
             }
+        };
+        // Plan 4e: a big backjump's CPU is sampled here, before any undo.
+        let pending = match (&verdict, tracer.as_mut()) {
+            (SearchVerdict::Unsat(deps), Some(tr)) => tr.intercept(&stack, deps),
+            _ => None,
         };
         // #288 step 4c: a clash that skips frames is caught selectively.
         if let SearchVerdict::Unsat(deps) = &verdict
@@ -183,6 +200,7 @@ fn drive(
                     stack.clone(),
                     Expanded::Done(verdict.clone()),
                     &mut Vec::new(),
+                    &mut None,
                 );
                 shadows.push((jumps, v));
             }
@@ -190,8 +208,18 @@ fn drive(
             let SearchVerdict::Unsat(deps) = verdict else {
                 unreachable!()
             };
-            next = Expanded::Open(selective::backjump(ctx, &mut stack, t, deps));
+            let mut renumbered = selective::backjump(ctx, &mut stack, t, deps);
+            if let Some(tr) = tracer.as_mut() {
+                tr.splice(&mut stack, t, &mut renumbered);
+                if let Some(p) = pending {
+                    tr.write(p, true, stack.len() - t);
+                }
+            }
+            next = Expanded::Open(renumbered);
             continue;
+        }
+        if let (Some(tr), Some(p)) = (tracer.as_mut(), pending) {
+            tr.write(p, false, 0);
         }
         // Hand the verdict to the frame that asked for it.
         let Some((mut frame, k, cp)) = stack.pop() else {
@@ -343,6 +371,8 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
 /// An open `≤n R.C` (#293), ready to branch on.
 #[derive(Clone)]
 struct OpenMax {
+    /// The `≤n` label (its identity in the 4e decision trace).
+    max: ConceptId,
     /// The node carrying the `≤n` label.
     holder: NodeId,
     /// The `≤n` label's deps.
@@ -424,6 +454,7 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                     .collect();
                 if !partners.is_empty() {
                     return Some(OpenMax {
+                        max: c,
                         holder: node_id,
                         max_deps,
                         bound: *n as usize,
@@ -490,6 +521,16 @@ struct Frame {
     /// the frame's node redirected or already carrying an option. It asserts
     /// nothing and passes its one child's verdict up.
     retired: bool,
+    /// The 4e decision trace's number for the selective backjump that last
+    /// kept this frame (0: none, or the trace is off).
+    splice: u32,
+    /// The 4e decision trace's numbers of every selective backjump that
+    /// refuted this frame's decision and re-numbered it (empty: none, or the
+    /// trace is off).
+    lineage: Vec<u32>,
+    /// The 4e decision trace's number of this frame's current option (0 when
+    /// the trace is off).
+    dec_n: u32,
 }
 
 /// Whether an option still needs deciding ([`Frame::moot`]).
@@ -546,6 +587,9 @@ impl Frame {
             pre,
             early_return: None,
             retired: false,
+            splice: 0,
+            lineage: Vec::new(),
+            dec_n: 0,
         }
     }
 
@@ -583,6 +627,9 @@ impl Frame {
             pre,
             early_return: None,
             retired: false,
+            splice: 0,
+            lineage: Vec::new(),
+            dec_n: 0,
         }
     }
 

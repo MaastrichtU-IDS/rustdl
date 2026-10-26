@@ -133,7 +133,7 @@ fn a_shared_object_with_an_inverse_bound_forces_the_equality() {
     assert!(equivalent(&c));
 }
 
-/// Only `a` is a nominal of the TBox; `c` is not, but `a = c` gives `{a}` the type
+/// Only `a` is a nominal of the `TBox`; `c` is not, but `a = c` gives `{a}` the type
 /// `D` of `c`, so `C1 ⊑ K ≡ ∃p.D`.
 #[test]
 fn one_individual_in_reach_is_enough() {

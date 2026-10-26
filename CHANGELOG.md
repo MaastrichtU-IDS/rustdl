@@ -29,8 +29,10 @@ All notable changes to rustdl are documented here. Format is based on
   to genuine models, so it adds only real clashes. `same_individuals` also stopped dropping the
   `a ≠ b` fact for two TBox-only individuals, which made `{a} ⊑ {b}` read "not same". On a KB
   inconsistent in a way only the tableau finds, the instance and same-individual queries now answer
-  vacuously (every membership holds) instead of erroring; the cheap inconsistency guard (#313) is
-  unchanged. Classify is unchanged.
+  vacuously (every membership holds) instead of returning the weaker KB's answers; neither version
+  errors, because the cheap inconsistency guard (#313) is unchanged by design. `disjoint_classes` now
+  errors when the classify run it already makes proves the KB inconsistent; it used to report "no
+  disjoint pairs". Classify is unchanged.
 
 ## [0.4.42] — 2026-10-25
 

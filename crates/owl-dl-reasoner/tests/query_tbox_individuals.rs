@@ -202,3 +202,16 @@ fn tbox_stats_counts_tbox_only_individuals() {
     let abox = onto("ClassAssertion(:A :b)\nSubClassOf(ObjectOneOf(:b) :A)");
     assert_eq!(owl_dl_reasoner::tbox_stats(&abox).unwrap().tbox_only_individuals, 0);
 }
+
+/// `disjoint_classes` runs classify, whose pre-check proves this KB inconsistent;
+/// it used to go on to report "no disjoint pairs" (every class unsat).
+#[test]
+fn disjoint_classes_errors_when_classify_proves_inconsistency() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = owl_dl_reasoner::disjoint_classes(&onto(ISSUE_356), None);
+    assert!(
+        matches!(r, Err(owl_dl_reasoner::ReasonError::Inconsistent)),
+        "expected Err(Inconsistent), got {:?}",
+        r.map(|d| d.pairs().len())
+    );
+}

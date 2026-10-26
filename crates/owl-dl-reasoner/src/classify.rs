@@ -417,6 +417,14 @@ pub struct ClassificationStats {
     /// field (`RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND`). It does NOT set
     /// `incomplete`, which means only "a deadline fired".
     pub wedge_hierarchy_blind: bool,
+    /// #353: clauses the wedge's matcher refuses (a body it cannot match even
+    /// after the clausifier splits over-cap bodies into named branches). A refused
+    /// clause never fires, so the wedge's trusted `Sat` can miss an entailment
+    /// silently: [`Classification::completeness_guaranteed`] is false when this is
+    /// non-zero, and `classify --json` reports it
+    /// (`RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`). It does NOT set `incomplete`, which
+    /// means only "a deadline fired". 0 when there is no wedge.
+    pub wedge_clauses_refused: usize,
     /// Axioms dropped during conversion, tallied by diagnostic kind (issue
     /// #43). Carried here so a caller that wants the tally does NOT have to
     /// re-run `convert_ontology` to get it: the CLI used to, which cost a
@@ -981,6 +989,7 @@ impl Classification {
         matches!(self.stats.fragment, FragmentClassification::PureEl)
             && self.stats.timed_out_pairs == 0
             && !self.stats.wedge_hierarchy_blind
+            && self.stats.wedge_clauses_refused == 0
             && !self.stats.consistency_undetermined
             && self.stats.dropped.is_empty()
     }
@@ -1556,6 +1565,7 @@ fn classify_internal_with_timeout_impl(
         per_class_safe_count: prepared.per_class_safe_count(),
         per_class_unsafe_count: prepared.per_class_unsafe_count(),
         wedge_hierarchy_blind: wedge_hierarchy_blind(&prepared),
+        wedge_clauses_refused: wedge_clauses_refused(&prepared),
         ..ClassificationStats::default()
     };
     let cut_probes = std::sync::Mutex::new(Vec::new());
@@ -3551,6 +3561,15 @@ fn wedge_hierarchy_blind(prepared: &PreparedOntology) -> bool {
     crate::report_wedge_hierarchy_blind_enabled() && prepared.wedge_hierarchy_blind()
 }
 
+/// #353: clauses the wedge refuses, if reporting is on.
+fn wedge_clauses_refused(prepared: &PreparedOntology) -> usize {
+    if crate::report_wedge_clauses_refused_enabled() {
+        prepared.wedge_clauses_refused()
+    } else {
+        0
+    }
+}
+
 /// Record that class `i`'s per-class unsat probe was cut (deadline or
 /// `NoVerdict`) and defaulted to "satisfiable" (#218).
 fn record_cut_probe(cut: &std::sync::Mutex<Vec<usize>>, i: usize) {
@@ -3968,6 +3987,7 @@ fn classify_top_down_internal_impl(
         precheck_wall_ms: precheck_ms,
         prepare_wall_ms: prepare_ms,
         wedge_hierarchy_blind: wedge_hierarchy_blind(&prepared),
+        wedge_clauses_refused: wedge_clauses_refused(&prepared),
         ..ClassificationStats::default()
     };
 

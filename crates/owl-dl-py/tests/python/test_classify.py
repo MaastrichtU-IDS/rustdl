@@ -100,6 +100,41 @@ def test_wedge_hierarchy_blind_is_its_own_signal(fixtures_dir, monkeypatch):
     assert "http://ex.org/A" in r.unsatisfiable
 
 
+def test_wedge_clauses_refused_is_its_own_signal(tmp_path, monkeypatch):
+    # #353: a clause body the wedge cannot match is reported by
+    # `wedge_clauses_refused` and warned about, while `complete` keeps meaning
+    # "no timeout fired". With the clausifier's split reverted, the 9-variable
+    # body of the sufficient condition below is refused.
+    import warnings
+    lhs = " ".join(f"ObjectSomeValuesFrom(:s{i} :S{i})" for i in range(1, 9))
+    exists = "\n".join(
+        f"SubClassOf(:A ObjectSomeValuesFrom(:s{i} :S{i}))" for i in range(1, 9)
+    )
+    fixture = tmp_path / "wide.ofn"
+    fixture.write_text(
+        "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/o>\n"
+        "SubClassOf(:B1 :J) SubClassOf(:B2 :J) DisjointClasses(:B1 :B2)\n"
+        "SubClassOf(:A ObjectSomeValuesFrom(:q :B1)) "
+        "SubClassOf(:A ObjectSomeValuesFrom(:q :B2))\n"
+        f"{exists}\n"
+        f"SubClassOf(ObjectIntersectionOf({lhs} ObjectMinCardinality(2 :q :J)) :G)\n)\n"
+    )
+    monkeypatch.setenv("RUSTDL_WEDGE_BODY_DECOMPOSE", "0")
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_clauses_refused == 1
+    assert r.complete is True
+    assert sum(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning) for w in rec
+    ) == 1
+
+    monkeypatch.delenv("RUSTDL_WEDGE_BODY_DECOMPOSE")
+    r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_clauses_refused == 0
+    assert r.is_subclass("http://ex.org/A", "http://ex.org/G")
+
+
 def test_prep_timed_out_is_its_own_signal(tmp_path, monkeypatch):
     # #162: a preparation cut by the global deadline is reported by
     # `prep_timed_out` and warned about once as a cut preparation, not as a

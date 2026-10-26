@@ -49,8 +49,59 @@ pub const X: Var = 0;
 /// a guard against pathological inputs, not a normal-case limit.
 const ANTECEDENT_DNF_CAP: usize = 64;
 
+/// The hypertableau wedge's cap on the variables of a clause body (#353 moved it
+/// here from `owl-dl-tableau`'s `hyper.rs`, so the clausifier and the wedge share
+/// one definition). The wedge's matcher refuses a body over the cap, and a refused
+/// clause never fires. [`clausify_with_stats`] therefore splits an over-cap body
+/// into named branches (see [`body_decompose_enabled`]), and counts what it cannot
+/// split in [`ClauseStats::refused`].
+pub const MAX_BODY_VARS: usize = 8;
+
+/// Distinct variables among the `(u, v)` endpoints of a body's role atoms,
+/// counting `X`. This is what the wedge's `eval_order` binds, so a body is over the
+/// cap iff this exceeds [`MAX_BODY_VARS`] (for a body connected to `X`).
+#[must_use]
+pub fn distinct_vars(pairs: impl IntoIterator<Item = (Var, Var)>) -> usize {
+    let mut seen: Vec<Var> = vec![X];
+    for (u, v) in pairs {
+        for w in [u, v] {
+            if !seen.contains(&w) {
+                seen.push(w);
+            }
+        }
+    }
+    seen.len()
+}
+
+/// [`distinct_vars`] over a clause body's role atoms.
+#[must_use]
+pub fn body_var_count(body: &[Atom]) -> usize {
+    distinct_vars(body.iter().filter_map(|a| match a {
+        Atom::Role(_, u, v) => Some((*u, *v)),
+        _ => None,
+    }))
+}
+
+/// Whether the clausifier splits a clause body over [`MAX_BODY_VARS`] into named
+/// branches (#353, `RUSTDL_WEDGE_BODY_DECOMPOSE`, **default ON**, `=0` reverts).
+///
+/// A body over the cap made the wedge refuse the clause, so its constraint was
+/// silently never enforced: a wedge `Sat` that `trust_sat` turned into a missed
+/// subsumption with `incomplete: false` (`ore_ont_16461`). A clausifier body is a
+/// tree rooted at `X`, so each child subtree of `X` is matched independently of the
+/// others. The pass names each one with a fresh class `E`, adding
+/// `R(X,y) ∧ subtree(y) → E(X)`, and rewrites the clause over `E(X)`. That is an
+/// exact rewrite: `E` holds at a node iff its branch matches there. Matching then
+/// costs the sum of the branches, not their product, which is what made raising the
+/// cap blow up. A branch that mentions a head variable stays inline, since the head
+/// needs its binding.
+#[must_use]
+pub fn body_decompose_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_BODY_DECOMPOSE").is_none_or(|v| v != "0")
+}
+
 /// An atom in a DL-clause body or head.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Atom {
     /// `A(v)` — variable `v` is an instance of class `A`.
     Class(ClassId, Var),
@@ -1016,8 +1067,251 @@ pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, Claus
         apply_reflexive_roles(&mut c, &reflexive);
         add_counted_self_loops(&mut c, &reflexive);
     }
-    let stats = ClauseStats::of(&c.clauses, c.deferred);
+    // Last, so it sees every body the passes above produce (`add_counted_self_loops`
+    // appends role atoms).
+    let decomposed = if body_decompose_enabled() {
+        decompose_wide_bodies(&mut c)
+    } else {
+        0
+    };
+    let mut stats = ClauseStats::of(&c.clauses, c.deferred);
+    stats.decomposed = decomposed;
     (c.clauses, stats)
+}
+
+/// Split every clause body over [`MAX_BODY_VARS`] into named branches (#353; see
+/// [`body_decompose_enabled`]). Returns how many clauses were rewritten. A body
+/// that cannot be split stays as it is and is counted in [`ClauseStats::refused`].
+fn decompose_wide_bodies(c: &mut Clausifier) -> usize {
+    let mut memo: HashMap<Vec<Atom>, ClassId> = HashMap::new();
+    let mut named: Vec<DlClause> = Vec::new();
+    let mut rewritten = 0;
+    let clauses = std::mem::take(&mut c.clauses);
+    let mut out = Vec::with_capacity(clauses.len());
+    for cl in clauses {
+        if body_var_count(&cl.body) <= MAX_BODY_VARS
+            || cl
+                .body
+                .iter()
+                .any(|a| !matches!(a, Atom::Class(..) | Atom::Role(..)))
+        {
+            out.push(cl);
+            continue;
+        }
+        let keep = head_vars(&cl.head);
+        if let Some(body) = name_branches(&cl.body, X, &keep, c, &mut memo, &mut named) {
+            rewritten += 1;
+            out.push(DlClause {
+                body,
+                head: cl.head,
+            });
+        } else {
+            out.push(cl);
+        }
+    }
+    out.extend(named);
+    c.clauses = out;
+    rewritten
+}
+
+/// The non-`X` variables a head mentions. A body branch binding one of them must
+/// stay inline, or the head would lose the binding.
+fn head_vars(head: &[Atom]) -> Vec<Var> {
+    let mut vars = Vec::new();
+    let mut add = |v: Var| {
+        if v != X && !vars.contains(&v) {
+            vars.push(v);
+        }
+    };
+    for a in head {
+        match *a {
+            Atom::Class(_, v)
+            | Atom::Exists(_, _, v)
+            | Atom::AtMost(_, _, _, v)
+            | Atom::AtLeast(_, _, _, v) => add(v),
+            Atom::Role(_, u, v) | Atom::Equal(u, v) => {
+                add(u);
+                add(v);
+            }
+        }
+    }
+    vars
+}
+
+/// Replace each child subtree of `root` in `atoms` (a body whose role atoms form a
+/// tree rooted at `root`) by one atom `E(root)`, emitting `subtree → E(X)` into
+/// `named`, with `root` renamed to `X`. A subtree still over the cap is first split
+/// the same way one level down. A subtree that mentions a `keep` variable stays
+/// inline. Returns `None`, and leaves the caller's clause untouched, when the body
+/// is not a tree from `root`, when an atom spans two subtrees, or when nothing was
+/// named.
+///
+/// Not every over-cap body ends under the cap. An inline (head-variable) subtree is
+/// not split further, nor is a subtree whose root has a second edge from `root` or
+/// whose atoms mention `root` below its first level. Such a clause is still pushed;
+/// the wedge refuses it, and it is counted in [`ClauseStats::refused`], a MISS, never
+/// a false positive.
+fn name_branches(
+    atoms: &[Atom],
+    root: Var,
+    keep: &[Var],
+    c: &mut Clausifier,
+    memo: &mut HashMap<Vec<Atom>, ClassId>,
+    named: &mut Vec<DlClause>,
+) -> Option<Vec<Atom>> {
+    // Tree edges, discovered as `eval_order` does: an atom whose source is bound
+    // and whose target is not binds the target; one with both ends bound is a
+    // filter.
+    let mut parent: HashMap<Var, Var> = HashMap::new();
+    let mut bound: Vec<Var> = vec![root];
+    let mut placed = vec![false; atoms.len()];
+    loop {
+        let mut progressed = false;
+        for (i, a) in atoms.iter().enumerate() {
+            if let Atom::Role(_, u, v) = *a
+                && !placed[i]
+                && bound.contains(&u)
+            {
+                placed[i] = true;
+                progressed = true;
+                if !bound.contains(&v) {
+                    bound.push(v);
+                    parent.insert(v, u);
+                }
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    if atoms
+        .iter()
+        .zip(&placed)
+        .any(|(a, p)| matches!(a, Atom::Role(..)) && !p)
+    {
+        return None; // disconnected from `root`
+    }
+    // The child of `root` whose subtree contains `v` (`None` for `root` itself).
+    let top = |v: Var| -> Option<Var> {
+        if v == root {
+            return None;
+        }
+        let mut w = v;
+        while let Some(&p) = parent.get(&w) {
+            if p == root {
+                return Some(w);
+            }
+            w = p;
+        }
+        // A variable no role atom binds (a class atom on an unbound variable):
+        // not a tree body.
+        Some(Var::MAX)
+    };
+    let mut root_atoms: Vec<Atom> = Vec::new();
+    let mut groups: Vec<(Var, Vec<Atom>)> = Vec::new();
+    for a in atoms {
+        let vars: Vec<Var> = match *a {
+            Atom::Class(_, v) => vec![v],
+            Atom::Role(_, u, v) => vec![u, v],
+            _ => return None,
+        };
+        let mut tops = vars.iter().filter_map(|&v| top(v));
+        let first = tops.next();
+        if tops.any(|t| Some(t) != first) {
+            return None; // spans two subtrees
+        }
+        match first {
+            None => root_atoms.push(*a),
+            Some(Var::MAX) => return None,
+            Some(t) => match groups.iter_mut().find(|(g, _)| *g == t) {
+                Some((_, g)) => g.push(*a),
+                None => groups.push((t, vec![*a])),
+            },
+        }
+    }
+    let mut any_named = false;
+    let mut result = root_atoms;
+    for (t, group) in groups {
+        let group_vars: Vec<Var> = group
+            .iter()
+            .flat_map(|a| match *a {
+                Atom::Class(_, v) => vec![v],
+                Atom::Role(_, u, v) => vec![u, v],
+                _ => vec![],
+            })
+            .collect();
+        if group_vars.iter().any(|v| keep.contains(v)) {
+            result.extend(group);
+            continue;
+        }
+        let mut sub = group;
+        if body_var_count_from(&sub, root) > MAX_BODY_VARS {
+            // Split one level down: below `t`, every atom must avoid `root`.
+            let (edge, inner): (Vec<Atom>, Vec<Atom>) = sub
+                .iter()
+                .partition(|a| matches!(a, Atom::Role(_, u, v) if *u == root && *v == t));
+            let inner_mentions_root = inner.iter().any(|a| match *a {
+                Atom::Class(_, v) => v == root,
+                Atom::Role(_, u, v) => u == root || v == root,
+                _ => false,
+            });
+            if edge.len() == 1
+                && !inner_mentions_root
+                && let Some(reduced) = name_branches(&inner, t, &[], c, memo, named)
+            {
+                sub = edge.into_iter().chain(reduced).collect();
+            }
+        }
+        let body = renumber(&sub, root);
+        let e = if let Some(&e) = memo.get(&body) {
+            e
+        } else {
+            let e = c.fresh_class();
+            memo.insert(body.clone(), e);
+            named.push(DlClause {
+                body,
+                head: vec![Atom::Class(e, X)],
+            });
+            e
+        };
+        result.push(Atom::Class(e, root));
+        any_named = true;
+    }
+    any_named.then_some(result)
+}
+
+/// [`distinct_vars`] over `atoms`' role atoms, counting `root` in place of `X`.
+fn body_var_count_from(atoms: &[Atom], root: Var) -> usize {
+    distinct_vars(atoms.iter().filter_map(|a| match *a {
+        Atom::Role(_, u, v) => Some((if u == root { X } else { u }, if v == root { X } else { v })),
+        _ => None,
+    }))
+}
+
+/// `atoms` with `root` renamed to `X` and every other variable renumbered `1..` in
+/// order of first appearance, so equal branches get equal bodies (the memo key).
+fn renumber(atoms: &[Atom], root: Var) -> Vec<Atom> {
+    let mut map: Vec<(Var, Var)> = vec![(root, X)];
+    let mut var = |v: Var| -> Var {
+        if let Some(&(_, w)) = map.iter().find(|(o, _)| *o == v) {
+            w
+        } else {
+            let w = Var::try_from(map.len()).expect("var count fits u32");
+            map.push((v, w));
+            w
+        }
+    };
+    atoms
+        .iter()
+        .map(|a| match *a {
+            Atom::Class(k, v) => Atom::Class(k, var(v)),
+            Atom::Role(r, u, v) => {
+                let u = var(u);
+                Atom::Role(r, u, var(v))
+            }
+            other => other,
+        })
+        .collect()
 }
 
 /// Canonical ids of every reflexive role: those declared
@@ -1264,6 +1558,14 @@ pub struct ClauseStats {
     pub bottom_headed: usize,
     pub with_exists_head: usize,
     pub deferred: usize,
+    /// Clauses whose over-cap body was split into named branches (#353).
+    pub decomposed: usize,
+    /// Clauses whose body is still over [`MAX_BODY_VARS`] after that pass. The
+    /// wedge refuses them, so their constraint is not enforced. A clause the pass
+    /// rewrote but could not bring under the cap counts in both fields. This uses
+    /// the shipped cap even under `RUSTDL_WIDE_BODY_VARS=1`, which lets the wedge
+    /// accept up to 16 variables.
+    pub refused: usize,
 }
 
 impl ClauseStats {
@@ -1285,6 +1587,9 @@ impl ClauseStats {
             }
             if cl.head.iter().any(|a| matches!(a, Atom::Exists(..))) {
                 s.with_exists_head += 1;
+            }
+            if body_var_count(&cl.body) > MAX_BODY_VARS {
+                s.refused += 1;
             }
         }
         s
@@ -1312,6 +1617,82 @@ mod tests {
 
     const HEADER: &str = "Prefix(:=<http://x/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// #353: `(∃s₁.S₁ ⊓ … ⊓ ∃sₙ.Sₙ) ⊑ G`, plus a second GCI sharing its first
+    /// `shared` branches.
+    fn wide_star(n: u32, shared: u32) -> String {
+        use std::fmt::Write as _;
+        let mut lhs = String::new();
+        for i in 1..=n {
+            write!(lhs, " ObjectSomeValuesFrom(:s{i} :S{i})").expect("write to String");
+        }
+        let mut other = String::new();
+        for i in 1..=shared {
+            write!(other, " ObjectSomeValuesFrom(:s{i} :S{i})").expect("write to String");
+        }
+        for i in shared + 1..=n {
+            write!(other, " ObjectSomeValuesFrom(:t{i} :T{i})").expect("write to String");
+        }
+        format!(
+            "{HEADER}Ontology(<http://x/o>\n\
+             SubClassOf(ObjectIntersectionOf({lhs}) :G)\n\
+             SubClassOf(ObjectIntersectionOf({other}) :H)\n)\n"
+        )
+    }
+
+    /// Every body ends at or under the cap, both over-cap clauses are rewritten,
+    /// and the rewritten clauses are `E₁(X) ∧ … ∧ Eₙ(X) → head`, each `Eᵢ` the head
+    /// of a one-branch clause `sᵢ(X,y) ∧ Sᵢ(y) → Eᵢ(X)`.
+    #[test]
+    fn an_over_cap_body_is_split_into_named_branches() {
+        let (clauses, stats) = clausify_ofn(&wide_star(9, 0));
+        assert_eq!(stats.decomposed, 2);
+        assert_eq!(stats.refused, 0);
+        assert!(
+            clauses
+                .iter()
+                .all(|c| body_var_count(&c.body) <= MAX_BODY_VARS)
+        );
+        let rewritten: Vec<&DlClause> = clauses
+            .iter()
+            .filter(|c| c.body.len() == 9 && c.body.iter().all(|a| matches!(a, Atom::Class(_, X))))
+            .collect();
+        assert_eq!(rewritten.len(), 2, "{clauses:?}");
+        let branch_heads: std::collections::HashSet<ClassId> = clauses
+            .iter()
+            .filter(|c| c.body.len() == 2)
+            .filter_map(|c| match c.head.as_slice() {
+                [Atom::Class(e, X)] => Some(*e),
+                _ => None,
+            })
+            .collect();
+        for c in rewritten {
+            for a in &c.body {
+                let Atom::Class(e, _) = a else { unreachable!() };
+                assert!(branch_heads.contains(e), "{e:?} names no branch");
+            }
+        }
+    }
+
+    /// Identical branches across clauses share one name: 9 + 9 branches with 4 in
+    /// common give 14 branch clauses, not 18.
+    #[test]
+    fn identical_branches_share_one_name() {
+        let (clauses, stats) = clausify_ofn(&wide_star(9, 4));
+        assert_eq!(stats.decomposed, 2);
+        let branches = clauses
+            .iter()
+            .filter(|c| c.body.len() == 2 && matches!(c.head.as_slice(), [Atom::Class(_, X)]))
+            .count();
+        assert_eq!(branches, 14);
+    }
+
+    /// Under the cap nothing changes.
+    #[test]
+    fn under_the_cap_nothing_is_split() {
+        let (_, stats) = clausify_ofn(&wide_star(7, 0));
+        assert_eq!((stats.decomposed, stats.refused), (0, 0));
+    }
 
     #[test]
     fn told_subsumption_is_a_horn_clause() {

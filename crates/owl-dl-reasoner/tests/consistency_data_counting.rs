@@ -261,7 +261,6 @@ fn classify_reports_the_inconsistency() {
 
 /// KNOWN MISSES, sound: the main tableau does not count these either. `HermiT` says
 /// inconsistent on each. FLIP when handled.
-/// - values on a sub-property (`concrete_domain_clash` keys on the exact property);
 /// - a decimal, double or dateTime enumeration limit against asserted values (only
 ///   the integer range and enumeration buckets are counted together, #334);
 /// - an unqualified `≥n` against a range enumeration (no data range to count).
@@ -277,11 +276,6 @@ fn shapes_the_tableau_does_not_count_are_known_misses() {
         )
     };
     for body in [
-        format!(
-            "SubClassOf(:P {LIMIT}) SubDataPropertyOf(:q :p) ClassAssertion(:P :a)\n\
-             DataPropertyAssertion(:q :a \"1\"^^xsd:integer)\n\
-             DataPropertyAssertion(:q :a \"2\"^^xsd:integer)"
-        ),
         enumeration("decimal", "1.5", "2.5"),
         enumeration("double", "1.5", "2.5"),
         enumeration("dateTime", "2020-01-01T00:00:00", "2021-01-01T00:00:00"),

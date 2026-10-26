@@ -220,11 +220,31 @@ fn the_identity_is_not_integer_specific() {
 fn a_union_carrying_a_non_enumeration_member_still_drops() {
     // ALL-OR-DROP, inherited from `flatten_union_of_oneofs`. A partial flatten would
     // be a strictly weaker range, which is unsound in the sufficient direction. The
-    // class stays satisfiable (a sound MISS, and a VISIBLE one — `dropped` is set).
-    let mixed = "DataUnionOf(DataOneOf(\"1\"^^xsd:integer) \
-                 DatatypeRestriction(xsd:integer xsd:minInclusive \"100\"^^xsd:integer))";
+    // class stays satisfiable (a sound MISS, and a VISIBLE one).
+    //
+    // Retargeted for #343: the member here used to be an INTEGER interval, but a
+    // union of integer enumerations and intervals now lowers whole to an
+    // interval-set key and is counted (`tests/data_card_int_union.rs`). A member of
+    // ANOTHER datatype is what still drops.
+    let mixed = "DataUnionOf(DataOneOf(\"1\"^^xsd:integer) xsd:string)";
     assert!(
         !unsat(&format!("SubClassOf(:A DataMinCardinality(3 :p {mixed}))")),
-        "a union with a non-enumeration member must drop whole, not flatten partially"
+        "a union with a member of another datatype must drop whole, not flatten partially"
     );
+}
+
+/// What the test above used to hold (#343): an integer enumeration united with an
+/// integer interval is counted as one interval set. `{1} ⊔ [100,101]` holds three
+/// integers.
+#[test]
+fn a_union_of_an_integer_enumeration_and_interval_is_counted() {
+    let mixed = "DataUnionOf(DataOneOf(\"1\"^^xsd:integer) \
+                 DatatypeRestriction(xsd:integer xsd:minInclusive \"100\"^^xsd:integer \
+                 xsd:maxInclusive \"101\"^^xsd:integer))";
+    assert!(!unsat(&format!(
+        "SubClassOf(:A DataMinCardinality(3 :p {mixed}))"
+    )));
+    assert!(unsat(&format!(
+        "SubClassOf(:A DataMinCardinality(4 :p {mixed}))"
+    )));
 }

@@ -249,6 +249,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_DATA_COUNTING_ROLE_HIERARCHY",
+            owl_dl_tableau::data_counting_role_hierarchy_enabled,
+            true,
+        ),
+        (
             "RUSTDL_FORALL_FIRST",
             owl_dl_tableau::forall_first_enabled,
             true,
@@ -306,6 +311,16 @@ fn expected() -> Vec<FlagRow> {
         (
             "RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND",
             owl_dl_reasoner::report_wedge_hierarchy_blind_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED",
+            owl_dl_reasoner::report_wedge_clauses_refused_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_WEDGE_BODY_DECOMPOSE",
+            owl_dl_core::clause::body_decompose_enabled,
             true,
         ),
         (

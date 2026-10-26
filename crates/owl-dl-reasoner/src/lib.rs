@@ -2979,6 +2979,21 @@ pub fn report_wedge_hierarchy_blind_enabled() -> bool {
     std::env::var_os("RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND").is_none_or(|v| v != "0")
 }
 
+/// Whether classify records [`crate::classify::ClassificationStats::wedge_clauses_refused`]
+/// (#353, `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`, **default ON**, `=0` reverts).
+///
+/// A clause whose body the wedge's matcher refuses never fires, so the wedge's
+/// trusted `Sat` can miss an entailment that needs it, with no deadline involved.
+/// The clausifier splits over-cap bodies into named branches
+/// (`RUSTDL_WEDGE_BODY_DECOMPOSE`), so this counts what it could not split. Like
+/// `wedge_hierarchy_blind` it is a SEPARATE field, not `incomplete`, which keeps
+/// meaning "a deadline fired", and `completeness_guaranteed()` is false when it is
+/// non-zero. Reporting only: no answer changes.
+#[must_use]
+pub fn report_wedge_clauses_refused_enabled() -> bool {
+    std::env::var_os("RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED").is_none_or(|v| v != "0")
+}
+
 /// Whether classify takes same-tier sweep candidates from the MAIN TABLEAU's
 /// per-class model when the wedge gave no label (#192,
 /// `RUSTDL_CLASSIFY_TABLEAU_LABELS`, **default ON**, `=0` reverts).
@@ -4269,6 +4284,11 @@ impl HyperCache {
     /// another (the signed closure is larger than the reflexive one).
     pub(crate) fn hierarchy_blind(&self) -> bool {
         !self.layer_a && self.sub_roles.signed_max_closure() > 1
+    }
+
+    /// #353: clauses the wedge's matcher refuses, which therefore never fire.
+    pub(crate) fn clauses_refused(&self) -> usize {
+        self.base_indexes.refused_clauses()
     }
 
     /// Clausify `internal` and pre-compute the `¬sup` expansions once.
@@ -6639,6 +6659,13 @@ pub struct QueryStats {
     /// the soundness contract names ("a sound under-approximation the
     /// caller cannot see").
     pub incomplete: bool,
+    /// #357: clauses the consistency wedge cannot match, which therefore never
+    /// fire. Counted whenever the consistency wedge was consulted, even when the
+    /// main tableau then decided (a conservative over-report); 0 when it was not,
+    /// or with `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`. A
+    /// wedge `consistent` can then miss a clash, so this is a completeness signal,
+    /// separate from `incomplete` (which means a give-up).
+    pub wedge_clauses_refused: usize,
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -6797,6 +6824,7 @@ fn is_class_satisfiable_internal_full(
                 answered_by_saturation: true,
                 pure_el_mode: pure_el,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -6807,6 +6835,7 @@ fn is_class_satisfiable_internal_full(
                 answered_by_saturation: true,
                 pure_el_mode: true,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -6817,6 +6846,7 @@ fn is_class_satisfiable_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete: false,
+            wedge_clauses_refused: 0,
         },
     ))
 }
@@ -7001,6 +7031,7 @@ fn is_consistent_internal_full(
                 answered_by_saturation: true,
                 pure_el_mode: false,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -7032,6 +7063,7 @@ fn is_consistent_internal_full(
                 answered_by_saturation: true,
                 pure_el_mode: false,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -7046,10 +7078,12 @@ fn is_consistent_internal_full(
                 answered_by_saturation: false,
                 pure_el_mode: false,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
     let trace = std::env::var_os("RUSTDL_TRACE").is_some();
+    let refused = prepared.consistency_wedge_clauses_refused();
     // ABox-seeded wedge route (default on; kills the `decide(Top)` hang
     // on out-of-EL ABoxes). `Some` only when enabled AND an individual is
     // named (ABox or TBox nominal); otherwise fall straight through to the
@@ -7069,6 +7103,7 @@ fn is_consistent_internal_full(
                     answered_by_saturation: false,
                     pure_el_mode: false,
                     incomplete: false,
+                    wedge_clauses_refused: refused,
                 },
             ));
         }
@@ -7087,6 +7122,7 @@ fn is_consistent_internal_full(
                     answered_by_saturation: false,
                     pure_el_mode: false,
                     incomplete: false,
+                    wedge_clauses_refused: refused,
                 },
             ));
         }
@@ -7103,6 +7139,7 @@ fn is_consistent_internal_full(
                     answered_by_saturation: false,
                     pure_el_mode: false,
                     incomplete: false,
+                    wedge_clauses_refused: refused,
                 },
             ));
         }
@@ -7176,6 +7213,7 @@ fn is_consistent_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete,
+            wedge_clauses_refused: refused,
         },
     ))
 }
@@ -7542,6 +7580,7 @@ fn is_subclass_of_internal_full(
         answered_by_saturation: true,
         pure_el_mode: pure_el,
         incomplete: false,
+        wedge_clauses_refused: 0,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -7579,6 +7618,7 @@ fn is_subclass_of_internal_full(
                 answered_by_saturation: false,
                 pure_el_mode: false,
                 incomplete: false,
+                wedge_clauses_refused: 0,
             },
         ));
     }
@@ -7596,6 +7636,7 @@ fn is_subclass_of_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete: false,
+            wedge_clauses_refused: 0,
         },
     ))
 }
@@ -8272,18 +8313,19 @@ fn build_dkey_range_map(
                 owl_dl_datatypes::CardRange::DateTimeSet(owl_dl_datatypes::FiniteSet::Set(set)),
             );
         }
-        // DELIBERATE FALL-THROUGH, not an omission: a multi-interval `iset:` key
-        // (#42 item 1, `xsd:integer` interval sets) matches NO decoder above — the
-        // untagged integer decoder rejects the tag — so it gets no side-map entry.
-        // `CardRange` carries ONE interval per variant and cannot express a union, and
-        // inventing a hull `[0,15]` for `{[0,5],[10,15]}` would over-state the
-        // concrete-domain capacity in the false-POSITIVE direction. No entry means
-        // `concept_has_dkey_counting` does not flag such a filler and no counting clash
-        // is derived from it — a sound MISS, and the same one already recorded for
-        // qualified data cardinality over a union. The DISJOINTNESS the interval-set
-        // representation exists for is seeded as native `DisjointClasses` axioms in
-        // `convert.rs` and does not come through this map. If you add a decoder here,
-        // leave this absence intentional or widen `CardRange` first.
+        // A multi-interval `iset:` key (#42 item 1) decodes to an exact union of
+        // intervals (#343); the untagged single-interval form was decoded above.
+        else if let Some(pieces) = owl_dl_core::decode_int_set_dkey(iri) {
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::IntUnion(owl_dl_datatypes::IntUnion::from_intervals(
+                    pieces
+                        .into_iter()
+                        .map(|(min, max)| owl_dl_datatypes::IntInterval { min, max })
+                        .collect(),
+                )),
+            );
+        }
     }
     map
 }
@@ -8864,6 +8906,17 @@ impl PreparedOntology {
         self.consistency.as_ref().map(|c| c.decide(deadline))
     }
 
+    /// #357: clauses the consistency wedge refuses (0 when there is no wedge or
+    /// the report flag is off).
+    pub(crate) fn consistency_wedge_clauses_refused(&self) -> usize {
+        if !report_wedge_clauses_refused_enabled() {
+            return 0;
+        }
+        self.consistency.as_ref().map_or(0, |c| {
+            owl_dl_tableau::hyper::refused_clause_count(&c.clauses)
+        })
+    }
+
     /// One `ABox` witness model's per-individual COMPLETE type sets, or `None`
     /// when the wedge consistency route is disabled / there is no `ABox` /
     /// no clash-free completion is available (`Unsat`/`Stalled`/deadline).
@@ -8984,6 +9037,11 @@ impl PreparedOntology {
     /// cannot see role-hierarchy reasoning.
     pub(crate) fn wedge_hierarchy_blind(&self) -> bool {
         self.hyper.as_ref().is_some_and(HyperCache::hierarchy_blind)
+    }
+
+    /// #353: how many clauses the wedge refuses (0 when there is no wedge).
+    pub(crate) fn wedge_clauses_refused(&self) -> usize {
+        self.hyper.as_ref().map_or(0, HyperCache::clauses_refused)
     }
 
     pub(crate) fn hyper_decide(
@@ -10719,6 +10777,37 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 .any(|i| i.min == Some(37) && i.max == Some(100)),
             "expected CardRange::Int([37,100]) in the side-map, got {ranges:?}"
         );
+    }
+
+    /// #343: an interval-set (`iset:`) key gets an exact `CardRange::IntUnion` entry.
+    #[test]
+    fn prepared_builds_integer_union_dkey_range_map() {
+        let src = format!(
+            "{HEADER}Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\nOntology(\n\
+             Declaration(Class(:C)) Declaration(DataProperty(:p))\n\
+             SubClassOf(:C DataAllValuesFrom(:p DataUnionOf(\
+             DatatypeRestriction(xsd:integer xsd:minInclusive \"0\"^^xsd:integer \
+             xsd:maxInclusive \"5\"^^xsd:integer) \
+             DatatypeRestriction(xsd:integer xsd:minInclusive \"10\"^^xsd:integer))))\n)\n"
+        );
+        let internal = convert_ontology(&parse(&src)).expect("converts");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        let unions: Vec<_> = prepared
+            .dkey_ranges
+            .values()
+            .filter_map(|r| match r {
+                owl_dl_datatypes::CardRange::IntUnion(u) => Some(u.clone()),
+                _ => None,
+            })
+            .collect();
+        let want = owl_dl_datatypes::IntUnion::from_intervals(vec![
+            owl_dl_datatypes::IntInterval::closed(0, 5),
+            owl_dl_datatypes::IntInterval {
+                min: Some(10),
+                max: None,
+            },
+        ]);
+        assert_eq!(unions, vec![want]);
     }
 
     /// T3 termination acceptance for anywhere blocking (plan

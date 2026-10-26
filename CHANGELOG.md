@@ -6,6 +6,22 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **Classify uses individual equalities the KB forces (#354), `RUSTDL_CLASSIFY_DERIVED_SAME`,
+  default ON (`=0` reverts).** In the classify wedge a nominal `{a}` is an ordinary class, and an
+  equality between individuals reached it only when asserted. So `x : W`, `W ⊑ ≤1 f`, `f(x,a)`,
+  `f(x,b)`, which forces `a = b`, left `∃p.{a}` and `∃p.{b}` apart, with `incomplete: false`. The
+  corpus instance is `ore_ont_7668` (wine), which missed `SauvignonBlanc ≡ Semillon`; there the
+  grapes' equality follows only by contradiction. Classify now tests candidate pairs on the
+  ABox-seeded wedge: individuals that share a subject or object through a role some counting
+  construct bounds, at least one of them a nominal in the TBox. `KB ∪ {a ≠ b}` inconsistent means
+  `a = b`, which is then added as `SameIndividual`. Probes are capped
+  (`RUSTDL_CLASSIFY_DERIVED_SAME_MAX`, 64) and budgeted (`RUSTDL_CLASSIFY_DERIVED_SAME_MS`, 1000,
+  clipped to the global deadline), and probing stops after 8 consecutive undecided probes
+  (`RUSTDL_CLASSIFY_DERIVED_SAME_STALLS`). Candidates left undecided are reported as
+  `derived_same_undecided` in `classify --json`, Python and the Protégé plugin, separately from
+  `incomplete`. On `ore_ont_7668`: 1 candidate, 1 equality, 12 ms, MISSED 2 → 0 against Konclude.
+
 ## [0.4.42] — 2026-10-25
 
 ### Fixed

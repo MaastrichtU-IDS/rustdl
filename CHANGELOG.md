@@ -21,6 +21,18 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_CLASSIFY_DERIVED_SAME_STALLS`). Candidates left undecided are reported as
   `derived_same_undecided` in `classify --json`, Python and the Protégé plugin, separately from
   `incomplete`. On `ore_ont_7668`: 1 candidate, 1 equality, 12 ms, MISSED 2 → 0 against Konclude.
+- **Queries seed the individuals named only in TBox nominals (#356), `RUSTDL_QUERY_TBOX_INDIVIDUALS`,
+  default ON (`=0` reverts).** A named individual exists in every model. `consistent` already seeded
+  these, but the probe behind `sat`, `subclass`, the disjointness and same-individual probes and
+  realize did not. So on a KB inconsistent only through such an individual (`{b} ⊑ ≥2 r`, `r`
+  functional), `consistent` said inconsistent while `sat Q` said `sat`. Seeding restricts the probe
+  to genuine models, so it adds only real clashes. `same_individuals` also stopped dropping the
+  `a ≠ b` fact for two TBox-only individuals, which made `{a} ⊑ {b}` read "not same". On a KB
+  inconsistent in a way only the tableau finds, the instance and same-individual queries now answer
+  vacuously (every membership holds) instead of returning the weaker KB's answers; neither version
+  errors, because the cheap inconsistency guard (#313) is unchanged by design. `disjoint_classes` now
+  errors when the classify run it already makes proves the KB inconsistent; it used to report "no
+  disjoint pairs". Classify is unchanged.
 
 ## [0.4.42] — 2026-10-25
 

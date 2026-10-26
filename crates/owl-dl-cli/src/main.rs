@@ -2424,6 +2424,7 @@ fn main() -> Result<()> {
             println!("# concept_rules:        {}", stats.concept_rules);
             println!("# told_super_edges:     {}", stats.told_super_edges);
             println!("# told_disjoint_pairs:  {}", stats.told_disjoint_pairs);
+            println!("# tbox_only_individuals:{}", stats.tbox_only_individuals);
             // MEASUREMENT (RUSTDL_DKEY_SPLIT_STATS=1): how many DKey-disjointness
             // pairs the proposed collapse/broadcast split would drop. Report-only.
             if std::env::var("RUSTDL_DKEY_SPLIT_STATS").is_ok_and(|v| v != "0") {

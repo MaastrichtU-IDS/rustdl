@@ -13,6 +13,7 @@
 //! Run: `cargo test -p owl-dl-reasoner --test query_tbox_individuals`
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::doc_markdown)]
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -110,7 +111,9 @@ const B_CANNOT_EXIST: &str = "\
 
 #[test]
 fn issue_reproducer_q_is_unsatisfiable() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto(ISSUE_356);
     assert!(!sat(&o, "Q"), "inconsistent KB: Q is unsatisfiable");
     // On an inconsistent KB every subsumption holds.
@@ -119,26 +122,38 @@ fn issue_reproducer_q_is_unsatisfiable() {
 
 #[test]
 fn an_individual_that_cannot_exist_makes_every_class_unsatisfiable() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto(B_CANNOT_EXIST);
     assert!(!sat(&o, "Q"));
-    assert!(!sat(&o, "B"), "B is not mentioned anywhere and is still empty");
+    assert!(
+        !sat(&o, "B"),
+        "B is not mentioned anywhere and is still empty"
+    );
     assert!(subclass(&o, "Q", "C"));
 }
 
 /// The flag is load-bearing: off, both cases fall back to the old `sat`.
 #[test]
 fn flag_off_restores_the_old_answer() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _off = SetEnvGuard::set(FLAG, "0");
     assert!(sat(&onto(ISSUE_356), "Q"), "flag off: the #356 miss");
-    assert!(sat(&onto(B_CANNOT_EXIST), "Q"), "flag off: the minimal miss");
+    assert!(
+        sat(&onto(B_CANNOT_EXIST), "Q"),
+        "flag off: the minimal miss"
+    );
 }
 
 /// No unique name assumption: `{a} ⊑ {b}` merges the two seeded nodes.
 #[test]
 fn control_nominal_subsumption_merges_and_does_not_clash() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto("SubClassOf(ObjectOneOf(:a) ObjectOneOf(:b))\nSubClassOf(:Q :A)");
     assert!(sat(&o, "Q"));
     assert!(!subclass(&o, "Q", "B"));
@@ -147,7 +162,9 @@ fn control_nominal_subsumption_merges_and_does_not_clash() {
 /// A disjunction at the seeded node: one branch is empty, the other is open.
 #[test]
 fn control_choice_at_a_seeded_individual() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto(
         "SubClassOf(ObjectOneOf(:b) ObjectUnionOf(:A :B))\n\
          SubClassOf(:A owl:Nothing)",
@@ -161,7 +178,9 @@ fn control_choice_at_a_seeded_individual() {
 /// successor must not leak a type onto `Q`.
 #[test]
 fn control_probe_reaches_the_seeded_individual() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto(
         "SubClassOf(:Q ObjectIntersectionOf(ObjectSomeValuesFrom(:r ObjectOneOf(:b)) ObjectMaxCardinality(1 :r owl:Thing)))\n\
          SubClassOf(ObjectOneOf(:b) ObjectSomeValuesFrom(:s :C))",
@@ -173,7 +192,9 @@ fn control_probe_reaches_the_seeded_individual() {
 /// A seeded individual pointing at an `ABox` individual: `a` gains no type.
 #[test]
 fn control_instance_query_is_unchanged() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto(
         "ClassAssertion(:D :a)\n\
          SubClassOf(ObjectOneOf(:b) ObjectSomeValuesFrom(:s ObjectOneOf(:a)))",
@@ -186,7 +207,9 @@ fn control_instance_query_is_unchanged() {
 /// `≠` fact used to find no node and was dropped, so `{a} ⊑ {b}` read "not same".
 #[test]
 fn same_individuals_sees_tbox_only_individuals() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto("SubClassOf(ObjectOneOf(:a) ObjectOneOf(:b))\nSubClassOf(:Q :A)");
     let same = owl_dl_reasoner::same_individuals(&o, None).unwrap();
     assert_eq!(same.groups(), &[vec![iri("a"), iri("b")]]);
@@ -196,18 +219,27 @@ fn same_individuals_sees_tbox_only_individuals() {
 /// is declared but unused, so it is in no nominal and is not seeded.
 #[test]
 fn tbox_stats_counts_tbox_only_individuals() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let stats = owl_dl_reasoner::tbox_stats(&onto(B_CANNOT_EXIST)).unwrap();
     assert_eq!(stats.tbox_only_individuals, 1);
     let abox = onto("ClassAssertion(:A :b)\nSubClassOf(ObjectOneOf(:b) :A)");
-    assert_eq!(owl_dl_reasoner::tbox_stats(&abox).unwrap().tbox_only_individuals, 0);
+    assert_eq!(
+        owl_dl_reasoner::tbox_stats(&abox)
+            .unwrap()
+            .tbox_only_individuals,
+        0
+    );
 }
 
 /// `disjoint_classes` runs classify, whose pre-check proves this KB inconsistent;
 /// it used to go on to report "no disjoint pairs" (every class unsat).
 #[test]
 fn disjoint_classes_errors_when_classify_proves_inconsistency() {
-    let _lock = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let r = owl_dl_reasoner::disjoint_classes(&onto(ISSUE_356), None);
     assert!(
         matches!(r, Err(owl_dl_reasoner::ReasonError::Inconsistent)),

@@ -643,6 +643,9 @@ pub struct TBoxStats {
     /// `RUSTDL_DKEY_EMIT_ORDER` makes conversion emit MORE
     /// `DisjointClasses(DKey, DKey)`; this is where that volume shows up.
     pub told_disjoint_pairs: usize,
+    /// Individuals named only in `TBox` nominals, which the per-query probes
+    /// seed beyond the `ABox` (#356, `RUSTDL_QUERY_TBOX_INDIVIDUALS`).
+    pub tbox_only_individuals: usize,
 }
 
 /// Clausify the ontology into DL-clauses and return the shape
@@ -2992,6 +2995,21 @@ pub fn report_wedge_hierarchy_blind_enabled() -> bool {
 #[must_use]
 pub fn report_wedge_clauses_refused_enabled() -> bool {
     std::env::var_os("RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED").is_none_or(|v| v != "0")
+}
+
+/// Whether the per-query tableau probes (`sat`, `subclass`, the disjointness and
+/// same-individual probes, realize/instance) seed the individuals named only in
+/// `TBox` nominals, as [`PreparedOntology::decide_consistency`] already does
+/// (#356, `RUSTDL_QUERY_TBOX_INDIVIDUALS`, **default ON**, `=0` reverts).
+///
+/// Every named individual exists in every model, so seeding a node for each one
+/// only restricts the probe to genuine models: it can add real clashes, never an
+/// invented one. Without the seed a probe that never reaches `{b}` ignores what
+/// the `TBox` says about `b`, and on a KB inconsistent only through `b`, `sat`
+/// answered `sat`. Classify's pairwise probes (`decide_classify*`) are unchanged.
+#[must_use]
+pub fn query_tbox_individuals_enabled() -> bool {
+    std::env::var_os("RUSTDL_QUERY_TBOX_INDIVIDUALS").is_none_or(|v| v != "0")
 }
 
 /// Whether classify takes same-tier sweep candidates from the MAIN TABLEAU's
@@ -6411,6 +6429,10 @@ pub fn tbox_stats<A: horned_owl::model::ForIRI>(
     // (A degenerate self-disjoint `DisjointClasses(c, c)` is counted once and so
     // would round down; it is a malformed axiom and does not occur in the corpus.)
     stats.told_disjoint_pairs /= 2;
+    // #356: the individuals the per-query probes now seed beyond the `ABox`, so a
+    // scan can select exactly the ontologies `RUSTDL_QUERY_TBOX_INDIVIDUALS` reaches.
+    let abox = collect_abox(&mut internal);
+    stats.tbox_only_individuals = tbox_only_individuals(&internal.concepts, &abox).len();
     Ok(stats)
 }
 
@@ -9459,7 +9481,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            &self.abox,
+            &self.query_abox(),
             &[],
             &[],
             &self.dkey_ranges,
@@ -9498,7 +9520,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            &self.abox,
+            &self.query_abox(),
             &[],
             &[],
             &self.dkey_ranges,
@@ -9517,15 +9539,7 @@ impl PreparedOntology {
         &self,
         deadline: Option<std::time::Instant>,
     ) -> Result<Option<bool>, ReasonError> {
-        let extended;
-        let abox = if self.tbox_individuals.is_empty() {
-            &self.abox
-        } else {
-            let mut a = self.abox.clone();
-            a.individuals.extend_from_slice(&self.tbox_individuals);
-            extended = a;
-            &extended
-        };
+        let abox = self.abox_with_tbox_individuals(true);
         decide(
             &self.pool,
             &self.tbox,
@@ -9535,7 +9549,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            abox,
+            &abox,
             &[],
             &[],
             &self.dkey_ranges,
@@ -9543,6 +9557,23 @@ impl PreparedOntology {
             deadline,
             owl_dl_core::ConceptPool::top,
         )
+    }
+
+    /// The `ABox` seed plus, when `include` holds, one node per individual named
+    /// only in a `TBox` nominal ([`Self::tbox_individuals`]). Borrowed unchanged
+    /// when there is nothing to add.
+    fn abox_with_tbox_individuals(&self, include: bool) -> std::borrow::Cow<'_, Abox> {
+        if !include || self.tbox_individuals.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.abox);
+        }
+        let mut a = self.abox.clone();
+        a.individuals.extend_from_slice(&self.tbox_individuals);
+        std::borrow::Cow::Owned(a)
+    }
+
+    /// The seed for a per-query probe (#356): see [`query_tbox_individuals_enabled`].
+    fn query_abox(&self) -> std::borrow::Cow<'_, Abox> {
+        self.abox_with_tbox_individuals(query_tbox_individuals_enabled())
     }
 
     /// Lever A: like [`Self::decide`], but for the **classification pairwise
@@ -9620,7 +9651,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            &self.abox,
+            &self.query_abox(),
             &[],
             &[],
             &self.dkey_ranges,
@@ -9791,7 +9822,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            &self.abox,
+            &self.query_abox(),
             extra_distinct,
             extra_neg_prop,
             &self.dkey_ranges,

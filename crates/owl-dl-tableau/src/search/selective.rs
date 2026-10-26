@@ -1026,7 +1026,7 @@ mod tests {
     use super::{classify, recopy_kept_units};
     use crate::TableauContext;
     use crate::trail::{EntryAction, TableauTrail, TrailEntry};
-    use owl_dl_core::{ClassId, ConceptPool, RoleId};
+    use owl_dl_core::{ClassId, ConceptPool, IndividualId, RoleId};
 
     /// Plan 4c Revision 2, B-A: `c` reaches `y` first under T (deps {2}), so
     /// the kept merge `x → y` (deps {1}) copies nothing. Undoing T's label
@@ -1180,5 +1180,34 @@ mod tests {
                 .any(|&(r, n)| r == role && n == y),
             "the restored edge ends at s -> y"
         );
+    }
+
+    /// Plan 4d-G (s19): a nominal-map entry naming a node that does not carry
+    /// `{ind}` is what the validated read in the nominal rule would filter;
+    /// the oracle reports it instead of letting a merge go to the wrong node.
+    #[test]
+    #[should_panic(expected = "does not carry it")]
+    fn a_stale_nominal_map_entry_fails_the_oracle() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_selective_undo(true);
+        let n = ctx.new_node();
+        ctx.assign_nominal(IndividualId::new(0), n);
+        super::check_invariants(&ctx, &[], None);
+    }
+
+    /// The control for the test above: the same entry passes once the node
+    /// carries the nominal.
+    #[test]
+    fn a_nominal_map_entry_on_its_carrier_passes_the_oracle() {
+        let mut pool = ConceptPool::new();
+        let a = IndividualId::new(0);
+        let nominal = pool.nominal(a);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_selective_undo(true);
+        let n = ctx.new_node();
+        ctx.add_label_with_deps(n, nominal, &[]);
+        ctx.assign_nominal(a, n);
+        super::check_invariants(&ctx, &[], None);
     }
 }

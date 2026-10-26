@@ -1621,7 +1621,7 @@ mod early_abandon_tests {
 /// pin the dep content selective undo will rely on.
 #[cfg(test)]
 mod selective_tests {
-    use super::{Frame, Record, SearchVerdict, Start, search};
+    use super::{Frame, Moot, Record, SearchVerdict, Start, search};
     use crate::TableauContext;
     use crate::graph::DepSet;
     use owl_dl_core::{ClassId, ConceptId, ConceptPool};
@@ -1747,6 +1747,30 @@ mod selective_tests {
         frame.records[0] = None;
         assert!(matches!(frame.start_option(&mut ctx), Start::Child(0, _)));
     }
+
+    /// Plan 4d-G (s10, mechanism-only): a re-numbered frame whose node a kept
+    /// merge redirected retires, so a fresh frame at the representative
+    /// decides from the merged state instead of asserting onto a redirected
+    /// node.
+    #[test]
+    fn a_frame_whose_node_was_merged_away_retires() {
+        let mut pool = ConceptPool::new();
+        let opts = [pool.atomic(ClassId::new(0)), pool.atomic(ClassId::new(1))];
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_selective_undo(true);
+        let n = ctx.new_node();
+        let m = ctx.new_node();
+        let frame = Frame::or(&mut ctx, 10, n, &opts, &[], DepSet::new());
+        assert!(
+            matches!(frame.moot(&ctx, 0), Moot::No),
+            "control: nothing moved"
+        );
+        assert!(ctx.merge_into_with_deps(n, m, &[]));
+        assert!(
+            matches!(frame.moot(&ctx, 0), Moot::Retire),
+            "the frame's node now resolves to {m:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1806,6 +1830,58 @@ mod dep_tests {
                 "moved label deps {deps:?} miss witness decision {b}"
             );
         }
+    }
+
+    /// Plan 4d-G (s15, mechanism-only): a `≤1 r.C` holder that exists only
+    /// under a decision merges two witnesses that outlive it and whose edges
+    /// and labels carry no deps. The merge holds only while the holder exists, so what it moves
+    /// must depend on that decision, or a selective undo of it keeps the
+    /// merge's effects after the holder is gone.
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn a_max_merge_depends_on_its_holders_existence() {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let s = RoleId::new(1);
+        let c = pool.atomic(ClassId::new(0));
+        let d = pool.atomic(ClassId::new(1));
+        let at_most_one = pool.max(1, Role::Named(r), c);
+
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_selective_undo(true);
+        let root = ctx.new_node();
+        let t = ctx.push_branch();
+        let holder = ctx.new_successor_with_deps(root, s, &[t]);
+        ctx.add_label_with_deps(holder, at_most_one, &[]);
+        // Free-standing witnesses (as nominals or a predecessor would be):
+        // they do not die with the holder, so only the fold ties the merge
+        // to it.
+        let w1 = ctx.new_node();
+        let w2 = ctx.new_node();
+        ctx.add_edge_with_deps(holder, r, w1, &[]);
+        ctx.add_edge_with_deps(holder, r, w2, &[]);
+        ctx.add_label_with_deps(w1, c, &[]);
+        ctx.add_label_with_deps(w2, c, &[]);
+        ctx.add_label_with_deps(w1, d, &[]);
+
+        assert!(matches!(search(&mut ctx, 64), SearchVerdict::Sat));
+        assert!(
+            ctx.graph().node(w1).is_redirected() || ctx.graph().node(w2).is_redirected(),
+            "the ≤1 merged the witnesses"
+        );
+        let merge_deps = ctx
+            .trail()
+            .entries_from(0)
+            .iter()
+            .find_map(|e| match e {
+                crate::trail::TrailEntry::MergeBegin { deps, .. } => Some(deps.clone()),
+                _ => None,
+            })
+            .expect("the merge is on the trail");
+        assert!(
+            merge_deps.contains(&t),
+            "merge deps {merge_deps:?} miss the holder's existence decision {t}"
+        );
     }
 
     /// `A ⊔ B` at a node holding `E`, with `A ⊑ ¬E`. `A` fails on the rule, so

@@ -15,6 +15,21 @@
 //!   edge move after the undo. `HermiT`: the ontology is inconsistent, so `Q` is
 //!   unsatisfiable.
 //!
+//!
+//! Two more pin rules that round 1 of the 4d sabotage runs left unguarded
+//! (plan 4d-G). Each is a hand-built case where a selective backjump keeps a
+//! frame across a clash that rests only on the target. `HermiT`: `Q`
+//! satisfiable in both.
+//!
+//! - `stale_merge_frame_mark.ofn` (s03): an abandoned `≤2` merge frame ended
+//!   on its last option, marking two successors distinct. The undo must
+//!   remove the mark with the frame, or the target's other option, which
+//!   needs those successors merged, clashes on it.
+//! - `legacy_min_stale_mark.ofn` (s20): with `RUSTDL_MIN_FRESH_WITNESSES=0`
+//!   the flag still takes the fresh-witness `≥n` path. The legacy path marks
+//!   existing successors distinct with the `≥n`'s deps only, so the mark
+//!   outlives the undone `∀` that made them witnesses.
+//!
 //! Node cap off and a deadline, as in `merged_node_termination.rs`.
 
 #![allow(clippy::unwrap_used)]
@@ -35,8 +50,14 @@ fn fixture(name: &str) -> String {
 
 /// `rustdl sat FILE Q` with selective undo and its oracle on.
 fn sat_q(name: &str) -> String {
+    sat_q_env(name, &[])
+}
+
+/// [`sat_q`] with extra environment variables.
+fn sat_q_env(name: &str, env: &[(&str, &str)]) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rustdl"))
         .args(["sat", &fixture(name), "http://x.org/f#Q"])
+        .envs(env.iter().copied())
         .env("RUSTDL_SELECTIVE_UNDO", "1")
         .env("RUSTDL_SELECTIVE_CHECK", "1")
         .env("RUSTDL_MAX_NODES", "0")
@@ -73,4 +94,20 @@ fn a_duplicate_edge_keeps_its_own_mirror() {
 #[test]
 fn a_kept_merge_moves_an_edge_the_undo_restores() {
     assert_eq!(sat_q("restored_edge_on_merged_source.ofn"), "unsat");
+}
+
+#[test]
+fn an_abandoned_merge_frames_mark_is_undone() {
+    assert_eq!(sat_q("stale_merge_frame_mark.ofn"), "sat");
+}
+
+#[test]
+fn the_flag_keeps_fresh_witnesses_when_the_legacy_min_path_is_asked_for() {
+    assert_eq!(
+        sat_q_env(
+            "legacy_min_stale_mark.ofn",
+            &[("RUSTDL_MIN_FRESH_WITNESSES", "0")]
+        ),
+        "sat"
+    );
 }

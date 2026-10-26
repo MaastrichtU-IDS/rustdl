@@ -3611,6 +3611,17 @@ fn classify_derived_same_max() -> usize {
         .unwrap_or(64)
 }
 
+/// Consecutive `Stalled` probes after which [`derive_nominal_same`] stops probing
+/// (`RUSTDL_CLASSIFY_DERIVED_SAME_STALLS`, default 8; `0` never stops early). A
+/// decided probe resets the count. The candidates left are counted as undecided, so
+/// the stop saves wall without hiding that completeness is not guaranteed.
+fn classify_derived_same_stalls() -> usize {
+    std::env::var("RUSTDL_CLASSIFY_DERIVED_SAME_STALLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8)
+}
+
 /// What [`derive_nominal_same`] found.
 #[derive(Debug, Default)]
 pub(crate) struct DerivedSame {
@@ -3644,7 +3655,8 @@ pub(crate) struct DerivedSame {
 ///
 /// **Bounds:** runs only when the ontology has a counting construct (`≥n`/`≤n`,
 /// functional or inverse-functional), at most [`classify_derived_same_max`] probes,
-/// each within [`classify_derived_same_ms`] and the global deadline. Candidates not
+/// each within [`classify_derived_same_ms`] and the global deadline, stopping after
+/// [`classify_derived_same_stalls`] consecutive `Stalled` probes. Candidates not
 /// decided are counted in [`DerivedSame::undecided`].
 ///
 /// Misses, by design (sound): equalities whose individuals share no asserted edge
@@ -3653,6 +3665,35 @@ pub(crate) fn derive_nominal_same(
     internal: &InternalOntology,
     cache: Option<ConsistencyCache>,
     global_deadline: Option<std::time::Instant>,
+) -> DerivedSame {
+    let mut cache = cache;
+    derive_nominal_same_with(
+        internal,
+        global_deadline,
+        classify_derived_same_max(),
+        std::time::Duration::from_millis(classify_derived_same_ms()),
+        classify_derived_same_stalls(),
+        |a, b, deadline| {
+            cache
+                .get_or_insert_with(|| ConsistencyCache::build(internal))
+                .distinct_clashes(a, b, deadline)
+        },
+    )
+}
+
+/// [`derive_nominal_same`] with its bounds and its probe passed in, so a test can
+/// script the probe's verdicts.
+fn derive_nominal_same_with(
+    internal: &InternalOntology,
+    global_deadline: Option<std::time::Instant>,
+    max: usize,
+    per_probe: std::time::Duration,
+    stalls_max: usize,
+    mut probe: impl FnMut(
+        owl_dl_core::ir::IndividualId,
+        owl_dl_core::ir::IndividualId,
+        Option<std::time::Instant>,
+    ) -> owl_dl_tableau::hyper::HyperResult,
 ) -> DerivedSame {
     use owl_dl_core::ir::{ConceptExpr, IndividualId};
     use owl_dl_core::ontology::Axiom;
@@ -3741,9 +3782,7 @@ pub(crate) fn derive_nominal_same(
             }
         }
     }
-    let max = classify_derived_same_max();
-    let per_probe = std::time::Duration::from_millis(classify_derived_same_ms());
-    let mut cache = cache;
+    let mut stalls = 0usize;
     let mut tried: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
     loop {
         // Members of each group of individuals sharing a subject (or an object),
@@ -3789,7 +3828,7 @@ pub(crate) fn derive_nominal_same(
             if uf.same(x, y) {
                 continue;
             }
-            if probes >= max {
+            if probes >= max || (stalls_max > 0 && stalls >= stalls_max) {
                 out.undecided += cands.len() - k;
                 trace(&out, seen_candidates, probes);
                 out.candidates = seen_candidates;
@@ -3805,17 +3844,20 @@ pub(crate) fn derive_nominal_same(
                 Some(g) => (now + per_probe).min(g),
                 None => now + per_probe,
             });
-            let cache = cache.get_or_insert_with(|| ConsistencyCache::build(internal));
             probes += 1;
             let (a, b) = (IndividualId::new(x), IndividualId::new(y));
-            match cache.distinct_clashes(a, b, deadline) {
+            match probe(a, b, deadline) {
                 HyperResult::Unsat => {
                     uf.union(x, y);
                     out.pairs.push((a, b));
                     merged = true;
+                    stalls = 0;
                 }
-                HyperResult::Sat => {}
-                HyperResult::Stalled => out.undecided += 1,
+                HyperResult::Sat => stalls = 0,
+                HyperResult::Stalled => {
+                    out.undecided += 1;
+                    stalls += 1;
+                }
             }
         }
         if !merged {
@@ -10820,6 +10862,56 @@ mod tests {
 
     fn parse_internal_lib(src: &str) -> InternalOntology {
         owl_dl_core::convert::convert_ontology(&parse(src)).expect("fixture converts")
+    }
+
+    /// #354: the stall stop (`RUSTDL_CLASSIFY_DERIVED_SAME_STALLS`, default 8) trades
+    /// a possible equality for wall. Ten objects of `x` under `≤1 f`, each a `TBox`
+    /// nominal, give 45 candidates; the scripted probe stalls 8 times, confirms on the
+    /// 9th call and refutes after. With the stop at 8 the 9th probe never runs: no
+    /// equality, every candidate undecided. With the stop off the equality is found.
+    #[test]
+    fn derived_same_stall_stop_skips_a_later_decidable_probe() {
+        use owl_dl_tableau::hyper::HyperResult;
+        use std::fmt::Write as _;
+        if std::env::var_os("RUSTDL_CLASSIFY_DERIVED_SAME_STALLS").is_none() {
+            assert_eq!(classify_derived_same_stalls(), 8, "default stall stop");
+        }
+        let mut src = format!("{HEADER}Ontology(<http://rustdl.test/o>\n");
+        src.push_str("ClassAssertion(:W :x) SubClassOf(:W ObjectMaxCardinality(1 :f))\n");
+        for i in 0..10 {
+            let _ = write!(
+                src,
+                "EquivalentClasses(:C{i} ObjectHasValue(:p :a{i}))\n\
+                 ObjectPropertyAssertion(:f :x :a{i})\n"
+            );
+        }
+        src.push(')');
+        let internal = parse_internal_lib(&src);
+        let run = |stalls_max: usize| {
+            let mut calls = 0usize;
+            derive_nominal_same_with(
+                &internal,
+                None,
+                64,
+                std::time::Duration::from_secs(1),
+                stalls_max,
+                |_, _, _| {
+                    calls += 1;
+                    match calls {
+                        1..=8 => HyperResult::Stalled,
+                        9 => HyperResult::Unsat,
+                        _ => HyperResult::Sat,
+                    }
+                },
+            )
+        };
+        let stopped = run(8);
+        assert_eq!(stopped.probes, 8);
+        assert!(stopped.pairs.is_empty());
+        assert_eq!(stopped.undecided, stopped.candidates);
+        let full = run(0);
+        assert!(full.probes > 8);
+        assert_eq!(full.pairs.len(), 1, "the 9th probe confirms an equality");
     }
 
     const HEADER: &str = "\

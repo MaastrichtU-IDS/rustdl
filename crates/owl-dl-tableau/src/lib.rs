@@ -4604,6 +4604,18 @@ pub fn hyper_match_deadline_enabled() -> bool {
 /// a deadline is set, so an unbudgeted run still terminates by step count. Read by
 /// `owl-dl-reasoner`'s `ConsistencyCache::decide`; realize's witness model keeps the
 /// cap.
+/// #355 `RUSTDL_MRV_REFUTED` (default ON, `=0` reverts): when MRV ordering is on, the
+/// wedge branches first on the open disjunction with the fewest VIABLE disjuncts (live
+/// and not already refuted at the binding), then the fewest live ones. Without it a
+/// disjunction whose every disjunct clashes ties with a generating one (`Aryl ∨ Alkyl`)
+/// and loses the first-found tie-break, and the search dives into the generator:
+/// `subclass SulfoxideGroup SulfinicAcidGeneralGroup` on `ore_ont_10019` ran >300 s.
+/// Reordering is FP-safe; under a budget or depth cap it can change which pairs are cut.
+#[must_use]
+pub fn hyper_mrv_refuted_enabled() -> bool {
+    std::env::var_os("RUSTDL_MRV_REFUTED").is_none_or(|v| v != "0")
+}
+
 #[must_use]
 pub fn seeded_fixpoint_uncapped_enabled() -> bool {
     // Default-ON idiom (house convention): an EMPTY value enables.

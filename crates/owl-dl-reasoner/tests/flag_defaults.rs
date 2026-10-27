@@ -214,6 +214,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_MRV_REFUTED",
+            owl_dl_tableau::hyper_mrv_refuted_enabled,
+            true,
+        ),
+        (
             "RUSTDL_NN_INDEX",
             owl_dl_tableau::hyper_nn_index_enabled,
             true,

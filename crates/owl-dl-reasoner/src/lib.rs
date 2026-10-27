@@ -10895,6 +10895,31 @@ mod tests {
         owl_dl_core::convert::convert_ontology(&parse(src)).expect("fixture converts")
     }
 
+    /// #355: on this 46-axiom excerpt of `ore_ont_10019` the wedge proves
+    /// `SulfoxideGroup ⊑ SulfinicAcidGeneralGroup` at once with the refuted MRV rank
+    /// (`RUSTDL_MRV_REFUTED`, default ON); with the old rank it thrashes for minutes on
+    /// `Aryl ∨ Alkyl` choices. Deadline-bounded, so a regression fails instead of
+    /// hanging the suite.
+    #[test]
+    fn mrv_refuted_proves_the_sulfoxide_pair() {
+        let src = include_str!("../tests/fixtures/mrv_refuted/sulfoxide_min.ofn");
+        let internal = parse_internal_lib(src);
+        let id = |n: &str| {
+            internal
+                .vocabulary
+                .class_id(&format!("http://ontology.dumontierlab.com/{n}"))
+                .expect("class declared")
+        };
+        let (sub, sup) = (id("SulfoxideGroup"), id("SulfinicAcidGeneralGroup"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        if std::env::var_os("RUSTDL_MRV_REFUTED").is_none_or(|v| v != "0") {
+            assert_eq!(
+                HyperCache::build(&internal).decide(sub, sup, Some(deadline)),
+                HyperVerdict::Subsumed
+            );
+        }
+    }
+
     /// #354: the stall stop (`RUSTDL_CLASSIFY_DERIVED_SAME_STALLS`, default 8) trades
     /// a possible equality for wall. Ten objects of `x` under `≤1 f`, each a `TBox`
     /// nominal, give 45 candidates; the scripted probe stalls 8 times, confirms on the

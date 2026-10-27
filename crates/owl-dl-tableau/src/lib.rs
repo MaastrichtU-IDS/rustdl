@@ -4610,6 +4610,18 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
     std::env::var_os("RUSTDL_SEEDED_FIXPOINT_UNCAPPED").is_none_or(|v| v != "0")
 }
 
+/// #355 `RUSTDL_MRV_REFUTED` (default ON, `=0` reverts): when MRV ordering is on, the
+/// wedge branches first on the open disjunction with the fewest VIABLE disjuncts (live
+/// and not already refuted at the binding), then the fewest live ones. Without it a
+/// disjunction whose every disjunct clashes ties with a generating one (`Aryl ∨ Alkyl`)
+/// and loses the first-found tie-break, and the search dives into the generator:
+/// `subclass SulfoxideGroup SulfinicAcidGeneralGroup` on `ore_ont_10019` ran >300 s.
+/// Reordering is FP-safe; under a budget or depth cap it can change which pairs are cut.
+#[must_use]
+pub fn hyper_mrv_refuted_enabled() -> bool {
+    std::env::var_os("RUSTDL_MRV_REFUTED").is_none_or(|v| v != "0")
+}
+
 /// Whether the wedge's `HF4a` NN rule finds the other holder of a nominal through
 /// an index instead of scanning every node (`RUSTDL_NN_INDEX`, **default ON**,
 /// `=0` reverts).

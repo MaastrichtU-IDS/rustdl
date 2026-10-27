@@ -3375,6 +3375,28 @@ mod tests {
         assert_eq!(check_sat(&pool, bot), Some(false));
     }
 
+    /// #373: a `¬∃r.Self` clash rests on the self-edge as well as the label, so
+    /// the `⊥` carries the edge's deps. With only the (deterministic) label's
+    /// deps, the search back-jumped past the decision that made the edge.
+    #[test]
+    fn negative_self_clash_carries_the_self_edge_deps() {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let self_r = pool.self_restriction(Role::named(r));
+        let not_self_r = pool.not(self_r);
+        let bot = pool.bot();
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        ctx.add_label(n, not_self_r);
+        ctx.add_edge_with_deps(n, r, n, &[7]);
+        let _ = apply_self_restriction(&mut ctx, n);
+        let deps = ctx.label_deps_of(n, bot).expect("clash");
+        assert!(
+            deps.binary_search(&7).is_ok(),
+            "deps {deps:?} miss the edge's 7"
+        );
+    }
+
     #[test]
     fn and_rule_decomposes_conjunction() {
         let mut pool = ConceptPool::new();

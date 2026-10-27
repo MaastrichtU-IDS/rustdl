@@ -115,6 +115,12 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; w
 > ~38 s means a pre-v0.4.19 binary; near ~74 s means pre-v0.4.18. A wine that DNFs unbounded is now itself the
 > stale-binary signal.
 >
+> **SUPERSEDED 2026-10-27 (#355 / PR #367, `RUSTDL_MRV_REFUTED`, default ON, `=0` reverts):
+> `wine` is ~1.4–1.8 CPU-s at the default**, with `incomplete: false` and identical answers
+> (197 rows). With `=0` it is 13.8–14.0 CPU-s (3 interleaved reps). The ~13 s recorded below came
+> from the wedge's MRV tie-break picking a generating disjunction ahead of one it could already
+> refute. Use **~1.5 s** as the canary now; a wine near ~13 s means a pre-#367 binary.
+>
 > **RE-MEASURED 2026-10-11 (v0.4.38 release): `wine` is ~13 s at the default, not ~2.7 s** —
 > 13.2–13.3 CPU-s and ~13 s wall, single-threaded or default threads, on the coder host. The
 > v0.4.37 tag measures the SAME (13.2 CPU-s), so the move happened somewhere between v0.4.19
@@ -1227,6 +1233,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     And `ore_ont_7775` is both one of the 11 and one of the three completers cap-16 is recorded
     as destroying, so the naive fix trades recoveries for known regressions. **Do not
     re-propose without a single ontology where a 9-variable Horn body changes an answer.**
+    **SUPERSEDED 2026-10-24 by #353 / PR #358:** such an ontology exists. `ore_ont_16461` has a
+    16-variable body (15 existentials plus `≥4`), and it missed `Patient1 ⊑ Systemic_JIA_Patient`,
+    which HermiT and Konclude derive. The fix does not raise the cap; it splits an over-cap body
+    into named branches. See the `MAX_BODY_VARS` entry.
     **Instrument note:** the first positive control did NOT fire — the fixture was pure-EL, so
     `classify` took the saturation fast path and never reached the hyper engine; a census run
     then would have read "0 addressable" from a silent instrument. Adding one `∀` fixed it.
@@ -2937,7 +2947,8 @@ the path where a wrong answer could come from (here, a signature REJECT), and co
 test time against main's CI before believing "load".
 
 **`wine` is still ~12 CPU-s at the default** after #239, #263/#266 and #267 (5 interleaved reps,
-11.7–12.0 median), not ~2.7 s.
+11.7–12.0 median), not ~2.7 s. **SUPERSEDED 2026-10-27:** ~1.5 CPU-s since #367; see the
+canary note near the top.
 
 ## State of play — 2026-10-12, after v0.4.38
 
@@ -2967,7 +2978,8 @@ serially by CPU time on a quiet box.
 
 **`wine` is ~13 s at the default on 0.4.37 and 0.4.38, not ~2.7 s** (see the canary note above);
 whether #239 fixed it is the next thing to measure. **Answered 2026-10-15: it did not; still
-~12 CPU-s** (see the section above).
+~12 CPU-s** (see the section above). **SUPERSEDED 2026-10-27:** #367 (`RUSTDL_MRV_REFUTED`)
+took it to ~1.5 CPU-s.
 
 ## State of play — 2026-10-09, after v0.4.36
 
@@ -3677,6 +3689,14 @@ adaptive rule that consumes it couples the label-cache budget to `--pair-timeout
 *small* per-pair budget starves the cache — see
 `docs/known-limitations/label-cache-budget-starved-by-small-pair-timeout.md`. A "dead code"
 label would deter exactly the investigation that found that).
+
+> **SUPERSEDED 2026-10-24 (#353 / PR #358, `RUSTDL_WEDGE_BODY_DECOMPOSE`, default ON, `=0`
+> reverts).** The cap was not raised. A final clausify pass splits an over-cap body into named
+> branches (`R(X,y) ∧ subtree(y) → E(X)`), so matching costs the sum of the branches instead of
+> their product, which was the cross-product blowup that made raising the cap a dead end.
+> `ore_ont_16461` (a 16-variable body) went from missing `Patient1 ⊑ Systemic_JIA_Patient` to
+> deriving it. Whatever the wedge still refuses is reported as `wedge_clauses_refused`, a field
+> separate from `incomplete`. The entry below describes the pre-#358 state.
 
 **`MAX_BODY_VARS = 8` — RESOLVED 2026-08-03, and the answer is "mis-designed, not mis-tuned".**
 The silent MISS is **real**: a fixture that provably trips the `> MAX_BODY_VARS` branch (12 body

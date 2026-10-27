@@ -107,6 +107,14 @@ impl PyClassification {
         self.inner.stats().wedge_clauses_refused
     }
 
+    /// How many candidate individual equalities classify did not decide (a probe
+    /// was cut by its budget or the deadline, or the probe cap was reached; #354).
+    /// Each may be an entailed equality the hierarchy does not use.
+    #[getter]
+    fn derived_same_undecided(&self) -> usize {
+        self.inner.stats().derived_same_undecided
+    }
+
     /// True iff `sub ⊑ sup` is entailed.
     fn is_subclass(&self, sub: &str, sup: &str) -> bool {
         self.inner.is_subclass(sub, sup)

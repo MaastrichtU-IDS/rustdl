@@ -105,7 +105,9 @@ class IncompleteClassificationWarning(UserWarning):
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`; raising that cap trades
       time for the missing entailments;
     * the wedge cannot match some clauses' bodies
-      (`result.wedge_clauses_refused > 0`): those clauses never fire (#353).
+      (`result.wedge_clauses_refused > 0`): those clauses never fire (#353);
+    * candidate individual equalities went undecided
+      (`result.derived_same_undecided > 0`): a probe was cut or capped (#354).
 
     `result.consistency_undetermined` is reported but not warned about, matching
     the CLI, which notes it only in the banner.
@@ -170,6 +172,17 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             "clause(s), so they never fire and entailments that need them may be "
             "missing. It is still sound (no false subsumptions); check "
             "result.wedge_clauses_refused.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    if result.derived_same_undecided:
+        # #354: equalities the KB may force were not decided, so the hierarchy may
+        # be missing what they entail, with no timeout on any class pair.
+        _warnings.warn(
+            f"{result.derived_same_undecided} candidate individual equalit(ies) were "
+            "not decided (budget or probe cap), so entailments that need them may "
+            "be missing. It is still sound (no false subsumptions); check "
+            "result.derived_same_undecided.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )

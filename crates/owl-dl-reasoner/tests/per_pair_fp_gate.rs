@@ -98,7 +98,7 @@ fn load(path: &Path) -> SetOntology<RcStr> {
 /// passing one in the log.
 fn cases() -> Vec<(&'static str, PathBuf, PathBuf)> {
     let base = Path::new("../../ontologies/real");
-    ["pizza", "ro", "sulo"]
+    ["pizza", "ro", "sulo", "wine"]
         .iter()
         .map(|n| {
             (
@@ -111,7 +111,7 @@ fn cases() -> Vec<(&'static str, PathBuf, PathBuf)> {
 }
 
 #[test]
-#[ignore = "needs the gitignored ontologies/real/{pizza,ro,sulo}.ofn + konclude-input/*-classified.owx; \
+#[ignore = "needs the gitignored ontologies/real/{pizza,ro,sulo,wine}.ofn + konclude-input/*-classified.owx; \
             runs classify with the wedge Sat-trust withdrawn, so it is slower than the plain net"]
 fn per_pair_path_has_no_false_positives() {
     // Withdraw the wedge `Sat`-trust so refuted pairs reach the tableau — the

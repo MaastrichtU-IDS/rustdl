@@ -58,6 +58,16 @@ pub fn disjoint_classes<A: ForIRI>(
     // this, classification's own probes ignored `pair_deadline` entirely and
     // could dominate the wall time this function is trying to bound.
     let classification = crate::classify::classify_internal_with_timeout(&internal, pair_deadline)?;
+    // Classify's own pre-check (incl. the individual-seeded wedge) can prove an
+    // inconsistency the cheap guard above misses; it then marks every class unsat
+    // and the loop below would answer "no disjoint pairs". Mirrors realize (#310);
+    // part of the #313 query guard, so `RUSTDL_QUERY_INCONSISTENCY_GUARD=0` reverts it.
+    if crate::query_inconsistency_guard_enabled()
+        && crate::sat_inconsistency_all_surfaces_enabled()
+        && classification.stats().inconsistent
+    {
+        return Err(ReasonError::Inconsistent);
+    }
     let unsat: std::collections::HashSet<&str> =
         classification.unsatisfiable_classes().into_iter().collect();
     let mut incomplete = !classification.completeness_guaranteed();

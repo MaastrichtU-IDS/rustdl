@@ -214,6 +214,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_MRV_REFUTED",
+            owl_dl_tableau::hyper_mrv_refuted_enabled,
+            true,
+        ),
+        (
             "RUSTDL_NN_INDEX",
             owl_dl_tableau::hyper_nn_index_enabled,
             true,
@@ -314,8 +319,18 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_CLASSIFY_DERIVED_SAME",
+            owl_dl_reasoner::classify_derived_same_enabled,
+            true,
+        ),
+        (
             "RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED",
             owl_dl_reasoner::report_wedge_clauses_refused_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_QUERY_TBOX_INDIVIDUALS",
+            owl_dl_reasoner::query_tbox_individuals_enabled,
             true,
         ),
         (

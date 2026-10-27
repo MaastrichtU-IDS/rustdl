@@ -643,6 +643,9 @@ pub struct TBoxStats {
     /// `RUSTDL_DKEY_EMIT_ORDER` makes conversion emit MORE
     /// `DisjointClasses(DKey, DKey)`; this is where that volume shows up.
     pub told_disjoint_pairs: usize,
+    /// Individuals named only in `TBox` nominals, which the per-query probes
+    /// seed beyond the `ABox` (#356, `RUSTDL_QUERY_TBOX_INDIVIDUALS`).
+    pub tbox_only_individuals: usize,
 }
 
 /// Clausify the ontology into DL-clauses and return the shape
@@ -2994,6 +2997,21 @@ pub fn report_wedge_clauses_refused_enabled() -> bool {
     std::env::var_os("RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED").is_none_or(|v| v != "0")
 }
 
+/// Whether the per-query tableau probes (`sat`, `subclass`, the disjointness and
+/// same-individual probes, realize/instance) seed the individuals named only in
+/// `TBox` nominals, as [`PreparedOntology::decide_consistency`] already does
+/// (#356, `RUSTDL_QUERY_TBOX_INDIVIDUALS`, **default ON**, `=0` reverts).
+///
+/// Every named individual exists in every model, so seeding a node for each one
+/// only restricts the probe to genuine models: it can add real clashes, never an
+/// invented one. Without the seed a probe that never reaches `{b}` ignores what
+/// the `TBox` says about `b`, and on a KB inconsistent only through `b`, `sat`
+/// answered `sat`. Classify's pairwise probes (`decide_classify*`) are unchanged.
+#[must_use]
+pub fn query_tbox_individuals_enabled() -> bool {
+    std::env::var_os("RUSTDL_QUERY_TBOX_INDIVIDUALS").is_none_or(|v| v != "0")
+}
+
 /// Whether classify takes same-tier sweep candidates from the MAIN TABLEAU's
 /// per-class model when the wedge gave no label (#192,
 /// `RUSTDL_CLASSIFY_TABLEAU_LABELS`, **default ON**, `=0` reverts).
@@ -3412,6 +3430,7 @@ pub(crate) fn classify_inconsistency_precheck(
     internal: &InternalOntology,
     closure: &owl_dl_saturation::Subsumers,
     global_deadline: Option<std::time::Instant>,
+    wedge_cache: &mut Option<ConsistencyCache>,
 ) -> bool {
     use owl_dl_tableau::hyper::HyperResult;
     if closure.globally_inconsistent() || closure.top_is_unsat() {
@@ -3445,7 +3464,7 @@ pub(crate) fn classify_inconsistency_precheck(
     }
 
     // Route 2: the ABox-seeded wedge (#89).
-    match classify_wedge_consistency(internal, route_deadline()) {
+    match classify_wedge_consistency(internal, route_deadline(), wedge_cache) {
         Some(HyperResult::Unsat) => return true,
         // A wedge model decides consistency, whatever route 1 did.
         Some(HyperResult::Sat) => cut = false,
@@ -3551,6 +3570,7 @@ pub(crate) fn take_consistency_undetermined() -> bool {
 fn classify_wedge_consistency(
     internal: &InternalOntology,
     deadline: Option<std::time::Instant>,
+    cache_out: &mut Option<ConsistencyCache>,
 ) -> Option<owl_dl_tableau::hyper::HyperResult> {
     use owl_dl_tableau::hyper::HyperResult;
     if !classify_wedge_inconsistency_enabled()
@@ -3564,11 +3584,321 @@ fn classify_wedge_consistency(
     if deadline.is_some_and(|d| d <= std::time::Instant::now()) {
         return Some(HyperResult::Stalled);
     }
-    let verdict = ConsistencyCache::build(internal).decide(deadline);
+    let cache = ConsistencyCache::build(internal);
+    let verdict = cache.decide(deadline);
     if verdict == HyperResult::Unsat && std::env::var_os("RUSTDL_TRACE").is_some() {
         eprintln!("classify: KB inconsistent (wedge Unsat)");
     }
+    // Kept for `derive_nominal_same`, which probes the same KB (#354).
+    *cache_out = Some(cache);
     Some(verdict)
+}
+
+/// Whether classify derives individual equalities for the classify wedge (#354,
+/// `RUSTDL_CLASSIFY_DERIVED_SAME`, **default ON**, `=0` reverts).
+///
+/// In the classify wedge a nominal `{a}` is an ordinary class, and individual
+/// equality reaches it only as an asserted `SameIndividual`
+/// ([`push_nominal_abox_axioms`]). So an equality the KB forces some other way was
+/// invisible there: `x : W`, `W ⊑ ≤1 f`, `f(x,a)`, `f(x,b)` makes `a = b`, hence
+/// `∃p.{a} ≡ ∃p.{b}`, and `classify` missed it with `incomplete: false`
+/// (`ore_ont_7668`: `SauvignonBlanc ≡ Semillon`). [`derive_nominal_same`] confirms
+/// candidate equalities on the `ABox`-seeded wedge and adds them as
+/// `SameIndividual`. Each added equality is entailed, so this only reveals real
+/// subsumptions.
+#[must_use]
+pub fn classify_derived_same_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_DERIVED_SAME").is_none_or(|v| v != "0")
+}
+
+/// Per-probe budget of [`derive_nominal_same`], in ms
+/// (`RUSTDL_CLASSIFY_DERIVED_SAME_MS`, default 1000), clipped to the global deadline.
+fn classify_derived_same_ms() -> u64 {
+    std::env::var("RUSTDL_CLASSIFY_DERIVED_SAME_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000)
+}
+
+/// Most probes [`derive_nominal_same`] runs (`RUSTDL_CLASSIFY_DERIVED_SAME_MAX`,
+/// default 64). Candidates past it are counted as undecided.
+fn classify_derived_same_max() -> usize {
+    std::env::var("RUSTDL_CLASSIFY_DERIVED_SAME_MAX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64)
+}
+
+/// Consecutive `Stalled` probes after which [`derive_nominal_same`] stops probing
+/// (`RUSTDL_CLASSIFY_DERIVED_SAME_STALLS`, default 8; `0` never stops early). A
+/// decided probe resets the count. The candidates left are counted as undecided, so
+/// the stop saves wall without hiding that completeness is not guaranteed.
+fn classify_derived_same_stalls() -> usize {
+    std::env::var("RUSTDL_CLASSIFY_DERIVED_SAME_STALLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8)
+}
+
+/// What [`derive_nominal_same`] found.
+#[derive(Debug, Default)]
+pub(crate) struct DerivedSame {
+    /// Confirmed equalities, in the order found.
+    pub(crate) pairs: Vec<(owl_dl_core::ir::IndividualId, owl_dl_core::ir::IndividualId)>,
+    /// Candidates not decided: the probe was cut (budget, `Stalled`) or never run
+    /// (over the probe cap, or the global deadline had passed). Each is a possible
+    /// equality classify does not use, as before #354.
+    pub(crate) undecided: usize,
+    /// Candidate pairs considered, over all rounds.
+    pub(crate) candidates: usize,
+    /// Probes run.
+    pub(crate) probes: usize,
+}
+
+/// #354: individual equalities the KB forces, for the classify wedge.
+///
+/// **Candidates** are pairs of individuals, at least one in [`nominal_reach`] (an
+/// equality matters to classify only through a nominal), that share an asserted
+/// subject (or object, the inverse shape) through edges whose roles have a common
+/// super-role (or are the same role) that a counting construct bounds: only such a
+/// construct can count the two as distinct successors. Individuals already equal count
+/// as one, through a union-find, and candidates are recomputed after each confirmed
+/// merge, so a merge that makes two subjects one can expose a further pair.
+///
+/// **Confirmation:** `a = b` iff `KB ∪ {a ≠ b}` is inconsistent, decided by the
+/// `ABox`-seeded wedge ([`ConsistencyCache::distinct_clashes`]). Only a witnessed
+/// `Unsat` confirms. This is not the main tableau: its `≤n` rule commits to a merge
+/// pair without a choice point (#76), and a spurious `Unsat` there would become a
+/// false equality.
+///
+/// **Bounds:** runs only when the ontology has a counting construct (`≥n`/`≤n`,
+/// functional or inverse-functional), at most [`classify_derived_same_max`] probes,
+/// each within [`classify_derived_same_ms`] and the global deadline, stopping after
+/// [`classify_derived_same_stalls`] consecutive `Stalled` probes. Candidates not
+/// decided are counted in [`DerivedSame::undecided`].
+///
+/// Misses, by design (sound): equalities whose individuals share no asserted edge
+/// (e.g. `X ⊑ ∃f.{a}` with `x : X`, or `C ⊑ {a}` with `b : C`).
+pub(crate) fn derive_nominal_same(
+    internal: &InternalOntology,
+    cache: Option<ConsistencyCache>,
+    global_deadline: Option<std::time::Instant>,
+) -> DerivedSame {
+    let mut cache = cache;
+    derive_nominal_same_with(
+        internal,
+        global_deadline,
+        classify_derived_same_max(),
+        std::time::Duration::from_millis(classify_derived_same_ms()),
+        classify_derived_same_stalls(),
+        |a, b, deadline| {
+            cache
+                .get_or_insert_with(|| ConsistencyCache::build(internal))
+                .distinct_clashes(a, b, deadline)
+        },
+    )
+}
+
+/// [`derive_nominal_same`] with its bounds and its probe passed in, so a test can
+/// script the probe's verdicts.
+fn derive_nominal_same_with(
+    internal: &InternalOntology,
+    global_deadline: Option<std::time::Instant>,
+    max: usize,
+    per_probe: std::time::Duration,
+    stalls_max: usize,
+    mut probe: impl FnMut(
+        owl_dl_core::ir::IndividualId,
+        owl_dl_core::ir::IndividualId,
+        Option<std::time::Instant>,
+    ) -> owl_dl_tableau::hyper::HyperResult,
+) -> DerivedSame {
+    use owl_dl_core::ir::{ConceptExpr, IndividualId};
+    use owl_dl_core::ontology::Axiom;
+    use owl_dl_tableau::hyper::HyperResult;
+    let start = std::time::Instant::now();
+    let mut out = DerivedSame::default();
+    let mut seen_candidates = 0usize;
+    let mut probes = 0usize;
+    let trace = |out: &DerivedSame, candidates: usize, probes: usize| {
+        if std::env::var_os("RUSTDL_TRACE_DERIVED_SAME").is_some() {
+            eprintln!(
+                "[dsame] candidates={candidates} probes={probes} confirmed={} undecided={} ms={}",
+                out.pairs.len(),
+                out.undecided,
+                start.elapsed().as_millis()
+            );
+        }
+    };
+    if !classify_derived_same_enabled()
+        || !classify_nominal_types_enabled()
+        || !classify_nominal_same_enabled()
+        || !wedge_consistency_enabled()
+    {
+        return out;
+    }
+    // Roles some counting construct bounds: `≥n`/`≤n` fillers and functional or
+    // inverse-functional roles. Two individuals sharing a subject (or an object) can
+    // be forced equal only if such a construct counts them as distinct successors, so
+    // the shared edge's role must be one of these or a sub-role of one.
+    let mut counted: std::collections::HashSet<owl_dl_core::ir::RoleId> = internal
+        .concepts
+        .iter_exprs()
+        .filter_map(|e| match e {
+            ConceptExpr::Min(_, r, _) | ConceptExpr::Max(_, r, _) => Some(r.role_id()),
+            _ => None,
+        })
+        .collect();
+    for ax in &internal.axioms {
+        if let Axiom::FunctionalRole(r) | Axiom::InverseFunctionalRole(r) = ax {
+            counted.insert(r.role_id());
+        }
+    }
+    if counted.is_empty() {
+        return out;
+    }
+    let reach = nominal_reach(internal, true, classify_nominal_opa_enabled());
+    if reach.is_empty() {
+        return out;
+    }
+    let hierarchy = build_role_hierarchy(internal);
+    // Asserted edges `(subject, object, counted super-roles of the edge's role)`.
+    let edges: Vec<(IndividualId, IndividualId, Vec<owl_dl_core::ir::RoleId>)> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => {
+                let (s, o) = if role.is_inverse() {
+                    (*object, *subject)
+                } else {
+                    (*subject, *object)
+                };
+                let sups: Vec<owl_dl_core::ir::RoleId> = hierarchy
+                    .super_roles(role.role_id())
+                    .iter()
+                    .copied()
+                    .filter(|r| counted.contains(r))
+                    .collect();
+                (!sups.is_empty()).then_some((s, o, sups))
+            }
+            _ => None,
+        })
+        .collect();
+    if edges.is_empty() {
+        return out;
+    }
+    let n = internal.vocabulary.num_individuals();
+    let mut uf = crate::union_find::UnionFind::new(n);
+    for ax in &internal.axioms {
+        if let Axiom::SameIndividual(inds) = ax {
+            for w in inds.windows(2) {
+                uf.union(w[0].index(), w[1].index());
+            }
+        }
+    }
+    let mut stalls = 0usize;
+    let mut tried: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    loop {
+        // Members of each group of individuals sharing a subject (or an object),
+        // one representative per equality class, in id order.
+        type Key = (bool, u32, owl_dl_core::ir::RoleId);
+        let mut groups: std::collections::BTreeMap<Key, std::collections::BTreeSet<u32>> =
+            std::collections::BTreeMap::new();
+        for (s, o, sups) in &edges {
+            let (rs, ro) = (uf.find(s.index()), uf.find(o.index()));
+            for &r in sups {
+                groups.entry((false, rs, r)).or_default().insert(ro);
+                groups.entry((true, ro, r)).or_default().insert(rs);
+            }
+        }
+        // A representative is "in reach" if any member of its class is.
+        let mut rep_reach: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for &i in &reach {
+            rep_reach.insert(uf.find(i.index()));
+        }
+        let mut cands: Vec<(u32, u32)> = Vec::new();
+        for members in groups.values() {
+            let m: Vec<u32> = members.iter().copied().collect();
+            for i in 0..m.len() {
+                for j in (i + 1)..m.len() {
+                    let (x, y) = (m[i], m[j]);
+                    if (rep_reach.contains(&x) || rep_reach.contains(&y))
+                        && !tried.contains(&(x, y))
+                    {
+                        cands.push((x, y));
+                    }
+                }
+            }
+        }
+        cands.sort_unstable();
+        cands.dedup();
+        if cands.is_empty() {
+            break;
+        }
+        seen_candidates += cands.len();
+        let mut merged = false;
+        for (k, &(x, y)) in cands.iter().enumerate() {
+            tried.insert((x, y));
+            if uf.same(x, y) {
+                continue;
+            }
+            if probes >= max || (stalls_max > 0 && stalls >= stalls_max) {
+                out.undecided += cands.len() - k;
+                trace(&out, seen_candidates, probes);
+                out.candidates = seen_candidates;
+                out.probes = probes;
+                return out;
+            }
+            let now = std::time::Instant::now();
+            if global_deadline.is_some_and(|d| d <= now) {
+                out.undecided += 1;
+                continue;
+            }
+            let deadline = Some(match global_deadline {
+                Some(g) => (now + per_probe).min(g),
+                None => now + per_probe,
+            });
+            probes += 1;
+            let (a, b) = (IndividualId::new(x), IndividualId::new(y));
+            match probe(a, b, deadline) {
+                HyperResult::Unsat => {
+                    uf.union(x, y);
+                    out.pairs.push((a, b));
+                    merged = true;
+                    stalls = 0;
+                }
+                HyperResult::Sat => stalls = 0,
+                HyperResult::Stalled => {
+                    out.undecided += 1;
+                    stalls += 1;
+                }
+            }
+        }
+        if !merged {
+            break;
+        }
+    }
+    trace(&out, seen_candidates, probes);
+    out.candidates = seen_candidates;
+    out.probes = probes;
+    out
+}
+
+/// `internal` with each pair of `pairs` added as `SameIndividual` (#354).
+pub(crate) fn with_derived_same(
+    internal: &InternalOntology,
+    pairs: &[(owl_dl_core::ir::IndividualId, owl_dl_core::ir::IndividualId)],
+) -> InternalOntology {
+    let mut out = internal.clone();
+    for &(a, b) in pairs {
+        out.axioms
+            .push(owl_dl_core::ontology::Axiom::SameIndividual(vec![a, b]));
+    }
+    out
 }
 
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
@@ -3968,22 +4298,18 @@ pub fn classify_nominal_opa_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_NOMINAL_OPA").is_some_and(|v| v == "1")
 }
 
-/// Push the `ABox` facts of nominal individuals onto `internal.axioms` as GCIs with
-/// a `{a}` antecedent, the encoding the consistency cache uses, so clausification
-/// handles any asserted class (atomic, complex, nominal) uniformly. Returns the
-/// axiom count before the push: the caller clausifies, then truncates back, so the
-/// other consumers of `internal` see the original axioms while the concept pool
-/// (append-only) stays shared and no concept id can be reused.
-///
-/// Only individuals that can label a classify node get facts: those occurring as a
-/// nominal in a concept, closed under `SameIndividual` (`same`) and property
-/// assertions (`opa`). An ontology without nominals pays nothing. Sound: each GCI is
-/// exactly the assertion it encodes, and the classify wedge is not built
-/// `with_nominals`, so `{a}` is an ordinary class there.
-fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bool) -> usize {
+/// The individuals whose `ABox` facts the classify wedge sees (#277/#279): those
+/// occurring as a nominal in a concept, closed under `SameIndividual` (`same`) and
+/// property assertions (`opa`), both directions. Empty when the ontology has no
+/// nominal. Shared by [`push_nominal_abox_axioms`] and [`derive_nominal_same`] so the
+/// two agree on which individuals matter.
+fn nominal_reach(
+    internal: &InternalOntology,
+    same: bool,
+    opa: bool,
+) -> std::collections::HashSet<owl_dl_core::ir::IndividualId> {
     use owl_dl_core::ir::{ConceptExpr, IndividualId};
     use owl_dl_core::ontology::Axiom;
-    let before = internal.axioms.len();
     let mut reach: std::collections::HashSet<IndividualId> = internal
         .concepts
         .iter_exprs()
@@ -3993,7 +4319,7 @@ fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bo
         })
         .collect();
     if reach.is_empty() {
-        return before;
+        return reach;
     }
     if same || opa {
         // Close under SameIndividual and property assertions, both directions.
@@ -4024,6 +4350,28 @@ fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bo
                 }
             }
         }
+    }
+    reach
+}
+
+/// Push the `ABox` facts of nominal individuals onto `internal.axioms` as GCIs with
+/// a `{a}` antecedent, the encoding the consistency cache uses, so clausification
+/// handles any asserted class (atomic, complex, nominal) uniformly. Returns the
+/// axiom count before the push: the caller clausifies, then truncates back, so the
+/// other consumers of `internal` see the original axioms while the concept pool
+/// (append-only) stays shared and no concept id can be reused.
+///
+/// Only individuals that can label a classify node get facts: those occurring as a
+/// nominal in a concept, closed under `SameIndividual` (`same`) and property
+/// assertions (`opa`). An ontology without nominals pays nothing. Sound: each GCI is
+/// exactly the assertion it encodes, and the classify wedge is not built
+/// `with_nominals`, so `{a}` is an ordinary class there.
+fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bool) -> usize {
+    use owl_dl_core::ontology::Axiom;
+    let before = internal.axioms.len();
+    let reach = nominal_reach(internal, same, opa);
+    if reach.is_empty() {
+        return before;
     }
     let mut extra: Vec<Axiom> = Vec::new();
     for ax in &internal.axioms[..before] {
@@ -5636,8 +5984,17 @@ impl ConsistencyCache {
     /// silently produce a different completion (or a non-model), which would be
     /// unsound for `base_model_types`'s witness-model contract.
     fn build_seeded_engine(&self) -> owl_dl_tableau::hyper::HyperEngine<'_> {
+        self.build_seeded_engine_over(&self.clauses)
+    }
+
+    /// [`Self::build_seeded_engine`] over `clauses` instead of `self.clauses` (a
+    /// superset of them: [`Self::distinct_clashes`] adds one clause).
+    fn build_seeded_engine_over<'a>(
+        &'a self,
+        clauses: &'a [owl_dl_core::clause::DlClause],
+    ) -> owl_dl_tableau::hyper::HyperEngine<'a> {
         use owl_dl_tableau::hyper::HyperEngine;
-        let mut engine = HyperEngine::new_seeded(&self.clauses, &self.seed)
+        let mut engine = HyperEngine::new_seeded(clauses, &self.seed)
             .with_sub_roles(self.sub_roles.clone())
             .with_nominals(self.num_classes, self.num_individuals);
         if crate::incremental_fixpoint_enabled() {
@@ -5676,6 +6033,34 @@ impl ConsistencyCache {
         let mut engine = self.build_seeded_engine();
         // Consistency verdict only: `base_model_types` (realize's witness) keeps
         // the step cap. See `with_deadline_bounded_fixpoint`.
+        if owl_dl_tableau::seeded_fixpoint_uncapped_enabled() {
+            engine = engine.with_deadline_bounded_fixpoint();
+        }
+        engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
+    }
+
+    /// #354: whether `KB ∪ {a ≠ b}` is inconsistent, i.e. whether `a = b` is
+    /// entailed. Adds `{a}(X) ∧ {b}(X) → ⊥`, the encoding
+    /// [`push_different_individuals_disjoint`] uses for `DifferentIndividuals`, to the
+    /// clause set and runs the same engine as [`Self::decide`]. Only a witnessed
+    /// `Unsat` means `a = b`; `Sat`, `Stalled` and a deadline mean "not shown".
+    pub(crate) fn distinct_clashes(
+        &self,
+        a: owl_dl_core::ir::IndividualId,
+        b: owl_dl_core::ir::IndividualId,
+        deadline: Option<std::time::Instant>,
+    ) -> owl_dl_tableau::hyper::HyperResult {
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_core::ir::ClassId;
+        let mut clauses = self.clauses.clone();
+        clauses.push(DlClause {
+            body: vec![
+                Atom::Class(ClassId::new(self.num_classes + a.index()), X),
+                Atom::Class(ClassId::new(self.num_classes + b.index()), X),
+            ],
+            head: vec![],
+        });
+        let mut engine = self.build_seeded_engine_over(&clauses);
         if owl_dl_tableau::seeded_fixpoint_uncapped_enabled() {
             engine = engine.with_deadline_bounded_fixpoint();
         }
@@ -6044,6 +6429,10 @@ pub fn tbox_stats<A: horned_owl::model::ForIRI>(
     // (A degenerate self-disjoint `DisjointClasses(c, c)` is counted once and so
     // would round down; it is a malformed axiom and does not occur in the corpus.)
     stats.told_disjoint_pairs /= 2;
+    // #356: the individuals the per-query probes now seed beyond the `ABox`, so a
+    // scan can select exactly the ontologies `RUSTDL_QUERY_TBOX_INDIVIDUALS` reaches.
+    let abox = collect_abox(&mut internal);
+    stats.tbox_only_individuals = tbox_only_individuals(&internal.concepts, &abox).len();
     Ok(stats)
 }
 
@@ -9092,7 +9481,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            &self.abox,
+            &self.query_abox(),
             &[],
             &[],
             &self.dkey_ranges,
@@ -9131,7 +9520,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            &self.abox,
+            &self.query_abox(),
             &[],
             &[],
             &self.dkey_ranges,
@@ -9150,15 +9539,7 @@ impl PreparedOntology {
         &self,
         deadline: Option<std::time::Instant>,
     ) -> Result<Option<bool>, ReasonError> {
-        let extended;
-        let abox = if self.tbox_individuals.is_empty() {
-            &self.abox
-        } else {
-            let mut a = self.abox.clone();
-            a.individuals.extend_from_slice(&self.tbox_individuals);
-            extended = a;
-            &extended
-        };
+        let abox = self.abox_with_tbox_individuals(true);
         decide(
             &self.pool,
             &self.tbox,
@@ -9168,7 +9549,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            abox,
+            &abox,
             &[],
             &[],
             &self.dkey_ranges,
@@ -9176,6 +9557,23 @@ impl PreparedOntology {
             deadline,
             owl_dl_core::ConceptPool::top,
         )
+    }
+
+    /// The `ABox` seed plus, when `include` holds, one node per individual named
+    /// only in a `TBox` nominal ([`Self::tbox_individuals`]). Borrowed unchanged
+    /// when there is nothing to add.
+    fn abox_with_tbox_individuals(&self, include: bool) -> std::borrow::Cow<'_, Abox> {
+        if !include || self.tbox_individuals.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.abox);
+        }
+        let mut a = self.abox.clone();
+        a.individuals.extend_from_slice(&self.tbox_individuals);
+        std::borrow::Cow::Owned(a)
+    }
+
+    /// The seed for a per-query probe (#356): see [`query_tbox_individuals_enabled`].
+    fn query_abox(&self) -> std::borrow::Cow<'_, Abox> {
+        self.abox_with_tbox_individuals(query_tbox_individuals_enabled())
     }
 
     /// Lever A: like [`Self::decide`], but for the **classification pairwise
@@ -9253,7 +9651,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            &self.abox,
+            &self.query_abox(),
             &[],
             &[],
             &self.dkey_ranges,
@@ -9424,7 +9822,7 @@ impl PreparedOntology {
             &self.asymmetric_roles,
             &self.disjoint_role_pairs,
             &self.complements,
-            &self.abox,
+            &self.query_abox(),
             extra_distinct,
             extra_neg_prop,
             &self.dkey_ranges,
@@ -10495,6 +10893,81 @@ mod tests {
 
     fn parse_internal_lib(src: &str) -> InternalOntology {
         owl_dl_core::convert::convert_ontology(&parse(src)).expect("fixture converts")
+    }
+
+    /// #355: on this 46-axiom excerpt of `ore_ont_10019` the wedge proves
+    /// `SulfoxideGroup ⊑ SulfinicAcidGeneralGroup` at once with the refuted MRV rank
+    /// (`RUSTDL_MRV_REFUTED`, default ON); with the old rank it thrashes for minutes on
+    /// `Aryl ∨ Alkyl` choices. Deadline-bounded, so a regression fails instead of
+    /// hanging the suite.
+    #[test]
+    fn mrv_refuted_proves_the_sulfoxide_pair() {
+        let src = include_str!("../tests/fixtures/mrv_refuted/sulfoxide_min.ofn");
+        let internal = parse_internal_lib(src);
+        let id = |n: &str| {
+            internal
+                .vocabulary
+                .class_id(&format!("http://ontology.dumontierlab.com/{n}"))
+                .expect("class declared")
+        };
+        let (sub, sup) = (id("SulfoxideGroup"), id("SulfinicAcidGeneralGroup"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        if std::env::var_os("RUSTDL_MRV_REFUTED").is_none_or(|v| v != "0") {
+            assert_eq!(
+                HyperCache::build(&internal).decide(sub, sup, Some(deadline)),
+                HyperVerdict::Subsumed
+            );
+        }
+    }
+
+    /// #354: the stall stop (`RUSTDL_CLASSIFY_DERIVED_SAME_STALLS`, default 8) trades
+    /// a possible equality for wall. Ten objects of `x` under `≤1 f`, each a `TBox`
+    /// nominal, give 45 candidates; the scripted probe stalls 8 times, confirms on the
+    /// 9th call and refutes after. With the stop at 8 the 9th probe never runs: no
+    /// equality, every candidate undecided. With the stop off the equality is found.
+    #[test]
+    fn derived_same_stall_stop_skips_a_later_decidable_probe() {
+        use owl_dl_tableau::hyper::HyperResult;
+        use std::fmt::Write as _;
+        if std::env::var_os("RUSTDL_CLASSIFY_DERIVED_SAME_STALLS").is_none() {
+            assert_eq!(classify_derived_same_stalls(), 8, "default stall stop");
+        }
+        let mut src = format!("{HEADER}Ontology(<http://rustdl.test/o>\n");
+        src.push_str("ClassAssertion(:W :x) SubClassOf(:W ObjectMaxCardinality(1 :f))\n");
+        for i in 0..10 {
+            let _ = write!(
+                src,
+                "EquivalentClasses(:C{i} ObjectHasValue(:p :a{i}))\n\
+                 ObjectPropertyAssertion(:f :x :a{i})\n"
+            );
+        }
+        src.push(')');
+        let internal = parse_internal_lib(&src);
+        let run = |stalls_max: usize| {
+            let mut calls = 0usize;
+            derive_nominal_same_with(
+                &internal,
+                None,
+                64,
+                std::time::Duration::from_secs(1),
+                stalls_max,
+                |_, _, _| {
+                    calls += 1;
+                    match calls {
+                        1..=8 => HyperResult::Stalled,
+                        9 => HyperResult::Unsat,
+                        _ => HyperResult::Sat,
+                    }
+                },
+            )
+        };
+        let stopped = run(8);
+        assert_eq!(stopped.probes, 8);
+        assert!(stopped.pairs.is_empty());
+        assert_eq!(stopped.undecided, stopped.candidates);
+        let full = run(0);
+        assert!(full.probes > 8);
+        assert_eq!(full.pairs.len(), 1, "the 9th probe confirms an equality");
     }
 
     const HEADER: &str = "\

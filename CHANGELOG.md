@@ -6,6 +6,56 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **Classify uses individual equalities the KB forces (#354), `RUSTDL_CLASSIFY_DERIVED_SAME`,
+  default ON (`=0` reverts).** In the classify wedge a nominal `{a}` is an ordinary class, and an
+  equality between individuals reached it only when asserted. So `x : W`, `W ⊑ ≤1 f`, `f(x,a)`,
+  `f(x,b)`, which forces `a = b`, left `∃p.{a}` and `∃p.{b}` apart, with `incomplete: false`. The
+  corpus instance is `ore_ont_7668` (wine), which missed `SauvignonBlanc ≡ Semillon`; there the
+  grapes' equality follows only by contradiction. Classify now tests candidate pairs on the
+  ABox-seeded wedge: individuals that share a subject or object through a role some counting
+  construct bounds, at least one of them a nominal in the TBox. `KB ∪ {a ≠ b}` inconsistent means
+  `a = b`, which is then added as `SameIndividual`. Probes are capped
+  (`RUSTDL_CLASSIFY_DERIVED_SAME_MAX`, 64) and budgeted (`RUSTDL_CLASSIFY_DERIVED_SAME_MS`, 1000,
+  clipped to the global deadline), and probing stops after 8 consecutive undecided probes
+  (`RUSTDL_CLASSIFY_DERIVED_SAME_STALLS`). Candidates left undecided are reported as
+  `derived_same_undecided` in `classify --json`, Python and the Protégé plugin, separately from
+  `incomplete`. On `ore_ont_7668`: 1 candidate, 1 equality, 12 ms, MISSED 2 → 0 against Konclude.
+- **Queries seed the individuals named only in TBox nominals (#356), `RUSTDL_QUERY_TBOX_INDIVIDUALS`,
+  default ON (`=0` reverts).** A named individual exists in every model. `consistent` already seeded
+  these, but the probe behind `sat`, `subclass`, the disjointness and same-individual probes and
+  realize did not. So on a KB inconsistent only through such an individual (`{b} ⊑ ≥2 r`, `r`
+  functional), `consistent` said inconsistent while `sat Q` said `sat`. Seeding restricts the probe
+  to genuine models, so it adds only real clashes. `same_individuals` also stopped dropping the
+  `a ≠ b` fact for two TBox-only individuals, which made `{a} ⊑ {b}` read "not same". On a KB
+  inconsistent in a way only the tableau finds, the instance and same-individual queries now answer
+  vacuously (every membership holds) instead of returning the weaker KB's answers; neither version
+  errors, because the cheap inconsistency guard (#313) is unchanged by design. `disjoint_classes` now
+  errors when the classify run it already makes proves the KB inconsistent; it used to report "no
+  disjoint pairs". Classify is unchanged.
+- **The wedge tries a disjunction it can refute first (#355), `RUSTDL_MRV_REFUTED`, default ON
+  (`=0` reverts).** `subclass SulfoxideGroup SulfinicAcidGeneralGroup` on `ore_ont_10019` / `6485`
+  ran past 300 s (HermiT: 2.7 s). MRV ordering ranked open disjunctions by live disjuncts only, so a
+  disjunction whose every disjunct already clashed tied with the generating
+  `CarbonGroup → Aryl ∨ Alkyl` and lost the first-found tie-break. The search then failed every
+  branch at depth ~100, too slowly for the divergence cut. The rank is now `(viable, live)`. A
+  disjunct is not viable when its class is excluded or told-disjoint from a label, when it is
+  `≥n r.q` under `≤m r.q` with `m < n`, or when it is `≤0 r.q` at a node with an `r`-successor in `q`.
+  Ordering does not change a verdict, but under a budget it can change which pairs are cut. Serial
+  CPU: `10019` and `6485` >60 s → 0.07 s, `3250` 0.51 → 0.06 s, `1707` 1.05 → 0.34 s. Classify
+  gains the pair on all four (Konclude confirms it). On `6485`, `3250` and `1707` the gain is stable
+  at the default budget. On `10019` it depends on the budget: 1 run in 4 at the default 5 ms, 4 in 4
+  at `--pair-timeout-ms 1000`. `subclass` on the pair is fixed outright. `consistent` now decides
+  10 ORE ontologies it used to leave undetermined after ~30 s (`incomplete: true`): `ore_ont_850`,
+  `1397`, `2826`, `3010`, `3156`, `5834`, `8042`, `8786`, `10702`, `13954`, each in ~0.5 s.
+  All 10 are consistent, and Konclude agrees. `wine` classify goes from 13.9 to 1.7 CPU-s with
+  identical answers (197 rows), and it now completes within the default per-pair budget
+  (`incomplete: false`, it was `true`). Cost: on a serial recheck of 183 flagged rows, four
+  are slower with identical answers. `ore_ont_7610` 0.17 → 1.04 CPU-s (classify) and 0.21 → 1.14
+  (consistent), `10517` classify 4.0 → 6.7, `13928` consistent 5.1 → 6.9. On `7610` the extra time
+  is the different search order (blocking and matching), not computing the key. The main tableau
+  (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
+
 ## [0.4.42] — 2026-10-25
 
 ### Fixed

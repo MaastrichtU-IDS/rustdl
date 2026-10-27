@@ -1476,6 +1476,21 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.wedge_clauses_refused
         )?;
     }
+    if stats.derived_same_candidates > 0 {
+        writeln!(
+            out,
+            "# derived individual equalities: {} used, {} undecided ({} candidates, {} probes){}",
+            stats.derived_same,
+            stats.derived_same_undecided,
+            stats.derived_same_candidates,
+            stats.derived_same_probes,
+            if stats.derived_same_undecided > 0 {
+                ": completeness not guaranteed"
+            } else {
+                ""
+            }
+        )?;
+    }
     let tsr = json_out::trusted_sat_risk(&stats);
     if tsr > 0 {
         writeln!(
@@ -2409,6 +2424,7 @@ fn main() -> Result<()> {
             println!("# concept_rules:        {}", stats.concept_rules);
             println!("# told_super_edges:     {}", stats.told_super_edges);
             println!("# told_disjoint_pairs:  {}", stats.told_disjoint_pairs);
+            println!("# tbox_only_individuals:{}", stats.tbox_only_individuals);
             // MEASUREMENT (RUSTDL_DKEY_SPLIT_STATS=1): how many DKey-disjointness
             // pairs the proposed collapse/broadcast split would drop. Report-only.
             if std::env::var("RUSTDL_DKEY_SPLIT_STATS").is_ok_and(|v| v != "0") {

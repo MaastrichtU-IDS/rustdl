@@ -867,7 +867,7 @@ pub struct SearchStats {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent opt-in feature flags (double_blocking, precise_card_deps, \
-              mrv_ordering, nn_taint_disabled, shadow_dep_probe, incremental_fixpoint, \
+              mrv_ordering, mrv_refuted, nn_taint_disabled, shadow_dep_probe, incremental_fixpoint, \
               semantic_branching) — orthogonal toggles, not a state enum"
 )]
 pub struct HyperEngine<'c> {
@@ -1059,6 +1059,10 @@ pub struct HyperEngine<'c> {
     /// disjunctive clause with the fewest live disjuncts first (most-constrained-variable).
     /// Verdict-invariant (reordering only). See the MRV spec.
     mrv_ordering: bool,
+    /// #355 `RUSTDL_MRV_REFUTED` (default ON, read when MRV is switched on): MRV ranks
+    /// by VIABLE disjuncts first, i.e. live ones not already refuted at the binding
+    /// ([`Self::mrv_disjunct_refuted`]), then by live count. Order only.
+    mrv_refuted: bool,
     /// TAUTOLOGY-SKIP (`RUSTDL_TAUTOLOGY_SKIP`, default OFF): unordered `(a,b)` index
     /// pairs of a complement pair `b ≡ ¬a` (mutually exhaustive). `find_open_disjunction`
     /// skips a binary disjunction whose two `Class` disjuncts are such a pair — it is a
@@ -1811,6 +1815,7 @@ impl<'c> HyperEngine<'c> {
             head_present_skip: crate::head_present_skip_enabled(),
             edge_pin: crate::hyper_edge_pin_enabled(),
             mrv_ordering: false,
+            mrv_refuted: false,
             tautology_pairs: None,
             block_index: None,
             nn_holders: None,
@@ -1891,6 +1896,7 @@ impl<'c> HyperEngine<'c> {
             head_present_skip: crate::head_present_skip_enabled(),
             edge_pin: crate::hyper_edge_pin_enabled(),
             mrv_ordering: false,
+            mrv_refuted: false,
             tautology_pairs: None,
             block_index: None,
             nn_holders: None,
@@ -2064,6 +2070,7 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_mrv_ordering(mut self) -> Self {
         self.mrv_ordering = true;
+        self.mrv_refuted = crate::hyper_mrv_refuted_enabled();
         self
     }
 
@@ -3680,6 +3687,7 @@ impl<'c> HyperEngine<'c> {
             head_present_skip: crate::head_present_skip_enabled(),
             edge_pin: crate::hyper_edge_pin_enabled(),
             mrv_ordering: false,
+            mrv_refuted: false,
             tautology_pairs: None,
             block_index: None,
             nn_holders: None,
@@ -4301,7 +4309,9 @@ impl<'c> HyperEngine<'c> {
 
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
         if self.mrv_ordering {
-            let mut best: Option<(usize, (usize, HNode, Binding))> = None; // (live_count, candidate)
+            // ((viable, live), candidate)
+            type Ranked = ((usize, usize), (usize, HNode, Binding));
+            let mut best: Option<Ranked> = None;
             for idx in 0..self.nodes.len() {
                 if self.open_scan_deadline_passed(idx) {
                     return None;
@@ -4339,15 +4349,28 @@ impl<'c> HyperEngine<'c> {
                         if self.any_head_satisfied(ci, node, &binding) {
                             continue;
                         }
-                        let live = (0..self.clause(ci).head.len())
-                            .filter(|&k| !self.head_atom_satisfied(ci, k, node, &binding))
-                            .count();
+                        let mut live = 0usize;
+                        let mut viable = 0usize;
+                        for k in 0..self.clause(ci).head.len() {
+                            if self.head_atom_satisfied(ci, k, node, &binding) {
+                                continue;
+                            }
+                            live += 1;
+                            if !(self.mrv_refuted
+                                && self.mrv_disjunct_refuted(ci, k, node, &binding))
+                            {
+                                viable += 1;
+                            }
+                        }
+                        // Lexicographic (viable, live); with `mrv_refuted` off
+                        // `viable == live`, which is the old key exactly.
+                        let key = (viable, live);
                         let better = match &best {
                             None => true,
-                            Some((b, _)) => live < *b,
+                            Some((b, _)) => key < *b,
                         };
                         if better {
-                            best = Some((live, (ci, node, binding)));
+                            best = Some((key, (ci, node, binding)));
                         }
                     }
                 }
@@ -4402,6 +4425,53 @@ impl<'c> HyperEngine<'c> {
             }
         }
         None
+    }
+
+    /// #355: head atom `k` of clause `ci` would clash on assertion at this binding,
+    /// read off the current graph. It is ONLY an ordering key for MRV, never a prune,
+    /// so a wrong answer costs search time, not a verdict. Three cheap cases:
+    /// * `Class(c, v)`: `v` already carries a class `pair_disjoint` with `c`, or `c`
+    ///   is excluded there (the semantic-branching dead-disjunct test);
+    /// * `AtLeast(r, q, n, v)`: `v` has a `≤m` on `r` with `m < n` and the same
+    ///   qualifier, or an unqualified one;
+    /// * `AtMost(r, q, 0, v)`: `v` already has a matching `r`-successor.
+    ///
+    /// Read on both the raw node and its union-find survivor, as
+    /// [`Self::head_atom_satisfied`] does, since heads land on either.
+    fn mrv_disjunct_refuted(&self, ci: usize, k: usize, xnode: HNode, binding: &Binding) -> bool {
+        let atom = self.clause(ci).head[k];
+        let (Atom::Class(_, var) | Atom::AtLeast(_, _, _, var) | Atom::AtMost(_, _, _, var)) = atom
+        else {
+            return false;
+        };
+        let Some(t0) = resolve_var(var, xnode, binding) else {
+            return false;
+        };
+        let t1 = self.resolve(t0);
+        let on = |t: HNode| -> bool {
+            let n = &self.nodes[t.index()];
+            match atom {
+                Atom::Class(c, _) => {
+                    n.is_excluded(c).is_some()
+                        || n.labels.iter().any(|&e| {
+                            e != c
+                                && self.pair_disjoint(
+                                    c.index().min(e.index()),
+                                    c.index().max(e.index()),
+                                )
+                        })
+                }
+                Atom::AtLeast(r, q, need, _) => n
+                    .at_most
+                    .iter()
+                    .any(|&(r2, q2, m)| r2 == r && m < need && (q2.is_none() || q2 == q)),
+                // A live `≤0 r.q` is unsatisfied, i.e. has a matching successor on the
+                // raw node (`head_atom_satisfied_on`), so it is always refuted.
+                Atom::AtMost(_, _, 0, _) => true,
+                _ => false,
+            }
+        };
+        on(t0) || (t1 != t0 && on(t1))
     }
 
     /// True iff some head disjunct of clause `ci` already holds at
@@ -9671,6 +9741,87 @@ mod tests {
             on.find_open_disjunction_for_test().map(|(ci, _, _)| ci),
             Some(1)
         );
+    }
+
+    /// #355: the open disjunction MRV picks, with the refuted rank forced on or off.
+    fn mrv_pick(clauses: &[DlClause], root: ClassId, refuted: bool) -> Option<usize> {
+        let mut e = HyperEngine::new(clauses, root).with_mrv_ordering();
+        e.mrv_refuted = refuted;
+        e.horn_fixpoint(FIXPOINT_ITERS);
+        e.find_open_disjunction_for_test().map(|(ci, _, _)| ci)
+    }
+
+    /// `A ∧ x → ⊥` for each `x`: binary ⊥-clauses `pair_disjoint` reads.
+    fn disjoint_with(a: ClassId, xs: &[ClassId]) -> Vec<DlClause> {
+        xs.iter()
+            .map(|&x| DlClause {
+                body: vec![Atom::Class(a, X), Atom::Class(x, X)],
+                head: vec![],
+            })
+            .collect()
+    }
+
+    /// #355: two 2-way disjunctions tie on live count; the second has both disjuncts
+    /// disjoint with the root's `A`. The old rank keeps first-found (clause 0); the
+    /// refuted rank takes the all-refuted one (clause 1).
+    #[test]
+    fn mrv_refuted_prefers_a_disjunction_whose_classes_all_clash() {
+        let (a, d1, d2, e1, e2) = (cls(0), cls(1), cls(2), cls(3), cls(4));
+        let mut clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(e1, X), Atom::Class(e2, X)],
+            },
+        ];
+        clauses.extend(disjoint_with(a, &[e1, e2]));
+        assert_eq!(mrv_pick(&clauses, a, false), Some(0));
+        assert_eq!(mrv_pick(&clauses, a, true), Some(1));
+    }
+
+    /// #355: `≥2 r` is refuted by the node's `≤1 r`, `≤0 r.B` by an existing
+    /// `r`-successor in `B`. These are the two cardinality disjuncts of the
+    /// `ore_ont_10019` probe. The other disjunct `e1` stays viable, so clause 2 wins
+    /// only through the cardinality arm; without it, it ties the generator at `(2, 2)`.
+    #[test]
+    fn mrv_refuted_reads_cardinality_disjuncts() {
+        let (a, b, d1, d2, e1) = (cls(0), cls(1), cls(2), cls(3), cls(4));
+        let r = Role::Named(RoleId::new(0));
+        let generator = DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+        };
+        // `≥2 r` against `≤1 r`.
+        let at_least = vec![
+            generator.clone(),
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(r, None, 1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtLeast(r, None, 2, X), Atom::Class(e1, X)],
+            },
+        ];
+        assert_eq!(mrv_pick(&at_least, a, false), Some(0));
+        assert_eq!(mrv_pick(&at_least, a, true), Some(2));
+        // `≤0 r.B` against an existing `r`-successor in `B`.
+        let at_most_zero = vec![
+            generator,
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(r, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(r, Some(b), 0, X), Atom::Class(e1, X)],
+            },
+        ];
+        assert_eq!(mrv_pick(&at_most_zero, a, false), Some(0));
+        assert_eq!(mrv_pick(&at_most_zero, a, true), Some(2));
     }
 
     /// Scaffold test: `mrv_ordering` defaults to `false`; `with_mrv_ordering` flips it.

@@ -942,6 +942,8 @@ pub struct HyperEngine<'c> {
     /// soundness with inverse roles; without it, `RUSTDL_HYPERTABLEAU_TRUST_SAT`
     /// is corpus-only safe (see SIO finding).
     double_blocking: bool,
+    /// `RUSTDL_NOMINAL_BLOCK_GUARD` (#361/#362): see `nn_guarded`.
+    nominal_guard: bool,
     /// SP1 scaffold (`RUSTDL_HYPER_INCREMENTAL_FIXPOINT`, via
     /// [`with_incremental_fixpoint`]): opt-in incremental `horn_fixpoint` —
     /// process only the per-branch worklist delta instead of re-seeding the
@@ -1792,6 +1794,7 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            nominal_guard: crate::nominal_block_guard_enabled(),
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,
@@ -1873,6 +1876,7 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            nominal_guard: crate::nominal_block_guard_enabled(),
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,
@@ -2320,7 +2324,36 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
-    /// Whether class `c` names a singleton nominal `{a}` (`HF4a`).
+    /// `n` carries a nominal class (`HF4a` range).
+    fn node_has_nominal(&self, n: HNode) -> bool {
+        let Some((start, count)) = self.nominals else {
+            return false;
+        };
+        let l = &self.nodes[n.index()].labels;
+        let i = l.partition_point(|c| c.index() < start);
+        i < l.len() && l[i].index() < start.saturating_add(count)
+    }
+
+    /// #361/#362: `n` stands in for a nominal individual's `≤`-witness: some
+    /// nominal neighbour `w` has `≤k r.q`, `n` is one of `w`'s `r`-neighbours
+    /// carrying `q` (the witnesses `distinct_role_succ` counts), and `w` has at
+    /// most `k` of them. Such a node is neither blocked nor a blocker. Over-full,
+    /// the guard lifts so ordinary blocking bounds generation until the `≤` merges.
+    fn nn_guarded(&self, n: HNode) -> bool {
+        let rn = self.resolve(n);
+        let node = &self.nodes[rn.index()];
+        node.edges.iter().chain(node.preds.iter()).any(|&(_, w)| {
+            let w = self.resolve(w);
+            if !self.node_has_nominal(w) {
+                return false;
+            }
+            self.nodes[w.index()].at_most.iter().any(|&(r, q, k)| {
+                let cands = self.distinct_role_succ(w, r, q);
+                cands.len() <= k as usize && cands.contains(&rn)
+            })
+        })
+    }
+
     fn is_nominal(&self, c: ClassId) -> bool {
         match self.nominals {
             Some((start, count)) => {
@@ -2573,6 +2606,11 @@ impl<'c> HyperEngine<'c> {
                 let nr = ln.parent_role.expect("non-root has parent_role");
                 (np, nr)
             };
+            // #361/#362: a node that is, or stands for, a nominal individual is
+            // never blocked (see `nn_guarded`).
+            if self.nominal_guard && (self.node_has_nominal(n) || self.nn_guarded(n)) {
+                return false;
+            }
             self.stats.block_eligible += 1;
             // Iterate the candidate bucket in place (no per-call clone — the
             // immutable borrow of `block_index` coexists with the immutable
@@ -2632,7 +2670,11 @@ impl<'c> HyperEngine<'c> {
                     ) && subset_sorted(
                         &self.nodes[np.index()].labels,
                         &self.nodes[mp.index()].labels,
-                    ) {
+                    ) && !(self.nominal_guard
+                        && (self.resolve(m_hnode) != m_hnode
+                            || self.node_has_nominal(m_hnode)
+                            || self.nn_guarded(m_hnode)))
+                    {
                         blocked = true;
                         break;
                     }
@@ -2647,10 +2689,19 @@ impl<'c> HyperEngine<'c> {
             // Anywhere blocking (legacy; sound for SHIQ-no-inverse).
             // Snapshot the node count and iterate by index to keep
             // mutating `stats` clean of borrow conflicts.
+            if self.nominal_guard && (self.node_has_nominal(n) || self.nn_guarded(n)) {
+                return false;
+            }
             let n_nodes = self.nodes.len();
             for i in 0..n_nodes {
                 let m_order = self.nodes.hdr(i).order;
                 if m_order >= ln_order {
+                    continue;
+                }
+                let m = HNode(u32::try_from(i).expect("fits u32"));
+                if self.nominal_guard
+                    && (self.resolve(m) != m || self.node_has_nominal(m) || self.nn_guarded(m))
+                {
                     continue;
                 }
                 self.stats.block_compares += 1;
@@ -3664,6 +3715,7 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            nominal_guard: crate::nominal_block_guard_enabled(),
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,

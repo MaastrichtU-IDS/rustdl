@@ -267,6 +267,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// hot `is_blocked` path pays no per-call env read. See
     /// `docs/superpowers/plans/2026-06-15-anywhere-pairwise-blocking.md`.
     anywhere_blocking: bool,
+    /// `RUSTDL_NOMINAL_BLOCK_GUARD`, cached (#361/#362).
+    nominal_block_guard: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
     /// `trigger ClassId → sorted atomic-super ConceptIds` reachable through
     /// chains of `ConceptRule`s whose conclusion is itself `Atomic(_)`. Built
@@ -397,6 +399,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            nominal_block_guard: nominal_block_guard_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -440,6 +443,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            nominal_block_guard: nominal_block_guard_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -488,6 +492,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            nominal_block_guard: nominal_block_guard_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -1426,6 +1431,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let (Some(yp_id), Some(yr)) = (yb.parent, yb.parent_role) else {
             return false;
         };
+        // #361/#362: a nominal node is never blocked (as in anywhere blocking).
+        if self.nominal_block_guard && self.node_is_nominal(y) {
+            return false;
+        }
         let yl_sig = yb.label_sig;
         let yp_sig = self.graph.blocking(yp_id).label_sig;
 
@@ -1468,7 +1477,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     if is_subset_sorted(y_labels, x_labels) {
                         let yp_labels = &self.graph.node(yp_id).labels;
                         let xp_labels = &self.graph.node(xp_id).labels;
-                        if is_subset_sorted(yp_labels, xp_labels) {
+                        if is_subset_sorted(yp_labels, xp_labels)
+                            && !(self.nominal_block_guard && self.node_is_nominal(x_prime_id))
+                            && !self.nn_guarded(y)
+                            && !self.nn_guarded(x_prime_id)
+                        {
                             crate::bump_counter!(self, is_blocked_true);
                             return true;
                         }
@@ -1499,6 +1512,38 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// blocker, and a nominal node must not itself be blocked) because the
     /// loop-back model trick that justifies pair blocking does not hold for a
     /// node whose extension is forced to a single named individual.
+    /// #361/#362: `v` stands in for a nominal individual's `≤`-witness and must be
+    /// neither blocked nor a blocker. True iff some nominal neighbour `w` of `v`
+    /// carries `≤n R.C`, `v` is an `R`-neighbour of `w` without `¬C`, and `w` has at
+    /// most `n` such neighbours.
+    fn nn_guarded(&self, v: NodeId) -> bool {
+        if !self.nominal_block_guard {
+            return false;
+        }
+        self.graph.node(v).neighbours().any(|(_, w)| {
+            self.node_is_nominal(w)
+                && self.graph.node(w).labels.iter().any(|&c| {
+                    let ConceptExpr::Max(n, role, body) = self.pool.get(c) else {
+                        return false;
+                    };
+                    if self.dkey_range_of(*body).is_some() {
+                        return false;
+                    }
+                    let comp = self.complement_of(*body);
+                    let mut cands: Vec<NodeId> = Vec::new();
+                    for (seen, x) in self.graph.node(w).neighbours() {
+                        if self.edge_satisfies(seen, *role)
+                            && comp.is_none_or(|k| !self.graph.node(x).has_label(k))
+                            && !cands.contains(&x)
+                        {
+                            cands.push(x);
+                        }
+                    }
+                    cands.len() <= *n as usize && cands.contains(&v)
+                })
+        })
+    }
+
     #[must_use]
     fn node_is_nominal(&self, node: NodeId) -> bool {
         let labels = &self.graph.node(node).labels;
@@ -1546,7 +1591,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             return false;
         };
         // A nominal `y` denotes a fixed individual and must not be blocked.
-        if self.node_is_nominal(y) {
+        if self.node_is_nominal(y) || self.nn_guarded(y) {
             return false;
         }
         let yl_sig = yb.label_sig;
@@ -1596,7 +1641,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             if is_subset_sorted(y_labels, x_labels) {
                 let yp_labels = &self.graph.node(yp_id).labels;
                 let xp_labels = &self.graph.node(xp_id).labels;
-                if is_subset_sorted(yp_labels, xp_labels) {
+                if is_subset_sorted(yp_labels, xp_labels) && !self.nn_guarded(x_prime_id) {
                     crate::bump_counter!(self, is_blocked_true);
                     return true;
                 }
@@ -4639,6 +4684,21 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
 /// and loses the first-found tie-break, and the search dives into the generator:
 /// `subclass SulfoxideGroup SulfinicAcidGeneralGroup` on `ore_ont_10019` ran >300 s.
 /// Reordering is FP-safe; under a budget or depth cap it can change which pairs are cut.
+/// #361/#362 `RUSTDL_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): pair blocking
+/// never blocks, and never blocks against, a node that is or stands for a nominal
+/// individual. That covers a node carrying a nominal (now also in ancestor blocking
+/// and in the wedge, which had no such exclusion) and a node counted by a `≤n R.C` at
+/// a nominal neighbour that is not over-full (the case the SHOIQ NN-rule makes a
+/// nominal node). Unravelling a blocked copy of such a node duplicates an edge into
+/// the nominal, so the copy can break the `≤n`: `sat` missed `Q ⊑ ⊥` for
+/// `Q ⊑ ≥2 r.(∃s⁻.{a})` with `s` functional (#362), and the wedge called
+/// `{a} : ≥3 s.{a,b}` consistent (#361). This is a blocking guard, not the NN-rule
+/// (no `≤m` guess, no new nominal nodes); a nominal two edges away is still missed.
+#[must_use]
+pub fn nominal_block_guard_enabled() -> bool {
+    std::env::var_os("RUSTDL_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")
+}
+
 #[must_use]
 pub fn hyper_mrv_refuted_enabled() -> bool {
     std::env::var_os("RUSTDL_MRV_REFUTED").is_none_or(|v| v != "0")

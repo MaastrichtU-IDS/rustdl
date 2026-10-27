@@ -10912,7 +10912,7 @@ mod tests {
         };
         let (sub, sup) = (id("SulfoxideGroup"), id("SulfinicAcidGeneralGroup"));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        if std::env::var_os("RUSTDL_MRV_REFUTED").is_none() {
+        if std::env::var_os("RUSTDL_MRV_REFUTED").is_none_or(|v| v != "0") {
             assert_eq!(
                 HyperCache::build(&internal).decide(sub, sup, Some(deadline)),
                 HyperVerdict::Subsumed

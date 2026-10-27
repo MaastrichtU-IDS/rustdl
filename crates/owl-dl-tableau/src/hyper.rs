@@ -867,7 +867,7 @@ pub struct SearchStats {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent opt-in feature flags (double_blocking, precise_card_deps, \
-              mrv_ordering, nn_taint_disabled, shadow_dep_probe, incremental_fixpoint, \
+              mrv_ordering, mrv_refuted, nn_taint_disabled, shadow_dep_probe, incremental_fixpoint, \
               semantic_branching) — orthogonal toggles, not a state enum"
 )]
 pub struct HyperEngine<'c> {
@@ -4465,7 +4465,9 @@ impl<'c> HyperEngine<'c> {
                     .at_most
                     .iter()
                     .any(|&(r2, q2, m)| r2 == r && m < need && (q2.is_none() || q2 == q)),
-                Atom::AtMost(r, q, 0, _) => !self.distinct_role_succ(t, r, q).is_empty(),
+                // A live `≤0 r.q` is unsatisfied, i.e. has a matching successor on the
+                // raw node (`head_atom_satisfied_on`), so it is always refuted.
+                Atom::AtMost(_, _, 0, _) => true,
                 _ => false,
             }
         };
@@ -9782,7 +9784,8 @@ mod tests {
 
     /// #355: `≥2 r` is refuted by the node's `≤1 r`, `≤0 r.B` by an existing
     /// `r`-successor in `B`. These are the two cardinality disjuncts of the
-    /// `ore_ont_10019` probe.
+    /// `ore_ont_10019` probe. The other disjunct `e1` stays viable, so clause 2 wins
+    /// only through the cardinality arm; without it, it ties the generator at `(2, 2)`.
     #[test]
     fn mrv_refuted_reads_cardinality_disjuncts() {
         let (a, b, d1, d2, e1) = (cls(0), cls(1), cls(2), cls(3), cls(4));
@@ -9792,7 +9795,7 @@ mod tests {
             head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
         };
         // `≥2 r` against `≤1 r`.
-        let mut at_least = vec![
+        let at_least = vec![
             generator.clone(),
             DlClause {
                 body: vec![Atom::Class(a, X)],
@@ -9803,11 +9806,10 @@ mod tests {
                 head: vec![Atom::AtLeast(r, None, 2, X), Atom::Class(e1, X)],
             },
         ];
-        at_least.extend(disjoint_with(a, &[e1]));
         assert_eq!(mrv_pick(&at_least, a, false), Some(0));
         assert_eq!(mrv_pick(&at_least, a, true), Some(2));
         // `≤0 r.B` against an existing `r`-successor in `B`.
-        let mut at_most_zero = vec![
+        let at_most_zero = vec![
             generator,
             DlClause {
                 body: vec![Atom::Class(a, X)],
@@ -9818,7 +9820,6 @@ mod tests {
                 head: vec![Atom::AtMost(r, Some(b), 0, X), Atom::Class(e1, X)],
             },
         ];
-        at_most_zero.extend(disjoint_with(a, &[e1]));
         assert_eq!(mrv_pick(&at_most_zero, a, false), Some(0));
         assert_eq!(mrv_pick(&at_most_zero, a, true), Some(2));
     }

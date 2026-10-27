@@ -40,7 +40,7 @@ All notable changes to rustdl are documented here. Format is based on
   `CarbonGroup → Aryl ∨ Alkyl` and lost the first-found tie-break. The search then failed every
   branch at depth ~100, too slowly for the divergence cut. The rank is now `(viable, live)`. A
   disjunct is not viable when its class is excluded or told-disjoint from a label, when it is
-  `≥n r.q` under `≤m r.q` with `m < n`, or when it is `≤0 r` at a node with an `r`-successor.
+  `≥n r.q` under `≤m r.q` with `m < n`, or when it is `≤0 r.q` at a node with an `r`-successor in `q`.
   Ordering does not change a verdict, but under a budget it can change which pairs are cut. Serial
   CPU: `10019` and `6485` >60 s → 0.07 s, `3250` 0.51 → 0.06 s, `1707` 1.05 → 0.34 s. Classify
   gains the pair on all four (Konclude confirms it). On `6485`, `3250` and `1707` the gain is stable

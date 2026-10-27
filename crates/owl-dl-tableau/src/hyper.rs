@@ -4310,7 +4310,8 @@ impl<'c> HyperEngine<'c> {
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
         if self.mrv_ordering {
             // ((viable, live), candidate)
-            let mut best: Option<((usize, usize), (usize, HNode, Binding))> = None;
+            type Ranked = ((usize, usize), (usize, HNode, Binding));
+            let mut best: Option<Ranked> = None;
             for idx in 0..self.nodes.len() {
                 if self.open_scan_deadline_passed(idx) {
                     return None;
@@ -4439,9 +4440,9 @@ impl<'c> HyperEngine<'c> {
     /// [`Self::head_atom_satisfied`] does, since heads land on either.
     fn mrv_disjunct_refuted(&self, ci: usize, k: usize, xnode: HNode, binding: &Binding) -> bool {
         let atom = self.clause(ci).head[k];
-        let var = match atom {
-            Atom::Class(_, v) | Atom::AtLeast(_, _, _, v) | Atom::AtMost(_, _, _, v) => v,
-            _ => return false,
+        let (Atom::Class(_, var) | Atom::AtLeast(_, _, _, var) | Atom::AtMost(_, _, _, var)) = atom
+        else {
+            return false;
         };
         let Some(t0) = resolve_var(var, xnode, binding) else {
             return false;

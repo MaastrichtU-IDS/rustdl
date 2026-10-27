@@ -1117,7 +1117,7 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
             // #288 step 4 (plan B2): the marks record their deps (step 1c).
             // Exact only with the choice point on: this merge is then forced
             // (one mergeable pair), not a pick among several.
-            if ctx.selective_undo() && crate::max_choice_point_enabled() {
+            if ctx.selective_undo() && crate::diag288_on(7) && crate::max_choice_point_enabled() {
                 for (i, &a) in c_neighbours.iter().enumerate() {
                     for &b in &c_neighbours[i + 1..] {
                         if let Some(d) = ctx.inequality_deps_of(a, b) {
@@ -1144,7 +1144,7 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                         &compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps),
                         &witness_deps,
                     );
-                    if ctx.selective_undo() {
+                    if ctx.selective_undo() && crate::diag288_on(8) {
                         // #288 step 4 (4a review): the merge rests on the
                         // holder's `≤n`, so it dies with the holder unless it
                         // dies with the pair anyway.
@@ -1355,7 +1355,7 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
         let mapped = ctx.graph().nominal_node(ind);
         // #288 step 4 (plan S3): after a selective undo the map may name a
         // dead node or one that no longer carries `{ind}`; treat it as absent.
-        let mapped = if ctx.selective_undo() {
+        let mapped = if ctx.selective_undo() && crate::diag288_on(9) {
             mapped.filter(|&m| ctx.carries_nominal(m, ind))
         } else {
             mapped

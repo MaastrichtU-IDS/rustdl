@@ -461,7 +461,7 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                         pivot,
                         partners,
                         earlier: j,
-                        distinct_deps: if ctx.selective_undo() {
+                        distinct_deps: if ctx.selective_undo() && crate::diag288_on(3) {
                             distinct_marks_deps(ctx, &witnesses[..=j])
                         } else {
                             DepSet::new()
@@ -560,7 +560,7 @@ impl Frame {
     /// precisely, so this stays conservative, as `apply_max`'s `⊥` arm does).
     /// Each merge's deps cover every witness (see [`first_open_max`]).
     fn merge(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize, open: OpenMax) -> Self {
-        let pre = if ctx.selective_undo() {
+        let pre = if ctx.selective_undo() && crate::diag288_on(4) {
             merge_pre(ctx, &open)
         } else {
             DepSet::new()
@@ -568,7 +568,7 @@ impl Frame {
         // Read before this frame's own id is pushed. With selective undo the
         // distinctness that rules out other merges is recorded (step 1c), so
         // the exhaustion deps are exact rather than every active decision.
-        let initial = if ctx.selective_undo() {
+        let initial = if ctx.selective_undo() && crate::diag288_on(4) {
             crate::deps::union(&open.max_deps, &pre)
         } else {
             crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()))
@@ -659,7 +659,7 @@ impl Frame {
             let Some(k) = self.records.iter().position(Option::is_none) else {
                 return Start::Exhausted;
             };
-            if !ctx.selective_undo() {
+            if !(ctx.selective_undo() && crate::diag288_on(5)) {
                 break k;
             }
             match self.moot(ctx, k) {
@@ -999,7 +999,7 @@ impl Frame {
 /// the existence fold on, carry its origins') and the node's existence. Empty
 /// unless selective undo is on.
 fn or_pre(ctx: &TableauContext<'_, '_, '_>, node: NodeId, or_deps: &[u32]) -> DepSet {
-    if !ctx.selective_undo() {
+    if !(ctx.selective_undo() && crate::diag288_on(6)) {
         return DepSet::new();
     }
     crate::deps::union(or_deps, ctx.exist_deps_of(node))
@@ -1009,7 +1009,7 @@ fn or_pre(ctx: &TableauContext<'_, '_, '_>, node: NodeId, or_deps: &[u32]) -> De
 /// existence of the holder and the neighbour, and the deps of every edge
 /// between them. Empty unless selective undo is on.
 fn choose_pre(ctx: &TableauContext<'_, '_, '_>, open: &OpenChoose) -> DepSet {
-    if !ctx.selective_undo() {
+    if !(ctx.selective_undo() && crate::diag288_on(6)) {
         return DepSet::new();
     }
     let graph = ctx.graph();

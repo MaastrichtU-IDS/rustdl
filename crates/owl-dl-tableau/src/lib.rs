@@ -401,11 +401,11 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
-            trail: TableauTrail::keyed_if(selective_undo_enabled()),
+            trail: TableauTrail::keyed_if(selective_undo_enabled() && diag288_on(1)),
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
-            exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
+            exist_fold: exist_deps_fold_enabled() || (selective_undo_enabled() && diag288_on(2)),
             selective: selective_undo_enabled(),
             selective_min_skip: selective_min_skip(),
             selective_jumps: 0,
@@ -450,11 +450,11 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
-            trail: TableauTrail::keyed_if(selective_undo_enabled()),
+            trail: TableauTrail::keyed_if(selective_undo_enabled() && diag288_on(1)),
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
-            exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
+            exist_fold: exist_deps_fold_enabled() || (selective_undo_enabled() && diag288_on(2)),
             selective: selective_undo_enabled(),
             selective_min_skip: selective_min_skip(),
             selective_jumps: 0,
@@ -504,11 +504,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
-            trail: TableauTrail::keyed_if(selective_undo_enabled()),
+            trail: TableauTrail::keyed_if(selective_undo_enabled() && diag288_on(1)),
             deadline: None,
             deadline_hit: false,
             active_branches: Vec::new(),
-            exist_fold: exist_deps_fold_enabled() || selective_undo_enabled(),
+            exist_fold: exist_deps_fold_enabled() || (selective_undo_enabled() && diag288_on(2)),
             selective: selective_undo_enabled(),
             selective_min_skip: selective_min_skip(),
             selective_jumps: 0,
@@ -3056,6 +3056,22 @@ pub fn max_precise_bot_enabled() -> bool {
 #[must_use]
 pub fn max_merge_keep_older_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_MERGE_KEEP_OLDER").is_none_or(|v| v != "0")
+}
+
+/// DIAGNOSTIC ONLY (#288 q0244 isolation, branch `diag/288-q0244`, never merged): whether
+/// flag-gated part `k` stays on. `RUSTDL_DIAG288_OFF=1,5` turns parts 1 and 5 off. Parts: 1 keyed
+/// trail, 2 existence fold, 3 distinct deps of open merges, 4 merge pre/exhaustion deps, 5 moot
+/// retire, 6 or/choose preconditions, 7 apply_max mark deps, 8 holder existence in merge deps,
+/// 9 nominal-map liveness filter.
+#[must_use]
+pub fn diag288_on(k: u8) -> bool {
+    static OFF: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    !OFF.get_or_init(|| {
+        std::env::var("RUSTDL_DIAG288_OFF")
+            .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default()
+    })
+    .contains(&k)
 }
 
 /// Whether a backjump undoes only what depends on the decisions it abandons

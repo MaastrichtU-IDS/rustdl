@@ -7,6 +7,28 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **The wedge no longer blocks against a node that carries a nominal (#361),
+  `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD`, default ON (`=0` reverts).** `consistent` called
+  `{a} : ≥3 s.{a,b}` consistent, and also the inverse form `{a} ⊑ ≥3 s⁻.{a,b}`. The wedge made
+  three `≥3` witnesses and blocked two of them by the first. The first then picked `{a}` and
+  merged into `a`, but stayed their blocker, so the disjunction never ran on the other two and
+  the pigeonhole clash never formed. A blocked copy of a node carrying `{a}` is a second element
+  with `a`'s class. The main tableau's anywhere blocking already refused such blockers; the
+  wedge had no such exclusion.
+
+  The refusal covers only the nominals a copy could contradict:
+  - a nominal that some clause head forces (a TBox nominal);
+  - every nominal, when some `≤` counts predecessors (an inverse `≤`, an inverse-stored edge
+    on a counted role, or a symmetric or polarity-crossing hierarchy).
+
+  In the `ABox`-seeded engine every individual is a nominal. Refusing all of them, and doing
+  the check on every blocking call, cost large `ABox`es their `consistent` verdicts by pushing
+  them past the time budget. So the check runs only on a candidate that would otherwise block.
+  Classify is not affected, because its wedge has no nominal classes.
+
+  Sweeps over ORE, main against the fix, with flagged rows rechecked serially at 5 runs per arm:
+  - `consistent` (1,159) and realize (200): no answer changes;
+  - one ontology (`ore_ont_16853`) gains a verdict.
 - **Soundness: a self-loop made by a search decision no longer back-jumps past that decision
   (#373).** `Irreflexive(r)` is enforced in the main tableau as `¬∃r.Self` on every node. The clash
   on a self-edge took only that label's deps, which are always empty. When a search decision made

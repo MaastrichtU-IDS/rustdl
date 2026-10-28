@@ -145,3 +145,27 @@ fn nominal_cycles_terminate() {
          ObjectSomeValuesFrom(:q ObjectOneOf(:a)))))"
     ));
 }
+
+/// `ABox`-only individuals reached through counting. The guard skips a nominal no
+/// clause mentions, unless a clause counts predecessors. Forward functional `f`:
+/// the copy of an individual has the same successors, so skipping is sound, and the
+/// verdicts must still be right. Inverse-functional `g` counts predecessors, so
+/// every nominal stays guarded. HermiT: as asserted.
+#[test]
+fn abox_only_individuals_through_counting() {
+    let _l = lock();
+    let base = "FunctionalObjectProperty(:s)\n\
+        ClassAssertion(ObjectSomeValuesFrom(:s :A) :a)\n\
+        ObjectPropertyAssertion(:s :a :b)\n\
+        SubClassOf(:A ObjectSomeValuesFrom(:q :A))";
+    assert!(consistent(base));
+    assert!(!consistent(&format!(
+        "{base}\nClassAssertion(:Q :b)\nDisjointClasses(:A :Q)"
+    )));
+    let inv = "InverseFunctionalObjectProperty(:q)\n\
+        ClassAssertion(ObjectSomeValuesFrom(:q :A) :a)\n\
+        ObjectPropertyAssertion(:q :b :c)\n\
+        ClassAssertion(ObjectSomeValuesFrom(:q :A) :b)\n\
+        SubClassOf(:A ObjectSomeValuesFrom(:s :A))";
+    assert!(consistent(inv));
+}

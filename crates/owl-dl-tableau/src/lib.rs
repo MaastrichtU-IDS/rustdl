@@ -4633,8 +4633,9 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
 }
 
 /// #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): in the wedge's
-/// pair blocking, a node that carries a nominal, or has merged into another, is
-/// never a blocker for a representative node. A nominal node is one individual, so
+/// pair blocking, a node that carries a nominal a blocked copy could contradict (one
+/// a clause mentions, or any when a clause counts predecessors) is never a blocker
+/// for a representative node. A nominal node is one individual, so
 /// a blocked copy of it would be a second element with the same nominal. The wedge
 /// had no such exclusion (the main tableau's anywhere blocking does), and called
 /// `{a} : ≥3 s.{a,b}` consistent: two `≥3` witnesses were blocked by a third that had

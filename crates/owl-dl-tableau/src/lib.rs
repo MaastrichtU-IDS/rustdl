@@ -267,6 +267,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// hot `is_blocked` path pays no per-call env read. See
     /// `docs/superpowers/plans/2026-06-15-anywhere-pairwise-blocking.md`.
     anywhere_blocking: bool,
+    /// `RUSTDL_NOMINAL_BLOCK_GUARD`, cached (#361/#362).
+    nominal_block_guard: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
     /// `trigger ClassId → sorted atomic-super ConceptIds` reachable through
     /// chains of `ConceptRule`s whose conclusion is itself `Atomic(_)`. Built
@@ -397,6 +399,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            nominal_block_guard: nominal_block_guard_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -440,6 +443,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            nominal_block_guard: nominal_block_guard_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -488,6 +492,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             dkey_unguarded_rules: HashMap::new(),
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            nominal_block_guard: nominal_block_guard_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -1097,7 +1102,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `x → y → z` and fires when `y`, a neighbour of both, is touched).
     /// Outside a `saturate` call this is a no-op: the next call's start set
     /// comes from the trail.
-    fn touch(&mut self, nodes: &[NodeId]) {
+    pub(crate) fn touch(&mut self, nodes: &[NodeId]) {
         if !self.incremental_saturate || self.scan_phase == ScanPhase::Idle {
             return;
         }
@@ -1426,6 +1431,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let (Some(yp_id), Some(yr)) = (yb.parent, yb.parent_role) else {
             return false;
         };
+        // #361/#362: a nominal node is never blocked (as in anywhere blocking).
+        if self.nominal_block_guard && self.node_is_nominal(y) {
+            return false;
+        }
         let yl_sig = yb.label_sig;
         let yp_sig = self.graph.blocking(yp_id).label_sig;
 
@@ -1468,7 +1477,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     if is_subset_sorted(y_labels, x_labels) {
                         let yp_labels = &self.graph.node(yp_id).labels;
                         let xp_labels = &self.graph.node(xp_id).labels;
-                        if is_subset_sorted(yp_labels, xp_labels) {
+                        if is_subset_sorted(yp_labels, xp_labels)
+                            && !(self.nominal_block_guard && self.node_is_nominal(x_prime_id))
+                            && !self.nn_guarded(y)
+                            && !self.nn_guarded(x_prime_id)
+                        {
                             crate::bump_counter!(self, is_blocked_true);
                             return true;
                         }
@@ -1491,6 +1504,73 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             }
         }
         false
+    }
+
+    /// #361/#362: for each `≤n R.C` at a nominal neighbour `w` of `v` that counts
+    /// `v` (`v` an `R`-neighbour of `w` without `¬C`), whether `w` has more than `n`
+    /// such neighbours. `None` when the guard is off or nothing counts `v`.
+    fn nominal_max_overfull(&self, v: NodeId) -> Option<bool> {
+        if !self.nominal_block_guard {
+            return None;
+        }
+        let mut found = None;
+        for (_, w) in self.graph.node(v).neighbours() {
+            if !self.node_is_nominal(w) {
+                continue;
+            }
+            for &c in &self.graph.node(w).labels {
+                let ConceptExpr::Max(n, role, body) = self.pool.get(c) else {
+                    continue;
+                };
+                if self.dkey_range_of(*body).is_some() {
+                    continue;
+                }
+                // The choose rule skips a `≤` with no registered complement;
+                // so does this count, so the two agree label by label.
+                let Some(comp) = self.complement_of(*body) else {
+                    continue;
+                };
+                let mut cands: Vec<NodeId> = Vec::new();
+                for (seen, x) in self.graph.node(w).neighbours() {
+                    if self.edge_satisfies(seen, *role)
+                        && !self.graph.node(x).has_label(comp)
+                        && !cands.contains(&x)
+                    {
+                        cands.push(x);
+                    }
+                }
+                if cands.contains(&v) {
+                    let over = cands.len() > *n as usize;
+                    if over {
+                        return Some(true);
+                    }
+                    found = Some(false);
+                }
+            }
+        }
+        found
+    }
+
+    /// #361/#362: `v` stands in for a nominal individual's `≤`-witness and must be
+    /// neither blocked nor a blocker: a `≤n R.C` at a nominal neighbour counts `v`
+    /// and is not over-full. Over-full, the guard lifts so blocking bounds the
+    /// chain until the `≤` merges.
+    fn nn_guarded(&self, v: NodeId) -> bool {
+        self.nominal_max_overfull(v) == Some(false)
+    }
+
+    /// Whether `RUSTDL_NOMINAL_BLOCK_GUARD` is on (cached).
+    pub(crate) fn nominal_block_guard(&self) -> bool {
+        self.nominal_block_guard
+    }
+
+    /// #362: generation (`∃`, `≥n`) waits at `v` while a `≤` at a nominal neighbour
+    /// that counts `v` is over-full, so the merge runs before `v` makes a child a
+    /// later merge would reparent (the SHOIQ priority of the `≤`/o-rules over the
+    /// generating rules). Deferral only: a deferring rule registers `v` with
+    /// [`Self::note_blocked_skip`], so incremental saturation revisits it.
+    pub(crate) fn defer_generation_at_overfull_nominal(&self, v: NodeId) -> bool {
+        self.nominal_max_overfull(v) == Some(true)
     }
 
     /// True iff any label of `node` is a [`ConceptExpr::Nominal`] — i.e. the
@@ -1546,7 +1626,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             return false;
         };
         // A nominal `y` denotes a fixed individual and must not be blocked.
-        if self.node_is_nominal(y) {
+        if self.node_is_nominal(y) || self.nn_guarded(y) {
             return false;
         }
         let yl_sig = yb.label_sig;
@@ -1576,7 +1656,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             };
             // Exclude redirected (merged-away) candidates: their live state
             // lives on the representative, so their own label set is stale.
-            if self.graph.node(x_prime_id).is_redirected() {
+            // Also a candidate whose parent was pruned (#362).
+            if self.graph.node(x_prime_id).is_redirected() || self.graph.node(xp_id).is_redirected()
+            {
                 continue;
             }
             // `label_sig` subset prefilter (necessary condition for (3)/(4)).
@@ -1596,7 +1678,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             if is_subset_sorted(y_labels, x_labels) {
                 let yp_labels = &self.graph.node(yp_id).labels;
                 let xp_labels = &self.graph.node(xp_id).labels;
-                if is_subset_sorted(yp_labels, xp_labels) {
+                if is_subset_sorted(yp_labels, xp_labels) && !self.nn_guarded(x_prime_id) {
                     crate::bump_counter!(self, is_blocked_true);
                     return true;
                 }
@@ -2013,6 +2095,117 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         });
         self.touch(&[source, target]);
 
+        true
+    }
+
+    /// #362: the SHOIQ prune, run before `source` merges away under a `≤`.
+    ///
+    /// Without it the merge reparents `source`'s children, and on a nominal's
+    /// `≤`-witnesses each round left a child that nothing could block, which
+    /// generated again: `A ⊑ ∃r.A ⊓ ∃s⁻.{a}`, `{a} ⊑ ≤2 s` never terminated.
+    /// Instead every blockable descendant of `source` is removed with all its
+    /// edges, and a nominal descendant becomes a root (it is an individual and
+    /// outlives the subtree). Only `source`'s own edges move in the merge.
+    ///
+    /// Sound: it only removes facts, and every pruned fact derived from labels
+    /// that move to the survivor, which regenerates what it still needs.
+    /// Trailed (`EdgeRemoved`, `Pruned`, `ParentRewritten`), so the checkpoint
+    /// before the merge undoes it.
+    ///
+    /// Declines (returns `false`, pruning nothing, so the merge reparents as
+    /// before) when `survivor` lies in `source`'s subtree: the survivor would
+    /// itself be pruned.
+    pub(crate) fn prune_subtree(&mut self, source: NodeId, survivor: NodeId) -> bool {
+        if !self.nominal_block_guard || !self.graph.had_child(source) {
+            return false;
+        }
+        let len = self.graph.len();
+        let mut inside = vec![false; len];
+        inside[source.index() as usize] = true;
+        let mut pruned: Vec<NodeId> = Vec::new();
+        let mut roots: Vec<(NodeId, NodeId)> = Vec::new();
+        // Reparenting can give a child a lower index than its parent, so
+        // iterate to a fixpoint rather than one index-order pass.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for idx in 0..len {
+                let id = NodeId::new(u32::try_from(idx).expect("node count fits in u32"));
+                if inside[idx] || self.graph.node(id).is_redirected() {
+                    continue;
+                }
+                let Some(p) = self.graph.node(id).parent() else {
+                    continue;
+                };
+                if !inside[p.index() as usize] {
+                    continue;
+                }
+                if self.node_is_nominal(id) {
+                    if !roots.iter().any(|&(r, _)| r == id) {
+                        roots.push((id, p));
+                    }
+                    continue;
+                }
+                inside[idx] = true;
+                pruned.push(id);
+                changed = true;
+            }
+        }
+        if inside[survivor.index() as usize] {
+            return false;
+        }
+        for (id, p) in roots {
+            let prior_parent_role = self.graph.node(id).parent_role();
+            self.graph.node_mut(id).parent = None;
+            self.graph.blocking_mut(id).parent = None;
+            self.trail.record(TrailEntry::ParentRewritten {
+                node: id,
+                prior_parent: Some(p),
+                prior_parent_role,
+            });
+            self.touch(&[id]);
+        }
+        for p in pruned {
+            // Snapshots, and a missing mirror is skipped: a stale orphan
+            // entry is reachable (#38) and harmless on a pruned node.
+            for (role, t) in self.graph.node(p).edges.clone().into_iter().rev() {
+                let (Some(pos), Some(in_pos)) = (
+                    self.graph
+                        .node(p)
+                        .edges
+                        .iter()
+                        .position(|&e| e == (role, t)),
+                    self.graph
+                        .node(t)
+                        .in_edges
+                        .iter()
+                        .position(|&e| e == (role, p)),
+                ) else {
+                    continue;
+                };
+                self.remove_edge_recorded(p, role, t, pos, in_pos);
+            }
+            for (role, s) in self.graph.node(p).in_edges.clone().into_iter().rev() {
+                let (Some(pos), Some(in_pos)) = (
+                    self.graph
+                        .node(s)
+                        .edges
+                        .iter()
+                        .position(|&e| e == (role, p)),
+                    self.graph
+                        .node(p)
+                        .in_edges
+                        .iter()
+                        .position(|&e| e == (role, s)),
+                ) else {
+                    continue;
+                };
+                self.remove_edge_recorded(s, role, p, pos, in_pos);
+            }
+            self.graph.node_mut(p).pruned = true;
+            self.graph.set_dirty(p, false);
+            self.trail.record(TrailEntry::Pruned { node: p });
+        }
         true
     }
 
@@ -4630,6 +4823,30 @@ pub fn hyper_match_deadline_enabled() -> bool {
 pub fn seeded_fixpoint_uncapped_enabled() -> bool {
     // Default-ON idiom (house convention): an EMPTY value enables.
     std::env::var_os("RUSTDL_SEEDED_FIXPOINT_UNCAPPED").is_none_or(|v| v != "0")
+}
+
+/// #362 `RUSTDL_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts), main tableau. Pair
+/// blocking never blocks, and never blocks against, a node that is or stands for a
+/// nominal individual: a node carrying a nominal (now also in ancestor blocking) or
+/// a node counted by a `≤n R.C` at a nominal neighbour that is not over-full (the
+/// case the SHOIQ NN-rule makes a nominal node). Unravelling a blocked copy of such a
+/// node duplicates an edge into the nominal, so the copy can break the `≤n`: `sat`
+/// missed `Q ⊑ ⊥` for `Q ⊑ ≥2 r.(∃s⁻.{a})` with `s` functional.
+///
+/// The same flag orders generation and merges, which the guard needs to terminate:
+/// an `∃` into a nominal fires first and folds into the nominal's canonical node at
+/// once; further `∃`/`≥n` at a node such a `≤` counts wait while it is over-full
+/// (the SHOIQ priority of the `≤`/o-rules over the generating rules); and a `≤`
+/// merge prunes the merged node's blockable subtree instead of reparenting it
+/// ([`TableauContext::prune_subtree`]). Without the prune each merge left a child
+/// nothing could block, which generated again without end.
+///
+/// A guard plus prune, not the NN-rule (no `≤m` guess, no new nominal nodes): a
+/// nominal two edges away is still missed, and so is the wedge's half (a wedge
+/// blocker merely next to an individual), which default `consistent` trusts.
+#[must_use]
+pub fn nominal_block_guard_enabled() -> bool {
+    std::env::var_os("RUSTDL_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")
 }
 
 /// #355 `RUSTDL_MRV_REFUTED` (default ON, `=0` reverts): when MRV ordering is on, the

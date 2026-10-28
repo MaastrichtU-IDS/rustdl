@@ -18,7 +18,9 @@ All notable changes to rustdl are documented here. Format is based on
   So `A ⊑ ∃r.A ⊓ ∃s⁻.{a}`, `{a} ⊑ ≤2 s`, `Irreflexive(r)` gave `sat A` = unsat, and `subclass A`
   = yes for any class. The model `{a, y0, y1}`, `r = {(y0,y1),(y1,y0)}` shows it is satisfiable.
   The `⊥` now carries the self-edge's deps. The `≤n` trial merge, used when the merge choice point
-  is off, now also rejects a merge that makes such a self-loop. No flag, since this is a soundness
+  is off, now also rejects a merge whose survivor has such a self-loop at once. That covers a
+  fused edge and one made from a merged `∃q.Self`. A loop that appears only after further rules
+  fire is still committed to, as with the trial merge's other deeper clashes. No flag, since this is a soundness
   fix. `classify` was not affected on the reproducer (the wedge answers it).
 
   Sweeps over ORE, main against the fix, with every flagged row rechecked serially by CPU time:

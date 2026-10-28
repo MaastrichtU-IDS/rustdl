@@ -1152,12 +1152,18 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                         // `⊥` it may add is on the trail, so `rollback_to`
                         // undoes it.
                         if trial {
+                            // #373: a merge can also make a self-loop an
+                            // irreflexive (`¬∃r.Self`) role forbids, either
+                            // fused from an edge or added here from a merged
+                            // `∃q.Self`. The second pass sees the edge the first
+                            // added. Same order as the sweep: self-restriction,
+                            // then the role axioms, so they see that edge too.
+                            for at in [node, survivor] {
+                                apply_self_restriction(ctx, at);
+                                apply_self_restriction(ctx, at);
+                            }
                             apply_role_axioms(ctx, node);
                             apply_role_axioms(ctx, survivor);
-                            // #373: a merge can also make a self-loop an
-                            // irreflexive (`¬∃r.Self`) role forbids.
-                            apply_self_restriction(ctx, node);
-                            apply_self_restriction(ctx, survivor);
                         }
                         if !trial || !(ctx.clash_in(survivor) || ctx.clash_in(node)) {
                             applied = true;
@@ -1666,6 +1672,11 @@ fn chain_edge_already_present(
 /// self-loop-respecting pair-blocking discipline.
 pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_self_restriction);
+    // A merged-away node's state lives on its representative (`apply_max`'s
+    // trial can pass one).
+    if ctx.graph().node(node).is_redirected() {
+        return RuleOutcome::NoChange;
+    }
     if ctx.is_blocked(node) {
         ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;

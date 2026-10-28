@@ -745,9 +745,8 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
     // makes over-full is visible before the node generates anything else.
     let mut pending = pending;
     if ctx.nominal_block_guard() {
-        pending.sort_by_key(|&(_, body, _)| {
-            !matches!(ctx.pool().get(body), ConceptExpr::Nominal(_))
-        });
+        pending
+            .sort_by_key(|&(_, body, _)| !matches!(ctx.pool().get(body), ConceptExpr::Nominal(_)));
     }
     let mut applied = false;
     // Recomputed only after a nominal filler fires, the one step here that can

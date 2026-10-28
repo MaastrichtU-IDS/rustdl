@@ -171,24 +171,18 @@ fn trial_merge_rejects_a_self_loop() {
     )));
 }
 
-/// KNOWN LIMITATION, not a deps bug: with `≤1 s`, each merge reparents a child
-/// that nothing can block, which then generates again, without end (#362's
-/// guard work). `A` is satisfiable (`{a, y}`, `r = {(y,y)}`, `s = {(a,y)}`).
-/// A bounded call reaches no verdict today: `Ok(None)` at the deadline, or
-/// `Err(NoVerdict)` when the search bails first (as on CI). FLIP to
-/// `Ok(Some(true))` when fixed.
+/// The `≤1` sibling, which did not terminate before #362: each merge reparented a
+/// child that nothing could block. The merge-before-expand order (#362) settles
+/// it: `A` is satisfiable (`{a, y}`, `r = {(y,y)}`, `s = {(a,y)}`).
 #[test]
-fn known_max_one_merge_does_not_terminate() {
+fn max_one_merge_terminates() {
     let _l = lock();
     let r = owl_dl_reasoner::is_class_satisfiable_with_timeout(
         &onto(&format!(
             "{CHAIN}SubClassOf(ObjectOneOf(:a) ObjectMaxCardinality(1 :s))"
         )),
         &format!("{NS}A"),
-        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(20),
     );
-    assert!(
-        matches!(r, Ok(None) | Err(owl_dl_reasoner::ReasonError::NoVerdict)),
-        "FLIP: the ≤1 merge loop reaches a verdict now: {r:?}"
-    );
+    assert!(matches!(r, Ok(Some(true))), "{r:?}");
 }

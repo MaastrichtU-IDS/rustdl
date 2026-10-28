@@ -2367,7 +2367,6 @@ impl<'c> HyperEngine<'c> {
         self.nominal_at_most_overfull(n) == Some(false)
     }
 
-
     fn is_nominal(&self, c: ClassId) -> bool {
         match self.nominals {
             Some((start, count)) => {

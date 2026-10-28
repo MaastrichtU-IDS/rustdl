@@ -1152,6 +1152,16 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                         // `⊥` it may add is on the trail, so `rollback_to`
                         // undoes it.
                         if trial {
+                            // #373: a merge can also make a self-loop an
+                            // irreflexive (`¬∃r.Self`) role forbids, either
+                            // fused from an edge or added here from a merged
+                            // `∃q.Self`. The second pass sees the edge the first
+                            // added. Same order as the sweep: self-restriction,
+                            // then the role axioms, so they see that edge too.
+                            for at in [node, survivor] {
+                                apply_self_restriction(ctx, at);
+                                apply_self_restriction(ctx, at);
+                            }
                             apply_role_axioms(ctx, node);
                             apply_role_axioms(ctx, survivor);
                         }
@@ -1662,6 +1672,11 @@ fn chain_edge_already_present(
 /// self-loop-respecting pair-blocking discipline.
 pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_self_restriction);
+    // A merged-away node's state lives on its representative (`apply_max`'s
+    // trial can pass one).
+    if ctx.graph().node(node).is_redirected() {
+        return RuleOutcome::NoChange;
+    }
     if ctx.is_blocked(node) {
         ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
@@ -1689,19 +1704,23 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
     if positives.is_empty() && negatives.is_empty() {
         return RuleOutcome::NoChange;
     }
-    // Helper: does any outgoing self-edge of `node` satisfy `wanted`?
-    let self_edges: Vec<RoleId> = ctx
-        .graph()
-        .node(node)
-        .edges()
-        .iter()
-        .filter_map(|&(r, t)| if t == node { Some(r) } else { None })
-        .collect();
+    // Helper: does any outgoing self-edge of `node` satisfy `wanted`? Each
+    // self-edge is kept with its deps: a clash on it rests on the edge as much
+    // as on the `¬Self` label.
+    let self_edges: Vec<(RoleId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        n.edges()
+            .iter()
+            .zip(n.edge_deps.iter())
+            .filter(|&(&(_, t), _)| t == node)
+            .map(|(&(r, _), d)| (r, d.clone()))
+            .collect()
+    };
     let satisfies_any =
-        |wanted: Role, edges: &[RoleId], ctx: &TableauContext<'_, '_, '_>| -> bool {
+        |wanted: Role, edges: &[(RoleId, DepSet)], ctx: &TableauContext<'_, '_, '_>| -> bool {
             edges
                 .iter()
-                .any(|&r| ctx.edge_satisfies(Role::Named(r), wanted))
+                .any(|(r, _)| ctx.edge_satisfies(Role::Named(*r), wanted))
         };
     let mut applied = false;
     // Negatives first — a fresh positive added below could shadow an
@@ -1710,9 +1729,18 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
     // already satisfies the negated role.
     let bot_id = ctx.pool().bot_id();
     for (wanted, neg_deps) in &negatives {
-        if satisfies_any(*wanted, &self_edges, ctx)
-            && let Some(bot) = bot_id
-            && ctx.add_label_with_deps(node, bot, neg_deps)
+        // #373: the clash rests on the self-edge too. A `≤n` merge choice can
+        // create that edge, and its deps carry the choice; with only the
+        // `¬Self` label's (empty, deterministic) deps the search back-jumped
+        // past the choice and called a satisfiable class unsat.
+        let Some((_, edge_deps)) = self_edges
+            .iter()
+            .find(|(r, _)| ctx.edge_satisfies(Role::Named(*r), *wanted))
+        else {
+            continue;
+        };
+        if let Some(bot) = bot_id
+            && ctx.add_label_with_deps(node, bot, &union(neg_deps, edge_deps))
         {
             applied = true;
         }

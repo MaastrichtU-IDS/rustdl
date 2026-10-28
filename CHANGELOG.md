@@ -7,6 +7,27 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **Soundness: a self-loop made by a search decision no longer back-jumps past that decision
+  (#373).** `Irreflexive(r)` is enforced in the main tableau as `¬∃r.Self` on every node. The clash
+  on a self-edge took only that label's deps, which are always empty. When a search decision made
+  the self-loop, the clash did not depend on the decision, so the search skipped its remaining
+  options and called a satisfiable class unsatisfiable. Two ways to make such a decision:
+  - a `≤n` merge choice;
+  - a disjunct `∃q.Self` with `q ⊑ r`.
+
+  So `A ⊑ ∃r.A ⊓ ∃s⁻.{a}`, `{a} ⊑ ≤2 s`, `Irreflexive(r)` gave `sat A` = unsat, and `subclass A`
+  = yes for any class. The model `{a, y0, y1}`, `r = {(y0,y1),(y1,y0)}` shows it is satisfiable.
+  The `⊥` now carries the self-edge's deps. The `≤n` trial merge, used when the merge choice point
+  is off, now also rejects a merge whose survivor has such a self-loop at once. That covers a
+  fused edge and one made from a merged `∃q.Self`. A loop that appears only after further rules
+  fire is still committed to, as with the trial merge's other deeper clashes. No flag, since this is a soundness
+  fix. `classify` was not affected on the reproducer (the wedge answers it).
+
+  Sweeps over ORE, main against the fix, with every flagged row rechecked serially by CPU time:
+  - classify (1,920), `consistent` (1,159) and realize (200): no answer changes;
+  - missed-entailment net: FP 0, ΔMISSED 0.
+
+  Still open: the same shape with `≤1 s` and no `Irreflexive` does not terminate (#362).
 - **Classify uses individual equalities the KB forces (#354), `RUSTDL_CLASSIFY_DERIVED_SAME`,
   default ON (`=0` reverts).** In the classify wedge a nominal `{a}` is an ordinary class, and an
   equality between individuals reached it only when asserted. So `x : W`, `W ⊑ ≤1 f`, `f(x,a)`,

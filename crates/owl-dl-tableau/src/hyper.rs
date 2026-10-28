@@ -2334,25 +2334,39 @@ impl<'c> HyperEngine<'c> {
         i < l.len() && l[i].index() < start.saturating_add(count)
     }
 
-    /// #361/#362: `n` stands in for a nominal individual's `≤`-witness: some
-    /// nominal neighbour `w` has `≤k r.q`, `n` is one of `w`'s `r`-neighbours
-    /// carrying `q` (the witnesses `distinct_role_succ` counts), and `w` has at
-    /// most `k` of them. Such a node is neither blocked nor a blocker. Over-full,
-    /// the guard lifts so ordinary blocking bounds generation until the `≤` merges.
-    fn nn_guarded(&self, n: HNode) -> bool {
+    /// #361/#362: for each `≤k r.q` at a nominal neighbour `w` of `n` that counts
+    /// `n` (one of the witnesses `distinct_role_succ` reads), whether `w` has more
+    /// than `k` of them. `None` when nothing counts `n`.
+    fn nominal_at_most_overfull(&self, n: HNode) -> Option<bool> {
         let rn = self.resolve(n);
         let node = &self.nodes[rn.index()];
-        node.edges.iter().chain(node.preds.iter()).any(|&(_, w)| {
+        let mut found = None;
+        for &(_, w) in node.edges.iter().chain(node.preds.iter()) {
             let w = self.resolve(w);
             if !self.node_has_nominal(w) {
-                return false;
+                continue;
             }
-            self.nodes[w.index()].at_most.iter().any(|&(r, q, k)| {
+            for &(r, q, k) in &self.nodes[w.index()].at_most {
                 let cands = self.distinct_role_succ(w, r, q);
-                cands.len() <= k as usize && cands.contains(&rn)
-            })
-        })
+                if cands.contains(&rn) {
+                    if cands.len() > k as usize {
+                        return Some(true);
+                    }
+                    found = Some(false);
+                }
+            }
+        }
+        found
     }
+
+    /// #361/#362: `n` stands in for a nominal individual's `≤`-witness (a `≤k r.q`
+    /// at a nominal neighbour counts it and is not over-full). Such a node is
+    /// neither blocked nor a blocker. Over-full, the guard lifts so ordinary
+    /// blocking bounds generation until the `≤` merges.
+    fn nn_guarded(&self, n: HNode) -> bool {
+        self.nominal_at_most_overfull(n) == Some(false)
+    }
+
 
     fn is_nominal(&self, c: ClassId) -> bool {
         match self.nominals {

@@ -740,8 +740,26 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
     if pending.is_empty() {
         return RuleOutcome::NoChange;
     }
+    // #362: an existential into a nominal goes first, and its fresh node merges
+    // with the nominal's canonical node at once, so a `≤` there that this node
+    // makes over-full is visible before the node generates anything else.
+    let mut pending = pending;
+    if ctx.nominal_block_guard() {
+        pending.sort_by_key(|&(_, body, _)| {
+            !matches!(ctx.pool().get(body), ConceptExpr::Nominal(_))
+        });
+    }
     let mut applied = false;
+    // Recomputed only after a nominal filler fires, the one step here that can
+    // change it.
+    let mut defer = None;
     for (role, body, exists_deps) in pending {
+        let nominal_filler = matches!(ctx.pool().get(body), ConceptExpr::Nominal(_));
+        if !nominal_filler
+            && *defer.get_or_insert_with(|| ctx.defer_generation_at_overfull_nominal(node))
+        {
+            continue;
+        }
         // Witness check honours the role hierarchy and inverse
         // polarity: any neighbour reachable via a sub-role of `role`
         // (same polarity) that already carries `body` discharges the
@@ -768,6 +786,15 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         };
         if ctx.add_label_with_deps(fresh, body, &exists_deps) {
             applied = true;
+            if nominal_filler && ctx.nominal_block_guard() {
+                let _ = apply_nominal_assignment(ctx, fresh);
+                defer = None;
+                // `node` may have been the nominal's canonical node and merged
+                // into `fresh`; its survivor holds the rest and is dirty.
+                if ctx.graph().node(node).is_redirected() {
+                    return RuleOutcome::Applied;
+                }
+            }
         }
     }
     if applied {
@@ -811,6 +838,9 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     // Deferral only — the node is re-dirtied on add_label/merge, so generation
     // resumes on the survivor (completeness-preserving).
     if crate::nominal_first_enabled() && ctx.has_pending_nominal_disjunction(node) {
+        return RuleOutcome::NoChange;
+    }
+    if ctx.defer_generation_at_overfull_nominal(node) {
         return RuleOutcome::NoChange;
     }
     let mins: Vec<(u32, Role, ConceptId, DepSet)> = {
@@ -1168,6 +1198,12 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                         if !trial || !(ctx.clash_in(survivor) || ctx.clash_in(node)) {
                             applied = true;
                             merged = true;
+                            // #362: a witness whose generation waited on this
+                            // over-full `≤` is due again, in this pass too.
+                            for &w in &c_neighbours {
+                                ctx.graph_mut().set_dirty(w, true);
+                            }
+                            ctx.touch(&c_neighbours);
                             break 'pairs;
                         }
                         crate::bump_counter!(ctx, max_trial_merge_rejects);

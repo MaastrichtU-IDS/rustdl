@@ -7,6 +7,27 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **Pair blocking no longer blocks a node that stands for a nominal individual (#361, #362),
+  `RUSTDL_NOMINAL_BLOCK_GUARD`, default ON (`=0` reverts).** A blocked node is replaced in the
+  model by a copy of its blocker's subtree. When that subtree reaches a nominal `a`, the copy
+  adds a neighbour to `a`, and that can break a `≤n` at `a`. Both engines had the gap:
+  - `sat` reported `Q` satisfiable for `Q ⊑ ≥2 r.A`, `A ⊑ ∃s⁻.{a}`, `s` functional (#362). The
+    main tableau blocked the second `A` by the first.
+  - `consistent` reported `{a} : ≥3 s.{a,b}` consistent (#361). The wedge blocked two
+    witnesses by one that had merged into `a`, and the wedge had no nominal exclusion at all.
+
+  Now a node that carries a nominal, or that a `≤` at a nominal neighbour counts while that `≤`
+  is not over-full, is neither blocked nor a blocker, in both engines and both blocking modes.
+  In the main tableau an `∃` into a nominal also fires first and merges at once, and further
+  generation at a node waits while such a `≤` is over-full. Without this ordering, each merge
+  reparented a child that nothing could block, without end. The `≤1` sibling of #373 now
+  terminates.
+
+  This is a blocking guard, not the SHOIQ NN-rule. Known misses, each pinned by a test to FLIP:
+  - a nominal two edges below the blocker;
+  - the wedge's `ABox` forms when `RUSTDL_RESEED_VERIFY=0` or
+    `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0`. The wedge relies on the #137 re-seed net to re-fire
+    an `∃` skipped while blocked, and with either off it can miss the clash silently.
 - **Soundness: a self-loop made by a search decision no longer back-jumps past that decision
   (#373).** `Irreflexive(r)` is enforced in the main tableau as `¬∃r.Self` on every node. The clash
   on a self-edge took only that label's deps, which are always empty. When a search decision made

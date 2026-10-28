@@ -299,22 +299,44 @@ fn known_nominal_two_edges_away_is_missed() {
     );
 }
 
-/// NOT this change's defect, pinned because the guard sends more merges through
-/// it: `A` is satisfiable (`{a, y0, y1}`, `r = {(y0,y1),(y1,y0)}`,
-/// `s = {(a,y0),(a,y1)}`), and rustdl says unsat on main too. The `≤2` merge makes
-/// an `r` self-loop whose clash does not carry the merge decision, so the search
-/// skips the other merge.
+/// #373's reproducer, fixed there: after the self-looping `≤2` merge is refuted the
+/// other merge is tried. Under this guard it must still terminate.
 #[test]
-fn known_max_merge_self_loop_false_positive() {
+fn max_merge_self_loop_is_satisfiable() {
     let _l = lock();
+    assert!(sat(
+        "SubClassOf(:A ObjectIntersectionOf(ObjectSomeValuesFrom(:r :A) \
+         ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a))))\n\
+         SubClassOf(ObjectOneOf(:a) ObjectMaxCardinality(2 :s))\n\
+         IrreflexiveObjectProperty(:r)",
+        "A"
+    ));
+}
+
+/// The `≤1` sibling of #373, which did not terminate on main: each `≤` merge
+/// reparented a child that nothing could block. With the merge-before-expand order
+/// the second `A` waits, merges into the first (`r(y,y)`), and `A` is satisfiable.
+#[test]
+fn max_one_merge_terminates() {
+    let _l = lock();
+    assert!(sat(
+        "SubClassOf(:A ObjectIntersectionOf(ObjectSomeValuesFrom(:r :A) \
+         ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a))))\n\
+         SubClassOf(ObjectOneOf(:a) ObjectMaxCardinality(1 :s))",
+        "A"
+    ));
+}
+
+/// The wedge has the blocking half only. On the `ABox` form an `∃` skipped while
+/// its node was blocked is re-fired by the #137 re-seed net; with the net off the
+/// wedge can miss the clash. Pinned so a re-queue that removes the dependency
+/// FLIPS it.
+#[test]
+fn known_wedge_abox_form_relies_on_the_reseed_net() {
+    let _l = lock();
+    let _off = SetEnvGuard::set("RUSTDL_RESEED_VERIFY", "0");
     assert!(
-        !sat(
-            "SubClassOf(:A ObjectIntersectionOf(ObjectSomeValuesFrom(:r :A) \
-             ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a))))\n\
-             SubClassOf(ObjectOneOf(:a) ObjectMaxCardinality(2 :s))\n\
-             IrreflexiveObjectProperty(:r)",
-            "A"
-        ),
-        "FLIP: the ≤-merge self-loop false positive is fixed"
+        consistent(&format!("{I362}\nClassAssertion(:Q :q)")),
+        "FLIP: the wedge finds the clash without the re-seed net"
     );
 }

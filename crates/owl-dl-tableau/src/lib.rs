@@ -1102,7 +1102,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `x → y → z` and fires when `y`, a neighbour of both, is touched).
     /// Outside a `saturate` call this is a no-op: the next call's start set
     /// comes from the trail.
-    fn touch(&mut self, nodes: &[NodeId]) {
+    pub(crate) fn touch(&mut self, nodes: &[NodeId]) {
         if !self.incremental_saturate || self.scan_phase == ScanPhase::Idle {
             return;
         }
@@ -1512,36 +1512,71 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// blocker, and a nominal node must not itself be blocked) because the
     /// loop-back model trick that justifies pair blocking does not hold for a
     /// node whose extension is forced to a single named individual.
-    /// #361/#362: `v` stands in for a nominal individual's `≤`-witness and must be
-    /// neither blocked nor a blocker. True iff some nominal neighbour `w` of `v`
-    /// carries `≤n R.C`, `v` is an `R`-neighbour of `w` without `¬C`, and `w` has at
-    /// most `n` such neighbours.
-    fn nn_guarded(&self, v: NodeId) -> bool {
+    /// #361/#362: for each `≤n R.C` at a nominal neighbour `w` of `v` that counts
+    /// `v` (`v` an `R`-neighbour of `w` without `¬C`), whether `w` has more than `n`
+    /// such neighbours. `None` when the guard is off or nothing counts `v`.
+    fn nominal_max_overfull(&self, v: NodeId) -> Option<bool> {
         if !self.nominal_block_guard {
-            return false;
+            return None;
         }
-        self.graph.node(v).neighbours().any(|(_, w)| {
-            self.node_is_nominal(w)
-                && self.graph.node(w).labels.iter().any(|&c| {
-                    let ConceptExpr::Max(n, role, body) = self.pool.get(c) else {
-                        return false;
-                    };
-                    if self.dkey_range_of(*body).is_some() {
-                        return false;
+        let mut found = None;
+        for (_, w) in self.graph.node(v).neighbours() {
+            if !self.node_is_nominal(w) {
+                continue;
+            }
+            for &c in &self.graph.node(w).labels {
+                let ConceptExpr::Max(n, role, body) = self.pool.get(c) else {
+                    continue;
+                };
+                if self.dkey_range_of(*body).is_some() {
+                    continue;
+                }
+                // The choose rule skips a `≤` with no registered complement;
+                // so does this count, so the two agree label by label.
+                let Some(comp) = self.complement_of(*body) else {
+                    continue;
+                };
+                let mut cands: Vec<NodeId> = Vec::new();
+                for (seen, x) in self.graph.node(w).neighbours() {
+                    if self.edge_satisfies(seen, *role)
+                        && !self.graph.node(x).has_label(comp)
+                        && !cands.contains(&x)
+                    {
+                        cands.push(x);
                     }
-                    let comp = self.complement_of(*body);
-                    let mut cands: Vec<NodeId> = Vec::new();
-                    for (seen, x) in self.graph.node(w).neighbours() {
-                        if self.edge_satisfies(seen, *role)
-                            && comp.is_none_or(|k| !self.graph.node(x).has_label(k))
-                            && !cands.contains(&x)
-                        {
-                            cands.push(x);
-                        }
+                }
+                if cands.contains(&v) {
+                    let over = cands.len() > *n as usize;
+                    if over {
+                        return Some(true);
                     }
-                    cands.len() <= *n as usize && cands.contains(&v)
-                })
-        })
+                    found = Some(false);
+                }
+            }
+        }
+        found
+    }
+
+    /// #361/#362: `v` stands in for a nominal individual's `≤`-witness and must be
+    /// neither blocked nor a blocker: a `≤n R.C` at a nominal neighbour counts `v`
+    /// and is not over-full. Over-full, the guard lifts so blocking bounds the
+    /// chain until the `≤` merges.
+    fn nn_guarded(&self, v: NodeId) -> bool {
+        self.nominal_max_overfull(v) == Some(false)
+    }
+
+    /// #362: generation (`∃`, `≥n`) waits at `v` while a `≤` at a nominal neighbour
+    /// that counts `v` is over-full, so the merge runs before `v` makes a child a
+    /// later merge would reparent (the SHOIQ priority of the `≤`/o-rules over the
+    /// generating rules). Deferral only: the search resolves the `≤`, and the merge
+    /// or a later `saturate` re-dirties `v`.
+    /// Whether `RUSTDL_NOMINAL_BLOCK_GUARD` is on (cached).
+    pub(crate) fn nominal_block_guard(&self) -> bool {
+        self.nominal_block_guard
+    }
+
+    pub(crate) fn defer_generation_at_overfull_nominal(&self, v: NodeId) -> bool {
+        self.nominal_max_overfull(v) == Some(true)
     }
 
     #[must_use]
@@ -4677,13 +4712,6 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
     std::env::var_os("RUSTDL_SEEDED_FIXPOINT_UNCAPPED").is_none_or(|v| v != "0")
 }
 
-/// #355 `RUSTDL_MRV_REFUTED` (default ON, `=0` reverts): when MRV ordering is on, the
-/// wedge branches first on the open disjunction with the fewest VIABLE disjuncts (live
-/// and not already refuted at the binding), then the fewest live ones. Without it a
-/// disjunction whose every disjunct clashes ties with a generating one (`Aryl ∨ Alkyl`)
-/// and loses the first-found tie-break, and the search dives into the generator:
-/// `subclass SulfoxideGroup SulfinicAcidGeneralGroup` on `ore_ont_10019` ran >300 s.
-/// Reordering is FP-safe; under a budget or depth cap it can change which pairs are cut.
 /// #361/#362 `RUSTDL_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): pair blocking
 /// never blocks, and never blocks against, a node that is or stands for a nominal
 /// individual. That covers a node carrying a nominal (now also in ancestor blocking
@@ -4694,11 +4722,27 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
 /// `Q ⊑ ≥2 r.(∃s⁻.{a})` with `s` functional (#362), and the wedge called
 /// `{a} : ≥3 s.{a,b}` consistent (#361). This is a blocking guard, not the NN-rule
 /// (no `≤m` guess, no new nominal nodes); a nominal two edges away is still missed.
+///
+/// In the main tableau the same flag also orders generation: an `∃` into a nominal
+/// fires first and merges with the nominal at once, and further `∃`/`≥n` at a node a
+/// `≤` there counts wait while that `≤` is over-full (the SHOIQ priority of the
+/// `≤`/o-rules over the generating rules). Without it, each `≤` merge reparented a
+/// child that nothing could block, which generated again without end. The wedge has
+/// only the blocking half, and on the `ABox` shapes it relies on the #137 re-seed net
+/// (`RUSTDL_RESEED_VERIFY`, with `RUSTDL_HYPER_INCREMENTAL_FIXPOINT`) to re-fire an
+/// `∃` skipped while its node was blocked; with either off it can miss the clash.
 #[must_use]
 pub fn nominal_block_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")
 }
 
+/// #355 `RUSTDL_MRV_REFUTED` (default ON, `=0` reverts): when MRV ordering is on, the
+/// wedge branches first on the open disjunction with the fewest VIABLE disjuncts (live
+/// and not already refuted at the binding), then the fewest live ones. Without it a
+/// disjunction whose every disjunct clashes ties with a generating one (`Aryl ∨ Alkyl`)
+/// and loses the first-found tie-break, and the search dives into the generator:
+/// `subclass SulfoxideGroup SulfinicAcidGeneralGroup` on `ore_ont_10019` ran >300 s.
+/// Reordering is FP-safe; under a budget or depth cap it can change which pairs are cut.
 #[must_use]
 pub fn hyper_mrv_refuted_enabled() -> bool {
     std::env::var_os("RUSTDL_MRV_REFUTED").is_none_or(|v| v != "0")

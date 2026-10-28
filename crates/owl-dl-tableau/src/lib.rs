@@ -4634,13 +4634,14 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
 
 /// #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): in the wedge's
 /// pair blocking, a node that carries a nominal a blocked copy could contradict (one
-/// a clause mentions, or any when a clause counts predecessors) is never a blocker
-/// for a representative node. A nominal node is one individual, so
-/// a blocked copy of it would be a second element with the same nominal. The wedge
-/// had no such exclusion (the main tableau's anywhere blocking does), and called
+/// a clause head forces, or any when a `≤` counts predecessors) is never a blocker
+/// for a representative node. A nominal node is one individual, so a blocked copy of
+/// it would be a second element with the same nominal. The wedge had no such
+/// exclusion (the main tableau's anywhere blocking does), and called
 /// `{a} : ≥3 s.{a,b}` consistent: two `≥3` witnesses were blocked by a third that had
-/// then merged into `a`. Inert on classify, whose wedge has no nominal classes. Only
-/// the label half; the `≤`-witness half of the SHOIQ NN-rule is #362.
+/// then merged into `a`. Inert on classify's `HyperCache`, which has no nominal
+/// classes. Only the label half: a blocker that is merely next to a nominal under
+/// predecessor counting (the SHOIQ NN-rule case) is not refused; that is #362.
 #[must_use]
 pub fn wedge_nominal_block_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")

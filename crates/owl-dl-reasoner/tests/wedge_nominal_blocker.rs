@@ -1,6 +1,6 @@
-//! #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON): the wedge's pair blocking
-//! never blocks a node carrying a nominal, nor blocks against one or against a node
-//! merged into another.
+//! #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON): in the wedge's pair blocking,
+//! a node carrying a nominal a blocked copy could contradict (one a clause head forces,
+//! or any when a `≤` counts predecessors) is never a blocker.
 //!
 //! `{a} : ≥3 s.{a,b}` is inconsistent: three pairwise-distinct `s`-fillers must each be
 //! `a` or `b`. The wedge made three witnesses, blocked two by the first, and the first
@@ -127,7 +127,7 @@ fn flag_off_restores_the_old_answer() {
     assert!(consistent(I361), "flag off: the #361 miss");
 }
 
-/// Termination with the guard on: nominal nodes are never blockers, so a cycle
+/// Termination with the guard on: visible-nominal nodes are never blockers, so a cycle
 /// through a nominal must close by merging, not by blocking. Both are consistent.
 #[test]
 fn nominal_cycles_terminate() {
@@ -150,7 +150,8 @@ fn nominal_cycles_terminate() {
 /// clause mentions, unless a clause counts predecessors. Forward functional `f`:
 /// the copy of an individual has the same successors, so skipping is sound, and the
 /// verdicts must still be right. Inverse-functional `g` counts predecessors, so
-/// every nominal stays guarded. HermiT: as asserted.
+/// every nominal stays guarded; that case shows only that it still terminates, since
+/// the answer is the same with the guard off. HermiT: as asserted.
 #[test]
 fn abox_only_individuals_through_counting() {
     let _l = lock();

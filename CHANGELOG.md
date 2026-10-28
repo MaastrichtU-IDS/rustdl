@@ -7,7 +7,7 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
-- **The wedge no longer blocks against a node that carries a nominal (#361),
+- **The wedge no longer blocks against a node that carries a visible nominal (#361),
   `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD`, default ON (`=0` reverts).** `consistent` called
   `{a} : ≥3 s.{a,b}` consistent, and also the inverse form `{a} ⊑ ≥3 s⁻.{a,b}`. The wedge made
   three `≥3` witnesses and blocked two of them by the first. The first then picked `{a}` and
@@ -28,7 +28,7 @@ All notable changes to rustdl are documented here. Format is based on
 
   Sweeps over ORE, main against the fix, with flagged rows rechecked serially at 5 runs per arm:
   - `consistent` (1,159) and realize (200): no answer changes;
-  - one ontology (`ore_ont_16853`) gains a verdict.
+  - `ore_ont_16853` occasionally decides where main never does (1/5 against 0/5).
 - **Soundness: a self-loop made by a search decision no longer back-jumps past that decision
   (#373).** `Irreflexive(r)` is enforced in the main tableau as `¬∃r.Self` on every node. The clash
   on a self-edge took only that label's deps, which are always empty. When a search decision made

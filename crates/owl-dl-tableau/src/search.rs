@@ -511,6 +511,10 @@ impl Frame {
                     if let Err(pos) = deps.binary_search(&my_id) {
                         deps.insert(pos, my_id);
                     }
+                    // #362: drop the pivot's blockable subtree instead of letting
+                    // the merge reparent it (behind `cp`, so the next option
+                    // starts from the unpruned graph).
+                    let _ = ctx.prune_subtree(open.pivot, *w);
                     if ctx.merge_into_with_deps(open.pivot, *w, deps.as_slice()) {
                         Start::Child(k, cp)
                     } else {

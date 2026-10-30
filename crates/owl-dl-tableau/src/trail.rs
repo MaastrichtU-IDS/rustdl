@@ -79,6 +79,9 @@ pub enum TrailEntry {
         new_target: NodeId,
         prior_redirect: Option<NodeId>,
     },
+    /// `node` was pruned (#362); undo puts it back. Its edges come back through
+    /// their own `EdgeRemoved` entries.
+    Pruned { node: NodeId },
     /// `node`'s `parent` / `parent_role` was rewritten (typically
     /// during merge, when a child's parent was the source side and
     /// needs to point at the target). Undo restores the prior
@@ -335,6 +338,9 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             prior_redirect,
         } => {
             graph.node_mut(node).merged_into = prior_redirect;
+        }
+        TrailEntry::Pruned { node } => {
+            graph.node_mut(node).pruned = false;
         }
         TrailEntry::ParentRewritten {
             node,

@@ -7,6 +7,32 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **`sat` no longer misses `Q ⊑ ⊥` when the witnesses that should clash meet at a nominal (#362),
+  `RUSTDL_NOMINAL_BLOCK_GUARD`, default ON (`=0` reverts), main tableau.** With
+  `Q ⊑ ≥2 r.A`, `A ⊑ ∃s⁻.{a}` and `s` functional, `sat Q` said satisfiable. Anywhere blocking
+  blocked the second `r`-witness by the first, so `a` saw one `s`-neighbour instead of two. A
+  blocked copy of a node next to a nominal would add a neighbour to it, and that can break the
+  nominal's `≤n`. Changes, as in SHOIQ:
+  - a node that carries a nominal, or that a `≤` at a nominal neighbour counts while that `≤` is
+    not over-full, is neither blocked nor a blocker;
+  - an `∃` into a nominal fires first and folds into the nominal's existing node;
+  - further generation at a counted node waits while its `≤` is over-full;
+  - a `≤` merge prunes the merged node's blockable subtree instead of reparenting it. Without
+    the prune each merge left a child nothing could block. That loop also made the `≤1` sibling
+    of #373 run forever; it now terminates.
+
+  This is a guard plus prune, not the NN-rule. Known misses, each pinned by a test to FLIP:
+  - a nominal two edges below the blocker;
+  - the wedge's half (#376): a wedge blocker merely next to an individual. Default `consistent`
+    trusts the wedge, so the ABox forms of this shape still read consistent there. The main
+    tableau now gets them right.
+
+  Sweeps over ORE against main, with flagged rows rechecked serially at 5 runs per arm:
+  - classify, `consistent` and realize: no lost answers; the classify DIFFERs reproduce
+    identically and the flips are at the 60 s cap;
+  - realize gains 36 types on `ore_ont_7342`, all confirmed by HermiT;
+  - classify recovers 3 ontologies;
+  - the missed-entailment net gains 6, with FP 0.
 - **The wedge no longer blocks against a node that carries a visible nominal (#361),
   `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD`, default ON (`=0` reverts).** `consistent` called
   `{a} : ≥3 s.{a,b}` consistent, and also the inverse form `{a} ⊑ ≥3 s⁻.{a,b}`. The wedge made

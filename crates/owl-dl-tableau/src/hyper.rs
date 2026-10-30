@@ -942,6 +942,13 @@ pub struct HyperEngine<'c> {
     /// soundness with inverse roles; without it, `RUSTDL_HYPERTABLEAU_TRUST_SAT`
     /// is corpus-only safe (see SIO finding).
     double_blocking: bool,
+    /// `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (#361): see `is_blocked`. Cleared at the
+    /// first blocking check when no nominal is visible.
+    nominal_guard: bool,
+    /// #361: per nominal in the `HF4a` range, whether a refused blocker must carry
+    /// it (see `node_has_visible_nominal`). Computed at the first blocking check,
+    /// after any per-query clauses are appended.
+    visible_nominals: Option<Vec<bool>>,
     /// SP1 scaffold (`RUSTDL_HYPER_INCREMENTAL_FIXPOINT`, via
     /// [`with_incremental_fixpoint`]): opt-in incremental `horn_fixpoint` —
     /// process only the per-branch worklist delta instead of re-seeding the
@@ -1792,6 +1799,8 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            nominal_guard: crate::wedge_nominal_block_guard_enabled(),
+            visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,
@@ -1873,6 +1882,8 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            nominal_guard: crate::wedge_nominal_block_guard_enabled(),
+            visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,
@@ -2320,6 +2331,107 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
+    /// #361: which nominals a blocked copy could contradict. A copy of a node that
+    /// carries `{a}` is a second element with `a`'s labels and `a`'s edges. Dropping
+    /// `{a}` from it gives a model element unless
+    /// * a clause HEAD forces `{a}` (a class, an `∃` filler, a `≥`/`≤` qualifier): a
+    ///   `TBox` nominal. A body-only `{a}`, as in a class assertion `{a} → C` or
+    ///   `DifferentIndividuals`' `{a} ⊓ {b} → ⊥`, only stops applying; or
+    /// * a `≤` counts predecessors, which the engine does for an edge with an
+    ///   inverse role, a symmetric role, or a polarity-crossing inclusion (see
+    ///   `distinct_role_succ`): the copy's edges are then extra predecessors of
+    ///   `a`'s successors. Then every nominal is visible.
+    ///
+    /// In the `ABox`-seeded engine every individual is a nominal, and refusing them
+    /// all as blockers cost large `ABox`es their verdicts.
+    fn compute_visible_nominals(&self, start: u32, count: u32) -> Vec<bool> {
+        let mut vis = vec![false; count as usize];
+        let nominal = |c: ClassId| c.index().checked_sub(start).filter(|&k| k < count);
+        // Roles some `≤` counts, and inverse roles an edge can be stored with (a
+        // clause atom, or a seeded `ABox` edge).
+        let mut at_most: Vec<Role> = Vec::new();
+        let mut inverse: Vec<Role> = Vec::new();
+        let note = |r: Role, inv: &mut Vec<Role>| {
+            if r.is_inverse() && !inv.contains(&r) {
+                inv.push(r);
+            }
+        };
+        for ci in 0..self.num_clauses() {
+            let clause = self.clause(ci);
+            for atom in &clause.body {
+                if let Atom::Role(r, _, _) = *atom {
+                    note(r, &mut inverse);
+                }
+            }
+            for atom in &clause.head {
+                let c = match *atom {
+                    Atom::Class(c, _) => Some(c),
+                    Atom::Exists(r, c, _) => {
+                        note(r, &mut inverse);
+                        Some(c)
+                    }
+                    Atom::AtMost(r, q, _, _) => {
+                        if !at_most.contains(&r) {
+                            at_most.push(r);
+                        }
+                        q
+                    }
+                    Atom::AtLeast(r, q, _, _) => {
+                        note(r, &mut inverse);
+                        q
+                    }
+                    Atom::Role(r, _, _) => {
+                        note(r, &mut inverse);
+                        None
+                    }
+                    Atom::Equal(..) => None,
+                };
+                if let Some(k) = c.and_then(nominal) {
+                    vis[k as usize] = true;
+                }
+            }
+        }
+        for n in self.nodes.iter() {
+            for &(r, _) in &n.edges {
+                note(r, &mut inverse);
+            }
+        }
+        // A `≤ r` counts a predecessor over an edge stored as `e` when
+        // `role_matches(e.flip(), r)` (`distinct_role_succ`): `e` inverse, or a
+        // symmetric or polarity-crossing hierarchy.
+        let hier = self.sub_roles.as_ref();
+        let crossing = hier.is_some_and(|h| {
+            h.has_polarity_crossing() || at_most.iter().any(|r| h.is_symmetric(r.role_id()))
+        });
+        let counts_predecessors = !at_most.is_empty()
+            && (crossing
+                || at_most.iter().any(|&r| {
+                    r.is_inverse() || inverse.iter().any(|&e| role_matches(e.flip(), r, hier))
+                }));
+        if counts_predecessors {
+            vis.fill(true);
+        }
+        vis
+    }
+
+    /// Whether `n` carries a nominal that a blocked copy could contradict
+    /// ([`Self::compute_visible_nominals`]).
+    fn node_has_visible_nominal(&self, n: HNode) -> bool {
+        let Some((start, count)) = self.nominals else {
+            return false;
+        };
+        let l = &self.nodes[n.index()].labels;
+        let i = l.partition_point(|c| c.index() < start);
+        l[i..]
+            .iter()
+            .take_while(|c| c.index() < start.saturating_add(count))
+            .any(|c| {
+                self.visible_nominals
+                    .as_ref()
+                    .is_none_or(|v| v[(c.index() - start) as usize])
+            })
+    }
+
     /// Whether class `c` names a singleton nominal `{a}` (`HF4a`).
     fn is_nominal(&self, c: ClassId) -> bool {
         match self.nominals {
@@ -2559,6 +2671,16 @@ impl<'c> HyperEngine<'c> {
     /// the blocking condition here; that refinement is H3).
     fn is_blocked(&mut self, n: HNode) -> bool {
         self.stats.is_blocked_calls += 1;
+        if self.nominal_guard
+            && self.visible_nominals.is_none()
+            && let Some((start, count)) = self.nominals
+        {
+            let vis = self.compute_visible_nominals(start, count);
+            // Nothing visible: the guard has nothing to refuse, so skip its
+            // per-call label scans.
+            self.nominal_guard = vis.iter().any(|&v| v);
+            self.visible_nominals = Some(vis);
+        }
         self.nodes.sync();
         let ln_order = self.nodes.hdr(n.index()).order;
         if self.double_blocking {
@@ -2573,6 +2695,17 @@ impl<'c> HyperEngine<'c> {
                 let nr = ln.parent_role.expect("non-root has parent_role");
                 (np, nr)
             };
+            // #361: a node carrying a nominal is one individual, so it is never a
+            // blocker (below), as in the main tableau's anywhere blocking: a blocked
+            // copy of it would be a second element with the same nominal, and
+            // `{a} : ≥3 s.{a,b}` read consistent with two witnesses blocked by a third
+            // that had merged into `a`. Only nominals a copy could contradict
+            // (`compute_visible_nominals`), and only for a representative `n`: a
+            // merged-away node's labels are stale, and blocking it costs nothing.
+            // Checked only on a candidate that would otherwise block, so a block
+            // costs one label scan; that also covers a nominal `n` (`L(n) ⊆ L(m)`
+            // puts its nominal on `m`).
+            let guard = self.nominal_guard && self.resolve(n) == n;
             self.stats.block_eligible += 1;
             // Iterate the candidate bucket in place (no per-call clone — the
             // immutable borrow of `block_index` coexists with the immutable
@@ -2632,7 +2765,8 @@ impl<'c> HyperEngine<'c> {
                     ) && subset_sorted(
                         &self.nodes[np.index()].labels,
                         &self.nodes[mp.index()].labels,
-                    ) {
+                    ) && !(guard && self.node_has_visible_nominal(m_hnode))
+                    {
                         blocked = true;
                         break;
                     }
@@ -2647,16 +2781,20 @@ impl<'c> HyperEngine<'c> {
             // Anywhere blocking (legacy; sound for SHIQ-no-inverse).
             // Snapshot the node count and iterate by index to keep
             // mutating `stats` clean of borrow conflicts.
+            let guard = self.nominal_guard && self.resolve(n) == n;
             let n_nodes = self.nodes.len();
             for i in 0..n_nodes {
                 let m_order = self.nodes.hdr(i).order;
                 if m_order >= ln_order {
                     continue;
                 }
+                let m = HNode(u32::try_from(i).expect("fits u32"));
                 self.stats.block_compares += 1;
                 let ln_labels = &self.nodes[n.index()].labels;
                 let m_labels = &self.nodes[i].labels;
-                if subset_sorted(ln_labels, m_labels) {
+                if subset_sorted(ln_labels, m_labels)
+                    && !(guard && self.node_has_visible_nominal(m))
+                {
                     self.stats.blocks_fired += 1;
                     return true;
                 }
@@ -3664,6 +3802,8 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            nominal_guard: crate::wedge_nominal_block_guard_enabled(),
+            visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
             reseed_verify_active: false,

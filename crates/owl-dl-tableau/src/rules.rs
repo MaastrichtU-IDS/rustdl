@@ -740,8 +740,27 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
     if pending.is_empty() {
         return RuleOutcome::NoChange;
     }
+    // #362: an existential into a nominal goes first, and its fresh node merges
+    // with the nominal's canonical node at once, so a `≤` there that this node
+    // makes over-full is visible before the node generates anything else.
+    let mut pending = pending;
+    if ctx.nominal_block_guard() {
+        pending
+            .sort_by_key(|&(_, body, _)| !matches!(ctx.pool().get(body), ConceptExpr::Nominal(_)));
+    }
     let mut applied = false;
+    // Recomputed only after a nominal filler fires, the one step here that can
+    // change it.
+    let mut defer = None;
     for (role, body, exists_deps) in pending {
+        let nominal_filler = matches!(ctx.pool().get(body), ConceptExpr::Nominal(_));
+        if !nominal_filler
+            && *defer.get_or_insert_with(|| ctx.defer_generation_at_overfull_nominal(node))
+        {
+            // Revisited once the `≤` resolves (incremental saturation).
+            ctx.note_blocked_skip(node);
+            continue;
+        }
         // Witness check honours the role hierarchy and inverse
         // polarity: any neighbour reachable via a sub-role of `role`
         // (same polarity) that already carries `body` discharges the
@@ -768,6 +787,13 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         };
         if ctx.add_label_with_deps(fresh, body, &exists_deps) {
             applied = true;
+            if nominal_filler && ctx.nominal_block_guard() {
+                // `fresh` folds into the nominal's canonical node now, so a `≤`
+                // there that `node` makes over-full is visible to the deferral
+                // below.
+                let _ = apply_nominal_assignment(ctx, fresh);
+                defer = None;
+            }
         }
     }
     if applied {
@@ -811,6 +837,10 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     // Deferral only — the node is re-dirtied on add_label/merge, so generation
     // resumes on the survivor (completeness-preserving).
     if crate::nominal_first_enabled() && ctx.has_pending_nominal_disjunction(node) {
+        return RuleOutcome::NoChange;
+    }
+    if ctx.defer_generation_at_overfull_nominal(node) {
+        ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
     let mins: Vec<(u32, Role, ConceptId, DepSet)> = {
@@ -1143,6 +1173,14 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                     // `rejected_deps` and the `⊥` below would be under-dependent.
                     debug_assert!(!ctx.are_distinct(source, survivor));
                     let cp = trial.then(|| ctx.checkpoint());
+                    // #362: prune `source`'s blockable subtree first (see
+                    // `prune_subtree`). Only with the choice point on: then this
+                    // pair is the only mergeable one and the merge is forced.
+                    // With it off the trial picks among pairs, and pruning would
+                    // hide the clashes that reject a pair (#76).
+                    if crate::max_choice_point_enabled() {
+                        let _ = ctx.prune_subtree(source, survivor);
+                    }
                     if ctx.merge_into_with_deps(source, survivor, merge_deps.as_slice()) {
                         // `source` merged INTO `survivor`. A merge can also
                         // violate a role axiom (asymmetry, disjoint roles)
@@ -1168,6 +1206,20 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                         if !trial || !(ctx.clash_in(survivor) || ctx.clash_in(node)) {
                             applied = true;
                             merged = true;
+                            // #362: a neighbour whose generation waited on this
+                            // over-full `≤` is due again, in this pass too. The
+                            // wait counts every neighbour without `¬C`, not only
+                            // the `C`-witnesses, so dirty them all.
+                            let nbrs: Vec<NodeId> = ctx
+                                .graph()
+                                .node(node)
+                                .neighbours()
+                                .map(|(_, w)| w)
+                                .collect();
+                            for &w in &nbrs {
+                                ctx.graph_mut().set_dirty(w, true);
+                            }
+                            ctx.touch(&nbrs);
                             break 'pairs;
                         }
                         crate::bump_counter!(ctx, max_trial_merge_rejects);
@@ -1335,7 +1387,7 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
         return RuleOutcome::NoChange;
     }
     let mut applied = false;
-    let resolved_node = ctx.resolve(node);
+    let mut resolved_node = ctx.resolve(node);
     for (ind, here_nom_deps) in individuals {
         match ctx.graph().nominal_node(ind) {
             None => {
@@ -1364,19 +1416,27 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                             .unwrap_or_default()
                     };
                     let merge_deps: DepSet = union(&here_nom_deps, &other_nom_deps);
-                    // Merge other_res into resolved_node, threading
-                    // the merge-condition deps so moved labels/edges
-                    // carry them.
-                    if !ctx.merge_into_with_deps(other_res, resolved_node, merge_deps.as_slice())
+                    // Merge the two, threading the merge-condition deps so
+                    // moved labels/edges carry them. #362: with the nominal
+                    // guard on, the node that just gained the nominal folds INTO
+                    // the existing canonical node, so an individual's node keeps
+                    // its identity rather than hopping to each fresh `{a}` node.
+                    let (source, keep) = if ctx.nominal_block_guard() {
+                        (resolved_node, other_res)
+                    } else {
+                        (other_res, resolved_node)
+                    };
+                    if !ctx.merge_into_with_deps(source, keep, merge_deps.as_slice())
                         && let Some(bot) = ctx.pool().bot_id()
                     {
                         // Conservative deps for the failed-merge clash:
                         // active branches ⊇ the precise merge-cond deps.
                         let deps: DepSet = DepSet::from_slice(ctx.active_branches());
-                        ctx.add_label_with_deps(resolved_node, bot, &deps);
+                        ctx.add_label_with_deps(keep, bot, &deps);
                     }
                     // After merging, update the nominal map so
                     // subsequent lookups skip the resolve chain.
+                    resolved_node = ctx.resolve(keep);
                     ctx.assign_nominal(ind, resolved_node);
                     applied = true;
                 }

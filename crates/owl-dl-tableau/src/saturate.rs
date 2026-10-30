@@ -236,6 +236,11 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
 fn first_clash(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, DepSet)> {
     for idx in 0..ctx.graph().len() {
         let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        // #362: a pruned node is out of the graph; its clash (a real
+        // consequence, but of facts no longer present) is not reported.
+        if ctx.graph().node(node).pruned {
+            continue;
+        }
         if let Some(deps) = ctx.clash_deps_at(node) {
             return Some((node, deps));
         }

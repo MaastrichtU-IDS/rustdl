@@ -105,6 +105,10 @@ pub struct Node {
     /// `t`; this node is a redirect. Resolved through chains via
     /// [`crate::TableauContext::resolve`].
     pub(crate) merged_into: Option<NodeId>,
+    /// #362: removed by a `≤` merge's prune (`TableauContext::prune_subtree`):
+    /// its edges are gone and it is no part of the graph. Never merged into
+    /// anything, so `resolve` leaves it alone.
+    pub(crate) pruned: bool,
 }
 
 /// Bit position contributed by `c` to a [`Node::label_sig`] bloom
@@ -163,9 +167,11 @@ impl Node {
         self.merged_into
     }
 
+    /// Whether the node is out of the graph: merged into another, or pruned
+    /// (#362). Every arena scan skips such nodes.
     #[must_use]
     pub fn is_redirected(&self) -> bool {
-        self.merged_into.is_some()
+        self.merged_into.is_some() || self.pruned
     }
 
     #[must_use]

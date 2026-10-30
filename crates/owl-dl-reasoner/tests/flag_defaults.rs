@@ -219,6 +219,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_NOMINAL_BLOCK_GUARD",
+            owl_dl_tableau::nominal_block_guard_enabled,
+            true,
+        ),
+        (
             "RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD",
             owl_dl_tableau::wedge_nominal_block_guard_enabled,
             true,

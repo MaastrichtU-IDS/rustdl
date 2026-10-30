@@ -810,6 +810,10 @@ pub struct SearchStats {
     /// Fix#2 Layer A: times a `⊔` decision collapsed to a single live disjunct
     /// after pruning and was unit-forced (asserted without a decision level).
     pub semantic_unit_forces: u64,
+    /// #371: MRV candidates whose refutation checks stopped early because they could
+    /// no longer beat the best key. The pick is the same either way; this only shows
+    /// that the early stop ran.
+    pub mrv_bail_skips: u64,
     /// #128 head-present skip: `fire_clause` calls short-circuited because the
     /// single head atom `Class(c, X)` was already on the node. **Non-vacuity signal
     /// for the identity test**: if this is 0 on a fixture, the skip never fired
@@ -1072,8 +1076,8 @@ pub struct HyperEngine<'c> {
     mrv_refuted: bool,
     /// #371 `RUSTDL_MRV_GEN_LOCAL` (default ON, read when MRV is switched on): a
     /// disjunction whose only viable disjuncts generate (`∃`, `≥n`) keeps the
-    /// viable-first rank only when no node earlier in the scan has an open
-    /// disjunction; otherwise it ranks by live disjuncts. Order only.
+    /// viable-first rank only when the best candidate so far is at its own node (or
+    /// there is none yet); otherwise it ranks by live disjuncts. Order only.
     mrv_gen_local: bool,
     /// TAUTOLOGY-SKIP (`RUSTDL_TAUTOLOGY_SKIP`, default OFF): unordered `(a,b)` index
     /// pairs of a complement pair `b ≡ ¬a` (mutually exhaustive). `find_open_disjunction`
@@ -4594,13 +4598,19 @@ impl<'c> HyperEngine<'c> {
                                 }
                             }
                             if beaten {
+                                self.stats.mrv_bail_skips += 1;
                                 continue;
                             }
                             // #371: a disjunction left only with generating disjuncts
-                            // forces a successor, not a clash. Promoting it past an
-                            // open disjunction at an earlier node walked `ore_ont_7610`
-                            // across ~240 nodes to the depth cap. The scan is in node
-                            // order, so a best found at another node is an earlier one.
+                            // forces a successor, not a clash. Promoting it past the
+                            // best candidate at an earlier node walked `ore_ont_7610`
+                            // across ~240 nodes to the depth cap. So it keeps the
+                            // viable-first rank only against a best at its own node.
+                            // The scan is in node order, so a best at another node is
+                            // at an earlier one. The best can itself have moved to a
+                            // later node (a class survivor there beat it); a
+                            // generating-only disjunction at that node then competes
+                            // with it on the viable-first rank.
                             if self.mrv_gen_local
                                 && viable > 0
                                 && generating_only
@@ -10103,15 +10113,56 @@ mod tests {
         ];
         clauses.extend(disjoint_with(a, &[e1, e2]));
         assert_eq!(mrv_pick(&clauses, a, true), Some(1));
-        // A third candidate that ties clause 1 is cut by the bail and must not
-        // replace it (first found wins).
+        // A third candidate that ties clause 1, with its viable disjunct first: after
+        // that disjunct the bound `(1, 3)` already equals the best, so the scan stops
+        // there, and the tie keeps clause 1 (first found wins).
         let (f1, f2, f3) = (cls(6), cls(7), cls(8));
         clauses.push(DlClause {
             body: vec![Atom::Class(a, X)],
-            head: vec![Atom::Class(f1, X), Atom::Class(f2, X), Atom::Class(f3, X)],
+            head: vec![Atom::Class(f3, X), Atom::Class(f1, X), Atom::Class(f2, X)],
         });
         clauses.extend(disjoint_with(a, &[f1, f2]));
-        assert_eq!(mrv_pick(&clauses, a, true), Some(1));
+        let mut e = HyperEngine::new(&clauses, a).with_mrv_ordering();
+        e.mrv_refuted = true;
+        e.horn_fixpoint(FIXPOINT_ITERS);
+        let pick = e.find_open_disjunction_for_test().map(|(ci, _, _)| ci);
+        assert_eq!(pick, Some(1));
+        assert!(e.stats.mrv_bail_skips >= 1, "the early stop never ran");
+    }
+
+    /// #371: the class refutation also reads the per-pair delta's disjoint pairs
+    /// (classify's `Q ⊓ Sup → ⊥` lives there, not in the shared base).
+    #[test]
+    fn mrv_refuted_reads_delta_disjoint_pairs() {
+        let (a, d1, d2, e1, e2) = (cls(0), cls(1), cls(2), cls(3), cls(4));
+        let base = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(e1, X), Atom::Class(e2, X)],
+            },
+        ];
+        // `A ⊓ E1 → ⊥`, `A ⊓ E2 → ⊥` only in the extras: clause 1 is fully refuted.
+        let extras = disjoint_with(a, &[e1, e2]);
+        let delta = build_clause_index_delta(base.len(), &extras, None);
+        let mut e = HyperEngine::new_with_prebuilt_extras(
+            &base,
+            &extras,
+            a,
+            std::sync::Arc::new(build_clause_indexes(&base, None)),
+            std::sync::Arc::new(build_disjoint_pairs(&base)),
+            delta,
+        )
+        .with_mrv_ordering();
+        e.mrv_refuted = true;
+        e.horn_fixpoint(FIXPOINT_ITERS);
+        assert_eq!(
+            e.find_open_disjunction_for_test().map(|(ci, _, _)| ci),
+            Some(1)
+        );
     }
 
     /// #371 fixture: root `A` has a `(2, 2)` class disjunction (clause 1) and an
@@ -10181,6 +10232,29 @@ mod tests {
         ];
         clauses.extend(disjoint_with(a, &[e1]));
         assert_eq!(mrv_pick_local(&clauses, a, true), Some(1));
+    }
+
+    /// #371: the rule compares against the BEST candidate's node, not the first node
+    /// with an open disjunction. Root has `(2, 2)`; the successor has a class survivor
+    /// `(1, 3)` that beats it, then a generating-only `(1, 2)`. The best has moved to
+    /// the successor, so the generating-only one competes on the viable-first rank
+    /// there and wins.
+    #[test]
+    fn mrv_gen_local_compares_against_the_best_candidates_node() {
+        let (e1, g, h, f) = (cls(4), cls(5), cls(6), cls(7));
+        let s = Role::Named(RoleId::new(1));
+        let mut clauses = gen_local_fixture(
+            vec![Atom::Class(e1, X), Atom::Class(g, X), Atom::Class(h, X)],
+            &[cls(6)],
+        );
+        clauses.push(DlClause {
+            body: vec![Atom::Class(cls(1), X)],
+            head: vec![Atom::Class(e1, X), Atom::Exists(s, f, X)],
+        });
+        assert_eq!(
+            mrv_pick_local(&clauses, cls(0), true),
+            Some(clauses.len() - 1)
+        );
     }
 
     /// #371: the partner lists agree with the pair set, both directions.

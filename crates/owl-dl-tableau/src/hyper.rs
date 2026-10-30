@@ -32,6 +32,10 @@ use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::time::Instant;
 
+/// #376: how far `nn_counted` follows nominal-like neighbours (the SHOIQ NN-rule
+/// cascade). Reach is only over generated nodes, whose trees are shallow.
+const NN_CASCADE_DEPTH: u8 = 4;
+
 /// A match binding: the body's non-`X` successor variables mapped to
 /// graph nodes, sorted by variable. `X` is implicit (always the match
 /// root), so an empty binding is a body on `X` only. Bodies are trees
@@ -783,6 +787,10 @@ pub struct SearchStats {
     /// never caps the completion — the model grows unbounded until a
     /// deadline/stall (the pizza/SIO convergence problem).
     pub blocks_fired: u64,
+    /// #376: would-be blocks checked by the nominal-witness guard.
+    pub nn_guard_checks: u64,
+    /// #376: would-be blocks the nominal-witness guard refused.
+    pub nn_guard_refusals: u64,
     /// Times `is_blocked` was called on a non-root node (had a parent,
     /// so was *eligible* to be blocked). The meaningful denominator for
     /// `blocks_fired` (root calls can never block).
@@ -949,6 +957,14 @@ pub struct HyperEngine<'c> {
     /// `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (#361): see `is_blocked`. Cleared at the
     /// first blocking check when no nominal is visible.
     nominal_guard: bool,
+    /// `RUSTDL_WEDGE_NN_GUARD` (#376): see `nn_counted`.
+    nn_guard: bool,
+    /// #376: nodes whose generation (`∃`, `≥n`) was skipped because they were
+    /// blocked. A block can stop holding as the graph grows (the witness guard
+    /// refuses a blocker once it becomes an individual's witness), and nothing
+    /// else re-fires the skip; the leaf net re-fires these until stable. Stale
+    /// entries after a branch restore are filtered on use.
+    blocked_gen: Vec<HNode>,
     /// #361: per nominal in the `HF4a` range, whether a refused blocker must carry
     /// it (see `node_has_visible_nominal`). Computed at the first blocking check,
     /// after any per-query clauses are appended.
@@ -1884,6 +1900,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
+            nn_guard: crate::wedge_nn_guard_enabled(),
+            blocked_gen: Vec::new(),
             visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
@@ -1968,6 +1986,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
+            nn_guard: crate::wedge_nn_guard_enabled(),
+            blocked_gen: Vec::new(),
             visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
@@ -2503,6 +2523,103 @@ impl<'c> HyperEngine<'c> {
 
     /// Whether `n` carries a nominal that a blocked copy could contradict
     /// ([`Self::compute_visible_nominals`]).
+    /// Whether `n` carries any nominal class (`HF4a` range).
+    fn node_carries_nominal(&self, n: HNode) -> bool {
+        let Some((start, count)) = self.nominals else {
+            return false;
+        };
+        let l = &self.nodes[n.index()].labels;
+        let i = l.partition_point(|c| c.index() < start);
+        i < l.len() && l[i].index() < start.saturating_add(count)
+    }
+
+    /// How many distinct `role`-witnesses carrying `qual` `node` has, as
+    /// [`Self::distinct_role_succ`] counts them, stopping at `limit`.
+    fn count_role_succ_upto(
+        &self,
+        node: HNode,
+        role: Role,
+        qual: Option<ClassId>,
+        limit: usize,
+    ) -> usize {
+        let hier = self.sub_roles.as_ref();
+        let mut seen: SmallVec<[HNode; 4]> = SmallVec::new();
+        let n = &self.nodes[node.index()];
+        let fwd = n
+            .edges
+            .iter()
+            .filter(|(er, _)| role_matches(*er, role, hier));
+        let bwd = n
+            .preds
+            .iter()
+            .filter(|(er, _)| self.inverse_func_merge && role_matches(er.flip(), role, hier));
+        for &(_, t) in fwd.chain(bwd) {
+            let rt = self.resolve(t);
+            if qual.is_some_and(|q| !self.nodes[rt.index()].has(q)) || seen.contains(&rt) {
+                continue;
+            }
+            seen.push(rt);
+            if seen.len() >= limit {
+                break;
+            }
+        }
+        seen.len()
+    }
+
+    /// #376: whether `m` stands for a nominal individual's `≤`-witness, so a
+    /// blocked copy of it could add one more witness to that individual: some
+    /// nominal-like neighbour `w` has `≤k r.q`, the `m`–`w` edge is one `w`'s count
+    /// reads (as [`Self::distinct_role_succ`] does), and `w` has at most `k`
+    /// witnesses. "Nominal-like" is a nominal, or itself such a witness of one
+    /// (the SHOIQ NN-rule makes it a nominal node), to `depth` steps.
+    ///
+    /// `m`'s parent edge is skipped: a copy of `m` in place of another node does
+    /// not duplicate it. Over-full, the guard lifts so ordinary blocking bounds the
+    /// chain until the `≤` merges.
+    fn nn_counted(&self, m: HNode, depth: u8, visited: &mut SmallVec<[HNode; 8]>) -> bool {
+        let rm = self.resolve(m);
+        if visited.contains(&rm) {
+            return false;
+        }
+        visited.push(rm);
+        let hier = self.sub_roles.as_ref();
+        let node = &self.nodes[rm.index()];
+        // `(edge role as stored, neighbour, stored on m)`: an edge on `m` is read
+        // at `w` through its pred branch; an edge on `w` (one of `m`'s preds) is
+        // read through `w`'s own edges.
+        let on_m = node.edges.iter().map(|&(e, w)| (e, w, true));
+        let on_w = node
+            .preds
+            .iter()
+            .filter(|&&(e, w)| !(node.parent == Some(w) && node.parent_role == Some(e)))
+            .map(|&(e, w)| (e, w, false));
+        for (e, w, stored_on_m) in on_m.chain(on_w) {
+            let w = self.resolve(w);
+            if w == rm {
+                continue;
+            }
+            let nominal_like = self.node_carries_nominal(w)
+                || (depth > 0 && self.nn_counted(w, depth - 1, visited));
+            if !nominal_like {
+                continue;
+            }
+            for &(r, q, k) in &self.nodes[w.index()].at_most {
+                let counts = if stored_on_m {
+                    self.inverse_func_merge && role_matches(e.flip(), r, hier)
+                } else {
+                    role_matches(e, r, hier)
+                };
+                if !counts || q.is_some_and(|q| !node.has(q)) {
+                    continue;
+                }
+                if self.count_role_succ_upto(w, r, q, k as usize + 1) <= k as usize {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn node_has_visible_nominal(&self, n: HNode) -> bool {
         let Some((start, count)) = self.nominals else {
             return false;
@@ -2758,6 +2875,8 @@ impl<'c> HyperEngine<'c> {
     /// the blocking condition here; that refinement is H3).
     fn is_blocked(&mut self, n: HNode) -> bool {
         self.stats.is_blocked_calls += 1;
+        // #376: no nominal classes, nothing for the witness guard to find.
+        self.nn_guard &= self.nominals.is_some_and(|(_, count)| count > 0);
         if self.nominal_guard
             && self.visible_nominals.is_none()
             && let Some((start, count)) = self.nominals
@@ -2800,6 +2919,7 @@ impl<'c> HyperEngine<'c> {
             // conflicting mutable borrow is held during it). Behaviour-identical
             // to the old clone-then-scan.
             let mut compares: u64 = 0;
+            let (mut nn_checks, mut nn_refusals) = (0u64, 0u64);
             let mut blocked = false;
             if let Some(bucket) = self.block_index.as_ref().and_then(|ix| ix.get(&nr)) {
                 // Candidates are filtered on their contiguous headers; only a
@@ -2854,12 +2974,23 @@ impl<'c> HyperEngine<'c> {
                         &self.nodes[mp.index()].labels,
                     ) && !(guard && self.node_has_visible_nominal(m_hnode))
                     {
+                        // #376: a would-be blocker that stands for an individual's
+                        // `≤`-witness is refused (see `nn_counted`).
+                        if self.nn_guard {
+                            nn_checks += 1;
+                            if self.nn_counted(m_hnode, NN_CASCADE_DEPTH, &mut SmallVec::new()) {
+                                nn_refusals += 1;
+                                continue;
+                            }
+                        }
                         blocked = true;
                         break;
                     }
                 }
             }
             self.stats.block_compares += compares;
+            self.stats.nn_guard_checks += nn_checks;
+            self.stats.nn_guard_refusals += nn_refusals;
             if blocked {
                 self.stats.blocks_fired += 1;
             }
@@ -2881,6 +3012,8 @@ impl<'c> HyperEngine<'c> {
                 let m_labels = &self.nodes[i].labels;
                 if subset_sorted(ln_labels, m_labels)
                     && !(guard && self.node_has_visible_nominal(m))
+                    && !(self.nn_guard
+                        && self.nn_counted(m, NN_CASCADE_DEPTH, &mut SmallVec::new()))
                 {
                     self.stats.blocks_fired += 1;
                     return true;
@@ -3030,12 +3163,39 @@ impl<'c> HyperEngine<'c> {
         let before = self.graph_fingerprint();
         self.reseed_verify_active = true;
         self.seed_worklist_from_graph();
-        let r = self.horn_fixpoint(max_iters);
+        let mut r = self.horn_fixpoint(max_iters);
+        // #376: one pass re-fires each blocked skip once, but a pass can itself
+        // unblock another (a blocker that became an individual's witness is
+        // refused), so re-fire the recorded skips until nothing changes.
+        while self.nn_guard && !matches!(r, HyperResult::Unsat) && !self.blocked_gen.is_empty() {
+            let mark = self.graph_fingerprint();
+            for n in std::mem::take(&mut self.blocked_gen) {
+                if n.index() >= self.nodes.len() || self.resolve(n) != n {
+                    continue;
+                }
+                for c in self.nodes[n.index()].labels.clone() {
+                    self.worklist.push(Event::Label(n, c));
+                }
+            }
+            r = self.horn_fixpoint(max_iters);
+            if self.graph_fingerprint() == mark
+                || self.deadline.is_some_and(|dl| Instant::now() >= dl)
+            {
+                break;
+            }
+        }
         self.reseed_verify_active = false;
         let changed = self.graph_fingerprint() != before;
         self.reseed_net_ran = true;
         self.reseed_net_hit = changed || matches!(r, HyperResult::Unsat);
         (r, changed)
+    }
+
+    /// #376: record that `n`'s generation was skipped because it was blocked.
+    fn note_blocked_gen(&mut self, n: HNode) {
+        if self.nn_guard && !self.blocked_gen.contains(&n) {
+            self.blocked_gen.push(n);
+        }
     }
 
     /// Count, do NOT assert. A nonzero count means a trigger is still missing
@@ -3890,6 +4050,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
+            nn_guard: crate::wedge_nn_guard_enabled(),
+            blocked_gen: Vec::new(),
             visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
@@ -6084,6 +6246,7 @@ impl<'c> HyperEngine<'c> {
         if self.is_blocked(src) {
             // Blocked: the witness ancestor already realises this
             // existential; don't generate.
+            self.note_blocked_gen(src);
             return FireOutcome::NoChange;
         }
         let succ = self.new_node();
@@ -6186,6 +6349,7 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         if self.is_blocked(x) {
+            self.note_blocked_gen(x);
             return FireOutcome::NoChange;
         }
         self.nodes[x.index()].at_least_done.push(key);

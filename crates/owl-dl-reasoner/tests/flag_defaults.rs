@@ -224,6 +224,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_WEDGE_NN_GUARD",
+            owl_dl_tableau::wedge_nn_guard_enabled,
+            true,
+        ),
+        (
             "RUSTDL_NN_INDEX",
             owl_dl_tableau::hyper_nn_index_enabled,
             true,

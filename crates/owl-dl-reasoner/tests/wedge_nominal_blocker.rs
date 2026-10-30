@@ -68,8 +68,10 @@ fn onto(body: &str) -> SetOntology<RcStr> {
          Ontology(<http://x.org/f>\n\
          Declaration(Class(:A)) Declaration(Class(:Q))\n\
          Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:q))\n\
+         Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:t))\n\
+         Declaration(Class(:B))\n\
          Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
-         Declaration(NamedIndividual(:c))\n\
+         Declaration(NamedIndividual(:c)) Declaration(NamedIndividual(:d))\n\
          {body}\n)"
     );
     let mut reader = Cursor::new(src);
@@ -169,4 +171,111 @@ fn abox_only_individuals_through_counting() {
         ClassAssertion(ObjectSomeValuesFrom(:q :A) :b)\n\
         SubClassOf(:A ObjectSomeValuesFrom(:s :A))";
     assert!(consistent(inv));
+}
+
+// ---- #376: a blocker merely NEXT TO an individual (the wedge's NN-rule half) ----
+
+/// The `r`-witnesses are pairwise distinct and each is an `s`-predecessor of an
+/// individual whose `s` is functional, so the witnesses must merge, against `≠`.
+/// The wedge blocked the second witness by the first, which carries no nominal
+/// but is next to `a`; a copy of it adds a second `s`-neighbour to `a`.
+/// HermiT: inconsistent.
+#[test]
+fn issue_376_abox_forms_are_inconsistent() {
+    let _l = lock();
+    for body in [
+        // #362's shape on an individual.
+        "SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+         FunctionalObjectProperty(:s)\n\
+         SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+         ClassAssertion(:Q :d)",
+        // #361's `p0289` reduction: the `≥3` on a nominal.
+        "SubClassOf(ObjectOneOf(:a) ObjectMinCardinality(3 :r :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:b)))\n\
+         FunctionalObjectProperty(:s)",
+        // S1: three witnesses, `≤2`. The third was blocked by a witness that had
+        // not yet reached `b`, and one re-check of the skip was not enough.
+        "SubClassOf(ObjectOneOf(:a) ObjectMinCardinality(3 :r :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:b)))\n\
+         SubClassOf(ObjectOneOf(:b) ObjectMaxCardinality(2 :s))",
+        // S1 with `≤1`.
+        "SubClassOf(ObjectOneOf(:a) ObjectMinCardinality(3 :r :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:b)))\n\
+         SubClassOf(ObjectOneOf(:b) ObjectMaxCardinality(1 :s))",
+        // The nominal two edges away (the SHOIQ NN-rule cascade): the `B`s merge
+        // at `a`, and the `≤1 t⁻` on `B` then merges the `A`s.
+        "SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:t :B))\n\
+         SubClassOf(:B ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+         SubClassOf(:B ObjectMaxCardinality(1 ObjectInverseOf(:t)))\n\
+         FunctionalObjectProperty(:s)\n\
+         ClassAssertion(:Q :d)",
+    ] {
+        assert!(!consistent(body), "should be inconsistent: {body}");
+    }
+}
+
+/// Controls: no functional role, or room for two, or two nominals to point at.
+#[test]
+fn issue_376_controls_stay_consistent() {
+    let _l = lock();
+    for body in [
+        "SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+         SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+         ClassAssertion(:Q :d)",
+        "SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+         SubClassOf(ObjectOneOf(:a) ObjectMaxCardinality(2 :s))\n\
+         SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+         ClassAssertion(:Q :d)",
+        "SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a :b)))\n\
+         FunctionalObjectProperty(:s)\n\
+         SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+         ClassAssertion(:Q :d)",
+        // Two edges away, but nothing bounds the `t`-predecessors of `B`.
+        "SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:t :B))\n\
+         SubClassOf(:B ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+         FunctionalObjectProperty(:s)\n\
+         ClassAssertion(:Q :d)",
+        // Forward successors of `a` only: `≥2` within `≤3`.
+        "SubClassOf(ObjectOneOf(:a) ObjectIntersectionOf(ObjectMinCardinality(2 :r :A) \
+         ObjectMaxCardinality(3 :r)))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:t :A))",
+    ] {
+        assert!(consistent(body), "should be consistent: {body}");
+    }
+}
+
+/// KNOWN LIMITATION: the cascade shape with `InverseFunctional(t)` instead of an
+/// explicit `≤1 t⁻` on `B`. The wedge needs the `≤1 t⁻` that conversion emits for
+/// an inverse-functional role, and `inv_func_merge_consumable` (owl-dl-core
+/// convert.rs) declines it for a single non-nominal `∃t` generator; that gate is a
+/// recorded cost decision (19–47× on SIO). HermiT: inconsistent. FLIP if the gate
+/// admits this shape.
+#[test]
+fn known_inverse_functional_bound_not_emitted() {
+    let _l = lock();
+    assert!(
+        consistent(
+            "SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+             SubClassOf(:A ObjectSomeValuesFrom(:t :B))\n\
+             SubClassOf(:B ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+             FunctionalObjectProperty(:s)\n\
+             InverseFunctionalObjectProperty(:t)\n\
+             ClassAssertion(:Q :d)"
+        ),
+        "FLIP: the inverse-functional bound reaches this shape now"
+    );
+}
+
+#[test]
+fn issue_376_flag_off_restores_the_old_answer() {
+    let _l = lock();
+    let _off = SetEnvGuard::set("RUSTDL_WEDGE_NN_GUARD", "0");
+    assert!(consistent(
+        "SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+         FunctionalObjectProperty(:s)\n\
+         SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+         ClassAssertion(:Q :d)"
+    ));
 }

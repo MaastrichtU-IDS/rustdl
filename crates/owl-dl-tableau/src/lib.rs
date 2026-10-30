@@ -1572,7 +1572,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// that counts `v` is over-full, so the merge runs before `v` makes a child a
     /// later merge would reparent (the SHOIQ priority of the `≤`/o-rules over the
     /// generating rules). Deferral only: a deferring rule registers `v` with
-    /// [`Self::note_blocked_skip`], so incremental saturation revisits it.
+    /// [`Self::note_blocked_skip`], so incremental saturation revisits it. If the
+    /// `≤` stops being over-full other than by a merge at its holder (which dirties
+    /// every neighbour), the revisit comes from the `Sat`-leaf re-saturation
+    /// (`RUSTDL_SAT_LEAF_RESATURATE`, default ON), as for any blocked skip.
     pub(crate) fn defer_generation_at_overfull_nominal(&self, v: NodeId) -> bool {
         self.nominal_max_overfull(v) == Some(true)
     }

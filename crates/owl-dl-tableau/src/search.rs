@@ -284,6 +284,13 @@ struct OpenMax {
     /// How many witnesses precede `pivot`. They are pairwise distinct, because
     /// `pivot` is the first witness with a mergeable earlier one.
     earlier: usize,
+    /// Every witness's deps (the same set each partner carries).
+    witness_deps: DepSet,
+    /// The deps of the distinctness marks among the witnesses up to and
+    /// including `pivot` (#370): the marks that removed the other merges and,
+    /// when `earlier >= bound`, the distinct option. Empty unless
+    /// `RUSTDL_MERGE_EXACT_DEPS` is on.
+    distinct_deps: DepSet,
 }
 
 /// Find an over-full `≤n R.C` with at least two pairs that may merge (#293),
@@ -344,12 +351,19 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                     .map(|&w| (w, witness_deps.clone()))
                     .collect();
                 if !partners.is_empty() {
+                    let distinct_deps = if ctx.merge_exact_deps() {
+                        crate::rules::distinct_marks_deps(ctx, &witnesses, j + 1)
+                    } else {
+                        DepSet::new()
+                    };
                     return Some(OpenMax {
                         max_deps,
                         bound: *n as usize,
                         pivot,
                         partners,
                         earlier: j,
+                        witness_deps,
+                        distinct_deps,
                     });
                 }
             }
@@ -421,8 +435,27 @@ impl Frame {
     /// Each merge's deps cover every witness (see [`first_open_max`]).
     fn merge(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize, open: OpenMax) -> Self {
         // Read before this frame's own id is pushed.
-        let initial =
-            crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()));
+        let initial = if ctx.merge_exact_deps() {
+            // #370: every option failing means the `≤n` cannot hold given its
+            // label, the witnesses, and the marks that removed the other merges
+            // (and the distinct option, when `earlier >= bound`).
+            let exact = crate::deps::union(
+                &crate::deps::union(&open.max_deps, &open.witness_deps),
+                &open.distinct_deps,
+            );
+            crate::bump_counter!(ctx, merge_exact_p4);
+            #[cfg(feature = "counters")]
+            if ctx
+                .active_branches()
+                .iter()
+                .any(|b| exact.binary_search(b).is_err())
+            {
+                crate::bump_counter!(ctx, merge_exact_p4_narrower);
+            }
+            exact
+        } else {
+            crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()))
+        };
         let my_id = ctx.push_branch();
         // The distinct option leaves `earlier + 1` pairwise-distinct witnesses,
         // which a bound of `earlier` or less cannot accommodate.
@@ -519,12 +552,20 @@ impl Frame {
                         Start::Child(k, cp)
                     } else {
                         // Unreachable: the pair was mergeable when listed and
-                        // nothing has run since the last rollback.
+                        // nothing has run since the last rollback. With exact
+                        // deps (#370) this `{my_id}` would under-report.
+                        debug_assert!(!ctx.merge_exact_deps(), "merge frame: refused merge");
                         Start::Decided(k, cp, SearchVerdict::Unsat(DepSet::from_slice(&[my_id])))
                     }
                 } else {
+                    // The marks are this decision's; the witnesses' deps keep
+                    // the record self-contained for any reader (#370).
+                    let mut deps = open.witness_deps.clone();
+                    if let Err(pos) = deps.binary_search(&my_id) {
+                        deps.insert(pos, my_id);
+                    }
                     for (w, _) in &open.partners {
-                        ctx.mark_distinct(open.pivot, *w);
+                        ctx.mark_distinct_with_deps(open.pivot, *w, &deps);
                     }
                     Start::Child(k, cp)
                 }

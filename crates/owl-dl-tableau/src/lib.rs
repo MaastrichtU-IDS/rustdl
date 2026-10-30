@@ -269,6 +269,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     anywhere_blocking: bool,
     /// `RUSTDL_NOMINAL_BLOCK_GUARD`, cached (#361/#362).
     nominal_block_guard: bool,
+    /// `RUSTDL_MERGE_EXACT_DEPS`, cached (#370).
+    merge_exact_deps: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
     /// `trigger ClassId → sorted atomic-super ConceptIds` reachable through
     /// chains of `ConceptRule`s whose conclusion is itself `Atomic(_)`. Built
@@ -400,6 +402,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -444,6 +447,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -493,6 +497,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -1568,6 +1573,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.nominal_block_guard
     }
 
+    /// Whether `≤n` merges use exact distinctness deps (#370,
+    /// [`merge_exact_deps_enabled`], cached at construction).
+    pub(crate) fn merge_exact_deps(&self) -> bool {
+        self.merge_exact_deps
+    }
+
     /// #362: generation (`∃`, `≥n`) waits at `v` while a `≤` at a nominal neighbour
     /// that counts `v` is over-full, so the merge runs before `v` makes a child a
     /// later merge would reparent (the SHOIQ priority of the `≤`/o-rules over the
@@ -1788,17 +1799,52 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
     }
 
-    /// Mark `a` and `b` as denoting distinct individuals. Symmetric.
-    /// Idempotent: a no-op if the pair is already marked. Records a
-    /// [`TrailEntry::DistinctMarked`] when the mark is fresh.
+    /// Mark `a` and `b` as denoting distinct individuals, with no deps.
+    /// Equivalent to `mark_distinct_with_deps(a, b, &[])`: for marks that
+    /// hold before any decision (asserted `DifferentIndividuals`).
     pub fn mark_distinct(&mut self, a: NodeId, b: NodeId) {
+        self.mark_distinct_with_deps(a, b, &[]);
+    }
+
+    /// Mark `a` and `b` as denoting distinct individuals. Symmetric.
+    /// Idempotent: a no-op if the pair is already marked, which keeps the
+    /// first mark's deps. That is sound with the LIFO trail: a later reason
+    /// is undone no later than the mark itself, and the first reason holds
+    /// as long as the mark exists. Records a [`TrailEntry::DistinctMarked`]
+    /// when the mark is fresh.
+    ///
+    /// `deps` are the decisions the mark depends on (#370). They are stored
+    /// only with `RUSTDL_MERGE_EXACT_DEPS` on; otherwise an empty set is kept,
+    /// so the two vectors stay in lockstep at no cost.
+    pub fn mark_distinct_with_deps(&mut self, a: NodeId, b: NodeId, deps: &[u32]) {
         if a == b || self.are_distinct(a, b) {
             return;
         }
-        self.graph.node_mut(a).inequalities.push(b);
-        self.graph.node_mut(b).inequalities.push(a);
+        let deps = if self.merge_exact_deps {
+            DepSet::from_slice(deps)
+        } else {
+            DepSet::new()
+        };
+        let na = self.graph.node_mut(a);
+        na.inequalities.push(b);
+        na.inequality_deps.push(deps.clone());
+        let nb = self.graph.node_mut(b);
+        nb.inequalities.push(a);
+        nb.inequality_deps.push(deps);
         self.trail.record(TrailEntry::DistinctMarked { a, b });
         self.touch(&[a, b]);
+    }
+
+    /// The deps of the mark `a ≠ b` (#370): empty when the pair is not
+    /// marked, or when `RUSTDL_MERGE_EXACT_DEPS` is off.
+    #[must_use]
+    pub fn distinct_deps(&self, a: NodeId, b: NodeId) -> DepSet {
+        let n = self.graph.node(a);
+        n.inequalities
+            .iter()
+            .position(|&x| x == b)
+            .map(|i| n.inequality_deps[i].clone())
+            .unwrap_or_default()
     }
 
     /// True iff `a` and `b` are known distinct via a prior
@@ -1941,7 +1987,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         };
         let source_out: Vec<(RoleId, NodeId)> = self.graph.node(source).edges.to_vec();
         let source_in: Vec<(RoleId, NodeId)> = self.graph.node(source).in_edges.to_vec();
-        let source_ineq: Vec<NodeId> = self.graph.node(source).inequalities.to_vec();
+        let source_ineq: Vec<(NodeId, DepSet)> = {
+            let n = self.graph.node(source);
+            n.inequalities
+                .iter()
+                .copied()
+                .zip(n.inequality_deps.iter().cloned())
+                .collect()
+        };
 
         // 1. Replay labels on target with their deps so back-jumping
         //    can identify which branch the merge-clash depends on.
@@ -2030,10 +2083,16 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
 
         // 4. Carry inequalities. mark_distinct is symmetric and
-        //    idempotent.
-        for other in source_ineq {
+        //    idempotent. `target ≠ other` holds because `source ≠ other`
+        //    and `source = target`: the mark's deps ∪ the merge's (#370).
+        for (other, mark_deps) in source_ineq {
             if other != target && other != source {
-                self.mark_distinct(target, other);
+                if self.merge_exact_deps {
+                    let deps = crate::deps::union(&mark_deps, &DepSet::from_slice(merge_deps));
+                    self.mark_distinct_with_deps(target, other, &deps);
+                } else {
+                    self.mark_distinct(target, other);
+                }
             }
         }
 
@@ -2899,6 +2958,32 @@ pub fn forall_first_enabled() -> bool {
 #[must_use]
 pub fn max_choice_point_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_CHOICE_POINT").is_none_or(|v| v != "0")
+}
+
+/// #370 `RUSTDL_MERGE_EXACT_DEPS` (**default OFF**, `=1` enables): exact
+/// dependency sets for `≤n` merges. Each distinctness mark records the
+/// decisions it depends on ([`TableauContext::mark_distinct_with_deps`]), and
+/// two sites that took every active decision use them instead:
+///
+/// * P4, an exhausted merge frame (`search::Frame::merge`): the `≤n` label, the
+///   witnesses (their edges and qualifier labels) and the marks among the
+///   witnesses up to the pivot, which are what removed the other options;
+/// * P7, `apply_max`'s forced merge when some witness pair is distinct (only
+///   with [`max_choice_point_enabled`]: without it the merge is a pick among
+///   pairs, which the marks do not justify).
+///
+/// Either conservative set made every clash below a `≤n` depend on every open
+/// decision and turned back-jumping off above it: with both exact,
+/// `ore_ont_10019`/`6485` `subclass SulfoxideGroup SulfinicAcidGeneralGroup` with
+/// the wedge off, and the #288 fuzz case q0244, answer in under a second where
+/// main stalls.
+///
+/// The `≥n` rule's all-witnesses path (`RUSTDL_MIN_FRESH_WITNESSES=0`) marks
+/// existing witnesses distinct, which no dep set justifies (#304), so it keeps
+/// every active decision.
+#[must_use]
+pub fn merge_exact_deps_enabled() -> bool {
+    std::env::var_os("RUSTDL_MERGE_EXACT_DEPS").is_some_and(|v| v == "1")
 }
 
 /// Whether the `≥n R.C` rule counts existing witnesses only when `n` of them

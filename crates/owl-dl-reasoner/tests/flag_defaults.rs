@@ -228,6 +228,12 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::nominal_block_guard_enabled,
             true,
         ),
+        // OFF until its fuzz differential, sweeps and MISSED net pass (#370).
+        (
+            "RUSTDL_MERGE_EXACT_DEPS",
+            owl_dl_tableau::merge_exact_deps_enabled,
+            false,
+        ),
         (
             "RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD",
             owl_dl_tableau::wedge_nominal_block_guard_enabled,

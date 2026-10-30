@@ -912,9 +912,11 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 ctx.add_label_with_deps(fresh, body, &min_deps);
                 fresh_witnesses.push(fresh);
             }
+            // The `≥n` label licenses `n` distinct elements, and the fresh
+            // witnesses exist only under it (#370).
             for i in 0..fresh_witnesses.len() {
                 for j in (i + 1)..fresh_witnesses.len() {
-                    ctx.mark_distinct(fresh_witnesses[i], fresh_witnesses[j]);
+                    ctx.mark_distinct_with_deps(fresh_witnesses[i], fresh_witnesses[j], &min_deps);
                 }
             }
             applied = true;
@@ -946,10 +948,18 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         // SIO_000450 et al. tripped exactly this. See
         // `docs/perf-2026-05-24-new-server.md` §5.
         let commit_count = (n as usize).min(all_witnesses.len());
+        // #370: these marks make EXISTING witnesses distinct, which is not
+        // entailed (#304), so no dep set justifies them. Every active decision
+        // keeps this path as conservative as without exact deps.
+        let mark_deps: DepSet = if ctx.merge_exact_deps() {
+            DepSet::from_slice(ctx.active_branches())
+        } else {
+            DepSet::new()
+        };
         for i in 0..commit_count {
             for j in (i + 1)..commit_count {
                 if !ctx.are_distinct(all_witnesses[i], all_witnesses[j]) {
-                    ctx.mark_distinct(all_witnesses[i], all_witnesses[j]);
+                    ctx.mark_distinct_with_deps(all_witnesses[i], all_witnesses[j], &mark_deps);
                     applied = true;
                 }
             }
@@ -1140,7 +1150,22 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 .any(|&b| ctx.are_distinct(a, b))
         });
         if any_distinct {
-            witness_deps = union(&witness_deps, &DepSet::from_slice(ctx.active_branches()));
+            // #370: with the choice point on, the merge is forced by the
+            // marks that exclude the other pairs, so their deps are exact.
+            let fallback = if ctx.merge_exact_deps() && crate::max_choice_point_enabled() {
+                let marks = distinct_marks_deps(ctx, &c_neighbours, c_neighbours.len());
+                crate::bump_counter!(ctx, merge_exact_p7);
+                #[cfg(feature = "counters")]
+                if ctx.active_branches().iter().any(|b| {
+                    marks.binary_search(b).is_err() && witness_deps.binary_search(b).is_err()
+                }) {
+                    crate::bump_counter!(ctx, merge_exact_p7_narrower);
+                }
+                marks
+            } else {
+                DepSet::from_slice(ctx.active_branches())
+            };
+            witness_deps = union(&witness_deps, &fallback);
         }
         let keep_older = crate::max_merge_keep_older_enabled();
         // What each rejected trial merge clashed on, for a precise `⊥` below.
@@ -1282,6 +1307,25 @@ pub(crate) fn max_witnesses(
             && !out.contains(&w)
         {
             out.push(w);
+        }
+    }
+    out
+}
+
+/// The union of the deps of every distinctness mark among `witnesses[..upto]`
+/// (#370). Empty unless `RUSTDL_MERGE_EXACT_DEPS` is on.
+pub(crate) fn distinct_marks_deps(
+    ctx: &TableauContext<'_, '_, '_>,
+    witnesses: &[NodeId],
+    upto: usize,
+) -> DepSet {
+    let mut out = DepSet::new();
+    let ws = &witnesses[..upto.min(witnesses.len())];
+    for (i, &a) in ws.iter().enumerate() {
+        for &b in &ws[i + 1..] {
+            if ctx.are_distinct(a, b) {
+                out = union(&out, &ctx.distinct_deps(a, b));
+            }
         }
     }
     out

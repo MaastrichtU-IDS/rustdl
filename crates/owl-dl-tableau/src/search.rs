@@ -1530,8 +1530,9 @@ mod exact_dep_tests {
     /// `≤1 r.C` over three witnesses where the first two are distinct under
     /// decision `d`; `u` is an unrelated open decision. The pivot is the third
     /// witness with no distinct option (`earlier = 2 ≥ 1`), so exhaustion rests
-    /// on the label, the witnesses and the mark: `d` but not `u`.
-    fn p4_initial(exact: bool) -> (Vec<u32>, u32, u32) {
+    /// on the label, the witnesses and the mark: `d` and the pivot's own
+    /// decision `e`, but not `u`.
+    fn p4_initial(exact: bool) -> (Vec<u32>, u32, u32, u32) {
         let mut pool = ConceptPool::new();
         let r = RoleId::new(0);
         let c = pool.atomic(ClassId::new(0));
@@ -1542,10 +1543,12 @@ mod exact_dep_tests {
         ctx.add_label_with_deps(n, at_most_one, &[]);
         let u = ctx.push_branch();
         let d = ctx.push_branch();
-        let ws: Vec<_> = (0..3)
-            .map(|_| {
-                let w = ctx.new_successor_with_deps(n, r, &[]);
-                ctx.add_label_with_deps(w, c, &[]);
+        let e = ctx.push_branch();
+        let ws: Vec<_> = [&[][..], &[], &[e]]
+            .into_iter()
+            .map(|deps| {
+                let w = ctx.new_successor_with_deps(n, r, deps);
+                ctx.add_label_with_deps(w, c, deps);
                 w
             })
             .collect();
@@ -1553,7 +1556,7 @@ mod exact_dep_tests {
         let open = first_open_max(&ctx).expect("an open ≤1 with two mergeable pairs");
         assert_eq!(open.pivot, ws[2]);
         let frame = Frame::merge(&mut ctx, 64, open);
-        (frame.initial.to_vec(), u, d)
+        (frame.initial.to_vec(), u, d, e)
     }
 
     /// The frame's distinct option marks the pivot distinct from each partner
@@ -1593,16 +1596,20 @@ mod exact_dep_tests {
 
     #[test]
     fn p4_exhaustion_depends_on_the_marks_not_on_unrelated_decisions() {
-        let (initial, u, d) = p4_initial(true);
+        let (initial, u, d, e) = p4_initial(true);
         assert!(
             initial.contains(&d),
             "{initial:?} misses the mark's decision"
         );
         assert!(
+            initial.contains(&e),
+            "{initial:?} misses the pivot's existence"
+        );
+        assert!(
             !initial.contains(&u),
             "{initial:?} carries an unrelated decision"
         );
-        let (initial, u, d) = p4_initial(false);
+        let (initial, u, d, _) = p4_initial(false);
         assert!(initial.contains(&d) && initial.contains(&u), "{initial:?}");
     }
 

@@ -1452,3 +1452,205 @@ mod dep_tests {
         assert_eq!(deps.len(), 2, "complement deps {deps:?}");
     }
 }
+
+/// #370: exact `≤n` merge deps (`RUSTDL_MERGE_EXACT_DEPS`).
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod exact_dep_tests {
+    use super::{Frame, first_open_max};
+    use crate::TableauContext;
+    use owl_dl_core::{ClassId, ConceptPool, Role, RoleId};
+
+    #[test]
+    fn a_mark_keeps_its_deps_and_undo_restores_both_vectors() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_merge_exact_deps(true);
+        let a = ctx.new_node();
+        let b = ctx.new_node();
+        let cp = ctx.checkpoint();
+        ctx.mark_distinct_with_deps(a, b, &[3]);
+        assert_eq!(ctx.distinct_deps(a, b).as_slice(), &[3]);
+        assert_eq!(ctx.distinct_deps(b, a).as_slice(), &[3]);
+        // A second reason keeps the first mark's deps.
+        ctx.mark_distinct_with_deps(a, b, &[5]);
+        assert_eq!(ctx.distinct_deps(a, b).as_slice(), &[3]);
+        ctx.rollback_to(cp);
+        for x in [a, b] {
+            assert!(ctx.graph().node(x).inequalities.is_empty());
+            assert!(ctx.graph().node(x).inequality_deps.is_empty());
+        }
+    }
+
+    #[test]
+    fn flag_off_records_no_deps() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_merge_exact_deps(false);
+        let a = ctx.new_node();
+        let b = ctx.new_node();
+        ctx.mark_distinct_with_deps(a, b, &[3]);
+        assert!(ctx.are_distinct(a, b));
+        assert!(ctx.distinct_deps(a, b).is_empty());
+        assert_eq!(ctx.graph().node(a).inequality_deps.len(), 1);
+    }
+
+    #[test]
+    fn a_carried_mark_depends_on_the_mark_and_the_merge() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_merge_exact_deps(true);
+        let a = ctx.new_node();
+        let b = ctx.new_node();
+        let c = ctx.new_node();
+        ctx.mark_distinct_with_deps(a, c, &[1]);
+        assert!(ctx.merge_into_with_deps(a, b, &[2]));
+        assert!(ctx.are_distinct(b, c));
+        assert_eq!(ctx.distinct_deps(b, c).as_slice(), &[1, 2]);
+    }
+
+    #[test]
+    fn fresh_min_witnesses_are_distinct_under_the_min_label() {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(0));
+        let at_least_two = pool.min(2, Role::Named(r), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_merge_exact_deps(true);
+        let n = ctx.new_node();
+        let d = ctx.push_branch();
+        let _unrelated = ctx.push_branch();
+        ctx.add_label_with_deps(n, at_least_two, &[d]);
+        crate::rules::apply_min(&mut ctx, n);
+        let ws = crate::rules::max_witnesses(&ctx, n, Role::Named(r), c);
+        assert_eq!(ws.len(), 2);
+        assert_eq!(ctx.distinct_deps(ws[0], ws[1]).as_slice(), &[d]);
+    }
+
+    /// `≤1 r.C` over three witnesses where the first two are distinct under
+    /// decision `d`; `u` is an unrelated open decision. The pivot is the third
+    /// witness with no distinct option (`earlier = 2 ≥ 1`), so exhaustion rests
+    /// on the label, the witnesses and the mark: `d` but not `u`.
+    fn p4_initial(exact: bool) -> (Vec<u32>, u32, u32) {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_one = pool.max(1, Role::Named(r), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_merge_exact_deps(exact);
+        let n = ctx.new_node();
+        ctx.add_label_with_deps(n, at_most_one, &[]);
+        let u = ctx.push_branch();
+        let d = ctx.push_branch();
+        let ws: Vec<_> = (0..3)
+            .map(|_| {
+                let w = ctx.new_successor_with_deps(n, r, &[]);
+                ctx.add_label_with_deps(w, c, &[]);
+                w
+            })
+            .collect();
+        ctx.mark_distinct_with_deps(ws[0], ws[1], &[d]);
+        let open = first_open_max(&ctx).expect("an open ≤1 with two mergeable pairs");
+        assert_eq!(open.pivot, ws[2]);
+        let frame = Frame::merge(&mut ctx, 64, open);
+        (frame.initial.to_vec(), u, d)
+    }
+
+    /// The frame's distinct option marks the pivot distinct from each partner
+    /// under the frame's own decision and the witnesses' deps.
+    #[test]
+    fn the_distinct_option_marks_under_the_frame_decision() {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_two = pool.max(2, Role::Named(r), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_merge_exact_deps(true);
+        let n = ctx.new_node();
+        ctx.add_label_with_deps(n, at_most_two, &[]);
+        let w_dec = ctx.push_branch();
+        for _ in 0..3 {
+            let w = ctx.new_successor_with_deps(n, r, &[w_dec]);
+            ctx.add_label_with_deps(w, c, &[w_dec]);
+        }
+        let open = first_open_max(&ctx).expect("an open ≤2 over three witnesses");
+        let (pivot, partners): (_, Vec<_>) =
+            (open.pivot, open.partners.iter().map(|(w, _)| *w).collect());
+        assert!(open.earlier < open.bound, "the distinct option is offered");
+        let mut frame = Frame::merge(&mut ctx, 64, open);
+        // Skip the merge options: start the distinct one directly.
+        frame.next = partners.len();
+        assert!(matches!(
+            frame.start_option(&mut ctx),
+            super::Start::Child(..)
+        ));
+        for w in partners {
+            let deps = ctx.distinct_deps(pivot, w);
+            assert!(deps.contains(&frame.my_id), "{deps:?} misses the frame");
+            assert!(deps.contains(&w_dec), "{deps:?} misses the witnesses");
+        }
+    }
+
+    #[test]
+    fn p4_exhaustion_depends_on_the_marks_not_on_unrelated_decisions() {
+        let (initial, u, d) = p4_initial(true);
+        assert!(
+            initial.contains(&d),
+            "{initial:?} misses the mark's decision"
+        );
+        assert!(
+            !initial.contains(&u),
+            "{initial:?} carries an unrelated decision"
+        );
+        let (initial, u, d) = p4_initial(false);
+        assert!(initial.contains(&d) && initial.contains(&u), "{initial:?}");
+    }
+
+    /// `≤1 r.C` over three witnesses, `w0 ≠ w1` under `d1` and `w0 ≠ w2` under
+    /// `d2`: one mergeable pair, so `apply_max` forces `w2` into `w1`. The moved
+    /// marker must depend on both marks, and (exact) not on the unrelated `u`.
+    fn p7_moved_deps(exact: bool) -> (Vec<u32>, [u32; 3]) {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(0));
+        let marker = pool.atomic(ClassId::new(1));
+        let at_most_one = pool.max(1, Role::Named(r), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_merge_exact_deps(exact);
+        let n = ctx.new_node();
+        ctx.add_label_with_deps(n, at_most_one, &[]);
+        let u = ctx.push_branch();
+        let d1 = ctx.push_branch();
+        let d2 = ctx.push_branch();
+        let ws: Vec<_> = (0..3)
+            .map(|_| {
+                let w = ctx.new_successor_with_deps(n, r, &[]);
+                ctx.add_label_with_deps(w, c, &[]);
+                w
+            })
+            .collect();
+        ctx.add_label_with_deps(ws[2], marker, &[]);
+        ctx.mark_distinct_with_deps(ws[0], ws[1], &[d1]);
+        ctx.mark_distinct_with_deps(ws[0], ws[2], &[d2]);
+        crate::rules::apply_max(&mut ctx, n);
+        let holder = ctx.resolve(ws[2]);
+        assert_eq!(holder, ws[1], "the one mergeable pair was merged");
+        let deps = ctx
+            .label_deps_of(holder, marker)
+            .expect("moved marker")
+            .to_vec();
+        (deps, [u, d1, d2])
+    }
+
+    #[test]
+    fn p7_forced_merge_depends_on_the_excluding_marks_only() {
+        if !crate::max_choice_point_enabled() {
+            return;
+        }
+        let (deps, [u, d1, d2]) = p7_moved_deps(true);
+        assert!(deps.contains(&d1) && deps.contains(&d2), "{deps:?}");
+        assert!(!deps.contains(&u), "{deps:?} carries an unrelated decision");
+        let (deps, [u, ..]) = p7_moved_deps(false);
+        assert!(deps.contains(&u), "{deps:?}");
+    }
+}

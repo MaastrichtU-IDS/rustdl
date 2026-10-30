@@ -1579,6 +1579,13 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.merge_exact_deps
     }
 
+    /// Test-only override of the cached `RUSTDL_MERGE_EXACT_DEPS`, so tests do
+    /// not set a process-wide env var under parallel test threads.
+    #[cfg(test)]
+    pub(crate) fn set_merge_exact_deps(&mut self, on: bool) {
+        self.merge_exact_deps = on;
+    }
+
     /// #362: generation (`∃`, `≥n`) waits at `v` while a `≤` at a nominal neighbour
     /// that counts `v` is over-full, so the merge runs before `v` makes a child a
     /// later merge would reparent (the SHOIQ priority of the `≤`/o-rules over the

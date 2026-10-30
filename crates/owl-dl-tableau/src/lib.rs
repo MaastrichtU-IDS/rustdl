@@ -1477,13 +1477,17 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     if is_subset_sorted(y_labels, x_labels) {
                         let yp_labels = &self.graph.node(yp_id).labels;
                         let xp_labels = &self.graph.node(xp_id).labels;
-                        if is_subset_sorted(yp_labels, xp_labels)
-                            && !(self.nominal_block_guard && self.node_is_nominal(x_prime_id))
-                            && !self.nn_guarded(y)
-                            && !self.nn_guarded(x_prime_id)
-                        {
-                            crate::bump_counter!(self, is_blocked_true);
-                            return true;
+                        if is_subset_sorted(yp_labels, xp_labels) {
+                            // #362: a nominal blocker, or either side standing for
+                            // a nominal's `≤`-witness, is refused.
+                            let refused = (self.nominal_block_guard
+                                && self.node_is_nominal(x_prime_id))
+                                || self.nn_guarded(y)
+                                || self.nn_guarded(x_prime_id);
+                            if !refused {
+                                crate::bump_counter!(self, is_blocked_true);
+                                return true;
+                            }
                         }
                     }
                 }

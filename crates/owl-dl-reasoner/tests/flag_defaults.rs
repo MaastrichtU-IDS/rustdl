@@ -219,6 +219,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_MRV_GEN_LOCAL",
+            owl_dl_tableau::hyper_mrv_gen_local_enabled,
+            true,
+        ),
+        (
             "RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD",
             owl_dl_tableau::wedge_nominal_block_guard_enabled,
             true,

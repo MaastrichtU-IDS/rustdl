@@ -197,15 +197,14 @@ fn abox_forms_are_inconsistent_on_the_main_tableau() {
     }
 }
 
-/// KNOWN LIMITATION: by default `consistent` trusts the wedge's `Sat`, and the
-/// wedge's blocking accepts a blocker that is merely next to an individual under a
-/// `≤` that counts predecessors (its half of the NN-rule case, #376). FLIP when it is
-/// fixed.
+/// The same forms on the default route, which trusts the wedge's `Sat`. The wedge
+/// used to accept a blocker merely next to an individual under a `≤` that counts it
+/// (#376, `RUSTDL_WEDGE_NN_GUARD`); this was the pinned miss until that was fixed.
 #[test]
-fn known_wedge_misses_the_abox_forms() {
+fn abox_forms_are_inconsistent_on_the_default_route() {
     let _l = lock();
     for body in ABOX_FORMS {
-        assert!(consistent(body), "FLIP: the wedge decides it now: {body}");
+        assert!(!consistent(body), "should be inconsistent: {body}");
     }
 }
 

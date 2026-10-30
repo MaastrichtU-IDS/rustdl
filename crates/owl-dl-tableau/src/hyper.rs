@@ -1733,11 +1733,14 @@ pub fn build_clause_index_delta(
 /// each class's partners listed. The MRV refutation check
 /// ([`HyperEngine::mrv_disjunct_refuted`]) walks `c`'s partners instead of probing
 /// every label of the node against `c` in a hashed set, which was about half of
-/// `ore_ont_10517`'s classify (#371). Equality and membership are over the pairs.
+/// `ore_ont_10517`'s classify (#371). The partner lists are built from the pairs on
+/// first use: built eagerly they cost ~64 MB on `ore_ont_16632`, whose `consistent`
+/// never reaches the check, and that was enough to push it over an 8 GB address-space
+/// cap. Equality and membership are over the pairs.
 #[derive(Clone, Debug, Default)]
 pub struct DisjointPairs {
     set: hashbrown::HashSet<(u32, u32)>,
-    partners: Vec<smallvec::SmallVec<[u32; 4]>>,
+    partners: std::sync::OnceLock<hashbrown::HashMap<u32, smallvec::SmallVec<[u32; 2]>>>,
 }
 
 impl DisjointPairs {
@@ -1764,19 +1767,24 @@ impl DisjointPairs {
         if !self.set.insert((lo, hi)) {
             return false;
         }
-        let need = lo.max(hi) as usize + 1;
-        if self.partners.len() < need {
-            self.partners.resize_with(need, smallvec::SmallVec::new);
-        }
-        self.partners[lo as usize].push(hi);
-        self.partners[hi as usize].push(lo);
+        // Rebuilt from the set on the next `partners` call.
+        self.partners = std::sync::OnceLock::new();
         true
     }
 
     /// The class indices disjoint with class index `c`.
     #[must_use]
     pub fn partners(&self, c: u32) -> &[u32] {
-        self.partners.get(c as usize).map_or(&[], |v| v.as_slice())
+        let map = self.partners.get_or_init(|| {
+            let mut map: hashbrown::HashMap<u32, smallvec::SmallVec<[u32; 2]>> =
+                hashbrown::HashMap::new();
+            for &(lo, hi) in &self.set {
+                map.entry(lo).or_default().push(hi);
+                map.entry(hi).or_default().push(lo);
+            }
+            map
+        });
+        map.get(&c).map_or(&[], |v| v.as_slice())
     }
 }
 
@@ -10266,9 +10274,18 @@ mod tests {
         assert!(!p.insert((1, 4)));
         assert_eq!(p.len(), 2);
         assert!(p.contains(&(1, 4)) && !p.contains(&(1, 2)));
-        assert_eq!(p.partners(4), &[1, 2]);
-        assert_eq!(p.partners(1), &[4]);
+        let sorted = |p: &DisjointPairs, c: u32| {
+            let mut v = p.partners(c).to_vec();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(sorted(&p, 4), [1, 2]);
+        assert_eq!(sorted(&p, 1), [4]);
         assert!(p.partners(3).is_empty() && p.partners(99).is_empty());
+        // A pair added after the lists were read is seen on the next read.
+        assert!(p.insert((3, 4)));
+        assert_eq!(sorted(&p, 4), [1, 2, 3]);
+        assert_eq!(sorted(&p, 3), [4]);
     }
 
     /// Scaffold test: `mrv_ordering` defaults to `false`; `with_mrv_ordering` flips it.

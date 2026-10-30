@@ -4616,9 +4616,12 @@ impl<'c> HyperEngine<'c> {
                             // viable-first rank only against a best at its own node.
                             // The scan is in node order, so a best at another node is
                             // at an earlier one. The best can itself have moved to a
-                            // later node (a class survivor there beat it); a
-                            // generating-only disjunction at that node then competes
-                            // with it on the viable-first rank.
+                            // later node (a class survivor there, scanned earlier at that
+                            // node, beat it); a generating-only disjunction scanned after
+                            // it then competes with it on the viable-first rank. One
+                            // scanned before the survivor is still demoted, so the rank
+                            // depends on clause order within a node (a heuristic; the
+                            // choice affects only cost, never a verdict).
                             if self.mrv_gen_local
                                 && viable > 0
                                 && generating_only
@@ -10246,7 +10249,9 @@ mod tests {
     /// with an open disjunction. Root has `(2, 2)`; the successor has a class survivor
     /// `(1, 3)` that beats it, then a generating-only `(1, 2)`. The best has moved to
     /// the successor, so the generating-only one competes on the viable-first rank
-    /// there and wins.
+    /// there and wins. This depends on the survivor being scanned first (lower clause
+    /// id): with the two clauses swapped, the generating-only one is demoted against
+    /// the root's best and the survivor is picked.
     #[test]
     fn mrv_gen_local_compares_against_the_best_candidates_node() {
         let (e1, g, h, f) = (cls(4), cls(5), cls(6), cls(7));

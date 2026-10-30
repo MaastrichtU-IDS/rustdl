@@ -4847,10 +4847,11 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
 ///
 /// A guard plus prune, not the NN-rule (no `≤m` guess, no new nominal nodes): a
 /// nominal two edges away is still missed, and so is the wedge's half (a wedge
-/// blocker merely next to an individual), which default `consistent` trusts.
+/// blocker merely next to an individual, #376), which default `consistent` trusts.
 #[must_use]
 pub fn nominal_block_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")
+}
 
 /// #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): in the wedge's
 /// pair blocking, a node that carries a nominal a blocked copy could contradict (one
@@ -4861,7 +4862,8 @@ pub fn nominal_block_guard_enabled() -> bool {
 /// `{a} : ≥3 s.{a,b}` consistent: two `≥3` witnesses were blocked by a third that had
 /// then merged into `a`. Inert on classify's `HyperCache`, which has no nominal
 /// classes. Only the label half: a blocker that is merely next to a nominal under
-/// predecessor counting (the SHOIQ NN-rule case) is not refused; that is #362.
+/// predecessor counting (the SHOIQ NN-rule case) is not refused. The main
+/// tableau's half is `RUSTDL_NOMINAL_BLOCK_GUARD` (#362); the wedge's is #376.
 #[must_use]
 pub fn wedge_nominal_block_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")

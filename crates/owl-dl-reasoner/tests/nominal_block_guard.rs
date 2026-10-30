@@ -199,7 +199,8 @@ fn abox_forms_are_inconsistent_on_the_main_tableau() {
 
 /// KNOWN LIMITATION: by default `consistent` trusts the wedge's `Sat`, and the
 /// wedge's blocking accepts a blocker that is merely next to an individual under a
-/// `≤` that counts predecessors (its half of the NN-rule case). FLIP when it is fixed.
+/// `≤` that counts predecessors (its half of the NN-rule case, #376). FLIP when it is
+/// fixed.
 #[test]
 fn known_wedge_misses_the_abox_forms() {
     let _l = lock();

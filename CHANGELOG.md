@@ -102,6 +102,31 @@ All notable changes to rustdl are documented here. Format is based on
   errors, because the cheap inconsistency guard (#313) is unchanged by design. `disjoint_classes` now
   errors when the classify run it already makes proves the KB inconsistent; it used to report "no
   disjoint pairs". Classify is unchanged.
+- **The #355 MRV rank no longer walks away from the clash, and its key is cheaper (#371),
+  `RUSTDL_MRV_GEN_LOCAL`, default ON (`=0` reverts the order change).** #355 ranks open
+  disjunctions by viable disjuncts first. On `ore_ont_7610` that promoted `C ∨ ∃r.D`
+  disjunctions whose `C` was already refuted, on ~240 nodes in a row. Each only forces a
+  successor, so the search never got back to node 0, where the clash is: `consistent` ended
+  `Stalled` at the depth cap and fell back to the main tableau. Now a disjunction whose only viable
+  disjuncts generate (`∃`, `≥n`) keeps the viable-first rank only against a best candidate at its
+  own node. The #355 wins keep a viable class disjunct and are unchanged. Separately, computing the
+  key cost about half of `ore_ont_10517`'s classify: every live class disjunct probed every node
+  label in a hashed set. The scan now stops on a candidate that cannot beat the best key (the pick
+  is unchanged), and the refutation walks the class's disjoint partners, built on first use.
+  Instructions, single-threaded, main → this change:
+  - `ore_ont_7610` `consistent` 5.4 → 0.61 G (wedge `Unsat` again), classify 4.2–4.7 → 0.52 G;
+  - `ore_ont_10517` classify 41.2 → 16.9 G (17.5 G with #355 off);
+  - `ore_ont_10019`, `6485`, `1707` `subclass SulfoxideGroup SulfinicAcidGeneralGroup` unchanged;
+  - `ore_ont_13928` `consistent` was not slower: 18.96 G both before and after #355.
+
+  Sweeps over ORE (classify 1,920, `consistent` 1,159), main against this change and against
+  `RUSTDL_MRV_GEN_LOCAL=0`, every flagged row rechecked serially in all three arms:
+  - no answer changes (`ore_ont_12698` differs run to run in every arm, at the 5 ms budget);
+  - no ok → DNF (`ore_ont_16008` and `11005` sit at the 60 s cap in every arm);
+  - `incomplete` on the 48 flagged rows: 29 runs (main), 33 (flag off), 27 (this change);
+  - MISSED net (400 ontologies): FP 0 in both arms, and no MISSED change.
+  `ore_ont_7775` cuts its 273-pair class at the per-pair budget in roughly a third of runs, in
+  every arm. Peak RSS: within 1% (`ore_ont_10425` 5,375 → 5,427 MB).
 - **The wedge tries a disjunction it can refute first (#355), `RUSTDL_MRV_REFUTED`, default ON
   (`=0` reverts).** `subclass SulfoxideGroup SulfinicAcidGeneralGroup` on `ore_ont_10019` / `6485`
   ran past 300 s (HermiT: 2.7 s). MRV ordering ranked open disjunctions by live disjuncts only, so a

@@ -4884,6 +4884,22 @@ pub fn hyper_mrv_refuted_enabled() -> bool {
     std::env::var_os("RUSTDL_MRV_REFUTED").is_none_or(|v| v != "0")
 }
 
+/// #371 `RUSTDL_MRV_GEN_LOCAL` (default ON, `=0` reverts; only matters with
+/// `RUSTDL_MRV_REFUTED` on): an open disjunction whose only viable disjuncts are
+/// generating (`∃`, `≥n`) keeps the viable-first rank only when the best candidate found
+/// so far in the scan is at its own node (or there is none yet), and otherwise ranks by
+/// live disjuncts as before #355. The scan is in node order, so this stops it from
+/// jumping past a candidate at an earlier node.
+/// On `ore_ont_7610` the viable-first rank picked `C ∨ ∃r.D` disjunctions with `C`
+/// already refuted on ~240 nodes in a row and never got back to node 0, where the clash
+/// is, so `consistent` ended `Stalled` at the depth cap instead of `Unsat` (5.2 G
+/// instructions vs 0.6 G). The #355 wins keep a class disjunct and are unaffected.
+/// Reordering is FP-safe; under a budget or depth cap it can change which pairs are cut.
+#[must_use]
+pub fn hyper_mrv_gen_local_enabled() -> bool {
+    std::env::var_os("RUSTDL_MRV_GEN_LOCAL").is_none_or(|v| v != "0")
+}
+
 /// Whether the wedge's `HF4a` NN rule finds the other holder of a nominal through
 /// an index instead of scanning every node (`RUSTDL_NN_INDEX`, **default ON**,
 /// `=0` reverts).

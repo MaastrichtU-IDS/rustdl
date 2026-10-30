@@ -4471,7 +4471,7 @@ pub(crate) struct HyperCache {
     /// Pre-built pairwise-disjoint set for `self.clauses`. Shared via
     /// `Arc::clone` per `classify_labels` probe (Q-clause is not
     /// ⊥-headed so adds no new pairs — same set for every probe).
-    base_disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
+    base_disjoint_pairs: std::sync::Arc<owl_dl_tableau::hyper::DisjointPairs>,
     /// Snapshot of [`classify_amortize_idx_enabled`] at `build` time
     /// (`RUSTDL_CLASSIFY_AMORTIZE_IDX`, default ON). When `true`,
     /// `decide_with_stats` takes the amortized base-index + per-pair-delta

@@ -549,14 +549,16 @@ pub fn property_structural_gaps<A: ForIRI>(
     if obj_empty {
         od.insert("object-empty-property");
     }
-    if obj_disjoint_sets
-        .iter()
-        .flatten()
-        .any(|m| oedges.iter().any(|(x, y)| y == m && x != m))
+    let down = crate::property_disjoint_down_enabled();
+    if !down
+        && obj_disjoint_sets
+            .iter()
+            .flatten()
+            .any(|m| oedges.iter().any(|(x, y)| y == m && x != m))
     {
         od.insert("object-disjoint-inheritance");
     }
-    if obj_disjoint_sets.iter().flatten().any(|m| m.1) {
+    if !down && obj_disjoint_sets.iter().flatten().any(|m| m.1) {
         od.insert("object-disjoint-inverse-member");
     }
     if !asymmetric.is_empty() {
@@ -579,10 +581,11 @@ pub fn property_structural_gaps<A: ForIRI>(
     if data_empty {
         dd.insert("data-empty-property");
     }
-    if data_disjoint_sets
-        .iter()
-        .flatten()
-        .any(|m| dedges.iter().any(|(x, y)| y == m && x != m))
+    if !down
+        && data_disjoint_sets
+            .iter()
+            .flatten()
+            .any(|m| dedges.iter().any(|(x, y)| y == m && x != m))
     {
         dd.insert("data-disjoint-inheritance");
     }

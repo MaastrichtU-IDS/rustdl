@@ -23,6 +23,17 @@ pub fn property_symmetric_enabled() -> bool {
     std::env::var_os("RUSTDL_PROPERTY_SYMMETRIC").is_none_or(|v| v != "0")
 }
 
+/// Told property disjointness is passed down the told hierarchy (#389, F2): with
+/// `Disjoint(q, r)`, every `p ⊑ q` and `p' ⊑ r` are disjoint, and so are their
+/// inverses (`(q ∩ r)⁻ = q⁻ ∩ r⁻`). Members written as `ObjectInverseOf` are no
+/// longer skipped. Sound: a sub-property's edges are among its parent's. Default
+/// **ON**; `RUSTDL_PROPERTY_DISJOINT_DOWN=0` reverts to told pairs between named
+/// members only.
+#[must_use]
+pub fn property_disjoint_down_enabled() -> bool {
+    std::env::var_os("RUSTDL_PROPERTY_DISJOINT_DOWN").is_none_or(|v| v != "0")
+}
+
 /// `(property IRI, is_inverse)`.
 pub(crate) type Signed = (String, bool);
 
@@ -178,4 +189,51 @@ pub(crate) fn data_named_pairs(edges: &BTreeSet<(String, String)>) -> Vec<(Strin
     out.sort();
     out.dedup();
     out
+}
+
+/// Disjoint named pairs `(a, b)` with `a < b`: every pair below two members of one
+/// told disjointness set, through the signed closure `edges`. Two signed nodes of
+/// the same polarity give the named pair (for two inverses, `x⁻ ∩ y⁻ = ∅` is
+/// `x ∩ y = ∅`). A node below two members is empty, which this `a < b` list
+/// cannot express; `property_structural_gaps` reports it. `exclude` names
+/// (`owl:top/bottom…`) are dropped.
+pub(crate) fn disjoint_down(
+    edges: &BTreeSet<(Signed, Signed)>,
+    sets: &[Vec<Signed>],
+    exclude: &[&str],
+) -> Vec<(String, String)> {
+    let below = |m: &Signed| -> BTreeSet<Signed> {
+        let mut s: BTreeSet<Signed> = edges
+            .iter()
+            .filter(|(_, y)| y == m)
+            .map(|(x, _)| x.clone())
+            .collect();
+        s.insert(m.clone());
+        s
+    };
+    let mut out: BTreeSet<(String, String)> = BTreeSet::new();
+    for set in sets {
+        for (i, m1) in set.iter().enumerate() {
+            for m2 in &set[i + 1..] {
+                let (b1, b2) = (below(m1), below(m2));
+                for x in &b1 {
+                    for y in &b2 {
+                        if x.1 != y.1 || x.0 == y.0 {
+                            continue;
+                        }
+                        if exclude.contains(&x.0.as_str()) || exclude.contains(&y.0.as_str()) {
+                            continue;
+                        }
+                        let (lo, hi) = if x.0 < y.0 {
+                            (&x.0, &y.0)
+                        } else {
+                            (&y.0, &x.0)
+                        };
+                        out.insert((lo.clone(), hi.clone()));
+                    }
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
 }

@@ -221,7 +221,11 @@ fn empty_property() {
 fn disjointness_inherited_by_a_sub_property() {
     let _l = lock();
     let k = "object-disjoint-inheritance";
-    let g = gaps("SubObjectPropertyOf(:p :q)\nDisjointObjectProperties(:q :r)");
+    let body = "SubObjectPropertyOf(:p :q)\nDisjointObjectProperties(:q :r)";
+    // Covered by F2 (`RUSTDL_PROPERTY_DISJOINT_DOWN`, default ON).
+    assert!(!has(gaps(body).object_disjoint(), k));
+    let _off = SetEnv::new("RUSTDL_PROPERTY_DISJOINT_DOWN", "0");
+    let g = gaps(body);
     assert!(has(g.object_disjoint(), k));
     assert!(!has(
         gaps("DisjointObjectProperties(:q :r)").object_disjoint(),
@@ -233,7 +237,10 @@ fn disjointness_inherited_by_a_sub_property() {
 fn disjointness_with_an_inverse_member() {
     let _l = lock();
     let k = "object-disjoint-inverse-member";
-    let g = gaps("DisjointObjectProperties(:q ObjectInverseOf(:r))");
+    let body = "DisjointObjectProperties(:q ObjectInverseOf(:r))";
+    assert!(!has(gaps(body).object_disjoint(), k));
+    let _off = SetEnv::new("RUSTDL_PROPERTY_DISJOINT_DOWN", "0");
+    let g = gaps(body);
     assert!(has(g.object_disjoint(), k));
     assert!(!has(
         gaps("DisjointObjectProperties(:q :r)").object_disjoint(),
@@ -311,8 +318,15 @@ fn data_hierarchy_kinds() {
 #[test]
 fn data_disjointness_kinds() {
     let _l = lock();
-    let g = gaps("SubDataPropertyOf(:d :e)\nDisjointDataProperties(:e :f)");
-    assert!(has(g.data_disjoint(), "data-disjoint-inheritance"));
+    let body = "SubDataPropertyOf(:d :e)\nDisjointDataProperties(:e :f)";
+    assert!(!has(
+        gaps(body).data_disjoint(),
+        "data-disjoint-inheritance"
+    ));
+    {
+        let _off = SetEnv::new("RUSTDL_PROPERTY_DISJOINT_DOWN", "0");
+        assert!(has(gaps(body).data_disjoint(), "data-disjoint-inheritance"));
+    }
     assert!(!has(
         gaps("DisjointDataProperties(:e :f)").data_disjoint(),
         "data-disjoint-inheritance"

@@ -245,6 +245,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_CLASSIFY_WEDGE_NOMINALS",
+            owl_dl_reasoner::classify_wedge_nominals_enabled,
+            true,
+        ),
+        (
             "RUSTDL_NN_INDEX",
             owl_dl_tableau::hyper_nn_index_enabled,
             true,

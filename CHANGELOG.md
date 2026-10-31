@@ -7,6 +7,21 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **`classify` no longer ignores nominal identity (#383), `RUSTDL_CLASSIFY_WEDGE_NOMINALS`,
+  default ON (`=0` reverts).** The classify wedge was built without nominals, so two nodes that both
+  carry `{a}` never merged. `classify` trusts that wedge's `Sat` in its unsat probe and in the
+  label heuristic, so it missed every entailment that needs two occurrences of `{a}` to be one
+  individual, with `incomplete: false`, while `sat` and `subclass` were right. Examples, each
+  confirmed by HermiT:
+  - `X ⊑ ∃r.({a} ⊓ C) ⊓ ∃t.({a} ⊓ D)` with `C ⊓ D ⊑ ⊥`: `X` is unsatisfiable;
+  - `X ⊑ ∃r.({a} ⊓ C) ⊓ ∃t.{a}` with `∃t.C ⊑ Y`: `X ⊑ Y`. The label heuristic pruned this
+    pair before any tableau call;
+  - `Q ⊑ ≥2 r.A`, `A ⊑ ∃s⁻.{a}`, `s` functional (the `TBox` form of #362): `Q` is
+    unsatisfiable. This one also needs #376's guard.
+
+  The engines are now built `with_nominals`, as the consistency engine already was. That
+  happens only when a classify clause mentions a nominal class, so individuals that occur
+  only in the `ABox` cost nothing.
 - **The wedge no longer blocks against a node that a nominal's `≤` counts (#376),
   `RUSTDL_WEDGE_NN_GUARD`, default ON (`=0` reverts).** `consistent` called `Q ⊑ ≥2 r.A`,
   `A ⊑ ∃s⁻.{a}`, `s` functional, `Q(d)` consistent, and also #361's `p0289` reduction
@@ -24,9 +39,8 @@ All notable changes to rustdl are documented here. Format is based on
   Known misses, each pinned by a test to FLIP:
   - the two-edge shape with `InverseFunctional(t)` instead of an explicit `≤1 t⁻`, because
     conversion declines to emit that bound for it;
-  - `classify` on the TBox form (`Q ⊑ ≥2 r.A` and the rest, without `Q(d)`): `Q` is
-    unsatisfiable and `sat` says so, but the classify wedge is not built with nominals, so the
-    guard does not apply there. The miss predates this change;
+  - `classify` on the TBox form (`Q ⊑ ≥2 r.A` and the rest, without `Q(d)`). Fixed by
+    `RUSTDL_CLASSIFY_WEDGE_NOMINALS` (#383), above;
   - with `RUSTDL_RESEED_VERIFY=0` the fix is lost: the #137 re-seed net is what re-checks a
     block made before its blocker became counted, and re-fires the skips.
 

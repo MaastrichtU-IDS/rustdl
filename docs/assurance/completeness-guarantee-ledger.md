@@ -69,7 +69,8 @@ guard's sabotage check.
 - **The guarantee covers `classify` only.** `realize`, `consistent`, `sat` and the
   inferred-query surface have their own partial signals (`incomplete`,
   `witness_prune_active`, `consistency_undetermined`) and no guarantee predicate.
-  Auditing those is a later slice of package A.
+  How each reports a give-up is in the
+  [query-surface ledger](query-surface-ledger.md).
 
 ## Rule for changes
 

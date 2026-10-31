@@ -17,6 +17,9 @@ All notable changes to rustdl are documented here. Format is based on
   surface and the test that pins it. `ClassificationStats::completeness_guaranteed()` now holds
   the predicate (the `Classification` method delegates), and a table test shows each condition on
   its own voids the guarantee.
+- **Query-surface ledger, `docs/assurance/query-surface-ledger.md` (#363 A2).** For every query
+  surface other than `classify`: how a probe can give up, and how the give-up reaches Rust, CLI
+  and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
 - **`classify` no longer ignores nominal identity (#383), `RUSTDL_CLASSIFY_WEDGE_NOMINALS`,
@@ -43,6 +46,21 @@ All notable changes to rustdl are documented here. Format is based on
   cut lost `ore_ont_6833`'s `consistent` verdict. Answers are unchanged. On ORE, CPU time is
   flat except `ore_ont_9540` (`classify`, 22 → 41 CPU-s, same answer): with nominals its
   per-class label probes run out of budget, so the label heuristic prunes fewer pairs.
+- **A query whose probe gives up no longer looks like a definite answer (#363 A2).** No answer
+  changes; only the signal is new. Changes:
+  - `sat`, `subclass` and `explain` folded a live-node-cap trip (`RUSTDL_MAX_NODES`) into "sat" /
+    "no", exit 0, and `is_class_satisfiable_with_stats` / `is_subclass_of_with_stats` reported
+    `incomplete: false`. They now print `unknown` and exit 3, and set `incomplete`.
+  - `instance` prints `unknown` and exits 3 on a cut probe; `instances` and `realize` warn on
+    stderr. The Rust side already computed the flag; the CLI and Python called the bare forms.
+  - `realize` with `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` now counts a node-cap trip as a cut probe.
+  - Python `is_consistent`, `is_class_satisfiable`, `is_subclass_of`, `is_instance_of`,
+    `instances_of` and `realize` emit `IncompleteQueryWarning` on a give-up. Return types are
+    unchanged.
+  - `consistent`: when the #344 data-counting verification of a wedge `Sat` gives up, it now
+    prints `unknown` and exits 3, with `incomplete: true` in `--json`, instead of
+    `consistent`/exit 0. `is_consistent_with_timeout` returns `None` there. This matches the
+    existing #182 give-up; the Protégé plugin reports a non-zero exit as an error.
 - **The wedge no longer blocks against a node that a nominal's `≤` counts (#376),
   `RUSTDL_WEDGE_NN_GUARD`, default ON (`=0` reverts).** `consistent` called `Q ⊑ ≥2 r.A`,
   `A ⊑ ∃s⁻.{a}`, `s` functional, `Q(d)` consistent, and also #361's `p0289` reduction

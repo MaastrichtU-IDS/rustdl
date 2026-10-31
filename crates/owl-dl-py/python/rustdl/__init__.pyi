@@ -109,6 +109,14 @@ class IncompleteQueryWarning(UserWarning):
     when the per-pair budget/probe was exhausted (sound but possibly
     incomplete)."""
 
+class StructuralGapWarning(UserWarning):
+    """Emitted by the structural property queries (`object_property_hierarchy`,
+    `data_property_hierarchy`, `disjoint_object_properties`,
+    `disjoint_data_properties`, `data_property_values` and the matching
+    `materialize_inferred_*` functions) when the ontology has constructs they do
+    not reason with (#389, #390). Not an `IncompleteQueryWarning`: no budget was
+    cut."""
+
 class Root(Mapping[str, object]):
     iri: str
     justification: tuple[str, ...]
@@ -222,21 +230,25 @@ def disjoint_classes(path: str) -> list[tuple[str, str]]:
     ...
 
 def disjoint_object_properties(path: str) -> list[tuple[str, str]]:
-    """Told-disjoint object property pairs."""
+    """Told-disjoint object property pairs. Structural; emits
+    `StructuralGapWarning` when the ontology has constructs it ignores."""
     ...
 
 def disjoint_data_properties(path: str) -> list[tuple[str, str]]:
-    """Told-disjoint data property pairs."""
+    """Told-disjoint data property pairs. Structural; emits
+    `StructuralGapWarning` when the ontology has constructs it ignores."""
     ...
 
 # ── inferred property hierarchy ─────────────────────────────────────────────
 
 def object_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str, str]]]:
-    """(equivalent_groups, direct_subsumptions) for object properties."""
+    """(equivalent_groups, direct_subsumptions) for object properties. Structural; emits
+    `StructuralGapWarning` when the ontology has constructs it ignores."""
     ...
 
 def data_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str, str]]]:
-    """(equivalent_groups, direct_subsumptions) for data properties."""
+    """(equivalent_groups, direct_subsumptions) for data properties. Structural; emits
+    `StructuralGapWarning` when the ontology has constructs it ignores."""
     ...
 
 # ── inferred same/different individuals ─────────────────────────────────────
@@ -268,7 +280,11 @@ def data_property_values(path: str) -> list[tuple[str, str, str, str, str]]:
     It is part of the literal's IDENTITY, not decoration: `"bonjour"@fr` and
     `"bonjour"@de` are distinct literals. Until issue #72 the tag was dropped
     before dedup, which merged such rows and lost an assertion outright when
-    they shared a subject."""
+    they shared a subject.
+
+    Structural; emits `StructuralGapWarning` when the ontology has constructs it
+    ignores.
+    """
     ...
 
 # ── complex class-expression queries ────────────────────────────────────────
@@ -319,15 +335,18 @@ def materialize_inferred_property_assertions(path: str) -> list[tuple[str, str, 
 def materialize_inferred_data_property_assertions(
     path: str,
 ) -> list[tuple[str, str, str, str, str]]:
-    """Inferred data property assertions (subject, property, lexical, datatype, lang)."""
+    """Inferred data property assertions (subject, property, lexical, datatype, lang). Structural; emits
+    `StructuralGapWarning` when the ontology has constructs it ignores."""
     ...
 
 def materialize_inferred_subobjectproperty_axioms(path: str) -> list[tuple[str, str]]:
-    """Inferred object property subsumption pairs (sub, sup)."""
+    """Inferred object property subsumption pairs (sub, sup). Structural; emits
+    `StructuralGapWarning` when the ontology has constructs it ignores."""
     ...
 
 def materialize_inferred_subdataproperty_axioms(path: str) -> list[tuple[str, str]]:
-    """Inferred data property subsumption pairs (sub, sup)."""
+    """Inferred data property subsumption pairs (sub, sup). Structural; emits
+    `StructuralGapWarning` when the ontology has constructs it ignores."""
     ...
 
 def materialize_existential_successors(path: str) -> list[tuple[str, str, str, str]]:

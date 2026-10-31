@@ -68,9 +68,32 @@ guard's sabotage check.
   and widening it needs its own completeness argument.
 - **The guarantee covers `classify` only.** `realize`, `consistent`, `sat` and the
   inferred-query surface have their own partial signals (`incomplete`,
-  `witness_prune_active`, `consistency_undetermined`) and no guarantee predicate.
+  `witness_prune_active`, `consistency_undetermined`, and `structural_gaps` on the
+  structural property surfaces, see below) and no guarantee predicate.
   How each reports a give-up is in the
   [query-surface ledger](query-surface-ledger.md).
+
+## Structural property surfaces (#389, #390)
+
+These surfaces are structural closures over told axioms. They never probe the
+reasoner, so they have no deadline, no `incomplete` of their own and no guarantee
+predicate. Their signal is `structural_gaps`: the constructs present in the
+ontology that the closure ignores and that can entail a relation it would report.
+An empty list means none of the enumerated routes occurs, not that the answer is
+complete. Not enumerated, and so never reported: a property that is empty because
+its domain or range is unsatisfiable outside the EL fragment, and routes not yet
+found. `structural_gaps` is outside `incomplete` on purpose: nothing was cut, so
+more time changes nothing.
+
+| Surface | Rust | CLI | Python | Pinned by |
+|---|---|---|---|---|
+| object / data property hierarchy | `property_structural_gaps(&o).object_hierarchy()` / `.data_hierarchy()` | `property-hierarchy --json` `structural_gaps` (both sides) | `StructuralGapWarning` from `object_property_hierarchy`, `data_property_hierarchy`, `materialize_inferred_sub{object,data}property_axioms` | `property_structural_gaps.rs`; `json_output.rs` `structural_property_surfaces_report_their_gaps`; `test_queries.py` `test_structural_gap_warning` |
+| disjoint object / data properties | `.object_disjoint()` / `.data_disjoint()` | `disjoint --json` `structural_gaps` (property half; the class half keeps `incomplete`) | `StructuralGapWarning` from `disjoint_object_properties`, `disjoint_data_properties` | same |
+| inferred data property values | `.data_values()` | `property-values --json` `structural_gaps` (data half; the object half keeps `incomplete`) | `StructuralGapWarning` from `data_property_values`, `materialize_inferred_data_property_assertions` | same |
+
+`StructuralGapWarning` is a sibling of `IncompleteQueryWarning`, not a subclass, so a
+caller that turns budget warnings into errors is not tripped by a structural gap.
+In text mode each command prints one stderr `warning:` line naming the kinds.
 
 ## Rule for changes
 

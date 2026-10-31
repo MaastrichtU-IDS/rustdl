@@ -98,45 +98,67 @@ pub(crate) fn disjoint_classes(path: &str) -> PyResult<(Vec<(String, String)>, b
         .map_err(reason_error_to_py)
 }
 
-/// Told-disjoint object property pairs `(a, b)`.
-#[pyfunction]
-pub(crate) fn disjoint_object_properties(path: &str) -> PyResult<Vec<(String, String)>> {
-    let ontology = load::load_path(path)?;
-    owl_dl_reasoner::disjoint_object_properties(&ontology).map_err(reason_error_to_py)
+/// The #389/#390 structural gaps of `onto`; see
+/// `owl_dl_reasoner::property_structural_gaps`.
+pub(crate) fn gaps<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> PyResult<owl_dl_reasoner::PropertyStructuralGaps> {
+    owl_dl_reasoner::property_structural_gaps(onto).map_err(reason_error_to_py)
 }
 
-/// Told-disjoint data property pairs `(a, b)`.
+/// Told-disjoint object property pairs `(a, b)`, plus the structural gaps (#389).
+/// The Python wrapper unpacks the tuple and emits `StructuralGapWarning`.
 #[pyfunction]
-pub(crate) fn disjoint_data_properties(path: &str) -> PyResult<Vec<(String, String)>> {
+#[allow(clippy::type_complexity)]
+pub(crate) fn disjoint_object_properties(
+    path: &str,
+) -> PyResult<(Vec<(String, String)>, Vec<String>)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::disjoint_data_properties(&ontology).map_err(reason_error_to_py)
+    let pairs =
+        owl_dl_reasoner::disjoint_object_properties(&ontology).map_err(reason_error_to_py)?;
+    Ok((pairs, gaps(&ontology)?.object_disjoint().to_vec()))
 }
 
-/// Inferred object property hierarchy: `(equivalent_groups, direct_subsumptions)`.
+/// Told-disjoint data property pairs `(a, b)`, plus the structural gaps (#389).
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn disjoint_data_properties(
+    path: &str,
+) -> PyResult<(Vec<(String, String)>, Vec<String>)> {
+    let ontology = load::load_path(path)?;
+    let pairs = owl_dl_reasoner::disjoint_data_properties(&ontology).map_err(reason_error_to_py)?;
+    Ok((pairs, gaps(&ontology)?.data_disjoint().to_vec()))
+}
+
+/// Inferred object property hierarchy: `(equivalent_groups, direct_subsumptions,
+/// structural_gaps)` (#389).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn object_property_hierarchy(
     path: &str,
-) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>)> {
+) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>, Vec<String>)> {
     let o = load::load_path(path)?;
     let c = owl_dl_reasoner::classify_object_property_hierarchy(&o).map_err(reason_error_to_py)?;
     Ok((
         c.equivalent_groups().to_vec(),
         c.direct_subsumptions().to_vec(),
+        gaps(&o)?.object_hierarchy().to_vec(),
     ))
 }
 
-/// Inferred data property hierarchy: `(equivalent_groups, direct_subsumptions)`.
+/// Inferred data property hierarchy: `(equivalent_groups, direct_subsumptions,
+/// structural_gaps)` (#389).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn data_property_hierarchy(
     path: &str,
-) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>)> {
+) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>, Vec<String>)> {
     let o = load::load_path(path)?;
     let c = owl_dl_reasoner::classify_data_property_hierarchy(&o).map_err(reason_error_to_py)?;
     Ok((
         c.equivalent_groups().to_vec(),
         c.direct_subsumptions().to_vec(),
+        gaps(&o)?.data_hierarchy().to_vec(),
     ))
 }
 
@@ -177,16 +199,17 @@ pub(crate) fn object_property_values(
 }
 
 /// Inferred data property values `(subject, property, lexical, datatype, lang)`
-/// over named individuals.
+/// over named individuals, plus the structural gaps (#390).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn data_property_values(
     path: &str,
-) -> PyResult<Vec<(String, String, String, String, String)>> {
+) -> PyResult<(Vec<(String, String, String, String, String)>, Vec<String>)> {
     let o = load::load_path(path)?;
-    owl_dl_reasoner::inferred_data_property_values(&o)
+    let quints = owl_dl_reasoner::inferred_data_property_values(&o)
         .map(|v| v.quints().to_vec())
-        .map_err(reason_error_to_py)
+        .map_err(reason_error_to_py)?;
+    Ok((quints, gaps(&o)?.data_values().to_vec()))
 }
 
 /// Kinds and counts of axioms conversion could not represent (a sound

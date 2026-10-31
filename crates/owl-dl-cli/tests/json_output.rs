@@ -998,3 +998,61 @@ fn classify_json_completeness_guaranteed_ends() {
     assert_eq!(inconsistent["consistent"], false);
     assert_eq!(inconsistent["completeness_guaranteed"], true);
 }
+
+fn structural_gaps_fixture() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/structural_gaps.ofn"
+    )
+}
+
+fn gaps_of(args: &[&str]) -> (Vec<String>, serde_json::Value) {
+    let out = rustdl().args(args).output().unwrap();
+    assert!(out.status.success(), "{args:?} failed");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    let gaps = v["structural_gaps"]
+        .as_array()
+        .expect("structural_gaps is a list")
+        .iter()
+        .map(|k| k.as_str().unwrap().to_string())
+        .collect();
+    (gaps, v)
+}
+
+/// #389/#390: each structural property surface reports the constructs it ignored
+/// in its own `structural_gaps` field and leaves `incomplete` alone, since
+/// nothing was cut. A plain ontology reports an empty list.
+#[test]
+fn structural_property_surfaces_report_their_gaps() {
+    let f = structural_gaps_fixture();
+    let (g, v) = gaps_of(&["property-hierarchy", "--json", f]);
+    assert!(g.contains(&"object-counting".to_string()), "{g:?}");
+    assert!(g.contains(&"data-counting".to_string()), "{g:?}");
+    assert_eq!(v["incomplete"], false);
+    let (g, _) = gaps_of(&["disjoint", "--json", f]);
+    assert!(g.contains(&"object-class-constraint".to_string()), "{g:?}");
+    let (g, _) = gaps_of(&["property-values", "--json", f]);
+    assert!(g.contains(&"data-counting".to_string()), "{g:?}");
+
+    for (cmd, plain) in [
+        ("property-hierarchy", prophier_tiny()),
+        ("disjoint", disjoint_tiny()),
+        ("property-values", propvalues_tiny()),
+    ] {
+        let (g, _) = gaps_of(&[cmd, "--json", plain]);
+        assert!(g.is_empty(), "{cmd} on a plain fixture: {g:?}");
+    }
+
+    // Text mode: one stderr warning naming the kinds; none without gaps.
+    let out = rustdl().args(["property-hierarchy", f]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("structural") && err.contains("object-counting"),
+        "{err}"
+    );
+    let out = rustdl()
+        .args(["property-hierarchy", prophier_tiny()])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("structural"));
+}

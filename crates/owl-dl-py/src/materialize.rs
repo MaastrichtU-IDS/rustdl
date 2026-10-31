@@ -83,29 +83,46 @@ pub(crate) fn materialize_inferred_property_assertions(
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_data_property_assertions(
     path: &str,
-) -> PyResult<Vec<(String, String, String, String, String)>> {
+) -> PyResult<(Vec<(String, String, String, String, String)>, Vec<String>)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::materialize_data_property_assertions(&ontology).map_err(reason_error_to_py)
+    let rows = owl_dl_reasoner::materialize_data_property_assertions(&ontology)
+        .map_err(reason_error_to_py)?;
+    Ok((
+        rows,
+        crate::queries::gaps(&ontology)?.data_values().to_vec(),
+    ))
 }
 
 /// Returns every inferred object property subsumption `(sub, sup)` over named object
 /// properties (told + equivalent + inverse closure). Raises if inconsistent.
 #[pyfunction]
+#[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_subobjectproperty_axioms(
     path: &str,
-) -> PyResult<Vec<(String, String)>> {
+) -> PyResult<(Vec<(String, String)>, Vec<String>)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::materialize_subobjectproperty_axioms(&ontology).map_err(reason_error_to_py)
+    let rows = owl_dl_reasoner::materialize_subobjectproperty_axioms(&ontology)
+        .map_err(reason_error_to_py)?;
+    Ok((
+        rows,
+        crate::queries::gaps(&ontology)?.object_hierarchy().to_vec(),
+    ))
 }
 
 /// Returns every inferred data property subsumption `(sub, sup)` over named data
 /// properties (told + equivalent closure). Raises if inconsistent.
 #[pyfunction]
+#[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_subdataproperty_axioms(
     path: &str,
-) -> PyResult<Vec<(String, String)>> {
+) -> PyResult<(Vec<(String, String)>, Vec<String>)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::materialize_subdataproperty_axioms(&ontology).map_err(reason_error_to_py)
+    let rows = owl_dl_reasoner::materialize_subdataproperty_axioms(&ontology)
+        .map_err(reason_error_to_py)?;
+    Ok((
+        rows,
+        crate::queries::gaps(&ontology)?.data_hierarchy().to_vec(),
+    ))
 }
 
 /// Returns the entailed existential successors of named individuals as 4-tuples

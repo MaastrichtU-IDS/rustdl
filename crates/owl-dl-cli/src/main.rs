@@ -1049,6 +1049,16 @@ fn warn_probes_cut(what: &str) {
     );
 }
 
+/// #389/#390: one stderr line naming the constructs a structural surface ignored.
+fn warn_structural_gaps(what: &str, gaps: &[String]) {
+    if !gaps.is_empty() {
+        eprintln!(
+            "warning: {what} is structural; this ontology has constructs it does not reason with, so relations may be missing: {}",
+            gaps.join(", ")
+        );
+    }
+}
+
 /// Print a stderr warning if any axioms were dropped during conversion
 /// (unsupported constructs — see `owl_dl_reasoner::dropped_axioms`). Those
 /// axioms are simply absent from reasoning, so the result is a sound
@@ -1693,11 +1703,14 @@ fn main() -> Result<()> {
                 .context("disjoint_object_properties")?;
             let data = owl_dl_reasoner::disjoint_data_properties(&onto)
                 .context("disjoint_data_properties")?;
+            let gaps = owl_dl_reasoner::property_structural_gaps(&onto)
+                .context("property_structural_gaps")?
+                .disjoint();
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_disjoint_json(
-                        &classes, obj, data
+                        &classes, obj, data, gaps
                     ))?
                 );
                 return Ok(());
@@ -1719,6 +1732,7 @@ fn main() -> Result<()> {
             for (a, b) in &data {
                 println!("{a}\t{b}");
             }
+            warn_structural_gaps("property disjointness", &gaps);
         }
         Command::Individuals {
             file,
@@ -1769,11 +1783,15 @@ fn main() -> Result<()> {
                 .context("inferred_object_property_values")?;
             let data =
                 inferred_data_property_values(&onto).context("inferred_data_property_values")?;
+            let gaps = owl_dl_reasoner::property_structural_gaps(&onto)
+                .context("property_structural_gaps")?
+                .data_values()
+                .to_vec();
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_property_values_json(
-                        &obj, &data
+                        &obj, &data, gaps
                     ))?
                 );
                 return Ok(());
@@ -1795,6 +1813,7 @@ fn main() -> Result<()> {
                     "warning: property values incomplete (budget/fragment) — sound under-approximation"
                 );
             }
+            warn_structural_gaps("data property values", &gaps);
         }
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
@@ -1803,10 +1822,15 @@ fn main() -> Result<()> {
                 .context("classify_object_property_hierarchy")?;
             let data = owl_dl_reasoner::classify_data_property_hierarchy(&onto)
                 .context("classify_data_property_hierarchy")?;
+            let gaps = owl_dl_reasoner::property_structural_gaps(&onto)
+                .context("property_structural_gaps")?
+                .hierarchy();
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&json_out::build_prophier_json(&obj, &data))?
+                    serde_json::to_string_pretty(&json_out::build_prophier_json(
+                        &obj, &data, gaps
+                    ))?
                 );
                 return Ok(());
             }
@@ -1818,6 +1842,7 @@ fn main() -> Result<()> {
             for (a, b) in data.direct_subsumptions() {
                 println!("{a}\t{b}");
             }
+            warn_structural_gaps("property hierarchy", &gaps);
         }
         Command::Sat { file, class_iri } => {
             let onto = parse_ofn(&file)?;

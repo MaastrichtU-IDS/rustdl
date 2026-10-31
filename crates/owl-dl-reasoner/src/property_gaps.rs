@@ -509,7 +509,7 @@ pub fn property_structural_gaps<A: ForIRI>(
     if obj_top_bottom && !crate::property_top_bottom_enabled() {
         oh.insert("object-top-bottom");
     }
-    if chain_unit {
+    if chain_unit && !crate::property_unit_chain_enabled() {
         oh.insert("object-unit-chain");
     }
     if chain_long && (reflexive || f.has_self || chain_top_leg) {

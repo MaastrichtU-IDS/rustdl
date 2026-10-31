@@ -260,6 +260,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_PROPERTY_UNIT_CHAIN",
+            owl_dl_reasoner::property_unit_chain_enabled,
+            true,
+        ),
+        (
             "RUSTDL_PROPERTY_SYMMETRIC",
             owl_dl_reasoner::property_symmetric_enabled,
             true,

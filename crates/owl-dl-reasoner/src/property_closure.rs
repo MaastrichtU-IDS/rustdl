@@ -56,6 +56,14 @@ pub fn property_top_bottom_enabled() -> bool {
     std::env::var_os("RUSTDL_PROPERTY_TOP_BOTTOM").is_none_or(|v| v != "0")
 }
 
+/// A one-leg `ObjectPropertyChain([p]) ⊑ s` is the plain `p ⊑ s` and joins the told
+/// closure (#389). OFN cannot write one (its grammar wants two legs); other syntaxes
+/// and the API can. Default **ON**; `RUSTDL_PROPERTY_UNIT_CHAIN=0` reverts.
+#[must_use]
+pub fn property_unit_chain_enabled() -> bool {
+    std::env::var_os("RUSTDL_PROPERTY_UNIT_CHAIN").is_none_or(|v| v != "0")
+}
+
 /// `(property IRI, is_inverse)`.
 pub(crate) type Signed = (String, bool);
 
@@ -71,14 +79,21 @@ pub(crate) fn signed<A: ForIRI>(ope: &OPE<A>) -> Signed {
 /// transitivity. `(a, b)` means `a ⊑ b`.
 pub(crate) fn object_edges<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<(Signed, Signed)> {
     let symmetric = property_symmetric_enabled();
+    let unit_chain = property_unit_chain_enabled();
     let mut edges: BTreeSet<(Signed, Signed)> = BTreeSet::new();
     for ac in onto {
         match &ac.component {
             C::SubObjectPropertyOf(ax) => {
-                if let SOPE::ObjectPropertyExpression(sub_ope) = &ax.sub {
-                    edges.insert((signed(sub_ope), signed(&ax.sup)));
+                match &ax.sub {
+                    SOPE::ObjectPropertyExpression(sub_ope) => {
+                        edges.insert((signed(sub_ope), signed(&ax.sup)));
+                    }
+                    SOPE::ObjectPropertyChain(legs) if unit_chain && legs.len() == 1 => {
+                        edges.insert((signed(&legs[0]), signed(&ax.sup)));
+                    }
+                    // A longer chain is complex subsumption, skipped.
+                    SOPE::ObjectPropertyChain(_) => {}
                 }
-                // ObjectPropertyChain sub → complex subsumption, skipped.
             }
             C::EquivalentObjectProperties(ax) => {
                 let ss: Vec<Signed> = ax.0.iter().map(signed).collect();

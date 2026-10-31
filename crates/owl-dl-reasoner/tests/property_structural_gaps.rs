@@ -129,8 +129,14 @@ fn unit_chain() {
         )]),
         sup: OPE::ObjectProperty(b.object_property("http://x.org/g#s")),
     }));
+    // Covered by `RUSTDL_PROPERTY_UNIT_CHAIN` (default ON).
     let g = owl_dl_reasoner::property_structural_gaps(&o).unwrap();
-    assert!(has(g.object_hierarchy(), "object-unit-chain"));
+    assert!(!has(g.object_hierarchy(), "object-unit-chain"));
+    {
+        let _off = SetEnv::new("RUSTDL_PROPERTY_UNIT_CHAIN", "0");
+        let g = owl_dl_reasoner::property_structural_gaps(&o).unwrap();
+        assert!(has(g.object_hierarchy(), "object-unit-chain"));
+    }
     let g = gaps("SubObjectPropertyOf(ObjectPropertyChain(:p :q) :s)");
     assert!(!has(g.object_hierarchy(), "object-unit-chain"));
 }

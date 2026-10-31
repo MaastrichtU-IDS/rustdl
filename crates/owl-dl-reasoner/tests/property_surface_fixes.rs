@@ -272,3 +272,39 @@ fn top_bottom_flag_off_restores_the_old_answer() {
     let _off = SetEnv::new("RUSTDL_PROPERTY_TOP_BOTTOM", "0");
     assert!(sub_obj("SubObjectPropertyOf(:p owl:bottomObjectProperty)").is_empty());
 }
+
+// ── one-leg chains ──────────────────────────────────────────────────────────
+
+/// `ObjectPropertyChain([p]) ⊑ s` (built through the API: OFN cannot write it) is
+/// `p ⊑ s`.
+fn unit_chain_onto() -> SetOntology<RcStr> {
+    use horned_owl::model::MutableOntology as _;
+    use horned_owl::model::{
+        Build, Component, ObjectPropertyExpression as OPE, SubObjectPropertyExpression as SOPE,
+        SubObjectPropertyOf,
+    };
+    let b: Build<RcStr> = Build::new_rc();
+    let mut o = onto("");
+    o.insert(Component::SubObjectPropertyOf(SubObjectPropertyOf {
+        sub: SOPE::ObjectPropertyChain(vec![OPE::ObjectProperty(b.object_property(iri("p")))]),
+        sup: OPE::ObjectProperty(b.object_property(iri("s"))),
+    }));
+    o
+}
+
+#[test]
+fn a_one_leg_chain_is_a_plain_subsumption() {
+    let _l = lock();
+    let rows = owl_dl_reasoner::materialize_subobjectproperty_axioms(&unit_chain_onto()).unwrap();
+    assert_eq!(rows, vec![pair("p", "s")]);
+    let _off = SetEnv::new("RUSTDL_PROPERTY_UNIT_CHAIN", "0");
+    let rows = owl_dl_reasoner::materialize_subobjectproperty_axioms(&unit_chain_onto()).unwrap();
+    assert!(rows.is_empty(), "{rows:?}");
+}
+
+/// FP guard: a two-leg chain stays out of the simple closure.
+#[test]
+fn a_two_leg_chain_is_not_a_subsumption() {
+    let _l = lock();
+    assert!(sub_obj("SubObjectPropertyOf(ObjectPropertyChain(:p :q) :s)").is_empty());
+}

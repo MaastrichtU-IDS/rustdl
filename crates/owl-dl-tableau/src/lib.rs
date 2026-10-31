@@ -863,11 +863,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         false
     }
 
-    /// True once live node count exceeds [`crate::max_nodes`]. Callers treat a
-    /// resulting `NodeCap` verdict as a clean "no verdict" (sound under-approx).
+    /// True once live node count exceeds [`crate::effective_max_nodes`]. Callers
+    /// treat a resulting `NodeCap` verdict as a clean "no verdict" (sound
+    /// under-approx).
     #[must_use]
     pub fn node_cap_exceeded(&self) -> bool {
-        crate::max_nodes().is_some_and(|cap| self.graph().len() > cap)
+        crate::effective_max_nodes().is_some_and(|cap| self.graph().len() > cap)
     }
 
     #[must_use]
@@ -3275,6 +3276,76 @@ pub fn max_nodes() -> Option<usize> {
         },
         Err(_) => Some(50_000),
     })
+}
+
+thread_local! {
+    /// A per-thread replacement for [`max_nodes`], set by [`NodeCapOverride`]:
+    /// `(active, cap)`, where `cap == None` disables the cap. A thread spawned
+    /// for a search does not inherit it; the spawner passes
+    /// [`effective_max_nodes`] on explicitly.
+    static NODE_CAP_OVERRIDE: std::cell::Cell<(bool, Option<usize>)> =
+        const { std::cell::Cell::new((false, None)) };
+}
+
+/// The live-node cap the current thread's searches use: the
+/// [`NodeCapOverride`] in force, else [`max_nodes`].
+#[must_use]
+pub fn effective_max_nodes() -> Option<usize> {
+    match NODE_CAP_OVERRIDE.with(std::cell::Cell::get) {
+        (true, cap) => cap,
+        (false, _) => max_nodes(),
+    }
+}
+
+/// Live-node cap for a deadline-FREE single query (`sat`, `subclass`, `instance`
+/// with no probe deadline), #363 A2. Such a query has no other bound, so the cap
+/// is its only safety net, but at the 50000 default it cut ORE queries that
+/// finish in about a second a little past it, and they now report `unknown`
+/// rather than a silent `sat`. An explicit `RUSTDL_MAX_NODES` wins (tests and
+/// users who set it keep exact control). Otherwise `RUSTDL_QUERY_MAX_NODES`
+/// (default 500000; `0` disables). Cached once.
+#[must_use]
+pub fn query_max_nodes() -> Option<usize> {
+    use std::sync::OnceLock;
+    static CAP: OnceLock<Option<usize>> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        if std::env::var_os("RUSTDL_MAX_NODES").is_some() {
+            return max_nodes();
+        }
+        match std::env::var("RUSTDL_QUERY_MAX_NODES") {
+            Ok(v) => match v.trim().parse::<usize>() {
+                Ok(0) => None,
+                Ok(n) => Some(n),
+                Err(_) => Some(500_000),
+            },
+            Err(_) => Some(500_000),
+        }
+    })
+}
+
+/// Replaces the live-node cap for searches on this thread until dropped
+/// (restoring the previous value). The CLI and Python single-query entry points
+/// (`sat`, `subclass`, `explain`, `instance`) set it to [`query_max_nodes`] via
+/// `owl_dl_reasoner::single_query_node_cap`; classify, consistency, every
+/// deadline-bounded path and multi-probe callers (`justify`, …) never set it, so
+/// they keep [`max_nodes`].
+#[must_use = "the override lasts only while the guard is alive"]
+pub struct NodeCapOverride {
+    prev: (bool, Option<usize>),
+}
+
+impl NodeCapOverride {
+    /// Use `cap` (`None` = no cap) for searches on this thread.
+    pub fn enter(cap: Option<usize>) -> Self {
+        let prev = NODE_CAP_OVERRIDE.with(|c| c.replace((true, cap)));
+        Self { prev }
+    }
+}
+
+impl Drop for NodeCapOverride {
+    fn drop(&mut self) {
+        NODE_CAP_OVERRIDE.with(|c| c.set(self.prev));
+    }
 }
 
 /// Nominals-first scheduling (#35 v4). **Default OFF** — dormant/deferred: a

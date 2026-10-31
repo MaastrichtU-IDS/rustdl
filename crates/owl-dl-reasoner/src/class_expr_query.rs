@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    QueryStats, ReasonError, instances_of, is_class_satisfiable_with_stats,
+    QueryStats, ReasonError, instances_of_reporting, is_class_satisfiable_with_stats,
     is_subclass_of_with_stats,
 };
 use horned_owl::model::{
@@ -64,7 +64,9 @@ impl CeInstances {
 }
 
 fn incomplete_of(stats: QueryStats) -> bool {
-    !stats.pure_el_mode
+    // Off pure-EL the probe is not guaranteed complete; a give-up (node cap)
+    // is reported even if that ever stops being true (#363 A2).
+    !stats.pure_el_mode || stats.incomplete
 }
 
 /// Add every class IRI referenced (nested) inside `ce` to `out`. Mirrors
@@ -227,12 +229,12 @@ pub fn class_expression_instances<A: ForIRI>(
     probed.insert(probe_axiom(&build, PROBE_IRI, ce));
     // Completeness signal via a companion sat query on the probe (cheap vs realize).
     let (_sat, stats) = is_class_satisfiable_with_stats(&probed, PROBE_IRI)?;
-    let mut individuals = instances_of(&probed, PROBE_IRI)?;
+    let (mut individuals, cut) = instances_of_reporting(&probed, PROBE_IRI)?;
     individuals.retain(|i| !i.starts_with("urn:rustdl-ce-probe"));
     individuals.sort();
     individuals.dedup();
     Ok(CeInstances {
         individuals,
-        incomplete: incomplete_of(stats),
+        incomplete: incomplete_of(stats) || cut,
     })
 }

@@ -7110,11 +7110,14 @@ pub struct QueryStats {
     /// the verdict).
     pub pure_el_mode: bool,
     /// `true` iff the verdict is a GIVE-UP reported in its sound direction
-    /// rather than a witnessed answer (#182): the consistency fall-through
-    /// tableau hit its `RUSTDL_CONSISTENCY_FALLBACK_MS` deadline, abandoned,
-    /// or tripped the node cap, and "consistent" was reported because no
-    /// clash was WITNESSED — not because a model was found at the usual
-    /// trust level. Callers presenting the verdict as such (the CLI, the
+    /// rather than a witnessed answer. For consistency (#182): the fall-through
+    /// tableau hit its `RUSTDL_CONSISTENCY_FALLBACK_MS` deadline, abandoned, or
+    /// tripped the node cap, or the #344 data-counting verification of a wedge
+    /// `Sat` gave up; "consistent" was reported because no clash was WITNESSED,
+    /// not because a model was found at the usual trust level. For
+    /// satisfiability and subsumption (#363 A2): the tableau probe tripped the
+    /// node cap (`RUSTDL_MAX_NODES`), so "satisfiable" / "not subsumed" is the
+    /// sound direction of no verdict. Callers presenting the verdict as such (the CLI, the
     /// Python surface) must surface this; the silent form is the bug class
     /// the soundness contract names ("a sound under-approximation the
     /// caller cannot see").
@@ -7189,6 +7192,11 @@ pub enum ReasonError {
 /// Returns `Ok(true)` if `class_iri` is satisfiable w.r.t. the
 /// ontology, `Ok(false)` if unsatisfiable, and a [`ReasonError`]
 /// otherwise.
+///
+/// A give-up (node cap, deadline, verification give-up) is returned in its
+/// sound direction and is indistinguishable here from a definite answer. Use
+/// the `_with_stats` form and check [`QueryStats::incomplete`] when that
+/// matters (#363 A2).
 ///
 /// # Errors
 ///
@@ -7299,13 +7307,13 @@ fn is_class_satisfiable_internal_full(
             },
         ));
     }
-    let sat = run_satisfiability(internal, move |pool| pool.atomic(class_id))?;
+    let (sat, cut) = run_satisfiability_reporting(internal, move |pool| pool.atomic(class_id))?;
     Ok((
         sat,
         QueryStats {
             answered_by_saturation: false,
             pure_el_mode: false,
-            incomplete: false,
+            incomplete: cut,
             wedge_clauses_refused: 0,
         },
     ))
@@ -7314,6 +7322,11 @@ fn is_class_satisfiable_internal_full(
 /// Decide whether `ontology` is consistent — i.e. whether it has any
 /// model at all. Reduces to satisfiability of `⊤` under the full
 /// `TBox` + `ABox`.
+///
+/// A give-up (node cap, deadline, verification give-up) is returned in its
+/// sound direction and is indistinguishable here from a definite answer. Use
+/// the `_with_stats` form and check [`QueryStats::incomplete`] when that
+/// matters (#363 A2).
 ///
 /// # Errors
 ///
@@ -7457,10 +7470,11 @@ pub fn is_consistent_internal_bounded(
     let wedge_deadline = wedge_cap.min(deadline);
     match prepared.consistency_wedge(Some(wedge_deadline)) {
         Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return Ok(Some(false)),
-        // #344: verify a `Sat` the wedge reached without counting data values; a
-        // give-up keeps the wedge's answer.
+        // #344: verify a `Sat` the wedge reached without counting data values. A
+        // give-up is no verdict, which this bounded API reports as `None`.
         Some(owl_dl_tableau::hyper::HyperResult::Sat) => {
-            return Ok(Some(prepared.verify_wedge_sat(Some(deadline))?));
+            let (consistent, gave_up) = prepared.verify_wedge_sat(Some(deadline))?;
+            return Ok((!gave_up).then_some(consistent));
         }
         Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
     }
@@ -7568,12 +7582,14 @@ fn is_consistent_internal_full(
             ));
         }
         // #344: when the ontology counts data values, verify the wedge's `Sat` (it
-        // counts none) on the main tableau; a give-up keeps the wedge's answer.
+        // counts none) on the main tableau. A give-up keeps the wedge's answer and is
+        // reported as `incomplete`, not as a verified `consistent` (#363 A2).
         Some(owl_dl_tableau::hyper::HyperResult::Sat) if prepared.wedge_sat_skips_data_counting => {
-            let consistent = prepared.verify_wedge_sat(None)?;
+            let (consistent, gave_up) = prepared.verify_wedge_sat(None)?;
             if trace {
                 eprintln!(
-                    "consistency: wedge Sat, data counting verified: consistent={consistent}"
+                    "consistency: wedge Sat, data counting verified: consistent={consistent} \
+                     gave_up={gave_up}"
                 );
             }
             return Ok((
@@ -7581,7 +7597,7 @@ fn is_consistent_internal_full(
                 QueryStats {
                     answered_by_saturation: false,
                     pure_el_mode: false,
-                    incomplete: false,
+                    incomplete: gave_up,
                     wedge_clauses_refused: refused,
                 },
             ));
@@ -7951,6 +7967,11 @@ mod abox_component_batch_tests {
 /// Returns `Ok(true)` if `sub ⊑ sup`, `Ok(false)` if there is a model
 /// in which some `sub`-instance is not a `sup`-instance.
 ///
+/// A give-up (node cap, deadline, verification give-up) is returned in its
+/// sound direction and is indistinguishable here from a definite answer. Use
+/// the `_with_stats` form and check [`QueryStats::incomplete`] when that
+/// matters (#363 A2).
+///
 /// # Errors
 ///
 /// See [`ReasonError`]. Either IRI not declared as a class surfaces as
@@ -8084,7 +8105,7 @@ fn is_subclass_of_internal_full(
     }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
-    let sat = run_satisfiability(internal, move |pool| {
+    let (sat, cut) = run_satisfiability_reporting(internal, move |pool| {
         let sub_concept = pool.atomic(sub_id);
         let super_concept = pool.atomic(super_id);
         let not_super = pool.not(super_concept);
@@ -8095,10 +8116,28 @@ fn is_subclass_of_internal_full(
         QueryStats {
             answered_by_saturation: false,
             pure_el_mode: false,
-            incomplete: false,
+            incomplete: cut,
             wedge_clauses_refused: 0,
         },
     ))
+}
+
+/// Raises the live-node cap for a deadline-free SINGLE query on this thread
+/// until the returned guard is dropped (#363 A2): the cap becomes
+/// [`owl_dl_tableau::query_max_nodes`] (`RUSTDL_QUERY_MAX_NODES`, default
+/// 500000; an explicit `RUSTDL_MAX_NODES` wins) instead of the classify-wide
+/// [`owl_dl_tableau::max_nodes`] (50000).
+///
+/// The CLI's `sat`, `subclass`, `explain` and `instance` and the matching Python
+/// functions hold it around their one query. A single query with no deadline is
+/// bounded only by the node cap, and at 50000 it cut ORE queries that finish a
+/// little past it (3 of 43 measurable random ORE ontologies; all finish under
+/// 500000 in the same CPU time and peak RSS). Library callers that issue many
+/// probes (`justify`, `repair`, `diagnose`, the class-expression queries)
+/// deliberately do not take it.
+#[must_use = "the larger cap lasts only while the guard is alive"]
+pub fn single_query_node_cap() -> owl_dl_tableau::NodeCapOverride {
+    owl_dl_tableau::NodeCapOverride::enter(owl_dl_tableau::query_max_nodes())
 }
 
 /// Shared end-of-pipeline runner: takes a (possibly mutated)
@@ -8111,21 +8150,31 @@ fn is_subclass_of_internal_full(
 /// question. For repeated queries against the same ontology — the
 /// pairwise loop in `classify`, or the per-class probes in
 /// `realize` — prefer [`PreparedOntology::from_internal`] +
-/// [`PreparedOntology::decide`], which shares the expensive
+/// [`PreparedOntology::decide_raw`], which shares the expensive
 /// prepare work across calls.
 ///
 /// The closure is invoked *after* the pool has been cloned for the
 /// tableau run, so the concept it returns is guaranteed to live in
 /// the pool the tableau will use.
-pub(crate) fn run_satisfiability<F>(
+///
+/// Returns `(sat, cut)`. On a deadline-free run the only give-up is a
+/// live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4); early abandon is armed only
+/// under a deadline. A cut keeps the sound direction (`sat = true`, so "not
+/// subsumed" / "not an instance") and sets `cut`, which callers report as
+/// [`QueryStats::incomplete`] (#363 A2). There is deliberately no variant that
+/// folds the cut away.
+pub(crate) fn run_satisfiability_reporting<F>(
     internal: InternalOntology,
     build_test_concept: F,
-) -> Result<bool, ReasonError>
+) -> Result<(bool, bool), ReasonError>
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
     let prepared = PreparedOntology::from_internal(internal)?;
-    prepared.decide(build_test_concept)
+    Ok(match prepared.decide_raw(build_test_concept)? {
+        Some(sat) => (sat, false),
+        None => (true, true),
+    })
 }
 
 /// Owned backing store for [`abox_check::AboxCheckInputs`], for callers that need
@@ -9335,23 +9384,29 @@ impl PreparedOntology {
     /// The consistency answer after a wedge `Sat` (#344). When the ontology counts
     /// data values the wedge does not, one main-tableau run bounded by
     /// [`consistency_data_counting_verify_ms`] (and `deadline`) checks it: a clash
-    /// is `false`. Otherwise, and on a give-up, the wedge's `true` stands.
+    /// is `false`. Otherwise the wedge's `true` stands.
+    ///
+    /// Returns `(consistent, gave_up)`. `gave_up` is set when the verification ran
+    /// and reached no verdict (deadline, node cap, or the search-depth bail-out the
+    /// tableau reports as `NoVerdict`): the answer is then the wedge's `true` in its
+    /// sound direction, not a verified one, and callers report it as incomplete
+    /// (#363 A2). It used to be returned as a plain `true`.
     pub(crate) fn verify_wedge_sat(
         &self,
         deadline: Option<std::time::Instant>,
-    ) -> Result<bool, ReasonError> {
+    ) -> Result<(bool, bool), ReasonError> {
         if !self.wedge_sat_skips_data_counting {
-            return Ok(true);
+            return Ok((true, false));
         }
         let own = std::time::Instant::now()
             + std::time::Duration::from_millis(consistency_data_counting_verify_ms());
         let dl = deadline.map_or(own, |d| d.min(own));
         let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
         match self.decide_consistency(Some(dl)) {
-            Ok(Some(consistent)) => Ok(consistent),
+            Ok(Some(consistent)) => Ok((consistent, false)),
             // A give-up (deadline, node cap, or the search-depth bail-out the tableau
-            // reports as `NoVerdict`) keeps the wedge's answer.
-            Ok(None) | Err(ReasonError::NoVerdict) => Ok(true),
+            // reports as `NoVerdict`) keeps the wedge's answer and says so.
+            Ok(None) | Err(ReasonError::NoVerdict) => Ok((true, true)),
             Err(e) => Err(e),
         }
     }
@@ -9535,49 +9590,16 @@ impl PreparedOntology {
             .map_or(LabelOracle::NoVerdict, |hc| hc.classify_labels(c, deadline))
     }
 
-    /// Decide whether the test concept built by `build_test_concept`
-    /// is satisfiable in this prepared ontology. The closure is
-    /// invoked on a freshly-cloned pool so the prepared pool stays
-    /// intact for the next call.
-    pub(crate) fn decide<F>(&self, build_test_concept: F) -> Result<bool, ReasonError>
-    where
-        F: FnOnce(&mut ConceptPool) -> ConceptId,
-    {
-        decide(
-            &self.pool,
-            &self.tbox,
-            &self.hierarchy,
-            &self.inverse_pairs,
-            &self.chain_axioms,
-            &self.asymmetric_roles,
-            &self.disjoint_role_pairs,
-            &self.complements,
-            &self.query_abox(),
-            &[],
-            &[],
-            &self.dkey_ranges,
-            &self.tableau_id,
-            None,
-            build_test_concept,
-        )
-        // `None` was previously impossible with no deadline set (search always
-        // returned `Some(_)`), but a live-node cap trip (#35 v4 safety net) can
-        // now legitimately yield `None` even here. Treat it the same as the
-        // deadline-bounded callers already do: "no verdict" ⇒ satisfiable ⇒
-        // not-an-instance/not-subsumed — a sound under-approximation, never a
-        // panic.
-        .map(|opt| opt.unwrap_or(true))
-    }
-
-    /// Like [`Self::decide`], but does NOT fold an inconclusive `None` (a
-    /// live-node-cap trip, #35 v4 safety net) into `Some(true)`. Callers that
-    /// need to distinguish "genuinely satisfiable" from "no verdict reached"
-    /// on the deadline-FREE path — e.g. [`Self::pair_disjoint_with_deadline`]
-    /// / [`Self::pair_individuals_disjoint_with_deadline`]'s `None`-deadline
-    /// branch, whose own callers set `incomplete` on an observed `None` —
-    /// MUST use this instead of [`Self::decide`], whose `unwrap_or(true)`
-    /// would otherwise silently swallow the `NodeCap` `None` and report a
-    /// probe-capped result as complete.
+    /// Decide whether the test concept built by `build_test_concept` is
+    /// satisfiable in this prepared ontology, on the deadline-FREE path.
+    /// The closure is invoked on a freshly-cloned pool so the prepared pool
+    /// stays intact for the next call.
+    ///
+    /// `None` is a live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4 safety net):
+    /// no verdict. Callers answer it in its sound direction AND report it as
+    /// incomplete. A former `decide` folded it into `Some(true)` with
+    /// `unwrap_or(true)`, which silently reported a capped probe as complete;
+    /// it was removed in #363 A2 once no caller needed it.
     pub(crate) fn decide_raw<F>(&self, build_test_concept: F) -> Result<Option<bool>, ReasonError>
     where
         F: FnOnce(&mut ConceptPool) -> ConceptId,
@@ -9647,7 +9669,7 @@ impl PreparedOntology {
         self.abox_with_tbox_individuals(query_tbox_individuals_enabled())
     }
 
-    /// Lever A: like [`Self::decide`], but for the **classification pairwise
+    /// Lever A: like [`Self::decide_raw`], but for the **classification pairwise
     /// subsumption loop only** — skips the `ABox` seed when it is provably
     /// irrelevant to class subsumption (`abox_irrelevant_to_classify`: has
     /// `ABox`, no nominals, gate on). MUST NOT be used for realize / consistency
@@ -9702,7 +9724,7 @@ impl PreparedOntology {
         )
     }
 
-    /// Like [`Self::decide`] but the search is bounded by `deadline`.
+    /// Like [`Self::decide_raw`] but the search is bounded by `deadline`.
     /// Returns `Ok(Some(sat))` if the tableau reached a verdict in
     /// time, or `Ok(None)` if the deadline elapsed first.
     pub(crate) fn decide_with_deadline<F>(
@@ -9749,7 +9771,7 @@ impl PreparedOntology {
         };
         let sat = match deadline {
             Some(deadline) => self.decide_with_deadline(deadline, build_test_concept)?,
-            // Use the raw Option-returning decide, NOT `Self::decide` — its
+            // Use the raw Option-returning decide, NOT the former `decide` — its
             // `unwrap_or(true)` would fold an inconclusive NodeCap `None`
             // into `Some(true)` (satisfiable ⇒ "not disjoint"), silently
             // discarding the inconclusive verdict instead of letting it
@@ -9780,8 +9802,8 @@ impl PreparedOntology {
             Some(deadline) => self.decide_with_deadline(deadline, build_test_concept)?,
             // See the matching comment in `pair_disjoint_with_deadline`: use
             // the raw Option-returning decide so a NodeCap `None` propagates
-            // instead of being folded into `Some(true)` by `Self::decide`'s
-            // `unwrap_or(true)`.
+            // instead of being folded into `Some(true)` (as the former `decide`'s
+            // `unwrap_or(true)` did).
             None => self.decide_raw(build_test_concept)?,
         };
         Ok(sat.map(|s| !s)) // {a}⊓{b} unsat ⇒ a≠b
@@ -10741,10 +10763,14 @@ where
             owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH)
         }
     } else {
+        // The node cap in force on this thread (a single-query override, #363
+        // A2) does not cross into the spawned thread on its own.
+        let node_cap = owl_dl_tableau::effective_max_nodes();
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .stack_size(DEEP_SEARCH_STACK_BYTES)
                 .spawn_scoped(scope, || {
+                    let _cap = owl_dl_tableau::NodeCapOverride::enter(node_cap);
                     owl_dl_tableau::search(&mut ctx, DEEP_SEARCH_DEPTH)
                 })
                 .expect("spawn deep tableau search thread")

@@ -17,6 +17,9 @@ All notable changes to rustdl are documented here. Format is based on
   surface and the test that pins it. `ClassificationStats::completeness_guaranteed()` now holds
   the predicate (the `Classification` method delegates), and a table test shows each condition on
   its own voids the guarantee.
+- **Query-surface ledger, `docs/assurance/query-surface-ledger.md` (#363 A2).** For every query
+  surface other than `classify`: how a probe can give up, and how the give-up reaches Rust, CLI
+  and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
 - **`classify` no longer ignores nominal identity (#383), `RUSTDL_CLASSIFY_WEDGE_NOMINALS`,
@@ -43,6 +46,25 @@ All notable changes to rustdl are documented here. Format is based on
   cut lost `ore_ont_6833`'s `consistent` verdict. Answers are unchanged. On ORE, CPU time is
   flat except `ore_ont_9540` (`classify`, 22 → 41 CPU-s, same answer): with nominals its
   per-class label probes run out of budget, so the label heuristic prunes fewer pairs.
+- **A query whose probe gives up no longer looks like a definite answer (#363 A2).** No answer
+  changes; only the signal is new. Changes:
+  - `sat`, `subclass` and `explain` folded a live-node-cap trip (`RUSTDL_MAX_NODES`) into "sat" /
+    "no", exit 0, and `is_class_satisfiable_with_stats` / `is_subclass_of_with_stats` reported
+    `incomplete: false`. They now print `unknown` and exit 3, and set `incomplete`.
+  - `instance` prints `unknown` and exits 3 on a cut probe; `instances` and `realize` warn on
+    stderr. The Rust side already computed the flag; the CLI and Python called the bare forms.
+  - `realize` with `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` now counts a node-cap trip as a cut probe.
+  - Python `is_consistent`, `is_class_satisfiable`, `is_subclass_of`, `is_instance_of`,
+    `instances_of` and `realize` emit `IncompleteQueryWarning` on a give-up. Return types are
+    unchanged.
+  - `consistent`: when the #344 data-counting verification of a wedge `Sat` gives up, it now
+    prints `unknown` and exits 3, with `incomplete: true` in `--json`, instead of
+    `consistent`/exit 0. `is_consistent_with_timeout` returns `None` there. This matches the
+    existing #182 give-up; the Protégé plugin reports a non-zero exit as an error.
+  - Measured on a seeded ORE sample (pinned release builds, 60 s cap): `consistent` changed on 1
+    of 96 measurable ontologies (`ore_ont_14379`, deterministically), with no verdict changed;
+    `realize` reported a cut probe on 1 of 58 completed.
+
 - **The wedge no longer blocks against a node that a nominal's `≤` counts (#376),
   `RUSTDL_WEDGE_NN_GUARD`, default ON (`=0` reverts).** `consistent` called `Q ⊑ ≥2 r.A`,
   `A ⊑ ∃s⁻.{a}`, `s` functional, `Q(d)` consistent, and also #361's `p0289` reduction
@@ -210,6 +232,19 @@ All notable changes to rustdl are documented here. Format is based on
   (consistent), `10517` classify 4.0 → 6.7, `13928` consistent 5.1 → 6.9. On `7610` the extra time
   is the different search order (blocking and matching), not computing the key. The main tableau
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
+
+### Changed
+- **`sat`, `subclass`, `explain` and `instance` get a larger node cap (#363 A2),
+  `RUSTDL_QUERY_MAX_NODES`, default 500000 (`0` disables).** These single queries, from the CLI
+  and the matching Python functions, have no bound but the live-node cap when they run without a
+  deadline. At 50000, `sat` and `subclass` on the first named classes said `unknown` on 3 of 43
+  measurable random ORE ontologies (`ore_ont_12414`, `318`, `9046`) that finish with a
+  200k–500k cap in the same CPU time and peak RSS. The larger cap is scoped to those entry
+  points (`owl_dl_reasoner::single_query_node_cap`). Library calls, classify, consistency,
+  `justify`/`repair`/`diagnose`, the class-expression queries and every deadline-bounded path
+  keep `RUSTDL_MAX_NODES` (50000), and an explicit `RUSTDL_MAX_NODES` governs both. The seven
+  `sat`/`subclass` DNF rows in the sample are unchanged, with identical peak RSS (max 4.85 GB),
+  and the issue #35 v4 reproducer still terminates.
 
 ## [0.4.42] — 2026-10-25
 

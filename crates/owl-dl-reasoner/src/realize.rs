@@ -447,8 +447,13 @@ fn instance_check_reporting(
             Err(ReasonError::NoVerdict) => Ok((false, true)),
             Err(e) => Err(e),
         },
-        // No deadline: the probe ran to a verdict, so nothing was truncated.
-        None => Ok((!prepared.decide(build)?, false)),
+        // No deadline: the only give-up is a node-cap trip (`RUSTDL_MAX_NODES`),
+        // which `decide_raw` reports as `None`. Sound answer "not an instance",
+        // and the result is truncated (#363 A2).
+        None => Ok(match prepared.decide_raw(build)? {
+            Some(sat) => (!sat, false),
+            None => (false, true),
+        }),
     }
 }
 
@@ -1350,7 +1355,7 @@ pub(crate) fn realize_tableau_internal(
 
     // Per-individual realization is independent across individuals
     // (each builds a fresh tableau context per class probe via
-    // `prepared.decide`). Parallelise the outer loop with rayon; the
+    // `prepared.decide_with_deadline` / `decide_raw`). Parallelise the outer loop with rayon; the
     // hierarchy / closure / prepared snapshot is shared read-only.
     let per_individual: Result<Vec<IndivResultReporting>, ReasonError> = individual_iris
         .par_iter()

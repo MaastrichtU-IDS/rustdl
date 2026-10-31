@@ -184,27 +184,33 @@ def classify_bytes(
     ...
 
 def is_consistent(path: str) -> bool:
-    """True iff the ontology is consistent."""
+    """True iff the ontology is consistent. A give-up (no clash found within
+    budget) returns `True` and emits `IncompleteQueryWarning`."""
     ...
 
 def is_class_satisfiable(path: str, class_iri: str) -> bool:
-    """True iff `class_iri` is satisfiable (not ⊑ ⊥)."""
+    """True iff `class_iri` is satisfiable (not ⊑ ⊥). If the probe gave up (node
+    cap), returns `True` and emits `IncompleteQueryWarning`."""
     ...
 
 def is_subclass_of(path: str, sub: str, sup: str) -> bool:
-    """True iff `sub ⊑ sup` is entailed."""
+    """True iff `sub ⊑ sup` is entailed. If the probe gave up (node cap),
+    returns `False` and emits `IncompleteQueryWarning`."""
     ...
 
 def is_instance_of(path: str, class_iri: str, individual_iri: str) -> bool:
-    """True iff `individual_iri` is an instance of `class_iri`."""
+    """True iff `individual_iri` is an instance of `class_iri`. If the probe was
+    cut, returns `False` and emits `IncompleteQueryWarning`."""
     ...
 
 def instances_of(path: str, class_iri: str) -> list[str]:
-    """Named individuals entailed to be instances of `class_iri`."""
+    """Named individuals entailed to be instances of `class_iri`. Emits
+    `IncompleteQueryWarning` when a probe was cut (members may be missing)."""
     ...
 
 def realize(path: str) -> dict[str, list[str]]:
-    """Map each named individual to its most-specific entailed types."""
+    """Map each named individual to its most-specific entailed types. Emits
+    `IncompleteQueryWarning` when an instance probe was cut."""
     ...
 
 # ── inferred disjointness ───────────────────────────────────────────────────

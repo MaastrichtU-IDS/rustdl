@@ -14,12 +14,12 @@ from rustdl._native import (
     Classification as Classification,
     classify as _classify_native,
     classify_bytes as _classify_bytes_native,
-    is_consistent as is_consistent,
-    is_class_satisfiable as is_class_satisfiable,
-    is_subclass_of as is_subclass_of,
-    is_instance_of as is_instance_of,
-    instances_of as instances_of,
-    realize as realize,
+    is_consistent as _is_consistent_native,
+    is_class_satisfiable as _is_class_satisfiable_native,
+    is_subclass_of as _is_subclass_of_native,
+    is_instance_of as _is_instance_of_native,
+    instances_of as _instances_of_native,
+    realize as _realize_native,
     disjoint_classes as _disjoint_classes_native,
     disjoint_object_properties as disjoint_object_properties,
     disjoint_data_properties as disjoint_data_properties,
@@ -207,6 +207,56 @@ def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
             IncompleteQueryWarning,
             stacklevel=3,
         )
+
+
+def is_consistent(path):
+    """True iff the ontology at `path` is consistent. A give-up (budget or node
+    cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`."""
+    consistent, incomplete = _is_consistent_native(path)
+    _warn_if_query_incomplete("is_consistent", incomplete)
+    return consistent
+
+
+def is_class_satisfiable(path, class_iri):
+    """True iff `class_iri` is satisfiable (not ⊑ ⊥). If the probe gave up (node
+    cap), returns `True` and emits `IncompleteQueryWarning`."""
+    sat, incomplete = _is_class_satisfiable_native(path, class_iri)
+    _warn_if_query_incomplete("is_class_satisfiable", incomplete)
+    return sat
+
+
+def is_subclass_of(path, sub, sup):
+    """True iff `sub ⊑ sup` is entailed. If the probe gave up (node cap), returns
+    `False` and emits `IncompleteQueryWarning`."""
+    subsumed, incomplete = _is_subclass_of_native(path, sub, sup)
+    _warn_if_query_incomplete("is_subclass_of", incomplete)
+    return subsumed
+
+
+def is_instance_of(path, class_iri, individual_iri):
+    """True iff `individual_iri` is an instance of `class_iri`. If the probe was
+    cut (deadline, node cap, depth limit), returns `False` and emits
+    `IncompleteQueryWarning`."""
+    is_inst, incomplete = _is_instance_of_native(path, class_iri, individual_iri)
+    _warn_if_query_incomplete("is_instance_of", incomplete)
+    return is_inst
+
+
+def instances_of(path, class_iri):
+    """Named individuals entailed to be instances of `class_iri`. Emits
+    `IncompleteQueryWarning` when a probe was cut (members may be missing)."""
+    members, incomplete = _instances_of_native(path, class_iri)
+    _warn_if_query_incomplete("instances_of", incomplete)
+    return members
+
+
+def realize(path):
+    """Map each named individual to its most-specific entailed types. Emits
+    `IncompleteQueryWarning` when an instance probe was cut (types may be
+    missing)."""
+    types, incomplete = _realize_native(path)
+    _warn_if_query_incomplete("realize", incomplete)
+    return types
 
 
 def disjoint_classes(path):

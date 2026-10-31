@@ -702,6 +702,67 @@ pub struct ClassificationStats {
     pub prep_empty_retry: bool,
 }
 
+impl ClassificationStats {
+    /// `true` iff these stats guarantee the hierarchy is complete — no missed
+    /// subsumptions, silent or flagged.
+    ///
+    /// This is the honest calibration contract: `completeness_guaranteed()` ⟹
+    /// `MISSED == 0`. Every condition below must hold:
+    ///
+    /// 1. `fragment` is [`FragmentClassification::PureEl`]: the saturator, the
+    ///    engine that answers on that path, is complete (`Horn` is excluded,
+    ///    #124; see the comment in the body);
+    /// 2. no per-pair probe timed out (`timed_out_pairs == 0`; a preparation or
+    ///    conversion timeout also bumps this and forces `OutOfFragment`);
+    /// 3. the wedge was not blind to the role hierarchy (#214);
+    /// 4. the wedge refused no clause (#353);
+    /// 5. no candidate individual equality was left undecided (#354);
+    /// 6. consistency was determined (#162);
+    /// 7. no axiom was dropped at conversion (#246): the engine would otherwise
+    ///    have reasoned over a strictly weaker KB than the input.
+    ///
+    /// `docs/assurance/completeness-guarantee-ledger.md` records each condition
+    /// with its source issue, the CLI/Python field that reports it and the test
+    /// that pins it, plus the signals deliberately left out. A new completeness
+    /// signal needs a row there and a row in the table test in
+    /// `tests/completeness_contract.rs`, in the same change.
+    ///
+    /// On `OutOfFragment` inputs it returns `false` even when nothing timed out,
+    /// because the classifier relies on the wedge's `trust_sat` verdicts, which
+    /// are sound but **not proven complete**: a spurious `Sat` on
+    /// complement/disjunction structure can silently miss a subsumption the full
+    /// tableau would find (measured on the ORE corpus — see
+    /// `docs/paper-calibration-decomposition-2026-07-08.md`).
+    #[must_use]
+    pub fn completeness_guaranteed(&self) -> bool {
+        // `Horn` is DELIBERATELY not here (#124). It is a property of the
+        // CLAUSE SHAPE — "no disjunctive head, nothing deferred" — and was read
+        // as a property of the RUN. The two came apart: on
+        //
+        //   X ⊑ ∃r.B,  Domain(r, ∃s.Z),  ∃s.Z ⊑ W        ⟹  X ⊑ W
+        //
+        // (Konclude and HermiT both derive it) the clausification is Horn and
+        // `classify` reports NOTHING, while `subclass X W` answers `yes` — and
+        // the certificate read clean. `CLAUDE.md` already records the
+        // justification as false-as-implemented: "the shortcircuit ran the EL
+        // saturator, not the hyper fixpoint". `saturator_complete_fragment`
+        // learned the same lesson earlier and replaced its clausal test with a
+        // strict allowlist; this arm had not.
+        //
+        // `PureEl` stays because it is gated by `is_pure_el`, whose contract is
+        // that the SATURATOR — the engine that actually answers on that path —
+        // is complete, with the `BareRoleDecls` proof for the admitted inert
+        // declarations. That is an engine property, not a clause count.
+        matches!(self.fragment, FragmentClassification::PureEl)
+            && self.timed_out_pairs == 0
+            && !self.wedge_hierarchy_blind
+            && self.wedge_clauses_refused == 0
+            && self.derived_same_undecided == 0
+            && !self.consistency_undetermined
+            && self.dropped.is_empty()
+    }
+}
+
 impl Classification {
     /// Every declared class IRI in insertion order.
     #[must_use]
@@ -960,53 +1021,17 @@ impl Classification {
     }
 
     /// `true` iff the reported hierarchy is **guaranteed complete** — no missed
-    /// subsumptions, silent or flagged.
+    /// subsumptions, silent or flagged. Delegates to
+    /// [`ClassificationStats::completeness_guaranteed`], which documents the
+    /// conditions; `docs/assurance/completeness-guarantee-ledger.md` lists each
+    /// one with its source issue and the surfaces that report it.
     ///
-    /// This is the honest calibration contract: `completeness_guaranteed()` ⟹
-    /// `MISSED == 0`. It holds **only** on [`FragmentClassification::PureEl`]
-    /// (the saturator is complete; `Horn` is excluded, see #124 in the body),
-    /// **and** when no per-pair probe timed out, the wedge was not blind to the
-    /// role hierarchy (#214), consistency was determined, and no axiom was
-    /// dropped at conversion (#246). A dropped axiom means the engine reasoned
-    /// over a strictly weaker KB than the input, so entailments of the input can
-    /// be missed even when the saturator is complete on what it was given.
-    ///
-    /// On `OutOfFragment` inputs it returns `false` even when nothing timed out,
-    /// because the classifier relies on the wedge's `trust_sat` verdicts, which
-    /// are sound but **not proven complete**: a spurious `Sat` on
-    /// complement/disjunction structure can silently miss a subsumption the full
-    /// tableau would find (measured on the ORE corpus — see
-    /// `docs/paper-calibration-decomposition-2026-07-08.md`). A `false` here does
-    /// *not* mean the hierarchy is incomplete — only that completeness is not
-    /// *guaranteed*. Callers needing a proof-carrying hierarchy should treat
-    /// `false` as "verify externally".
+    /// A `false` here does *not* mean the hierarchy is incomplete — only that
+    /// completeness is not *guaranteed*. Callers needing a proof-carrying
+    /// hierarchy should treat `false` as "verify externally".
     #[must_use]
     pub fn completeness_guaranteed(&self) -> bool {
-        // `Horn` is DELIBERATELY not here (#124). It is a property of the
-        // CLAUSE SHAPE — "no disjunctive head, nothing deferred" — and was read
-        // as a property of the RUN. The two came apart: on
-        //
-        //   X ⊑ ∃r.B,  Domain(r, ∃s.Z),  ∃s.Z ⊑ W        ⟹  X ⊑ W
-        //
-        // (Konclude and HermiT both derive it) the clausification is Horn and
-        // `classify` reports NOTHING, while `subclass X W` answers `yes` — and
-        // the certificate read clean. `CLAUDE.md` already records the
-        // justification as false-as-implemented: "the shortcircuit ran the EL
-        // saturator, not the hyper fixpoint". `saturator_complete_fragment`
-        // learned the same lesson earlier and replaced its clausal test with a
-        // strict allowlist; this arm had not.
-        //
-        // `PureEl` stays because it is gated by `is_pure_el`, whose contract is
-        // that the SATURATOR — the engine that actually answers on that path —
-        // is complete, with the `BareRoleDecls` proof for the admitted inert
-        // declarations. That is an engine property, not a clause count.
-        matches!(self.stats.fragment, FragmentClassification::PureEl)
-            && self.stats.timed_out_pairs == 0
-            && !self.stats.wedge_hierarchy_blind
-            && self.stats.wedge_clauses_refused == 0
-            && self.stats.derived_same_undecided == 0
-            && !self.stats.consistency_undetermined
-            && self.stats.dropped.is_empty()
+        self.stats.completeness_guaranteed()
     }
 }
 

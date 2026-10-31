@@ -131,8 +131,12 @@ pub(crate) struct ClassifyJson {
     /// #124: the honest calibration signal — `Classification::
     /// completeness_guaranteed()`, i.e. **this hierarchy is provably free of
     /// missed subsumptions**. `true` only on a fragment where the engine that
-    /// answered is complete, only with no timed-out pair, and only when no
-    /// axiom was dropped at conversion (#246; see `dropped`).
+    /// answered is complete and when none of the other signals in this struct
+    /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no
+    /// `wedge_clauses_refused`, no `derived_same_undecided`, no
+    /// `consistency_undetermined` and nothing in `dropped` (#246).
+    /// `ClassificationStats::completeness_guaranteed` is the predicate, and
+    /// `docs/assurance/completeness-guarantee-ledger.md` lists each condition.
     ///
     /// Added because on `X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`, `∃s.Z ⊑ W` (⟹ `X ⊑ W`,
     /// derived by both Konclude and `HermiT`) every other field here reads

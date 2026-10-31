@@ -51,11 +51,25 @@ impl PyClassification {
     /// True iff classification ran to completion — no pair hit the
     /// timeout. When `False`, the hierarchy may be missing real
     /// subsumptions (see `timed_out_pairs`); re-classify with
-    /// `per_pair_timeout_ms=0, global_deadline_ms=0` for the complete
-    /// (unbounded) result.
+    /// `per_pair_timeout_ms=0, global_deadline_ms=0` for the unbounded result.
+    /// `True` does NOT mean no entailment is missing: that is the stronger
+    /// `completeness_guaranteed`.
     #[getter]
     fn complete(&self) -> bool {
         self.inner.stats().timed_out_pairs == 0
+    }
+
+    /// True iff the hierarchy is guaranteed complete: no missed subsumptions,
+    /// silent or flagged. The same value as the Rust
+    /// `Classification::completeness_guaranteed()` and the `classify --json`
+    /// field. It holds only on a pure-EL ontology with no timed-out pair, no
+    /// `wedge_hierarchy_blind`, no `wedge_clauses_refused`, no
+    /// `derived_same_undecided`, no `consistency_undetermined` and no dropped
+    /// axiom. `False` means completeness is not guaranteed, not that the
+    /// hierarchy is incomplete.
+    #[getter]
+    fn completeness_guaranteed(&self) -> bool {
+        self.inner.completeness_guaranteed()
     }
 
     /// True iff the global deadline ran out during preparation (EL saturation

@@ -6,6 +6,18 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Added
+- **Python `Classification.completeness_guaranteed` (#363).** The same value as the Rust
+  `Classification::completeness_guaranteed()` and the `classify --json` field. Python had only
+  `complete`, which says no pair timed out and nothing more: an ontology outside pure EL, or one
+  with a dropped axiom, reads `complete is True` while completeness is not guaranteed. `complete`
+  is unchanged.
+- **Completeness guarantee ledger, `docs/assurance/completeness-guarantee-ledger.md` (#363).** One
+  row per condition of the guarantee, with its source issue, the field that reports it on each
+  surface and the test that pins it. `ClassificationStats::completeness_guaranteed()` now holds
+  the predicate (the `Classification` method delegates), and a table test shows each condition on
+  its own voids the guarantee.
+
 ### Fixed
 - **The wedge no longer blocks against a node that a nominal's `≤` counts (#376),
   `RUSTDL_WEDGE_NN_GUARD`, default ON (`=0` reverts).** `consistent` called `Q ⊑ ≥2 r.A`,

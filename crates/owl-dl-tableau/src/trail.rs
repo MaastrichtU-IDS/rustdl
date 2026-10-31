@@ -307,15 +307,25 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             let ineq_a = &mut graph.node_mut(a).inequalities;
             let last = ineq_a.pop().expect("DistinctMarked undo: a empty");
             debug_assert_eq!(last, b, "DistinctMarked undo: a/b mismatch");
-            graph.node_mut(a).inequality_deps.pop();
+            graph
+                .node_mut(a)
+                .inequality_deps
+                .pop()
+                .expect("DistinctMarked undo: a deps empty");
             let ineq_b = &mut graph.node_mut(b).inequalities;
             let last = ineq_b.pop().expect("DistinctMarked undo: b empty");
             debug_assert_eq!(last, a, "DistinctMarked undo: b/a mismatch");
-            graph.node_mut(b).inequality_deps.pop();
-            debug_assert_eq!(
-                graph.node(a).inequalities.len(),
-                graph.node(a).inequality_deps.len()
-            );
+            graph
+                .node_mut(b)
+                .inequality_deps
+                .pop()
+                .expect("DistinctMarked undo: b deps empty");
+            for n in [a, b] {
+                debug_assert_eq!(
+                    graph.node(n).inequalities.len(),
+                    graph.node(n).inequality_deps.len()
+                );
+            }
         }
         TrailEntry::EdgeRemoved {
             from,

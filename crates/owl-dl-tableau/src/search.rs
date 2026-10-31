@@ -912,6 +912,23 @@ fn reorder_disjuncts(
         if is_leaf_compound(pool, d) {
             return 0;
         }
+        // #382: a `≤n R.C` the node already meets generates nothing. Not when a
+        // `≥m R.C` with `m > n` is labelled: that one clashes at once.
+        if ctx.max_first()
+            && let ConceptExpr::Max(n, role, body) = pool.get(d)
+            && !labels.iter().any(|&l| {
+                matches!(pool.get(l), ConceptExpr::Min(m, r, c) if m > n && r == role && c == body)
+            })
+            && ctx
+                .graph()
+                .node(node)
+                .neighbours()
+                .filter(|(seen, _)| ctx.edge_satisfies(*seen, *role))
+                .nth(*n as usize)
+                .is_none()
+        {
+            return 0;
+        }
         // #288: `∀R.C` generates nothing, so at a node with few `R`-successors
         // try it before an atomic disjunct whose definition may generate (see
         // `forall_first_enabled`). Its cost is pushing `C` into each
@@ -976,6 +993,10 @@ fn first_open_choose(
             let ConceptExpr::Max(_, role, body) = pool.get(c) else {
                 continue;
             };
+            // #382: every neighbour already counts for a `⊤` body.
+            if ctx.top_filler_body(*body) {
+                continue;
+            }
             let Some(complement) = ctx.complement_of(*body) else {
                 // No complement registered — the reasoner facade
                 // should have set this for every Max body. Skip
@@ -2077,6 +2098,296 @@ mod tree_sticky_tests {
                 });
                 assert!(!is_unsat(&v), "cap {cap} flag {on}: {v:?}");
             }
+        }
+    }
+}
+
+/// #382: a met `≤n` disjunct first (`max_first`) and `⊤` as a filler every
+/// neighbour carries (`top_filler`).
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod counting_tests {
+    use super::{DECISION_LOG, SearchVerdict, first_open_max, reorder_disjuncts, search};
+    use crate::TableauContext;
+    use crate::graph::NodeId;
+    use owl_dl_core::{ClassId, ConceptId, ConceptPool, Role, RoleId};
+
+    const DEEP: usize = 1_000;
+    const R: RoleId = RoleId::new(0);
+
+    /// Run `search` with the two flags, returning the verdict, the decisions'
+    /// nodes in order and the final node count.
+    /// `(⊤, ⊥)` in `pool`.
+    fn top_bot(pool: &mut ConceptPool) -> (ConceptId, ConceptId) {
+        (pool.top(), pool.bot())
+    }
+
+    fn run(
+        pool: &ConceptPool,
+        tb: (ConceptId, ConceptId),
+        max_first: bool,
+        top_filler: bool,
+        build: impl FnOnce(&mut TableauContext<'_, '_, '_>),
+    ) -> (SearchVerdict, Vec<NodeId>, usize) {
+        let mut ctx = TableauContext::new(pool);
+        ctx.set_counting_flags(max_first, top_filler);
+        // The reasoner registers `¬⊤ = ⊥` for every `≤n R.⊤` it prepares;
+        // without it the choose rule cannot fire on `⊤` with the flag off either.
+        ctx.set_complement(tb.0, tb.1);
+        build(&mut ctx);
+        DECISION_LOG.with(|l| l.borrow_mut().clear());
+        let v = search(&mut ctx, DEEP);
+        let log = DECISION_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        (v, log, ctx.graph().len())
+    }
+
+    fn unsat(v: &SearchVerdict) -> bool {
+        matches!(v, SearchVerdict::Unsat(_))
+    }
+
+    #[test]
+    fn at_most_one_top_with_two_disjoint_successors_is_unsat() {
+        // The guard against counting nothing: skipping the choose on `⊤`
+        // without counting every neighbour leaves `≤1 R.⊤` unenforced.
+        let mut pool = ConceptPool::new();
+        let tb = top_bot(&mut pool);
+        let a = pool.atomic(ClassId::new(1));
+        let na = pool.not(a);
+        let top = pool.top();
+        let some_a = pool.some(Role::Named(R), a);
+        let some_na = pool.some(Role::Named(R), na);
+        let at_most = pool.max(1, Role::Named(R), top);
+        for on in [false, true] {
+            let (v, _, _) = run(&pool, tb, false, on, |ctx| {
+                let n = ctx.new_node();
+                for c in [some_a, some_na, at_most] {
+                    ctx.add_label(n, c);
+                }
+            });
+            assert!(unsat(&v), "top_filler {on}: {v:?}");
+        }
+    }
+
+    #[test]
+    fn at_most_one_top_merges_two_compatible_successors() {
+        let mut pool = ConceptPool::new();
+        let tb = top_bot(&mut pool);
+        let a = pool.atomic(ClassId::new(1));
+        let b = pool.atomic(ClassId::new(2));
+        let top = pool.top();
+        let some_a = pool.some(Role::Named(R), a);
+        let some_b = pool.some(Role::Named(R), b);
+        let at_most = pool.max(1, Role::Named(R), top);
+        for on in [false, true] {
+            let (v, _, _) = run(&pool, tb, false, on, |ctx| {
+                let n = ctx.new_node();
+                for c in [some_a, some_b, at_most] {
+                    ctx.add_label(n, c);
+                }
+            });
+            assert!(matches!(v, SearchVerdict::Sat), "top_filler {on}: {v:?}");
+        }
+    }
+
+    #[test]
+    fn some_top_is_witnessed_by_any_neighbour() {
+        let mut pool = ConceptPool::new();
+        let tb = top_bot(&mut pool);
+        let top = pool.top();
+        let some_top = pool.some(Role::Named(R), top);
+        let build = |ctx: &mut TableauContext<'_, '_, '_>| {
+            let n = ctx.new_node();
+            ctx.new_successor(n, R);
+            ctx.add_label(n, some_top);
+        };
+        let (_, _, off) = run(&pool, tb, false, false, build);
+        let (_, _, on) = run(&pool, tb, false, true, build);
+        assert_eq!(off, 3, "flag off generates a fresh successor");
+        assert_eq!(on, 2, "flag on reuses the existing one");
+    }
+
+    #[test]
+    fn at_least_two_top_is_met_by_two_distinct_neighbours() {
+        let mut pool = ConceptPool::new();
+        let tb = top_bot(&mut pool);
+        let top = pool.top();
+        let at_least = pool.min(2, Role::Named(R), top);
+        let (v, _, len) = run(&pool, tb, false, true, |ctx| {
+            let n = ctx.new_node();
+            let a = ctx.new_successor(n, R);
+            let b = ctx.new_successor(n, R);
+            ctx.mark_distinct(a, b);
+            ctx.add_label(n, at_least);
+        });
+        assert!(matches!(v, SearchVerdict::Sat), "{v:?}");
+        assert_eq!(len, 3, "no fresh witness");
+    }
+
+    #[test]
+    fn the_choose_rule_does_not_fire_on_a_top_body() {
+        let mut pool = ConceptPool::new();
+        let tb = top_bot(&mut pool);
+        let top = pool.top();
+        let at_most = pool.max(1, Role::Named(R), top);
+        let build = |ctx: &mut TableauContext<'_, '_, '_>| {
+            let n = ctx.new_node();
+            ctx.new_successor(n, R);
+            ctx.add_label(n, at_most);
+        };
+        let (v_off, off, _) = run(&pool, tb, false, false, build);
+        let (v_on, on, _) = run(&pool, tb, false, true, build);
+        assert!(matches!(v_off, SearchVerdict::Sat) && matches!(v_on, SearchVerdict::Sat));
+        assert_eq!(
+            off,
+            vec![NodeId::new(1)],
+            "flag off chooses on the successor"
+        );
+        assert!(on.is_empty(), "flag on opens no decision: {on:?}");
+    }
+
+    #[test]
+    fn a_top_merge_depends_on_every_witness_edge() {
+        // Witnesses carry no `⊤` label, so the only deps a merge can take from
+        // them are their edges'. Each must be in every partner's deps.
+        let mut pool = ConceptPool::new();
+        let top = pool.top();
+        let marker = pool.atomic(ClassId::new(1));
+        let at_most = pool.max(1, Role::Named(R), top);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_counting_flags(false, true);
+        let n = ctx.new_node();
+        ctx.add_label_with_deps(n, at_most, &[]);
+        let ids: Vec<u32> = (0..3).map(|_| ctx.push_branch()).collect();
+        let ws: Vec<NodeId> = ids
+            .iter()
+            .map(|&b| ctx.new_successor_with_deps(n, R, &[b]))
+            .collect();
+        ctx.add_label_with_deps(ws[1], marker, &[]);
+        let (_, open) = first_open_max(&ctx, u32::MAX).expect("an open ≤1 over three witnesses");
+        for (_, deps) in &open.partners {
+            for b in &ids {
+                assert!(
+                    deps.contains(b),
+                    "merge deps {deps:?} miss witness edge {b}"
+                );
+            }
+        }
+        assert!(matches!(search(&mut ctx, 64), SearchVerdict::Sat));
+        let holder = (0..ctx.graph().len())
+            .map(|i| NodeId::new(u32::try_from(i).expect("fits")))
+            .find(|&x| {
+                !ctx.graph().node(x).is_redirected()
+                    && ctx.graph().node(x).labels().binary_search(&marker).is_ok()
+            })
+            .expect("the marker survives the merges");
+        let deps = ctx.label_deps_of(holder, marker).expect("marker deps");
+        for b in &ids {
+            assert!(
+                deps.contains(b),
+                "moved label deps {deps:?} miss witness edge {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_inverse_neighbour_counts_and_witnesses() {
+        let mut pool = ConceptPool::new();
+        let tb = top_bot(&mut pool);
+        let top = pool.top();
+        let at_most_zero = pool.max(0, Role::Inverse(R), top);
+        let some_inv = pool.some(Role::Inverse(R), top);
+        let (v, _, _) = run(&pool, tb, false, true, |ctx| {
+            let m = ctx.new_node();
+            ctx.new_predecessor(m, R);
+            ctx.add_label(m, at_most_zero);
+        });
+        assert!(unsat(&v), "≤0 R⁻.⊤ with an R-predecessor: {v:?}");
+        let (v, _, len) = run(&pool, tb, false, true, |ctx| {
+            let m = ctx.new_node();
+            ctx.new_predecessor(m, R);
+            ctx.add_label(m, some_inv);
+        });
+        assert!(matches!(v, SearchVerdict::Sat), "{v:?}");
+        assert_eq!(len, 2, "∃R⁻.⊤ is witnessed by the predecessor");
+    }
+
+    #[test]
+    fn some_top_with_at_most_zero_top_is_unsat() {
+        let mut pool = ConceptPool::new();
+        let tb = top_bot(&mut pool);
+        let top = pool.top();
+        let some_top = pool.some(Role::Named(R), top);
+        let at_most_zero = pool.max(0, Role::Named(R), top);
+        for on in [false, true] {
+            let (v, _, _) = run(&pool, tb, false, on, |ctx| {
+                let n = ctx.new_node();
+                ctx.add_label(n, some_top);
+                ctx.add_label(n, at_most_zero);
+            });
+            assert!(unsat(&v), "top_filler {on}: {v:?}");
+        }
+    }
+
+    #[test]
+    fn a_met_at_most_disjunct_is_tried_first() {
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(1));
+        let c = pool.atomic(ClassId::new(2));
+        let at_most_zero = pool.max(0, Role::Named(R), c);
+        let at_least_one = pool.min(1, Role::Named(R), c);
+        let options = [a, at_most_zero];
+        let order = |max_first: bool, successor: bool, at_least: bool| {
+            let mut ctx = TableauContext::new(&pool);
+            ctx.set_counting_flags(max_first, false);
+            let n = ctx.new_node();
+            if successor {
+                ctx.new_successor(n, R);
+            }
+            if at_least {
+                ctx.add_label(n, at_least_one);
+            }
+            reorder_disjuncts(&ctx, n, &options)
+        };
+        assert_eq!(
+            order(false, false, false),
+            vec![a, at_most_zero],
+            "off: atomic first"
+        );
+        assert_eq!(
+            order(true, false, false),
+            vec![at_most_zero, a],
+            "met ≤0 first"
+        );
+        assert_eq!(
+            order(true, true, false),
+            vec![a, at_most_zero],
+            "≤0 not met: unchanged"
+        );
+        assert_eq!(
+            order(true, false, true),
+            vec![a, at_most_zero],
+            "a ≥1 is labelled: unchanged"
+        );
+    }
+
+    #[test]
+    fn max_first_keeps_the_verdict_when_the_met_disjunct_fails() {
+        // `≤0 R.C` is met at first, tried first, and refuted once `∃R.C`
+        // generates; `A` then models it.
+        let mut pool = ConceptPool::new();
+        let tb = top_bot(&mut pool);
+        let a = pool.atomic(ClassId::new(1));
+        let c = pool.atomic(ClassId::new(2));
+        let at_most_zero = pool.max(0, Role::Named(R), c);
+        let or = pool.or([a, at_most_zero]);
+        let some_c = pool.some(Role::Named(R), c);
+        for on in [false, true] {
+            let (v, _, _) = run(&pool, tb, on, false, |ctx| {
+                let n = ctx.new_node();
+                ctx.add_label(n, or);
+                ctx.add_label(n, some_c);
+            });
+            assert!(matches!(v, SearchVerdict::Sat), "max_first {on}: {v:?}");
         }
     }
 }

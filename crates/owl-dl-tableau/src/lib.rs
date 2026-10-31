@@ -779,6 +779,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// choice currently under trial. The `decision_labels` vector
     /// is indexed by branch id and grown on demand.
     #[doc(hidden)]
+    /// DIAGNOSTIC (#382): the node a recorded decision was made on.
+    pub(crate) fn diag_decision_node(&self, branch_id: u32) -> Option<NodeId> {
+        self.decision_labels.get(branch_id as usize).copied().flatten().map(|(n, _)| n)
+    }
+
     pub fn record_decision(&mut self, branch_id: u32, node: NodeId, disjunct: ConceptId) {
         let idx = branch_id as usize;
         if idx >= self.decision_labels.len() {
@@ -868,6 +873,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// redundant successor that a later `≤m R.body` would clash on.
     #[must_use]
     pub fn node_entails_filler(&self, node: NodeId, body: ConceptId) -> bool {
+        if diag_top(self, body) {
+            return true;
+        }
         let labels = &self.graph.node(node).labels;
         if labels.binary_search(&body).is_ok() {
             return true;
@@ -2947,6 +2955,13 @@ pub fn data_counting_role_hierarchy_enabled() -> bool {
 /// practice: budgets cut searches differently, and the `≤n` trial merge (#76)
 /// commits to the first pair that does not clash at once, so a different order
 /// can reach a different committed pair.
+/// DIAGNOSTIC (#382): with `RUSTDL_DIAG_CHOOSE_TOP=1`, every node counts as
+/// carrying `⊤`.
+pub(crate) fn diag_top(ctx: &TableauContext<'_, '_, '_>, body: ConceptId) -> bool {
+    std::env::var_os("RUSTDL_DIAG_CHOOSE_TOP").is_some_and(|v| v == "1")
+        && matches!(ctx.pool().get(body), owl_dl_core::ConceptExpr::Top)
+}
+
 #[must_use]
 pub fn forall_first_enabled() -> bool {
     std::env::var_os("RUSTDL_FORALL_FIRST").is_none_or(|v| v != "0")

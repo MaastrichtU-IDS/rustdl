@@ -770,7 +770,8 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
             .node(node)
             .neighbours()
             .find(|&(seen, neighbour)| {
-                ctx.edge_satisfies(seen, role) && ctx.graph().node(neighbour).has_label(body)
+                ctx.edge_satisfies(seen, role)
+                    && (ctx.graph().node(neighbour).has_label(body) || crate::diag_top(ctx, body))
             })
             .map(|(_, neighbour)| neighbour);
         if witness.is_some() {
@@ -1303,7 +1304,7 @@ pub(crate) fn max_witnesses(
     let mut out: Vec<NodeId> = Vec::new();
     for (seen, w) in ctx.graph().node(node).neighbours() {
         if ctx.edge_satisfies(seen, role)
-            && ctx.graph().node(w).has_label(body)
+            && (ctx.graph().node(w).has_label(body) || crate::diag_top(ctx, body))
             && !out.contains(&w)
         {
             out.push(w);

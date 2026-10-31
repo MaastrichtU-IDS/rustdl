@@ -172,6 +172,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
         }
         let verdict = match saturate(ctx, SATURATE_ITERS) {
             SaturationResult::Clash(_, deps) => {
+                diag::clash(deps.len());
                 if trace_enabled() {
                     eprintln!(
                         "# trace search depth={max_depth} clash=immediate deps={}",
@@ -195,11 +196,13 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    diag::open(ctx.pool(), 2, open.pivot.index(), 0);
                     return Expanded::Open(Frame::merge(ctx, max_depth, open));
                 }
                 // Step 1: ⊔ branching has priority — it's structurally
                 // cheaper and keeps the search shape predictable.
-                if let Some((node, _or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
+                if let Some((node, or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
+                    diag::open(ctx.pool(), 0, node.index(), or_label.index());
                     if trace_enabled() {
                         eprintln!(
                             "# trace search depth={max_depth} disj node={} options={} graph_nodes={}",
@@ -220,6 +223,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    diag::open(ctx.pool(), 1, node.index(), c.index());
                     return Expanded::Open(Frame::or(
                         ctx,
                         max_depth,
@@ -667,6 +671,28 @@ impl Frame {
                     // contribute to the clash. Every sibling option
                     // would clash for the same upstream reason —
                     // propagate the failure straight up.
+                    {
+                        let frame_node = match &self.kind {
+                            FrameKind::Or { node, .. } => *node,
+                            FrameKind::Merge { open } => open.pivot,
+                        };
+                        let related = |a: NodeId, b: NodeId| {
+                            // a is b or an ancestor of b
+                            let mut n = Some(b);
+                            while let Some(x) = n {
+                                if x == a {
+                                    return true;
+                                }
+                                n = ctx.graph().node(x).parent();
+                            }
+                            false
+                        };
+                        let independent = !clash_deps
+                            .iter()
+                            .filter_map(|&d| ctx.diag_decision_node(d))
+                            .any(|d| related(frame_node, d) || related(d, frame_node));
+                        diag::skip_kind(independent);
+                    }
                     self.early_return = Some(SearchVerdict::Unsat(clash_deps));
                 } else {
                     // This decision mattered. Keep its deps for the "all
@@ -746,6 +772,7 @@ impl Frame {
                     }
                 }
             }
+            diag::exhaust(self.refuted.len());
             SearchVerdict::Unsat(combined)
         }
     }
@@ -819,6 +846,20 @@ fn reorder_disjuncts(
         if is_leaf_compound(pool, d) {
             return 0;
         }
+        // DIAGNOSTIC (#382): a `≤n R.C` the node already meets by count generates
+        // nothing, so try it first.
+        if std::env::var_os("RUSTDL_DIAG_MAX_FIRST").is_some_and(|v| v == "1")
+            && let ConceptExpr::Max(n, role, _) = pool.get(d)
+            && ctx
+                .graph()
+                .node(node)
+                .neighbours()
+                .filter(|(seen, _)| ctx.edge_satisfies(*seen, *role))
+                .nth(*n as usize)
+                .is_none()
+        {
+            return 0;
+        }
         // #288: `∀R.C` generates nothing, so at a node with few `R`-successors
         // try it before an atomic disjunct whose definition may generate (see
         // `forall_first_enabled`). Its cost is pushing `C` into each
@@ -881,6 +922,12 @@ fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Concep
             let ConceptExpr::Max(_, role, body) = pool.get(c) else {
                 continue;
             };
+            // DIAGNOSTIC (#382): every node is in `⊤`, so `⊤ ⊔ ¬⊤` decides nothing.
+            if std::env::var_os("RUSTDL_DIAG_CHOOSE_TOP").is_some_and(|v| v == "1")
+                && matches!(pool.get(*body), ConceptExpr::Top)
+            {
+                continue;
+            }
             let Some(complement) = ctx.complement_of(*body) else {
                 // No complement registered — the reasoner facade
                 // should have set this for every Max body. Skip
@@ -1659,5 +1706,125 @@ mod exact_dep_tests {
         assert!(!deps.contains(&u), "{deps:?} carries an unrelated decision");
         let (deps, [u, ..]) = p7_moved_deps(false);
         assert!(deps.contains(&u), "{deps:?}");
+    }
+}
+
+/// DIAGNOSTIC (#382, not for merge): counters over one process, printed every
+/// 20,000 decisions when `RUSTDL_DIAG382` is set.
+mod diag {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    static OPENS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    static SKIPS: AtomicU64 = AtomicU64::new(0);
+    static EXHAUSTS: AtomicU64 = AtomicU64::new(0);
+    static EXHAUST_OPTS: AtomicU64 = AtomicU64::new(0);
+    static CLASHES: AtomicU64 = AtomicU64::new(0);
+    static CLASH_DEPS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+    static SITES: Mutex<Option<HashMap<u64, u32>>> = Mutex::new(None);
+
+    fn on() -> bool {
+        std::env::var_os("RUSTDL_DIAG382").is_some()
+    }
+
+    fn show(pool: &owl_dl_core::ConceptPool, id: owl_dl_core::ConceptId, d: usize) -> String {
+        use owl_dl_core::{ConceptExpr as E, Role};
+        if d > 4 {
+            return "…".into();
+        }
+        let r = |r: &Role| match r {
+            Role::Named(x) => format!("r{}", x.index()),
+            Role::Inverse(x) => format!("r{}⁻", x.index()),
+        };
+        let list = |xs: &[owl_dl_core::ConceptId], sep: &str| {
+            xs.iter().map(|&x| show(pool, x, d + 1)).collect::<Vec<_>>().join(sep)
+        };
+        match pool.get(id) {
+            E::Top => "⊤".into(),
+            E::Bot => "⊥".into(),
+            E::Atomic(c) => format!("C{}", c.index()),
+            E::Nominal(i) => format!("{{i{}}}", i.index()),
+            E::SelfRestriction(x) => format!("∃{}.Self", r(x)),
+            E::Not(x) => format!("¬{}", show(pool, *x, d + 1)),
+            E::And(xs) => format!("({})", list(xs, " ⊓ ")),
+            E::Or(xs) => format!("({})", list(xs, " ⊔ ")),
+            E::Some(x, c) => format!("∃{}.{}", r(x), show(pool, *c, d + 1)),
+            E::All(x, c) => format!("∀{}.{}", r(x), show(pool, *c, d + 1)),
+            E::Min(n, x, c) => format!("≥{n} {}.{}", r(x), show(pool, *c, d + 1)),
+            E::Max(n, x, c) => format!("≤{n} {}.{}", r(x), show(pool, *c, d + 1)),
+        }
+    }
+
+    pub(super) fn open(pool: &owl_dl_core::ConceptPool, kind: usize, node: u32, concept: u32) {
+        if !on() {
+            return;
+        }
+        OPENS[kind].fetch_add(1, Relaxed);
+        let key = ((kind as u64) << 60) | (u64::from(node) << 32) | u64::from(concept);
+        let mut g = SITES.lock().expect("diag lock");
+        *g.get_or_insert_with(HashMap::new).entry(key).or_insert(0) += 1;
+        let total: u64 = OPENS.iter().map(|a| a.load(Relaxed)).sum();
+        if total % 20_000 == 0 {
+            let m = g.as_ref().expect("map");
+            let mut counts: Vec<u32> = m.values().copied().collect();
+            counts.sort_unstable_by(|a, b| b.cmp(a));
+            let top: Vec<u32> = counts.iter().take(8).copied().collect();
+            // Opens by decision concept (kind, concept), summed over nodes.
+            let mut by_c: HashMap<(u64, u64), u64> = HashMap::new();
+            for (k, v) in m {
+                *by_c.entry((k >> 60, k & 0xffff_ffff)).or_insert(0) += u64::from(*v);
+            }
+            let mut by_c: Vec<_> = by_c.into_iter().collect();
+            by_c.sort_by(|a, b| b.1.cmp(&a.1));
+            for ((kind, c), v) in by_c.iter().take(8) {
+                let c = owl_dl_core::ConceptId::new(u32::try_from(*c).expect("id"));
+                eprintln!("#   kind={kind} opens={v} {}", show(pool, c, 0));
+            }
+            let o: Vec<u64> = OPENS.iter().map(|a| a.load(Relaxed)).collect();
+            let cd: Vec<u64> = CLASH_DEPS.iter().map(|a| a.load(Relaxed)).collect();
+            let ex = EXHAUSTS.load(Relaxed);
+            eprintln!(
+                "# diag382 opens[or,choose,max]={o:?} sites={} top_site_opens={top:?} skips={} indep_skips={} exhausts={ex} avg_opts_at_exhaust={:.2} clashes={} clash_deps[0-1,2-4,5-9,10-19,20-39,40+]={cd:?}",
+                m.len(),
+                SKIPS.load(Relaxed),
+                INDEP_SKIPS.load(Relaxed),
+                EXHAUST_OPTS.load(Relaxed) as f64 / ex.max(1) as f64,
+                CLASHES.load(Relaxed),
+            );
+        }
+    }
+
+    static INDEP_SKIPS: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn skip_kind(independent: bool) {
+        if on() {
+            SKIPS.fetch_add(1, Relaxed);
+            if independent {
+                INDEP_SKIPS.fetch_add(1, Relaxed);
+            }
+        }
+    }
+
+    pub(super) fn exhaust(options: usize) {
+        if on() {
+            EXHAUSTS.fetch_add(1, Relaxed);
+            EXHAUST_OPTS.fetch_add(options as u64, Relaxed);
+        }
+    }
+
+    pub(super) fn clash(deps: usize) {
+        if on() {
+            CLASHES.fetch_add(1, Relaxed);
+            let b = match deps {
+                0..=1 => 0,
+                2..=4 => 1,
+                5..=9 => 2,
+                10..=19 => 3,
+                20..=39 => 4,
+                _ => 5,
+            };
+            CLASH_DEPS[b].fetch_add(1, Relaxed);
+        }
     }
 }

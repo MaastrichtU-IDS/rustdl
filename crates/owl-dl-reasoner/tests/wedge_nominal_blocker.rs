@@ -304,7 +304,7 @@ fn known_reseed_net_off_loses_the_fix() {
 /// HermiT and `rustdl sat` (the main tableau) agree. `classify` misses it with or
 /// without the #376 guard, and with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`: the classify
 /// wedge is not built with nominals (`{a}` is an ordinary class there), so the
-/// guard has nothing to check. FLIP when classify derives it.
+/// guard has nothing to check. Tracked as #383; FLIP when classify derives it.
 #[test]
 fn known_classify_misses_the_tbox_form() {
     let _l = lock();

@@ -302,9 +302,11 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             // symmetric and append-only between checkpoints.
             let ineq_a = &mut graph.node_mut(a).inequalities;
             let last = ineq_a.pop().expect("DistinctMarked undo: a empty");
+            graph.node_mut(a).inequality_stamps.pop();
             debug_assert_eq!(last, b, "DistinctMarked undo: a/b mismatch");
             let ineq_b = &mut graph.node_mut(b).inequalities;
             let last = ineq_b.pop().expect("DistinctMarked undo: b empty");
+            graph.node_mut(b).inequality_stamps.pop();
             debug_assert_eq!(last, a, "DistinctMarked undo: b/a mismatch");
         }
         TrailEntry::EdgeRemoved {

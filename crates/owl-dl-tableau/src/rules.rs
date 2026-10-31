@@ -1110,7 +1110,12 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 .any(|&b| ctx.are_distinct(a, b))
         });
         if any_distinct {
-            witness_deps = union(&witness_deps, &DepSet::from_slice(ctx.active_branches()));
+            let marks = if crate::merge_stamp_deps_enabled() {
+                ctx.marks_prefix_deps(&c_neighbours)
+            } else {
+                DepSet::from_slice(ctx.active_branches())
+            };
+            witness_deps = union(&witness_deps, &marks);
         }
         let keep_older = crate::max_merge_keep_older_enabled();
         // What each rejected trial merge clashed on, for a precise `⊥` below.

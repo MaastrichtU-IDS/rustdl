@@ -100,6 +100,9 @@ pub struct Node {
     /// is known to denote a *different* individual than this node.
     /// Symmetric — if `a ∈ b.inequalities` then `b ∈ a.inequalities`.
     pub(crate) inequalities: SmallVec<[NodeId; 2]>,
+    /// PROTOTYPE #370 (local only): branch-stack depth when each inequality was marked,
+    /// parallel to [`Self::inequalities`].
+    pub(crate) inequality_stamps: SmallVec<[u32; 2]>,
     /// `Some(t)` if this node has been merged into `t` by
     /// `apply_max`. All meaningful state has been transferred to
     /// `t`; this node is a redirect. Resolved through chains via

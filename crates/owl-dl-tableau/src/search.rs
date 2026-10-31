@@ -284,6 +284,9 @@ struct OpenMax {
     /// How many witnesses precede `pivot`. They are pairwise distinct, because
     /// `pivot` is the first witness with a mergeable earlier one.
     earlier: usize,
+    /// PROTOTYPE #370: with `RUSTDL_MERGE_STAMP_DEPS=1`, the witnesses' deps plus the branch-stack
+    /// prefix the distinctness marks among `witnesses[..=pivot]` can depend on; else empty.
+    stamp_pre: Option<DepSet>,
 }
 
 /// Find an over-full `≤n R.C` with at least two pairs that may merge (#293),
@@ -350,6 +353,9 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                         pivot,
                         partners,
                         earlier: j,
+                        stamp_pre: crate::merge_stamp_deps_enabled().then(|| {
+                            crate::deps::union(&witness_deps, &ctx.marks_prefix_deps(&witnesses[..=j]))
+                        }),
                     });
                 }
             }
@@ -421,8 +427,10 @@ impl Frame {
     /// Each merge's deps cover every witness (see [`first_open_max`]).
     fn merge(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize, open: OpenMax) -> Self {
         // Read before this frame's own id is pushed.
-        let initial =
-            crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()));
+        let initial = match &open.stamp_pre {
+            Some(pre) => crate::deps::union(&open.max_deps, pre),
+            None => crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches())),
+        };
         let my_id = ctx.push_branch();
         // The distinct option leaves `earlier + 1` pairwise-distinct witnesses,
         // which a bound of `earlier` or less cannot accommodate.

@@ -1706,10 +1706,38 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         if a == b || self.are_distinct(a, b) {
             return;
         }
+        let stamp = u32::try_from(self.active_branches().len()).expect("branch depth fits u32");
         self.graph.node_mut(a).inequalities.push(b);
+        self.graph.node_mut(a).inequality_stamps.push(stamp);
         self.graph.node_mut(b).inequalities.push(a);
+        self.graph.node_mut(b).inequality_stamps.push(stamp);
         self.trail.record(TrailEntry::DistinctMarked { a, b });
         self.touch(&[a, b]);
+    }
+
+    /// PROTOTYPE #370: the branch-stack depth at which `a ≠ b` was marked. Rollback is LIFO, so
+    /// the mark can only depend on the first `stamp` active decisions.
+    #[must_use]
+    pub fn inequality_stamp_of(&self, a: NodeId, b: NodeId) -> Option<u32> {
+        let n = self.graph.node(a);
+        let pos = n.inequalities.iter().position(|&x| x == b)?;
+        n.inequality_stamps.get(pos).copied()
+    }
+
+    /// PROTOTYPE #370: the active decisions a set of distinctness marks among `nodes` can depend
+    /// on, i.e. the prefix of the branch stack up to the latest mark's stamp.
+    #[must_use]
+    pub fn marks_prefix_deps(&self, nodes: &[NodeId]) -> crate::graph::DepSet {
+        let mut s = 0u32;
+        for (i, &a) in nodes.iter().enumerate() {
+            for &b in &nodes[i + 1..] {
+                if let Some(t) = self.inequality_stamp_of(a, b) {
+                    s = s.max(t);
+                }
+            }
+        }
+        let branches = self.active_branches();
+        crate::graph::DepSet::from_slice(&branches[..(s as usize).min(branches.len())])
     }
 
     /// True iff `a` and `b` are known distinct via a prior
@@ -2739,6 +2767,13 @@ pub fn max_precise_bot_enabled() -> bool {
 /// index) is now merged into the older one, as the standard `≤`-rule merges a
 /// successor into its predecessor.
 #[must_use]
+/// PROTOTYPE #370 (local only): distinctness marks' deps from their branch-depth stamps.
+#[must_use]
+pub fn merge_stamp_deps_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RUSTDL_MERGE_STAMP_DEPS").is_some_and(|v| v == "1"))
+}
+
 pub fn max_merge_keep_older_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_MERGE_KEEP_OLDER").is_none_or(|v| v != "0")
 }

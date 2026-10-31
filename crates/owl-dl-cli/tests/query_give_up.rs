@@ -95,7 +95,7 @@ fn sat_prints_unknown_when_the_probe_hits_the_node_cap() {
     assert_eq!(capped.stdout.trim(), "unknown", "stderr: {}", capped.stderr);
     assert_eq!(capped.code, 3);
     assert!(
-        capped.stderr.contains("RUSTDL_MAX_NODES"),
+        capped.stderr.contains("RUSTDL_QUERY_MAX_NODES"),
         "{}",
         capped.stderr
     );
@@ -231,4 +231,28 @@ Ontology(<http://ex.org/o>
         decided.stderr
     );
     assert_eq!(decided.code, 0);
+}
+
+/// The deadline-free single-query cap (`RUSTDL_QUERY_MAX_NODES`, default 500000)
+/// must reach the tableau search, which runs on its own large-stack thread. With
+/// `RUSTDL_MAX_NODES` unset, a query cap of 1 must cut `sat` and a query cap of
+/// 0 (disabled) must let it decide.
+#[test]
+fn the_single_query_cap_reaches_the_search_thread() {
+    let f = fixture_named("querycap");
+    let p = f.path().to_str().unwrap();
+    let run_query_cap = |cap: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rustdl"))
+            .args(["sat", p, C])
+            .env_remove("RUSTDL_MAX_NODES")
+            .env("RUSTDL_QUERY_MAX_NODES", cap)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8(out.stdout).unwrap().trim().to_owned(),
+        )
+    };
+    assert_eq!(run_query_cap("1"), (3, "unknown".to_owned()));
+    assert_eq!(run_query_cap("0"), (0, "sat".to_owned()));
 }

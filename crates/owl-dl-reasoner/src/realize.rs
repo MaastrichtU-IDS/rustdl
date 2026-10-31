@@ -450,7 +450,7 @@ fn instance_check_reporting(
         // No deadline: the only give-up is a node-cap trip (`RUSTDL_MAX_NODES`),
         // which `decide_raw` reports as `None`. Sound answer "not an instance",
         // and the result is truncated (#363 A2).
-        None => Ok(match prepared.decide_raw(build)? {
+        None => Ok(match prepared.decide_raw_single_query(build)? {
             Some(sat) => (!sat, false),
             None => (false, true),
         }),

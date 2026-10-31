@@ -1022,7 +1022,7 @@ fn exit_unknown_node_cap() -> ! {
     println!("unknown");
     eprintln!(
         "warning: the tableau probe hit the live-node cap and reached no verdict. \
-         Raise RUSTDL_MAX_NODES (default 50000; 0 disables the cap) for more room."
+         Raise RUSTDL_QUERY_MAX_NODES (default 500000; 0 disables the cap) for more room."
     );
     std::process::exit(3);
 }
@@ -2065,7 +2065,9 @@ fn main() -> Result<()> {
                 " (closure didn't witness it; tableau adjudicated)"
             };
             if stats.incomplete {
-                println!("{sub} ⊑ {sup} : unknown — tableau gave up (node cap, RUSTDL_MAX_NODES)");
+                println!(
+                    "{sub} ⊑ {sup} : unknown — tableau gave up (node cap, RUSTDL_QUERY_MAX_NODES)"
+                );
                 std::process::exit(3);
             }
             println!(

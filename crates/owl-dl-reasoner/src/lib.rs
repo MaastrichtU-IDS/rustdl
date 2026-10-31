@@ -8153,10 +8153,12 @@ where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
     let prepared = PreparedOntology::from_internal(internal)?;
-    Ok(match prepared.decide_raw(build_test_concept)? {
-        Some(sat) => (sat, false),
-        None => (true, true),
-    })
+    Ok(
+        match prepared.decide_raw_single_query(build_test_concept)? {
+            Some(sat) => (sat, false),
+            None => (true, true),
+        },
+    )
 }
 
 /// Owned backing store for [`abox_check::AboxCheckInputs`], for callers that need
@@ -9572,6 +9574,21 @@ impl PreparedOntology {
             .map_or(LabelOracle::NoVerdict, |hc| hc.classify_labels(c, deadline))
     }
 
+    /// [`Self::decide_raw`] for a deadline-free SINGLE query (`sat`, `subclass`,
+    /// `instance` with no probe deadline): the node cap is its only bound, so it
+    /// uses [`owl_dl_tableau::query_max_nodes`] instead of the classify-wide
+    /// [`owl_dl_tableau::max_nodes`] (#363 A2).
+    pub(crate) fn decide_raw_single_query<F>(
+        &self,
+        build_test_concept: F,
+    ) -> Result<Option<bool>, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        let _cap = owl_dl_tableau::NodeCapOverride::enter(owl_dl_tableau::query_max_nodes());
+        self.decide_raw(build_test_concept)
+    }
+
     /// Decide whether the test concept built by `build_test_concept` is
     /// satisfiable in this prepared ontology, on the deadline-FREE path.
     /// The closure is invoked on a freshly-cloned pool so the prepared pool
@@ -10745,10 +10762,14 @@ where
             owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH)
         }
     } else {
+        // The node cap in force on this thread (a single-query override, #363
+        // A2) does not cross into the spawned thread on its own.
+        let node_cap = owl_dl_tableau::effective_max_nodes();
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .stack_size(DEEP_SEARCH_STACK_BYTES)
                 .spawn_scoped(scope, || {
+                    let _cap = owl_dl_tableau::NodeCapOverride::enter(node_cap);
                     owl_dl_tableau::search(&mut ctx, DEEP_SEARCH_DEPTH)
                 })
                 .expect("spawn deep tableau search thread")

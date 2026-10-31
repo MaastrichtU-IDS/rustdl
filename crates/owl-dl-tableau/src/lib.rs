@@ -139,6 +139,13 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// Cached [`forall_first_enabled`] (#288), read once per context because
     /// disjunct ordering runs at every branch.
     forall_first: bool,
+    /// Cached [`tree_sticky_branching_enabled`] (#377), read once per context
+    /// because the decision selectors run at every expansion.
+    tree_sticky: bool,
+    /// The tree root of the last decision the search opened (#377), `u32::MAX`
+    /// before the first. With [`Self::tree_sticky_branching`], the selectors
+    /// prefer an open decision in this tree.
+    last_decision_root: u32,
     /// Last [`Self::is_blocked`] answer as `(node, trail generation, blocked)`
     /// (#288). Six rules ask for the same node in a row, usually with no graph
     /// change in between, and anywhere-blocking scans every candidate each time.
@@ -378,6 +385,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
+            tree_sticky: tree_sticky_branching_enabled(),
+            last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
@@ -423,6 +432,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
+            tree_sticky: tree_sticky_branching_enabled(),
+            last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
@@ -473,6 +484,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             signed_roles: signed_role_edges_enabled(),
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
+            tree_sticky: tree_sticky_branching_enabled(),
+            last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
@@ -1140,6 +1153,35 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn forall_first_enabled(&self) -> bool {
         self.forall_first
+    }
+
+    /// Whether the search stays in the tree of its last decision (#377).
+    #[must_use]
+    pub fn tree_sticky_branching(&self) -> bool {
+        self.tree_sticky
+    }
+
+    /// The tree root of the last decision the search opened (#377).
+    #[must_use]
+    pub(crate) fn last_decision_root(&self) -> u32 {
+        self.last_decision_root
+    }
+
+    /// Record that the search opened a decision at `node` (#377).
+    pub(crate) fn note_decision_at(&mut self, node: NodeId) {
+        self.last_decision_root = self.graph.node(node).root;
+    }
+
+    /// Forget the last decision's tree, so the next one is taken in node order
+    /// (#377).
+    pub(crate) fn forget_decision_root(&mut self) {
+        self.last_decision_root = u32::MAX;
+    }
+
+    /// Test hook for [`Self::tree_sticky_branching`].
+    #[cfg(test)]
+    pub(crate) fn set_tree_sticky_branching(&mut self, on: bool) {
+        self.tree_sticky = on;
     }
 
     /// Slice of all registered length-2 chain axioms.
@@ -2950,6 +2992,37 @@ pub fn data_counting_role_hierarchy_enabled() -> bool {
 #[must_use]
 pub fn forall_first_enabled() -> bool {
     std::env::var_os("RUSTDL_FORALL_FIRST").is_none_or(|v| v != "0")
+}
+
+/// Whether the search keeps branching in the completion-graph tree of its last
+/// decision while that tree has open decisions (#377,
+/// `RUSTDL_TREE_STICKY_BRANCHING=1`, **default OFF**).
+///
+/// A probe with `ABox` individuals has several trees: the test node's and one
+/// per individual. With no edges between them they are independent, but the
+/// selectors took the first open decision in node order, and nodes of the
+/// trees interleave, so the decision stack did too. A clash in one tree
+/// backjumps to that tree's own decision, which is right, but undoing to its
+/// checkpoint also pops every decision the other tree made since, and that
+/// tree then searches again from there. On `core-3250-b` (6 axioms and one
+/// `ClassAssertion`) the test node's tree made over 630,000 decisions in 60 s,
+/// where alone its whole search takes 55,329.
+///
+/// With the flag on, the selectors still scan in node order but prefer an open
+/// decision whose node is in the tree of the last decision opened, so a tree is
+/// finished before another is started. `sat Alkyl` on that core answers in
+/// about 13 CPU-s. A fixed tree order was tried first and was worse: taking the
+/// lowest root first finished near-empty individual trees before the test
+/// node's, and lost 7 of 1,800 fuzz cases that node order decides at once.
+///
+/// This changes only which decision is taken next. Every option of every
+/// decision is still tried, and a leaf is still `Sat` only when no selector
+/// finds an open decision in any tree. That is sound, and on a complete search
+/// the verdict is the same either way. Budgets and depth caps can cut a
+/// different order at a different place.
+#[must_use]
+pub fn tree_sticky_branching_enabled() -> bool {
+    std::env::var_os("RUSTDL_TREE_STICKY_BRANCHING").is_some_and(|v| v == "1")
 }
 
 /// Whether the choice of which `≤n` witnesses to merge is a search branch

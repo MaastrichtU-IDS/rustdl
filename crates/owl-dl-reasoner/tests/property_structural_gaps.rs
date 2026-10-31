@@ -99,7 +99,11 @@ fn symmetric() {
 #[test]
 fn top_bottom() {
     let _l = lock();
-    let g = gaps("SubObjectPropertyOf(:p owl:bottomObjectProperty)");
+    let body = "SubObjectPropertyOf(:p owl:bottomObjectProperty)";
+    // Covered by `RUSTDL_PROPERTY_TOP_BOTTOM` (default ON).
+    assert!(!has(gaps(body).object_hierarchy(), "object-top-bottom"));
+    let _off = SetEnv::new("RUSTDL_PROPERTY_TOP_BOTTOM", "0");
+    let g = gaps(body);
     assert!(has(g.object_hierarchy(), "object-top-bottom"));
     assert!(!has(
         gaps("SubObjectPropertyOf(:p :q)").object_hierarchy(),
@@ -304,8 +308,12 @@ fn hierarchy_routes_reach_disjointness_only_with_a_told_disjointness() {
 #[test]
 fn data_hierarchy_kinds() {
     let _l = lock();
-    let g = gaps("SubDataPropertyOf(:d owl:bottomDataProperty)");
-    assert!(has(g.data_hierarchy(), "data-top-bottom"));
+    let body = "SubDataPropertyOf(:d owl:bottomDataProperty)";
+    assert!(!has(gaps(body).data_hierarchy(), "data-top-bottom"));
+    {
+        let _off = SetEnv::new("RUSTDL_PROPERTY_TOP_BOTTOM", "0");
+        assert!(has(gaps(body).data_hierarchy(), "data-top-bottom"));
+    }
     let g = gaps("SubDataPropertyOf(:d :e)\nFunctionalDataProperty(:e)");
     assert!(has(g.data_hierarchy(), "data-counting"));
     assert!(!has(

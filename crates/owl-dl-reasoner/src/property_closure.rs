@@ -44,6 +44,18 @@ pub fn property_asymmetric_disjoint_enabled() -> bool {
     std::env::var_os("RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT").is_none_or(|v| v != "0")
 }
 
+/// Seed `owl:topObjectProperty` / `owl:bottomObjectProperty` (and the data pair)
+/// into the told closures (#389): every property is below top and above bottom,
+/// both are their own inverse. So `top ⊑ p` makes every property a sub-property of
+/// `p`, and `p ⊑ bottom` makes `p` a sub-property of every property. Done only when
+/// a told hierarchy axiom mentions top or bottom, so the closure of an ordinary
+/// ontology is unchanged; top and bottom stay out of the reported rows. Default
+/// **ON**; `RUSTDL_PROPERTY_TOP_BOTTOM=0` reverts.
+#[must_use]
+pub fn property_top_bottom_enabled() -> bool {
+    std::env::var_os("RUSTDL_PROPERTY_TOP_BOTTOM").is_none_or(|v| v != "0")
+}
+
 /// `(property IRI, is_inverse)`.
 pub(crate) type Signed = (String, bool);
 
@@ -95,8 +107,53 @@ pub(crate) fn object_edges<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<(Signed
             _ => {}
         }
     }
+    let mentions = |n: &str| n == OBJ_TOP || n == OBJ_BOT;
+    if property_top_bottom_enabled() && edges.iter().any(|(a, b)| mentions(&a.0) || mentions(&b.0))
+    {
+        let mut names: BTreeSet<String> = object_signature(onto);
+        names.extend(edges.iter().flat_map(|(a, b)| [a.0.clone(), b.0.clone()]));
+        for n in names {
+            for pol in [false, true] {
+                edges.insert(((n.clone(), pol), (OBJ_TOP.to_string(), false)));
+                edges.insert(((OBJ_BOT.to_string(), false), (n.clone(), pol)));
+            }
+        }
+        for t in [OBJ_TOP, OBJ_BOT] {
+            edges.insert(((t.to_string(), false), (t.to_string(), true)));
+            edges.insert(((t.to_string(), true), (t.to_string(), false)));
+        }
+    }
     close_signed(&mut edges);
     edges
+}
+
+/// Object properties declared or used at the top level of a property axiom or
+/// assertion. Nested class-expression uses of an undeclared property are not
+/// collected; missing one only loses rows for that property.
+fn object_signature<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut add = |o: &OPE<A>| {
+        out.insert(signed(o).0);
+    };
+    for ac in onto {
+        match &ac.component {
+            C::DeclareObjectProperty(d) => add(&OPE::ObjectProperty(d.0.clone())),
+            C::ObjectPropertyDomain(ax) => add(&ax.ope),
+            C::ObjectPropertyRange(ax) => add(&ax.ope),
+            C::DisjointObjectProperties(ax) => ax.0.iter().for_each(&mut add),
+            C::FunctionalObjectProperty(ax) => add(&ax.0),
+            C::InverseFunctionalObjectProperty(ax) => add(&ax.0),
+            C::SymmetricObjectProperty(ax) => add(&ax.0),
+            C::AsymmetricObjectProperty(ax) => add(&ax.0),
+            C::ReflexiveObjectProperty(ax) => add(&ax.0),
+            C::IrreflexiveObjectProperty(ax) => add(&ax.0),
+            C::TransitiveObjectProperty(ax) => add(&ax.0),
+            C::ObjectPropertyAssertion(ax) => add(&ax.ope),
+            C::NegativeObjectPropertyAssertion(ax) => add(&ax.ope),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Inverse propagation + transitive closure to fixpoint.
@@ -148,6 +205,25 @@ pub(crate) fn data_edges<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<(String, 
                 }
             }
             _ => {}
+        }
+    }
+    let mentions = |n: &str| n == DATA_TOP || n == DATA_BOT;
+    if property_top_bottom_enabled() && edges.iter().any(|(a, b)| mentions(a) || mentions(b)) {
+        let mut names: BTreeSet<String> = onto
+            .iter()
+            .filter_map(|ac| match &ac.component {
+                C::DeclareDataProperty(d) => Some(d.0.0.as_ref().to_string()),
+                C::DataPropertyDomain(ax) => Some(ax.dp.0.as_ref().to_string()),
+                C::DataPropertyRange(ax) => Some(ax.dp.0.as_ref().to_string()),
+                C::FunctionalDataProperty(ax) => Some(ax.0.0.as_ref().to_string()),
+                C::DataPropertyAssertion(ax) => Some(ax.dp.0.as_ref().to_string()),
+                _ => None,
+            })
+            .collect();
+        names.extend(edges.iter().flat_map(|(a, b)| [a.clone(), b.clone()]));
+        for n in names {
+            edges.insert((n.clone(), DATA_TOP.to_string()));
+            edges.insert((DATA_BOT.to_string(), n));
         }
     }
     close_plain(&mut edges);

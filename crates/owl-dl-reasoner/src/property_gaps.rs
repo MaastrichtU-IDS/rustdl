@@ -506,7 +506,7 @@ pub fn property_structural_gaps<A: ForIRI>(
     if !symmetric.is_empty() && !crate::property_symmetric_enabled() {
         oh.insert("object-symmetric");
     }
-    if obj_top_bottom {
+    if obj_top_bottom && !crate::property_top_bottom_enabled() {
         oh.insert("object-top-bottom");
     }
     if chain_unit {
@@ -527,7 +527,7 @@ pub fn property_structural_gaps<A: ForIRI>(
 
     // ── data hierarchy ───────────────────────────────────────────────────────
     let mut dh: BTreeSet<&str> = BTreeSet::new();
-    if data_top_bottom {
+    if data_top_bottom && !crate::property_top_bottom_enabled() {
         dh.insert("data-top-bottom");
     }
     if bounded_data.iter().any(|t| has_strict_sub(&dedges, t)) {

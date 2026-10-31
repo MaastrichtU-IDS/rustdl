@@ -255,6 +255,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_PROPERTY_TOP_BOTTOM",
+            owl_dl_reasoner::property_top_bottom_enabled,
+            true,
+        ),
+        (
             "RUSTDL_PROPERTY_SYMMETRIC",
             owl_dl_reasoner::property_symmetric_enabled,
             true,

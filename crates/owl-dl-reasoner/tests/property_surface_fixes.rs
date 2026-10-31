@@ -224,3 +224,51 @@ fn asymmetric_flag_off_restores_the_old_answer() {
         assert!(dj_obj(body).is_empty(), "{flag}=0");
     }
 }
+
+// ── owl:topObjectProperty / owl:bottomObjectProperty ────────────────────────
+
+fn sub_data(body: &str) -> Vec<(String, String)> {
+    owl_dl_reasoner::materialize_subdataproperty_axioms(&onto(body)).unwrap()
+}
+
+/// HermiT: `p ⊑ bottom` ⊨ `p ⊑ q` for every `q`; `top ⊑ p` ⊨ `q ⊑ p` for every
+/// `q`. Neither top nor bottom appears in the rows.
+#[test]
+fn top_and_bottom_reach_every_property() {
+    let _l = lock();
+    let rows = sub_obj("SubObjectPropertyOf(:p owl:bottomObjectProperty)");
+    for q in ["q", "r", "s"] {
+        assert!(holds(&rows, "p", q), "p ⊑ {q}: {rows:?}");
+    }
+    assert!(!holds(&rows, "q", "p"));
+    let rows = sub_obj("SubObjectPropertyOf(owl:topObjectProperty :p)");
+    for q in ["q", "r", "s"] {
+        assert!(holds(&rows, q, "p"), "{q} ⊑ p: {rows:?}");
+    }
+    assert!(!holds(&rows, "p", "q"));
+    assert!(
+        rows.iter()
+            .all(|(a, b)| !a.contains("www.w3.org") && !b.contains("www.w3.org"))
+    );
+    let rows = sub_data("SubDataPropertyOf(:d owl:bottomDataProperty)");
+    assert!(holds(&rows, "d", "e") && holds(&rows, "d", "f"), "{rows:?}");
+    // `p ⊑ bottom` is empty, so it is disjoint from every property it sits below
+    // (here `q` and `r`); bottom itself never shows.
+    let d =
+        dj_obj("SubObjectPropertyOf(:p owl:bottomObjectProperty)\nDisjointObjectProperties(:q :r)");
+    assert_eq!(d, vec![pair("p", "q"), pair("p", "r"), pair("q", "r")]);
+}
+
+/// Mentioning neither leaves the closure as it was: no seeding, no new rows.
+#[test]
+fn an_ordinary_ontology_is_not_seeded() {
+    let _l = lock();
+    assert_eq!(sub_obj("SubObjectPropertyOf(:p :q)"), vec![pair("p", "q")]);
+}
+
+#[test]
+fn top_bottom_flag_off_restores_the_old_answer() {
+    let _l = lock();
+    let _off = SetEnv::new("RUSTDL_PROPERTY_TOP_BOTTOM", "0");
+    assert!(sub_obj("SubObjectPropertyOf(:p owl:bottomObjectProperty)").is_empty());
+}

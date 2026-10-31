@@ -84,7 +84,7 @@ pub use property_classify::{
 };
 pub use property_closure::{
     property_asymmetric_disjoint_enabled, property_disjoint_down_enabled,
-    property_symmetric_enabled,
+    property_symmetric_enabled, property_top_bottom_enabled,
 };
 pub use property_gaps::{PropertyStructuralGaps, property_structural_gaps};
 pub use property_values::{

@@ -11,11 +11,11 @@ Separate three outcomes: a sound and complete procedure; a resource-limited run 
 
 ### Current evidence and its implications
 
-**Observed.** At commit `60eca181037c308f25f732da4136883d3c89942b`, the Rust completeness guard is restricted to PureEl and additional checks, while Python `complete` only tests timed-out pairs. Its comments acknowledge that entailments can still be missing. PureEl is the current guarded baseline, not the desired ceiling. These are contract observations, not reproduced failures. [Rust guard](https://github.com/MaastrichtU-IDS/rustdl/blob/60eca181037c308f25f732da4136883d3c89942b/crates/owl-dl-reasoner/src/classify.rs#L947-L998) and [Python result](https://github.com/MaastrichtU-IDS/rustdl/blob/60eca181037c308f25f732da4136883d3c89942b/crates/owl-dl-py/src/classify.rs#L50-L108).
+**Observed.** At commit `60eca181037c308f25f732da4136883d3c89942b`, re-checked at `42457595292bceee9143c413091d08f74ca9a32c` (31 October 2026), the Rust completeness guard `completeness_guaranteed()` is restricted to PureEl and additional checks. CLI `classify --json` emits that guard as `completeness_guaranteed`. Python exposes no equivalent: its `complete` only tests timed-out pairs, and the other conditions appear as separate getters. Its comments acknowledge that entailments can still be missing. PureEl is the current guarded baseline, not the desired ceiling. These are contract observations, not reproduced failures. [Rust guard](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-reasoner/src/classify.rs#L962-L1010), [CLI field](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-cli/src/json_out.rs#L131-L147) and [Python result](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-py/src/classify.rs#L50-L116).
 
 **Proposed.** Express the intended guarantee as a tuple: **fragment, operation, engine route, input preservation, resource policy and evidence**. The complete fallback must cover its declared domain; shortcuts must prove eligibility or defer. Keep execution completion, semantic answers and completeness eligibility separate throughout Rust, Python, CLI and serialized output.
 
-**Unverified.** No executed tests, exhaustive audit or certification is asserted here. The Claude agent manager quoted by Michel reports repeated defects across engines and commands, including issues #354, #356, #361 and #362; the suspected shared mechanism remains unconfirmed. Investigate this cluster as one architectural question, while retaining individual reproducers.
+**Unverified.** No executed tests, exhaustive audit or certification is asserted here. The Claude agent manager quoted by Michel reported repeated defects across engines and commands, beginning with issues #354, #356, #361 and #362. All four are now closed by individual fixes (#365, #366, #375, #378), and the follow-on #376 is closed by #381. The fixes support a shared *obligation* implemented separately per engine (nominal identity and counting under blocking, and individual seeding) rather than a single code defect. Issue #383, still open, shows the classify route still lacks that obligation. Section 3 records the cluster as a mechanism × engine × command table. Keep investigating it as one architectural question, while retaining individual reproducers.
 
 ### Decisions to make first
 
@@ -25,7 +25,7 @@ Separate three outcomes: a sound and complete procedure; a resource-limited run 
 
 ## 2 Define the operation contract
 
-Use OWL 2 Direct Semantics with an explicit parser/import policy. Internal “PureEl” and “Horn” labels are not W3C profile conformance. Rust’s current completeness guard requires PureEl, no timed-out pairs, no hierarchy blindness, no refused clauses, determined consistency and no dropped axioms; Horn shape alone is insufficient. [Rust guard](https://github.com/MaastrichtU-IDS/rustdl/blob/60eca181037c308f25f732da4136883d3c89942b/crates/owl-dl-reasoner/src/classify.rs#L947-L998) and [OWL 2 profiles](https://www.w3.org/TR/owl2-profiles/).
+Use OWL 2 Direct Semantics with an explicit parser/import policy. Internal “PureEl” and “Horn” labels are not W3C profile conformance. Rust’s current completeness guard requires PureEl, no timed-out pairs, no hierarchy blindness, no refused clauses, no undecided derived individual equalities (added by #365), determined consistency and no dropped axioms; Horn shape alone is insufficient. The derived-equality condition depends on a budget: probing stops after eight consecutive stalled probes, and the remaining candidates count as undecided. That puts the resource policy directly into the guarantee. The guard’s own doc comment lists only part of its conditions. It already omitted refused clauses at the original baseline, and it now also omits undecided derived equalities. This drift between the stated claim and the code is the kind the guarantee ledger should catch. [Rust guard](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-reasoner/src/classify.rs#L962-L1010) and [OWL 2 profiles](https://www.w3.org/TR/owl2-profiles/).
 
 | Operation | Meaning of a definitive answer | Required negative or opposite evidence |
 | --- | --- | --- |
@@ -63,11 +63,23 @@ Review by semantic boundary, not just by source file. Each boundary needs a writ
 
 ### Review the interactions where local arguments fail
 
-Branching, equality, role propagation and blocking must be reviewed together. A merge can invalidate previously cached labels or blocking relations; a rollback can restore labels but leave stale indexes; a role-chain inference can create obligations after a node appears complete. Tests for each feature in isolation do not establish the combined invariant.
+Branching, equality, role propagation and blocking must be reviewed together. A merge can invalidate previously cached labels or blocking relations; a rollback can restore labels but leave stale indexes; a role-chain inference can create obligations after a node appears complete. Tests for each feature in isolation do not establish the combined invariant. An example is issue #373, fixed by #374. A `≤n` merge chosen by a search decision created a self-loop on an irreflexive role. The clash it raised kept only the label’s empty dependency set, not the edge’s, so backjumping skipped live alternatives. The result was a false `unsat` from `sat` and a false subsumption from `subclass`. This is a separate mechanism from the nominal cluster below.
 
 A completion graph is not automatically a model. If a proof uses blocking, show how a model is constructed and how inverse roles, nominals, equality and counting survive. Establish the appropriate calculus conditions; a successful traversal is not that argument. [SROIQ calculus](https://www.cs.ox.ac.uk/people/ian.horrocks/Publications/download/2006/HoKS06a.pdf).
 
 Audit the reported issue cluster in a mechanism × engine × command ledger: equality, counting, propagation, eligibility and publication across saturation, hypertableau, tableau, pre-checks and fallback. Centralize semantic contracts and reusable obligations without requiring a monolithic rewrite. Independent checkers should remain independent of that shared production code.
+
+The initial cluster, as resolved by 31 October 2026 (`42457595`), gives a first instance of that ledger. Each row records the fix as merged; none is independently assured yet.
+
+| Mechanism | Engine and command where it failed | Fix and status |
+| --- | --- | --- |
+| A blocker whose copy duplicates a nominal or a neighbour counted by a nominal’s ≤n (the SHOIQ NN-rule obligation) | Wedge, `consistent` (#361, #376) | #375 and #381; flags `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` and `RUSTDL_WEDGE_NN_GUARD`, default on |
+| Same obligation | Main tableau, `sat` and `subclass` (#362) | #378; flag `RUSTDL_NOMINAL_BLOCK_GUARD`, default on |
+| Same obligation, plus nominal identity | Classify wedge, which is built without nominals, so neither wedge guard applies; reported with `incomplete: false` (#383) | Open |
+| Individuals named only in TBox nominals seeded for consistency but not for per-query probes | Main tableau, `sat` versus `consistent` (#356) | #366; one shared seeding helper, `RUSTDL_QUERY_TBOX_INDIVIDUALS`, default on |
+| Individual equalities forced by functional or ≤1 roles over nominals | `classify` (#354) | #365; probe-confirmed `derived_same`, budget-limited, undecided candidates reported |
+
+The same nominal obligation had to be added three times. The first three rows are the duplicated semantic decision this strategy warns about.
 
 ## 4 Centralize checked publication across engines
 
@@ -157,7 +169,7 @@ Treat a reasoner instance as a state machine. Compare reused execution with a ge
 
 ### Cross command laws and histories
 
-Consistency of O agrees with satisfiability of owlThing in O under matched semantics. A consistent ontology can still contain an unsatisfiable named class, so consistency and sat(C) need not agree. A justified classification verdict that C is unsatisfiable must agree with sat(C). Unknown is not a contradiction; identical wrong answers across routes are not proof.
+Consistency of O agrees with satisfiability of `owl:Thing` in O under matched semantics. A consistent ontology can still contain an unsatisfiable named class, so consistency and sat(C) need not agree. A justified classification verdict that C is unsatisfiable must agree with sat(C). Unknown is not a contradiction; identical wrong answers across routes are not proof.
 
 Cover classify → query → classify, reordered queries, consistency before and after classification, load/reload and multiple instances. Where mutation is supported, compare add/remove histories with fresh recomputation. Interrupt at deterministic checkpoints, retain justified partials, restart and check that timeout or cancellation has not poisoned state.
 
@@ -279,15 +291,32 @@ The stopping condition for this programme is not that every conceivable input ha
 
 ## Sources and baseline notes
 
-Repository observations are tied to the inspected commit `60eca181037c308f25f732da4136883d3c89942b`. Proposed artefacts, schemas, gates and milestones are recommendations, not descriptions of implemented or executed work. A later commit requires rechecking the affected claims.
+Repository observations are tied to the inspected commit `60eca181037c308f25f732da4136883d3c89942b`. They were re-checked on 31 October 2026 against `42457595292bceee9143c413091d08f74ca9a32c`, ten commits later (#365, #366, #367, #374, #375, #378, #379, #380, #381, #384). Changed:
+
+- The completeness guard and the Python result changed (links above repointed to `42457595`).
+- The issue cluster closed.
+- #380 (`RUSTDL_MERGE_EXACT_DEPS`) and #384 (`RUSTDL_TREE_STICKY_BRANCHING`) merged as default-off options, not shipped behaviour.
+- Issues #382 and #383 remain open.
+
+Unchanged, so their permalinks remain at the original baseline:
+
+- the cited blocked-disjunction and incremental-identity tests;
+- the CI, Python CI and Java CI workflows (the manual closure-diff lane and the Java path filter still stand);
+- `owl-dl-verify`;
+- the README.
+
+Proposed artefacts, schemas, gates and milestones are recommendations, not descriptions of implemented or executed work. A later commit requires rechecking the affected claims.
 
 ### Repository sources
 
 [RustDL README](https://github.com/MaastrichtU-IDS/rustdl/blob/60eca181037c308f25f732da4136883d3c89942b/README.md)  
 Scope statements and public reasoning claims.
 
-[Python classification result](https://github.com/MaastrichtU-IDS/rustdl/blob/60eca181037c308f25f732da4136883d3c89942b/crates/owl-dl-py/src/classify.rs#L50-L108)  
-Observed distinction between completion of timed pairs and diagnostics for potentially missing entailments.
+[Python classification result](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-py/src/classify.rs#L50-L116)  
+Observed distinction between completion of timed pairs and diagnostics for potentially missing entailments. Python has no counterpart to the Rust and CLI `completeness_guaranteed`.
+
+[Rust completeness guard](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-reasoner/src/classify.rs#L962-L1010) and [CLI JSON field](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-cli/src/json_out.rs#L131-L147)  
+The guard’s conditions, and its serialization in `classify --json`.
 
 [CI workflow](https://github.com/MaastrichtU-IDS/rustdl/blob/60eca181037c308f25f732da4136883d3c89942b/.github/workflows/ci.yml)  
 Workflow triggers and the manually invoked differential lane. Enforcement by repository settings is a separate fact to verify.

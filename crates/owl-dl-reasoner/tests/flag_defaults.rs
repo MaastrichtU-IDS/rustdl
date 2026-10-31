@@ -265,6 +265,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_DATA_VALUES_ANONYMOUS",
+            owl_dl_reasoner::data_values_anonymous_enabled,
+            true,
+        ),
+        (
             "RUSTDL_PROPERTY_SYMMETRIC",
             owl_dl_reasoner::property_symmetric_enabled,
             true,

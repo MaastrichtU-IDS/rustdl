@@ -162,6 +162,15 @@ pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
     Ok(out)
 }
 
+/// Anonymous individuals take part in the `SameIndividual` folding of
+/// [`materialize_data_property_assertions`] (#390): `d(_:x, v)` and
+/// `SameIndividual(_:x, a)` give `d(a, v)`. They were skipped, so that value was
+/// lost. Default **ON**; `RUSTDL_DATA_VALUES_ANONYMOUS=0` reverts.
+#[must_use]
+pub fn data_values_anonymous_enabled() -> bool {
+    std::env::var_os("RUSTDL_DATA_VALUES_ANONYMOUS").is_none_or(|v| v != "0")
+}
+
 /// Materialize the inferred DATA property assertions entailed over **named
 /// individuals** — `(subject_iri, property_iri, lexical, datatype_iri, lang)`
 /// 5-tuples (the full entailed closure under sub-data-property hierarchy,
@@ -205,6 +214,21 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
+    // #390: an anonymous individual takes part in the folding under the key
+    // conversion gives it, so `d(_:x, v)` and `SameIndividual(_:x, a)` give `d(a, v)`.
+    // Rows about the anonymous individual itself are dropped below.
+    let anon = data_values_anonymous_enabled();
+    let key = |i: &Individual<A>| -> Option<String> {
+        match i {
+            Individual::Named(n) => Some(n.0.as_ref().to_string()),
+            Individual::Anonymous(a) if anon => Some(format!(
+                "{}{}",
+                owl_dl_core::convert::ANON_IRI_PREFIX,
+                a.0.as_ref()
+            )),
+            Individual::Anonymous(_) => None,
+        }
+    };
 
     let mut asserted: Vec<(String, String, (String, String, String))> = Vec::new();
     let mut hierarchy: Vec<(String, String)> = Vec::new();
@@ -216,10 +240,9 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     for ac in onto {
         match &ac.component {
             C::DataPropertyAssertion(ax) => {
-                let Individual::Named(ni) = &ax.from else {
+                let Some(subj) = key(&ax.from) else {
                     continue;
                 };
-                let subj = ni.0.as_ref().to_string();
                 let dp = ax.dp.0.as_ref().to_string();
                 let value = match &ax.to {
                     Literal::Simple { literal } => {
@@ -241,13 +264,7 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
                 asserted.push((subj, dp, value));
             }
             C::SameIndividual(ax) => {
-                let named: Vec<String> =
-                    ax.0.iter()
-                        .filter_map(|i| match i {
-                            Individual::Named(n) => Some(n.0.as_ref().to_string()),
-                            Individual::Anonymous(_) => None,
-                        })
-                        .collect();
+                let named: Vec<String> = ax.0.iter().filter_map(key).collect();
                 for w in named.windows(2) {
                     all_inds.insert(w[0].clone());
                     all_inds.insert(w[1].clone());

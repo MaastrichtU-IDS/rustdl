@@ -624,7 +624,7 @@ pub fn property_structural_gaps<A: ForIRI>(
         if bounded_successors || nominal_on_bounded || shared_key || singleton_nominal_axiom {
             dv.insert("data-derived-equality");
         }
-        if anon_individual {
+        if anon_individual && !crate::data_values_anonymous_enabled() {
             dv.insert("data-anonymous-individual");
         }
         dv.extend(dh.iter().copied().filter(|k| *k != "data-empty-property"));

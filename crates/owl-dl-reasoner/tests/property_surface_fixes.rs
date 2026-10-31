@@ -308,3 +308,29 @@ fn a_two_leg_chain_is_not_a_subsumption() {
     let _l = lock();
     assert!(sub_obj("SubObjectPropertyOf(ObjectPropertyChain(:p :q) :s)").is_empty());
 }
+
+// ── anonymous individuals in the data-value folding (#390) ──────────────────
+
+fn values(body: &str) -> Vec<(String, String, String, String, String)> {
+    owl_dl_reasoner::materialize_data_property_assertions(&onto(body)).unwrap()
+}
+
+/// `d(_:x, 1)` + `SameIndividual(_:x, a)` ⊨ `d(a, 1)` (`∃x. d(x,1) ∧ x = a`). OWL 2 DL
+/// forbids an anonymous individual in `SameIndividual`, so HermiT rejects the input
+/// and cannot adjudicate; rustdl reads it anyway. No row is reported
+/// for the anonymous individual itself.
+#[test]
+fn a_value_on_an_anonymous_individual_reaches_its_named_equal() {
+    let _l = lock();
+    let body = "DataPropertyAssertion(:d _:x \"1\"^^xsd:integer)\nSameIndividual(_:x :a)";
+    let rows = values(body);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (rows[0].0.as_str(), rows[0].1.as_str(), rows[0].2.as_str()),
+        (iri("a").as_str(), iri("d").as_str(), "1")
+    );
+    // FP guard: without the equality nothing reaches `a`.
+    assert!(values("DataPropertyAssertion(:d _:x \"1\"^^xsd:integer)").is_empty());
+    let _off = SetEnv::new("RUSTDL_DATA_VALUES_ANONYMOUS", "0");
+    assert!(values(body).is_empty());
+}

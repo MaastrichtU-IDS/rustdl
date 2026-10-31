@@ -412,7 +412,11 @@ fn derived_individual_equality() {
 fn anonymous_individual() {
     let _l = lock();
     let k = "data-anonymous-individual";
-    let g = gaps("DataPropertyAssertion(:d _:x \"1\"^^xsd:integer)\nSameIndividual(_:x :a)");
+    let body = "DataPropertyAssertion(:d _:x \"1\"^^xsd:integer)\nSameIndividual(_:x :a)";
+    // Covered by `RUSTDL_DATA_VALUES_ANONYMOUS` (default ON).
+    assert!(!has(gaps(body).data_values(), k));
+    let _off = SetEnv::new("RUSTDL_DATA_VALUES_ANONYMOUS", "0");
+    let g = gaps(body);
     assert!(has(g.data_values(), k));
     assert!(!has(
         gaps("DataPropertyAssertion(:d :a \"1\"^^xsd:integer)").data_values(),

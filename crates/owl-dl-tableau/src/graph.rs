@@ -100,6 +100,11 @@ pub struct Node {
     /// is known to denote a *different* individual than this node.
     /// Symmetric — if `a ∈ b.inequalities` then `b ∈ a.inequalities`.
     pub(crate) inequalities: SmallVec<[NodeId; 2]>,
+    /// Per-inequality `DepSet`, parallel to [`Self::inequalities`] (#370): the
+    /// decisions the mark depends on. Always kept in lockstep with
+    /// `inequalities`; the entries are empty unless `RUSTDL_MERGE_EXACT_DEPS`
+    /// is on.
+    pub(crate) inequality_deps: SmallVec<[DepSet; 2]>,
     /// `Some(t)` if this node has been merged into `t` by
     /// `apply_max`. All meaningful state has been transferred to
     /// `t`; this node is a redirect. Resolved through chains via

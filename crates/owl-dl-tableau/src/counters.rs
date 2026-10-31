@@ -44,6 +44,13 @@ pub(crate) struct RuleCounters {
     /// because the survivor clashed immediately. Non-zero means the old
     /// first-pair behaviour would have committed to a contradictory merge.
     pub(crate) max_trial_merge_rejects: Cell<u64>,
+    /// #370 vacuity counters: how often P7 (`apply_max`'s distinct fallback)
+    /// and P4 (merge-frame exhaustion) used exact deps, and how often those
+    /// came out strictly narrower than every active decision.
+    pub(crate) merge_exact_p7: Cell<u64>,
+    pub(crate) merge_exact_p7_narrower: Cell<u64>,
+    pub(crate) merge_exact_p4: Cell<u64>,
+    pub(crate) merge_exact_p4_narrower: Cell<u64>,
     pub(crate) is_blocked_true: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
@@ -125,6 +132,16 @@ impl RuleCounters {
             (
                 "max_trial_merge_rejects",
                 self.max_trial_merge_rejects.get(),
+            ),
+            ("merge_exact_p7", self.merge_exact_p7.get()),
+            (
+                "merge_exact_p7_narrower",
+                self.merge_exact_p7_narrower.get(),
+            ),
+            ("merge_exact_p4", self.merge_exact_p4.get()),
+            (
+                "merge_exact_p4_narrower",
+                self.merge_exact_p4_narrower.get(),
             ),
             ("is_blocked_true", self.is_blocked_true.get()),
             (

@@ -1,5 +1,5 @@
 // Phase 1 scaffolding: the data structure ships ahead of its
-// integration with `PreparedOntology::decide`. Unit tests
+// integration with `PreparedOntology::decide_raw`. Unit tests
 // exercise every method, but no production call site does yet.
 // The full path lands in Phase 2 per `docs/model-caching-plan.md`.
 #![allow(dead_code)]

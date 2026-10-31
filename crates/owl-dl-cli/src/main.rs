@@ -1034,7 +1034,7 @@ fn exit_unknown_probe_cut() -> ! {
     eprintln!(
         "warning: the instance probe was cut (deadline, node cap or depth limit) and \
          reached no verdict. Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = \
-         unbounded) or RUSTDL_MAX_NODES."
+         unbounded), RUSTDL_MAX_NODES, or with no probe deadline RUSTDL_QUERY_MAX_NODES."
     );
     std::process::exit(3);
 }
@@ -1822,6 +1822,7 @@ fn main() -> Result<()> {
         Command::Sat { file, class_iri } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
+            let _cap = owl_dl_reasoner::single_query_node_cap();
             let (verdict, stats) = is_class_satisfiable_with_stats(&onto, &class_iri)
                 .context("is_class_satisfiable_with_stats")?;
             if stats.incomplete {
@@ -1841,6 +1842,7 @@ fn main() -> Result<()> {
                 is_subclass_of_saturation_only(&onto, &sub, &sup)
                     .context("is_subclass_of_saturation_only")?
             } else {
+                let _cap = owl_dl_reasoner::single_query_node_cap();
                 let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
                     .context("is_subclass_of_with_stats")?;
                 if stats.incomplete {
@@ -1888,9 +1890,11 @@ fn main() -> Result<()> {
                 is_instance_of_saturation_only(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_saturation_only")?
             } else {
+                let _cap = owl_dl_reasoner::single_query_node_cap();
                 let (verdict, cut) = is_instance_of_reporting(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_reporting")?;
-                if cut {
+                // `(true, true)` is a proved membership; only a "no" is in doubt.
+                if cut && !verdict {
                     exit_unknown_probe_cut();
                 }
                 verdict
@@ -2050,6 +2054,7 @@ fn main() -> Result<()> {
         }
         Command::Explain { file, sub, sup } => {
             let onto = parse_ofn(&file)?;
+            let _cap = owl_dl_reasoner::single_query_node_cap();
             let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
                 .context("is_subclass_of_with_stats")?;
             let answered_by = if stats.answered_by_saturation {

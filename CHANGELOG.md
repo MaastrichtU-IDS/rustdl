@@ -65,16 +65,6 @@ All notable changes to rustdl are documented here. Format is based on
     of 96 measurable ontologies (`ore_ont_14379`, deterministically), with no verdict changed;
     `realize` reported a cut probe on 1 of 58 completed.
 
-### Changed
-- **Deadline-free single queries get a larger node cap (#363 A2), `RUSTDL_QUERY_MAX_NODES`,
-  default 500000 (`0` disables).** `sat`, `subclass`, and `instance`/`realize` probes with
-  `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` have no bound but the live-node cap. At 50000, `sat` and
-  `subclass` on the first named classes said `unknown` on 3 of 43 measurable random ORE
-  ontologies (`ore_ont_12414`, `318`, `9046`) that finish with a 200k–500k cap in the same CPU
-  time and peak RSS. Classify, consistency and every deadline-bounded path keep
-  `RUSTDL_MAX_NODES` (50000), and an explicit `RUSTDL_MAX_NODES` still governs single queries.
-  The seven `sat`/`subclass` DNF rows in the sample are unchanged, with identical peak RSS (max
-  4.85 GB), and the issue #35 v4 reproducer still terminates.
 - **The wedge no longer blocks against a node that a nominal's `≤` counts (#376),
   `RUSTDL_WEDGE_NN_GUARD`, default ON (`=0` reverts).** `consistent` called `Q ⊑ ≥2 r.A`,
   `A ⊑ ∃s⁻.{a}`, `s` functional, `Q(d)` consistent, and also #361's `p0289` reduction
@@ -242,6 +232,19 @@ All notable changes to rustdl are documented here. Format is based on
   (consistent), `10517` classify 4.0 → 6.7, `13928` consistent 5.1 → 6.9. On `7610` the extra time
   is the different search order (blocking and matching), not computing the key. The main tableau
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
+
+### Changed
+- **`sat`, `subclass`, `explain` and `instance` get a larger node cap (#363 A2),
+  `RUSTDL_QUERY_MAX_NODES`, default 500000 (`0` disables).** These single queries, from the CLI
+  and the matching Python functions, have no bound but the live-node cap when they run without a
+  deadline. At 50000, `sat` and `subclass` on the first named classes said `unknown` on 3 of 43
+  measurable random ORE ontologies (`ore_ont_12414`, `318`, `9046`) that finish with a
+  200k–500k cap in the same CPU time and peak RSS. The larger cap is scoped to those entry
+  points (`owl_dl_reasoner::single_query_node_cap`). Library calls, classify, consistency,
+  `justify`/`repair`/`diagnose`, the class-expression queries and every deadline-bounded path
+  keep `RUSTDL_MAX_NODES` (50000), and an explicit `RUSTDL_MAX_NODES` governs both. The seven
+  `sat`/`subclass` DNF rows in the sample are unchanged, with identical peak RSS (max 4.85 GB),
+  and the issue #35 v4 reproducer still terminates.
 
 ## [0.4.42] — 2026-10-25
 

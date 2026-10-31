@@ -44,7 +44,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | Surface | Give-up sources | Rust | CLI text | CLI `--json` | Python | Pinned by |
 |---|---|---|---|---|---|---|
 | `consistent` | fall-through tableau deadline (`RUSTDL_CONSISTENCY_FALLBACK_MS`), node cap, abandon (#182); #344 data-counting verification gives up | `is_consistent_with_stats` → `incomplete` | `unknown`, exit 3 | `incomplete`, exit 3 | `is_consistent` warns | `consistency_data_counting.rs`; CLI `consistent` tests |
-| `sat` | node cap (deadline-free path, `RUSTDL_QUERY_MAX_NODES`, default 500000; early abandon is armed only under a deadline) | `is_class_satisfiable_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_class_satisfiable` warns | `query_give_up.rs`; `test_query_give_up.py` |
+| `sat` | node cap (`RUSTDL_QUERY_MAX_NODES` on the CLI/Python entry point; early abandon is armed only under a deadline). A deadline-free depth bail-out is an error (exit 1), not `unknown` | `is_class_satisfiable_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_class_satisfiable` warns | `query_give_up.rs`; `test_query_give_up.py` |
 | `subclass` | node cap (`RUSTDL_QUERY_MAX_NODES`) | `is_subclass_of_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_subclass_of` warns | same |
 | `explain` | node cap | `is_subclass_of_with_stats` | `: unknown — tableau gave up`, exit 3 | — | — | `query_give_up.rs` |
 | `instance` | per-probe deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, default 750 ms), node cap, depth bail-out | `is_instance_of_reporting` | `unknown`, exit 3 | no `--json` | `is_instance_of` warns | `query_give_up.rs`; `test_query_give_up.py` |
@@ -78,6 +78,10 @@ about its signal, so each is filed rather than fixed here.
   `materialize_inferred_class_assertions`) drop realize's flags. #391.
 - **consistency's trusted wedge `Sat`** is a trust decision, not a cut, and has
   no signal beyond `wedge_clauses_refused`. #392.
+- **justify / repair / diagnose** decide each candidate subset with the bare
+  `is_*` functions, so a probe that gives up reads as "not entailed" and the
+  result can be "no justification" with no signal. A printed justification is
+  still entailed. #396.
 
 ## Rule for changes
 
@@ -90,11 +94,15 @@ its own process, because the cap is cached once per process.
 
 ## Node caps
 
-Deadline-free single queries (`sat`, `subclass`, and instance probes with
-`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) use `RUSTDL_QUERY_MAX_NODES` (default 500000;
-`0` disables). Classify, consistency and every deadline-bounded path use
-`RUSTDL_MAX_NODES` (default 50000). An explicit `RUSTDL_MAX_NODES` governs both.
-Both defaults are pinned by `owl-dl-tableau/tests/node_cap_defaults.rs`. The
+The CLI's `sat`, `subclass`, `explain` and `instance`, and the Python
+`is_class_satisfiable`, `is_subclass_of` and `is_instance_of`, run their one query
+under `owl_dl_reasoner::single_query_node_cap()`, which raises the cap to
+`RUSTDL_QUERY_MAX_NODES` (default 500000; `0` disables). Everything else uses
+`RUSTDL_MAX_NODES` (default 50000): library calls, classify, consistency, realize,
+`justify`/`repair`/`diagnose` (many probes per query) and the class-expression
+queries. An explicit `RUSTDL_MAX_NODES` governs both. Both defaults are pinned by
+`owl-dl-tableau/tests/node_cap_defaults.rs`, and the scoping by
+`owl-dl-reasoner/tests/single_query_node_cap_scope.rs`. The
 single-query default was raised from 50000 when the give-up became visible: at
 50000, 3 of 43 measurable random ORE ontologies answered `unknown` on `sat` and
 `subclass` that finish with a 200k–500k cap.

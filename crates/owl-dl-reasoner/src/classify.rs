@@ -6267,7 +6267,7 @@ Ontology(<http://rustdl.test/test>\n\
     /// Diagnostic probe (wine residual-31, cluster A): why does classify miss
     /// `food#Fruit ⊑ food#EdibleThing` when `is_subclass_of` proves it in 0.01s?
     /// Compares the fresh tableau (`is_subclass_of_internal`) against the
-    /// classify-path `PreparedOntology::decide` (the ABox-seeded snapshot) on the
+    /// classify-path `PreparedOntology::decide_raw` (the ABox-seeded snapshot) on the
     /// exact query `Fruit ⊓ ¬EdibleThing`, unbounded and at the 200ms classify
     /// budget. Settles timeout-vs-wrong-verdict. See
     /// `docs/wine-residual-31-diagnosis-2026-06-07.md`. `#[ignore]`d (needs the
@@ -6295,7 +6295,7 @@ Ontology(<http://rustdl.test/test>\n\
         let fresh = crate::is_subclass_of(&parse_onto(), f, e).expect("fresh is_subclass_of");
         eprintln!("FRESH is_subclass_of(Fruit, EdibleThing) = {fresh}");
 
-        // Classify-path: PreparedOntology::decide on `Fruit ⊓ ¬EdibleThing`.
+        // Classify-path: PreparedOntology::decide_raw on `Fruit ⊓ ¬EdibleThing`.
         let internal = owl_dl_core::convert::convert_ontology(&parse_onto()).expect("convert");
         let cons = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/food#ConsumableThing";
         let fid = internal.vocabulary.class_id(f).expect("Fruit id");

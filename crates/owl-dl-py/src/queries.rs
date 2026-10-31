@@ -25,6 +25,7 @@ pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool)> {
 #[pyfunction]
 pub(crate) fn is_class_satisfiable(path: &str, class_iri: &str) -> PyResult<(bool, bool)> {
     let ontology = load::load_path(path)?;
+    let _cap = owl_dl_reasoner::single_query_node_cap();
     let (sat, stats) = owl_dl_reasoner::is_class_satisfiable_with_stats(&ontology, class_iri)
         .map_err(reason_error_to_py)?;
     Ok((sat, stats.incomplete))
@@ -35,6 +36,7 @@ pub(crate) fn is_class_satisfiable(path: &str, class_iri: &str) -> PyResult<(boo
 #[pyfunction]
 pub(crate) fn is_subclass_of(path: &str, sub: &str, sup: &str) -> PyResult<(bool, bool)> {
     let ontology = load::load_path(path)?;
+    let _cap = owl_dl_reasoner::single_query_node_cap();
     let (subsumed, stats) = owl_dl_reasoner::is_subclass_of_with_stats(&ontology, sub, sup)
         .map_err(reason_error_to_py)?;
     Ok((subsumed, stats.incomplete))
@@ -49,6 +51,7 @@ pub(crate) fn is_instance_of(
     individual_iri: &str,
 ) -> PyResult<(bool, bool)> {
     let ontology = load::load_path(path)?;
+    let _cap = owl_dl_reasoner::single_query_node_cap();
     owl_dl_reasoner::is_instance_of_reporting(&ontology, class_iri, individual_iri)
         .map_err(reason_error_to_py)
 }

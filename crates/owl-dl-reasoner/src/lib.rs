@@ -8122,6 +8122,24 @@ fn is_subclass_of_internal_full(
     ))
 }
 
+/// Raises the live-node cap for a deadline-free SINGLE query on this thread
+/// until the returned guard is dropped (#363 A2): the cap becomes
+/// [`owl_dl_tableau::query_max_nodes`] (`RUSTDL_QUERY_MAX_NODES`, default
+/// 500000; an explicit `RUSTDL_MAX_NODES` wins) instead of the classify-wide
+/// [`owl_dl_tableau::max_nodes`] (50000).
+///
+/// The CLI's `sat`, `subclass`, `explain` and `instance` and the matching Python
+/// functions hold it around their one query. A single query with no deadline is
+/// bounded only by the node cap, and at 50000 it cut ORE queries that finish a
+/// little past it (3 of 43 measurable random ORE ontologies; all finish under
+/// 500000 in the same CPU time and peak RSS). Library callers that issue many
+/// probes (`justify`, `repair`, `diagnose`, the class-expression queries)
+/// deliberately do not take it.
+#[must_use = "the larger cap lasts only while the guard is alive"]
+pub fn single_query_node_cap() -> owl_dl_tableau::NodeCapOverride {
+    owl_dl_tableau::NodeCapOverride::enter(owl_dl_tableau::query_max_nodes())
+}
+
 /// Shared end-of-pipeline runner: takes a (possibly mutated)
 /// `InternalOntology`, runs the full normalize/absorb/`ABox`-seed
 /// pipeline once, and asks the tableau whether `build_test_concept`
@@ -8153,12 +8171,10 @@ where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
     let prepared = PreparedOntology::from_internal(internal)?;
-    Ok(
-        match prepared.decide_raw_single_query(build_test_concept)? {
-            Some(sat) => (sat, false),
-            None => (true, true),
-        },
-    )
+    Ok(match prepared.decide_raw(build_test_concept)? {
+        Some(sat) => (sat, false),
+        None => (true, true),
+    })
 }
 
 /// Owned backing store for [`abox_check::AboxCheckInputs`], for callers that need
@@ -9572,21 +9588,6 @@ impl PreparedOntology {
         self.hyper
             .as_ref()
             .map_or(LabelOracle::NoVerdict, |hc| hc.classify_labels(c, deadline))
-    }
-
-    /// [`Self::decide_raw`] for a deadline-free SINGLE query (`sat`, `subclass`,
-    /// `instance` with no probe deadline): the node cap is its only bound, so it
-    /// uses [`owl_dl_tableau::query_max_nodes`] instead of the classify-wide
-    /// [`owl_dl_tableau::max_nodes`] (#363 A2).
-    pub(crate) fn decide_raw_single_query<F>(
-        &self,
-        build_test_concept: F,
-    ) -> Result<Option<bool>, ReasonError>
-    where
-        F: FnOnce(&mut ConceptPool) -> ConceptId,
-    {
-        let _cap = owl_dl_tableau::NodeCapOverride::enter(owl_dl_tableau::query_max_nodes());
-        self.decide_raw(build_test_concept)
     }
 
     /// Decide whether the test concept built by `build_test_concept` is

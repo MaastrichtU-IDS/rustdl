@@ -44,8 +44,8 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | Surface | Give-up sources | Rust | CLI text | CLI `--json` | Python | Pinned by |
 |---|---|---|---|---|---|---|
 | `consistent` | fall-through tableau deadline (`RUSTDL_CONSISTENCY_FALLBACK_MS`), node cap, abandon (#182); #344 data-counting verification gives up | `is_consistent_with_stats` → `incomplete` | `unknown`, exit 3 | `incomplete`, exit 3 | `is_consistent` warns | `consistency_data_counting.rs`; CLI `consistent` tests |
-| `sat` | node cap (deadline-free path; early abandon is armed only under a deadline) | `is_class_satisfiable_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_class_satisfiable` warns | `query_give_up.rs`; `test_query_give_up.py` |
-| `subclass` | node cap | `is_subclass_of_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_subclass_of` warns | same |
+| `sat` | node cap (deadline-free path, `RUSTDL_QUERY_MAX_NODES`, default 500000; early abandon is armed only under a deadline) | `is_class_satisfiable_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_class_satisfiable` warns | `query_give_up.rs`; `test_query_give_up.py` |
+| `subclass` | node cap (`RUSTDL_QUERY_MAX_NODES`) | `is_subclass_of_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_subclass_of` warns | same |
 | `explain` | node cap | `is_subclass_of_with_stats` | `: unknown — tableau gave up`, exit 3 | — | — | `query_give_up.rs` |
 | `instance` | per-probe deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, default 750 ms), node cap, depth bail-out | `is_instance_of_reporting` | `unknown`, exit 3 | no `--json` | `is_instance_of` warns | `query_give_up.rs`; `test_query_give_up.py` |
 | `instances` | same | `instances_of_reporting` | stderr warning | no `--json` | `instances_of` warns | same |
@@ -87,3 +87,14 @@ query is exposed on (Rust, CLI, Python), and add a test that forces the give-up.
 `RUSTDL_MAX_NODES=1` on a small out-of-fragment ontology that generates a
 successor is a deterministic way to force one (see `query_give_up.rs`); run it in
 its own process, because the cap is cached once per process.
+
+## Node caps
+
+Deadline-free single queries (`sat`, `subclass`, and instance probes with
+`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) use `RUSTDL_QUERY_MAX_NODES` (default 500000;
+`0` disables). Classify, consistency and every deadline-bounded path use
+`RUSTDL_MAX_NODES` (default 50000). An explicit `RUSTDL_MAX_NODES` governs both.
+Both defaults are pinned by `owl-dl-tableau/tests/node_cap_defaults.rs`. The
+single-query default was raised from 50000 when the give-up became visible: at
+50000, 3 of 43 measurable random ORE ontologies answered `unknown` on `sat` and
+`subclass` that finish with a 200k–500k cap.

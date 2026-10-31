@@ -604,6 +604,8 @@ struct Snapshot {
     nn_holders: Option<Vec<Vec<HNode>>>,
     /// `nn_log.len()` at save time: a restore pops the index back to it.
     nn_log_len: usize,
+    /// `nn_possible` at save time.
+    nn_possible: Option<bool>,
     /// Per-node sentinel-origin bits, saved alongside `nodes` so they
     /// stay in sync after restore. The `snapshot_backprop_aborted`
     /// flag on the engine is intentionally NOT saved — once back-prop
@@ -959,6 +961,12 @@ pub struct HyperEngine<'c> {
     nominal_guard: bool,
     /// `RUSTDL_WEDGE_NN_GUARD` (#376): see `nn_counted`.
     nn_guard: bool,
+    /// [`Self::nn_counted_possible`], cached: `None` until first asked. Only a
+    /// node gaining a `≤` while carrying a nominal, or a nominal while holding a
+    /// `≤`, can turn it true, and those two sites set it; a restore puts back the
+    /// saved value. Recomputing it per `is_blocked` call walked every node, which
+    /// made a blocking pass over a large `ABox` quadratic.
+    nn_possible: Option<bool>,
     /// #376: nodes whose generation (`∃`, `≥n`) was skipped because they were
     /// blocked. A block can stop holding as the graph grows (the witness guard
     /// refuses a blocker once it becomes an individual's witness), and nothing
@@ -1983,6 +1991,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
             visible_nominals: None,
@@ -2070,6 +2079,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
             visible_nominals: None,
@@ -2695,10 +2705,21 @@ impl<'c> HyperEngine<'c> {
     /// bottoms out at a node carrying a nominal, so that `≤` chain starts at a node
     /// that carries a nominal and has a `≤`. Without one it is false everywhere.
     fn nn_counted_possible(&self) -> bool {
+        if let Some(p) = self.nn_possible {
+            return p;
+        }
         (0..self.nodes.len()).any(|i| {
             let n = HNode(u32::try_from(i).expect("fits u32"));
             !self.nodes[i].at_most.is_empty() && self.node_carries_nominal(n)
         })
+    }
+
+    /// [`Self::nn_counted_possible`], computed once and then kept current by the
+    /// two sites that can turn it true (see `nn_possible`).
+    fn nn_possible_now(&mut self) -> bool {
+        let p = self.nn_counted_possible();
+        self.nn_possible = Some(p);
+        p
     }
 
     fn node_has_visible_nominal(&self, n: HNode) -> bool {
@@ -2819,6 +2840,9 @@ impl<'c> HyperEngine<'c> {
                 if self.nn_undo_log {
                     self.nn_log.push(k);
                 }
+            }
+            if !self.nodes[n.index()].at_most.is_empty() && self.node_carries_nominal(n) {
+                self.nn_possible = Some(true);
             }
             // Shadow: mirror the insertion into shadow_label_deps at the same
             // sorted position so the two vecs stay parallel. Guard: flag-off
@@ -3001,7 +3025,7 @@ impl<'c> HyperEngine<'c> {
             // to the old clone-then-scan.
             let mut compares: u64 = 0;
             let (mut nn_checks, mut nn_refusals) = (0u64, 0u64);
-            let mut nn_possible: Option<bool> = None;
+            let nn_possible = self.nn_guard && self.nn_possible_now();
             let mut blocked = false;
             if let Some(bucket) = self.block_index.as_ref().and_then(|ix| ix.get(&nr)) {
                 // Candidates are filtered on their contiguous headers; only a
@@ -3058,9 +3082,7 @@ impl<'c> HyperEngine<'c> {
                     {
                         // #376: a would-be blocker that stands for an individual's
                         // `≤`-witness is refused (see `nn_counted`).
-                        if self.nn_guard
-                            && *nn_possible.get_or_insert_with(|| self.nn_counted_possible())
-                        {
+                        if nn_possible {
                             nn_checks += 1;
                             if self.nn_counted(m_hnode, NN_CASCADE_DEPTH, &mut SmallVec::new()) {
                                 nn_refusals += 1;
@@ -3084,7 +3106,7 @@ impl<'c> HyperEngine<'c> {
             // Snapshot the node count and iterate by index to keep
             // mutating `stats` clean of borrow conflicts.
             let guard = self.nominal_guard && self.resolve(n) == n;
-            let mut nn_possible: Option<bool> = None;
+            let nn_possible = self.nn_guard && self.nn_possible_now();
             let n_nodes = self.nodes.len();
             for i in 0..n_nodes {
                 let m_order = self.nodes.hdr(i).order;
@@ -3098,9 +3120,7 @@ impl<'c> HyperEngine<'c> {
                 if subset_sorted(ln_labels, m_labels)
                     && !(guard && self.node_has_visible_nominal(m))
                 {
-                    if self.nn_guard
-                        && *nn_possible.get_or_insert_with(|| self.nn_counted_possible())
-                    {
+                    if nn_possible {
                         self.stats.nn_guard_checks += 1;
                         if self.nn_counted(m, NN_CASCADE_DEPTH, &mut SmallVec::new()) {
                             self.stats.nn_guard_refusals += 1;
@@ -4157,6 +4177,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
             visible_nominals: None,
@@ -4752,6 +4773,7 @@ impl<'c> HyperEngine<'c> {
                 self.nn_holders.clone()
             },
             nn_log_len: self.nn_log.len(),
+            nn_possible: self.nn_possible,
             origin: self.snapshot_origin.clone(),
             worklist: if self.incremental_fixpoint {
                 self.worklist.clone()
@@ -4782,6 +4804,7 @@ impl<'c> HyperEngine<'c> {
             self.nn_holders = saved.nn_holders;
         }
         self.snapshot_origin = saved.origin;
+        self.nn_possible = saved.nn_possible;
         if self.incremental_fixpoint {
             self.worklist = saved.worklist;
         }
@@ -5697,6 +5720,9 @@ impl<'c> HyperEngine<'c> {
         for c in self.nodes[s_j.index()].at_most.clone() {
             if !self.nodes[s_i.index()].at_most.contains(&c) {
                 self.nodes[s_i.index()].at_most.push(c);
+                if self.node_carries_nominal(s_i) {
+                    self.nn_possible = Some(true);
+                }
                 // #137: a MERGE-inherited `≤1` needs the same constraint-added
                 // trigger the `Atom::AtMost` head path gets — the survivor may
                 // already hold ≥2 matching successors (its own plus those just
@@ -6190,6 +6216,9 @@ impl<'c> HyperEngine<'c> {
                 if self.nodes[target.index()].at_most.contains(&c) {
                     FireOutcome::NoChange
                 } else {
+                    if self.node_carries_nominal(target) {
+                        self.nn_possible = Some(true);
+                    }
                     {
                         let tn = &mut self.nodes[target.index()];
                         tn.at_most.push(c);
@@ -8034,6 +8063,39 @@ mod tests {
         assert_eq!(eng.nn_other_holder(n1, a), None, "n2 is filtered out");
         assert_eq!(eng.nn_other_holder(n1, a), eng.nn_other_holder_scan(n1, a));
         assert_eq!(eng.nn_other_holder(n2, a), Some(n1));
+    }
+
+    /// The cached `nn_possible` (#383) must agree with a full scan after each
+    /// change that can flip it: a nominal reaching a node that holds a `≤`, and a
+    /// restore that drops it again. Recomputing per `is_blocked` call was quadratic
+    /// over a large `ABox`, so the cache is what `is_blocked` reads.
+    #[test]
+    fn nn_possible_cache_tracks_labels_and_restores() {
+        fn scan(e: &mut HyperEngine<'_>) -> bool {
+            let cached = e.nn_possible.take();
+            let p = e.nn_counted_possible();
+            e.nn_possible = cached;
+            p
+        }
+        let a = cls(10);
+        let r = Role::Named(RoleId::new(0));
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        let n1 = eng.new_node();
+        eng.nodes[n1.index()].at_most.push((r, None, 1));
+        assert!(!eng.nn_possible_now(), "a `≤` alone, no nominal");
+        let saved = eng.save();
+        eng.add_label(n1, a, DepSet::EMPTY);
+        assert!(scan(&mut eng));
+        assert_eq!(eng.nn_counted_possible(), scan(&mut eng));
+        eng.restore(saved);
+        assert!(!scan(&mut eng));
+        assert_eq!(eng.nn_counted_possible(), scan(&mut eng));
+        // And a value saved as true comes back true.
+        eng.add_label(n1, a, DepSet::EMPTY);
+        let saved = eng.save();
+        eng.nn_possible = Some(false);
+        eng.restore(saved);
+        assert!(eng.nn_counted_possible());
     }
 
     /// `RUSTDL_OPEN_SCAN_DEADLINE`: with the deadline passed, both open-rule

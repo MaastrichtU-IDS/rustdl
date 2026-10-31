@@ -1314,6 +1314,9 @@ pub fn seed_probe<A: horned_owl::model::ForIRI>(
         }
     }
     let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
+    if let Some((st, ct)) = cache.nominal_range {
+        engine = engine.with_nominals(st, ct);
+    }
     if hyper_double_block_enabled() {
         engine = engine.with_double_blocking();
     }
@@ -1476,6 +1479,9 @@ pub fn precompletion_probe<A: horned_owl::model::ForIRI>(
 
     // Build engine with full index rebuild (seed clauses must be indexed).
     let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
+    if let Some((st, ct)) = cache.nominal_range {
+        engine = engine.with_nominals(st, ct);
+    }
     if hyper_double_block_enabled() {
         engine = engine.with_double_blocking();
     }
@@ -4269,6 +4275,55 @@ pub fn classify_nominal_types_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_NOMINAL_TYPES").is_none_or(|v| v != "0")
 }
 
+/// The classify wedge (`HyperCache`) is built `with_nominals`, so two nodes that carry
+/// the same `{a}` merge (the NN rule), as they do in the consistency engine. Without it
+/// `{a}` was an ordinary class in classify: `X ⊑ ∃r.({a} ⊓ C) ⊓ ∃t.({a} ⊓ D)` with
+/// `C ⊓ D ⊑ ⊥` left `X` satisfiable, and `Q ⊑ ≥2 r.A`, `A ⊑ ∃s⁻.{a}`, `Func(s)` (the
+/// `TBox` form of #362) left `Q` satisfiable, both with `incomplete: false`, because the
+/// unsat probe and the label heuristic trust that wedge's `Sat`. The `Sat` completion is
+/// then a model with respect to nominal identity; it is still subject to the wedge's
+/// other known gaps. Inert unless a classify clause mentions a nominal class (see
+/// `classify_nominal_range`). Default **ON**; `RUSTDL_CLASSIFY_WEDGE_NOMINALS=0` reverts.
+#[must_use]
+pub fn classify_wedge_nominals_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_WEDGE_NOMINALS").is_none_or(|v| v != "0")
+}
+
+/// The nominal id range `[num_classes, num_classes + num_individuals)` for the classify
+/// wedge, or `None` when nothing can put a nominal class on a node: no clause head, no
+/// probe complement and no `∃`-seed names one. Body-only nominals (the `{a} → C`
+/// assertion GCIs, `DifferentIndividuals`' `{a} ⊓ {b} → ⊥`) never fire without such a
+/// head, so they do not count. The engine computes its nominal-visibility table with an
+/// O(#clauses) scan per engine, so an ontology whose individuals occur only in the
+/// `ABox` must not pay it per probe for nothing.
+fn classify_nominal_range(
+    internal: &InternalOntology,
+    clauses: &[owl_dl_core::clause::DlClause],
+    sup_neg: &std::collections::HashMap<owl_dl_core::ir::ClassId, Vec<owl_dl_core::clause::Atom>>,
+    exists_seed: Option<&Vec<Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>>>,
+) -> Option<(u32, u32)> {
+    use owl_dl_core::clause::Atom;
+    if !classify_wedge_nominals_enabled() {
+        return None;
+    }
+    let start = u32::try_from(internal.vocabulary.num_classes()).ok()?;
+    let count = u32::try_from(internal.vocabulary.num_individuals()).ok()?;
+    if count == 0 {
+        return None;
+    }
+    let nominal =
+        |c: owl_dl_core::ir::ClassId| c.index() >= start && c.index() < start.saturating_add(count);
+    let atom_nominal = |a: &Atom| match *a {
+        Atom::Class(c, _) | Atom::Exists(_, c, _) => nominal(c),
+        Atom::AtMost(_, q, _, _) | Atom::AtLeast(_, q, _, _) => q.is_some_and(nominal),
+        Atom::Role(..) | Atom::Equal(..) => false,
+    };
+    let any = clauses.iter().any(|cl| cl.head.iter().any(atom_nominal))
+        || sup_neg.values().flatten().any(atom_nominal)
+        || exists_seed.is_some_and(|t| t.iter().flatten().any(|&(_, c)| nominal(c)));
+    any.then_some((start, count))
+}
+
 /// #279: `SameIndividual(a, b)` in the classify wedge, as `{a} ⊑ {b}` and `{b} ⊑ {a}`.
 /// The set of individuals whose facts are added grows from the nominals along these
 /// equalities, so `b`'s types reach a node labelled `{a}` when `a = b`. Without it,
@@ -4364,8 +4419,9 @@ fn nominal_reach(
 /// Only individuals that can label a classify node get facts: those occurring as a
 /// nominal in a concept, closed under `SameIndividual` (`same`) and property
 /// assertions (`opa`). An ontology without nominals pays nothing. Sound: each GCI is
-/// exactly the assertion it encodes, and the classify wedge is not built
-/// `with_nominals`, so `{a}` is an ordinary class there.
+/// exactly the assertion it encodes, which is the encoding the consistency cache
+/// uses; the classify wedge is built `with_nominals` like it
+/// (`classify_wedge_nominals_enabled`).
 fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bool) -> usize {
     use owl_dl_core::ontology::Axiom;
     let before = internal.axioms.len();
@@ -4460,6 +4516,9 @@ pub(crate) struct HyperCache {
     sup_neg: std::collections::HashMap<owl_dl_core::ir::ClassId, Vec<owl_dl_core::clause::Atom>>,
     /// Fresh helper concept `q` for the `sub ⊓ ¬sup` injection.
     fresh_q: owl_dl_core::ir::ClassId,
+    /// The nominal id range every engine is built `with_nominals` over, or `None`
+    /// (see `classify_nominal_range`).
+    nominal_range: Option<(u32, u32)>,
     /// Pre-built trigger indexes for `self.clauses` plus the Q-clause
     /// delta (`x_trigger[fresh_q] += [clauses.len()]`). Built once in
     /// `HyperCache::build` and shared via `Arc::clone` (O(1) ref-count
@@ -4968,7 +5027,10 @@ impl HyperCache {
         } else {
             None
         };
+        let nominal_range =
+            classify_nominal_range(&internal, &clauses, &sup_neg, exists_seed.as_ref());
         Self {
+            nominal_range,
             layer_a,
             id_shallow_waste_us: std::sync::atomic::AtomicU64::new(0),
             id_shallow_decided: std::sync::atomic::AtomicU64::new(0),
@@ -5371,6 +5433,9 @@ impl HyperCache {
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
+        if let Some((st, ct)) = self.nominal_range {
+            engine = engine.with_nominals(st, ct);
+        }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
         }
@@ -5436,6 +5501,9 @@ impl HyperCache {
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
+        }
+        if let Some((st, ct)) = self.nominal_range {
+            engine = engine.with_nominals(st, ct);
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
@@ -5623,6 +5691,9 @@ impl HyperCache {
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
+        }
+        if let Some((st, ct)) = self.nominal_range {
+            engine = engine.with_nominals(st, ct);
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
@@ -10893,6 +10964,43 @@ mod tests {
 
     fn parse_internal_lib(src: &str) -> InternalOntology {
         owl_dl_core::convert::convert_ontology(&parse(src)).expect("fixture converts")
+    }
+
+    fn classify_cache(body: &str) -> (HyperCache, u32, u32) {
+        let internal = parse_internal_lib(&format!(
+            "Prefix(:=<http://x.org/f#>)\nOntology(<http://x.org/f>\n\
+             Declaration(Class(:A)) Declaration(Class(:B))\n\
+             Declaration(ObjectProperty(:r))\n\
+             Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+             {body}\n)"
+        ));
+        let nc = u32::try_from(internal.vocabulary.num_classes()).expect("class count fits u32");
+        let ni = u32::try_from(internal.vocabulary.num_individuals())
+            .expect("individual count fits u32");
+        (HyperCache::build(&internal), nc, ni)
+    }
+
+    /// `RUSTDL_CLASSIFY_WEDGE_NOMINALS`: individuals that occur only in the `ABox` put no
+    /// nominal class in the classify clauses, so the engines are not built
+    /// `with_nominals` and pay nothing for it.
+    #[test]
+    fn classify_nominal_range_is_off_for_abox_only_individuals() {
+        let (cache, _, _) = classify_cache(
+            "SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n\
+             ClassAssertion(:A :a) ObjectPropertyAssertion(:r :a :b)\n\
+             DifferentIndividuals(:a :b)",
+        );
+        assert_eq!(cache.nominal_range, None);
+    }
+
+    /// A `TBox` nominal turns the range on, and the probe root sits above it, so it is
+    /// never taken for a singleton (#205; complements come from the same floor).
+    #[test]
+    fn classify_nominal_range_covers_tbox_nominals_and_not_probe_ids() {
+        let (cache, nc, ni) =
+            classify_cache("SubClassOf(:A ObjectSomeValuesFrom(:r ObjectOneOf(:a)))");
+        assert_eq!(cache.nominal_range, Some((nc, ni)));
+        assert!(cache.fresh_q.index() >= nc + ni);
     }
 
     /// #376: the `consistent` wedge's verdict and the NN-guard counters on `body`.

@@ -604,6 +604,8 @@ struct Snapshot {
     nn_holders: Option<Vec<Vec<HNode>>>,
     /// `nn_log.len()` at save time: a restore pops the index back to it.
     nn_log_len: usize,
+    /// `nn_possible` at save time.
+    nn_possible: Option<bool>,
     /// Per-node sentinel-origin bits, saved alongside `nodes` so they
     /// stay in sync after restore. The `snapshot_backprop_aborted`
     /// flag on the engine is intentionally NOT saved — once back-prop
@@ -959,6 +961,12 @@ pub struct HyperEngine<'c> {
     nominal_guard: bool,
     /// `RUSTDL_WEDGE_NN_GUARD` (#376): see `nn_counted`.
     nn_guard: bool,
+    /// [`Self::nn_counted_possible`], cached: `None` until first asked. Only a
+    /// node gaining a `≤` while carrying a nominal, or a nominal while holding a
+    /// `≤`, can turn it true, and those two sites set it; a restore puts back the
+    /// saved value. Recomputing it per `is_blocked` call walked every node, which
+    /// made a blocking pass over a large `ABox` quadratic.
+    nn_possible: Option<bool>,
     /// #376: nodes whose generation (`∃`, `≥n`) was skipped because they were
     /// blocked. A block can stop holding as the graph grows (the witness guard
     /// refuses a blocker once it becomes an individual's witness), and nothing
@@ -1291,6 +1299,84 @@ pub struct ClauseIndexes {
     /// only this list instead of every clause at every node. Ascending order ⇒
     /// the MRV first-found tie-break is identical to the old full scan.
     nonhorn: Vec<(usize, Option<ClassId>)>,
+    /// What [`HyperEngine::compute_visible_nominals`] reads from these base
+    /// clauses, computed once and shared by every engine built on this index.
+    /// Classify builds an engine per class and per pair, so scanning every
+    /// clause per engine was quadratic on large ontologies.
+    nominal_scan: std::sync::OnceLock<NominalScan>,
+    /// How many clauses [`build_clause_indexes`] indexed. Entries added later
+    /// with [`index_extra_clause`] (the per-probe Q-clause) are not counted: an
+    /// engine on this index may or may not carry that clause in its base slice.
+    built_len: usize,
+}
+
+/// The clause half of [`HyperEngine::compute_visible_nominals`] for one nominal
+/// range `[start, start + count)`.
+#[derive(Debug, Clone)]
+struct NominalScan {
+    start: u32,
+    count: u32,
+    /// Nominals some clause head forces.
+    vis: Vec<bool>,
+    /// Roles some `≤` counts.
+    at_most: Vec<Role>,
+    /// Inverse roles a clause atom can store an edge with.
+    inverse: Vec<Role>,
+}
+
+impl NominalScan {
+    fn new(start: u32, count: u32) -> Self {
+        Self {
+            start,
+            count,
+            vis: vec![false; count as usize],
+            at_most: Vec::new(),
+            inverse: Vec::new(),
+        }
+    }
+
+    fn note_inverse(&mut self, r: Role) {
+        if r.is_inverse() && !self.inverse.contains(&r) {
+            self.inverse.push(r);
+        }
+    }
+
+    fn add_clause(&mut self, clause: &DlClause) {
+        let (start, count) = (self.start, self.count);
+        let nominal = |c: ClassId| c.index().checked_sub(start).filter(|&k| k < count);
+        for atom in &clause.body {
+            if let Atom::Role(r, _, _) = *atom {
+                self.note_inverse(r);
+            }
+        }
+        for atom in &clause.head {
+            let c = match *atom {
+                Atom::Class(c, _) => Some(c),
+                Atom::Exists(r, c, _) => {
+                    self.note_inverse(r);
+                    Some(c)
+                }
+                Atom::AtMost(r, q, _, _) => {
+                    if !self.at_most.contains(&r) {
+                        self.at_most.push(r);
+                    }
+                    q
+                }
+                Atom::AtLeast(r, q, _, _) => {
+                    self.note_inverse(r);
+                    q
+                }
+                Atom::Role(r, _, _) => {
+                    self.note_inverse(r);
+                    None
+                }
+                Atom::Equal(..) => None,
+            };
+            if let Some(k) = c.and_then(nominal) {
+                self.vis[k as usize] = true;
+            }
+        }
+    }
 }
 
 fn role_id_index(r: Role) -> usize {
@@ -1704,6 +1790,7 @@ pub fn build_clause_indexes(clauses: &[DlClause], sym: Option<&RoleHierarchy>) -
     for (ci, cl) in clauses.iter().enumerate() {
         index_one_clause(&mut ix, ci, cl, sym);
     }
+    ix.built_len = clauses.len();
     ix
 }
 
@@ -1904,6 +1991,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
             visible_nominals: None,
@@ -1991,6 +2079,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
             visible_nominals: None,
@@ -2457,52 +2546,38 @@ impl<'c> HyperEngine<'c> {
     /// In the `ABox`-seeded engine every individual is a nominal, and refusing them
     /// all as blockers cost large `ABox`es their verdicts.
     fn compute_visible_nominals(&self, start: u32, count: u32) -> Vec<bool> {
-        let mut vis = vec![false; count as usize];
-        let nominal = |c: ClassId| c.index().checked_sub(start).filter(|&k| k < count);
-        // Roles some `≤` counts, and inverse roles an edge can be stored with (a
-        // clause atom, or a seeded `ABox` edge).
-        let mut at_most: Vec<Role> = Vec::new();
-        let mut inverse: Vec<Role> = Vec::new();
+        // The first `built_len` clauses are the ones `self.indexes` was built
+        // over, shared by every engine on that index: scan them once.
+        let built = self.indexes.built_len;
+        let shared = (built <= self.clauses.len())
+            .then(|| {
+                self.indexes.nominal_scan.get_or_init(|| {
+                    let mut scan = NominalScan::new(start, count);
+                    for clause in &self.clauses[..built] {
+                        scan.add_clause(clause);
+                    }
+                    scan
+                })
+            })
+            .filter(|s| (s.start, s.count) == (start, count));
+        let (mut scan, rest) = match shared {
+            Some(s) => (s.clone(), &self.clauses[built..]),
+            None => (NominalScan::new(start, count), self.clauses),
+        };
+        for clause in rest.iter().chain(self.extra_clauses) {
+            scan.add_clause(clause);
+        }
+        let NominalScan {
+            mut vis,
+            at_most,
+            mut inverse,
+            ..
+        } = scan;
         let note = |r: Role, inv: &mut Vec<Role>| {
             if r.is_inverse() && !inv.contains(&r) {
                 inv.push(r);
             }
         };
-        for ci in 0..self.num_clauses() {
-            let clause = self.clause(ci);
-            for atom in &clause.body {
-                if let Atom::Role(r, _, _) = *atom {
-                    note(r, &mut inverse);
-                }
-            }
-            for atom in &clause.head {
-                let c = match *atom {
-                    Atom::Class(c, _) => Some(c),
-                    Atom::Exists(r, c, _) => {
-                        note(r, &mut inverse);
-                        Some(c)
-                    }
-                    Atom::AtMost(r, q, _, _) => {
-                        if !at_most.contains(&r) {
-                            at_most.push(r);
-                        }
-                        q
-                    }
-                    Atom::AtLeast(r, q, _, _) => {
-                        note(r, &mut inverse);
-                        q
-                    }
-                    Atom::Role(r, _, _) => {
-                        note(r, &mut inverse);
-                        None
-                    }
-                    Atom::Equal(..) => None,
-                };
-                if let Some(k) = c.and_then(nominal) {
-                    vis[k as usize] = true;
-                }
-            }
-        }
         for n in self.nodes.iter() {
             for &(r, _) in &n.edges {
                 note(r, &mut inverse);
@@ -2625,6 +2700,28 @@ impl<'c> HyperEngine<'c> {
         false
     }
 
+    /// Whether [`Self::nn_counted`] can return true anywhere in the graph. It
+    /// returns true only for a `≤` on a nominal-like neighbour, and nominal-likeness
+    /// bottoms out at a node carrying a nominal, so that `≤` chain starts at a node
+    /// that carries a nominal and has a `≤`. Without one it is false everywhere.
+    fn nn_counted_possible(&self) -> bool {
+        if let Some(p) = self.nn_possible {
+            return p;
+        }
+        (0..self.nodes.len()).any(|i| {
+            let n = HNode(u32::try_from(i).expect("fits u32"));
+            !self.nodes[i].at_most.is_empty() && self.node_carries_nominal(n)
+        })
+    }
+
+    /// [`Self::nn_counted_possible`], computed once and then kept current by the
+    /// two sites that can turn it true (see `nn_possible`).
+    fn nn_possible_now(&mut self) -> bool {
+        let p = self.nn_counted_possible();
+        self.nn_possible = Some(p);
+        p
+    }
+
     fn node_has_visible_nominal(&self, n: HNode) -> bool {
         let Some((start, count)) = self.nominals else {
             return false;
@@ -2743,6 +2840,9 @@ impl<'c> HyperEngine<'c> {
                 if self.nn_undo_log {
                     self.nn_log.push(k);
                 }
+            }
+            if !self.nodes[n.index()].at_most.is_empty() && self.node_carries_nominal(n) {
+                self.nn_possible = Some(true);
             }
             // Shadow: mirror the insertion into shadow_label_deps at the same
             // sorted position so the two vecs stay parallel. Guard: flag-off
@@ -2925,6 +3025,7 @@ impl<'c> HyperEngine<'c> {
             // to the old clone-then-scan.
             let mut compares: u64 = 0;
             let (mut nn_checks, mut nn_refusals) = (0u64, 0u64);
+            let nn_possible = self.nn_guard && self.nn_possible_now();
             let mut blocked = false;
             if let Some(bucket) = self.block_index.as_ref().and_then(|ix| ix.get(&nr)) {
                 // Candidates are filtered on their contiguous headers; only a
@@ -2981,7 +3082,7 @@ impl<'c> HyperEngine<'c> {
                     {
                         // #376: a would-be blocker that stands for an individual's
                         // `≤`-witness is refused (see `nn_counted`).
-                        if self.nn_guard {
+                        if nn_possible {
                             nn_checks += 1;
                             if self.nn_counted(m_hnode, NN_CASCADE_DEPTH, &mut SmallVec::new()) {
                                 nn_refusals += 1;
@@ -3005,6 +3106,7 @@ impl<'c> HyperEngine<'c> {
             // Snapshot the node count and iterate by index to keep
             // mutating `stats` clean of borrow conflicts.
             let guard = self.nominal_guard && self.resolve(n) == n;
+            let nn_possible = self.nn_guard && self.nn_possible_now();
             let n_nodes = self.nodes.len();
             for i in 0..n_nodes {
                 let m_order = self.nodes.hdr(i).order;
@@ -3018,7 +3120,7 @@ impl<'c> HyperEngine<'c> {
                 if subset_sorted(ln_labels, m_labels)
                     && !(guard && self.node_has_visible_nominal(m))
                 {
-                    if self.nn_guard {
+                    if nn_possible {
                         self.stats.nn_guard_checks += 1;
                         if self.nn_counted(m, NN_CASCADE_DEPTH, &mut SmallVec::new()) {
                             self.stats.nn_guard_refusals += 1;
@@ -4075,6 +4177,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
             visible_nominals: None,
@@ -4659,6 +4762,13 @@ impl<'c> HyperEngine<'c> {
     /// revert on a failed branch.
     fn save(&mut self) -> Snapshot {
         self.stats.node_clones += 1;
+        // Settle `nn_possible` before saving it: a snapshot holding `None` would
+        // put `None` back on every restore, and each branch would rescan every node.
+        let nn_possible = if self.nn_guard {
+            Some(self.nn_possible_now())
+        } else {
+            self.nn_possible
+        };
         Snapshot {
             nodes: self.nodes.snapshot(self.cow_nodes),
             representative: self.representative.clone(),
@@ -4670,6 +4780,7 @@ impl<'c> HyperEngine<'c> {
                 self.nn_holders.clone()
             },
             nn_log_len: self.nn_log.len(),
+            nn_possible,
             origin: self.snapshot_origin.clone(),
             worklist: if self.incremental_fixpoint {
                 self.worklist.clone()
@@ -4700,6 +4811,7 @@ impl<'c> HyperEngine<'c> {
             self.nn_holders = saved.nn_holders;
         }
         self.snapshot_origin = saved.origin;
+        self.nn_possible = saved.nn_possible;
         if self.incremental_fixpoint {
             self.worklist = saved.worklist;
         }
@@ -5615,6 +5727,9 @@ impl<'c> HyperEngine<'c> {
         for c in self.nodes[s_j.index()].at_most.clone() {
             if !self.nodes[s_i.index()].at_most.contains(&c) {
                 self.nodes[s_i.index()].at_most.push(c);
+                if self.node_carries_nominal(s_i) {
+                    self.nn_possible = Some(true);
+                }
                 // #137: a MERGE-inherited `≤1` needs the same constraint-added
                 // trigger the `Atom::AtMost` head path gets — the survivor may
                 // already hold ≥2 matching successors (its own plus those just
@@ -6108,6 +6223,9 @@ impl<'c> HyperEngine<'c> {
                 if self.nodes[target.index()].at_most.contains(&c) {
                     FireOutcome::NoChange
                 } else {
+                    if self.node_carries_nominal(target) {
+                        self.nn_possible = Some(true);
+                    }
                     {
                         let tn = &mut self.nodes[target.index()];
                         tn.at_most.push(c);
@@ -7952,6 +8070,70 @@ mod tests {
         assert_eq!(eng.nn_other_holder(n1, a), None, "n2 is filtered out");
         assert_eq!(eng.nn_other_holder(n1, a), eng.nn_other_holder_scan(n1, a));
         assert_eq!(eng.nn_other_holder(n2, a), Some(n1));
+    }
+
+    /// The cached `nn_possible` (#383) must agree with a full scan after each
+    /// change that can flip it: a nominal reaching a node that holds a `≤`, and a
+    /// restore that drops it again. Recomputing per `is_blocked` call was quadratic
+    /// over a large `ABox`, so the cache is what `is_blocked` reads.
+    #[test]
+    fn nn_possible_cache_tracks_labels_and_restores() {
+        fn scan(e: &mut HyperEngine<'_>) -> bool {
+            let cached = e.nn_possible.take();
+            let p = e.nn_counted_possible();
+            e.nn_possible = cached;
+            p
+        }
+        let a = cls(10);
+        let r = Role::Named(RoleId::new(0));
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        let n1 = eng.new_node();
+        eng.nodes[n1.index()].at_most.push((r, None, 1));
+        assert!(!eng.nn_possible_now(), "a `≤` alone, no nominal");
+        let saved = eng.save();
+        eng.add_label(n1, a, DepSet::EMPTY);
+        assert!(scan(&mut eng));
+        assert_eq!(eng.nn_counted_possible(), scan(&mut eng));
+        eng.restore(saved);
+        assert!(!scan(&mut eng));
+        assert_eq!(eng.nn_counted_possible(), scan(&mut eng));
+        // And a value saved as true comes back true.
+        eng.add_label(n1, a, DepSet::EMPTY);
+        let saved = eng.save();
+        eng.nn_possible = Some(false);
+        eng.restore(saved);
+        assert!(eng.nn_counted_possible());
+    }
+
+    /// A snapshot taken before any `is_blocked` call must not hold `None`, or
+    /// every restore to it would discard the cache and rescan every node.
+    #[test]
+    fn nn_possible_is_settled_by_save() {
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        eng.new_node();
+        assert_eq!(eng.nn_possible, None);
+        let saved = eng.save();
+        eng.restore(saved);
+        assert_eq!(eng.nn_possible, Some(false));
+    }
+
+    /// The third site that can turn `nn_possible` true: a merge hands a `≤` to a
+    /// survivor that already carries a nominal. The merged-away node has no labels,
+    /// so nothing reaches `add_label`, and only the merge's own hook can set it.
+    #[test]
+    fn nn_possible_cache_tracks_a_merge_inherited_at_most() {
+        let a = cls(10);
+        let r = Role::Named(RoleId::new(0));
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        let (s_i, s_j) = (eng.new_node(), eng.new_node());
+        eng.add_label(s_i, a, DepSet::EMPTY);
+        eng.nodes[s_j.index()].at_most.push((r, None, 1));
+        assert!(
+            !eng.nn_possible_now(),
+            "the nominal and the `≤` sit on different nodes"
+        );
+        assert!(!eng.merge(s_i, s_j), "no clash");
+        assert!(eng.nn_counted_possible(), "the survivor now has both");
     }
 
     /// `RUSTDL_OPEN_SCAN_DEADLINE`: with the deadline passed, both open-rule
@@ -10546,5 +10728,46 @@ mod tests {
     #[test]
     fn leaf_net_leaf_net_refutes_at_most_only_recovery() {
         assert_eq!(leaf_net_at_most_only_recovery(true), HyperResult::Unsat);
+    }
+
+    /// The clause scan behind `compute_visible_nominals` is shared through the
+    /// base index (#383), so it must cover only the clauses that index was built
+    /// over: one engine's extras must not leak into another's, and a base slice
+    /// that carries the pre-applied probe clause must still be scanned in full.
+    #[test]
+    fn shared_nominal_scan_covers_each_engines_own_clauses() {
+        let head = |b: u32, n: u32| DlClause {
+            body: vec![Atom::Class(cls(b), X)],
+            head: vec![Atom::Class(cls(n), X)],
+        };
+        // Nominals are classes 10, 11, 12.
+        let base = vec![head(1, 10), head(2, 3)];
+        let mut ix = build_clause_indexes(&base, None);
+        // As `HyperCache::build` does: the probe clause is indexed past the base.
+        index_extra_clause(&mut ix, base.len(), &head(4, 4), None);
+        let ix = std::sync::Arc::new(ix);
+        let disj = std::sync::Arc::new(build_disjoint_pairs(&base));
+        let with_extras = |extras: &[DlClause]| {
+            let delta = build_clause_index_delta(base.len(), extras, None);
+            HyperEngine::new_with_prebuilt_extras(
+                &base,
+                extras,
+                cls(0),
+                std::sync::Arc::clone(&ix),
+                std::sync::Arc::clone(&disj),
+                delta,
+            )
+            .compute_visible_nominals(10, 3)
+        };
+        assert_eq!(with_extras(&[head(5, 11)]), vec![true, true, false]);
+        assert_eq!(with_extras(&[head(5, 12)]), vec![true, false, true]);
+        assert_eq!(with_extras(&[]), vec![true, false, false]);
+        // A base slice one longer than the indexed clauses (the probe clause).
+        let mut long = base.clone();
+        long.push(head(4, 12));
+        let e = HyperEngine::new_with_prebuilt(&long, cls(0), std::sync::Arc::clone(&ix), disj);
+        assert_eq!(e.compute_visible_nominals(10, 3), vec![true, false, true]);
+        // A different nominal range on the same index is scanned afresh.
+        assert_eq!(e.compute_visible_nominals(11, 2), vec![false, true]);
     }
 }

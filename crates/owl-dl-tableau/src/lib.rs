@@ -779,6 +779,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// choice currently under trial. The `decision_labels` vector
     /// is indexed by branch id and grown on demand.
     #[doc(hidden)]
+    /// DIAGNOSTIC (#377): the node a recorded decision was made on.
+    pub(crate) fn diag_decision_node(&self, branch_id: u32) -> Option<NodeId> {
+        self.decision_labels.get(branch_id as usize).copied().flatten().map(|(n, _)| n)
+    }
+
     pub fn record_decision(&mut self, branch_id: u32, node: NodeId, disjunct: ConceptId) {
         let idx = branch_id as usize;
         if idx >= self.decision_labels.len() {

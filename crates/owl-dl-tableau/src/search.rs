@@ -89,7 +89,7 @@ impl SearchVerdict {
 
 /// Single-shot env check: `RUSTDL_TRACE=1` enables one-line stderr
 /// dumps in `search` and `branch`. Off path is a single atomic load.
-fn trace_enabled() -> bool {
+pub(crate) fn trace_enabled() -> bool {
     use std::sync::atomic::{AtomicU8, Ordering};
     static STATE: AtomicU8 = AtomicU8::new(0); // 0=unknown, 1=off, 2=on
     let s = STATE.load(Ordering::Relaxed);
@@ -133,6 +133,10 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
         };
         // Hand the verdict to the frame that asked for it.
         let Some((mut frame, k, cp)) = stack.pop() else {
+            if std::env::var_os("RUSTDL_DIAG_COUNT").is_some() {
+                let d: Vec<u64> = DIAG_DEC.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect();
+                eprintln!("# diag count decisions_by_root={d:?} skips={} foreign_skips={}", DIAG_SKIPS.load(std::sync::atomic::Ordering::Relaxed), DIAG_FOREIGN.load(std::sync::atomic::Ordering::Relaxed));
+            }
             return verdict;
         };
         frame.on_child(ctx, k, cp, verdict);
@@ -171,11 +175,27 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
             return Expanded::Done(SearchVerdict::DepthLimit);
         }
         let verdict = match saturate(ctx, SATURATE_ITERS) {
-            SaturationResult::Clash(_, deps) => {
+            SaturationResult::Clash(at, deps) => {
                 if trace_enabled() {
+                    let root = |mut n: NodeId| {
+                        while let Some(p) = ctx.graph().node(n).parent() {
+                            n = p;
+                        }
+                        n.index()
+                    };
+                    let detail: Vec<String> = deps
+                        .iter()
+                        .map(|&d| match ctx.diag_decision_node(d) {
+                            Some(n) => format!("{d}@n{}r{}", n.index(), root(n)),
+                            None => format!("{d}@?"),
+                        })
+                        .collect();
                     eprintln!(
-                        "# trace search depth={max_depth} clash=immediate deps={}",
-                        deps.len()
+                        "# trace search depth={max_depth} clash=immediate deps={} at=n{}r{} [{}]",
+                        deps.len(),
+                        at.index(),
+                        root(at),
+                        detail.join(" ")
                     );
                 }
                 SearchVerdict::Unsat(deps)
@@ -186,6 +206,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                 // Step 0 (#293): an over-full `≤n` with more than one pair that may
                 // merge. Saturation used to commit to the first pair; which pair
                 // to merge is a real choice, so branch over them here.
+                diag_select_root(ctx);
                 if let Some(open) = first_open_max(ctx) {
                     if trace_enabled() {
                         eprintln!(
@@ -195,6 +216,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    diag_count_decision(ctx, open.pivot);
                     return Expanded::Open(Frame::merge(ctx, max_depth, open));
                 }
                 // Step 1: ⊔ branching has priority — it's structurally
@@ -208,6 +230,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    diag_count_decision(ctx, node);
                     return Expanded::Open(Frame::or(ctx, max_depth, node, &disjuncts, &or_deps));
                 }
                 // Step 2: choose rule for `≤n R.C` — pick a neighbour
@@ -220,6 +243,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    diag_count_decision(ctx, node);
                     return Expanded::Open(Frame::or(
                         ctx,
                         max_depth,
@@ -302,6 +326,67 @@ struct OpenMax {
 /// witnesses are taken in node order and only the first one with a mergeable
 /// earlier witness is decided: it merges into one of those, or is distinct from
 /// all of them. Each way of partitioning the witnesses is then reached once.
+// DIAGNOSTIC (#377): decision counts per tree root (0..7, 8 = other) and foreign skips.
+static DIAG_DEC: [std::sync::atomic::AtomicU64; 9] = [const { std::sync::atomic::AtomicU64::new(0) }; 9];
+static DIAG_FOREIGN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DIAG_SKIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn diag_count_decision(ctx: &TableauContext<'_, '_, '_>, node: NodeId) {
+    let r = diag_root_of(ctx, node) as usize;
+    let prev = DIAG_DEC[r.min(8)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = prev;
+    let total: u64 = DIAG_DEC.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).sum();
+    if total % 20_000 == 0 && std::env::var_os("RUSTDL_DIAG_COUNT").is_some() {
+        let d: Vec<u64> = DIAG_DEC.iter().take(3).map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect();
+        eprintln!(
+            "# diag progress decisions_by_root={d:?} skips={} foreign_skips={}",
+            DIAG_SKIPS.load(std::sync::atomic::Ordering::Relaxed),
+            DIAG_FOREIGN.load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+}
+
+// DIAGNOSTIC (#377, not for merge): restrict decisions to one tree root.
+static DIAG_ROOT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+fn diag_root_of(ctx: &TableauContext<'_, '_, '_>, mut n: NodeId) -> u32 {
+    while let Some(p) = ctx.graph().node(n).parent() {
+        n = p;
+    }
+    u32::try_from(n.index()).expect("node index exceeds u32")
+}
+
+fn diag_skip(ctx: &TableauContext<'_, '_, '_>, node: NodeId) -> bool {
+    let r = DIAG_ROOT.load(std::sync::atomic::Ordering::Relaxed);
+    r != u32::MAX && diag_root_of(ctx, node) != r
+}
+
+/// Pick the lowest root that has any open decision, and filter the selectors to it.
+fn diag_select_root(ctx: &TableauContext<'_, '_, '_>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    DIAG_ROOT.store(u32::MAX, Relaxed);
+    if !std::env::var_os("RUSTDL_DIAG_ROOT_ORDER").is_some_and(|v| v == "1") {
+        return;
+    }
+    let mut roots: Vec<u32> = (0..ctx.graph().len())
+        .map(|i| NodeId::new(u32::try_from(i).expect("node count exceeds u32")))
+        .filter(|&n| !ctx.graph().node(n).is_redirected())
+        .map(|n| diag_root_of(ctx, n))
+        .collect();
+    roots.sort_unstable();
+    roots.dedup();
+    for r in roots {
+        DIAG_ROOT.store(r, Relaxed);
+        if first_open_max(ctx).is_some()
+            || first_open_disjunction(ctx).is_some()
+            || first_open_choose(ctx).is_some()
+        {
+            return;
+        }
+    }
+    DIAG_ROOT.store(u32::MAX, Relaxed);
+}
+
 fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
     if !crate::max_choice_point_enabled() {
         return None;
@@ -310,6 +395,9 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
     let graph = ctx.graph();
     for idx in 0..graph.len() {
         let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        if diag_skip(ctx, node_id) {
+            continue;
+        }
         let node = graph.node(node_id);
         if node.is_redirected() {
             continue;
@@ -454,6 +542,7 @@ impl Frame {
             }
             exact
         } else {
+            if crate::search::trace_enabled() { eprintln!("# diag ab site=s457"); }
             crate::deps::union(&open.max_deps, &DepSet::from_slice(ctx.active_branches()))
         };
         let my_id = ctx.push_branch();
@@ -667,6 +756,35 @@ impl Frame {
                     // contribute to the clash. Every sibling option
                     // would clash for the same upstream reason —
                     // propagate the failure straight up.
+                    DIAG_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    {
+                        let frame_node = match &self.kind {
+                            FrameKind::Or { node, .. } => *node,
+                            FrameKind::Merge { open } => open.pivot,
+                        };
+                        let fr = diag_root_of(ctx, frame_node);
+                        if !clash_deps.iter().filter_map(|&d| ctx.diag_decision_node(d)).any(|n| diag_root_of(ctx, n) == fr) {
+                            DIAG_FOREIGN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    if trace_enabled() {
+                        let frame_node = match &self.kind {
+                            FrameKind::Or { node, .. } => *node,
+                            FrameKind::Merge { open } => open.pivot,
+                        };
+                        let fr = diag_root_of(ctx, frame_node);
+                        let mut crs: Vec<u32> = clash_deps
+                            .iter()
+                            .filter_map(|&d| ctx.diag_decision_node(d))
+                            .map(|n| diag_root_of(ctx, n))
+                            .collect();
+                        crs.sort_unstable();
+                        crs.dedup();
+                        eprintln!(
+                            "# diag bj frame_root={fr} foreign={} clash_roots={crs:?}",
+                            !crs.contains(&fr)
+                        );
+                    }
                     self.early_return = Some(SearchVerdict::Unsat(clash_deps));
                 } else {
                     // This decision mattered. Keep its deps for the "all
@@ -873,14 +991,32 @@ fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Concep
     let graph = ctx.graph();
     for idx in 0..graph.len() {
         let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        if diag_skip(ctx, node_id) {
+            continue;
+        }
         // #284: a merged-away node's `≤n` is enforced on its representative.
         if graph.node(node_id).is_redirected() {
             continue;
         }
         for &c in graph.node(node_id).labels() {
-            let ConceptExpr::Max(_, role, body) = pool.get(c) else {
+            let ConceptExpr::Max(n, role, body) = pool.get(c) else {
                 continue;
             };
+            // DIAGNOSTIC (#377, not for merge): skip a `≤n` whose node has at
+            // most `n` distinct `role`-neighbours.
+            if std::env::var_os("RUSTDL_DIAG_CHOOSE_GUARD").is_some_and(|v| v == "1") {
+                let mut ns: Vec<NodeId> = graph
+                    .node(node_id)
+                    .neighbours()
+                    .filter(|(seen, _)| ctx.edge_satisfies(*seen, *role))
+                    .map(|(_, t)| t)
+                    .collect();
+                ns.sort_unstable();
+                ns.dedup();
+                if ns.len() <= *n as usize {
+                    continue;
+                }
+            }
             let Some(complement) = ctx.complement_of(*body) else {
                 // No complement registered — the reasoner facade
                 // should have set this for every Max body. Skip
@@ -925,6 +1061,9 @@ fn first_open_disjunction(
     let mut first_any: Option<(NodeId, ConceptId, Vec<ConceptId>, DepSet)> = None;
     for idx in 0..graph.len() {
         let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        if diag_skip(ctx, node_id) {
+            continue;
+        }
         let node = graph.node(node_id);
         // #284: a merged-away node's labels are enforced on its representative.
         if node.is_redirected() {

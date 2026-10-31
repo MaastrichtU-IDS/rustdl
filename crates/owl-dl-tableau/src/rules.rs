@@ -952,6 +952,7 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         // entailed (#304), so no dep set justifies them. Every active decision
         // keeps this path as conservative as without exact deps.
         let mark_deps: DepSet = if ctx.merge_exact_deps() {
+        if crate::search::trace_enabled() { eprintln!("# diag ab site=r955"); }
             DepSet::from_slice(ctx.active_branches())
         } else {
             DepSet::new()
@@ -1163,6 +1164,7 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 }
                 marks
             } else {
+        if crate::search::trace_enabled() { eprintln!("# diag ab site=r1166"); }
                 DepSet::from_slice(ctx.active_branches())
             };
             witness_deps = union(&witness_deps, &fallback);
@@ -1273,6 +1275,7 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 union(&union(&max_deps, &witness_deps), &rejected_deps)
             } else {
                 let mut deps = max_deps.clone();
+        if crate::search::trace_enabled() { eprintln!("# diag ab site=r1276"); }
                 for &b in ctx.active_branches() {
                     if let Err(pos) = deps.binary_search(&b) {
                         deps.insert(pos, b);
@@ -1475,6 +1478,7 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                     {
                         // Conservative deps for the failed-merge clash:
                         // active branches ⊇ the precise merge-cond deps.
+        if crate::search::trace_enabled() { eprintln!("# diag ab site=r1478"); }
                         let deps: DepSet = DepSet::from_slice(ctx.active_branches());
                         ctx.add_label_with_deps(keep, bot, &deps);
                     }
@@ -1933,6 +1937,7 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         // the `outgoing` snapshot above; `active_branches()` is a
         // sound over-approximation that keeps the soundness
         // invariant.
+        if crate::search::trace_enabled() { eprintln!("# diag ab site=r1936"); }
         let deps: DepSet = DepSet::from_slice(ctx.active_branches());
         if ctx.add_label_with_deps(node, bot, &deps) {
             return RuleOutcome::Applied;

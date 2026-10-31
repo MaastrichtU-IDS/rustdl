@@ -79,6 +79,12 @@ impl NodeId {
 pub struct Node {
     pub(crate) parent: Option<NodeId>,
     pub(crate) parent_role: Option<Role>,
+    /// The root of the tree this node was created in (#377): itself for a
+    /// parentless node, else its creating parent's root. Fixed at creation; a
+    /// later re-parenting (`prune_subtree`, a merge) keeps it. It only groups
+    /// decisions for [`crate::TableauContext::tree_sticky_branching`], so a
+    /// stale group after a merge can change the order, never a verdict.
+    pub(crate) root: u32,
     pub(crate) labels: SmallVec<[ConceptId; 8]>,
     /// Per-label [`DepSet`], parallel to [`Self::labels`] (same index,
     /// same length). Populated by `add_label_with_deps`; the legacy
@@ -160,6 +166,12 @@ impl Node {
     #[must_use]
     pub fn parent(&self) -> Option<NodeId> {
         self.parent
+    }
+
+    /// The root of the tree this node was created in (#377).
+    #[must_use]
+    pub fn root(&self) -> NodeId {
+        NodeId(self.root)
     }
 
     #[must_use]
@@ -384,9 +396,11 @@ impl CompletionGraph {
         parent_role: Option<Role>,
     ) -> NodeId {
         let id = NodeId(u32::try_from(self.nodes.len()).expect("node count exceeds u32"));
+        let root = parent.map_or(id.0, |p| self.nodes[p.0 as usize].root);
         self.nodes.push(Node {
             parent,
             parent_role,
+            root,
             ..Node::default()
         });
         self.blocking.push(BlockingSummary {

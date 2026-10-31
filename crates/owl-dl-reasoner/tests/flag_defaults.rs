@@ -290,6 +290,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_TREE_STICKY_BRANCHING",
+            owl_dl_tableau::tree_sticky_branching_enabled,
+            false,
+        ),
+        (
             "RUSTDL_MAX_CHOICE_POINT",
             owl_dl_tableau::max_choice_point_enabled,
             true,

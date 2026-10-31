@@ -109,6 +109,9 @@ fn trace_enabled() -> bool {
 /// stands in for recursion. Every side effect happens in the order the
 /// recursive version had.
 pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchVerdict {
+    // #377: a search starts in node order, also when iterative deepening runs
+    // it again on the same context.
+    ctx.forget_decision_root();
     // Each open frame, with the option it is trying and that option's checkpoint.
     let mut stack: Vec<(Frame, usize, Checkpoint)> = Vec::new();
     let mut next = expand(ctx, max_depth);
@@ -186,7 +189,29 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                 // Step 0 (#293): an over-full `≤n` with more than one pair that may
                 // merge. Saturation used to commit to the first pair; which pair
                 // to merge is a real choice, so branch over them here.
-                if let Some(open) = first_open_max(ctx) {
+                // #377: with tree-sticky branching, each selector looks only at
+                // nodes that rank below the earlier selectors' picks (rank 0 =
+                // in the last decision's tree), so a decision in that tree wins
+                // and ties keep the order max > ⊔ > choose. Off, a later
+                // selector runs only when the earlier ones found nothing.
+                let ranked = ctx.tree_sticky_branching();
+                let max = first_open_max(ctx, u32::MAX);
+                let bound = max.as_ref().map_or(u32::MAX, |(r, _)| *r);
+                let disj = if max.is_some() && !ranked {
+                    None
+                } else {
+                    first_open_disjunction(ctx, bound)
+                };
+                let bound = disj.as_ref().map_or(bound, |(r, _)| *r);
+                let choose = if (max.is_some() || disj.is_some()) && !ranked {
+                    None
+                } else {
+                    first_open_choose(ctx, bound)
+                };
+                if choose.is_none()
+                    && disj.is_none()
+                    && let Some((_, open)) = max
+                {
                     if trace_enabled() {
                         eprintln!(
                             "# trace search depth={max_depth} max pivot={} options={} graph_nodes={}",
@@ -195,11 +220,15 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    log_decision(open.pivot);
+                    ctx.note_decision_at(open.pivot);
                     return Expanded::Open(Frame::merge(ctx, max_depth, open));
                 }
                 // Step 1: ⊔ branching has priority — it's structurally
                 // cheaper and keeps the search shape predictable.
-                if let Some((node, _or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
+                if choose.is_none()
+                    && let Some((_, (node, _or_label, disjuncts, or_deps))) = disj
+                {
                     if trace_enabled() {
                         eprintln!(
                             "# trace search depth={max_depth} disj node={} options={} graph_nodes={}",
@@ -208,11 +237,13 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    log_decision(node);
+                    ctx.note_decision_at(node);
                     return Expanded::Open(Frame::or(ctx, max_depth, node, &disjuncts, &or_deps));
                 }
                 // Step 2: choose rule for `≤n R.C` — pick a neighbour
                 // that doesn't yet have `C` or `¬C` and branch.
-                if let Some((node, c, c_neg)) = first_open_choose(ctx) {
+                if let Some((_, (node, c, c_neg))) = choose {
                     if trace_enabled() {
                         eprintln!(
                             "# trace search depth={max_depth} choose node={} graph_nodes={}",
@@ -220,6 +251,11 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                             ctx.graph().len()
                         );
                     }
+                    log_decision(node);
+                    // The choose rule labels the neighbour, so the decision
+                    // counts in the neighbour's tree, which across an asserted
+                    // edge is not the `≤n` owner's.
+                    ctx.note_decision_at(node);
                     return Expanded::Open(Frame::or(
                         ctx,
                         max_depth,
@@ -293,6 +329,64 @@ struct OpenMax {
     distinct_deps: DepSet,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The node of every decision `expand` opened on this thread, in order.
+    static DECISION_LOG: std::cell::RefCell<Vec<NodeId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record a decision for the tests (#377).
+#[cfg(test)]
+fn log_decision(node: NodeId) {
+    DECISION_LOG.with(|l| l.borrow_mut().push(node));
+}
+
+/// Outside the tests there is no decision log.
+#[cfg(not(test))]
+const fn log_decision(_node: NodeId) {}
+
+/// How a node ranks for tree-sticky branching (#377): 0 in the tree of the
+/// last decision opened, 1 elsewhere.
+fn tree_rank(ctx: &TableauContext<'_, '_, '_>, node: NodeId) -> u32 {
+    u32::from(ctx.graph().node(node).root != ctx.last_decision_root())
+}
+
+/// Scan the nodes for an open decision with `find` (#377). Returns the hit's
+/// [`tree_rank`] with it.
+///
+/// Off ([`TableauContext::tree_sticky_branching`]): the first hit in node
+/// order, as before. On: the first hit, in node order, of the lowest rank below
+/// `bound`. A node whose rank is not below the best so far is skipped before
+/// `find` runs, a rank-0 hit ends the scan, and a rank-1 node is still
+/// returned when no rank-0 one is open: the rank orders decisions, it never
+/// hides one.
+fn scan_by_rank<T>(
+    ctx: &TableauContext<'_, '_, '_>,
+    bound: u32,
+    mut find: impl FnMut(NodeId) -> Option<T>,
+) -> Option<(u32, T)> {
+    let ranked = ctx.tree_sticky_branching();
+    let graph = ctx.graph();
+    let mut bound = bound;
+    let mut best = None;
+    for idx in 0..graph.len() {
+        let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        // Off, the rank is not read and every hit reports rank 0.
+        let rank = if ranked { tree_rank(ctx, node_id) } else { 0 };
+        if ranked && rank >= bound {
+            continue;
+        }
+        if let Some(hit) = find(node_id) {
+            if !ranked || rank == 0 {
+                return Some((rank, hit));
+            }
+            bound = rank;
+            best = Some((rank, hit));
+        }
+    }
+    best
+}
+
 /// Find an over-full `≤n R.C` with at least two pairs that may merge (#293),
 /// which `apply_max` leaves to the search when
 /// [`crate::max_choice_point_enabled`].
@@ -302,17 +396,16 @@ struct OpenMax {
 /// witnesses are taken in node order and only the first one with a mergeable
 /// earlier witness is decided: it merges into one of those, or is distinct from
 /// all of them. Each way of partitioning the witnesses is then reached once.
-fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
+fn first_open_max(ctx: &TableauContext<'_, '_, '_>, bound: u32) -> Option<(u32, OpenMax)> {
     if !crate::max_choice_point_enabled() {
         return None;
     }
     let pool = ctx.pool();
     let graph = ctx.graph();
-    for idx in 0..graph.len() {
-        let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+    scan_by_rank(ctx, bound, |node_id| {
         let node = graph.node(node_id);
         if node.is_redirected() {
-            continue;
+            return None;
         }
         for (pos, &c) in node.labels().iter().enumerate() {
             let ConceptExpr::Max(n, role, body) = pool.get(c) else {
@@ -368,8 +461,8 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>) -> Option<OpenMax> {
                 }
             }
         }
-    }
-    None
+        None
+    })
 }
 
 /// What a frame chooses between (#288 step 3).
@@ -868,14 +961,16 @@ fn is_literal(ctx: &TableauContext<'_, '_, '_>, c: ConceptId) -> bool {
 /// Find the first `Max(n, R, C)` label whose R-neighbour at the
 /// owning node is unlabelled for both `C` and `¬C`. Returns
 /// `(neighbour, C, ¬C)` — the two labels the search will branch on.
-fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, ConceptId, ConceptId)> {
+fn first_open_choose(
+    ctx: &TableauContext<'_, '_, '_>,
+    bound: u32,
+) -> Option<(u32, (NodeId, ConceptId, ConceptId))> {
     let pool = ctx.pool();
     let graph = ctx.graph();
-    for idx in 0..graph.len() {
-        let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+    scan_by_rank(ctx, bound, |node_id| {
         // #284: a merged-away node's `≤n` is enforced on its representative.
         if graph.node(node_id).is_redirected() {
-            continue;
+            return None;
         }
         for &c in graph.node(node_id).labels() {
             let ConceptExpr::Max(_, role, body) = pool.get(c) else {
@@ -900,8 +995,8 @@ fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Concep
                 }
             }
         }
-    }
-    None
+        None
+    })
 }
 
 /// Find the first `Or` label in any node such that none of its
@@ -910,9 +1005,14 @@ fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Concep
 /// "First" is well-defined: nodes are visited in arena order, labels
 /// in sorted order. Stable choice keeps the search deterministic for
 /// reproducible tests; smarter heuristics arrive in Phase 4.
+#[allow(clippy::type_complexity)]
 fn first_open_disjunction(
     ctx: &TableauContext<'_, '_, '_>,
-) -> Option<(NodeId, ConceptId, Vec<ConceptId>, DepSet)> {
+    bound: u32,
+) -> Option<(u32, (NodeId, ConceptId, Vec<ConceptId>, DepSet))> {
+    if ctx.tree_sticky_branching() {
+        return first_open_disjunction_by_rank(ctx, bound);
+    }
     let pool = ctx.pool();
     let graph = ctx.graph();
     // #35 v4: with nominals-first scheduling on, prefer an open `Or`
@@ -922,7 +1022,7 @@ fn first_open_disjunction(
     // no nominal-bearing Or open): identical to the historical
     // first-open choice.
     let prefer_nominal = crate::nominal_first_enabled();
-    let mut first_any: Option<(NodeId, ConceptId, Vec<ConceptId>, DepSet)> = None;
+    let mut first_any: Option<(u32, (NodeId, ConceptId, Vec<ConceptId>, DepSet))> = None;
     for idx in 0..graph.len() {
         let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
         let node = graph.node(node_id);
@@ -950,15 +1050,73 @@ fn first_open_disjunction(
                         .iter()
                         .any(|&d| matches!(pool.get(d), ConceptExpr::Nominal(_)));
                 if has_nominal {
-                    return Some(hit);
+                    return Some((0, hit));
                 }
                 if first_any.is_none() {
-                    first_any = Some(hit);
+                    first_any = Some((0, hit));
                 }
             }
         }
     }
     first_any
+}
+
+/// [`first_open_disjunction`] with tree-sticky branching (#377): the open `Or`
+/// of the lowest [`tree_rank`] below `bound`. Within a rank the old order
+/// holds, including the nominal-first preference: the key is `(rank, whether no
+/// disjunct is a nominal)`, and the first hit of the lowest key wins.
+#[allow(clippy::type_complexity)]
+fn first_open_disjunction_by_rank(
+    ctx: &TableauContext<'_, '_, '_>,
+    bound: u32,
+) -> Option<(u32, (NodeId, ConceptId, Vec<ConceptId>, DepSet))> {
+    let pool = ctx.pool();
+    let graph = ctx.graph();
+    let prefer_nominal = crate::nominal_first_enabled();
+    let mut best: Option<((u32, bool), (NodeId, ConceptId, Vec<ConceptId>, DepSet))> = None;
+    for idx in 0..graph.len() {
+        let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        let node = graph.node(node_id);
+        let rank = tree_rank(ctx, node_id);
+        // Skip a node that cannot beat the best key. Its best is `(rank, false)`
+        // when nominals are preferred and `(rank, true)` otherwise, so with
+        // nominal-first off a rank-1 best skips every other rank-1 node.
+        if rank >= bound
+            || best
+                .as_ref()
+                .is_some_and(|(k, _)| (rank, !prefer_nominal) >= *k)
+        {
+            continue;
+        }
+        // #284: a merged-away node's labels are enforced on its representative.
+        if node.is_redirected() {
+            continue;
+        }
+        let labels = node.labels();
+        for (pos, &c) in labels.iter().enumerate() {
+            if let ConceptExpr::Or(args) = pool.get(c)
+                && !args.iter().any(|d| labels.binary_search(d).is_ok())
+            {
+                let has_nominal = prefer_nominal
+                    && args
+                        .iter()
+                        .any(|&d| matches!(pool.get(d), ConceptExpr::Nominal(_)));
+                let key = (rank, !has_nominal);
+                if best.as_ref().is_none_or(|(k, _)| key < *k) {
+                    best = Some((
+                        key,
+                        (node_id, c, args.to_vec(), node.label_deps[pos].clone()),
+                    ));
+                    // Nothing beats rank 0 with a nominal, or rank 0 when
+                    // nominals are not preferred.
+                    if rank == 0 && (has_nominal || !prefer_nominal) {
+                        return best.map(|((r, _), hit)| (r, hit));
+                    }
+                }
+            }
+        }
+    }
+    best.map(|((r, _), hit)| (r, hit))
 }
 
 #[cfg(test)]
@@ -1004,7 +1162,8 @@ mod tests {
         ctx.add_label(n, plain_or);
         ctx.add_label(n, nominal_or);
 
-        let (_, chosen, _, _) = super::first_open_disjunction(&ctx).expect("an open Or");
+        let (_, (_, chosen, _, _)) =
+            super::first_open_disjunction(&ctx, u32::MAX).expect("an open Or");
         assert!(
             matches!(ctx.pool().get(chosen), ConceptExpr::Or(args)
                 if args
@@ -1372,7 +1531,8 @@ mod dep_tests {
         // A marker on the pivot (the second witness), moved by the merge.
         ctx.add_label_with_deps(witnesses[1], d, &[]);
 
-        let open = first_open_max(&ctx).expect("an open ≤1 with three mergeable pairs");
+        let (_, open) =
+            first_open_max(&ctx, u32::MAX).expect("an open ≤1 with three mergeable pairs");
         for (_, deps) in &open.partners {
             for b in &ids {
                 assert!(
@@ -1553,7 +1713,8 @@ mod exact_dep_tests {
             })
             .collect();
         ctx.mark_distinct_with_deps(ws[0], ws[1], &[d]);
-        let open = first_open_max(&ctx).expect("an open ≤1 with two mergeable pairs");
+        let (_, open) =
+            first_open_max(&ctx, u32::MAX).expect("an open ≤1 with two mergeable pairs");
         assert_eq!(open.pivot, ws[2]);
         let frame = Frame::merge(&mut ctx, 64, open);
         (frame.initial.to_vec(), u, d, e)
@@ -1576,7 +1737,7 @@ mod exact_dep_tests {
             let w = ctx.new_successor_with_deps(n, r, &[w_dec]);
             ctx.add_label_with_deps(w, c, &[w_dec]);
         }
-        let open = first_open_max(&ctx).expect("an open ≤2 over three witnesses");
+        let (_, open) = first_open_max(&ctx, u32::MAX).expect("an open ≤2 over three witnesses");
         let (pivot, partners): (_, Vec<_>) =
             (open.pivot, open.partners.iter().map(|(w, _)| *w).collect());
         assert!(open.earlier < open.bound, "the distinct option is offered");
@@ -1659,5 +1820,263 @@ mod exact_dep_tests {
         assert!(!deps.contains(&u), "{deps:?} carries an unrelated decision");
         let (deps, [u, ..]) = p7_moved_deps(false);
         assert!(deps.contains(&u), "{deps:?}");
+    }
+}
+
+#[cfg(test)]
+mod tree_sticky_tests {
+    use super::{DECISION_LOG, SearchVerdict, search};
+    use crate::TableauContext;
+    use crate::graph::NodeId;
+    use owl_dl_core::{ClassId, ConceptId, ConceptPool, Role, RoleId};
+
+    const DEEP: usize = 1_000;
+
+    /// Run `search` with tree-sticky branching `on`, returning the verdict and the
+    /// decisions' nodes in order. `build` labels the graph.
+    fn run(
+        pool: &ConceptPool,
+        on: bool,
+        cap: usize,
+        build: impl FnOnce(&mut TableauContext<'_, '_, '_>),
+    ) -> (SearchVerdict, Vec<NodeId>) {
+        let mut ctx = TableauContext::new(pool);
+        ctx.set_tree_sticky_branching(on);
+        build(&mut ctx);
+        DECISION_LOG.with(|l| l.borrow_mut().clear());
+        let v = search(&mut ctx, cap);
+        let log = DECISION_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        (v, log)
+    }
+
+    fn is_unsat(v: &SearchVerdict) -> bool {
+        matches!(v, SearchVerdict::Unsat(_))
+    }
+
+    /// `X ⊔ Y` with both `¬X` and `¬Y` asserted: unsatisfiable once the
+    /// disjunction is tried.
+    fn refuted_or(pool: &mut ConceptPool, base: u32) -> Vec<ConceptId> {
+        let x = pool.atomic(ClassId::new(base));
+        let y = pool.atomic(ClassId::new(base + 1));
+        let nx = pool.not(x);
+        let ny = pool.not(y);
+        vec![pool.or([x, y]), nx, ny]
+    }
+
+    #[test]
+    fn a_successor_inherits_its_parents_root() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        let a = ctx.new_node();
+        let b = ctx.new_node();
+        let b1 = ctx.new_successor(b, RoleId::new(0));
+        let b2 = ctx.new_successor(b1, RoleId::new(0));
+        let a1 = ctx.new_successor(a, RoleId::new(0));
+        assert_eq!(ctx.graph().node(a).root(), a);
+        assert_eq!(ctx.graph().node(b).root(), b);
+        assert_eq!(ctx.graph().node(b1).root(), b);
+        assert_eq!(ctx.graph().node(b2).root(), b);
+        assert_eq!(ctx.graph().node(a1).root(), a);
+    }
+
+    /// Open `⊔`s at node 1 (root 1), node 2 (root 0's successor) and node 3
+    /// (root 1's successor). Node order takes 1, 2, 3; staying in the tree of
+    /// the last decision takes 1, 3, 2.
+    fn interleaved(pool: &mut ConceptPool) -> impl FnOnce(&mut TableauContext<'_, '_, '_>) + use<> {
+        let ors: Vec<ConceptId> = (0..3)
+            .map(|k| {
+                let a = pool.atomic(ClassId::new(1 + 2 * k));
+                let b = pool.atomic(ClassId::new(2 + 2 * k));
+                pool.or([a, b])
+            })
+            .collect();
+        move |ctx| {
+            let r0 = ctx.new_node();
+            let r1 = ctx.new_node();
+            ctx.add_label(r1, ors[0]);
+            let c0 = ctx.new_successor(r0, RoleId::new(0));
+            ctx.add_label(c0, ors[1]);
+            let c1 = ctx.new_successor(r1, RoleId::new(0));
+            ctx.add_label(c1, ors[2]);
+        }
+    }
+
+    fn nodes(ids: &[u32]) -> Vec<NodeId> {
+        ids.iter().map(|&i| NodeId::new(i)).collect()
+    }
+
+    #[test]
+    fn the_search_stays_in_the_tree_of_its_last_decision() {
+        let mut pool = ConceptPool::new();
+        let build_off = interleaved(&mut pool);
+        let build_on = interleaved(&mut pool);
+        let (v_off, off) = run(&pool, false, DEEP, build_off);
+        let (v_on, on) = run(&pool, true, DEEP, build_on);
+        assert!(matches!(v_off, SearchVerdict::Sat) && matches!(v_on, SearchVerdict::Sat));
+        assert_eq!(off, nodes(&[1, 2, 3]), "flag off keeps node order");
+        assert_eq!(
+            on,
+            nodes(&[1, 3, 2]),
+            "flag on finishes root 1's tree first"
+        );
+    }
+
+    /// Choose-rule decisions in two trees. `≤1 r.C` owners, each with one
+    /// `r`-successor: node 1 (root 1, successor 2), node 3 (root 0's
+    /// `q`-successor, successor 4) and node 5 (root 1's `q`-successor,
+    /// successor 6). Node order chooses on 2, 4, 6; staying in the last
+    /// decision's tree chooses on 2, 6, 4.
+    fn interleaved_choose(
+        pool: &mut ConceptPool,
+    ) -> impl FnOnce(&mut TableauContext<'_, '_, '_>) + use<> {
+        let r = RoleId::new(0);
+        let q = RoleId::new(1);
+        let c = pool.atomic(ClassId::new(1));
+        let nc = pool.not(c);
+        let at_most = pool.max(1, Role::Named(r), c);
+        move |ctx| {
+            ctx.set_complement(c, nc);
+            let r0 = ctx.new_node();
+            let r1 = ctx.new_node();
+            ctx.add_label(r1, at_most);
+            ctx.new_successor(r1, r);
+            let owner0 = ctx.new_successor(r0, q);
+            ctx.add_label(owner0, at_most);
+            ctx.new_successor(owner0, r);
+            let owner1 = ctx.new_successor(r1, q);
+            ctx.add_label(owner1, at_most);
+            ctx.new_successor(owner1, r);
+        }
+    }
+
+    #[test]
+    fn choose_decisions_stay_in_the_tree_and_none_is_skipped() {
+        let mut pool = ConceptPool::new();
+        let build_off = interleaved_choose(&mut pool);
+        let build_on = interleaved_choose(&mut pool);
+        let (v_off, off) = run(&pool, false, DEEP, build_off);
+        let (v_on, on) = run(&pool, true, DEEP, build_on);
+        assert!(matches!(v_off, SearchVerdict::Sat) && matches!(v_on, SearchVerdict::Sat));
+        assert_eq!(off, nodes(&[2, 4, 6]), "flag off keeps node order");
+        // On: root 1's tree is finished first, and root 0's choose is still
+        // taken: a leaf with it left open would not be a model.
+        assert_eq!(on, nodes(&[2, 6, 4]), "flag on");
+    }
+
+    #[test]
+    fn a_later_roots_refutation_is_still_found() {
+        // Root 0 is satisfiable after a decision; root 1 is refuted only by
+        // trying its disjunction. A selector that stopped at the first root
+        // with a decision would leave root 1's open and call the leaf `Sat`.
+        let mut pool = ConceptPool::new();
+        let p = pool.atomic(ClassId::new(1));
+        let q = pool.atomic(ClassId::new(2));
+        let pq = pool.or([p, q]);
+        let bad = refuted_or(&mut pool, 10);
+        for on in [false, true] {
+            let bad = bad.clone();
+            let (v, log) = run(&pool, on, DEEP, move |ctx| {
+                let r0 = ctx.new_node();
+                let r1 = ctx.new_node();
+                ctx.add_label(r0, pq);
+                for c in bad {
+                    ctx.add_label(r1, c);
+                }
+            });
+            assert!(is_unsat(&v), "flag {on}: {v:?} after {log:?}");
+        }
+    }
+
+    #[test]
+    fn a_single_root_search_is_unchanged() {
+        // One root: every rank is a tie, so the order must be node order.
+        let mut pool = ConceptPool::new();
+        let ors: Vec<ConceptId> = (0..4)
+            .map(|k| {
+                let a = pool.atomic(ClassId::new(20 + 2 * k));
+                let b = pool.atomic(ClassId::new(21 + 2 * k));
+                pool.or([a, b])
+            })
+            .collect();
+        let bad = refuted_or(&mut pool, 40);
+        let build = |ors: Vec<ConceptId>, bad: Vec<ConceptId>| {
+            move |ctx: &mut TableauContext<'_, '_, '_>| {
+                let r = ctx.new_node();
+                let mut prev = r;
+                for (k, o) in ors.into_iter().enumerate() {
+                    let n = ctx.new_successor(if k % 2 == 0 { r } else { prev }, RoleId::new(0));
+                    ctx.add_label(n, o);
+                    prev = n;
+                }
+                for c in bad {
+                    ctx.add_label(prev, c);
+                }
+            }
+        };
+        let (v_off, off) = run(&pool, false, DEEP, build(ors.clone(), bad.clone()));
+        let (v_on, on) = run(&pool, true, DEEP, build(ors, bad));
+        assert_eq!(off, on);
+        assert_eq!(format!("{v_off:?}"), format!("{v_on:?}"));
+    }
+
+    #[test]
+    fn a_refutation_across_an_edge_between_roots_is_kept() {
+        // Root 0 must pick `∀r.¬X` (its other disjunct is refuted); root 1,
+        // reached by an asserted edge, must pick `X` (likewise). Unsatisfiable
+        // only through both decisions.
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let x = pool.atomic(ClassId::new(1));
+        let w = pool.atomic(ClassId::new(2));
+        let x2 = pool.atomic(ClassId::new(3));
+        let nx = pool.not(x);
+        let nw = pool.not(w);
+        let nx2 = pool.not(x2);
+        let all_nx = pool.all(Role::Named(r), nx);
+        let or0 = pool.or([all_nx, w]);
+        let or1 = pool.or([x, x2]);
+        for on in [false, true] {
+            let (v, _) = run(&pool, on, DEEP, |ctx| {
+                let r0 = ctx.new_node();
+                let r1 = ctx.new_node();
+                ctx.add_edge(r0, r, r1);
+                ctx.add_label(r0, or0);
+                ctx.add_label(r0, nw);
+                ctx.add_label(r1, or1);
+                ctx.add_label(r1, nx2);
+            });
+            assert!(is_unsat(&v), "flag {on}: {v:?}");
+        }
+    }
+
+    #[test]
+    fn a_depth_cap_never_turns_into_an_unsat() {
+        // Two roots, each a satisfiable chain of ten nested choices. At a cap
+        // below the total depth either order may run out; neither may refute.
+        let mut pool = ConceptPool::new();
+        let mut chain = |base: u32| {
+            let mut top = pool.atomic(ClassId::new(base));
+            for k in 0..10 {
+                let a = pool.atomic(ClassId::new(base + 1 + 2 * k));
+                let b = pool.atomic(ClassId::new(base + 2 + 2 * k));
+                let ab = pool.or([a, b]);
+                top = pool.and([top, ab]);
+            }
+            top
+        };
+        let c0 = chain(100);
+        let c1 = chain(200);
+        for cap in [3, 8, 15, DEEP] {
+            for on in [false, true] {
+                let (v, _) = run(&pool, on, cap, |ctx| {
+                    let r0 = ctx.new_node();
+                    let r1 = ctx.new_node();
+                    ctx.add_label(r1, c1);
+                    let s0 = ctx.new_successor(r0, RoleId::new(0));
+                    ctx.add_label(s0, c0);
+                });
+                assert!(!is_unsat(&v), "cap {cap} flag {on}: {v:?}");
+            }
+        }
     }
 }

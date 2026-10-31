@@ -129,3 +129,85 @@ fn the_same_shape_without_a_drop_keeps_the_guarantee() {
     assert!(c.is_subclass("http://e#A", "http://e#E"));
     assert!(c.completeness_guaranteed());
 }
+
+/// Each condition of `ClassificationStats::completeness_guaranteed` on its own
+/// voids the guarantee. The base is the one state that guarantees completeness
+/// (PureEl, nothing cut, nothing refused, nothing dropped); every row flips
+/// exactly one field away from it.
+///
+/// This is also the sabotage test for the guard: deleting any conjunct from the
+/// predicate makes exactly its row fail. A new completeness signal needs a row
+/// here AND a row in `docs/assurance/completeness-guarantee-ledger.md`.
+#[test]
+fn each_condition_alone_voids_the_guarantee() {
+    use owl_dl_reasoner::{ClassificationStats, FragmentClassification};
+
+    let base = || ClassificationStats {
+        fragment: FragmentClassification::PureEl,
+        ..ClassificationStats::default()
+    };
+    assert!(
+        base().completeness_guaranteed(),
+        "base state (PureEl, nothing cut or dropped) must guarantee completeness"
+    );
+
+    type Flip = fn(&mut ClassificationStats);
+    let rows: [(&str, Flip); 8] = [
+        ("fragment Horn (#124)", |s| {
+            s.fragment = FragmentClassification::Horn;
+        }),
+        ("fragment OutOfFragment", |s| {
+            s.fragment = FragmentClassification::OutOfFragment;
+        }),
+        ("timed_out_pairs", |s| s.timed_out_pairs = 1),
+        ("wedge_hierarchy_blind (#214)", |s| {
+            s.wedge_hierarchy_blind = true;
+        }),
+        ("wedge_clauses_refused (#353)", |s| {
+            s.wedge_clauses_refused = 1;
+        }),
+        ("derived_same_undecided (#354)", |s| {
+            s.derived_same_undecided = 1;
+        }),
+        ("consistency_undetermined (#162)", |s| {
+            s.consistency_undetermined = true;
+        }),
+        ("dropped (#246)", |s| {
+            s.dropped.record("TestKind".to_owned());
+        }),
+    ];
+    // Seven conditions; the fragment condition has two failing values. Keep this
+    // count in step with the predicate and the ledger.
+    assert_eq!(rows.len(), 8);
+
+    for (name, flip) in rows {
+        let mut s = base();
+        flip(&mut s);
+        assert!(
+            !s.completeness_guaranteed(),
+            "{name}: this condition alone must void the guarantee"
+        );
+    }
+}
+
+/// `Classification::completeness_guaranteed` and the stats predicate are the
+/// same answer, so the CLI and Python surfaces (which read the former) cannot
+/// drift from the table test above.
+#[test]
+fn the_classification_delegates_to_its_stats() {
+    for src in [
+        // PureEl, guaranteed.
+        "Prefix(:=<http://e#>)\nOntology(\n\
+         Declaration(Class(:A)) Declaration(Class(:B))\nSubClassOf(:A :B)\n)",
+        // OutOfFragment, not guaranteed.
+        "Prefix(:=<http://e#>)\nOntology(\n\
+         Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:D))\n\
+         EquivalentClasses(:D ObjectIntersectionOf(:A ObjectComplementOf(:B)))\n)",
+    ] {
+        let c = classify(src);
+        assert_eq!(
+            c.completeness_guaranteed(),
+            c.stats().completeness_guaranteed()
+        );
+    }
+}

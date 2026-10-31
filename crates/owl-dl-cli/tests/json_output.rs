@@ -952,3 +952,49 @@ fn classify_reports_a_cut_preparation_or_conversion_in_its_own_field() {
             .contains(&serde_json::json!(["http://ex#A0", "http://ex#C0"]))
     );
 }
+
+/// `completeness_guaranteed` at its two ends: a pure-EL ontology with nothing
+/// cut or dropped gets it, and one with a dropped axiom does not, even though no
+/// deadline fired. The predicate itself is pinned condition by condition in
+/// `owl-dl-reasoner/tests/completeness_contract.rs`; this pins the serialized
+/// field. See `docs/assurance/completeness-guarantee-ledger.md`.
+#[test]
+fn classify_json_completeness_guaranteed_ends() {
+    let run = |fixture: &str| {
+        let out = rustdl()
+            .args(["classify", "--json", "--pair-timeout-ms", "0", fixture])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let el = run(tiny_consistent());
+    assert_eq!(el["incomplete"], false);
+    assert_eq!(el["completeness_guaranteed"], true);
+
+    let dropped = run(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/dropped_tiny.ofn"
+    ));
+    assert_eq!(dropped["incomplete"], false, "no deadline fired");
+    assert!(
+        dropped["dropped"]
+            .as_object()
+            .is_some_and(|m| !m.is_empty()),
+        "precondition: HasKey is dropped"
+    );
+    assert_eq!(dropped["completeness_guaranteed"], false);
+
+    // An inconsistent pure-EL KB (`⊤ ⊑ ⊥`) keeps the guarantee: every class is
+    // unsatisfiable and every subsumption entailed, which is what is reported.
+    let inconsistent = run(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/inconsistent_pure_el.ofn"
+    ));
+    assert_eq!(inconsistent["consistent"], false);
+    assert_eq!(inconsistent["completeness_guaranteed"], true);
+}

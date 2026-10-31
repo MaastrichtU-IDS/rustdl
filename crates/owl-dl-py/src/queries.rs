@@ -8,48 +8,70 @@ use pyo3::prelude::*;
 use crate::errors::reason_error_to_py;
 use crate::load;
 
-/// True iff the ontology at `path` is consistent.
+/// `(consistent, incomplete)` for the ontology at `path`. `incomplete` is set
+/// when "consistent" is a give-up rather than a verdict (the `QueryStats`
+/// contract). The Python wrapper (`__init__.py`) warns on it and returns the
+/// bool (#363 A2).
 #[pyfunction]
-pub(crate) fn is_consistent(path: &str) -> PyResult<bool> {
+pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::is_consistent(&ontology).map_err(reason_error_to_py)
+    let (verdict, stats) =
+        owl_dl_reasoner::is_consistent_with_stats(&ontology).map_err(reason_error_to_py)?;
+    Ok((verdict, verdict && stats.incomplete))
 }
 
-/// True iff `class_iri` is satisfiable (not ⊑ ⊥).
+/// `(satisfiable, incomplete)`: `incomplete` means the tableau probe gave up
+/// (node cap) and "satisfiable" is the sound direction of no verdict.
 #[pyfunction]
-pub(crate) fn is_class_satisfiable(path: &str, class_iri: &str) -> PyResult<bool> {
+pub(crate) fn is_class_satisfiable(path: &str, class_iri: &str) -> PyResult<(bool, bool)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::is_class_satisfiable(&ontology, class_iri).map_err(reason_error_to_py)
+    let (sat, stats) = owl_dl_reasoner::is_class_satisfiable_with_stats(&ontology, class_iri)
+        .map_err(reason_error_to_py)?;
+    Ok((sat, stats.incomplete))
 }
 
-/// True iff `sub ⊑ sup` is entailed.
+/// `(subsumed, incomplete)`: `incomplete` means the probe gave up and
+/// "not subsumed" is the sound direction of no verdict.
 #[pyfunction]
-pub(crate) fn is_subclass_of(path: &str, sub: &str, sup: &str) -> PyResult<bool> {
+pub(crate) fn is_subclass_of(path: &str, sub: &str, sup: &str) -> PyResult<(bool, bool)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::is_subclass_of(&ontology, sub, sup).map_err(reason_error_to_py)
+    let (subsumed, stats) = owl_dl_reasoner::is_subclass_of_with_stats(&ontology, sub, sup)
+        .map_err(reason_error_to_py)?;
+    Ok((subsumed, stats.incomplete))
 }
 
-/// True iff `individual_iri` is an instance of `class_iri`.
+/// `(is_instance, incomplete)`: `incomplete` means the probe was cut
+/// (deadline, node cap or depth limit) and "no" is the sound direction.
 #[pyfunction]
-pub(crate) fn is_instance_of(path: &str, class_iri: &str, individual_iri: &str) -> PyResult<bool> {
+pub(crate) fn is_instance_of(
+    path: &str,
+    class_iri: &str,
+    individual_iri: &str,
+) -> PyResult<(bool, bool)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::is_instance_of(&ontology, class_iri, individual_iri)
+    owl_dl_reasoner::is_instance_of_reporting(&ontology, class_iri, individual_iri)
         .map_err(reason_error_to_py)
 }
 
-/// Named individuals entailed to be instances of `class_iri`.
+/// `(individuals, incomplete)`: named individuals entailed to be instances of
+/// `class_iri`; `incomplete` means at least one probe was cut.
 #[pyfunction]
-pub(crate) fn instances_of(path: &str, class_iri: &str) -> PyResult<Vec<String>> {
+pub(crate) fn instances_of(path: &str, class_iri: &str) -> PyResult<(Vec<String>, bool)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::instances_of(&ontology, class_iri).map_err(reason_error_to_py)
+    owl_dl_reasoner::instances_of_reporting(&ontology, class_iri).map_err(reason_error_to_py)
 }
 
-/// Map each named individual to its most-specific entailed types.
+/// `(types, incomplete)`: each named individual mapped to its most-specific
+/// entailed types; `incomplete` means at least one instance probe was cut
+/// (`Realization::incomplete`).
 #[pyfunction]
-pub(crate) fn realize(path: &str) -> PyResult<HashMap<String, Vec<String>>> {
+pub(crate) fn realize(path: &str) -> PyResult<(HashMap<String, Vec<String>>, bool)> {
     let ontology = load::load_path(path)?;
     let rs_realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
-    Ok(realization_to_dict(&rs_realization))
+    Ok((
+        realization_to_dict(&rs_realization),
+        rs_realization.incomplete(),
+    ))
 }
 
 fn realization_to_dict(realization: &owl_dl_reasoner::Realization) -> HashMap<String, Vec<String>> {

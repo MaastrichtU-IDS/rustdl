@@ -447,8 +447,13 @@ fn instance_check_reporting(
             Err(ReasonError::NoVerdict) => Ok((false, true)),
             Err(e) => Err(e),
         },
-        // No deadline: the probe ran to a verdict, so nothing was truncated.
-        None => Ok((!prepared.decide(build)?, false)),
+        // No deadline: the only give-up is a node-cap trip (`RUSTDL_MAX_NODES`),
+        // which `decide_raw` reports as `None`. Sound answer "not an instance",
+        // and the result is truncated (#363 A2).
+        None => Ok(match prepared.decide_raw(build)? {
+            Some(sat) => (!sat, false),
+            None => (false, true),
+        }),
     }
 }
 

@@ -34,8 +34,8 @@ use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, Realization, classify_n2, classify_n2_with_timeout, classify_saturation_only,
     classify_with_budget, inferred_data_property_values, inferred_object_property_values,
-    instances_of, instances_of_saturation_only, is_class_satisfiable, is_instance_of,
-    is_instance_of_saturation_only, is_subclass_of, is_subclass_of_saturation_only,
+    instances_of_reporting, instances_of_saturation_only, is_class_satisfiable_with_stats,
+    is_instance_of_reporting, is_instance_of_saturation_only, is_subclass_of_saturation_only,
     is_subclass_of_with_stats, realize, realize_saturation_only,
 };
 use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment_rcstr, render_proof_with_defs};
@@ -1015,6 +1015,40 @@ fn warn_if_incomplete(
     }
 }
 
+/// A `sat` / `subclass` probe tripped the live-node cap: there is no verdict.
+/// Print `unknown`, explain on stderr and exit 3, the convention `consistent`
+/// uses for a give-up (#363 A2).
+fn exit_unknown_node_cap() -> ! {
+    println!("unknown");
+    eprintln!(
+        "warning: the tableau probe hit the live-node cap and reached no verdict. \
+         Raise RUSTDL_MAX_NODES (default 50000; 0 disables the cap) for more room."
+    );
+    std::process::exit(3);
+}
+
+/// An `instance` probe was cut (deadline, node cap or depth bail-out): print
+/// `unknown` and exit 3, as for [`exit_unknown_node_cap`] (#363 A2).
+fn exit_unknown_probe_cut() -> ! {
+    println!("unknown");
+    eprintln!(
+        "warning: the instance probe was cut (deadline, node cap or depth limit) and \
+         reached no verdict. Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = \
+         unbounded) or RUSTDL_MAX_NODES."
+    );
+    std::process::exit(3);
+}
+
+/// A list-valued answer (`instances`, `realize`) had at least one probe cut, so
+/// members may be missing. The members printed are sound (#363 A2).
+fn warn_probes_cut(what: &str) {
+    eprintln!(
+        "warning: {what}: at least one instance probe was cut (deadline, node cap or \
+         depth limit), so entries may be missing; those printed are sound. Raise \
+         RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded) or RUSTDL_MAX_NODES."
+    );
+}
+
 /// Print a stderr warning if any axioms were dropped during conversion
 /// (unsupported constructs — see `owl_dl_reasoner::dropped_axioms`). Those
 /// axioms are simply absent from reasoning, so the result is a sound
@@ -1787,8 +1821,11 @@ fn main() -> Result<()> {
         Command::Sat { file, class_iri } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
-            let verdict =
-                is_class_satisfiable(&onto, &class_iri).context("is_class_satisfiable")?;
+            let (verdict, stats) = is_class_satisfiable_with_stats(&onto, &class_iri)
+                .context("is_class_satisfiable_with_stats")?;
+            if stats.incomplete {
+                exit_unknown_node_cap();
+            }
             println!("{}", if verdict { "sat" } else { "unsat" });
         }
         Command::Subclass {
@@ -1803,7 +1840,12 @@ fn main() -> Result<()> {
                 is_subclass_of_saturation_only(&onto, &sub, &sup)
                     .context("is_subclass_of_saturation_only")?
             } else {
-                is_subclass_of(&onto, &sub, &sup).context("is_subclass_of")?
+                let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
+                    .context("is_subclass_of_with_stats")?;
+                if stats.incomplete {
+                    exit_unknown_node_cap();
+                }
+                verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
         }
@@ -1845,7 +1887,12 @@ fn main() -> Result<()> {
                 is_instance_of_saturation_only(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_saturation_only")?
             } else {
-                is_instance_of(&onto, &class_iri, &individual_iri).context("is_instance_of")?
+                let (verdict, cut) = is_instance_of_reporting(&onto, &class_iri, &individual_iri)
+                    .context("is_instance_of_reporting")?;
+                if cut {
+                    exit_unknown_probe_cut();
+                }
+                verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
         }
@@ -1856,14 +1903,20 @@ fn main() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
-            let members = if saturation_only {
-                instances_of_saturation_only(&onto, &class_iri)
-                    .context("instances_of_saturation_only")?
+            let (members, cut) = if saturation_only {
+                (
+                    instances_of_saturation_only(&onto, &class_iri)
+                        .context("instances_of_saturation_only")?,
+                    false,
+                )
             } else {
-                instances_of(&onto, &class_iri).context("instances_of")?
+                instances_of_reporting(&onto, &class_iri).context("instances_of_reporting")?
             };
             for iri in members {
                 println!("{iri}");
+            }
+            if cut {
+                warn_probes_cut("instances");
             }
         }
         Command::SatExpr { file, ce, json } => {
@@ -1965,6 +2018,9 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             print_realization(&r);
+            if r.incomplete() {
+                warn_probes_cut("realize");
+            }
             warn_if_dropped(&dropped);
             if properties {
                 match owl_dl_reasoner::materialize_object_property_assertions(&onto) {
@@ -2007,6 +2063,10 @@ fn main() -> Result<()> {
             } else {
                 " (closure didn't witness it; tableau adjudicated)"
             };
+            if stats.incomplete {
+                println!("{sub} ⊑ {sup} : unknown — tableau gave up (node cap, RUSTDL_MAX_NODES)");
+                std::process::exit(3);
+            }
             println!(
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },

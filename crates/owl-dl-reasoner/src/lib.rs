@@ -7110,11 +7110,14 @@ pub struct QueryStats {
     /// the verdict).
     pub pure_el_mode: bool,
     /// `true` iff the verdict is a GIVE-UP reported in its sound direction
-    /// rather than a witnessed answer (#182): the consistency fall-through
-    /// tableau hit its `RUSTDL_CONSISTENCY_FALLBACK_MS` deadline, abandoned,
-    /// or tripped the node cap, and "consistent" was reported because no
-    /// clash was WITNESSED — not because a model was found at the usual
-    /// trust level. Callers presenting the verdict as such (the CLI, the
+    /// rather than a witnessed answer. For consistency (#182): the fall-through
+    /// tableau hit its `RUSTDL_CONSISTENCY_FALLBACK_MS` deadline, abandoned, or
+    /// tripped the node cap, or the #344 data-counting verification of a wedge
+    /// `Sat` gave up; "consistent" was reported because no clash was WITNESSED,
+    /// not because a model was found at the usual trust level. For
+    /// satisfiability and subsumption (#363 A2): the tableau probe tripped the
+    /// node cap (`RUSTDL_MAX_NODES`), so "satisfiable" / "not subsumed" is the
+    /// sound direction of no verdict. Callers presenting the verdict as such (the CLI, the
     /// Python surface) must surface this; the silent form is the bug class
     /// the soundness contract names ("a sound under-approximation the
     /// caller cannot see").
@@ -7189,6 +7192,11 @@ pub enum ReasonError {
 /// Returns `Ok(true)` if `class_iri` is satisfiable w.r.t. the
 /// ontology, `Ok(false)` if unsatisfiable, and a [`ReasonError`]
 /// otherwise.
+///
+/// A give-up (node cap, deadline, verification give-up) is returned in its
+/// sound direction and is indistinguishable here from a definite answer. Use
+/// the `_with_stats` form and check [`QueryStats::incomplete`] when that
+/// matters (#363 A2).
 ///
 /// # Errors
 ///
@@ -7299,13 +7307,13 @@ fn is_class_satisfiable_internal_full(
             },
         ));
     }
-    let sat = run_satisfiability(internal, move |pool| pool.atomic(class_id))?;
+    let (sat, cut) = run_satisfiability_reporting(internal, move |pool| pool.atomic(class_id))?;
     Ok((
         sat,
         QueryStats {
             answered_by_saturation: false,
             pure_el_mode: false,
-            incomplete: false,
+            incomplete: cut,
             wedge_clauses_refused: 0,
         },
     ))
@@ -7314,6 +7322,11 @@ fn is_class_satisfiable_internal_full(
 /// Decide whether `ontology` is consistent — i.e. whether it has any
 /// model at all. Reduces to satisfiability of `⊤` under the full
 /// `TBox` + `ABox`.
+///
+/// A give-up (node cap, deadline, verification give-up) is returned in its
+/// sound direction and is indistinguishable here from a definite answer. Use
+/// the `_with_stats` form and check [`QueryStats::incomplete`] when that
+/// matters (#363 A2).
 ///
 /// # Errors
 ///
@@ -7951,6 +7964,11 @@ mod abox_component_batch_tests {
 /// Returns `Ok(true)` if `sub ⊑ sup`, `Ok(false)` if there is a model
 /// in which some `sub`-instance is not a `sup`-instance.
 ///
+/// A give-up (node cap, deadline, verification give-up) is returned in its
+/// sound direction and is indistinguishable here from a definite answer. Use
+/// the `_with_stats` form and check [`QueryStats::incomplete`] when that
+/// matters (#363 A2).
+///
 /// # Errors
 ///
 /// See [`ReasonError`]. Either IRI not declared as a class surfaces as
@@ -8084,7 +8102,7 @@ fn is_subclass_of_internal_full(
     }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
-    let sat = run_satisfiability(internal, move |pool| {
+    let (sat, cut) = run_satisfiability_reporting(internal, move |pool| {
         let sub_concept = pool.atomic(sub_id);
         let super_concept = pool.atomic(super_id);
         let not_super = pool.not(super_concept);
@@ -8095,7 +8113,7 @@ fn is_subclass_of_internal_full(
         QueryStats {
             answered_by_saturation: false,
             pure_el_mode: false,
-            incomplete: false,
+            incomplete: cut,
             wedge_clauses_refused: 0,
         },
     ))
@@ -8111,21 +8129,31 @@ fn is_subclass_of_internal_full(
 /// question. For repeated queries against the same ontology — the
 /// pairwise loop in `classify`, or the per-class probes in
 /// `realize` — prefer [`PreparedOntology::from_internal`] +
-/// [`PreparedOntology::decide`], which shares the expensive
+/// [`PreparedOntology::decide_raw`], which shares the expensive
 /// prepare work across calls.
 ///
 /// The closure is invoked *after* the pool has been cloned for the
 /// tableau run, so the concept it returns is guaranteed to live in
 /// the pool the tableau will use.
-pub(crate) fn run_satisfiability<F>(
+///
+/// Returns `(sat, cut)`. On a deadline-free run the only give-up is a
+/// live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4); early abandon is armed only
+/// under a deadline. A cut keeps the sound direction (`sat = true`, so "not
+/// subsumed" / "not an instance") and sets `cut`, which callers report as
+/// [`QueryStats::incomplete`] (#363 A2). There is deliberately no variant that
+/// folds the cut away.
+pub(crate) fn run_satisfiability_reporting<F>(
     internal: InternalOntology,
     build_test_concept: F,
-) -> Result<bool, ReasonError>
+) -> Result<(bool, bool), ReasonError>
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
     let prepared = PreparedOntology::from_internal(internal)?;
-    prepared.decide(build_test_concept)
+    Ok(match prepared.decide_raw(build_test_concept)? {
+        Some(sat) => (sat, false),
+        None => (true, true),
+    })
 }
 
 /// Owned backing store for [`abox_check::AboxCheckInputs`], for callers that need
@@ -9535,49 +9563,16 @@ impl PreparedOntology {
             .map_or(LabelOracle::NoVerdict, |hc| hc.classify_labels(c, deadline))
     }
 
-    /// Decide whether the test concept built by `build_test_concept`
-    /// is satisfiable in this prepared ontology. The closure is
-    /// invoked on a freshly-cloned pool so the prepared pool stays
-    /// intact for the next call.
-    pub(crate) fn decide<F>(&self, build_test_concept: F) -> Result<bool, ReasonError>
-    where
-        F: FnOnce(&mut ConceptPool) -> ConceptId,
-    {
-        decide(
-            &self.pool,
-            &self.tbox,
-            &self.hierarchy,
-            &self.inverse_pairs,
-            &self.chain_axioms,
-            &self.asymmetric_roles,
-            &self.disjoint_role_pairs,
-            &self.complements,
-            &self.query_abox(),
-            &[],
-            &[],
-            &self.dkey_ranges,
-            &self.tableau_id,
-            None,
-            build_test_concept,
-        )
-        // `None` was previously impossible with no deadline set (search always
-        // returned `Some(_)`), but a live-node cap trip (#35 v4 safety net) can
-        // now legitimately yield `None` even here. Treat it the same as the
-        // deadline-bounded callers already do: "no verdict" ⇒ satisfiable ⇒
-        // not-an-instance/not-subsumed — a sound under-approximation, never a
-        // panic.
-        .map(|opt| opt.unwrap_or(true))
-    }
-
-    /// Like [`Self::decide`], but does NOT fold an inconclusive `None` (a
-    /// live-node-cap trip, #35 v4 safety net) into `Some(true)`. Callers that
-    /// need to distinguish "genuinely satisfiable" from "no verdict reached"
-    /// on the deadline-FREE path — e.g. [`Self::pair_disjoint_with_deadline`]
-    /// / [`Self::pair_individuals_disjoint_with_deadline`]'s `None`-deadline
-    /// branch, whose own callers set `incomplete` on an observed `None` —
-    /// MUST use this instead of [`Self::decide`], whose `unwrap_or(true)`
-    /// would otherwise silently swallow the `NodeCap` `None` and report a
-    /// probe-capped result as complete.
+    /// Decide whether the test concept built by `build_test_concept` is
+    /// satisfiable in this prepared ontology, on the deadline-FREE path.
+    /// The closure is invoked on a freshly-cloned pool so the prepared pool
+    /// stays intact for the next call.
+    ///
+    /// `None` is a live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4 safety net):
+    /// no verdict. Callers answer it in its sound direction AND report it as
+    /// incomplete. A former `decide` folded it into `Some(true)` with
+    /// `unwrap_or(true)`, which silently reported a capped probe as complete;
+    /// it was removed in #363 A2 once no caller needed it.
     pub(crate) fn decide_raw<F>(&self, build_test_concept: F) -> Result<Option<bool>, ReasonError>
     where
         F: FnOnce(&mut ConceptPool) -> ConceptId,
@@ -9647,7 +9642,7 @@ impl PreparedOntology {
         self.abox_with_tbox_individuals(query_tbox_individuals_enabled())
     }
 
-    /// Lever A: like [`Self::decide`], but for the **classification pairwise
+    /// Lever A: like [`Self::decide_raw`], but for the **classification pairwise
     /// subsumption loop only** — skips the `ABox` seed when it is provably
     /// irrelevant to class subsumption (`abox_irrelevant_to_classify`: has
     /// `ABox`, no nominals, gate on). MUST NOT be used for realize / consistency
@@ -9702,7 +9697,7 @@ impl PreparedOntology {
         )
     }
 
-    /// Like [`Self::decide`] but the search is bounded by `deadline`.
+    /// Like [`Self::decide_raw`] but the search is bounded by `deadline`.
     /// Returns `Ok(Some(sat))` if the tableau reached a verdict in
     /// time, or `Ok(None)` if the deadline elapsed first.
     pub(crate) fn decide_with_deadline<F>(
@@ -9749,7 +9744,7 @@ impl PreparedOntology {
         };
         let sat = match deadline {
             Some(deadline) => self.decide_with_deadline(deadline, build_test_concept)?,
-            // Use the raw Option-returning decide, NOT `Self::decide` — its
+            // Use the raw Option-returning decide, NOT the former `decide` — its
             // `unwrap_or(true)` would fold an inconclusive NodeCap `None`
             // into `Some(true)` (satisfiable ⇒ "not disjoint"), silently
             // discarding the inconclusive verdict instead of letting it
@@ -9780,8 +9775,8 @@ impl PreparedOntology {
             Some(deadline) => self.decide_with_deadline(deadline, build_test_concept)?,
             // See the matching comment in `pair_disjoint_with_deadline`: use
             // the raw Option-returning decide so a NodeCap `None` propagates
-            // instead of being folded into `Some(true)` by `Self::decide`'s
-            // `unwrap_or(true)`.
+            // instead of being folded into `Some(true)` (as the former `decide`'s
+            // `unwrap_or(true)` did).
             None => self.decide_raw(build_test_concept)?,
         };
         Ok(sat.map(|s| !s)) // {a}⊓{b} unsat ⇒ a≠b

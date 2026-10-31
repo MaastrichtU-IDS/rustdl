@@ -7,6 +7,18 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **`structural_gaps` on the structural property surfaces (#389, #390).** `property-hierarchy`,
+  the property half of `disjoint` and the data half of `property-values` read told axioms and
+  never probe the reasoner, yet reported `incomplete: false`. They now list, in a separate
+  `structural_gaps` field, the constructs present in the ontology that they ignore and that can
+  entail a relation they would report: for example a counting bound over a sub-property, a
+  nominal-bounded range, a reflexive chain, class-level disjointness over constrained
+  properties, a property provably empty, or an individual equality the KB forces. An empty
+  list means none of these routes occurs, not that the answer is complete. `incomplete` keeps
+  its meaning (a deadline cut a probe). Rust: `property_structural_gaps(&onto)`. Text mode
+  prints one stderr warning. Python: `StructuralGapWarning`, a sibling of
+  `IncompleteQueryWarning` (no budget was cut), from the five query functions and the three
+  matching `materialize_inferred_*` ones.
 - **Python `Classification.completeness_guaranteed` (#363).** The same value as the Rust
   `Classification::completeness_guaranteed()` and the `classify --json` field. Python had only
   `complete`, which says no pair timed out and nothing more: an ontology outside pure EL, or one
@@ -22,6 +34,22 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The structural property surfaces derive what their own axioms entail (#389, #390).** Each
+  fix has its own flag, default ON (`=0` reverts):
+  - `SymmetricObjectProperty(p)` makes `p ≡ p⁻`, so with `InverseObjectProperties(p q)` it
+    gives `p ≡ q` (`RUSTDL_PROPERTY_SYMMETRIC`);
+  - told property disjointness reaches sub-properties and inverses, and `ObjectInverseOf`
+    members are no longer skipped (`RUSTDL_PROPERTY_DISJOINT_DOWN`);
+  - `AsymmetricObjectProperty(p)` makes `p` disjoint from `p⁻`
+    (`RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT`);
+  - `owl:topObjectProperty` / `owl:bottomObjectProperty` (and the data pair) are seeded, so
+    `top ⊑ p` puts every property below `p` and `p ⊑ bottom` puts `p` below every property
+    (`RUSTDL_PROPERTY_TOP_BOTTOM`);
+  - a one-leg `ObjectPropertyChain([p]) ⊑ s` is `p ⊑ s` (`RUSTDL_PROPERTY_UNIT_CHAIN`);
+  - an anonymous individual takes part in the `SameIndividual` folding of data values
+    (`RUSTDL_DATA_VALUES_ANONYMOUS`).
+
+  HermiT agrees on every case it can decide.
 - **`classify` no longer ignores nominal identity (#383), `RUSTDL_CLASSIFY_WEDGE_NOMINALS`,
   default ON (`=0` reverts).** The classify wedge was built without nominals, so two nodes that both
   carry `{a}` never merged. `classify` trusts that wedge's `Sat` in its unsat probe and in the

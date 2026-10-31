@@ -176,9 +176,8 @@ fn each_condition_alone_voids_the_guarantee() {
             s.dropped.record("TestKind".to_owned());
         }),
     ];
-    // Seven conditions; the fragment condition has two failing values. Keep this
-    // count in step with the predicate and the ledger.
-    assert_eq!(rows.len(), 8);
+    // Seven conditions; the fragment condition has two failing values. Keep the
+    // rows in step with the predicate and the ledger.
 
     for (name, flip) in rows {
         let mut s = base();

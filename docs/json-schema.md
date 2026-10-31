@@ -46,8 +46,11 @@ no such flag: the Python API parses before any budget applies.
 
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where
-the engine that answered is provably complete, only when no pair timed out, and
-only when neither `wedge_hierarchy_blind` nor `consistency_undetermined` is set.
+the engine that answered is provably complete (pure EL), and only when no pair
+timed out, `wedge_hierarchy_blind` and `consistency_undetermined` are false,
+`wedge_clauses_refused` and `derived_same_undecided` are 0, and `dropped` is
+empty. `docs/assurance/completeness-guarantee-ledger.md` lists each condition
+with its source issue and test.
 
 `wedge_hierarchy_blind` = the wedge decided pairs without its role-hierarchy
 matching (Layer A off: `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`, or the role closure

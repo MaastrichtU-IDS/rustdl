@@ -30,8 +30,10 @@ class Classification:
         ...
     @property
     def complete(self) -> bool:
-        """True iff no pair timed out. See also `wedge_hierarchy_blind`: a
-        result can be `complete` (no timeout) and still miss entailments."""
+        """True iff no pair timed out. `True` does NOT mean no entailment is
+        missing: that is the stronger `completeness_guaranteed`. See also
+        `wedge_hierarchy_blind`: a result can be `complete` (no timeout) and
+        still miss entailments."""
         ...
     @property
     def completeness_guaranteed(self) -> bool:

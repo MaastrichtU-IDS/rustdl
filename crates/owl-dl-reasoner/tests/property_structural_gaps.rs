@@ -251,10 +251,21 @@ fn disjointness_with_an_inverse_member() {
 #[test]
 fn asymmetric() {
     let _l = lock();
-    assert!(has(
+    // Covered by F3 (needs F2): listed with either flag off.
+    assert!(!has(
         gaps("AsymmetricObjectProperty(:p)").object_disjoint(),
         "object-asymmetric"
     ));
+    for flag in [
+        "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
+        "RUSTDL_PROPERTY_DISJOINT_DOWN",
+    ] {
+        let _off = SetEnv::new(flag, "0");
+        assert!(has(
+            gaps("AsymmetricObjectProperty(:p)").object_disjoint(),
+            "object-asymmetric"
+        ));
+    }
     assert!(!has(
         gaps("IrreflexiveObjectProperty(:p)").object_disjoint(),
         "object-asymmetric"

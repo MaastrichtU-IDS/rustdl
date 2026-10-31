@@ -34,6 +34,16 @@ pub fn property_disjoint_down_enabled() -> bool {
     std::env::var_os("RUSTDL_PROPERTY_DISJOINT_DOWN").is_none_or(|v| v != "0")
 }
 
+/// `AsymmetricObjectProperty(p)` is read as `Disjoint(p, p⁻)` by the property
+/// disjointness surface (#389, F3), which is exactly its meaning (`p(x,y)` and
+/// `p(y,x)` never both hold). It then passes down the hierarchy like any told
+/// disjointness, so it needs `RUSTDL_PROPERTY_DISJOINT_DOWN` and is inert without
+/// it. Default **ON**; `RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT=0` reverts.
+#[must_use]
+pub fn property_asymmetric_disjoint_enabled() -> bool {
+    std::env::var_os("RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT").is_none_or(|v| v != "0")
+}
+
 /// `(property IRI, is_inverse)`.
 pub(crate) type Signed = (String, bool);
 

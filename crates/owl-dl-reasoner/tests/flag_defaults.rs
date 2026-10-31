@@ -245,6 +245,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
+            owl_dl_reasoner::property_asymmetric_disjoint_enabled,
+            true,
+        ),
+        (
             "RUSTDL_PROPERTY_DISJOINT_DOWN",
             owl_dl_reasoner::property_disjoint_down_enabled,
             true,

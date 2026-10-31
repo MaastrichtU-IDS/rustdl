@@ -182,3 +182,45 @@ fn disjoint_down_flag_off_restores_the_old_answer() {
     let d = dj_obj("DisjointObjectProperties(ObjectInverseOf(:q) ObjectInverseOf(:r))");
     assert!(d.is_empty(), "{d:?}");
 }
+
+// ── F3: AsymmetricObjectProperty ────────────────────────────────────────────
+
+/// HermiT (`KB ∪ {x(a,b), y(a,b)}` inconsistent): `Asymmetric(p)` with `p⁻ ≡ q`
+/// ⊨ `Disjoint(p, q)`, and with `s ⊑ p` also `Disjoint(s, q)`.
+#[test]
+fn asymmetric_is_disjoint_from_its_inverse() {
+    let _l = lock();
+    let body = "AsymmetricObjectProperty(:p)\nInverseObjectProperties(:p :q)";
+    assert_eq!(dj_obj(body), vec![pair("p", "q")]);
+    let d = dj_obj(&format!("{body}\nSubObjectPropertyOf(:s :p)"));
+    assert!(
+        d.contains(&pair("p", "q")) && d.contains(&pair("q", "s")),
+        "{d:?}"
+    );
+    let d = dj_obj("AsymmetricObjectProperty(ObjectInverseOf(:p))\nInverseObjectProperties(:p :q)");
+    assert_eq!(d, vec![pair("p", "q")]);
+}
+
+/// FP guards: an asymmetric `p` is not disjoint from a mere sub-property, nor from
+/// an unrelated property (HermiT: both `KB ∪ {x(a,b), y(a,b)}` consistent).
+#[test]
+fn asymmetric_adds_nothing_else() {
+    let _l = lock();
+    let d = dj_obj(
+        "AsymmetricObjectProperty(:p)\nSubObjectPropertyOf(:s :p)\nSubObjectPropertyOf(:r :s)",
+    );
+    assert!(d.is_empty(), "{d:?}");
+}
+
+#[test]
+fn asymmetric_flag_off_restores_the_old_answer() {
+    let _l = lock();
+    let body = "AsymmetricObjectProperty(:p)\nInverseObjectProperties(:p :q)";
+    for flag in [
+        "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
+        "RUSTDL_PROPERTY_DISJOINT_DOWN",
+    ] {
+        let _off = SetEnv::new(flag, "0");
+        assert!(dj_obj(body).is_empty(), "{flag}=0");
+    }
+}

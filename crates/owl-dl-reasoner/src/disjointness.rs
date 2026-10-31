@@ -147,11 +147,17 @@ pub fn disjoint_object_properties<A: ForIRI>(
         return Err(ReasonError::Inconsistent);
     }
     if crate::property_disjoint_down_enabled() {
+        let asymmetric = crate::property_asymmetric_disjoint_enabled();
         let sets: Vec<Vec<crate::property_closure::Signed>> = onto
             .iter()
             .filter_map(|ac| match &ac.component {
                 C::DisjointObjectProperties(ax) => {
                     Some(ax.0.iter().map(crate::property_closure::signed).collect())
+                }
+                // `Asymmetric(p)` is `Disjoint(p, p⁻)` (F3).
+                C::AsymmetricObjectProperty(ax) if asymmetric => {
+                    let p = crate::property_closure::signed(&ax.0).0;
+                    Some(vec![(p.clone(), false), (p, true)])
                 }
                 _ => None,
             })

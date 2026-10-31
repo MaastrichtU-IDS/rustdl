@@ -561,7 +561,7 @@ pub fn property_structural_gaps<A: ForIRI>(
     if !down && obj_disjoint_sets.iter().flatten().any(|m| m.1) {
         od.insert("object-disjoint-inverse-member");
     }
-    if !asymmetric.is_empty() {
+    if !asymmetric.is_empty() && !(down && crate::property_asymmetric_disjoint_enabled()) {
         od.insert("object-asymmetric");
     }
     let obj_constrained = f

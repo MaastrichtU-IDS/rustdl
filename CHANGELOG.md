@@ -26,7 +26,9 @@ All notable changes to rustdl are documented here. Format is based on
     conversion declines to emit that bound for it;
   - `classify` on the TBox form (`Q ⊑ ≥2 r.A` and the rest, without `Q(d)`): `Q` is
     unsatisfiable and `sat` says so, but the classify wedge is not built with nominals, so the
-    guard does not apply there. The miss predates this change.
+    guard does not apply there. The miss predates this change;
+  - with `RUSTDL_RESEED_VERIFY=0` the fix is lost: the #137 re-seed net is what re-checks a
+    block made before its blocker became counted, and re-fires the skips.
 
   Sweeps over ORE against main, with every flagged row rechecked serially by CPU time at 5 runs
   per arm: classify, `consistent` and realize give no answer differences, and every flip is at

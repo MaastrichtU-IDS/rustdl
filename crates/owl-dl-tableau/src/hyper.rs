@@ -965,6 +965,9 @@ pub struct HyperEngine<'c> {
     /// else re-fires the skip; the leaf net re-fires these until stable. Stale
     /// entries after a branch restore are filtered on use.
     blocked_gen: Vec<HNode>,
+    /// Membership marks for `blocked_gen`, by node index, so noting a skip is
+    /// O(1). Cleared with the entries they mark.
+    blocked_gen_mark: Vec<bool>,
     /// #361: per nominal in the `HF4a` range, whether a refused blocker must carry
     /// it (see `node_has_visible_nominal`). Computed at the first blocking check,
     /// after any per-query clauses are appended.
@@ -1902,6 +1905,7 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             blocked_gen: Vec::new(),
+            blocked_gen_mark: Vec::new(),
             visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
@@ -1988,6 +1992,7 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             blocked_gen: Vec::new(),
+            blocked_gen_mark: Vec::new(),
             visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),
@@ -3012,9 +3017,14 @@ impl<'c> HyperEngine<'c> {
                 let m_labels = &self.nodes[i].labels;
                 if subset_sorted(ln_labels, m_labels)
                     && !(guard && self.node_has_visible_nominal(m))
-                    && !(self.nn_guard
-                        && self.nn_counted(m, NN_CASCADE_DEPTH, &mut SmallVec::new()))
                 {
+                    if self.nn_guard {
+                        self.stats.nn_guard_checks += 1;
+                        if self.nn_counted(m, NN_CASCADE_DEPTH, &mut SmallVec::new()) {
+                            self.stats.nn_guard_refusals += 1;
+                            continue;
+                        }
+                    }
                     self.stats.blocks_fired += 1;
                     return true;
                 }
@@ -3170,6 +3180,9 @@ impl<'c> HyperEngine<'c> {
         while self.nn_guard && !matches!(r, HyperResult::Unsat) && !self.blocked_gen.is_empty() {
             let mark = self.graph_fingerprint();
             for n in std::mem::take(&mut self.blocked_gen) {
+                if let Some(b) = self.blocked_gen_mark.get_mut(n.index()) {
+                    *b = false;
+                }
                 if n.index() >= self.nodes.len() || self.resolve(n) != n {
                     continue;
                 }
@@ -3193,7 +3206,15 @@ impl<'c> HyperEngine<'c> {
 
     /// #376: record that `n`'s generation was skipped because it was blocked.
     fn note_blocked_gen(&mut self, n: HNode) {
-        if self.nn_guard && !self.blocked_gen.contains(&n) {
+        if !self.nn_guard {
+            return;
+        }
+        let i = n.index();
+        if self.blocked_gen_mark.len() <= i {
+            self.blocked_gen_mark.resize(i + 1, false);
+        }
+        if !self.blocked_gen_mark[i] {
+            self.blocked_gen_mark[i] = true;
             self.blocked_gen.push(n);
         }
     }
@@ -3658,6 +3679,9 @@ impl<'c> HyperEngine<'c> {
         self.fixpoint_last_check = None;
         self.reseed_deferred = false;
         self.leaf_net_fresh = false;
+        // #376: skips recorded by an earlier decide on this engine belong to it.
+        self.blocked_gen.clear();
+        self.blocked_gen_mark.clear();
         self.at_most_exhaust_probe = std::env::var_os("RUSTDL_AT_MOST_EXHAUST_PROBE")
             .is_some_and(|v| v != "0" && !v.is_empty());
         // Incremental mode: the root query graph is built by direct field
@@ -4052,6 +4076,7 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             blocked_gen: Vec::new(),
+            blocked_gen_mark: Vec::new(),
             visible_nominals: None,
             incremental_fixpoint: false,
             reseed_verify: crate::reseed_verify_enabled(),

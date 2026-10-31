@@ -280,6 +280,25 @@ fn issue_376_flag_off_restores_the_old_answer() {
     ));
 }
 
+/// KNOWN LIMITATION: the #376 fix needs the #137 re-seed net. With
+/// `RUSTDL_RESEED_VERIFY=0` a block that fired before its blocker became counted
+/// is never revisited (the net is what re-checks blocks and re-fires the skips),
+/// so the ABox forms read consistent again. FLIP if an unblock trigger lands.
+#[test]
+fn known_reseed_net_off_loses_the_fix() {
+    let _l = lock();
+    let _off = SetEnvGuard::set("RUSTDL_RESEED_VERIFY", "0");
+    assert!(
+        consistent(
+            "SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+             FunctionalObjectProperty(:s)\n\
+             SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+             ClassAssertion(:Q :d)"
+        ),
+        "FLIP: the #376 ABox form is inconsistent without the re-seed net now"
+    );
+}
+
 /// KNOWN LIMITATION: the TBox form of #362's shape. `Q` is unsatisfiable (two
 /// distinct `A`s are each an `s`-successor of `a`, and `s` is functional), and
 /// HermiT and `rustdl sat` (the main tableau) agree. `classify` misses it with or

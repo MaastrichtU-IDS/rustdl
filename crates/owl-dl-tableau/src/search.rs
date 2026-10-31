@@ -2372,22 +2372,45 @@ mod counting_tests {
 
     #[test]
     fn max_first_keeps_the_verdict_when_the_met_disjunct_fails() {
-        // `≤0 R.C` is met at first, tried first, and refuted once `∃R.C`
-        // generates; `A` then models it.
+        // `A ⊔ ≤0 R.C`, then a second `⊔` both of whose options generate an
+        // `R.C` successor. When the first `⊔` opens, nothing has generated yet,
+        // so `≤0 R.C` is met: with the flag on it is tried first, refuted by
+        // the second `⊔`, and the search backtracks to `A`. One more decision
+        // than with the flag off, and the same verdict.
         let mut pool = ConceptPool::new();
         let tb = top_bot(&mut pool);
         let a = pool.atomic(ClassId::new(1));
         let c = pool.atomic(ClassId::new(2));
+        let b1 = pool.atomic(ClassId::new(3));
+        let b2 = pool.atomic(ClassId::new(4));
         let at_most_zero = pool.max(0, Role::Named(R), c);
-        let or = pool.or([a, at_most_zero]);
+        // Interned first, so decided first.
+        let first = pool.or([a, at_most_zero]);
         let some_c = pool.some(Role::Named(R), c);
+        let opt1 = pool.and([some_c, b1]);
+        let opt2 = pool.and([some_c, b2]);
+        let second = pool.or([opt1, opt2]);
+        let mut logs = Vec::new();
         for on in [false, true] {
-            let (v, _, _) = run(&pool, tb, on, false, |ctx| {
+            let (v, log, _) = run(&pool, tb, on, false, |ctx| {
                 let n = ctx.new_node();
-                ctx.add_label(n, or);
-                ctx.add_label(n, some_c);
+                ctx.add_label(n, first);
+                ctx.add_label(n, second);
             });
             assert!(matches!(v, SearchVerdict::Sat), "max_first {on}: {v:?}");
+            logs.push(log);
         }
+        assert_eq!(
+            logs[0].len(),
+            2,
+            "flag off: A, then the second ⊔: {:?}",
+            logs[0]
+        );
+        assert_eq!(
+            logs[1].len(),
+            3,
+            "flag on: ≤0, the refuted second ⊔, then A's second ⊔: {:?}",
+            logs[1]
+        );
     }
 }

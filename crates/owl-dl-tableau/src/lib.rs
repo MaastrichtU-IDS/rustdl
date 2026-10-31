@@ -1595,9 +1595,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `v` (`v` an `R`-neighbour of `w` without `¬C`), whether `w` has more than `n`
     /// such neighbours. `None` when the guard is off or nothing counts `v`.
     ///
-    /// For `C = ⊤` this already counts every `R`-neighbour, since `¬⊤` is `⊥`.
-    /// That agrees with [`top_filler_enabled`] (#382), under which the choose
-    /// rule no longer fires on a `⊤` body.
+    /// For `C = ⊤` with `¬⊤ = ⊥` registered (every `≤n R.⊤` the reasoner
+    /// prepares), this already counts every `R`-neighbour, which agrees with
+    /// [`top_filler_enabled`] (#382). A `≤n R.⊤` first interned by a query has no
+    /// registered complement and is skipped here while #382 counts it: that can
+    /// only keep a node unblocked longer, never add a clash.
     fn nominal_max_overfull(&self, v: NodeId) -> Option<bool> {
         if !self.nominal_block_guard {
             return None;

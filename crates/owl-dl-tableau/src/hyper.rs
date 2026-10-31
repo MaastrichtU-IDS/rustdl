@@ -8098,6 +8098,25 @@ mod tests {
         assert!(eng.nn_counted_possible());
     }
 
+    /// The third site that can turn `nn_possible` true: a merge hands a `≤` to a
+    /// survivor that already carries a nominal. The merged-away node has no labels,
+    /// so nothing reaches `add_label`, and only the merge's own hook can set it.
+    #[test]
+    fn nn_possible_cache_tracks_a_merge_inherited_at_most() {
+        let a = cls(10);
+        let r = Role::Named(RoleId::new(0));
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        let (s_i, s_j) = (eng.new_node(), eng.new_node());
+        eng.add_label(s_i, a, DepSet::EMPTY);
+        eng.nodes[s_j.index()].at_most.push((r, None, 1));
+        assert!(
+            !eng.nn_possible_now(),
+            "the nominal and the `≤` sit on different nodes"
+        );
+        assert!(!eng.merge(s_i, s_j), "no clash");
+        assert!(eng.nn_counted_possible(), "the survivor now has both");
+    }
+
     /// `RUSTDL_OPEN_SCAN_DEADLINE`: with the deadline passed, both open-rule
     /// scans stop and report nothing open, and they record the truncation in
     /// `match_deadline_hit`, which is what makes `solve_inner` conclude

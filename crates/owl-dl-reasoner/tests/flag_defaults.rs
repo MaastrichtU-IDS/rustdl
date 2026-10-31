@@ -245,6 +245,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_PROPERTY_SYMMETRIC",
+            owl_dl_reasoner::property_symmetric_enabled,
+            true,
+        ),
+        (
             "RUSTDL_CLASSIFY_WEDGE_NOMINALS",
             owl_dl_reasoner::classify_wedge_nominals_enabled,
             true,

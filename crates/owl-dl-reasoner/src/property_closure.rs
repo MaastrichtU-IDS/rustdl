@@ -12,6 +12,17 @@ pub(crate) const OBJ_BOT: &str = "http://www.w3.org/2002/07/owl#bottomObjectProp
 pub(crate) const DATA_TOP: &str = "http://www.w3.org/2002/07/owl#topDataProperty";
 pub(crate) const DATA_BOT: &str = "http://www.w3.org/2002/07/owl#bottomDataProperty";
 
+/// `SymmetricObjectProperty(p)` makes `p ≡ p⁻` in the object closure (#389, F1). It
+/// is the axiom's own meaning (`p(x,y) → p(y,x)` is `p ⊑ p⁻`, and so `p ≡ p⁻`), so it
+/// can only add a relation that holds; with `InverseObjectProperties(p, q)` it gives
+/// `p ≡ q`. A symmetric `p⁻` is the same as a symmetric `p`. Built from the horned-owl
+/// axiom alone, not from the core's `collect_inverse_pairs` / `mark_symmetric` path.
+/// Default **ON**; `RUSTDL_PROPERTY_SYMMETRIC=0` reverts.
+#[must_use]
+pub fn property_symmetric_enabled() -> bool {
+    std::env::var_os("RUSTDL_PROPERTY_SYMMETRIC").is_none_or(|v| v != "0")
+}
+
 /// `(property IRI, is_inverse)`.
 pub(crate) type Signed = (String, bool);
 
@@ -26,6 +37,7 @@ pub(crate) fn signed<A: ForIRI>(ope: &OPE<A>) -> Signed {
 /// sub-property, equivalence, declared inverses), closed under inversion and
 /// transitivity. `(a, b)` means `a ⊑ b`.
 pub(crate) fn object_edges<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<(Signed, Signed)> {
+    let symmetric = property_symmetric_enabled();
     let mut edges: BTreeSet<(Signed, Signed)> = BTreeSet::new();
     for ac in onto {
         match &ac.component {
@@ -53,6 +65,11 @@ pub(crate) fn object_edges<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<(Signed
                 edges.insert(((q.clone(), true), (p.clone(), false)));
                 edges.insert(((q.clone(), false), (p.clone(), true)));
                 edges.insert(((p.clone(), true), (q.clone(), false)));
+            }
+            C::SymmetricObjectProperty(ax) if symmetric => {
+                let p = signed(&ax.0).0;
+                edges.insert(((p.clone(), false), (p.clone(), true)));
+                edges.insert(((p.clone(), true), (p, false)));
             }
             _ => {}
         }

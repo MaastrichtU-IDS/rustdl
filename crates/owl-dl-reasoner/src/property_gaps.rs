@@ -503,7 +503,7 @@ pub fn property_structural_gaps<A: ForIRI>(
 
     // ── object hierarchy ─────────────────────────────────────────────────────
     let mut oh: BTreeSet<&str> = BTreeSet::new();
-    if !symmetric.is_empty() {
+    if !symmetric.is_empty() && !crate::property_symmetric_enabled() {
         oh.insert("object-symmetric");
     }
     if obj_top_bottom {

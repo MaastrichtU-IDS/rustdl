@@ -222,3 +222,60 @@ def test_prep_timed_out_is_its_own_signal(tmp_path, monkeypatch):
     assert r.prep_timed_out is False
     assert r.conversion_timed_out is False
     assert r.is_subclass("http://ex#A0", "http://ex#C0")
+
+
+# The completeness guarantee (docs/assurance/completeness-guarantee-ledger.md).
+# Inline ontologies, unbounded budgets so a loaded host cannot flip them.
+_EL = b"""Prefix(:=<http://e#>)
+Ontology(
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+SubClassOf(:A :B) SubClassOf(:B :C)
+)"""
+
+_OUT_OF_FRAGMENT = b"""Prefix(:=<http://e#>)
+Ontology(
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:D))
+EquivalentClasses(:D ObjectIntersectionOf(:A ObjectComplementOf(:B)))
+SubClassOf(:A :B)
+)"""
+
+# Pure EL once the unsupported DataAllValuesFrom(xsd:hexBinary) is dropped; the
+# input entails A ⊑ E, which classify misses (#246).
+_DROPPED = b"""Prefix(:=<http://e#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(
+Declaration(DataProperty(:dp)) Declaration(ObjectProperty(:r))
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:E))
+SubClassOf(:A ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B DataAllValuesFrom(:dp xsd:hexBinary))))
+SubClassOf(ObjectSomeValuesFrom(:r :B) :E)
+)"""
+
+
+def _classify_unbounded(data):
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return rustdl.classify_bytes(
+            data, format="ofn", per_pair_timeout_ms=0, global_timeout_ms=0
+        )
+
+
+def test_completeness_guaranteed_on_pure_el():
+    r = _classify_unbounded(_EL)
+    assert r.complete is True
+    assert r.completeness_guaranteed is True
+
+
+def test_complete_is_weaker_than_completeness_guaranteed():
+    # Nothing timed out, so `complete` is True, but the ontology is out of the
+    # fragment where completeness is provable.
+    r = _classify_unbounded(_OUT_OF_FRAGMENT)
+    assert r.complete is True
+    assert r.completeness_guaranteed is False
+
+
+def test_dropped_axiom_voids_the_guarantee():
+    r = _classify_unbounded(_DROPPED)
+    assert r.complete is True
+    assert not r.is_subclass("http://e#A", "http://e#E")
+    assert r.completeness_guaranteed is False

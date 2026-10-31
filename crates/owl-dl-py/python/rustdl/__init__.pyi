@@ -34,6 +34,14 @@ class Classification:
         result can be `complete` (no timeout) and still miss entailments."""
         ...
     @property
+    def completeness_guaranteed(self) -> bool:
+        """True iff the hierarchy is guaranteed complete (no missed
+        subsumptions): pure EL, no timeout, no `wedge_hierarchy_blind`, no
+        `wedge_clauses_refused`, no `derived_same_undecided`, no
+        `consistency_undetermined` and no dropped axiom. Stronger than
+        `complete`, which only says no pair timed out."""
+        ...
+    @property
     def prep_timed_out(self) -> bool:
         """True iff the global deadline ran out during preparation, so only a
         partial saturation closure is reported and consistency was not fully

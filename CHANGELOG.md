@@ -7,6 +7,31 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Fixed
+- **The wedge no longer blocks against a node that a nominal's `≤` counts (#376),
+  `RUSTDL_WEDGE_NN_GUARD`, default ON (`=0` reverts).** `consistent` called `Q ⊑ ≥2 r.A`,
+  `A ⊑ ∃s⁻.{a}`, `s` functional, `Q(d)` consistent, and also #361's `p0289` reduction
+  (`{a} ⊑ ≥3 r.A`). The wedge blocked the second witness by the first, which carries no nominal
+  but sits next to `a`. A copy of it would give `a` a second `s`-neighbour, so the clash with
+  `≤1 s` never formed. This is the wedge's half of #362. Changes:
+  - a candidate blocker that a non-over-full `≤k r.q` at a nominal neighbour counts is refused.
+    The check runs only on a block that would otherwise fire. An edge by which the neighbour
+    generated the candidate is not counted, since a copy does not duplicate it;
+  - the check cascades through a node the guard itself refuses, up to depth 4, so a nominal two
+    edges away is seen;
+  - a node whose `∃`/`≥` was skipped because it was blocked is re-fired at the leaf until the
+    graph stops changing. Nothing re-fired those skips once the node was unblocked.
+
+  Known misses, each pinned by a test to FLIP:
+  - the two-edge shape with `InverseFunctional(t)` instead of an explicit `≤1 t⁻`, because
+    conversion declines to emit that bound for it;
+  - `classify` on the TBox form (`Q ⊑ ≥2 r.A` and the rest, without `Q(d)`): `Q` is
+    unsatisfiable and `sat` says so, but the classify wedge is not built with nominals, so the
+    guard does not apply there. The miss predates this change.
+
+  Sweeps over ORE against main, with every flagged row rechecked serially by CPU time at 5 runs
+  per arm: classify, `consistent` and realize give no answer differences, and every flip is at
+  the 60 s cap. The missed-entailment net reads +9 under load, but the rows behind it give
+  identical answers serially and at `--pair-timeout-ms 1000`; FP 0.
 - **`sat` no longer misses `Q ⊑ ⊥` when the witnesses that should clash meet at a nominal (#362),
   `RUSTDL_NOMINAL_BLOCK_GUARD`, default ON (`=0` reverts), main tableau.** With
   `Q ⊑ ≥2 r.A`, `A ⊑ ∃s⁻.{a}` and `s` functional, `sat Q` said satisfiable. Anywhere blocking
@@ -23,9 +48,8 @@ All notable changes to rustdl are documented here. Format is based on
 
   This is a guard plus prune, not the NN-rule. Known misses, each pinned by a test to FLIP:
   - a nominal two edges below the blocker;
-  - the wedge's half (#376): a wedge blocker merely next to an individual. Default `consistent`
-    trusts the wedge, so the ABox forms of this shape still read consistent there. The main
-    tableau now gets them right.
+  - the wedge's half (#376): a wedge blocker merely next to an individual. Fixed by
+    `RUSTDL_WEDGE_NN_GUARD`, below.
 
   Sweeps over ORE against main, with flagged rows rechecked serially at 5 runs per arm:
   - classify, `consistent` and realize: no lost answers; the classify DIFFERs reproduce

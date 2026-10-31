@@ -10895,6 +10895,52 @@ mod tests {
         owl_dl_core::convert::convert_ontology(&parse(src)).expect("fixture converts")
     }
 
+    /// #376: the `consistent` wedge's verdict and the NN-guard counters on `body`.
+    fn nn_guard_run(body: &str) -> (owl_dl_tableau::hyper::HyperResult, u64, u64) {
+        let src = format!(
+            "Prefix(:=<http://x.org/f#>)\nOntology(<http://x.org/f>\n\
+             Declaration(Class(:A)) Declaration(Class(:Q))\n\
+             Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+             Declaration(ObjectProperty(:t))\n\
+             Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:d))\n\
+             {body}\n)"
+        );
+        let internal = parse_internal_lib(&src);
+        let cache = ConsistencyCache::build(&internal);
+        let mut engine = cache.build_seeded_engine();
+        let result = engine.decide(HYPER_WEDGE_DEPTH);
+        let stats = engine.stats();
+        (result, stats.nn_guard_checks, stats.nn_guard_refusals)
+    }
+
+    /// #376: a witness the nominal generated through its own `≥2 r` is not
+    /// duplicated by a copy of it, so the guard checks it and never refuses it (the
+    /// parent edge is excluded). The control, where the witness reaches `a` through
+    /// `s⁻` and `s` is functional, is refused and comes out inconsistent.
+    #[test]
+    fn nn_guard_does_not_refuse_forward_successors() {
+        use owl_dl_tableau::hyper::HyperResult;
+        let (result, checks, refusals) = nn_guard_run(
+            "SubClassOf(ObjectOneOf(:a) ObjectIntersectionOf(ObjectMinCardinality(2 :r :A) \
+             ObjectMaxCardinality(3 :r)))\n\
+             SubClassOf(:A ObjectSomeValuesFrom(:t :A))",
+        );
+        assert_eq!(result, HyperResult::Sat);
+        assert_eq!(
+            refusals, 0,
+            "a forward successor was refused ({checks} checks)"
+        );
+
+        let (result, checks, refusals) = nn_guard_run(
+            "SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+             FunctionalObjectProperty(:s)\n\
+             SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
+             ClassAssertion(:Q :d)",
+        );
+        assert_eq!(result, HyperResult::Unsat, "control ({checks} checks)");
+        assert!(refusals > 0, "control: never refused ({checks} checks)");
+    }
+
     /// #355: on this 46-axiom excerpt of `ore_ont_10019` the wedge proves
     /// `SulfoxideGroup ⊑ SulfinicAcidGeneralGroup` at once with the refuted MRV rank
     /// (`RUSTDL_MRV_REFUTED`, default ON); with the old rank it thrashes for minutes on

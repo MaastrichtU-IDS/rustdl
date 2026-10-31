@@ -279,3 +279,24 @@ fn issue_376_flag_off_restores_the_old_answer() {
          ClassAssertion(:Q :d)"
     ));
 }
+
+/// KNOWN LIMITATION: the TBox form of #362's shape. `Q` is unsatisfiable (two
+/// distinct `A`s are each an `s`-successor of `a`, and `s` is functional), and
+/// HermiT and `rustdl sat` (the main tableau) agree. `classify` misses it with or
+/// without the #376 guard, and with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`: the classify
+/// wedge is not built with nominals (`{a}` is an ordinary class there), so the
+/// guard has nothing to check. FLIP when classify derives it.
+#[test]
+fn known_classify_misses_the_tbox_form() {
+    let _l = lock();
+    let cls = owl_dl_reasoner::classify(&onto(
+        "SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
+         FunctionalObjectProperty(:s)\n\
+         SubClassOf(:Q ObjectMinCardinality(2 :r :A))",
+    ))
+    .unwrap();
+    assert!(
+        !cls.unsatisfiable_classes().contains(&"http://x.org/f#Q"),
+        "FLIP: classify derives Q unsatisfiable now"
+    );
+}

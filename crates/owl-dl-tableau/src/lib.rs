@@ -142,6 +142,10 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// Cached [`tree_sticky_branching_enabled`] (#377), read once per context
     /// because the decision selectors run at every expansion.
     tree_sticky: bool,
+    /// Cached [`max_first_enabled`] (#382).
+    max_first: bool,
+    /// Cached [`top_filler_enabled`] (#382).
+    top_filler: bool,
     /// The tree root of the last decision the search opened (#377), `u32::MAX`
     /// before the first. With [`Self::tree_sticky_branching`], the selectors
     /// prefer an open decision in this tree.
@@ -386,6 +390,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
             tree_sticky: tree_sticky_branching_enabled(),
+            max_first: max_first_enabled(),
+            top_filler: top_filler_enabled(),
             last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             incremental_saturate: incremental_saturate_enabled(),
@@ -433,6 +439,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
             tree_sticky: tree_sticky_branching_enabled(),
+            max_first: max_first_enabled(),
+            top_filler: top_filler_enabled(),
             last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             incremental_saturate: incremental_saturate_enabled(),
@@ -485,6 +493,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             chain_middle: chain_middle_enabled(),
             forall_first: forall_first_enabled(),
             tree_sticky: tree_sticky_branching_enabled(),
+            max_first: max_first_enabled(),
+            top_filler: top_filler_enabled(),
             last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
             incremental_saturate: incremental_saturate_enabled(),
@@ -881,6 +891,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// redundant successor that a later `≤m R.body` would clash on.
     #[must_use]
     pub fn node_entails_filler(&self, node: NodeId, body: ConceptId) -> bool {
+        // #382: every node is in `⊤`.
+        if self.top_filler_body(body) {
+            return true;
+        }
         let labels = &self.graph.node(node).labels;
         if labels.binary_search(&body).is_ok() {
             return true;
@@ -1159,6 +1173,26 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn tree_sticky_branching(&self) -> bool {
         self.tree_sticky
+    }
+
+    /// Whether a met `≤n` disjunct is tried first (#382).
+    #[must_use]
+    pub fn max_first(&self) -> bool {
+        self.max_first
+    }
+
+    /// Whether `body` is `⊤` and [`top_filler_enabled`] is on (#382): then every
+    /// neighbour counts as carrying it.
+    #[must_use]
+    pub fn top_filler_body(&self, body: ConceptId) -> bool {
+        self.top_filler && matches!(self.pool.get(body), owl_dl_core::ConceptExpr::Top)
+    }
+
+    /// Test hook for the two #382 flags.
+    #[cfg(test)]
+    pub(crate) fn set_counting_flags(&mut self, max_first: bool, top_filler: bool) {
+        self.max_first = max_first;
+        self.top_filler = top_filler;
     }
 
     /// The tree root of the last decision the search opened (#377).
@@ -1560,6 +1594,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// #361/#362: for each `≤n R.C` at a nominal neighbour `w` of `v` that counts
     /// `v` (`v` an `R`-neighbour of `w` without `¬C`), whether `w` has more than `n`
     /// such neighbours. `None` when the guard is off or nothing counts `v`.
+    ///
+    /// For `C = ⊤` with `¬⊤ = ⊥` registered (every `≤n R.⊤` the reasoner
+    /// prepares), this already counts every `R`-neighbour, which agrees with
+    /// [`top_filler_enabled`] (#382). A `≤n R.⊤` first interned by a query has no
+    /// registered complement and is skipped here while #382 counts it: that can
+    /// only keep a node unblocked longer, never add a clash.
     fn nominal_max_overfull(&self, v: NodeId) -> Option<bool> {
         if !self.nominal_block_guard {
             return None;
@@ -3023,6 +3063,47 @@ pub fn forall_first_enabled() -> bool {
 #[must_use]
 pub fn tree_sticky_branching_enabled() -> bool {
     std::env::var_os("RUSTDL_TREE_STICKY_BRANCHING").is_some_and(|v| v == "1")
+}
+
+/// Whether a `≤n R.C` disjunct is tried first at a node that has at most `n`
+/// `R`-neighbours (#382, `RUSTDL_MAX_FIRST=1`, **default OFF**).
+///
+/// A definition `D ≡ A ⊓ =1 R.B` leaves the residual `¬A ⊔ D ⊔ ≤0 R.B ⊔ ≥2 R.B`
+/// on every `A` node. Trying `D` first forces `D`'s own `=1` successors, and on
+/// `ore_ont_3250`'s functional-group definitions every `CarbonAtom` node became
+/// every group it could be, whose overlapping counts clashed deep in the tree.
+/// A `≤n` the node already meets generates nothing, as a `∀` does (#288). Only
+/// the order of options changes, so this is sound, and on a complete search the
+/// verdict is the same.
+#[must_use]
+pub fn max_first_enabled() -> bool {
+    std::env::var_os("RUSTDL_MAX_FIRST").is_some_and(|v| v == "1")
+}
+
+/// Whether every node counts as carrying `⊤` for the `∃`, `≥n` and `≤n` witness
+/// tests, and the choose rule skips a `≤n R.⊤` (#382, `RUSTDL_TOP_FILLER=1`,
+/// **default OFF**).
+///
+/// `⊤` holds everywhere, so counting every `R`-neighbour for `≤n R.⊤` is the
+/// semantics. Before, a neighbour counted only once the choose rule had labelled
+/// it `⊤`: its other option, `¬⊤ = ⊥`, always clashes, so the outcome was the
+/// same, but each `⊤` label carried the choose decision's id, and every clash
+/// downstream depended on it. On `ore_ont_3250` that decision was opened 9,446
+/// times in 30 s. A branch id affects backjumping only in the frame that owns it,
+/// and an exhausted choose frame returned exactly its `⊤` branch's clash deps
+/// minus its own id, so dropping the frame narrows no dependency a clash rests
+/// on.
+///
+/// It also enforces a `≤n R.⊤` the choose rule could not fire on: one first
+/// interned by a query, whose body has no registered complement. And with fewer
+/// `⊤` labels, subset blocking can fire on nodes it did not before, which only
+/// suppresses generation.
+///
+/// Counting and skipping the choose belong together: skipping the choose alone
+/// leaves `≤n R.⊤` unenforced, a false `Sat`.
+#[must_use]
+pub fn top_filler_enabled() -> bool {
+    std::env::var_os("RUSTDL_TOP_FILLER").is_some_and(|v| v == "1")
 }
 
 /// Whether the choice of which `≤n` witnesses to merge is a search branch

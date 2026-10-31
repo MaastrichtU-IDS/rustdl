@@ -765,12 +765,15 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         // polarity: any neighbour reachable via a sub-role of `role`
         // (same polarity) that already carries `body` discharges the
         // existential.
+        // #382: with `⊤` the filler, any `role`-neighbour is a witness.
+        let any = ctx.top_filler_body(body);
         let witness = ctx
             .graph()
             .node(node)
             .neighbours()
             .find(|&(seen, neighbour)| {
-                ctx.edge_satisfies(seen, role) && ctx.graph().node(neighbour).has_label(body)
+                ctx.edge_satisfies(seen, role)
+                    && (any || ctx.graph().node(neighbour).has_label(body))
             })
             .map(|(_, neighbour)| neighbour);
         if witness.is_some() {
@@ -1301,9 +1304,11 @@ pub(crate) fn max_witnesses(
     body: ConceptId,
 ) -> Vec<NodeId> {
     let mut out: Vec<NodeId> = Vec::new();
+    // #382: with `⊤` the filler, every `role`-neighbour counts.
+    let any = ctx.top_filler_body(body);
     for (seen, w) in ctx.graph().node(node).neighbours() {
         if ctx.edge_satisfies(seen, role)
-            && ctx.graph().node(w).has_label(body)
+            && (any || ctx.graph().node(w).has_label(body))
             && !out.contains(&w)
         {
             out.push(w);

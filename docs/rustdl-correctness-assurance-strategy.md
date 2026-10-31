@@ -1,7 +1,7 @@
 # RustDL Correctness Assurance Strategy
 
 Prepared for Michel Dumontier  
-26 October 2026
+26 October 2026; revised 31 October 2026
 
 ## 1 Assurance decision and evidence boundary
 
@@ -11,7 +11,7 @@ Separate three outcomes: a sound and complete procedure; a resource-limited run 
 
 ### Current evidence and its implications
 
-**Observed.** At commit `60eca181037c308f25f732da4136883d3c89942b`, re-checked at `42457595292bceee9143c413091d08f74ca9a32c` (31 October 2026), the Rust completeness guard `completeness_guaranteed()` is restricted to PureEl and additional checks. CLI `classify --json` emits that guard as `completeness_guaranteed`. Python exposes no equivalent: its `complete` only tests timed-out pairs, and the other conditions appear as separate getters. Its comments acknowledge that entailments can still be missing. PureEl is the current guarded baseline, not the desired ceiling. These are contract observations, not reproduced failures. [Rust guard](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-reasoner/src/classify.rs#L962-L1010), [CLI field](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-cli/src/json_out.rs#L131-L147) and [Python result](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-py/src/classify.rs#L50-L116).
+**Observed.** At commit `60eca181037c308f25f732da4136883d3c89942b`, re-checked at `42457595292bceee9143c413091d08f74ca9a32c` (31 October 2026), the Rust completeness guard `completeness_guaranteed()` is restricted to PureEl and additional checks. CLI `classify --json` emits that guard as `completeness_guaranteed`. Python exposes no equivalent: its `complete` only tests timed-out pairs, and most of the other conditions appear as separate getters. The fragment is not exposed, and dropped axioms need a separate `dropped_axioms()` call. Its comments acknowledge that entailments can still be missing. PureEl is the current guarded baseline, not the desired ceiling. These are contract observations, not reproduced failures. [Rust guard](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-reasoner/src/classify.rs#L962-L1010), [CLI field](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-cli/src/json_out.rs#L131-L147) and [Python result](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-py/src/classify.rs#L50-L116).
 
 **Proposed.** Express the intended guarantee as a tuple: **fragment, operation, engine route, input preservation, resource policy and evidence**. The complete fallback must cover its declared domain; shortcuts must prove eligibility or defer. Keep execution completion, semantic answers and completeness eligibility separate throughout Rust, Python, CLI and serialized output.
 
@@ -25,7 +25,7 @@ Separate three outcomes: a sound and complete procedure; a resource-limited run 
 
 ## 2 Define the operation contract
 
-Use OWL 2 Direct Semantics with an explicit parser/import policy. Internal “PureEl” and “Horn” labels are not W3C profile conformance. Rust’s current completeness guard requires PureEl, no timed-out pairs, no hierarchy blindness, no refused clauses, no undecided derived individual equalities (added by #365), determined consistency and no dropped axioms; Horn shape alone is insufficient. The derived-equality condition depends on a budget: probing stops after eight consecutive stalled probes, and the remaining candidates count as undecided. That puts the resource policy directly into the guarantee. The guard’s own doc comment lists only part of its conditions. It already omitted refused clauses at the original baseline, and it now also omits undecided derived equalities. This drift between the stated claim and the code is the kind the guarantee ledger should catch. [Rust guard](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-reasoner/src/classify.rs#L962-L1010) and [OWL 2 profiles](https://www.w3.org/TR/owl2-profiles/).
+Use OWL 2 Direct Semantics with an explicit parser/import policy. Internal “PureEl” and “Horn” labels are not W3C profile conformance. Rust’s current completeness guard requires PureEl, no timed-out pairs, no hierarchy blindness, no refused clauses, no undecided derived individual equalities (added by #365), determined consistency and no dropped axioms; Horn shape alone is insufficient. The derived-equality condition depends on a budget: probing stops after eight consecutive stalled probes, and the remaining candidates count as undecided. That puts the resource policy directly into the guarantee. On current main this condition cannot yet change the guarantee, because PureEl excludes the nominals that derived-equality candidates need. Until then, the field that carries the signal is `derived_same_undecided`. The guard’s own doc comment lists only part of its conditions. It already omitted refused clauses at the original baseline, and it now also omits undecided derived equalities. This drift between the stated claim and the code is the kind the guarantee ledger should catch. [Rust guard](https://github.com/MaastrichtU-IDS/rustdl/blob/42457595292bceee9143c413091d08f74ca9a32c/crates/owl-dl-reasoner/src/classify.rs#L962-L1010) and [OWL 2 profiles](https://www.w3.org/TR/owl2-profiles/).
 
 | Operation | Meaning of a definitive answer | Required negative or opposite evidence |
 | --- | --- | --- |
@@ -69,17 +69,17 @@ A completion graph is not automatically a model. If a proof uses blocking, show 
 
 Audit the reported issue cluster in a mechanism × engine × command ledger: equality, counting, propagation, eligibility and publication across saturation, hypertableau, tableau, pre-checks and fallback. Centralize semantic contracts and reusable obligations without requiring a monolithic rewrite. Independent checkers should remain independent of that shared production code.
 
-The initial cluster, as resolved by 31 October 2026 (`42457595`), gives a first instance of that ledger. Each row records the fix as merged; none is independently assured yet.
+The initial cluster, as it stood on 31 October 2026 (`42457595`), gives a first instance of that ledger. Each row records the fix as merged; none is independently assured yet.
 
 | Mechanism | Engine and command where it failed | Fix and status |
 | --- | --- | --- |
 | A blocker whose copy duplicates a nominal or a neighbour counted by a nominal’s ≤n (the SHOIQ NN-rule obligation) | Wedge, `consistent` (#361, #376) | #375 and #381; flags `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` and `RUSTDL_WEDGE_NN_GUARD`, default on |
-| Same obligation | Main tableau, `sat` and `subclass` (#362) | #378; flag `RUSTDL_NOMINAL_BLOCK_GUARD`, default on |
+| Same obligation | Main tableau, `sat` (#362; the same route serves `subclass`) | #378; flag `RUSTDL_NOMINAL_BLOCK_GUARD`, default on |
 | Same obligation, plus nominal identity | Classify wedge, which is built without nominals, so neither wedge guard applies; reported with `incomplete: false` (#383) | Open |
 | Individuals named only in TBox nominals seeded for consistency but not for per-query probes | Main tableau, `sat` versus `consistent` (#356) | #366; one shared seeding helper, `RUSTDL_QUERY_TBOX_INDIVIDUALS`, default on |
 | Individual equalities forced by functional or ≤1 roles over nominals | `classify` (#354) | #365; probe-confirmed `derived_same`, budget-limited, undecided candidates reported |
 
-The same nominal obligation had to be added three times. The first three rows are the duplicated semantic decision this strategy warns about.
+The same nominal obligation was added separately to the wedge and to the main tableau, and the classify wedge still lacks it (row 3). Those three rows are the duplicated semantic decision this strategy warns about.
 
 ## 4 Centralize checked publication across engines
 
@@ -293,10 +293,10 @@ The stopping condition for this programme is not that every conceivable input ha
 
 Repository observations are tied to the inspected commit `60eca181037c308f25f732da4136883d3c89942b`. They were re-checked on 31 October 2026 against `42457595292bceee9143c413091d08f74ca9a32c`, ten commits later (#365, #366, #367, #374, #375, #378, #379, #380, #381, #384). Changed:
 
-- The completeness guard and the Python result changed (links above repointed to `42457595`).
+- The completeness guard and the Python result changed (links above repointed, and a CLI field link added, at `42457595`).
 - The issue cluster closed.
 - #380 (`RUSTDL_MERGE_EXACT_DEPS`) and #384 (`RUSTDL_TREE_STICKY_BRANCHING`) merged as default-off options, not shipped behaviour.
-- Issues #382 and #383 remain open.
+- Issues #382 and #383 remain open, and #363 stays open as the tracking issue.
 
 Unchanged, so their permalinks remain at the original baseline:
 

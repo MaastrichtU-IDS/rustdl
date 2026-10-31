@@ -4964,6 +4964,18 @@ pub fn wedge_nominal_block_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")
 }
 
+/// #376 `RUSTDL_WEDGE_NN_GUARD` (default ON, `=0` reverts): in the wedge's pair
+/// blocking, a would-be blocker that stands for an individual's `≤`-witness is
+/// refused. A blocked copy of it would add one more witness to that individual,
+/// which can break the `≤`: with `A ⊑ ∃s⁻.{a}`, `s` functional and two distinct `A`s,
+/// the second `A` was blocked by the first, `a` saw one `s`-neighbour, and
+/// `consistent` said consistent. The wedge half of the SHOIQ NN-rule case; the
+/// main tableau's is `RUSTDL_NOMINAL_BLOCK_GUARD` (#362).
+#[must_use]
+pub fn wedge_nn_guard_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_NN_GUARD").is_none_or(|v| v != "0")
+}
+
 /// #355 `RUSTDL_MRV_REFUTED` (default ON, `=0` reverts): when MRV ordering is on, the
 /// wedge branches first on the open disjunction with the fewest VIABLE disjuncts (live
 /// and not already refuted at the binding), then the fewest live ones. Without it a

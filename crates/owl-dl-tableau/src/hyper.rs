@@ -4762,6 +4762,13 @@ impl<'c> HyperEngine<'c> {
     /// revert on a failed branch.
     fn save(&mut self) -> Snapshot {
         self.stats.node_clones += 1;
+        // Settle `nn_possible` before saving it: a snapshot holding `None` would
+        // put `None` back on every restore, and each branch would rescan every node.
+        let nn_possible = if self.nn_guard {
+            Some(self.nn_possible_now())
+        } else {
+            self.nn_possible
+        };
         Snapshot {
             nodes: self.nodes.snapshot(self.cow_nodes),
             representative: self.representative.clone(),
@@ -4773,7 +4780,7 @@ impl<'c> HyperEngine<'c> {
                 self.nn_holders.clone()
             },
             nn_log_len: self.nn_log.len(),
-            nn_possible: self.nn_possible,
+            nn_possible,
             origin: self.snapshot_origin.clone(),
             worklist: if self.incremental_fixpoint {
                 self.worklist.clone()
@@ -8096,6 +8103,18 @@ mod tests {
         eng.nn_possible = Some(false);
         eng.restore(saved);
         assert!(eng.nn_counted_possible());
+    }
+
+    /// A snapshot taken before any `is_blocked` call must not hold `None`, or
+    /// every restore to it would discard the cache and rescan every node.
+    #[test]
+    fn nn_possible_is_settled_by_save() {
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        eng.new_node();
+        assert_eq!(eng.nn_possible, None);
+        let saved = eng.save();
+        eng.restore(saved);
+        assert_eq!(eng.nn_possible, Some(false));
     }
 
     /// The third site that can turn `nn_possible` true: a merge hands a `≤` to a

@@ -102,7 +102,11 @@ def _stub_class_members() -> dict[str, dict[str, str]]:
                 if item.name.startswith("_"):
                     continue
                 is_prop = any(
-                    isinstance(d, ast.Name) and d.id == "property"
+                    (isinstance(d, ast.Name) and d.id == "property")
+                    or (
+                        isinstance(d, ast.Attribute)
+                        and d.attr in ("getter", "setter", "deleter")
+                    )
                     for d in item.decorator_list
                 )
                 members[item.name] = "attribute" if is_prop else "method"
@@ -130,7 +134,8 @@ def _runtime_class_members(cls: type) -> dict[str, str]:
         for f in dataclasses.fields(cls):
             members[f.name] = "attribute"
     for klass in cls.__mro__:
-        if not (klass.__module__ or "").startswith("rustdl"):
+        mod = klass.__module__ or ""
+        if not (mod == "rustdl" or mod.startswith("rustdl.")):
             continue
         for name in vars(klass):
             if name.startswith("_") or name in members:
@@ -138,7 +143,7 @@ def _runtime_class_members(cls: type) -> dict[str, str]:
             raw = inspect.getattr_static(cls, name)
             is_attr = isinstance(
                 raw, (property, types.GetSetDescriptorType, types.MemberDescriptorType)
-            )
+            ) or not callable(raw)
             members[name] = "attribute" if is_attr else "method"
     return members
 

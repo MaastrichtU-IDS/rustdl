@@ -176,3 +176,59 @@ fn instance_with_no_probe_deadline_still_reports_the_cut() {
     assert_eq!(control.stdout.trim(), "no", "stderr: {}", control.stderr);
     assert_eq!(control.code, 0);
 }
+
+/// #344: the reproducer is inconsistent, but only once the main tableau counts
+/// its data values. With a zero verification budget that check gives up, and
+/// `consistent` must say `unknown` (exit 3), not `consistent` (#363 A2). With the
+/// default budget it decides `inconsistent`.
+#[test]
+fn consistent_reports_a_data_counting_verification_give_up() {
+    const SRC_344: &str = r#"Prefix(:=<http://ex.org/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://ex.org/o>
+  Declaration(Class(:P)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+  SubClassOf(:P DataMaxCardinality(1 :p DataOneOf("1"^^xsd:integer "2"^^xsd:integer)))
+  ClassAssertion(:P :a)
+  DataPropertyAssertion(:p :a "1"^^xsd:integer)
+  DataPropertyAssertion(:p :a "2"^^xsd:integer)
+)
+"#;
+    let path = std::env::temp_dir().join(format!(
+        "rustdl-query-give-up-{}-344.ofn",
+        std::process::id()
+    ));
+    std::fs::write(&path, SRC_344).unwrap();
+    let f = Fixture(path);
+    let p = f.path().to_str().unwrap();
+    let zero = [("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS", "0")];
+    let gave_up = run_with("0", &zero, &["consistent", p]);
+    assert_eq!(
+        gave_up.stdout.trim(),
+        "unknown",
+        "stderr: {}",
+        gave_up.stderr
+    );
+    assert_eq!(gave_up.code, 3);
+    assert!(
+        gave_up
+            .stderr
+            .contains("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS"),
+        "{}",
+        gave_up.stderr
+    );
+    let json = run_with("0", &zero, &["consistent", "--json", p]);
+    assert_eq!(json.code, 3);
+    assert!(
+        json.stdout.contains("\"incomplete\": true"),
+        "{}",
+        json.stdout
+    );
+    let decided = run("0", &["consistent", p]);
+    assert_eq!(
+        decided.stdout.trim(),
+        "inconsistent",
+        "stderr: {}",
+        decided.stderr
+    );
+    assert_eq!(decided.code, 0);
+}

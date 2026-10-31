@@ -174,7 +174,8 @@ pub(crate) struct ConsistentJson {
     pub(crate) schema_version: u32,
     pub(crate) consistent: bool,
     /// #182: `true` when `consistent` is a GIVE-UP reported in its sound
-    /// direction (fall-through deadline / node cap), not a witnessed verdict.
+    /// direction (fall-through deadline / node cap, or the #344 data-counting
+    /// verification of a wedge `Sat` giving up), not a witnessed verdict.
     pub(crate) incomplete: bool,
     /// #357: clauses the consistency wedge cannot match, which therefore never fire,
     /// so a `consistent: true` from the wedge may miss a clash. A SEPARATE field from

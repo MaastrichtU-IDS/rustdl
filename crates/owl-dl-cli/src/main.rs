@@ -1659,7 +1659,8 @@ fn main() -> Result<()> {
                 eprintln!(
                     "warning: no inconsistency found within budget — this is a sound \
                      under-approximation, not a verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS \
-                     (default 10000) for more budget."
+                     (default 10000) or, for ontologies that count data values, \
+                     RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000) for more budget."
                 );
                 warn_if_dropped(&dropped);
                 std::process::exit(3);

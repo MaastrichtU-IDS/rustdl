@@ -7470,10 +7470,11 @@ pub fn is_consistent_internal_bounded(
     let wedge_deadline = wedge_cap.min(deadline);
     match prepared.consistency_wedge(Some(wedge_deadline)) {
         Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return Ok(Some(false)),
-        // #344: verify a `Sat` the wedge reached without counting data values; a
-        // give-up keeps the wedge's answer.
+        // #344: verify a `Sat` the wedge reached without counting data values. A
+        // give-up is no verdict, which this bounded API reports as `None`.
         Some(owl_dl_tableau::hyper::HyperResult::Sat) => {
-            return Ok(Some(prepared.verify_wedge_sat(Some(deadline))?));
+            let (consistent, gave_up) = prepared.verify_wedge_sat(Some(deadline))?;
+            return Ok((!gave_up).then_some(consistent));
         }
         Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
     }
@@ -7581,12 +7582,14 @@ fn is_consistent_internal_full(
             ));
         }
         // #344: when the ontology counts data values, verify the wedge's `Sat` (it
-        // counts none) on the main tableau; a give-up keeps the wedge's answer.
+        // counts none) on the main tableau. A give-up keeps the wedge's answer and is
+        // reported as `incomplete`, not as a verified `consistent` (#363 A2).
         Some(owl_dl_tableau::hyper::HyperResult::Sat) if prepared.wedge_sat_skips_data_counting => {
-            let consistent = prepared.verify_wedge_sat(None)?;
+            let (consistent, gave_up) = prepared.verify_wedge_sat(None)?;
             if trace {
                 eprintln!(
-                    "consistency: wedge Sat, data counting verified: consistent={consistent}"
+                    "consistency: wedge Sat, data counting verified: consistent={consistent} \
+                     gave_up={gave_up}"
                 );
             }
             return Ok((
@@ -7594,7 +7597,7 @@ fn is_consistent_internal_full(
                 QueryStats {
                     answered_by_saturation: false,
                     pure_el_mode: false,
-                    incomplete: false,
+                    incomplete: gave_up,
                     wedge_clauses_refused: refused,
                 },
             ));
@@ -9363,23 +9366,29 @@ impl PreparedOntology {
     /// The consistency answer after a wedge `Sat` (#344). When the ontology counts
     /// data values the wedge does not, one main-tableau run bounded by
     /// [`consistency_data_counting_verify_ms`] (and `deadline`) checks it: a clash
-    /// is `false`. Otherwise, and on a give-up, the wedge's `true` stands.
+    /// is `false`. Otherwise the wedge's `true` stands.
+    ///
+    /// Returns `(consistent, gave_up)`. `gave_up` is set when the verification ran
+    /// and reached no verdict (deadline, node cap, or the search-depth bail-out the
+    /// tableau reports as `NoVerdict`): the answer is then the wedge's `true` in its
+    /// sound direction, not a verified one, and callers report it as incomplete
+    /// (#363 A2). It used to be returned as a plain `true`.
     pub(crate) fn verify_wedge_sat(
         &self,
         deadline: Option<std::time::Instant>,
-    ) -> Result<bool, ReasonError> {
+    ) -> Result<(bool, bool), ReasonError> {
         if !self.wedge_sat_skips_data_counting {
-            return Ok(true);
+            return Ok((true, false));
         }
         let own = std::time::Instant::now()
             + std::time::Duration::from_millis(consistency_data_counting_verify_ms());
         let dl = deadline.map_or(own, |d| d.min(own));
         let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
         match self.decide_consistency(Some(dl)) {
-            Ok(Some(consistent)) => Ok(consistent),
+            Ok(Some(consistent)) => Ok((consistent, false)),
             // A give-up (deadline, node cap, or the search-depth bail-out the tableau
-            // reports as `NoVerdict`) keeps the wedge's answer.
-            Ok(None) | Err(ReasonError::NoVerdict) => Ok(true),
+            // reports as `NoVerdict`) keeps the wedge's answer and says so.
+            Ok(None) | Err(ReasonError::NoVerdict) => Ok((true, true)),
             Err(e) => Err(e),
         }
     }

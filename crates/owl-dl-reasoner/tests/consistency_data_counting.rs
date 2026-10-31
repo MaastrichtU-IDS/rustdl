@@ -223,11 +223,12 @@ fn the_flag_reverts() {
     assert!(!consistent(&body));
 }
 
-/// A verification that gives up keeps the wedge's answer rather than reporting
-/// `unknown`: with a zero budget the reproducer reads consistent, as on `main`, and
-/// is not marked incomplete.
+/// A verification that gives up keeps the wedge's answer in its sound direction
+/// and reports it as a give-up (#363 A2): with a zero budget the reproducer reads
+/// consistent with `incomplete` set, and the bounded API answers `None` (no
+/// verdict). Before A2 this test pinned `incomplete == false` and `Some(true)`.
 #[test]
-fn a_verification_give_up_keeps_the_old_answer() {
+fn a_verification_give_up_is_reported_as_incomplete() {
     let _g = lock();
     let body = format!("SubClassOf(:P {LIMIT}) ClassAssertion(:P :a)\n{TWO_VALUES}");
     let o = onto(&body);
@@ -237,12 +238,12 @@ fn a_verification_give_up_keeps_the_old_answer() {
         let bounded = is_consistent_with_timeout(&o, Duration::from_secs(60)).expect("bounded");
         (verdict, stats, bounded)
     };
-    assert!(verdict && !stats.incomplete, "a give-up keeps `consistent`");
-    assert_eq!(
-        bounded,
-        Some(true),
-        "a give-up keeps `consistent` on the bounded path"
+    assert!(
+        verdict,
+        "a give-up keeps `consistent` (the sound direction)"
     );
+    assert!(stats.incomplete, "a give-up must be reported as incomplete");
+    assert_eq!(bounded, None, "a give-up is no verdict on the bounded path");
 }
 
 /// Classify agrees: the reproducer is inconsistent there too.
@@ -289,12 +290,13 @@ fn shapes_the_tableau_does_not_count_are_known_misses() {
 }
 
 /// The tableau can bail out at its search-depth limit before the verification
-/// budget ends; that is a give-up too and keeps `consistent`, not an error. Here
+/// budget ends; that is a give-up too: it keeps `consistent`, is not an error, and
+/// (#363 A2) is reported as incomplete. Before A2 this pinned `incomplete == false`. Here
 /// `a : C0` walks 257 nested `C_i ⊑ C_{i+1} ⊔ X_i` choices, each `X_i` contradicting
 /// `C0`, past the depth limit; the counting constraint is unrelated. `HermiT`:
 /// consistent.
 #[test]
-fn a_depth_bail_out_keeps_the_old_answer() {
+fn a_depth_bail_out_is_reported_as_incomplete() {
     use std::fmt::Write as _;
     let _g = lock();
     let mut body = String::new();
@@ -312,7 +314,18 @@ fn a_depth_bail_out_keeps_the_old_answer() {
          DataPropertyAssertion(:p :a \"1\"^^xsd:integer)"
     )
     .unwrap();
-    assert!(consistent(&body));
+    let o = onto(&body);
+    let (verdict, stats) = is_consistent_with_stats(&o).expect("consistent");
+    assert!(verdict, "a depth bail-out keeps `consistent`");
+    assert!(
+        stats.incomplete,
+        "a depth bail-out must be reported as incomplete"
+    );
+    assert_eq!(
+        is_consistent_with_timeout(&o, Duration::from_secs(60)).expect("bounded"),
+        None,
+        "a depth bail-out is no verdict on the bounded path"
+    );
 }
 
 /// Scope of the gate: an unqualified data cardinality (no data range to count) does

@@ -83,3 +83,86 @@ def test_tuple_returning_stubs_match_runtime_arity(tmp_path):
                 f"{name}: stub declares a {declared}-tuple, runtime returned "
                 f"{len(row)}: {row}"
             )
+
+
+def _stub_class_members() -> dict[str, dict[str, str]]:
+    """Public members each stubbed class declares, as name -> "attribute"|"method".
+
+    A ``@property`` or an annotated field is an attribute; any other ``def`` is a
+    method. Dunder and underscore names are skipped.
+    """
+    stub = pathlib.Path(rustdl.__file__).with_name("__init__.pyi")
+    out: dict[str, dict[str, str]] = {}
+    for node in ast.parse(stub.read_text()).body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        members: dict[str, str] = {}
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if item.name.startswith("_"):
+                    continue
+                is_prop = any(
+                    isinstance(d, ast.Name) and d.id == "property"
+                    for d in item.decorator_list
+                )
+                members[item.name] = "attribute" if is_prop else "method"
+            elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                if not item.target.id.startswith("_"):
+                    members[item.target.id] = "attribute"
+        out[node.name] = members
+    return out
+
+
+def _runtime_class_members(cls: type) -> dict[str, str]:
+    """Public members a runtime class defines itself, as name -> kind.
+
+    Only classes defined by rustdl count (its own class and rustdl mixins such as
+    ``_MappingDataclass``), so members inherited from ``Mapping``, ``Exception``
+    or ``object`` are not expected in the stub. Dataclass fields are attributes
+    even when they have no class-level default.
+    """
+    import dataclasses
+    import inspect
+    import types
+
+    members: dict[str, str] = {}
+    if dataclasses.is_dataclass(cls):
+        for f in dataclasses.fields(cls):
+            members[f.name] = "attribute"
+    for klass in cls.__mro__:
+        if not (klass.__module__ or "").startswith("rustdl"):
+            continue
+        for name in vars(klass):
+            if name.startswith("_") or name in members:
+                continue
+            raw = inspect.getattr_static(cls, name)
+            is_attr = isinstance(
+                raw, (property, types.GetSetDescriptorType, types.MemberDescriptorType)
+            )
+            members[name] = "attribute" if is_attr else "method"
+    return members
+
+
+def test_stubbed_class_members_match_runtime():
+    """Each stubbed class declares exactly the members the runtime class has.
+
+    The name checks above stop at module level, so a property added to
+    ``Classification`` without a stub, or a stub for one that was removed or
+    renamed, passed CI. This compares the two in both directions and also checks
+    that a property is not stubbed as a method or the reverse.
+    """
+    problems: list[str] = []
+    for cls_name, declared in sorted(_stub_class_members().items()):
+        cls = getattr(rustdl, cls_name)
+        actual = _runtime_class_members(cls)
+        for name in sorted(declared.keys() - actual.keys()):
+            problems.append(f"{cls_name}.{name}: in the stub, not at runtime")
+        for name in sorted(actual.keys() - declared.keys()):
+            problems.append(f"{cls_name}.{name}: at runtime, missing from the stub")
+        for name in sorted(declared.keys() & actual.keys()):
+            if declared[name] != actual[name]:
+                problems.append(
+                    f"{cls_name}.{name}: stub says {declared[name]}, "
+                    f"runtime has {actual[name]}"
+                )
+    assert not problems, "stub/runtime class drift:\n  " + "\n  ".join(problems)

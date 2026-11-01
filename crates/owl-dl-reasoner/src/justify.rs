@@ -278,18 +278,78 @@ fn maybe_saturation_oracle<A: ForIRI>(
     }
 }
 
-/// Does `onto` entail `q`? Reduces to the public reasoner checks. The
-/// `DisjointClasses` case injects a fresh probe class `X ≡ a ⊓ b` and checks
-/// `X` unsatisfiable (probe = query encoding; never part of a justification).
+/// A three-valued entailment verdict (#396).
+///
+/// The reasoner checks under [`entails`] report a GIVE-UP (the live-node cap
+/// `RUSTDL_MAX_NODES`, a cut instance probe, a consistency fallback deadline) in
+/// its sound direction, which for every [`Entailment`] kind is "not entailed".
+/// `Unknown` is that give-up made visible: no entailment was witnessed, but none
+/// was refuted either. `Entailed` and `NotEntailed` are definite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The entailment holds (witnessed).
+    Entailed,
+    /// The entailment does not hold (refuted, with no give-up).
+    NotEntailed,
+    /// A check gave up before deciding.
+    Unknown,
+}
+
+impl Verdict {
+    /// The verdict of a check answering `holds`, with `gave_up` its give-up flag.
+    /// A positive is a witness even when part of the check was cut, so only a
+    /// negative is called into question.
+    fn from_check(holds: bool, gave_up: bool) -> Self {
+        match (holds, gave_up) {
+            (true, _) => Self::Entailed,
+            (false, false) => Self::NotEntailed,
+            (false, true) => Self::Unknown,
+        }
+    }
+
+    /// The verdict of `self AND second()`: a definite `NotEntailed` on either side
+    /// decides, `Entailed` needs both. `second` still runs when `self` is
+    /// `Unknown`, since it may be a definite no.
+    fn and(self, second: impl FnOnce() -> Result<Self, ReasonError>) -> Result<Self, ReasonError> {
+        if self == Self::NotEntailed {
+            return Ok(self);
+        }
+        Ok(match (self, second()?) {
+            (_, Self::NotEntailed) => Self::NotEntailed,
+            (Self::Entailed, Self::Entailed) => Self::Entailed,
+            _ => Self::Unknown,
+        })
+    }
+}
+
+/// Does `onto` entail `q`? `true` only for [`Verdict::Entailed`]: a give-up
+/// reads as "not entailed", in its sound direction. Callers that present the
+/// answer as a non-entailment should use [`entails_reporting`] instead.
 ///
 /// # Errors
 /// Propagates [`ReasonError`] from the underlying reasoner.
 pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool, ReasonError> {
+    Ok(entails_reporting(onto, q)? == Verdict::Entailed)
+}
+
+/// Does `onto` entail `q`, as a [`Verdict`]? Reduces to the reporting forms of
+/// the public reasoner checks. The `DisjointClasses` case injects a fresh probe
+/// class `X ≡ a ⊓ b` and checks `X` unsatisfiable (probe = query encoding; never
+/// part of a justification).
+///
+/// # Errors
+/// Propagates [`ReasonError`] from the underlying reasoner.
+pub fn entails_reporting<A: ForIRI>(
+    onto: &SetOntology<A>,
+    q: &Entailment,
+) -> Result<Verdict, ReasonError> {
+    let subclass = |sub: &str, sup: &str| -> Result<Verdict, ReasonError> {
+        let (holds, stats) = crate::is_subclass_of_with_stats(onto, sub, sup)?;
+        Ok(Verdict::from_check(holds, stats.incomplete))
+    };
     match q {
-        Entailment::SubClassOf { sub, sup } => crate::is_subclass_of(onto, sub, sup),
-        Entailment::EquivalentClasses { a, b } => {
-            Ok(crate::is_subclass_of(onto, a, b)? && crate::is_subclass_of(onto, b, a)?)
-        }
+        Entailment::SubClassOf { sub, sup } => subclass(sub, sup),
+        Entailment::EquivalentClasses { a, b } => subclass(a, b)?.and(|| subclass(b, a)),
         Entailment::DisjointClasses { a, b } => {
             let mut probed = onto.clone();
             let build: Build<A> = Build::new();
@@ -300,16 +360,20 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                     ClassExpression::Class(build.class(b.as_str())),
                 ]),
             ])));
-            Ok(!crate::is_class_satisfiable(&probed, PROBE_IRI)?)
+            let (sat, stats) = crate::is_class_satisfiable_with_stats(&probed, PROBE_IRI)?;
+            Ok(Verdict::from_check(!sat, stats.incomplete))
         }
-        Entailment::Unsatisfiable { class } => Ok(!crate::is_class_satisfiable(onto, class)?),
+        Entailment::Unsatisfiable { class } => {
+            let (sat, stats) = crate::is_class_satisfiable_with_stats(onto, class)?;
+            Ok(Verdict::from_check(!sat, stats.incomplete))
+        }
         // is_instance_of is (class, individual) — class first.
         Entailment::InstanceOf { individual, class } => {
-            match crate::is_instance_of(onto, class, individual) {
+            match crate::is_instance_of_reporting(onto, class, individual) {
                 // Inconsistent ⇒ everything is entailed, as for property assertions above;
                 // QuickXplain then returns the inconsistency core (#313).
-                Err(ReasonError::Inconsistent) => Ok(true),
-                r => r,
+                Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),
+                r => r.map(|(holds, cut)| Verdict::from_check(holds, cut)),
             }
         }
         Entailment::Inconsistent => {
@@ -317,8 +381,11 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
             if justify_trace_enabled() {
                 let n = JUSTIFY_ORACLE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 let t = std::time::Instant::now();
-                let (inconsistent, engine) = if sat_mode {
-                    (saturation_inconsistent(onto), "saturation-only")
+                // The saturation-only oracle is a sound refuter by design (see
+                // [`SATURATION_ORACLE`]), not a give-up: its "not refuted" can cost
+                // minimality only, so it is not reported as `Unknown`.
+                let (inconsistent, gave_up, engine) = if sat_mode {
+                    (saturation_inconsistent(onto), false, "saturation-only")
                 } else {
                     let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
                     let engine = if stats.answered_by_saturation {
@@ -326,7 +393,7 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                     } else {
                         "wedge/tableau"
                     };
-                    (!consistent, engine)
+                    (!consistent, stats.incomplete, engine)
                 };
                 eprintln!(
                     "[justify-trace] call#{n} verdict={} {}ms engine={engine} axioms={}",
@@ -338,11 +405,12 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                     t.elapsed().as_millis(),
                     onto.iter().count()
                 );
-                Ok(inconsistent)
+                Ok(Verdict::from_check(inconsistent, gave_up))
             } else if sat_mode {
-                Ok(saturation_inconsistent(onto))
+                Ok(Verdict::from_check(saturation_inconsistent(onto), false))
             } else {
-                Ok(!crate::is_consistent(onto)?)
+                let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
+                Ok(Verdict::from_check(!consistent, stats.incomplete))
             }
         }
         Entailment::SubObjectProperty { sub, sup } => {
@@ -363,19 +431,22 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                 ],
             )
         }
-        Entailment::EquivalentObjectProperties { a, b } => Ok(entails(
+        Entailment::EquivalentObjectProperties { a, b } => entails_reporting(
             onto,
             &Entailment::SubObjectProperty {
                 sub: a.clone(),
                 sup: b.clone(),
             },
-        )? && entails(
-            onto,
-            &Entailment::SubObjectProperty {
-                sub: b.clone(),
-                sup: a.clone(),
-            },
-        )?),
+        )?
+        .and(|| {
+            entails_reporting(
+                onto,
+                &Entailment::SubObjectProperty {
+                    sub: b.clone(),
+                    sup: a.clone(),
+                },
+            )
+        }),
         Entailment::DisjointObjectProperties { a, b } => {
             let bld: Build<A> = Build::new();
             inconsistent_with(
@@ -413,11 +484,11 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                         .iter()
                         .any(|(s, p, t)| s == source && p == prop && t == target)
                     {
-                        return Ok(true);
+                        return Ok(Verdict::Entailed);
                     }
                 }
                 // Inconsistent ⇒ everything is entailed (matches the probe below).
-                Err(ReasonError::Inconsistent) => return Ok(true),
+                Err(ReasonError::Inconsistent) => return Ok(Verdict::Entailed),
                 Err(e) => return Err(e),
             }
             let b: Build<A> = Build::new();
@@ -463,18 +534,19 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                 datatype_iri: b.iri(PROBE_INT),
             };
             // c1: asserting sub(_a,0) alone must be consistent (else range clash, not subsumption).
-            if inconsistent_with(
+            let guard = inconsistent_with(
                 onto,
                 vec![Component::DataPropertyAssertion(DataPropertyAssertion {
                     dp: b.data_property(sub.as_str()),
                     from: named(&b, PROBE_A),
                     to: sub_lit,
                 })],
-            )? {
-                return Ok(false);
+            )?;
+            if guard == Verdict::Entailed {
+                return Ok(Verdict::NotEntailed);
             }
             // c2: adding ¬sup(_a,0) becomes inconsistent ⟺ sub⊑sup forces sup(_a,0).
-            inconsistent_with(
+            let main = inconsistent_with(
                 onto,
                 vec![
                     Component::DataPropertyAssertion(DataPropertyAssertion {
@@ -491,21 +563,25 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                         to: sup_lit,
                     }),
                 ],
-            )
+            )?;
+            Ok(guarded(guard == Verdict::Unknown, main))
         }
-        Entailment::EquivalentDataProperties { a, b } => Ok(entails(
+        Entailment::EquivalentDataProperties { a, b } => entails_reporting(
             onto,
             &Entailment::SubDataProperty {
                 sub: a.clone(),
                 sup: b.clone(),
             },
-        )? && entails(
-            onto,
-            &Entailment::SubDataProperty {
-                sub: b.clone(),
-                sup: a.clone(),
-            },
-        )?),
+        )?
+        .and(|| {
+            entails_reporting(
+                onto,
+                &Entailment::SubDataProperty {
+                    sub: b.clone(),
+                    sup: a.clone(),
+                },
+            )
+        }),
         Entailment::DisjointDataProperties { a, b } => {
             // Reduce to inconsistency: assert dp_a(_probe, 0^^xsd:integer) and
             // dp_b(_probe, 0^^xsd:integer) — if `DisjointDataProperties(a,b)` holds
@@ -522,30 +598,32 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                 datatype_iri: bld.iri(PROBE_INT),
             };
             // c1a: assert a(probe, 0) alone — must be consistent.
-            if inconsistent_with(
+            let guard_a = inconsistent_with(
                 onto,
                 vec![Component::DataPropertyAssertion(DataPropertyAssertion {
                     dp: bld.data_property(a.as_str()),
                     from: named(&bld, PROBE_A),
                     to: make_lit(),
                 })],
-            )? {
-                return Ok(false);
+            )?;
+            if guard_a == Verdict::Entailed {
+                return Ok(Verdict::NotEntailed);
             }
             // c1b: assert b(probe, 0) alone — must be consistent.
-            if inconsistent_with(
+            let guard_b = inconsistent_with(
                 onto,
                 vec![Component::DataPropertyAssertion(DataPropertyAssertion {
                     dp: bld.data_property(b.as_str()),
                     from: named(&bld, PROBE_A),
                     to: make_lit(),
                 })],
-            )? {
-                return Ok(false);
+            )?;
+            if guard_b == Verdict::Entailed {
+                return Ok(Verdict::NotEntailed);
             }
             // c2: asserting both a(probe,0) and b(probe,0) ⟹ inconsistent iff
             // DisjointDataProperties(a,b) is entailed.
-            inconsistent_with(
+            let main = inconsistent_with(
                 onto,
                 vec![
                     Component::DataPropertyAssertion(DataPropertyAssertion {
@@ -559,7 +637,11 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                         to: make_lit(),
                     }),
                 ],
-            )
+            )?;
+            Ok(guarded(
+                guard_a == Verdict::Unknown || guard_b == Verdict::Unknown,
+                main,
+            ))
         }
         Entailment::DataPropertyValue {
             source,
@@ -586,18 +668,35 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
     }
 }
 
-/// `true` iff `onto ∪ extra` is inconsistent. The `extra` axioms are query-
-/// encoding probes (fresh `PROBE_*` symbols), never candidate axioms — they
-/// appear in every tested subset and never in a justification.
+/// The verdict of a data-property probe `main` behind its consistency guard
+/// (#396). The guard rules out a range clash: if asserting the property alone is
+/// already inconsistent, the probe answers "not entailed". A guard that GAVE UP
+/// ruled nothing out, so `main`'s "inconsistent" may be that very clash, not the
+/// entailment: it must not read as `Entailed`. A definite "no" from `main` still
+/// decides, since `main` only adds axioms to the guard's ontology.
+fn guarded(guard_gave_up: bool, main: Verdict) -> Verdict {
+    if guard_gave_up && main == Verdict::Entailed {
+        Verdict::Unknown
+    } else {
+        main
+    }
+}
+
+/// Is `onto ∪ extra` inconsistent? `Entailed` iff it is; `Unknown` when the
+/// consistency check gave up (reported "consistent" without a model at the usual
+/// trust level). The `extra` axioms are query-encoding probes (fresh `PROBE_*`
+/// symbols), never candidate axioms — they appear in every tested subset and
+/// never in a justification.
 fn inconsistent_with<A: ForIRI>(
     onto: &SetOntology<A>,
     extra: Vec<Component<A>>,
-) -> Result<bool, ReasonError> {
+) -> Result<Verdict, ReasonError> {
     let mut probed = onto.clone();
     for c in extra {
         probed.insert(c);
     }
-    Ok(!crate::is_consistent(&probed)?)
+    let (consistent, stats) = crate::is_consistent_with_stats(&probed)?;
+    Ok(Verdict::from_check(!consistent, stats.incomplete))
 }
 
 fn named<A: ForIRI>(b: &Build<A>, iri: &str) -> Individual<A> {
@@ -1092,11 +1191,24 @@ pub fn extract_bot_module<A: ForIRI>(
 /// needed axiom), we re-check the full set and fall back to it: this keeps
 /// find-one sound and find-all complete even if `is_bot_local` is wrong, paying
 /// the full-ontology cost only on that (rare) negative.
+///
+/// The top-level verdict (#396): the full set decides whenever the module does
+/// not entail, so a module give-up followed by a definite full-set "no" is a
+/// definite `NotEntailed`, and a full-set give-up is `Unknown` even after a
+/// definite module "no" (the module is only trusted to entail).
 fn localized_candidates<A: ForIRI>(
     fixed: &[Component<A>],
     all_candidates: &[Component<A>],
     q: &Entailment,
-) -> Result<Option<Vec<Component<A>>>, ReasonError> {
+) -> Result<Result<Vec<Component<A>>, Verdict>, ReasonError> {
+    let full = || -> Result<Result<Vec<Component<A>>, Verdict>, ReasonError> {
+        Ok(
+            match entails_reporting(&ontology_from(fixed, all_candidates), q)? {
+                Verdict::Entailed => Ok(canonical_order(all_candidates.to_vec())),
+                v => Err(v),
+            },
+        )
+    };
     // Escape hatch / differential-test gate: skip module extraction entirely.
     let no_module = std::env::var_os("RUSTDL_JUSTIFY_NO_MODULE").is_some();
     let Some(seed) = (if no_module {
@@ -1105,8 +1217,7 @@ fn localized_candidates<A: ForIRI>(
         query_seed_signature(q)
     }) else {
         // Not localizable (or disabled): decide on the full set.
-        return Ok(entails(&ontology_from(fixed, all_candidates), q)?
-            .then(|| canonical_order(all_candidates.to_vec())));
+        return full();
     };
     let module = extract_bot_module(all_candidates, &seed);
     if std::env::var_os("RUSTDL_JUSTIFY_DEBUG").is_some() {
@@ -1116,13 +1227,12 @@ fn localized_candidates<A: ForIRI>(
             all_candidates.len()
         );
     }
-    if entails(&ontology_from(fixed, &module), q)? {
-        Ok(Some(canonical_order(module)))
-    } else if entails(&ontology_from(fixed, all_candidates), q)? {
-        // locality bug — safe fallback
-        Ok(Some(canonical_order(all_candidates.to_vec())))
+    if entails_reporting(&ontology_from(fixed, &module), q)? == Verdict::Entailed {
+        Ok(Ok(canonical_order(module)))
     } else {
-        Ok(None) // genuinely not entailed
+        // Entailed here is a locality bug — safe fallback; otherwise genuinely not
+        // entailed, or a give-up.
+        full()
     }
 }
 
@@ -1146,7 +1256,95 @@ fn canonical_order<A: ForIRI>(mut axioms: Vec<Component<A>>) -> Vec<Component<A>
 pub struct Justification<A: ForIRI> {
     pub axioms: Vec<Component<A>>,
     pub fragment: FragmentClassification,
+    /// `true` iff minimality is guaranteed: the fragment is EL/Horn (rustdl
+    /// complete) AND no subset probe of this justification's search gave up
+    /// (#396). Otherwise the set still entails, but may not be minimal.
     pub minimal_guaranteed: bool,
+}
+
+/// The outcome of a justification query with its give-up signal (#396).
+#[derive(Debug, Clone)]
+pub struct JustifyOutcome<A: ForIRI> {
+    /// Whether the query is entailed. `Unknown`: the top-level check gave up, so
+    /// there are no justifications and no non-entailment either.
+    pub status: Verdict,
+    /// The justifications found (empty unless `status` is `Entailed`).
+    pub justifications: Vec<Justification<A>>,
+    /// `true` iff any probe gave up: the top-level one (`status` is `Unknown`), a
+    /// `QuickXplain` subset probe (that justification's `minimal_guaranteed` is
+    /// cleared), or an enumeration branch probe (a justification may be missing).
+    /// Every justification returned still entails the query.
+    pub incomplete: bool,
+}
+
+impl<A: ForIRI> JustifyOutcome<A> {
+    /// The first justification, or `None` (not entailed, or unknown).
+    fn into_first(self) -> Option<Justification<A>> {
+        self.justifications.into_iter().next()
+    }
+}
+
+/// Records whether any probe below the top-level one gave up (#396). Such a
+/// probe answers in its sound direction ("not entailed"), so the search stays
+/// sound, but a justification may be non-minimal or missing.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct GiveUps {
+    pub(crate) gave_up: bool,
+}
+
+impl GiveUps {
+    /// `entails`, recording a give-up.
+    pub(crate) fn entails<A: ForIRI>(
+        &mut self,
+        onto: &SetOntology<A>,
+        q: &Entailment,
+    ) -> Result<bool, ReasonError> {
+        match entails_reporting(onto, q)? {
+            Verdict::Entailed => Ok(true),
+            Verdict::NotEntailed => Ok(false),
+            Verdict::Unknown => {
+                self.gave_up = true;
+                Ok(false)
+            }
+        }
+    }
+}
+
+/// A search's raw result: the top-level verdict, the justifications (each with
+/// whether its own `QuickXplain` gave up), and whether any probe gave up.
+struct Search<A: ForIRI> {
+    status: Verdict,
+    found: Vec<(Vec<Component<A>>, bool)>,
+    gave_up: bool,
+}
+
+impl<A: ForIRI> Search<A> {
+    fn top_level(status: Verdict) -> Self {
+        Self {
+            status,
+            found: Vec::new(),
+            gave_up: false,
+        }
+    }
+
+    fn into_outcome(self, fragment: impl FnOnce() -> FragmentClassification) -> JustifyOutcome<A> {
+        // Classify the fragment only once there is a justification to label: on the
+        // not-entailed path that convert+analyze would be pure waste.
+        let justifications = if self.found.is_empty() {
+            Vec::new()
+        } else {
+            let fragment = fragment();
+            self.found
+                .into_iter()
+                .map(|(axioms, gave_up)| justification(axioms, fragment, gave_up))
+                .collect()
+        };
+        JustifyOutcome {
+            status: self.status,
+            justifications,
+            incomplete: self.status == Verdict::Unknown || self.gave_up,
+        }
+    }
 }
 
 /// Per-ontology state precomputed once and reused across justification queries.
@@ -1186,17 +1384,27 @@ impl<A: ForIRI> PreparedJustifier<A> {
         &self.all_candidates
     }
 
-    /// One minimal justification for `q` (`None` if not entailed), reusing the
-    /// prepared state.
+    /// One minimal justification for `q` (`None` if not entailed, or if a probe
+    /// gave up before deciding — use [`Self::find_one_reporting`] to tell those
+    /// apart), reusing the prepared state.
     ///
     /// # Errors
     /// Propagates [`ReasonError`].
     pub fn find_one(&self, q: &Entailment) -> Result<Option<Justification<A>>, ReasonError> {
-        Ok(search_one(&self.fixed, &self.all_candidates, q)?
-            .map(|axioms| justification(axioms, self.fragment)))
+        Ok(self.find_one_reporting(q)?.into_first())
+    }
+
+    /// [`Self::find_one`] with the give-up signal (#396).
+    ///
+    /// # Errors
+    /// Propagates [`ReasonError`].
+    pub fn find_one_reporting(&self, q: &Entailment) -> Result<JustifyOutcome<A>, ReasonError> {
+        Ok(search_one(&self.fixed, &self.all_candidates, q)?.into_outcome(|| self.fragment))
     }
 
     /// Up to `max` minimal justifications for `q`, reusing the prepared state.
+    /// Empty if not entailed, or if a probe gave up before deciding — use
+    /// [`Self::find_all_reporting`] to tell those apart.
     ///
     /// # Errors
     /// Propagates [`ReasonError`].
@@ -1205,24 +1413,35 @@ impl<A: ForIRI> PreparedJustifier<A> {
         q: &Entailment,
         max: usize,
     ) -> Result<Vec<Justification<A>>, ReasonError> {
-        Ok(search_all(&self.fixed, &self.all_candidates, q, max)?
-            .into_iter()
-            .map(|axioms| justification(axioms, self.fragment))
-            .collect())
+        Ok(self.find_all_reporting(q, max)?.justifications)
+    }
+
+    /// [`Self::find_all`] with the give-up signal (#396).
+    ///
+    /// # Errors
+    /// Propagates [`ReasonError`].
+    pub fn find_all_reporting(
+        &self,
+        q: &Entailment,
+        max: usize,
+    ) -> Result<JustifyOutcome<A>, ReasonError> {
+        Ok(search_all(&self.fixed, &self.all_candidates, q, max)?.into_outcome(|| self.fragment))
     }
 }
 
 fn justification<A: ForIRI>(
     axioms: Vec<Component<A>>,
     fragment: FragmentClassification,
+    gave_up: bool,
 ) -> Justification<A> {
     Justification {
         axioms,
         fragment,
-        minimal_guaranteed: matches!(
-            fragment,
-            FragmentClassification::PureEl | FragmentClassification::Horn
-        ),
+        minimal_guaranteed: !gave_up
+            && matches!(
+                fragment,
+                FragmentClassification::PureEl | FragmentClassification::Horn
+            ),
     }
 }
 
@@ -1232,12 +1451,20 @@ fn search_one<A: ForIRI>(
     fixed: &[Component<A>],
     all_candidates: &[Component<A>],
     q: &Entailment,
-) -> Result<Option<Vec<Component<A>>>, ReasonError> {
+) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
-    let Some(candidates) = localized_candidates(fixed, all_candidates, q)? else {
-        return Ok(None); // not entailed — nothing to justify
+    let candidates = match localized_candidates(fixed, all_candidates, q)? {
+        Ok(candidates) => candidates,
+        // Not entailed (or unknown) — nothing to justify.
+        Err(status) => return Ok(Search::top_level(status)),
     };
-    Ok(Some(quickxplain(fixed, &candidates, q)?))
+    let mut give_ups = GiveUps::default();
+    let j = quickxplain(fixed, &candidates, q, &mut give_ups)?;
+    Ok(Search {
+        status: Verdict::Entailed,
+        found: vec![(j, give_ups.gave_up)],
+        gave_up: give_ups.gave_up,
+    })
 }
 
 /// The HST search over an already-split ontology; see [`search_one`].
@@ -1246,14 +1473,19 @@ fn search_all<A: ForIRI>(
     all_candidates: &[Component<A>],
     q: &Entailment,
     max: usize,
-) -> Result<Vec<Vec<Component<A>>>, ReasonError> {
+) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
     // Narrow to the query's ⊥-module up front: justification-preserving, so the
     // HST below still discovers *every* justification — over a far smaller set.
-    let Some(candidates) = localized_candidates(fixed, all_candidates, q)? else {
-        return Ok(Vec::new()); // not entailed
+    let candidates = match localized_candidates(fixed, all_candidates, q)? {
+        Ok(candidates) => candidates,
+        Err(status) => return Ok(Search::top_level(status)), // not entailed (or unknown)
     };
-    let mut found: Vec<Vec<Component<A>>> = Vec::new();
+    // A branch probe that gives up prunes its branch, so a justification may be
+    // missing; that is recorded in `branch_give_ups`, separately from each
+    // justification's own `QuickXplain`.
+    let mut branch_give_ups = GiveUps::default();
+    let mut found: Vec<(Vec<Component<A>>, bool)> = Vec::new();
     let mut seen: std::collections::HashSet<BTreeSet<Component<A>>> =
         std::collections::HashSet::new();
     // HST worklist: each node is a set of candidate-INDICES removed on the path.
@@ -1272,14 +1504,16 @@ fn search_all<A: ForIRI>(
             .filter(|(i, _)| !removed.contains(i))
             .map(|(_, c)| c.clone())
             .collect();
-        if !entails(&ontology_from(fixed, &subset), q)? {
+        if !branch_give_ups.entails(&ontology_from(fixed, &subset), q)? {
             continue; // this branch cannot yield a justification
         }
-        let j = quickxplain(fixed, &subset, q)?;
+        let mut give_ups = GiveUps::default();
+        let j = quickxplain(fixed, &subset, q, &mut give_ups)?;
+        branch_give_ups.gave_up |= give_ups.gave_up;
         // Record if this justification (as an axiom SET) is new.
         let key: BTreeSet<Component<A>> = j.iter().cloned().collect();
         if seen.insert(key) {
-            found.push(j.clone());
+            found.push((j.clone(), give_ups.gave_up));
         }
         // Branch: remove each justification axiom (by its candidate index).
         for c in &j {
@@ -1290,7 +1524,11 @@ fn search_all<A: ForIRI>(
             }
         }
     }
-    Ok(found)
+    Ok(Search {
+        status: Verdict::Entailed,
+        found,
+        gave_up: branch_give_ups.gave_up,
+    })
 }
 
 /// Find ONE justification for `q` in `onto`, or `Ok(None)` if `onto` does not
@@ -1299,18 +1537,28 @@ fn search_all<A: ForIRI>(
 ///
 /// # Errors
 /// Propagates [`ReasonError`].
+///
+/// A probe that gives up before deciding also yields `Ok(None)`; use
+/// [`find_one_justification_reporting`] to tell that apart from a non-entailment.
 pub fn find_one_justification<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
 ) -> Result<Option<Justification<A>>, ReasonError> {
+    Ok(find_one_justification_reporting(onto, q)?.into_first())
+}
+
+/// [`find_one_justification`] with the give-up signal (#396).
+///
+/// # Errors
+/// Propagates [`ReasonError`].
+pub fn find_one_justification_reporting<A: ForIRI>(
+    onto: &SetOntology<A>,
+    q: &Entailment,
+) -> Result<JustifyOutcome<A>, ReasonError> {
     let (fixed, all_candidates) = logical_axioms(onto);
-    let Some(axioms) = search_one(&fixed, &all_candidates, q)? else {
-        return Ok(None);
-    };
-    // Classify the fragment only once there is a justification to label: on the
-    // not-entailed path that convert+analyze would be pure waste. (A
+    // The fragment is classified only if there is a justification to label. (A
     // [`PreparedJustifier`] amortizes it instead — a single query cannot.)
-    Ok(Some(justification(axioms, fragment_of(onto))))
+    Ok(search_one(&fixed, &all_candidates, q)?.into_outcome(|| fragment_of(onto)))
 }
 
 fn fragment_of<A: ForIRI>(onto: &SetOntology<A>) -> FragmentClassification {
@@ -1322,18 +1570,23 @@ fn fragment_of<A: ForIRI>(onto: &SetOntology<A>) -> FragmentClassification {
 
 /// `QuickXplain` (Junker 2004): minimal `C' ⊆ candidates` with
 /// `fixed ∪ C' ⊨ q`. Precondition: `fixed ∪ candidates ⊨ q`.
+///
+/// A subset probe that gives up reads as "not entailed", which only keeps more
+/// axioms: the result still entails, but may not be minimal. Such a give-up is
+/// recorded in `give_ups` (#396).
 pub(crate) fn quickxplain<A: ForIRI>(
     fixed: &[Component<A>],
     candidates: &[Component<A>],
     q: &Entailment,
+    give_ups: &mut GiveUps,
 ) -> Result<Vec<Component<A>>, ReasonError> {
-    if entails(&ontology_from(fixed, &[]), q)? {
+    if give_ups.entails(&ontology_from(fixed, &[]), q)? {
         return Ok(Vec::new()); // background alone entails ⇒ no candidate needed
     }
     if candidates.len() <= 1 {
         return Ok(candidates.to_vec());
     }
-    qx(fixed, true, candidates, q)
+    qx(fixed, true, candidates, q, give_ups)
 }
 
 /// Find up to `max` minimal justifications for `q` via a Reiter Hitting-Set
@@ -1343,6 +1596,10 @@ pub(crate) fn quickxplain<A: ForIRI>(
 /// HST's DFS traversal order — no particular preference (e.g. smallest) among
 /// them is guaranteed.
 ///
+/// A probe that gives up before deciding also yields `[]`; use
+/// [`find_all_justifications_reporting`] to tell that apart from a
+/// non-entailment, and to learn whether the enumeration lost a branch.
+///
 /// # Errors
 /// Propagates [`ReasonError`].
 pub fn find_all_justifications<A: ForIRI>(
@@ -1350,16 +1607,20 @@ pub fn find_all_justifications<A: ForIRI>(
     q: &Entailment,
     max: usize,
 ) -> Result<Vec<Justification<A>>, ReasonError> {
+    Ok(find_all_justifications_reporting(onto, q, max)?.justifications)
+}
+
+/// [`find_all_justifications`] with the give-up signal (#396).
+///
+/// # Errors
+/// Propagates [`ReasonError`].
+pub fn find_all_justifications_reporting<A: ForIRI>(
+    onto: &SetOntology<A>,
+    q: &Entailment,
+    max: usize,
+) -> Result<JustifyOutcome<A>, ReasonError> {
     let (fixed, all_candidates) = logical_axioms(onto);
-    let found = search_all(&fixed, &all_candidates, q, max)?;
-    if found.is_empty() {
-        return Ok(Vec::new()); // not entailed — nothing to classify the fragment for
-    }
-    let fragment = fragment_of(onto);
-    Ok(found
-        .into_iter()
-        .map(|axioms| justification(axioms, fragment))
-        .collect())
+    Ok(search_all(&fixed, &all_candidates, q, max)?.into_outcome(|| fragment_of(onto)))
 }
 
 /// `delta_nonempty`: whether the most recent addition to `fixed` was non-empty
@@ -1369,8 +1630,9 @@ fn qx<A: ForIRI>(
     delta_nonempty: bool,
     candidates: &[Component<A>],
     q: &Entailment,
+    give_ups: &mut GiveUps,
 ) -> Result<Vec<Component<A>>, ReasonError> {
-    if delta_nonempty && entails(&ontology_from(fixed, &[]), q)? {
+    if delta_nonempty && give_ups.entails(&ontology_from(fixed, &[]), q)? {
         return Ok(Vec::new());
     }
     if candidates.len() == 1 {
@@ -1379,10 +1641,70 @@ fn qx<A: ForIRI>(
     let mid = candidates.len() / 2;
     let (c1, c2) = candidates.split_at(mid);
     let fixed_c1: Vec<Component<A>> = fixed.iter().chain(c1.iter()).cloned().collect();
-    let d2 = qx(&fixed_c1, !c1.is_empty(), c2, q)?;
+    let d2 = qx(&fixed_c1, !c1.is_empty(), c2, q, give_ups)?;
     let fixed_d2: Vec<Component<A>> = fixed.iter().chain(d2.iter()).cloned().collect();
-    let d1 = qx(&fixed_d2, !d2.is_empty(), c1, q)?;
+    let d1 = qx(&fixed_d2, !d2.is_empty(), c1, q, give_ups)?;
     let mut out = d1;
     out.extend(d2);
     Ok(out)
+}
+
+#[cfg(test)]
+mod verdict_tests {
+    use super::{Verdict, guarded};
+    use Verdict::{Entailed, NotEntailed, Unknown};
+
+    const ALL: [Verdict; 3] = [Entailed, NotEntailed, Unknown];
+
+    #[test]
+    fn a_give_up_is_only_a_negative_called_into_question() {
+        assert_eq!(Verdict::from_check(true, false), Entailed);
+        assert_eq!(Verdict::from_check(true, true), Entailed);
+        assert_eq!(Verdict::from_check(false, false), NotEntailed);
+        assert_eq!(Verdict::from_check(false, true), Unknown);
+    }
+
+    #[test]
+    fn and_is_decided_by_a_definite_no_on_either_side() {
+        for a in ALL {
+            for b in ALL {
+                let mut ran = false;
+                let got = a
+                    .and(|| {
+                        ran = true;
+                        Ok(b)
+                    })
+                    .expect("the closure returns Ok");
+                let want = match (a, b) {
+                    (NotEntailed, _) | (_, NotEntailed) => NotEntailed,
+                    (Entailed, Entailed) => Entailed,
+                    _ => Unknown,
+                };
+                assert_eq!(got, want, "{a:?} AND {b:?}");
+                // The second half runs unless the first is a definite no: after a
+                // give-up it may still decide.
+                assert_eq!(ran, a != NotEntailed, "{a:?} AND {b:?}");
+            }
+        }
+    }
+
+    // #396: a data-property guard that gave up ruled out nothing, so the main
+    // probe's "inconsistent" must not become an entailment. On 293dcfd1 the guard
+    // read the give-up as "consistent" and the probe reported
+    // `SubDataPropertyOf(sub, sup)` entailed where HermiT says it is not.
+    #[test]
+    fn a_guard_give_up_never_yields_an_entailment() {
+        for main in ALL {
+            assert_eq!(guarded(false, main), main, "guard decided");
+            assert_ne!(
+                guarded(true, main),
+                Entailed,
+                "guard gave up, main {main:?}"
+            );
+        }
+        assert_eq!(guarded(true, Entailed), Unknown);
+        // A definite "no" from the main probe still decides: it only adds axioms
+        // to the guard's ontology.
+        assert_eq!(guarded(true, NotEntailed), NotEntailed);
+    }
 }

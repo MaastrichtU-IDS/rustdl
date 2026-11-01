@@ -358,19 +358,28 @@ def materialize_existential_successors(path: str) -> list[tuple[str, str, str, s
 
 def justify(path: str, query: list[str]) -> list[str]:
     """One minimal justification (Manchester axioms) for `query`
-    (e.g. ["unsat", c] / ["subclass", s, t] / ["inconsistent"])."""
+    (e.g. ["unsat", c] / ["subclass", s, t] / ["inconsistent"]). Emits
+    `IncompleteQueryWarning` when a reasoner check gave up: an empty list then
+    means unknown, and a justification may not be minimal."""
     ...
 
 def justify_all(path: str, query: list[str], max: int = 10) -> list[list[str]]:
-    """Up to `max` minimal justifications for `query`."""
+    """Up to `max` minimal justifications for `query`. Emits
+    `IncompleteQueryWarning` when a reasoner check gave up (see `justify`;
+    justifications may also be missing)."""
     ...
 
 def diagnose(path: str) -> tuple[bool, list[str], list[tuple[str, list[str]]]]:
-    """(consistent, root_unsat_iris, [(derived_iri, [root_iri, ...]), ...])."""
+    """(consistent, root_unsat_iris, [(derived_iri, [root_iri, ...]), ...]).
+    Emits `IncompleteQueryWarning` when a reasoner check under it gave up
+    (a class's unsatisfiability check, or the consistency check of an
+    all-classes-unsatisfiable ontology)."""
     ...
 
 def repair(path: str, query: list[str], max: int = 10) -> list[list[str]]:
-    """Minimal axiom-removal sets (Manchester) that break `query`."""
+    """Minimal axiom-removal sets (Manchester) that break `query`, each verified.
+    Emits `IncompleteQueryWarning` when a reasoner check gave up: an empty list
+    may then mean unknown, and repairs may be missing."""
     ...
 
 def render_manchester(path: str) -> list[str]:
@@ -383,10 +392,12 @@ class PreparedOntology:
     queries without re-doing that full-ontology work on each call. Use it from
     the thread that created it."""
     def justify(self, query: list[str]) -> list[str]:
-        """One minimal justification (Manchester axioms) for `query`."""
+        """One minimal justification (Manchester axioms) for `query`. Emits
+        `IncompleteQueryWarning` when a reasoner check gave up."""
         ...
     def justify_all(self, query: list[str], max: int = 10) -> list[list[str]]:
-        """Up to `max` minimal justifications for `query`."""
+        """Up to `max` minimal justifications for `query`. Emits
+        `IncompleteQueryWarning` when a reasoner check gave up."""
         ...
 
 def prepare(path: str) -> PreparedOntology:

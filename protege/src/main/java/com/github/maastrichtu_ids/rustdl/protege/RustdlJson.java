@@ -80,7 +80,7 @@ public final class RustdlJson {
     /** `justify --json` top-level payload (docs/json-schema.md). */
     public static final class JustifyJson {
         public int schema_version;
-        public String status;               // "entailed" | "not-entailed"
+        public String status;               // "entailed" | "not-entailed" | "unknown" (#396)
         public boolean enumeration_complete;
         public boolean minimal;             // true iff every justification is subset-minimal-guaranteed
         public boolean laconic;

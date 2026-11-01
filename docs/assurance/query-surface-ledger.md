@@ -16,8 +16,13 @@ instance", "not disjoint", "consistent". That is never a false positive. But it
 is not a verdict either, so the caller must be told. #363: *unknown answers must
 not be silently reported as non-entailment, satisfiability or consistency.*
 
-No surface in this audit turns a give-up into a definite **positive**. Every
-case found was in the miss direction.
+No surface in the #363 audit turned a give-up into a definite **positive**.
+#396 found two that did, both now fixed:
+- `repair` accepted a candidate whose verification probe gave up, i.e. a removal
+  never shown to break the entailment;
+- the data-property guard of `justify subdata-property` / `disjoint-data-property`
+  read its own give-up as "consistent" and could report a non-entailed axiom as
+  entailed.
 
 ## How a give-up is reported
 
@@ -54,6 +59,10 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `disjoint` (classes) | per-pair deadline, node cap | `DisjointClasses::incomplete` | yes | `incomplete` | warns | `disjoint_nodecap.rs` |
 | `individuals` | per-pair deadline, node cap | `incomplete` | yes | `incomplete` | warns | individuals tests |
 | `property-values` (object) | per-pair deadline, node cap; fragment whitelist | `incomplete` | yes | `incomplete` | warns | property-values tests |
+| `justify` (incl. `--all`, `--laconic`) | any probe under it: node cap (`RUSTDL_MAX_NODES`), a cut instance probe, the consistency fallback deadline. Top-level probe → no verdict; a QuickXplain subset probe → non-minimal; an enumeration branch probe → a justification may be missing (#396) | `JustifyOutcome { status: Verdict, incomplete }` from the `*_reporting` finders; `minimal_guaranteed` cleared on a QuickXplain give-up | top level: `unknown`, exit 3; otherwise stderr warning | `status: "unknown"` (exit 3), `incomplete`; `enumeration_complete: false` under `--all` | `justify`, `justify_all`, `PreparedOntology.justify*` warn | `justify_give_up.rs` (CLI, reasoner); `test_justify_give_up.py` |
+| `repair` | as `justify`, plus each candidate's verification probe | `Repairs::incomplete`; `complete` cleared; a candidate whose verification gave up is dropped and counted in `unverified_gave_up` | top level: `unknown`, exit 3; otherwise stderr warning and a note | no `--json` | `repair` warns | same |
+| `diagnose` | the consistency check on an all-classes-unsatisfiable ontology; the justifications under it as `justify` | `Diagnosis::incomplete` | `consistent (NOT witnessed …)` plus stderr warning; per-entailment `unknown` lines | no `--json` | `diagnose`, `debug` warn | same |
+| `report` | everything under it (diagnose, per-root justify and repair) | — (CLI only) | HTML banner, stderr warning | — | — | `report.rs` unit test |
 
 ## Not a give-up, but still a gap (filed)
 
@@ -79,10 +88,7 @@ about its signal, so each is filed rather than fixed here.
   `materialize_inferred_class_assertions`) drop realize's flags. #391.
 - **consistency's trusted wedge `Sat`** is a trust decision, not a cut, and has
   no signal beyond `wedge_clauses_refused`. #392.
-- **justify / repair / diagnose** decide each candidate subset with the bare
-  `is_*` functions, so a probe that gives up reads as "not entailed" and the
-  result can be "no justification" with no signal. A printed justification is
-  still entailed. #396.
+- **`prove`** reads a give-up as "NOT entailed" (the #396 bug class). #402.
 
 ## Rule for changes
 

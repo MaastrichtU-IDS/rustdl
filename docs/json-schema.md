@@ -209,22 +209,31 @@ edges may be missing.
 ## `justify --json`
 
 ```json
-{ "schema_version": 1, "status": "entailed" | "not-entailed",
+{ "schema_version": 1, "status": "entailed" | "not-entailed" | "unknown",
+  "incomplete": bool,
   "enumeration_complete": bool, "minimal": bool, "laconic": bool,
   "justifications": [ { "ofn": ofn_document } ] }
 ```
 
-`status` is `"not-entailed"` iff `justifications` is empty (no query holds
-without at least one justification). `minimal` = every returned
+`status` is `"entailed"` iff `justifications` is non-empty (no query holds
+without at least one justification). `"unknown"` (exit 3) means the top-level
+entailment check gave up (#396), so `justifications` is empty but this is NOT a
+non-entailment. `incomplete` means a probe gave up (the same meaning as in the
+other query JSONs, not classify's deadline-only one): either the top level
+(`"unknown"`), or a probe inside the search. In that case every justification
+still entails, `minimal` is `false` if a justification's own QuickXplain gave
+up, and under `--all` `enumeration_complete` is `false`, since a pruned branch
+may hide a justification. Added in #396 without a `schema_version` bump. `minimal` = every returned
 justification is *guaranteed* minimal (`Justification::minimal_guaranteed`
 across the whole saturator/tableau fragment the query resolved in — some
 SROIQ-only entailments return a sound but not-provably-minimal axiom set,
 e.g. `--all`-independent disjunctive derivations). `laconic` echoes the
 `--laconic` flag (each justification's axioms are weakened to their
 responsible fragment when set). `enumeration_complete` is `true` for the
-default single-justification query; for `--all`, `false` only when the
+default single-justification query; for `--all`, `false` when the
 `--max` cap genuinely truncated the true set (probed via `max + 1`, so a
-returned count that happens to equal `max` is not conflated with a cap).
+returned count that happens to equal `max` is not conflated with a cap), or
+when a probe gave up during the search.
 
 Each `justifications[i].ofn` is a **self-contained OFN ontology document** —
 a fresh ontology holding exactly that justification's axioms (no more, no

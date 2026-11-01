@@ -50,6 +50,28 @@ All notable changes to rustdl are documented here. Format is based on
     (`RUSTDL_DATA_VALUES_ANONYMOUS`).
 
   HermiT agrees on every case it can decide.
+- **`justify`, `repair`, `diagnose` and `report` no longer read a reasoner give-up as "not entailed"
+  (#396).** Each entailment probe under them (node cap `RUSTDL_MAX_NODES`, a cut instance probe, the
+  consistency fallback deadline) folded a give-up into "not entailed" with no signal. At justify's
+  50k cap, 78 of 2,943 sampled ORE `subclass` queries (2.7%, in 16 of 589 ontologies) give up at
+  the top level, and `justify` printed each as "not entailed (no justification)". Now:
+  - a top-level give-up prints `unknown` and exits 3 (`justify --json`: `status: "unknown"`);
+  - a give-up inside the search keeps the sound result, sets the new `justify --json` field
+    `incomplete` (give-up meaning), clears `minimal` for a justification whose QuickXplain gave up,
+    makes `enumeration_complete` false under `--all`, and warns on stderr;
+  - `diagnose` marks an unwitnessed `consistent`; `report` shows a banner;
+  - Python's `justify`, `justify_all`, `repair`, `diagnose`, `debug` and `PreparedOntology.justify*`
+    emit `IncompleteQueryWarning`, with return types unchanged;
+  - Rust: `justify::Verdict`, `entails_reporting`, `JustifyOutcome` and `*_reporting` twins of the
+    justification finders; `Repairs::{incomplete, unverified_gave_up}`; `Diagnosis::incomplete`.
+- **`repair` no longer reports a repair whose verification gave up (#396).** A capped
+  verification probe answered "not entailed", so the candidate was accepted as verified: a claim
+  that removing those axioms breaks the entailment, made without showing it. Such candidates are
+  now dropped and counted in `Repairs::unverified_gave_up`.
+- **`justify subdata-property` / `disjoint-data-property` no longer report an entailment after
+  their consistency guard gives up (#396).** The guard read its own give-up as "consistent", so
+  the main probe's clash (possibly the guard's own) reported a non-entailed axiom as entailed
+  (HermiT confirms the counter-example). The result is now `unknown`.
 - **`classify` no longer ignores nominal identity (#383), `RUSTDL_CLASSIFY_WEDGE_NOMINALS`,
   default ON (`=0` reverts).** The classify wedge was built without nominals, so two nodes that both
   carry `{a}` never merged. `classify` trusts that wedge's `Sat` in its unsat probe and in the

@@ -307,19 +307,45 @@ def is_consistent(path):
     return consistent
 
 
+class TrustedConsistencyWarning(UserWarning):
+    """Raised by `is_class_satisfiable`, `is_subclass_of`,
+    `class_expression_satisfiable` and `class_expression_entailed_subclass` when
+    the answer was computed without the ABox (#401). That is exact when the KB is
+    consistent and has no nominals; here consistency rests on the wedge finding a
+    model it does not prove complete, the same evidence `is_consistent` reports.
+    If that were ever wrong the answer could only be a miss ("satisfiable" / "not
+    subsumed"), never a false positive. Nothing was cut, so this is NOT an
+    `IncompleteQueryWarning`. `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead."""
+
+
+def _warn_if_trusted_consistency(name: str, relies: bool) -> None:
+    if relies:
+        _warnings.warn(
+            f"{name} was answered without the ABox; that relies on the KB being "
+            "consistent, which the wedge found but did not prove "
+            "(see TrustedConsistencyWarning).",
+            TrustedConsistencyWarning,
+            stacklevel=3,
+        )
+
+
 def is_class_satisfiable(path, class_iri):
     """True iff `class_iri` is satisfiable (not ⊑ ⊥). If the probe gave up (node
-    cap), returns `True` and emits `IncompleteQueryWarning`."""
-    sat, incomplete = _is_class_satisfiable_native(path, class_iri)
+    cap), returns `True` and emits `IncompleteQueryWarning`. Emits
+    `TrustedConsistencyWarning` when the answer relies on a trusted consistency
+    verdict."""
+    sat, incomplete, trusted = _is_class_satisfiable_native(path, class_iri)
     _warn_if_query_incomplete("is_class_satisfiable", incomplete)
+    _warn_if_trusted_consistency("is_class_satisfiable", trusted)
     return sat
 
 
 def is_subclass_of(path, sub, sup):
     """True iff `sub ⊑ sup` is entailed. If the probe gave up (node cap), returns
     `False` and emits `IncompleteQueryWarning`."""
-    subsumed, incomplete = _is_subclass_of_native(path, sub, sup)
+    subsumed, incomplete, trusted = _is_subclass_of_native(path, sub, sup)
     _warn_if_query_incomplete("is_subclass_of", incomplete)
+    _warn_if_trusted_consistency("is_subclass_of", trusted)
     return subsumed
 
 
@@ -467,8 +493,9 @@ def class_expression_satisfiable(path, ce):
     w.r.t. the ontology at `path` (`ce` is resolved against the ontology's
     own prefix map, e.g. `:A`). Emits `IncompleteQueryWarning` when the
     verdict is a sound under-approximation (see `IncompleteQueryWarning`)."""
-    holds, incomplete = _class_expression_satisfiable_native(path, ce)
+    holds, incomplete, trusted = _class_expression_satisfiable_native(path, ce)
     _warn_if_query_incomplete("class_expression_satisfiable", incomplete)
+    _warn_if_trusted_consistency("class_expression_satisfiable", trusted)
     return holds
 
 
@@ -477,8 +504,11 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     (both Manchester-syntax class expressions, resolved against the
     ontology's own prefix map). Emits `IncompleteQueryWarning` when the
     verdict is a sound under-approximation (see `IncompleteQueryWarning`)."""
-    holds, incomplete = _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)
+    holds, incomplete, trusted = _class_expression_entailed_subclass_native(
+        path, sub_ce, sup_ce
+    )
     _warn_if_query_incomplete("class_expression_entailed_subclass", incomplete)
+    _warn_if_trusted_consistency("class_expression_entailed_subclass", trusted)
     return holds
 
 
@@ -615,6 +645,7 @@ __all__ = [
     "IncompleteClassificationWarning",
     "IncompleteQueryWarning",
     "StructuralGapWarning",
+    "TrustedConsistencyWarning",
     "classify",
     "classify_bytes",
     "is_consistent",

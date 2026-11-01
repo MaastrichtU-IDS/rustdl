@@ -108,6 +108,9 @@ pub fn find_repairs_prepared<A: ForIRI>(
 
     // Verify each candidate by removing it and re-checking the entailment.
     let (fixed, logical) = (prepared.background(), prepared.logical());
+    // Each check runs on a subset of the prepared ontology, so it can inherit
+    // the parent's single-query consistency verdict (#401).
+    let _consistency = crate::justify::inherited_query_consistency(fixed, logical);
     let mut repairs = Vec::new();
     let mut dropped_unverified = 0usize;
     let mut unverified_gave_up = 0usize;

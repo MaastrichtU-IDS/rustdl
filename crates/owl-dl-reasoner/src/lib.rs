@@ -5727,6 +5727,34 @@ pub fn classify_tbox_only_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_TBOX_ONLY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// `RUSTDL_QUERY_TBOX_ONLY` — **default ON**, `=0` reverts (#401).
+///
+/// The single queries (`sat`, `subclass`, `explain`, `sat-expr`, `subclass-expr`
+/// and their library/Python forms) seeded the full `ABox` into a deadline-free
+/// main tableau. On `pizza.ofn` (31 individuals, no nominals) every such query
+/// ran past 120 CPU-s while `classify` and `consistent` took 0.1 s, and the same
+/// query with the `ABox` stripped took 0.01 s.
+///
+/// With the flag on, a query whose ontology (including the query's own probe
+/// axiom) has an `ABox` and no nominal first settles consistency, cached per
+/// [`PreparedOntology`] (see [`PreparedOntology::query_consistency`]):
+/// - inconsistent: the query answers "unsatisfiable" / "subsumed", as the
+///   seeded tableau would;
+/// - consistent: the probe runs with no `ABox` seed;
+/// - undetermined: the seeded probe runs exactly as before.
+///
+/// **No false positive is possible:** dropping the `ABox` only removes axioms.
+/// **Completeness:** nominal-free SROIQ(D) is closed under disjoint union, so on
+/// a consistent KB with no nominal in the `TBox` or the query, `T ∪ A ⊨ C ⊑ D`
+/// iff `T ⊨ C ⊑ D`. rustdl does not implement the universal role, the one
+/// construct that breaks this (`owl:topObjectProperty` is an ordinary role).
+/// A consistency verdict that rests on a trusted wedge `Sat` is reported through
+/// [`QueryStats::relies_on_trusted_consistency`].
+#[must_use]
+pub fn query_tbox_only_enabled() -> bool {
+    std::env::var_os("RUSTDL_QUERY_TBOX_ONLY").is_none_or(|v| v != "0")
+}
+
 /// Lever 1 (2026-07-20): when the ontology is nominal-free, evaluate the
 /// Horn-shortcircuit FRAGMENT gate on the `TBox` axioms only, ignoring the `ABox`.
 /// An EL/saturator-fragment `TBox` carrying a large `ABox` is otherwise kicked off
@@ -7033,6 +7061,9 @@ const DEEP_SEARCH_STACK_BYTES: usize = 1024 * 1024 * 1024;
 /// query, or did the tableau have to run? Returned alongside the
 /// boolean verdict by the `_with_stats` variants of the public
 /// reasoning entry points.
+// `struct_excessive_bools`: each bool is an independent signal of the public
+// query API (#401 added the fourth); they are not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QueryStats {
     /// `true` iff the EL saturation closure was sufficient to
@@ -7062,6 +7093,14 @@ pub struct QueryStats {
     /// wedge `consistent` can then miss a clash, so this is a completeness signal,
     /// separate from `incomplete` (which means a give-up).
     pub wedge_clauses_refused: usize,
+    /// #401: the verdict was reached with the `ABox` seed dropped
+    /// ([`query_tbox_only_enabled`]), and the consistency that licensed dropping
+    /// it rests on a trusted wedge `Sat`, not on a main-tableau model. The answer
+    /// is then exactly as trustworthy as `consistent`'s own (#392); if that `Sat`
+    /// were ever wrong, the effect is a miss in the sound direction ("satisfiable"
+    /// / "not subsumed"), never a false positive. Not a give-up, so it is separate
+    /// from `incomplete`.
+    pub relies_on_trusted_consistency: bool,
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -7226,6 +7265,7 @@ fn is_class_satisfiable_internal_full(
                 pure_el_mode: pure_el,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
@@ -7237,10 +7277,12 @@ fn is_class_satisfiable_internal_full(
                 pure_el_mode: true,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
-    let (sat, cut) = run_satisfiability_reporting(internal, move |pool| pool.atomic(class_id))?;
+    let (sat, cut, trusted) =
+        run_satisfiability_reporting(internal, move |pool| pool.atomic(class_id))?;
     Ok((
         sat,
         QueryStats {
@@ -7248,6 +7290,7 @@ fn is_class_satisfiable_internal_full(
             pure_el_mode: false,
             incomplete: cut,
             wedge_clauses_refused: 0,
+            relies_on_trusted_consistency: trusted,
         },
     ))
 }
@@ -7439,6 +7482,7 @@ fn is_consistent_internal_full(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
@@ -7471,6 +7515,7 @@ fn is_consistent_internal_full(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
@@ -7486,6 +7531,7 @@ fn is_consistent_internal_full(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
@@ -7511,6 +7557,7 @@ fn is_consistent_internal_full(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
+                    relies_on_trusted_consistency: false,
                 },
             ));
         }
@@ -7532,6 +7579,7 @@ fn is_consistent_internal_full(
                     pure_el_mode: false,
                     incomplete: gave_up,
                     wedge_clauses_refused: refused,
+                    relies_on_trusted_consistency: false,
                 },
             ));
         }
@@ -7549,6 +7597,7 @@ fn is_consistent_internal_full(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
+                    relies_on_trusted_consistency: false,
                 },
             ));
         }
@@ -7623,6 +7672,7 @@ fn is_consistent_internal_full(
             pure_el_mode: false,
             incomplete,
             wedge_clauses_refused: refused,
+            relies_on_trusted_consistency: false,
         },
     ))
 }
@@ -7995,6 +8045,7 @@ fn is_subclass_of_internal_full(
         pure_el_mode: pure_el,
         incomplete: false,
         wedge_clauses_refused: 0,
+        relies_on_trusted_consistency: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -8033,12 +8084,13 @@ fn is_subclass_of_internal_full(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
-    let (sat, cut) = run_satisfiability_reporting(internal, move |pool| {
+    let (sat, cut, trusted) = run_satisfiability_reporting(internal, move |pool| {
         let sub_concept = pool.atomic(sub_id);
         let super_concept = pool.atomic(super_id);
         let not_super = pool.not(super_concept);
@@ -8051,6 +8103,7 @@ fn is_subclass_of_internal_full(
             pure_el_mode: false,
             incomplete: cut,
             wedge_clauses_refused: 0,
+            relies_on_trusted_consistency: trusted,
         },
     ))
 }
@@ -8073,6 +8126,74 @@ pub fn single_query_node_cap() -> owl_dl_tableau::NodeCapOverride {
     owl_dl_tableau::NodeCapOverride::enter(owl_dl_tableau::query_max_nodes())
 }
 
+thread_local! {
+    /// #401: a consistency verdict inherited from a parent ontology, as
+    /// `Some(trusted)`; see [`assume_query_consistency`].
+    static INHERITED_QUERY_CONSISTENCY: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// #401: the single-query consistency verdict for `ontology`, settled with the
+/// same bounded routes [`is_class_satisfiable`] uses before it drops the `ABox`
+/// seed. `Some(trusted)` iff the ontology is definitely consistent (`trusted`:
+/// the only evidence is a wedge `Sat`); `None` when it is inconsistent or
+/// undetermined.
+///
+/// For callers that probe many SUBSETS of one ontology (`justify`, `repair`):
+/// consistency is monotone, so every subset of a consistent KB is consistent.
+/// Settle the parent once here and hold [`assume_query_consistency`] around the
+/// probes, so each one does not pay the consistency step again.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn query_consistency_verdict<A: ForIRI>(
+    ontology: &SetOntology<A>,
+) -> Result<Option<bool>, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    // Nothing to settle when the queries would keep the `ABox` anyway; this
+    // also spares callers the prepare below.
+    if !query_tbox_only_enabled()
+        || !internal_has_abox(&internal)
+        || ontology_uses_nominals(&internal)
+    {
+        return Ok(None);
+    }
+    let prepared = PreparedOntology::from_internal(internal)?;
+    Ok(match prepared.query_consistency()? {
+        QueryConsistency::Consistent { trusted } => Some(trusted),
+        QueryConsistency::Inconsistent | QueryConsistency::Undetermined => None,
+    })
+}
+
+/// #401: while the returned guard lives, the single queries on this thread treat
+/// their ontology as consistent, with `trusted` reported as
+/// [`QueryStats::relies_on_trusted_consistency`], instead of settling consistency
+/// themselves. Pass the `Some(trusted)` from [`query_consistency_verdict`] on a
+/// PARENT ontology and query only its subsets; do not hold it when the parent's
+/// verdict was `None`.
+///
+/// Misuse cannot produce a false positive: a wrong "consistent" only makes the
+/// queries drop the `ABox`, and dropping axioms can only lose entailments. The
+/// `ABox` is still kept whenever the queried ontology has a nominal.
+#[must_use = "the inherited verdict lasts only while the guard is alive"]
+pub fn assume_query_consistency(trusted: bool) -> AssumedQueryConsistency {
+    let prior = INHERITED_QUERY_CONSISTENCY.with(|c| c.replace(Some(trusted)));
+    AssumedQueryConsistency { prior }
+}
+
+/// Guard returned by [`assume_query_consistency`]; restores the previous state on
+/// drop.
+pub struct AssumedQueryConsistency {
+    prior: Option<bool>,
+}
+
+impl Drop for AssumedQueryConsistency {
+    fn drop(&mut self) {
+        INHERITED_QUERY_CONSISTENCY.with(|c| c.set(self.prior));
+    }
+}
+
 /// Shared end-of-pipeline runner: takes a (possibly mutated)
 /// `InternalOntology`, runs the full normalize/absorb/`ABox`-seed
 /// pipeline once, and asks the tableau whether `build_test_concept`
@@ -8090,23 +8211,26 @@ pub fn single_query_node_cap() -> owl_dl_tableau::NodeCapOverride {
 /// tableau run, so the concept it returns is guaranteed to live in
 /// the pool the tableau will use.
 ///
-/// Returns `(sat, cut)`. On a deadline-free run the only give-up is a
-/// live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4); early abandon is armed only
-/// under a deadline. A cut keeps the sound direction (`sat = true`, so "not
-/// subsumed" / "not an instance") and sets `cut`, which callers report as
+/// Returns `(sat, cut, relies_on_trusted)`. On a deadline-free run the only
+/// give-up is a live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4); early abandon is
+/// armed only under a deadline. A cut keeps the sound direction (`sat = true`, so
+/// "not subsumed" / "not an instance") and sets `cut`, which callers report as
 /// [`QueryStats::incomplete`] (#363 A2). There is deliberately no variant that
-/// folds the cut away.
+/// folds the cut away. The probe drops the `ABox` seed where it provably cannot
+/// matter (#401, [`PreparedOntology::decide_query_raw`]); `relies_on_trusted` is
+/// reported as [`QueryStats::relies_on_trusted_consistency`].
 pub(crate) fn run_satisfiability_reporting<F>(
     internal: InternalOntology,
     build_test_concept: F,
-) -> Result<(bool, bool), ReasonError>
+) -> Result<(bool, bool, bool), ReasonError>
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
     let prepared = PreparedOntology::from_internal(internal)?;
-    Ok(match prepared.decide_raw(build_test_concept)? {
-        Some(sat) => (sat, false),
-        None => (true, true),
+    let (verdict, trusted) = prepared.decide_query_raw(build_test_concept)?;
+    Ok(match verdict {
+        Some(sat) => (sat, false, trusted),
+        None => (true, true, trusted),
     })
 }
 
@@ -8485,6 +8609,18 @@ mod stall_gauge_tests {
     }
 }
 
+/// #401: the consistency verdict behind [`PreparedOntology::decide_query_raw`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryConsistency {
+    /// Provably inconsistent.
+    Inconsistent,
+    /// Consistent. `trusted` is set when the only evidence is a wedge `Sat` (the
+    /// wedge is not proven complete), and clear when the main tableau confirmed it.
+    Consistent { trusted: bool },
+    /// No bounded route decided it; the single queries keep the `ABox` seed.
+    Undetermined,
+}
+
 pub(crate) struct PreparedOntology {
     /// #139 adaptive stall-tail gauge; see [`StallTailGauge`]. Runtime state
     /// with interior mutability, deliberately NOT part of the snapshot
@@ -8520,6 +8656,13 @@ pub(crate) struct PreparedOntology {
     /// completion-graph blow-up it causes on near-EL `ABox`-bearing ontologies.
     /// `abox` is still kept full for `realize`/`materialize`/consistency.
     abox_irrelevant_to_classify: bool,
+    /// #401: the input has `ABox` axioms and no nominal ([`ontology_uses_nominals`]),
+    /// independent of the classify gate. The single queries may skip the `ABox`
+    /// seed only when this holds.
+    query_abox_droppable: bool,
+    /// #401: the consistency verdict the single queries rely on, settled at
+    /// most once per prepared ontology ([`Self::query_consistency`]).
+    query_consistency: std::sync::OnceLock<QueryConsistency>,
     /// EL saturator closure over the un-mutated input ontology.
     /// Used by [`abox_check`] (P1 `is_unsatisfiable`, P2 `subsumers_of`).
     /// Computed once at build time; classify already computes the same
@@ -9162,9 +9305,9 @@ impl PreparedOntology {
         let vocabulary = internal.vocabulary.clone();
         // Lever A: decide up front (on the un-mutated input) whether the ABox is
         // irrelevant to class subsumption — has-ABox, no nominals, gate on.
-        let abox_irrelevant_to_classify = classify_tbox_only_enabled()
-            && internal_has_abox(&internal)
-            && !ontology_uses_nominals(&internal);
+        let query_abox_droppable =
+            internal_has_abox(&internal) && !ontology_uses_nominals(&internal);
+        let abox_irrelevant_to_classify = classify_tbox_only_enabled() && query_abox_droppable;
         // Phase A1 (ABox consistency check): EL closure over the
         // un-mutated input. Used by abox_check for P1 (is_unsatisfiable)
         // and P2 (subsumers_of).
@@ -9295,6 +9438,8 @@ impl PreparedOntology {
             abox,
             tbox_individuals,
             abox_irrelevant_to_classify,
+            query_abox_droppable,
+            query_consistency: std::sync::OnceLock::new(),
             closure,
             told,
             axioms,
@@ -9554,6 +9699,104 @@ impl PreparedOntology {
             None,
             build_test_concept,
         )
+    }
+
+    /// #401: the consistency verdict the single queries rely on before they drop
+    /// the `ABox` seed. Settled at most once per prepared ontology, and only when
+    /// a query asks for it, so callers that never reach the seeded tableau pay
+    /// nothing.
+    ///
+    /// Uses only bounded routes: the saturator and `abox_check` verdicts already
+    /// on this prepared ontology, then the `ABox`-seeded consistency wedge under
+    /// [`consistency_fallback_ms`] (with the #344 data-counting verification where
+    /// it applies). It deliberately skips `consistent`'s main-tableau fall-through
+    /// and the #182 component retry: anything they would have decided is
+    /// [`QueryConsistency::Undetermined`] here, which keeps today's seeded path.
+    pub(crate) fn query_consistency(&self) -> Result<QueryConsistency, ReasonError> {
+        use owl_dl_tableau::hyper::HyperResult;
+        if let Some(trusted) = INHERITED_QUERY_CONSISTENCY.with(std::cell::Cell::get) {
+            return Ok(QueryConsistency::Consistent { trusted });
+        }
+        if let Some(v) = self.query_consistency.get() {
+            return Ok(*v);
+        }
+        let verdict = if self
+            .closure
+            .as_ref()
+            .is_some_and(saturation_says_inconsistent)
+            || matches!(
+                self.abox_verdict(),
+                abox_check::AboxVerdict::Inconsistent { .. }
+            ) {
+            QueryConsistency::Inconsistent
+        } else {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(consistency_fallback_ms());
+            match self.consistency_wedge(Some(deadline)) {
+                Some(HyperResult::Unsat) => QueryConsistency::Inconsistent,
+                Some(HyperResult::Sat) if self.wedge_sat_skips_data_counting => {
+                    match self.verify_wedge_sat(None)? {
+                        (false, _) => QueryConsistency::Inconsistent,
+                        // The main tableau confirmed the wedge's model.
+                        (true, false) => QueryConsistency::Consistent { trusted: false },
+                        (true, true) => QueryConsistency::Undetermined,
+                    }
+                }
+                Some(HyperResult::Sat) => QueryConsistency::Consistent { trusted: true },
+                Some(HyperResult::Stalled) | None => QueryConsistency::Undetermined,
+            }
+        };
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!("query consistency (#401): {verdict:?}");
+        }
+        Ok(*self.query_consistency.get_or_init(|| verdict))
+    }
+
+    /// #401: [`Self::decide_raw`] for the single queries, dropping the `ABox`
+    /// seed where it provably cannot change the answer (see
+    /// [`query_tbox_only_enabled`]). Returns `(verdict, relies_on_trusted)`:
+    /// `verdict` is as in [`Self::decide_raw`] (`None` is a node-cap give-up), and
+    /// `relies_on_trusted` is set when the `ABox` was dropped on the strength of a
+    /// trusted wedge `Sat`.
+    pub(crate) fn decide_query_raw<F>(
+        &self,
+        build_test_concept: F,
+    ) -> Result<(Option<bool>, bool), ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        if !query_tbox_only_enabled() || !self.query_abox_droppable {
+            return Ok((self.decide_raw(build_test_concept)?, false));
+        }
+        match self.query_consistency()? {
+            // An inconsistent KB makes every concept unsatisfiable, which is what
+            // the seeded tableau answers too.
+            QueryConsistency::Inconsistent => Ok((Some(false), false)),
+            QueryConsistency::Consistent { trusted } => {
+                if std::env::var_os("RUSTDL_TRACE").is_some() {
+                    eprintln!("query (#401): ABox seed skipped (consistent, no nominals)");
+                }
+                let verdict = decide(
+                    &self.pool,
+                    &self.tbox,
+                    &self.hierarchy,
+                    &self.inverse_pairs,
+                    &self.chain_axioms,
+                    &self.asymmetric_roles,
+                    &self.disjoint_role_pairs,
+                    &self.complements,
+                    &Abox::default(),
+                    &[],
+                    &[],
+                    &self.dkey_ranges,
+                    &self.tableau_id,
+                    None,
+                    build_test_concept,
+                )?;
+                Ok((verdict, trusted))
+            }
+            QueryConsistency::Undetermined => Ok((self.decide_raw(build_test_concept)?, false)),
+        }
     }
 
     /// Satisfiability of `⊤` for the CONSISTENCY question: like

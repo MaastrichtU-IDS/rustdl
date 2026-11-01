@@ -89,6 +89,18 @@ about its signal, so each is filed rather than fixed here.
 - **consistency's trusted wedge `Sat`** is a trust decision, not a cut, and has
   no signal beyond `wedge_clauses_refused`. #392.
 - **`prove`** reads a give-up as "NOT entailed" (the #396 bug class). #402.
+- **single queries that drop the `ABox` (#401)**: `sat`, `subclass`, `explain`,
+  `sat-expr` and `subclass-expr` drop the `ABox` seed when the ontology and the
+  query have no nominal and the KB is consistent (`RUSTDL_QUERY_TBOX_ONLY`,
+  default on). That is exact by disjoint-union closure of nominal-free SROIQ(D)
+  (rustdl has no universal role, the one construct that breaks it), and dropping
+  axioms can never add an entailment. When consistency rests on a trusted wedge
+  `Sat` (#392) the answer inherits that trust, so it has its own signal:
+  `QueryStats::relies_on_trusted_consistency`, `relies_on_trusted_consistency` in
+  `sat-expr`/`subclass-expr --json`, a stderr note in CLI text mode, and Python
+  `TrustedConsistencyWarning`. Not folded into `incomplete`. An undetermined
+  consistency keeps the seeded path. Pinned by `query_tbox_only.rs`,
+  `query_tbox_only_cli.rs`, `test_query_tbox_only.py`.
 
 ## Rule for changes
 

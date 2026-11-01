@@ -254,6 +254,13 @@ pub(crate) struct DisjointJson {
 pub(crate) struct SatExprJson {
     pub(crate) schema_version: u32,
     pub(crate) incomplete: bool,
+    /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
+    /// affect the answer: the ontology and the expression have no nominal), and
+    /// the consistency that licensed dropping it rests on a trusted wedge `Sat`
+    /// rather than a main-tableau model, as `consistent`'s own answer does. A
+    /// wrong `Sat` there could only make the answer a miss, never a false
+    /// positive. Separate from `incomplete`; not a give-up.
+    pub(crate) relies_on_trusted_consistency: bool,
     pub(crate) satisfiable: bool,
 }
 
@@ -261,6 +268,13 @@ pub(crate) struct SatExprJson {
 pub(crate) struct SubclassExprJson {
     pub(crate) schema_version: u32,
     pub(crate) incomplete: bool,
+    /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
+    /// affect the answer: the ontology and the expression have no nominal), and
+    /// the consistency that licensed dropping it rests on a trusted wedge `Sat`
+    /// rather than a main-tableau model, as `consistent`'s own answer does. A
+    /// wrong `Sat` there could only make the answer a miss, never a false
+    /// positive. Separate from `incomplete`; not a give-up.
+    pub(crate) relies_on_trusted_consistency: bool,
     pub(crate) entailed: bool,
 }
 
@@ -276,6 +290,7 @@ pub(crate) fn build_sat_expr_json(v: owl_dl_reasoner::CeVerdict) -> SatExprJson 
     SatExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: v.incomplete(),
+        relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         satisfiable: v.holds(),
     }
 }
@@ -285,6 +300,7 @@ pub(crate) fn build_subclass_expr_json(v: owl_dl_reasoner::CeVerdict) -> Subclas
     SubclassExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: v.incomplete(),
+        relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         entailed: v.holds(),
     }
 }

@@ -1016,6 +1016,23 @@ fn warn_if_incomplete(
     }
 }
 
+/// #401: the verdict was reached with the `ABox` seed dropped, on the strength of
+/// a trusted wedge `Sat` for consistency. Not a give-up: the answer stands and the
+/// exit code is unchanged; this only says what it rests on.
+fn note_trusted_consistency(stats: &owl_dl_reasoner::QueryStats) {
+    note_trusted_consistency_flag(stats.relies_on_trusted_consistency);
+}
+
+fn note_trusted_consistency_flag(relies: bool) {
+    if relies {
+        eprintln!(
+            "note: answered without the ABox, which cannot affect it here (no nominals); \
+             that relies on the KB being consistent, which the wedge found but did not \
+             prove (as `rustdl consistent` does). RUSTDL_QUERY_TBOX_ONLY=0 seeds the ABox."
+        );
+    }
+}
+
 /// A `sat` / `subclass` probe tripped the live-node cap: there is no verdict.
 /// Print `unknown`, explain on stderr and exit 3, the convention `consistent`
 /// uses for a give-up (#363 A2).
@@ -1909,6 +1926,7 @@ fn main() -> Result<()> {
             if stats.incomplete {
                 exit_unknown_node_cap();
             }
+            note_trusted_consistency(&stats);
             println!("{}", if verdict { "sat" } else { "unsat" });
         }
         Command::Subclass {
@@ -1929,6 +1947,7 @@ fn main() -> Result<()> {
                 if stats.incomplete {
                     exit_unknown_node_cap();
                 }
+                note_trusted_consistency(&stats);
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
@@ -2029,6 +2048,7 @@ fn main() -> Result<()> {
             if v.incomplete() {
                 eprintln!("warning: verdict is a sound under-approximation (incomplete)");
             }
+            note_trusted_consistency_flag(v.relies_on_trusted_consistency());
         }
         Command::SubclassExpr {
             file,
@@ -2053,6 +2073,7 @@ fn main() -> Result<()> {
             if v.incomplete() {
                 eprintln!("warning: verdict is a sound under-approximation (incomplete)");
             }
+            note_trusted_consistency_flag(v.relies_on_trusted_consistency());
         }
         Command::InstancesExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
@@ -2156,6 +2177,7 @@ fn main() -> Result<()> {
                 );
                 std::process::exit(3);
             }
+            note_trusted_consistency(&stats);
             println!(
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },

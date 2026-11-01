@@ -42,6 +42,23 @@ All notable changes to rustdl are documented here. Format is based on
   wedge answers first; reachable when the main tableau decides a pair (e.g.
   `RUSTDL_HYPERTABLEAU=0`). Both matches in the predicate are now exhaustive. No ORE ontology
   is affected.
+- **`sat`, `subclass`, `explain`, `sat-expr` and `subclass-expr` no longer hang on an
+  `ABox`-bearing ontology without nominals (#401).** They seeded the whole `ABox` into a
+  deadline-free main tableau. On `pizza.ofn` (31 individuals, no nominals) each query ran past
+  120 CPU-s while `classify` and `consistent` took 0.1 s. When neither the ontology nor the
+  query has a nominal, they now settle consistency first (bounded: the saturator and
+  `abox_check` verdicts, then the `ABox`-seeded wedge under the 10 s fallback budget). On a
+  consistent KB the probe runs without the `ABox`, which is exact (disjoint-union closure of
+  nominal-free SROIQ(D)); on an inconsistent one the answer is "unsatisfiable" / "subsumed";
+  if consistency is undetermined, the seeded probe runs as before. `RUSTDL_QUERY_TBOX_ONLY`,
+  default ON, `=0` reverts.
+  - New signal, separate from `incomplete`: when consistency rests on a trusted wedge `Sat`,
+    `QueryStats::relies_on_trusted_consistency` is set, `sat-expr`/`subclass-expr --json`
+    report `relies_on_trusted_consistency`, the CLI prints a stderr note, and Python emits
+    `TrustedConsistencyWarning`.
+  - New API for callers that probe subsets of one ontology (`justify`, `repair`):
+    `query_consistency_verdict` settles the parent once and `assume_query_consistency`
+    lets the subset probes inherit it.
 - **The structural property surfaces derive what their own axioms entail (#389, #390).** Each
   fix has its own flag, default ON (`=0` reverts):
   - `SymmetricObjectProperty(p)` makes `p ≡ p⁻`, so with `InverseObjectProperties(p q)` it

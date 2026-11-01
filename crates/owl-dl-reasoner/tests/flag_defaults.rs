@@ -511,6 +511,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_QUERY_TBOX_ONLY",
+            owl_dl_reasoner::query_tbox_only_enabled,
+            true,
+        ),
+        (
             "RUSTDL_COUNTING_PAIR_VERIFY",
             owl_dl_reasoner::counting_pair_verify_enabled,
             true,

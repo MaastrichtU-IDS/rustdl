@@ -1445,6 +1445,24 @@ fn justification<A: ForIRI>(
     }
 }
 
+/// #401: settle the parent ontology's single-query consistency once, and let
+/// every subset probe of this search inherit it. Consistency is monotone, so a
+/// subset of a consistent KB is consistent; without this each probe would settle
+/// it again (up to the wedge's 10 s budget). `None` when there is nothing to
+/// inherit (an `ABox`-free or nominal-bearing parent, or an inconsistent or
+/// undetermined one), and the probes then decide for themselves as before. An
+/// error settling it also means "nothing to inherit": the probes report their
+/// own errors as they always did.
+pub(crate) fn inherited_query_consistency<A: ForIRI>(
+    fixed: &[Component<A>],
+    all_candidates: &[Component<A>],
+) -> Option<crate::AssumedQueryConsistency> {
+    crate::query_consistency_verdict(&ontology_from(fixed, all_candidates))
+        .ok()
+        .flatten()
+        .map(crate::assume_query_consistency)
+}
+
 /// The `QuickXplain` search over an already-split ontology: axioms only, no
 /// fragment classification, so callers that don't have one yet can stay lazy.
 fn search_one<A: ForIRI>(
@@ -1453,6 +1471,7 @@ fn search_one<A: ForIRI>(
     q: &Entailment,
 ) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    let _consistency = inherited_query_consistency(fixed, all_candidates);
     let candidates = match localized_candidates(fixed, all_candidates, q)? {
         Ok(candidates) => candidates,
         // Not entailed (or unknown) — nothing to justify.
@@ -1475,6 +1494,7 @@ fn search_all<A: ForIRI>(
     max: usize,
 ) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    let _consistency = inherited_query_consistency(fixed, all_candidates);
     // Narrow to the query's ⊥-module up front: justification-preserving, so the
     // HST below still discovers *every* justification — over a far smaller set.
     let candidates = match localized_candidates(fixed, all_candidates, q)? {

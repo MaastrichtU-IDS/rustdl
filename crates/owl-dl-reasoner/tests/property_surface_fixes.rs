@@ -6,6 +6,7 @@
 //! Run: `cargo test -p owl-dl-reasoner --test property_surface_fixes`
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::doc_markdown)]
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -333,4 +334,46 @@ fn a_value_on_an_anonymous_individual_reaches_its_named_equal() {
     assert!(values("DataPropertyAssertion(:d _:x \"1\"^^xsd:integer)").is_empty());
     let _off = SetEnv::new("RUSTDL_DATA_VALUES_ANONYMOUS", "0");
     assert!(values(body).is_empty());
+}
+
+// ── classify_property_hierarchies ───────────────────────────────────────────
+
+/// The one-pass report gives exactly what the three separate calls give.
+#[test]
+fn the_combined_report_matches_the_separate_calls() {
+    let _l = lock();
+    for body in [
+        "SymmetricObjectProperty(:p)\nInverseObjectProperties(:p :q)\nSubDataPropertyOf(:d :e)",
+        "SubObjectPropertyOf(:r :s)\nFunctionalObjectProperty(:s)\nObjectPropertyDomain(:p owl:Nothing)",
+        "SubObjectPropertyOf(:p owl:bottomObjectProperty)\nSubDataPropertyOf(:d :e)\nFunctionalDataProperty(:e)",
+    ] {
+        let o = onto(body);
+        let h = owl_dl_reasoner::classify_property_hierarchies(&o).unwrap();
+        let obj = owl_dl_reasoner::classify_object_property_hierarchy(&o).unwrap();
+        let data = owl_dl_reasoner::classify_data_property_hierarchy(&o).unwrap();
+        assert_eq!(
+            h.object.direct_subsumptions(),
+            obj.direct_subsumptions(),
+            "{body}"
+        );
+        assert_eq!(
+            h.object.equivalent_groups(),
+            obj.equivalent_groups(),
+            "{body}"
+        );
+        assert_eq!(
+            h.data.direct_subsumptions(),
+            data.direct_subsumptions(),
+            "{body}"
+        );
+        assert_eq!(
+            h.gaps,
+            owl_dl_reasoner::property_structural_gaps(&o).unwrap(),
+            "{body}"
+        );
+    }
+    // An inconsistent KB (one the query guard detects) errors the same way.
+    let o = onto("SubClassOf(:A owl:Nothing)\nClassAssertion(:A :a)");
+    assert!(owl_dl_reasoner::classify_property_hierarchies(&o).is_err());
+    assert!(owl_dl_reasoner::classify_object_property_hierarchy(&o).is_err());
 }

@@ -1818,13 +1818,9 @@ fn main() -> Result<()> {
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
-            let obj = owl_dl_reasoner::classify_object_property_hierarchy(&onto)
-                .context("classify_object_property_hierarchy")?;
-            let data = owl_dl_reasoner::classify_data_property_hierarchy(&onto)
-                .context("classify_data_property_hierarchy")?;
-            let gaps = owl_dl_reasoner::property_structural_gaps(&onto)
-                .context("property_structural_gaps")?
-                .hierarchy();
+            let h = owl_dl_reasoner::classify_property_hierarchies(&onto)
+                .context("classify_property_hierarchies")?;
+            let (obj, data, gaps) = (h.object, h.data, h.gaps.hierarchy());
             if json {
                 println!(
                     "{}",

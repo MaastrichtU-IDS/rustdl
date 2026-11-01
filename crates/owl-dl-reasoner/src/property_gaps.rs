@@ -228,10 +228,22 @@ fn has_strict_sub<T: Ord + Clone>(edges: &BTreeSet<(T, T)>, t: &T) -> bool {
 /// # Errors
 /// [`ReasonError::Conversion`] if the ontology cannot be lowered (the EL
 /// saturation used for the `empty-property` check needs it).
-#[allow(clippy::too_many_lines)]
 pub fn property_structural_gaps<A: ForIRI>(
     onto: &SetOntology<A>,
 ) -> Result<PropertyStructuralGaps, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(onto)?;
+    let closure = owl_dl_saturation::saturate(&internal);
+    Ok(gaps_with(onto, &internal, &closure))
+}
+
+/// [`property_structural_gaps`] over an already converted ontology and its EL
+/// closure, for callers that built both anyway.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn gaps_with<A: ForIRI>(
+    onto: &SetOntology<A>,
+    internal: &owl_dl_core::ontology::InternalOntology,
+    closure: &owl_dl_saturation::Subsumers,
+) -> PropertyStructuralGaps {
     let oedges = object_edges(onto);
     let dedges = data_edges(onto);
     let mut f = CeFacts::default();
@@ -488,7 +500,13 @@ pub fn property_structural_gaps<A: ForIRI>(
     bounded_data.extend(f.data_bounded.iter().cloned());
 
     // ── empty properties ─────────────────────────────────────────────────────
-    let unsat_class = unsat_classes(onto)?;
+    let unsat_class = |iri: &str| {
+        iri == NOTHING
+            || internal
+                .vocabulary
+                .class_id(iri)
+                .is_some_and(|c| closure.is_unsatisfiable(c))
+    };
     let obj_empty = obj_domain_range_nothing.iter().next().is_some()
         || obj_domain_range_class.iter().any(|(_, c)| unsat_class(c))
         || symmetric.iter().any(|p| asymmetric.contains(p))
@@ -561,7 +579,8 @@ pub fn property_structural_gaps<A: ForIRI>(
     if !down && obj_disjoint_sets.iter().flatten().any(|m| m.1) {
         od.insert("object-disjoint-inverse-member");
     }
-    if !asymmetric.is_empty() && !(down && crate::property_asymmetric_disjoint_enabled()) {
+    let asymmetric_covered = down && crate::property_asymmetric_disjoint_enabled();
+    if !asymmetric.is_empty() && !asymmetric_covered {
         od.insert("object-asymmetric");
     }
     let obj_constrained = f
@@ -631,13 +650,13 @@ pub fn property_structural_gaps<A: ForIRI>(
     }
 
     let to_vec = |s: BTreeSet<&str>| s.into_iter().map(str::to_string).collect::<Vec<_>>();
-    Ok(PropertyStructuralGaps {
+    PropertyStructuralGaps {
         object_hierarchy: to_vec(oh),
         data_hierarchy: to_vec(dh),
         object_disjoint: to_vec(od),
         data_disjoint: to_vec(dd),
         data_values: to_vec(dv),
-    })
+    }
 }
 
 fn note_domain_range<A: ForIRI>(
@@ -676,21 +695,5 @@ fn derives_self_disjoint<T: Ord + Clone>(edges: &BTreeSet<(T, T)>, sets: &[Vec<T
             }
         }
         false
-    })
-}
-
-/// Named classes the EL saturation proves unsatisfiable. Sound (the saturation
-/// never derives a false `⊥`); incomplete outside its fragment. Looks a named
-/// class up by IRI: the closure also holds synthetic classes (markers, Tseitin
-/// names) that have no IRI.
-fn unsat_classes<A: ForIRI>(onto: &SetOntology<A>) -> Result<impl Fn(&str) -> bool, ReasonError> {
-    let internal = owl_dl_core::convert::convert_ontology(onto)?;
-    let closure = owl_dl_saturation::saturate(&internal);
-    Ok(move |iri: &str| {
-        iri == NOTHING
-            || internal
-                .vocabulary
-                .class_id(iri)
-                .is_some_and(|c| closure.is_unsatisfiable(c))
     })
 }

@@ -5,6 +5,7 @@
 //! Run: `cargo test -p owl-dl-reasoner --test property_structural_gaps`
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::doc_markdown)]
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;

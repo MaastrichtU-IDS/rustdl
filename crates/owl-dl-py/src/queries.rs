@@ -138,11 +138,11 @@ pub(crate) fn object_property_hierarchy(
     path: &str,
 ) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>, Vec<String>)> {
     let o = load::load_path(path)?;
-    let c = owl_dl_reasoner::classify_object_property_hierarchy(&o).map_err(reason_error_to_py)?;
+    let h = owl_dl_reasoner::classify_property_hierarchies(&o).map_err(reason_error_to_py)?;
     Ok((
-        c.equivalent_groups().to_vec(),
-        c.direct_subsumptions().to_vec(),
-        gaps(&o)?.object_hierarchy().to_vec(),
+        h.object.equivalent_groups().to_vec(),
+        h.object.direct_subsumptions().to_vec(),
+        h.gaps.object_hierarchy().to_vec(),
     ))
 }
 
@@ -154,11 +154,11 @@ pub(crate) fn data_property_hierarchy(
     path: &str,
 ) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>, Vec<String>)> {
     let o = load::load_path(path)?;
-    let c = owl_dl_reasoner::classify_data_property_hierarchy(&o).map_err(reason_error_to_py)?;
+    let h = owl_dl_reasoner::classify_property_hierarchies(&o).map_err(reason_error_to_py)?;
     Ok((
-        c.equivalent_groups().to_vec(),
-        c.direct_subsumptions().to_vec(),
-        gaps(&o)?.data_hierarchy().to_vec(),
+        h.data.equivalent_groups().to_vec(),
+        h.data.direct_subsumptions().to_vec(),
+        h.gaps.data_hierarchy().to_vec(),
     ))
 }
 

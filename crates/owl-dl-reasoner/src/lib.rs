@@ -82,6 +82,7 @@ pub use laconic::{find_all_laconic_justifications, find_laconic_justification};
 pub use property_classify::{
     PropertyClassification, classify_data_property_hierarchy, classify_object_property_hierarchy,
 };
+pub use property_classify::{PropertyHierarchies, classify_property_hierarchies};
 pub use property_closure::{
     property_asymmetric_disjoint_enabled, property_disjoint_down_enabled,
     property_symmetric_enabled, property_top_bottom_enabled, property_unit_chain_enabled,
@@ -3295,22 +3296,31 @@ pub(crate) fn query_kb_inconsistent(internal: &InternalOntology) -> bool {
 /// The part of [`query_kb_inconsistent`] beyond the `ABox` saturation, for callers that
 /// already ran that saturation and use its result.
 pub(crate) fn query_kb_inconsistent_beyond_abox(internal: &InternalOntology) -> bool {
+    query_kb_inconsistent_keeping_closure(internal).0
+}
+
+/// [`query_kb_inconsistent_beyond_abox`], also returning the EL closure it built,
+/// if it built one, so a caller that needs that closure does not saturate again.
+pub(crate) fn query_kb_inconsistent_keeping_closure(
+    internal: &InternalOntology,
+) -> (bool, Option<owl_dl_saturation::Subsumers>) {
     if !query_inconsistency_guard_enabled() {
-        return false;
+        return (false, None);
     }
     if reflexive_empty_clause_inconsistent(internal) {
-        return true;
+        return (true, None);
     }
     let closure = owl_dl_saturation::saturate(internal);
     if saturation_says_inconsistent(&closure) {
-        return true;
+        return (true, Some(closure));
     }
-    abox_check_enabled()
+    let inconsistent = abox_check_enabled()
         && classify::has_abox_axioms(internal)
         && matches!(
             abox_check::check(&build_abox_check_inputs(internal).as_inputs(&closure)),
             abox_check::AboxVerdict::Inconsistent { .. }
-        )
+        );
+    (inconsistent, Some(closure))
 }
 
 /// See [`query_kb_inconsistent`].

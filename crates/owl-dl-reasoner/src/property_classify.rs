@@ -104,3 +104,39 @@ pub fn classify_data_property_hierarchy<A: ForIRI>(
         onto,
     )?))
 }
+
+/// Both property hierarchies and their structural gaps (#389), from ONE
+/// conversion and ONE EL saturation: the inconsistency guard's closure also
+/// answers the gaps' `empty-property` check. Calling
+/// [`classify_object_property_hierarchy`], [`classify_data_property_hierarchy`] and
+/// [`crate::property_structural_gaps`] separately converts and saturates three times.
+#[derive(Debug, Clone)]
+pub struct PropertyHierarchies {
+    pub object: PropertyClassification,
+    pub data: PropertyClassification,
+    pub gaps: crate::PropertyStructuralGaps,
+}
+
+/// # Errors
+/// [`ReasonError::Inconsistent`] / [`ReasonError::Conversion`].
+pub fn classify_property_hierarchies<A: ForIRI>(
+    onto: &SetOntology<A>,
+) -> Result<PropertyHierarchies, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(onto)?;
+    if crate::abox_saturation::saturate_abox_consistency(&internal).clash {
+        return Err(ReasonError::Inconsistent);
+    }
+    let (inconsistent, closure) = crate::query_kb_inconsistent_keeping_closure(&internal);
+    if inconsistent {
+        return Err(ReasonError::Inconsistent);
+    }
+    let closure = closure.unwrap_or_else(|| owl_dl_saturation::saturate(&internal));
+    let object = from_closure(crate::property_closure::object_named_pairs(
+        &crate::property_closure::object_edges(onto),
+    ));
+    let data = from_closure(crate::property_closure::data_named_pairs(
+        &crate::property_closure::data_edges(onto),
+    ));
+    let gaps = crate::property_gaps::gaps_with(onto, &internal, &closure);
+    Ok(PropertyHierarchies { object, data, gaps })
+}

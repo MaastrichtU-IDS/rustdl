@@ -770,10 +770,14 @@ pub struct Realization {
     /// See `docs/known-limitations/realize-drops-derived-individual-equality.md` and
     /// `docs/benchmarks/2026-08-22-pseudo-model-bakeoff.md`.
     witness_prune_active: bool,
-    /// Some individual has two most-specific types whose subsumption the class
-    /// hierarchy left UNDECIDED (#388), so a most-specific set may list a type that
-    /// is a strict superclass of another listed type. Every listed type is still a
-    /// genuine type.
+    /// Some individual has two most-specific types whose subsumption is left
+    /// UNDECIDED (#388), so a most-specific set may list a type that is a strict
+    /// superclass of another listed type. Every listed type is still a genuine type.
+    ///
+    /// On the tableau path each pair the hierarchy decided in neither direction is
+    /// checked with the main tableau under the per-pair budget, and a proven strict
+    /// superclass is dropped (`RUSTDL_REALIZE_VERIFY_DIRECT`, default ON). So the
+    /// field is set only when such a check is cut, or when the check is off.
     ///
     /// **Why this field exists.** Most-specific types are the entailed types minus
     /// every class with a strict subclass among them, read off a classification.
@@ -838,15 +842,123 @@ impl Realization {
     }
 }
 
-/// Two co-listed most-specific types whose subsumption `hierarchy` decides in
-/// neither direction (#388). Co-leaves are never strictly ordered by the hierarchy,
-/// so a co-leaf pair is either proven equivalent (decided) or undecided.
-fn has_undecided_co_leaves(leaves: &[String], hierarchy: &crate::Classification) -> bool {
-    leaves.iter().enumerate().any(|(i, x)| {
-        leaves[i + 1..]
-            .iter()
-            .any(|y| !(hierarchy.is_subclass(x, y) && hierarchy.is_subclass(y, x)))
+/// Main-tableau verdict on `sub ⊑ sup` for two most-specific types (#388).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PairVerdict {
+    Proven,
+    Refuted,
+    /// Deadline, node cap or depth bail-out: no verdict.
+    Cut,
+}
+
+/// Ordered `(sub, sup)` verdicts for co-listed most-specific types.
+type PairVerdicts = HashMap<(String, String), PairVerdict>;
+
+/// The hierarchy proves `x ≡ y`. Co-leaves are never strictly ordered by it, so a
+/// co-leaf pair is either proven equivalent or decided in neither direction.
+fn hierarchy_equivalent(hierarchy: &crate::Classification, x: &str, y: &str) -> bool {
+    hierarchy.is_subclass(x, y) && hierarchy.is_subclass(y, x)
+}
+
+/// The most-specific set after the #388 check: drop `y` when some co-listed `x`
+/// has `x ⊑ y` PROVEN and `y ⊑ x` REFUTED, i.e. `y` is a strict superclass of
+/// another listed type. Two proven directions are an equivalence and both stay,
+/// as under the hierarchy. Also returns whether a remaining pair the hierarchy
+/// did not decide lacks a verdict in either direction (cut, or never checked).
+fn verified_leaves(
+    leaves: &[String],
+    hierarchy: &crate::Classification,
+    verdicts: &PairVerdicts,
+) -> (Vec<String>, bool) {
+    let v = |x: &String, y: &String| verdicts.get(&(x.clone(), y.clone())).copied();
+    let kept: Vec<String> = leaves
+        .iter()
+        .filter(|y| {
+            !leaves.iter().any(|x| {
+                x != *y
+                    && v(x, y) == Some(PairVerdict::Proven)
+                    && v(y, x) == Some(PairVerdict::Refuted)
+            })
+        })
+        .cloned()
+        .collect();
+    let decided =
+        |d: Option<PairVerdict>| matches!(d, Some(PairVerdict::Proven | PairVerdict::Refuted));
+    let unverified = kept.iter().enumerate().any(|(i, x)| {
+        kept[i + 1..].iter().any(|y| {
+            !(hierarchy_equivalent(hierarchy, x, y) || (decided(v(x, y)) && decided(v(y, x))))
+        })
+    });
+    (kept, unverified)
+}
+
+/// Decide `sub ⊑ sup` (`sub ⊓ ¬sup` unsatisfiable) with the main tableau, under
+/// realize's per-pair budget. No wedge `Sat` is trusted. Skips the `ABox` seed when
+/// it is irrelevant to class subsumption, like classify's pair loop.
+fn subsumption_verdict(
+    internal: &InternalOntology,
+    prepared: &PreparedOntology,
+    sub_iri: &str,
+    sup_iri: &str,
+    pair_deadline_ms: Option<u64>,
+) -> Result<PairVerdict, ReasonError> {
+    let (Some(sub), Some(sup)) = (
+        internal.vocabulary.class_id(sub_iri),
+        internal.vocabulary.class_id(sup_iri),
+    ) else {
+        return Ok(PairVerdict::Cut);
+    };
+    let build = move |pool: &mut ConceptPool| {
+        let a = pool.atomic(sub);
+        let b = pool.atomic(sup);
+        let not_b = pool.not(b);
+        pool.and(vec![a, not_b])
+    };
+    let sat = match pair_deadline_ms {
+        Some(ms) => prepared.decide_classify_with_deadline(
+            std::time::Instant::now() + std::time::Duration::from_millis(ms),
+            build,
+        ),
+        None => prepared.decide_classify_raw(build),
+    };
+    Ok(match sat {
+        Ok(Some(false)) => PairVerdict::Proven,
+        Ok(Some(true)) => PairVerdict::Refuted,
+        // A deadline, node cap or depth bail-out is no verdict; like a cut instance
+        // probe it must not fail the whole realization.
+        Ok(None) | Err(ReasonError::NoVerdict) => PairVerdict::Cut,
+        Err(e) => return Err(e),
     })
+}
+
+/// #388: verdicts for every ordered pair of co-listed most-specific types the
+/// hierarchy did not prove equivalent, over all named individuals. Deduplicated,
+/// so a pair shared by many individuals is checked once.
+fn verify_co_leaf_pairs(
+    internal: &InternalOntology,
+    prepared: &PreparedOntology,
+    hierarchy: &crate::Classification,
+    leaf_sets: &[&[String]],
+    pair_deadline_ms: Option<u64>,
+) -> Result<PairVerdicts, ReasonError> {
+    let mut pairs: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
+    for leaves in leaf_sets {
+        for x in *leaves {
+            for y in *leaves {
+                if x != y && !hierarchy_equivalent(hierarchy, x, y) {
+                    pairs.insert((x.as_str(), y.as_str()));
+                }
+            }
+        }
+    }
+    let pairs: Vec<(&str, &str)> = pairs.into_iter().collect();
+    pairs
+        .par_iter()
+        .map(|&(x, y)| {
+            subsumption_verdict(internal, prepared, x, y, pair_deadline_ms)
+                .map(|d| ((x.to_owned(), y.to_owned()), d))
+        })
+        .collect()
 }
 
 /// Realize every declared individual: compute entailed types and the
@@ -987,7 +1099,9 @@ pub fn realize_saturation_only_internal(
         if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
             continue;
         }
-        direct_types_unverified |= has_undecided_co_leaves(&leaves, &hierarchy);
+        // No tableau here by contract: an undecided pair stays undecided.
+        let (leaves, unverified) = verified_leaves(&leaves, &hierarchy, &PairVerdicts::new());
+        direct_types_unverified |= unverified;
         named_individual_iris.push(iri.clone());
         entailed_types.insert(iri.clone(), types_owned);
         most_specific_types.insert(iri.clone(), leaves);
@@ -1449,6 +1563,25 @@ pub(crate) fn realize_tableau_internal(
         })
         .collect();
     let per_individual = per_individual?;
+    // #388: the hierarchy can cut a pair or trust a wedge `Sat`, so a most-specific
+    // set can list a superclass of another listed type. Check those pairs.
+    let verdicts = if crate::realize_verify_direct_enabled() {
+        let leaf_sets: Vec<&[String]> = individual_iris
+            .iter()
+            .zip(&per_individual)
+            .filter(|(iri, _)| !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX))
+            .map(|(_, (_, leaves, _))| leaves.as_slice())
+            .collect();
+        verify_co_leaf_pairs(
+            internal,
+            &prepared,
+            &hierarchy,
+            &leaf_sets,
+            pair_deadline_ms,
+        )?
+    } else {
+        PairVerdicts::new()
+    };
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut named_individual_iris: Vec<String> = Vec::new();
@@ -1460,7 +1593,8 @@ pub(crate) fn realize_tableau_internal(
             continue;
         }
         incomplete |= truncated;
-        direct_types_unverified |= has_undecided_co_leaves(&leaves, &hierarchy);
+        let (leaves, unverified) = verified_leaves(&leaves, &hierarchy, &verdicts);
+        direct_types_unverified |= unverified;
         named_individual_iris.push(iri.clone());
         entailed_types.insert(iri.clone(), types_owned);
         most_specific_types.insert(iri.clone(), leaves);
@@ -1498,6 +1632,95 @@ mod tests {
     const HEADER: &str = "\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// #388 drop rule over a hierarchy that relates nothing (X, Y, Z declared only),
+    /// so every verdict comes from the map.
+    fn flat_hierarchy() -> crate::Classification {
+        crate::classify(&parse(&format!(
+            "{HEADER}Ontology(<http://rustdl.test/t>\n\
+             Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:Z))\n)\n"
+        )))
+        .expect("classify")
+    }
+
+    fn iri(c: &str) -> String {
+        format!("http://rustdl.test/{c}")
+    }
+
+    fn verdicts(rows: &[(&str, &str, PairVerdict)]) -> PairVerdicts {
+        rows.iter()
+            .map(|&(x, y, d)| ((iri(x), iri(y)), d))
+            .collect()
+    }
+
+    fn leaves(cs: &[&str]) -> Vec<String> {
+        cs.iter().map(|c| iri(c)).collect()
+    }
+
+    #[test]
+    fn a_proven_strict_superclass_is_dropped() {
+        use PairVerdict::{Proven, Refuted};
+        let h = flat_hierarchy();
+        let v = verdicts(&[("X", "Y", Proven), ("Y", "X", Refuted)]);
+        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y"]), &h, &v);
+        assert_eq!(kept, leaves(&["X"]));
+        assert!(!unverified);
+    }
+
+    #[test]
+    fn a_proven_equivalence_keeps_both() {
+        use PairVerdict::Proven;
+        let h = flat_hierarchy();
+        let v = verdicts(&[("X", "Y", Proven), ("Y", "X", Proven)]);
+        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y"]), &h, &v);
+        assert_eq!(kept, leaves(&["X", "Y"]));
+        assert!(!unverified);
+    }
+
+    #[test]
+    fn a_cut_direction_keeps_both_and_is_reported() {
+        use PairVerdict::{Cut, Proven, Refuted};
+        let h = flat_hierarchy();
+        // X ⊑ Y proven but the reverse cut: X ≡ Y is still possible, so keep both.
+        let v = verdicts(&[("X", "Y", Proven), ("Y", "X", Cut)]);
+        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y"]), &h, &v);
+        assert_eq!(kept, leaves(&["X", "Y"]));
+        assert!(unverified);
+        let v = verdicts(&[("X", "Y", Cut), ("Y", "X", Refuted)]);
+        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y"]), &h, &v);
+        assert_eq!(kept, leaves(&["X", "Y"]));
+        assert!(unverified);
+    }
+
+    #[test]
+    fn an_unchecked_pair_is_reported_and_a_refuted_one_is_not() {
+        use PairVerdict::Refuted;
+        let h = flat_hierarchy();
+        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y"]), &h, &PairVerdicts::new());
+        assert_eq!(kept, leaves(&["X", "Y"]));
+        assert!(unverified);
+        let v = verdicts(&[("X", "Y", Refuted), ("Y", "X", Refuted)]);
+        assert!(!verified_leaves(&leaves(&["X", "Y"]), &h, &v).1);
+    }
+
+    /// A dropped type's own undecided pairs do not count: only the remaining set
+    /// must be decided.
+    #[test]
+    fn only_pairs_among_the_kept_types_count() {
+        use PairVerdict::{Cut, Proven, Refuted};
+        let h = flat_hierarchy();
+        let v = verdicts(&[
+            ("X", "Y", Proven),
+            ("Y", "X", Refuted),
+            ("X", "Z", Refuted),
+            ("Z", "X", Refuted),
+            ("Y", "Z", Cut),
+            ("Z", "Y", Cut),
+        ]);
+        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y", "Z"]), &h, &v);
+        assert_eq!(kept, leaves(&["X", "Z"]));
+        assert!(!unverified);
+    }
 
     #[test]
     fn class_assertion_is_an_entailed_instance() {

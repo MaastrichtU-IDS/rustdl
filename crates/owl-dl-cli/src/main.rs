@@ -2309,8 +2309,18 @@ fn main() -> Result<()> {
             if r.incomplete {
                 warn_search_gave_up();
             }
+            // #396: candidates whose verification gave up are not repairs.
+            let note_gave_up = || {
+                if r.unverified_gave_up > 0 {
+                    println!(
+                        "# note: {} candidate(s) dropped (verification gave up — not shown to break the entailment)",
+                        r.unverified_gave_up
+                    );
+                }
+            };
             if r.repairs.is_empty() {
                 println!("entailed, but no verifiable axiom removal found");
+                note_gave_up();
                 return Ok(());
             }
 
@@ -2344,6 +2354,7 @@ fn main() -> Result<()> {
                     r.dropped_unverified
                 );
             }
+            note_gave_up();
         }
         Command::Prove {
             file,

@@ -2,7 +2,9 @@
 //! entailment `η` no longer hold. Repairs are the minimal hitting sets over all
 //! justifications of `η` (Reiter diagnoses). Every reported repair is VERIFIED by
 //! removing it and confirming `η` no longer holds — sound even when the
-//! justification set is incomplete. Read-only; never mutates the ontology.
+//! justification set is incomplete. A verification that gives up confirms
+//! nothing, so its candidate is not reported (#396). Read-only; never mutates the
+//! ontology.
 
 use std::collections::BTreeSet;
 
@@ -40,6 +42,10 @@ pub struct Repairs<A: ForIRI> {
     /// Candidate hitting sets discarded because they failed verification (an
     /// unfound justification survived). >0 signals the reported set may be partial.
     pub dropped_unverified: usize,
+    /// Candidate hitting sets discarded because their verification GAVE UP
+    /// (#396): removing them may or may not break `η`, so they are not reported.
+    /// Separate from `dropped_unverified`, which counts a definite failure.
+    pub unverified_gave_up: usize,
     /// `true` iff any probe gave up (#396): the top-level check (`entailed` is then
     /// `false`), a justification probe, or a repair verification.
     pub incomplete: bool,
@@ -81,6 +87,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
             repairs: Vec::new(),
             complete: true,
             dropped_unverified: 0,
+            unverified_gave_up: 0,
             incomplete: outcome.incomplete,
         });
     }
@@ -102,6 +109,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
     let (fixed, logical) = (prepared.background(), prepared.logical());
     let mut repairs = Vec::new();
     let mut dropped_unverified = 0usize;
+    let mut unverified_gave_up = 0usize;
     for h in candidates {
         if repairs.len() >= max {
             break;
@@ -114,7 +122,13 @@ pub fn find_repairs_prepared<A: ForIRI>(
                 dropped_unverified += 1;
                 continue;
             }
-            Verdict::Unknown => incomplete = true,
+            Verdict::Unknown => {
+                // The check gave up: nothing shows that removing `h` breaks the
+                // entailment, so it is not a verified repair.
+                unverified_gave_up += 1;
+                incomplete = true;
+                continue;
+            }
             Verdict::NotEntailed => {}
         }
         repairs.push(Repair {
@@ -127,6 +141,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
         repairs,
         complete,
         dropped_unverified,
+        unverified_gave_up,
         incomplete,
     })
 }

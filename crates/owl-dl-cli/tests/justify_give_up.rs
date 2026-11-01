@@ -51,6 +51,22 @@ Ontology(<http://ex/justifysubset>
 )
 ";
 
+// C ⊑ D has two justifications: {C ⊑ D}, in the EL closure, and
+// {C ⊑ ∃r.(A ⊔ B), ∃r.A ⊑ D, ∃r.B ⊑ D}, which needs the tableau (with the hyper
+// wedge off). At the cap the enumeration finds only {C ⊑ D}, so the one
+// candidate repair is "remove C ⊑ D" — which does NOT break the entailment
+// (HermiT agrees). Its verification probe gives up, and used to accept it.
+const REPAIR: &str = r"Prefix(:=<http://ex/rg#>)
+Ontology(<http://ex/repairgiveup>
+  Declaration(Class(:C)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:D))
+  Declaration(ObjectProperty(:r))
+  SubClassOf(:C :D)
+  SubClassOf(:C ObjectSomeValuesFrom(:r ObjectUnionOf(:A :B)))
+  SubClassOf(ObjectSomeValuesFrom(:r :A) :D)
+  SubClassOf(ObjectSomeValuesFrom(:r :B) :D)
+)
+";
+
 // ⊤ ⊑ ∃r.(A ⊔ B) with both ∃r.A and ∃r.B unsatisfiable: ⊤ is unsatisfiable, so
 // every class is, and the TBox-only ontology is inconsistent. `classify` does
 // not flag that, so `diagnose` asks `is_consistent`, whose tableau trips the cap.
@@ -327,8 +343,11 @@ fn repair_does_not_claim_completeness_after_a_give_up() {
         "{}",
         capped.stderr
     );
+    // The verification probes give up here too, so no repair is verified; none
+    // may be presented as complete either way.
+    assert!(!capped.stdout.contains("— complete"), "{}", capped.stdout);
     assert!(
-        capped.stdout.contains("completeness not guaranteed"),
+        capped.stdout.contains("verification gave up"),
         "{}",
         capped.stdout
     );
@@ -355,6 +374,54 @@ fn diagnose_does_not_present_a_given_up_consistency_check_as_a_verdict() {
     let control = run("0", &["diagnose", f.path()]);
     assert!(
         control.stdout.contains("# consistency: INCONSISTENT"),
+        "{}",
+        control.stdout
+    );
+}
+
+#[test]
+fn repair_never_reports_a_removal_whose_verification_gave_up() {
+    // The hyper wedge would prove the hidden justification without the tableau.
+    let f = Fixture::new(REPAIR, "repair-verify");
+    let wedge_off = [("RUSTDL_HYPERTABLEAU", "0")];
+    let args = [
+        "repair",
+        f.path(),
+        "subclass",
+        "http://ex/rg#C",
+        "http://ex/rg#D",
+    ];
+    let capped = run_with("1", &wedge_off, &args);
+    assert_eq!(capped.code, 0, "stderr: {}", capped.stderr);
+    // On 293dcfd1 this printed "repair 1 (remove 1 axiom(s)): C SubClassOf D".
+    assert!(!capped.stdout.contains("repair 1"), "{}", capped.stdout);
+    assert!(
+        capped.stdout.contains("no verifiable axiom removal found"),
+        "{}",
+        capped.stdout
+    );
+    assert!(
+        capped
+            .stdout
+            .contains("1 candidate(s) dropped (verification gave up"),
+        "{}",
+        capped.stdout
+    );
+    assert!(
+        capped.stderr.contains("gave up during the search"),
+        "{}",
+        capped.stderr
+    );
+
+    // Uncapped, all three repairs are found and verified.
+    let control = run_with("0", &wedge_off, &args);
+    assert!(
+        control.stdout.contains("# 3 minimal repair(s)"),
+        "{}",
+        control.stdout
+    );
+    assert!(
+        !control.stdout.contains("verification gave up"),
         "{}",
         control.stdout
     );

@@ -9,8 +9,10 @@
 //! An empty list means none of the enumerated routes occurs. It is NOT a proof of
 //! completeness: a property whose domain or range is unsatisfiable outside the EL
 //! fragment is empty in every model (so below every property and disjoint from
-//! every property) and is not detected, and routes not enumerated here are not
-//! reported. This is a separate signal from `incomplete`, which means only that a
+//! every property) and is not detected; a property used only inside a class
+//! expression and never declared is outside the `owl:topObjectProperty` /
+//! `owl:bottomObjectProperty` seeding (OWL 2 DL requires the declaration); and
+//! routes not enumerated here are not reported. This is a separate signal from `incomplete`, which means only that a
 //! deadline cut a probe.
 use crate::ReasonError;
 use crate::property_closure::{
@@ -103,6 +105,11 @@ struct CeFacts {
     /// `DataHasValue`, or `∃d.F` / `≥n d.F` with `F` a one-value enumeration.
     data_value: bool,
     data_all_oneof: BTreeSet<String>,
+    /// Data properties every instance of some class has a value for
+    /// (`∃d.F`, `≥n d.F` / `=n d.F` with `n ≥ 1`).
+    data_some: BTreeSet<String>,
+    /// Some `∀d.F`: with a value elsewhere, two classes can be disjoint by datatype.
+    data_all: bool,
     data_constrained: BTreeSet<String>,
     data_bounded: BTreeSet<String>,
 }
@@ -176,18 +183,33 @@ fn walk<A: ForIRI>(ce: &CE<A>, f: &mut CeFacts) {
             }
             walk(bce, f);
         }
-        CE::DataSomeValuesFrom { dr, .. } | CE::DataMinCardinality { dr, .. } => {
+        CE::DataSomeValuesFrom { dp, dr } => {
+            f.data_some.insert(dp.0.as_ref().to_string());
+            if is_single_value(dr) {
+                f.data_value = true;
+            }
+        }
+        CE::DataMinCardinality { n, dp, dr } => {
+            if *n >= 1 {
+                f.data_some.insert(dp.0.as_ref().to_string());
+            }
             if is_single_value(dr) {
                 f.data_value = true;
             }
         }
         CE::DataAllValuesFrom { dp, dr } => {
+            f.data_all = true;
             if is_data_oneofish(dr) {
                 f.data_all_oneof.insert(dp.0.as_ref().to_string());
             }
             f.data_constrained.insert(dp.0.as_ref().to_string());
         }
         CE::DataHasValue { .. } => f.data_value = true,
+        CE::DataExactCardinality { n, dp, .. } if *n >= 1 => {
+            f.data_some.insert(dp.0.as_ref().to_string());
+            f.data_constrained.insert(dp.0.as_ref().to_string());
+            f.data_bounded.insert(dp.0.as_ref().to_string());
+        }
         CE::DataMaxCardinality { dp, .. } | CE::DataExactCardinality { dp, .. } => {
             f.data_constrained.insert(dp.0.as_ref().to_string());
             f.data_bounded.insert(dp.0.as_ref().to_string());
@@ -217,10 +239,24 @@ fn lit_key<A: ForIRI>(l: &Literal<A>) -> String {
 }
 
 /// Strict sub-properties exist below `t`: some `x` with `x ⊑ t` and not `t ⊑ x`.
-fn has_strict_sub<T: Ord + Clone>(edges: &BTreeSet<(T, T)>, t: &T) -> bool {
+/// `skip` excludes the seeded top/bottom nodes: `owl:bottomObjectProperty ⊑ t`
+/// holds for every `t` and is no route to a miss.
+fn has_strict_sub<T: Ord + Clone>(
+    edges: &BTreeSet<(T, T)>,
+    t: &T,
+    skip: impl Fn(&T) -> bool,
+) -> bool {
     edges
         .iter()
-        .any(|(x, y)| y == t && x != t && !edges.contains(&(t.clone(), x.clone())))
+        .any(|(x, y)| y == t && x != t && !skip(x) && !edges.contains(&(t.clone(), x.clone())))
+}
+
+fn obj_top_or_bottom(s: &Signed) -> bool {
+    s.0 == OBJ_TOP || s.0 == OBJ_BOT
+}
+
+fn data_top_or_bottom(d: &String) -> bool {
+    d == DATA_TOP || d == DATA_BOT
 }
 
 /// See the module doc.
@@ -513,11 +549,23 @@ pub(crate) fn gaps_with<A: ForIRI>(
         || asymmetric
             .iter()
             .any(|p| oedges.contains(&((p.clone(), false), (p.clone(), true))))
-        || derives_self_disjoint(&oedges, &obj_disjoint_sets);
+        || oedges.iter().any(|(x, y)| y.0 == OBJ_BOT && x.0 != OBJ_BOT)
+        || derives_self_disjoint(&oedges, &obj_disjoint_sets, obj_top_or_bottom);
     let data_empty = data_domain_class
         .iter()
         .any(|(_, c)| c == NOTHING || unsat_class(c))
-        || derives_self_disjoint(&dedges, &data_disjoint_sets);
+        || dedges.iter().any(|(x, y)| y == DATA_BOT && x != DATA_BOT)
+        || derives_self_disjoint(&dedges, &data_disjoint_sets, data_top_or_bottom);
+
+    // Constructs that can make two classes disjoint: told disjointness, `⊥`,
+    // complements, an at-most bound (`≤0 r` against `≥1 r`), or a data constraint
+    // (`∀d.xsd:string` against a value of `xsd:integer`).
+    let class_disjoint_source = disjoint_source
+        || f.complement
+        || f.nothing
+        || !bounded_obj.is_empty()
+        || !bounded_data.is_empty()
+        || f.data_all;
 
     // ── object hierarchy ─────────────────────────────────────────────────────
     let mut oh: BTreeSet<&str> = BTreeSet::new();
@@ -536,7 +584,10 @@ pub(crate) fn gaps_with<A: ForIRI>(
     if (!f.obj_all_oneof.is_empty() && f.obj_value) || top_is_nominal {
         oh.insert("object-nominal-range");
     }
-    if bounded_obj.iter().any(|t| has_strict_sub(&oedges, t)) {
+    if bounded_obj
+        .iter()
+        .any(|t| has_strict_sub(&oedges, t, obj_top_or_bottom))
+    {
         oh.insert("object-counting");
     }
     if obj_empty {
@@ -548,7 +599,10 @@ pub(crate) fn gaps_with<A: ForIRI>(
     if data_top_bottom && !crate::property_top_bottom_enabled() {
         dh.insert("data-top-bottom");
     }
-    if bounded_data.iter().any(|t| has_strict_sub(&dedges, t)) {
+    if bounded_data
+        .iter()
+        .any(|t| has_strict_sub(&dedges, t, data_top_or_bottom))
+    {
         dh.insert("data-counting");
     }
     if !f.data_all_oneof.is_empty() && f.data_value {
@@ -588,7 +642,7 @@ pub(crate) fn gaps_with<A: ForIRI>(
         .iter()
         .filter(|p| p.as_str() != OBJ_TOP && p.as_str() != OBJ_BOT)
         .count();
-    if (disjoint_source || f.complement || f.nothing) && obj_constrained >= 2 {
+    if class_disjoint_source && obj_constrained >= 2 {
         od.insert("object-class-constraint");
     }
 
@@ -611,23 +665,36 @@ pub(crate) fn gaps_with<A: ForIRI>(
     let data_ranged = data_range_props.len() + f.data_all_oneof.len();
     if data_range_props.len() >= 2
         || data_ranged >= 2
-        || ((disjoint_source || f.complement || f.nothing) && f.data_constrained.len() >= 2)
+        || (class_disjoint_source && f.data_constrained.len() >= 2)
     {
         dd.insert("data-class-constraint");
     }
 
     // ── data values ──────────────────────────────────────────────────────────
     let mut dv: BTreeSet<&str> = BTreeSet::new();
-    if f.data_value && abox {
+    // A one-value range or `∀d.{v}` on `d` (or a super-property of `d`), plus a
+    // class that forces a `d` value, gives that value to every instance.
+    let value_via_range = f.data_some.iter().any(|d| {
+        f.data_all_oneof.contains(d)
+            || f.data_all_oneof
+                .iter()
+                .any(|e| dedges.contains(&(d.clone(), e.clone())))
+    });
+    if (f.data_value || value_via_range) && abox {
         dv.insert("data-value-class-axiom");
     }
     if dpa {
-        let bounded_successors = successors.iter().any(|((_, r), objs)| {
-            objs.len() >= 2
-                && bounded_obj
-                    .iter()
-                    .any(|t| t == r || oedges.contains(&(r.clone(), t.clone())))
-        });
+        // Successors of one subject over every role at or below a bounded `t`
+        // (sub-roles and declared inverses included), counted together.
+        let mut per_bound: BTreeMap<(&String, &Signed), BTreeSet<&String>> = BTreeMap::new();
+        for ((subj, r), objs) in &successors {
+            for t in &bounded_obj {
+                if t == r || oedges.contains(&(r.clone(), t.clone())) {
+                    per_bound.entry((subj, t)).or_default().extend(objs);
+                }
+            }
+        }
+        let bounded_successors = per_bound.values().any(|objs| objs.len() >= 2);
         let nominal_on_bounded = f.obj_nominal_filler.iter().any(|r| {
             bounded_obj
                 .iter()
@@ -676,11 +743,17 @@ fn note_domain_range<A: ForIRI>(
 
 /// A node below two members of one told disjointness set (or listed twice in one)
 /// is disjoint from itself, i.e. empty.
-fn derives_self_disjoint<T: Ord + Clone>(edges: &BTreeSet<(T, T)>, sets: &[Vec<T>]) -> bool {
+/// `skip` excludes the seeded top/bottom nodes, which sit below everything; a
+/// property told below `owl:bottomObjectProperty` is caught separately.
+fn derives_self_disjoint<T: Ord + Clone>(
+    edges: &BTreeSet<(T, T)>,
+    sets: &[Vec<T>],
+    skip: impl Fn(&T) -> bool,
+) -> bool {
     let below = |m: &T| -> BTreeSet<T> {
         let mut s: BTreeSet<T> = edges
             .iter()
-            .filter(|(_, y)| y == m)
+            .filter(|(x, y)| y == m && !skip(x))
             .map(|(x, _)| x.clone())
             .collect();
         s.insert(m.clone());

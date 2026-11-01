@@ -226,6 +226,44 @@ fn empty_property() {
     assert!(!has(g.object_hierarchy(), k));
 }
 
+/// `p ⊑ owl:bottomObjectProperty` makes `p` empty, so disjoint from every
+/// property; the disjointness surface does not list those pairs. This holds with
+/// the top/bottom fix on or off.
+#[test]
+fn a_property_below_bottom_is_empty() {
+    let _l = lock();
+    for flag in ["1", "0"] {
+        let _tb = SetEnv::new("RUSTDL_PROPERTY_TOP_BOTTOM", flag);
+        let g = gaps("SubObjectPropertyOf(:p owl:bottomObjectProperty)");
+        assert!(
+            has(g.object_disjoint(), "object-empty-property"),
+            "flag {flag}"
+        );
+        let g = gaps("SubDataPropertyOf(:d owl:bottomDataProperty)");
+        assert!(has(g.data_disjoint(), "data-empty-property"), "flag {flag}");
+    }
+}
+
+/// The seeded `owl:bottomObjectProperty` sits below every property. It is not a
+/// strict sub-property for the counting route, and not a common sub-property of
+/// two disjoint members.
+#[test]
+fn seeded_top_and_bottom_do_not_fire_routes() {
+    let _l = lock();
+    let g = gaps(
+        "SubObjectPropertyOf(:p owl:topObjectProperty)\nFunctionalObjectProperty(:q)\n\
+         DisjointObjectProperties(:r :s)",
+    );
+    assert!(!has(g.object_hierarchy(), "object-counting"));
+    assert!(!has(g.object_disjoint(), "object-empty-property"));
+    let g = gaps(
+        "SubDataPropertyOf(:d owl:topDataProperty)\nFunctionalDataProperty(:e)\n\
+         DisjointDataProperties(:e :f)",
+    );
+    assert!(!has(g.data_hierarchy(), "data-counting"));
+    assert!(!has(g.data_disjoint(), "data-empty-property"));
+}
+
 // ── object disjointness ─────────────────────────────────────────────────────
 
 #[test]
@@ -298,6 +336,24 @@ fn class_constraints_with_a_disjointness_source() {
         !has(g.object_disjoint(), k),
         "one constrained property cannot be disjoint from another"
     );
+    // Classes made disjoint by counting (`≤0 r` against `≥1 r`) or by datatype
+    // (`∃d.xsd:integer` against `∀d.xsd:string`), with no told disjointness.
+    let g = gaps(&format!(
+        "{doms}\nSubClassOf(:A ObjectMaxCardinality(0 :r))\n\
+         SubClassOf(:B ObjectMinCardinality(1 :r))"
+    ));
+    assert!(has(g.object_disjoint(), k));
+    let g = gaps(&format!(
+        "{doms}\nSubClassOf(:A DataSomeValuesFrom(:d xsd:integer))\n\
+         SubClassOf(:B DataAllValuesFrom(:d xsd:string))"
+    ));
+    assert!(has(g.object_disjoint(), k));
+    let g = gaps(
+        "DataPropertyDomain(:e :A)\nDataPropertyDomain(:f :B)\n\
+         SubClassOf(:A DataSomeValuesFrom(:d xsd:integer))\n\
+         SubClassOf(:B DataAllValuesFrom(:d xsd:string))",
+    );
+    assert!(has(g.data_disjoint(), "data-class-constraint"));
 }
 
 #[test]
@@ -379,6 +435,30 @@ fn a_data_value_from_a_class_axiom_needs_an_individual() {
     assert!(!has(gaps(tbox).data_values(), k));
 }
 
+/// A one-value range plus a class that forces a value: `A ⊑ ∃d.xsd:integer`,
+/// `range(d) = {1}`, `a : A` entail `d(a, 1)`.
+#[test]
+fn a_data_value_from_a_one_value_range() {
+    let _l = lock();
+    let k = "data-value-class-axiom";
+    let range = "DataPropertyRange(:d DataOneOf(\"1\"^^xsd:integer))";
+    let some = "SubClassOf(:A DataSomeValuesFrom(:d xsd:integer))";
+    let g = gaps(&format!("{range}\n{some}\nClassAssertion(:A :a)"));
+    assert!(has(g.data_values(), k));
+    // Through a sub-property: `e ⊑ d`, so an `e` value is a `d` value in range.
+    let g = gaps(&format!(
+        "{range}\nSubDataPropertyOf(:e :d)\n\
+         SubClassOf(:A DataSomeValuesFrom(:e xsd:integer))\nClassAssertion(:A :a)"
+    ));
+    assert!(has(g.data_values(), k));
+    // Near misses: no class forcing a value; no individual.
+    assert!(!has(
+        gaps(&format!("{range}\nClassAssertion(:A :a)")).data_values(),
+        k
+    ));
+    assert!(!has(gaps(&format!("{range}\n{some}")).data_values(), k));
+}
+
 #[test]
 fn derived_individual_equality() {
     let _l = lock();
@@ -394,6 +474,24 @@ fn derived_individual_equality() {
     assert!(!has(g.data_values(), k));
     // Two successors on an unbounded role.
     assert!(!has(gaps(&format!("{two}\n{dpa}")).data_values(), k));
+    // Two successors through two sub-roles of one functional role.
+    let g = gaps(&format!(
+        "SubObjectPropertyOf(:r :t)\nSubObjectPropertyOf(:s :t)\nFunctionalObjectProperty(:t)\n\
+         ObjectPropertyAssertion(:r :a :b)\nObjectPropertyAssertion(:s :a :c)\n{dpa}"
+    ));
+    assert!(has(g.data_values(), k));
+    // `s(c, a)` is `r(a, c)` under `Inverse(r, s)`: `a` has two `r`-successors.
+    let g = gaps(&format!(
+        "InverseObjectProperties(:r :s)\nFunctionalObjectProperty(:r)\n\
+         ObjectPropertyAssertion(:r :a :b)\nObjectPropertyAssertion(:s :c :a)\n{dpa}"
+    ));
+    assert!(has(g.data_values(), k));
+    // Near miss: the two sub-roles are not both below the bounded role.
+    let g = gaps(&format!(
+        "SubObjectPropertyOf(:r :t)\nFunctionalObjectProperty(:t)\n\
+         ObjectPropertyAssertion(:r :a :b)\nObjectPropertyAssertion(:s :a :c)\n{dpa}"
+    ));
+    assert!(!has(g.data_values(), k));
     // A shared key value.
     let g = gaps(&format!(
         "HasKey(:A () (:d))\n{dpa}\nDataPropertyAssertion(:d :c \"1\"^^xsd:integer)"

@@ -7281,7 +7281,7 @@ fn is_class_satisfiable_internal_full(
             },
         ));
     }
-    let (sat, cut, trusted) =
+    let (sat, cut, trusted, refused) =
         run_satisfiability_reporting(internal, move |pool| pool.atomic(class_id))?;
     Ok((
         sat,
@@ -7289,7 +7289,7 @@ fn is_class_satisfiable_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete: cut,
-            wedge_clauses_refused: 0,
+            wedge_clauses_refused: refused,
             relies_on_trusted_consistency: trusted,
         },
     ))
@@ -8090,7 +8090,7 @@ fn is_subclass_of_internal_full(
     }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
-    let (sat, cut, trusted) = run_satisfiability_reporting(internal, move |pool| {
+    let (sat, cut, trusted, refused) = run_satisfiability_reporting(internal, move |pool| {
         let sub_concept = pool.atomic(sub_id);
         let super_concept = pool.atomic(super_id);
         let not_super = pool.not(super_concept);
@@ -8102,7 +8102,7 @@ fn is_subclass_of_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete: cut,
-            wedge_clauses_refused: 0,
+            wedge_clauses_refused: refused,
             relies_on_trusted_consistency: trusted,
         },
     ))
@@ -8160,7 +8160,11 @@ pub fn query_consistency_verdict<A: ForIRI>(
         return Ok(None);
     }
     let prepared = PreparedOntology::from_internal(internal)?;
-    Ok(match prepared.query_consistency()? {
+    // Settle THIS ontology's verdict, not one an outer guard is lending.
+    let outer = INHERITED_QUERY_CONSISTENCY.with(|c| c.replace(None));
+    let verdict = prepared.query_consistency();
+    INHERITED_QUERY_CONSISTENCY.with(|c| c.set(outer));
+    Ok(match verdict? {
         QueryConsistency::Consistent { trusted } => Some(trusted),
         QueryConsistency::Inconsistent | QueryConsistency::Undetermined => None,
     })
@@ -8211,7 +8215,7 @@ impl Drop for AssumedQueryConsistency {
 /// tableau run, so the concept it returns is guaranteed to live in
 /// the pool the tableau will use.
 ///
-/// Returns `(sat, cut, relies_on_trusted)`. On a deadline-free run the only
+/// Returns `(sat, cut, relies_on_trusted, wedge_clauses_refused)`. On a deadline-free run the only
 /// give-up is a live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4); early abandon is
 /// armed only under a deadline. A cut keeps the sound direction (`sat = true`, so
 /// "not subsumed" / "not an instance") and sets `cut`, which callers report as
@@ -8222,15 +8226,15 @@ impl Drop for AssumedQueryConsistency {
 pub(crate) fn run_satisfiability_reporting<F>(
     internal: InternalOntology,
     build_test_concept: F,
-) -> Result<(bool, bool, bool), ReasonError>
+) -> Result<(bool, bool, bool, usize), ReasonError>
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
     let prepared = PreparedOntology::from_internal(internal)?;
-    let (verdict, trusted) = prepared.decide_query_raw(build_test_concept)?;
+    let (verdict, trusted, refused) = prepared.decide_query_raw(build_test_concept)?;
     Ok(match verdict {
-        Some(sat) => (sat, false, trusted),
-        None => (true, true, trusted),
+        Some(sat) => (sat, false, trusted, refused),
+        None => (true, true, trusted, refused),
     })
 }
 
@@ -9754,24 +9758,26 @@ impl PreparedOntology {
 
     /// #401: [`Self::decide_raw`] for the single queries, dropping the `ABox`
     /// seed where it provably cannot change the answer (see
-    /// [`query_tbox_only_enabled`]). Returns `(verdict, relies_on_trusted)`:
-    /// `verdict` is as in [`Self::decide_raw`] (`None` is a node-cap give-up), and
-    /// `relies_on_trusted` is set when the `ABox` was dropped on the strength of a
-    /// trusted wedge `Sat`.
+    /// [`query_tbox_only_enabled`]). Returns `(verdict, relies_on_trusted,
+    /// wedge_clauses_refused)`: `verdict` is as in [`Self::decide_raw`] (`None` is
+    /// a node-cap give-up); `relies_on_trusted` is set when the `ABox` was dropped
+    /// on the strength of a trusted wedge `Sat`; and when the `ABox` was dropped,
+    /// the consistency wedge's refused clauses are reported (#357), since a refused
+    /// clause can hide a clash.
     pub(crate) fn decide_query_raw<F>(
         &self,
         build_test_concept: F,
-    ) -> Result<(Option<bool>, bool), ReasonError>
+    ) -> Result<(Option<bool>, bool, usize), ReasonError>
     where
         F: FnOnce(&mut ConceptPool) -> ConceptId,
     {
         if !query_tbox_only_enabled() || !self.query_abox_droppable {
-            return Ok((self.decide_raw(build_test_concept)?, false));
+            return Ok((self.decide_raw(build_test_concept)?, false, 0));
         }
         match self.query_consistency()? {
             // An inconsistent KB makes every concept unsatisfiable, which is what
             // the seeded tableau answers too.
-            QueryConsistency::Inconsistent => Ok((Some(false), false)),
+            QueryConsistency::Inconsistent => Ok((Some(false), false, 0)),
             QueryConsistency::Consistent { trusted } => {
                 if std::env::var_os("RUSTDL_TRACE").is_some() {
                     eprintln!("query (#401): ABox seed skipped (consistent, no nominals)");
@@ -9793,9 +9799,9 @@ impl PreparedOntology {
                     None,
                     build_test_concept,
                 )?;
-                Ok((verdict, trusted))
+                Ok((verdict, trusted, self.consistency_wedge_clauses_refused()))
             }
-            QueryConsistency::Undetermined => Ok((self.decide_raw(build_test_concept)?, false)),
+            QueryConsistency::Undetermined => Ok((self.decide_raw(build_test_concept)?, false, 0)),
         }
     }
 

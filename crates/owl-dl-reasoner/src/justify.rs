@@ -1456,7 +1456,19 @@ fn justification<A: ForIRI>(
 pub(crate) fn inherited_query_consistency<A: ForIRI>(
     fixed: &[Component<A>],
     all_candidates: &[Component<A>],
+    q: &Entailment,
 ) -> Option<crate::AssumedQueryConsistency> {
+    // Only these entailments probe through the single class queries; settling
+    // a verdict for the others (instance, property, inconsistency) is wasted.
+    if !matches!(
+        q,
+        Entailment::SubClassOf { .. }
+            | Entailment::EquivalentClasses { .. }
+            | Entailment::DisjointClasses { .. }
+            | Entailment::Unsatisfiable { .. }
+    ) {
+        return None;
+    }
     crate::query_consistency_verdict(&ontology_from(fixed, all_candidates))
         .ok()
         .flatten()
@@ -1471,7 +1483,7 @@ fn search_one<A: ForIRI>(
     q: &Entailment,
 ) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
-    let _consistency = inherited_query_consistency(fixed, all_candidates);
+    let _consistency = inherited_query_consistency(fixed, all_candidates, q);
     let candidates = match localized_candidates(fixed, all_candidates, q)? {
         Ok(candidates) => candidates,
         // Not entailed (or unknown) — nothing to justify.
@@ -1494,7 +1506,7 @@ fn search_all<A: ForIRI>(
     max: usize,
 ) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
-    let _consistency = inherited_query_consistency(fixed, all_candidates);
+    let _consistency = inherited_query_consistency(fixed, all_candidates, q);
     // Narrow to the query's ⊥-module up front: justification-preserving, so the
     // HST below still discovers *every* justification — over a far smaller set.
     let candidates = match localized_candidates(fixed, all_candidates, q)? {

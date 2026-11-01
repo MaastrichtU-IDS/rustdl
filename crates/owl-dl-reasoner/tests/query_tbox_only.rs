@@ -228,6 +228,26 @@ fn a_nominal_in_the_query_keeps_the_abox() {
     assert!(!v.relies_on_trusted_consistency());
 }
 
+/// An inconsistency only the `ABox`-seeded consistency wedge finds (`a : ∃r.E`
+/// with `E ⊑ ⊥`; neither the saturator nor `abox_check` sees it).
+const WEDGE_ONLY_INCONSISTENT: &str = "\
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))
+Declaration(Class(:E)) Declaration(ObjectProperty(:r)) Declaration(NamedIndividual(:a))
+SubClassOf(:A ObjectUnionOf(:C :D))
+SubClassOf(:E owl:Nothing)
+ClassAssertion(ObjectSomeValuesFrom(:r :E) :a)";
+
+/// The wedge-`Unsat` arm: the KB is inconsistent, so `B` is unsatisfiable.
+/// Dropping the `ABox` without settling consistency would answer "satisfiable".
+#[test]
+fn a_wedge_only_inconsistency_answers_unsatisfiable() {
+    let _l = lock();
+    let o = parse(WEDGE_ONLY_INCONSISTENT);
+    let (s, st) = sat(&o, "B");
+    assert!(!s, "every class is unsatisfiable in an inconsistent KB");
+    assert!(!st.relies_on_trusted_consistency);
+}
+
 /// No bounded route decides consistency (the consistency wedge is off, so
 /// [`owl_dl_reasoner`] reports it undetermined): the seeded path runs, so the
 /// answers stay right and nothing claims a skip.
@@ -235,7 +255,10 @@ fn a_nominal_in_the_query_keeps_the_abox() {
 fn an_undetermined_consistency_keeps_the_abox() {
     let _l = lock();
     let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
-    let o = parse(INCONSISTENT);
+    // With the wedge off nothing bounded sees this inconsistency, so the verdict
+    // is undetermined; only the seeded tableau finds it. Treating undetermined
+    // as consistent would drop the ABox and answer "satisfiable".
+    let o = parse(WEDGE_ONLY_INCONSISTENT);
     assert!(!sat(&o, "B").0, "seeded path still sees the inconsistency");
     let o = parse(CONSISTENT);
     let (s, st) = sat(&o, "A");

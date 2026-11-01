@@ -952,11 +952,40 @@ fn verify_co_leaf_pairs(
         }
     }
     let pairs: Vec<(&str, &str)> = pairs.into_iter().collect();
+    decide_pairs_until_cut(&pairs, |x, y| {
+        subsumption_verdict(internal, prepared, x, y, pair_deadline_ms)
+    })
+}
+
+/// Decide `pairs` in parallel, and stop starting new checks once one is cut.
+///
+/// After a cut, `direct_types_unverified` is true whatever the remaining checks
+/// say: the cut pair stays undecided, and so does every pair skipped here (it gets
+/// no entry, which [`verified_leaves`] reports as unverified). The remaining checks
+/// could only drop a type, and the 2026-11 ORE sweep found no dropped type on any
+/// of 648 ontologies. Meanwhile, a check that runs into its deadline costs the full
+/// per-pair budget, and on the expensive rows most of the extra time went to those
+/// checks (`ore_ont_7342` 11.7 → 116 CPU-s, with the field still set).
+///
+/// Checks already running when the cut lands still finish, so with several threads
+/// the set of decided pairs after a cut can vary between runs. That can change the
+/// output only by a dropped type, and only when the field is set either way.
+fn decide_pairs_until_cut<F>(pairs: &[(&str, &str)], decide: F) -> Result<PairVerdicts, ReasonError>
+where
+    F: Fn(&str, &str) -> Result<PairVerdict, ReasonError> + Sync,
+{
+    let cut = std::sync::atomic::AtomicBool::new(false);
     pairs
         .par_iter()
-        .map(|&(x, y)| {
-            subsumption_verdict(internal, prepared, x, y, pair_deadline_ms)
-                .map(|d| ((x.to_owned(), y.to_owned()), d))
+        .filter_map(|&(x, y)| {
+            if cut.load(std::sync::atomic::Ordering::Relaxed) {
+                return None;
+            }
+            let d = decide(x, y);
+            if matches!(d, Ok(PairVerdict::Cut)) {
+                cut.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Some(d.map(|d| ((x.to_owned(), y.to_owned()), d)))
         })
         .collect()
 }
@@ -1720,6 +1749,45 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         let (kept, unverified) = verified_leaves(&leaves(&["X", "Y", "Z"]), &h, &v);
         assert_eq!(kept, leaves(&["X", "Z"]));
         assert!(!unverified);
+    }
+
+    /// After the first cut no new check starts, and the skipped pairs still leave
+    /// the field set.
+    #[test]
+    fn checks_stop_at_the_first_cut_and_the_field_stays_set() {
+        use PairVerdict::{Cut, Refuted};
+        let h = flat_hierarchy();
+        let (x, y, z) = (iri("X"), iri("Y"), iri("Z"));
+        let pairs = [
+            (x.as_str(), y.as_str()),
+            (y.as_str(), x.as_str()),
+            (x.as_str(), z.as_str()),
+            (z.as_str(), x.as_str()),
+        ];
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("pool");
+        let v = pool
+            .install(|| {
+                decide_pairs_until_cut(&pairs, |_, _| {
+                    let n = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Ok(if n == 0 { Cut } else { Refuted })
+                })
+            })
+            .expect("verdicts");
+        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y", "Z"]), &h, &v);
+        assert!(unverified, "an early stop must leave the field set");
+        // X/Z was never checked: an individual with only those two types is
+        // unverified too, not cleared by the stop.
+        assert!(
+            verified_leaves(&leaves(&["X", "Z"]), &h, &v).1,
+            "a pair skipped after the cut must stay unverified"
+        );
+        assert_eq!(kept, leaves(&["X", "Y", "Z"]));
+        assert_eq!(calls.into_inner(), 1, "no check starts after the cut");
+        assert_eq!(v.len(), 1);
     }
 
     #[test]

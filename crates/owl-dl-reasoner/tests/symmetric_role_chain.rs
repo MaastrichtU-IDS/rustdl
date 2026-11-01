@@ -47,11 +47,10 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Classify with `RUSTDL_CLASSIFY_ROLE_HIERARCHY=1`. The fix is **opt-in** — it
-/// is default OFF on a measured ~19× wall regression, not on any doubt about
-/// correctness (see the flag's doc comment). Every test here therefore sets it
-/// explicitly, and `the_fix_is_opt_in_and_the_default_still_misses` pins that
-/// the default does NOT have it.
+/// Classify with `RUSTDL_CLASSIFY_ROLE_HIERARCHY=1`. The flag has been default ON
+/// since #163; setting it explicitly keeps these tests independent of the default
+/// and of the closure guard (`layer_a_affordable`).
+/// `the_fix_is_on_by_default_and_the_flag_still_works` pins the default.
 fn classify_with_hierarchy(body: &str) -> owl_dl_reasoner::Classification {
     // SAFETY: set_var is unsafe under edition 2024. Callers hold `lock()`, and
     // the value is restored by `remove_var` before returning.
@@ -197,11 +196,16 @@ fn the_fix_is_on_by_default_and_the_flag_still_works() {
     );
 }
 
-/// KNOWN RESIDUAL, pinned so it is not mistaken for coverage. A length-3 chain
-/// with a symmetric first leg is still missed at the default; both peers derive
-/// it. FLIP this assertion rather than deleting it when that closes.
+/// FALSE-POSITIVE GUARD. This shape was pinned as a "known miss" that both
+/// peers derive, with an instruction to FLIP the assertion when it closed. That
+/// was wrong: `A ⊑ B` is NOT entailed. An `A`-instance `x` has a `p`-successor
+/// and a `q`-successor, and symmetry adds `p` back to `x`, but nothing forces an
+/// `s`-edge, and the chain `p ∘ q ∘ s ⊑ s` only extends an `s`-edge that already
+/// exists. `HermiT` (robot 1.9.10) and Konclude v0.7.0 both report no `A ⊑ B`
+/// (checked 2026-11-01). A "fix" that made this hold would ship a false
+/// positive; keep it negative.
 #[test]
-fn a_length_three_chain_with_a_symmetric_leg_is_a_known_miss() {
+fn a_length_three_chain_with_a_symmetric_leg_does_not_entail_this() {
     let _serial = lock();
     let body = "SymmetricObjectProperty(:p)\n\
          SubObjectPropertyOf(ObjectPropertyChain(:p :q :s) :s)\n\
@@ -210,6 +214,39 @@ fn a_length_three_chain_with_a_symmetric_leg_is_a_known_miss() {
          EquivalentClasses(:B ObjectSomeValuesFrom(:s :Z))";
     assert!(
         !holds(body, "A", "B"),
-        "if this now passes, #128's residual has closed — FLIP this test, do not delete it"
+        "A ⊑ B is not entailed (no s-edge is forced); HermiT and Konclude agree"
+    );
+    assert!(
+        !classify(body).is_subclass("http://ex.org/A", "http://ex.org/B"),
+        "the default classify must not derive it either"
+    );
+}
+
+/// The entailment the length-3 symmetric chain DOES give, so the guard above is
+/// not passing on an engine that ignores 3-leg chains. `A ⊑ ∃p.Y ⊓ ∃q.∃s.Z`: for
+/// an `A`-instance `x` with `p(x,y)`, symmetry gives `p(y,x)`, and the chain
+/// `y -p-> x -q-> z -s-> w` gives `s(y,w)` with `w : Z`, so `A ⊑ ∃p.(Y ⊓ ∃s.Z)`.
+/// `HermiT` and Konclude both derive it with `Symmetric(p)`; `HermiT` does not
+/// without it.
+#[test]
+fn a_length_three_chain_with_a_symmetric_leg_fires_through_the_reverse_edge() {
+    let _serial = lock();
+    let tbox = "SubObjectPropertyOf(ObjectPropertyChain(:p :q :s) :s)\n\
+         SubClassOf(:A ObjectIntersectionOf(ObjectSomeValuesFrom(:p :Y) \
+         ObjectSomeValuesFrom(:q ObjectSomeValuesFrom(:s :Z))))\n\
+         EquivalentClasses(:B ObjectSomeValuesFrom(:p ObjectIntersectionOf(:Y \
+         ObjectSomeValuesFrom(:s :Z))))";
+    let sym = format!("SymmetricObjectProperty(:p)\n{tbox}");
+    assert!(
+        holds(&sym, "A", "B"),
+        "symmetry composed with the 3-leg chain"
+    );
+    assert!(
+        classify(&sym).is_subclass("http://ex.org/A", "http://ex.org/B"),
+        "the default classify derives it too"
+    );
+    assert!(
+        !holds(tbox, "A", "B"),
+        "without symmetry it is not entailed"
     );
 }

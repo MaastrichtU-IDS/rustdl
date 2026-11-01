@@ -1448,11 +1448,12 @@ fn justification<A: ForIRI>(
 /// #401: settle the parent ontology's single-query consistency once, and let
 /// every subset probe of this search inherit it. Consistency is monotone, so a
 /// subset of a consistent KB is consistent; without this each probe would settle
-/// it again (up to the wedge's 10 s budget). `None` when there is nothing to
-/// inherit (an `ABox`-free or nominal-bearing parent, or an inconsistent or
-/// undetermined one), and the probes then decide for themselves as before. An
-/// error settling it also means "nothing to inherit": the probes report their
-/// own errors as they always did.
+/// it again (up to the wedge's 10 s budget). An undetermined parent is lent too:
+/// its probes then take the seeded path directly, as before #401. `None` when
+/// there is nothing to inherit (an `ABox`-free, nominal-bearing or inconsistent
+/// parent), and the probes then decide for themselves. An error settling it also
+/// means "nothing to inherit": the probes report their own errors as they always
+/// did.
 pub(crate) fn inherited_query_consistency<A: ForIRI>(
     fixed: &[Component<A>],
     all_candidates: &[Component<A>],
@@ -1469,10 +1470,15 @@ pub(crate) fn inherited_query_consistency<A: ForIRI>(
     ) {
         return None;
     }
-    crate::query_consistency_verdict(&ontology_from(fixed, all_candidates))
-        .ok()
-        .flatten()
-        .map(crate::assume_query_consistency)
+    // Lend "consistent" and "undetermined"; an inconsistent parent lends
+    // nothing, since a subset of it may be consistent. An error settling the
+    // parent also lends nothing: each probe then decides for itself.
+    match crate::query_consistency_of(&ontology_from(fixed, all_candidates)) {
+        Ok(Some(v)) if v != crate::QueryConsistency::Inconsistent => {
+            Some(crate::inherit_query_consistency(v))
+        }
+        _ => None,
+    }
 }
 
 /// The `QuickXplain` search over an already-split ontology: axioms only, no

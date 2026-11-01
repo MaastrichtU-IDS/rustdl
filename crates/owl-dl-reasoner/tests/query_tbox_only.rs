@@ -10,10 +10,15 @@
 //!   the `ABox`;
 //! - an undetermined consistency keeps the `ABox`;
 //! - `relies_on_trusted_consistency` is set exactly when the skip rested on a
-//!   trusted wedge `Sat`.
+//!   trusted wedge `Sat`;
+//! - the seeded probe runs first (`RUSTDL_QUERY_SEEDED_FIRST_MS`): a verdict it
+//!   reaches is returned as is, a give-up falls through to the skip, and an
+//!   inherited "consistent" verdict skips the seeded attempt.
 //!
 //! Every test locks `ENV_MUTEX`, including the read-only ones, so none observes
-//! another test's setting.
+//! another test's setting. `lock()` also sets `RUSTDL_QUERY_SEEDED_FIRST_MS=0`,
+//! so the tests of the consistency step reach it on these tiny fixtures (the
+//! seeded probe would answer them first); the seeded-first tests override it.
 
 #![allow(clippy::unwrap_used)]
 
@@ -26,10 +31,21 @@ use std::io::Cursor;
 
 static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_MUTEX
+/// The env lock, plus `RUSTDL_QUERY_SEEDED_FIRST_MS=0` (see the module doc).
+/// Fields drop in order: the env is restored before the lock is released.
+struct Locked {
+    _seeded_first: SetEnvGuard,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+fn lock() -> Locked {
+    let lock = ENV_MUTEX
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Locked {
+        _seeded_first: SetEnvGuard::set("RUSTDL_QUERY_SEEDED_FIRST_MS", "0"),
+        _lock: lock,
+    }
 }
 
 struct SetEnvGuard {
@@ -350,6 +366,57 @@ fn a_parent_verdict_is_settled_once_and_inherited() {
         "guard restored on drop"
     );
 }
+
+/// Seeded first: on a KB where the seeded probe finishes in its budget, the
+/// answer comes from it (so nothing rests on a trusted consistency), and equals
+/// the skip's answer. Under an inherited "consistent" verdict the seeded attempt
+/// is skipped, since the consistency step is then free.
+#[test]
+fn the_seeded_probe_answers_first_when_it_finishes_in_time() {
+    let _l = lock();
+    let _budget = SetEnvGuard::set("RUSTDL_QUERY_SEEDED_FIRST_MS", "60000");
+    let o = parse(CONSISTENT);
+    for (q, got, want) in consistent_answers(&o) {
+        assert_eq!(got, want, "{q} seeded first");
+    }
+    let (s, st) = sat(&o, "A");
+    assert!(s);
+    assert!(
+        !st.relies_on_trusted_consistency,
+        "answered by the seeded probe, which relies on nothing"
+    );
+    assert!(!st.incomplete);
+    let _g = owl_dl_reasoner::assume_query_consistency(true);
+    assert!(
+        sat(&o, "A").1.relies_on_trusted_consistency,
+        "an inherited verdict goes straight to the skip"
+    );
+}
+
+/// Seeded first: a seeded probe that gives up (here the node cap, which the
+/// individuals' nominal roots exceed and the `ABox`-free probe does not) is not
+/// an answer; the query falls through to the consistency step and the skip. With
+/// the skip off, the same cap leaves the query cut.
+#[test]
+fn a_seeded_give_up_falls_through_to_the_skip() {
+    let _l = lock();
+    let _budget = SetEnvGuard::set("RUSTDL_QUERY_SEEDED_FIRST_MS", "60000");
+    let o = parse(CONSISTENT);
+    let _cap = owl_dl_tableau::NodeCapOverride::enter(Some(SEEDED_GIVE_UP_CAP));
+    let (s, st) = sat(&o, "A");
+    assert!(s);
+    assert!(!st.incomplete, "the skip answered after the seeded give-up");
+    assert!(st.relies_on_trusted_consistency, "answered by the skip");
+    let _off = SetEnvGuard::set("RUSTDL_QUERY_TBOX_ONLY", "0");
+    assert!(
+        sat(&o, "A").1.incomplete,
+        "control: the seeded probe alone gives up under this cap"
+    );
+}
+
+/// A live-node cap the seeded probe on `CONSISTENT` exceeds (nominal roots for
+/// `a` and `b`, plus the test root) and the `ABox`-free probe does not.
+const SEEDED_GIVE_UP_CAP: usize = 2;
 
 /// Under the guard a nominal still keeps the `ABox`: the inherited verdict
 /// replaces only the consistency step, never the nominal precondition.

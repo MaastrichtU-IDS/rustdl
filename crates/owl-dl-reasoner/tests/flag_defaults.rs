@@ -722,3 +722,27 @@ fn overrides_are_honoured_in_both_directions() {
         "`=1` must enable a default-OFF flag"
     );
 }
+
+/// #401: `RUSTDL_QUERY_SEEDED_FIRST_MS`, numeric, pinned here at rustdl-manager's
+/// request although numeric knobs are otherwise out of this file's scope (see
+/// the module doc): unset is the default, `0` disables the seeded-first attempt,
+/// a number is honoured, and garbage falls back to the default.
+#[test]
+fn query_seeded_first_ms_default_is_pinned() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = "RUSTDL_QUERY_SEEDED_FIRST_MS";
+    let _restore = EnvGuard::unset(key);
+    assert_eq!(owl_dl_reasoner::QUERY_SEEDED_FIRST_DEFAULT_MS, 1_000);
+    assert_eq!(owl_dl_reasoner::query_seeded_first_ms(), 1_000, "unset");
+    #[allow(unsafe_code)]
+    let with = |v: &str| {
+        // SAFETY: ENV_MUTEX is held; `_restore` puts the prior value back.
+        unsafe { std::env::set_var(key, v) };
+        owl_dl_reasoner::query_seeded_first_ms()
+    };
+    assert_eq!(with("0"), 0, "`0` goes straight to the consistency step");
+    assert_eq!(with("250"), 250);
+    assert_eq!(with("soon"), 1_000, "unparsable falls back to the default");
+}

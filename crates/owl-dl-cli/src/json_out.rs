@@ -763,6 +763,11 @@ pub(crate) struct ProveJson {
     /// the justification fallback (its justification may not be minimal, or
     /// none was found). Give-up meaning, as in the other query JSONs.
     pub(crate) incomplete: bool,
+    /// #401: `status: "not-entailed"` was answered without the `ABox`, relying
+    /// on a consistency verdict that rests on a trusted wedge `Sat` (not a
+    /// main-tableau model). Not a give-up; separate from `incomplete`. Always
+    /// `false` for the other statuses.
+    pub(crate) relies_on_trusted_consistency: bool,
     pub(crate) has_proof: bool,
     /// `true` when every proof step cites the axiom its rule applies (or needs none) and
     /// every premise has a sub-proof; `false` when some step cannot be completed from
@@ -1015,7 +1020,7 @@ fn proof_is_complete(node: &ProofNodeJson) -> bool {
 
 pub(crate) fn build_prove_json(
     result: &ProveEntailmentResult,
-    incomplete: bool,
+    flags: owl_dl_reasoner::ProveFlags,
     internal: &InternalOntology,
     pm: &PrefixMapping,
 ) -> Result<ProveJson> {
@@ -1023,7 +1028,8 @@ pub(crate) fn build_prove_json(
         schema_version: SCHEMA_VERSION,
         entailed,
         status: status.to_owned(),
-        incomplete,
+        incomplete: flags.incomplete,
+        relies_on_trusted_consistency: flags.relies_on_trusted_consistency,
         has_proof: false,
         proof_complete: None,
         proof: None,

@@ -2391,8 +2391,9 @@ fn main() -> Result<()> {
             // A single query, like `subclass` / `explain`: the 500k query cap
             // (#402). It covers the justification fallback too (thread-local).
             let _cap = owl_dl_reasoner::single_query_node_cap();
-            let (result, incomplete) =
+            let (result, flags) =
                 prove_entailment_rcstr_reporting(&onto, &sub, &sup).context("prove_entailment")?;
+            let incomplete = flags.incomplete;
             let unknown = matches!(result, ProveEntailmentResult::Unknown);
             // #402: a give-up is never "NOT entailed".
             let warn_gave_up = || {
@@ -2410,11 +2411,12 @@ fn main() -> Result<()> {
                          minimal, or none was found."
                     );
                 }
+                note_trusted_consistency_flag(flags.relies_on_trusted_consistency);
             };
             if json {
                 let internal = owl_dl_core::convert::convert_ontology(&onto)
                     .context("re-convert for rendering")?;
-                let prove_json = json_out::build_prove_json(&result, incomplete, &internal, &pm)
+                let prove_json = json_out::build_prove_json(&result, flags, &internal, &pm)
                     .context("rendering prove --json proof tree")?;
                 println!("{}", serde_json::to_string_pretty(&prove_json)?);
                 warn_gave_up();

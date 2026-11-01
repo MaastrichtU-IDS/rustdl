@@ -2,6 +2,9 @@
 `Sat` for consistency, emits `TrustedConsistencyWarning`. It is not an
 `IncompleteQueryWarning` (nothing was cut), and the answer is unchanged.
 `RUSTDL_QUERY_TBOX_ONLY` is read on every call, so `monkeypatch` suffices.
+
+The seeded probe runs first (`RUSTDL_QUERY_SEEDED_FIRST_MS`) and would answer
+this tiny fixture itself, so the tests of the skip set it to 0.
 """
 import warnings
 
@@ -31,6 +34,11 @@ CALLS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _skip_seeded_first(monkeypatch):
+    monkeypatch.setenv("RUSTDL_QUERY_SEEDED_FIRST_MS", "0")
+
+
 def _call(path, name, args):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -56,6 +64,18 @@ def test_each_query_warns_when_the_abox_is_skipped(tmp_path, name, args, expecte
 @pytest.mark.parametrize("name,args,expected", CALLS)
 def test_no_warning_when_the_abox_is_seeded(tmp_path, monkeypatch, name, args, expected):
     monkeypatch.setenv("RUSTDL_QUERY_TBOX_ONLY", "0")
+    p = tmp_path / "o.ofn"
+    p.write_text(SRC)
+    result, cats = _call(p, name, args)
+    assert result is expected
+    assert rustdl.TrustedConsistencyWarning not in cats, cats
+
+
+@pytest.mark.parametrize("name,args,expected", CALLS)
+def test_at_the_default_budget_the_seeded_probe_answers_first(
+    tmp_path, monkeypatch, name, args, expected
+):
+    monkeypatch.delenv("RUSTDL_QUERY_SEEDED_FIRST_MS", raising=False)
     p = tmp_path / "o.ofn"
     p.write_text(SRC)
     result, cats = _call(p, name, args)

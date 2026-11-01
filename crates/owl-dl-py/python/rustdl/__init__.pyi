@@ -109,6 +109,11 @@ class IncompleteQueryWarning(UserWarning):
     when the per-pair budget/probe was exhausted (sound but possibly
     incomplete)."""
 
+class DirectTypesUnverifiedWarning(UserWarning):
+    """Emitted by `realize` when two most-specific types of an individual could
+    not be compared, so a listed type may be a superclass of another (#388). Not
+    an `IncompleteQueryWarning`: no type is missing."""
+
 class StructuralGapWarning(UserWarning):
     """Emitted by the structural property queries (`object_property_hierarchy`,
     `data_property_hierarchy`, `disjoint_object_properties`,
@@ -225,7 +230,9 @@ def instances_of(path: str, class_iri: str) -> list[str]:
 
 def realize(path: str) -> dict[str, list[str]]:
     """Map each named individual to its most-specific entailed types. Emits
-    `IncompleteQueryWarning` when an instance probe was cut."""
+    `IncompleteQueryWarning` when an instance probe was cut, and
+    `DirectTypesUnverifiedWarning` when two most-specific types could not be
+    compared."""
     ...
 
 # ── inferred disjointness ───────────────────────────────────────────────────

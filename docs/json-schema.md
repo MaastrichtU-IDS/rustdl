@@ -87,9 +87,29 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
 ## `realize --json`
 
 ```json
-{ "schema_version": 1,
-  "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ] }
+{ "schema_version": 1, "incomplete": bool, "witness_prune_active": bool,
+  "direct_types_unverified": bool,
+  "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
+  "dropped": { kind: count } }
 ```
+
+Every listed type is entailed. The three flags are separate claims; none implies
+another:
+
+- `incomplete` = an instance probe was cut (deadline, node cap or depth limit),
+  so a type may be MISSING from `types` and `direct_types`.
+- `witness_prune_active` = the pseudo-model witness prune was applied, so some
+  non-memberships were skipped rather than refuted; it can drop an entailed type
+  without setting `incomplete`.
+- `direct_types_unverified` = some individual has two `direct_types` whose
+  subsumption was left undecided (#388), so a `direct_types` entry may be a strict
+  superclass of another; `types` is unaffected. Off the saturation fast path such
+  pairs are checked with the main tableau, so it is set only when a check was cut
+  (or `RUSTDL_REALIZE_VERIFY_DIRECT=0`). It does not cover a type dropped through
+  `incomplete` or `witness_prune_active`, which can also leave a superclass listed.
+
+`dropped` maps each axiom kind dropped at conversion to its count (empty when
+nothing was dropped).
 
 ## `disjoint --json`
 

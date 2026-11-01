@@ -7,6 +7,14 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **`direct_types_unverified` on `realize` (#388).** `realize` derives each individual's
+  most-specific types from a class hierarchy that can cut a pair or trust a wedge `Sat`, so a
+  missed subsumption could leave a superclass listed beside its subclass, with nothing said.
+  The new field is set when some individual has two most-specific types whose subsumption is
+  left undecided. Every listed type is still a genuine type. It is separate from `incomplete`
+  (a type may be missing) and from `witness_prune_active`. Rust:
+  `Realization::direct_types_unverified()`; CLI: a `realize --json` field and one stderr line;
+  Python: `DirectTypesUnverifiedWarning` from `realize`, a sibling of `IncompleteQueryWarning`.
 - **`structural_gaps` on the structural property surfaces (#389, #390).** `property-hierarchy`,
   the property half of `disjoint` and the data half of `property-values` read told axioms and
   never probe the reasoner, yet reported `incomplete: false`. They now list, in a separate
@@ -43,6 +51,11 @@ All notable changes to rustdl are documented here. Format is based on
   with default settings. Debug builds panicked on the tableau's NNF assertion instead. The seed
   now takes the NNF of each class. Output on `ABox`es that were already NNF is unchanged; on the
   ORE pool sample, 9 of 1,920 ontologies have such an assertion and none of their answers change.
+- **`realize` checks undecided pairs of most-specific types (#388).** Off the saturation fast
+  path, each pair of an individual's most-specific types that the hierarchy decided in neither
+  direction is now decided with the main tableau under the per-pair budget, and a type proven
+  to be a strict superclass of another listed type is dropped. A cut check keeps both and sets
+  `direct_types_unverified`. `RUSTDL_REALIZE_VERIFY_DIRECT`, default ON (`=0` only reports).
 - **Lever A sees nominals in property domains and ranges (#400).** `ontology_uses_nominals`
   decides whether classify's main-tableau probes may skip the `ABox` seed
   (`RUSTDL_CLASSIFY_TBOX_ONLY`). It ignored `ObjectPropertyDomain`/`ObjectPropertyRange`, so

@@ -5774,8 +5774,9 @@ pub const QUERY_SEEDED_FIRST_DEFAULT_MS: u64 = 3_000;
 /// The seeded attempt decides over the full KB with the deadline-free search
 /// (anywhere-blocking, deep stack, no early abandon); the deadline only stops it.
 /// So a verdict it reaches in time is the one the pre-#401 query gave, either
-/// way; only "did not finish" (deadline, node cap, depth cap) moves on to the
-/// consistency step.
+/// way; only "did not finish" (deadline, node cap, depth cap, or a saturation
+/// that hit its iteration bound, which used to surface as an error) moves on to
+/// the consistency step.
 #[must_use]
 pub fn query_seeded_first_ms() -> u64 {
     std::env::var("RUSTDL_QUERY_SEEDED_FIRST_MS")

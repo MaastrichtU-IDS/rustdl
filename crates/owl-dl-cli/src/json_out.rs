@@ -750,6 +750,9 @@ pub(crate) fn build_justify_json(
 // `prove --json`
 // ---------------------------------------------------------------------------
 
+// Each bool is its own field of the `prove --json` contract (docs/json-schema.md),
+// read by external consumers; folding them into an enum would change the schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct ProveJson {
     pub(crate) schema_version: u32,

@@ -62,7 +62,9 @@ All notable changes to rustdl are documented here. Format is based on
   `ABox`-bearing ontology without nominals (#401).** They seeded the whole `ABox` into a
   deadline-free main tableau. On `pizza.ofn` (31 individuals, no nominals) each query ran past
   120 CPU-s while `classify` and `consistent` took 0.1 s. When neither the ontology nor the
-  query has a nominal, they now settle consistency first (bounded: the saturator and
+  query has a nominal, they now first run the old seeded probe under a 3 s budget
+  (`RUSTDL_QUERY_SEEDED_FIRST_MS`, `0` = skip it), so queries it answers keep their cost and
+  answer. If it does not finish, they settle consistency (bounded: the saturator and
   `abox_check` verdicts, then the `ABox`-seeded wedge under the 10 s fallback budget). On a
   consistent KB the probe runs without the `ABox`, which is exact (disjoint-union closure of
   nominal-free SROIQ(D)); on an inconsistent one the answer is "unsatisfiable" / "subsumed";
@@ -71,7 +73,12 @@ All notable changes to rustdl are documented here. Format is based on
   - New signal, separate from `incomplete`: when consistency rests on a trusted wedge `Sat`,
     `QueryStats::relies_on_trusted_consistency` is set, `sat-expr`/`subclass-expr --json`
     report `relies_on_trusted_consistency`, the CLI prints a stderr note, and Python emits
-    `TrustedConsistencyWarning`.
+    `TrustedConsistencyWarning`. `prove` reports it too, on a "NOT entailed": the stderr note,
+    and `relies_on_trusted_consistency` in `prove --json` (Rust: `ProveFlags`, returned by
+    `prove_entailment_rcstr_reporting`).
+  - Cost: a query the seeded probe does not answer in 3 s pays those 3 s before the skip
+    (pizza `sat :Pizza` 3.0 s). One whose consistency stays undetermined pays the seeded
+    attempt and the wedge budget before the old seeded path runs.
   - New API for callers that probe subsets of one ontology (`justify`, `repair`):
     `query_consistency_verdict` settles the parent once and `assume_query_consistency`
     lets the subset probes inherit it.

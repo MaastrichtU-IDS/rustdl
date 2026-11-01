@@ -3067,7 +3067,7 @@ pub fn tree_sticky_branching_enabled() -> bool {
 }
 
 /// Whether a `≤n R.C` disjunct is tried first at a node that has at most `n`
-/// `R`-neighbours (#382, `RUSTDL_MAX_FIRST=1`, **default OFF**).
+/// `R`-neighbours (#382, **default ON**, `RUSTDL_MAX_FIRST=0` reverts).
 ///
 /// A definition `D ≡ A ⊓ =1 R.B` leaves the residual `¬A ⊔ D ⊔ ≤0 R.B ⊔ ≥2 R.B`
 /// on every `A` node. Trying `D` first forces `D`'s own `=1` successors, and on
@@ -3078,12 +3078,12 @@ pub fn tree_sticky_branching_enabled() -> bool {
 /// verdict is the same.
 #[must_use]
 pub fn max_first_enabled() -> bool {
-    std::env::var_os("RUSTDL_MAX_FIRST").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_MAX_FIRST").is_none_or(|v| v != "0")
 }
 
 /// Whether every node counts as carrying `⊤` for the `∃`, `≥n` and `≤n` witness
-/// tests, and the choose rule skips a `≤n R.⊤` (#382, `RUSTDL_TOP_FILLER=1`,
-/// **default OFF**).
+/// tests, and the choose rule skips a `≤n R.⊤` (#382, **default ON**,
+/// `RUSTDL_TOP_FILLER=0` reverts).
 ///
 /// `⊤` holds everywhere, so counting every `R`-neighbour for `≤n R.⊤` is the
 /// semantics. Before, a neighbour counted only once the choose rule had labelled
@@ -3104,7 +3104,7 @@ pub fn max_first_enabled() -> bool {
 /// leaves `≤n R.⊤` unenforced, a false `Sat`.
 #[must_use]
 pub fn top_filler_enabled() -> bool {
-    std::env::var_os("RUSTDL_TOP_FILLER").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_TOP_FILLER").is_none_or(|v| v != "0")
 }
 
 /// Whether the choice of which `≤n` witnesses to merge is a search branch

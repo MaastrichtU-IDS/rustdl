@@ -55,7 +55,9 @@ fn is_logical_axiom(c: &Component<RcStr>) -> bool {
 
 /// The first justification's axioms as Manchester strings (empty if none),
 /// with the outcome's give-up flag (#396).
-fn first_rendered(outcome: owl_dl_reasoner::justify::JustifyOutcome<RcStr>) -> (Vec<String>, bool) {
+fn first_rendered(
+    outcome: &owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
+) -> (Vec<String>, bool) {
     let axioms = outcome
         .justifications
         .first()
@@ -67,7 +69,7 @@ fn first_rendered(outcome: owl_dl_reasoner::justify::JustifyOutcome<RcStr>) -> (
 /// Every justification's axioms as Manchester strings, with the outcome's
 /// give-up flag (#396).
 fn all_rendered(
-    outcome: owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
+    outcome: &owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
 ) -> (Vec<Vec<String>>, bool) {
     let js = outcome
         .justifications
@@ -90,7 +92,7 @@ pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<(Vec<String>, 
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_one_justification_reporting(&onto, &q)
         .map_err(reason_error_to_py)?;
-    Ok(first_rendered(outcome))
+    Ok(first_rendered(&outcome))
 }
 
 /// All minimal justifications (capped by `max`), paired with `incomplete` (see
@@ -107,7 +109,7 @@ pub(crate) fn justify_all(
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_all_justifications_reporting(&onto, &q, max)
         .map_err(reason_error_to_py)?;
-    Ok(all_rendered(outcome))
+    Ok(all_rendered(&outcome))
 }
 
 /// Root/derived unsatisfiability partition:
@@ -172,7 +174,7 @@ impl PyPreparedOntology {
             .inner
             .find_one_reporting(&q)
             .map_err(reason_error_to_py)?;
-        Ok(first_rendered(outcome))
+        Ok(first_rendered(&outcome))
     }
 
     /// All minimal justifications (capped by `max`), paired with `incomplete`;
@@ -189,7 +191,7 @@ impl PyPreparedOntology {
             .inner
             .find_all_reporting(&q, max)
             .map_err(reason_error_to_py)?;
-        Ok(all_rendered(outcome))
+        Ok(all_rendered(&outcome))
     }
 }
 

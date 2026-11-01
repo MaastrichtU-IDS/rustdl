@@ -78,7 +78,10 @@ pub use disjointness::{
 pub use individuals::{
     DifferentIndividuals, SameIndividuals, different_individuals, same_individuals,
 };
-pub use laconic::{find_all_laconic_justifications, find_laconic_justification};
+pub use laconic::{
+    find_all_laconic_justifications, find_all_laconic_justifications_reporting,
+    find_laconic_justification, find_laconic_justification_reporting,
+};
 pub use property_classify::{
     PropertyClassification, classify_data_property_hierarchy, classify_object_property_hierarchy,
 };

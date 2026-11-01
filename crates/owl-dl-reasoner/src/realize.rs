@@ -770,6 +770,27 @@ pub struct Realization {
     /// See `docs/known-limitations/realize-drops-derived-individual-equality.md` and
     /// `docs/benchmarks/2026-08-22-pseudo-model-bakeoff.md`.
     witness_prune_active: bool,
+    /// Some individual has two most-specific types whose subsumption the class
+    /// hierarchy left UNDECIDED (#388), so a most-specific set may list a type that
+    /// is a strict superclass of another listed type. Every listed type is still a
+    /// genuine type.
+    ///
+    /// **Why this field exists.** Most-specific types are the entailed types minus
+    /// every class with a strict subclass among them, read off a classification.
+    /// On the tableau path that classification runs under realize's per-pair
+    /// deadline and, off the EL fragment, trusts the wedge's `Sat`; a subsumption it
+    /// misses leaves both classes listed. Python's `realize()` returns only these
+    /// sets.
+    ///
+    /// Distinct from [`Self::incomplete`] (a type may be MISSING) and from
+    /// [`Self::witness_prune_active`]; NOT implied by either, and it does not cover
+    /// them: a type dropped by a cut probe or by the prune can also leave its
+    /// superclass listed. `false` means each most-specific set is minimal RELATIVE
+    /// TO the reported types. Two co-listed classes the hierarchy proves equivalent
+    /// are decided, not undecided. Always `false` on the saturation fast path, where
+    /// the types and the hierarchy come from one saturation closure on a fragment
+    /// where it is complete.
+    direct_types_unverified: bool,
 }
 
 impl Realization {
@@ -785,6 +806,14 @@ impl Realization {
     #[must_use]
     pub fn witness_prune_active(&self) -> bool {
         self.witness_prune_active
+    }
+
+    /// See [`Self::direct_types_unverified`] — `true` iff some individual has two
+    /// most-specific types whose subsumption was left undecided, so a most-specific
+    /// set may be non-minimal.
+    #[must_use]
+    pub fn direct_types_unverified(&self) -> bool {
+        self.direct_types_unverified
     }
 
     #[must_use]
@@ -807,6 +836,17 @@ impl Realization {
             .get(individual_iri)
             .map_or(EMPTY.as_slice(), Vec::as_slice)
     }
+}
+
+/// Two co-listed most-specific types whose subsumption `hierarchy` decides in
+/// neither direction (#388). Co-leaves are never strictly ordered by the hierarchy,
+/// so a co-leaf pair is either proven equivalent (decided) or undecided.
+fn has_undecided_co_leaves(leaves: &[String], hierarchy: &crate::Classification) -> bool {
+    leaves.iter().enumerate().any(|(i, x)| {
+        leaves[i + 1..]
+            .iter()
+            .any(|y| !(hierarchy.is_subclass(x, y) && hierarchy.is_subclass(y, x)))
+    })
 }
 
 /// Realize every declared individual: compute entailed types and the
@@ -942,10 +982,12 @@ pub fn realize_saturation_only_internal(
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut named_individual_iris: Vec<String> = Vec::new();
+    let mut direct_types_unverified = false;
     for (iri, (types_owned, leaves)) in individual_iris.iter().zip(per_individual) {
         if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
             continue;
         }
+        direct_types_unverified |= has_undecided_co_leaves(&leaves, &hierarchy);
         named_individual_iris.push(iri.clone());
         entailed_types.insert(iri.clone(), types_owned);
         most_specific_types.insert(iri.clone(), leaves);
@@ -957,6 +999,8 @@ pub fn realize_saturation_only_internal(
         // Saturation-only path: closure lookups only, no probe to cut.
         incomplete: false,
         witness_prune_active: false,
+        // No tableau on this path by contract, so an undecided pair stays undecided.
+        direct_types_unverified,
     })
 }
 
@@ -1154,6 +1198,9 @@ pub(crate) fn realize_via_saturation_internal(
         // Saturation path: no tableau probe runs, so nothing can be cut.
         incomplete: false,
         witness_prune_active: false,
+        // Types and hierarchy come from one saturation closure on a fragment where
+        // it is complete (see the field doc).
+        direct_types_unverified: false,
     })
 }
 
@@ -1407,11 +1454,13 @@ pub(crate) fn realize_tableau_internal(
     let mut named_individual_iris: Vec<String> = Vec::new();
     // Any cut probe anywhere makes the whole realization possibly short.
     let mut incomplete = false;
+    let mut direct_types_unverified = false;
     for (iri, (types_owned, leaves, truncated)) in individual_iris.iter().zip(per_individual) {
         if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
             continue;
         }
         incomplete |= truncated;
+        direct_types_unverified |= has_undecided_co_leaves(&leaves, &hierarchy);
         named_individual_iris.push(iri.clone());
         entailed_types.insert(iri.clone(), types_owned);
         most_specific_types.insert(iri.clone(), leaves);
@@ -1427,6 +1476,7 @@ pub(crate) fn realize_tableau_internal(
         // wedge-consistency cache, and in each of those cases every pair took the
         // unchanged probe path.
         witness_prune_active: base_model.is_some(),
+        direct_types_unverified,
     })
 }
 

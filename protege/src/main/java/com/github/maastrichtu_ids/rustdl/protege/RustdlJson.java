@@ -100,10 +100,17 @@ public final class RustdlJson {
      * <li>not entailed: {@code entailed=false, has_proof=false}, both {@code proof} and
      *     {@code justification_fallback} {@code null}.</li>
      * </ul>
+     * #402: {@code status} is {@code "entailed" | "not-entailed" | "unknown"}. {@code "unknown"}
+     * (rustdl exits 3, so {@link RustdlProcess} already throws) means the reasoner check gave up:
+     * {@code entailed=false} is then NOT a non-entailment. {@code incomplete} is set by any
+     * give-up, including one in the justification fallback, whose axiom list can then be empty
+     * (entailed, but no justification available).
      */
     public static final class ProveJson {
         public int schema_version;
         public boolean entailed;
+        public String status;               // "entailed" | "not-entailed" | "unknown" (#402)
+        public boolean incomplete;          // a reasoner check gave up (#402)
         public boolean has_proof;
         public ProofNodeJson proof;
         public String justification_fallback; // self-contained OFN ontology document, or null

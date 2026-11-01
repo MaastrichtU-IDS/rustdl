@@ -117,6 +117,13 @@ class StructuralGapWarning(UserWarning):
     not reason with (#389, #390). Not an `IncompleteQueryWarning`: no budget was
     cut."""
 
+class TrustedConsistencyWarning(UserWarning):
+    """Emitted by `is_class_satisfiable`, `is_subclass_of`,
+    `class_expression_satisfiable` and `class_expression_entailed_subclass` when
+    the answer was computed without the ABox and relies on a consistency verdict
+    the wedge found but did not prove (#401). Not an `IncompleteQueryWarning`:
+    nothing was cut."""
+
 class Root(Mapping[str, object]):
     iri: str
     justification: tuple[str, ...]

@@ -1445,6 +1445,42 @@ fn justification<A: ForIRI>(
     }
 }
 
+/// #401: settle the parent ontology's single-query consistency once, and let
+/// every subset probe of this search inherit it. Consistency is monotone, so a
+/// subset of a consistent KB is consistent; without this each probe would settle
+/// it again (up to the wedge's 10 s budget). An undetermined parent is lent too:
+/// its probes then take the seeded path directly, as before #401. `None` when
+/// there is nothing to inherit (an `ABox`-free, nominal-bearing or inconsistent
+/// parent), and the probes then decide for themselves. An error settling it also
+/// means "nothing to inherit": the probes report their own errors as they always
+/// did.
+pub(crate) fn inherited_query_consistency<A: ForIRI>(
+    fixed: &[Component<A>],
+    all_candidates: &[Component<A>],
+    q: &Entailment,
+) -> Option<crate::AssumedQueryConsistency> {
+    // Only these entailments probe through the single class queries; settling
+    // a verdict for the others (instance, property, inconsistency) is wasted.
+    if !matches!(
+        q,
+        Entailment::SubClassOf { .. }
+            | Entailment::EquivalentClasses { .. }
+            | Entailment::DisjointClasses { .. }
+            | Entailment::Unsatisfiable { .. }
+    ) {
+        return None;
+    }
+    // Lend "consistent" and "undetermined"; an inconsistent parent lends
+    // nothing, since a subset of it may be consistent. An error settling the
+    // parent also lends nothing: each probe then decides for itself.
+    match crate::query_consistency_of(&ontology_from(fixed, all_candidates)) {
+        Ok(Some(v)) if v != crate::QueryConsistency::Inconsistent => {
+            Some(crate::inherit_query_consistency(v))
+        }
+        _ => None,
+    }
+}
+
 /// The `QuickXplain` search over an already-split ontology: axioms only, no
 /// fragment classification, so callers that don't have one yet can stay lazy.
 fn search_one<A: ForIRI>(
@@ -1453,6 +1489,7 @@ fn search_one<A: ForIRI>(
     q: &Entailment,
 ) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    let _consistency = inherited_query_consistency(fixed, all_candidates, q);
     let candidates = match localized_candidates(fixed, all_candidates, q)? {
         Ok(candidates) => candidates,
         // Not entailed (or unknown) — nothing to justify.
@@ -1475,6 +1512,7 @@ fn search_all<A: ForIRI>(
     max: usize,
 ) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    let _consistency = inherited_query_consistency(fixed, all_candidates, q);
     // Narrow to the query's ⊥-module up front: justification-preserving, so the
     // HST below still discovers *every* justification — over a far smaller set.
     let candidates = match localized_candidates(fixed, all_candidates, q)? {

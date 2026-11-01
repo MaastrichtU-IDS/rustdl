@@ -5727,6 +5727,64 @@ pub fn classify_tbox_only_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_TBOX_ONLY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// `RUSTDL_QUERY_TBOX_ONLY` — **default ON**, `=0` reverts (#401).
+///
+/// The single queries (`sat`, `subclass`, `explain`, `sat-expr`, `subclass-expr`
+/// and their library/Python forms) seeded the full `ABox` into a deadline-free
+/// main tableau. On `pizza.ofn` (31 individuals, no nominals) every such query
+/// ran past 120 CPU-s while `classify` and `consistent` took 0.1 s, and the same
+/// query with the `ABox` stripped took 0.01 s.
+///
+/// With the flag on, a query whose ontology (including the query's own probe
+/// axiom) has an `ABox` and no nominal first settles consistency, cached per
+/// [`PreparedOntology`] (see [`PreparedOntology::query_consistency`]):
+/// - inconsistent: the query answers "unsatisfiable" / "subsumed", as the
+///   seeded tableau would;
+/// - consistent: the probe runs with no `ABox` seed;
+/// - undetermined: the seeded probe runs exactly as before.
+///
+/// **No false positive is possible:** dropping the `ABox` only removes axioms.
+/// **Completeness:** nominal-free SROIQ(D) is closed under disjoint union, so on
+/// a consistent KB with no nominal in the `TBox` or the query, `T ∪ A ⊨ C ⊑ D`
+/// iff `T ⊨ C ⊑ D`. rustdl does not implement the universal role, the one
+/// construct that breaks this (`owl:topObjectProperty` is an ordinary role).
+/// A consistency verdict that rests on a trusted wedge `Sat` is reported through
+/// [`QueryStats::relies_on_trusted_consistency`].
+#[must_use]
+pub fn query_tbox_only_enabled() -> bool {
+    std::env::var_os("RUSTDL_QUERY_TBOX_ONLY").is_none_or(|v| v != "0")
+}
+
+/// Default of [`query_seeded_first_ms`]. Measured, 3 interleaved reps on one
+/// core: `ore_ont_6923`'s seeded probe needs more than 2 000 ms (two of its five
+/// regressed queries stay slow at 2 000) and 3 000 restores all eight
+/// regressions to the base cost. The price is that budget on every query that
+/// does need the `ABox` skipped: pizza `sat :Pizza` 0.1 s → 3.0 s (was > 117 s).
+pub const QUERY_SEEDED_FIRST_DEFAULT_MS: u64 = 3_000;
+
+/// `RUSTDL_QUERY_SEEDED_FIRST_MS` (#401): before a single query settles
+/// consistency to drop the `ABox` ([`query_tbox_only_enabled`]), it first runs
+/// the `ABox`-seeded probe it ran before #401, under this wall-clock budget.
+/// Default [`QUERY_SEEDED_FIRST_DEFAULT_MS`]; `0` goes straight to the
+/// consistency step. Unparsable values fall back to the default.
+///
+/// Why: settling consistency costs the `ABox`-seeded wedge (up to
+/// `RUSTDL_CONSISTENCY_FALLBACK_MS`), which on ontologies where the seeded probe
+/// was already cheap made the query 2–3× slower (`ore_ont_5764`, `ore_ont_6923`).
+/// The seeded attempt decides over the full KB with the deadline-free search
+/// (anywhere-blocking, deep stack, no early abandon); the deadline only stops it.
+/// So a verdict it reaches in time is the one the pre-#401 query gave, either
+/// way; only "did not finish" (deadline, node cap, depth cap, or a saturation
+/// that hit its iteration bound, which used to surface as an error) moves on to
+/// the consistency step.
+#[must_use]
+pub fn query_seeded_first_ms() -> u64 {
+    std::env::var("RUSTDL_QUERY_SEEDED_FIRST_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(QUERY_SEEDED_FIRST_DEFAULT_MS)
+}
+
 /// Lever 1 (2026-07-20): when the ontology is nominal-free, evaluate the
 /// Horn-shortcircuit FRAGMENT gate on the `TBox` axioms only, ignoring the `ABox`.
 /// An EL/saturator-fragment `TBox` carrying a large `ABox` is otherwise kicked off
@@ -7033,6 +7091,9 @@ const DEEP_SEARCH_STACK_BYTES: usize = 1024 * 1024 * 1024;
 /// query, or did the tableau have to run? Returned alongside the
 /// boolean verdict by the `_with_stats` variants of the public
 /// reasoning entry points.
+// `struct_excessive_bools`: each bool is an independent signal of the public
+// query API (#401 added the fourth); they are not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QueryStats {
     /// `true` iff the EL saturation closure was sufficient to
@@ -7062,6 +7123,14 @@ pub struct QueryStats {
     /// wedge `consistent` can then miss a clash, so this is a completeness signal,
     /// separate from `incomplete` (which means a give-up).
     pub wedge_clauses_refused: usize,
+    /// #401: the verdict was reached with the `ABox` seed dropped
+    /// ([`query_tbox_only_enabled`]), and the consistency that licensed dropping
+    /// it rests on a trusted wedge `Sat`, not on a main-tableau model. The answer
+    /// is then exactly as trustworthy as `consistent`'s own (#392); if that `Sat`
+    /// were ever wrong, the effect is a miss in the sound direction ("satisfiable"
+    /// / "not subsumed"), never a false positive. Not a give-up, so it is separate
+    /// from `incomplete`.
+    pub relies_on_trusted_consistency: bool,
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -7226,6 +7295,7 @@ fn is_class_satisfiable_internal_full(
                 pure_el_mode: pure_el,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
@@ -7237,17 +7307,20 @@ fn is_class_satisfiable_internal_full(
                 pure_el_mode: true,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
-    let (sat, cut) = run_satisfiability_reporting(internal, move |pool| pool.atomic(class_id))?;
+    let (sat, cut, trusted, refused) =
+        run_satisfiability_reporting(internal, move |pool| pool.atomic(class_id))?;
     Ok((
         sat,
         QueryStats {
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete: cut,
-            wedge_clauses_refused: 0,
+            wedge_clauses_refused: refused,
+            relies_on_trusted_consistency: trusted,
         },
     ))
 }
@@ -7439,6 +7512,7 @@ fn is_consistent_internal_full(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
@@ -7471,6 +7545,7 @@ fn is_consistent_internal_full(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
@@ -7486,6 +7561,7 @@ fn is_consistent_internal_full(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
@@ -7511,6 +7587,7 @@ fn is_consistent_internal_full(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
+                    relies_on_trusted_consistency: false,
                 },
             ));
         }
@@ -7532,6 +7609,7 @@ fn is_consistent_internal_full(
                     pure_el_mode: false,
                     incomplete: gave_up,
                     wedge_clauses_refused: refused,
+                    relies_on_trusted_consistency: false,
                 },
             ));
         }
@@ -7549,6 +7627,7 @@ fn is_consistent_internal_full(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
+                    relies_on_trusted_consistency: false,
                 },
             ));
         }
@@ -7623,6 +7702,7 @@ fn is_consistent_internal_full(
             pure_el_mode: false,
             incomplete,
             wedge_clauses_refused: refused,
+            relies_on_trusted_consistency: false,
         },
     ))
 }
@@ -7995,6 +8075,7 @@ fn is_subclass_of_internal_full(
         pure_el_mode: pure_el,
         incomplete: false,
         wedge_clauses_refused: 0,
+        relies_on_trusted_consistency: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -8033,12 +8114,13 @@ fn is_subclass_of_internal_full(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
             },
         ));
     }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
-    let (sat, cut) = run_satisfiability_reporting(internal, move |pool| {
+    let (sat, cut, trusted, refused) = run_satisfiability_reporting(internal, move |pool| {
         let sub_concept = pool.atomic(sub_id);
         let super_concept = pool.atomic(super_id);
         let not_super = pool.not(super_concept);
@@ -8050,7 +8132,8 @@ fn is_subclass_of_internal_full(
             answered_by_saturation: false,
             pure_el_mode: false,
             incomplete: cut,
-            wedge_clauses_refused: 0,
+            wedge_clauses_refused: refused,
+            relies_on_trusted_consistency: trusted,
         },
     ))
 }
@@ -8074,6 +8157,97 @@ pub fn single_query_node_cap() -> owl_dl_tableau::NodeCapOverride {
     owl_dl_tableau::NodeCapOverride::enter(owl_dl_tableau::query_max_nodes())
 }
 
+thread_local! {
+    /// #401: a consistency verdict inherited from a parent ontology, as
+    /// `Some(trusted)`; see [`assume_query_consistency`].
+    static INHERITED_QUERY_CONSISTENCY: std::cell::Cell<Option<QueryConsistency>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// #401: the single-query consistency verdict for `ontology`, settled with the
+/// same bounded routes [`is_class_satisfiable`] uses before it drops the `ABox`
+/// seed. `Some(trusted)` iff the ontology is definitely consistent (`trusted`:
+/// the only evidence is a wedge `Sat`); `None` when it is inconsistent or
+/// undetermined.
+///
+/// For callers that probe many SUBSETS of one ontology (`justify`, `repair`):
+/// consistency is monotone, so every subset of a consistent KB is consistent.
+/// Settle the parent once here and hold [`assume_query_consistency`] around the
+/// probes, so each one does not pay the consistency step again.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn query_consistency_verdict<A: ForIRI>(
+    ontology: &SetOntology<A>,
+) -> Result<Option<bool>, ReasonError> {
+    Ok(match query_consistency_of(ontology)? {
+        Some(QueryConsistency::Consistent { trusted }) => Some(trusted),
+        _ => None,
+    })
+}
+
+/// #401: [`query_consistency_verdict`] with the full verdict; `None` when the
+/// queries would keep the `ABox` anyway (flag off, no `ABox`, or a nominal).
+pub(crate) fn query_consistency_of<A: ForIRI>(
+    ontology: &SetOntology<A>,
+) -> Result<Option<QueryConsistency>, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    // Nothing to settle when the queries would keep the `ABox` anyway; this
+    // also spares callers the prepare below.
+    if !query_tbox_only_enabled()
+        || !internal_has_abox(&internal)
+        || ontology_uses_nominals(&internal)
+    {
+        return Ok(None);
+    }
+    let prepared = PreparedOntology::from_internal(internal)?;
+    // Settle THIS ontology's verdict, not one an outer guard is lending.
+    let outer = INHERITED_QUERY_CONSISTENCY.with(|c| c.replace(None));
+    let verdict = prepared.query_consistency();
+    INHERITED_QUERY_CONSISTENCY.with(|c| c.set(outer));
+    Ok(Some(verdict?))
+}
+
+/// #401: while the returned guard lives, the single queries on this thread treat
+/// their ontology as consistent, with `trusted` reported as
+/// [`QueryStats::relies_on_trusted_consistency`], instead of settling consistency
+/// themselves. Pass the `Some(trusted)` from [`query_consistency_verdict`] on a
+/// PARENT ontology and query only its subsets; do not hold it when the parent's
+/// verdict was `None`.
+///
+/// Misuse cannot produce a false positive: a wrong "consistent" only makes the
+/// queries drop the `ABox`, and dropping axioms can only lose entailments. The
+/// `ABox` is still kept whenever the queried ontology has a nominal.
+#[must_use = "the inherited verdict lasts only while the guard is alive"]
+pub fn assume_query_consistency(trusted: bool) -> AssumedQueryConsistency {
+    inherit_query_consistency(QueryConsistency::Consistent { trusted })
+}
+
+/// #401: like [`assume_query_consistency`], for any verdict a parent can lend.
+/// [`QueryConsistency::Undetermined`] makes the subset probes take the seeded
+/// path directly, as before #401, instead of each re-running the consistency
+/// step the parent already found undecidable within its budget. Never lend
+/// [`QueryConsistency::Inconsistent`]: a subset of an inconsistent KB may be
+/// consistent.
+pub(crate) fn inherit_query_consistency(verdict: QueryConsistency) -> AssumedQueryConsistency {
+    debug_assert!(verdict != QueryConsistency::Inconsistent);
+    let prior = INHERITED_QUERY_CONSISTENCY.with(|c| c.replace(Some(verdict)));
+    AssumedQueryConsistency { prior }
+}
+
+/// Guard returned by [`assume_query_consistency`]; restores the previous state on
+/// drop.
+pub struct AssumedQueryConsistency {
+    prior: Option<QueryConsistency>,
+}
+
+impl Drop for AssumedQueryConsistency {
+    fn drop(&mut self) {
+        INHERITED_QUERY_CONSISTENCY.with(|c| c.set(self.prior));
+    }
+}
+
 /// Shared end-of-pipeline runner: takes a (possibly mutated)
 /// `InternalOntology`, runs the full normalize/absorb/`ABox`-seed
 /// pipeline once, and asks the tableau whether `build_test_concept`
@@ -8091,23 +8265,26 @@ pub fn single_query_node_cap() -> owl_dl_tableau::NodeCapOverride {
 /// tableau run, so the concept it returns is guaranteed to live in
 /// the pool the tableau will use.
 ///
-/// Returns `(sat, cut)`. On a deadline-free run the only give-up is a
-/// live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4); early abandon is armed only
-/// under a deadline. A cut keeps the sound direction (`sat = true`, so "not
-/// subsumed" / "not an instance") and sets `cut`, which callers report as
+/// Returns `(sat, cut, relies_on_trusted, wedge_clauses_refused)`. On a deadline-free run the only
+/// give-up is a live-node-cap trip (`RUSTDL_MAX_NODES`, #35 v4); early abandon is
+/// armed only under a deadline. A cut keeps the sound direction (`sat = true`, so
+/// "not subsumed" / "not an instance") and sets `cut`, which callers report as
 /// [`QueryStats::incomplete`] (#363 A2). There is deliberately no variant that
-/// folds the cut away.
+/// folds the cut away. The probe drops the `ABox` seed where it provably cannot
+/// matter (#401, [`PreparedOntology::decide_query_raw`]); `relies_on_trusted` is
+/// reported as [`QueryStats::relies_on_trusted_consistency`].
 pub(crate) fn run_satisfiability_reporting<F>(
     internal: InternalOntology,
     build_test_concept: F,
-) -> Result<(bool, bool), ReasonError>
+) -> Result<(bool, bool, bool, usize), ReasonError>
 where
-    F: FnOnce(&mut ConceptPool) -> ConceptId,
+    F: Fn(&mut ConceptPool) -> ConceptId,
 {
     let prepared = PreparedOntology::from_internal(internal)?;
-    Ok(match prepared.decide_raw(build_test_concept)? {
-        Some(sat) => (sat, false),
-        None => (true, true),
+    let (verdict, trusted, refused) = prepared.decide_query_raw(build_test_concept)?;
+    Ok(match verdict {
+        Some(sat) => (sat, false, trusted, refused),
+        None => (true, true, trusted, refused),
     })
 }
 
@@ -8487,6 +8664,18 @@ mod stall_gauge_tests {
     }
 }
 
+/// #401: the consistency verdict behind [`PreparedOntology::decide_query_raw`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryConsistency {
+    /// Provably inconsistent.
+    Inconsistent,
+    /// Consistent. `trusted` is set when the only evidence is a wedge `Sat` (the
+    /// wedge is not proven complete), and clear when the main tableau confirmed it.
+    Consistent { trusted: bool },
+    /// No bounded route decided it; the single queries keep the `ABox` seed.
+    Undetermined,
+}
+
 pub(crate) struct PreparedOntology {
     /// #139 adaptive stall-tail gauge; see [`StallTailGauge`]. Runtime state
     /// with interior mutability, deliberately NOT part of the snapshot
@@ -8522,6 +8711,13 @@ pub(crate) struct PreparedOntology {
     /// completion-graph blow-up it causes on near-EL `ABox`-bearing ontologies.
     /// `abox` is still kept full for `realize`/`materialize`/consistency.
     abox_irrelevant_to_classify: bool,
+    /// #401: the input has `ABox` axioms and no nominal ([`ontology_uses_nominals`]),
+    /// independent of the classify gate. The single queries may skip the `ABox`
+    /// seed only when this holds.
+    query_abox_droppable: bool,
+    /// #401: the consistency verdict the single queries rely on, settled at
+    /// most once per prepared ontology ([`Self::query_consistency`]).
+    query_consistency: std::sync::OnceLock<QueryConsistency>,
     /// EL saturator closure over the un-mutated input ontology.
     /// Used by [`abox_check`] (P1 `is_unsatisfiable`, P2 `subsumers_of`).
     /// Computed once at build time; classify already computes the same
@@ -9164,9 +9360,9 @@ impl PreparedOntology {
         let vocabulary = internal.vocabulary.clone();
         // Lever A: decide up front (on the un-mutated input) whether the ABox is
         // irrelevant to class subsumption — has-ABox, no nominals, gate on.
-        let abox_irrelevant_to_classify = classify_tbox_only_enabled()
-            && internal_has_abox(&internal)
-            && !ontology_uses_nominals(&internal);
+        let query_abox_droppable =
+            internal_has_abox(&internal) && !ontology_uses_nominals(&internal);
+        let abox_irrelevant_to_classify = classify_tbox_only_enabled() && query_abox_droppable;
         // Phase A1 (ABox consistency check): EL closure over the
         // un-mutated input. Used by abox_check for P1 (is_unsatisfiable)
         // and P2 (subsumers_of).
@@ -9297,6 +9493,8 @@ impl PreparedOntology {
             abox,
             tbox_individuals,
             abox_irrelevant_to_classify,
+            query_abox_droppable,
+            query_consistency: std::sync::OnceLock::new(),
             closure,
             told,
             axioms,
@@ -9558,6 +9756,148 @@ impl PreparedOntology {
         )
     }
 
+    /// #401: the consistency verdict the single queries rely on before they drop
+    /// the `ABox` seed. Settled at most once per prepared ontology, and only when
+    /// a query asks for it, so callers that never reach the seeded tableau pay
+    /// nothing.
+    ///
+    /// Uses only bounded routes: the saturator and `abox_check` verdicts already
+    /// on this prepared ontology, then the `ABox`-seeded consistency wedge under
+    /// [`consistency_fallback_ms`] (with the #344 data-counting verification where
+    /// it applies). It deliberately skips `consistent`'s main-tableau fall-through
+    /// and the #182 component retry: anything they would have decided is
+    /// [`QueryConsistency::Undetermined`] here, which keeps today's seeded path.
+    pub(crate) fn query_consistency(&self) -> Result<QueryConsistency, ReasonError> {
+        use owl_dl_tableau::hyper::HyperResult;
+        if let Some(inherited) = INHERITED_QUERY_CONSISTENCY.with(std::cell::Cell::get) {
+            return Ok(inherited);
+        }
+        if let Some(v) = self.query_consistency.get() {
+            return Ok(*v);
+        }
+        let verdict = if self
+            .closure
+            .as_ref()
+            .is_some_and(saturation_says_inconsistent)
+            || matches!(
+                self.abox_verdict(),
+                abox_check::AboxVerdict::Inconsistent { .. }
+            ) {
+            QueryConsistency::Inconsistent
+        } else {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(consistency_fallback_ms());
+            match self.consistency_wedge(Some(deadline)) {
+                Some(HyperResult::Unsat) => QueryConsistency::Inconsistent,
+                Some(HyperResult::Sat) if self.wedge_sat_skips_data_counting => {
+                    match self.verify_wedge_sat(None)? {
+                        (false, _) => QueryConsistency::Inconsistent,
+                        // The main tableau confirmed the wedge's model.
+                        (true, false) => QueryConsistency::Consistent { trusted: false },
+                        (true, true) => QueryConsistency::Undetermined,
+                    }
+                }
+                Some(HyperResult::Sat) => QueryConsistency::Consistent { trusted: true },
+                Some(HyperResult::Stalled) | None => QueryConsistency::Undetermined,
+            }
+        };
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!("query consistency (#401): {verdict:?}");
+        }
+        Ok(*self.query_consistency.get_or_init(|| verdict))
+    }
+
+    /// #401: [`Self::decide_raw`] for the single queries, dropping the `ABox`
+    /// seed where it provably cannot change the answer (see
+    /// [`query_tbox_only_enabled`]). The seeded probe is tried first under
+    /// [`query_seeded_first_ms`], so queries it settles quickly keep their
+    /// pre-#401 path and cost. Returns `(verdict, relies_on_trusted,
+    /// wedge_clauses_refused)`: `verdict` is as in [`Self::decide_raw`] (`None` is
+    /// a node-cap give-up); `relies_on_trusted` is set when the `ABox` was dropped
+    /// on the strength of a trusted wedge `Sat`; and when the `ABox` was dropped,
+    /// the consistency wedge's refused clauses are reported (#357), since a refused
+    /// clause can hide a clash.
+    pub(crate) fn decide_query_raw<F>(
+        &self,
+        build_test_concept: F,
+    ) -> Result<(Option<bool>, bool, usize), ReasonError>
+    where
+        F: Fn(&mut ConceptPool) -> ConceptId,
+    {
+        if !query_tbox_only_enabled() || !self.query_abox_droppable {
+            return Ok((self.decide_raw(build_test_concept)?, false, 0));
+        }
+        let inherited = INHERITED_QUERY_CONSISTENCY.with(std::cell::Cell::get);
+        // Seeded first ([`query_seeded_first_ms`]), unless a parent lent a
+        // verdict. A lent "consistent" makes the consistency step free and the
+        // `ABox`-free probe the cheap one; a lent "undetermined" comes back from
+        // [`Self::query_consistency`] below and keeps the seeded path, as before
+        // #401, without a seeded attempt or a consistency step of its own. The seeded probe decides over the
+        // full KB with the deadline-free search, so any verdict it reaches in
+        // time is definite either way; only a probe that did not finish
+        // (deadline, node cap, or depth cap) moves on to the consistency step.
+        let budget = query_seeded_first_ms();
+        if inherited.is_none() && budget > 0 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(budget);
+            match decide_capturing(
+                &self.pool,
+                &self.tbox,
+                &self.hierarchy,
+                &self.inverse_pairs,
+                &self.chain_axioms,
+                &self.asymmetric_roles,
+                &self.disjoint_role_pairs,
+                &self.complements,
+                &self.query_abox(),
+                &[],
+                &[],
+                &self.dkey_ranges,
+                &self.tableau_id,
+                Some(deadline),
+                &build_test_concept,
+                None,
+                true,
+            ) {
+                Ok(Some(verdict)) => return Ok((Some(verdict), false, 0)),
+                Ok(None) | Err(ReasonError::NoVerdict) => {
+                    if std::env::var_os("RUSTDL_TRACE").is_some() {
+                        eprintln!("query (#401): seeded probe unfinished in {budget} ms");
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        match self.query_consistency()? {
+            // An inconsistent KB makes every concept unsatisfiable, which is what
+            // the seeded tableau answers too.
+            QueryConsistency::Inconsistent => Ok((Some(false), false, 0)),
+            QueryConsistency::Consistent { trusted } => {
+                if std::env::var_os("RUSTDL_TRACE").is_some() {
+                    eprintln!("query (#401): ABox seed skipped (consistent, no nominals)");
+                }
+                let verdict = decide(
+                    &self.pool,
+                    &self.tbox,
+                    &self.hierarchy,
+                    &self.inverse_pairs,
+                    &self.chain_axioms,
+                    &self.asymmetric_roles,
+                    &self.disjoint_role_pairs,
+                    &self.complements,
+                    &Abox::default(),
+                    &[],
+                    &[],
+                    &self.dkey_ranges,
+                    &self.tableau_id,
+                    None,
+                    &build_test_concept,
+                )?;
+                Ok((verdict, trusted, self.consistency_wedge_clauses_refused()))
+            }
+            QueryConsistency::Undetermined => Ok((self.decide_raw(build_test_concept)?, false, 0)),
+        }
+    }
+
     /// Satisfiability of `⊤` for the CONSISTENCY question: like
     /// [`Self::decide_raw`] / [`Self::decide_with_deadline`], but the seed also
     /// carries [`Self::tbox_individuals`]. Without them the probe never
@@ -9780,6 +10120,7 @@ impl PreparedOntology {
             deadline,
             build_test_concept,
             Some(root_labels),
+            false,
         )
     }
 
@@ -10500,6 +10841,7 @@ where
         deadline,
         build_test_concept,
         None,
+        false,
     )
 }
 
@@ -10524,6 +10866,7 @@ fn decide_capturing<F>(
     deadline: Option<std::time::Instant>,
     build_test_concept: F,
     root_labels: Option<&mut Vec<owl_dl_core::ir::ClassId>>,
+    keep_unbounded_search: bool,
 ) -> Result<Option<bool>, ReasonError>
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
@@ -10576,7 +10919,7 @@ where
     let anywhere = match std::env::var("RUSTDL_ANYWHERE_BLOCKING").as_deref() {
         Ok("1") => true,
         Ok("0") => false,
-        _ => deadline.is_none(),
+        _ => deadline.is_none() || keep_unbounded_search,
     };
     ctx.set_anywhere_blocking(anywhere);
     // Concrete-domain solver (P3): supply the DKey range side-map so the
@@ -10691,7 +11034,10 @@ where
     // a large dedicated stack, so termination rests on pair-blocking rather
     // than an artificial recursion limit — the issue-#35 hang was this cap
     // cutting a blocking-bounded-but-deep branch and destroying back-jumping.
-    let outcome = if let Some(dl) = deadline {
+    // `keep_unbounded_search` (#401's seeded-first attempt): the deadline only
+    // stops the search; blocking, depth cap and early abandon stay as on the
+    // deadline-free path, so a verdict reached in time is the one that path gives.
+    let outcome = if let Some(dl) = deadline.filter(|_| !keep_unbounded_search) {
         // Adaptive early-abandon (RUSTDL_TABLEAU_EARLY_ABANDON, default ON since 0.4.14).
         // Armed only on the DEADLINE-BOUNDED arm — that is the one and only path
         // `MAX_SEARCH_DEPTH` is reachable from, so arming the deep arm would be
@@ -10884,11 +11230,23 @@ pub fn prove_entailment_rcstr(
     prove_entailment_rcstr_reporting(ontology, sub_iri, sup_iri).map(|(result, _)| result)
 }
 
-/// [`prove_entailment_rcstr`] plus `incomplete` (#402): `true` iff a reasoner
-/// check under it gave up — the top-level check (the result is
-/// [`ProveEntailmentResult::Unknown`]), or the justification fallback (its
-/// justification may not be minimal, or none was found for an entailment that
-/// does hold).
+/// What [`prove_entailment_rcstr_reporting`] reports beside the result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProveFlags {
+    /// A reasoner check gave up (#402): the top-level check (the result is
+    /// [`ProveEntailmentResult::Unknown`]), or the justification fallback (its
+    /// justification may not be minimal, or none was found for an entailment
+    /// that does hold).
+    pub incomplete: bool,
+    /// #401: a [`ProveEntailmentResult::NotEntailed`] answered without the
+    /// `ABox`, on the strength of a trusted wedge `Sat` for consistency (see
+    /// [`QueryStats::relies_on_trusted_consistency`]). Only that result can rest
+    /// on it: dropping the `ABox` can only lose entailments, so an entailment
+    /// found without it holds regardless. Separate from `incomplete`.
+    pub relies_on_trusted_consistency: bool,
+}
+
+/// [`prove_entailment_rcstr`] plus its [`ProveFlags`].
 ///
 /// # Errors
 /// Propagates `ReasonError`.
@@ -10896,7 +11254,7 @@ pub fn prove_entailment_rcstr_reporting(
     ontology: &horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
     sub_iri: &str,
     sup_iri: &str,
-) -> Result<(ProveEntailmentResult, bool), ReasonError> {
+) -> Result<(ProveEntailmentResult, ProveFlags), ReasonError> {
     use justify::Entailment;
 
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
@@ -10905,7 +11263,7 @@ pub fn prove_entailment_rcstr_reporting(
 
     // If classes not found, not entailed.
     let (Some(sub), Some(sup)) = (sub_opt, sup_opt) else {
-        return Ok((ProveEntailmentResult::NotEntailed, false));
+        return Ok((ProveEntailmentResult::NotEntailed, ProveFlags::default()));
     };
 
     let cfg = SaturateConfig {
@@ -10924,7 +11282,7 @@ pub fn prove_entailment_rcstr_reporting(
                     root,
                     trace,
                 })),
-                false,
+                ProveFlags::default(),
             ));
         }
     }
@@ -10934,9 +11292,21 @@ pub fn prove_entailment_rcstr_reporting(
     let (held, stats) = is_subclass_of_with_stats(ontology, sub_iri, sup_iri)?;
     if !held {
         return Ok(if stats.incomplete {
-            (ProveEntailmentResult::Unknown, true)
+            (
+                ProveEntailmentResult::Unknown,
+                ProveFlags {
+                    incomplete: true,
+                    relies_on_trusted_consistency: false,
+                },
+            )
         } else {
-            (ProveEntailmentResult::NotEntailed, false)
+            (
+                ProveEntailmentResult::NotEntailed,
+                ProveFlags {
+                    incomplete: false,
+                    relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
+                },
+            )
         });
     }
 
@@ -10946,7 +11316,14 @@ pub fn prove_entailment_rcstr_reporting(
         sup: sup_iri.to_string(),
     };
     let outcome = justify::find_one_justification_reporting(ontology, &q)?;
-    Ok(fallback_after_held(outcome))
+    let (result, incomplete) = fallback_after_held(outcome);
+    Ok((
+        result,
+        ProveFlags {
+            incomplete,
+            relies_on_trusted_consistency: false,
+        },
+    ))
 }
 
 /// Maps prove's justification-fallback outcome, reached only after the check
@@ -15768,5 +16145,55 @@ mod internal_flag_defaults {
             drift.len(),
             drift.join("\n")
         );
+    }
+}
+
+/// #401: an inherited "undetermined" verdict (justify/repair lend it from the
+/// parent) sends the subset probes straight to the seeded path, as before #401,
+/// without the seeded-first attempt or a consistency step of their own. Reads
+/// no env var it sets: the default seeded-first budget applies, and the node cap
+/// is a thread-local override.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod query_inherited_undetermined_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    /// Consistent, nominal-free, off pure EL, with an `ABox` of two individuals.
+    const SRC: &str = "Prefix(:=<http://t/>)
+Ontology(<http://t>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))
+Declaration(ObjectProperty(:r))
+Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+SubClassOf(:A ObjectUnionOf(:C :D)) SubClassOf(:C :B) SubClassOf(:D :B)
+ClassAssertion(:A :a) ObjectPropertyAssertion(:r :a :b) ClassAssertion(:C :b)
+)";
+
+    fn parse() -> SetOntology<RcStr> {
+        read(&mut Cursor::new(SRC), ParserConfiguration::default())
+            .expect("fixture parses")
+            .0
+    }
+
+    #[test]
+    fn an_inherited_undetermined_verdict_keeps_the_seeded_path() {
+        let o = parse();
+        // The seeded probe exceeds this cap (two nominal roots plus the test
+        // root); the `ABox`-free probe does not.
+        let _cap = owl_dl_tableau::NodeCapOverride::enter(Some(2));
+        let (sat, st) = is_class_satisfiable_with_stats(&o, "http://t/A").unwrap();
+        assert!(sat && !st.incomplete, "no verdict lent: the skip answers");
+        let _lent = inherit_query_consistency(QueryConsistency::Undetermined);
+        let (sat, st) = is_class_satisfiable_with_stats(&o, "http://t/A").unwrap();
+        assert!(sat);
+        assert!(
+            st.incomplete,
+            "lent undetermined: only the seeded probe runs, and it gives up"
+        );
+        assert!(!st.relies_on_trusted_consistency);
     }
 }

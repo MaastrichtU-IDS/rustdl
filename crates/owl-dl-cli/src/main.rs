@@ -1018,6 +1018,23 @@ fn warn_if_incomplete(
     }
 }
 
+/// #401: the verdict was reached with the `ABox` seed dropped, on the strength of
+/// a trusted wedge `Sat` for consistency. Not a give-up: the answer stands and the
+/// exit code is unchanged; this only says what it rests on.
+fn note_trusted_consistency(stats: &owl_dl_reasoner::QueryStats) {
+    note_trusted_consistency_flag(stats.relies_on_trusted_consistency);
+}
+
+fn note_trusted_consistency_flag(relies: bool) {
+    if relies {
+        eprintln!(
+            "note: answered without the ABox, which cannot affect it here (no nominals); \
+             that relies on the KB being consistent, which the wedge found but did not \
+             prove (as `rustdl consistent` does). RUSTDL_QUERY_TBOX_ONLY=0 seeds the ABox."
+        );
+    }
+}
+
 /// A `sat` / `subclass` probe tripped the live-node cap: there is no verdict.
 /// Print `unknown`, explain on stderr and exit 3, the convention `consistent`
 /// uses for a give-up (#363 A2).
@@ -1911,6 +1928,7 @@ fn main() -> Result<()> {
             if stats.incomplete {
                 exit_unknown_node_cap();
             }
+            note_trusted_consistency(&stats);
             println!("{}", if verdict { "sat" } else { "unsat" });
         }
         Command::Subclass {
@@ -1931,6 +1949,7 @@ fn main() -> Result<()> {
                 if stats.incomplete {
                     exit_unknown_node_cap();
                 }
+                note_trusted_consistency(&stats);
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
@@ -2031,6 +2050,7 @@ fn main() -> Result<()> {
             if v.incomplete() {
                 eprintln!("warning: verdict is a sound under-approximation (incomplete)");
             }
+            note_trusted_consistency_flag(v.relies_on_trusted_consistency());
         }
         Command::SubclassExpr {
             file,
@@ -2055,6 +2075,7 @@ fn main() -> Result<()> {
             if v.incomplete() {
                 eprintln!("warning: verdict is a sound under-approximation (incomplete)");
             }
+            note_trusted_consistency_flag(v.relies_on_trusted_consistency());
         }
         Command::InstancesExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
@@ -2158,6 +2179,7 @@ fn main() -> Result<()> {
                 );
                 std::process::exit(3);
             }
+            note_trusted_consistency(&stats);
             println!(
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },
@@ -2369,8 +2391,9 @@ fn main() -> Result<()> {
             // A single query, like `subclass` / `explain`: the 500k query cap
             // (#402). It covers the justification fallback too (thread-local).
             let _cap = owl_dl_reasoner::single_query_node_cap();
-            let (result, incomplete) =
+            let (result, flags) =
                 prove_entailment_rcstr_reporting(&onto, &sub, &sup).context("prove_entailment")?;
+            let incomplete = flags.incomplete;
             let unknown = matches!(result, ProveEntailmentResult::Unknown);
             // #402: a give-up is never "NOT entailed".
             let warn_gave_up = || {
@@ -2388,11 +2411,12 @@ fn main() -> Result<()> {
                          minimal, or none was found."
                     );
                 }
+                note_trusted_consistency_flag(flags.relies_on_trusted_consistency);
             };
             if json {
                 let internal = owl_dl_core::convert::convert_ontology(&onto)
                     .context("re-convert for rendering")?;
-                let prove_json = json_out::build_prove_json(&result, incomplete, &internal, &pm)
+                let prove_json = json_out::build_prove_json(&result, flags, &internal, &pm)
                     .context("rendering prove --json proof tree")?;
                 println!("{}", serde_json::to_string_pretty(&prove_json)?);
                 warn_gave_up();

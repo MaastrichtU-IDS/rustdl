@@ -247,6 +247,7 @@ below).
 ```json
 { "schema_version": 1, "entailed": bool,
   "status": "entailed" | "not-entailed" | "unknown", "incomplete": bool,
+  "relies_on_trusted_consistency": bool,
   "has_proof": bool,
   "proof_complete": bool | null,
   "proof": ProofNodeJson | null,
@@ -303,3 +304,9 @@ JSONs. That is the top level (`"unknown"`), or the justification fallback (the
 justification may not be minimal, or none was found for an entailment that
 holds). `prove` runs under the single-query node cap (`RUSTDL_QUERY_MAX_NODES`,
 default 500000), like `subclass` and `explain`.
+
+`relies_on_trusted_consistency` was added in #401, also without a bump. It is
+`true` only with `status: "not-entailed"`, when that answer was reached without
+the `ABox` (no nominals, so the `ABox` cannot change it on a consistent KB) and
+the consistency verdict rests on a trusted wedge `Sat` rather than a
+main-tableau model. It is not a give-up and does not set `incomplete`.

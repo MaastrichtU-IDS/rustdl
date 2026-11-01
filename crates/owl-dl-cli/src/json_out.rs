@@ -254,6 +254,13 @@ pub(crate) struct DisjointJson {
 pub(crate) struct SatExprJson {
     pub(crate) schema_version: u32,
     pub(crate) incomplete: bool,
+    /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
+    /// affect the answer: the ontology and the expression have no nominal), and
+    /// the consistency that licensed dropping it rests on a trusted wedge `Sat`
+    /// rather than a main-tableau model, as `consistent`'s own answer does. A
+    /// wrong `Sat` there could only make the answer a miss, never a false
+    /// positive. Separate from `incomplete`; not a give-up.
+    pub(crate) relies_on_trusted_consistency: bool,
     pub(crate) satisfiable: bool,
 }
 
@@ -261,6 +268,13 @@ pub(crate) struct SatExprJson {
 pub(crate) struct SubclassExprJson {
     pub(crate) schema_version: u32,
     pub(crate) incomplete: bool,
+    /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
+    /// affect the answer: the ontology and the expression have no nominal), and
+    /// the consistency that licensed dropping it rests on a trusted wedge `Sat`
+    /// rather than a main-tableau model, as `consistent`'s own answer does. A
+    /// wrong `Sat` there could only make the answer a miss, never a false
+    /// positive. Separate from `incomplete`; not a give-up.
+    pub(crate) relies_on_trusted_consistency: bool,
     pub(crate) entailed: bool,
 }
 
@@ -276,6 +290,7 @@ pub(crate) fn build_sat_expr_json(v: owl_dl_reasoner::CeVerdict) -> SatExprJson 
     SatExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: v.incomplete(),
+        relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         satisfiable: v.holds(),
     }
 }
@@ -285,6 +300,7 @@ pub(crate) fn build_subclass_expr_json(v: owl_dl_reasoner::CeVerdict) -> Subclas
     SubclassExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: v.incomplete(),
+        relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         entailed: v.holds(),
     }
 }
@@ -734,6 +750,9 @@ pub(crate) fn build_justify_json(
 // `prove --json`
 // ---------------------------------------------------------------------------
 
+// Each bool is its own field of the `prove --json` contract (docs/json-schema.md),
+// read by external consumers; folding them into an enum would change the schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct ProveJson {
     pub(crate) schema_version: u32,
@@ -747,6 +766,11 @@ pub(crate) struct ProveJson {
     /// the justification fallback (its justification may not be minimal, or
     /// none was found). Give-up meaning, as in the other query JSONs.
     pub(crate) incomplete: bool,
+    /// #401: `status: "not-entailed"` was answered without the `ABox`, relying
+    /// on a consistency verdict that rests on a trusted wedge `Sat` (not a
+    /// main-tableau model). Not a give-up; separate from `incomplete`. Always
+    /// `false` for the other statuses.
+    pub(crate) relies_on_trusted_consistency: bool,
     pub(crate) has_proof: bool,
     /// `true` when every proof step cites the axiom its rule applies (or needs none) and
     /// every premise has a sub-proof; `false` when some step cannot be completed from
@@ -999,7 +1023,7 @@ fn proof_is_complete(node: &ProofNodeJson) -> bool {
 
 pub(crate) fn build_prove_json(
     result: &ProveEntailmentResult,
-    incomplete: bool,
+    flags: owl_dl_reasoner::ProveFlags,
     internal: &InternalOntology,
     pm: &PrefixMapping,
 ) -> Result<ProveJson> {
@@ -1007,7 +1031,8 @@ pub(crate) fn build_prove_json(
         schema_version: SCHEMA_VERSION,
         entailed,
         status: status.to_owned(),
-        incomplete,
+        incomplete: flags.incomplete,
+        relies_on_trusted_consistency: flags.relies_on_trusted_consistency,
         has_proof: false,
         proof_complete: None,
         proof: None,

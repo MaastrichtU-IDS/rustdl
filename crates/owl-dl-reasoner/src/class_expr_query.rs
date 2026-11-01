@@ -24,6 +24,7 @@ const PROBE_IRI_2: &str = "urn:rustdl-ce-probe:q2";
 pub struct CeVerdict {
     holds: bool,
     incomplete: bool,
+    relies_on_trusted_consistency: bool,
 }
 
 impl CeVerdict {
@@ -38,6 +39,14 @@ impl CeVerdict {
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// #401: the verdict was reached with the `ABox` seed dropped, on the strength
+    /// of a trusted wedge `Sat` for consistency. See
+    /// [`QueryStats::relies_on_trusted_consistency`].
+    #[must_use]
+    pub fn relies_on_trusted_consistency(&self) -> bool {
+        self.relies_on_trusted_consistency
     }
 }
 
@@ -183,6 +192,7 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     Ok(CeVerdict {
         holds,
         incomplete: incomplete_of(stats),
+        relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
     })
 }
 
@@ -210,6 +220,7 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     Ok(CeVerdict {
         holds,
         incomplete: incomplete_of(stats),
+        relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
     })
 }
 

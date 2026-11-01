@@ -89,6 +89,25 @@ about its signal, so each is filed rather than fixed here.
   `materialize_inferred_class_assertions`) drop realize's flags. #391.
 - **consistency's trusted wedge `Sat`** is a trust decision, not a cut, and has
   no signal beyond `wedge_clauses_refused`. #392.
+- **single queries that drop the `ABox` (#401)**: `sat`, `subclass`, `explain`,
+  `sat-expr` and `subclass-expr` drop the `ABox` seed when the ontology and the
+  query have no nominal and the KB is consistent (`RUSTDL_QUERY_TBOX_ONLY`,
+  default on). That is exact by disjoint-union closure of nominal-free SROIQ(D)
+  (rustdl has no universal role, the one construct that breaks it), and dropping
+  axioms can never add an entailment. When consistency rests on a trusted wedge
+  `Sat` (#392) the answer inherits that trust, so it has its own signal:
+  `QueryStats::relies_on_trusted_consistency`, `relies_on_trusted_consistency` in
+  `sat-expr`/`subclass-expr --json`, a stderr note in CLI text mode, and Python
+  `TrustedConsistencyWarning`. Not folded into `incomplete`. An undetermined
+  consistency keeps the seeded path. `prove` reports the same signal on a "NOT
+  entailed" (stderr note, `relies_on_trusted_consistency` in `prove --json`).
+  Before any of this the old seeded probe runs under `RUSTDL_QUERY_SEEDED_FIRST_MS`
+  (default 3000, a wall-clock budget, with the deadline-free search settings), and
+  a verdict it reaches is returned as is. So whether an answer carries the trust
+  signal depends on whether that probe finished in time: on a slower or loaded host
+  the skip may answer instead, with the same answer and the signal set. A sweep
+  diff on that field alone is not a regression. Pinned by `query_tbox_only.rs`,
+  `query_tbox_only_cli.rs`, `test_query_tbox_only.py`.
 
 ## Rule for changes
 

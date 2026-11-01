@@ -34,6 +34,14 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **Lever A sees nominals in property domains and ranges (#400).** `ontology_uses_nominals`
+  decides whether classify's main-tableau probes may skip the `ABox` seed
+  (`RUSTDL_CLASSIFY_TBOX_ONLY`). It ignored `ObjectPropertyDomain`/`ObjectPropertyRange`, so
+  with `ObjectPropertyRange(:r ObjectOneOf(:a))` the `ABox` was dropped and an entailment that
+  needs it was silently missed (`incomplete: false`). Latent at default settings, where the
+  wedge answers first; reachable when the main tableau decides a pair (e.g.
+  `RUSTDL_HYPERTABLEAU=0`). Both matches in the predicate are now exhaustive. No ORE ontology
+  is affected.
 - **The structural property surfaces derive what their own axioms entail (#389, #390).** Each
   fix has its own flag, default ON (`=0` reverts):
   - `SymmetricObjectProperty(p)` makes `p ≡ p⁻`, so with `InverseObjectProperties(p q)` it

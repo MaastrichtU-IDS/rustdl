@@ -5755,8 +5755,12 @@ pub fn query_tbox_only_enabled() -> bool {
     std::env::var_os("RUSTDL_QUERY_TBOX_ONLY").is_none_or(|v| v != "0")
 }
 
-/// Default of [`query_seeded_first_ms`].
-pub const QUERY_SEEDED_FIRST_DEFAULT_MS: u64 = 1_000;
+/// Default of [`query_seeded_first_ms`]. Measured, 3 interleaved reps on one
+/// core: `ore_ont_6923`'s seeded probe needs more than 2 000 ms (two of its five
+/// regressed queries stay slow at 2 000) and 3 000 restores all eight
+/// regressions to the base cost. The price is that budget on every query that
+/// does need the `ABox` skipped: pizza `sat :Pizza` 0.1 s → 3.0 s (was > 117 s).
+pub const QUERY_SEEDED_FIRST_DEFAULT_MS: u64 = 3_000;
 
 /// `RUSTDL_QUERY_SEEDED_FIRST_MS` (#401): before a single query settles
 /// consistency to drop the `ABox` ([`query_tbox_only_enabled`]), it first runs

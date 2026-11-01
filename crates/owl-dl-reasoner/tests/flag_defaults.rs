@@ -734,8 +734,8 @@ fn query_seeded_first_ms_default_is_pinned() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = "RUSTDL_QUERY_SEEDED_FIRST_MS";
     let _restore = EnvGuard::unset(key);
-    assert_eq!(owl_dl_reasoner::QUERY_SEEDED_FIRST_DEFAULT_MS, 1_000);
-    assert_eq!(owl_dl_reasoner::query_seeded_first_ms(), 1_000, "unset");
+    assert_eq!(owl_dl_reasoner::QUERY_SEEDED_FIRST_DEFAULT_MS, 3_000);
+    assert_eq!(owl_dl_reasoner::query_seeded_first_ms(), 3_000, "unset");
     #[allow(unsafe_code)]
     let with = |v: &str| {
         // SAFETY: ENV_MUTEX is held; `_restore` puts the prior value back.
@@ -744,5 +744,5 @@ fn query_seeded_first_ms_default_is_pinned() {
     };
     assert_eq!(with("0"), 0, "`0` goes straight to the consistency step");
     assert_eq!(with("250"), 250);
-    assert_eq!(with("soon"), 1_000, "unparsable falls back to the default");
+    assert_eq!(with("soon"), 3_000, "unparsable falls back to the default");
 }

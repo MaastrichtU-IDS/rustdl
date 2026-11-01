@@ -146,6 +146,32 @@ pub fn disjoint_object_properties<A: ForIRI>(
     if crate::query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
+    if crate::property_disjoint_down_enabled() {
+        let asymmetric = crate::property_asymmetric_disjoint_enabled();
+        let sets: Vec<Vec<crate::property_closure::Signed>> = onto
+            .iter()
+            .filter_map(|ac| match &ac.component {
+                C::DisjointObjectProperties(ax) => {
+                    Some(ax.0.iter().map(crate::property_closure::signed).collect())
+                }
+                // `Asymmetric(p)` is `Disjoint(p, p⁻)` (F3).
+                C::AsymmetricObjectProperty(ax) if asymmetric => {
+                    let p = crate::property_closure::signed(&ax.0).0;
+                    Some(vec![(p.clone(), false), (p, true)])
+                }
+                _ => None,
+            })
+            .collect();
+        let edges = crate::property_closure::object_edges(onto);
+        return Ok(crate::property_closure::disjoint_down(
+            &edges,
+            &sets,
+            &[
+                crate::property_closure::OBJ_TOP,
+                crate::property_closure::OBJ_BOT,
+            ],
+        ));
+    }
     let mut out: Vec<(String, String)> = Vec::new();
     for ac in onto {
         if let C::DisjointObjectProperties(ax) = &ac.component {
@@ -180,6 +206,31 @@ pub fn disjoint_data_properties<A: ForIRI>(
     let internal = convert_ontology(onto)?;
     if crate::query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
+    }
+    if crate::property_disjoint_down_enabled() {
+        let sets: Vec<Vec<(String, bool)>> = onto
+            .iter()
+            .filter_map(|ac| match &ac.component {
+                C::DisjointDataProperties(ax) => Some(
+                    ax.0.iter()
+                        .map(|dp| (dp.0.as_ref().to_string(), false))
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .collect();
+        let edges = crate::property_closure::data_edges(onto)
+            .into_iter()
+            .map(|(a, b)| ((a, false), (b, false)))
+            .collect();
+        return Ok(crate::property_closure::disjoint_down(
+            &edges,
+            &sets,
+            &[
+                crate::property_closure::DATA_TOP,
+                crate::property_closure::DATA_BOT,
+            ],
+        ));
     }
     let mut out: Vec<(String, String)> = Vec::new();
     for ac in onto {

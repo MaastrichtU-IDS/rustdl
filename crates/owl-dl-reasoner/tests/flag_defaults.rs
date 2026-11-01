@@ -245,6 +245,36 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
+            owl_dl_reasoner::property_asymmetric_disjoint_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_PROPERTY_DISJOINT_DOWN",
+            owl_dl_reasoner::property_disjoint_down_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_PROPERTY_TOP_BOTTOM",
+            owl_dl_reasoner::property_top_bottom_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_PROPERTY_UNIT_CHAIN",
+            owl_dl_reasoner::property_unit_chain_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_DATA_VALUES_ANONYMOUS",
+            owl_dl_reasoner::data_values_anonymous_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_PROPERTY_SYMMETRIC",
+            owl_dl_reasoner::property_symmetric_enabled,
+            true,
+        ),
+        (
             "RUSTDL_CLASSIFY_WEDGE_NOMINALS",
             owl_dl_reasoner::classify_wedge_nominals_enabled,
             true,

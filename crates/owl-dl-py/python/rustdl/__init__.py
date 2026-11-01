@@ -21,14 +21,14 @@ from rustdl._native import (
     instances_of as _instances_of_native,
     realize as _realize_native,
     disjoint_classes as _disjoint_classes_native,
-    disjoint_object_properties as disjoint_object_properties,
-    disjoint_data_properties as disjoint_data_properties,
-    object_property_hierarchy as object_property_hierarchy,
-    data_property_hierarchy as data_property_hierarchy,
+    disjoint_object_properties as _disjoint_object_properties_native,
+    disjoint_data_properties as _disjoint_data_properties_native,
+    object_property_hierarchy as _object_property_hierarchy_native,
+    data_property_hierarchy as _data_property_hierarchy_native,
     same_individuals as _same_individuals_native,
     different_individuals as _different_individuals_native,
     object_property_values as _object_property_values_native,
-    data_property_values as data_property_values,
+    data_property_values as _data_property_values_native,
     class_expression_satisfiable as _class_expression_satisfiable_native,
     class_expression_entailed_subclass as _class_expression_entailed_subclass_native,
     class_expression_instances as _class_expression_instances_native,
@@ -40,9 +40,9 @@ from rustdl._native import (
     materialize_inferred_subclass_axioms as materialize_inferred_subclass_axioms,
     materialize_inferred_class_assertions as materialize_inferred_class_assertions,
     materialize_inferred_property_assertions as materialize_inferred_property_assertions,
-    materialize_inferred_data_property_assertions as materialize_inferred_data_property_assertions,
-    materialize_inferred_subobjectproperty_axioms as materialize_inferred_subobjectproperty_axioms,
-    materialize_inferred_subdataproperty_axioms as materialize_inferred_subdataproperty_axioms,
+    materialize_inferred_data_property_assertions as _materialize_inferred_data_property_assertions_native,
+    materialize_inferred_subobjectproperty_axioms as _materialize_inferred_subobjectproperty_axioms_native,
+    materialize_inferred_subdataproperty_axioms as _materialize_inferred_subdataproperty_axioms_native,
     materialize_existential_successors as materialize_existential_successors,
     justify as justify,
     justify_all as justify_all,
@@ -259,6 +259,78 @@ def realize(path):
     return types
 
 
+class StructuralGapWarning(UserWarning):
+    """Raised by the STRUCTURAL property queries (`object_property_hierarchy`,
+    `data_property_hierarchy`, `disjoint_object_properties`,
+    `disjoint_data_properties`, `data_property_values` and the matching
+    `materialize_inferred_*` functions) when the ontology contains constructs
+    those closures do not reason with and that can entail a relation they would
+    report (issues #389, #390). The message names them. Nothing was cut by a
+    budget, so this is deliberately NOT an `IncompleteQueryWarning`: re-running
+    with more time changes nothing. No warning does not prove completeness."""
+
+
+def _warn_if_structural_gaps(name: str, gaps: "list[str]") -> None:
+    if gaps:
+        _warnings.warn(
+            f"{name} is structural and this ontology has constructs it does not "
+            f"reason with, so entailed entries may be missing: {', '.join(gaps)}.",
+            StructuralGapWarning,
+            stacklevel=3,
+        )
+
+
+def _structural(name, native):
+    def wrapper(path):
+        result, gaps = native(path)
+        _warn_if_structural_gaps(name, gaps)
+        return result
+
+    wrapper.__name__ = name
+    wrapper.__qualname__ = name
+    wrapper.__doc__ = (native.__doc__ or "") + (
+        "\n\nEmits `StructuralGapWarning` when the ontology has constructs this "
+        "structural closure ignores (see `StructuralGapWarning`)."
+    )
+    return wrapper
+
+
+disjoint_object_properties = _structural(
+    "disjoint_object_properties", _disjoint_object_properties_native
+)
+disjoint_data_properties = _structural("disjoint_data_properties", _disjoint_data_properties_native)
+data_property_values = _structural("data_property_values", _data_property_values_native)
+materialize_inferred_data_property_assertions = _structural(
+    "materialize_inferred_data_property_assertions",
+    _materialize_inferred_data_property_assertions_native,
+)
+materialize_inferred_subobjectproperty_axioms = _structural(
+    "materialize_inferred_subobjectproperty_axioms",
+    _materialize_inferred_subobjectproperty_axioms_native,
+)
+materialize_inferred_subdataproperty_axioms = _structural(
+    "materialize_inferred_subdataproperty_axioms",
+    _materialize_inferred_subdataproperty_axioms_native,
+)
+
+
+def object_property_hierarchy(path):
+    """Inferred object property hierarchy: `(equivalent_groups,
+    direct_subsumptions)`. Structural; emits `StructuralGapWarning` when the
+    ontology has constructs it ignores."""
+    groups, direct, gaps = _object_property_hierarchy_native(path)
+    _warn_if_structural_gaps("object_property_hierarchy", gaps)
+    return groups, direct
+
+
+def data_property_hierarchy(path):
+    """Inferred data property hierarchy: `(equivalent_groups,
+    direct_subsumptions)`. Structural; emits `StructuralGapWarning` when the
+    ontology has constructs it ignores."""
+    groups, direct, gaps = _data_property_hierarchy_native(path)
+    _warn_if_structural_gaps("data_property_hierarchy", gaps)
+    return groups, direct
+
 def disjoint_classes(path):
     """Entailed disjoint named-class pairs `(c, d)` — `C ⊓ D` is proven
     unsatisfiable. Bounded by a 1s per-pair deadline; emits
@@ -450,6 +522,7 @@ __all__ = [
     "Classification",
     "IncompleteClassificationWarning",
     "IncompleteQueryWarning",
+    "StructuralGapWarning",
     "classify",
     "classify_bytes",
     "is_consistent",

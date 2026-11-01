@@ -52,6 +52,8 @@ pub mod laconic;
 mod model_cache;
 pub mod oracle_diff;
 mod property_classify;
+mod property_closure;
+mod property_gaps;
 mod property_values;
 mod realize;
 pub mod repair;
@@ -80,6 +82,12 @@ pub use laconic::{find_all_laconic_justifications, find_laconic_justification};
 pub use property_classify::{
     PropertyClassification, classify_data_property_hierarchy, classify_object_property_hierarchy,
 };
+pub use property_classify::{PropertyHierarchies, classify_property_hierarchies};
+pub use property_closure::{
+    property_asymmetric_disjoint_enabled, property_disjoint_down_enabled,
+    property_symmetric_enabled, property_top_bottom_enabled, property_unit_chain_enabled,
+};
+pub use property_gaps::{PropertyStructuralGaps, property_structural_gaps};
 pub use property_values::{
     DataPropertyValues, ObjectPropertyValues, inferred_data_property_values,
     inferred_object_property_values,
@@ -155,6 +163,15 @@ pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
     Ok(out)
 }
 
+/// Anonymous individuals take part in the `SameIndividual` folding of
+/// [`materialize_data_property_assertions`] (#390): `d(_:x, v)` and
+/// `SameIndividual(_:x, a)` give `d(a, v)`. They were skipped, so that value was
+/// lost. Default **ON**; `RUSTDL_DATA_VALUES_ANONYMOUS=0` reverts.
+#[must_use]
+pub fn data_values_anonymous_enabled() -> bool {
+    std::env::var_os("RUSTDL_DATA_VALUES_ANONYMOUS").is_none_or(|v| v != "0")
+}
+
 /// Materialize the inferred DATA property assertions entailed over **named
 /// individuals** — `(subject_iri, property_iri, lexical, datatype_iri, lang)`
 /// 5-tuples (the full entailed closure under sub-data-property hierarchy,
@@ -198,6 +215,21 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
+    // #390: an anonymous individual takes part in the folding under the key
+    // conversion gives it, so `d(_:x, v)` and `SameIndividual(_:x, a)` give `d(a, v)`.
+    // Rows about the anonymous individual itself are dropped below.
+    let anon = data_values_anonymous_enabled();
+    let key = |i: &Individual<A>| -> Option<String> {
+        match i {
+            Individual::Named(n) => Some(n.0.as_ref().to_string()),
+            Individual::Anonymous(a) if anon => Some(format!(
+                "{}{}",
+                owl_dl_core::convert::ANON_IRI_PREFIX,
+                a.0.as_ref()
+            )),
+            Individual::Anonymous(_) => None,
+        }
+    };
 
     let mut asserted: Vec<(String, String, (String, String, String))> = Vec::new();
     let mut hierarchy: Vec<(String, String)> = Vec::new();
@@ -209,10 +241,9 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     for ac in onto {
         match &ac.component {
             C::DataPropertyAssertion(ax) => {
-                let Individual::Named(ni) = &ax.from else {
+                let Some(subj) = key(&ax.from) else {
                     continue;
                 };
-                let subj = ni.0.as_ref().to_string();
                 let dp = ax.dp.0.as_ref().to_string();
                 let value = match &ax.to {
                     Literal::Simple { literal } => {
@@ -234,13 +265,7 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
                 asserted.push((subj, dp, value));
             }
             C::SameIndividual(ax) => {
-                let named: Vec<String> =
-                    ax.0.iter()
-                        .filter_map(|i| match i {
-                            Individual::Named(n) => Some(n.0.as_ref().to_string()),
-                            Individual::Anonymous(_) => None,
-                        })
-                        .collect();
+                let named: Vec<String> = ax.0.iter().filter_map(key).collect();
                 for w in named.windows(2) {
                     all_inds.insert(w[0].clone());
                     all_inds.insert(w[1].clone());
@@ -426,94 +451,13 @@ pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
 pub fn materialize_subobjectproperty_axioms<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String)>, ReasonError> {
-    use horned_owl::model::{
-        Component as C, ObjectPropertyExpression as OPE, SubObjectPropertyExpression as SOPE,
-    };
-    use std::collections::BTreeSet;
-
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
     if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
-    type Signed = (String, bool); // (property IRI, is_inverse)
-    fn signed<A: horned_owl::model::ForIRI>(ope: &OPE<A>) -> Signed {
-        match ope {
-            OPE::ObjectProperty(op) => (op.0.as_ref().to_string(), false),
-            OPE::InverseObjectProperty(op) => (op.0.as_ref().to_string(), true),
-        }
-    }
-
-    let mut edges: BTreeSet<(Signed, Signed)> = BTreeSet::new();
-    for ac in onto {
-        match &ac.component {
-            C::SubObjectPropertyOf(ax) => {
-                if let SOPE::ObjectPropertyExpression(sub_ope) = &ax.sub {
-                    edges.insert((signed(sub_ope), signed(&ax.sup)));
-                }
-                // ObjectPropertyChain sub → complex subsumption, skipped.
-            }
-            C::EquivalentObjectProperties(ax) => {
-                let ss: Vec<Signed> = ax.0.iter().map(signed).collect();
-                for (i, si) in ss.iter().enumerate() {
-                    for (j, sj) in ss.iter().enumerate() {
-                        if i != j {
-                            edges.insert((si.clone(), sj.clone()));
-                        }
-                    }
-                }
-            }
-            C::InverseObjectProperties(ax) => {
-                let p = ax.0.0.as_ref().to_string();
-                let q = ax.1.0.as_ref().to_string();
-                // (p,false) ≡ (q,true) ; (q,false) ≡ (p,true)
-                edges.insert(((p.clone(), false), (q.clone(), true)));
-                edges.insert(((q.clone(), true), (p.clone(), false)));
-                edges.insert(((q.clone(), false), (p.clone(), true)));
-                edges.insert(((p.clone(), true), (q.clone(), false)));
-            }
-            _ => {}
-        }
-    }
-
-    // Inverse propagation + transitive closure to fixpoint.
-    loop {
-        let mut new: Vec<(Signed, Signed)> = Vec::new();
-        for ((an, af), (bn, bf)) in &edges {
-            let cand = ((an.clone(), !*af), (bn.clone(), !*bf));
-            if !edges.contains(&cand) {
-                new.push(cand);
-            }
-        }
-        for (a, b) in &edges {
-            for (b2, c) in &edges {
-                if b == b2 {
-                    let cand = (a.clone(), c.clone());
-                    if !edges.contains(&cand) {
-                        new.push(cand);
-                    }
-                }
-            }
-        }
-        if new.is_empty() {
-            break;
-        }
-        for e in new {
-            edges.insert(e);
-        }
-    }
-
-    const TOP: &str = "http://www.w3.org/2002/07/owl#topObjectProperty";
-    const BOT: &str = "http://www.w3.org/2002/07/owl#bottomObjectProperty";
-    let mut out: Vec<(String, String)> = edges
-        .iter()
-        .filter(|((_, af), (_, bf))| !af && !bf)
-        .map(|((a, _), (b, _))| (a.clone(), b.clone()))
-        .filter(|(a, b)| a != b && a != TOP && a != BOT && b != TOP && b != BOT)
-        .collect();
-    out.sort();
-    out.dedup();
-    Ok(out)
+    let edges = crate::property_closure::object_edges(onto);
+    Ok(crate::property_closure::object_named_pairs(&edges))
 }
 
 /// Materialize the inferred DATA property-subsumption axioms `(sub, sup)` over named
@@ -525,63 +469,13 @@ pub fn materialize_subobjectproperty_axioms<A: horned_owl::model::ForIRI>(
 pub fn materialize_subdataproperty_axioms<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String)>, ReasonError> {
-    use horned_owl::model::Component as C;
-    use std::collections::BTreeSet;
-
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
     if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
-    let mut edges: BTreeSet<(String, String)> = BTreeSet::new();
-    for ac in onto {
-        match &ac.component {
-            C::SubDataPropertyOf(ax) => {
-                edges.insert((ax.sub.0.as_ref().to_string(), ax.sup.0.as_ref().to_string()));
-            }
-            C::EquivalentDataProperties(ax) => {
-                let ds: Vec<String> = ax.0.iter().map(|d| d.0.as_ref().to_string()).collect();
-                for (i, di) in ds.iter().enumerate() {
-                    for (j, dj) in ds.iter().enumerate() {
-                        if i != j {
-                            edges.insert((di.clone(), dj.clone()));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    loop {
-        let mut new: Vec<(String, String)> = Vec::new();
-        for (a, b) in &edges {
-            for (b2, c) in &edges {
-                if b == b2 {
-                    let cand = (a.clone(), c.clone());
-                    if !edges.contains(&cand) {
-                        new.push(cand);
-                    }
-                }
-            }
-        }
-        if new.is_empty() {
-            break;
-        }
-        for e in new {
-            edges.insert(e);
-        }
-    }
-
-    const TOP: &str = "http://www.w3.org/2002/07/owl#topDataProperty";
-    const BOT: &str = "http://www.w3.org/2002/07/owl#bottomDataProperty";
-    let mut out: Vec<(String, String)> = edges
-        .into_iter()
-        .filter(|(a, b)| a != b && a != TOP && a != BOT && b != TOP && b != BOT)
-        .collect();
-    out.sort();
-    out.dedup();
-    Ok(out)
+    let edges = crate::property_closure::data_edges(onto);
+    Ok(crate::property_closure::data_named_pairs(&edges))
 }
 
 /// Compute a sparse summary of the signature-locality partition
@@ -3402,22 +3296,31 @@ pub(crate) fn query_kb_inconsistent(internal: &InternalOntology) -> bool {
 /// The part of [`query_kb_inconsistent`] beyond the `ABox` saturation, for callers that
 /// already ran that saturation and use its result.
 pub(crate) fn query_kb_inconsistent_beyond_abox(internal: &InternalOntology) -> bool {
+    query_kb_inconsistent_keeping_closure(internal).0
+}
+
+/// [`query_kb_inconsistent_beyond_abox`], also returning the EL closure it built,
+/// if it built one, so a caller that needs that closure does not saturate again.
+pub(crate) fn query_kb_inconsistent_keeping_closure(
+    internal: &InternalOntology,
+) -> (bool, Option<owl_dl_saturation::Subsumers>) {
     if !query_inconsistency_guard_enabled() {
-        return false;
+        return (false, None);
     }
     if reflexive_empty_clause_inconsistent(internal) {
-        return true;
+        return (true, None);
     }
     let closure = owl_dl_saturation::saturate(internal);
     if saturation_says_inconsistent(&closure) {
-        return true;
+        return (true, Some(closure));
     }
-    abox_check_enabled()
+    let inconsistent = abox_check_enabled()
         && classify::has_abox_axioms(internal)
         && matches!(
             abox_check::check(&build_abox_check_inputs(internal).as_inputs(&closure)),
             abox_check::AboxVerdict::Inconsistent { .. }
-        )
+        );
+    (inconsistent, Some(closure))
 }
 
 /// See [`query_kb_inconsistent`].

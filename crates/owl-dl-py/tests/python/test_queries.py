@@ -279,3 +279,65 @@ def test_data_property_values_keeps_language_tags(tmp_path):
     quints = rustdl.data_property_values(str(p))
     tags = sorted(q[4] for q in quints)
     assert tags == ["de", "fr"], quints
+
+
+_GAPS_ONTOLOGY = (
+    "Prefix(:=<http://ex/#>)\n"
+    "Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n"
+    "Ontology(<http://ex/>\n"
+    "  Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:t))\n"
+    "  Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n"
+    "  Declaration(DataProperty(:d)) Declaration(DataProperty(:e))\n"
+    "  Declaration(Class(:A)) Declaration(Class(:B))\n"
+    "  Declaration(NamedIndividual(:a))\n"
+    "  SubObjectPropertyOf(:r :t) FunctionalObjectProperty(:t)\n"
+    "  ObjectPropertyDomain(:p :A) ObjectPropertyDomain(:q :B) DisjointClasses(:A :B)\n"
+    "  SubDataPropertyOf(:d :e) FunctionalDataProperty(:e)\n"
+    '  DataPropertyAssertion(:d :a "1"^^xsd:integer))\n'
+)
+
+
+def test_structural_gap_warning(tmp_path):
+    """#389/#390: the structural property queries warn with StructuralGapWarning,
+    which is NOT an IncompleteQueryWarning (nothing was cut), and stay silent on
+    an ontology without the constructs they ignore."""
+    import warnings
+
+    assert not issubclass(rustdl.StructuralGapWarning, rustdl.IncompleteQueryWarning)
+    p = tmp_path / "gaps.ofn"
+    p.write_text(_GAPS_ONTOLOGY)
+    calls = [
+        (rustdl.object_property_hierarchy, "object-counting"),
+        (rustdl.data_property_hierarchy, "data-counting"),
+        (rustdl.disjoint_object_properties, "object-class-constraint"),
+        (rustdl.disjoint_data_properties, None),
+        (rustdl.data_property_values, "data-counting"),
+        (rustdl.materialize_inferred_subobjectproperty_axioms, "object-counting"),
+        (rustdl.materialize_inferred_subdataproperty_axioms, "data-counting"),
+        (rustdl.materialize_inferred_data_property_assertions, "data-counting"),
+    ]
+    for fn, kind in calls:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fn(str(p))
+        gap = [w for w in caught if issubclass(w.category, rustdl.StructuralGapWarning)]
+        if kind is None:
+            assert not gap, fn.__name__
+        else:
+            assert gap and kind in str(gap[0].message), fn.__name__
+        assert not any(
+            issubclass(w.category, rustdl.IncompleteQueryWarning) for w in caught
+        ), fn.__name__
+
+    plain = tmp_path / "plain.ofn"
+    plain.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n"
+        "  SubObjectPropertyOf(:r :s))\n"
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", rustdl.StructuralGapWarning)
+        assert rustdl.object_property_hierarchy(str(plain))[1] == [
+            ("http://ex/#r", "http://ex/#s")
+        ]

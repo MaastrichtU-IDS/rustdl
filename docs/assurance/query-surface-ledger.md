@@ -68,12 +68,13 @@ about its signal, so each is filed rather than fixed here.
 - **realize's classify step** runs under a deadline whose cut pairs are not
   folded into `Realization::incomplete`, so `direct_types` can be non-minimal
   (never a false type). #388.
-- **disjoint properties and the property hierarchy** are told/structural; JSON
-  hard-codes `incomplete: false` while entailments such as
-  `Symmetric(p) + Inverse(p, q) ⊨ p ≡ q` are missed. #389.
-- **data property values** hard-codes `incomplete: false` although
-  `DataHasValue`-derived values are omitted, and Python's
-  `data_property_values` drops the flag. #390.
+- **disjoint properties, the property hierarchy and data property values** are
+  structural. #389 and #390 give them their own signal, `structural_gaps` (CLI
+  `--json`, one stderr line in text mode, Python `StructuralGapWarning`), and fix
+  the cheap misses (`Symmetric`, disjointness down the hierarchy, `Asymmetric`,
+  top/bottom, one-leg chains, anonymous individuals). `incomplete` stays a
+  give-up signal. See the
+  [completeness ledger](completeness-guarantee-ledger.md#structural-property-surfaces-389-390).
 - **materialize_\*** (`materialize_existential_successors`, Python
   `materialize_inferred_class_assertions`) drop realize's flags. #391.
 - **consistency's trusted wedge `Sat`** is a trust decision, not a cut, and has

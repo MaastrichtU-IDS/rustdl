@@ -242,6 +242,12 @@ pub(crate) struct DisjointJson {
     pub(crate) disjoint_classes: Vec<[String; 2]>,
     pub(crate) disjoint_object_properties: Vec<[String; 2]>,
     pub(crate) disjoint_data_properties: Vec<[String; 2]>,
+    /// #389/#390: constructs present that the property half of this surface (the class half reports through `incomplete`) ignores and that
+    /// can entail a relation it would report (see
+    /// `owl_dl_reasoner::property_structural_gaps`). Empty means none of the known
+    /// routes occurs, not that the answer is complete. Separate from `incomplete`,
+    /// which means only that a deadline cut a probe.
+    pub(crate) structural_gaps: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -494,6 +500,12 @@ pub(crate) struct PropHierJson {
     pub(crate) incomplete: bool,
     pub(crate) object_properties: PropHierSide,
     pub(crate) data_properties: PropHierSide,
+    /// #389/#390: constructs present that this STRUCTURAL surface ignores and that
+    /// can entail a relation it would report (see
+    /// `owl_dl_reasoner::property_structural_gaps`). Empty means none of the known
+    /// routes occurs, not that the answer is complete. Separate from `incomplete`,
+    /// which means only that a deadline cut a probe.
+    pub(crate) structural_gaps: Vec<String>,
 }
 
 fn side(c: &PropertyClassification) -> PropHierSide {
@@ -515,12 +527,14 @@ fn side(c: &PropertyClassification) -> PropHierSide {
 pub(crate) fn build_prophier_json(
     obj: &PropertyClassification,
     data: &PropertyClassification,
+    structural_gaps: Vec<String>,
 ) -> PropHierJson {
     PropHierJson {
         schema_version: SCHEMA_VERSION,
         incomplete: false,
         object_properties: side(obj),
         data_properties: side(data),
+        structural_gaps,
     }
 }
 
@@ -529,6 +543,7 @@ pub(crate) fn build_disjoint_json(
     classes: &Disjointness,
     obj: Vec<(String, String)>,
     data: Vec<(String, String)>,
+    structural_gaps: Vec<String>,
 ) -> DisjointJson {
     let to_arr = |v: Vec<(String, String)>| {
         let mut a: Vec<[String; 2]> = v.into_iter().map(|(x, y)| [x, y]).collect();
@@ -547,6 +562,7 @@ pub(crate) fn build_disjoint_json(
         disjoint_classes: dc,
         disjoint_object_properties: to_arr(obj),
         disjoint_data_properties: to_arr(data),
+        structural_gaps,
     }
 }
 
@@ -598,12 +614,19 @@ pub(crate) struct PropertyValuesJson {
     pub(crate) incomplete: bool,
     pub(crate) object_property_values: Vec<[String; 3]>,
     pub(crate) data_property_values: Vec<[String; 5]>,
+    /// #389/#390: constructs present that the data half of this surface (the object half reports through `incomplete`) ignores and that
+    /// can entail a relation it would report (see
+    /// `owl_dl_reasoner::property_structural_gaps`). Empty means none of the known
+    /// routes occurs, not that the answer is complete. Separate from `incomplete`,
+    /// which means only that a deadline cut a probe.
+    pub(crate) structural_gaps: Vec<String>,
 }
 
 #[must_use]
 pub(crate) fn build_property_values_json(
     obj: &ObjectPropertyValues,
     data: &DataPropertyValues,
+    structural_gaps: Vec<String>,
 ) -> PropertyValuesJson {
     let mut object_property_values: Vec<[String; 3]> = obj
         .triples()
@@ -626,6 +649,7 @@ pub(crate) fn build_property_values_json(
         incomplete: obj.incomplete() || data.incomplete(),
         object_property_values,
         data_property_values,
+        structural_gaps,
     }
 }
 

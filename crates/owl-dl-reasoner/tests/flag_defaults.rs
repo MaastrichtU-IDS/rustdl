@@ -299,11 +299,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::tree_sticky_branching_enabled,
             false,
         ),
-        ("RUSTDL_MAX_FIRST", owl_dl_tableau::max_first_enabled, false),
+        ("RUSTDL_MAX_FIRST", owl_dl_tableau::max_first_enabled, true),
         (
             "RUSTDL_TOP_FILLER",
             owl_dl_tableau::top_filler_enabled,
-            false,
+            true,
         ),
         (
             "RUSTDL_MAX_CHOICE_POINT",

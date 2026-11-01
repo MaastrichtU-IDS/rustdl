@@ -34,6 +34,15 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`ABox` class assertions reach the tableau in NNF (#403).** The main tableau's `ABox` seed
+  took each `ClassAssertion` class as written. A class assertion of a negated compound, such as
+  `ObjectComplementOf(ObjectSomeValuesFrom(:r :B))` or the lowered form of a
+  `NegativeDataPropertyAssertion`, was then an opaque label: no `∀`-rule fired and no clash was
+  found. Checked against HermiT, the main tableau answered "consistent" for inconsistent `ABox`es
+  (when it, not the consistency wedge, decided), and `instance` / `realize` missed entailments
+  with default settings. Debug builds panicked on the tableau's NNF assertion instead. The seed
+  now takes the NNF of each class. Output on `ABox`es that were already NNF is unchanged; on the
+  ORE pool sample, 9 of 1,920 ontologies have such an assertion and none of their answers change.
 - **Lever A sees nominals in property domains and ranges (#400).** `ontology_uses_nominals`
   decides whether classify's main-tableau probes may skip the `ABox` seed
   (`RUSTDL_CLASSIFY_TBOX_ONLY`). It ignored `ObjectPropertyDomain`/`ObjectPropertyRange`, so

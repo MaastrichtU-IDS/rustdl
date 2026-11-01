@@ -328,6 +328,22 @@ fn pizza_sat_answers_quickly() {
         "{:?}",
         start.elapsed()
     );
+    // At the default seeded-first budget the seeded probe runs out its budget
+    // first (it would not finish), then the skip answers.
+    let default_ms = owl_dl_reasoner::QUERY_SEEDED_FIRST_DEFAULT_MS.to_string();
+    let _budget = SetEnvGuard::set("RUSTDL_QUERY_SEEDED_FIRST_MS", &default_ms);
+    let start = std::time::Instant::now();
+    let (s, st) = owl_dl_reasoner::is_class_satisfiable_with_stats(
+        &o,
+        "https://w3id.org/ontostart/pizza/Pizza",
+    )
+    .unwrap();
+    assert!(s && !st.incomplete && st.relies_on_trusted_consistency);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
 }
 
 /// The subset hook: settle the parent once, then probes inherit it. The trust

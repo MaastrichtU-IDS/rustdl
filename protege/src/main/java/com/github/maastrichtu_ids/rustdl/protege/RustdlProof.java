@@ -76,6 +76,14 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
             // path. Fail-hard: a fabricated axiom rejects the proof rather than being displayed.
             List<OWLAxiom> premises = new ArrayList<>(RustdlOfn.verifiedAgainst(
                 RustdlOfn.parse(json.justification_fallback), source, "proof justification"));
+            if (premises.isEmpty()) {
+                // #402: rustdl showed the entailment holds but found no justification (its
+                // search gave up). An inference with no premises would present the goal as
+                // proved from nothing; refuse rather than display it.
+                throw new IllegalStateException(
+                    "rustdl prove: the entailment holds, but no justification is available"
+                        + (json.incomplete ? " (a reasoner check gave up)" : ""));
+            }
             proof.produce(new SimpleInference("justification", goal, premises));
         }
         return proof;

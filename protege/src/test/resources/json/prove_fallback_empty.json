@@ -1,0 +1,4 @@
+{ "schema_version": 1, "entailed": true, "status": "entailed", "incomplete": true,
+  "has_proof": false, "proof_complete": null, "proof": null,
+  "justification_fallback": "Prefix(:=<http://ex/#>)\nOntology(\n)\n"
+}

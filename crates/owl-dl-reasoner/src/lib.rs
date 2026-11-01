@@ -5781,7 +5781,11 @@ pub(crate) fn ontology_uses_nominals(internal: &InternalOntology) -> bool {
             ConceptExpr::And(ops) | ConceptExpr::Or(ops) => {
                 ops.iter().any(|op| has_nominal(*op, pool))
             }
-            _ => false,
+            // Exhaustive for the same reason as the axiom match below (#400).
+            ConceptExpr::Top
+            | ConceptExpr::Bot
+            | ConceptExpr::Atomic(_)
+            | ConceptExpr::SelfRestriction(_) => false,
         }
     }
     let pool = &internal.concepts;

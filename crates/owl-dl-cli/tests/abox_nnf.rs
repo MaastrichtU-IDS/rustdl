@@ -6,9 +6,9 @@
 //! "consistent" for inconsistent `ABox`es and missed instance entailments. Debug
 //! builds panicked on `add_label`'s NNF `debug_assert!` instead.
 //!
-//! The expected answers are `HermiT`'s. `RUSTDL_WEDGE_CONSISTENCY=0` makes
-//! `consistent` reach the main tableau (by default the consistency wedge, which
-//! NNFs its own copy, answers first). Each case runs the binary in its own
+//! The expected answers are `HermiT`'s. `RUSTDL_WEDGE_CONSISTENCY=0` and
+//! `RUSTDL_ABOX_CHECK=0` make `consistent` reach the main tableau (by default
+//! the consistency wedge, which NNFs its own copy, answers first). Each case runs the binary in its own
 //! process.
 #![allow(clippy::unwrap_used)]
 
@@ -76,20 +76,28 @@ impl Drop for Fixture {
     }
 }
 
-/// Runs the binary; returns stdout, failing the test on a non-zero exit.
+/// Runs the binary with no inherited `RUSTDL_*` settings (so "default" means
+/// the shipped defaults) plus `env`; returns stdout, failing the test on a
+/// non-zero exit.
 fn run(env: &[(&str, &str)], args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_rustdl"))
-        .args(args)
-        .env_remove("RUSTDL_WEDGE_CONSISTENCY")
-        .envs(env.iter().copied())
-        .output()
-        .unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("RUSTDL_") {
+            cmd.env_remove(key);
+        }
+    }
+    let out = cmd.args(args).envs(env.iter().copied()).output().unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(out.status.success(), "{args:?}: {stderr}");
     String::from_utf8(out.stdout).unwrap()
 }
 
-const WEDGE_OFF: &[(&str, &str)] = &[("RUSTDL_WEDGE_CONSISTENCY", "0")];
+// The wedge and the told-`ABox` pre-check (`¬¬A` is atomic `A` once NNF'd,
+// so its told-disjointness rule would answer first) both stand aside.
+const WEDGE_OFF: &[(&str, &str)] = &[
+    ("RUSTDL_WEDGE_CONSISTENCY", "0"),
+    ("RUSTDL_ABOX_CHECK", "0"),
+];
 
 fn consistent_on_main_tableau(src: &str, tag: &str) -> String {
     let f = Fixture::new(src, tag);

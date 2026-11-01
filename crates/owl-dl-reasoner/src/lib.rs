@@ -10036,10 +10036,10 @@ fn collect_abox(internal: &mut InternalOntology) -> Abox {
 ///    set faster than the back-jump can prune (Phase 4 attempt 1
 ///    regressed corpus 2× this way).
 ///
-/// This is the last stage before `absorb` that mutates the pool for the
-/// tableau's complement-precomputation; `collect_abox` runs afterwards and
-/// also mutates the pool (interning one nominal concept per individual), so
-/// the pool is not fully frozen until after `collect_abox` returns. Its NNF of
+/// This runs after `absorb`; `collect_abox` runs afterwards and also mutates
+/// the pool (interning one nominal concept per individual and the `∀r.¬{b}`
+/// of each negative property assertion), so the pool is not fully frozen
+/// until after `collect_abox` returns. Its NNF of
 /// `ClassAssertion` classes (#403) interns nothing new on this path:
 /// `nnf_axioms` interned the same NNF forms before `absorb`, so the `Max`
 /// complements above already cover them.

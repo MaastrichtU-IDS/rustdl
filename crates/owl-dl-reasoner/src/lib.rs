@@ -8152,10 +8152,11 @@ impl OwnedAboxCheckInputs {
 /// omits `nnf_axioms`, `absorb`, `precompute_max_complements`, [`HyperCache::build`],
 /// [`ConsistencyCache::build`] and `snapshot_cache`, none of which `check` reads.
 ///
-/// `collect_abox` only reads `internal.axioms` and interns one nominal concept per
-/// individual, so running it before `absorb` yields different *individual* concept
-/// ids but identical *class* ids — and `check` compares ids only within one input
-/// set, so the verdict is unchanged. The canaries in
+/// `collect_abox` only reads `internal.axioms`, interns one nominal concept per
+/// individual and the NNF of any non-NNF `ClassAssertion` class (#403), so running
+/// it before `absorb` yields different *individual* (and non-NNF assertion) concept
+/// ids but identical atomic *class* ids — and `check` compares ids only within one
+/// input set, so the verdict is unchanged. The canaries in
 /// `tests/abox_check_reduced_input.rs` pin this.
 ///
 /// # This is a HAND-COPIED prefix, and the differential test does not fully guard it
@@ -9871,7 +9872,8 @@ struct Abox {
     /// node seeded with the nominal label before the test class is
     /// added.
     individuals: Vec<(IndividualId, ConceptId)>,
-    /// `(individual, class_concept_id)` from `ClassAssertion`.
+    /// `(individual, class_concept_id)` from `ClassAssertion`, the class in
+    /// NNF (#403).
     class_assertions: Vec<(IndividualId, ConceptId)>,
     /// `(from_individual, role_id, to_individual)` from
     /// `ObjectPropertyAssertion`. Role polarity has been normalized:
@@ -9955,7 +9957,15 @@ fn collect_abox(internal: &mut InternalOntology) -> Abox {
     for ax in &axioms {
         match ax {
             Axiom::ClassAssertion { class, individual } => {
-                abox.class_assertions.push((*individual, *class));
+                // The tableau's labels must be NNF (`add_label`'s contract). A
+                // raw `¬∃r.B` — a user `ObjectComplementOf`, or the lowered
+                // `NegativeDataPropertyAssertion` `¬∃dp.DKey(v)` — is otherwise
+                // an opaque literal: no ∀-rule, no clash, so a false
+                // "consistent" or a missed instance (#403). On the tableau
+                // path `nnf_axioms` has already interned this, so it adds no
+                // ids there.
+                let class = owl_dl_core::normalize::to_nnf(*class, &mut internal.concepts);
+                abox.class_assertions.push((*individual, class));
             }
             Axiom::ObjectPropertyAssertion {
                 role,
@@ -10026,10 +10036,13 @@ fn collect_abox(internal: &mut InternalOntology) -> Abox {
 ///    set faster than the back-jump can prune (Phase 4 attempt 1
 ///    regressed corpus 2× this way).
 ///
-/// This is the last stage before `absorb` that mutates the pool for the
-/// tableau's complement-precomputation; `collect_abox` runs afterwards and
-/// also mutates the pool (interning one nominal concept per individual), so
-/// the pool is not fully frozen until after `collect_abox` returns.
+/// This runs after `absorb`; `collect_abox` runs afterwards and also mutates
+/// the pool (interning one nominal concept per individual and the `∀r.¬{b}`
+/// of each negative property assertion), so the pool is not fully frozen
+/// until after `collect_abox` returns. Its NNF of
+/// `ClassAssertion` classes (#403) interns nothing new on this path:
+/// `nnf_axioms` interned the same NNF forms before `absorb`, so the `Max`
+/// complements above already cover them.
 fn precompute_max_complements(pool: &mut ConceptPool) -> Vec<(ConceptId, ConceptId)> {
     let mut targets: Vec<ConceptId> = pool
         .iter_with_ids()

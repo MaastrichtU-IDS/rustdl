@@ -251,6 +251,30 @@ mod tests {
         assert_eq!(to_nnf(not_not_a, &mut p), a);
     }
 
+    /// NNF input comes back as the same id (#403: the tableau's `ABox` seeding
+    /// re-normalises every `ClassAssertion` class and relies on this to intern
+    /// nothing new for classes that are already NNF).
+    #[test]
+    fn nnf_of_an_nnf_compound_is_identity() {
+        let mut p = pool();
+        let role = Role::named(RoleId::new(0));
+        let a = p.atomic(ClassId::new(0));
+        let not_b = {
+            let b = p.atomic(ClassId::new(1));
+            p.not(b)
+        };
+        let some = p.some(role, not_b);
+        let all = p.all(role, a);
+        let max = p.max(2, role, a);
+        let min = p.min(1, role, not_b);
+        let or = p.or([some, max]);
+        let compound = p.and([or, all, min, not_b]);
+        assert!(is_nnf(compound, &p));
+        let len = p.len();
+        assert_eq!(to_nnf(compound, &mut p), compound);
+        assert_eq!(p.len(), len, "no new concepts interned");
+    }
+
     #[test]
     fn nnf_of_not_atomic_keeps_one_not() {
         let mut p = pool();

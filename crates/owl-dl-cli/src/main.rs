@@ -39,7 +39,9 @@ use owl_dl_reasoner::{
     is_instance_of_reporting, is_instance_of_saturation_only, is_subclass_of_saturation_only,
     is_subclass_of_with_stats, realize, realize_saturation_only,
 };
-use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment_rcstr, render_proof_with_defs};
+use owl_dl_reasoner::{
+    ProveEntailmentResult, prove_entailment_rcstr_reporting, render_proof_with_defs,
+};
 
 mod json_out;
 mod report;
@@ -2364,13 +2366,38 @@ fn main() -> Result<()> {
             json,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            let result = prove_entailment_rcstr(&onto, &sub, &sup).context("prove_entailment")?;
+            // A single query, like `subclass` / `explain`: the 500k query cap
+            // (#402). It covers the justification fallback too (thread-local).
+            let _cap = owl_dl_reasoner::single_query_node_cap();
+            let (result, incomplete) =
+                prove_entailment_rcstr_reporting(&onto, &sub, &sup).context("prove_entailment")?;
+            let unknown = matches!(result, ProveEntailmentResult::Unknown);
+            // #402: a give-up is never "NOT entailed".
+            let warn_gave_up = || {
+                if unknown {
+                    eprintln!(
+                        "warning: the reasoner check gave up (node cap, RUSTDL_QUERY_MAX_NODES) \
+                         before deciding whether {sub} ⊑ {sup} holds — this is not a \
+                         non-entailment."
+                    );
+                } else if incomplete {
+                    eprintln!(
+                        "warning: a reasoner check gave up in the justification fallback (node \
+                         cap): the entailment holds, but the justification shown may not be \
+                         minimal, or none was found."
+                    );
+                }
+            };
             if json {
                 let internal = owl_dl_core::convert::convert_ontology(&onto)
                     .context("re-convert for rendering")?;
-                let prove_json = json_out::build_prove_json(&result, &internal, &pm)
+                let prove_json = json_out::build_prove_json(&result, incomplete, &internal, &pm)
                     .context("rendering prove --json proof tree")?;
                 println!("{}", serde_json::to_string_pretty(&prove_json)?);
+                warn_gave_up();
+                if unknown {
+                    std::process::exit(3);
+                }
                 return Ok(());
             }
             match result {
@@ -2449,6 +2476,15 @@ fn main() -> Result<()> {
                 ProveEntailmentResult::NotEntailed => {
                     println!("NOT entailed: {sub} SubClassOf {sup} does not hold in this ontology");
                 }
+                ProveEntailmentResult::Unknown => {
+                    println!(
+                        "unknown: {sub} SubClassOf {sup} was not decided (a reasoner check gave up)"
+                    );
+                }
+            }
+            warn_gave_up();
+            if unknown {
+                std::process::exit(3);
             }
         }
         Command::Diagnose {

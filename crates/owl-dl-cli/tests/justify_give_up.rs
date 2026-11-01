@@ -80,6 +80,33 @@ Ontology(<http://ex/allunsat>
 )
 ";
 
+// `SubDataPropertyOf(sub, sup)` is NOT entailed (HermiT agrees): only the value 0
+// is forced from `sub` to `sup`, and `sub`'s value 0 is impossible (it forces G,
+// whose r-chain ends in P ⊔ Q, both empty). The probe's guard asserts
+// `sub(_a, 0)` alone — inconsistent through that chain — and so answers "not
+// entailed". At cap 7 (wedge off) the guard's tableau trips the cap while c2
+// (`sub(_a, 0)`, `¬sup(_a, 0)`) still finds its clash; main 293dcfd1 read the
+// guard's give-up as "consistent" and printed a justification.
+const DATA_GUARD: &str = r#"Prefix(:=<http://ex/dg#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://ex/dataguard>
+  Declaration(DataProperty(:sub)) Declaration(DataProperty(:sup))
+  Declaration(ObjectProperty(:r))
+  Declaration(Class(:G)) Declaration(Class(:H1)) Declaration(Class(:H2))
+  Declaration(Class(:H3)) Declaration(Class(:H4)) Declaration(Class(:P)) Declaration(Class(:Q))
+  SubClassOf(DataHasValue(:sub "0"^^xsd:integer) DataHasValue(:sup "0"^^xsd:integer))
+  SubClassOf(DataHasValue(:sub "0"^^xsd:integer) :G)
+  SubClassOf(:G ObjectSomeValuesFrom(:r :H1))
+  SubClassOf(:H1 ObjectSomeValuesFrom(:r :H2))
+  SubClassOf(:H2 ObjectSomeValuesFrom(:r :H3))
+  SubClassOf(:H3 ObjectSomeValuesFrom(:r :H4))
+  SubClassOf(:H4 ObjectUnionOf(:P :Q))
+  SubClassOf(:P owl:Nothing)
+  SubClassOf(:Q owl:Nothing)
+)
+"#;
+
 /// Writes a fixture to a per-test file (tests run in parallel).
 struct Fixture(PathBuf);
 
@@ -331,4 +358,43 @@ fn diagnose_does_not_present_a_given_up_consistency_check_as_a_verdict() {
         "{}",
         control.stdout
     );
+}
+
+/// The guard fix end to end. Release-only: in a debug build, c2's
+/// `NegativeDataPropertyAssertion` reaches the tableau as a non-NNF label and
+/// trips `add_label`'s `debug_assert!` (#403, a separate, pre-existing bug, on
+/// main too, with or without a cap), so the window cannot be reached there. The
+/// decision itself is unit-tested in `justify::verdict_tests`. Run:
+///
+/// ```sh
+/// cargo test --release -p owl-dl-cli --test justify_give_up -- --ignored
+/// ```
+#[test]
+#[ignore = "release-only: in a debug build the probe's NegativeDataPropertyAssertion \
+            hits the pre-existing non-NNF debug_assert of #403 before the \
+            give-up window; the decision is unit-tested in justify::verdict_tests"]
+fn a_data_property_guard_give_up_never_reports_an_entailment() {
+    // The consistency wedge would decide both probes without the tableau.
+    let f = Fixture::new(DATA_GUARD, "data-guard");
+    let wedge_off = [("RUSTDL_WEDGE_CONSISTENCY", "0")];
+    let args = [
+        "justify",
+        f.path(),
+        "--json",
+        "subdata-property",
+        "http://ex/dg#sub",
+        "http://ex/dg#sup",
+    ];
+    let control = run_with("0", &wedge_off, &args);
+    assert_eq!(control.json()["status"], "not-entailed");
+    // Cap 7 is where main printed a justification.
+    let window = run_with("7", &wedge_off, &args);
+    assert_eq!(window.json()["status"], "unknown", "{}", window.stdout);
+    assert_eq!(window.code, 3);
+    // The window is one cap wide; sweep around it so a shift in node accounting
+    // cannot move a false entailment past the assertion above unseen.
+    for cap in 1..=16 {
+        let capped = run_with(&cap.to_string(), &wedge_off, &args);
+        assert_ne!(capped.json()["status"], "entailed", "cap {cap}");
+    }
 }

@@ -534,19 +534,19 @@ pub fn entails_reporting<A: ForIRI>(
                 datatype_iri: b.iri(PROBE_INT),
             };
             // c1: asserting sub(_a,0) alone must be consistent (else range clash, not subsumption).
-            if inconsistent_with(
+            let guard = inconsistent_with(
                 onto,
                 vec![Component::DataPropertyAssertion(DataPropertyAssertion {
                     dp: b.data_property(sub.as_str()),
                     from: named(&b, PROBE_A),
                     to: sub_lit,
                 })],
-            )? == Verdict::Entailed
-            {
+            )?;
+            if guard == Verdict::Entailed {
                 return Ok(Verdict::NotEntailed);
             }
             // c2: adding ¬sup(_a,0) becomes inconsistent ⟺ sub⊑sup forces sup(_a,0).
-            inconsistent_with(
+            let main = inconsistent_with(
                 onto,
                 vec![
                     Component::DataPropertyAssertion(DataPropertyAssertion {
@@ -563,7 +563,8 @@ pub fn entails_reporting<A: ForIRI>(
                         to: sup_lit,
                     }),
                 ],
-            )
+            )?;
+            Ok(guarded(guard == Verdict::Unknown, main))
         }
         Entailment::EquivalentDataProperties { a, b } => entails_reporting(
             onto,
@@ -597,32 +598,32 @@ pub fn entails_reporting<A: ForIRI>(
                 datatype_iri: bld.iri(PROBE_INT),
             };
             // c1a: assert a(probe, 0) alone — must be consistent.
-            if inconsistent_with(
+            let guard_a = inconsistent_with(
                 onto,
                 vec![Component::DataPropertyAssertion(DataPropertyAssertion {
                     dp: bld.data_property(a.as_str()),
                     from: named(&bld, PROBE_A),
                     to: make_lit(),
                 })],
-            )? == Verdict::Entailed
-            {
+            )?;
+            if guard_a == Verdict::Entailed {
                 return Ok(Verdict::NotEntailed);
             }
             // c1b: assert b(probe, 0) alone — must be consistent.
-            if inconsistent_with(
+            let guard_b = inconsistent_with(
                 onto,
                 vec![Component::DataPropertyAssertion(DataPropertyAssertion {
                     dp: bld.data_property(b.as_str()),
                     from: named(&bld, PROBE_A),
                     to: make_lit(),
                 })],
-            )? == Verdict::Entailed
-            {
+            )?;
+            if guard_b == Verdict::Entailed {
                 return Ok(Verdict::NotEntailed);
             }
             // c2: asserting both a(probe,0) and b(probe,0) ⟹ inconsistent iff
             // DisjointDataProperties(a,b) is entailed.
-            inconsistent_with(
+            let main = inconsistent_with(
                 onto,
                 vec![
                     Component::DataPropertyAssertion(DataPropertyAssertion {
@@ -636,7 +637,11 @@ pub fn entails_reporting<A: ForIRI>(
                         to: make_lit(),
                     }),
                 ],
-            )
+            )?;
+            Ok(guarded(
+                guard_a == Verdict::Unknown || guard_b == Verdict::Unknown,
+                main,
+            ))
         }
         Entailment::DataPropertyValue {
             source,
@@ -660,6 +665,20 @@ pub fn entails_reporting<A: ForIRI>(
                 )],
             )
         }
+    }
+}
+
+/// The verdict of a data-property probe `main` behind its consistency guard
+/// (#396). The guard rules out a range clash: if asserting the property alone is
+/// already inconsistent, the probe answers "not entailed". A guard that GAVE UP
+/// ruled nothing out, so `main`'s "inconsistent" may be that very clash, not the
+/// entailment: it must not read as `Entailed`. A definite "no" from `main` still
+/// decides, since `main` only adds axioms to the guard's ontology.
+fn guarded(guard_gave_up: bool, main: Verdict) -> Verdict {
+    if guard_gave_up && main == Verdict::Entailed {
+        Verdict::Unknown
+    } else {
+        main
     }
 }
 
@@ -1628,4 +1647,64 @@ fn qx<A: ForIRI>(
     let mut out = d1;
     out.extend(d2);
     Ok(out)
+}
+
+#[cfg(test)]
+mod verdict_tests {
+    use super::{Verdict, guarded};
+    use Verdict::{Entailed, NotEntailed, Unknown};
+
+    const ALL: [Verdict; 3] = [Entailed, NotEntailed, Unknown];
+
+    #[test]
+    fn a_give_up_is_only_a_negative_called_into_question() {
+        assert_eq!(Verdict::from_check(true, false), Entailed);
+        assert_eq!(Verdict::from_check(true, true), Entailed);
+        assert_eq!(Verdict::from_check(false, false), NotEntailed);
+        assert_eq!(Verdict::from_check(false, true), Unknown);
+    }
+
+    #[test]
+    fn and_is_decided_by_a_definite_no_on_either_side() {
+        for a in ALL {
+            for b in ALL {
+                let mut ran = false;
+                let got = a
+                    .and(|| {
+                        ran = true;
+                        Ok(b)
+                    })
+                    .expect("the closure returns Ok");
+                let want = match (a, b) {
+                    (NotEntailed, _) | (_, NotEntailed) => NotEntailed,
+                    (Entailed, Entailed) => Entailed,
+                    _ => Unknown,
+                };
+                assert_eq!(got, want, "{a:?} AND {b:?}");
+                // The second half runs unless the first is a definite no: after a
+                // give-up it may still decide.
+                assert_eq!(ran, a != NotEntailed, "{a:?} AND {b:?}");
+            }
+        }
+    }
+
+    // #396: a data-property guard that gave up ruled out nothing, so the main
+    // probe's "inconsistent" must not become an entailment. On 293dcfd1 the guard
+    // read the give-up as "consistent" and the probe reported
+    // `SubDataPropertyOf(sub, sup)` entailed where HermiT says it is not.
+    #[test]
+    fn a_guard_give_up_never_yields_an_entailment() {
+        for main in ALL {
+            assert_eq!(guarded(false, main), main, "guard decided");
+            assert_ne!(
+                guarded(true, main),
+                Entailed,
+                "guard gave up, main {main:?}"
+            );
+        }
+        assert_eq!(guarded(true, Entailed), Unknown);
+        // A definite "no" from the main probe still decides: it only adds axioms
+        // to the guard's ontology.
+        assert_eq!(guarded(true, NotEntailed), NotEntailed);
+    }
 }

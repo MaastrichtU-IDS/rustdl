@@ -44,10 +44,10 @@ from rustdl._native import (
     materialize_inferred_subobjectproperty_axioms as _materialize_inferred_subobjectproperty_axioms_native,
     materialize_inferred_subdataproperty_axioms as _materialize_inferred_subdataproperty_axioms_native,
     materialize_existential_successors as materialize_existential_successors,
-    justify as justify,
-    justify_all as justify_all,
-    diagnose as diagnose,
-    repair as repair,
+    justify as _justify_native,
+    justify_all as _justify_all_native,
+    diagnose as _diagnose_native,
+    repair as _repair_native,
     render_manchester as render_manchester,
     prepare as prepare,
     prepare_bytes as prepare_bytes,
@@ -195,7 +195,16 @@ class IncompleteQueryWarning(UserWarning):
     when the reasoner's per-pair budget/probe was exhausted, so the returned
     list is a sound under-approximation (no false pairs/groups/triples, but
     real ones may be missing). Mirrors `IncompleteClassificationWarning`'s
-    convention for `classify`. Silence with the standard `warnings` module."""
+    convention for `classify`.
+
+    Also raised by the explanation calls (`justify`, `justify_all`, `repair`,
+    `diagnose`, `debug`, and `PreparedOntology.justify` / `justify_all`) when a
+    reasoner check under them gave up (#396): an empty result then means
+    "unknown", not "not entailed"; a justification returned still entails but
+    may not be minimal; justifications or repairs may be missing. Every repair
+    returned is still verified.
+
+    Silence with the standard `warnings` module."""
 
 
 def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
@@ -207,6 +216,85 @@ def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
             IncompleteQueryWarning,
             stacklevel=3,
         )
+
+
+def _warn_if_explanation_incomplete(name: str, incomplete: bool) -> None:
+    if incomplete:
+        _warnings.warn(
+            f"{name}: a reasoner check gave up (node cap, RUSTDL_MAX_NODES), so an "
+            "empty result means unknown, not 'not entailed'; justifications "
+            "returned still entail but may not be minimal, and justifications or "
+            "repairs may be missing.",
+            IncompleteQueryWarning,
+            stacklevel=3,
+        )
+
+
+def justify(path, query):
+    """One minimal justification (Manchester axioms) for `query` (CLI-style
+    tokens, e.g. ["unsat", c] / ["subclass", s, t] / ["inconsistent"]). Empty if
+    not entailed. Emits `IncompleteQueryWarning` when a reasoner check gave up:
+    an empty list then means unknown, and a justification may not be minimal."""
+    axioms, incomplete = _justify_native(path, query)
+    _warn_if_explanation_incomplete("justify", incomplete)
+    return axioms
+
+
+def justify_all(path, query, max=10):
+    """Up to `max` minimal justifications for `query`. Emits
+    `IncompleteQueryWarning` when a reasoner check gave up (see `justify`; some
+    justifications may also be missing)."""
+    js, incomplete = _justify_all_native(path, query, max)
+    _warn_if_explanation_incomplete("justify_all", incomplete)
+    return js
+
+
+def diagnose(path):
+    """(consistent, root_unsat_iris, [(derived_iri, [root_iri, ...]), ...]).
+    Emits `IncompleteQueryWarning` when the consistency check of an
+    all-classes-unsatisfiable ontology gave up, so `consistent` is not
+    witnessed."""
+    consistent, roots, derived, incomplete = _diagnose_native(path)
+    if incomplete:
+        _warnings.warn(
+            "diagnose: every class is unsatisfiable and the consistency check "
+            "gave up (node cap, RUSTDL_MAX_NODES), so `consistent` is not "
+            "witnessed and the ontology may be inconsistent.",
+            IncompleteQueryWarning,
+            stacklevel=2,
+        )
+    return consistent, roots, derived
+
+
+def repair(path, query, max=10):
+    """Minimal axiom-removal sets (Manchester) that break `query`, each verified.
+    Emits `IncompleteQueryWarning` when a reasoner check gave up: an empty list
+    may then mean unknown, and repairs may be missing."""
+    repairs, incomplete = _repair_native(path, query, max)
+    _warn_if_explanation_incomplete("repair", incomplete)
+    return repairs
+
+
+def _prepared_justify(self: "PreparedOntology", query):
+    """One minimal justification (Manchester axioms) for `query`. Emits
+    `IncompleteQueryWarning` when a reasoner check gave up (see
+    `rustdl.justify`)."""
+    axioms, incomplete = self._justify_reporting(query)
+    _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete)
+    return axioms
+
+
+def _prepared_justify_all(self: "PreparedOntology", query, max=10):
+    """Up to `max` minimal justifications for `query`. Emits
+    `IncompleteQueryWarning` when a reasoner check gave up (see
+    `rustdl.justify_all`)."""
+    js, incomplete = self._justify_all_reporting(query, max)
+    _warn_if_explanation_incomplete("PreparedOntology.justify_all", incomplete)
+    return js
+
+
+PreparedOntology.justify = _prepared_justify  # type: ignore[attr-defined]
+PreparedOntology.justify_all = _prepared_justify_all  # type: ignore[attr-defined]
 
 
 def is_consistent(path):
@@ -485,7 +573,9 @@ def debug(path):
 
     Consistent ontology → Diagnosis(consistent=True, unsatisfiable=..., roots=[Root...],
     derived=[Derived...], inconsistency=None). Inconsistent → consistent=False, empties,
-    inconsistency=Inconsistency(...). Read-only; sound by construction."""
+    inconsistency=Inconsistency(...). Read-only; sound by construction. Emits
+    `IncompleteQueryWarning` when a reasoner check under it gave up (#396), through
+    `diagnose`, `justify` and `repair`."""
     consistent, roots, derived = diagnose(path)
     if not consistent:
         return Diagnosis(

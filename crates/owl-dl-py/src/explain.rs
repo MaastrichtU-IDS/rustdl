@@ -53,21 +53,48 @@ fn is_logical_axiom(c: &Component<RcStr>) -> bool {
     )
 }
 
-/// One minimal justification for a query (CLI-style tokens, e.g.
-/// `["subclass", sub, sup]`, `["unsat", c]`, `["inconsistent"]`) as Manchester
-/// axiom strings. Empty list if not entailed.
-#[pyfunction]
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<Vec<String>> {
-    let onto = load::load_path(path)?;
-    let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
-    let j =
-        owl_dl_reasoner::justify::find_one_justification(&onto, &q).map_err(reason_error_to_py)?;
-    Ok(j.map(|j| j.axioms.iter().map(render).collect())
-        .unwrap_or_default())
+/// The first justification's axioms as Manchester strings (empty if none),
+/// with the outcome's give-up flag (#396).
+fn first_rendered(outcome: owl_dl_reasoner::justify::JustifyOutcome<RcStr>) -> (Vec<String>, bool) {
+    let axioms = outcome
+        .justifications
+        .first()
+        .map(|j| j.axioms.iter().map(render).collect())
+        .unwrap_or_default();
+    (axioms, outcome.incomplete)
 }
 
-/// All minimal justifications (capped by `max`).
+/// Every justification's axioms as Manchester strings, with the outcome's
+/// give-up flag (#396).
+fn all_rendered(
+    outcome: owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
+) -> (Vec<Vec<String>>, bool) {
+    let js = outcome
+        .justifications
+        .iter()
+        .map(|j| j.axioms.iter().map(render).collect())
+        .collect();
+    (js, outcome.incomplete)
+}
+
+/// One minimal justification for a query (CLI-style tokens, e.g.
+/// `["subclass", sub, sup]`, `["unsat", c]`, `["inconsistent"]`) as Manchester
+/// axiom strings — empty if not entailed — paired with `incomplete`: a reasoner
+/// check gave up (#396), so an empty list means "unknown", and a non-empty one
+/// may not be minimal. The `rustdl.justify` wrapper turns the flag into an
+/// `IncompleteQueryWarning`.
+#[pyfunction]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<(Vec<String>, bool)> {
+    let onto = load::load_path(path)?;
+    let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
+    let outcome = owl_dl_reasoner::justify::find_one_justification_reporting(&onto, &q)
+        .map_err(reason_error_to_py)?;
+    Ok(first_rendered(outcome))
+}
+
+/// All minimal justifications (capped by `max`), paired with `incomplete` (see
+/// `justify`; here it also means some justifications may be missing).
 #[pyfunction]
 #[pyo3(signature = (path, query, max = 10))]
 #[allow(clippy::needless_pass_by_value)]
@@ -75,40 +102,50 @@ pub(crate) fn justify_all(
     path: &str,
     query: Vec<String>,
     max: usize,
-) -> PyResult<Vec<Vec<String>>> {
+) -> PyResult<(Vec<Vec<String>>, bool)> {
     let onto = load::load_path(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
-    let js = owl_dl_reasoner::justify::find_all_justifications(&onto, &q, max)
+    let outcome = owl_dl_reasoner::justify::find_all_justifications_reporting(&onto, &q, max)
         .map_err(reason_error_to_py)?;
-    Ok(js
-        .into_iter()
-        .map(|j| j.axioms.iter().map(render).collect())
-        .collect())
+    Ok(all_rendered(outcome))
 }
 
 /// Root/derived unsatisfiability partition:
-/// `(consistent, roots, [(derived_iri, [root_iri, ...]), ...])`.
+/// `(consistent, roots, [(derived_iri, [root_iri, ...]), ...], incomplete)`.
+/// `incomplete`: the consistency check of an all-classes-unsatisfiable ontology
+/// gave up, so `consistent` is not witnessed (#396).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
-pub(crate) fn diagnose(path: &str) -> PyResult<(bool, Vec<String>, Vec<(String, Vec<String>)>)> {
+pub(crate) fn diagnose(
+    path: &str,
+) -> PyResult<(bool, Vec<String>, Vec<(String, Vec<String>)>, bool)> {
     let onto = load::load_path(path)?;
     let d = owl_dl_reasoner::diagnose(&onto).map_err(reason_error_to_py)?;
     let derived = d.derived.into_iter().map(|dc| (dc.iri, dc.roots)).collect();
-    Ok((d.consistent, d.roots, derived))
+    Ok((d.consistent, d.roots, derived, d.incomplete))
 }
 
 /// Minimal repairs for a query: each is a list of Manchester axioms to remove.
+/// Paired with `incomplete`: a reasoner check gave up (#396), so an empty list
+/// may mean "unknown", and repairs may be missing; every repair returned is
+/// still verified.
 #[pyfunction]
 #[pyo3(signature = (path, query, max = 10))]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn repair(path: &str, query: Vec<String>, max: usize) -> PyResult<Vec<Vec<String>>> {
+pub(crate) fn repair(
+    path: &str,
+    query: Vec<String>,
+    max: usize,
+) -> PyResult<(Vec<Vec<String>>, bool)> {
     let onto = load::load_path(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let r = owl_dl_reasoner::find_repairs(&onto, &q, max).map_err(reason_error_to_py)?;
-    Ok(r.repairs
+    let repairs = r
+        .repairs
         .into_iter()
         .map(|rep| rep.remove.iter().map(render).collect())
-        .collect())
+        .collect();
+    Ok((repairs, r.incomplete))
 }
 
 /// A loaded ontology with the per-ontology justification state precomputed once
@@ -122,26 +159,35 @@ pub(crate) struct PyPreparedOntology {
 
 #[pymethods]
 impl PyPreparedOntology {
-    /// One minimal justification for a query (CLI-style tokens; see `justify`).
-    /// Empty list if not entailed.
+    /// One minimal justification for a query (CLI-style tokens; see `justify`),
+    /// paired with `incomplete` (#396). The Python package binds a
+    /// `PreparedOntology.justify` wrapper over this that warns instead.
+    #[pyo3(name = "_justify_reporting")]
     #[allow(clippy::needless_pass_by_value)]
-    fn justify(&self, query: Vec<String>) -> PyResult<Vec<String>> {
+    fn justify_reporting(&self, query: Vec<String>) -> PyResult<(Vec<String>, bool)> {
         let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
-        let j = self.inner.find_one(&q).map_err(reason_error_to_py)?;
-        Ok(j.map(|j| j.axioms.iter().map(render).collect())
-            .unwrap_or_default())
+        let outcome = self
+            .inner
+            .find_one_reporting(&q)
+            .map_err(reason_error_to_py)?;
+        Ok(first_rendered(outcome))
     }
 
-    /// All minimal justifications (capped by `max`).
-    #[pyo3(signature = (query, max = 10))]
+    /// All minimal justifications (capped by `max`), paired with `incomplete`;
+    /// wrapped by `PreparedOntology.justify_all`.
+    #[pyo3(name = "_justify_all_reporting", signature = (query, max = 10))]
     #[allow(clippy::needless_pass_by_value)]
-    fn justify_all(&self, query: Vec<String>, max: usize) -> PyResult<Vec<Vec<String>>> {
+    fn justify_all_reporting(
+        &self,
+        query: Vec<String>,
+        max: usize,
+    ) -> PyResult<(Vec<Vec<String>>, bool)> {
         let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
-        let js = self.inner.find_all(&q, max).map_err(reason_error_to_py)?;
-        Ok(js
-            .into_iter()
-            .map(|j| j.axioms.iter().map(render).collect())
-            .collect())
+        let outcome = self
+            .inner
+            .find_all_reporting(&q, max)
+            .map_err(reason_error_to_py)?;
+        Ok(all_rendered(outcome))
     }
 }
 

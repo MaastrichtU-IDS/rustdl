@@ -47,11 +47,10 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Classify with `RUSTDL_CLASSIFY_ROLE_HIERARCHY=1`. The fix is **opt-in** — it
-/// is default OFF on a measured ~19× wall regression, not on any doubt about
-/// correctness (see the flag's doc comment). Every test here therefore sets it
-/// explicitly, and `the_fix_is_opt_in_and_the_default_still_misses` pins that
-/// the default does NOT have it.
+/// Classify with `RUSTDL_CLASSIFY_ROLE_HIERARCHY=1`. The flag has been default ON
+/// since #163; setting it explicitly keeps these tests independent of the default
+/// and of the closure guard (`layer_a_affordable`).
+/// `the_fix_is_on_by_default_and_the_flag_still_works` pins the default.
 fn classify_with_hierarchy(body: &str) -> owl_dl_reasoner::Classification {
     // SAFETY: set_var is unsafe under edition 2024. Callers hold `lock()`, and
     // the value is restored by `remove_var` before returning.

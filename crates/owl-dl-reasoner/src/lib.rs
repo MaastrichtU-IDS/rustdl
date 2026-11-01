@@ -5785,14 +5785,37 @@ pub(crate) fn ontology_uses_nominals(internal: &InternalOntology) -> bool {
         }
     }
     let pool = &internal.concepts;
+    // Exhaustive on purpose (#400): a wildcard arm once hid the
+    // `ObjectPropertyDomain`/`ObjectPropertyRange` concepts, so a nominal in
+    // `Range(r, {a})` let Lever A drop an ABox the TBox depends on. A new
+    // concept-bearing `Axiom` variant must now be classified here to compile.
     internal.axioms.iter().any(|ax| match ax {
         Axiom::SubClassOf { sub, sup } => has_nominal(*sub, pool) || has_nominal(*sup, pool),
         Axiom::EquivalentClasses(v) | Axiom::DisjointClasses(v) => {
             v.iter().any(|c| has_nominal(*c, pool))
         }
         Axiom::DisjointUnion { members, .. } => members.iter().any(|c| has_nominal(*c, pool)),
-        Axiom::ClassAssertion { class, .. } => has_nominal(*class, pool),
-        _ => false,
+        Axiom::ObjectPropertyDomain { domain: c, .. }
+        | Axiom::ObjectPropertyRange { range: c, .. }
+        | Axiom::ClassAssertion { class: c, .. } => has_nominal(*c, pool),
+        Axiom::SubObjectPropertyOf { .. }
+        | Axiom::EquivalentObjectProperties(_)
+        | Axiom::DisjointObjectProperties(_)
+        | Axiom::InverseObjectProperties(..)
+        | Axiom::TransitiveRole(_)
+        | Axiom::SymmetricRole(_)
+        | Axiom::AsymmetricRole(_)
+        | Axiom::ReflexiveRole(_)
+        | Axiom::IrreflexiveRole(_)
+        | Axiom::FunctionalRole(_)
+        | Axiom::InverseFunctionalRole(_)
+        | Axiom::ObjectPropertyAssertion { .. }
+        | Axiom::NegativeObjectPropertyAssertion { .. }
+        | Axiom::SameIndividual(_)
+        | Axiom::DifferentIndividuals(_)
+        | Axiom::DeclareClass(_)
+        | Axiom::DeclareObjectProperty(_)
+        | Axiom::DeclareNamedIndividual(_) => false,
     })
 }
 

@@ -6,25 +6,6 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
-### Changed
-- **`RUSTDL_MAX_FIRST` and `RUSTDL_TOP_FILLER` are default ON (#382; `=0` reverts each).** Both
-  shipped OFF in #394.
-  - **`MAX_FIRST`** tries a `≤n R.C` disjunct first at a node that already meets it.
-  - **`TOP_FILLER`** counts every neighbour as carrying `⊤` for the `∃`, `≥n` and `≤n` witness
-    tests, and stops the choose rule branching on a `≤n R.⊤`. The choose's `¬⊤` option always
-    clashed, but tagged every `⊤` label with a decision.
-  - **Effect.** Together they end the main tableau's thrash on counting residuals: the
-    `ore_ont_3250` `subclass` query that ran past 60 s answers in 0.03 s. Classify is mostly
-    unaffected, since the wedge decides it. The gain is on `sat`, `subclass`, `realize` and
-    TBox-only `consistent`.
-  - **Measured with both flags on:**
-    - no answer changes on the 1,920 classify, the 589 verify-refutations classify, `consistent`
-      over 1,159 ABox and 761 TBox-only ontologies, and `realize` over 1,159;
-    - 2,943 sampled `subclass` queries with 0 disagreements;
-    - MISSED net ΔMISSED 0, FP 0;
-    - the 1,800-case `sat` fuzz against HermiT: 0 disagreements, 32 decided that timed out
-      before.
-
 ### Added
 - **Python `Classification.completeness_guaranteed` (#363).** The same value as the Rust
   `Classification::completeness_guaranteed()` and the `classify --json` field. Python had only
@@ -253,6 +234,24 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`RUSTDL_MAX_FIRST` and `RUSTDL_TOP_FILLER` are default ON (#382; `=0` reverts each).** Both
+  shipped OFF in #394.
+  - **`MAX_FIRST`** tries a `≤n R.C` disjunct first at a node that already meets it.
+  - **`TOP_FILLER`** counts every neighbour as carrying `⊤` for the `∃`, `≥n` and `≤n` witness
+    tests, and stops the choose rule branching on a `≤n R.⊤`. The choose's `¬⊤` option always
+    clashed, but tagged every `⊤` label with a decision.
+  - **Effect.** Together they end the main tableau's thrash on counting residuals: the
+    `ore_ont_3250` `subclass` query that ran past 60 s answers in 0.03 s. Classify is mostly
+    unaffected, since the wedge decides it. The gain is on `sat`, `subclass`, `realize` and
+    TBox-only `consistent`.
+  - **Measured with both flags on:**
+    - no answer changes, wherever both arms finished, on the 1,920 classify, the 589
+      verify-refutations classify, `consistent` over 1,159 ABox and 761 TBox-only ontologies, and
+      `realize` over 1,159 (687 compared; the rest time out or fail in both arms);
+    - 2,943 sampled `subclass` queries with 0 disagreements (2,432 answered in both arms);
+    - MISSED net ΔMISSED 0, FP 0;
+    - the 1,800-case `sat` fuzz against HermiT: 0 disagreements, 32 decided that timed out
+      before.
 - **`sat`, `subclass`, `explain` and `instance` get a larger node cap (#363 A2),
   `RUSTDL_QUERY_MAX_NODES`, default 500000 (`0` disables).** These single queries, from the CLI
   and the matching Python functions, have no bound but the live-node cap when they run without a

@@ -1,7 +1,8 @@
 //! The larger single-query node cap (#363 A2) applies only inside
 //! `single_query_node_cap()`, which the CLI and Python `sat`/`subclass`/
-//! `explain`/`instance` entry points and the CLI `prove` hold. Library callers (and the multi-probe
-//! `justify`/`repair`/`diagnose` built on them) keep the classify-wide 50000.
+//! `explain`/`instance` entry points and the CLI `prove` hold. Library callers
+//! (and the multi-probe `justify`/`repair`/`diagnose` built on them) keep the
+//! classify-wide 50000.
 //!
 //! Set `RUSTDL_QUERY_MAX_NODES=1` with `RUSTDL_MAX_NODES` unset: a bare library
 //! call must still decide (50000 is plenty for this fixture), and the same call

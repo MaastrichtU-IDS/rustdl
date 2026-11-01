@@ -10884,7 +10884,7 @@ pub fn prove_entailment_rcstr_reporting(
     sub_iri: &str,
     sup_iri: &str,
 ) -> Result<(ProveEntailmentResult, bool), ReasonError> {
-    use justify::{Entailment, Verdict};
+    use justify::Entailment;
 
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
     let sub_opt = internal.vocabulary.class_id(sub_iri);
@@ -10933,6 +10933,15 @@ pub fn prove_entailment_rcstr_reporting(
         sup: sup_iri.to_string(),
     };
     let outcome = justify::find_one_justification_reporting(ontology, &q)?;
+    Ok(fallback_after_held(outcome))
+}
+
+/// Maps prove's justification-fallback outcome, reached only after the check
+/// witnessed the entailment, to a result and its `incomplete` flag (#402).
+fn fallback_after_held(
+    outcome: justify::JustifyOutcome<horned_owl::model::RcStr>,
+) -> (ProveEntailmentResult, bool) {
+    use justify::Verdict;
     if outcome.status == Verdict::NotEntailed {
         // The same axioms, under the same cap, just witnessed the entailment: a
         // definite "no" here is a contradiction, not a give-up. Never report it
@@ -10954,7 +10963,7 @@ pub fn prove_entailment_rcstr_reporting(
             fragment: classify::FragmentClassification::OutOfFragment,
             minimal_guaranteed: false,
         });
-    Ok((ProveEntailmentResult::JustificationFallback(j), incomplete))
+    (ProveEntailmentResult::JustificationFallback(j), incomplete)
 }
 
 #[cfg(test)]
@@ -13033,6 +13042,39 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
         assert_eq!(label_cache_ms_for_run(137, pp, false, None, true), 685);
         assert_eq!(label_cache_ms_for_run(137, None, false, Some(42), true), 42);
         assert_eq!(label_cache_ms_for_run(137, None, false, Some(0), false), 0);
+    }
+
+    /// #402: after the check witnessed the entailment, an empty or given-up
+    /// justification search is "entailed, no justification", never `NotEntailed`.
+    #[test]
+    fn prove_fallback_after_held_is_never_a_non_entailment() {
+        let gave_up = justify::JustifyOutcome::<RcStr> {
+            status: justify::Verdict::Unknown,
+            justifications: vec![],
+            incomplete: true,
+        };
+        let (result, incomplete) = fallback_after_held(gave_up);
+        assert!(
+            matches!(&result, ProveEntailmentResult::JustificationFallback(j) if j.axioms.is_empty()),
+            "{result:?}"
+        );
+        assert!(incomplete);
+
+        let not_minimal = justify::JustifyOutcome::<RcStr> {
+            status: justify::Verdict::Entailed,
+            justifications: vec![justify::Justification {
+                axioms: vec![],
+                fragment: classify::FragmentClassification::OutOfFragment,
+                minimal_guaranteed: false,
+            }],
+            incomplete: true,
+        };
+        let (result, incomplete) = fallback_after_held(not_minimal);
+        assert!(matches!(
+            result,
+            ProveEntailmentResult::JustificationFallback(_)
+        ));
+        assert!(incomplete);
     }
 }
 

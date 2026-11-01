@@ -2376,7 +2376,8 @@ fn main() -> Result<()> {
             let warn_gave_up = || {
                 if unknown {
                     eprintln!(
-                        "warning: the reasoner check gave up (node cap, RUSTDL_QUERY_MAX_NODES) \
+                        "warning: the reasoner check gave up (node cap: RUSTDL_QUERY_MAX_NODES, or \
+                         RUSTDL_MAX_NODES if set) \
                          before deciding whether {sub} ⊑ {sup} holds — this is not a \
                          non-entailment."
                     );
@@ -2470,6 +2471,9 @@ fn main() -> Result<()> {
                     } else {
                         for ax in &j.axioms {
                             println!("  {}", ax.as_manchester_with_prefixes(&pm));
+                        }
+                        if !j.minimal_guaranteed {
+                            println!("  (entailing; minimality NOT guaranteed)");
                         }
                     }
                 }

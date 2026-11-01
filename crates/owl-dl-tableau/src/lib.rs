@@ -3325,7 +3325,8 @@ pub fn query_max_nodes() -> Option<usize> {
 
 /// Replaces the live-node cap for searches on this thread until dropped
 /// (restoring the previous value). The CLI and Python single-query entry points
-/// (`sat`, `subclass`, `explain`, `instance`, `prove`) set it to [`query_max_nodes`] via
+/// (`sat`, `subclass`, `explain`, `instance`) and the CLI `prove` set it to
+/// [`query_max_nodes`] via
 /// `owl_dl_reasoner::single_query_node_cap`; classify, consistency, every
 /// deadline-bounded path and multi-probe callers (`justify`, …) never set it, so
 /// they keep [`max_nodes`].

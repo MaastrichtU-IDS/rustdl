@@ -17,6 +17,9 @@ import java.nio.file.Paths;
 import java.util.Collection;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -138,6 +141,37 @@ public class RustdlProofTest {
         assertEquals(2, inference.getPremises().size());
         assertTrue(inference.getPremises().contains(xy));
         assertTrue(inference.getPremises().contains(yz));
+    }
+
+    /**
+     * #402: a give-up parses as {@code status: "unknown"} with {@code incomplete}, so it is never
+     * read from {@code entailed=false} alone; an older payload without the fields still parses.
+     */
+    @Test
+    public void aGiveUpParsesAsUnknownNotAsANonEntailment() throws Exception {
+        RustdlJson.ProveJson unknown = RustdlProcess.parseProve(fixture("prove_unknown.json"));
+        assertEquals("unknown", unknown.status);
+        assertTrue(unknown.incomplete);
+        assertFalse(unknown.entailed);
+
+        RustdlJson.ProveJson legacy = RustdlProcess.parseProve(fixture("prove_fallback.json"));
+        assertNull(legacy.status);
+        assertFalse(legacy.incomplete);
+    }
+
+    /**
+     * #402: "entailed, but no justification available" (the fallback search gave up) must not
+     * become an inference with no premises, which would show the goal as proved from nothing.
+     */
+    @Test
+    public void anEmptyFallbackIsRefusedNotShownAsAPremiselessProof() throws Exception {
+        RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove_fallback_empty.json"));
+        assertTrue(json.entailed);
+        assertTrue(json.incomplete);
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("Sub"), cls("Sup"));
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+            () -> RustdlProof.fromProveJson(json, goal, sourceWith()));
+        assertTrue(e.getMessage(), e.getMessage().contains("no justification is available"));
     }
 
     /**

@@ -121,6 +121,13 @@ public final class RustdlProofService extends ProofService {
                 ofn = Files.createTempFile("rustdl-prove-", ".ofn");
                 FlattenedOntology.writeOfn(ontology, ofn);
                 RustdlJson.ProveJson json = RustdlProcess.prove(ofn, sub, sup, TIMEOUT_SECONDS);
+                if ("unknown".equals(json.status)) {
+                    // #402: rustdl exits 3 for this, which RustdlProcess already turns into an
+                    // IOException; kept as a guard should a caller ever see the body anyway.
+                    // A give-up is not a non-entailment, so it must not read as one.
+                    throw new IllegalStateException(
+                        "rustdl prove: the reasoner check gave up before deciding the entailment");
+                }
                 if (!json.entailed) {
                     // hasProof() only promises a SUPPORTED query shape, not that the axiom is
                     // actually entailed; Protégé only calls getProof for entailments it already

@@ -42,6 +42,22 @@ All notable changes to rustdl are documented here. Format is based on
   wedge answers first; reachable when the main tableau decides a pair (e.g.
   `RUSTDL_HYPERTABLEAU=0`). Both matches in the predicate are now exhaustive. No ORE ontology
   is affected.
+- **`prove` no longer reads a reasoner give-up as "NOT entailed" (#402).**
+  - **Top-level give-up:** when the subsumption check hit the node cap, `prove` printed `NOT
+    entailed: … does not hold` and exited 0, and `prove --json` gave `entailed: false`. It now
+    prints `unknown` and exits 3. `prove --json` keeps `entailed: false` (its sound direction, as
+    `consistent --json` does) and adds `status: "unknown"` and `incomplete: true`.
+  - **Justification fallback:** a give-up there sets `incomplete` and warns. A fallback that found
+    no justification after the entailment was shown is reported as entailed, never as "NOT
+    entailed" as before.
+  - **Node cap:** `prove` now holds the single-query node cap (`RUSTDL_QUERY_MAX_NODES`, default
+    500000) like `subclass` / `explain`, so the two cannot disagree on one query. That covers the
+    justification fallback too: its QuickXplain probes run at 500k, not `justify`'s 50k, which
+    only adds answers but can take longer.
+  - **Rust API:** `ProveEntailmentResult::Unknown` (a new variant) and
+    `prove_entailment_rcstr_reporting`.
+  - **Protégé plugin:** a fallback with no justification is refused instead of being shown as a
+    proof with no premises, and `ProveJson` parses `status` / `incomplete`.
 - **`sat`, `subclass`, `explain`, `sat-expr` and `subclass-expr` no longer hang on an
   `ABox`-bearing ontology without nominals (#401).** They seeded the whole `ABox` into a
   deadline-free main tableau. On `pizza.ofn` (31 individuals, no nominals) each query ran past

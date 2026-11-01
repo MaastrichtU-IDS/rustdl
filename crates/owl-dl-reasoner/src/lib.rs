@@ -8114,7 +8114,8 @@ fn is_subclass_of_internal_full(
 /// 500000; an explicit `RUSTDL_MAX_NODES` wins) instead of the classify-wide
 /// [`owl_dl_tableau::max_nodes`] (50000).
 ///
-/// The CLI's `sat`, `subclass`, `explain` and `instance` and the matching Python
+/// The CLI's `sat`, `subclass`, `explain`, `instance` and `prove` (#402; around
+/// the whole call, so its justification fallback too) and the matching Python
 /// functions hold it around their one query. A single query with no deadline is
 /// bounded only by the node cap, and at 50000 it cut ORE queries that finish a
 /// little past it (3 of 43 measurable random ORE ontologies; all finish under
@@ -11034,6 +11035,9 @@ pub enum ProveEntailmentResult {
     JustificationFallback(justify::Justification<horned_owl::model::RcStr>),
     /// The entailment does not hold.
     NotEntailed,
+    /// The reasoner check gave up (node cap) before deciding whether the
+    /// entailment holds (#402). Not a non-entailment.
+    Unknown,
 }
 
 /// Prove a `sub ⊑ sup` entailment: run the saturator with proof recording and
@@ -11078,10 +11082,15 @@ pub fn prove_entailment<A: horned_owl::model::ForIRI>(
         }
     }
 
-    // Check if the entailment holds at all.
-    let held = is_subclass_of(ontology, sub_iri, sup_iri)?;
+    // Check if the entailment holds at all. A give-up is `Unknown`, not a
+    // non-entailment (#402).
+    let (held, stats) = is_subclass_of_with_stats(ontology, sub_iri, sup_iri)?;
     if !held {
-        return Ok(ProveEntailmentResult::NotEntailed);
+        return Ok(if stats.incomplete {
+            ProveEntailmentResult::Unknown
+        } else {
+            ProveEntailmentResult::NotEntailed
+        });
     }
 
     // Held but not in saturation fragment; no justification available in generic path.
@@ -11097,6 +11106,9 @@ pub fn prove_entailment<A: horned_owl::model::ForIRI>(
 
 /// Variant of `prove_entailment` for `SetOntology<RcStr>` (the common case
 /// used by the CLI and most tests), which supports the justification fallback.
+/// A top-level give-up is [`ProveEntailmentResult::Unknown`]; a give-up inside
+/// the justification fallback is dropped here — see
+/// [`prove_entailment_rcstr_reporting`].
 ///
 /// # Errors
 /// Propagates `ReasonError`.
@@ -11105,6 +11117,22 @@ pub fn prove_entailment_rcstr(
     sub_iri: &str,
     sup_iri: &str,
 ) -> Result<ProveEntailmentResult, ReasonError> {
+    prove_entailment_rcstr_reporting(ontology, sub_iri, sup_iri).map(|(result, _)| result)
+}
+
+/// [`prove_entailment_rcstr`] plus `incomplete` (#402): `true` iff a reasoner
+/// check under it gave up — the top-level check (the result is
+/// [`ProveEntailmentResult::Unknown`]), or the justification fallback (its
+/// justification may not be minimal, or none was found for an entailment that
+/// does hold).
+///
+/// # Errors
+/// Propagates `ReasonError`.
+pub fn prove_entailment_rcstr_reporting(
+    ontology: &horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+    sub_iri: &str,
+    sup_iri: &str,
+) -> Result<(ProveEntailmentResult, bool), ReasonError> {
     use justify::Entailment;
 
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
@@ -11113,7 +11141,7 @@ pub fn prove_entailment_rcstr(
 
     // If classes not found, not entailed.
     let (Some(sub), Some(sup)) = (sub_opt, sup_opt) else {
-        return Ok(ProveEntailmentResult::NotEntailed);
+        return Ok((ProveEntailmentResult::NotEntailed, false));
     };
 
     let cfg = SaturateConfig {
@@ -11125,21 +11153,27 @@ pub fn prove_entailment_rcstr(
         let trace = maybe_trace.unwrap_or_default();
         let mut memo = std::collections::HashMap::new();
         if let Some(root) = prove_subsumption(&trace, sub, sup, &mut memo) {
-            return Ok(ProveEntailmentResult::SaturatorProof(Box::new(
-                SaturatorProofData {
+            return Ok((
+                ProveEntailmentResult::SaturatorProof(Box::new(SaturatorProofData {
                     vocab_num_classes: internal.vocabulary.num_classes(),
                     num_axioms: internal.axioms.len(),
                     root,
                     trace,
-                },
-            )));
+                })),
+                false,
+            ));
         }
     }
 
-    // Check if the entailment holds at all (possibly via tableau).
-    let held = is_subclass_of(ontology, sub_iri, sup_iri)?;
+    // Check if the entailment holds at all (possibly via tableau). A give-up is
+    // `Unknown`, not a non-entailment (#402).
+    let (held, stats) = is_subclass_of_with_stats(ontology, sub_iri, sup_iri)?;
     if !held {
-        return Ok(ProveEntailmentResult::NotEntailed);
+        return Ok(if stats.incomplete {
+            (ProveEntailmentResult::Unknown, true)
+        } else {
+            (ProveEntailmentResult::NotEntailed, false)
+        });
     }
 
     // Holds but not in saturation fragment — axiom-level justification.
@@ -11147,11 +11181,38 @@ pub fn prove_entailment_rcstr(
         sub: sub_iri.to_string(),
         sup: sup_iri.to_string(),
     };
-    match justify::find_one_justification(ontology, &q) {
-        Ok(Some(j)) => Ok(ProveEntailmentResult::JustificationFallback(j)),
-        Ok(None) => Ok(ProveEntailmentResult::NotEntailed),
-        Err(e) => Err(e),
+    let outcome = justify::find_one_justification_reporting(ontology, &q)?;
+    Ok(fallback_after_held(outcome))
+}
+
+/// Maps prove's justification-fallback outcome, reached only after the check
+/// witnessed the entailment, to a result and its `incomplete` flag (#402).
+fn fallback_after_held(
+    outcome: justify::JustifyOutcome<horned_owl::model::RcStr>,
+) -> (ProveEntailmentResult, bool) {
+    use justify::Verdict;
+    if outcome.status == Verdict::NotEntailed {
+        // The same axioms, under the same cap, just witnessed the entailment: a
+        // definite "no" here is a contradiction, not a give-up. Never report it
+        // as a non-entailment; `incomplete` below carries it to the caller.
+        debug_assert!(
+            false,
+            "prove: the justification search refuted an entailment the check just witnessed"
+        );
     }
+    // After a witnessed `held`, no outcome is a non-entailment: an empty or
+    // given-up search is "entailed, no justification available".
+    let incomplete = outcome.incomplete || outcome.status != Verdict::Entailed;
+    let j = outcome
+        .justifications
+        .into_iter()
+        .next()
+        .unwrap_or(justify::Justification {
+            axioms: vec![],
+            fragment: classify::FragmentClassification::OutOfFragment,
+            minimal_guaranteed: false,
+        });
+    (ProveEntailmentResult::JustificationFallback(j), incomplete)
 }
 
 #[cfg(test)]
@@ -13230,6 +13291,39 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
         assert_eq!(label_cache_ms_for_run(137, pp, false, None, true), 685);
         assert_eq!(label_cache_ms_for_run(137, None, false, Some(42), true), 42);
         assert_eq!(label_cache_ms_for_run(137, None, false, Some(0), false), 0);
+    }
+
+    /// #402: after the check witnessed the entailment, an empty or given-up
+    /// justification search is "entailed, no justification", never `NotEntailed`.
+    #[test]
+    fn prove_fallback_after_held_is_never_a_non_entailment() {
+        let gave_up = justify::JustifyOutcome::<RcStr> {
+            status: justify::Verdict::Unknown,
+            justifications: vec![],
+            incomplete: true,
+        };
+        let (result, incomplete) = fallback_after_held(gave_up);
+        assert!(
+            matches!(&result, ProveEntailmentResult::JustificationFallback(j) if j.axioms.is_empty()),
+            "{result:?}"
+        );
+        assert!(incomplete);
+
+        let not_minimal = justify::JustifyOutcome::<RcStr> {
+            status: justify::Verdict::Entailed,
+            justifications: vec![justify::Justification {
+                axioms: vec![],
+                fragment: classify::FragmentClassification::OutOfFragment,
+                minimal_guaranteed: false,
+            }],
+            incomplete: true,
+        };
+        let (result, incomplete) = fallback_after_held(not_minimal);
+        assert!(matches!(
+            result,
+            ProveEntailmentResult::JustificationFallback(_)
+        ));
+        assert!(incomplete);
     }
 }
 

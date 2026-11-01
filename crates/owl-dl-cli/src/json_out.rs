@@ -753,7 +753,16 @@ pub(crate) fn build_justify_json(
 #[derive(Serialize)]
 pub(crate) struct ProveJson {
     pub(crate) schema_version: u32,
+    /// `true` iff the entailment holds. `false` is also the sound direction of a
+    /// give-up: check `status` / `incomplete` (#402).
     pub(crate) entailed: bool,
+    /// `"entailed" | "not-entailed" | "unknown"` (#402; justify's vocabulary).
+    /// `"unknown"` (exit 3): the reasoner check gave up before deciding.
+    pub(crate) status: String,
+    /// A reasoner check gave up (#402): the top level (`status: "unknown"`), or
+    /// the justification fallback (its justification may not be minimal, or
+    /// none was found). Give-up meaning, as in the other query JSONs.
+    pub(crate) incomplete: bool,
     pub(crate) has_proof: bool,
     /// `true` when every proof step cites the axiom its rule applies (or needs none) and
     /// every premise has a sub-proof; `false` when some step cannot be completed from
@@ -1006,9 +1015,20 @@ fn proof_is_complete(node: &ProofNodeJson) -> bool {
 
 pub(crate) fn build_prove_json(
     result: &ProveEntailmentResult,
+    incomplete: bool,
     internal: &InternalOntology,
     pm: &PrefixMapping,
 ) -> Result<ProveJson> {
+    let verdict = |entailed: bool, status: &str| ProveJson {
+        schema_version: SCHEMA_VERSION,
+        entailed,
+        status: status.to_owned(),
+        incomplete,
+        has_proof: false,
+        proof_complete: None,
+        proof: None,
+        justification_fallback: None,
+    };
     Ok(match result {
         ProveEntailmentResult::SaturatorProof(data) => {
             let build: Build<RcStr> = Build::new_rc();
@@ -1020,30 +1040,18 @@ pub(crate) fn build_prove_json(
                 &build,
             )?;
             ProveJson {
-                schema_version: SCHEMA_VERSION,
-                entailed: true,
                 has_proof: true,
                 proof_complete: Some(proof_is_complete(&proof)),
                 proof: Some(proof),
-                justification_fallback: None,
+                ..verdict(true, "entailed")
             }
         }
         ProveEntailmentResult::JustificationFallback(j) => ProveJson {
-            schema_version: SCHEMA_VERSION,
-            entailed: true,
-            has_proof: false,
-            proof_complete: None,
-            proof: None,
             justification_fallback: Some(axioms_to_ofn_doc(&j.axioms, pm)),
+            ..verdict(true, "entailed")
         },
-        ProveEntailmentResult::NotEntailed => ProveJson {
-            schema_version: SCHEMA_VERSION,
-            entailed: false,
-            has_proof: false,
-            proof_complete: None,
-            proof: None,
-            justification_fallback: None,
-        },
+        ProveEntailmentResult::NotEntailed => verdict(false, "not-entailed"),
+        ProveEntailmentResult::Unknown => verdict(false, "unknown"),
     })
 }
 

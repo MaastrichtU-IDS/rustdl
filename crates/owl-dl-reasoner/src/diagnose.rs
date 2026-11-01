@@ -33,11 +33,17 @@ pub struct Diagnosis {
     pub all_unsat: Vec<String>,
     /// For each root IRI, the derived classes that depend on it, sorted.
     pub root_derives: BTreeMap<String, Vec<String>>,
-    /// `true` iff the consistency check deciding an all-classes-unsatisfiable
-    /// ontology gave up (#396): `consistent: true` is then the sound direction of
-    /// no verdict, not a witnessed one, and the partition may describe an
-    /// inconsistent ontology.
+    /// `true` iff a reasoner check under the diagnosis gave up (#396): either
+    /// `consistency_gave_up` or `unsat_probes_cut > 0`.
     pub incomplete: bool,
+    /// The consistency check deciding an all-classes-unsatisfiable ontology gave
+    /// up: `consistent: true` is then the sound direction of no verdict, not a
+    /// witnessed one, and the partition may describe an inconsistent ontology.
+    pub consistency_gave_up: bool,
+    /// Classes whose unsatisfiability probe was cut (the `RUSTDL_MAX_NODES` cap)
+    /// and so were reported satisfiable without a verdict: classify's
+    /// `timed_out_pairs`. Roots and derived classes may be missing.
+    pub unsat_probes_cut: usize,
 }
 
 /// An empty `Diagnosis` for an ontology found inconsistent (caller justifies the
@@ -50,6 +56,8 @@ fn inconsistent_diagnosis() -> Diagnosis {
         all_unsat: Vec::new(),
         root_derives: BTreeMap::new(),
         incomplete: false,
+        consistency_gave_up: false,
+        unsat_probes_cut: 0,
     }
 }
 
@@ -110,14 +118,23 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
     // `is_consistent` is slow. The rare consistent-but-all-classes-empty ontology
     // correctly falls through to a partition (verdict: consistent).
     let n_declared = classification.classes().len();
-    let mut incomplete = false;
+    let mut consistency_gave_up = false;
     if n_declared > 0 && unsat.len() == n_declared {
         let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
         if !consistent {
             return Ok(inconsistent_diagnosis());
         }
-        incomplete = stats.incomplete;
+        consistency_gave_up = stats.incomplete;
     }
+    // No deadline here, so a cut pair is an unsat probe that tripped the node cap
+    // and was reported satisfiable (#218): an unsatisfiable class may be missing.
+    let unsat_probes_cut = classification.stats().timed_out_pairs;
+    let gave_up = Diagnosis {
+        incomplete: consistency_gave_up || unsat_probes_cut > 0,
+        consistency_gave_up,
+        unsat_probes_cut,
+        ..inconsistent_diagnosis()
+    };
 
     if unsat.is_empty() {
         return Ok(Diagnosis {
@@ -126,14 +143,16 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
             derived: Vec::new(),
             all_unsat: Vec::new(),
             root_derives: BTreeMap::new(),
-            incomplete,
+            ..gave_up
         });
     }
 
     let logical = crate::justify::logical_axioms(onto).1;
     let edges = build_dep_edges(&unsat, &logical);
     Ok(Diagnosis {
-        incomplete,
+        incomplete: gave_up.incomplete,
+        consistency_gave_up,
+        unsat_probes_cut,
         ..partition(&unsat, &edges)
     })
 }
@@ -308,6 +327,8 @@ fn partition(unsat: &BTreeSet<String>, edges: &BTreeMap<String, BTreeSet<String>
         all_unsat,
         root_derives,
         incomplete: false,
+        consistency_gave_up: false,
+        unsat_probes_cut: 0,
     }
 }
 

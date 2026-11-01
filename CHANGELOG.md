@@ -59,7 +59,9 @@ All notable changes to rustdl are documented here. Format is based on
   - a give-up inside the search keeps the sound result, sets the new `justify --json` field
     `incomplete` (give-up meaning), clears `minimal` for a justification whose QuickXplain gave up,
     makes `enumeration_complete` false under `--all`, and warns on stderr;
-  - `diagnose` marks an unwitnessed `consistent`; `report` shows a banner;
+  - `diagnose` warns when a class's unsatisfiability check hit the cap (it used to print
+    "coherent" for an unsatisfiable class) and marks an unwitnessed `consistent`; `report` shows a
+    banner;
   - Python's `justify`, `justify_all`, `repair`, `diagnose`, `debug` and `PreparedOntology.justify*`
     emit `IncompleteQueryWarning`, with return types unchanged;
   - Rust: `justify::Verdict`, `entails_reporting`, `JustifyOutcome` and `*_reporting` twins of the

@@ -85,7 +85,8 @@ pub fn find_repairs_prepared<A: ForIRI>(
         return Ok(Repairs {
             entailed: false,
             repairs: Vec::new(),
-            complete: true,
+            // Not known to be complete when the top-level check gave up.
+            complete: !outcome.incomplete,
             dropped_unverified: 0,
             unverified_gave_up: 0,
             incomplete: outcome.incomplete,

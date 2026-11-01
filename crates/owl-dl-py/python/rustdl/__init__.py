@@ -251,15 +251,17 @@ def justify_all(path, query, max=10):
 
 def diagnose(path):
     """(consistent, root_unsat_iris, [(derived_iri, [root_iri, ...]), ...]).
-    Emits `IncompleteQueryWarning` when the consistency check of an
-    all-classes-unsatisfiable ontology gave up, so `consistent` is not
-    witnessed."""
+    Emits `IncompleteQueryWarning` when a reasoner check under it gave up: a
+    class's unsatisfiability check (unsatisfiable classes may be missing), or
+    the consistency check of an all-classes-unsatisfiable ontology
+    (`consistent` is not witnessed)."""
     consistent, roots, derived, incomplete = _diagnose_native(path)
     if incomplete:
         _warnings.warn(
-            "diagnose: every class is unsatisfiable and the consistency check "
-            "gave up (node cap, RUSTDL_MAX_NODES), so `consistent` is not "
-            "witnessed and the ontology may be inconsistent.",
+            "diagnose: a reasoner check gave up (node cap, RUSTDL_MAX_NODES): "
+            "unsatisfiable classes may be missing, or, if every class is "
+            "unsatisfiable, `consistent` is not witnessed and the ontology may be "
+            "inconsistent.",
             IncompleteQueryWarning,
             stacklevel=2,
         )

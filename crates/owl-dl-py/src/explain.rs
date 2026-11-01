@@ -112,8 +112,10 @@ pub(crate) fn justify_all(
 
 /// Root/derived unsatisfiability partition:
 /// `(consistent, roots, [(derived_iri, [root_iri, ...]), ...], incomplete)`.
-/// `incomplete`: the consistency check of an all-classes-unsatisfiable ontology
-/// gave up, so `consistent` is not witnessed (#396).
+/// `incomplete` (#396): the consistency check of an all-classes-unsatisfiable
+/// ontology gave up (`consistent` is not witnessed), or a class's
+/// unsatisfiability check hit the node cap (unsatisfiable classes may be
+/// missing).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn diagnose(

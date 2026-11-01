@@ -2512,11 +2512,19 @@ fn main() -> Result<()> {
 
             let d = owl_dl_reasoner::diagnose(&onto).context("diagnose")?;
             println!("# diagnose: {}", file.display());
-            if d.incomplete {
+            if d.consistency_gave_up {
                 eprintln!(
                     "warning: every class is unsatisfiable and the consistency check gave up \
                      (#396): `consistent` below is not witnessed, and the ontology may be \
                      inconsistent."
+                );
+            }
+            if d.unsat_probes_cut > 0 {
+                eprintln!(
+                    "warning: {} class(es) hit the node cap (RUSTDL_MAX_NODES) in their \
+                     unsatisfiability check and were treated as satisfiable (#396): \
+                     unsatisfiable classes may be missing below.",
+                    d.unsat_probes_cut
                 );
             }
 
@@ -2527,13 +2535,20 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
-            if d.incomplete {
+            if d.consistency_gave_up {
                 println!("# consistency: consistent (NOT witnessed: the check gave up)");
             } else {
                 println!("# consistency: consistent");
             }
             if d.all_unsat.is_empty() {
-                println!("# coherent: no unsatisfiable classes");
+                if d.unsat_probes_cut > 0 {
+                    println!(
+                        "# coherent: no unsatisfiable class found ({} check(s) gave up)",
+                        d.unsat_probes_cut
+                    );
+                } else {
+                    println!("# coherent: no unsatisfiable classes");
+                }
                 return Ok(());
             }
             println!(

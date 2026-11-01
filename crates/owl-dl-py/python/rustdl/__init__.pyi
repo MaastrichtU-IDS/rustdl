@@ -371,8 +371,9 @@ def justify_all(path: str, query: list[str], max: int = 10) -> list[list[str]]:
 
 def diagnose(path: str) -> tuple[bool, list[str], list[tuple[str, list[str]]]]:
     """(consistent, root_unsat_iris, [(derived_iri, [root_iri, ...]), ...]).
-    Emits `IncompleteQueryWarning` when the consistency check of an
-    all-classes-unsatisfiable ontology gave up."""
+    Emits `IncompleteQueryWarning` when a reasoner check under it gave up
+    (a class's unsatisfiability check, or the consistency check of an
+    all-classes-unsatisfiable ontology)."""
     ...
 
 def repair(path: str, query: list[str], max: int = 10) -> list[list[str]]:

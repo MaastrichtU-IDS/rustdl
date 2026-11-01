@@ -89,6 +89,10 @@ fn give_ups_are_reported_through_the_library_api() {
         !rep.entailed && rep.incomplete,
         "top-level unknown: {rep:?}"
     );
+    assert!(
+        !rep.complete,
+        "not known complete after a top-level give-up"
+    );
 
     // A QuickXplain give-up: still entailing, minimality no longer guaranteed.
     let out = find_one_justification_reporting(&parse(QX), &q).unwrap();

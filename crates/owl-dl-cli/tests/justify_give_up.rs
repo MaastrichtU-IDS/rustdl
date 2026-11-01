@@ -51,6 +51,20 @@ Ontology(<http://ex/justifysubset>
 )
 ";
 
+// C is unsatisfiable (its r-successor is A or B, and both are excluded), D is
+// not. With the hyper wedge off, classify's unsat probe on C needs the tableau
+// and trips the cap, so C is reported satisfiable without a verdict.
+const UNSAT_CUT: &str = r"Prefix(:=<http://ex/dc#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://ex/diagcut>
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))
+  Declaration(ObjectProperty(:r))
+  SubClassOf(:C ObjectSomeValuesFrom(:r ObjectUnionOf(:A :B)))
+  SubClassOf(ObjectSomeValuesFrom(:r :A) owl:Nothing)
+  SubClassOf(ObjectSomeValuesFrom(:r :B) owl:Nothing)
+)
+";
+
 // C ⊑ D has two justifications: {C ⊑ D}, in the EL closure, and
 // {C ⊑ ∃r.(A ⊔ B), ∃r.A ⊑ D, ∃r.B ⊑ D}, which needs the tableau (with the hyper
 // wedge off). At the cap the enumeration finds only {C ⊑ D}, so the one
@@ -425,6 +439,38 @@ fn repair_never_reports_a_removal_whose_verification_gave_up() {
         "{}",
         control.stdout
     );
+}
+
+#[test]
+fn diagnose_does_not_report_coherence_after_a_cut_unsat_probe() {
+    // The hyper wedge would prove C unsatisfiable without the tableau.
+    let f = Fixture::new(UNSAT_CUT, "diagnose-cut");
+    let wedge_off = [("RUSTDL_HYPERTABLEAU", "0")];
+    let capped = run_with("1", &wedge_off, &["diagnose", f.path()]);
+    assert_eq!(capped.code, 0, "stderr: {}", capped.stderr);
+    // On 293dcfd1 this printed "# coherent: no unsatisfiable classes".
+    assert!(
+        !capped.stdout.contains("no unsatisfiable classes"),
+        "{}",
+        capped.stdout
+    );
+    assert!(
+        capped.stdout.contains("check(s) gave up"),
+        "{}",
+        capped.stdout
+    );
+    assert!(
+        capped.stderr.contains("hit the node cap"),
+        "{}",
+        capped.stderr
+    );
+    let control = run_with("0", &wedge_off, &["diagnose", f.path()]);
+    assert!(
+        control.stdout.contains("# unsatisfiable: 1"),
+        "{}",
+        control.stdout
+    );
+    assert!(control.stderr.is_empty(), "{}", control.stderr);
 }
 
 /// The guard fix end to end. Release-only: in a debug build, c2's

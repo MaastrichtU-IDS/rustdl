@@ -65,6 +65,13 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `report` | everything under it (diagnose, per-root justify and repair) | — (CLI only) | HTML banner, stderr warning | — | — | `report.rs` unit test |
 | `prove` | the subsumption check (node cap); the justification fallback, as `justify` | `prove_entailment_rcstr_reporting` → `(ProveEntailmentResult, incomplete)`; `ProveEntailmentResult::Unknown` | `unknown`, exit 3; fallback give-up: stderr warning | `entailed: false`, `status: "unknown"`, `incomplete`, exit 3 | no binding | `prove_give_up.rs` |
 
+An unknown class IRI is not a give-up and gets no verdict on any of these
+surfaces: `sat`, `subclass`, `explain`, `instance`, `instances`, `justify` and
+`prove` return `ReasonError::UnknownClass` (CLI: `class IRI not in ontology`,
+exit 1, which is not the exit 3 of `unknown`). That includes `owl:Thing` and
+`owl:Nothing`, which are not in the named-class vocabulary. `prove` used to
+answer "NOT entailed" instead, even for `Aa ⊑ Aa` (#409).
+
 ## Not a give-up, but still a gap (filed)
 
 These are not cut probes; they are surfaces that compute less than the

@@ -202,7 +202,7 @@ fn the_fix_is_on_by_default_and_the_flag_still_works() {
 /// was wrong: `A ⊑ B` is NOT entailed. An `A`-instance `x` has a `p`-successor
 /// and a `q`-successor, and symmetry adds `p` back to `x`, but nothing forces an
 /// `s`-edge, and the chain `p ∘ q ∘ s ⊑ s` only extends an `s`-edge that already
-/// exists. HermiT (robot 1.9.10) and Konclude v0.7.0 both report no `A ⊑ B`
+/// exists. `HermiT` (robot 1.9.10) and Konclude v0.7.0 both report no `A ⊑ B`
 /// (checked 2026-11-01). A "fix" that made this hold would ship a false
 /// positive; keep it negative.
 #[test]
@@ -227,7 +227,7 @@ fn a_length_three_chain_with_a_symmetric_leg_does_not_entail_this() {
 /// not passing on an engine that ignores 3-leg chains. `A ⊑ ∃p.Y ⊓ ∃q.∃s.Z`: for
 /// an `A`-instance `x` with `p(x,y)`, symmetry gives `p(y,x)`, and the chain
 /// `y -p-> x -q-> z -s-> w` gives `s(y,w)` with `w : Z`, so `A ⊑ ∃p.(Y ⊓ ∃s.Z)`.
-/// HermiT and Konclude both derive it with `Symmetric(p)`; HermiT does not
+/// `HermiT` and Konclude both derive it with `Symmetric(p)`; `HermiT` does not
 /// without it.
 #[test]
 fn a_length_three_chain_with_a_symmetric_leg_fires_through_the_reverse_edge() {

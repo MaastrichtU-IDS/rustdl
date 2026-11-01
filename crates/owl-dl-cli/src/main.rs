@@ -31,6 +31,7 @@ use horned_owl::io::owx::reader::read as read_owx;
 use horned_owl::io::rdf::reader::{ConcreteRcRDFOntology, read as read_rdf};
 use horned_owl::model::{AnnotationSubject, AnnotationValue, Component, RcStr};
 use horned_owl::ontology::set::SetOntology;
+use owl_dl_reasoner::justify::{Entailment, JustifyOutcome, Verdict};
 use owl_dl_reasoner::{
     Classification, Realization, classify_n2, classify_n2_with_timeout, classify_saturation_only,
     classify_with_budget, inferred_data_property_values, inferred_object_property_values,
@@ -1096,6 +1097,65 @@ fn warn_if_dropped(dropped: &std::collections::BTreeMap<String, u64>) {
     );
 }
 
+/// One justification for `q` (laconic or regular), with the give-up signal (#396).
+fn find_one_justification_outcome(
+    onto: &SetOntology<RcStr>,
+    q: &Entailment,
+    laconic: bool,
+) -> Result<JustifyOutcome<RcStr>> {
+    Ok(if laconic {
+        owl_dl_reasoner::find_laconic_justification_reporting(onto, q)
+            .context("find_laconic_justification")?
+    } else {
+        owl_dl_reasoner::justify::find_one_justification_reporting(onto, q)
+            .context("find_one_justification")?
+    })
+}
+
+/// Up to `max` justifications for `q` (laconic or regular), with the give-up
+/// signal (#396).
+fn find_all_justifications_outcome(
+    onto: &SetOntology<RcStr>,
+    q: &Entailment,
+    max: usize,
+    laconic: bool,
+) -> Result<JustifyOutcome<RcStr>> {
+    Ok(if laconic {
+        owl_dl_reasoner::find_all_laconic_justifications_reporting(onto, q, max)
+            .context("find_all_laconic_justifications")?
+    } else {
+        owl_dl_reasoner::justify::find_all_justifications_reporting(onto, q, max)
+            .context("find_all_justifications")?
+    })
+}
+
+/// #396: explain on stderr when a reasoner check under a justification search
+/// gave up. Returns `true` iff the TOP-LEVEL check did (the status is unknown),
+/// which callers turn into exit 3; a give-up inside the search leaves a sound
+/// result, so it only warns.
+fn warn_if_justify_gave_up(outcome: &JustifyOutcome<RcStr>) -> bool {
+    if outcome.status == Verdict::Unknown {
+        eprintln!(
+            "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before deciding \
+             whether the query is entailed — this is not a non-entailment."
+        );
+        return true;
+    }
+    if outcome.incomplete {
+        warn_search_gave_up();
+    }
+    false
+}
+
+/// #396: the warning for a give-up inside a justification or repair search.
+fn warn_search_gave_up() {
+    eprintln!(
+        "warning: a reasoner check gave up during the search (node cap, RUSTDL_MAX_NODES): \
+         every justification shown still entails the query, but may not be minimal, and \
+         some justifications or repairs may be missing."
+    );
+}
+
 /// Renders every `owl_dl_verify::UnresolvedReason` (or `Violation`) in `it`
 /// via `Debug`, then SORTS the result.
 ///
@@ -2114,10 +2174,7 @@ fn main() -> Result<()> {
             let q =
                 owl_dl_reasoner::justify::parse_query(&query).map_err(|e| anyhow::anyhow!(e))?;
             if json {
-                let (justs, enumeration_complete): (
-                    Vec<owl_dl_reasoner::justify::Justification<RcStr>>,
-                    bool,
-                ) = if all {
+                let (outcome, enumeration_complete) = if all {
                     // Probe with `max + 1`: `find_all_*` stops as soon as
                     // `found.len() >= max`, so a returned count of exactly
                     // `max` is ambiguous (genuinely capped, or coincidentally
@@ -2130,14 +2187,15 @@ fn main() -> Result<()> {
                     // probe can't add headroom, so whatever comes back is,
                     // by construction, the full set.
                     let probe_max = max.saturating_add(1);
-                    let mut js = if laconic {
-                        owl_dl_reasoner::find_all_laconic_justifications(&onto, &q, probe_max)
-                            .context("find_all_laconic_justifications")?
-                    } else {
-                        owl_dl_reasoner::justify::find_all_justifications(&onto, &q, probe_max)
-                            .context("find_all_justifications")?
-                    };
-                    let enumeration_complete = if max == usize::MAX {
+                    let mut outcome =
+                        find_all_justifications_outcome(&onto, &q, probe_max, laconic)?;
+                    let js = &mut outcome.justifications;
+                    // A probe that gave up during the search may have pruned a
+                    // branch, so the set is not known to be full (#396).
+                    let enumeration_complete = if outcome.incomplete {
+                        js.truncate(max);
+                        false
+                    } else if max == usize::MAX {
                         true
                     } else if js.len() > max {
                         js.truncate(max);
@@ -2145,26 +2203,22 @@ fn main() -> Result<()> {
                     } else {
                         true
                     };
-                    (js, enumeration_complete)
+                    (outcome, enumeration_complete)
                 } else {
-                    let one = if laconic {
-                        owl_dl_reasoner::find_laconic_justification(&onto, &q)
-                            .context("find_laconic_justification")?
-                    } else {
-                        owl_dl_reasoner::justify::find_one_justification(&onto, &q)
-                            .context("find_one_justification")?
-                    };
-                    (one.into_iter().collect(), true)
+                    (find_one_justification_outcome(&onto, &q, laconic)?, true)
                 };
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_justify_json(
-                        &justs,
+                        &outcome,
                         &pm,
                         laconic,
                         enumeration_complete,
                     ))?
                 );
+                if warn_if_justify_gave_up(&outcome) {
+                    std::process::exit(3);
+                }
                 return Ok(());
             }
             let label_map = labels.then(|| build_label_map(&onto));
@@ -2204,34 +2258,26 @@ fn main() -> Result<()> {
                     }
                 }
             };
-            if all {
-                let js = if laconic {
-                    owl_dl_reasoner::find_all_laconic_justifications(&onto, &q, max)
-                        .context("find_all_laconic_justifications")?
-                } else {
-                    owl_dl_reasoner::justify::find_all_justifications(&onto, &q, max)
-                        .context("find_all_justifications")?
-                };
-                if js.is_empty() {
-                    println!("not entailed (no justification)");
-                } else {
-                    println!("# {} justification(s)", js.len());
-                    for j in &js {
-                        render(j);
-                    }
+            let outcome = if all {
+                find_all_justifications_outcome(&onto, &q, max, laconic)?
+            } else {
+                find_one_justification_outcome(&onto, &q, laconic)?
+            };
+            let js = &outcome.justifications;
+            if outcome.status == Verdict::Unknown {
+                println!("unknown (a reasoner check gave up before deciding)");
+            } else if js.is_empty() {
+                println!("not entailed (no justification)");
+            } else if all {
+                println!("# {} justification(s)", js.len());
+                for j in js {
+                    render(j);
                 }
             } else {
-                let one = if laconic {
-                    owl_dl_reasoner::find_laconic_justification(&onto, &q)
-                        .context("find_laconic_justification")?
-                } else {
-                    owl_dl_reasoner::justify::find_one_justification(&onto, &q)
-                        .context("find_one_justification")?
-                };
-                match one {
-                    Some(j) => render(&j),
-                    None => println!("not entailed (no justification)"),
-                }
+                render(&js[0]);
+            }
+            if warn_if_justify_gave_up(&outcome) {
+                std::process::exit(3);
             }
         }
         Command::Repair {
@@ -2247,9 +2293,21 @@ fn main() -> Result<()> {
             let label_map = labels.then(|| build_label_map(&onto));
             let r = owl_dl_reasoner::find_repairs(&onto, &q, max).context("find_repairs")?;
 
+            if !r.entailed && r.incomplete {
+                // #396: the top-level check gave up — not a non-entailment.
+                println!("unknown (a reasoner check gave up before deciding)");
+                eprintln!(
+                    "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before \
+                     deciding whether the query is entailed — this is not a non-entailment."
+                );
+                std::process::exit(3);
+            }
             if !r.entailed {
                 println!("not entailed; nothing to repair");
                 return Ok(());
+            }
+            if r.incomplete {
+                warn_search_gave_up();
             }
             if r.repairs.is_empty() {
                 println!("entailed, but no verifiable axiom removal found");
@@ -2389,7 +2447,8 @@ fn main() -> Result<()> {
             labels,
         } => {
             use owl_dl_reasoner::justify::{
-                Entailment, component_entities, find_all_justifications, find_one_justification,
+                component_entities, find_all_justifications_reporting,
+                find_one_justification_reporting,
             };
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             let label_map = labels.then(|| build_label_map(&onto));
@@ -2421,26 +2480,34 @@ fn main() -> Result<()> {
 
             // Render either one or all justifications for an entailment.
             let render_q = |q: &Entailment, indent: &str| -> anyhow::Result<()> {
-                if all {
-                    let js = find_all_justifications(&onto, q, max)
-                        .context("find_all_justifications")?;
-                    if js.is_empty() {
-                        println!("{indent}(no justification found)");
-                    }
-                    for j in &js {
-                        render(j, indent);
-                    }
+                let outcome = if all {
+                    find_all_justifications_reporting(&onto, q, max)
+                        .context("find_all_justifications")?
                 } else {
-                    match find_one_justification(&onto, q).context("find_one_justification")? {
-                        Some(j) => render(&j, indent),
-                        None => println!("{indent}(no justification found)"),
-                    }
+                    find_one_justification_reporting(&onto, q).context("find_one_justification")?
+                };
+                if outcome.status == Verdict::Unknown {
+                    println!("{indent}(unknown: a reasoner check gave up before deciding)");
+                } else if outcome.justifications.is_empty() {
+                    println!("{indent}(no justification found)");
                 }
+                for j in &outcome.justifications {
+                    render(j, indent);
+                }
+                // #396: the stderr warning, once per justified entailment.
+                warn_if_justify_gave_up(&outcome);
                 Ok(())
             };
 
             let d = owl_dl_reasoner::diagnose(&onto).context("diagnose")?;
             println!("# diagnose: {}", file.display());
+            if d.incomplete {
+                eprintln!(
+                    "warning: every class is unsatisfiable and the consistency check gave up \
+                     (#396): `consistent` below is not witnessed, and the ontology may be \
+                     inconsistent."
+                );
+            }
 
             if !d.consistent {
                 println!("# consistency: INCONSISTENT");
@@ -2449,7 +2516,11 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
-            println!("# consistency: consistent");
+            if d.incomplete {
+                println!("# consistency: consistent (NOT witnessed: the check gave up)");
+            } else {
+                println!("# consistency: consistent");
+            }
             if d.all_unsat.is_empty() {
                 println!("# coherent: no unsatisfiable classes");
                 return Ok(());
@@ -2490,6 +2561,9 @@ fn main() -> Result<()> {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             let label_map = labels.then(|| build_label_map(&onto));
             let report = report::build_report(&onto, file.display().to_string(), max_roots)?;
+            if report.incomplete {
+                warn_search_gave_up();
+            }
             let html = report::render_html(&report, &pm, label_map.as_ref());
             match output {
                 Some(path) => {

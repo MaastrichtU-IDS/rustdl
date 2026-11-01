@@ -10,7 +10,9 @@ use horned_owl::model::{ClassExpression, Component, ForIRI, SubClassOf};
 use horned_owl::ontology::set::SetOntology;
 
 use crate::ReasonError;
-use crate::justify::{Entailment, Justification, PreparedJustifier, quickxplain};
+use crate::justify::{
+    Entailment, GiveUps, Justification, JustifyOutcome, PreparedJustifier, quickxplain,
+};
 
 /// Decompose a superclass expression into top-level fragments whose CONJUNCTION
 /// is EQUIVALENT to the original (so the fragment set, as a whole, preserves every
@@ -117,6 +119,7 @@ fn laconic_from<A: ForIRI>(
     j_axioms: &[Component<A>],
     fragment: crate::classify::FragmentClassification,
     minimal_guaranteed: bool,
+    give_ups: &mut GiveUps,
 ) -> Result<Justification<A>, ReasonError> {
     // candidates = the union of the weakenings of the justification's axioms.
     let candidates: Vec<Component<A>> = j_axioms
@@ -131,10 +134,13 @@ fn laconic_from<A: ForIRI>(
     // candidate set must still entail `q`. With the ∃-filler narrowing dropped this
     // can never fire; assert it in debug builds so a future non-preserving operator
     // is caught immediately rather than silently producing a non-entailing result.
+    // Only a definite "no" fails it: a give-up (#396) is no evidence either way.
     #[cfg(debug_assertions)]
     {
-        let still_entails =
-            crate::justify::entails(&crate::justify::ontology_from(background, &candidates), q)?;
+        let still_entails = crate::justify::entails_reporting(
+            &crate::justify::ontology_from(background, &candidates),
+            q,
+        )? != crate::justify::Verdict::NotEntailed;
         debug_assert!(
             still_entails,
             "laconic candidate set must still entail q — a weakening operator is not \
@@ -142,15 +148,20 @@ fn laconic_from<A: ForIRI>(
         );
     }
 
-    let laconic = quickxplain(background, &candidates, q)?;
+    // A subset probe that gives up keeps more fragments: still sound, but the
+    // result may not be minimal among the weakenings.
+    let mut own = GiveUps::default();
+    let laconic = quickxplain(background, &candidates, q, &mut own)?;
+    give_ups.gave_up |= own.gave_up;
     Ok(Justification {
         axioms: laconic,
         fragment,
-        minimal_guaranteed,
+        minimal_guaranteed: minimal_guaranteed && !own.gave_up,
     })
 }
 
-/// Laconic justification for `q` (one), or `None` if `q` is not entailed.
+/// Laconic justification for `q` (one), or `None` if `q` is not entailed (or a
+/// probe gave up before deciding — see [`find_laconic_justification_reporting`]).
 ///
 /// # Errors
 /// Propagates [`ReasonError`].
@@ -158,17 +169,23 @@ pub fn find_laconic_justification<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
 ) -> Result<Option<Justification<A>>, ReasonError> {
+    Ok(find_laconic_justification_reporting(onto, q)?
+        .justifications
+        .into_iter()
+        .next())
+}
+
+/// [`find_laconic_justification`] with the give-up signal (#396).
+///
+/// # Errors
+/// Propagates [`ReasonError`].
+pub fn find_laconic_justification_reporting<A: ForIRI>(
+    onto: &SetOntology<A>,
+    q: &Entailment,
+) -> Result<JustifyOutcome<A>, ReasonError> {
     let prepared = PreparedJustifier::prepare(onto);
-    let Some(j) = prepared.find_one(q)? else {
-        return Ok(None);
-    };
-    Ok(Some(laconic_from(
-        prepared.background(),
-        q,
-        &j.axioms,
-        j.fragment,
-        j.minimal_guaranteed,
-    )?))
+    let regular = prepared.find_one_reporting(q)?;
+    laconic_outcome(&prepared, q, regular)
 }
 
 /// All laconic justifications for `q` (one per regular justification, capped by
@@ -181,24 +198,52 @@ pub fn find_all_laconic_justifications<A: ForIRI>(
     q: &Entailment,
     max: usize,
 ) -> Result<Vec<Justification<A>>, ReasonError> {
+    Ok(find_all_laconic_justifications_reporting(onto, q, max)?.justifications)
+}
+
+/// [`find_all_laconic_justifications`] with the give-up signal (#396).
+///
+/// # Errors
+/// Propagates [`ReasonError`].
+pub fn find_all_laconic_justifications_reporting<A: ForIRI>(
+    onto: &SetOntology<A>,
+    q: &Entailment,
+    max: usize,
+) -> Result<JustifyOutcome<A>, ReasonError> {
     let prepared = PreparedJustifier::prepare(onto);
-    let regular = prepared.find_all(q, max)?;
+    let regular = prepared.find_all_reporting(q, max)?;
+    laconic_outcome(&prepared, q, regular)
+}
+
+/// Weaken each regular justification of `regular` to its laconic form,
+/// de-duplicated by fragment set, carrying the give-up signal through.
+fn laconic_outcome<A: ForIRI>(
+    prepared: &PreparedJustifier<A>,
+    q: &Entailment,
+    regular: JustifyOutcome<A>,
+) -> Result<JustifyOutcome<A>, ReasonError> {
+    let mut give_ups = GiveUps::default();
     let mut out = Vec::new();
     let mut seen: HashSet<BTreeSet<Component<A>>> = HashSet::new();
-    for j in regular {
+    for j in regular.justifications {
         let lac = laconic_from(
             prepared.background(),
             q,
             &j.axioms,
             j.fragment,
             j.minimal_guaranteed,
+            &mut give_ups,
         )?;
         let key: BTreeSet<Component<A>> = lac.axioms.iter().cloned().collect();
         if seen.insert(key) {
             out.push(lac);
         }
     }
-    Ok(out)
+    Ok(JustifyOutcome {
+        status: regular.status,
+        justifications: out,
+        incomplete: regular.incomplete || give_ups.gave_up,
+    })
 }
 
 #[cfg(test)]

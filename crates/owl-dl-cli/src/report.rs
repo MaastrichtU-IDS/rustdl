@@ -43,6 +43,9 @@ pub(crate) struct Report {
     pub(crate) n_derived: usize,
     pub(crate) repairs_complete: bool,
     pub(crate) truncated_roots: usize,
+    /// A reasoner check under the report gave up (#396): a justification or repair
+    /// search, or diagnose's consistency check. Rendered as a warning banner.
+    pub(crate) incomplete: bool,
 }
 
 /// HTML-escape text for safe, faithful embedding as element content.
@@ -178,6 +181,15 @@ pub(crate) fn render_html(
         html_escape(&report.fragment)
     ));
     h.push_str("</div>");
+    if report.incomplete {
+        h.push_str(
+            "<p style=\"border:1px solid #b45309;padding:.6em\"><strong>Incomplete:</strong> a \
+             reasoner check gave up (node cap, RUSTDL_MAX_NODES) while building this report. \
+             Every justification and repair shown is still sound, but a justification may not \
+             be minimal, some may be missing, and an empty section means \"unknown\", not \
+             \"none\".</p>",
+        );
+    }
 
     if let Some(sec) = &report.inconsistency {
         h.push_str("<h2>Inconsistent ontology — responsible axioms</h2>");
@@ -277,13 +289,18 @@ pub(crate) fn build_report(
         let q = Entailment::Inconsistent;
         // Two queries, one ontology — prepare once.
         let prepared = PreparedJustifier::prepare(onto);
-        let justification = prepared
-            .find_one(&q)
-            .context("justify inconsistency")?
-            .map(|j| j.axioms)
-            .unwrap_or_default();
+        let outcome = prepared
+            .find_one_reporting(&q)
+            .context("justify inconsistency")?;
         let rep = owl_dl_reasoner::find_repairs_prepared(&prepared, &q, 10)
             .context("repair inconsistency")?;
+        let incomplete = diag.incomplete || outcome.incomplete || rep.incomplete;
+        let justification = outcome
+            .justifications
+            .into_iter()
+            .next()
+            .map(|j| j.axioms)
+            .unwrap_or_default();
         let repairs = rep.repairs.into_iter().map(|r| r.remove).collect();
         return Ok(Report {
             ontology_path,
@@ -301,6 +318,7 @@ pub(crate) fn build_report(
             n_derived: 0,
             repairs_complete: rep.complete,
             truncated_roots: 0,
+            incomplete,
         });
     }
 
@@ -310,6 +328,7 @@ pub(crate) fn build_report(
     let n_unsat = diag.all_unsat.len();
     let truncated_roots = n_root.saturating_sub(max_roots);
     let mut repairs_complete = true;
+    let mut incomplete = diag.incomplete;
     let mut roots = Vec::new();
     // Every root is justified AND repaired against the SAME ontology, so the
     // per-ontology state (axiom split + fragment) is derived once and reused by
@@ -318,14 +337,18 @@ pub(crate) fn build_report(
     for iri in diag.roots.iter().take(max_roots) {
         let q = Entailment::Unsatisfiable { class: iri.clone() };
         let prepared = justifier.get_or_insert_with(|| PreparedJustifier::prepare(onto));
-        let justification = prepared
-            .find_one(&q)
-            .context("justify root")?
+        let outcome = prepared.find_one_reporting(&q).context("justify root")?;
+        incomplete |= outcome.incomplete;
+        let justification = outcome
+            .justifications
+            .into_iter()
+            .next()
             .map(|j| j.axioms)
             .unwrap_or_default();
         let rep =
             owl_dl_reasoner::find_repairs_prepared(prepared, &q, 10).context("repair root")?;
         repairs_complete &= rep.complete;
+        incomplete |= rep.incomplete;
         let derives = diag.root_derives.get(iri).cloned().unwrap_or_default();
         roots.push(RootEntry {
             iri: iri.clone(),
@@ -353,6 +376,7 @@ pub(crate) fn build_report(
         n_derived,
         repairs_complete,
         truncated_roots,
+        incomplete,
     })
 }
 
@@ -402,6 +426,7 @@ mod render_tests {
             n_derived: 0,
             repairs_complete: true,
             truncated_roots: 0,
+            incomplete: false,
         }
     }
 
@@ -444,6 +469,23 @@ mod render_tests {
         assert!(html.to_lowercase().contains("root unsatisfiable"));
         assert!(html.to_lowercase().contains("repair"));
         assert!(html.contains("urn:SubBad"), "lists the derived class");
+    }
+
+    #[test]
+    fn incomplete_report_shows_a_warning_banner() {
+        // #396: a give-up under the report must be visible in the page.
+        let quiet = render_html(&coherent_report(), &prefixes(), None);
+        assert!(
+            !quiet.contains("Incomplete:"),
+            "no banner without a give-up"
+        );
+        let report = Report {
+            incomplete: true,
+            ..coherent_report()
+        };
+        let html = render_html(&report, &prefixes(), None);
+        assert!(html.contains("Incomplete:"), "banner on a give-up");
+        assert!(html.contains("RUSTDL_MAX_NODES"));
     }
 
     #[test]

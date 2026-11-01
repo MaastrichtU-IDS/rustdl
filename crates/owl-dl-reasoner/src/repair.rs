@@ -10,7 +10,7 @@ use horned_owl::model::{Component, ForIRI};
 use horned_owl::ontology::set::SetOntology;
 
 use crate::ReasonError;
-use crate::justify::{Entailment, PreparedJustifier, entails, ontology_from};
+use crate::justify::{Entailment, PreparedJustifier, Verdict, entails_reporting, ontology_from};
 
 /// Cap on justifications discovered for repair (independent of the user-facing
 /// `max` on repairs). Generous so the hitting sets are computed over as complete a
@@ -27,16 +27,22 @@ pub struct Repair<A: ForIRI> {
 /// The result of a repair query.
 #[derive(Debug, Clone)]
 pub struct Repairs<A: ForIRI> {
-    /// Whether `η` was entailed at all (`false` → nothing to repair).
+    /// Whether `η` was entailed at all (`false` → nothing to repair, unless
+    /// `incomplete` is also set: then the top-level check gave up, and whether
+    /// `η` is entailed is unknown).
     pub entailed: bool,
     /// Verified minimal repairs, smallest first, capped by the user `max`.
     pub repairs: Vec<Repair<A>>,
     /// Whether the repair set is complete (all minimal repairs found) — true iff
-    /// the underlying justification set is complete (EL/Horn).
+    /// the underlying justification set is complete (EL/Horn) and no probe gave
+    /// up while finding it (#396).
     pub complete: bool,
     /// Candidate hitting sets discarded because they failed verification (an
     /// unfound justification survived). >0 signals the reported set may be partial.
     pub dropped_unverified: usize,
+    /// `true` iff any probe gave up (#396): the top-level check (`entailed` is then
+    /// `false`), a justification probe, or a repair verification.
+    pub incomplete: bool,
 }
 
 /// Compute verified minimal repairs for `q` in `onto`.
@@ -67,16 +73,21 @@ pub fn find_repairs_prepared<A: ForIRI>(
     max: usize,
 ) -> Result<Repairs<A>, ReasonError> {
     // All justifications (generous internal cap, independent of the repair `max`).
-    let justifications = prepared.find_all(q, REPAIR_JUSTIFICATION_CAP)?;
+    let outcome = prepared.find_all_reporting(q, REPAIR_JUSTIFICATION_CAP)?;
+    let justifications = outcome.justifications;
     if justifications.is_empty() {
         return Ok(Repairs {
             entailed: false,
             repairs: Vec::new(),
             complete: true,
             dropped_unverified: 0,
+            incomplete: outcome.incomplete,
         });
     }
-    let complete = justifications.iter().all(|j| j.minimal_guaranteed);
+    // A give-up in the search can hide a justification (a pruned branch), and so
+    // a repair: the set is then not known to be complete.
+    let complete = !outcome.incomplete && justifications.iter().all(|j| j.minimal_guaranteed);
+    let mut incomplete = outcome.incomplete;
 
     // Hitting sets over the justification axiom-sets.
     let j_sets: Vec<BTreeSet<Component<A>>> = justifications
@@ -97,10 +108,14 @@ pub fn find_repairs_prepared<A: ForIRI>(
         }
         let kept: Vec<Component<A>> = logical.iter().filter(|a| !h.contains(a)).cloned().collect();
         let reduced = ontology_from(fixed, &kept);
-        if entails(&reduced, q)? {
-            // An unfound justification survives — not a real repair.
-            dropped_unverified += 1;
-            continue;
+        match entails_reporting(&reduced, q)? {
+            Verdict::Entailed => {
+                // An unfound justification survives — not a real repair.
+                dropped_unverified += 1;
+                continue;
+            }
+            Verdict::Unknown => incomplete = true,
+            Verdict::NotEntailed => {}
         }
         repairs.push(Repair {
             remove: h.into_iter().collect(),
@@ -112,6 +127,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
         repairs,
         complete,
         dropped_unverified,
+        incomplete,
     })
 }
 

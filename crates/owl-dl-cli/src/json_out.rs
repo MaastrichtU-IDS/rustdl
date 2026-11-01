@@ -13,7 +13,7 @@ use horned_owl::model::{
 use horned_owl::ontology::component_mapped::RcComponentMappedOntology;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_core::{ClassId, IndividualId, InternalOntology, RoleId, Vocabulary};
-use owl_dl_reasoner::justify::Justification;
+use owl_dl_reasoner::justify::{JustifyOutcome, Verdict};
 use owl_dl_reasoner::{
     Classification, DataPropertyValues, DifferentIndividuals, Disjointness, ObjectPropertyValues,
     PropertyClassification, ProveEntailmentResult, Realization, SameIndividuals, SyntheticDef,
@@ -653,10 +653,16 @@ pub(crate) fn build_property_values_json(
     }
 }
 
+// `struct_excessive_bools`: as for `ClassifyJson`, the bools are the wire format.
 #[derive(Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct JustifyJson {
     pub(crate) schema_version: u32,
-    pub(crate) status: String, // "entailed" | "not-entailed"
+    pub(crate) status: String, // "entailed" | "not-entailed" | "unknown"
+    /// A probe gave up (#396): the top-level one (`status: "unknown"`), or one
+    /// inside the search (the justifications still entail, but may be non-minimal
+    /// or, under `--all`, incomplete). Give-up meaning, as in the other query JSONs.
+    pub(crate) incomplete: bool,
     pub(crate) enumeration_complete: bool,
     pub(crate) minimal: bool, // all justifications minimal_guaranteed
     pub(crate) laconic: bool,
@@ -689,16 +695,18 @@ fn axioms_to_ofn_doc(axioms: &[Component<RcStr>], pm: &PrefixMapping) -> String 
 }
 
 /// Build the `justify --json` payload. `enumeration_complete` reflects
-/// whether `justs` is the FULL set of minimal justifications (always `true`
-/// for the default single-justification query; for `--all`, `false` when the
-/// `--max` cap was hit — see the call site).
+/// whether the outcome's justifications are the FULL set of minimal
+/// justifications (always `true` for the default single-justification query;
+/// for `--all`, `false` when the `--max` cap was hit or a probe gave up — see
+/// the call site).
 #[must_use]
 pub(crate) fn build_justify_json(
-    justs: &[Justification<RcStr>],
+    outcome: &JustifyOutcome<RcStr>,
     pm: &PrefixMapping,
     laconic: bool,
     enumeration_complete: bool,
 ) -> JustifyJson {
+    let justs = &outcome.justifications;
     let minimal = justs.iter().all(|j| j.minimal_guaranteed);
     let justifications = justs
         .iter()
@@ -708,12 +716,13 @@ pub(crate) fn build_justify_json(
         .collect();
     JustifyJson {
         schema_version: SCHEMA_VERSION,
-        status: if justs.is_empty() {
-            "not-entailed"
-        } else {
-            "entailed"
+        status: match outcome.status {
+            Verdict::Entailed => "entailed",
+            Verdict::NotEntailed => "not-entailed",
+            Verdict::Unknown => "unknown",
         }
         .to_owned(),
+        incomplete: outcome.incomplete,
         enumeration_complete,
         minimal,
         laconic,

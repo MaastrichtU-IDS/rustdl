@@ -33,6 +33,11 @@ pub struct Diagnosis {
     pub all_unsat: Vec<String>,
     /// For each root IRI, the derived classes that depend on it, sorted.
     pub root_derives: BTreeMap<String, Vec<String>>,
+    /// `true` iff the consistency check deciding an all-classes-unsatisfiable
+    /// ontology gave up (#396): `consistent: true` is then the sound direction of
+    /// no verdict, not a witnessed one, and the partition may describe an
+    /// inconsistent ontology.
+    pub incomplete: bool,
 }
 
 /// An empty `Diagnosis` for an ontology found inconsistent (caller justifies the
@@ -44,6 +49,7 @@ fn inconsistent_diagnosis() -> Diagnosis {
         derived: Vec::new(),
         all_unsat: Vec::new(),
         root_derives: BTreeMap::new(),
+        incomplete: false,
     }
 }
 
@@ -104,8 +110,13 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
     // `is_consistent` is slow. The rare consistent-but-all-classes-empty ontology
     // correctly falls through to a partition (verdict: consistent).
     let n_declared = classification.classes().len();
-    if n_declared > 0 && unsat.len() == n_declared && !crate::is_consistent(onto)? {
-        return Ok(inconsistent_diagnosis());
+    let mut incomplete = false;
+    if n_declared > 0 && unsat.len() == n_declared {
+        let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
+        if !consistent {
+            return Ok(inconsistent_diagnosis());
+        }
+        incomplete = stats.incomplete;
     }
 
     if unsat.is_empty() {
@@ -115,12 +126,16 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
             derived: Vec::new(),
             all_unsat: Vec::new(),
             root_derives: BTreeMap::new(),
+            incomplete,
         });
     }
 
     let logical = crate::justify::logical_axioms(onto).1;
     let edges = build_dep_edges(&unsat, &logical);
-    Ok(partition(&unsat, &edges))
+    Ok(Diagnosis {
+        incomplete,
+        ..partition(&unsat, &edges)
+    })
 }
 
 /// Collect the named classes that occur in *unsat-forcing* positions of `ce`.
@@ -292,6 +307,7 @@ fn partition(unsat: &BTreeSet<String>, edges: &BTreeMap<String, BTreeSet<String>
         derived,
         all_unsat,
         root_derives,
+        incomplete: false,
     }
 }
 

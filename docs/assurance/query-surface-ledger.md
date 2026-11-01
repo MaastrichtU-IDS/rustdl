@@ -30,7 +30,7 @@ No surface in the #363 audit turned a give-up into a definite **positive**.
 |---|---|---|
 | Rust `*_with_stats` | `QueryStats::incomplete` | the verdict is a give-up in its sound direction |
 | Rust `*_reporting`, `Realization` | `incomplete` (second tuple element, `Realization::incomplete()`) | at least one probe was cut |
-| CLI single answer (`consistent`, `sat`, `subclass`, `instance`, `explain`) | prints `unknown`, exits 3, explains on stderr | no verdict |
+| CLI single answer (`consistent`, `sat`, `subclass`, `instance`, `explain`, `prove`) | prints `unknown`, exits 3, explains on stderr | no verdict |
 | CLI list answer (`instances`, `realize`) | stderr warning; members printed are sound | members may be missing |
 | CLI `--json` | `incomplete` field | as the Rust field |
 | Python | `IncompleteQueryWarning`; the return value keeps its sound direction | as the Rust field |
@@ -63,6 +63,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `repair` | as `justify`, plus each candidate's verification probe | `Repairs::incomplete`; `complete` cleared; a candidate whose verification gave up is dropped and counted in `unverified_gave_up` | top level: `unknown`, exit 3; otherwise stderr warning and a note | no `--json` | `repair` warns | same |
 | `diagnose` | classify's unsat probes (node cap: a class reported satisfiable without a verdict); the consistency check on an all-classes-unsatisfiable ontology; the justifications under it as `justify` | `Diagnosis::{incomplete, unsat_probes_cut, consistency_gave_up}` | stderr warning per cause; `consistent (NOT witnessed …)`; `coherent: no unsatisfiable class found (N check(s) gave up)`; per-entailment `unknown` lines | no `--json` | `diagnose`, `debug` warn | same |
 | `report` | everything under it (diagnose, per-root justify and repair) | — (CLI only) | HTML banner, stderr warning | — | — | `report.rs` unit test |
+| `prove` | the subsumption check (node cap); the justification fallback, as `justify` | `prove_entailment_rcstr_reporting` → `(ProveEntailmentResult, incomplete)`; `ProveEntailmentResult::Unknown` | `unknown`, exit 3; fallback give-up: stderr warning | `entailed: false`, `status: "unknown"`, `incomplete`, exit 3 | no binding | `prove_give_up.rs` |
 
 ## Not a give-up, but still a gap (filed)
 
@@ -88,7 +89,6 @@ about its signal, so each is filed rather than fixed here.
   `materialize_inferred_class_assertions`) drop realize's flags. #391.
 - **consistency's trusted wedge `Sat`** is a trust decision, not a cut, and has
   no signal beyond `wedge_clauses_refused`. #392.
-- **`prove`** reads a give-up as "NOT entailed" (the #396 bug class). #402.
 
 ## Rule for changes
 
@@ -101,7 +101,8 @@ its own process, because the cap is cached once per process.
 
 ## Node caps
 
-The CLI's `sat`, `subclass`, `explain` and `instance`, and the Python
+The CLI's `sat`, `subclass`, `explain`, `instance` and `prove` (around the whole
+call, so its justification fallback too, #402), and the Python
 `is_class_satisfiable`, `is_subclass_of` and `is_instance_of`, run their one query
 under `owl_dl_reasoner::single_query_node_cap()`, which raises the cap to
 `RUSTDL_QUERY_MAX_NODES` (default 500000; `0` disables). Everything else uses

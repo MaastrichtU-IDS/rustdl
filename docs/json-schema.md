@@ -245,7 +245,9 @@ below).
 ## `prove --json`
 
 ```json
-{ "schema_version": 1, "entailed": bool, "has_proof": bool,
+{ "schema_version": 1, "entailed": bool,
+  "status": "entailed" | "not-entailed" | "unknown", "incomplete": bool,
+  "has_proof": bool,
   "proof_complete": bool | null,
   "proof": ProofNodeJson | null,
   "justification_fallback": ofn_document | null }
@@ -288,6 +290,16 @@ Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
   saturation fragment — SROIQ-only, e.g. genuine disjunctive/cardinality
   tableau reasoning): `entailed: true, has_proof: false`, `proof: null`,
   `justification_fallback` is the axiom-level justification's OFN document
-  (may be empty-axioms if none could be found).
+  (may be empty-axioms if none could be found; `incomplete` is then `true`).
 - **Not entailed**: `entailed: false, has_proof: false`, `proof: null,
   justification_fallback: null`.
+
+`status` and `incomplete` were added in #402, without a `schema_version` bump.
+`status` is `"entailed"` for both entailed shapes. It is `"unknown"` (exit 3)
+when the subsumption check gave up (the node cap), in which case the payload has
+the not-entailed shape, so `entailed: false` is NOT a non-entailment: read
+`status`. `incomplete` means a reasoner check gave up, as in the other query
+JSONs. That is the top level (`"unknown"`), or the justification fallback (the
+justification may not be minimal, or none was found for an entailment that
+holds). `prove` runs under the single-query node cap (`RUSTDL_QUERY_MAX_NODES`,
+default 500000), like `subclass` and `explain`.

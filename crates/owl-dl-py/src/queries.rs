@@ -73,6 +73,7 @@ pub(crate) fn is_instance_of(
 #[pyfunction]
 pub(crate) fn instances_of(path: &str, class_iri: &str) -> PyResult<(Vec<String>, bool)> {
     let ontology = load::load_path(path)?;
+    let _cap = owl_dl_reasoner::single_query_node_cap();
     owl_dl_reasoner::instances_of_reporting(&ontology, class_iri).map_err(reason_error_to_py)
 }
 
@@ -250,19 +251,25 @@ fn parse_ce(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("class expression: {e}")))
 }
 
-/// Is `ce` satisfiable w.r.t. the ontology at `path`? Plus a completeness
-/// flag. See `disjoint_classes` for the tuple/wrapper convention.
+/// `(satisfiable, incomplete, relies_on_trusted_consistency)` for the class
+/// expression `ce`: `incomplete` means the probe gave up (node cap) and
+/// "satisfiable" is the sound direction (#363 A2); an answer off pure EL is not
+/// `incomplete`. Runs under the single-query node cap, like
+/// `is_class_satisfiable`.
 #[pyfunction]
 pub(crate) fn class_expression_satisfiable(path: &str, ce: &str) -> PyResult<(bool, bool, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
+    let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
     let ce = parse_ce(ce, &pm, &build)?;
     let v = owl_dl_reasoner::class_expression_satisfiable(&o, &ce).map_err(reason_error_to_py)?;
     Ok((v.holds(), v.incomplete(), v.relies_on_trusted_consistency()))
 }
 
-/// Is `sub_ce ⊑ sup_ce` entailed w.r.t. the ontology at `path`? Plus a
-/// completeness flag. See `disjoint_classes` for the tuple/wrapper convention.
+/// `(entailed, incomplete, relies_on_trusted_consistency)` for
+/// `sub_ce ⊑ sup_ce`: `incomplete` means the probe gave up and "not entailed"
+/// is the sound direction; an answer off pure EL is not `incomplete`. Runs
+/// under the single-query node cap, like `is_subclass_of`.
 #[pyfunction]
 pub(crate) fn class_expression_entailed_subclass(
     path: &str,
@@ -270,6 +277,7 @@ pub(crate) fn class_expression_entailed_subclass(
     sup_ce: &str,
 ) -> PyResult<(bool, bool, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
+    let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
     let sub_ce = parse_ce(sub_ce, &pm, &build)?;
     let sup_ce = parse_ce(sup_ce, &pm, &build)?;
@@ -278,11 +286,14 @@ pub(crate) fn class_expression_entailed_subclass(
     Ok((v.holds(), v.incomplete(), v.relies_on_trusted_consistency()))
 }
 
-/// Named individuals provably in `ce` w.r.t. the ontology at `path`, plus a
-/// completeness flag. See `disjoint_classes` for the tuple/wrapper convention.
+/// `(individuals, incomplete)`: named individuals provably in `ce`;
+/// `incomplete` means at least one instance probe was cut, so members may be
+/// missing (those returned are sound). Runs under the single-query node cap,
+/// like `instances_of`.
 #[pyfunction]
 pub(crate) fn class_expression_instances(path: &str, ce: &str) -> PyResult<(Vec<String>, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
+    let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
     let ce = parse_ce(ce, &pm, &build)?;
     let r = owl_dl_reasoner::class_expression_instances(&o, &ce).map_err(reason_error_to_py)?;

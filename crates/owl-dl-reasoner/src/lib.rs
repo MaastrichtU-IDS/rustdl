@@ -8210,14 +8210,17 @@ fn is_subclass_of_internal_full(
 /// 500000; an explicit `RUSTDL_MAX_NODES` wins) instead of the classify-wide
 /// [`owl_dl_tableau::max_nodes`] (50000).
 ///
-/// The CLI's `sat`, `subclass`, `explain`, `instance` and `prove` (#402; around
-/// the whole call, so its justification fallback too) and the matching Python
-/// functions hold it around their one query. A single query with no deadline is
-/// bounded only by the node cap, and at 50000 it cut ORE queries that finish a
-/// little past it (3 of 43 measurable random ORE ontologies; all finish under
-/// 500000 in the same CPU time and peak RSS). Library callers that issue many
-/// probes (`justify`, `repair`, `diagnose`, the class-expression queries)
-/// deliberately do not take it.
+/// The CLI's `sat`, `subclass`, `explain`, `instance`, `instances`, `prove`
+/// (#402; around the whole call, so its justification fallback too),
+/// `sat-expr`, `subclass-expr` and `instances-expr`, and the matching Python
+/// functions, hold it around their one query. The expression and `instances`
+/// commands took it in package 2's prerequisite, so that each named query and
+/// its expression or list form run under the same cap. A single query with no
+/// deadline is bounded only by the node cap, and at 50000 it cut ORE queries
+/// that finish a little past it (3 of 43 measurable random ORE ontologies; all
+/// finish under 500000 in the same CPU time and peak RSS). Library callers, and
+/// the callers that issue many probes per query (`justify`, `repair`,
+/// `diagnose`), deliberately do not take it.
 #[must_use = "the larger cap lasts only while the guard is alive"]
 pub fn single_query_node_cap() -> owl_dl_tableau::NodeCapOverride {
     owl_dl_tableau::NodeCapOverride::enter(owl_dl_tableau::query_max_nodes())

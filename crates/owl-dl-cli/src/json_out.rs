@@ -262,10 +262,21 @@ pub(crate) struct DisjointJson {
     pub(crate) structural_gaps: Vec<String>,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct SatExprJson {
     pub(crate) schema_version: u32,
+    /// A probe gave up (node cap): the verdict is the sound direction of no
+    /// verdict, and the command exits 3 (#363 A2). Give-up only, as on the other
+    /// query JSONs (#395); an answer off the pure-EL fast path is reported by
+    /// `completeness_guaranteed`. (Before package 2 this was also `true` whenever
+    /// the ontology was not pure EL.)
     pub(crate) incomplete: bool,
+    /// The verdict is guaranteed complete: answered on the pure-EL fast path and
+    /// nothing gave up. `false` means a "satisfiable" / "not entailed" is not
+    /// proven complete, not that it is wrong (as `classify --json`).
+    pub(crate) completeness_guaranteed: bool,
     /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
     /// affect the answer: the ontology and the expression have no nominal), and
     /// the consistency that licensed dropping it rests on a trusted wedge `Sat`
@@ -276,10 +287,21 @@ pub(crate) struct SatExprJson {
     pub(crate) satisfiable: bool,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct SubclassExprJson {
     pub(crate) schema_version: u32,
+    /// A probe gave up (node cap): the verdict is the sound direction of no
+    /// verdict, and the command exits 3 (#363 A2). Give-up only, as on the other
+    /// query JSONs (#395); an answer off the pure-EL fast path is reported by
+    /// `completeness_guaranteed`. (Before package 2 this was also `true` whenever
+    /// the ontology was not pure EL.)
     pub(crate) incomplete: bool,
+    /// The verdict is guaranteed complete: answered on the pure-EL fast path and
+    /// nothing gave up. `false` means a "satisfiable" / "not entailed" is not
+    /// proven complete, not that it is wrong (as `classify --json`).
+    pub(crate) completeness_guaranteed: bool,
     /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
     /// affect the answer: the ontology and the expression have no nominal), and
     /// the consistency that licensed dropping it rests on a trusted wedge `Sat`
@@ -293,7 +315,15 @@ pub(crate) struct SubclassExprJson {
 #[derive(Serialize)]
 pub(crate) struct InstancesExprJson {
     pub(crate) schema_version: u32,
+    /// At least one instance probe was cut, so members may be missing; those
+    /// listed are sound (#363 A2). Give-up only (#395); exit 0, as `instances`.
+    /// (Before package 2 this was also `true` whenever the ontology was not pure
+    /// EL.)
     pub(crate) incomplete: bool,
+    /// The list is guaranteed complete: the instance query ran on the realize
+    /// saturation fast path. Off it the tableau path's pseudo-model prune is not
+    /// proven complete, so this is `false` even when nothing was cut.
+    pub(crate) completeness_guaranteed: bool,
     pub(crate) instances: Vec<String>,
 }
 
@@ -302,6 +332,7 @@ pub(crate) fn build_sat_expr_json(v: owl_dl_reasoner::CeVerdict) -> SatExprJson 
     SatExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: v.incomplete(),
+        completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         satisfiable: v.holds(),
     }
@@ -312,6 +343,7 @@ pub(crate) fn build_subclass_expr_json(v: owl_dl_reasoner::CeVerdict) -> Subclas
     SubclassExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: v.incomplete(),
+        completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         entailed: v.holds(),
     }
@@ -324,6 +356,7 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
     InstancesExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: r.incomplete(),
+        completeness_guaranteed: r.completeness_guaranteed(),
         instances,
     }
 }

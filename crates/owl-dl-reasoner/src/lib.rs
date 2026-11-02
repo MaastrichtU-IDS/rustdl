@@ -359,12 +359,51 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
 /// told `X ⊑ ∃R.C`). Under-approximate: told `∃` only, simple named role + named
 /// class filler, 1-step (no recursion). Read-only.
 ///
+/// Drops the completeness flags of the `realize` run underneath: a cut instance
+/// probe or the pseudo-model prune can remove rows without a signal here. Use
+/// [`materialize_existential_successors_reporting`] to get them (#391).
+///
 /// # Errors
 /// [`ReasonError::Inconsistent`] if inconsistent; [`ReasonError::Conversion`].
 #[allow(clippy::type_complexity)]
 pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String, String, String)>, ReasonError> {
+    materialize_existential_successors_reporting(onto).map(|(rows, _)| rows)
+}
+
+/// What [`materialize_existential_successors_reporting`] reports beside the rows
+/// (#391). Both come from the `realize` run the rows are read off; both mean a
+/// row may be MISSING, never that a row is wrong.
+///
+/// `direct_types_unverified` (#388) is deliberately absent: the rows join on
+/// ENTAILED types, which that flag does not affect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExistentialSuccessorFlags {
+    /// An instance probe was cut ([`Realization::incomplete`]), so an entailed
+    /// type and the rows it yields may be missing.
+    pub incomplete: bool,
+    /// The pseudo-model prune ran ([`Realization::witness_prune_active`]). It can
+    /// drop an entailed type without cutting a probe; #387 tracks a sharper signal.
+    pub witness_prune_active: bool,
+}
+
+/// [`materialize_existential_successors`], plus the completeness flags of the
+/// `realize` run it reads (#391). All flags are `false` when no told `X ⊑ ∃R.C`
+/// exists: no row can be produced, so none can be missing.
+///
+/// # Errors
+/// As [`materialize_existential_successors`].
+#[allow(clippy::type_complexity)]
+pub fn materialize_existential_successors_reporting<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<
+    (
+        Vec<(String, String, String, String)>,
+        ExistentialSuccessorFlags,
+    ),
+    ReasonError,
+> {
     use horned_owl::model::{
         ClassExpression as CE, Component as C, ForIRI, ObjectPropertyExpression as OPE,
     };
@@ -428,10 +467,14 @@ pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
         }
     }
     if told.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), ExistentialSuccessorFlags::default()));
     }
 
     let realization = realize(onto)?;
+    let flags = ExistentialSuccessorFlags {
+        incomplete: realization.incomplete(),
+        witness_prune_active: realization.witness_prune_active(),
+    };
     // Distinct (a, R, C) with a:X entailed and X ⊑ ∃R.C told.
     let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
     for a in realization.individuals() {
@@ -451,7 +494,7 @@ pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
         .map(|(i, (a, r, c))| (a, r, format!("_:b{i}"), c))
         .collect();
     out.retain(|(s, ..)| !s.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX));
-    Ok(out)
+    Ok((out, flags))
 }
 
 /// Materialize the inferred OBJECT property-subsumption axioms `(sub, sup)` over

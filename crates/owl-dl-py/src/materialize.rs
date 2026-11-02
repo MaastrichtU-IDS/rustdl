@@ -4,6 +4,7 @@
 
 use pyo3::prelude::*;
 
+use crate::classify::PyClassification;
 use crate::errors::reason_error_to_py;
 use crate::load;
 
@@ -12,8 +13,14 @@ use crate::load;
 /// - Reflexive pairs (`sub == sup`)
 /// - Pairs involving `owl:Thing` or `owl:Nothing`
 /// - Pairs from unsatisfiable classes (which trivially subsume all)
+///
+/// Also returns the `Classification` the pairs were read off, so the Python
+/// wrapper (`__init__.py`) can warn on its completeness signals as `classify`
+/// does (#391), and returns just the pairs.
 #[pyfunction]
-pub(crate) fn materialize_inferred_subclass_axioms(path: &str) -> PyResult<Vec<(String, String)>> {
+pub(crate) fn materialize_inferred_subclass_axioms(
+    path: &str,
+) -> PyResult<(Vec<(String, String)>, PyClassification)> {
     let ontology = load::load_path(path)?;
     let classification = owl_dl_reasoner::classify(&ontology).map_err(reason_error_to_py)?;
     let classes = classification.classes();
@@ -43,13 +50,23 @@ pub(crate) fn materialize_inferred_subclass_axioms(path: &str) -> PyResult<Vec<(
             }
         }
     }
-    Ok(out)
+    Ok((out, PyClassification::new(classification)))
 }
 
-/// Returns every (class IRI, individual IRI) pair `(c, i)` such that
-/// `ClassAssertion(c, i)` is entailed.
+/// Returns a `(class IRI, individual IRI)` pair for each MOST-SPECIFIC entailed
+/// type of each named individual, as `realize` reports them: an entailed type
+/// with an entailed strict subtype in the list is left out.
+///
+/// Also returns `realize`'s `incomplete` (a probe was cut, so a type may be
+/// missing) and `direct_types_unverified` (#388: a listed type may be a
+/// superclass of another); the Python wrapper warns on them (#391).
+/// `witness_prune_active` is not returned: no Python surface reports it until
+/// #387 settles the signal.
 #[pyfunction]
-pub(crate) fn materialize_inferred_class_assertions(path: &str) -> PyResult<Vec<(String, String)>> {
+#[allow(clippy::type_complexity)]
+pub(crate) fn materialize_inferred_class_assertions(
+    path: &str,
+) -> PyResult<(Vec<(String, String)>, bool, bool)> {
     let ontology = load::load_path(path)?;
     let realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     let mut out = Vec::new();
@@ -58,7 +75,11 @@ pub(crate) fn materialize_inferred_class_assertions(path: &str) -> PyResult<Vec<
             out.push((c.clone(), ind.clone()));
         }
     }
-    Ok(out)
+    Ok((
+        out,
+        realization.incomplete(),
+        realization.direct_types_unverified(),
+    ))
 }
 
 /// Returns every inferred object property assertion `(subject, property, object)`
@@ -130,13 +151,18 @@ pub(crate) fn materialize_inferred_subdataproperty_axioms(
 /// `a : exists R.C`. NOTE: a blank-node REPRESENTATION of entailed existential
 /// restrictions, NOT entailed ground triples (the specific witness is model-relative).
 /// Raises if the ontology is inconsistent.
+///
+/// Also returns `incomplete` from the `realize` run underneath (a probe was cut,
+/// so rows may be missing); the Python wrapper warns on it (#391).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_existential_successors(
     path: &str,
-) -> PyResult<Vec<(String, String, String, String)>> {
+) -> PyResult<(Vec<(String, String, String, String)>, bool)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::materialize_existential_successors(&ontology).map_err(reason_error_to_py)
+    owl_dl_reasoner::materialize_existential_successors_reporting(&ontology)
+        .map(|(rows, flags)| (rows, flags.incomplete))
+        .map_err(reason_error_to_py)
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

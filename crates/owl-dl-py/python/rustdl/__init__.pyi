@@ -334,11 +334,15 @@ def dropped_axioms(path: str) -> dict[str, int]:
 # ── inference materialization ───────────────────────────────────────────────
 
 def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:
-    """Every entailed (sub, sup) class-subsumption pair."""
+    """Every entailed (sub, sup) class-subsumption pair, read off `classify`. Emits
+    the same `IncompleteClassificationWarning`s as `classify`."""
     ...
 
 def materialize_inferred_class_assertions(path: str) -> list[tuple[str, str]]:
-    """Every entailed (class, individual) most-specific class assertion."""
+    """A (class, individual) pair for each most-specific entailed type, as `realize`
+    reports them (not every entailed type). Emits `IncompleteQueryWarning` when a
+    probe was cut and `DirectTypesUnverifiedWarning` when a listed type may be a
+    superclass of another."""
     ...
 
 def materialize_inferred_property_assertions(path: str) -> list[tuple[str, str, str]]:
@@ -365,7 +369,8 @@ def materialize_inferred_subdataproperty_axioms(path: str) -> list[tuple[str, st
 
 def materialize_existential_successors(path: str) -> list[tuple[str, str, str, str]]:
     """Entailed existential successors as (subject, property, witness_blank, filler_class)
-    — a blank-node representation of entailed `a : ∃R.C` (not ground triples)."""
+    — a blank-node representation of entailed `a : ∃R.C` (not ground triples). Emits
+    `IncompleteQueryWarning` when a probe of the `realize` run underneath was cut."""
     ...
 
 # ── explanation & debugging ─────────────────────────────────────────────────

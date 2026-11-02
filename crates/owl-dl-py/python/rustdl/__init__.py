@@ -37,13 +37,13 @@ from rustdl._native import (
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
     UnknownClassError as UnknownClassError,
-    materialize_inferred_subclass_axioms as materialize_inferred_subclass_axioms,
-    materialize_inferred_class_assertions as materialize_inferred_class_assertions,
+    materialize_inferred_subclass_axioms as _materialize_inferred_subclass_axioms_native,
+    materialize_inferred_class_assertions as _materialize_inferred_class_assertions_native,
     materialize_inferred_property_assertions as materialize_inferred_property_assertions,
     materialize_inferred_data_property_assertions as _materialize_inferred_data_property_assertions_native,
     materialize_inferred_subobjectproperty_axioms as _materialize_inferred_subobjectproperty_axioms_native,
     materialize_inferred_subdataproperty_axioms as _materialize_inferred_subdataproperty_axioms_native,
-    materialize_existential_successors as materialize_existential_successors,
+    materialize_existential_successors as _materialize_existential_successors_native,
     justify as _justify_native,
     justify_all as _justify_all_native,
     diagnose as _diagnose_native,
@@ -386,15 +386,51 @@ def realize(path):
     specific)."""
     types, incomplete, unverified = _realize_native(path)
     _warn_if_query_incomplete("realize", incomplete)
+    _warn_if_direct_types_unverified("realize", unverified)
+    return types
+
+
+def _warn_if_direct_types_unverified(name: str, unverified: bool) -> None:
     if unverified:
         _warnings.warn(
-            "realize: some individual has two most-specific types whose "
+            f"{name}: some individual has two most-specific types whose "
             "subsumption could not be decided, so a listed type may be a "
             "superclass of another; every listed type is a genuine type.",
             DirectTypesUnverifiedWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
-    return types
+
+
+def materialize_inferred_subclass_axioms(path):
+    """Every entailed `(sub, sup)` pair of named classes, read off `classify`
+    (reflexive pairs, `owl:Thing`/`owl:Nothing` and unsatisfiable subclasses
+    left out). Emits the same `IncompleteClassificationWarning`s as `classify`
+    when the classification may be missing subsumptions (#391)."""
+    pairs, classification = _materialize_inferred_subclass_axioms_native(path)
+    _warn_if_incomplete(classification)
+    return pairs
+
+
+def materialize_inferred_class_assertions(path):
+    """A `(class, individual)` pair for each MOST-SPECIFIC entailed type of each
+    named individual, as `realize` reports them (not every entailed type).
+    Emits `IncompleteQueryWarning` when an instance probe was cut (types may be
+    missing) and `DirectTypesUnverifiedWarning` when a listed type may be a
+    superclass of another (#388, #391)."""
+    pairs, incomplete, unverified = _materialize_inferred_class_assertions_native(path)
+    _warn_if_query_incomplete("materialize_inferred_class_assertions", incomplete)
+    _warn_if_direct_types_unverified("materialize_inferred_class_assertions", unverified)
+    return pairs
+
+
+def materialize_existential_successors(path):
+    """Entailed existential successors as `(subject, property, witness_blank,
+    filler_class)`: a blank-node representation of entailed `a : ∃R.C`, not
+    ground triples. Emits `IncompleteQueryWarning` when an instance probe of the
+    `realize` run underneath was cut, so rows may be missing (#391)."""
+    rows, incomplete = _materialize_existential_successors_native(path)
+    _warn_if_query_incomplete("materialize_existential_successors", incomplete)
+    return rows
 
 
 class StructuralGapWarning(UserWarning):

@@ -6,7 +6,9 @@
 //! (`EquivalentClasses(<urn:rustdl-ce-probe:q> ObjectUnionOf(:A :B))`). FP
 //! (rustdl reports, HermiT does not) is the hard soundness guard and must
 //! always be empty; MISSED (HermiT infers, rustdl omits) is allowed to be
-//! non-empty only when rustdl reports its own `incomplete() == true`.
+//! non-empty only when rustdl does not report `completeness_guaranteed()`
+//! (until package 2's prerequisite that was `incomplete()`, which now means
+//! only a give-up).
 //!
 //! The oracle is generated offline by `docker/robot/class-expr-oracle.sh`
 //! (ROBOT + embedded HermiT) and committed as `ce-materialized.owx`, so this
@@ -119,25 +121,23 @@ fn class_expr_entailed_subclass_matches_hermit() {
     );
     // This fixture is simple/complete for both engines, so the verdicts should
     // match exactly (MISS would also be a bug here, not just a soft signal).
-    // Gated on `!incomplete()` (mirrors the instances test's pattern below): if
-    // a future fixture edit grows past the EL fragment and rustdl legitimately
-    // returns a sound MISS, it self-reports `incomplete()` and that must not
-    // fire as a hard failure indistinguishable from a real FP.
-    if verdict.incomplete() {
-        if verdict.holds() != hermit_says {
-            eprintln!(
-                "MISS (allowed, class_expression_entailed_subclass reported incomplete): \
-                 rustdl={:?} hermit={hermit_says:?}",
-                verdict.holds()
-            );
-        }
-    } else {
+    // Gated on `completeness_guaranteed()` (mirrors the instances test's pattern
+    // below): if a future fixture edit grows past the EL fragment and rustdl
+    // legitimately returns a sound MISS, it does not report a guarantee, and that
+    // must not fire as a hard failure indistinguishable from a real FP.
+    if verdict.completeness_guaranteed() {
         assert_eq!(
             verdict.holds(),
             hermit_says,
-            "rustdl verdict {:?} != HermiT oracle {hermit_says:?} (incomplete={:?})",
+            "rustdl verdict {:?} != HermiT oracle {hermit_says:?} (completeness_guaranteed={:?})",
             verdict.holds(),
-            verdict.incomplete()
+            verdict.completeness_guaranteed()
+        );
+    } else if verdict.holds() != hermit_says {
+        eprintln!(
+            "MISS (allowed, class_expression_entailed_subclass guarantees no completeness): \
+             rustdl={:?} hermit={hermit_says:?}",
+            verdict.holds()
         );
     }
 }
@@ -145,7 +145,7 @@ fn class_expr_entailed_subclass_matches_hermit() {
 /// `class_expression_instances(A⊔B)` vs HermiT's instances of the same probe
 /// class. FP-direction (rustdl ⊆ oracle) is UNCONDITIONAL — issue #48's
 /// soundness guard for the CE reduction. MISSED (oracle − got) is gated on
-/// `!incomplete()`.
+/// `completeness_guaranteed()`.
 #[test]
 fn class_expr_instances_matches_hermit() {
     let o = load_fixture();
@@ -167,16 +167,14 @@ fn class_expr_instances_matches_hermit() {
     );
 
     let missed: Vec<_> = oracle_instances.difference(&got).collect();
-    if result.incomplete() {
-        if !missed.is_empty() {
-            eprintln!(
-                "MISSED (allowed, class_expression_instances reported incomplete): {missed:?}"
-            );
-        }
-    } else {
+    if result.completeness_guaranteed() {
         assert!(
             missed.is_empty(),
-            "MISSED — HermiT infers an instance of A⊔B rustdl omits (and rustdl did not report incomplete): {missed:?}"
+            "MISSED — HermiT infers an instance of A⊔B rustdl omits (and rustdl guaranteed completeness): {missed:?}"
+        );
+    } else if !missed.is_empty() {
+        eprintln!(
+            "MISSED (allowed, class_expression_instances guarantees no completeness): {missed:?}"
         );
     }
 }

@@ -1,0 +1,11 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(:=<http://ex.org/rd#>)
+Ontology(<http://ex.org/rd>
+# a : A and A ⊑ B ⊔ C: neither B nor C is an entailed type of a, but a witness
+# model carries one of them. Mutant M6 (inverted pseudo-model prune) publishes it (L10).
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+Declaration(NamedIndividual(:a))
+SubClassOf(:A ObjectUnionOf(:B :C))
+ClassAssertion(:A :a)
+)

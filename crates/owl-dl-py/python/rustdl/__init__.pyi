@@ -123,11 +123,19 @@ class StructuralGapWarning(UserWarning):
     cut."""
 
 class TrustedConsistencyWarning(UserWarning):
-    """Emitted by `is_class_satisfiable`, `is_subclass_of`,
-    `class_expression_satisfiable` and `class_expression_entailed_subclass` when
-    the answer was computed without the ABox and relies on a consistency verdict
-    the wedge found but did not prove (#401). Not an `IncompleteQueryWarning`:
-    nothing was cut."""
+    """Emitted when an answer rests on a consistency verdict the wedge found but
+    did not prove: by `is_consistent` for that verdict itself (#392), and by
+    `is_class_satisfiable`, `is_subclass_of`, `class_expression_satisfiable` and
+    `class_expression_entailed_subclass` when the answer was computed without the
+    ABox on its strength (#401). Not an `IncompleteQueryWarning`: nothing was
+    cut."""
+
+class ConsistencyUndeterminedWarning(UserWarning):
+    """Emitted by `is_instance_of`, `instances_of`, `same_individuals`,
+    `different_individuals` and `class_expression_instances` when the answer
+    was positive and the KB's consistency stayed undetermined (#369), so it may
+    be the vacuous answer of an inconsistent KB. Not an
+    `IncompleteQueryWarning`: nothing was cut."""
 
 class Root(Mapping[str, object]):
     iri: str
@@ -205,7 +213,8 @@ def classify_bytes(
 
 def is_consistent(path: str) -> bool:
     """True iff the ontology is consistent. A give-up (no clash found within
-    budget) returns `True` and emits `IncompleteQueryWarning`."""
+    budget) returns `True` and emits `IncompleteQueryWarning`. A `True` resting
+    only on the wedge's unproved model emits `TrustedConsistencyWarning` (#392)."""
     ...
 
 def is_class_satisfiable(path: str, class_iri: str) -> bool:
@@ -306,22 +315,23 @@ def data_property_values(path: str) -> list[tuple[str, str, str, str, str]]:
 def class_expression_satisfiable(path: str, ce: str) -> bool:
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (resolved against the ontology's own prefix
-    map). Emits `IncompleteQueryWarning` if the verdict is a sound
-    under-approximation."""
+    map). If the probe gave up (node cap), returns `True` and emits
+    `IncompleteQueryWarning`; an answer off pure EL does not warn."""
     ...
 
 def class_expression_entailed_subclass(path: str, sub_ce: str, sup_ce: str) -> bool:
     """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
     (Manchester-syntax class expressions, resolved against the ontology's own
-    prefix map). Emits `IncompleteQueryWarning` if the verdict is a sound
-    under-approximation."""
+    prefix map). If the probe gave up (node cap), returns `False` and emits
+    `IncompleteQueryWarning`; an answer off pure EL does not warn."""
     ...
 
 def class_expression_instances(path: str, ce: str) -> list[str]:
     """Named individuals provably in the Manchester-syntax class expression
     `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
-    prefix map). Emits `IncompleteQueryWarning` if the result is a sound
-    under-approximation."""
+    prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
+    (members may be missing; those returned are sound); an answer off pure EL
+    does not warn."""
     ...
 
 # ── conversion diagnostics ──────────────────────────────────────────────────

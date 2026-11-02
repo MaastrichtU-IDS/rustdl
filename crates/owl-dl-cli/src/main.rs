@@ -1035,6 +1035,32 @@ fn note_trusted_consistency_flag(relies: bool) {
     }
 }
 
+/// #392: `consistent`'s verdict is the consistency wedge's `Sat`, which nothing
+/// verified. A trust decision, not a give-up: stdout and the exit code are
+/// unchanged.
+fn note_trusted_wedge_sat(trusted: bool) {
+    if trusted {
+        eprintln!(
+            "note: consistent on the consistency wedge's model alone; the wedge is not \
+             proven complete and no main-tableau model was built. RUSTDL_WEDGE_CONSISTENCY=0 \
+             decides on the main tableau (bounded by RUSTDL_CONSISTENCY_FALLBACK_MS)."
+        );
+    }
+}
+
+/// #369: a positive answer whose KB consistency stayed undetermined. Not a
+/// give-up: stdout and the exit code are unchanged.
+fn warn_consistency_undetermined(command: &str, undetermined: bool) {
+    if undetermined {
+        eprintln!(
+            "warning: {command}: the KB's consistency could not be determined (the \
+             consistency wedge stalled or was cut), so this positive answer may be the \
+             vacuous one of an inconsistent KB. RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1 also \
+             runs a bounded main-tableau check."
+        );
+    }
+}
+
 /// A `sat` / `subclass` probe tripped the live-node cap: there is no verdict.
 /// Print `unknown`, explain on stderr and exit 3, the convention `consistent`
 /// uses for a give-up (#363 A2).
@@ -1061,11 +1087,14 @@ fn exit_unknown_probe_cut() -> ! {
 
 /// A list-valued answer (`instances`, `realize`) had at least one probe cut, so
 /// members may be missing. The members printed are sound (#363 A2).
-fn warn_probes_cut(what: &str) {
+/// `node_cap_var`: the variable that governs the node cap on this command —
+/// `RUSTDL_QUERY_MAX_NODES` under [`owl_dl_reasoner::single_query_node_cap`],
+/// else `RUSTDL_MAX_NODES`.
+fn warn_probes_cut(what: &str, node_cap_var: &str) {
     eprintln!(
         "warning: {what}: at least one instance probe was cut (deadline, node cap or \
          depth limit), so entries may be missing; those printed are sound. Raise \
-         RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded) or RUSTDL_MAX_NODES."
+         RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded) or {node_cap_var}."
     );
 }
 
@@ -1724,10 +1753,12 @@ fn main() -> Result<()> {
                     serde_json::to_string_pretty(&json_out::build_consistent_json(
                         verdict,
                         incomplete,
+                        stats.relies_on_trusted_consistency,
                         stats.wedge_clauses_refused,
                         dropped
                     ))?
                 );
+                note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
                 if verdict {
                     warn_if_clauses_refused(
                         stats.wedge_clauses_refused,
@@ -1762,6 +1793,7 @@ fn main() -> Result<()> {
                     "inconsistent"
                 }
             );
+            note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
             if verdict {
                 warn_if_clauses_refused(stats.wedge_clauses_refused, "RUSTDL_WEDGE_CONSISTENCY=0");
             }
@@ -1848,6 +1880,10 @@ fn main() -> Result<()> {
                     "warning: individuals incomplete (budget/fragment) — sound under-approximation"
                 );
             }
+            warn_consistency_undetermined(
+                "individuals",
+                same.consistency_undetermined() || different.consistency_undetermined(),
+            );
         }
         Command::PropertyValues {
             file,
@@ -1988,20 +2024,23 @@ fn main() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
+            let mut undetermined = false;
             let verdict = if saturation_only {
                 is_instance_of_saturation_only(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_saturation_only")?
             } else {
                 let _cap = owl_dl_reasoner::single_query_node_cap();
-                let (verdict, cut) = is_instance_of_reporting(&onto, &class_iri, &individual_iri)
+                let (verdict, flags) = is_instance_of_reporting(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_reporting")?;
-                // `(true, true)` is a proved membership; only a "no" is in doubt.
-                if cut && !verdict {
+                // `(true, cut)` is a proved membership; only a "no" is in doubt.
+                if flags.incomplete && !verdict {
                     exit_unknown_probe_cut();
                 }
+                undetermined = flags.consistency_undetermined;
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
+            warn_consistency_undetermined("instance", undetermined);
         }
         Command::Instances {
             file,
@@ -2010,11 +2049,14 @@ fn main() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
-            let (members, cut) = if saturation_only {
+            // One query, like `instance`: the single-query node cap (package 2),
+            // so `instance C a` and `instances C` cannot disagree on the cap.
+            let _cap = owl_dl_reasoner::single_query_node_cap();
+            let (members, flags) = if saturation_only {
                 (
                     instances_of_saturation_only(&onto, &class_iri)
                         .context("instances_of_saturation_only")?,
-                    false,
+                    owl_dl_reasoner::InstanceFlags::default(),
                 )
             } else {
                 instances_of_reporting(&onto, &class_iri).context("instances_of_reporting")?
@@ -2022,14 +2064,17 @@ fn main() -> Result<()> {
             for iri in members {
                 println!("{iri}");
             }
-            if cut {
-                warn_probes_cut("instances");
+            if flags.incomplete {
+                warn_probes_cut("instances", "RUSTDL_QUERY_MAX_NODES");
             }
+            warn_consistency_undetermined("instances", flags.consistency_undetermined);
         }
         Command::SatExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
             let ce = parse_ce(&pm, &ce)?;
+            // One query, like `sat`: the single-query node cap (package 2).
+            let _cap = owl_dl_reasoner::single_query_node_cap();
             let v = owl_dl_reasoner::class_expression_satisfiable(&onto, &ce)
                 .context("class_expression_satisfiable")?;
             if json {
@@ -2037,7 +2082,15 @@ fn main() -> Result<()> {
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_sat_expr_json(v))?
                 );
+                note_trusted_consistency_flag(v.relies_on_trusted_consistency());
+                if v.incomplete() {
+                    std::process::exit(3);
+                }
                 return Ok(());
+            }
+            // A give-up is `unknown`, exit 3, as on `sat` (#363 A2).
+            if v.incomplete() {
+                exit_unknown_node_cap();
             }
             println!(
                 "{}",
@@ -2047,9 +2100,6 @@ fn main() -> Result<()> {
                     "unsatisfiable"
                 }
             );
-            if v.incomplete() {
-                eprintln!("warning: verdict is a sound under-approximation (incomplete)");
-            }
             note_trusted_consistency_flag(v.relies_on_trusted_consistency());
         }
         Command::SubclassExpr {
@@ -2062,6 +2112,8 @@ fn main() -> Result<()> {
             warn_if_dropped(&json_out::dropped_block(&onto));
             let sub_ce = parse_ce(&pm, &sub_ce)?;
             let sup_ce = parse_ce(&pm, &sup_ce)?;
+            // One query, like `subclass`: the single-query node cap (package 2).
+            let _cap = owl_dl_reasoner::single_query_node_cap();
             let v = owl_dl_reasoner::class_expression_entailed_subclass(&onto, &sub_ce, &sup_ce)
                 .context("class_expression_entailed_subclass")?;
             if json {
@@ -2069,18 +2121,25 @@ fn main() -> Result<()> {
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_subclass_expr_json(v))?
                 );
+                note_trusted_consistency_flag(v.relies_on_trusted_consistency());
+                if v.incomplete() {
+                    std::process::exit(3);
+                }
                 return Ok(());
             }
-            println!("{}", if v.holds() { "yes" } else { "no" });
+            // A give-up is `unknown`, exit 3, as on `subclass` (#363 A2).
             if v.incomplete() {
-                eprintln!("warning: verdict is a sound under-approximation (incomplete)");
+                exit_unknown_node_cap();
             }
+            println!("{}", if v.holds() { "yes" } else { "no" });
             note_trusted_consistency_flag(v.relies_on_trusted_consistency());
         }
         Command::InstancesExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
             let ce = parse_ce(&pm, &ce)?;
+            // One query, like `instances`: the single-query node cap (package 2).
+            let _cap = owl_dl_reasoner::single_query_node_cap();
             let r = owl_dl_reasoner::class_expression_instances(&onto, &ce)
                 .context("class_expression_instances")?;
             if json {
@@ -2093,9 +2152,11 @@ fn main() -> Result<()> {
             for iri in r.individuals() {
                 println!("{iri}");
             }
+            // A list answer, as `instances`: sound members, a warning, exit 0.
             if r.incomplete() {
-                eprintln!("warning: verdict is a sound under-approximation (incomplete)");
+                warn_probes_cut("instances-expr", "RUSTDL_QUERY_MAX_NODES");
             }
+            warn_consistency_undetermined("instances-expr", r.consistency_undetermined());
         }
         Command::Realize {
             file,
@@ -2128,7 +2189,7 @@ fn main() -> Result<()> {
             }
             print_realization(&r);
             if r.incomplete() {
-                warn_probes_cut("realize");
+                warn_probes_cut("realize", "RUSTDL_MAX_NODES");
             }
             if r.direct_types_unverified() {
                 eprintln!(

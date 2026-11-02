@@ -26,14 +26,32 @@
 //! inputs — `bibtex` is Horn and is deliberately not a case here, because a
 //! fixture where the flag cannot engage would pad the gate without testing it.
 //!
-//! ## Sabotage-validated — re-run this after touching either flag
+//! ## Sabotage: STALE, this gate currently has no known way to fail
 //!
-//! With `RUSTDL_MAX_TRIAL_MERGE=0` (which reverts the #76 fix) this test FAILS:
-//! pizza closure **501 vs oracle 499, FP=2**, naming
-//! `Margherita ⊑ InterestingPizza` and `QuattroFormaggi ⊑ InterestingPizza` —
-//! exactly the two pairs the #76 investigation identified, and exactly the
-//! numbers the held #66 branch recorded before #76 landed. A gate that cannot
-//! be made to fail is not a gate.
+//! When #76 landed, `RUSTDL_MAX_TRIAL_MERGE=0` (which then reverted the fix)
+//! made this test FAIL: pizza closure **501 vs oracle 499, FP=2**, naming
+//! `Margherita ⊑ InterestingPizza` and `QuattroFormaggi ⊑ InterestingPizza`.
+//!
+//! That no longer holds (measured 2026-11-02 on main b7eb21b8, Stanford pizza
+//! v2.0 from owlcs/pizza-ontology @ dc48fca9 with its own Konclude oracle). The
+//! test passes at pizza 499 = 499 under `RUSTDL_MAX_TRIAL_MERGE=0`, under
+//! `RUSTDL_MAX_CHOICE_POINT=0`, and under both (two runs each). `rustdl subclass`
+//! answers `no` on both pizza pairs even with every `RUSTDL_MAX_*` lever off. The
+//! #293 merge choice point superseded the trial merge (the Rust source at
+//! 0090dc9f is identical).
+//!
+//! Turning BOTH off does restore the first-pair commit (either alone does not,
+//! two runs each): on the five-axiom #76
+//! synthetic (`crates/owl-dl-cli/tests/fixtures/laws/maxmerge_fp.ofn`) `subclass
+//! A I` then answers `yes`, which HermiT refutes. The cross-command law harness
+//! catches that as a HermiT-confirmed R1 false positive. On pizza the same
+//! sabotage changes nothing, so this gate has no live sabotage; the #76 guard
+//! now lives in the law harness. See the package F-lite mutant table in
+//! `docs/assurance/query-surface-ledger.md`.
+//!
+//! The pizza case needs the Stanford pizza (`scripts/fetch-real-ontologies.sh`)
+//! and an oracle generated from that same file (`scripts/konclude-oracle.sh`).
+//! Another pizza vintage with a matching oracle passes without testing #76.
 //!
 //! Fixtures live under the gitignored `ontologies/`, so this is `#[ignore]`d and
 //! **panics** when they are absent rather than passing vacuously — the failure

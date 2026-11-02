@@ -81,8 +81,29 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
 ## `consistent --json`
 
 ```json
-{ "schema_version": 1, "consistent": bool }
+{ "schema_version": 1,
+  "consistent": bool,
+  "incomplete": bool,
+  "relies_on_trusted_consistency": bool,
+  "wedge_clauses_refused": int,
+  "dropped": { "<axiom kind>": int } }
 ```
+
+`incomplete` (#182) means `consistent: true` is a give-up in its sound
+direction (the fall-through tableau's deadline or node cap, or the #344
+data-counting verification giving up), not a verdict; the exit code is then 3.
+`wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
+match, so a wedge `consistent` may miss a clash; 0 when the wedge was not
+consulted. `dropped` counts the axioms rustdl does not reason with, as in
+`classify --json`.
+
+`relies_on_trusted_consistency` was added in #392, without a `schema_version`
+bump. It is `true` when `consistent: true` rests only on the consistency wedge's
+`Sat`, which no main-tableau run verified (the wedge is not proven complete).
+It is not a give-up: `incomplete` stays `false` and the exit code stays 0. It is
+never `true` with `consistent: false`, which is a witnessed clash. The same name
+and meaning as in `sat-expr`, `subclass-expr` and `prove --json` (#401).
+`RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
 
 ## `realize --json`
 
@@ -166,9 +187,14 @@ or under-approximate.
 
 ```json
 { "schema_version": 1, "incomplete": bool,
+  "consistency_undetermined": bool,
   "same_groups": [[iri, ...], ...],
   "different_pairs": [[a_iri, b_iri], ...] }
 ```
+
+`consistency_undetermined` was added in #369 without a `schema_version` bump;
+see the `*-expr` section. Here it is set when a probe (not a told or
+saturation-derived pair) merged or separated two individuals.
 
 `same_groups` = entailed same-individual equivalence groups (size ≥ 2, each
 sorted, outer list sorted) — seeded from asserted `SameIndividual` plus the
@@ -331,3 +357,36 @@ default 500000), like `subclass` and `explain`.
 the `ABox` (no nominals, so the `ABox` cannot change it on a consistent KB) and
 the consistency verdict rests on a trusted wedge `Sat` rather than a
 main-tableau model. It is not a give-up and does not set `incomplete`.
+
+## `sat-expr --json`, `subclass-expr --json`, `instances-expr --json`
+
+```json
+{ "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
+  "relies_on_trusted_consistency": bool, "satisfiable": bool }      // sat-expr
+{ "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
+  "relies_on_trusted_consistency": bool, "entailed": bool }         // subclass-expr
+{ "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
+  "consistency_undetermined": bool, "instances": [iri] }             // instances-expr
+```
+
+- `incomplete`: a probe gave up (node cap; for `instances-expr` also the per-probe deadline or
+  depth limit), as in the other query JSONs. `sat-expr`/`subclass-expr` then report the sound
+  direction (`satisfiable: true` / `entailed: false`) and **exit 3**; `instances-expr` lists the
+  members it proved (sound, possibly short) and exits 0. Until package 2's prerequisite this was
+  also `true` whenever the ontology was not pure EL; that is now `completeness_guaranteed`.
+- `completeness_guaranteed`: the answer is guaranteed complete: answered on the pure-EL fast path
+  (`instances-expr`: the realize saturation fast path) and nothing gave up. `false` means a
+  "satisfiable" / "not entailed" / member list is not proven complete, not that it is wrong (the
+  meaning `classify --json` uses).
+- `relies_on_trusted_consistency` (#401): see the `prove --json` note above.
+- `consistency_undetermined` (`instances-expr` only; #369, added without a `schema_version`
+  bump): set only when a probe answered positively (anonymous members count, so
+  `instances` may be empty) and the KB's
+  consistency stayed undetermined: the consistency wedge stalled or was cut, and the
+  main-tableau tail (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`) is off by default. On an
+  inconsistent KB every such answer holds vacuously, so the answer is then not known to be more
+  than that. Not a give-up; does not set `incomplete`.
+- All three run under the single-query node cap (`RUSTDL_QUERY_MAX_NODES`, default 500000). On an
+  inconsistent KB all three error (`Inconsistent`, exit 1) instead of printing JSON. Since #369
+  `instances-expr` also errors on an inconsistency only the consistency wedge finds, checked
+  after a positive answer; `sat-expr` / `subclass-expr` do not yet (a follow-up).

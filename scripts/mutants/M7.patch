@@ -1,0 +1,21 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M7
+# id: M7
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: classify unsat probe
+# reopens: #218/#219: a CUT per-class unsat probe published as unsat
+# env: RUSTDL_UNSAT_PROBE_MS=1 RUSTDL_LABEL_HEURISTIC=0
+# expect: L3@pizza
+diff --git a/crates/owl-dl-reasoner/src/classify.rs b/crates/owl-dl-reasoner/src/classify.rs
+index 51b1c685..3849b209 100644
+--- a/crates/owl-dl-reasoner/src/classify.rs
++++ b/crates/owl-dl-reasoner/src/classify.rs
+@@ -4438,7 +4438,7 @@ fn classify_top_down_internal_impl(
+                         // Possibly unsat: recorded so the result is flagged
+                         // incomplete (#218).
+                         record_cut_probe(&cut_probes, i);
+-                        true
++                        false // F-LITE MUTANT M7: a cut unsat probe published as unsat.
+                     }
+                     Err(other) => return Err(other),
+                 };

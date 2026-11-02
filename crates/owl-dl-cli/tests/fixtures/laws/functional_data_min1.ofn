@@ -1,0 +1,12 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(:=<http://ex.org/fd#>)
+Ontology(<http://ex.org/fd>
+# Functional(d) with C ⊑ ≥1 d is satisfiable (D4 makes ≥2 unsat, not ≥1).
+# Mutant M8b (D4 off by one) makes C unsat in conversion, shared by every surface:
+# expected NOT caught by any cross-command law.
+Declaration(Class(:C)) Declaration(Class(:D)) Declaration(DataProperty(:d))
+FunctionalDataProperty(:d)
+SubClassOf(:C DataMinCardinality(1 :d))
+SubClassOf(:D :C)
+)

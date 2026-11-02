@@ -1,0 +1,27 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M9
+# id: M9
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: classify JSON output
+# reopens: a class folded into an equivalence group with its first direct subsumer
+# env: -
+# expect: L2@pizza,L2@disjoint_up
+diff --git a/crates/owl-dl-cli/src/json_out.rs b/crates/owl-dl-cli/src/json_out.rs
+index be4d3ff6..0d3c69bd 100644
+--- a/crates/owl-dl-cli/src/json_out.rs
++++ b/crates/owl-dl-cli/src/json_out.rs
+@@ -398,6 +398,14 @@ pub(crate) fn build_classify_json(
+         if !group.iter().any(|g| g == c) {
+             group.push(c.clone());
+         }
++        // F-LITE MUTANT M9: a class folded into a group with its first direct subsumer.
++        group.extend(
++            h.direct_subsumers(c)
++                .into_iter()
++                .filter(|s| !s.starts_with("http://www.w3.org/2002/07/owl#"))
++                .take(1)
++                .map(str::to_owned),
++        );
+         group.sort();
+         group.dedup();
+         for g in &group {

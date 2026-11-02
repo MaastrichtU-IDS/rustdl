@@ -7,6 +7,37 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **The instance and individuals queries catch an inconsistency their pre-checks miss (#369).**
+  `instance`, `instances`, `instances-expr` and `individuals` checked consistency only with
+  cheap pre-checks. On a KB only the consistency wedge or the tableau finds inconsistent (a
+  TBox-only individual that cannot exist; an asserted `∃r.E` with `E` unsatisfiable by case
+  split) they returned the vacuous answers of an inconsistent KB: every membership, every
+  sameness. After a POSITIVE answer they now settle consistency once with the wedge (#401's
+  cached verdict, on the ontology the probes already prepared) and error as `Inconsistent`
+  (exit 1) when it finds a clash. A negative answer costs nothing.
+  - When the wedge leaves consistency undetermined, the answer is kept and reported as
+    `consistency_undetermined`: Rust `InstanceFlags` (which replaces the `bool` in
+    `is_instance_of_reporting` / `instances_of_reporting`, a library API change) and the
+    accessors on `SameIndividuals`, `DifferentIndividuals` and `CeInstances`; a `--json`
+    field (`individuals`, `instances-expr`) and one stderr warning in the CLI; Python
+    `ConsistencyUndeterminedWarning`.
+  - `RUSTDL_QUERY_LAZY_CONSISTENCY=0` reverts (`=report` only logs).
+    `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1` also runs `consistent`'s bounded main-tableau
+    probe when the wedge is undetermined. It is off by default: on the ORE pool it ran 82
+    times, found no inconsistency the wedge had not, and took about 90% of the check's wall
+    time.
+  - `sat-expr`, `subclass-expr`, `materialize_*` and `property-values` are unchanged. They
+    hold no prepared ontology, so the check would newly cost a full prepare (23 of 1,054
+    `subclass-expr` answers lost to a 30 s cap); a follow-up prices them together.
+- **`consistent` reports a verdict that rests on the wedge's trust (#392).** By default
+  `consistent` accepts the consistency wedge's `Sat` without a main-tableau model, and the
+  wedge is not proven complete: it missed clashes in #290 and #376. That `consistent` was
+  indistinguishable from a verified one. It now sets `QueryStats::relies_on_trusted_consistency`
+  (the #401 flag, with the same meaning) from `is_consistent_with_stats`. CLI: a
+  `consistent --json` field and one stderr note in both modes. Python: `is_consistent` emits
+  `TrustedConsistencyWarning`. It is not a give-up: stdout stays `consistent`, `incomplete` stays
+  false and the exit code stays 0. `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau
+  instead. `docs/json-schema.md` now lists every `consistent --json` field.
 - **`direct_types_unverified` on `realize` (#388).** `realize` derives each individual's
   most-specific types from a class hierarchy that can cut a pair or trust a wedge `Sat`, so a
   missed subsumption could leave a superclass listed beside its subclass, with nothing said.
@@ -378,6 +409,33 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`sat-expr`, `subclass-expr` and `instances-expr`: `incomplete` now means only "a probe gave
+  up" (package 2 prerequisite, #363).** It used to be set whenever the ontology was not pure EL,
+  so it could not tell an answer off the EL fragment from a cut probe, against the rule the other
+  query surfaces follow (#395, #220/#221). **Off-EL answers no longer set `incomplete`.** The
+  other half moves to a new field, `completeness_guaranteed` (the name and meaning
+  `classify --json` already uses): `true` only on the pure-EL fast path (for `instances-expr`,
+  the realize saturation fast path) with nothing cut.
+  - Rust: `CeVerdict::incomplete()` / `CeInstances::incomplete()` narrow to a give-up; new
+    `completeness_guaranteed()` on both.
+  - CLI text: on a give-up, `sat-expr` and `subclass-expr` print `unknown` and exit 3, as `sat`
+    and `subclass` do; `instances-expr` prints the provable members with a stderr warning and
+    exits 0, as `instances` does. The old "sound under-approximation (incomplete)" warning on
+    off-EL answers is gone.
+  - CLI `--json`: `completeness_guaranteed` on all three; `sat-expr --json` and
+    `subclass-expr --json` exit 3 on a give-up, as `consistent --json` and `prove --json` do.
+  - Python: `class_expression_satisfiable`, `class_expression_entailed_subclass` and
+    `class_expression_instances` emit `IncompleteQueryWarning` only on a give-up, as
+    `is_class_satisfiable` does.
+  - `instances-expr` no longer runs a companion `sat` probe to compute its flag.
+  - `sat-expr --json` and `subclass-expr --json` now print the #401 trusted-consistency note on
+    stderr, as `prove --json` does; they printed nothing on stderr before.
+- **`sat-expr`, `subclass-expr`, `instances-expr` and `instances` run under the single-query node
+  cap** (`RUSTDL_QUERY_MAX_NODES`, default 500000), in the CLI and in Python (`instances_of` and
+  the three `class_expression_*` functions), like `sat`, `subclass` and `instance`. They used the
+  classify-wide 50000, so a named query and its expression or list form could disagree on the
+  cap. This only adds answers; a query that hits the larger cap can take longer.
+
 - **`RUSTDL_MAX_FIRST` and `RUSTDL_TOP_FILLER` are default ON (#382; `=0` reverts each).** Both
   shipped OFF in #394.
   - **`MAX_FIRST`** tries a `≤n R.C` disjunct first at a node that already meets it.

@@ -1,0 +1,22 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M3
+# id: M3
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: wedge clausifier (owl-dl-core clause.rs)
+# reopens: #78: the negated-disjunct naming clause emitted on `var` instead of `X`
+# env: -
+# expect: R1@neg_disjunct_forall
+diff --git a/crates/owl-dl-core/src/clause.rs b/crates/owl-dl-core/src/clause.rs
+index 2cee5c19..33fcca49 100644
+--- a/crates/owl-dl-core/src/clause.rs
++++ b/crates/owl-dl-core/src/clause.rs
+@@ -889,7 +889,8 @@ impl Clausifier {
+                 if let Some(a) = self.class_id_of(inner) {
+                     let q = self.fresh_class();
+                     self.clauses.push(DlClause {
+-                        body: vec![Atom::Class(q, X), Atom::Class(a, X)],
++                        // F-LITE MUTANT M3: #78 revert (clause emitted on `var`).
++                        body: vec![Atom::Class(q, var), Atom::Class(a, var)],
+                         head: Vec::new(),
+                     });
+                     Some(Atom::Class(q, var))

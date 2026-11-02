@@ -1,0 +1,34 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M1
+# id: M1
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: consistency surface (classify inconsistency pre-check)
+# reopens: reads 'every named class unsat' as inconsistency (the {A⊑⊥, B⊑⊥} subtlety)
+# env: -
+# expect: L4@all_unsat
+diff --git a/crates/owl-dl-reasoner/src/lib.rs b/crates/owl-dl-reasoner/src/lib.rs
+index a54711c9..0bd4c597 100644
+--- a/crates/owl-dl-reasoner/src/lib.rs
++++ b/crates/owl-dl-reasoner/src/lib.rs
+@@ -3402,6 +3402,21 @@ pub(crate) fn classify_inconsistency_precheck(
+     if closure.globally_inconsistent() || closure.top_is_unsat() {
+         return true;
+     }
++    // F-LITE MUTANT M1: all named classes unsat read as inconsistency.
++    {
++        let mut any = false;
++        let all = internal
++            .vocabulary
++            .classes()
++            .filter(|(_, iri)| !iri.starts_with("http://www.w3.org/2002/07/owl#"))
++            .all(|(c, _)| {
++                any = true;
++                closure.is_unsatisfiable(c)
++            });
++        if any && all {
++            return true;
++        }
++    }
+     let own_ms = classify_inconsistency_budget_ms(internal);
+     // A route's deadline, computed when the route starts.
+     let route_deadline = || {

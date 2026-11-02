@@ -177,6 +177,12 @@ pub(crate) struct ConsistentJson {
     /// direction (fall-through deadline / node cap, or the #344 data-counting
     /// verification of a wedge `Sat` giving up), not a witnessed verdict.
     pub(crate) incomplete: bool,
+    /// #392: `consistent: true` rests only on the consistency wedge's `Sat`, which
+    /// no main-tableau run verified (the wedge is not proven complete). A trust
+    /// decision, not a give-up, so it is SEPARATE from `incomplete`; broader than
+    /// `wedge_clauses_refused`. The same flag as `sat-expr`/`subclass-expr`/`prove`
+    /// `--json` (#401). Never set with `consistent: false`.
+    pub(crate) relies_on_trusted_consistency: bool,
     /// #357: clauses the consistency wedge cannot match, which therefore never fire,
     /// so a `consistent: true` from the wedge may miss a clash. A SEPARATE field from
     /// `incomplete` (a give-up), as in `classify --json`. Counted whenever the
@@ -265,10 +271,21 @@ pub(crate) struct DisjointJson {
     pub(crate) structural_gaps: Vec<String>,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct SatExprJson {
     pub(crate) schema_version: u32,
+    /// A probe gave up (node cap): the verdict is the sound direction of no
+    /// verdict, and the command exits 3 (#363 A2). Give-up only, as on the other
+    /// query JSONs (#395); an answer off the pure-EL fast path is reported by
+    /// `completeness_guaranteed`. (Before package 2 this was also `true` whenever
+    /// the ontology was not pure EL.)
     pub(crate) incomplete: bool,
+    /// The verdict is guaranteed complete: answered on the pure-EL fast path and
+    /// nothing gave up. `false` means a "satisfiable" / "not entailed" is not
+    /// proven complete, not that it is wrong (as `classify --json`).
+    pub(crate) completeness_guaranteed: bool,
     /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
     /// affect the answer: the ontology and the expression have no nominal), and
     /// the consistency that licensed dropping it rests on a trusted wedge `Sat`
@@ -279,10 +296,21 @@ pub(crate) struct SatExprJson {
     pub(crate) satisfiable: bool,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct SubclassExprJson {
     pub(crate) schema_version: u32,
+    /// A probe gave up (node cap): the verdict is the sound direction of no
+    /// verdict, and the command exits 3 (#363 A2). Give-up only, as on the other
+    /// query JSONs (#395); an answer off the pure-EL fast path is reported by
+    /// `completeness_guaranteed`. (Before package 2 this was also `true` whenever
+    /// the ontology was not pure EL.)
     pub(crate) incomplete: bool,
+    /// The verdict is guaranteed complete: answered on the pure-EL fast path and
+    /// nothing gave up. `false` means a "satisfiable" / "not entailed" is not
+    /// proven complete, not that it is wrong (as `classify --json`).
+    pub(crate) completeness_guaranteed: bool,
     /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
     /// affect the answer: the ontology and the expression have no nominal), and
     /// the consistency that licensed dropping it rests on a trusted wedge `Sat`
@@ -296,7 +324,20 @@ pub(crate) struct SubclassExprJson {
 #[derive(Serialize)]
 pub(crate) struct InstancesExprJson {
     pub(crate) schema_version: u32,
+    /// At least one instance probe was cut, so members may be missing; those
+    /// listed are sound (#363 A2). Give-up only (#395); exit 0, as `instances`.
+    /// (Before package 2 this was also `true` whenever the ontology was not pure
+    /// EL.)
     pub(crate) incomplete: bool,
+    /// The list is guaranteed complete: the instance query ran on the realize
+    /// saturation fast path. Off it the tableau path's pseudo-model prune is not
+    /// proven complete, so this is `false` even when nothing was cut.
+    pub(crate) completeness_guaranteed: bool,
+    /// #369: the answer was positive and the KB's consistency stayed
+    /// undetermined (the consistency wedge stalled or was cut), so it may be the
+    /// vacuous answer of an inconsistent KB. Separate from `incomplete`; not a
+    /// give-up. A KB found inconsistent is an error instead.
+    pub(crate) consistency_undetermined: bool,
     pub(crate) instances: Vec<String>,
 }
 
@@ -305,6 +346,7 @@ pub(crate) fn build_sat_expr_json(v: owl_dl_reasoner::CeVerdict) -> SatExprJson 
     SatExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: v.incomplete(),
+        completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         satisfiable: v.holds(),
     }
@@ -315,6 +357,7 @@ pub(crate) fn build_subclass_expr_json(v: owl_dl_reasoner::CeVerdict) -> Subclas
     SubclassExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: v.incomplete(),
+        completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         entailed: v.holds(),
     }
@@ -327,6 +370,8 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
     InstancesExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: r.incomplete(),
+        completeness_guaranteed: r.completeness_guaranteed(),
+        consistency_undetermined: r.consistency_undetermined(),
         instances,
     }
 }
@@ -454,6 +499,7 @@ fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool, 
 pub(crate) fn build_consistent_json(
     consistent: bool,
     incomplete: bool,
+    relies_on_trusted_consistency: bool,
     wedge_clauses_refused: usize,
     dropped: BTreeMap<String, u64>,
 ) -> ConsistentJson {
@@ -461,6 +507,7 @@ pub(crate) fn build_consistent_json(
         schema_version: SCHEMA_VERSION,
         consistent,
         incomplete,
+        relies_on_trusted_consistency,
         wedge_clauses_refused,
         dropped,
     }
@@ -608,6 +655,11 @@ pub(crate) fn build_disjoint_json(
 pub(crate) struct IndividualsJson {
     pub(crate) schema_version: u32,
     pub(crate) incomplete: bool,
+    /// #369: the answer was positive and the KB's consistency stayed
+    /// undetermined (the consistency wedge stalled or was cut), so it may be the
+    /// vacuous answer of an inconsistent KB. Separate from `incomplete`; not a
+    /// give-up. A KB found inconsistent is an error instead.
+    pub(crate) consistency_undetermined: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
 }
@@ -641,6 +693,8 @@ pub(crate) fn build_individuals_json(
     IndividualsJson {
         schema_version: SCHEMA_VERSION,
         incomplete: same.incomplete() || different.incomplete(),
+        consistency_undetermined: same.consistency_undetermined()
+            || different.consistency_undetermined(),
         same_groups,
         different_pairs,
     }

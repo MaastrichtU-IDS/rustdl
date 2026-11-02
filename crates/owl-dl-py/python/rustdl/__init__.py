@@ -301,21 +301,35 @@ PreparedOntology.justify_all = _prepared_justify_all  # type: ignore[attr-define
 
 def is_consistent(path):
     """True iff the ontology at `path` is consistent. A give-up (budget or node
-    cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`."""
-    consistent, incomplete = _is_consistent_native(path)
+    cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`.
+    A `True` that rests on the consistency wedge's model alone (the wedge is not
+    proven complete) emits `TrustedConsistencyWarning` (#392)."""
+    consistent, incomplete, trusted = _is_consistent_native(path)
     _warn_if_query_incomplete("is_consistent", incomplete)
+    if trusted:
+        _warnings.warn(
+            "is_consistent: consistent on the consistency wedge's model alone; the "
+            "wedge is not proven complete and no main-tableau model was built "
+            "(see TrustedConsistencyWarning).",
+            TrustedConsistencyWarning,
+            stacklevel=2,
+        )
     return consistent
 
 
 class TrustedConsistencyWarning(UserWarning):
-    """Raised by `is_class_satisfiable`, `is_subclass_of`,
-    `class_expression_satisfiable` and `class_expression_entailed_subclass` when
-    the answer was computed without the ABox (#401). That is exact when the KB is
-    consistent and has no nominals; here consistency rests on the wedge finding a
-    model it does not prove complete, the same evidence `is_consistent` reports.
-    If that were ever wrong the answer could only be a miss ("satisfiable" / "not
-    subsumed"), never a false positive. Nothing was cut, so this is NOT an
-    `IncompleteQueryWarning`. `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead."""
+    """An answer rests on the KB being consistent, and the only evidence for that
+    is the wedge finding a model it does not prove complete. Nothing was cut, so
+    this is NOT an `IncompleteQueryWarning`.
+
+    - `is_consistent` (#392): the `True` IS that verdict.
+      `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
+    - `is_class_satisfiable`, `is_subclass_of`, `class_expression_satisfiable` and
+      `class_expression_entailed_subclass` (#401): the answer was computed without
+      the ABox, which is exact when the KB is consistent and has no nominals. If
+      that consistency were ever wrong the answer could only be a miss
+      ("satisfiable" / "not subsumed"), never a false positive.
+      `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead."""
 
 
 def _warn_if_trusted_consistency(name: str, relies: bool) -> None:
@@ -325,6 +339,29 @@ def _warn_if_trusted_consistency(name: str, relies: bool) -> None:
             "consistent, which the wedge found but did not prove "
             "(see TrustedConsistencyWarning).",
             TrustedConsistencyWarning,
+            stacklevel=3,
+        )
+
+
+class ConsistencyUndeterminedWarning(UserWarning):
+    """Raised by `is_instance_of`, `instances_of`, `same_individuals`,
+    `different_individuals` and `class_expression_instances` when the answer
+    was positive (an instance, a merge, a difference) and the KB's consistency
+    stayed undetermined (#369): the
+    consistency wedge stalled or was cut, so the answer may be the vacuous one of
+    an inconsistent KB. A KB found inconsistent raises `RustdlError` instead.
+    Nothing was cut, so this is NOT an `IncompleteQueryWarning`.
+    `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1` also runs a bounded main-tableau
+    check, at a cost."""
+
+
+def _warn_if_consistency_undetermined(name: str, undetermined: bool) -> None:
+    if undetermined:
+        _warnings.warn(
+            f"{name}: the KB's consistency could not be determined, so this "
+            "positive answer may be the vacuous one of an inconsistent KB "
+            "(see ConsistencyUndeterminedWarning).",
+            ConsistencyUndeterminedWarning,
             stacklevel=3,
         )
 
@@ -352,17 +389,22 @@ def is_subclass_of(path, sub, sup):
 def is_instance_of(path, class_iri, individual_iri):
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
     cut (deadline, node cap, depth limit), returns `False` and emits
-    `IncompleteQueryWarning`."""
-    is_inst, incomplete = _is_instance_of_native(path, class_iri, individual_iri)
+    `IncompleteQueryWarning`. Emits `ConsistencyUndeterminedWarning` (#369)."""
+    is_inst, incomplete, undetermined = _is_instance_of_native(
+        path, class_iri, individual_iri
+    )
     _warn_if_query_incomplete("is_instance_of", incomplete)
+    _warn_if_consistency_undetermined("is_instance_of", undetermined)
     return is_inst
 
 
 def instances_of(path, class_iri):
     """Named individuals entailed to be instances of `class_iri`. Emits
-    `IncompleteQueryWarning` when a probe was cut (members may be missing)."""
-    members, incomplete = _instances_of_native(path, class_iri)
+    `IncompleteQueryWarning` when a probe was cut (members may be missing), and
+    `ConsistencyUndeterminedWarning` (#369)."""
+    members, incomplete, undetermined = _instances_of_native(path, class_iri)
     _warn_if_query_incomplete("instances_of", incomplete)
+    _warn_if_consistency_undetermined("instances_of", undetermined)
     return members
 
 
@@ -524,8 +566,9 @@ def same_individuals(path):
     `IncompleteQueryWarning` when the budget was exhausted (see
     `IncompleteQueryWarning`) — note this fires whenever ANY extension probe
     beyond the sound-complete seed ran, even if no new group was found."""
-    groups, incomplete = _same_individuals_native(path)
+    groups, incomplete, undetermined = _same_individuals_native(path)
     _warn_if_query_incomplete("same_individuals", incomplete)
+    _warn_if_consistency_undetermined("same_individuals", undetermined)
     return groups
 
 
@@ -534,8 +577,9 @@ def different_individuals(path):
     unsatisfiable. Bounded by a 1s per-pair deadline; emits
     `IncompleteQueryWarning` when the budget was exhausted (see
     `IncompleteQueryWarning`)."""
-    pairs, incomplete = _different_individuals_native(path)
+    pairs, incomplete, undetermined = _different_individuals_native(path)
     _warn_if_query_incomplete("different_individuals", incomplete)
+    _warn_if_consistency_undetermined("different_individuals", undetermined)
     return pairs
 
 
@@ -552,8 +596,9 @@ def object_property_values(path):
 def class_expression_satisfiable(path, ce):
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (`ce` is resolved against the ontology's
-    own prefix map, e.g. `:A`). Emits `IncompleteQueryWarning` when the
-    verdict is a sound under-approximation (see `IncompleteQueryWarning`)."""
+    own prefix map, e.g. `:A`). If the probe gave up (node cap), returns `True`
+    and emits `IncompleteQueryWarning`, as `is_class_satisfiable` does; an
+    answer off the pure-EL fragment no longer warns."""
     holds, incomplete, trusted = _class_expression_satisfiable_native(path, ce)
     _warn_if_query_incomplete("class_expression_satisfiable", incomplete)
     _warn_if_trusted_consistency("class_expression_satisfiable", trusted)
@@ -563,8 +608,9 @@ def class_expression_satisfiable(path, ce):
 def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
     (both Manchester-syntax class expressions, resolved against the
-    ontology's own prefix map). Emits `IncompleteQueryWarning` when the
-    verdict is a sound under-approximation (see `IncompleteQueryWarning`)."""
+    ontology's own prefix map). If the probe gave up (node cap), returns `False`
+    and emits `IncompleteQueryWarning`, as `is_subclass_of` does; an answer off
+    the pure-EL fragment no longer warns."""
     holds, incomplete, trusted = _class_expression_entailed_subclass_native(
         path, sub_ce, sup_ce
     )
@@ -576,10 +622,13 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
 def class_expression_instances(path, ce):
     """Named individuals provably in the Manchester-syntax class expression
     `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
-    prefix map). Emits `IncompleteQueryWarning` when the result is a sound
-    under-approximation (see `IncompleteQueryWarning`)."""
-    individuals, incomplete = _class_expression_instances_native(path, ce)
+    prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
+    (members may be missing; those returned are sound), as `instances_of`
+    does; an answer off the pure-EL fragment no longer warns.
+    Emits `ConsistencyUndeterminedWarning` (#369)."""
+    individuals, incomplete, undetermined = _class_expression_instances_native(path, ce)
     _warn_if_query_incomplete("class_expression_instances", incomplete)
+    _warn_if_consistency_undetermined("class_expression_instances", undetermined)
     return individuals
 
 
@@ -708,6 +757,7 @@ __all__ = [
     "DirectTypesUnverifiedWarning",
     "StructuralGapWarning",
     "TrustedConsistencyWarning",
+    "ConsistencyUndeterminedWarning",
     "classify",
     "classify_bytes",
     "is_consistent",

@@ -83,15 +83,16 @@ fn point_queries_report_whether_a_probe_was_cut() {
     // ── control: at the default budget every probe concludes, so nothing is cut
     // and the flag must be clear on BOTH surfaces.
     let o = onto(&disjunctive(60));
-    let (is_inst, cut) = owl_dl_reasoner::is_instance_of_reporting(&o, "http://t/C0", "http://t/a")
-        .expect("is_instance_of_reporting at the default budget");
+    let (is_inst, flags) =
+        owl_dl_reasoner::is_instance_of_reporting(&o, "http://t/C0", "http://t/a")
+            .expect("is_instance_of_reporting at the default budget");
     assert!(is_inst, "a : C0 holds by case analysis");
-    assert!(!cut, "nothing is cut at the default budget");
+    assert!(!flags.incomplete, "nothing is cut at the default budget");
 
-    let (members, cut) = owl_dl_reasoner::instances_of_reporting(&o, "http://t/C0")
+    let (members, flags) = owl_dl_reasoner::instances_of_reporting(&o, "http://t/C0")
         .expect("instances_of_reporting at the default budget");
     assert_eq!(members, vec!["http://t/a".to_string()]);
-    assert!(!cut, "nothing is cut at the default budget");
+    assert!(!flags.incomplete, "nothing is cut at the default budget");
 
     // The un-reporting forms must agree with the reporting ones, so the refactor
     // did not change existing behaviour.
@@ -113,10 +114,10 @@ fn point_queries_report_whether_a_probe_was_cut() {
     // in a release build.
     let dense = onto(&disjunctive(1000));
     let _g = set_budget("1");
-    let (_, cut) = owl_dl_reasoner::instances_of_reporting(&dense, "http://t/C0")
+    let (_, flags) = owl_dl_reasoner::instances_of_reporting(&dense, "http://t/C0")
         .expect("instances_of_reporting under a 1 ms budget");
     assert!(
-        cut,
+        flags.incomplete,
         "a 1 ms per-pair budget must cut at least one probe; if this fires, either \
          the fixture became decidable without probing or the flag is being discarded \
          again — the exact defect #73 reported"

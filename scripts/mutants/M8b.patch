@@ -1,0 +1,21 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M8b
+# id: M8b
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: conversion (D4 data axioms), shared by every surface
+# reopens: D4 off by one: Functional(d) + ≥1 d read as unsat
+# env: -
+# expect: none
+diff --git a/crates/owl-dl-core/src/data_axioms.rs b/crates/owl-dl-core/src/data_axioms.rs
+index ce0029c2..7424ee62 100644
+--- a/crates/owl-dl-core/src/data_axioms.rs
++++ b/crates/owl-dl-core/src/data_axioms.rs
+@@ -2744,7 +2744,7 @@ fn emit_clashes(
+ ) {
+     // Pattern 1: Functional(dp) + min ≥ 2 → unsat.
+     for ((class_iri, dp_iri), min) in &f.class_min {
+-        if *min >= 2
++        if *min >= 1 // F-LITE MUTANT M8b: D4 off by one.
+             && f.functional_dps.contains(dp_iri)
+             && let Some(cid) = vocab.class_id(class_iri)
+         {

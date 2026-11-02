@@ -5,7 +5,8 @@ Work package A2 of the correctness assurance programme (#363). The
 `classify`. This one covers every other query surface and asks one question:
 **when a probe reaches no verdict, does the caller find out?**
 
-Checked against `main` at `0bbe276c` (31 October 2026).
+Checked against `main` at `0bbe276c` (31 October 2026); the `consistent` trust row
+(#392) against `83853936` (2 November 2026).
 
 ## The rule
 
@@ -49,6 +50,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | Surface | Give-up sources | Rust | CLI text | CLI `--json` | Python | Pinned by |
 |---|---|---|---|---|---|---|
 | `consistent` | fall-through tableau deadline (`RUSTDL_CONSISTENCY_FALLBACK_MS`), node cap, abandon (#182); #344 data-counting verification gives up | `is_consistent_with_stats` → `incomplete` | `unknown`, exit 3 | `incomplete`, exit 3 | `is_consistent` warns | `consistency_data_counting.rs`; CLI `consistent` tests |
+| `consistent` trusted wedge `Sat` (#392) | not a give-up: `consistent` rests only on the consistency wedge's `Sat`, which no main-tableau run verified (the wedge missed clashes in #290 and #376). Never set on `inconsistent`, on a main-tableau model, or on a #344-verified `Sat`. Broader than `wedge_clauses_refused` | `QueryStats::relies_on_trusted_consistency` (the #401 flag, same meaning) | stdout `consistent`, exit 0, one stderr note | `relies_on_trusted_consistency`, exit 0; the same stderr note | `is_consistent` warns `TrustedConsistencyWarning` | `consistent_trusted_sat.rs` (reasoner, CLI); `consistency_data_counting.rs`; `test_consistent_trusted_sat.py` |
 | `sat` | node cap (`RUSTDL_QUERY_MAX_NODES` on the CLI/Python entry point; early abandon is armed only under a deadline). A deadline-free depth bail-out is an error (exit 1), not `unknown` | `is_class_satisfiable_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_class_satisfiable` warns | `query_give_up.rs`; `test_query_give_up.py` |
 | `subclass` | node cap (`RUSTDL_QUERY_MAX_NODES`) | `is_subclass_of_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_subclass_of` warns | same |
 | `explain` | node cap | `is_subclass_of_with_stats` | `: unknown — tableau gave up`, exit 3 | — | — | `query_give_up.rs` |
@@ -104,8 +106,18 @@ about its signal, so each is filed rather than fixed here.
   and the materialize functions alike, until #387 settles the signal (see the
   pseudo-model prune above). The Rust `materialize_existential_successors_reporting`
   carries it.
-- **consistency's trusted wedge `Sat`** is a trust decision, not a cut, and has
-  no signal beyond `wedge_clauses_refused`. #392.
+- **other readers of a trusted consistency `Sat`** do not pass #392's flag on.
+  `consistent` itself reports it (see its row). These also trust the wedge's
+  `Sat` and do not say so: `classify`'s consistency pre-check (`lib.rs`,
+  `classify_inconsistency_precheck`) and its second probe (`classify.rs`,
+  `probe_says_inconsistent`), so `classify --json`'s `consistent: true`, and
+  `realize` and `diagnose`, which read `Classification::stats().inconsistent`;
+  `justify`'s inconsistency oracle (`justify.rs`,
+  `Verdict::from_check(!consistent, stats.incomplete)`); and `diagnose`'s
+  all-classes-unsatisfiable gate (`diagnose.rs`), where passing the flag on is a
+  one-line change. A wrong trusted `Sat` there is a miss, never a
+  false positive. The Protégé plugin reads `classify --json`'s `consistent`, not
+  `consistent --json`. Not filed.
 - **single queries that drop the `ABox` (#401)**: `sat`, `subclass`, `explain`,
   `sat-expr` and `subclass-expr` drop the `ABox` seed when the ontology and the
   query have no nominal and the KB is consistent (`RUSTDL_QUERY_TBOX_ONLY`,

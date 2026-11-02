@@ -7,6 +7,15 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **`consistent` reports a verdict that rests on the wedge's trust (#392).** By default
+  `consistent` accepts the consistency wedge's `Sat` without a main-tableau model, and the
+  wedge is not proven complete: it missed clashes in #290 and #376. That `consistent` was
+  indistinguishable from a verified one. It now sets `QueryStats::relies_on_trusted_consistency`
+  (the #401 flag, with the same meaning) from `is_consistent_with_stats`. CLI: a
+  `consistent --json` field and one stderr note in both modes. Python: `is_consistent` emits
+  `TrustedConsistencyWarning`. It is not a give-up: stdout stays `consistent`, `incomplete` stays
+  false and the exit code stays 0. `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau
+  instead. `docs/json-schema.md` now lists every `consistent --json` field.
 - **`direct_types_unverified` on `realize` (#388).** `realize` derives each individual's
   most-specific types from a class hierarchy that can cut a pair or trust a wedge `Sat`, so a
   missed subsumption could leave a superclass listed beside its subclass, with nothing said.

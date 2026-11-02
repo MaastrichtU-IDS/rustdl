@@ -1035,6 +1035,19 @@ fn note_trusted_consistency_flag(relies: bool) {
     }
 }
 
+/// #392: `consistent`'s verdict is the consistency wedge's `Sat`, which nothing
+/// verified. A trust decision, not a give-up: stdout and the exit code are
+/// unchanged.
+fn note_trusted_wedge_sat(trusted: bool) {
+    if trusted {
+        eprintln!(
+            "note: consistent on the consistency wedge's model alone; the wedge is not \
+             proven complete and no main-tableau model was built. RUSTDL_WEDGE_CONSISTENCY=0 \
+             decides on the main tableau (bounded by RUSTDL_CONSISTENCY_FALLBACK_MS)."
+        );
+    }
+}
+
 /// A `sat` / `subclass` probe tripped the live-node cap: there is no verdict.
 /// Print `unknown`, explain on stderr and exit 3, the convention `consistent`
 /// uses for a give-up (#363 A2).
@@ -1727,10 +1740,12 @@ fn main() -> Result<()> {
                     serde_json::to_string_pretty(&json_out::build_consistent_json(
                         verdict,
                         incomplete,
+                        stats.relies_on_trusted_consistency,
                         stats.wedge_clauses_refused,
                         dropped
                     ))?
                 );
+                note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
                 if verdict {
                     warn_if_clauses_refused(
                         stats.wedge_clauses_refused,
@@ -1765,6 +1780,7 @@ fn main() -> Result<()> {
                     "inconsistent"
                 }
             );
+            note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
             if verdict {
                 warn_if_clauses_refused(stats.wedge_clauses_refused, "RUSTDL_WEDGE_CONSISTENCY=0");
             }

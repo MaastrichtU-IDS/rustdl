@@ -142,6 +142,11 @@ rustdl.realize(path)                              # -> dict[str, list[str]]
 `realize` returns each individual IRI mapped to its most-specific entailed
 class IRIs.
 
+`is_consistent`, `is_class_satisfiable` and `is_subclass_of` emit
+`TrustedConsistencyWarning` when the answer rests on the KB being consistent and
+the only evidence is the consistency wedge's model, which is not proven complete
+(#392, #401). Nothing was cut, so it is not an `IncompleteQueryWarning`.
+
 > For repeated queries over the same ontology, prefer `classify(path)` once and
 > query the returned `Classification` — each top-level function re-parses.
 

@@ -13,6 +13,14 @@ pub(crate) struct PyClassification {
     inner: RsClassification,
 }
 
+impl PyClassification {
+    /// Wrap a classification computed elsewhere, so a surface built on it can
+    /// hand its completeness signals to Python (#391).
+    pub(crate) fn new(inner: RsClassification) -> Self {
+        Self { inner }
+    }
+}
+
 #[pymethods]
 impl PyClassification {
     /// All declared class IRIs in the ontology, insertion order.

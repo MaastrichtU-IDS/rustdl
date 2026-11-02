@@ -7,6 +7,15 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **`consistent` reports a verdict that rests on the wedge's trust (#392).** By default
+  `consistent` accepts the consistency wedge's `Sat` without a main-tableau model, and the
+  wedge is not proven complete: it missed clashes in #290 and #376. That `consistent` was
+  indistinguishable from a verified one. It now sets `QueryStats::relies_on_trusted_consistency`
+  (the #401 flag, with the same meaning) from `is_consistent_with_stats`. CLI: a
+  `consistent --json` field and one stderr note in both modes. Python: `is_consistent` emits
+  `TrustedConsistencyWarning`. It is not a give-up: stdout stays `consistent`, `incomplete` stays
+  false and the exit code stays 0. `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau
+  instead. `docs/json-schema.md` now lists every `consistent --json` field.
 - **`direct_types_unverified` on `realize` (#388).** `realize` derives each individual's
   most-specific types from a class hierarchy that can cut a pair or trust a wedge `Sat`, so a
   missed subsumption could leave a superclass listed beside its subclass, with nothing said.
@@ -42,6 +51,18 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The materialize functions over `realize` and `classify` report their answer may be short
+  (#391).** `materialize_existential_successors` and Python's
+  `materialize_inferred_class_assertions` called `realize` and returned bare lists, so a cut
+  instance probe or the pseudo-model prune could shorten them with nothing said; Python's
+  `materialize_inferred_subclass_axioms` likewise dropped `classify`'s signals. Rust:
+  `materialize_existential_successors_reporting` returns `incomplete` and
+  `witness_prune_active` beside the rows (`direct_types_unverified` does not apply: the rows
+  use entailed types). Python: the existential and class-assertion functions warn
+  `IncompleteQueryWarning`, the class assertions also `DirectTypesUnverifiedWarning`, and the
+  subclass pairs the same `IncompleteClassificationWarning`s as `classify`. Return types are
+  unchanged. The class-assertion docs now say they return most-specific types only, which they
+  always did. Neither function has a CLI surface.
 - **`prove` refuses a class IRI that is not in the ontology (#409).** It answered "NOT
   entailed" (`prove --json`: `entailed: false`, `status: "not-entailed"`), a wrong definite
   answer: `prove Aa Aa` for a typo'd `Aa` said a tautology does not hold, and so did

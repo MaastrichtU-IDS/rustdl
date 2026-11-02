@@ -205,21 +205,27 @@ fn values_the_limit_does_not_count_are_consistent() {
         ),
     ] {
         assert!(consistent(&body), "{body}");
+        // #392: the main tableau verified the wedge's `Sat`, so it is not trusted.
+        let (_, stats) = is_consistent_with_stats(&onto(&body)).expect("consistent");
+        assert!(
+            !stats.relies_on_trusted_consistency,
+            "a verified Sat is not trusted: {body}"
+        );
     }
 }
 
-/// `=0` restores the trusted wedge `Sat`, so the reproducer reads consistent.
+/// `=0` restores the trusted wedge `Sat`, so the reproducer reads consistent,
+/// reported as resting on that trust (#392).
 #[test]
 fn the_flag_reverts() {
     let _g = lock();
     let body = format!("SubClassOf(:P {LIMIT}) ClassAssertion(:P :a)\n{TWO_VALUES}");
-    let reverted = {
+    let (reverted, stats) = {
         let _env = SetEnvGuard::set("RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY", "0");
-        is_consistent_with_stats(&onto(&body))
-            .expect("consistent")
-            .0
+        is_consistent_with_stats(&onto(&body)).expect("consistent")
     };
     assert!(reverted, "=0 must restore the trusted wedge Sat");
+    assert!(stats.relies_on_trusted_consistency, "{stats:?}");
     assert!(!consistent(&body));
 }
 
@@ -243,6 +249,10 @@ fn a_verification_give_up_is_reported_as_incomplete() {
         "a give-up keeps `consistent` (the sound direction)"
     );
     assert!(stats.incomplete, "a give-up must be reported as incomplete");
+    assert!(
+        !stats.relies_on_trusted_consistency,
+        "a give-up is `incomplete`, not trust"
+    );
     assert_eq!(bounded, None, "a give-up is no verdict on the bounded path");
 }
 

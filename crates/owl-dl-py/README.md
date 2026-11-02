@@ -142,6 +142,11 @@ rustdl.realize(path)                              # -> dict[str, list[str]]
 `realize` returns each individual IRI mapped to its most-specific entailed
 class IRIs.
 
+`is_consistent`, `is_class_satisfiable` and `is_subclass_of` emit
+`TrustedConsistencyWarning` when the answer rests on the KB being consistent and
+the only evidence is the consistency wedge's model, which is not proven complete
+(#392, #401). Nothing was cut, so it is not an `IncompleteQueryWarning`.
+
 > For repeated queries over the same ontology, prefer `classify(path)` once and
 > query the returned `Classification` — each top-level function re-parses.
 
@@ -154,9 +159,12 @@ rustdl.materialize_inferred_class_assertions(path)  # -> list[tuple[str, str]]
 
 `materialize_inferred_subclass_axioms` yields `(sub, sup)` pairs for every
 entailed subsumption (excluding reflexive, `owl:Thing`/`owl:Nothing`, and
-unsatisfiable classes). `materialize_inferred_class_assertions` yields
-`(class, individual)` pairs. Useful for writing an inferred ontology back to
-disk.
+unsatisfiable classes). `materialize_inferred_class_assertions` yields a
+`(class, individual)` pair for each individual's most-specific entailed types,
+as `realize` reports them. Useful for writing an inferred ontology back to
+disk. Both warn when their answer may be short, as `classify` and `realize` do:
+`IncompleteClassificationWarning` for the subclass pairs, `IncompleteQueryWarning`
+and `DirectTypesUnverifiedWarning` for the class assertions.
 
 ### Errors
 

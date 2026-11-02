@@ -177,6 +177,12 @@ pub(crate) struct ConsistentJson {
     /// direction (fall-through deadline / node cap, or the #344 data-counting
     /// verification of a wedge `Sat` giving up), not a witnessed verdict.
     pub(crate) incomplete: bool,
+    /// #392: `consistent: true` rests only on the consistency wedge's `Sat`, which
+    /// no main-tableau run verified (the wedge is not proven complete). A trust
+    /// decision, not a give-up, so it is SEPARATE from `incomplete`; broader than
+    /// `wedge_clauses_refused`. The same flag as `sat-expr`/`subclass-expr`/`prove`
+    /// `--json` (#401). Never set with `consistent: false`.
+    pub(crate) relies_on_trusted_consistency: bool,
     /// #357: clauses the consistency wedge cannot match, which therefore never fire,
     /// so a `consistent: true` from the wedge may miss a clash. A SEPARATE field from
     /// `incomplete` (a give-up), as in `classify --json`. Counted whenever the
@@ -478,6 +484,7 @@ fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool, 
 pub(crate) fn build_consistent_json(
     consistent: bool,
     incomplete: bool,
+    relies_on_trusted_consistency: bool,
     wedge_clauses_refused: usize,
     dropped: BTreeMap<String, u64>,
 ) -> ConsistentJson {
@@ -485,6 +492,7 @@ pub(crate) fn build_consistent_json(
         schema_version: SCHEMA_VERSION,
         consistent,
         incomplete,
+        relies_on_trusted_consistency,
         wedge_clauses_refused,
         dropped,
     }

@@ -37,13 +37,13 @@ from rustdl._native import (
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
     UnknownClassError as UnknownClassError,
-    materialize_inferred_subclass_axioms as materialize_inferred_subclass_axioms,
-    materialize_inferred_class_assertions as materialize_inferred_class_assertions,
+    materialize_inferred_subclass_axioms as _materialize_inferred_subclass_axioms_native,
+    materialize_inferred_class_assertions as _materialize_inferred_class_assertions_native,
     materialize_inferred_property_assertions as materialize_inferred_property_assertions,
     materialize_inferred_data_property_assertions as _materialize_inferred_data_property_assertions_native,
     materialize_inferred_subobjectproperty_axioms as _materialize_inferred_subobjectproperty_axioms_native,
     materialize_inferred_subdataproperty_axioms as _materialize_inferred_subdataproperty_axioms_native,
-    materialize_existential_successors as materialize_existential_successors,
+    materialize_existential_successors as _materialize_existential_successors_native,
     justify as _justify_native,
     justify_all as _justify_all_native,
     diagnose as _diagnose_native,
@@ -301,21 +301,35 @@ PreparedOntology.justify_all = _prepared_justify_all  # type: ignore[attr-define
 
 def is_consistent(path):
     """True iff the ontology at `path` is consistent. A give-up (budget or node
-    cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`."""
-    consistent, incomplete = _is_consistent_native(path)
+    cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`.
+    A `True` that rests on the consistency wedge's model alone (the wedge is not
+    proven complete) emits `TrustedConsistencyWarning` (#392)."""
+    consistent, incomplete, trusted = _is_consistent_native(path)
     _warn_if_query_incomplete("is_consistent", incomplete)
+    if trusted:
+        _warnings.warn(
+            "is_consistent: consistent on the consistency wedge's model alone; the "
+            "wedge is not proven complete and no main-tableau model was built "
+            "(see TrustedConsistencyWarning).",
+            TrustedConsistencyWarning,
+            stacklevel=2,
+        )
     return consistent
 
 
 class TrustedConsistencyWarning(UserWarning):
-    """Raised by `is_class_satisfiable`, `is_subclass_of`,
-    `class_expression_satisfiable` and `class_expression_entailed_subclass` when
-    the answer was computed without the ABox (#401). That is exact when the KB is
-    consistent and has no nominals; here consistency rests on the wedge finding a
-    model it does not prove complete, the same evidence `is_consistent` reports.
-    If that were ever wrong the answer could only be a miss ("satisfiable" / "not
-    subsumed"), never a false positive. Nothing was cut, so this is NOT an
-    `IncompleteQueryWarning`. `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead."""
+    """An answer rests on the KB being consistent, and the only evidence for that
+    is the wedge finding a model it does not prove complete. Nothing was cut, so
+    this is NOT an `IncompleteQueryWarning`.
+
+    - `is_consistent` (#392): the `True` IS that verdict.
+      `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
+    - `is_class_satisfiable`, `is_subclass_of`, `class_expression_satisfiable` and
+      `class_expression_entailed_subclass` (#401): the answer was computed without
+      the ABox, which is exact when the KB is consistent and has no nominals. If
+      that consistency were ever wrong the answer could only be a miss
+      ("satisfiable" / "not subsumed"), never a false positive.
+      `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead."""
 
 
 def _warn_if_trusted_consistency(name: str, relies: bool) -> None:
@@ -386,15 +400,54 @@ def realize(path):
     specific)."""
     types, incomplete, unverified = _realize_native(path)
     _warn_if_query_incomplete("realize", incomplete)
+    _warn_if_direct_types_unverified("realize", unverified)
+    return types
+
+
+def _warn_if_direct_types_unverified(name: str, unverified: bool) -> None:
     if unverified:
         _warnings.warn(
-            "realize: some individual has two most-specific types whose "
+            f"{name}: some individual has two most-specific types whose "
             "subsumption could not be decided, so a listed type may be a "
             "superclass of another; every listed type is a genuine type.",
             DirectTypesUnverifiedWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
-    return types
+
+
+def materialize_inferred_subclass_axioms(path):
+    """Every entailed `(sub, sup)` pair of named classes, read off `classify`
+    (reflexive pairs, `owl:Thing`/`owl:Nothing` and unsatisfiable subclasses
+    left out). Emits the same `IncompleteClassificationWarning`s as `classify`
+    when the classification may be missing subsumptions (#391). It runs an
+    unbounded `classify` and takes no budget arguments, so a warning that
+    suggests passing `per_pair_timeout_ms` / `global_timeout_ms` or checking
+    `result` refers to `rustdl.classify`, which exposes both."""
+    pairs, classification = _materialize_inferred_subclass_axioms_native(path)
+    _warn_if_incomplete(classification)
+    return pairs
+
+
+def materialize_inferred_class_assertions(path):
+    """A `(class, individual)` pair for each MOST-SPECIFIC entailed type of each
+    named individual, as `realize` reports them (not every entailed type).
+    Emits `IncompleteQueryWarning` when an instance probe was cut (types may be
+    missing) and `DirectTypesUnverifiedWarning` when a listed type may be a
+    superclass of another (#388, #391)."""
+    pairs, incomplete, unverified = _materialize_inferred_class_assertions_native(path)
+    _warn_if_query_incomplete("materialize_inferred_class_assertions", incomplete)
+    _warn_if_direct_types_unverified("materialize_inferred_class_assertions", unverified)
+    return pairs
+
+
+def materialize_existential_successors(path):
+    """Entailed existential successors as `(subject, property, witness_blank,
+    filler_class)`: a blank-node representation of entailed `a : ∃R.C`, not
+    ground triples. Emits `IncompleteQueryWarning` when an instance probe of the
+    `realize` run underneath was cut, so rows may be missing (#391)."""
+    rows, incomplete = _materialize_existential_successors_native(path)
+    _warn_if_query_incomplete("materialize_existential_successors", incomplete)
+    return rows
 
 
 class StructuralGapWarning(UserWarning):

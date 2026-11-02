@@ -87,7 +87,12 @@ public final class RustdlProofService extends ProofService {
         OWLSubClassOfAxiom subClassOf = (OWLSubClassOfAxiom) entailment;
         OWLClassExpression sub = subClassOf.getSubClass();
         OWLClassExpression sup = subClassOf.getSuperClass();
-        return !sub.isAnonymous() && !sup.isAnonymous();
+        // #409: rustdl prove refuses owl:Thing / owl:Nothing (they are not in its
+        // named-class vocabulary); declining them here lets Protégé use the explanation
+        // generator instead (X ⊑ owl:Nothing is its unsatisfiability query).
+        return !sub.isAnonymous() && !sup.isAnonymous()
+            && !sub.isOWLThing() && !sub.isOWLNothing()
+            && !sup.isOWLThing() && !sup.isOWLNothing();
     }
 
     /**

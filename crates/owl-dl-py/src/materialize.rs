@@ -14,9 +14,9 @@ use crate::load;
 /// - Pairs involving `owl:Thing` or `owl:Nothing`
 /// - Pairs from unsatisfiable classes (which trivially subsume all)
 ///
-/// Also returns the `Classification` the pairs were read off, so the Python
-/// wrapper (`__init__.py`) can warn on its completeness signals as `classify`
-/// does (#391), and returns just the pairs.
+/// Also returns the `Classification` the pairs were read off. The Python
+/// wrapper (`__init__.py`) warns on its completeness signals as `classify` does
+/// (#391) and returns just the pairs.
 #[pyfunction]
 pub(crate) fn materialize_inferred_subclass_axioms(
     path: &str,

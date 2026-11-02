@@ -224,7 +224,8 @@ rustdl.materialize_existential_successors(path)              # entailed ∃-succ
 > Note on `materialize_existential_successors`: it returns a *representation* of
 > entailed existentials (one blank-node witness row per entailed `a : ∃R.C`), not
 > entailed ground triples — the witnesses are model-relative, so they are blank
-> nodes, not named individuals.
+> nodes, not named individuals. It emits `IncompleteQueryWarning` when an instance
+> probe of the `realize` run underneath was cut, so rows may be missing (#391).
 
 ## Where next
 

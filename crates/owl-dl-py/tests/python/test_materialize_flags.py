@@ -99,7 +99,9 @@ def test_class_assertions_warn_direct_types_unverified(tmp_path, monkeypatch):
     rows, cats = _warnings(rustdl.materialize_inferred_class_assertions, str(p))
     assert sorted(rows) == [("http://ex.org/X", "http://ex.org/a"), ("http://ex.org/Y", "http://ex.org/a")]
     assert rustdl.DirectTypesUnverifiedWarning in cats
-    # The successor rows use entailed types, which that flag does not touch.
+    # The successor rows use entailed types, which that flag does not touch. The
+    # row proves realize ran; the warning check pins that the flag stays off this
+    # surface if someone later wires it in.
     rows, cats = _warnings(rustdl.materialize_existential_successors, str(p))
     assert rows == [("http://ex.org/a", "http://ex.org/r", "_:b0", "http://ex.org/D")]
     assert rustdl.DirectTypesUnverifiedWarning not in cats
@@ -114,6 +116,8 @@ def test_subclass_axioms_warn_as_classify(fixtures_dir, monkeypatch):
     fixture = str(fixtures_dir / "role_hierarchy_blind.ofn")
     monkeypatch.setenv("RUSTDL_CLASSIFY_ROLE_HIERARCHY", "0")
     _, cats = _warnings(rustdl.materialize_inferred_subclass_axioms, fixture)
+    # Exactly one: wedge_hierarchy_blind. A second one on a red run means a cut
+    # under host load (same exposure as test_query_give_up.py), not this wiring.
     assert cats.count(rustdl.IncompleteClassificationWarning) == 1
     monkeypatch.setenv("RUSTDL_CLASSIFY_ROLE_HIERARCHY", "1")
     _, cats = _warnings(rustdl.materialize_inferred_subclass_axioms, fixture)

@@ -29,7 +29,7 @@ No surface in the #363 audit turned a give-up into a definite **positive**.
 | Surface | Signal | Meaning |
 |---|---|---|
 | Rust `*_with_stats` | `QueryStats::incomplete` | the verdict is a give-up in its sound direction |
-| Rust `*_reporting`, `Realization` | `incomplete` (second tuple element, `Realization::incomplete()`) | at least one probe was cut |
+| Rust `*_reporting`, `Realization` | `incomplete` (second tuple element, or a field of the flags struct there, e.g. `ExistentialSuccessorFlags`; `Realization::incomplete()`) | at least one probe was cut |
 | CLI single answer (`consistent`, `sat`, `subclass`, `instance`, `explain`, `prove`) | prints `unknown`, exits 3, explains on stderr | no verdict |
 | CLI list answer (`instances`, `realize`) | stderr warning; members printed are sound | members may be missing |
 | CLI `--json` | `incomplete` field | as the Rust field |

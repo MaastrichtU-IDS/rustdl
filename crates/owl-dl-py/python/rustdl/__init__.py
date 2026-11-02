@@ -405,7 +405,10 @@ def materialize_inferred_subclass_axioms(path):
     """Every entailed `(sub, sup)` pair of named classes, read off `classify`
     (reflexive pairs, `owl:Thing`/`owl:Nothing` and unsatisfiable subclasses
     left out). Emits the same `IncompleteClassificationWarning`s as `classify`
-    when the classification may be missing subsumptions (#391)."""
+    when the classification may be missing subsumptions (#391). It runs an
+    unbounded `classify` and takes no budget arguments, so a warning that
+    suggests passing `per_pair_timeout_ms` / `global_timeout_ms` or checking
+    `result` refers to `rustdl.classify`, which exposes both."""
     pairs, classification = _materialize_inferred_subclass_axioms_native(path)
     _warn_if_incomplete(classification)
     return pairs

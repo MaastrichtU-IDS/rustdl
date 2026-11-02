@@ -168,6 +168,39 @@ fn instances_expr_and_instances_warn_on_a_give_up_and_exit_0() {
     assert_eq!(r.code, 0);
 }
 
+// OFF_EL plus an untyped individual: `a` is a told member of `C`, while `b`'s
+// `{b} ⊓ ¬C` probe needs the tableau and trips the query cap.
+const OFF_EL_TWO: &str = r"Prefix(:=<http://ex/#>)
+Ontology(<http://ex/exprgiveup2>
+  Declaration(Class(:C)) Declaration(Class(:E))
+  Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+  SubClassOf(:C ObjectSomeValuesFrom(:r :C))
+  SubClassOf(:C ObjectAllValuesFrom(:s :E))
+  ClassAssertion(:C :a)
+)
+";
+
+/// A give-up keeps the members already proved: `a` is still printed while `b`'s
+/// probe is cut.
+#[test]
+fn a_give_up_keeps_the_proved_members() {
+    let f = Fixture::new(OFF_EL_TWO, "keep");
+    for args in [
+        vec!["instances-expr", f.path(), ":C"],
+        vec!["instances", f.path(), "http://ex/#C"],
+    ] {
+        let r = run(QUERY_CAP1, &args);
+        assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
+        assert_eq!(r.stdout.trim(), "http://ex/#a", "{args:?}: {}", r.stderr);
+        assert!(
+            r.stderr.contains("instance probe was cut"),
+            "{args:?}: {}",
+            r.stderr
+        );
+    }
+}
+
 /// The split itself: off EL with nothing cut, `incomplete` is false and only
 /// `completeness_guaranteed` says the answer is not proven complete; there is no
 /// warning and the exit code is 0.

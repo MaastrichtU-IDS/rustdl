@@ -7,10 +7,7 @@
 
 use std::collections::HashSet;
 
-use crate::{
-    QueryStats, ReasonError, instances_of_reporting, is_class_satisfiable_with_stats,
-    is_subclass_of_with_stats,
-};
+use crate::{QueryStats, ReasonError, is_class_satisfiable_with_stats, is_subclass_of_with_stats};
 use horned_owl::model::{
     Build, ClassExpression, Component, EquivalentClasses, ForIRI, MutableOntology,
 };
@@ -272,10 +269,10 @@ pub fn class_expression_instances<A: ForIRI>(
     // takes the complete saturation fast path. (A companion `sat` probe used to
     // supply this signal; it answered a different question, so its give-up was
     // not a give-up of this query.)
-    let fast_path = crate::realize::realize_saturation_eligible(
-        &owl_dl_core::convert::convert_ontology(&probed)?,
-    );
-    let (mut individuals, cut) = instances_of_reporting(&probed, PROBE_IRI)?;
+    let internal = owl_dl_core::convert::convert_ontology(&probed)?;
+    let fast_path = crate::realize::realize_saturation_eligible(&internal);
+    let (mut individuals, cut) =
+        crate::realize::instances_of_reporting_internal(&internal, PROBE_IRI)?;
     individuals.retain(|i| !i.starts_with("urn:rustdl-ce-probe"));
     individuals.sort();
     individuals.dedup();

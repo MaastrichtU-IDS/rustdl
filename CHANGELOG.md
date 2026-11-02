@@ -53,6 +53,8 @@ All notable changes to rustdl are documented here. Format is based on
     `class_expression_instances` emit `IncompleteQueryWarning` only on a give-up, as
     `is_class_satisfiable` does.
   - `instances-expr` no longer runs a companion `sat` probe to compute its flag.
+  - `sat-expr --json` and `subclass-expr --json` now print the #401 trusted-consistency note on
+    stderr, as `prove --json` does; they printed nothing on stderr before.
 - **`sat-expr`, `subclass-expr`, `instances-expr` and `instances` run under the single-query node
   cap** (`RUSTDL_QUERY_MAX_NODES`, default 500000), in the CLI and in Python (`instances_of` and
   the three `class_expression_*` functions), like `sat`, `subclass` and `instance`. They used the

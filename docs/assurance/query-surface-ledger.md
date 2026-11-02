@@ -65,6 +65,12 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `report` | everything under it (diagnose, per-root justify and repair) | — (CLI only) | HTML banner, stderr warning | — | — | `report.rs` unit test |
 | `prove` | the subsumption check (node cap); the justification fallback, as `justify` | `prove_entailment_rcstr_reporting` → `(ProveEntailmentResult, ProveFlags)`; `ProveEntailmentResult::Unknown` | `unknown`, exit 3; fallback give-up: stderr warning | `entailed: false`, `status: "unknown"`, `incomplete`, exit 3 | no binding | `prove_give_up.rs` |
 
+`completeness_guaranteed: true` on the expression queries is only as strong as the
+fast-path gate behind it (`is_pure_el`, or for `instances-expr`
+`realize_saturation_eligible`). Any recorded gate/engine gap there, such as the
+chain-induced poison residual, surfaces as a guaranteed answer, the same exposure
+`classify --json` carries; no corpus net covers these surfaces.
+
 An unknown class IRI is not a give-up and gets no verdict on any of these
 surfaces: `sat`, `subclass`, `explain`, `instance`, `instances`, `justify` and
 `prove` return `ReasonError::UnknownClass` (CLI: `class IRI not in ontology`,

@@ -187,9 +187,14 @@ or under-approximate.
 
 ```json
 { "schema_version": 1, "incomplete": bool,
+  "consistency_undetermined": bool,
   "same_groups": [[iri, ...], ...],
   "different_pairs": [[a_iri, b_iri], ...] }
 ```
+
+`consistency_undetermined` was added in #369 without a `schema_version` bump;
+see the `*-expr` section. Here it is set when a probe (not a told or
+saturation-derived pair) merged or separated two individuals.
 
 `same_groups` = entailed same-individual equivalence groups (size ≥ 2, each
 sorted, outer list sorted) — seeded from asserted `SameIndividual` plus the
@@ -361,7 +366,7 @@ main-tableau model. It is not a give-up and does not set `incomplete`.
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
   "relies_on_trusted_consistency": bool, "entailed": bool }         // subclass-expr
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
-  "instances": [iri] }                                               // instances-expr
+  "consistency_undetermined": bool, "instances": [iri] }             // instances-expr
 ```
 
 - `incomplete`: a probe gave up (node cap; for `instances-expr` also the per-probe deadline or
@@ -374,5 +379,13 @@ main-tableau model. It is not a give-up and does not set `incomplete`.
   "satisfiable" / "not entailed" / member list is not proven complete, not that it is wrong (the
   meaning `classify --json` uses).
 - `relies_on_trusted_consistency` (#401): see the `prove --json` note above.
+- `consistency_undetermined` (`instances-expr` only; #369, added without a `schema_version`
+  bump): set only on a POSITIVE answer (a non-empty `instances`) when the KB's
+  consistency stayed undetermined: the consistency wedge stalled or was cut, and the
+  main-tableau tail (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`) is off by default. On an
+  inconsistent KB every such answer holds vacuously, so the answer is then not known to be more
+  than that. Not a give-up; does not set `incomplete`.
 - All three run under the single-query node cap (`RUSTDL_QUERY_MAX_NODES`, default 500000). On an
-  inconsistent KB all three error (`Inconsistent`, exit 1) instead of printing JSON.
+  inconsistent KB all three error (`Inconsistent`, exit 1) instead of printing JSON. Since #369
+  `instances-expr` also errors on an inconsistency only the consistency wedge finds, checked
+  after a positive answer; `sat-expr` / `subclass-expr` do not yet (a follow-up).

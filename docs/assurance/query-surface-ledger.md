@@ -6,7 +6,8 @@ Work package A2 of the correctness assurance programme (#363). The
 **when a probe reaches no verdict, does the caller find out?**
 
 Checked against `main` at `0bbe276c` (31 October 2026); the `consistent` trust row
-(#392) against `83853936` (2 November 2026).
+(#392) against `83853936`, and the #369 consistency rows against `47c28f32`
+(both 2 November 2026).
 
 ## The rule
 
@@ -64,6 +65,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `sat-expr`, `subclass-expr`, `instances-expr` | as `sat` / `subclass` / `instances` (same single-query node cap) | `CeVerdict` / `CeInstances` `incomplete`; separately `completeness_guaranteed` (pure-EL fast path, or for `instances-expr` the realize saturation fast path, and nothing cut) | `sat-expr`/`subclass-expr`: `unknown`, exit 3; `instances-expr`: stderr warning | `incomplete` (`sat-expr`/`subclass-expr` exit 3), `completeness_guaranteed` | warns | `expr_give_up_cli.rs`; `test_expr_give_up.py` |
 | `disjoint` (classes) | per-pair deadline, node cap | `DisjointClasses::incomplete` | yes | `incomplete` | warns | `disjoint_nodecap.rs` |
 | `individuals` | per-pair deadline, node cap | `incomplete` | yes | `incomplete` | warns | individuals tests |
+| `instance`, `instances`, `instances-expr`, `individuals`: consistency (#369) | not a give-up: a POSITIVE answer (an instance, a merge, a difference) on a KB whose consistency the lazy check left undetermined (the consistency wedge stalled or was cut; the main-tableau tail `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL` is off by default). An inconsistency the check witnesses is `Err(Inconsistent)`, exit 1, "ontology is inconsistent". A negative answer never runs the check | `InstanceFlags::consistency_undetermined`; `SameIndividuals` / `DifferentIndividuals` / `CeInstances` `consistency_undetermined()` | answer unchanged, exit 0, one stderr warning | `consistency_undetermined` (`individuals`, `instances-expr`); `instance` / `instances` have no `--json` | `ConsistencyUndeterminedWarning` | `lazy_query_consistency.rs`, `lazy_query_consistency_cli.rs`, `test_lazy_query_consistency.py` |
 | `property-values` (object) | per-pair deadline, node cap; fragment whitelist | `incomplete` | yes | `incomplete` | warns | property-values tests |
 | `justify` (incl. `--all`, `--laconic`) | any probe under it: node cap (`RUSTDL_MAX_NODES`), a cut instance probe, the consistency fallback deadline. Top-level probe → no verdict; a QuickXplain subset probe → non-minimal; an enumeration branch probe → a justification may be missing (#396) | `JustifyOutcome { status: Verdict, incomplete }` from the `*_reporting` finders; `minimal_guaranteed` cleared on a QuickXplain give-up | top level: `unknown`, exit 3; otherwise stderr warning | `status: "unknown"` (exit 3), `incomplete`; `enumeration_complete: false` under `--all` | `justify`, `justify_all`, `PreparedOntology.justify*` warn | `justify_give_up.rs` (CLI, reasoner); `test_justify_give_up.py` |
 | `repair` | as `justify`, plus each candidate's verification probe | `Repairs::incomplete`; `complete` cleared; a candidate whose verification gave up is dropped and counted in `unverified_gave_up` | top level: `unknown`, exit 3; otherwise stderr warning and a note | no `--json` | `repair` warns | same |
@@ -118,6 +120,19 @@ about its signal, so each is filed rather than fixed here.
   one-line change. A wrong trusted `Sat` there is a miss, never a
   false positive. The Protégé plugin reads `classify --json`'s `consistent`, not
   `consistent --json`. Not filed.
+- **#369's lazy consistency check, not yet on every surface.** `instance`,
+  `instances`, `instances-expr` and `individuals` run it after a positive answer,
+  on the ontology their probes already prepared. `sat-expr`, `subclass-expr`,
+  `materialize_*` and `property-values` (`inferred_object_property_values`) still
+  have only the #313 pre-checks, so on a KB only the wedge or the tableau finds
+  inconsistent they return the vacuous answers. They hold no prepared ontology,
+  so the check would newly cost a full prepare: measured on the ORE pool,
+  `subclass-expr C owl:Thing` lost 23 of 1,054 answers to a 30 s cap. A follow-up
+  PR (#369) covers the four together, aimed at reusing or bounding that prepare.
+  `disjoint_classes` already errors on classify's inconsistency verdict, which
+  includes the wedge. With the tail off, an inconsistency only the main tableau
+  can find (the wedge stalls) is reported as `consistency_undetermined`, not as an
+  error; on the ORE pool the tail ran 82 times and found none.
 - **single queries that drop the `ABox` (#401)**: `sat`, `subclass`, `explain`,
   `sat-expr` and `subclass-expr` drop the `ABox` seed when the ontology and the
   query have no nominal and the KB is consistent (`RUSTDL_QUERY_TBOX_ONLY`,

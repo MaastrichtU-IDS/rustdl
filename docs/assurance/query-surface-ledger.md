@@ -55,6 +55,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `instance` | per-probe deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, default 750 ms), node cap, depth bail-out | `is_instance_of_reporting` | `unknown`, exit 3 | no `--json` | `is_instance_of` warns | `query_give_up.rs`; `test_query_give_up.py` |
 | `instances` | same | `instances_of_reporting` | stderr warning | no `--json` | `instances_of` warns | same |
 | `realize` | same, plus the node cap with the per-probe deadline disabled (`=0`) | `Realization::incomplete()` | stderr warning | `incomplete` | `realize` warns | same |
+| `realize` direct types (#388) | the check of two most-specific types the hierarchy left undecided: per-probe deadline, node cap, depth bail-out (or the check is off, `RUSTDL_REALIZE_VERIFY_DIRECT=0`). Not a missing type: a listed type may be a superclass of another. Never set on the saturation fast path | `Realization::direct_types_unverified()` | stderr warning | `direct_types_unverified` | `realize` warns `DirectTypesUnverifiedWarning` | `realize_direct_types.rs`, `realize_direct_types_cap.rs`; `test_direct_types_unverified_warning` |
 | `sat-expr`, `subclass-expr`, `instances-expr` | as `sat` / `subclass` / `instances` (same single-query node cap) | `CeVerdict` / `CeInstances` `incomplete`; separately `completeness_guaranteed` (pure-EL fast path, or for `instances-expr` the realize saturation fast path, and nothing cut) | `sat-expr`/`subclass-expr`: `unknown`, exit 3; `instances-expr`: stderr warning | `incomplete` (`sat-expr`/`subclass-expr` exit 3), `completeness_guaranteed` | warns | `expr_give_up_cli.rs`; `test_expr_give_up.py` |
 | `disjoint` (classes) | per-pair deadline, node cap | `DisjointClasses::incomplete` | yes | `incomplete` | warns | `disjoint_nodecap.rs` |
 | `individuals` | per-pair deadline, node cap | `incomplete` | yes | `incomplete` | warns | individuals tests |
@@ -89,9 +90,6 @@ about its signal, so each is filed rather than fixed here.
   `incomplete` (`witness_prune_active` reports that the prune ran). It is on for
   nearly every off-fragment ontology with individuals, so a warning on the flag
   alone would fire almost always. #387.
-- **realize's classify step** runs under a deadline whose cut pairs are not
-  folded into `Realization::incomplete`, so `direct_types` can be non-minimal
-  (never a false type). #388.
 - **disjoint properties, the property hierarchy and data property values** are
   structural. #389 and #390 give them their own signal, `structural_gaps` (CLI
   `--json`, one stderr line in text mode, Python `StructuralGapWarning`), and fix

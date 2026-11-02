@@ -366,12 +366,34 @@ def instances_of(path, class_iri):
     return members
 
 
+class DirectTypesUnverifiedWarning(UserWarning):
+    """Raised by `realize` when some individual has two most-specific types
+    whose subsumption could not be decided (#388): a listed type may be a
+    superclass of another listed type. Every listed type is still a genuine
+    type. Deliberately NOT an `IncompleteQueryWarning`, which means a type may
+    be MISSING; this means one may be EXTRA. It is set when the check was cut by
+    the per-pair budget or node cap, so more time
+    (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`) can clear it; when the check is off
+    (`RUSTDL_REALIZE_VERIFY_DIRECT=0`); and by `realize_saturation_only`, which
+    runs no check."""
+
+
 def realize(path):
     """Map each named individual to its most-specific entailed types. Emits
     `IncompleteQueryWarning` when an instance probe was cut (types may be
-    missing)."""
-    types, incomplete = _realize_native(path)
+    missing), and `DirectTypesUnverifiedWarning` when two most-specific types
+    of an individual could not be compared (a listed type may not be the most
+    specific)."""
+    types, incomplete, unverified = _realize_native(path)
     _warn_if_query_incomplete("realize", incomplete)
+    if unverified:
+        _warnings.warn(
+            "realize: some individual has two most-specific types whose "
+            "subsumption could not be decided, so a listed type may be a "
+            "superclass of another; every listed type is a genuine type.",
+            DirectTypesUnverifiedWarning,
+            stacklevel=2,
+        )
     return types
 
 
@@ -647,6 +669,7 @@ __all__ = [
     "Classification",
     "IncompleteClassificationWarning",
     "IncompleteQueryWarning",
+    "DirectTypesUnverifiedWarning",
     "StructuralGapWarning",
     "TrustedConsistencyWarning",
     "classify",

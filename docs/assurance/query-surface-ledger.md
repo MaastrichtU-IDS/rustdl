@@ -189,5 +189,13 @@ ratchets (`--sabotage`):
 - R2: `RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` on `tests/fixtures/laws/complex_qualifier_98.ofn`;
 - R3: `RUSTDL_CLASSIFY_INCONSISTENCY=0` on `family.ofn`.
 
+Two laws had **0 checks** in the first full run (30 ontologies, `--pair-timeout-ms 1000`):
+
+- L4: `classify --json` on `family.ofn` reports `consistent: true` with
+  `consistency_undetermined: true` on this host (its ABox pre-check runs out of budget
+  on a slow machine), so neither L4 nor R3 applies. That is the signal working as
+  intended, and it depends on the host.
+- L11: `individuals` was killed at 30 s wherever it ran (pizza, ro).
+
 The quick mode is a local gate:
 `cargo test --release -p owl-dl-cli --test cross_command_laws -- --ignored`.

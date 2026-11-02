@@ -14,7 +14,9 @@ Hard laws (a violation fails the run):
   L1  classify closure A ⊑ B            => `subclass A B` = yes
   L2  classify equivalence {A, B}       => `subclass` both ways = yes
   L3  classify unsat C                  => `sat C` = unsat
-  L4  classify `consistent: false`      => `consistent` = inconsistent   (smoke)
+  L4  classify `consistent: false`      => `consistent` = inconsistent   (smoke;
+      never exercised on the curated corpus here: family's classify reports
+      `consistency_undetermined: true` at `--pair-timeout-ms 1000` on this host)
   L5  `consistent` = inconsistent       => the guarded surfaces (instance,
       realize, disjoint, individuals, *-expr) answer yes or error
       `Inconsistent`, never "no". `sat`/`subclass`/`explain` are excluded: they
@@ -27,6 +29,8 @@ Hard laws (a violation fails the run):
   L8  `classify --saturation-only` closure ⊆ classify closure
   L10 realize type C of a               => `instance C a` = yes
   L11 `individuals` different (a, b)    => `sat-expr "{a} and {b}"` = unsat
+      (never exercised in the first full run: `individuals` was killed at 30 s
+      wherever it ran)
 
 Ratchets (counted against a committed per-ontology baseline):
   R1  `subclass A B` = yes, classify closure lacks (A, B)
@@ -260,7 +264,7 @@ def _base(r):
     c = cmdline(r)
     if r["killed"]:
         return ans("unknown", f"killed at {CALL_TIMEOUT_S}s", c, None)
-    if r["rc"] == 1 and "inconsistent" in r["stderr"]:
+    if r["rc"] == 1 and "ontology is inconsistent" in r["stderr"]:
         return ans("inconsistent", "error Inconsistent", c, 1)
     if r["rc"] == 3:
         return ans("unknown", "exit 3 (gave up)", c, 3)
@@ -496,19 +500,25 @@ def evaluate(obs):
                 out.append(check(law, o, a["v"] == "yes",
                                  f"classify has {s} ⊑ {t}, subclass says {a['v']}", cl_op, a)
                            if definite(a) else unresolved(law, o, a))
+            elif not definite(a):
+                out.append(unresolved("R1", o, a))
             elif a["v"] == "yes" and s not in unsat and t not in unsat:
+                # #3: under a budget cut classify may lack an entailed pair; the
+                # discrepancy is still listed and HermiT-checked, but not ratcheted.
                 out.append(outcome("R1", o, "discrepancy",
                                    f"subclass says {s} ⊑ {t}, classify lacks it", cl_op, a)
-                           | dict(pair=[s, t]))
+                           | dict(pair=[s, t], budget_cut=bool(c.get("incomplete"))))
         elif kind == "sat" and not kb_inconsistent and cl_ok:
             x = key[1]
             if x in unsat:
                 out.append(check("L3", o, a["v"] == "no", f"classify unsat {x}, sat says {a['v']}",
                                  cl_op, a) if definite(a) else unresolved("L3", o, a))
+            elif not definite(a):
+                out.append(unresolved("R2", o, a))
             elif a["v"] == "no":
                 out.append(outcome("R2", o, "discrepancy",
                                    f"sat says {x} unsat, classify lists it satisfiable", cl_op, a)
-                           | dict(pair=[x, NOTHING]))
+                           | dict(pair=[x, NOTHING], budget_cut=bool(c.get("incomplete"))))
         elif kind == "sat-expr" and not kb_inconsistent:
             n = q.get(("sat", key[1]))
             if n is None:
@@ -555,6 +565,10 @@ def evaluate(obs):
                                      f"{key[1]} is not unsat", q.get(("disjoint",)), s, sa))
             else:
                 out.append(unresolved("L7", o, a))
+        elif kind in ("disjoint", "individuals", "realize") and not kb_inconsistent:
+            if a["v"] != "ok":
+                law = {"disjoint": "L7", "individuals": "L11", "realize": "L10"}[kind]
+                out.append(unresolved(law, o, a))
         elif kind == "sat-expr-nom":
             out.append(check("L11", o, a["v"] == "no",
                              f"individuals says {key[1]} ≠ {key[2]}, sat-expr says satisfiable",
@@ -616,7 +630,8 @@ def adjudicate(outcomes, spec, hermit=None):
             continue
         s, t = d["pair"]
         if oracle is None:
-            d["verdict"] = "no oracle: manual adjudication"
+            d["verdict"] = ("no Konclude oracle: HermiT decides" if hermit and d["law"] in ("R1", "R2")
+                            else "no oracle: manual adjudication")
         elif d["law"] == "R1":
             d["verdict"] = "classify miss (Konclude has it)" if (s, t) in oracle[0] \
                 else "candidate FP (Konclude lacks it)"
@@ -625,7 +640,10 @@ def adjudicate(outcomes, spec, hermit=None):
                 else "candidate FP (Konclude: satisfiable)"
         else:
             d["verdict"] = "classify miss (residual of #392)"
-        if hermit and d["verdict"].startswith("candidate FP"):
+        if d.get("budget_cut"):
+            d["verdict"] += "; classify was budget-cut (incomplete), not ratcheted"
+        if hermit and (d["verdict"].startswith("candidate FP")
+                       or d["verdict"].startswith("no Konclude oracle")):
             d["hermit"] = hermit(spec, d)
     return outcomes
 
@@ -640,7 +658,8 @@ def hermit_check(spec, d):
     java = Path(os.environ.get("JAVA_HOME", "")) / "bin" / "java"
     if not robot.exists() or not java.exists():
         return "unavailable"
-    out = Path(os.environ.get("TMPDIR", "/tmp")) / f"hermit-{spec['id']}.ofn"
+    digest = hashlib.md5(Path(spec["path"]).read_bytes()).hexdigest()[:10]
+    out = Path(os.environ.get("TMPDIR", "/tmp")) / f"hermit-{spec['id']}-{digest}.ofn"
     if not out.exists():
         p = subprocess.run([str(java), "-jar", str(robot), "reason", "--reasoner", "hermit",
                             "--axiom-generators", "SubClass EquivalentClass",
@@ -786,6 +805,40 @@ def self_test():
                   ([("http://e#A", "http://e#B"), ("http://e#A", "http://e#C"),
                     ("http://e#B", "http://e#C"), ("http://e#C", "http://e#B")], ["http://e#D"])))
 
+    # Readers, on records shaped like Runner.run's.
+    rec = lambda rc, out="", err="", killed=False: dict(
+        args=["sat", "f", "C"], env={}, rc=rc, killed=killed, stdout=out, stderr=err)
+    cases.append(("reader: sat", read_token(rec(0, "sat\n"), "sat", "unsat")["v"], "yes"))
+    cases.append(("reader: unsat", read_token(rec(0, "unsat\n"), "sat", "unsat")["v"], "no"))
+    cases.append(("reader: exit 3", read_token(rec(3, "unknown\n"), "sat", "unsat")["v"], "unknown"))
+    cases.append(("reader: killed", read_token(rec(None, killed=True), "sat", "unsat")["v"], "unknown"))
+    cases.append(("reader: Inconsistent error",
+                  read_token(rec(1, err="Error: x\nCaused by:\n    ontology is inconsistent; every"),
+                             "sat", "unsat")["v"], "inconsistent"))
+    cases.append(("reader: other error mentioning inconsistent",
+                  read_token(rec(1, err="Error: inconsistent role hierarchy"), "sat", "unsat")["v"],
+                  "unknown"))
+    cases.append(("reader: json give-up",
+                  read_json(rec(3, '{"incomplete": true, "satisfiable": true}'), "satisfiable")["v"],
+                  "unknown"))
+    cases.append(("reader: json definite",
+                  read_json(rec(0, '{"incomplete": false, "satisfiable": false}'), "satisfiable")["v"],
+                  "no"))
+    cases.append(("reader: payload kept on give-up",
+                  read_payload(rec(0, '{"incomplete": true, "instances": ["a"]}'))["extra"]["instances"],
+                  ["a"]))
+    # Unknown operands are recorded, never dropped.
+    ob = dict(onto="t", q={("subclass", "A", "B"): U, ("sat", "C"): U,
+                           ("disjoint",): U, ("individuals",): U, ("realize",): U},
+              classify=base()["classify"])
+    cases.append(("unknowns recorded as unresolved", laws_of(ob, "unresolved"),
+                  ["L10", "L11", "L7", "R1", "R2"]))
+    # A budget-cut classify: R1 listed but not ratcheted.
+    ob = dict(onto="t", q={("subclass", "A", "B"): Y}, classify=base(incomplete=True)["classify"])
+    res = [dict(onto="t", outcomes=evaluate(ob))]
+    cases.append(("budget-cut R1 not ratcheted",
+                  (laws_of(ob, "discrepancy"), dict(summarize(res, {})[2])), (["R1"], {})))
+
     bad = 0
     for name, got, want in cases:
         ok = got == want
@@ -823,10 +876,20 @@ def corpus(args):
     return specs, missing
 
 
+def _pin_worker(cores_q):
+    """Pool initializer: pin THIS worker (and the rustdl processes it starts) to
+    one core, so no two workers share a core whatever job order the pool picks."""
+    core = cores_q.get()
+    if core is not None:
+        os.sched_setaffinity(0, {core})
+
+
 def run_one(job):
     spec, binary, core, outdir, seed, env_extra = job
     tag = "-".join(f"{k}={v}" for k, v in sorted(env_extra.items())) or "default"
-    runner = Runner(binary, core, outdir / f"calls-{spec['id']}-{tag}.jsonl", env_extra)
+    # The cache is per binary: a new pin never resumes another binary's answers.
+    sha12 = hashlib.sha256(Path(binary).read_bytes()).hexdigest()[:12]
+    runner = Runner(binary, core, outdir / f"calls-{spec['id']}-{tag}-{sha12}.jsonl", env_extra)
     t0 = time.monotonic()
     caps = dict(DEFAULT_CAPS, **spec.get("caps", {}))
     obs = observe(spec, runner, caps, seed, log=lambda *a: print(*a, flush=True))
@@ -845,7 +908,7 @@ def summarize(results, baseline):
             by_law[o["law"]][o["kind"]] += 1
             if o["kind"] == "violation":
                 fails.append(o)
-            if o["kind"] == "discrepancy":
+            if o["kind"] == "discrepancy" and not o.get("budget_cut"):
                 ratchet[(res["onto"], o["law"])] += 1
                 # hermit_check reports whether HermiT CONFIRMS rustdl's per-pair
                 # claim; a refuted claim is a confirmed false positive.
@@ -911,13 +974,18 @@ def main():
         (a.out / "sabotage.json").write_text(json.dumps(rows, indent=1))
         return 1 if bad else 0
 
+    import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
-    jobs = [(s, binary, cores[i % len(cores)], a.out, a.seed, {}) for i, s in enumerate(specs)]
+    jobs = [(s, binary, None, a.out, a.seed, {}) for s in specs]
+    cores_q = multiprocessing.get_context().Queue()
+    for c_ in cores:
+        cores_q.put(c_)
     print(f"binary {binary} sha256 {sha[:12]} {version}; {len(specs)} ontologies on cores {cores}"
           + (f"; missing fixtures: {missing}" if missing else ""), flush=True)
     t0 = time.monotonic()
     results = []
-    with ProcessPoolExecutor(max_workers=len(cores)) as ex:
+    with ProcessPoolExecutor(max_workers=len(cores), initializer=_pin_worker,
+                             initargs=(cores_q,)) as ex:
         for res in ex.map(run_one, jobs):
             results.append(res)
             print(f"done {res['onto']}: {res['calls']} calls, {res['kills']} kills, "

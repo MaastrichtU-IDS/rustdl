@@ -109,26 +109,44 @@ and meaning as in `sat-expr`, `subclass-expr` and `prove --json` (#401).
 
 ```json
 { "schema_version": 1, "incomplete": bool, "witness_prune_active": bool,
+  "witness_prune_may_drop": bool, "witness_prune_reasons": [string],
   "direct_types_unverified": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
 ```
 
-Every listed type is entailed. The three flags are separate claims; none implies
+Every listed type is entailed. The flags are separate claims; apart from
+`witness_prune_may_drop` (which needs `witness_prune_active`), none implies
 another:
 
 - `incomplete` = an instance probe was cut (deadline, node cap or depth limit),
   so a type may be MISSING from `types` and `direct_types`.
 - `witness_prune_active` = the pseudo-model witness prune was applied, so some
-  non-memberships were skipped rather than refuted; it can drop an entailed type
-  without setting `incomplete`.
+  non-memberships were skipped rather than refuted. It is true on almost every
+  off-fragment ontology with individuals.
+- `witness_prune_may_drop` = the prune was applied AND its witness has a known
+  reason to lack an entailed type (#387), so a type may be MISSING without
+  `incomplete` being set. `witness_prune_reasons` names the reasons (empty when
+  the prune was not applied):
+  - `branched`: the witness search chose a disjunct or a `≤n` merge, so its
+    labels are one branch's pre-model;
+  - `deferred_clauses`: the clausifier set axioms aside from the witness engine;
+  - `refused_clauses`: the witness engine's matcher refuses some clauses;
+  - `reseed_net_off`: `RUSTDL_RESEED_VERIFY=0` with the incremental fixpoint on;
+  - `inverse_functional_max_off`: `RUSTDL_INVERSE_FUNC_MAX=0`.
+
+  `false` with the prune applied means **no known reason for loss**: the witness
+  came from the engine's deterministic closure over its full clause set, with no
+  choice taken. It is **not a guarantee**: it rests on that closure being
+  complete as implemented, and the bake-off behind it found no loss in either
+  bucket, so it has no positive control.
 - `direct_types_unverified` = some individual has two `direct_types` whose
   subsumption was left undecided (#388), so a `direct_types` entry may be a strict
   superclass of another; `types` is unaffected. Off the saturation fast path such
   pairs are checked with the main tableau, so it is set only when a check was cut
   (or `RUSTDL_REALIZE_VERIFY_DIRECT=0`). The saturation-only realize runs no check,
   so there any undecided pair sets it. It does not cover a type dropped through
-  `incomplete` or `witness_prune_active`, which can also leave a superclass listed.
+  `incomplete` or the prune, which can also leave a superclass listed.
 
 `dropped` maps each axiom kind dropped at conversion to its count (empty when
 nothing was dropped).

@@ -59,8 +59,9 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `instances` | same | `instances_of_reporting` | stderr warning | no `--json` | `instances_of` warns | same |
 | `realize` | same, plus the node cap with the per-probe deadline disabled (`=0`) | `Realization::incomplete()` | stderr warning | `incomplete` | `realize` warns | same |
 | `realize` direct types (#388) | the check of two most-specific types the hierarchy left undecided: per-probe deadline, node cap, depth bail-out (or the check is off, `RUSTDL_REALIZE_VERIFY_DIRECT=0`). Not a missing type: a listed type may be a superclass of another. Never set on the saturation fast path | `Realization::direct_types_unverified()` | stderr warning | `direct_types_unverified` | `realize` warns `DirectTypesUnverifiedWarning` | `realize_direct_types.rs`, `realize_direct_types_cap.rs`; `test_direct_types_unverified_warning` |
-| `materialize_existential_successors` (#391) | as `realize`; the rows join on ENTAILED types, so `direct_types_unverified` does not apply | `materialize_existential_successors_reporting` → `ExistentialSuccessorFlags::{incomplete, witness_prune_active}` | no CLI surface | — | warns `IncompleteQueryWarning` | `materialize_realize_flags.rs`, `materialize_realize_flags_cap.rs`; `test_materialize_flags.py` |
-| Python `materialize_inferred_class_assertions` (#391) | as `realize` (most-specific types) | — (Python only, over `realize`) | no CLI surface | — | warns `IncompleteQueryWarning` and `DirectTypesUnverifiedWarning` | `test_materialize_flags.py` |
+| `realize` pseudo-model prune (#387) | not a give-up: the prune answered "not a type" from one witness model (no probe), and that witness has a known reason to lack an entailed type: its search chose a disjunct or merge (`branched`), axioms were deferred or refused, or `RUSTDL_RESEED_VERIFY=0` / `RUSTDL_INVERSE_FUNC_MAX=0`. `false` means no known reason for loss, not a guarantee (the 2026-11-02 bake-off found no loss in either bucket, so it has no positive control). `witness_prune_active` alone says only that the prune ran. Both are `false` by construction on the realize saturation fast path, on `RUSTDL_PSEUDO_MODEL=0`, and on `instance` / `instances`, which build no witness | `Realization::witness_prune_may_drop()`, `witness_prune_reasons()` | stderr warning naming the reasons | `witness_prune_may_drop`, `witness_prune_reasons` | `realize` warns `WitnessPruneWarning` | `witness_prune_reasons.rs` (CLI), `materialize_realize_flags.rs`; `test_materialize_flags.py` |
+| `materialize_existential_successors` (#391) | as `realize`; the rows join on ENTAILED types, so `direct_types_unverified` does not apply | `materialize_existential_successors_reporting` → `ExistentialSuccessorFlags::{incomplete, witness_prune_active, witness_prune_may_drop}` | no CLI surface | — | warns `IncompleteQueryWarning` and `WitnessPruneWarning` | `materialize_realize_flags.rs`, `materialize_realize_flags_cap.rs`; `test_materialize_flags.py` |
+| Python `materialize_inferred_class_assertions` (#391) | as `realize` (most-specific types) | — (Python only, over `realize`) | no CLI surface | — | warns `IncompleteQueryWarning`, `DirectTypesUnverifiedWarning` and `WitnessPruneWarning` | `test_materialize_flags.py` |
 | Python `materialize_inferred_subclass_axioms` (#391) | as `classify` | — (Python only, over `classify`) | no CLI surface | — | the same `IncompleteClassificationWarning`s as `classify` | `test_materialize_flags.py` |
 | `sat-expr`, `subclass-expr`, `instances-expr` | as `sat` / `subclass` / `instances` (same single-query node cap) | `CeVerdict` / `CeInstances` `incomplete`; separately `completeness_guaranteed` (pure-EL fast path, or for `instances-expr` the realize saturation fast path, and nothing cut) | `sat-expr`/`subclass-expr`: `unknown`, exit 3; `instances-expr`: stderr warning | `incomplete` (`sat-expr`/`subclass-expr` exit 3), `completeness_guaranteed` | warns | `expr_give_up_cli.rs`; `test_expr_give_up.py` |
 | `disjoint` (classes) | per-pair deadline, node cap | `DisjointClasses::incomplete` | yes | `incomplete` | warns | `disjoint_nodecap.rs` |
@@ -93,10 +94,6 @@ These are not cut probes; they are surfaces that compute less than the
 entailments and still report a complete-looking answer. Each needs a decision
 about its signal, so each is filed rather than fixed here.
 
-- **realize's pseudo-model prune** drops entailed types without setting
-  `incomplete` (`witness_prune_active` reports that the prune ran). It is on for
-  nearly every off-fragment ontology with individuals, so a warning on the flag
-  alone would fire almost always. #387.
 - **disjoint properties, the property hierarchy and data property values** are
   structural. #389 and #390 give them their own signal, `structural_gaps` (CLI
   `--json`, one stderr line in text mode, Python `StructuralGapWarning`), and fix
@@ -104,10 +101,6 @@ about its signal, so each is filed rather than fixed here.
   top/bottom, one-leg chains, anonymous individuals). `incomplete` stays a
   give-up signal. See the
   [completeness ledger](completeness-guarantee-ledger.md#structural-property-surfaces-389-390).
-- **`witness_prune_active` in Python**: no Python surface reports it, `realize`
-  and the materialize functions alike, until #387 settles the signal (see the
-  pseudo-model prune above). The Rust `materialize_existential_successors_reporting`
-  carries it.
 - **other readers of a trusted consistency `Sat`** do not pass #392's flag on.
   `consistent` itself reports it (see its row). These also trust the wedge's
   `Sat` and do not say so: `classify`'s consistency pre-check (`lib.rs`,

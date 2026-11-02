@@ -757,12 +757,17 @@ pub fn instances_of_saturation_only_internal(
 
 /// Why the pseudo-model witness may not be the engine's deterministic closure
 /// over the whole KB, so that a class absent from it may still be entailed
-/// (#387). Each is read off the witness build itself. All `false` means the
-/// witness labels are the engine's Horn closure, as implemented, over every
-/// clause it was given: absence from them is not the case-analysis loss the
-/// 2026-08-22 bake-off measured. That is NOT a proof that every pruned pair is a
-/// non-instance; it rests on the wedge's Horn completeness, the same trust
-/// `classify`'s `trust_sat` places in it (#124).
+/// (#387). Each is read off the witness build itself.
+///
+/// All `false` means **no known reason for loss**: the witness came from the
+/// engine's deterministic closure over its full clause set, with no choice
+/// taken, so absence from it is not the case-analysis loss the 2026-08-22
+/// bake-off measured. It is **not a guarantee** that every pruned pair is a
+/// non-instance. It rests on the wedge's Horn closure being complete as
+/// implemented, the same trust `classify`'s `trust_sat` places in it, and that
+/// has had gaps (#124, #137). The 2026-11-02 re-run of the bake-off found no
+/// lost type in either bucket, so it has no positive control and cannot show
+/// that this flag separates safe witnesses from unsafe ones.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct WitnessPruneReasons {
@@ -855,7 +860,10 @@ pub struct Realization {
     /// type, and it does so **silently**: `incomplete` stays `false`, because no probe was
     /// cut — the prune simply never asked. Measured on ORE: 5 of 259 comparable
     /// ABox-bearing ontologies lose types (10 pairs of 3.92M), all OAEI benchmark
-    /// variants, deterministically.
+    /// variants, deterministically. A 2026-11-02 re-run on the binary that added
+    /// [`Self::witness_prune_may_drop`] found none of the 8 losers of the broader
+    /// 2026-08-22 bake-off losing a type any more, and no loss among 154 measured
+    /// prune-active ontologies (#387).
     ///
     /// A per-pair COUNT would be useless here: the prune fires on most non-types, which
     /// is why it is worth 2.4x more completions. This boolean says only that the
@@ -919,8 +927,8 @@ impl Realization {
     /// `true` iff the prune was in play AND its witness may lack an entailed type
     /// (any of [`Self::witness_prune_reasons`]), so an entailed type may be missing
     /// with no probe cut (#387). Separate from [`Self::incomplete`]. `false` with
-    /// the prune active means the witness is the engine's deterministic closure;
-    /// see [`WitnessPruneReasons`] for what that does and does not guarantee.
+    /// the prune active means no known reason for loss, not a guarantee; see
+    /// [`WitnessPruneReasons`].
     #[must_use]
     pub fn witness_prune_may_drop(&self) -> bool {
         self.witness_prune_active && self.witness_prune_reasons.any()

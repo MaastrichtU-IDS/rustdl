@@ -122,3 +122,49 @@ def test_subclass_axioms_warn_as_classify(fixtures_dir, monkeypatch):
     monkeypatch.setenv("RUSTDL_CLASSIFY_ROLE_HIERARCHY", "1")
     _, cats = _warnings(rustdl.materialize_inferred_subclass_axioms, fixture)
     assert rustdl.IncompleteClassificationWarning not in cats
+
+
+# #387: a Horn ABox, and the same with a disjunction the witness must choose.
+# `E ⊑ ∃s.H` is the told existential the successor rows join on.
+WITNESS_BASE = """Prefix(:=<http://ex/#>)
+Ontology(<http://ex/wp>
+  Declaration(Class(:D)) Declaration(Class(:E)) Declaration(Class(:F))
+  Declaration(Class(:G)) Declaration(Class(:H))
+  Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+  Declaration(NamedIndividual(:a))
+  SubClassOf(:D :E) SubClassOf(:G ObjectAllValuesFrom(:r :F))
+  SubClassOf(:E ObjectSomeValuesFrom(:s :H))
+  %s
+  ClassAssertion(:D :a)
+)
+"""
+WITNESS_SURFACES = (
+    "realize",
+    "materialize_inferred_class_assertions",
+    "materialize_existential_successors",
+)
+
+
+def test_a_branched_witness_warns_witness_prune(tmp_path, monkeypatch):
+    horn, union = tmp_path / "horn.ofn", tmp_path / "union.ofn"
+    horn.write_text(WITNESS_BASE % "")
+    union.write_text(WITNESS_BASE % "SubClassOf(:D ObjectUnionOf(:F :G))")
+    # Keep the disjunction a search decision rather than a lookahead deduction.
+    monkeypatch.setenv("RUSTDL_SEMANTIC_BRANCHING", "0")
+    monkeypatch.setenv("RUSTDL_SAT_LOOKAHEAD", "0")
+    for name in WITNESS_SURFACES:
+        fn = getattr(rustdl, name)
+        value, cats = _warnings(fn, str(union))
+        assert rustdl.WitnessPruneWarning in cats, name
+        # Its own warning: nothing was cut.
+        assert rustdl.IncompleteQueryWarning not in cats, name
+        _, cats = _warnings(fn, str(horn))
+        assert rustdl.WitnessPruneWarning not in cats, f"{name} warned on a Horn witness"
+        # Only a signal: the answer is that of the unpruned run, which warns nothing.
+        monkeypatch.setenv("RUSTDL_PSEUDO_MODEL", "0")
+        off, cats = _warnings(fn, str(union))
+        monkeypatch.delenv("RUSTDL_PSEUDO_MODEL")
+        assert rustdl.WitnessPruneWarning not in cats, name
+        assert value == off, name
+    rows, _ = _warnings(rustdl.materialize_existential_successors, str(union))
+    assert rows == [("http://ex/#a", "http://ex/#s", "_:b0", "http://ex/#H")]

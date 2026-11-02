@@ -84,19 +84,24 @@ pub(crate) fn instances_of(path: &str, class_iri: &str) -> PyResult<(Vec<String>
     Ok((members, flags.incomplete, flags.consistency_undetermined))
 }
 
-/// `(types, incomplete, direct_types_unverified)`: each named individual mapped
-/// to its most-specific entailed types; `incomplete` means at least one instance
-/// probe was cut (`Realization::incomplete`); `direct_types_unverified` means a
-/// most-specific set may list a superclass of another listed type
-/// (`Realization::direct_types_unverified`, #388).
+/// `(types, incomplete, direct_types_unverified, witness_prune_may_drop)`: each
+/// named individual mapped to its most-specific entailed types; `incomplete`
+/// means at least one instance probe was cut (`Realization::incomplete`);
+/// `direct_types_unverified` means a most-specific set may list a superclass of
+/// another listed type (`Realization::direct_types_unverified`, #388);
+/// `witness_prune_may_drop` means the pseudo-model prune ran on a witness with a
+/// known reason to lack an entailed type (`Realization::witness_prune_may_drop`,
+/// #387).
 #[pyfunction]
-pub(crate) fn realize(path: &str) -> PyResult<(HashMap<String, Vec<String>>, bool, bool)> {
+#[allow(clippy::type_complexity)]
+pub(crate) fn realize(path: &str) -> PyResult<(HashMap<String, Vec<String>>, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let rs_realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     Ok((
         realization_to_dict(&rs_realization),
         rs_realization.incomplete(),
         rs_realization.direct_types_unverified(),
+        rs_realization.witness_prune_may_drop(),
     ))
 }
 

@@ -109,3 +109,43 @@ fn no_told_existential_means_no_flags() {
     assert!(rows.is_empty());
     assert_eq!(flags, ExistentialSuccessorFlags::default());
 }
+
+/// #387: `SRC` is Horn, so its witness is the deterministic closure; adding
+/// `C ⊑ D ⊔ E` makes the witness search choose, which `witness_prune_may_drop`
+/// reports on `Realization` and on the successor rows' flags. The search
+/// shortcuts that could settle a disjunction without a decision are pinned off.
+#[test]
+fn a_branched_witness_is_reported_and_a_horn_one_is_not() {
+    let _l = lock();
+    let _sb = SetEnv::new("RUSTDL_SEMANTIC_BRANCHING", "0");
+    let _la = SetEnv::new("RUSTDL_SAT_LOOKAHEAD", "0");
+    let horn = parse(SRC);
+    let union = parse(&SRC.replace(
+        "ClassAssertion(:C :a)",
+        "SubClassOf(:C ObjectUnionOf(:D :E)) ClassAssertion(:C :a)",
+    ));
+
+    let r = owl_dl_reasoner::realize(&horn).unwrap();
+    assert!(r.witness_prune_active());
+    assert!(!r.witness_prune_may_drop());
+    assert!(!r.witness_prune_reasons().any());
+    let (_, flags) = materialize_existential_successors_reporting(&horn).unwrap();
+    assert!(flags.witness_prune_active && !flags.witness_prune_may_drop);
+
+    let r = owl_dl_reasoner::realize(&union).unwrap();
+    assert!(r.witness_prune_may_drop());
+    assert_eq!(r.witness_prune_reasons().names(), ["branched"]);
+    assert!(
+        !r.incomplete(),
+        "no probe is cut; only the prune is flagged"
+    );
+    let (_, flags) = materialize_existential_successors_reporting(&union).unwrap();
+    assert!(flags.witness_prune_may_drop);
+
+    // With the prune off there is no witness to drop anything.
+    let _off = SetEnv::new("RUSTDL_PSEUDO_MODEL", "0");
+    let r = owl_dl_reasoner::realize(&union).unwrap();
+    assert!(!r.witness_prune_active() && !r.witness_prune_may_drop());
+    let (_, flags) = materialize_existential_successors_reporting(&union).unwrap();
+    assert!(!flags.witness_prune_may_drop);
+}

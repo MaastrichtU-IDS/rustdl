@@ -224,7 +224,9 @@ pub(crate) struct IndividualTypesJson {
     pub(crate) direct_types: Vec<String>,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
 #[derive(Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct RealizeJson {
     pub(crate) schema_version: u32,
     /// At least one instance probe was CUT rather than refuted, so a reported type
@@ -238,7 +240,8 @@ pub(crate) struct RealizeJson {
     /// `incomplete: false`. See `Realization::witness_prune_active`.
     pub(crate) witness_prune_active: bool,
     /// The prune was active AND its witness may lack an entailed type (#387), so a
-    /// type may be missing with `incomplete: false`. See
+    /// type may be missing with `incomplete: false`. `false` with the prune active
+    /// means no known reason for loss, NOT a guarantee that nothing was dropped. See
     /// `Realization::witness_prune_may_drop`.
     pub(crate) witness_prune_may_drop: bool,
     /// Why the witness may lack an entailed type, as stable names (`branched`,

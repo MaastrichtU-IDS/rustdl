@@ -114,6 +114,13 @@ class DirectTypesUnverifiedWarning(UserWarning):
     not be compared, so a listed type may be a superclass of another (#388). Not
     an `IncompleteQueryWarning`: no type is missing."""
 
+class WitnessPruneWarning(UserWarning):
+    """Emitted by `realize`, `materialize_inferred_class_assertions` and
+    `materialize_existential_successors` when the pseudo-model prune answered
+    "not a type" from a witness with a known reason to lack an entailed type
+    (#387). A type may be missing although no probe was cut. Its absence means
+    no known reason for loss, not a guarantee."""
+
 class StructuralGapWarning(UserWarning):
     """Emitted by the structural property queries (`object_property_hierarchy`,
     `data_property_hierarchy`, `disjoint_object_properties`,
@@ -241,7 +248,8 @@ def realize(path: str) -> dict[str, list[str]]:
     """Map each named individual to its most-specific entailed types. Emits
     `IncompleteQueryWarning` when an instance probe was cut, and
     `DirectTypesUnverifiedWarning` when two most-specific types could not be
-    compared."""
+    compared, and `WitnessPruneWarning` when the pseudo-model prune may have
+    dropped an entailed type."""
     ...
 
 # ── inferred disjointness ───────────────────────────────────────────────────
@@ -351,8 +359,9 @@ def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:
 def materialize_inferred_class_assertions(path: str) -> list[tuple[str, str]]:
     """A (class, individual) pair for each most-specific entailed type, as `realize`
     reports them (not every entailed type). Emits `IncompleteQueryWarning` when a
-    probe was cut and `DirectTypesUnverifiedWarning` when a listed type may be a
-    superclass of another."""
+    probe was cut, `DirectTypesUnverifiedWarning` when a listed type may be a
+    superclass of another, and `WitnessPruneWarning` when the pseudo-model prune
+    may have dropped a type."""
     ...
 
 def materialize_inferred_property_assertions(path: str) -> list[tuple[str, str, str]]:
@@ -380,7 +389,8 @@ def materialize_inferred_subdataproperty_axioms(path: str) -> list[tuple[str, st
 def materialize_existential_successors(path: str) -> list[tuple[str, str, str, str]]:
     """Entailed existential successors as (subject, property, witness_blank, filler_class)
     — a blank-node representation of entailed `a : ∃R.C` (not ground triples). Emits
-    `IncompleteQueryWarning` when a probe of the `realize` run underneath was cut."""
+    `IncompleteQueryWarning` when a probe of the `realize` run underneath was cut, and
+    `WitnessPruneWarning` when its pseudo-model prune may have dropped a type."""
     ...
 
 # ── explanation & debugging ─────────────────────────────────────────────────

@@ -38,6 +38,23 @@ All notable changes to rustdl are documented here. Format is based on
   `TrustedConsistencyWarning`. It is not a give-up: stdout stays `consistent`, `incomplete` stays
   false and the exit code stays 0. `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau
   instead. `docs/json-schema.md` now lists every `consistent --json` field.
+- **`witness_prune_may_drop` on `realize`: when the pseudo-model prune may have dropped a
+  type (#387).** Off the saturation fast path, `realize` answers most "not a type" pairs from
+  one witness model instead of a probe. That witness is a pre-model when its search chose a
+  disjunct or merge, so an entailed type can be absent from it, and nothing said so:
+  `witness_prune_active` is true on almost every off-fragment ontology with individuals, and
+  Python reported nothing. The new flag is set when the prune ran AND its witness has a known
+  reason to lack a type: the search branched, the clausifier deferred axioms, the matcher
+  refused clauses, or `RUSTDL_RESEED_VERIFY=0` / `RUSTDL_INVERSE_FUNC_MAX=0`. `false` means
+  no known reason for loss, not a guarantee. Rust: `Realization::witness_prune_may_drop()`,
+  `witness_prune_reasons()` (`WitnessPruneReasons`), and
+  `ExistentialSuccessorFlags::witness_prune_may_drop`. CLI: `realize --json` fields
+  `witness_prune_may_drop` and `witness_prune_reasons`, and one stderr line in text mode.
+  Python: `WitnessPruneWarning` from `realize`, `materialize_inferred_class_assertions` and
+  `materialize_existential_successors`. A re-run of the 2026-08-22 bake-off over 1,146 ABox ORE
+  ontologies found no lost type: the 8 old losers no longer lose any, and of 308 prune-active
+  ontologies 154 were measured with the prune off (134 of 222 with the flag false, 20 of 86 with
+  it true), none losing or gaining a type.
 - **`direct_types_unverified` on `realize` (#388).** `realize` derives each individual's
   most-specific types from a class hierarchy that can cut a pair or trust a wedge `Sat`, so a
   missed subsumption could leave a superclass listed beside its subclass, with nothing said.

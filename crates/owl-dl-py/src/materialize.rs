@@ -59,14 +59,13 @@ pub(crate) fn materialize_inferred_subclass_axioms(
 ///
 /// Also returns `realize`'s `incomplete` (a probe was cut, so a type may be
 /// missing) and `direct_types_unverified` (#388: a listed type may be a
-/// superclass of another); the Python wrapper warns on them (#391).
-/// `witness_prune_active` is not returned: no Python surface reports it until
-/// #387 settles the signal.
+/// superclass of another) and `witness_prune_may_drop` (#387: the pseudo-model
+/// prune may have dropped a type); the Python wrapper warns on them (#391).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_class_assertions(
     path: &str,
-) -> PyResult<(Vec<(String, String)>, bool, bool)> {
+) -> PyResult<(Vec<(String, String)>, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     let mut out = Vec::new();
@@ -79,6 +78,7 @@ pub(crate) fn materialize_inferred_class_assertions(
         out,
         realization.incomplete(),
         realization.direct_types_unverified(),
+        realization.witness_prune_may_drop(),
     ))
 }
 
@@ -152,16 +152,18 @@ pub(crate) fn materialize_inferred_subdataproperty_axioms(
 /// restrictions, NOT entailed ground triples (the specific witness is model-relative).
 /// Raises if the ontology is inconsistent.
 ///
-/// Also returns `incomplete` from the `realize` run underneath (a probe was cut,
-/// so rows may be missing); the Python wrapper warns on it (#391).
+/// Also returns `incomplete` (a probe was cut) and `witness_prune_may_drop` (the
+/// pseudo-model prune may have dropped a type, #387) from the `realize` run
+/// underneath, either of which means rows may be missing; the Python wrapper
+/// warns on them (#391).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_existential_successors(
     path: &str,
-) -> PyResult<(Vec<(String, String, String, String)>, bool)> {
+) -> PyResult<(Vec<(String, String, String, String)>, bool, bool)> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::materialize_existential_successors_reporting(&ontology)
-        .map(|(rows, flags)| (rows, flags.incomplete))
+        .map(|(rows, flags)| (rows, flags.incomplete, flags.witness_prune_may_drop))
         .map_err(reason_error_to_py)
 }
 

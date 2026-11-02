@@ -68,7 +68,8 @@ guard's sabotage check.
   and widening it needs its own completeness argument.
 - **The guarantee covers `classify` only.** `realize`, `consistent`, `sat` and the
   inferred-query surface have their own partial signals (`incomplete`,
-  `witness_prune_active`, `direct_types_unverified` on `realize`,
+  `witness_prune_active`, `witness_prune_may_drop`, `direct_types_unverified`
+  on `realize`,
   `consistency_undetermined`, and `structural_gaps` on the
   structural property surfaces, see below) and no guarantee predicate.
   How each reports a give-up is in the

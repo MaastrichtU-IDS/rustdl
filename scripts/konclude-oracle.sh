@@ -8,7 +8,7 @@ ROBOT_IMG="${ROBOT_IMAGE:-obolibrary/robot:latest}"
 KON_IMG="konclude/konclude:latest"
 mkdir -p "$ORACLE"
 
-for f in sio sulo ro wine; do
+for f in sio sulo ro wine pizza; do
   echo "==> $f"
   # back up the HermiT oracle if present
   [[ -f "$ORACLE/$f-classified.owx" && ! -f "$ORACLE/$f-classified.hermit.owx" ]] \

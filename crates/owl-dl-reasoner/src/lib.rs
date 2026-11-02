@@ -166,6 +166,17 @@ pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
     Ok(out)
 }
 
+/// `realize` checks, with the main tableau, each pair of an individual's
+/// most-specific types that the class hierarchy decided in neither direction, and
+/// drops a type proven to be a strict superclass of another (#388). The hierarchy
+/// can cut a pair or trust a wedge `Sat`, which left such a superclass listed.
+/// Default **ON**; `RUSTDL_REALIZE_VERIFY_DIRECT=0` reverts (the pairs are then
+/// only reported, through `Realization::direct_types_unverified`).
+#[must_use]
+pub fn realize_verify_direct_enabled() -> bool {
+    std::env::var_os("RUSTDL_REALIZE_VERIFY_DIRECT").is_none_or(|v| v != "0")
+}
+
 /// Anonymous individuals take part in the `SameIndividual` folding of
 /// [`materialize_data_property_assertions`] (#390): `d(_:x, v)` and
 /// `SameIndividual(_:x, a)` give `d(a, v)`. They were skipped, so that value was
@@ -9947,8 +9958,9 @@ impl PreparedOntology {
     /// Lever A: like [`Self::decide_raw`], but for the **classification pairwise
     /// subsumption loop only** — skips the `ABox` seed when it is provably
     /// irrelevant to class subsumption (`abox_irrelevant_to_classify`: has
-    /// `ABox`, no nominals, gate on). MUST NOT be used for realize / consistency
-    /// / instance queries, which genuinely need the `ABox`. Global `ABox`
+    /// `ABox`, no nominals, gate on). MUST NOT be used for realize's instance probes,
+    /// consistency or instance queries, which genuinely need the `ABox`. (Realize's
+    /// class-subsumption check between two types, #388, may use it.) Global `ABox`
     /// inconsistency is caught by the separate pre-checks before this loop runs.
     pub(crate) fn decide_classify<F>(&self, build_test_concept: F) -> Result<bool, ReasonError>
     where

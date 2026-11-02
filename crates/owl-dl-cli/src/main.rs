@@ -2130,6 +2130,13 @@ fn main() -> Result<()> {
             if r.incomplete() {
                 warn_probes_cut("realize");
             }
+            if r.direct_types_unverified() {
+                eprintln!(
+                    "warning: realize: some individual has two direct types whose subsumption \
+                     was left undecided, so a listed direct type may be a superclass of \
+                     another; every listed type is a genuine type."
+                );
+            }
             warn_if_dropped(&dropped);
             if properties {
                 match owl_dl_reasoner::materialize_object_property_assertions(&onto) {

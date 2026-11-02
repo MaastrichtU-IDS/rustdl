@@ -169,6 +169,29 @@ fn realize_json_reports_types() {
     assert!(types.contains(&"http://ex/#B"));
 }
 
+/// #388: `direct_types_unverified` is wired to its own field, not to `incomplete`.
+/// `a : X, a : Y` off the EL fragment: with the check off the X/Y pair stays
+/// undecided; with it on (the default) both directions are refuted.
+#[test]
+fn realize_json_reports_direct_types_unverified() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/abox_two_types_off_fragment.ofn"
+    );
+    for (verify, unverified) in [("0", true), ("1", false)] {
+        let out = rustdl()
+            .env("RUSTDL_REALIZE_VERIFY_DIRECT", verify)
+            .args(["realize", "--json", fixture])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+        assert_eq!(v["direct_types_unverified"], unverified, "verify={verify}");
+        assert_eq!(v["incomplete"], false, "verify={verify}");
+    }
+}
+
 #[test]
 fn classify_json_reports_equivalent_group() {
     let out = rustdl()

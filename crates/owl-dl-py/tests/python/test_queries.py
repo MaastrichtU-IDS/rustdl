@@ -341,3 +341,42 @@ def test_structural_gap_warning(tmp_path):
         assert rustdl.object_property_hierarchy(str(plain))[1] == [
             ("http://ex/#r", "http://ex/#s")
         ]
+
+
+_TWO_TYPES_ONTOLOGY = (
+    "Prefix(:=<http://ex/#>)\n"
+    "Ontology(<http://ex/>\n"
+    "  Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:C))\n"
+    "  Declaration(Class(:D)) Declaration(ObjectProperty(:r))\n"
+    "  Declaration(NamedIndividual(:a))\n"
+    "  SubClassOf(:C ObjectAllValuesFrom(:r :D))\n"
+    "  ClassAssertion(:X :a) ClassAssertion(:Y :a))\n"
+)
+
+
+def test_direct_types_unverified_warning(tmp_path, monkeypatch):
+    """#388: realize warns with DirectTypesUnverifiedWarning, which is NOT an
+    IncompleteQueryWarning, when two most-specific types were not compared. With
+    the check on (default) the unrelated pair is refuted and nothing is emitted;
+    with RUSTDL_REALIZE_VERIFY_DIRECT=0 it is only reported."""
+    import warnings
+
+    assert not issubclass(
+        rustdl.DirectTypesUnverifiedWarning, rustdl.IncompleteQueryWarning
+    )
+    p = tmp_path / "two.ofn"
+    p.write_text(_TWO_TYPES_ONTOLOGY)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        types = rustdl.realize(str(p))
+    assert sorted(types["http://ex/#a"]) == ["http://ex/#X", "http://ex/#Y"]
+
+    monkeypatch.setenv("RUSTDL_REALIZE_VERIFY_DIRECT", "0")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        types = rustdl.realize(str(p))
+    assert sorted(types["http://ex/#a"]) == ["http://ex/#X", "http://ex/#Y"]
+    assert any(
+        issubclass(w.category, rustdl.DirectTypesUnverifiedWarning) for w in caught
+    )
+    assert not any(issubclass(w.category, rustdl.IncompleteQueryWarning) for w in caught)

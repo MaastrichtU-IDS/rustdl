@@ -265,6 +265,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_REALIZE_VERIFY_DIRECT",
+            owl_dl_reasoner::realize_verify_direct_enabled,
+            true,
+        ),
+        (
             "RUSTDL_DATA_VALUES_ANONYMOUS",
             owl_dl_reasoner::data_values_anonymous_enabled,
             true,

@@ -231,6 +231,12 @@ pub(crate) struct RealizeJson {
     /// CUT probes) and NOT implied by it: the prune's loss is silent, leaving
     /// `incomplete: false`. See `Realization::witness_prune_active`.
     pub(crate) witness_prune_active: bool,
+    /// Some individual has two `direct_types` whose subsumption was left undecided
+    /// (#388), so a `direct_types` list may hold a strict superclass of another entry;
+    /// every entry is still a genuine type. Distinct from `incomplete` (a type may be
+    /// missing) and from `witness_prune_active`, not implied by either, and does not
+    /// cover them. See `Realization::direct_types_unverified`.
+    pub(crate) direct_types_unverified: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -499,6 +505,7 @@ pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>
         schema_version: SCHEMA_VERSION,
         incomplete: r.incomplete(),
         witness_prune_active: r.witness_prune_active(),
+        direct_types_unverified: r.direct_types_unverified(),
         individuals,
         dropped,
     }

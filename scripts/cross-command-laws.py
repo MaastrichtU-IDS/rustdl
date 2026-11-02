@@ -370,7 +370,10 @@ def observe(spec, runner, caps, seed, log=print):
         anc = defaultdict(set)
         for s, t in clo:
             anc[s].add(t)
-        cands = [(a, b) for a in sats for b in sats
+        # Bounded: enumerating every ordered pair is O(n^2) and ran out of
+        # memory on go-basic (~50k classes).
+        pool_ = rng.sample(sats, min(len(sats), 300))
+        cands = [(a, b) for a in pool_ for b in pool_
                  if a != b and (a, b) not in clo and anc[a] & anc[b]]
         if len(cands) < caps["neg"]:
             cands += [(a, b) for a in rng.sample(sats, min(len(sats), 40))

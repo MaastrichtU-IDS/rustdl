@@ -154,9 +154,12 @@ rustdl.materialize_inferred_class_assertions(path)  # -> list[tuple[str, str]]
 
 `materialize_inferred_subclass_axioms` yields `(sub, sup)` pairs for every
 entailed subsumption (excluding reflexive, `owl:Thing`/`owl:Nothing`, and
-unsatisfiable classes). `materialize_inferred_class_assertions` yields
-`(class, individual)` pairs. Useful for writing an inferred ontology back to
-disk.
+unsatisfiable classes). `materialize_inferred_class_assertions` yields a
+`(class, individual)` pair for each individual's most-specific entailed types,
+as `realize` reports them. Useful for writing an inferred ontology back to
+disk. Both warn when their answer may be short, as `classify` and `realize` do:
+`IncompleteClassificationWarning` for the subclass pairs, `IncompleteQueryWarning`
+and `DirectTypesUnverifiedWarning` for the class assertions.
 
 ### Errors
 

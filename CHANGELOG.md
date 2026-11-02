@@ -42,6 +42,18 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The materialize functions over `realize` and `classify` report their answer may be short
+  (#391).** `materialize_existential_successors` and Python's
+  `materialize_inferred_class_assertions` called `realize` and returned bare lists, so a cut
+  instance probe or the pseudo-model prune could shorten them with nothing said; Python's
+  `materialize_inferred_subclass_axioms` likewise dropped `classify`'s signals. Rust:
+  `materialize_existential_successors_reporting` returns `incomplete` and
+  `witness_prune_active` beside the rows (`direct_types_unverified` does not apply: the rows
+  use entailed types). Python: the existential and class-assertion functions warn
+  `IncompleteQueryWarning`, the class assertions also `DirectTypesUnverifiedWarning`, and the
+  subclass pairs the same `IncompleteClassificationWarning`s as `classify`. Return types are
+  unchanged. The class-assertion docs now say they return most-specific types only, which they
+  always did. Neither function has a CLI surface.
 - **`prove` refuses a class IRI that is not in the ontology (#409).** It answered "NOT
   entailed" (`prove --json`: `entailed: false`, `status: "not-entailed"`), a wrong definite
   answer: `prove Aa Aa` for a typo'd `Aa` said a tautology does not hold, and so did

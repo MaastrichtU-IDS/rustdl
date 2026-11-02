@@ -31,7 +31,8 @@ def _is_consistent(tmp_path, extra=""):
     return result, [w.category for w in caught]
 
 
-def test_a_wedge_sat_warns(tmp_path):
+def test_a_wedge_sat_warns(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTDL_WEDGE_CONSISTENCY", raising=False)
     result, cats = _is_consistent(tmp_path)
     assert result is True
     assert rustdl.TrustedConsistencyWarning in cats, cats

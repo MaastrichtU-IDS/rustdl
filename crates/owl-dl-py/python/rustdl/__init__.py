@@ -302,14 +302,14 @@ PreparedOntology.justify_all = _prepared_justify_all  # type: ignore[attr-define
 def is_consistent(path):
     """True iff the ontology at `path` is consistent. A give-up (budget or node
     cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`.
-    A `True` whose only evidence is the wedge's model, which it does not prove
-    complete, emits `TrustedConsistencyWarning` (#392)."""
+    A `True` that rests on the consistency wedge's model alone (the wedge is not
+    proven complete) emits `TrustedConsistencyWarning` (#392)."""
     consistent, incomplete, trusted = _is_consistent_native(path)
     _warn_if_query_incomplete("is_consistent", incomplete)
     if trusted:
         _warnings.warn(
-            "is_consistent: consistent because the wedge found a model, which it does "
-            "not prove complete; no main-tableau model was built "
+            "is_consistent: consistent on the consistency wedge's model alone; the "
+            "wedge is not proven complete and no main-tableau model was built "
             "(see TrustedConsistencyWarning).",
             TrustedConsistencyWarning,
             stacklevel=2,

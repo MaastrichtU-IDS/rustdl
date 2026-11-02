@@ -21,7 +21,13 @@ Ontology(<http://ex/trustedsat>
 )
 ";
 
-const NOTE: &str = "note: consistent because the wedge found a model";
+const NOTE: &str = "note: consistent on the consistency wedge's model alone";
+
+/// The whole note, as one line.
+const FULL_NOTE: &str = "note: consistent on the consistency wedge's model alone; the wedge is \
+                         not proven complete and no main-tableau model was built. \
+                         RUSTDL_WEDGE_CONSISTENCY=0 decides on the main tableau (bounded by \
+                         RUSTDL_CONSISTENCY_FALLBACK_MS).\n";
 
 /// Writes the fixture to a per-test file (tests run in parallel).
 struct Fixture(PathBuf);
@@ -79,12 +85,7 @@ fn a_wedge_sat_is_consistent_with_a_note() {
     let r = run(&["consistent", f.path()], &[]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(r.stdout, "consistent\n");
-    assert!(r.stderr.contains(NOTE), "{}", r.stderr);
-    assert!(
-        r.stderr.contains("RUSTDL_WEDGE_CONSISTENCY=0"),
-        "{}",
-        r.stderr
-    );
+    assert_eq!(r.stderr, FULL_NOTE);
 }
 
 #[test]

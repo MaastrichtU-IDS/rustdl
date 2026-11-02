@@ -1041,7 +1041,9 @@ fn note_trusted_consistency_flag(relies: bool) {
 fn note_trusted_wedge_sat(trusted: bool) {
     if trusted {
         eprintln!(
-            "note: consistent because the wedge found a model, which it does not prove              complete (no main-tableau model was built). RUSTDL_WEDGE_CONSISTENCY=0 decides              on the main tableau instead, bounded by RUSTDL_CONSISTENCY_FALLBACK_MS."
+            "note: consistent on the consistency wedge's model alone; the wedge is not \
+             proven complete and no main-tableau model was built. RUSTDL_WEDGE_CONSISTENCY=0 \
+             decides on the main tableau (bounded by RUSTDL_CONSISTENCY_FALLBACK_MS)."
         );
     }
 }

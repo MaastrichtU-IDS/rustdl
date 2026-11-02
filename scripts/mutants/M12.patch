@@ -1,0 +1,30 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M12
+# id: M12
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: classify --saturation-only JSON output (STRUCTURAL: classify unions the saturation, so no engine fault can break L8)
+# reopens: one reversed edge appended
+# env: -
+# expect: L8@pizza,L8@disjoint_up
+diff --git a/crates/owl-dl-cli/src/main.rs b/crates/owl-dl-cli/src/main.rs
+index f064a1a8..21a13e25 100644
+--- a/crates/owl-dl-cli/src/main.rs
++++ b/crates/owl-dl-cli/src/main.rs
+@@ -826,7 +826,16 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
+     if *json {
+         println!(
+             "{}",
+-            serde_json::to_string_pretty(&json_out::build_classify_json(&h, dropped))?
++            serde_json::to_string_pretty(&{
++                // F-LITE MUTANT M12 (structural): one reversed edge under --saturation-only.
++                let mut j = json_out::build_classify_json(&h, dropped);
++                if *saturation_only
++                    && let Some([a, b]) = j.direct_subsumptions.first().cloned()
++                {
++                    j.direct_subsumptions.push([b, a]);
++                }
++                j
++            })?
+         );
+         warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
+         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);

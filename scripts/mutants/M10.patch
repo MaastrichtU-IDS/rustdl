@@ -1,0 +1,49 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M10
+# id: M10
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: disjoint surface
+# reopens: the inconsistency guards removed: an inconsistent KB answered with no pairs
+# env: -
+# expect: L5@inconsistent_small
+diff --git a/crates/owl-dl-reasoner/src/disjointness.rs b/crates/owl-dl-reasoner/src/disjointness.rs
+index 94ac5d8e..09d5ee61 100644
+--- a/crates/owl-dl-reasoner/src/disjointness.rs
++++ b/crates/owl-dl-reasoner/src/disjointness.rs
+@@ -48,7 +48,8 @@ pub fn disjoint_classes<A: ForIRI>(
+ ) -> Result<Disjointness, ReasonError> {
+     let internal = convert_ontology(onto)?;
+     if crate::query_kb_inconsistent(&internal) {
+-        return Err(ReasonError::Inconsistent);
++        // F-LITE MUTANT M10: an inconsistent KB answered with no pairs, complete.
++        return Ok(Disjointness { pairs: Vec::new(), incomplete: false });
+     }
+     // Candidate named classes = declared classes minus unsat/Thing/Nothing.
+     // Use classify to get the unsat set + the reportable class list. Threads
+@@ -66,7 +67,7 @@ pub fn disjoint_classes<A: ForIRI>(
+         && crate::sat_inconsistency_all_surfaces_enabled()
+         && classification.stats().inconsistent
+     {
+-        return Err(ReasonError::Inconsistent);
++        return Ok(Disjointness { pairs: Vec::new(), incomplete: false }); // M10
+     }
+     let unsat: std::collections::HashSet<&str> =
+         classification.unsatisfiable_classes().into_iter().collect();
+@@ -144,7 +145,7 @@ pub fn disjoint_object_properties<A: ForIRI>(
+ 
+     let internal = convert_ontology(onto)?;
+     if crate::query_kb_inconsistent(&internal) {
+-        return Err(ReasonError::Inconsistent);
++        return Ok(Vec::new()); // M10
+     }
+     if crate::property_disjoint_down_enabled() {
+         let asymmetric = crate::property_asymmetric_disjoint_enabled();
+@@ -205,7 +206,7 @@ pub fn disjoint_data_properties<A: ForIRI>(
+ 
+     let internal = convert_ontology(onto)?;
+     if crate::query_kb_inconsistent(&internal) {
+-        return Err(ReasonError::Inconsistent);
++        return Ok(Vec::new()); // M10
+     }
+     if crate::property_disjoint_down_enabled() {
+         let sets: Vec<Vec<(String, bool)>> = onto

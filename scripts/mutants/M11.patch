@@ -1,0 +1,21 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M11
+# id: M11
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: individuals surface
+# reopens: `Some(false) => true`: every probed pair published as different
+# env: -
+# expect: L11@individuals_three
+diff --git a/crates/owl-dl-reasoner/src/individuals.rs b/crates/owl-dl-reasoner/src/individuals.rs
+index 22a26049..b7dbf1d3 100644
+--- a/crates/owl-dl-reasoner/src/individuals.rs
++++ b/crates/owl-dl-reasoner/src/individuals.rs
+@@ -217,7 +217,7 @@ pub fn different_individuals<A: ForIRI>(
+                 let deadline = pair_deadline.map(|d| Instant::now() + d);
+                 match prepared.pair_individuals_disjoint_with_deadline(*a, *b, deadline)? {
+                     Some(true) => true,
+-                    Some(false) => false,
++                    Some(false) => true, // F-LITE MUTANT M11: inverted.
+                     None => {
+                         incomplete = true;
+                         false

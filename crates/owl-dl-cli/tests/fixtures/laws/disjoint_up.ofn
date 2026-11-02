@@ -1,0 +1,9 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(:=<http://ex.org/du#>)
+Ontology(<http://ex.org/du>
+# A ⊑ S and A disjoint from B do not make S disjoint from B: X is both.
+# Mutant M5 (told disjointness propagated upward) breaks L7 here.
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:S)) Declaration(Class(:X))
+SubClassOf(:A :S) DisjointClasses(:A :B) SubClassOf(:X :S) SubClassOf(:X :B)
+)

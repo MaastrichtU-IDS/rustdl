@@ -4,12 +4,16 @@
 //! `scripts/cross-command-laws.py` against this crate's `rustdl` binary. The
 //! script first runs its `--self-test` (each law fires on fabricated operands,
 //! and an unknown operand never counts as a violation), then the quick corpus
-//! (pizza, ro, sulo, bibtex and two synthetics), and fails on a hard-law
-//! violation or on a ratchet count above `tests/fixtures/laws/baseline.json`.
+//! (pizza, ro, sulo, bibtex and the small fixtures in `tests/fixtures/laws/`),
+//! and fails on a hard-law violation or a ratchet count above
+//! `tests/fixtures/laws/baseline.json` (the gate does not run HermiT; with
+//! `--hermit`, the script also fails on a HermiT-confirmed false positive).
 //!
-//! Coverage, stated: no hard law has a live engine-level sabotage on the curated
-//! fixtures; the self-test checks the harness logic, not the engine. The
-//! engine-level sabotages (R2, R3) run with `--sabotage`.
+//! Coverage, stated: the self-test checks the harness logic, not the engine.
+//! Engine-level evidence: the env sabotages (`--sabotage`: R1 #76, R2, R3) and
+//! the source mutants in `scripts/mutants/`, whose table (in
+//! `docs/assurance/query-surface-ledger.md`) lists what each law catches and the
+//! two shared-path faults no law can see.
 //!
 //! Run: `cargo test --release -p owl-dl-cli --test cross_command_laws -- --ignored`.
 //! Needs `python3` and the gitignored fixtures (`scripts/fetch-real-ontologies.sh`);

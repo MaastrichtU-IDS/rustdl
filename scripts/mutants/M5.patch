@@ -1,0 +1,33 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M5
+# id: M5
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: disjoint surface
+# reopens: told disjointness propagated UP from a told subclass
+# env: -
+# expect: L7@disjoint_up
+diff --git a/crates/owl-dl-reasoner/src/disjointness.rs b/crates/owl-dl-reasoner/src/disjointness.rs
+index 94ac5d8e..d3e7f044 100644
+--- a/crates/owl-dl-reasoner/src/disjointness.rs
++++ b/crates/owl-dl-reasoner/src/disjointness.rs
+@@ -92,7 +92,19 @@ pub fn disjoint_classes<A: ForIRI>(
+             // disjoint without running the tableau probe at all. Task 1.1:
+             // this is what turns the O(n^2) full-probe loop into "probe only
+             // the pairs that aren't already known".
+-            if prepared.told.are_told_disjoint(ci, cj) {
++            // F-LITE MUTANT M5: told disjointness propagated UP from a told subclass.
++            if prepared.told.are_told_disjoint(ci, cj)
++                || prepared
++                    .told
++                    .sub_classes(ci)
++                    .iter()
++                    .any(|&k| k != ci && prepared.told.are_told_disjoint(k, cj))
++                || prepared
++                    .told
++                    .sub_classes(cj)
++                    .iter()
++                    .any(|&k| k != cj && prepared.told.are_told_disjoint(k, ci))
++            {
+                 let (a, b) = (&names[i].0, &names[j].0);
+                 let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                 pairs.push((lo.clone(), hi.clone()));

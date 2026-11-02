@@ -1,0 +1,9 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(:=<http://ex.org/au#>)
+Ontology(<http://ex.org/au>
+# Every named class unsatisfiable, yet the KB is consistent (⊤ is not ⊥).
+# Mutant M1 (all-unsat read as inconsistency) breaks L4 here.
+Declaration(Class(:A)) Declaration(Class(:B))
+SubClassOf(:A owl:Nothing) SubClassOf(:B owl:Nothing)
+)

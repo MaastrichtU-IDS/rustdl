@@ -1,0 +1,24 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M8a
+# id: M8a
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: EL saturator, shared by every surface
+# reopens: #114: a non-atomic GCI domain head discarded
+# env: -
+# expect: none
+diff --git a/crates/owl-dl-saturation/src/lib.rs b/crates/owl-dl-saturation/src/lib.rs
+index 60e793e1..e4410338 100644
+--- a/crates/owl-dl-saturation/src/lib.rs
++++ b/crates/owl-dl-saturation/src/lib.rs
+@@ -5099,8 +5099,9 @@ fn lower_sub_class_of(
+                 // non-atomic conjunct — so `∃r.⊤ ⊑ ∃s.S` pushed nothing and the
+                 // axiom vanished under a pure-EL completeness banner. See
+                 // `domain_heads_el`.
+-                let heads =
+-                    domain_heads_el(sup, pool, rules, tseitin, effective_ranges, chain_ranges);
++                // F-LITE MUTANT M8a: #114 revert.
++                let _ = (&tseitin, &effective_ranges, &chain_ranges);
++                let heads = atomic_operands_on_right(sup, pool);
+                 rules
+                     .role_domains
+                     .entry(role.role_id())

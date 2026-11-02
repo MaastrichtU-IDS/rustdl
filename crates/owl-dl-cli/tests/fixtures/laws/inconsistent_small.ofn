@@ -1,0 +1,12 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(:=<http://ex.org/ic#>)
+Ontology(<http://ex.org/ic>
+# An inconsistent KB in two axioms. Every guarded surface must error; mutant M10
+# (disjoint answers with no pairs) breaks L5 here.
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))
+Declaration(NamedIndividual(:a))
+DisjointClasses(:A :B)
+ClassAssertion(:A :a) ClassAssertion(:B :a)
+SubClassOf(:C :D)
+)

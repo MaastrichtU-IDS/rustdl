@@ -2941,6 +2941,15 @@ impl<'c> HyperEngine<'c> {
         self.snapshot_backprop_aborted
     }
 
+    /// Clauses this engine's matcher refuses ([`ClauseIndexes::refused_clauses`]):
+    /// they never fire, so their constraint is not enforced. Read off the engine's
+    /// own indexes, which can differ from [`refused_clause_count`] under
+    /// `RUSTDL_WIDE_BODY_VARS` (#387).
+    #[must_use]
+    pub fn refused_clauses(&self) -> usize {
+        self.indexes.refused_clauses()
+    }
+
     /// Search instrumentation from the last [`decide`] call.
     #[must_use]
     pub fn stats(&self) -> SearchStats {

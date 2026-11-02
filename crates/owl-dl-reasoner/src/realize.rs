@@ -717,6 +717,63 @@ pub fn instances_of_saturation_only_internal(
     Ok(out)
 }
 
+/// Why the pseudo-model witness may not be the engine's deterministic closure
+/// over the whole KB, so that a class absent from it may still be entailed
+/// (#387). Each is read off the witness build itself. All `false` means the
+/// witness labels are the engine's Horn closure, as implemented, over every
+/// clause it was given: absence from them is not the case-analysis loss the
+/// 2026-08-22 bake-off measured. That is NOT a proof that every pruned pair is a
+/// non-instance; it rests on the wedge's Horn completeness, the same trust
+/// `classify`'s `trust_sat` places in it (#124).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct WitnessPruneReasons {
+    /// The witness search chose a disjunct or a `≤n` merge partition
+    /// (`SearchStats::branches_taken > 0`): its labels are one branch's pre-model.
+    /// Every measured loss is of this kind.
+    pub branched: bool,
+    /// The clausifier deferred some axioms out of the witness engine's clause set.
+    pub deferred_clauses: bool,
+    /// The witness engine's matcher refuses some clauses, so they never fire.
+    pub refused_clauses: bool,
+    /// `RUSTDL_RESEED_VERIFY=0` with the incremental fixpoint on: nothing re-fires
+    /// an `∃` skipped at a node that is later unblocked (#137).
+    pub reseed_net_off: bool,
+    /// `RUSTDL_INVERSE_FUNC_MAX=0`: the witness misses merges an
+    /// inverse-functional role forces, with no choice involved.
+    pub inverse_functional_max_off: bool,
+}
+
+impl WitnessPruneReasons {
+    /// Any reason set.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.branched
+            || self.deferred_clauses
+            || self.refused_clauses
+            || self.reseed_net_off
+            || self.inverse_functional_max_off
+    }
+
+    /// The set reasons, as the stable names `realize --json` reports.
+    #[must_use]
+    pub fn names(&self) -> Vec<&'static str> {
+        [
+            (self.branched, "branched"),
+            (self.deferred_clauses, "deferred_clauses"),
+            (self.refused_clauses, "refused_clauses"),
+            (self.reseed_net_off, "reseed_net_off"),
+            (
+                self.inverse_functional_max_off,
+                "inverse_functional_max_off",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(set, name)| set.then_some(name))
+        .collect()
+    }
+}
+
 /// Per-individual realization: every entailed type plus the
 /// most-specific named classes (the leaves of the subclass relation
 /// restricted to the entailed types).
@@ -762,14 +819,19 @@ pub struct Realization {
     /// ABox-bearing ontologies lose types (10 pairs of 3.92M), all OAEI benchmark
     /// variants, deterministically.
     ///
-    /// A per-pair COUNT would be useless here — the prune fires on most non-types, which
-    /// is why it is worth 2.4x more completions — so the honest signal is the boolean
-    /// "this approximation was in play". `false` means every reported non-membership was
+    /// A per-pair COUNT would be useless here: the prune fires on most non-types, which
+    /// is why it is worth 2.4x more completions. This boolean says only that the
+    /// approximation was in play, which is true on almost every off-fragment ontology
+    /// with individuals; [`Self::witness_prune_may_drop`] says when it may actually
+    /// have dropped a type (#387). `false` means every reported non-membership was
     /// actually refuted by a probe.
     ///
     /// See `docs/known-limitations/realize-drops-derived-individual-equality.md` and
     /// `docs/benchmarks/2026-08-22-pseudo-model-bakeoff.md`.
     witness_prune_active: bool,
+    /// Why the prune's witness may lack an entailed type (#387); all `false` when
+    /// the prune was not in play. See [`WitnessPruneReasons`].
+    witness_prune_reasons: WitnessPruneReasons,
     /// Some individual has two most-specific types whose subsumption is left
     /// UNDECIDED (#388), so a most-specific set may list a type that is a strict
     /// superclass of another listed type. Every listed type is still a genuine type.
@@ -814,6 +876,22 @@ impl Realization {
     #[must_use]
     pub fn witness_prune_active(&self) -> bool {
         self.witness_prune_active
+    }
+
+    /// `true` iff the prune was in play AND its witness may lack an entailed type
+    /// (any of [`Self::witness_prune_reasons`]), so an entailed type may be missing
+    /// with no probe cut (#387). Separate from [`Self::incomplete`]. `false` with
+    /// the prune active means the witness is the engine's deterministic closure;
+    /// see [`WitnessPruneReasons`] for what that does and does not guarantee.
+    #[must_use]
+    pub fn witness_prune_may_drop(&self) -> bool {
+        self.witness_prune_active && self.witness_prune_reasons.any()
+    }
+
+    /// Why the prune's witness may lack an entailed type (#387).
+    #[must_use]
+    pub fn witness_prune_reasons(&self) -> WitnessPruneReasons {
+        self.witness_prune_reasons
     }
 
     /// See [`Self::direct_types_unverified`] — `true` iff some individual has two
@@ -1146,6 +1224,7 @@ pub fn realize_saturation_only_internal(
         // Saturation-only path: closure lookups only, no probe to cut.
         incomplete: false,
         witness_prune_active: false,
+        witness_prune_reasons: WitnessPruneReasons::default(),
         // No tableau on this path by contract, so an undecided pair stays undecided.
         direct_types_unverified,
     })
@@ -1345,6 +1424,7 @@ pub(crate) fn realize_via_saturation_internal(
         // Saturation path: no tableau probe runs, so nothing can be cut.
         incomplete: false,
         witness_prune_active: false,
+        witness_prune_reasons: WitnessPruneReasons::default(),
         // Types and hierarchy come from one saturation closure on a fragment where
         // it is complete (see the field doc).
         direct_types_unverified: false,
@@ -1533,12 +1613,16 @@ pub(crate) fn realize_tableau_internal(
     // `pseudo_model_enabled`'s coupling note) ⇒ every pair below takes the
     // unchanged normal path, so this can only ever skip probes, never
     // change a verdict.
-    let base_model: Option<Vec<HashSet<ClassId>>> = if pseudo_model_enabled() {
-        let witness_deadline = pseudo_model_witness_deadline_from_env();
-        prepared.realize_base_model_types(Some(witness_deadline))
-    } else {
-        None
-    };
+    let (base_model, witness_prune_reasons): (Option<Vec<HashSet<ClassId>>>, WitnessPruneReasons) =
+        if pseudo_model_enabled() {
+            let witness_deadline = pseudo_model_witness_deadline_from_env();
+            match prepared.realize_base_model_types(Some(witness_deadline)) {
+                Some((types, reasons)) => (Some(types), reasons),
+                None => (None, WitnessPruneReasons::default()),
+            }
+        } else {
+            (None, WitnessPruneReasons::default())
+        };
     if let Some(ref m) = base_model {
         debug_assert_eq!(
             m.len(),
@@ -1643,6 +1727,7 @@ pub(crate) fn realize_tableau_internal(
         // wedge-consistency cache, and in each of those cases every pair took the
         // unchanged probe path.
         witness_prune_active: base_model.is_some(),
+        witness_prune_reasons,
         direct_types_unverified,
     })
 }

@@ -81,8 +81,29 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
 ## `consistent --json`
 
 ```json
-{ "schema_version": 1, "consistent": bool }
+{ "schema_version": 1,
+  "consistent": bool,
+  "incomplete": bool,
+  "relies_on_trusted_consistency": bool,
+  "wedge_clauses_refused": int,
+  "dropped": { "<axiom kind>": int } }
 ```
+
+`incomplete` (#182) means `consistent: true` is a give-up in its sound
+direction (the fall-through tableau's deadline or node cap, or the #344
+data-counting verification giving up), not a verdict; the exit code is then 3.
+`wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
+match, so a wedge `consistent` may miss a clash; 0 when the wedge was not
+consulted. `dropped` counts the axioms rustdl does not reason with, as in
+`classify --json`.
+
+`relies_on_trusted_consistency` was added in #392, without a `schema_version`
+bump. It is `true` when `consistent: true` rests only on the consistency wedge's
+`Sat`, which no main-tableau run verified (the wedge is not proven complete).
+It is not a give-up: `incomplete` stays `false` and the exit code stays 0. It is
+never `true` with `consistent: false`, which is a witnessed clash. The same name
+and meaning as in `sat-expr`, `subclass-expr` and `prove --json` (#401).
+`RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
 
 ## `realize --json`
 

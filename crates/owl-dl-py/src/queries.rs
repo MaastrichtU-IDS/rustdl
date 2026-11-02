@@ -8,16 +8,21 @@ use pyo3::prelude::*;
 use crate::errors::reason_error_to_py;
 use crate::load;
 
-/// `(consistent, incomplete)` for the ontology at `path`. `incomplete` is set
-/// when "consistent" is a give-up rather than a verdict (the `QueryStats`
-/// contract). The Python wrapper (`__init__.py`) warns on it and returns the
-/// bool (#363 A2).
+/// `(consistent, incomplete, relies_on_trusted_consistency)` for the ontology at
+/// `path`. `incomplete` is set when "consistent" is a give-up rather than a
+/// verdict (the `QueryStats` contract, #363 A2); the third flag when it rests
+/// only on the consistency wedge's unverified `Sat` (#392). The Python wrapper
+/// (`__init__.py`) warns on each and returns the bool.
 #[pyfunction]
-pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool)> {
+pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&ontology).map_err(reason_error_to_py)?;
-    Ok((verdict, verdict && stats.incomplete))
+    Ok((
+        verdict,
+        verdict && stats.incomplete,
+        stats.relies_on_trusted_consistency,
+    ))
 }
 
 /// `(satisfiable, incomplete, relies_on_trusted_consistency)`: `incomplete`

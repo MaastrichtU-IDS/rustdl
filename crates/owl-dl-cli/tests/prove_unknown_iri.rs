@@ -1,7 +1,7 @@
 //! #409: `prove` with a class IRI that is not in the ontology is an error
 //! (`class IRI not in ontology`, exit 1), as for `subclass`, never
 //! "NOT entailed". `owl:Thing` / `owl:Nothing` are not in the named-class
-//! vocabulary, so they are refused the same way.
+//! vocabulary (unless declared), so they are refused the same way.
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;

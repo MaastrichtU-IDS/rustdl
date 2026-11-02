@@ -40,7 +40,8 @@ All notable changes to rustdl are documented here. Format is based on
   `A ⊑ owl:Thing`. It now errors as `subclass`, `sat` and the other named-class queries do
   (`class IRI not in ontology`, exit 1; `prove_entailment*` return
   `ReasonError::UnknownClass`, a change to the library API). `owl:Thing` / `owl:Nothing` are
-  not in the named-class vocabulary, so they are refused too. The Protégé plugin no longer
+  not in the named-class vocabulary unless the ontology declares them, so they are refused
+  too (a declared `owl:Thing` still resolves to an ordinary class, as for `subclass`). The Protégé plugin no longer
   offers a rustdl proof for them (`hasProof` is false), so Protégé uses the explanation
   generator, which handles `X ⊑ owl:Nothing`.
 - **`ABox` class assertions reach the tableau in NNF (#403).** The main tableau's `ABox` seed

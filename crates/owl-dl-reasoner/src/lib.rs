@@ -11180,7 +11180,8 @@ fn prove_class_ids(
 /// # Errors
 /// Propagates `ReasonError` from conversion; [`ReasonError::UnknownClass`] for
 /// a class IRI not in the ontology (sub checked first), as `is_subclass_of`
-/// (#409). `owl:Thing` / `owl:Nothing` are not in the vocabulary either.
+/// (#409). `owl:Thing` / `owl:Nothing` are not in the vocabulary either,
+/// unless the ontology declares them.
 pub fn prove_entailment<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     sub_iri: &str,
@@ -13458,12 +13459,14 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
         );
         let (a, b, typo) = ("http://ex/#A", "http://ex/#B", "http://ex/#Aa");
         let thing = "http://www.w3.org/2002/07/owl#Thing";
+        let nothing = "http://www.w3.org/2002/07/owl#Nothing";
         for (sub, sup, missing) in [
             (typo, typo, typo),
             (typo, b, typo),
             (a, typo, typo),
             (typo, "http://ex/#Bb", typo),
             (a, thing, thing),
+            (nothing, a, nothing),
         ] {
             let generic = prove_entailment(&onto, sub, sup);
             assert!(

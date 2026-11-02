@@ -74,6 +74,14 @@ pub fn read_owx_verdict(path: &Path) -> anyhow::Result<OwxVerdict> {
                 if let (ClassExpression::Class(sub_c), ClassExpression::Class(sup_c)) = (sub, sup) {
                     let s = sub_c.0.to_string();
                     let t = sup_c.0.to_string();
+                    // OWLAPI's InferredSubClassAxiomGenerator (ROBOT, HermiT)
+                    // writes an unsatisfiable class as `C ⊑ owl:Nothing`, not as
+                    // an equivalence with it. Missing this form would turn every
+                    // correct rustdl unsat class into a spurious unsat FP.
+                    if is_owl_nothing(&t) && !is_owl_nothing(&s) {
+                        unsat.insert(s);
+                        continue;
+                    }
                     if is_owl_thing(&s)
                         || is_owl_thing(&t)
                         || is_owl_nothing(&s)
@@ -218,6 +226,12 @@ pub fn closure_from_classification(c: &Classification, exclude: &BTreeSet<String
 /// tests and the anytime sweep — keeping both callers on the same code path
 /// ensures FP=0 comparisons are valid (e.g. SIO's `EquivalentClasses(owl:Thing,
 /// SIO_000000)` causes spurious FPs without `thing_equiv` exclusion).
+///
+/// **Blind to a false unsat class on its own.** A class rustdl wrongly calls
+/// unsatisfiable is in `exclude`, so it leaves both sides before the diff and
+/// never counts as an FP. Every caller that gates soundness must ALSO call
+/// [`unsat_diff`]. Measured: mutant M8b (`scripts/mutants/`) made 41 classes of
+/// `ore_ont_10080` unsatisfiable, Konclude 0, and this pair diff read FP=0.
 pub fn aligned_closures(c: &Classification, verdict: &OwxVerdict) -> (PairSet, PairSet) {
     let rustdl_unsat: BTreeSet<String> = c
         .unsatisfiable_classes()
@@ -239,6 +253,9 @@ pub fn aligned_closures(c: &Classification, verdict: &OwxVerdict) -> (PairSet, P
 /// atomic-subsumption basis: exclude either side's unsat classes and either
 /// side's thing-equivalent classes, then transitively close both edge sets.
 /// Returns `(reasoner_pairs, oracle_pairs)`.
+///
+/// Blind to a false unsat class for the same reason as [`aligned_closures`];
+/// pair it with [`unsat_owx_diff`].
 pub fn aligned_owx_closures(reasoner: &OwxVerdict, oracle: &OwxVerdict) -> (PairSet, PairSet) {
     let mut exclude: BTreeSet<String> = reasoner.unsat.union(&oracle.unsat).cloned().collect();
     exclude.extend(reasoner.thing_equiv.iter().cloned());
@@ -252,6 +269,59 @@ pub fn aligned_owx_closures(reasoner: &OwxVerdict, oracle: &OwxVerdict) -> (Pair
         filter(transitive_closure(&reasoner.edges)),
         filter(transitive_closure(&oracle.edges)),
     )
+}
+
+/// The unsatisfiable-class half of an oracle diff, which the pair diffs above
+/// exclude by construction.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnsatDiff {
+    /// Classes the reasoner calls unsatisfiable and the oracle does not: a
+    /// soundness failure (an unsat class is subsumed by every class).
+    pub fp: BTreeSet<String>,
+    /// Classes the oracle calls unsatisfiable and the reasoner does not: a
+    /// completeness gap (expected under a deadline cut).
+    pub missed: BTreeSet<String>,
+}
+
+/// Compare rustdl's unsatisfiable classes with the oracle's. Pair this with
+/// [`aligned_closures`], which cannot see a false unsat class.
+pub fn unsat_diff(c: &Classification, verdict: &OwxVerdict) -> UnsatDiff {
+    let reasoner: BTreeSet<String> = c
+        .unsatisfiable_classes()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    diff_unsat(&reasoner, verdict)
+}
+
+/// [`unsat_diff`] for a reasoner whose verdict was read from an `.owx` file.
+pub fn unsat_owx_diff(reasoner: &OwxVerdict, oracle: &OwxVerdict) -> UnsatDiff {
+    diff_unsat(&reasoner.unsat, oracle)
+}
+
+fn diff_unsat(reasoner: &BTreeSet<String>, oracle: &OwxVerdict) -> UnsatDiff {
+    let named = |i: &&String| !is_owl_thing(i) && !is_owl_nothing(i);
+    // An oracle that puts owl:Thing in its unsat group says the KB is
+    // inconsistent: every class is unsatisfiable, so nothing is a false unsat.
+    let oracle_inconsistent = oracle.unsat.iter().any(|i| is_owl_thing(i));
+    let fp = if oracle_inconsistent {
+        BTreeSet::new()
+    } else {
+        reasoner
+            .iter()
+            .filter(named)
+            .filter(|i| !oracle.unsat.contains(*i))
+            .cloned()
+            .collect()
+    };
+    let missed = oracle
+        .unsat
+        .iter()
+        .filter(named)
+        .filter(|i| !reasoner.contains(*i))
+        .cloned()
+        .collect();
+    UnsatDiff { fp, missed }
 }
 
 #[cfg(test)]
@@ -316,5 +386,105 @@ mod tests {
             "relative owl:Thing edge must be excluded; edges = {:?}",
             verdict.edges
         );
+    }
+
+    fn set(xs: &[&str]) -> BTreeSet<String> {
+        xs.iter().map(ToString::to_string).collect()
+    }
+
+    fn oracle_with_unsat(unsat: &[&str]) -> OwxVerdict {
+        OwxVerdict {
+            edges: BTreeSet::new(),
+            unsat: set(unsat),
+            thing_equiv: set(&["T"]),
+        }
+    }
+
+    /// The case the pair diff is blind to: rustdl says unsat, the oracle does not.
+    #[test]
+    fn unsat_diff_reports_a_false_unsat_class() {
+        let d = diff_unsat(&set(&["A", "B"]), &oracle_with_unsat(&["A"]));
+        assert_eq!(d.fp, set(&["B"]));
+        assert!(d.missed.is_empty());
+    }
+
+    #[test]
+    fn unsat_diff_reports_a_missed_unsat_class() {
+        let d = diff_unsat(&set(&["A"]), &oracle_with_unsat(&["A", "C"]));
+        assert!(d.fp.is_empty());
+        assert_eq!(d.missed, set(&["C"]));
+    }
+
+    /// A thing-equivalent class is satisfiable in a consistent KB, so calling it
+    /// unsat is an FP like any other.
+    #[test]
+    fn unsat_diff_counts_a_thing_equivalent_class() {
+        let d = diff_unsat(&set(&["T"]), &oracle_with_unsat(&[]));
+        assert_eq!(d.fp, set(&["T"]));
+    }
+
+    /// An inconsistent oracle KB (owl:Thing ≡ owl:Nothing, either IRI form) makes
+    /// every class unsatisfiable, so no rustdl unsat class is false.
+    #[test]
+    fn unsat_diff_has_no_fp_against_an_inconsistent_oracle() {
+        for thing in [OWL_THING, "Thing"] {
+            let d = diff_unsat(&set(&["A", "Z"]), &oracle_with_unsat(&[thing, "A"]));
+            assert!(d.fp.is_empty(), "{thing}: {d:?}");
+        }
+    }
+
+    /// owl:Thing / owl:Nothing in either set are not classes to compare.
+    #[test]
+    fn unsat_diff_ignores_thing_and_nothing_names() {
+        let d = diff_unsat(
+            &set(&[OWL_NOTHING, "Nothing"]),
+            &oracle_with_unsat(&[OWL_NOTHING]),
+        );
+        assert_eq!(d, UnsatDiff::default());
+    }
+
+    /// ROBOT/HermiT write an unsat class as `SubClassOf(C, owl:Nothing)`; the
+    /// reader must count it as unsat in both IRI forms, or a correct rustdl
+    /// unsat class reads as an unsat FP against such an oracle.
+    #[test]
+    fn read_owx_verdict_counts_subclass_of_nothing_as_unsat() {
+        let doc = r#"<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#"
+     xml:base="http://www.w3.org/2002/07/owl#">
+    <Declaration><Class IRI="http://ex.org/C"/></Declaration>
+    <Declaration><Class IRI="http://ex.org/D"/></Declaration>
+    <Declaration><Class IRI="http://ex.org/E"/></Declaration>
+    <SubClassOf><Class IRI="http://ex.org/C"/><Class IRI="Nothing"/></SubClassOf>
+    <SubClassOf><Class IRI="http://ex.org/D"/><Class IRI="http://www.w3.org/2002/07/owl#Nothing"/></SubClassOf>
+    <SubClassOf><Class IRI="http://ex.org/E"/><Class IRI="http://ex.org/C"/></SubClassOf>
+</Ontology>
+"#;
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "rustdl-oracle-diff-subclass-nothing-{}.owx",
+            std::process::id()
+        ));
+        {
+            let mut f = File::create(&path).expect("create temp owx");
+            f.write_all(doc.as_bytes()).expect("write temp owx");
+        }
+        let verdict = read_owx_verdict(&path).expect("read temp owx verdict");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(verdict.unsat, set(&["http://ex.org/C", "http://ex.org/D"]));
+        assert!(
+            verdict.edges.iter().all(|(_, t)| !t.ends_with("Nothing")),
+            "no edge may target owl:Nothing: {:?}",
+            verdict.edges
+        );
+        let d = diff_unsat(&set(&["http://ex.org/C", "http://ex.org/D"]), &verdict);
+        assert!(d.fp.is_empty(), "{d:?}");
+    }
+
+    #[test]
+    fn unsat_owx_diff_compares_the_two_unsat_groups() {
+        let reasoner = oracle_with_unsat(&["A", "B"]);
+        let d = unsat_owx_diff(&reasoner, &oracle_with_unsat(&["A", "C"]));
+        assert_eq!(d.fp, set(&["B"]));
+        assert_eq!(d.missed, set(&["C"]));
     }
 }

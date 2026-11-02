@@ -209,9 +209,14 @@ Ratchets, counted against `crates/owl-dl-cli/tests/fixtures/laws/baseline.json`:
 - **R2**: `sat` says unsat where classify lists the class as satisfiable.
 - **R3**: `consistent` says inconsistent while classify says `consistent: true`. A
   `consistency_undetermined: true` from classify does not count.
+- **U1** (#363 step 1.5): classify calls a class unsatisfiable that the Konclude oracle (or a
+  synthetic spec's hand-checked `known_sat` list, a hard violation) has satisfiable. Never
+  exempted for a budget cut. Oracle unsat classes classify misses are listed, not ratcheted.
 
 A pair in the committed Konclude closure is a classify miss. A pair absent from it is a
-candidate false positive, which fails a run only if HermiT confirms it (`--hermit`).
+candidate false positive, which fails a run only if HermiT confirms it (`--hermit`). U1 is
+stricter: any U1 discrepancy over the baseline fails the run, and a U1 baseline entry needs a
+recorded HermiT verdict, never Konclude alone.
 
 **Coverage.** `--self-test` shows each law can fire on fabricated operands; that checks
 the harness, not the engine. Engine-level evidence comes from two places.
@@ -241,18 +246,63 @@ discrepancies for an (ontology, law) than the unmutated control under the same e
 | M6 | `realize` | pseudo-model prune inverted | L10 (`realize_disjunction`) | no: fixture only, though ro and pizza have individuals |
 | M7 | classify unsat probe | a cut probe published as unsat (env `RUSTDL_UNSAT_PROBE_MS=1 RUSTDL_LABEL_HEURISTIC=0`) | L3; also L4 on ro | yes: pizza, ro, sulo, bibtex |
 | M8a | EL saturator (shared) | #114 non-atomic GCI domain head dropped | **nothing** | **not caught** |
-| M8b | conversion, D4 (shared) | `Functional(d)` + `≥1 d` read as unsat | **nothing** | **not caught** |
+| M8b | conversion, D4 (shared) | `Functional(d)` + `≥1 d` read as unsat | nothing in the first run; since step 1.5, U1 (`functional_data_min1`, an oracle check, not a cross-command law) | no: fixture only |
 | M9 | classify JSON | a class grouped as equivalent to its parent | L2, L1, L8 | yes: all four |
 | M10 | `disjoint` | inconsistency guards removed | L5 (`inconsistent_small`) | no: fixture only |
 | M11 | `individuals` | every probed pair published as different | L11 (`individuals_three`) | no: fixture only |
 | M12 | `--saturation-only` JSON | one reversed edge (structural) | L8 | yes: all four |
 
-**Not caught: M8a and M8b, and that is structural.** Both faults sit in code every surface
+**Not caught by any cross-command law: M8a and M8b, and that is structural.** Both faults sit in code every surface
 shares (the EL saturator; conversion), so `classify`, `subclass`, `sat` and the expression
 queries all agree on the wrong answer: M8a loses the entailed `X ⊑ Z` everywhere, M8b makes
 `C` unsatisfiable everywhere. Cross-command laws compare rustdl with itself, so they cannot see
 a fault on a shared path; only an oracle diff can (the FP=0 closure-diff net for M8b's false
 unsat, the MISSED net for M8a's miss), and only on an ontology that carries the shape.
+
+### Which other gates see M8a and M8b (#363 step 1.5)
+
+Measured 2026-11-02 on 7c038ba3 (each cell compared with an unmutated control under the same
+settings). "Didn't run" in every arm: the 84 `#[ignore]`d tests of the default suite, and the
+`alehif-test` and `notgalen` blocks of the FP=0 net (fixtures absent).
+
+| gate | M8a | M8b |
+|---|---|---|
+| default `cargo test` (core, saturation, reasoner, cli; what CI runs) | **caught**: 3 tests in `gci_domain_nonatomic_head.rs` | not caught: the D4 tests pinned only the `≥2` side |
+| FP=0 closure-diff net (`konclude_closure_diff`, local) | not caught | **not caught although it fired**: 41 classes of `ore_ont_10080` unsat (Konclude 0, control 0), net read FP=0 |
+| per-pair FP gate | not caught | not caught (no fixture carries the shape) |
+
+**Why the net missed M8b.** `oracle_diff::aligned_closures` excludes
+`oracle_unsat ∪ rustdl_unsat` from BOTH sides before diffing pairs, so a class rustdl wrongly
+calls unsatisfiable never reached the comparison. A false unsat is the strongest false positive
+(the class is subsumed by everything), and neither net could report one.
+
+**Fixed (#363 step 1.5).** `oracle_diff::unsat_diff` compares the unsat SETS; every in-repo
+consumer now uses it:
+
+- the FP=0 net (`unsat_FP`/`unsat_MISSED` on each `[fp0]` line; unsat FP is folded into the
+  gated FP and counted by `closure-diff.sh`, unsat MISSED is informational);
+- the ore-10080 deadline test, both anytime sweeps (unsat FP gated at every deadline), and the
+  global-deadline differential (unsat sets must match);
+- the per-pair gate;
+- `owl-dl-bench matrix` (separate `unsat_fp`/`unsat_missed` columns, since `fp` counts pairs);
+- the laws harness: new ratchet **U1** against the Konclude oracle, or a spec's hand-checked
+  `known_sat` list on synthetics; never budget-exempted, HermiT-adjudicated like R2.
+
+The oracle reader also counts `SubClassOf(C, owl:Nothing)`, the form OWLAPI-based oracles
+(ROBOT/HermiT) write, as unsat; without it a correct unsat class would read as an unsat FP.
+
+After the fix, unmutated main: every fixture present reports `unsat_FP=0` (galen, ore-10080,
+ore-10908, ore-15672, sio, wine, bibtex, ro, sulo, the ontostart pizza in both nets, and the
+Stanford pizza at 499 = 499); the laws quick set has 5 U1 comparisons, all agreeing. With M8b
+applied: the net fails on `unsat_FP=41` at `ore_ont_10080`, the new default-run
+`data_axioms::tests::functional_dp_min1_is_not_unsat` fails, and U1 reports 2 violations on
+`functional_data_min1`. So **M8b is now caught in CI** (the unit test) and locally (net, U1).
+
+Still open: M8a is caught only by its own canaries; no oracle gate carries its shape (0 of 157
+ORE GCI-domain ontologies have a non-atomic head). The inconsistent-oracle branch of
+`unsat_diff` is covered by unit tests only: no fixture oracle puts `owl:Thing` in its
+`owl:Nothing` group. The harness repo's scorers (`normalise.compare`, `missed-net`,
+`cross-check.sh`, `release-corpus-report`) have the same exclusion and are not changed here.
 
 Other limits, stated:
 

@@ -2,7 +2,8 @@ use crate::matrix::corpus::StagedOnt;
 use anyhow::{Context, Result};
 use owl_dl_reasoner::classify_with_budget;
 use owl_dl_reasoner::oracle_diff::{
-    OwxVerdict, PairSet, aligned_closures, aligned_owx_closures, read_owx_verdict,
+    OwxVerdict, PairSet, UnsatDiff, aligned_closures, aligned_owx_closures, read_owx_verdict,
+    unsat_diff, unsat_owx_diff,
 };
 use std::path::Path;
 use std::time::Duration;
@@ -10,23 +11,31 @@ use std::time::Duration;
 /// FP/MISSED counts for one reasoner's classification against the Konclude
 /// oracle's closure. `closure_size` is the reasoner's own closure size (the
 /// denominator used for reporting percentages elsewhere in the matrix).
+///
+/// `fp`/`missed` count subsumption PAIRS over classes both sides find
+/// satisfiable, so they cannot see a class the reasoner wrongly calls
+/// unsatisfiable; `unsat_fp`/`unsat_missed` count those CLASSES separately.
 #[derive(Debug, Clone, Copy)]
 pub struct Correctness {
     pub closure_size: usize,
     pub fp: usize,
     pub missed: usize,
+    pub unsat_fp: usize,
+    pub unsat_missed: usize,
 }
 
 /// Diff a reasoner's closure against the oracle's: FP = pairs the reasoner
 /// asserts that the oracle does not (unsound); MISSED = pairs the oracle
 /// asserts that the reasoner does not (incomplete).
-pub fn diff_pairsets(reasoner: &PairSet, oracle: &PairSet) -> Correctness {
+pub fn diff_pairsets(reasoner: &PairSet, oracle: &PairSet, unsat: &UnsatDiff) -> Correctness {
     let fp = reasoner.difference(oracle).count();
     let missed = oracle.difference(reasoner).count();
     Correctness {
         closure_size: reasoner.len(),
         fp,
         missed,
+        unsat_fp: unsat.fp.len(),
+        unsat_missed: unsat.missed.len(),
     }
 }
 
@@ -55,7 +64,11 @@ pub fn rustdl_vs_oracle(
     )
     .context("rustdl classify")?;
     let (rustdl, oracle_pairs) = aligned_closures(&c, oracle);
-    Ok(diff_pairsets(&rustdl, &oracle_pairs))
+    Ok(diff_pairsets(
+        &rustdl,
+        &oracle_pairs,
+        &unsat_diff(&c, oracle),
+    ))
 }
 
 /// Read a reasoner's own `.owx` output, align its closure against the
@@ -64,7 +77,11 @@ pub fn rustdl_vs_oracle(
 pub fn owx_vs_oracle(reasoner_owx: &Path, oracle: &OwxVerdict) -> Result<Correctness> {
     let v = read_owx_verdict(reasoner_owx)?;
     let (reasoner, oracle_pairs) = aligned_owx_closures(&v, oracle);
-    Ok(diff_pairsets(&reasoner, &oracle_pairs))
+    Ok(diff_pairsets(
+        &reasoner,
+        &oracle_pairs,
+        &unsat_owx_diff(&v, oracle),
+    ))
 }
 
 #[cfg(test)]
@@ -85,7 +102,7 @@ mod tests {
     fn fp_and_missed_counted_against_oracle() {
         let oracle = ps(&[("A", "B"), ("B", "C"), ("A", "C")]);
         let reasoner = ps(&[("A", "B"), ("A", "C"), ("A", "D")]); // missing B<C; extra A<D
-        let c = diff_pairsets(&reasoner, &oracle);
+        let c = diff_pairsets(&reasoner, &oracle, &UnsatDiff::default());
         assert_eq!(c.closure_size, 3);
         assert_eq!(c.fp, 1); // A<D is unsound
         assert_eq!(c.missed, 1); // B<C missed
@@ -94,7 +111,7 @@ mod tests {
     #[test]
     fn identical_closures_are_clean() {
         let o = ps(&[("A", "B")]);
-        let c = diff_pairsets(&o.clone(), &o);
+        let c = diff_pairsets(&o.clone(), &o, &UnsatDiff::default());
         assert_eq!(c.fp, 0);
         assert_eq!(c.missed, 0);
     }

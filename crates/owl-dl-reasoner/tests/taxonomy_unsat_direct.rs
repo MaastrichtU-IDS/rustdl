@@ -17,6 +17,9 @@
 //! `oracle_diff::aligned_closures` excludes `verdict.unsat ∪ rustdl_unsat` from
 //! both sides before diffing, so unsat-subject edges never entered the
 //! comparison. A green net is therefore not evidence here — these tests are.
+//! (Since #363 step 1.5 the net also compares the unsat SETS via
+//! `oracle_diff::unsat_diff`, which catches a false unsat class but still
+//! never looks at the edges an unsat subject emits.)
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;

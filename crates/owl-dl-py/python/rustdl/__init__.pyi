@@ -123,11 +123,12 @@ class StructuralGapWarning(UserWarning):
     cut."""
 
 class TrustedConsistencyWarning(UserWarning):
-    """Emitted by `is_class_satisfiable`, `is_subclass_of`,
-    `class_expression_satisfiable` and `class_expression_entailed_subclass` when
-    the answer was computed without the ABox and relies on a consistency verdict
-    the wedge found but did not prove (#401). Not an `IncompleteQueryWarning`:
-    nothing was cut."""
+    """Emitted when an answer rests on a consistency verdict the wedge found but
+    did not prove: by `is_consistent` for that verdict itself (#392), and by
+    `is_class_satisfiable`, `is_subclass_of`, `class_expression_satisfiable` and
+    `class_expression_entailed_subclass` when the answer was computed without the
+    ABox on its strength (#401). Not an `IncompleteQueryWarning`: nothing was
+    cut."""
 
 class Root(Mapping[str, object]):
     iri: str
@@ -205,7 +206,8 @@ def classify_bytes(
 
 def is_consistent(path: str) -> bool:
     """True iff the ontology is consistent. A give-up (no clash found within
-    budget) returns `True` and emits `IncompleteQueryWarning`."""
+    budget) returns `True` and emits `IncompleteQueryWarning`. A `True` resting
+    only on the wedge's unproved model emits `TrustedConsistencyWarning` (#392)."""
     ...
 
 def is_class_satisfiable(path: str, class_iri: str) -> bool:

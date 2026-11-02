@@ -301,21 +301,35 @@ PreparedOntology.justify_all = _prepared_justify_all  # type: ignore[attr-define
 
 def is_consistent(path):
     """True iff the ontology at `path` is consistent. A give-up (budget or node
-    cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`."""
-    consistent, incomplete = _is_consistent_native(path)
+    cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`.
+    A `True` whose only evidence is the wedge's model, which it does not prove
+    complete, emits `TrustedConsistencyWarning` (#392)."""
+    consistent, incomplete, trusted = _is_consistent_native(path)
     _warn_if_query_incomplete("is_consistent", incomplete)
+    if trusted:
+        _warnings.warn(
+            "is_consistent: consistent because the wedge found a model, which it does "
+            "not prove complete; no main-tableau model was built "
+            "(see TrustedConsistencyWarning).",
+            TrustedConsistencyWarning,
+            stacklevel=2,
+        )
     return consistent
 
 
 class TrustedConsistencyWarning(UserWarning):
-    """Raised by `is_class_satisfiable`, `is_subclass_of`,
-    `class_expression_satisfiable` and `class_expression_entailed_subclass` when
-    the answer was computed without the ABox (#401). That is exact when the KB is
-    consistent and has no nominals; here consistency rests on the wedge finding a
-    model it does not prove complete, the same evidence `is_consistent` reports.
-    If that were ever wrong the answer could only be a miss ("satisfiable" / "not
-    subsumed"), never a false positive. Nothing was cut, so this is NOT an
-    `IncompleteQueryWarning`. `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead."""
+    """An answer rests on the KB being consistent, and the only evidence for that
+    is the wedge finding a model it does not prove complete. Nothing was cut, so
+    this is NOT an `IncompleteQueryWarning`.
+
+    - `is_consistent` (#392): the `True` IS that verdict.
+      `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
+    - `is_class_satisfiable`, `is_subclass_of`, `class_expression_satisfiable` and
+      `class_expression_entailed_subclass` (#401): the answer was computed without
+      the ABox, which is exact when the KB is consistent and has no nominals. If
+      that consistency were ever wrong the answer could only be a miss
+      ("satisfiable" / "not subsumed"), never a false positive.
+      `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead."""
 
 
 def _warn_if_trusted_consistency(name: str, relies: bool) -> None:

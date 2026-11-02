@@ -198,21 +198,63 @@ Ratchets, counted against `crates/owl-dl-cli/tests/fixtures/laws/baseline.json`:
 A pair in the committed Konclude closure is a classify miss. A pair absent from it is a
 candidate false positive, which fails a run only if HermiT confirms it (`--hermit`).
 
-**Coverage.** No hard law has a live engine-level sabotage on this repository's
-curated fixtures. `--self-test` shows that each law can fire, on fabricated operands;
-that checks the harness, not the engine. Engine-level sabotages exist only for the
-ratchets (`--sabotage`):
+**Coverage.** `--self-test` shows each law can fire on fabricated operands; that checks
+the harness, not the engine. Engine-level evidence comes from two places.
 
-- R2: `RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` on `tests/fixtures/laws/complex_qualifier_98.ofn`;
+Env sabotages (`--sabotage`), each FIRES on the unmutated binary and not in its control:
+
+- R1: `RUSTDL_MAX_CHOICE_POINT=0` + `RUSTDL_MAX_TRIAL_MERGE=0` on `maxmerge_fp.ofn` (#76:
+  `subclass A I` says yes, HermiT refutes it). Either flag alone does not restore the FP,
+  and on the Stanford pizza both together still give 499 = 499, so `per_pair_fp_gate.rs`
+  has no live sabotage; this is #76's live guard;
+- R2: `RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` on `complex_qualifier_98.ofn`;
 - R3: `RUSTDL_CLASSIFY_INCONSISTENCY=0` on `family.ofn`.
 
-Two laws had **0 checks** in the first full run (30 ontologies, `--pair-timeout-ms 1000`):
+Source mutants (package F-lite, `scripts/mutants/`): each patch plants one known fault,
+built as its own binary and run through the quick mode with `--hermit`. A law catches a
+mutant when the mutant's run has a violation, a HermiT-confirmed false positive, or more
+discrepancies for an (ontology, law) than the unmutated control under the same env
+(`scripts/mutants/detect.py`). Measured 2026-11-02, base 0090dc9f, seed 363:
 
-- L4: `classify --json` on `family.ofn` reports `consistent: true` with
-  `consistency_undetermined: true` on this host (its ABox pre-check runs out of budget
-  on a slow machine), so neither L4 nor R3 applies. That is the signal working as
-  intended, and it depends on the host.
-- L11: `individuals` was killed at 30 s wherever it ran (pizza, ro).
+| mutant | layer | re-opens | caught by | on the curated corpus? |
+|---|---|---|---|---|
+| M1 | classify consistency pre-check | all named classes unsat read as inconsistency | L4 (`all_unsat`) | no: fixture only |
+| M2 | per-pair tableau, env only | #76 first-pair `≤n` merge (both flags off) | R1, HermiT-confirmed FP (`maxmerge_fp`) | no: fixture only (pizza unaffected) |
+| M3 | wedge clausifier | #78 naming clause on `var` | R1 over baseline (`neg_disjunct_forall`); HermiT confirms the miss | no: fixture only |
+| M4 | expression surfaces | probe injects only `Q ⊑ CE` | L6 | yes: pizza, ro, sulo, bibtex and 6 fixtures |
+| M5 | `disjoint` | told disjointness propagated upward | L7 | yes: sulo, and `disjoint_up` |
+| M6 | `realize` | pseudo-model prune inverted | L10 (`realize_disjunction`) | no: fixture only, though ro and pizza have individuals |
+| M7 | classify unsat probe | a cut probe published as unsat (env `RUSTDL_UNSAT_PROBE_MS=1 RUSTDL_LABEL_HEURISTIC=0`) | L3; also L4 on ro | yes: pizza, ro, sulo, bibtex |
+| M8a | EL saturator (shared) | #114 non-atomic GCI domain head dropped | **nothing** | **not caught** |
+| M8b | conversion, D4 (shared) | `Functional(d)` + `≥1 d` read as unsat | **nothing** | **not caught** |
+| M9 | classify JSON | a class grouped as equivalent to its parent | L2, L1, L8 | yes: all four |
+| M10 | `disjoint` | inconsistency guards removed | L5 (`inconsistent_small`) | no: fixture only |
+| M11 | `individuals` | every probed pair published as different | L11 (`individuals_three`) | no: fixture only |
+| M12 | `--saturation-only` JSON | one reversed edge (structural) | L8 | yes: all four |
+
+**Not caught: M8a and M8b, and that is structural.** Both faults sit in code every surface
+shares (the EL saturator; conversion), so `classify`, `subclass`, `sat` and the expression
+queries all agree on the wrong answer: M8a loses the entailed `X ⊑ Z` everywhere, M8b makes
+`C` unsatisfiable everywhere. Cross-command laws compare rustdl with itself, so they cannot see
+a fault on a shared path; only an oracle diff can (the FP=0 closure-diff net for M8b's false
+unsat, the MISSED net for M8a's miss), and only on an ontology that carries the shape.
+
+Other limits, stated:
+
+- Six of the eleven caught mutants are caught only on a fixture written for them. The fixtures
+  are now in the quick mode, so the unmutated engine is checked against those shapes from now
+  on, but the curated corpus alone would have missed M1, M2, M3, M6, M10 and M11.
+- M12 is structural: `classify` unions the saturation closure, so no engine fault can break L8;
+  M12 only shows the law's plumbing works.
+- Mutant choice is a sample of fault classes, not coverage. Four mutants were inert on their
+  first fixture or settings and were corrected before the runs (M3: the saturator matched an
+  identical `∀` body; M5: the pair is visited in the other order; M7: the label heuristic
+  answers before the probe; M10: the `disjoint` command has three guards).
+
+With the fixtures in the quick mode, every hard law now has checks on the unmutated engine
+(control run: L4 1, L11 10). In the first full run (30 ontologies) L4 and L11 had **0 checks**:
+`classify --json` on `family.ofn` reports `consistency_undetermined: true` on a slow host (so
+neither L4 nor R3 applies there), and `individuals` was killed at 30 s on pizza and ro.
 
 The quick mode is a local gate:
 `cargo test --release -p owl-dl-cli --test cross_command_laws -- --ignored`.

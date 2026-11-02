@@ -1,0 +1,26 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M6
+# id: M6
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: realize surface
+# reopens: the pseudo-model prune inverted: a witness-model type is published
+# env: -
+# expect: L10@realize_disjunction
+diff --git a/crates/owl-dl-reasoner/src/realize.rs b/crates/owl-dl-reasoner/src/realize.rs
+index 88c352ea..edc3c3bb 100644
+--- a/crates/owl-dl-reasoner/src/realize.rs
++++ b/crates/owl-dl-reasoner/src/realize.rs
+@@ -415,10 +415,11 @@ fn instance_check_reporting(
+             return Ok((true, false));
+         }
+     }
++    // F-LITE MUTANT M6: the pseudo-model prune inverted (a witness type is published).
+     if let Some(bt) = base_types
+-        && !bt.contains(&class_id)
++        && bt.contains(&class_id)
+     {
+-        return Ok((false, false));
++        return Ok((true, false));
+     }
+     // KB ⊨ C(a) iff `{a} ⊓ ¬C` is unsatisfiable.
+     let build = move |pool: &mut ConceptPool| {

@@ -1,0 +1,28 @@
+# rustdl package F-lite mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Replay: scripts/mutants/replay-mutants.sh M4
+# id: M4
+# base: 0090dc9f820acbbc31133fb2041df46643de5e67
+# layer: expression surface (sat-expr/subclass-expr/instances-expr)
+# reopens: the probe injects only Q ⊑ CE, dropping the ⊒ half
+# env: -
+# expect: L6@neg_disjunct_forall,L6@pizza
+diff --git a/crates/owl-dl-reasoner/src/class_expr_query.rs b/crates/owl-dl-reasoner/src/class_expr_query.rs
+index 9bfb88ca..3932a349 100644
+--- a/crates/owl-dl-reasoner/src/class_expr_query.rs
++++ b/crates/owl-dl-reasoner/src/class_expr_query.rs
+@@ -187,10 +187,11 @@ fn ensure_fresh<A: ForIRI>(onto: &SetOntology<A>, iri: &str) -> Result<(), Reaso
+ }
+ 
+ fn probe_axiom<A: ForIRI>(build: &Build<A>, iri: &str, ce: &ClassExpression<A>) -> Component<A> {
+-    Component::EquivalentClasses(EquivalentClasses(vec![
+-        ClassExpression::Class(build.class(iri)),
+-        ce.clone(),
+-    ]))
++    // F-LITE MUTANT M4: only Q ⊑ CE is injected.
++    Component::SubClassOf(horned_owl::model::SubClassOf {
++        sub: ClassExpression::Class(build.class(iri)),
++        sup: ce.clone(),
++    })
+ }
+ 
+ /// Is `ce` satisfiable w.r.t. `onto`? Reduces to satisfiability of a fresh

@@ -1,0 +1,13 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(:=<http://ex.org/nd#>)
+Ontology(<http://ex.org/nd>
+# The #78 shape: T ⊑ S needs the negated-disjunct naming clause under a ∀ (the
+# wedge; the bodies differ, so no told match). Mutant M3 (#78 revert) makes
+# classify miss it while subclass proves it (R1).
+Declaration(Class(:S)) Declaration(Class(:T)) Declaration(Class(:R))
+Declaration(Class(:A)) Declaration(Class(:V))
+Declaration(ObjectProperty(:p))
+SubClassOf(:A :V)
+EquivalentClasses(:S ObjectAllValuesFrom(:p ObjectUnionOf(:V ObjectComplementOf(:R))))
+SubClassOf(:T ObjectAllValuesFrom(:p ObjectUnionOf(:A ObjectComplementOf(:R))))
+)

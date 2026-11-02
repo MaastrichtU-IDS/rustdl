@@ -1,0 +1,13 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(:=<http://ex.org/gd#>)
+Ontology(<http://ex.org/gd>
+# The #114 shape (pure EL): ∃r.⊤ ⊑ ∃s.S with X ⊑ ∃r.B and ∃s.S ⊑ Z gives X ⊑ Z.
+# Mutant M8a (#114 revert) loses it in the saturator every surface shares:
+# expected NOT caught by any cross-command law.
+Declaration(Class(:X)) Declaration(Class(:B)) Declaration(Class(:S)) Declaration(Class(:Z))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) ObjectSomeValuesFrom(:s :S))
+SubClassOf(:X ObjectSomeValuesFrom(:r :B))
+SubClassOf(ObjectSomeValuesFrom(:s :S) :Z)
+)

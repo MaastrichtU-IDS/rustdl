@@ -41,11 +41,13 @@ Adjudication: a pair in the committed Konclude closure is a classify MISS; a
 pair absent from it is a CANDIDATE FP, confirmed only by HermiT (`--hermit`).
 Konclude alone never fails a run (it under-reports in documented cases).
 
-COVERAGE, stated: on this host no hard law has a live engine-level sabotage.
-`--self-test` shows each law CAN fire, on fabricated operands; that checks the
-harness, not the engine. Engine-level sabotage covers R2
-(`RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` on the #98 fixture) and R3
-(`RUSTDL_CLASSIFY_INCONSISTENCY=0` on family.ofn); see `--sabotage`.
+COVERAGE, stated: `--self-test` shows each law CAN fire, on fabricated operands;
+that checks the harness, not the engine. Env sabotages (`--sabotage`) cover R1
+(#76, both `RUSTDL_MAX_*` merge flags off on maxmerge_fp), R2 (#98) and R3
+(family.ofn). Source mutants for every hard law are in scripts/mutants/ (replay
+with scripts/mutants/replay-mutants.sh); their table, including the two faults
+no law catches (both on a path every surface shares), is in
+docs/assurance/query-surface-ledger.md.
 
 Usage:
     scripts/cross-command-laws.py --self-test
@@ -86,8 +88,13 @@ PAIR_MS = "1000"
 DEFAULT_CAPS = dict(pos=40, neg=40, sat=20, inst=20, disj=20, eq=10)
 SMALL_CAPS = dict(pos=5, neg=5, sat=5, inst=5, disj=5, eq=3)
 
+CODE_PIZZA = "http://www.co-ode.org/ontologies/pizza/pizza.owl#"
 CURATED = [
-    dict(id="pizza", path=REAL / "pizza.ofn", oracle="pizza-classified.owx"),
+    # The #76 pairs on the Stanford (co-ode) pizza. Pins whose IRIs are not declared
+    # (another pizza vintage) are dropped in observe().
+    dict(id="pizza", path=REAL / "pizza.ofn", oracle="pizza-classified.owx",
+         pin_neg=[(CODE_PIZZA + "Margherita", CODE_PIZZA + "InterestingPizza"),
+                  (CODE_PIZZA + "QuattroFormaggi", CODE_PIZZA + "InterestingPizza")]),
     dict(id="ro", path=REAL / "ro.ofn", oracle="ro-classified.owx"),
     dict(id="sulo", path=REAL / "sulo.ofn", oracle="sulo-classified.owx"),
     dict(id="bibtex", path=REAL / "bibtex.ofn", oracle="bibtex-classified.owx"),
@@ -99,13 +106,25 @@ CURATED = [
          caps=dict(pos=0, neg=0, sat=5, inst=5, disj=5, eq=0)),
 ]
 SYNTHETIC = [
-    # #76's non-entailed `A ⊑ I`; pinned as an R1 probe (not a sabotage: the
-    # flag no longer makes the engine say yes on this build).
+    # #76's non-entailed `A ⊑ I`; pinned as an R1 probe. Its sabotage (both
+    # `RUSTDL_MAX_CHOICE_POINT=0` and `RUSTDL_MAX_TRIAL_MERGE=0`) is in SABOTAGES.
     dict(id="maxmerge_fp", path=LAWS_FIX / "maxmerge_fp.ofn",
          pin_neg=[("http://ex.org/p#A", "http://ex.org/p#I")]),
     dict(id="complex_qualifier_98", path=LAWS_FIX / "complex_qualifier_98.ofn"),
+    # Targets for the package F-lite mutants (scripts/mutants/). Each one makes a
+    # law able to see one fault class on the unmutated engine from now on.
+    dict(id="all_unsat", path=LAWS_FIX / "all_unsat.ofn"),
+    dict(id="neg_disjunct_forall", path=LAWS_FIX / "neg_disjunct_forall.ofn",
+         pin_neg=[("http://ex.org/nd#T", "http://ex.org/nd#S")]),
+    dict(id="disjoint_up", path=LAWS_FIX / "disjoint_up.ofn"),
+    dict(id="realize_disjunction", path=LAWS_FIX / "realize_disjunction.ofn"),
+    dict(id="gci_domain_nonatomic", path=LAWS_FIX / "gci_domain_nonatomic.ofn",
+         pin_neg=[("http://ex.org/gd#X", "http://ex.org/gd#Z")]),
+    dict(id="functional_data_min1", path=LAWS_FIX / "functional_data_min1.ofn"),
+    dict(id="inconsistent_small", path=LAWS_FIX / "inconsistent_small.ofn"),
+    dict(id="individuals_three", path=LAWS_FIX / "individuals_three.ofn"),
 ]
-QUICK_IDS = {"pizza", "ro", "sulo", "bibtex", "maxmerge_fp", "complex_qualifier_98"}
+QUICK_IDS = {"pizza", "ro", "sulo", "bibtex"} | {s["id"] for s in SYNTHETIC}
 QUICK_CAPS = dict(pos=10, neg=10, sat=10, inst=10, disj=10, eq=5)
 
 SABOTAGES = [
@@ -113,6 +132,11 @@ SABOTAGES = [
          env={"RUSTDL_COMPLEX_QUALIFIER_VERIFY": "0"}, expect="R2"),
     dict(name="R3: RUSTDL_CLASSIFY_INCONSISTENCY=0 on family", onto="family",
          env={"RUSTDL_CLASSIFY_INCONSISTENCY": "0"}, expect="R3"),
+    # #76: both flags off restore the first-pair `≤n` merge, so `subclass A I` says
+    # yes on the synthetic (HermiT refutes it). One flag alone is not enough: the
+    # #293 choice point and the #76 trial merge each prevent it.
+    dict(name="R1: RUSTDL_MAX_CHOICE_POINT=0 RUSTDL_MAX_TRIAL_MERGE=0 on #76", onto="maxmerge_fp",
+         env={"RUSTDL_MAX_CHOICE_POINT": "0", "RUSTDL_MAX_TRIAL_MERGE": "0"}, expect="R1"),
 ]
 
 
@@ -384,7 +408,15 @@ def observe(spec, runner, caps, seed, log=print):
                       for b in rng.sample(sats, min(len(sats), 40)) if a != b and (a, b) not in clo]
         rng.shuffle(cands)
         neg = list(dict.fromkeys(cands))[:caps["neg"]]
-    neg += [tuple(p) for p in spec.get("pin_neg", [])]
+    declared = set(classes)
+    for p_ in spec.get("pin_neg", []):
+        if p_[0] in declared and p_[1] in declared:
+            if tuple(p_) not in neg:
+                neg.append(tuple(p_))
+        else:
+            # Expected for another pizza vintage; for any other spec it means a
+            # typo or a changed fixture, so say so rather than drop it silently.
+            log(f"  {oid}: pinned pair not declared, skipped: {p_[0]} ⊑ {p_[1]}")
     sat_classes = rng.sample(classes, min(len(classes), caps["sat"]))
     sat_classes += [x for x in sorted(c.get("unsat", set())) if x not in sat_classes][:caps["sat"]]
     eq = [g for g in c.get("equiv", []) if all(m not in (THING, NOTHING) for m in g)][:caps["eq"]]
@@ -838,6 +870,10 @@ def self_test():
     res = [dict(onto="t", outcomes=evaluate(ob))]
     cases.append(("budget-cut R1 not ratcheted",
                   (laws_of(ob, "discrepancy"), dict(summarize(res, {})[2])), (["R1"], {})))
+    # ... but a HermiT-refuted per-pair yes is an FP whatever classify's budget did.
+    res[0]["outcomes"] = [dict(o, hermit="refutes") for o in res[0]["outcomes"]]
+    cases.append(("budget-cut HermiT-refuted R1 still fails",
+                  [f["kind"] for f in summarize(res, {})[1]], ["HermiT-confirmed FP"]))
 
     bad = 0
     for name, got, want in cases:
@@ -869,7 +905,8 @@ def corpus(args):
         specs.append(dict(id=p.stem, path=p, caps=dict(pos=20, neg=20, sat=10, inst=10, disj=10,
                                                          eq=5)))
     if args.quick:
-        specs = [dict(s, caps=QUICK_CAPS) if s["id"] not in ("maxmerge_fp", "complex_qualifier_98")
+        synth = {s_["id"] for s_ in SYNTHETIC}
+        specs = [dict(s, caps=QUICK_CAPS) if s["id"] not in synth
                  else s for s in specs if s["id"] in QUICK_IDS]
     if args.only:
         specs = [s for s in specs if s["id"] in args.only.split(",")]
@@ -910,10 +947,11 @@ def summarize(results, baseline):
                 fails.append(o)
             if o["kind"] == "discrepancy" and not o.get("budget_cut"):
                 ratchet[(res["onto"], o["law"])] += 1
-                # hermit_check reports whether HermiT CONFIRMS rustdl's per-pair
-                # claim; a refuted claim is a confirmed false positive.
-                if o.get("hermit") == "refutes":
-                    fails.append(dict(o, kind="HermiT-confirmed FP"))
+            # hermit_check reports whether HermiT CONFIRMS rustdl's per-pair claim;
+            # a refuted claim is a false positive of the per-pair surface, whatever
+            # classify's budget did, so it fails the run even when budget-cut.
+            if o["kind"] == "discrepancy" and o.get("hermit") == "refutes":
+                fails.append(dict(o, kind="HermiT-confirmed FP"))
     over = []
     for (onto, law), n in sorted(ratchet.items()):
         allowed = baseline.get(onto, {}).get(law, 0) if baseline is not None else None
@@ -941,6 +979,8 @@ def main():
     ap.add_argument("--baseline", type=Path)
     ap.add_argument("--write-baseline", type=Path)
     ap.add_argument("--sabotage", action="store_true", help="run the engine-level sabotages")
+    ap.add_argument("--env", action="append", default=[], metavar="K=V",
+                    help="set K=V for every rustdl call (part of the cache key and file tag)")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
@@ -953,6 +993,8 @@ def main():
     cores = [int(c) for c in a.cores.split(",") if c] or [None] * a.workers
     specs, missing = corpus(a)
 
+    if a.sabotage and a.env:
+        ap.error("--env does not apply to --sabotage (each sabotage sets its own env)")
     if a.sabotage:
         allspecs = {s["id"]: s for s in CURATED + SYNTHETIC}
         rows, bad = [], 0
@@ -976,7 +1018,8 @@ def main():
 
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
-    jobs = [(s, binary, None, a.out, a.seed, {}) for s in specs]
+    env_extra = dict(kv.split("=", 1) for kv in a.env)
+    jobs = [(s, binary, None, a.out, a.seed, env_extra) for s in specs]
     cores_q = multiprocessing.get_context().Queue()
     for c_ in cores:
         cores_q.put(c_)
@@ -997,6 +1040,7 @@ def main():
             adjudicate(res["outcomes"], allspecs[res["onto"]], hermit=hermit_check)
     by_law, fails, ratchet, over = summarize(results, baseline)
     report = dict(binary=binary, sha256=sha, version=version, seed=a.seed, quick=a.quick,
+                  env=env_extra,
                   wall=round(time.monotonic() - t0, 1), missing_fixtures=missing,
                   per_ontology=[{k: r[k] for k in ("onto", "calls", "kills", "cpu", "wall")}
                                 for r in results],

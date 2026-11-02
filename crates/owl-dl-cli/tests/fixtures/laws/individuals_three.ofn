@@ -1,0 +1,10 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(:=<http://ex.org/i3#>)
+Ontology(<http://ex.org/i3>
+# Three individuals, none provably different. Mutant M11 (individuals inverted)
+# publishes every pair as different; sat-expr {a} and {b} stays satisfiable (L11).
+Declaration(Class(:P)) Declaration(Class(:Q))
+Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b)) Declaration(NamedIndividual(:c))
+ClassAssertion(:P :a) ClassAssertion(:P :b) ClassAssertion(:Q :c)
+)

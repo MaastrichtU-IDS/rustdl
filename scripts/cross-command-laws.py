@@ -37,9 +37,18 @@ Ratchets (counted against a committed per-ontology baseline):
   R2  `sat C` = unsat, classify lists C as satisfiable
   R3  `consistent` = inconsistent, classify `consistent: true`
       (not `consistency_undetermined`)
+  U1  classify unsat C, the Konclude oracle has C satisfiable. Unlike L3 this
+      compares rustdl with an ORACLE, so it sees a false unsat that every rustdl
+      surface shares (mutant M8b). Never exempted for a budget cut: a deadline
+      never makes a class unsat. A class in a spec's hand-adjudicated
+      `known_sat` list that classify calls unsat is a hard U1 violation.
+      Oracle unsat classes classify misses are listed in report.json
+      (`unsat_missed`), not ratcheted. Unlike R1/R2, a U1 discrepancy over the
+      baseline fails the run without HermiT: an empty baseline admits none.
 Adjudication: a pair in the committed Konclude closure is a classify MISS; a
 pair absent from it is a CANDIDATE FP, confirmed only by HermiT (`--hermit`).
-Konclude alone never fails a run (it under-reports in documented cases).
+Konclude alone never fails a run (it under-reports in documented cases); a U1
+baseline entry therefore needs a recorded HermiT verdict, never Konclude alone.
 
 COVERAGE, stated: `--self-test` shows each law CAN fire, on fabricated operands;
 that checks the harness, not the engine. Env sabotages (`--sabotage`) cover R1
@@ -120,7 +129,10 @@ SYNTHETIC = [
     dict(id="realize_disjunction", path=LAWS_FIX / "realize_disjunction.ofn"),
     dict(id="gci_domain_nonatomic", path=LAWS_FIX / "gci_domain_nonatomic.ofn",
          pin_neg=[("http://ex.org/gd#X", "http://ex.org/gd#Z")]),
-    dict(id="functional_data_min1", path=LAWS_FIX / "functional_data_min1.ofn"),
+    # `known_sat`: classes adjudicated satisfiable by hand (no Konclude oracle for
+    # the synthetics); U1 checks classify's unsat set against them.
+    dict(id="functional_data_min1", path=LAWS_FIX / "functional_data_min1.ofn",
+         known_sat=["http://ex.org/fd#C", "http://ex.org/fd#D"]),
     dict(id="inconsistent_small", path=LAWS_FIX / "inconsistent_small.ofn"),
     dict(id="individuals_three", path=LAWS_FIX / "individuals_three.ofn"),
 ]
@@ -220,10 +232,15 @@ def owx_closure(path):
         if re.search(r"<Object|<Data", body):
             continue
         if kind == "SubClassOf" and len(iris) == 2:
-            edges.append(tuple(iris))
+            # OWLAPI-style oracles write an unsat class as `C ⊑ owl:Nothing`.
+            if iris[1] in (NOTHING, "Nothing") and iris[0] not in (NOTHING, "Nothing"):
+                unsat.add(iris[0])
+            else:
+                edges.append(tuple(iris))
         elif kind == "EquivalentClasses" and len(iris) >= 2:
-            if NOTHING in iris:
-                unsat |= set(iris) - {NOTHING}
+            if NOTHING in iris or "Nothing" in iris:
+                # ROBOT writes owl:Nothing as the relative IRI "Nothing".
+                unsat |= {THING if i == "Thing" else i for i in iris} - {NOTHING, "Nothing"}
             else:
                 groups.append(iris)
     return closure(edges, groups, drop=unsat), unsat
@@ -349,6 +366,12 @@ def observe(spec, runner, caps, seed, log=print):
     rng = random.Random(f"{seed}:{oid}")
     obs = dict(onto=oid, q={}, sample={})
     q = obs["q"]
+    # U1 compares classify's unsat set with an oracle's; the oracle is data, so it
+    # is loaded here and evaluate() stays pure (and self-testable).
+    if spec.get("oracle") and (KONCLUDE / spec["oracle"]).exists():
+        obs["oracle_unsat"] = owx_closure(KONCLUDE / spec["oracle"])[1]
+    if spec.get("known_sat"):
+        obs["known_sat"] = set(spec["known_sat"])
 
     # classify once at the in-tree convention, and saturation-only for L8.
     r = runner.run(oid, ["classify", "--json", "--pair-timeout-ms", PAIR_MS, path],
@@ -636,6 +659,30 @@ def evaluate(obs):
             elif key[0] in ("instances-expr", "realize", "disjoint", "individuals"):
                 bad = f"{key[0]} answered instead of erroring"
             out.append(check("L5", o, bad is None, f"inconsistent KB: {bad}", cons, a))
+    # U1: classify unsat vs an oracle. Skipped when either side says the KB is
+    # inconsistent (every class is then unsat).
+    if cl_ok and c.get("consistent") and not kb_inconsistent:
+        ou = obs.get("oracle_unsat")
+        if ou is not None and THING not in ou:
+            # One `ok` per agreeing comparison, so a run shows U1 actually compared
+            # (silence would look the same as a missing oracle).
+            if not unsat - ou:
+                out.append(check("U1", o, True, "", cl_op))
+            for x in sorted(unsat - ou):
+                out.append(outcome("U1", o, "discrepancy",
+                                   f"classify says {x} unsat, Konclude has it satisfiable", cl_op)
+                           | dict(pair=[x, NOTHING]))
+            for x in sorted(ou - unsat):
+                out.append(outcome("U1", o, "unsat-missed",
+                                   f"Konclude says {x} unsat, classify lists it satisfiable", cl_op))
+        known = obs.get("known_sat")
+        if known is not None:
+            bad = sorted(unsat & known)
+            if not bad:
+                out.append(check("U1", o, True, "", cl_op))
+            for x in bad:
+                out.append(check("U1", o, False,
+                                 f"classify says {x} unsat; it is satisfiable (known_sat)", cl_op))
     # L8
     so = obs.get("satonly")
     if so is not None and cl_ok:
@@ -662,7 +709,7 @@ def adjudicate(outcomes, spec, hermit=None):
             continue
         s, t = d["pair"]
         if oracle is None:
-            d["verdict"] = ("no Konclude oracle: HermiT decides" if hermit and d["law"] in ("R1", "R2")
+            d["verdict"] = ("no Konclude oracle: HermiT decides" if hermit and d["law"] in ("R1", "R2", "U1")
                             else "no oracle: manual adjudication")
         elif d["law"] == "R1":
             d["verdict"] = "classify miss (Konclude has it)" if (s, t) in oracle[0] \
@@ -670,6 +717,8 @@ def adjudicate(outcomes, spec, hermit=None):
         elif d["law"] == "R2":
             d["verdict"] = "classify miss (Konclude: unsat)" if s in oracle[1] \
                 else "candidate FP (Konclude: satisfiable)"
+        elif d["law"] == "U1":
+            d["verdict"] = "candidate FP (Konclude: satisfiable)"
         else:
             d["verdict"] = "classify miss (residual of #392)"
         if d.get("budget_cut"):
@@ -705,12 +754,12 @@ def hermit_check(spec, d):
             if not bad:
                 return f"unavailable (robot rc={p.returncode})"
             s = d["pair"][0]
-            if d["law"] == "R2":
+            if d["law"] in ("R2", "U1"):
                 return "confirms" if s in bad else "refutes"
             return "confirms" if s in bad else "unavailable (HermiT: ontology has unsat classes)"
     clo, unsat = ofn_named_closure(out.read_text(errors="replace"))
     s, t = d["pair"]
-    if d["law"] == "R2":
+    if d["law"] in ("R2", "U1"):
         return "confirms" if s in unsat else "refutes"
     return "confirms" if (s, t) in clo or s in unsat else "refutes"
 
@@ -874,6 +923,37 @@ def self_test():
     res[0]["outcomes"] = [dict(o, hermit="refutes") for o in res[0]["outcomes"]]
     cases.append(("budget-cut HermiT-refuted R1 still fails",
                   [f["kind"] for f in summarize(res, {})[1]], ["HermiT-confirmed FP"]))
+
+    # U1: classify unsat vs the oracle's unsat set.
+    ob = dict(onto="t", q={}, classify=base(unsat={"A", "B"})["classify"], oracle_unsat={"A", "C"})
+    cases.append(("U1 false unsat is a discrepancy", laws_of(ob, "discrepancy"), ["U1"]))
+    cases.append(("U1 lists an oracle unsat classify misses", laws_of(ob, "unsat-missed"), ["U1"]))
+    ob["oracle_unsat"] = {"A", "B"}
+    cases.append(("U1 agreement is one ok, no discrepancy",
+                  (laws_of(ob, "ok"), laws_of(ob, "discrepancy")), (["U1"], [])))
+    ob["oracle_unsat"] = {THING, "A"}
+    cases.append(("U1 skipped on an inconsistent oracle", laws_of(ob, "discrepancy"), []))
+    ob = dict(onto="t", q={}, classify=base(consistent=False, unsat={"A"})["classify"],
+              oracle_unsat=set())
+    cases.append(("U1 skipped when classify says inconsistent", laws_of(ob, "discrepancy"), []))
+    ob = dict(onto="t", q={}, classify=base(unsat={"C"})["classify"], known_sat={"C", "D"})
+    cases.append(("U1 known_sat class unsat is a violation", laws_of(ob, "violation"), ["U1"]))
+    # A deadline never makes a class unsat, so U1 is ratcheted even when budget-cut.
+    ob = dict(onto="t", q={}, classify=base(unsat={"B"}, incomplete=True)["classify"],
+              oracle_unsat=set())
+    res = [dict(onto="t", outcomes=evaluate(ob))]
+    cases.append(("budget-cut U1 still ratcheted", dict(summarize(res, {})[2]), {("t", "U1"): 1}))
+    # The OWLAPI form of an unsat class in an oracle file.
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".owx", delete=False) as f:
+        f.write(f'<SubClassOf><Class IRI="http://e/C"/><Class IRI="{NOTHING}"/></SubClassOf>'
+                f'<EquivalentClasses><Class IRI="{NOTHING}"/><Class IRI="http://e/D"/>'
+                '</EquivalentClasses>'
+                # ROBOT's relative form.
+                '<SubClassOf><Class IRI="http://e/E"/><Class IRI="Nothing"/></SubClassOf>')
+    cases.append(("owx_closure reads both unsat forms", sorted(owx_closure(f.name)[1]),
+                  ["http://e/C", "http://e/D", "http://e/E"]))
+    os.unlink(f.name)
 
     bad = 0
     for name, got, want in cases:
@@ -1048,7 +1128,9 @@ def main():
                   failures=fails, ratchet_over_baseline=over,
                   discrepancies=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
                                  if o["kind"] == "discrepancy"],
-                  unresolved=[o for r in results for o in r["outcomes"] if o["kind"] == "unresolved"])
+                  unresolved=[o for r in results for o in r["outcomes"] if o["kind"] == "unresolved"],
+                  unsat_missed=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
+                                if o["kind"] == "unsat-missed"])
     (a.out / "report.json").write_text(json.dumps(report, indent=1, default=list))
     if a.write_baseline:
         bl = defaultdict(dict)

@@ -5,7 +5,7 @@
 # layer: conversion (D4 data axioms), shared by every surface
 # reopens: D4 off by one: Functional(d) + ≥1 d read as unsat
 # env: -
-# expect: none
+# expect: U1@functional_data_min1
 diff --git a/crates/owl-dl-core/src/data_axioms.rs b/crates/owl-dl-core/src/data_axioms.rs
 index ce0029c2..7424ee62 100644
 --- a/crates/owl-dl-core/src/data_axioms.rs

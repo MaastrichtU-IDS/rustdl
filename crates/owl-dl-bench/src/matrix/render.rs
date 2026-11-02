@@ -16,7 +16,13 @@ fn cell_wall(c: &CellResult) -> String {
 
 fn cell_correctness(c: &CellResult) -> String {
     match (c.fp, c.missed) {
-        (Some(fp), Some(m)) => format!("FP {fp} / M {m}"),
+        (Some(fp), Some(m)) => match (c.unsat_fp, c.unsat_missed) {
+            // A false unsat class is invisible to the pair counts; show it.
+            (Some(ufp), Some(um)) if ufp > 0 || um > 0 => {
+                format!("FP {fp} / M {m} / unsat FP {ufp} M {um}")
+            }
+            _ => format!("FP {fp} / M {m}"),
+        },
         _ => "—".into(),
     }
 }
@@ -100,24 +106,29 @@ pub fn render_markdown(meta: &RunMetadata, cells: &[CellResult]) -> String {
 
     // Summary per reasoner.
     s.push_str(
-        "\n## Summary\n\n| reasoner | finished | DNF | error | n/a | total FP | total MISSED |\n",
+        "\n## Summary\n\n| reasoner | finished | DNF | error | n/a | total FP | total MISSED \
+         | unsat FP (classes) | unsat MISSED (classes) |\n",
     );
-    s.push_str("|---|--:|--:|--:|--:|--:|--:|\n");
+    s.push_str("|---|--:|--:|--:|--:|--:|--:|--:|--:|\n");
     for r in REASONER_ORDER {
         let rc: Vec<&CellResult> = cells.iter().filter(|c| c.reasoner == *r).collect();
         let count = |st: Status| rc.iter().filter(|c| c.status == st).count();
         let sum_fp: usize = rc.iter().filter_map(|c| c.fp).sum();
         let sum_missed: usize = rc.iter().filter_map(|c| c.missed).sum();
+        let sum_unsat_fp: usize = rc.iter().filter_map(|c| c.unsat_fp).sum();
+        let sum_unsat_missed: usize = rc.iter().filter_map(|c| c.unsat_missed).sum();
         writeln!(
             s,
-            "| {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             r,
             count(Status::Ok),
             count(Status::Dnf),
             count(Status::Error),
             count(Status::Na),
             sum_fp,
-            sum_missed
+            sum_missed,
+            sum_unsat_fp,
+            sum_unsat_missed
         )
         .ok();
     }
@@ -173,8 +184,21 @@ mod tests {
             closure_size: Some(10),
             fp,
             missed: Some(0),
+            unsat_fp: Some(0),
+            unsat_missed: Some(0),
             oracle: "konclude-0.7.0-1138".into(),
         }
+    }
+
+    /// A false unsat class is not in the pair counts, so the matrix must show it
+    /// in the cell and in the summary.
+    #[test]
+    fn renders_unsat_fp_separately_from_pair_fp() {
+        let mut bad = cell("ore", "rustdl", Status::Ok, Some(10), Some(0));
+        bad.unsat_fp = Some(41);
+        let md = render_markdown(&meta(), &[bad]);
+        assert!(md.contains("unsat FP 41"), "{md}");
+        assert!(md.contains("| 0 | 0 | 41 | 0 |"), "summary row: {md}");
     }
 
     #[test]

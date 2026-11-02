@@ -64,7 +64,7 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::classify_top_down_with_timeout;
-use owl_dl_reasoner::oracle_diff::{aligned_closures, read_owx_verdict};
+use owl_dl_reasoner::oracle_diff::{aligned_closures, read_owx_verdict, unsat_diff};
 use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -156,18 +156,30 @@ fn per_pair_path_has_no_false_positives() {
         let verdict = read_owx_verdict(&truth).expect("read oracle verdict");
         let (rustdl, oracle) = aligned_closures(&c, &verdict);
         let fp: BTreeSet<_> = rustdl.difference(&oracle).cloned().collect();
+        // `aligned_closures` drops rustdl's unsat classes from both sides, so a
+        // class it wrongly calls unsat is visible only here.
+        let unsat = unsat_diff(&c, &verdict);
 
         eprintln!(
-            "[pp-fp] {label}: rustdl={} oracle={} FP={}",
+            "[pp-fp] {label}: rustdl={} oracle={} FP={} unsat_FP={} unsat_MISSED={}",
             rustdl.len(),
             oracle.len(),
-            fp.len()
+            fp.len(),
+            unsat.fp.len(),
+            unsat.missed.len()
         );
         for (s, t) in fp.iter().take(5) {
             eprintln!("[pp-fp]   FP: {s} ⊑ {t}");
         }
-        if !fp.is_empty() {
-            offenders.push(format!("{label} (FP={})", fp.len()));
+        for x in unsat.fp.iter().take(5) {
+            eprintln!("[pp-fp]   unsat FP: {x} (rustdl unsat, oracle satisfiable)");
+        }
+        if !fp.is_empty() || !unsat.fp.is_empty() {
+            offenders.push(format!(
+                "{label} (FP={}, unsat_FP={})",
+                fp.len(),
+                unsat.fp.len()
+            ));
         }
         checked.push(label);
     }

@@ -525,9 +525,9 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::lazy_query_consistency_enabled,
             true,
         ),
-        // #369: the main-tableau tail costs answers (21 `subclass-expr` files past a
-        // 30 s cap on the ORE pool) and found no inconsistency in 82 runs; an
-        // undetermined verdict is reported as `consistency_undetermined` instead.
+        // #369: the main-tableau tail found no inconsistency in 82 runs on the ORE
+        // pool and took about 90% of the check's wall time; an undetermined verdict
+        // is reported as `consistency_undetermined` instead.
         (
             "RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL",
             owl_dl_reasoner::lazy_query_consistency_tail_enabled,

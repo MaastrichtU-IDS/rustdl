@@ -380,7 +380,8 @@ main-tableau model. It is not a give-up and does not set `incomplete`.
   meaning `classify --json` uses).
 - `relies_on_trusted_consistency` (#401): see the `prove --json` note above.
 - `consistency_undetermined` (`instances-expr` only; #369, added without a `schema_version`
-  bump): set only on a POSITIVE answer (a non-empty `instances`) when the KB's
+  bump): set only when a probe answered positively (anonymous members count, so
+  `instances` may be empty) and the KB's
   consistency stayed undetermined: the consistency wedge stalled or was cut, and the
   main-tableau tail (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`) is off by default. On an
   inconsistent KB every such answer holds vacuously, so the answer is then not known to be more

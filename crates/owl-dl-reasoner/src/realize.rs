@@ -201,6 +201,7 @@ pub fn is_instance_of<A: ForIRI>(
 /// What a positive or negative instance answer leaves open, returned beside it by
 /// [`is_instance_of_reporting`] and [`instances_of_reporting`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct InstanceFlags {
     /// A probe was CUT (#73): a "not an instance" may be a give-up, and an
     /// `instances` set may be missing members. The members present are sound.

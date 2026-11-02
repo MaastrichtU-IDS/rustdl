@@ -23,8 +23,9 @@ All notable changes to rustdl are documented here. Format is based on
     `ConsistencyUndeterminedWarning`.
   - `RUSTDL_QUERY_LAZY_CONSISTENCY=0` reverts (`=report` only logs).
     `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1` also runs `consistent`'s bounded main-tableau
-    probe when the wedge is undetermined. It is off by default: on the ORE pool it found no
-    inconsistency in 82 runs and pushed 21 `subclass-expr` answers past a 30 s cap.
+    probe when the wedge is undetermined. It is off by default: on the ORE pool it ran 82
+    times, found no inconsistency the wedge had not, and took about 90% of the check's wall
+    time.
   - `sat-expr`, `subclass-expr`, `materialize_*` and `property-values` are unchanged. They
     hold no prepared ontology, so the check would newly cost a full prepare (23 of 1,054
     `subclass-expr` answers lost to a 30 s cap); a follow-up prices them together.

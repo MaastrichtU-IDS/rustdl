@@ -128,7 +128,7 @@ about its signal, so each is filed rather than fixed here.
   inconsistent they return the vacuous answers. They hold no prepared ontology,
   so the check would newly cost a full prepare: measured on the ORE pool,
   `subclass-expr C owl:Thing` lost 23 of 1,054 answers to a 30 s cap. A follow-up
-  PR (#369) covers the four together, aimed at reusing or bounding that prepare.
+  PR under #369 covers the four together, aimed at reusing or bounding that prepare.
   `disjoint_classes` already errors on classify's inconsistency verdict, which
   includes the wedge. With the tail off, an inconsistency only the main tableau
   can find (the wedge stalls) is reported as `consistency_undetermined`, not as an

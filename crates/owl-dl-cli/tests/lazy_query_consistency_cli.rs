@@ -163,3 +163,45 @@ fn the_flag_reverts() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(r.stdout, "yes\n");
 }
+
+const TRACE: &str = "lazy consistency (#369)";
+
+/// The check runs after a positive answer only: with `RUSTDL_TRACE` it logs one
+/// line, and a negative answer logs none.
+#[test]
+fn the_check_runs_only_after_a_positive_answer() {
+    let f = Fixture::new("trace", 1);
+    let trace = [("RUSTDL_TRACE", "1")];
+    let neg = run(
+        &["instance", f.path(), "http://ex/#X", "http://ex/#a"],
+        &trace,
+    );
+    assert_eq!(neg.stdout, "no\n", "{}", neg.stderr);
+    assert!(!neg.stderr.contains(TRACE), "{}", neg.stderr);
+    let pos = run(
+        &["instance", f.path(), "http://ex/#Y", "http://ex/#a"],
+        &trace,
+    );
+    assert_eq!(pos.stdout, "yes\n", "{}", pos.stderr);
+    assert!(pos.stderr.contains(TRACE), "{}", pos.stderr);
+}
+
+/// `justify` and `repair` skip the check: their oracle maps `Inconsistent` to the
+/// same verdict as the vacuous answer, so it could only cost time there.
+#[test]
+fn justify_never_runs_the_check() {
+    for (min, tag) in [(2, "justify-incons"), (1, "justify-ctl")] {
+        let f = Fixture::new(tag, min);
+        let r = run(
+            &[
+                "justify",
+                f.path(),
+                "instance",
+                "http://ex/#a",
+                "http://ex/#Y",
+            ],
+            &[("RUSTDL_TRACE", "1")],
+        );
+        assert!(!r.stderr.contains(TRACE), "min {min}: {}", r.stderr);
+    }
+}

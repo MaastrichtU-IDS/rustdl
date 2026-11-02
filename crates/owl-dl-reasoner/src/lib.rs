@@ -8274,10 +8274,11 @@ pub fn lazy_query_consistency_enabled() -> bool {
 
 /// #369: `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL` (default OFF, `=1` on): when the
 /// wedge leaves consistency undetermined, the lazy check also runs
-/// `consistent`'s bounded main-tableau probe. Off by default because it costs
-/// answers: on the ORE pool it ran 82 times, found no inconsistency, and pushed
-/// 21 `subclass-expr` answers past a 30 s cap. With it off, an undetermined
-/// verdict is reported as `consistency_undetermined` instead.
+/// `consistent`'s bounded main-tableau probe (up to `RUSTDL_CONSISTENCY_FALLBACK_MS`
+/// per call). Off by default: on the ORE pool it ran 82 times, found no
+/// inconsistency the wedge had not, and took about 90% of the check's wall time
+/// (44 of 48 s on `instances`). With it off, an undetermined verdict is reported
+/// as `consistency_undetermined` instead.
 #[must_use]
 pub fn lazy_query_consistency_tail_enabled() -> bool {
     std::env::var_os("RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL")
@@ -9969,7 +9970,10 @@ impl PreparedOntology {
     /// lent by a parent ([`assume_query_consistency`]) is final: a lent
     /// "consistent" is correct by monotonicity, and a lent "undetermined" does not
     /// run the tail, so subset probes never pay it. Both results are cached on
-    /// this prepared ontology.
+    /// this prepared ontology. A told membership counts as a positive answer
+    /// (an inconsistent KB errors on it, as `realize` does), whereas
+    /// `same_individuals` / `different_individuals` run the check only for a
+    /// probe answer, not for a told or saturation-derived pair.
     ///
     /// Returns `Ok(true)` when consistency stayed UNDETERMINED (the wedge
     /// stalled or was cut and the tail is off, cut or failed), which the

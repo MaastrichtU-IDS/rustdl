@@ -209,9 +209,14 @@ Ratchets, counted against `crates/owl-dl-cli/tests/fixtures/laws/baseline.json`:
 - **R2**: `sat` says unsat where classify lists the class as satisfiable.
 - **R3**: `consistent` says inconsistent while classify says `consistent: true`. A
   `consistency_undetermined: true` from classify does not count.
+- **U1** (#363 step 1.5): classify calls a class unsatisfiable that the Konclude oracle (or a
+  synthetic spec's hand-checked `known_sat` list, a hard violation) has satisfiable. Never
+  exempted for a budget cut. Oracle unsat classes classify misses are listed, not ratcheted.
 
 A pair in the committed Konclude closure is a classify miss. A pair absent from it is a
-candidate false positive, which fails a run only if HermiT confirms it (`--hermit`).
+candidate false positive, which fails a run only if HermiT confirms it (`--hermit`). U1 is
+stricter: any U1 discrepancy over the baseline fails the run, and a U1 baseline entry needs a
+recorded HermiT verdict, never Konclude alone.
 
 **Coverage.** `--self-test` shows each law can fire on fabricated operands; that checks
 the harness, not the engine. Engine-level evidence comes from two places.
@@ -274,8 +279,8 @@ calls unsatisfiable never reached the comparison. A false unsat is the strongest
 **Fixed (#363 step 1.5).** `oracle_diff::unsat_diff` compares the unsat SETS; every in-repo
 consumer now uses it:
 
-- the FP=0 net (`unsat_FP`/`unsat_MISSED` on each `[fp0]` line, folded into the gated FP and
-  MISSED; `closure-diff.sh` counts them);
+- the FP=0 net (`unsat_FP`/`unsat_MISSED` on each `[fp0]` line; unsat FP is folded into the
+  gated FP and counted by `closure-diff.sh`, unsat MISSED is informational);
 - the ore-10080 deadline test, both anytime sweeps (unsat FP gated at every deadline), and the
   global-deadline differential (unsat sets must match);
 - the per-pair gate;

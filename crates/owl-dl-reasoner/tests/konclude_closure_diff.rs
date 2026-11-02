@@ -129,10 +129,11 @@ fn load_ofn_fixture(input: &Path) -> SetOntology<RcStr> {
 /// Print per-fixture diff stats, emit a `[fp0]` coverage line, and return
 /// `(rustdl_closure, konclude_closure, fp, missed)`.
 ///
-/// `fp` and `missed` include the UNSAT half of the diff: each class rustdl calls
-/// unsatisfiable and the oracle does not counts as one FP, and each oracle unsat
-/// class rustdl misses as one MISSED. The pair diff alone cannot see either,
-/// because `aligned_closures` drops both sides' unsat classes before comparing.
+/// `fp` includes the UNSAT half of the diff: each class rustdl calls
+/// unsatisfiable and the oracle does not counts as one FP, which the pair diff
+/// alone cannot see (`aligned_closures` drops both sides' unsat classes before
+/// comparing). `missed` stays pairs only, so the `RESULT` line's MISSED keeps its
+/// meaning; unsat MISSED is printed on the `[fp0]` line and gates nothing.
 fn diff_corpus_ontology(
     label: &str,
     input: &Path,
@@ -203,7 +204,7 @@ fn diff_corpus_ontology(
         rustdl.len(),
         konclude.len(),
         fp.len() + unsat.fp.len(),
-        missed.len() + unsat.missed.len(),
+        missed.len(),
     )
 }
 

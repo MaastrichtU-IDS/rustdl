@@ -42,8 +42,9 @@ Ratchets (counted against a committed per-ontology baseline):
       surface shares (mutant M8b). Never exempted for a budget cut: a deadline
       never makes a class unsat. A class in a spec's hand-adjudicated
       `known_sat` list that classify calls unsat is a hard U1 violation.
-      Oracle unsat classes classify misses are listed (kind `unsat-missed`),
-      not ratcheted.
+      Oracle unsat classes classify misses are listed in report.json
+      (`unsat_missed`), not ratcheted. Unlike R1/R2, a U1 discrepancy over the
+      baseline fails the run without HermiT: an empty baseline admits none.
 Adjudication: a pair in the committed Konclude closure is a classify MISS; a
 pair absent from it is a CANDIDATE FP, confirmed only by HermiT (`--hermit`).
 Konclude alone never fails a run (it under-reports in documented cases); a U1
@@ -232,13 +233,14 @@ def owx_closure(path):
             continue
         if kind == "SubClassOf" and len(iris) == 2:
             # OWLAPI-style oracles write an unsat class as `C ⊑ owl:Nothing`.
-            if iris[1] == NOTHING and iris[0] != NOTHING:
+            if iris[1] in (NOTHING, "Nothing") and iris[0] not in (NOTHING, "Nothing"):
                 unsat.add(iris[0])
             else:
                 edges.append(tuple(iris))
         elif kind == "EquivalentClasses" and len(iris) >= 2:
-            if NOTHING in iris:
-                unsat |= set(iris) - {NOTHING}
+            if NOTHING in iris or "Nothing" in iris:
+                # ROBOT writes owl:Nothing as the relative IRI "Nothing".
+                unsat |= {THING if i == "Thing" else i for i in iris} - {NOTHING, "Nothing"}
             else:
                 groups.append(iris)
     return closure(edges, groups, drop=unsat), unsat
@@ -657,7 +659,6 @@ def evaluate(obs):
             elif key[0] in ("instances-expr", "realize", "disjoint", "individuals"):
                 bad = f"{key[0]} answered instead of erroring"
             out.append(check("L5", o, bad is None, f"inconsistent KB: {bad}", cons, a))
-    # L8
     # U1: classify unsat vs an oracle. Skipped when either side says the KB is
     # inconsistent (every class is then unsat).
     if cl_ok and c.get("consistent") and not kb_inconsistent:
@@ -682,6 +683,7 @@ def evaluate(obs):
             for x in bad:
                 out.append(check("U1", o, False,
                                  f"classify says {x} unsat; it is satisfiable (known_sat)", cl_op))
+    # L8
     so = obs.get("satonly")
     if so is not None and cl_ok:
         extra = {(s, t) for s, t in so["closure"]
@@ -946,9 +948,11 @@ def self_test():
     with tempfile.NamedTemporaryFile("w", suffix=".owx", delete=False) as f:
         f.write(f'<SubClassOf><Class IRI="http://e/C"/><Class IRI="{NOTHING}"/></SubClassOf>'
                 f'<EquivalentClasses><Class IRI="{NOTHING}"/><Class IRI="http://e/D"/>'
-                '</EquivalentClasses>')
+                '</EquivalentClasses>'
+                # ROBOT's relative form.
+                '<SubClassOf><Class IRI="http://e/E"/><Class IRI="Nothing"/></SubClassOf>')
     cases.append(("owx_closure reads both unsat forms", sorted(owx_closure(f.name)[1]),
-                  ["http://e/C", "http://e/D"]))
+                  ["http://e/C", "http://e/D", "http://e/E"]))
     os.unlink(f.name)
 
     bad = 0
@@ -1124,7 +1128,9 @@ def main():
                   failures=fails, ratchet_over_baseline=over,
                   discrepancies=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
                                  if o["kind"] == "discrepancy"],
-                  unresolved=[o for r in results for o in r["outcomes"] if o["kind"] == "unresolved"])
+                  unresolved=[o for r in results for o in r["outcomes"] if o["kind"] == "unresolved"],
+                  unsat_missed=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
+                                if o["kind"] == "unsat-missed"])
     (a.out / "report.json").write_text(json.dumps(report, indent=1, default=list))
     if a.write_baseline:
         bl = defaultdict(dict)

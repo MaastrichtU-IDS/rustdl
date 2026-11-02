@@ -118,11 +118,10 @@ parse_diff_output() {
   missed=$(echo "$output" | grep -oE ' MISSED=[0-9]+' | sed 's/ MISSED=//' | head -1)
   # The pair diff excludes unsat classes on both sides, so a class rustdl wrongly
   # calls unsat appears only on the `unsat_FP=` line; count it as FP here.
-  local ufp umissed
+  # (MISSED stays pairs only; unsat MISSED is in the test log.)
+  local ufp
   ufp=$(echo "$output" | grep -oE 'unsat_FP=[0-9]+' | sed 's/unsat_FP=//' | head -1)
-  umissed=$(echo "$output" | grep -oE 'unsat_MISSED=[0-9]+' | sed 's/unsat_MISSED=//' | head -1)
   [[ -n "$fp" && -n "$ufp" ]] && fp=$((fp + ufp))
-  [[ -n "$missed" && -n "$umissed" ]] && missed=$((missed + umissed))
   [[ -z "$rclosure" ]] && rclosure="?"
   [[ -z "$kclosure" ]] && kclosure="?"
   [[ -z "$fp" ]] && fp="?"

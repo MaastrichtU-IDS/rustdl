@@ -11162,6 +11162,25 @@ pub enum ProveEntailmentResult {
     Unknown,
 }
 
+/// Resolves prove's two class IRIs exactly as `is_subclass_of` does (sub
+/// first). An unknown IRI is an error, never "not entailed": `prove Aa Aa` for
+/// a typo'd `Aa` used to report a tautology as not holding (#409).
+fn prove_class_ids(
+    internal: &InternalOntology,
+    sub_iri: &str,
+    sup_iri: &str,
+) -> Result<(owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId), ReasonError> {
+    let sub = internal
+        .vocabulary
+        .class_id(sub_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(sub_iri.to_owned()))?;
+    let sup = internal
+        .vocabulary
+        .class_id(sup_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(sup_iri.to_owned()))?;
+    Ok((sub, sup))
+}
+
 /// Prove a `sub ⊑ sup` entailment: run the saturator with proof recording and
 /// return either a step-level proof tree (EL fragment) or check if held (via
 /// the general reasoner) + note that the step proof is unavailable.
@@ -11171,18 +11190,17 @@ pub enum ProveEntailmentResult {
 /// This forces `record_proofs: true` regardless of `RUSTDL_PROOF`.
 ///
 /// # Errors
-/// Propagates `ReasonError` from conversion.
+/// Propagates `ReasonError` from conversion; [`ReasonError::UnknownClass`] for
+/// a class IRI not in the ontology (sub checked first), as `is_subclass_of`
+/// (#409). `owl:Thing` / `owl:Nothing` are not in the vocabulary either,
+/// unless the ontology declares them.
 pub fn prove_entailment<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     sub_iri: &str,
     sup_iri: &str,
 ) -> Result<ProveEntailmentResult, ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
-    let sub_opt = internal.vocabulary.class_id(sub_iri);
-    let sup_opt = internal.vocabulary.class_id(sup_iri);
-    let (Some(sub), Some(sup)) = (sub_opt, sup_opt) else {
-        return Ok(ProveEntailmentResult::NotEntailed);
-    };
+    let (sub, sup) = prove_class_ids(&internal, sub_iri, sup_iri)?;
 
     let cfg = SaturateConfig {
         record_proofs: true,
@@ -11233,7 +11251,8 @@ pub fn prove_entailment<A: horned_owl::model::ForIRI>(
 /// [`prove_entailment_rcstr_reporting`].
 ///
 /// # Errors
-/// Propagates `ReasonError`.
+/// Propagates `ReasonError`; [`ReasonError::UnknownClass`] for a class IRI not
+/// in the ontology, as [`prove_entailment`] (#409).
 pub fn prove_entailment_rcstr(
     ontology: &horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
     sub_iri: &str,
@@ -11261,7 +11280,8 @@ pub struct ProveFlags {
 /// [`prove_entailment_rcstr`] plus its [`ProveFlags`].
 ///
 /// # Errors
-/// Propagates `ReasonError`.
+/// Propagates `ReasonError`; [`ReasonError::UnknownClass`] for a class IRI not
+/// in the ontology, as [`prove_entailment`] (#409).
 pub fn prove_entailment_rcstr_reporting(
     ontology: &horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
     sub_iri: &str,
@@ -11270,13 +11290,7 @@ pub fn prove_entailment_rcstr_reporting(
     use justify::Entailment;
 
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
-    let sub_opt = internal.vocabulary.class_id(sub_iri);
-    let sup_opt = internal.vocabulary.class_id(sup_iri);
-
-    // If classes not found, not entailed.
-    let (Some(sub), Some(sup)) = (sub_opt, sup_opt) else {
-        return Ok((ProveEntailmentResult::NotEntailed, ProveFlags::default()));
-    };
+    let (sub, sup) = prove_class_ids(&internal, sub_iri, sup_iri)?;
 
     let cfg = SaturateConfig {
         record_proofs: true,
@@ -13444,6 +13458,49 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
         assert_eq!(label_cache_ms_for_run(137, pp, false, None, true), 685);
         assert_eq!(label_cache_ms_for_run(137, None, false, Some(42), true), 42);
         assert_eq!(label_cache_ms_for_run(137, None, false, Some(0), false), 0);
+    }
+
+    /// #409: an unknown class IRI is `UnknownClass` (sub reported first), never
+    /// `NotEntailed`, on both prove entry points. `Aa ⊑ Aa` is a tautology for
+    /// any class, so "not entailed" there was a wrong definite answer.
+    #[test]
+    fn prove_reports_an_unknown_class_iri_as_an_error() {
+        let onto = parse(
+            "Prefix(:=<http://ex/#>) Ontology(<http://ex/o> \
+             Declaration(Class(:A)) Declaration(Class(:B)) SubClassOf(:A :B))",
+        );
+        let (a, b, typo) = ("http://ex/#A", "http://ex/#B", "http://ex/#Aa");
+        let thing = "http://www.w3.org/2002/07/owl#Thing";
+        let nothing = "http://www.w3.org/2002/07/owl#Nothing";
+        for (sub, sup, missing) in [
+            (typo, typo, typo),
+            (typo, b, typo),
+            (a, typo, typo),
+            (typo, "http://ex/#Bb", typo),
+            (a, thing, thing),
+            (nothing, a, nothing),
+        ] {
+            let generic = prove_entailment(&onto, sub, sup);
+            assert!(
+                matches!(&generic, Err(ReasonError::UnknownClass(iri)) if iri == missing),
+                "prove_entailment({sub}, {sup}): {generic:?}"
+            );
+            let rcstr = prove_entailment_rcstr_reporting(&onto, sub, sup);
+            assert!(
+                matches!(&rcstr, Err(ReasonError::UnknownClass(iri)) if iri == missing),
+                "prove_entailment_rcstr_reporting({sub}, {sup}): {rcstr:?}"
+            );
+        }
+        assert!(matches!(
+            prove_entailment_rcstr_reporting(&onto, a, b),
+            Ok((
+                ProveEntailmentResult::SaturatorProof(_),
+                ProveFlags {
+                    incomplete: false,
+                    ..
+                }
+            ))
+        ));
     }
 
     /// #402: after the check witnessed the entailment, an empty or given-up

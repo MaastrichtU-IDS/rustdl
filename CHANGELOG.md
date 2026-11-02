@@ -42,6 +42,16 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`prove` refuses a class IRI that is not in the ontology (#409).** It answered "NOT
+  entailed" (`prove --json`: `entailed: false`, `status: "not-entailed"`), a wrong definite
+  answer: `prove Aa Aa` for a typo'd `Aa` said a tautology does not hold, and so did
+  `A ⊑ owl:Thing`. It now errors as `subclass`, `sat` and the other named-class queries do
+  (`class IRI not in ontology`, exit 1; `prove_entailment*` return
+  `ReasonError::UnknownClass`, a change to the library API). `owl:Thing` / `owl:Nothing` are
+  not in the named-class vocabulary unless the ontology declares them, so they are refused
+  too (a declared `owl:Thing` still resolves to an ordinary class, as for `subclass`). The Protégé plugin no longer
+  offers a rustdl proof for them (`hasProof` is false), so Protégé uses the explanation
+  generator, which handles `X ⊑ owl:Nothing`.
 - **`ABox` class assertions reach the tableau in NNF (#403).** The main tableau's `ABox` seed
   took each `ClassAssertion` class as written. A class assertion of a negated compound, such as
   `ObjectComplementOf(ObjectSomeValuesFrom(:r :B))` or the lowered form of a

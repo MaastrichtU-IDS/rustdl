@@ -255,4 +255,20 @@ public class RustdlProofTest {
         OWLSubClassOfAxiom unrelated = DF.getOWLSubClassOfAxiom(cls("Unrelated1"), cls("Unrelated2"));
         assertTrue(proof.getInferences(unrelated).isEmpty());
     }
+
+    /**
+     * #409: owl:Thing / owl:Nothing are not in rustdl's named-class vocabulary, so
+     * `rustdl prove` refuses them (exit 1). hasProof must not claim them, so that
+     * Protégé falls through to the explanation generator (X ⊑ owl:Nothing is its
+     * unsatisfiability query) instead of a failed proof.
+     */
+    @Test
+    public void hasProofDeclinesOwlThingAndOwlNothing() {
+        RustdlProofService service = new RustdlProofService();
+        assertTrue(service.hasProof(DF.getOWLSubClassOfAxiom(cls("A"), cls("B"))));
+        assertFalse(service.hasProof(DF.getOWLSubClassOfAxiom(cls("A"), DF.getOWLThing())));
+        assertFalse(service.hasProof(DF.getOWLSubClassOfAxiom(cls("A"), DF.getOWLNothing())));
+        assertFalse(service.hasProof(DF.getOWLSubClassOfAxiom(DF.getOWLThing(), cls("A"))));
+        assertFalse(service.hasProof(DF.getOWLSubClassOfAxiom(DF.getOWLNothing(), cls("A"))));
+    }
 }

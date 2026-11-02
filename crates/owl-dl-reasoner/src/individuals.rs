@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 pub struct SameIndividuals {
     groups: Vec<Vec<String>>,
     incomplete: bool,
+    consistency_undetermined: bool,
 }
 
 impl SameIndividuals {
@@ -43,6 +44,15 @@ impl SameIndividuals {
     pub fn incomplete(&self) -> bool {
         self.incomplete
     }
+
+    /// #369: a probe merged a pair, and the KB's consistency stayed
+    /// undetermined, so that merge may be the vacuous one of an inconsistent KB.
+    /// Not a give-up, so separate from [`Self::incomplete`]. See
+    /// [`crate::InstanceFlags::consistency_undetermined`].
+    #[must_use]
+    pub fn consistency_undetermined(&self) -> bool {
+        self.consistency_undetermined
+    }
 }
 
 /// Entailed different-individual pairs, plus a completeness flag.
@@ -50,6 +60,7 @@ impl SameIndividuals {
 pub struct DifferentIndividuals {
     pairs: Vec<(String, String)>,
     incomplete: bool,
+    consistency_undetermined: bool,
 }
 
 impl DifferentIndividuals {
@@ -65,6 +76,14 @@ impl DifferentIndividuals {
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// #369: a probe (not a told pair) proved a pair different, and the KB's
+    /// consistency stayed undetermined. See
+    /// [`SameIndividuals::consistency_undetermined`].
+    #[must_use]
+    pub fn consistency_undetermined(&self) -> bool {
+        self.consistency_undetermined
     }
 }
 
@@ -131,6 +150,7 @@ pub fn same_individuals<A: ForIRI>(
     let names = named_individuals(&prepared.vocabulary);
 
     let mut incomplete = false;
+    let mut probe_merged = false;
     for i in 0..names.len() {
         for j in (i + 1)..names.len() {
             let (a, _) = &names[i];
@@ -146,9 +166,14 @@ pub fn same_individuals<A: ForIRI>(
             let deadline = pair_deadline.map(|d| Instant::now() + d);
             if prepared.consistent_with_extra(&[(*a, *b)], &[], deadline)? == Some(false) {
                 uf.union(a.index(), b.index());
+                probe_merged = true;
             }
         }
     }
+    // #369: a probe merge on a KB only the tableau finds inconsistent is vacuous.
+    // Seed merges (told, `derived_same`) are not probe answers and do not count.
+    let consistency_undetermined =
+        probe_merged && prepared.lazy_inconsistency_check("same_individuals")?;
 
     // Emit equivalence groups of size ≥ 2, each sorted, outer list sorted.
     let mut by_root: HashMap<u32, Vec<String>> = HashMap::new();
@@ -166,7 +191,11 @@ pub fn same_individuals<A: ForIRI>(
         .collect();
     groups.sort();
 
-    Ok(SameIndividuals { groups, incomplete })
+    Ok(SameIndividuals {
+        groups,
+        incomplete,
+        consistency_undetermined,
+    })
 }
 
 /// Entailed different-individual pairs. Seeds from told
@@ -207,6 +236,7 @@ pub fn different_individuals<A: ForIRI>(
 
     let mut pairs: Vec<(String, String)> = Vec::new();
     let mut incomplete = false;
+    let mut probe_different = false;
     for i in 0..names.len() {
         for j in (i + 1)..names.len() {
             let (a, a_iri) = &names[i];
@@ -216,7 +246,10 @@ pub fn different_individuals<A: ForIRI>(
             } else {
                 let deadline = pair_deadline.map(|d| Instant::now() + d);
                 match prepared.pair_individuals_disjoint_with_deadline(*a, *b, deadline)? {
-                    Some(true) => true,
+                    Some(true) => {
+                        probe_different = true;
+                        true
+                    }
                     Some(false) => false,
                     None => {
                         incomplete = true;
@@ -234,8 +267,15 @@ pub fn different_individuals<A: ForIRI>(
             }
         }
     }
+    // #369: as in `same_individuals`; told pairs do not count.
+    let consistency_undetermined =
+        probe_different && prepared.lazy_inconsistency_check("different_individuals")?;
     pairs.sort();
     pairs.dedup();
 
-    Ok(DifferentIndividuals { pairs, incomplete })
+    Ok(DifferentIndividuals {
+        pairs,
+        incomplete,
+        consistency_undetermined,
+    })
 }

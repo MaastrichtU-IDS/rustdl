@@ -343,6 +343,29 @@ def _warn_if_trusted_consistency(name: str, relies: bool) -> None:
         )
 
 
+class ConsistencyUndeterminedWarning(UserWarning):
+    """Raised by `is_instance_of`, `instances_of`, `same_individuals`,
+    `different_individuals` and `class_expression_instances` when the answer
+    was positive (an instance, a merge, a difference) and the KB's consistency
+    stayed undetermined (#369): the
+    consistency wedge stalled or was cut, so the answer may be the vacuous one of
+    an inconsistent KB. A KB found inconsistent raises `RustdlError` instead.
+    Nothing was cut, so this is NOT an `IncompleteQueryWarning`.
+    `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1` also runs a bounded main-tableau
+    check, at a cost."""
+
+
+def _warn_if_consistency_undetermined(name: str, undetermined: bool) -> None:
+    if undetermined:
+        _warnings.warn(
+            f"{name}: the KB's consistency could not be determined, so this "
+            "positive answer may be the vacuous one of an inconsistent KB "
+            "(see ConsistencyUndeterminedWarning).",
+            ConsistencyUndeterminedWarning,
+            stacklevel=3,
+        )
+
+
 def is_class_satisfiable(path, class_iri):
     """True iff `class_iri` is satisfiable (not ⊑ ⊥). If the probe gave up (node
     cap), returns `True` and emits `IncompleteQueryWarning`. Emits
@@ -366,17 +389,22 @@ def is_subclass_of(path, sub, sup):
 def is_instance_of(path, class_iri, individual_iri):
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
     cut (deadline, node cap, depth limit), returns `False` and emits
-    `IncompleteQueryWarning`."""
-    is_inst, incomplete = _is_instance_of_native(path, class_iri, individual_iri)
+    `IncompleteQueryWarning`. Emits `ConsistencyUndeterminedWarning` (#369)."""
+    is_inst, incomplete, undetermined = _is_instance_of_native(
+        path, class_iri, individual_iri
+    )
     _warn_if_query_incomplete("is_instance_of", incomplete)
+    _warn_if_consistency_undetermined("is_instance_of", undetermined)
     return is_inst
 
 
 def instances_of(path, class_iri):
     """Named individuals entailed to be instances of `class_iri`. Emits
-    `IncompleteQueryWarning` when a probe was cut (members may be missing)."""
-    members, incomplete = _instances_of_native(path, class_iri)
+    `IncompleteQueryWarning` when a probe was cut (members may be missing), and
+    `ConsistencyUndeterminedWarning` (#369)."""
+    members, incomplete, undetermined = _instances_of_native(path, class_iri)
     _warn_if_query_incomplete("instances_of", incomplete)
+    _warn_if_consistency_undetermined("instances_of", undetermined)
     return members
 
 
@@ -538,8 +566,9 @@ def same_individuals(path):
     `IncompleteQueryWarning` when the budget was exhausted (see
     `IncompleteQueryWarning`) — note this fires whenever ANY extension probe
     beyond the sound-complete seed ran, even if no new group was found."""
-    groups, incomplete = _same_individuals_native(path)
+    groups, incomplete, undetermined = _same_individuals_native(path)
     _warn_if_query_incomplete("same_individuals", incomplete)
+    _warn_if_consistency_undetermined("same_individuals", undetermined)
     return groups
 
 
@@ -548,8 +577,9 @@ def different_individuals(path):
     unsatisfiable. Bounded by a 1s per-pair deadline; emits
     `IncompleteQueryWarning` when the budget was exhausted (see
     `IncompleteQueryWarning`)."""
-    pairs, incomplete = _different_individuals_native(path)
+    pairs, incomplete, undetermined = _different_individuals_native(path)
     _warn_if_query_incomplete("different_individuals", incomplete)
+    _warn_if_consistency_undetermined("different_individuals", undetermined)
     return pairs
 
 
@@ -594,9 +624,11 @@ def class_expression_instances(path, ce):
     `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
     prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
     (members may be missing; those returned are sound), as `instances_of`
-    does; an answer off the pure-EL fragment no longer warns."""
-    individuals, incomplete = _class_expression_instances_native(path, ce)
+    does; an answer off the pure-EL fragment no longer warns.
+    Emits `ConsistencyUndeterminedWarning` (#369)."""
+    individuals, incomplete, undetermined = _class_expression_instances_native(path, ce)
     _warn_if_query_incomplete("class_expression_instances", incomplete)
+    _warn_if_consistency_undetermined("class_expression_instances", undetermined)
     return individuals
 
 
@@ -725,6 +757,7 @@ __all__ = [
     "DirectTypesUnverifiedWarning",
     "StructuralGapWarning",
     "TrustedConsistencyWarning",
+    "ConsistencyUndeterminedWarning",
     "classify",
     "classify_bytes",
     "is_consistent",

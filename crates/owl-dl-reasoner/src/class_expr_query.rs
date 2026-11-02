@@ -67,6 +67,7 @@ pub struct CeInstances {
     individuals: Vec<String>,
     incomplete: bool,
     completeness_guaranteed: bool,
+    consistency_undetermined: bool,
 }
 
 impl CeInstances {
@@ -91,6 +92,13 @@ impl CeInstances {
     #[must_use]
     pub fn completeness_guaranteed(&self) -> bool {
         self.completeness_guaranteed
+    }
+
+    /// #369: some individual was found, and the KB's consistency stayed
+    /// undetermined. See [`crate::InstanceFlags::consistency_undetermined`].
+    #[must_use]
+    pub fn consistency_undetermined(&self) -> bool {
+        self.consistency_undetermined
     }
 }
 
@@ -271,14 +279,16 @@ pub fn class_expression_instances<A: ForIRI>(
     // not a give-up of this query.)
     let internal = owl_dl_core::convert::convert_ontology(&probed)?;
     let fast_path = crate::realize::realize_saturation_eligible(&internal);
-    let (mut individuals, cut) =
+    // #369: the lazy consistency check runs inside the instance query.
+    let (mut individuals, flags) =
         crate::realize::instances_of_reporting_internal(&internal, PROBE_IRI)?;
     individuals.retain(|i| !i.starts_with("urn:rustdl-ce-probe"));
     individuals.sort();
     individuals.dedup();
     Ok(CeInstances {
         individuals,
-        incomplete: cut,
-        completeness_guaranteed: fast_path && !cut,
+        incomplete: flags.incomplete,
+        completeness_guaranteed: fast_path && !flags.incomplete,
+        consistency_undetermined: flags.consistency_undetermined,
     })
 }

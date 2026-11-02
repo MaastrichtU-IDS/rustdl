@@ -96,7 +96,7 @@ pub use property_values::{
     inferred_object_property_values,
 };
 pub use realize::{
-    Realization, instances_of, instances_of_internal, instances_of_reporting,
+    InstanceFlags, Realization, instances_of, instances_of_internal, instances_of_reporting,
     instances_of_reporting_internal, instances_of_saturation_only,
     instances_of_saturation_only_internal, is_instance_of, is_instance_of_internal,
     is_instance_of_reporting, is_instance_of_reporting_internal, is_instance_of_saturation_only,
@@ -3339,12 +3339,15 @@ pub(crate) fn saturation_says_inconsistent(closure: &owl_dl_saturation::Subsumer
 /// class-expression queries, the instance queries). They checked only the `ABox`
 /// saturation; this adds the EL saturator's signal ([`saturation_says_inconsistent`]),
 /// `abox_check` on that closure and the reflexive empty-clause check, so `c : E`,
-/// `E ⊑ ⊥` or `{a} ⊑ ⊥` errors as `Inconsistent`. Still missed, unlike `consistent`
-/// and `realize`: an inconsistency only the `ABox`-seeded wedge finds (that route can
-/// spend seconds even on a consistent KB, which these single queries should not pay),
-/// and an asserted non-atomic class with an unsatisfiable filler
-/// (`c : ∃R.E`, `E ⊑ ⊥`), which neither cheap check sees. Default **ON**;
-/// `RUSTDL_QUERY_INCONSISTENCY_GUARD=0` reverts to the `ABox`-saturation check alone.
+/// `E ⊑ ⊥` or `{a} ⊑ ⊥` errors as `Inconsistent`. Not seen by these cheap checks:
+/// an inconsistency only the `ABox`-seeded wedge finds, and an asserted non-atomic
+/// class with an unsatisfiable filler (`c : ∃R.E`, `E ⊑ ⊥`). Since #369 the instance,
+/// individuals and `instances-expr` queries run the wedge lazily, only after a
+/// positive answer ([`PreparedOntology::lazy_inconsistency_check`]), so a consistent
+/// KB with negative answers still pays nothing; `sat-expr`, `subclass-expr`,
+/// `materialize_*` and `property-values` do not yet (they hold no prepared ontology,
+/// so the check would cost a full prepare). Default **ON**; `RUSTDL_QUERY_INCONSISTENCY_GUARD=0` reverts to the
+/// `ABox`-saturation check alone, and turns the #369 check off too.
 pub(crate) fn query_kb_inconsistent(internal: &InternalOntology) -> bool {
     abox_saturation::saturate_abox_consistency(internal).clash
         || query_kb_inconsistent_beyond_abox(internal)
@@ -8231,6 +8234,75 @@ thread_local! {
     /// `Some(trusted)`; see [`assume_query_consistency`].
     static INHERITED_QUERY_CONSISTENCY: std::cell::Cell<Option<QueryConsistency>> =
         const { std::cell::Cell::new(None) };
+    /// #369: set while [`skip_lazy_query_consistency`]'s guard lives.
+    static SKIP_LAZY_QUERY_CONSISTENCY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// #369: what the lazy consistency check of the query surfaces does
+/// ([`PreparedOntology::lazy_inconsistency_check`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LazyConsistencyMode {
+    /// Not run.
+    Off,
+    /// Run and logged on stderr (`lazy consistency (#369): …`), never an error.
+    Report,
+    /// Run; a witnessed inconsistency is `Err(Inconsistent)`.
+    On,
+}
+
+/// #369: `RUSTDL_QUERY_LAZY_CONSISTENCY` (`=0` off, `=report` report-only,
+/// default on). `RUSTDL_QUERY_INCONSISTENCY_GUARD=0` turns it off too, so that
+/// flag still reverts all query-side inconsistency guarding.
+pub(crate) fn lazy_query_consistency_mode() -> LazyConsistencyMode {
+    if !query_inconsistency_guard_enabled() {
+        return LazyConsistencyMode::Off;
+    }
+    match std::env::var("RUSTDL_QUERY_LAZY_CONSISTENCY").as_deref() {
+        Ok("0") => LazyConsistencyMode::Off,
+        Ok("report") => LazyConsistencyMode::Report,
+        _ => LazyConsistencyMode::On,
+    }
+}
+
+/// #369: whether the lazy consistency check of the query surfaces runs at all
+/// (`RUSTDL_QUERY_LAZY_CONSISTENCY`, default on; see
+/// [`PreparedOntology::lazy_inconsistency_check`]).
+#[must_use]
+pub fn lazy_query_consistency_enabled() -> bool {
+    lazy_query_consistency_mode() != LazyConsistencyMode::Off
+}
+
+/// #369: `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL` (default OFF, `=1` on): when the
+/// wedge leaves consistency undetermined, the lazy check also runs
+/// `consistent`'s bounded main-tableau probe. Off by default because it costs
+/// answers: on the ORE pool it ran 82 times, found no inconsistency, and pushed
+/// 21 `subclass-expr` answers past a 30 s cap. With it off, an undetermined
+/// verdict is reported as `consistency_undetermined` instead.
+#[must_use]
+pub fn lazy_query_consistency_tail_enabled() -> bool {
+    std::env::var_os("RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL")
+        .is_some_and(|v| v == "1" || v == "true" || v == "yes" || v == "on")
+}
+
+/// #369: while the returned guard lives, the lazy consistency check of the query
+/// surfaces does not run on this thread. For `justify` and `repair`, whose
+/// oracle maps `Err(Inconsistent)` to the same verdict as the vacuous answer, so
+/// the check could only cost time there.
+#[must_use = "the check is skipped only while the guard is alive"]
+pub(crate) fn skip_lazy_query_consistency() -> SkipLazyQueryConsistency {
+    let prior = SKIP_LAZY_QUERY_CONSISTENCY.with(|c| c.replace(true));
+    SkipLazyQueryConsistency { prior }
+}
+
+/// Guard returned by [`skip_lazy_query_consistency`].
+pub(crate) struct SkipLazyQueryConsistency {
+    prior: bool,
+}
+
+impl Drop for SkipLazyQueryConsistency {
+    fn drop(&mut self) {
+        SKIP_LAZY_QUERY_CONSISTENCY.with(|c| c.set(self.prior));
+    }
 }
 
 /// #401: the single-query consistency verdict for `ontology`, settled with the
@@ -8287,7 +8359,11 @@ pub(crate) fn query_consistency_of<A: ForIRI>(
 ///
 /// Misuse cannot produce a false positive: a wrong "consistent" only makes the
 /// queries drop the `ABox`, and dropping axioms can only lose entailments. The
-/// `ABox` is still kept whenever the queried ontology has a nominal.
+/// `ABox` is still kept whenever the queried ontology has a nominal. A lent
+/// "consistent" also settles #369's lazy check
+/// ([`PreparedOntology::lazy_inconsistency_check`]): a positive answer is then kept
+/// without an error, which is never a wrong answer, only the vacuous one the check
+/// exists to catch.
 #[must_use = "the inherited verdict lasts only while the guard is alive"]
 pub fn assume_query_consistency(trusted: bool) -> AssumedQueryConsistency {
     inherit_query_consistency(QueryConsistency::Consistent { trusted })
@@ -8787,6 +8863,9 @@ pub(crate) struct PreparedOntology {
     /// #401: the consistency verdict the single queries rely on, settled at
     /// most once per prepared ontology ([`Self::query_consistency`]).
     query_consistency: std::sync::OnceLock<QueryConsistency>,
+    /// #369: the bounded main-tableau tail of [`Self::lazy_inconsistency_check`],
+    /// run at most once, only when [`Self::query_consistency`] is undetermined.
+    lazy_consistency_tail: std::sync::OnceLock<Option<bool>>,
     /// EL saturator closure over the un-mutated input ontology.
     /// Used by [`abox_check`] (P1 `is_unsatisfiable`, P2 `subsumers_of`).
     /// Computed once at build time; classify already computes the same
@@ -9564,6 +9643,7 @@ impl PreparedOntology {
             abox_irrelevant_to_classify,
             query_abox_droppable,
             query_consistency: std::sync::OnceLock::new(),
+            lazy_consistency_tail: std::sync::OnceLock::new(),
             closure,
             told,
             axioms,
@@ -9874,6 +9954,74 @@ impl PreparedOntology {
             eprintln!("query consistency (#401): {verdict:?}");
         }
         Ok(*self.query_consistency.get_or_init(|| verdict))
+    }
+
+    /// #369: the lazy consistency check of the query surfaces. Call it only after
+    /// a probe answered POSITIVELY (an instance, a merge, a difference): on an
+    /// inconsistent KB every probe
+    /// answers positively, so the negative path needs no check and pays nothing.
+    ///
+    /// `Err(Inconsistent)` only on a WITNESSED inconsistency:
+    /// [`Self::query_consistency`]'s `Inconsistent`, or, when that is
+    /// undetermined, `consistent`'s bounded main-tableau probe finding none
+    /// (`Some(false)`; [`lazy_query_consistency_tail_enabled`]). A consistent,
+    /// undetermined or cut verdict keeps the answer, as before #369. A verdict
+    /// lent by a parent ([`assume_query_consistency`]) is final: a lent
+    /// "consistent" is correct by monotonicity, and a lent "undetermined" does not
+    /// run the tail, so subset probes never pay it. Both results are cached on
+    /// this prepared ontology.
+    ///
+    /// Returns `Ok(true)` when consistency stayed UNDETERMINED (the wedge
+    /// stalled or was cut and the tail is off, cut or failed), which the
+    /// surfaces report as `consistency_undetermined`: the positive answer may be
+    /// the vacuous one of an inconsistent KB. `Ok(false)` when the KB is
+    /// consistent at the query surfaces' trust level, or the check did not run.
+    ///
+    /// # Errors
+    /// [`ReasonError::Inconsistent`] as above, and nothing else: a route that
+    /// fails while settling the verdict counts as no verdict.
+    pub(crate) fn lazy_inconsistency_check(&self, surface: &str) -> Result<bool, ReasonError> {
+        let mode = lazy_query_consistency_mode();
+        if mode == LazyConsistencyMode::Off
+            || SKIP_LAZY_QUERY_CONSISTENCY.with(std::cell::Cell::get)
+        {
+            return Ok(false);
+        }
+        let started = std::time::Instant::now();
+        let inherited = INHERITED_QUERY_CONSISTENCY
+            .with(std::cell::Cell::get)
+            .is_some();
+        // A route that fails (a tableau bail-out, an internal limit) is no verdict:
+        // the check must never turn an answer into any error but `Inconsistent`.
+        let verdict = self
+            .query_consistency()
+            .unwrap_or(QueryConsistency::Undetermined);
+        let tail = if verdict == QueryConsistency::Undetermined
+            && !inherited
+            && lazy_query_consistency_tail_enabled()
+        {
+            Some(*self.lazy_consistency_tail.get_or_init(|| {
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(consistency_fallback_ms());
+                let _full = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
+                self.decide_consistency(Some(deadline)).unwrap_or(None)
+            }))
+        } else {
+            None
+        };
+        let inconsistent = verdict == QueryConsistency::Inconsistent || tail == Some(Some(false));
+        let undetermined = verdict == QueryConsistency::Undetermined && tail != Some(Some(true));
+        if mode == LazyConsistencyMode::Report || std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!(
+                "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail:?} \
+                 inconsistent={inconsistent} us={}",
+                started.elapsed().as_micros()
+            );
+        }
+        if inconsistent && mode == LazyConsistencyMode::On {
+            return Err(ReasonError::Inconsistent);
+        }
+        Ok(undetermined)
     }
 
     /// #401: [`Self::decide_raw`] for the single queries, dropping the `ABox`

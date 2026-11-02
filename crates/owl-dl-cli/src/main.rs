@@ -1048,6 +1048,19 @@ fn note_trusted_wedge_sat(trusted: bool) {
     }
 }
 
+/// #369: a positive answer whose KB consistency stayed undetermined. Not a
+/// give-up: stdout and the exit code are unchanged.
+fn warn_consistency_undetermined(command: &str, undetermined: bool) {
+    if undetermined {
+        eprintln!(
+            "warning: {command}: the KB's consistency could not be determined (the \
+             consistency wedge stalled or was cut), so this positive answer may be the \
+             vacuous one of an inconsistent KB. RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1 also \
+             runs a bounded main-tableau check."
+        );
+    }
+}
+
 /// A `sat` / `subclass` probe tripped the live-node cap: there is no verdict.
 /// Print `unknown`, explain on stderr and exit 3, the convention `consistent`
 /// uses for a give-up (#363 A2).
@@ -1867,6 +1880,10 @@ fn main() -> Result<()> {
                     "warning: individuals incomplete (budget/fragment) — sound under-approximation"
                 );
             }
+            warn_consistency_undetermined(
+                "individuals",
+                same.consistency_undetermined() || different.consistency_undetermined(),
+            );
         }
         Command::PropertyValues {
             file,
@@ -2007,20 +2024,23 @@ fn main() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
+            let mut undetermined = false;
             let verdict = if saturation_only {
                 is_instance_of_saturation_only(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_saturation_only")?
             } else {
                 let _cap = owl_dl_reasoner::single_query_node_cap();
-                let (verdict, cut) = is_instance_of_reporting(&onto, &class_iri, &individual_iri)
+                let (verdict, flags) = is_instance_of_reporting(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_reporting")?;
-                // `(true, true)` is a proved membership; only a "no" is in doubt.
-                if cut && !verdict {
+                // `(true, cut)` is a proved membership; only a "no" is in doubt.
+                if flags.incomplete && !verdict {
                     exit_unknown_probe_cut();
                 }
+                undetermined = flags.consistency_undetermined;
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
+            warn_consistency_undetermined("instance", undetermined);
         }
         Command::Instances {
             file,
@@ -2032,11 +2052,11 @@ fn main() -> Result<()> {
             // One query, like `instance`: the single-query node cap (package 2),
             // so `instance C a` and `instances C` cannot disagree on the cap.
             let _cap = owl_dl_reasoner::single_query_node_cap();
-            let (members, cut) = if saturation_only {
+            let (members, flags) = if saturation_only {
                 (
                     instances_of_saturation_only(&onto, &class_iri)
                         .context("instances_of_saturation_only")?,
-                    false,
+                    owl_dl_reasoner::InstanceFlags::default(),
                 )
             } else {
                 instances_of_reporting(&onto, &class_iri).context("instances_of_reporting")?
@@ -2044,9 +2064,10 @@ fn main() -> Result<()> {
             for iri in members {
                 println!("{iri}");
             }
-            if cut {
+            if flags.incomplete {
                 warn_probes_cut("instances", "RUSTDL_QUERY_MAX_NODES");
             }
+            warn_consistency_undetermined("instances", flags.consistency_undetermined);
         }
         Command::SatExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
@@ -2135,6 +2156,7 @@ fn main() -> Result<()> {
             if r.incomplete() {
                 warn_probes_cut("instances-expr", "RUSTDL_QUERY_MAX_NODES");
             }
+            warn_consistency_undetermined("instances-expr", r.consistency_undetermined());
         }
         Command::Realize {
             file,

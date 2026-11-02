@@ -147,6 +147,11 @@ class IRIs.
 the only evidence is the consistency wedge's model, which is not proven complete
 (#392, #401). Nothing was cut, so it is not an `IncompleteQueryWarning`.
 
+`is_instance_of`, `instances_of`, `same_individuals`, `different_individuals` and
+`class_expression_instances` raise `RustdlError` on a KB they find
+inconsistent, and emit `ConsistencyUndeterminedWarning` when a positive answer's
+KB consistency could not be determined (#369).
+
 > For repeated queries over the same ontology, prefer `classify(path)` once and
 > query the returned `Classification` — each top-level function re-parses.
 

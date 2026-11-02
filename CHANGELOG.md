@@ -7,6 +7,30 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **The expression, property and materialize queries catch an inconsistency their pre-checks
+  miss (#369 follow-up).** `sat-expr`, `subclass-expr`, the `materialize_*` property functions
+  (object/data assertions, sub-property axioms), `property-values` and the property
+  disjointness queries now run #419's lazy consistency check after a positive answer
+  ("unsatisfiable", "subsumed", or non-empty), and error as `Inconsistent` (exit 1) when the
+  consistency wedge finds a clash.
+  - They hold no prepared ontology, so the check builds the wedge straight from the converted
+    ontology: no saturation, no full prepare. A tableau-answered expression and
+    `property-values` reuse the one they built. Each expression query now converts once.
+  - Its wedge budget is `RUSTDL_QUERY_LAZY_CONSISTENCY_MS` (default 2000); #419's surfaces keep
+    `RUSTDL_CONSISTENCY_FALLBACK_MS` (10 000). On 1,054 ORE files no answer was lost to a 30 s
+    cap. At classify's 12 s, 7 `subclass-expr` answers were.
+  - Undetermined is reported as `consistency_undetermined`:
+    - Rust: `CeVerdict::consistency_undetermined()`, `ObjectPropertyValues` /
+      `DataPropertyValues` accessors, and new `materialize_*_reporting` /
+      `disjoint_*_properties_reporting` functions returning `(rows, flag)`;
+    - CLI: `--json` (`sat-expr`, `subclass-expr`, `property-values`, `disjoint`) and a stderr
+      warning;
+    - Python: `ConsistencyUndeterminedWarning`.
+  - An ontology with no individual is not checked or flagged (the wedge needs a seed; run
+    unseeded it would test the first class, which is unsound). `materialize_existential_successors`
+    is not wired, since its `realize` already errors.
+  - `consistency_fallback_ms` and `lazy_query_consistency_ms` are public, pinned in
+    `flag_defaults.rs`.
 - **The instance and individuals queries catch an inconsistency their pre-checks miss (#369).**
   `instance`, `instances`, `instances-expr` and `individuals` checked consistency only with
   cheap pre-checks. On a KB only the consistency wedge or the tableau finds inconsistent (a

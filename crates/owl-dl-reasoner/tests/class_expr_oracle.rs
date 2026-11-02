@@ -125,21 +125,19 @@ fn class_expr_entailed_subclass_matches_hermit() {
     // below): if a future fixture edit grows past the EL fragment and rustdl
     // legitimately returns a sound MISS, it does not report a guarantee, and that
     // must not fire as a hard failure indistinguishable from a real FP.
-    if !verdict.completeness_guaranteed() {
-        if verdict.holds() != hermit_says {
-            eprintln!(
-                "MISS (allowed, class_expression_entailed_subclass guarantees no completeness): \
-                 rustdl={:?} hermit={hermit_says:?}",
-                verdict.holds()
-            );
-        }
-    } else {
+    if verdict.completeness_guaranteed() {
         assert_eq!(
             verdict.holds(),
             hermit_says,
             "rustdl verdict {:?} != HermiT oracle {hermit_says:?} (completeness_guaranteed={:?})",
             verdict.holds(),
             verdict.completeness_guaranteed()
+        );
+    } else if verdict.holds() != hermit_says {
+        eprintln!(
+            "MISS (allowed, class_expression_entailed_subclass guarantees no completeness): \
+             rustdl={:?} hermit={hermit_says:?}",
+            verdict.holds()
         );
     }
 }
@@ -169,16 +167,14 @@ fn class_expr_instances_matches_hermit() {
     );
 
     let missed: Vec<_> = oracle_instances.difference(&got).collect();
-    if !result.completeness_guaranteed() {
-        if !missed.is_empty() {
-            eprintln!(
-                "MISSED (allowed, class_expression_instances guarantees no completeness): {missed:?}"
-            );
-        }
-    } else {
+    if result.completeness_guaranteed() {
         assert!(
             missed.is_empty(),
             "MISSED — HermiT infers an instance of A⊔B rustdl omits (and rustdl guaranteed completeness): {missed:?}"
+        );
+    } else if !missed.is_empty() {
+        eprintln!(
+            "MISSED (allowed, class_expression_instances guarantees no completeness): {missed:?}"
         );
     }
 }

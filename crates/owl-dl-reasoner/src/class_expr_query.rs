@@ -21,6 +21,7 @@ const PROBE_IRI_2: &str = "urn:rustdl-ce-probe:q2";
 
 /// Verdict for a complex-class-expression satisfiability/subsumption query.
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CeVerdict {
     holds: bool,
     incomplete: bool,

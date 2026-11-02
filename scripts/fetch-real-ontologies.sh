@@ -26,7 +26,13 @@ SOURCES=(
     "sio|https://semanticscience.org/ontology/sio.owl|sio.owl"
     "sulo|https://w3id.org/sulo/sulo.ttl|sulo.ttl"
     "family|https://www.cs.man.ac.uk/~stevensr/ontology/family.rdf.owl|family.rdf.owl"
-    "pizza|http://protege.stanford.edu/ontologies/pizza/pizza.owl|pizza.owl"
+    # Pizza v2.0 pinned to a commit: protege.stanford.edu is unreachable from some
+    # hosts, and the repo's next commit (4922ecbd, 2025) renames every IRI. This
+    # revision reproduces the documented closure (pizza 499 = Konclude 499).
+    # After refetching, regenerate its oracle (scripts/konclude-oracle.sh): an
+    # existing konclude-input/pizza-classified.owx from another pizza vintage
+    # would make the closure-diff and per-pair nets diff the wrong pair.
+    "pizza|https://raw.githubusercontent.com/owlcs/pizza-ontology/dc48fca9142ab9ba63fb2cfb8732c1129278ffdf/pizza.owl|pizza.owl"
     "ro|http://purl.obolibrary.org/obo/ro.owl|ro.owl"
     "go-basic|http://purl.obolibrary.org/obo/go/go-basic.obo|go-basic.obo"
 )

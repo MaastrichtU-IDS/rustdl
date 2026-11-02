@@ -27,9 +27,9 @@
 # Notes on fixture coverage:
 #   shoiq-knowledge — input .ofn and oracle .owx both absent from repo;
 #                     SKIP, noted in the table.
-#   pizza           — input present, oracle absent; Konclude is run live and
-#                     the output is saved to ontologies/real/konclude-input/
-#                     pizza-classified.owx for future use.
+#   pizza           — oracle from scripts/konclude-oracle.sh; if absent, Konclude
+#                     is run live and the output is saved to
+#                     ontologies/real/konclude-input/pizza-classified.owx.
 #
 # The script writes:
 #   bench-results/konclude-parity-<STAMP>.md   (markdown table, appended row-by-row)

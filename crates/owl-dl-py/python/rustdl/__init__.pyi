@@ -130,6 +130,13 @@ class TrustedConsistencyWarning(UserWarning):
     ABox on its strength (#401). Not an `IncompleteQueryWarning`: nothing was
     cut."""
 
+class ConsistencyUndeterminedWarning(UserWarning):
+    """Emitted by `is_instance_of`, `instances_of`, `same_individuals`,
+    `different_individuals` and `class_expression_instances` when the answer
+    was positive and the KB's consistency stayed undetermined (#369), so it may
+    be the vacuous answer of an inconsistent KB. Not an
+    `IncompleteQueryWarning`: nothing was cut."""
+
 class Root(Mapping[str, object]):
     iri: str
     justification: tuple[str, ...]

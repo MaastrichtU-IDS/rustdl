@@ -324,6 +324,11 @@ pub(crate) struct InstancesExprJson {
     /// saturation fast path. Off it the tableau path's pseudo-model prune is not
     /// proven complete, so this is `false` even when nothing was cut.
     pub(crate) completeness_guaranteed: bool,
+    /// #369: the answer was positive and the KB's consistency stayed
+    /// undetermined (the consistency wedge stalled or was cut), so it may be the
+    /// vacuous answer of an inconsistent KB. Separate from `incomplete`; not a
+    /// give-up. A KB found inconsistent is an error instead.
+    pub(crate) consistency_undetermined: bool,
     pub(crate) instances: Vec<String>,
 }
 
@@ -357,6 +362,7 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
         schema_version: SCHEMA_VERSION,
         incomplete: r.incomplete(),
         completeness_guaranteed: r.completeness_guaranteed(),
+        consistency_undetermined: r.consistency_undetermined(),
         instances,
     }
 }
@@ -634,6 +640,11 @@ pub(crate) fn build_disjoint_json(
 pub(crate) struct IndividualsJson {
     pub(crate) schema_version: u32,
     pub(crate) incomplete: bool,
+    /// #369: the answer was positive and the KB's consistency stayed
+    /// undetermined (the consistency wedge stalled or was cut), so it may be the
+    /// vacuous answer of an inconsistent KB. Separate from `incomplete`; not a
+    /// give-up. A KB found inconsistent is an error instead.
+    pub(crate) consistency_undetermined: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
 }
@@ -667,6 +678,8 @@ pub(crate) fn build_individuals_json(
     IndividualsJson {
         schema_version: SCHEMA_VERSION,
         incomplete: same.incomplete() || different.incomplete(),
+        consistency_undetermined: same.consistency_undetermined()
+            || different.consistency_undetermined(),
         same_groups,
         different_pairs,
     }

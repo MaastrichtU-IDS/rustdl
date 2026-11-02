@@ -373,7 +373,7 @@ pub fn entails_reporting<A: ForIRI>(
                 // Inconsistent ⇒ everything is entailed, as for property assertions above;
                 // QuickXplain then returns the inconsistency core (#313).
                 Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),
-                r => r.map(|(holds, cut)| Verdict::from_check(holds, cut)),
+                r => r.map(|(holds, flags)| Verdict::from_check(holds, flags.incomplete)),
             }
         }
         Entailment::Inconsistent => {
@@ -1490,6 +1490,8 @@ fn search_one<A: ForIRI>(
 ) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
     let _consistency = inherited_query_consistency(fixed, all_candidates, q);
+    // #369: this oracle maps `Err(Inconsistent)` to the vacuous answer's verdict.
+    let _no_lazy = crate::skip_lazy_query_consistency();
     let candidates = match localized_candidates(fixed, all_candidates, q)? {
         Ok(candidates) => candidates,
         // Not entailed (or unknown) — nothing to justify.
@@ -1513,6 +1515,8 @@ fn search_all<A: ForIRI>(
 ) -> Result<Search<A>, ReasonError> {
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
     let _consistency = inherited_query_consistency(fixed, all_candidates, q);
+    // #369: this oracle maps `Err(Inconsistent)` to the vacuous answer's verdict.
+    let _no_lazy = crate::skip_lazy_query_consistency();
     // Narrow to the query's ⊥-module up front: justification-preserving, so the
     // HST below still discovers *every* justification — over a far smaller set.
     let candidates = match localized_candidates(fixed, all_candidates, q)? {

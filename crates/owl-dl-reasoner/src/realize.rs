@@ -198,7 +198,25 @@ pub fn is_instance_of<A: ForIRI>(
     is_instance_of_internal(&internal, class_iri, individual_iri)
 }
 
-/// [`is_instance_of`] plus the truncation flag (#73): `(is_instance, incomplete)`.
+/// What a positive or negative instance answer leaves open, returned beside it by
+/// [`is_instance_of_reporting`] and [`instances_of_reporting`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct InstanceFlags {
+    /// A probe was CUT (#73): a "not an instance" may be a give-up, and an
+    /// `instances` set may be missing members. The members present are sound.
+    pub incomplete: bool,
+    /// #369: a probe answered positively, and the KB's consistency stayed
+    /// undetermined (the consistency wedge stalled or was cut; the main-tableau
+    /// tail, `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL`, is off by default). On an
+    /// inconsistent KB every membership holds vacuously, so the positive answer
+    /// is then not known to be more than that. Separate from `incomplete`: nothing
+    /// in the answer was cut. A KB found inconsistent is
+    /// `Err(ReasonError::Inconsistent)` instead.
+    pub consistency_undetermined: bool,
+}
+
+/// [`is_instance_of`] plus its [`InstanceFlags`] (#73, #369).
 ///
 /// A bare [`is_instance_of`] returning `false` cannot be distinguished from a
 /// probe that was CUT, so a slow query silently becomes a negative answer. See
@@ -212,7 +230,7 @@ pub fn is_instance_of_reporting<A: ForIRI>(
     ontology: &SetOntology<A>,
     class_iri: &str,
     individual_iri: &str,
-) -> Result<(bool, bool), ReasonError> {
+) -> Result<(bool, InstanceFlags), ReasonError> {
     let internal = convert_ontology(ontology)?;
     is_instance_of_reporting_internal(&internal, class_iri, individual_iri)
 }
@@ -232,7 +250,7 @@ pub fn is_instance_of_internal(
 }
 
 /// Truncation-reporting form of [`is_instance_of`] (#73). Returns
-/// `(is_instance, incomplete)`.
+/// `(is_instance, flags)`; see [`InstanceFlags`].
 ///
 /// `incomplete == true` means the probe was CUT — a deadline expiry, a
 /// `RUSTDL_MAX_NODES` trip or a depth bail — rather than refuted. Without it a
@@ -255,7 +273,7 @@ pub fn is_instance_of_reporting_internal(
     internal: &InternalOntology,
     class_iri: &str,
     individual_iri: &str,
-) -> Result<(bool, bool), ReasonError> {
+) -> Result<(bool, InstanceFlags), ReasonError> {
     let class_id = internal
         .vocabulary
         .class_id(class_iri)
@@ -279,7 +297,7 @@ pub fn is_instance_of_reporting_internal(
             nominal_by_ind
                 .get(&individual_id)
                 .is_some_and(|&nom| subsumers.contains(nom, class_id)),
-            false,
+            InstanceFlags::default(),
         ));
     }
     let closure = saturate(internal);
@@ -292,7 +310,7 @@ pub fn is_instance_of_reporting_internal(
     // Single-pair path — the witness is a realize-loop optimization (one
     // witness amortized across the whole per-individual, per-class loop);
     // it isn't worth building for a lone instance check.
-    instance_check_reporting(
+    let (holds, cut) = instance_check_reporting(
         internal,
         &closure,
         &prepared,
@@ -300,7 +318,16 @@ pub fn is_instance_of_reporting_internal(
         individual_id,
         pair_deadline,
         None,
-    )
+    )?;
+    // #369: a membership on a KB only the tableau finds inconsistent is vacuous.
+    let consistency_undetermined = holds && prepared.lazy_inconsistency_check("instance")?;
+    Ok((
+        holds,
+        InstanceFlags {
+            incomplete: cut,
+            consistency_undetermined,
+        },
+    ))
 }
 
 /// Saturation-only counterpart of [`is_instance_of`]. Reports
@@ -561,7 +588,7 @@ pub fn instances_of<A: ForIRI>(
     instances_of_internal(&internal, class_iri)
 }
 
-/// [`instances_of`] plus the truncation flag (#73): `(instances, incomplete)`.
+/// [`instances_of`] plus its [`InstanceFlags`] (#73, #369).
 ///
 /// `incomplete == true` means at least one per-individual probe was cut, so the
 /// set may be MISSING members. The members present are still sound.
@@ -572,7 +599,7 @@ pub fn instances_of<A: ForIRI>(
 pub fn instances_of_reporting<A: ForIRI>(
     ontology: &SetOntology<A>,
     class_iri: &str,
-) -> Result<(Vec<String>, bool), ReasonError> {
+) -> Result<(Vec<String>, InstanceFlags), ReasonError> {
     let internal = convert_ontology(ontology)?;
     instances_of_reporting_internal(&internal, class_iri)
 }
@@ -590,7 +617,7 @@ pub fn instances_of_internal(
 }
 
 /// Truncation-reporting form of [`instances_of`] (#73). Returns
-/// `(instances, incomplete)`.
+/// `(instances, flags)`; see [`InstanceFlags`].
 ///
 /// `incomplete == true` means at least one per-individual probe was CUT, so the
 /// returned set may be MISSING members. The set itself stays sound — every
@@ -603,7 +630,7 @@ pub fn instances_of_internal(
 pub fn instances_of_reporting_internal(
     internal: &InternalOntology,
     class_iri: &str,
-) -> Result<(Vec<String>, bool), ReasonError> {
+) -> Result<(Vec<String>, InstanceFlags), ReasonError> {
     let class_id = internal
         .vocabulary
         .class_id(class_iri)
@@ -630,7 +657,7 @@ pub fn instances_of_reporting_internal(
             }
         }
         // Complete and terminating on this fragment: nothing can be cut.
-        return Ok((out, false));
+        return Ok((out, InstanceFlags::default()));
     }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
@@ -641,6 +668,7 @@ pub fn instances_of_reporting_internal(
     let mut out = Vec::new();
     // Sticky across the loop: ANY cut probe means the returned SET may be short.
     let mut incomplete = false;
+    let mut any_member = false;
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
@@ -658,6 +686,7 @@ pub fn instances_of_reporting_internal(
             None,
         )?;
         incomplete |= cut;
+        any_member |= is_inst;
         if is_inst {
             let iri = internal.vocabulary.individual_iri(individual_id);
             if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
@@ -665,7 +694,16 @@ pub fn instances_of_reporting_internal(
             }
         }
     }
-    Ok((out, incomplete))
+    // #369: once, after the loop, if any probe answered positively (anonymous
+    // members included, though they are not listed).
+    let consistency_undetermined = any_member && prepared.lazy_inconsistency_check("instances")?;
+    Ok((
+        out,
+        InstanceFlags {
+            incomplete,
+            consistency_undetermined,
+        },
+    ))
 }
 
 /// Saturation-only counterpart of [`instances_of`]. Returns the

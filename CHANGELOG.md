@@ -7,6 +7,28 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **The instance and individuals queries catch an inconsistency their pre-checks miss (#369).**
+  `instance`, `instances`, `instances-expr` and `individuals` checked consistency only with
+  cheap pre-checks. On a KB only the consistency wedge or the tableau finds inconsistent (a
+  TBox-only individual that cannot exist; an asserted `∃r.E` with `E` unsatisfiable by case
+  split) they returned the vacuous answers of an inconsistent KB: every membership, every
+  sameness. After a POSITIVE answer they now settle consistency once with the wedge (#401's
+  cached verdict, on the ontology the probes already prepared) and error as `Inconsistent`
+  (exit 1) when it finds a clash. A negative answer costs nothing.
+  - When the wedge leaves consistency undetermined, the answer is kept and reported as
+    `consistency_undetermined`: Rust `InstanceFlags` (which replaces the `bool` in
+    `is_instance_of_reporting` / `instances_of_reporting`, a library API change) and the
+    accessors on `SameIndividuals`, `DifferentIndividuals` and `CeInstances`; a `--json`
+    field (`individuals`, `instances-expr`) and one stderr warning in the CLI; Python
+    `ConsistencyUndeterminedWarning`.
+  - `RUSTDL_QUERY_LAZY_CONSISTENCY=0` reverts (`=report` only logs).
+    `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1` also runs `consistent`'s bounded main-tableau
+    probe when the wedge is undetermined. It is off by default: on the ORE pool it ran 82
+    times, found no inconsistency the wedge had not, and took about 90% of the check's wall
+    time.
+  - `sat-expr`, `subclass-expr`, `materialize_*` and `property-values` are unchanged. They
+    hold no prepared ontology, so the check would newly cost a full prepare (23 of 1,054
+    `subclass-expr` answers lost to a 30 s cap); a follow-up prices them together.
 - **`consistent` reports a verdict that rests on the wedge's trust (#392).** By default
   `consistent` accepts the consistency wedge's `Sat` without a main-tableau model, and the
   wedge is not proven complete: it missed clashes in #290 and #376. That `consistent` was

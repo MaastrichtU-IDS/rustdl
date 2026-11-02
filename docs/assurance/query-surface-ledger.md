@@ -29,7 +29,7 @@ No surface in the #363 audit turned a give-up into a definite **positive**.
 | Surface | Signal | Meaning |
 |---|---|---|
 | Rust `*_with_stats` | `QueryStats::incomplete` | the verdict is a give-up in its sound direction |
-| Rust `*_reporting`, `Realization` | `incomplete` (second tuple element, `Realization::incomplete()`) | at least one probe was cut |
+| Rust `*_reporting`, `Realization` | `incomplete` (second tuple element, or a field of the flags struct there, e.g. `ExistentialSuccessorFlags`; `Realization::incomplete()`) | at least one probe was cut |
 | CLI single answer (`consistent`, `sat`, `subclass`, `instance`, `explain`, `prove`) | prints `unknown`, exits 3, explains on stderr | no verdict |
 | CLI list answer (`instances`, `realize`) | stderr warning; members printed are sound | members may be missing |
 | CLI `--json` | `incomplete` field | as the Rust field |
@@ -56,6 +56,9 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `instances` | same | `instances_of_reporting` | stderr warning | no `--json` | `instances_of` warns | same |
 | `realize` | same, plus the node cap with the per-probe deadline disabled (`=0`) | `Realization::incomplete()` | stderr warning | `incomplete` | `realize` warns | same |
 | `realize` direct types (#388) | the check of two most-specific types the hierarchy left undecided: per-probe deadline, node cap, depth bail-out (or the check is off, `RUSTDL_REALIZE_VERIFY_DIRECT=0`). Not a missing type: a listed type may be a superclass of another. Never set on the saturation fast path | `Realization::direct_types_unverified()` | stderr warning | `direct_types_unverified` | `realize` warns `DirectTypesUnverifiedWarning` | `realize_direct_types.rs`, `realize_direct_types_cap.rs`; `test_direct_types_unverified_warning` |
+| `materialize_existential_successors` (#391) | as `realize`; the rows join on ENTAILED types, so `direct_types_unverified` does not apply | `materialize_existential_successors_reporting` → `ExistentialSuccessorFlags::{incomplete, witness_prune_active}` | no CLI surface | — | warns `IncompleteQueryWarning` | `materialize_realize_flags.rs`, `materialize_realize_flags_cap.rs`; `test_materialize_flags.py` |
+| Python `materialize_inferred_class_assertions` (#391) | as `realize` (most-specific types) | — (Python only, over `realize`) | no CLI surface | — | warns `IncompleteQueryWarning` and `DirectTypesUnverifiedWarning` | `test_materialize_flags.py` |
+| Python `materialize_inferred_subclass_axioms` (#391) | as `classify` | — (Python only, over `classify`) | no CLI surface | — | the same `IncompleteClassificationWarning`s as `classify` | `test_materialize_flags.py` |
 | `sat-expr`, `subclass-expr`, `instances-expr` | as `sat` / `subclass` / `instances`; also `incomplete` whenever the ontology is not pure EL | `CeVerdict` / `CeInstances` `incomplete` | (already reported) | `incomplete` | warns | `class_expr_query` tests |
 | `disjoint` (classes) | per-pair deadline, node cap | `DisjointClasses::incomplete` | yes | `incomplete` | warns | `disjoint_nodecap.rs` |
 | `individuals` | per-pair deadline, node cap | `incomplete` | yes | `incomplete` | warns | individuals tests |
@@ -91,8 +94,10 @@ about its signal, so each is filed rather than fixed here.
   top/bottom, one-leg chains, anonymous individuals). `incomplete` stays a
   give-up signal. See the
   [completeness ledger](completeness-guarantee-ledger.md#structural-property-surfaces-389-390).
-- **materialize_\*** (`materialize_existential_successors`, Python
-  `materialize_inferred_class_assertions`) drop realize's flags. #391.
+- **`witness_prune_active` in Python**: no Python surface reports it, `realize`
+  and the materialize functions alike, until #387 settles the signal (see the
+  pseudo-model prune above). The Rust `materialize_existential_successors_reporting`
+  carries it.
 - **consistency's trusted wedge `Sat`** is a trust decision, not a cut, and has
   no signal beyond `wedge_clauses_refused`. #392.
 - **single queries that drop the `ABox` (#401)**: `sat`, `subclass`, `explain`,

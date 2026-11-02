@@ -30,6 +30,13 @@ pub struct CellResult {
     pub closure_size: Option<usize>,
     pub fp: Option<usize>,
     pub missed: Option<usize>,
+    /// Classes the reasoner calls unsatisfiable that the oracle does not. Not in
+    /// `fp`, which counts subsumption PAIRS over satisfiable classes only.
+    #[serde(default)]
+    pub unsat_fp: Option<usize>,
+    /// Classes the oracle calls unsatisfiable that the reasoner does not.
+    #[serde(default)]
+    pub unsat_missed: Option<usize>,
     pub oracle: String,
 }
 
@@ -132,6 +139,8 @@ mod tests {
             closure_size: Some(653),
             fp: Some(0),
             missed: Some(0),
+            unsat_fp: None,
+            unsat_missed: None,
             oracle: "konclude-0.7.0-1138".into(),
         };
         append_cell(&path, &cell).unwrap();
@@ -159,6 +168,8 @@ mod tests {
             closure_size: None,
             fp: None,
             missed: None,
+            unsat_fp: None,
+            unsat_missed: None,
             oracle: "konclude-0.7.0-1138".into(),
         };
         let line = serde_json::to_string(&cell).unwrap();

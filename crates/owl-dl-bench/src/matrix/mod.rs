@@ -187,6 +187,8 @@ fn build_cell(
                         closure_size: orc.edges.len(),
                         fp: 0,
                         missed: 0,
+                        unsat_fp: 0,
+                        unsat_missed: 0,
                     });
                 }
             }
@@ -264,9 +266,15 @@ fn build_cell(
         }
     }
 
-    let (closure_size, fp, missed) = match correctness {
-        Some(c) => (Some(c.closure_size), Some(c.fp), Some(c.missed)),
-        None => (None, None, None),
+    let (closure_size, fp, missed, unsat_fp, unsat_missed) = match correctness {
+        Some(c) => (
+            Some(c.closure_size),
+            Some(c.fp),
+            Some(c.missed),
+            Some(c.unsat_fp),
+            Some(c.unsat_missed),
+        ),
+        None => (None, None, None, None, None),
     };
     Ok(CellResult {
         ont: ont.meta.name.clone(),
@@ -282,6 +290,8 @@ fn build_cell(
         closure_size,
         fp,
         missed,
+        unsat_fp,
+        unsat_missed,
         oracle: oracle_id.into(),
     })
 }
@@ -316,6 +326,8 @@ mod tests {
             closure_size: Some(0),
             fp: Some(0),
             missed: Some(0),
+            unsat_fp: Some(0),
+            unsat_missed: Some(0),
             oracle: "k".into(),
         }
     }

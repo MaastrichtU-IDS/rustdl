@@ -4383,6 +4383,48 @@ Ontology(<http://t/x>
         );
     }
 
+    /// The boundary of the D4 clash: a functional data property admits ONE value,
+    /// so `≥1` is satisfiable and must not be lowered to `⊑ ⊥`. The two tests
+    /// above pin only the `≥2` side; the off-by-one `min >= 1` (mutant M8b in
+    /// `scripts/mutants/`) passed both and made 41 classes of `ore_ont_10080`
+    /// unsatisfiable.
+    #[test]
+    fn functional_dp_min1_is_not_unsat() {
+        let src = r"Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/x>
+    Declaration(Class(:HasAge))
+    Declaration(DataProperty(:age))
+    FunctionalDataProperty(:age)
+    SubClassOf(:HasAge DataMinCardinality(1 :age))
+)
+";
+        let onto = parse_str(src);
+        let facts = extract_facts(&onto);
+        assert_eq!(
+            facts
+                .class_min
+                .get(&("http://t/HasAge".to_string(), "http://t/age".to_string())),
+            Some(&1),
+            "the fixture must reach the D4 pass, or this test guards nothing"
+        );
+        let mut internal = convert_ontology(&onto).expect("test ontology converts");
+        let has_age = internal
+            .vocabulary
+            .class_id("http://t/HasAge")
+            .expect("HasAge interned");
+        let bot = internal.concepts.bot();
+        let sub_concept = internal.concepts.atomic(has_age);
+        let derived_unsat = internal.axioms.iter().any(|ax| {
+            matches!(ax,
+            Axiom::SubClassOf { sub, sup } if *sub == sub_concept && *sup == bot)
+        });
+        assert!(
+            !derived_unsat,
+            "D4: Functional + DataMin(1) is satisfiable; HasAge ⊑ Bot must not be derived"
+        );
+    }
+
     // ── Phase D11b: disjoint() — the FP surface of the ∀-membership clash.
     // The corpus CANNOT exercise this (no ∃+∀ clash exists in it), so these
     // unit tests are the entire safety net. OVERLAP must NEVER read as

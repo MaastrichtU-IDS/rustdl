@@ -44,6 +44,7 @@ use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::oracle_diff::{
     aligned_closures, closure_from_classification, read_owx_verdict as read_konclude_verdict,
+    unsat_diff,
 };
 use owl_dl_reasoner::{
     classify_saturation_only, classify_top_down_with_timeout, classify_with_budget,
@@ -127,6 +128,11 @@ fn load_ofn_fixture(input: &Path) -> SetOntology<RcStr> {
 
 /// Print per-fixture diff stats, emit a `[fp0]` coverage line, and return
 /// `(rustdl_closure, konclude_closure, fp, missed)`.
+///
+/// `fp` and `missed` include the UNSAT half of the diff: each class rustdl calls
+/// unsatisfiable and the oracle does not counts as one FP, and each oracle unsat
+/// class rustdl misses as one MISSED. The pair diff alone cannot see either,
+/// because `aligned_closures` drops both sides' unsat classes before comparing.
 fn diff_corpus_ontology(
     label: &str,
     input: &Path,
@@ -148,6 +154,7 @@ fn diff_corpus_ontology(
     let verdict = read_konclude_verdict(truth).expect("read owx verdict");
     let rustdl_unsat_count = c.unsatisfiable_classes().len();
     let (rustdl, konclude) = aligned_closures(&c, &verdict);
+    let unsat = unsat_diff(&c, &verdict);
     let fp: BTreeSet<_> = rustdl.difference(&konclude).cloned().collect();
     let missed: BTreeSet<_> = konclude.difference(&rustdl).cloned().collect();
     eprintln!(
@@ -166,6 +173,17 @@ fn diff_corpus_ontology(
     for (s, t) in fp.iter().take(5) {
         eprintln!(" FP: {s} ⊑ {t}");
     }
+    eprintln!(
+        "unsat_FP={} unsat_MISSED={}",
+        unsat.fp.len(),
+        unsat.missed.len()
+    );
+    for x in unsat.fp.iter().take(5) {
+        eprintln!(" unsat FP: {x} (rustdl unsat, oracle satisfiable)");
+    }
+    for x in unsat.missed.iter().take(5) {
+        eprintln!(" unsat MISSED: {x}");
+    }
     // Print all MISSED when ≤ 50, otherwise first 50.
     let missed_limit = if missed.len() <= 50 { missed.len() } else { 50 };
     for (s, t) in missed.iter().take(missed_limit) {
@@ -173,13 +191,20 @@ fn diff_corpus_ontology(
     }
     // Coverage summary line — grep '^\[fp0\]' to extract the whole run's report.
     eprintln!(
-        "[fp0] {label}: VERIFIED (closure rustdl={} oracle={} FP={} MISSED={})",
+        "[fp0] {label}: VERIFIED (closure rustdl={} oracle={} FP={} MISSED={} unsat_FP={} unsat_MISSED={})",
         rustdl.len(),
         konclude.len(),
         fp.len(),
         missed.len(),
+        unsat.fp.len(),
+        unsat.missed.len(),
     );
-    (rustdl.len(), konclude.len(), fp.len(), missed.len())
+    (
+        rustdl.len(),
+        konclude.len(),
+        fp.len() + unsat.fp.len(),
+        missed.len() + unsat.missed.len(),
+    )
 }
 
 // ── per-fixture tests ────────────────────────────────────────────────────────
@@ -588,6 +613,13 @@ fn global_deadline_differential() {
             u.len(),
             t.len()
         );
+        // closure_from_classification drops each run's own unsat classes, so a
+        // class unsat in only one run would show here only as dropped pairs.
+        assert_eq!(
+            timed.unsatisfiable_classes(),
+            untimed.unsatisfiable_classes(),
+            "{fx}: 30 s global deadline must give the untimed unsat set"
+        );
         assert_eq!(
             t,
             u,
@@ -682,6 +714,14 @@ fn anytime_per_pair_sweep() {
             // Use the same symmetric exclude-set alignment as the closure-diff
             // tests — this is what makes the FP gate meaningful.
             let (reported, true_pairs) = aligned_closures(&h, &verdict);
+            // The pair diff drops unsat classes on both sides; a deadline must not
+            // make a satisfiable class unsat either.
+            let unsat = unsat_diff(&h, &verdict);
+            assert!(
+                unsat.fp.is_empty(),
+                "unsat FP at {fx}@{ms}ms: rustdl unsat, oracle satisfiable: {:?}",
+                unsat.fp.iter().take(5).collect::<Vec<_>>()
+            );
 
             // Undecided pairs: timed-out probes flagged by the anytime contract.
             let undecided: BTreeSet<(String, String)> = h
@@ -818,6 +858,14 @@ fn anytime_global_sweep() {
             // Use the same symmetric exclude-set alignment as the closure-diff
             // tests — this is what makes the FP gate meaningful.
             let (reported, true_pairs) = aligned_closures(&h, &verdict);
+            // The pair diff drops unsat classes on both sides; a deadline must not
+            // make a satisfiable class unsat either.
+            let unsat = unsat_diff(&h, &verdict);
+            assert!(
+                unsat.fp.is_empty(),
+                "unsat FP at {fx}@{ms}ms: rustdl unsat, oracle satisfiable: {:?}",
+                unsat.fp.iter().take(5).collect::<Vec<_>>()
+            );
 
             // Undecided pairs: timed-out probes flagged by the anytime contract.
             let undecided: BTreeSet<(String, String)> = h
@@ -963,6 +1011,7 @@ fn ore_10080_bounded_by_explicit_deadline() {
 
     let verdict = read_konclude_verdict(&oracle_path).expect("read owx verdict");
     let (rustdl, konclude) = aligned_closures(&c, &verdict);
+    let unsat = unsat_diff(&c, &verdict);
     let fp = rustdl.difference(&konclude).count();
     let missed = konclude.difference(&rustdl).count();
     println!(
@@ -974,9 +1023,11 @@ fn ore_10080_bounded_by_explicit_deadline() {
     );
     eprintln!(
         "[fp0] ore-10080-deadline: VERIFIED \
-         (closure rustdl={} oracle={} FP={fp} MISSED={missed})",
+         (closure rustdl={} oracle={} FP={fp} MISSED={missed} unsat_FP={} unsat_MISSED={})",
         rustdl.len(),
         konclude.len(),
+        unsat.fp.len(),
+        unsat.missed.len(),
     );
 
     // Bounded: must return well within a small multiple of the 5 s budget
@@ -991,6 +1042,16 @@ fn ore_10080_bounded_by_explicit_deadline() {
     );
     // Soundness: a deadline cut is always a MISS, never an FP.
     assert_eq!(fp, 0, "ore_ont_10080 has FPs — soundness regression");
+    // The pair diff above cannot see a false unsat class (aligned_closures drops
+    // rustdl's unsat classes from both sides). Mutant M8b made 41 classes of this
+    // ontology unsat while the pair diff read FP=0. Unsat MISSED is not gated: the
+    // run is deadline-cut by design.
+    assert!(
+        unsat.fp.is_empty(),
+        "ore_ont_10080: {} class(es) rustdl calls unsat that the oracle does not, e.g. {:?}",
+        unsat.fp.len(),
+        unsat.fp.iter().take(5).collect::<Vec<_>>()
+    );
 }
 
 /// Generic at-scale FP sweep over a directory of (input, oracle) pairs.

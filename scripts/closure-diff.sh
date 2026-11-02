@@ -9,9 +9,9 @@
 #
 # Why Rust tests, not a bash differ?
 #   The Rust harness uses horned-owl's canonical IRI parser, handles
-#   EquivalentClasses expansion, thing_equiv exclusion, and symmetric
-#   unsat-class exclusion correctly — the same logic that validated
-#   the corpus's FP=0 claim across every phase.  A bash/Python differ
+#   EquivalentClasses expansion, thing_equiv exclusion, symmetric
+#   unsat-class exclusion from the pair diff, and (since #363 step 1.5) a
+#   separate comparison of the unsat sets, which that exclusion hides.  A bash/Python differ
 #   built on regex would produce false FP and MISSED counts.
 #
 # Usage:
@@ -116,6 +116,13 @@ parse_diff_output() {
   # Fall back to grepping for "FP=[0-9]+" in the whole output if no diagnostic line.
   fp=$(echo "$output" | grep -oE ' FP=[0-9]+' | sed 's/ FP=//' | head -1)
   missed=$(echo "$output" | grep -oE ' MISSED=[0-9]+' | sed 's/ MISSED=//' | head -1)
+  # The pair diff excludes unsat classes on both sides, so a class rustdl wrongly
+  # calls unsat appears only on the `unsat_FP=` line; count it as FP here.
+  local ufp umissed
+  ufp=$(echo "$output" | grep -oE 'unsat_FP=[0-9]+' | sed 's/unsat_FP=//' | head -1)
+  umissed=$(echo "$output" | grep -oE 'unsat_MISSED=[0-9]+' | sed 's/unsat_MISSED=//' | head -1)
+  [[ -n "$fp" && -n "$ufp" ]] && fp=$((fp + ufp))
+  [[ -n "$missed" && -n "$umissed" ]] && missed=$((missed + umissed))
   [[ -z "$rclosure" ]] && rclosure="?"
   [[ -z "$kclosure" ]] && kclosure="?"
   [[ -z "$fp" ]] && fp="?"

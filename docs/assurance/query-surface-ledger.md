@@ -165,3 +165,54 @@ or list form cannot disagree on the cap. Everything else uses `RUSTDL_MAX_NODES`
 single-query default was raised from 50000 when the give-up became visible: at
 50000, 3 of 43 measurable random ORE ontologies answered `unknown` on `sat` and
 `subclass` that finish with a 200k–500k cap.
+
+## Cross-command laws (#363, package 2)
+
+`scripts/cross-command-laws.py` runs the CLI on real ontologies and checks that
+commands answering equivalent questions agree. A disagreement between two definite
+answers is a bug in one of them; agreement is not proof of correctness. Each operand
+is yes / no / unknown, read from the give-up signals in the table above (exit 3,
+`unknown`, a give-up flag, an error other than `Inconsistent`, or a 30 s kill). A law
+is checked only when every operand it needs is definite; otherwise it is counted as
+unresolved, with the reason.
+
+| law | statement |
+|---|---|
+| L1, L2 | a classify subsumption or equivalence ⇒ `subclass` = yes |
+| L3 | a classify-unsatisfiable class ⇒ `sat` = unsat |
+| L4 | `classify --json` `consistent: false` ⇒ `consistent` = inconsistent (smoke) |
+| L5 | inconsistent KB ⇒ `instance`, `realize`, `disjoint`, `individuals`, `*-expr` answer yes or error `Inconsistent`, never "no". `sat`/`subclass`/`explain` are excluded: they run no inconsistency guard and do not finish on `family.ofn` |
+| L6 | named and expression surfaces agree (smoke: they differ only by the injected `Q ≡ C`) |
+| L7 | a `disjoint` pair (A, B) ⇒ `sat-expr "A and B"` = unsat, and `subclass A B` ≠ yes unless A is unsatisfiable |
+| L8 | the `classify --saturation-only` closure ⊆ the classify closure |
+| L10 | a realize type C of a ⇒ `instance C a` = yes |
+| L11 | `individuals` different (a, b) ⇒ `sat-expr "{a} and {b}"` = unsat |
+
+Ratchets, counted against `crates/owl-dl-cli/tests/fixtures/laws/baseline.json`:
+
+- **R1**: `subclass` says yes where the classify closure lacks the pair.
+- **R2**: `sat` says unsat where classify lists the class as satisfiable.
+- **R3**: `consistent` says inconsistent while classify says `consistent: true`. A
+  `consistency_undetermined: true` from classify does not count.
+
+A pair in the committed Konclude closure is a classify miss. A pair absent from it is a
+candidate false positive, which fails a run only if HermiT confirms it (`--hermit`).
+
+**Coverage.** No hard law has a live engine-level sabotage on this repository's
+curated fixtures. `--self-test` shows that each law can fire, on fabricated operands;
+that checks the harness, not the engine. Engine-level sabotages exist only for the
+ratchets (`--sabotage`):
+
+- R2: `RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` on `tests/fixtures/laws/complex_qualifier_98.ofn`;
+- R3: `RUSTDL_CLASSIFY_INCONSISTENCY=0` on `family.ofn`.
+
+Two laws had **0 checks** in the first full run (30 ontologies, `--pair-timeout-ms 1000`):
+
+- L4: `classify --json` on `family.ofn` reports `consistent: true` with
+  `consistency_undetermined: true` on this host (its ABox pre-check runs out of budget
+  on a slow machine), so neither L4 nor R3 applies. That is the signal working as
+  intended, and it depends on the host.
+- L11: `individuals` was killed at 30 s wherever it ran (pizza, ro).
+
+The quick mode is a local gate:
+`cargo test --release -p owl-dl-cli --test cross_command_laws -- --ignored`.

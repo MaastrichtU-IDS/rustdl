@@ -1,0 +1,28 @@
+# 20 seeded ORE ontologies for scripts/cross-command-laws.py (#363 package 2).
+# Seed 363 over pool files < 3 MB; classify finished in 60 s at --pair-timeout-ms 1000.
+# Stratified by fragment x ABox; no pure-EL ontology with an ABox occurred in 90 candidates.
+# Horn, abox=0
+ore_ont_4106
+ore_ont_12382
+ore_ont_5404
+# Horn, abox=1
+ore_ont_7372
+ore_ont_13066
+ore_ont_1555
+ore_ont_16547
+# out-of-EL, abox=0
+ore_ont_16167
+ore_ont_11371
+ore_ont_6437
+# out-of-EL, abox=1
+ore_ont_2182
+ore_ont_8668
+ore_ont_148
+ore_ont_802
+ore_ont_13674
+# pure-EL, abox=0
+ore_ont_10283
+ore_ont_9646
+ore_ont_10053
+ore_ont_2229
+ore_ont_4652

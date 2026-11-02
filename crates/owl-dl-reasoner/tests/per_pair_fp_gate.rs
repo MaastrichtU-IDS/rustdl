@@ -37,9 +37,11 @@
 //! test passes at pizza 499 = 499 under `RUSTDL_MAX_TRIAL_MERGE=0`, under
 //! `RUSTDL_MAX_CHOICE_POINT=0`, and under both (two runs each). `rustdl subclass`
 //! answers `no` on both pizza pairs even with every `RUSTDL_MAX_*` lever off. The
-//! #370 merge choice point superseded the trial merge.
+//! #293 merge choice point superseded the trial merge (the Rust source at
+//! 0090dc9f is identical).
 //!
-//! Turning BOTH off does restore the first-pair commit: on the five-axiom #76
+//! Turning BOTH off does restore the first-pair commit (either alone does not,
+//! two runs each): on the five-axiom #76
 //! synthetic (`crates/owl-dl-cli/tests/fixtures/laws/maxmerge_fp.ofn`) `subclass
 //! A I` then answers `yes`, which HermiT refutes. The cross-command law harness
 //! catches that as a HermiT-confirmed R1 false positive. On pizza the same

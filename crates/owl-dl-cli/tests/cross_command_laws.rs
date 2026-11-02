@@ -6,8 +6,8 @@
 //! and an unknown operand never counts as a violation), then the quick corpus
 //! (pizza, ro, sulo, bibtex and the small fixtures in `tests/fixtures/laws/`),
 //! and fails on a hard-law violation or a ratchet count above
-//! `tests/fixtures/laws/baseline.json` (the gate does not run HermiT; with
-//! `--hermit`, the script also fails on a HermiT-confirmed false positive).
+//! `tests/fixtures/laws/baseline.json`. The gate does not pass `--hermit`; with
+//! it, the script also fails on a false positive that the oracle confirms.
 //!
 //! Coverage, stated: the self-test checks the harness logic, not the engine.
 //! Engine-level evidence: the env sabotages (`--sabotage`: R1 #76, R2, R3) and

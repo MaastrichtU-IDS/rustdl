@@ -12,9 +12,11 @@
 #   -> cargo build --release -p owl-dl-cli -> revert
 #   -> scripts/cross-command-laws.py --quick --hermit [--env from the header]
 #   -> detect.py: the laws that fire in the mutant run and not in the control run.
-# Output: one line per mutant, MATCH / MISMATCH / STALE / BUILD-FAILED, and a TSV.
-# Exit 0 only if every mutant MATCHes its expected detector; STALE, BUILD-FAILED
-# and MISMATCH all exit non-zero, so drift is visible.
+# Output: one line per mutant, MATCH / MISMATCH / STALE / BUILD-FAILED /
+# HARNESS-FAILED / BAD-HEADER (no `expect:`) / NO-SUCH-PATCH, and a TSV.
+# Exit 0 only if every mutant MATCHes its expected detector; anything else exits
+# non-zero, so drift is visible. M2 (#76) is an env revert, not a patch: it is
+# replayed by `scripts/cross-command-laws.py --sabotage`.
 #
 # Usage: scripts/mutants/replay-mutants.sh [M1 M3 ...]   (default: every patch)
 # Env:   CARGO_TARGET_DIR (default ~/target-mutants), LAWS_CORES (e.g. 92,93,94),
@@ -49,6 +51,7 @@ build() {  # $1 = label; leaves the binary at $OUT/bin-$1
 }
 
 harness() {  # $1 = label, $2 = env spec (space-separated K=V, may be empty)
+  rm -rf "$OUT/laws-$1"  # never read a report left by an earlier run
   local envargs=()
   for kv in $2; do envargs+=(--env "$kv"); done
   python3 "$WT/scripts/cross-command-laws.py" --bin "$OUT/bin-$1" --quick --hermit \
@@ -80,9 +83,17 @@ status=0
 printf 'id\tresult\texpected\tcaught\n' >"$OUT/results.tsv"
 for id in "${ids[@]}"; do
   p="$MUT/$id.patch"
+  if [[ ! -f "$p" ]]; then
+    res=NO-SUCH-PATCH; want="-"; got="-"; status=1
+    printf '%-4s %-14s expected %-28s caught %s\n' "$id" "$res" "$want" "$got"
+    printf '%s\t%s\t%s\t%s\n' "$id" "$res" "$want" "$got" >>"$OUT/results.tsv"
+    continue
+  fi
   want="$(header "$p" expect)"; envs="$(header "$p" env)"
   if [[ "$envs" == "-" ]]; then envs=""; fi
-  if ! git -C "$WT" apply --check "$p" 2>/dev/null; then
+  if [[ -z "$want" ]]; then
+    res=BAD-HEADER; got="-"; status=1
+  elif ! git -C "$WT" apply --check "$p" 2>/dev/null; then
     res=STALE; got="-"; status=1
   else
     git -C "$WT" apply "$p"

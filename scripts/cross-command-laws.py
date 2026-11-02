@@ -134,7 +134,7 @@ SABOTAGES = [
          env={"RUSTDL_CLASSIFY_INCONSISTENCY": "0"}, expect="R3"),
     # #76: both flags off restore the first-pair `≤n` merge, so `subclass A I` says
     # yes on the synthetic (HermiT refutes it). One flag alone is not enough: the
-    # #370 choice point and the trial merge each prevent it.
+    # #293 choice point and the #76 trial merge each prevent it.
     dict(name="R1: RUSTDL_MAX_CHOICE_POINT=0 RUSTDL_MAX_TRIAL_MERGE=0 on #76", onto="maxmerge_fp",
          env={"RUSTDL_MAX_CHOICE_POINT": "0", "RUSTDL_MAX_TRIAL_MERGE": "0"}, expect="R1"),
 ]
@@ -409,8 +409,14 @@ def observe(spec, runner, caps, seed, log=print):
         rng.shuffle(cands)
         neg = list(dict.fromkeys(cands))[:caps["neg"]]
     declared = set(classes)
-    neg += [tuple(p) for p in spec.get("pin_neg", []) if p[0] in declared and p[1] in declared
-            and tuple(p) not in neg]
+    for p_ in spec.get("pin_neg", []):
+        if p_[0] in declared and p_[1] in declared:
+            if tuple(p_) not in neg:
+                neg.append(tuple(p_))
+        else:
+            # Expected for another pizza vintage; for any other spec it means a
+            # typo or a changed fixture, so say so rather than drop it silently.
+            log(f"  {oid}: pinned pair not declared, skipped: {p_[0]} ⊑ {p_[1]}")
     sat_classes = rng.sample(classes, min(len(classes), caps["sat"]))
     sat_classes += [x for x in sorted(c.get("unsat", set())) if x not in sat_classes][:caps["sat"]]
     eq = [g for g in c.get("equiv", []) if all(m not in (THING, NOTHING) for m in g)][:caps["eq"]]
@@ -987,6 +993,8 @@ def main():
     cores = [int(c) for c in a.cores.split(",") if c] or [None] * a.workers
     specs, missing = corpus(a)
 
+    if a.sabotage and a.env:
+        ap.error("--env does not apply to --sabotage (each sabotage sets its own env)")
     if a.sabotage:
         allspecs = {s["id"]: s for s in CURATED + SYNTHETIC}
         rows, bad = [], 0

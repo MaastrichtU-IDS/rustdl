@@ -1756,7 +1756,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
     #[test]
     fn checks_stop_at_the_first_cut_and_the_field_stays_set() {
         use PairVerdict::{Cut, Refuted};
-        let h = flat_hierarchy();
+        let hier = flat_hierarchy();
         let (x, y, z) = (iri("X"), iri("Y"), iri("Z"));
         let pairs = [
             (x.as_str(), y.as_str()),
@@ -1769,25 +1769,25 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             .num_threads(1)
             .build()
             .expect("pool");
-        let v = pool
+        let verdicts = pool
             .install(|| {
                 decide_pairs_until_cut(&pairs, |_, _| {
-                    let n = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Ok(if n == 0 { Cut } else { Refuted })
+                    let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Ok(if call == 0 { Cut } else { Refuted })
                 })
             })
             .expect("verdicts");
-        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y", "Z"]), &h, &v);
+        let (kept, unverified) = verified_leaves(&leaves(&["X", "Y", "Z"]), &hier, &verdicts);
         assert!(unverified, "an early stop must leave the field set");
         // X/Z was never checked: an individual with only those two types is
         // unverified too, not cleared by the stop.
         assert!(
-            verified_leaves(&leaves(&["X", "Z"]), &h, &v).1,
+            verified_leaves(&leaves(&["X", "Z"]), &hier, &verdicts).1,
             "a pair skipped after the cut must stay unverified"
         );
         assert_eq!(kept, leaves(&["X", "Y", "Z"]));
         assert_eq!(calls.into_inner(), 1, "no check starts after the cut");
-        assert_eq!(v.len(), 1);
+        assert_eq!(verdicts.len(), 1);
     }
 
     #[test]

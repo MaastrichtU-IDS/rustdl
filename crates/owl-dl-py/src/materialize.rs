@@ -88,11 +88,13 @@ pub(crate) fn materialize_inferred_class_assertions(
 /// (no anonymous-witness or disjunctive-derived edges). Raises if the ontology is
 /// inconsistent.
 #[pyfunction]
+#[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_property_assertions(
     path: &str,
-) -> PyResult<Vec<(String, String, String)>> {
+) -> PyResult<(Vec<(String, String, String)>, bool)> {
     let ontology = load::load_path(path)?;
-    owl_dl_reasoner::materialize_object_property_assertions(&ontology).map_err(reason_error_to_py)
+    owl_dl_reasoner::materialize_object_property_assertions_reporting(&ontology)
+        .map_err(reason_error_to_py)
 }
 
 /// Returns every inferred data property assertion as a 5-tuple
@@ -104,13 +106,19 @@ pub(crate) fn materialize_inferred_property_assertions(
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_data_property_assertions(
     path: &str,
-) -> PyResult<(Vec<(String, String, String, String, String)>, Vec<String>)> {
+) -> PyResult<(
+    Vec<(String, String, String, String, String)>,
+    Vec<String>,
+    bool,
+)> {
     let ontology = load::load_path(path)?;
-    let rows = owl_dl_reasoner::materialize_data_property_assertions(&ontology)
-        .map_err(reason_error_to_py)?;
+    let (rows, undetermined) =
+        owl_dl_reasoner::materialize_data_property_assertions_reporting(&ontology)
+            .map_err(reason_error_to_py)?;
     Ok((
         rows,
         crate::queries::gaps(&ontology)?.data_values().to_vec(),
+        undetermined,
     ))
 }
 
@@ -120,13 +128,15 @@ pub(crate) fn materialize_inferred_data_property_assertions(
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_subobjectproperty_axioms(
     path: &str,
-) -> PyResult<(Vec<(String, String)>, Vec<String>)> {
+) -> PyResult<(Vec<(String, String)>, Vec<String>, bool)> {
     let ontology = load::load_path(path)?;
-    let rows = owl_dl_reasoner::materialize_subobjectproperty_axioms(&ontology)
-        .map_err(reason_error_to_py)?;
+    let (rows, undetermined) =
+        owl_dl_reasoner::materialize_subobjectproperty_axioms_reporting(&ontology)
+            .map_err(reason_error_to_py)?;
     Ok((
         rows,
         crate::queries::gaps(&ontology)?.object_hierarchy().to_vec(),
+        undetermined,
     ))
 }
 
@@ -136,13 +146,15 @@ pub(crate) fn materialize_inferred_subobjectproperty_axioms(
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_subdataproperty_axioms(
     path: &str,
-) -> PyResult<(Vec<(String, String)>, Vec<String>)> {
+) -> PyResult<(Vec<(String, String)>, Vec<String>, bool)> {
     let ontology = load::load_path(path)?;
-    let rows = owl_dl_reasoner::materialize_subdataproperty_axioms(&ontology)
-        .map_err(reason_error_to_py)?;
+    let (rows, undetermined) =
+        owl_dl_reasoner::materialize_subdataproperty_axioms_reporting(&ontology)
+            .map_err(reason_error_to_py)?;
     Ok((
         rows,
         crate::queries::gaps(&ontology)?.data_hierarchy().to_vec(),
+        undetermined,
     ))
 }
 

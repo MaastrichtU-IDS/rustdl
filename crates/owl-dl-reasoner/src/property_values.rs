@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 pub struct ObjectPropertyValues {
     triples: Vec<(String, String, String)>,
     incomplete: bool,
+    consistency_undetermined: bool,
 }
 
 impl ObjectPropertyValues {
@@ -63,6 +64,16 @@ impl ObjectPropertyValues {
     pub fn incomplete(&self) -> bool {
         self.incomplete
     }
+
+    /// #369: the answer is non-empty and the KB's consistency stayed
+    /// undetermined (the consistency wedge stalled or ran past
+    /// `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`), so it may be the vacuous answer of an
+    /// inconsistent KB. Not a give-up, so separate from `incomplete`. A KB the
+    /// wedge finds inconsistent is `Err(Inconsistent)`.
+    #[must_use]
+    pub fn consistency_undetermined(&self) -> bool {
+        self.consistency_undetermined
+    }
 }
 
 /// Entailed DATA property values over named individuals, plus a completeness
@@ -71,6 +82,7 @@ impl ObjectPropertyValues {
 pub struct DataPropertyValues {
     quints: Vec<(String, String, String, String, String)>,
     incomplete: bool,
+    consistency_undetermined: bool,
 }
 
 impl DataPropertyValues {
@@ -99,6 +111,16 @@ impl DataPropertyValues {
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// #369: the answer is non-empty and the KB's consistency stayed
+    /// undetermined (the consistency wedge stalled or ran past
+    /// `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`), so it may be the vacuous answer of an
+    /// inconsistent KB. Not a give-up, so separate from `incomplete`. A KB the
+    /// wedge finds inconsistent is `Err(Inconsistent)`.
+    #[must_use]
+    pub fn consistency_undetermined(&self) -> bool {
+        self.consistency_undetermined
     }
 }
 
@@ -412,12 +434,12 @@ pub fn inferred_object_property_values<A: ForIRI>(
     pair_deadline: Option<Duration>,
 ) -> Result<ObjectPropertyValues, ReasonError> {
     // Sound lower-bound seed; already runs the inconsistent-KB guard and
-    // returns `Err(Inconsistent)` on a clash.
-    let seed = crate::materialize_object_property_assertions(onto)?;
+    // returns `Err(Inconsistent)` on a clash. #369's lazy check runs once, below,
+    // on the prepared ontology, not on the seed.
+    let internal = convert_ontology(onto)?;
+    let seed = crate::materialize_object_property_assertions_from(&internal)?;
     let mut seed_set: HashSet<(String, String, String)> = seed.iter().cloned().collect();
     let mut triples = seed.clone();
-
-    let internal = convert_ontology(onto)?;
     let object_properties = named_object_properties(&internal);
 
     // Honest `incomplete` initialization (review Fix 2, "proper" pass): gate
@@ -476,9 +498,14 @@ pub fn inferred_object_property_values<A: ForIRI>(
 
     triples.sort();
     triples.dedup();
+    // #369: a non-empty answer (seed or probe) on a KB only the wedge finds
+    // inconsistent is vacuous.
+    let consistency_undetermined = !triples.is_empty()
+        && prepared.lazy_inconsistency_check_bounded("object_property_values")?;
     Ok(ObjectPropertyValues {
         triples,
         incomplete,
+        consistency_undetermined,
     })
 }
 
@@ -499,11 +526,13 @@ pub fn inferred_object_property_values<A: ForIRI>(
 pub fn inferred_data_property_values<A: ForIRI>(
     onto: &SetOntology<A>,
 ) -> Result<DataPropertyValues, ReasonError> {
-    let mut quints = crate::materialize_data_property_assertions(onto)?;
+    let (mut quints, consistency_undetermined) =
+        crate::materialize_data_property_assertions_reporting(onto)?;
     quints.sort();
     quints.dedup();
     Ok(DataPropertyValues {
         quints,
         incomplete: false,
+        consistency_undetermined,
     })
 }

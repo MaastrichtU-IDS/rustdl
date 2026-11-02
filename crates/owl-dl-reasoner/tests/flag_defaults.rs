@@ -764,3 +764,42 @@ fn query_seeded_first_ms_default_is_pinned() {
     assert_eq!(with("250"), 250);
     assert_eq!(with("soon"), 3_000, "unparsable falls back to the default");
 }
+
+/// #369: the lazy consistency check's two wedge budgets, numeric, pinned at
+/// rustdl-manager's request. #419's surfaces (`instance`, `instances`,
+/// `instances-expr`, `individuals`) use #401's `RUSTDL_CONSISTENCY_FALLBACK_MS`
+/// (10 000; it cost them no answer); the follow-up's surfaces (`sat-expr`,
+/// `subclass-expr`, `materialize_*`, `property-values`, the property disjointness
+/// queries) use `RUSTDL_QUERY_LAZY_CONSISTENCY_MS` (2000; at 12 s they lost 7
+/// answers to a 30 s cap). Unset is the default, a number is honoured, `0` is
+/// unbounded, and garbage falls back to the default.
+#[test]
+fn lazy_consistency_budgets_are_pinned() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (key, default, read) in [
+        (
+            "RUSTDL_CONSISTENCY_FALLBACK_MS",
+            10_000,
+            owl_dl_reasoner::consistency_fallback_ms as fn() -> u64,
+        ),
+        (
+            "RUSTDL_QUERY_LAZY_CONSISTENCY_MS",
+            2_000,
+            owl_dl_reasoner::lazy_query_consistency_ms,
+        ),
+    ] {
+        let _restore = EnvGuard::unset(key);
+        assert_eq!(read(), default, "{key} unset");
+        #[allow(unsafe_code)]
+        let with = |v: &str| {
+            // SAFETY: ENV_MUTEX is held; `_restore` puts the prior value back.
+            unsafe { std::env::set_var(key, v) };
+            read()
+        };
+        assert_eq!(with("0"), 0, "{key}=0");
+        assert_eq!(with("250"), 250, "{key}=250");
+        assert_eq!(with("soon"), default, "{key} unparsable");
+    }
+}

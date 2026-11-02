@@ -39,7 +39,7 @@ from rustdl._native import (
     UnknownClassError as UnknownClassError,
     materialize_inferred_subclass_axioms as _materialize_inferred_subclass_axioms_native,
     materialize_inferred_class_assertions as _materialize_inferred_class_assertions_native,
-    materialize_inferred_property_assertions as materialize_inferred_property_assertions,
+    materialize_inferred_property_assertions as _materialize_inferred_property_assertions_native,
     materialize_inferred_data_property_assertions as _materialize_inferred_data_property_assertions_native,
     materialize_inferred_subobjectproperty_axioms as _materialize_inferred_subobjectproperty_axioms_native,
     materialize_inferred_subdataproperty_axioms as _materialize_inferred_subdataproperty_axioms_native,
@@ -344,12 +344,16 @@ def _warn_if_trusted_consistency(name: str, relies: bool) -> None:
 
 
 class ConsistencyUndeterminedWarning(UserWarning):
-    """Raised by `is_instance_of`, `instances_of`, `same_individuals`,
-    `different_individuals` and `class_expression_instances` when the answer
-    was positive (an instance, a merge, a difference) and the KB's consistency
-    stayed undetermined (#369): the
-    consistency wedge stalled or was cut, so the answer may be the vacuous one of
-    an inconsistent KB. A KB found inconsistent raises `RustdlError` instead.
+    """Raised when a POSITIVE answer's KB consistency stayed undetermined (#369):
+    the consistency wedge stalled or ran out of budget, so the answer may be the
+    vacuous one of an inconsistent KB. Emitted by `is_instance_of`,
+    `instances_of`, `same_individuals`, `different_individuals`,
+    `class_expression_instances`, `class_expression_satisfiable` ("unsatisfiable"),
+    `class_expression_entailed_subclass` (entailed), `object_property_values`,
+    `data_property_values`, `disjoint_object_properties`,
+    `disjoint_data_properties` and the `materialize_inferred_*` property functions
+    (a non-empty answer). Ontologies with no individual are not checked (the
+    wedge needs one) and never warn. A KB found inconsistent raises `RustdlError` instead.
     Nothing was cut, so this is NOT an `IncompleteQueryWarning`.
     `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1` also runs a bounded main-tableau
     check, at a cost."""
@@ -501,17 +505,32 @@ def _warn_if_structural_gaps(name: str, gaps: "list[str]") -> None:
 
 def _structural(name, native):
     def wrapper(path):
-        result, gaps = native(path)
+        result, gaps, undetermined = native(path)
         _warn_if_structural_gaps(name, gaps)
+        _warn_if_consistency_undetermined(name, undetermined)
         return result
 
     wrapper.__name__ = name
     wrapper.__qualname__ = name
     wrapper.__doc__ = (native.__doc__ or "") + (
         "\n\nEmits `StructuralGapWarning` when the ontology has constructs this "
-        "structural closure ignores (see `StructuralGapWarning`)."
+        "structural closure ignores (see `StructuralGapWarning`), and "
+        "`ConsistencyUndeterminedWarning` (#369)."
     )
     return wrapper
+
+
+def materialize_inferred_property_assertions(path):
+    """Every inferred object property assertion `(subject, property, object)`
+    entailed over named individuals (asserted + derived via property hierarchy /
+    inverse / symmetric / role chains / transitivity). Sound under-approximation
+    (no anonymous-witness or disjunctive-derived edges). Raises if the ontology
+    is inconsistent. Emits `ConsistencyUndeterminedWarning` (#369)."""
+    rows, undetermined = _materialize_inferred_property_assertions_native(path)
+    _warn_if_consistency_undetermined(
+        "materialize_inferred_property_assertions", undetermined
+    )
+    return rows
 
 
 disjoint_object_properties = _structural(
@@ -587,9 +606,10 @@ def object_property_values(path):
     """Inferred object property values `(subject, property, object)` over
     named individuals. Bounded by a 1s per-pair deadline; emits
     `IncompleteQueryWarning` when the budget was exhausted (see
-    `IncompleteQueryWarning`)."""
-    triples, incomplete = _object_property_values_native(path)
+    `IncompleteQueryWarning`), and `ConsistencyUndeterminedWarning` (#369)."""
+    triples, incomplete, undetermined = _object_property_values_native(path)
     _warn_if_query_incomplete("object_property_values", incomplete)
+    _warn_if_consistency_undetermined("object_property_values", undetermined)
     return triples
 
 
@@ -598,10 +618,14 @@ def class_expression_satisfiable(path, ce):
     w.r.t. the ontology at `path` (`ce` is resolved against the ontology's
     own prefix map, e.g. `:A`). If the probe gave up (node cap), returns `True`
     and emits `IncompleteQueryWarning`, as `is_class_satisfiable` does; an
-    answer off the pure-EL fragment no longer warns."""
-    holds, incomplete, trusted = _class_expression_satisfiable_native(path, ce)
+    answer off the pure-EL fragment no longer warns. Emits
+    `ConsistencyUndeterminedWarning` (#369)."""
+    holds, incomplete, trusted, undetermined = _class_expression_satisfiable_native(
+        path, ce
+    )
     _warn_if_query_incomplete("class_expression_satisfiable", incomplete)
     _warn_if_trusted_consistency("class_expression_satisfiable", trusted)
+    _warn_if_consistency_undetermined("class_expression_satisfiable", undetermined)
     return holds
 
 
@@ -610,12 +634,16 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     (both Manchester-syntax class expressions, resolved against the
     ontology's own prefix map). If the probe gave up (node cap), returns `False`
     and emits `IncompleteQueryWarning`, as `is_subclass_of` does; an answer off
-    the pure-EL fragment no longer warns."""
-    holds, incomplete, trusted = _class_expression_entailed_subclass_native(
-        path, sub_ce, sup_ce
+    the pure-EL fragment no longer warns. Emits
+    `ConsistencyUndeterminedWarning` (#369)."""
+    holds, incomplete, trusted, undetermined = (
+        _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)
     )
     _warn_if_query_incomplete("class_expression_entailed_subclass", incomplete)
     _warn_if_trusted_consistency("class_expression_entailed_subclass", trusted)
+    _warn_if_consistency_undetermined(
+        "class_expression_entailed_subclass", undetermined
+    )
     return holds
 
 

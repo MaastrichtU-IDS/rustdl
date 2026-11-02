@@ -139,6 +139,18 @@ fn pairwise_sorted(names: &[String]) -> Vec<(String, String)> {
 pub fn disjoint_object_properties<A: ForIRI>(
     onto: &SetOntology<A>,
 ) -> Result<Vec<(String, String)>, ReasonError> {
+    disjoint_object_properties_reporting(onto).map(|(pairs, _)| pairs)
+}
+
+/// [`disjoint_object_properties`] plus #369's `consistency_undetermined`: the
+/// answer is non-empty and the KB's consistency stayed undetermined, so it may be
+/// the vacuous answer of an inconsistent KB.
+///
+/// # Errors
+/// As [`disjoint_object_properties`].
+pub fn disjoint_object_properties_reporting<A: ForIRI>(
+    onto: &SetOntology<A>,
+) -> Result<(Vec<(String, String)>, bool), ReasonError> {
     use horned_owl::model::Component as C;
     use horned_owl::model::ObjectPropertyExpression as OPE;
 
@@ -163,14 +175,18 @@ pub fn disjoint_object_properties<A: ForIRI>(
             })
             .collect();
         let edges = crate::property_closure::object_edges(onto);
-        return Ok(crate::property_closure::disjoint_down(
-            &edges,
-            &sets,
-            &[
-                crate::property_closure::OBJ_TOP,
-                crate::property_closure::OBJ_BOT,
-            ],
-        ));
+        return checked_pairs(
+            &internal,
+            "disjoint_object_properties",
+            crate::property_closure::disjoint_down(
+                &edges,
+                &sets,
+                &[
+                    crate::property_closure::OBJ_TOP,
+                    crate::property_closure::OBJ_BOT,
+                ],
+            ),
+        );
     }
     let mut out: Vec<(String, String)> = Vec::new();
     for ac in onto {
@@ -187,7 +203,7 @@ pub fn disjoint_object_properties<A: ForIRI>(
     }
     out.sort();
     out.dedup();
-    Ok(out)
+    checked_pairs(&internal, "disjoint_object_properties", out)
 }
 
 /// Told-disjoint data property pairs (`a < b`), read directly from the
@@ -201,6 +217,18 @@ pub fn disjoint_object_properties<A: ForIRI>(
 pub fn disjoint_data_properties<A: ForIRI>(
     onto: &SetOntology<A>,
 ) -> Result<Vec<(String, String)>, ReasonError> {
+    disjoint_data_properties_reporting(onto).map(|(pairs, _)| pairs)
+}
+
+/// [`disjoint_data_properties`] plus #369's `consistency_undetermined`: the
+/// answer is non-empty and the KB's consistency stayed undetermined, so it may be
+/// the vacuous answer of an inconsistent KB.
+///
+/// # Errors
+/// As [`disjoint_data_properties`].
+pub fn disjoint_data_properties_reporting<A: ForIRI>(
+    onto: &SetOntology<A>,
+) -> Result<(Vec<(String, String)>, bool), ReasonError> {
     use horned_owl::model::Component as C;
 
     let internal = convert_ontology(onto)?;
@@ -223,14 +251,18 @@ pub fn disjoint_data_properties<A: ForIRI>(
             .into_iter()
             .map(|(a, b)| ((a, false), (b, false)))
             .collect();
-        return Ok(crate::property_closure::disjoint_down(
-            &edges,
-            &sets,
-            &[
-                crate::property_closure::DATA_TOP,
-                crate::property_closure::DATA_BOT,
-            ],
-        ));
+        return checked_pairs(
+            &internal,
+            "disjoint_data_properties",
+            crate::property_closure::disjoint_down(
+                &edges,
+                &sets,
+                &[
+                    crate::property_closure::DATA_TOP,
+                    crate::property_closure::DATA_BOT,
+                ],
+            ),
+        );
     }
     let mut out: Vec<(String, String)> = Vec::new();
     for ac in onto {
@@ -241,5 +273,19 @@ pub fn disjoint_data_properties<A: ForIRI>(
     }
     out.sort();
     out.dedup();
-    Ok(out)
+    checked_pairs(&internal, "disjoint_data_properties", out)
+}
+
+/// #369: the property disjointness answers are told or structural, and on a KB
+/// only the consistency wedge finds inconsistent they are vacuous; a non-empty
+/// answer runs the light lazy consistency check
+/// ([`crate::lazy_inconsistency_check_light`]).
+fn checked_pairs(
+    internal: &owl_dl_core::InternalOntology,
+    surface: &str,
+    pairs: Vec<(String, String)>,
+) -> Result<(Vec<(String, String)>, bool), ReasonError> {
+    let undetermined =
+        !pairs.is_empty() && crate::lazy_inconsistency_check_light(internal, surface)?;
+    Ok((pairs, undetermined))
 }

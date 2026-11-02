@@ -1810,10 +1810,13 @@ fn main() -> Result<()> {
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let classes =
                 owl_dl_reasoner::disjoint_classes(&onto, deadline).context("disjoint_classes")?;
-            let obj = owl_dl_reasoner::disjoint_object_properties(&onto)
-                .context("disjoint_object_properties")?;
-            let data = owl_dl_reasoner::disjoint_data_properties(&onto)
-                .context("disjoint_data_properties")?;
+            let (obj, obj_undetermined) =
+                owl_dl_reasoner::disjoint_object_properties_reporting(&onto)
+                    .context("disjoint_object_properties")?;
+            let (data, data_undetermined) =
+                owl_dl_reasoner::disjoint_data_properties_reporting(&onto)
+                    .context("disjoint_data_properties")?;
+            let undetermined = obj_undetermined || data_undetermined;
             let gaps = owl_dl_reasoner::property_structural_gaps(&onto)
                 .context("property_structural_gaps")?
                 .disjoint();
@@ -1821,7 +1824,11 @@ fn main() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_disjoint_json(
-                        &classes, obj, data, gaps
+                        &classes,
+                        obj,
+                        data,
+                        undetermined,
+                        gaps
                     ))?
                 );
                 return Ok(());
@@ -1844,6 +1851,7 @@ fn main() -> Result<()> {
                 println!("{a}\t{b}");
             }
             warn_structural_gaps("property disjointness", &gaps);
+            warn_consistency_undetermined("disjoint (properties)", undetermined);
         }
         Command::Individuals {
             file,
@@ -1929,6 +1937,10 @@ fn main() -> Result<()> {
                 );
             }
             warn_structural_gaps("data property values", &gaps);
+            warn_consistency_undetermined(
+                "property-values",
+                obj.consistency_undetermined() || data.consistency_undetermined(),
+            );
         }
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
@@ -2101,6 +2113,7 @@ fn main() -> Result<()> {
                 }
             );
             note_trusted_consistency_flag(v.relies_on_trusted_consistency());
+            warn_consistency_undetermined("sat-expr", v.consistency_undetermined());
         }
         Command::SubclassExpr {
             file,
@@ -2133,6 +2146,7 @@ fn main() -> Result<()> {
             }
             println!("{}", if v.holds() { "yes" } else { "no" });
             note_trusted_consistency_flag(v.relies_on_trusted_consistency());
+            warn_consistency_undetermined("subclass-expr", v.consistency_undetermined());
         }
         Command::InstancesExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;

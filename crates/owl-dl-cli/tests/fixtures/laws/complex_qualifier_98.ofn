@@ -1,0 +1,7 @@
+Prefix(:=<http://ex#>)
+Ontology(<http://ex/q98>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+Declaration(ObjectProperty(:r))
+SubClassOf(:A ObjectMaxCardinality(1 :r ObjectIntersectionOf(:B :C)))
+SubClassOf(:A ObjectMinCardinality(2 :r ObjectIntersectionOf(:B :C)))
+)

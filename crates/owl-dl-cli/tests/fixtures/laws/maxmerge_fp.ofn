@@ -1,0 +1,10 @@
+Prefix(:=<http://ex.org/p#>)
+Ontology(<http://ex.org/p>
+Declaration(Class(:A)) Declaration(Class(:M)) Declaration(Class(:T)) Declaration(Class(:PT)) Declaration(Class(:I))
+Declaration(ObjectProperty(:r))
+SubClassOf(:A ObjectSomeValuesFrom(:r :M))
+SubClassOf(:A ObjectSomeValuesFrom(:r :T))
+SubClassOf(:A ObjectSomeValuesFrom(:r :PT))
+DisjointClasses(:M :PT)
+EquivalentClasses(:I ObjectMinCardinality(3 :r))
+)

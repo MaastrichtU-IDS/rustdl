@@ -5713,7 +5713,8 @@ impl HyperCache {
 /// - wedge `Sat` ⟹ **consistent** (trusted, exactly like classify's
 ///   `trust_sat`; the wedge is Horn-incomplete so it may MISS a clash,
 ///   which is sound — a missed clash is a `Sat` the main tableau might
-///   refute, the same trust level as today).
+///   refute). Reported as [`QueryStats::relies_on_trusted_consistency`]
+///   (#392), unless the #344 data-counting verification confirmed it.
 /// - wedge `Stalled` ⟹ undetermined → bounded main-tableau fall-through.
 ///
 /// Set `RUSTDL_WEDGE_CONSISTENCY=0` to revert to pure main-tableau.
@@ -7177,13 +7178,18 @@ pub struct QueryStats {
     /// wedge `consistent` can then miss a clash, so this is a completeness signal,
     /// separate from `incomplete` (which means a give-up).
     pub wedge_clauses_refused: usize,
-    /// #401: the verdict was reached with the `ABox` seed dropped
-    /// ([`query_tbox_only_enabled`]), and the consistency that licensed dropping
-    /// it rests on a trusted wedge `Sat`, not on a main-tableau model. The answer
-    /// is then exactly as trustworthy as `consistent`'s own (#392); if that `Sat`
-    /// were ever wrong, the effect is a miss in the sound direction ("satisfiable"
-    /// / "not subsumed"), never a false positive. Not a give-up, so it is separate
-    /// from `incomplete`.
+    /// The verdict rests on the KB being consistent, and the only evidence for
+    /// that is a consistency-wedge `Sat` that no main-tableau run verified (the
+    /// wedge is not proven complete; it missed clashes in #290 and #376). Not a
+    /// give-up, so it is separate from `incomplete`; broader than
+    /// `wedge_clauses_refused`, which names one way the wedge can miss. Set in
+    /// two cases:
+    /// - [`is_consistent_with_stats`] (#392): the verdict `consistent` IS that
+    ///   wedge `Sat`. Never set on `inconsistent`, which is a witnessed clash.
+    /// - The single queries (#401): the verdict was reached with the `ABox` seed
+    ///   dropped ([`query_tbox_only_enabled`]), which that consistency licensed.
+    ///   If the `Sat` were ever wrong, the effect is a miss in the sound direction
+    ///   ("satisfiable" / "not subsumed"), never a false positive.
     pub relies_on_trusted_consistency: bool,
 }
 
@@ -7386,7 +7392,8 @@ fn is_class_satisfiable_internal_full(
 /// A give-up (node cap, deadline, verification give-up) is returned in its
 /// sound direction and is indistinguishable here from a definite answer. Use
 /// the `_with_stats` form and check [`QueryStats::incomplete`] when that
-/// matters (#363 A2).
+/// matters (#363 A2), and [`QueryStats::relies_on_trusted_consistency`] for a
+/// `true` that rests on the wedge's unverified `Sat` (#392).
 ///
 /// # Errors
 ///
@@ -7410,6 +7417,11 @@ pub fn is_consistent_internal(internal: InternalOntology) -> Result<bool, Reason
 /// `answered_by_saturation` is `true` when a saturation pre-check decided the answer:
 /// the `ABox` saturation, or (#310) the EL closure proving `⊤` or an individual's
 /// stand-in unsatisfiable. Otherwise the wedge or the tableau answered.
+///
+/// `incomplete` marks a give-up reported as `true` (#182, #363 A2).
+/// `relies_on_trusted_consistency` marks a `true` whose only evidence is the
+/// consistency wedge's `Sat`, which no main-tableau run verified (#392): a
+/// trust decision, not a give-up.
 ///
 /// # Errors
 ///
@@ -7669,8 +7681,8 @@ fn is_consistent_internal_full(
         }
         Some(owl_dl_tableau::hyper::HyperResult::Sat) => {
             // Trusted consistent (like classify's trust_sat). The wedge
-            // is Horn-incomplete so it may MISS a clash — sound (a
-            // missed clash is the same trust level as classify today).
+            // is Horn-incomplete so it may MISS a clash — sound, and
+            // reported (#392): nothing verified this `Sat`.
             if trace {
                 eprintln!("consistency: wedge Sat — consistent (trusted)");
             }
@@ -7681,7 +7693,7 @@ fn is_consistent_internal_full(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
-                    relies_on_trusted_consistency: false,
+                    relies_on_trusted_consistency: true,
                 },
             ));
         }

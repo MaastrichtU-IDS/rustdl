@@ -1,0 +1,9 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/o>
+Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:C))
+Declaration(Class(:D)) Declaration(ObjectProperty(:r))
+Declaration(NamedIndividual(:a))
+SubClassOf(:C ObjectAllValuesFrom(:r :D))
+ClassAssertion(:X :a)
+ClassAssertion(:Y :a)
+)

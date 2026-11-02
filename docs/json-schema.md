@@ -105,7 +105,8 @@ another:
   subsumption was left undecided (#388), so a `direct_types` entry may be a strict
   superclass of another; `types` is unaffected. Off the saturation fast path such
   pairs are checked with the main tableau, so it is set only when a check was cut
-  (or `RUSTDL_REALIZE_VERIFY_DIRECT=0`). It does not cover a type dropped through
+  (or `RUSTDL_REALIZE_VERIFY_DIRECT=0`). The saturation-only realize runs no check,
+  so there any undecided pair sets it. It does not cover a type dropped through
   `incomplete` or `witness_prune_active`, which can also leave a superclass listed.
 
 `dropped` maps each axiom kind dropped at conversion to its count (empty when

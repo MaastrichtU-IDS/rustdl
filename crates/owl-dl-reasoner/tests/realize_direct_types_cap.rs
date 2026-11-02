@@ -14,7 +14,9 @@ fn a_cut_check_keeps_both_and_reports_it() {
     // SAFETY: the only test in this process; set before any reasoning reads it.
     unsafe { std::env::set_var("RUSTDL_MAX_NODES", "1") };
     // `X ⊑ ∃r.D` makes the `X ⊓ ¬Y` check generate a successor, which trips a
-    // node cap of 1. The asserted types need no probe, so nothing else is cut.
+    // node cap of 1. The asserted types need no probe, and the instance probes for
+    // C and D are skipped by the pseudo-model prune (`RUSTDL_PSEUDO_MODEL`, default
+    // ON), so nothing else is cut. With the prune off those probes trip the cap too.
     let src = "Prefix(:=<http://ex.org/>)\n\
          Ontology(<http://ex.org/o>\n\
          Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:C))\n\

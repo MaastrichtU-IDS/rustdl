@@ -778,6 +778,10 @@ pub struct Realization {
     /// checked with the main tableau under the per-pair budget, and a proven strict
     /// superclass is dropped (`RUSTDL_REALIZE_VERIFY_DIRECT`, default ON). So the
     /// field is set only when such a check is cut, or when the check is off.
+    /// `realize_saturation_only` runs no check, so there any undecided pair sets it.
+    /// A drop relies on the main tableau's `Unsat` for `x ⊓ ¬y`, the same per-pair
+    /// verdict `subclass` returns (gated by `per_pair_fp_gate`, not by the classify
+    /// closure net).
     ///
     /// **Why this field exists.** Most-specific types are the entailed types minus
     /// every class with a strict subclass among them, read off a classification.
@@ -1684,6 +1688,33 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 
     fn leaves(cs: &[&str]) -> Vec<String> {
         cs.iter().map(|c| iri(c)).collect()
+    }
+
+    /// The verdict's direction through the real check: with a told `X ⊑ Y`, the
+    /// pair `(X, Y)` is proven and `(Y, X)` refuted. Swapped, the drop rule would
+    /// remove `X`, the more specific type.
+    #[test]
+    fn a_told_subclass_is_proven_one_way_and_refuted_the_other() {
+        let internal = convert_ontology(&parse(&format!(
+            "{HEADER}Ontology(<http://rustdl.test/t>\n\
+             Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:C))\n\
+             Declaration(Class(:D)) Declaration(ObjectProperty(:r))\n\
+             SubClassOf(:C ObjectAllValuesFrom(:r :D))\n\
+             SubClassOf(:X :Y)\n)\n"
+        )))
+        .expect("convert");
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepare");
+        let (x, y) = (iri("X"), iri("Y"));
+        for deadline in [Some(750), None] {
+            assert_eq!(
+                subsumption_verdict(&internal, &prepared, &x, &y, deadline).expect("x ⊑ y"),
+                PairVerdict::Proven
+            );
+            assert_eq!(
+                subsumption_verdict(&internal, &prepared, &y, &x, deadline).expect("y ⊑ x"),
+                PairVerdict::Refuted
+            );
+        }
     }
 
     #[test]

@@ -373,7 +373,9 @@ class DirectTypesUnverifiedWarning(UserWarning):
     type. Deliberately NOT an `IncompleteQueryWarning`, which means a type may
     be MISSING; this means one may be EXTRA. It is set when the check was cut by
     the per-pair budget or node cap, so more time
-    (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`) can clear it."""
+    (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`) can clear it; when the check is off
+    (`RUSTDL_REALIZE_VERIFY_DIRECT=0`); and by `realize_saturation_only`, which
+    runs no check."""
 
 
 def realize(path):

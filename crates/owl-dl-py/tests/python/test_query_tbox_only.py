@@ -58,7 +58,8 @@ def test_each_query_warns_when_the_abox_is_skipped(tmp_path, name, args, expecte
     result, cats = _call(p, name, args)
     assert result is expected
     assert rustdl.TrustedConsistencyWarning in cats, cats
-    assert rustdl.IncompleteQueryWarning not in cats or name.startswith("class_expression")
+    # Off pure EL, nothing gave up: no give-up warning on any surface (package 2).
+    assert rustdl.IncompleteQueryWarning not in cats, cats
 
 
 @pytest.mark.parametrize("name,args,expected", CALLS)

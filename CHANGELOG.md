@@ -33,6 +33,32 @@ All notable changes to rustdl are documented here. Format is based on
   surface other than `classify`: how a probe can give up, and how the give-up reaches Rust, CLI
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
+### Changed
+- **`sat-expr`, `subclass-expr` and `instances-expr`: `incomplete` now means only "a probe gave
+  up" (package 2 prerequisite, #363).** It used to be set whenever the ontology was not pure EL,
+  so it could not tell an answer off the EL fragment from a cut probe, against the rule the other
+  query surfaces follow (#395, #220/#221). **Off-EL answers no longer set `incomplete`.** The
+  other half moves to a new field, `completeness_guaranteed` (the name and meaning
+  `classify --json` already uses): `true` only on the pure-EL fast path (for `instances-expr`,
+  the realize saturation fast path) with nothing cut.
+  - Rust: `CeVerdict::incomplete()` / `CeInstances::incomplete()` narrow to a give-up; new
+    `completeness_guaranteed()` on both.
+  - CLI text: on a give-up, `sat-expr` and `subclass-expr` print `unknown` and exit 3, as `sat`
+    and `subclass` do; `instances-expr` prints the provable members with a stderr warning and
+    exits 0, as `instances` does. The old "sound under-approximation (incomplete)" warning on
+    off-EL answers is gone.
+  - CLI `--json`: `completeness_guaranteed` on all three; `sat-expr --json` and
+    `subclass-expr --json` exit 3 on a give-up, as `consistent --json` and `prove --json` do.
+  - Python: `class_expression_satisfiable`, `class_expression_entailed_subclass` and
+    `class_expression_instances` emit `IncompleteQueryWarning` only on a give-up, as
+    `is_class_satisfiable` does.
+  - `instances-expr` no longer runs a companion `sat` probe to compute its flag.
+- **`sat-expr`, `subclass-expr`, `instances-expr` and `instances` run under the single-query node
+  cap** (`RUSTDL_QUERY_MAX_NODES`, default 500000), in the CLI and in Python (`instances_of` and
+  the three `class_expression_*` functions), like `sat`, `subclass` and `instance`. They used the
+  classify-wide 50000, so a named query and its expression or list form could disagree on the
+  cap. This only adds answers; a query that hits the larger cap can take longer.
+
 ### Fixed
 - **`ABox` class assertions reach the tableau in NNF (#403).** The main tableau's `ABox` seed
   took each `ClassAssertion` class as written. A class assertion of a negated compound, such as

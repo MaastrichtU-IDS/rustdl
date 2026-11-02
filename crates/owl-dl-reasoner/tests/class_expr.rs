@@ -133,3 +133,54 @@ fn ce_second_probe_iri_collision_errors() {
             .is_err()
     );
 }
+
+/// Package 2 prerequisite: `incomplete()` is a give-up only (#395). Off the EL
+/// fragment with nothing cut it is `false`, and `completeness_guaranteed()` is
+/// what says the answer is not proven complete; on pure EL both read clean.
+#[test]
+fn ce_incomplete_is_a_give_up_only() {
+    let b = Build::<RcStr>::new();
+    let off_el = onto(
+        r"Prefix(:=<http://ex/#>)
+  Ontology(<http://ex/>
+    Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))
+    Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+    Declaration(NamedIndividual(:a))
+    SubClassOf(:C ObjectSomeValuesFrom(:r :C))
+    SubClassOf(:C ObjectAllValuesFrom(:s :E))
+    ClassAssertion(:C :a))",
+    );
+    let c = cls(&b, "http://ex/#C");
+    let d = cls(&b, "http://ex/#D");
+    let v = class_expression_satisfiable(&off_el, &c).unwrap();
+    assert!(v.holds() && !v.incomplete() && !v.completeness_guaranteed());
+    let v = class_expression_entailed_subclass(&off_el, &c, &d).unwrap();
+    assert!(!v.holds() && !v.incomplete() && !v.completeness_guaranteed());
+    let r = class_expression_instances(&off_el, &c).unwrap();
+    assert_eq!(r.individuals(), ["http://ex/#a"]);
+    assert!(!r.incomplete() && !r.completeness_guaranteed());
+
+    // Pure EL needs an ABox-free ontology for the class queries (`is_pure_el`
+    // counts assertions); the instance query's complete fast path is the
+    // realize saturation fragment, which an atomic assertion stays in.
+    let el = onto(
+        r"Prefix(:=<http://ex/#>)
+  Ontology(<http://ex/>
+    Declaration(Class(:C)) Declaration(Class(:D)) Declaration(ObjectProperty(:r))
+    SubClassOf(:C ObjectSomeValuesFrom(:r :C)))",
+    );
+    let v = class_expression_satisfiable(&el, &c).unwrap();
+    assert!(v.holds() && !v.incomplete() && v.completeness_guaranteed());
+    let v = class_expression_entailed_subclass(&el, &c, &d).unwrap();
+    assert!(!v.holds() && !v.incomplete() && v.completeness_guaranteed());
+    let el_abox = onto(
+        r"Prefix(:=<http://ex/#>)
+  Ontology(<http://ex/>
+    Declaration(Class(:C)) Declaration(ObjectProperty(:r)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C ObjectSomeValuesFrom(:r :C))
+    ClassAssertion(:C :a))",
+    );
+    let r = class_expression_instances(&el_abox, &c).unwrap();
+    assert_eq!(r.individuals(), ["http://ex/#a"]);
+    assert!(!r.incomplete() && r.completeness_guaranteed());
+}

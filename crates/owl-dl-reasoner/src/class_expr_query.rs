@@ -24,6 +24,7 @@ const PROBE_IRI_2: &str = "urn:rustdl-ce-probe:q2";
 pub struct CeVerdict {
     holds: bool,
     incomplete: bool,
+    completeness_guaranteed: bool,
     relies_on_trusted_consistency: bool,
 }
 
@@ -34,11 +35,23 @@ impl CeVerdict {
         self.holds
     }
 
-    /// Whether the underlying probe query took a path that is not
-    /// guaranteed complete (i.e. answered off the pure-EL fast path).
+    /// The probe gave up (node cap) and [`Self::holds`] is the sound direction of
+    /// no verdict: "satisfiable" / "not entailed" (#363 A2). Only a give-up: an
+    /// answer off the pure-EL fast path is not `incomplete`; see
+    /// [`Self::completeness_guaranteed`]. (Before package 2's prerequisite this
+    /// was also set whenever the ontology was not pure EL.)
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// The verdict is guaranteed complete: answered on the pure-EL fast path,
+    /// and nothing gave up. `false` does not mean the verdict is wrong, only
+    /// that a "satisfiable" / "not entailed" is not proven complete (the same
+    /// meaning as `classify --json`'s `completeness_guaranteed`).
+    #[must_use]
+    pub fn completeness_guaranteed(&self) -> bool {
+        self.completeness_guaranteed
     }
 
     /// #401: the verdict was reached with the `ABox` seed dropped, on the strength
@@ -55,6 +68,7 @@ impl CeVerdict {
 pub struct CeInstances {
     individuals: Vec<String>,
     incomplete: bool,
+    completeness_guaranteed: bool,
 }
 
 impl CeInstances {
@@ -64,18 +78,29 @@ impl CeInstances {
         &self.individuals
     }
 
-    /// Whether the underlying probe query took a path that is not
-    /// guaranteed complete.
+    /// At least one instance probe was cut (deadline, node cap or depth
+    /// limit), so members may be missing; the members returned are sound
+    /// (#363 A2). Only a give-up; see [`Self::completeness_guaranteed`].
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
     }
+
+    /// The member list is guaranteed complete: the instance query ran on the
+    /// realize saturation fast path (complete on its fragment), so nothing could
+    /// be cut. Off that fragment the tableau path's pseudo-model prune is not
+    /// proven complete, so this is `false` even when no probe was cut.
+    #[must_use]
+    pub fn completeness_guaranteed(&self) -> bool {
+        self.completeness_guaranteed
+    }
 }
 
-fn incomplete_of(stats: QueryStats) -> bool {
-    // Off pure-EL the probe is not guaranteed complete; a give-up (node cap)
-    // is reported even if that ever stops being true (#363 A2).
-    !stats.pure_el_mode || stats.incomplete
+/// `(incomplete, completeness_guaranteed)` of a satisfiability/subsumption
+/// probe: `incomplete` is a give-up only (#395), and only the pure-EL fast
+/// path guarantees completeness.
+fn verdict_flags(stats: QueryStats) -> (bool, bool) {
+    (stats.incomplete, stats.pure_el_mode && !stats.incomplete)
 }
 
 /// Add every class IRI referenced (nested) inside `ce` to `out`. Mirrors
@@ -189,9 +214,11 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     let build: Build<A> = Build::new();
     probed.insert(probe_axiom(&build, PROBE_IRI, ce));
     let (holds, stats) = is_class_satisfiable_with_stats(&probed, PROBE_IRI)?;
+    let (incomplete, completeness_guaranteed) = verdict_flags(stats);
     Ok(CeVerdict {
         holds,
-        incomplete: incomplete_of(stats),
+        incomplete,
+        completeness_guaranteed,
         relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
     })
 }
@@ -217,9 +244,11 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     probed.insert(probe_axiom(&build, PROBE_IRI, sub_ce));
     probed.insert(probe_axiom(&build, PROBE_IRI_2, sup_ce));
     let (holds, stats) = is_subclass_of_with_stats(&probed, PROBE_IRI, PROBE_IRI_2)?;
+    let (incomplete, completeness_guaranteed) = verdict_flags(stats);
     Ok(CeVerdict {
         holds,
-        incomplete: incomplete_of(stats),
+        incomplete,
+        completeness_guaranteed,
         relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
     })
 }
@@ -238,14 +267,20 @@ pub fn class_expression_instances<A: ForIRI>(
     let mut probed = onto.clone();
     let build: Build<A> = Build::new();
     probed.insert(probe_axiom(&build, PROBE_IRI, ce));
-    // Completeness signal via a companion sat query on the probe (cheap vs realize).
-    let (_sat, stats) = is_class_satisfiable_with_stats(&probed, PROBE_IRI)?;
+    // Read the fragment on the probed ontology first: on it the instance query
+    // takes the complete saturation fast path. (A companion `sat` probe used to
+    // supply this signal; it answered a different question, so its give-up was
+    // not a give-up of this query.)
+    let fast_path = crate::realize::realize_saturation_eligible(
+        &owl_dl_core::convert::convert_ontology(&probed)?,
+    );
     let (mut individuals, cut) = instances_of_reporting(&probed, PROBE_IRI)?;
     individuals.retain(|i| !i.starts_with("urn:rustdl-ce-probe"));
     individuals.sort();
     individuals.dedup();
     Ok(CeInstances {
         individuals,
-        incomplete: incomplete_of(stats) || cut,
+        incomplete: cut,
+        completeness_guaranteed: fast_path && !cut,
     })
 }

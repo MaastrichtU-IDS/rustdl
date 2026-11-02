@@ -299,22 +299,23 @@ def data_property_values(path: str) -> list[tuple[str, str, str, str, str]]:
 def class_expression_satisfiable(path: str, ce: str) -> bool:
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (resolved against the ontology's own prefix
-    map). Emits `IncompleteQueryWarning` if the verdict is a sound
-    under-approximation."""
+    map). If the probe gave up (node cap), returns `True` and emits
+    `IncompleteQueryWarning`; an answer off pure EL does not warn."""
     ...
 
 def class_expression_entailed_subclass(path: str, sub_ce: str, sup_ce: str) -> bool:
     """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
     (Manchester-syntax class expressions, resolved against the ontology's own
-    prefix map). Emits `IncompleteQueryWarning` if the verdict is a sound
-    under-approximation."""
+    prefix map). If the probe gave up (node cap), returns `False` and emits
+    `IncompleteQueryWarning`; an answer off pure EL does not warn."""
     ...
 
 def class_expression_instances(path: str, ce: str) -> list[str]:
     """Named individuals provably in the Manchester-syntax class expression
     `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
-    prefix map). Emits `IncompleteQueryWarning` if the result is a sound
-    under-approximation."""
+    prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
+    (members may be missing; those returned are sound); an answer off pure EL
+    does not warn."""
     ...
 
 # ── conversion diagnostics ──────────────────────────────────────────────────

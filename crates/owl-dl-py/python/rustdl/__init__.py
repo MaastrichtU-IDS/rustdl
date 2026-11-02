@@ -491,8 +491,9 @@ def object_property_values(path):
 def class_expression_satisfiable(path, ce):
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (`ce` is resolved against the ontology's
-    own prefix map, e.g. `:A`). Emits `IncompleteQueryWarning` when the
-    verdict is a sound under-approximation (see `IncompleteQueryWarning`)."""
+    own prefix map, e.g. `:A`). If the probe gave up (node cap), returns `True`
+    and emits `IncompleteQueryWarning`, as `is_class_satisfiable` does; an
+    answer off the pure-EL fragment no longer warns."""
     holds, incomplete, trusted = _class_expression_satisfiable_native(path, ce)
     _warn_if_query_incomplete("class_expression_satisfiable", incomplete)
     _warn_if_trusted_consistency("class_expression_satisfiable", trusted)
@@ -502,8 +503,9 @@ def class_expression_satisfiable(path, ce):
 def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
     (both Manchester-syntax class expressions, resolved against the
-    ontology's own prefix map). Emits `IncompleteQueryWarning` when the
-    verdict is a sound under-approximation (see `IncompleteQueryWarning`)."""
+    ontology's own prefix map). If the probe gave up (node cap), returns `False`
+    and emits `IncompleteQueryWarning`, as `is_subclass_of` does; an answer off
+    the pure-EL fragment no longer warns."""
     holds, incomplete, trusted = _class_expression_entailed_subclass_native(
         path, sub_ce, sup_ce
     )
@@ -515,8 +517,9 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
 def class_expression_instances(path, ce):
     """Named individuals provably in the Manchester-syntax class expression
     `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
-    prefix map). Emits `IncompleteQueryWarning` when the result is a sound
-    under-approximation (see `IncompleteQueryWarning`)."""
+    prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
+    (members may be missing; those returned are sound), as `instances_of`
+    does; an answer off the pure-EL fragment no longer warns."""
     individuals, incomplete = _class_expression_instances_native(path, ce)
     _warn_if_query_incomplete("class_expression_instances", incomplete)
     return individuals

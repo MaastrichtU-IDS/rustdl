@@ -990,7 +990,7 @@ fn class_body_realize_safe(class: ConceptId, pool: &ConceptPool) -> bool {
 /// Unlike `classify`, realize CANNOT admit arbitrary `ABox` shapes: the `ABox` is
 /// load-bearing for individual types, whereas it is irrelevant to class
 /// subsumption.
-fn realize_saturation_eligible(internal: &InternalOntology) -> bool {
+pub(crate) fn realize_saturation_eligible(internal: &InternalOntology) -> bool {
     // RUSTDL_REALIZE_SATURATION=0 forces the tableau path (A/B isolation).
     if std::env::var_os("RUSTDL_REALIZE_SATURATION").is_some_and(|v| v == "0") {
         return false;

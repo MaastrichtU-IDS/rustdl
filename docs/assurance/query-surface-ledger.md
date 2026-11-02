@@ -30,8 +30,8 @@ No surface in the #363 audit turned a give-up into a definite **positive**.
 |---|---|---|
 | Rust `*_with_stats` | `QueryStats::incomplete` | the verdict is a give-up in its sound direction |
 | Rust `*_reporting`, `Realization` | `incomplete` (second tuple element, `Realization::incomplete()`) | at least one probe was cut |
-| CLI single answer (`consistent`, `sat`, `subclass`, `instance`, `explain`, `prove`) | prints `unknown`, exits 3, explains on stderr | no verdict |
-| CLI list answer (`instances`, `realize`) | stderr warning; members printed are sound | members may be missing |
+| CLI single answer (`consistent`, `sat`, `subclass`, `instance`, `explain`, `prove`, `sat-expr`, `subclass-expr`) | prints `unknown`, exits 3, explains on stderr | no verdict |
+| CLI list answer (`instances`, `realize`, `instances-expr`) | stderr warning; members printed are sound | members may be missing |
 | CLI `--json` | `incomplete` field | as the Rust field |
 | Python | `IncompleteQueryWarning`; the return value keeps its sound direction | as the Rust field |
 
@@ -55,7 +55,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `instance` | per-probe deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, default 750 ms), node cap, depth bail-out | `is_instance_of_reporting` | `unknown`, exit 3 | no `--json` | `is_instance_of` warns | `query_give_up.rs`; `test_query_give_up.py` |
 | `instances` | same | `instances_of_reporting` | stderr warning | no `--json` | `instances_of` warns | same |
 | `realize` | same, plus the node cap with the per-probe deadline disabled (`=0`) | `Realization::incomplete()` | stderr warning | `incomplete` | `realize` warns | same |
-| `sat-expr`, `subclass-expr`, `instances-expr` | as `sat` / `subclass` / `instances`; also `incomplete` whenever the ontology is not pure EL | `CeVerdict` / `CeInstances` `incomplete` | (already reported) | `incomplete` | warns | `class_expr_query` tests |
+| `sat-expr`, `subclass-expr`, `instances-expr` | as `sat` / `subclass` / `instances` (same single-query node cap) | `CeVerdict` / `CeInstances` `incomplete`; separately `completeness_guaranteed` (pure-EL fast path, or for `instances-expr` the realize saturation fast path, and nothing cut) | `sat-expr`/`subclass-expr`: `unknown`, exit 3; `instances-expr`: stderr warning | `incomplete` (`sat-expr`/`subclass-expr` exit 3), `completeness_guaranteed` | warns | `expr_give_up_cli.rs`; `test_expr_give_up.py` |
 | `disjoint` (classes) | per-pair deadline, node cap | `DisjointClasses::incomplete` | yes | `incomplete` | warns | `disjoint_nodecap.rs` |
 | `individuals` | per-pair deadline, node cap | `incomplete` | yes | `incomplete` | warns | individuals tests |
 | `property-values` (object) | per-pair deadline, node cap; fragment whitelist | `incomplete` | yes | `incomplete` | warns | property-values tests |
@@ -120,14 +120,17 @@ its own process, because the cap is cached once per process.
 
 ## Node caps
 
-The CLI's `sat`, `subclass`, `explain`, `instance` and `prove` (around the whole
-call, so its justification fallback too, #402), and the Python
-`is_class_satisfiable`, `is_subclass_of` and `is_instance_of`, run their one query
-under `owl_dl_reasoner::single_query_node_cap()`, which raises the cap to
-`RUSTDL_QUERY_MAX_NODES` (default 500000; `0` disables). Everything else uses
-`RUSTDL_MAX_NODES` (default 50000): library calls, classify, consistency, realize,
-`justify`/`repair`/`diagnose` (many probes per query) and the class-expression
-queries. An explicit `RUSTDL_MAX_NODES` governs both. Both defaults are pinned by
+The CLI's `sat`, `subclass`, `explain`, `instance`, `instances`, `sat-expr`,
+`subclass-expr`, `instances-expr` and `prove` (around the whole call, so its
+justification fallback too, #402), and the Python `is_class_satisfiable`,
+`is_subclass_of`, `is_instance_of`, `instances_of` and the three
+`class_expression_*` functions, run their one query under
+`owl_dl_reasoner::single_query_node_cap()`, which raises the cap to
+`RUSTDL_QUERY_MAX_NODES` (default 500000; `0` disables). The list and expression
+forms took it in package 2's prerequisite, so a named query and its expression
+or list form cannot disagree on the cap. Everything else uses `RUSTDL_MAX_NODES`
+(default 50000): library calls, classify, consistency, realize and
+`justify`/`repair`/`diagnose` (many probes per query). An explicit `RUSTDL_MAX_NODES` governs both. Both defaults are pinned by
 `owl-dl-tableau/tests/node_cap_defaults.rs`, and the scoping by
 `owl-dl-reasoner/tests/single_query_node_cap_scope.rs`. The
 single-query default was raised from 50000 when the give-up became visible: at

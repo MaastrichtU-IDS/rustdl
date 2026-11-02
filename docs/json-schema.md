@@ -310,3 +310,27 @@ default 500000), like `subclass` and `explain`.
 the `ABox` (no nominals, so the `ABox` cannot change it on a consistent KB) and
 the consistency verdict rests on a trusted wedge `Sat` rather than a
 main-tableau model. It is not a give-up and does not set `incomplete`.
+
+## `sat-expr --json`, `subclass-expr --json`, `instances-expr --json`
+
+```json
+{ "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
+  "relies_on_trusted_consistency": bool, "satisfiable": bool }      // sat-expr
+{ "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
+  "relies_on_trusted_consistency": bool, "entailed": bool }         // subclass-expr
+{ "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
+  "instances": [iri] }                                               // instances-expr
+```
+
+- `incomplete`: a probe gave up (node cap; for `instances-expr` also the per-probe deadline or
+  depth limit), as in the other query JSONs. `sat-expr`/`subclass-expr` then report the sound
+  direction (`satisfiable: true` / `entailed: false`) and **exit 3**; `instances-expr` lists the
+  members it proved (sound, possibly short) and exits 0. Until package 2's prerequisite this was
+  also `true` whenever the ontology was not pure EL; that is now `completeness_guaranteed`.
+- `completeness_guaranteed`: the answer is guaranteed complete: answered on the pure-EL fast path
+  (`instances-expr`: the realize saturation fast path) and nothing gave up. `false` means a
+  "satisfiable" / "not entailed" / member list is not proven complete, not that it is wrong (the
+  meaning `classify --json` uses).
+- `relies_on_trusted_consistency` (#401): see the `prove --json` note above.
+- All three run under the single-query node cap (`RUSTDL_QUERY_MAX_NODES`, default 500000). On an
+  inconsistent KB all three error (`Inconsistent`, exit 1) instead of printing JSON.

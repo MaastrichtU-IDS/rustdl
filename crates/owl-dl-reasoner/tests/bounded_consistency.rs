@@ -90,12 +90,17 @@ fn a_consistent_ontology_is_reported_consistent() {
 /// `true` when its own internal budget elapses (see
 /// `an_expired_budget_yields_no_verdict`).
 ///
-/// One real asymmetry does show up and is pinned below: the substitute needs
-/// `owl:Thing` to be DECLARED, and errors out otherwise.
+/// One real asymmetry used to show up: the substitute needed `owl:Thing` to be
+/// DECLARED, and errored otherwise. #427 removed it, and with it the substitute
+/// as a separate path: `owl:Thing` now resolves to `⊤`, and satisfiability of `⊤`
+/// IS `is_consistent_internal_bounded`. So the agreement below holds by
+/// construction; what this test still pins is that a DECLARED `owl:Thing` resolves
+/// to `⊤` (the declaration interns no class) and that the verdict is the
+/// inconsistency both shapes have.
 #[test]
 fn the_substitute_agrees_on_every_shape_tried() {
     let top = "http://www.w3.org/2002/07/owl#Thing";
-    // `owl:Thing` must be declared or the substitute cannot even be called.
+    // Declared: before #427 the substitute could not be called without this.
     let declared_top = "Declaration(Class(<http://www.w3.org/2002/07/owl#Thing>))";
     for body in [
         format!("{declared_top}\n{ABOX_ONLY_CLASH}"),
@@ -113,30 +118,34 @@ fn the_substitute_agrees_on_every_shape_tried() {
         let o = onto(&body);
         let cons = owl_dl_reasoner::is_consistent_with_timeout(&o, GENEROUS).unwrap();
         let sat = owl_dl_reasoner::is_class_satisfiable_with_timeout(&o, top, GENEROUS).unwrap();
+        assert_eq!(cons, Some(false), "both shapes are inconsistent:\n{body}");
         assert_eq!(
             cons, sat,
-            "measured agreement is the CURRENT state; if this ever fails, a genuine \
-             divergent case has been found and #74's structural argument is now \
-             demonstrated — record it rather than just fixing the test:\n{body}"
+            "sat(owl:Thing) is the bounded consistency check since #427:\n{body}"
         );
     }
 }
 
-/// The one asymmetry that IS demonstrable: the substitute requires `owl:Thing` to
-/// be declared in the ontology, and errors otherwise. `is_consistent_with_timeout`
-/// has no such precondition.
+/// The asymmetry that used to be demonstrable: the substitute required
+/// `owl:Thing` to be declared, and errored otherwise (`class IRI not in
+/// ontology`). Since #427 `owl:Thing` is the built-in `⊤` whether declared or not.
 #[test]
-fn the_substitute_needs_owl_thing_declared() {
+fn the_substitute_no_longer_needs_owl_thing_declared() {
     let o = onto(ABOX_ONLY_CLASH);
     let top = "http://www.w3.org/2002/07/owl#Thing";
-    assert!(
-        owl_dl_reasoner::is_class_satisfiable_with_timeout(&o, top, GENEROUS).is_err(),
-        "without a Declaration(Class(owl:Thing)) the substitute cannot be called at all"
+    assert_eq!(
+        owl_dl_reasoner::is_class_satisfiable_with_timeout(&o, top, GENEROUS).unwrap(),
+        Some(false),
+        "undeclared owl:Thing is ⊤, unsatisfiable on this inconsistent ABox"
     );
     assert_eq!(
         owl_dl_reasoner::is_consistent_with_timeout(&o, GENEROUS).unwrap(),
         Some(false),
-        "the real check has no such precondition"
+    );
+    let nothing = "http://www.w3.org/2002/07/owl#Nothing";
+    assert_eq!(
+        owl_dl_reasoner::is_class_satisfiable_with_timeout(&o, nothing, GENEROUS).unwrap(),
+        Some(false),
     );
 }
 

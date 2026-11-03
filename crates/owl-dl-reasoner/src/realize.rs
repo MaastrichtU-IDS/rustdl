@@ -249,6 +249,37 @@ pub fn is_instance_of_internal(
         .map(|(is_inst, _)| is_inst)
 }
 
+/// #427: the instance queries' class argument. A named class is its id. For a
+/// built-in (`owl:Thing` / `owl:Nothing`) the caller re-runs itself on a copy of
+/// the ontology extended with a fresh `Q ≡ ⊤` / `Q ≡ ⊥` ([`crate::add_builtin_probe`],
+/// a conservative extension), querying `Q` as an ordinary named class.
+///
+/// Going through the ordinary path, not a structural answer, is deliberate. `a : ⊤`
+/// holds in every ontology, so answering it is never vacuous; but on an
+/// inconsistent ontology EVERY instance query errors [`ReasonError::Inconsistent`]
+/// (#313, and #419 for a tableau-only inconsistency), and callers rely on that
+/// contract to learn that the ontology is broken. `⊤` must not be the one
+/// exception, so it pays for the same inconsistency guards as any other class.
+/// `a : ⊥` holds only vacuously, so it needs those guards anyway.
+enum InstanceClass {
+    Named(owl_dl_core::ClassId),
+    Probed(Box<InternalOntology>, &'static str),
+}
+
+fn resolve_instance_class(
+    internal: &InternalOntology,
+    class_iri: &str,
+) -> Result<InstanceClass, ReasonError> {
+    match crate::resolve_query_class(&internal.vocabulary, class_iri)? {
+        crate::QueryClass::Named(id) => Ok(InstanceClass::Named(id)),
+        builtin => {
+            let mut probed = internal.clone();
+            let probe = crate::add_builtin_probe(&mut probed, builtin == crate::QueryClass::Top)?;
+            Ok(InstanceClass::Probed(Box::new(probed), probe))
+        }
+    }
+}
+
 /// Truncation-reporting form of [`is_instance_of`] (#73). Returns
 /// `(is_instance, flags)`; see [`InstanceFlags`].
 ///
@@ -274,10 +305,12 @@ pub fn is_instance_of_reporting_internal(
     class_iri: &str,
     individual_iri: &str,
 ) -> Result<(bool, InstanceFlags), ReasonError> {
-    let class_id = internal
-        .vocabulary
-        .class_id(class_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let class_id = match resolve_instance_class(internal, class_iri)? {
+        InstanceClass::Named(id) => id,
+        InstanceClass::Probed(probed, probe) => {
+            return is_instance_of_reporting_internal(&probed, probe, individual_iri);
+        }
+    };
     let individual_id = internal
         .vocabulary
         .individual_id(individual_iri)
@@ -359,10 +392,12 @@ pub fn is_instance_of_saturation_only_internal(
     class_iri: &str,
     individual_iri: &str,
 ) -> Result<bool, ReasonError> {
-    let class_id = internal
-        .vocabulary
-        .class_id(class_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let class_id = match resolve_instance_class(internal, class_iri)? {
+        InstanceClass::Named(id) => id,
+        InstanceClass::Probed(probed, probe) => {
+            return is_instance_of_saturation_only_internal(&probed, probe, individual_iri);
+        }
+    };
     let individual_id = internal
         .vocabulary
         .individual_id(individual_iri)
@@ -631,10 +666,12 @@ pub fn instances_of_reporting_internal(
     internal: &InternalOntology,
     class_iri: &str,
 ) -> Result<(Vec<String>, InstanceFlags), ReasonError> {
-    let class_id = internal
-        .vocabulary
-        .class_id(class_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let class_id = match resolve_instance_class(internal, class_iri)? {
+        InstanceClass::Named(id) => id,
+        InstanceClass::Probed(probed, probe) => {
+            return instances_of_reporting_internal(&probed, probe);
+        }
+    };
     // Fast path: on the saturator-complete fragment, `a ∈ C` iff `C` subsumes
     // `a`'s nominal class (complete + terminating; no tableau).
     if realize_saturation_eligible(internal) {
@@ -732,10 +769,12 @@ pub fn instances_of_saturation_only_internal(
     internal: &InternalOntology,
     class_iri: &str,
 ) -> Result<Vec<String>, ReasonError> {
-    let class_id = internal
-        .vocabulary
-        .class_id(class_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let class_id = match resolve_instance_class(internal, class_iri)? {
+        InstanceClass::Named(id) => id,
+        InstanceClass::Probed(probed, probe) => {
+            return instances_of_saturation_only_internal(&probed, probe);
+        }
+    };
     let closure = saturate(internal);
     // #313: the closure itself proves the KB inconsistent.
     if crate::query_inconsistency_guard_enabled() && crate::saturation_says_inconsistent(&closure) {

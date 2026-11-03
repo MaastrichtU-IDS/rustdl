@@ -883,6 +883,12 @@ pub(crate) struct ProveJson {
     /// OFN ontology document (present iff `has_proof` is `false` and
     /// `entailed` is `true`).
     pub(crate) justification_fallback: Option<String>,
+    /// Present iff `justification_fallback` is: `true` when that justification is
+    /// guaranteed minimal. An EMPTY fallback with `justification_minimal: true`
+    /// is a tautology (#427: `C ⊑ owl:Thing`, `owl:Nothing ⊑ C`), which holds
+    /// with no axioms at all, unlike an empty fallback with `incomplete: true`,
+    /// where the search gave up (#402).
+    pub(crate) justification_minimal: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -1140,6 +1146,7 @@ pub(crate) fn build_prove_json(
         proof_complete: None,
         proof: None,
         justification_fallback: None,
+        justification_minimal: None,
     };
     Ok(match result {
         ProveEntailmentResult::SaturatorProof(data) => {
@@ -1160,6 +1167,7 @@ pub(crate) fn build_prove_json(
         }
         ProveEntailmentResult::JustificationFallback(j) => ProveJson {
             justification_fallback: Some(axioms_to_ofn_doc(&j.axioms, pm)),
+            justification_minimal: Some(j.minimal_guaranteed),
             ..verdict(true, "entailed")
         },
         ProveEntailmentResult::NotEntailed => verdict(false, "not-entailed"),

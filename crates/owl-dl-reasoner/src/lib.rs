@@ -7668,6 +7668,100 @@ pub enum ReasonError {
     Inconsistent,
 }
 
+/// A named-class query argument, resolved (#427). `owl:Thing` / `owl:Nothing` are
+/// the built-in `⊤` / `⊥`, never vocabulary entries (a declaration of one interns
+/// nothing; see [`owl_dl_core::is_builtin_class_iri`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryClass {
+    Top,
+    Bottom,
+    Named(owl_dl_core::ClassId),
+}
+
+/// Resolve a named-class query argument. The built-in IRIs are matched BEFORE the
+/// vocabulary, so no vocabulary entry under those IRIs can ever answer for them.
+/// Callers resolve EVERY argument before any structural shortcut, so a typo still
+/// errors when its partner is a built-in (`Aa ⊑ owl:Thing` is `UnknownClass(Aa)`,
+/// never a tautological "yes"; #409).
+///
+/// # Errors
+/// [`ReasonError::UnknownClass`] for a non-built-in IRI not in the vocabulary.
+pub(crate) fn resolve_query_class(
+    vocab: &owl_dl_core::vocab::Vocabulary,
+    iri: &str,
+) -> Result<QueryClass, ReasonError> {
+    match iri {
+        owl_dl_core::OWL_THING_IRI => Ok(QueryClass::Top),
+        owl_dl_core::OWL_NOTHING_IRI => Ok(QueryClass::Bottom),
+        _ => vocab
+            .class_id(iri)
+            .map(QueryClass::Named)
+            .ok_or_else(|| ReasonError::UnknownClass(iri.to_owned())),
+    }
+}
+
+/// Fresh class standing for `⊤` in a query that needs a named class (#427).
+pub(crate) const BUILTIN_TOP_PROBE_IRI: &str = "urn:rustdl-builtin-probe:top";
+/// Fresh class standing for `⊥` in a query that needs a named class (#427).
+pub(crate) const BUILTIN_BOTTOM_PROBE_IRI: &str = "urn:rustdl-builtin-probe:bottom";
+
+/// Mint a fresh class `Q` and pin it to a built-in: `SubClassOf(⊤, Q)` makes
+/// `Q ≡ ⊤`, `SubClassOf(Q, ⊥)` makes `Q ≡ ⊥`. Either is a definitional extension
+/// over a fresh name, so it is conservative: it entails nothing new about the
+/// input's signature and preserves consistency (hence the #369 / #401 consistency
+/// verdicts). Every query path re-reads `internal` (nothing derived is cached in
+/// it), so the probe must simply be added before the query runs. Returns the
+/// probe's IRI, to be queried as an ordinary named class.
+///
+/// # Errors
+/// [`ReasonError::UnknownClass`] if the input already uses the probe IRI: it is
+/// refused, never silently merged with an input class.
+pub(crate) fn add_builtin_probe(
+    internal: &mut InternalOntology,
+    top: bool,
+) -> Result<&'static str, ReasonError> {
+    let iri = if top {
+        BUILTIN_TOP_PROBE_IRI
+    } else {
+        BUILTIN_BOTTOM_PROBE_IRI
+    };
+    if internal.vocabulary.class_id(iri).is_some() {
+        return Err(ReasonError::UnknownClass(format!(
+            "probe IRI {iri} collides with a class in the ontology"
+        )));
+    }
+    let q = internal.vocabulary.intern_class(iri);
+    let q = internal.concepts.atomic(q);
+    let axiom = if top {
+        Axiom::SubClassOf {
+            sub: internal.concepts.top(),
+            sup: q,
+        }
+    } else {
+        Axiom::SubClassOf {
+            sub: q,
+            sup: internal.concepts.bot(),
+        }
+    };
+    internal.axioms.push(axiom);
+    Ok(iri)
+}
+
+/// The answer to `sub ⊑ sup` when it holds in EVERY ontology (`C ⊑ ⊤`, `⊥ ⊑ C`),
+/// whatever the axioms. Takes resolved arguments, so typos have already errored.
+pub(crate) fn subsumption_is_tautology(sub: QueryClass, sup: QueryClass) -> bool {
+    matches!(sup, QueryClass::Top) || matches!(sub, QueryClass::Bottom)
+}
+
+/// Is the named-class subsumption `sub ⊑ sup` a tautology, true in every
+/// ontology because `sup` is `owl:Thing` or `sub` is `owl:Nothing` (#427)? The
+/// query entry points answer it without reasoning. The IRIs are not resolved here:
+/// call this after the query, which errors on an unknown IRI.
+#[must_use]
+pub fn is_builtin_tautology(sub_iri: &str, sup_iri: &str) -> bool {
+    sup_iri == owl_dl_core::OWL_THING_IRI || sub_iri == owl_dl_core::OWL_NOTHING_IRI
+}
+
 /// Decide whether `class_iri` is satisfiable in the ontology.
 ///
 /// Pipeline:
@@ -7713,11 +7807,15 @@ pub fn is_class_satisfiable_with_timeout<A: ForIRI>(
     class_iri: &str,
     deadline: std::time::Duration,
 ) -> Result<Option<bool>, ReasonError> {
+    let start = std::time::Instant::now();
     let internal = convert_ontology(ontology)?;
-    let class_id = internal
-        .vocabulary
-        .class_id(class_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let class_id = match resolve_query_class(&internal.vocabulary, class_iri)? {
+        // #427: `⊤` is satisfiable iff the ontology is consistent: this IS the
+        // bounded consistency check, conversion time charged as there.
+        QueryClass::Top => return is_consistent_internal_bounded(internal, start + deadline),
+        QueryClass::Bottom => return Ok(Some(false)),
+        QueryClass::Named(id) => id,
+    };
     let closure = owl_dl_saturation::saturate(&internal);
     if closure.is_unsatisfiable(class_id) {
         return Ok(Some(false));
@@ -7772,10 +7870,28 @@ pub(crate) fn is_class_satisfiable_keeping(
     internal: InternalOntology,
     class_iri: &str,
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
-    let class_id = internal
-        .vocabulary
-        .class_id(class_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let class_id = match resolve_query_class(&internal.vocabulary, class_iri)? {
+        // #427: `⊤` is satisfiable iff the ontology is consistent, so this is the
+        // consistency check itself, with its stats (`incomplete`: a give-up
+        // reported as "consistent"; `relies_on_trusted_consistency`: #392).
+        QueryClass::Top => {
+            let (consistent, stats) = is_consistent_internal_full(internal.clone())?;
+            return Ok((
+                consistent,
+                stats,
+                QueryOntology::Unprepared(Box::new(internal)),
+            ));
+        }
+        // `⊥` is unsatisfiable in every ontology.
+        QueryClass::Bottom => {
+            return Ok((
+                false,
+                QueryStats::default(),
+                QueryOntology::Unprepared(Box::new(internal)),
+            ));
+        }
+        QueryClass::Named(id) => id,
+    };
     // EL closure oracle: a sound `⊑ ⊥` flag means the class is
     // definitively unsatisfiable, regardless of whether the rest of
     // the ontology is in the EL fragment. And for *pure*-EL inputs
@@ -7879,9 +7995,10 @@ pub fn is_consistent_with_stats<A: ForIRI>(
 ///
 /// Two reasons, of unequal strength — stated separately because #74 conflates them.
 ///
-/// **Demonstrated:** `is_class_satisfiable_with_timeout` requires `owl:Thing` to be
-/// DECLARED in the ontology and returns `Err(UnknownClass)` otherwise, so it cannot
-/// even be called on most inputs. This function has no such precondition.
+/// **Demonstrated (until #427):** `is_class_satisfiable_with_timeout` required
+/// `owl:Thing` to be DECLARED in the ontology and returned `Err(UnknownClass)`
+/// otherwise, so it could not even be called on most inputs. Since #427
+/// `owl:Thing` resolves to `⊤`, and its bounded satisfiability IS this function.
 ///
 /// **Structural, NOT demonstrated:** #74 argues the substitute is unsafe because it
 /// short-circuits on `is_pure_el` before consulting the `ABox`, so an `ABox`-only clash
@@ -8545,20 +8662,43 @@ pub fn is_subclass_of_saturation_only<A: ForIRI>(
     sub_iri: &str,
     super_iri: &str,
 ) -> Result<bool, ReasonError> {
-    let internal = convert_ontology(ontology)?;
-    let sub_id = internal
-        .vocabulary
-        .class_id(sub_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(sub_iri.to_owned()))?;
-    let super_id = internal
-        .vocabulary
-        .class_id(super_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(super_iri.to_owned()))?;
-    if sub_id == super_id {
+    let mut internal = convert_ontology(ontology)?;
+    // #427: both arguments resolve before any shortcut (a typo still errors).
+    let sub = resolve_query_class(&internal.vocabulary, sub_iri)?;
+    let sup = resolve_query_class(&internal.vocabulary, super_iri)?;
+    if subsumption_is_tautology(sub, sup) {
+        return Ok(true);
+    }
+    let sub_id = match sub {
+        QueryClass::Named(id) => id,
+        // `⊤ ⊑ X`: a fresh `Q ≡ ⊤` stands for `⊤` (the saturator supports
+        // `⊤ ⊑ Named`), and the closure answers for `Q`.
+        QueryClass::Top => {
+            let probe = add_builtin_probe(&mut internal, true)?;
+            internal
+                .vocabulary
+                .class_id(probe)
+                .expect("the probe was just interned")
+        }
+        QueryClass::Bottom => unreachable!("a tautology, answered above"),
+    };
+    if sup == QueryClass::Named(sub_id) {
         return Ok(true);
     }
     let closure = owl_dl_saturation::saturate(&internal);
-    Ok(closure.contains(sub_id, super_id) || closure.is_unsatisfiable(sub_id))
+    match sup {
+        // `X ⊑ ⊥`: the closure's own unsatisfiability witness. For the `⊤` probe
+        // that is `⊤ ⊑ ⊥`, covering `globally_inconsistent` / `top_is_unsat`
+        // too, without the `sat_inconsistency_all_surfaces_enabled` gate, which
+        // governs the #313 `Err` contract, not a sound "yes".
+        QueryClass::Bottom => Ok(closure.is_unsatisfiable(sub_id)
+            || (matches!(sub, QueryClass::Top)
+                && (closure.globally_inconsistent() || closure.top_is_unsat()))),
+        QueryClass::Named(super_id) => {
+            Ok(closure.contains(sub_id, super_id) || closure.is_unsatisfiable(sub_id))
+        }
+        QueryClass::Top => unreachable!("a tautology, answered above"),
+    }
 }
 
 fn is_subclass_of_internal_full(
@@ -8576,14 +8716,37 @@ pub(crate) fn is_subclass_of_keeping(
     sub_iri: &str,
     super_iri: &str,
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
-    let sub_id = internal
-        .vocabulary
-        .class_id(sub_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(sub_iri.to_owned()))?;
-    let super_id = internal
-        .vocabulary
-        .class_id(super_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(super_iri.to_owned()))?;
+    // #427: both arguments resolve before any shortcut (a typo still errors).
+    let sub = resolve_query_class(&internal.vocabulary, sub_iri)?;
+    let sup = resolve_query_class(&internal.vocabulary, super_iri)?;
+    let (sub_id, super_id) = match (sub, sup) {
+        // `C ⊑ ⊤`, `⊥ ⊑ C`: true in every ontology.
+        _ if subsumption_is_tautology(sub, sup) => {
+            return Ok((
+                true,
+                QueryStats::default(),
+                QueryOntology::Unprepared(Box::new(internal)),
+            ));
+        }
+        // `C ⊑ ⊥` iff `C` is unsatisfiable; `⊤ ⊑ ⊥` iff inconsistent (the sat path
+        // answers `⊤` with the consistency check). A give-up is "satisfiable",
+        // hence "no" with `incomplete`: the sound direction.
+        (_, QueryClass::Bottom) => {
+            let (sat, stats, left) = is_class_satisfiable_keeping(internal, sub_iri)?;
+            return Ok((!sat, stats, left));
+        }
+        // `⊤ ⊑ C`: through a fresh `Q ≡ ⊤`, as an ordinary named pair.
+        (QueryClass::Top, _) => {
+            let mut internal = internal;
+            let probe = add_builtin_probe(&mut internal, true)?;
+            return is_subclass_of_keeping(internal, probe, super_iri);
+        }
+        (QueryClass::Named(sub_id), QueryClass::Named(super_id)) => (sub_id, super_id),
+        (QueryClass::Named(_) | QueryClass::Bottom, QueryClass::Top)
+        | (QueryClass::Bottom, QueryClass::Named(_)) => {
+            unreachable!("tautologies are answered above")
+        }
+    };
     let pure_el = classify::is_pure_el(&internal);
     let sat_stats = QueryStats {
         answered_by_saturation: true,
@@ -12024,7 +12187,7 @@ where
 pub use owl_dl_saturation::proof::{
     AxiomRef, DerivedFact, ElRule, Inference, ProofGap, ProofNode, ProofTrace, ProveResult,
     SyntheticDef, check_proof, check_proof_with_content, proof_gaps, prove_subsumption,
-    render_proof, render_proof_with_defs,
+    prove_unsatisfiability, render_proof, render_proof_with_defs,
 };
 pub use owl_dl_saturation::{SaturateConfig, saturate_with_config};
 
@@ -12057,21 +12220,62 @@ pub enum ProveEntailmentResult {
 
 /// Resolves prove's two class IRIs exactly as `is_subclass_of` does (sub
 /// first). An unknown IRI is an error, never "not entailed": `prove Aa Aa` for
-/// a typo'd `Aa` used to report a tautology as not holding (#409).
+/// a typo'd `Aa` used to report a tautology as not holding (#409). `owl:Thing` /
+/// `owl:Nothing` resolve to `⊤` / `⊥` (#427).
 fn prove_class_ids(
     internal: &InternalOntology,
     sub_iri: &str,
     sup_iri: &str,
-) -> Result<(owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId), ReasonError> {
-    let sub = internal
-        .vocabulary
-        .class_id(sub_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(sub_iri.to_owned()))?;
-    let sup = internal
-        .vocabulary
-        .class_id(sup_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(sup_iri.to_owned()))?;
+) -> Result<(QueryClass, QueryClass), ReasonError> {
+    let sub = resolve_query_class(&internal.vocabulary, sub_iri)?;
+    let sup = resolve_query_class(&internal.vocabulary, sup_iri)?;
     Ok((sub, sup))
+}
+
+/// #427: prove's answer for a tautology (`C ⊑ ⊤`, `⊥ ⊑ C`): it holds in every
+/// ontology, so its justification is the empty set, which is minimal.
+fn prove_tautology(internal: &InternalOntology) -> ProveEntailmentResult {
+    ProveEntailmentResult::JustificationFallback(justify::Justification {
+        axioms: vec![],
+        fragment: classify::analyze_fragment(internal),
+        minimal_guaranteed: true,
+    })
+}
+
+/// The saturator's step proof for `sub ⊑ sup`, when it has one: a named pair the
+/// closure contains, or (#427) `C ⊑ ⊥` for a `C` the closure proves unsatisfiable.
+fn prove_step(
+    internal: &InternalOntology,
+    sub: QueryClass,
+    sup: QueryClass,
+) -> Option<ProveEntailmentResult> {
+    let cfg = SaturateConfig {
+        record_proofs: true,
+    };
+    let (subs, maybe_trace) = saturate_with_config(internal, &cfg);
+    let held = match (sub, sup) {
+        (QueryClass::Named(c), QueryClass::Named(d)) => subs.contains(c, d),
+        (QueryClass::Named(c), QueryClass::Bottom) => subs.is_unsatisfiable(c),
+        _ => false,
+    };
+    if !held {
+        return None;
+    }
+    let trace = maybe_trace.unwrap_or_default();
+    let mut memo = std::collections::HashMap::new();
+    let root = match (sub, sup) {
+        (QueryClass::Named(c), QueryClass::Named(d)) => prove_subsumption(&trace, c, d, &mut memo),
+        (QueryClass::Named(c), _) => prove_unsatisfiability(&trace, c, &mut memo),
+        _ => None,
+    }?;
+    Some(ProveEntailmentResult::SaturatorProof(Box::new(
+        SaturatorProofData {
+            root,
+            vocab_num_classes: internal.vocabulary.num_classes(),
+            num_axioms: internal.axioms.len(),
+            trace,
+        },
+    )))
 }
 
 /// Prove a `sub ⊑ sup` entailment: run the saturator with proof recording and
@@ -12085,8 +12289,8 @@ fn prove_class_ids(
 /// # Errors
 /// Propagates `ReasonError` from conversion; [`ReasonError::UnknownClass`] for
 /// a class IRI not in the ontology (sub checked first), as `is_subclass_of`
-/// (#409). `owl:Thing` / `owl:Nothing` are not in the vocabulary either,
-/// unless the ontology declares them.
+/// (#409). `owl:Thing` / `owl:Nothing` resolve to `⊤` / `⊥`, declared or not
+/// (#427); a typo beside one is still `UnknownClass`.
 pub fn prove_entailment<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     sub_iri: &str,
@@ -12094,25 +12298,11 @@ pub fn prove_entailment<A: horned_owl::model::ForIRI>(
 ) -> Result<ProveEntailmentResult, ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
     let (sub, sup) = prove_class_ids(&internal, sub_iri, sup_iri)?;
-
-    let cfg = SaturateConfig {
-        record_proofs: true,
-    };
-    let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
-
-    if subs.contains(sub, sup) {
-        let trace = maybe_trace.unwrap_or_default();
-        let mut memo = std::collections::HashMap::new();
-        if let Some(root) = prove_subsumption(&trace, sub, sup, &mut memo) {
-            return Ok(ProveEntailmentResult::SaturatorProof(Box::new(
-                SaturatorProofData {
-                    root,
-                    vocab_num_classes: internal.vocabulary.num_classes(),
-                    num_axioms: internal.axioms.len(),
-                    trace,
-                },
-            )));
-        }
+    if subsumption_is_tautology(sub, sup) {
+        return Ok(prove_tautology(&internal));
+    }
+    if let Some(step) = prove_step(&internal, sub, sup) {
+        return Ok(step);
     }
 
     // Check if the entailment holds at all. A give-up is `Unknown`, not a
@@ -12184,26 +12374,11 @@ pub fn prove_entailment_rcstr_reporting(
 
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
     let (sub, sup) = prove_class_ids(&internal, sub_iri, sup_iri)?;
-
-    let cfg = SaturateConfig {
-        record_proofs: true,
-    };
-    let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
-
-    if subs.contains(sub, sup) {
-        let trace = maybe_trace.unwrap_or_default();
-        let mut memo = std::collections::HashMap::new();
-        if let Some(root) = prove_subsumption(&trace, sub, sup, &mut memo) {
-            return Ok((
-                ProveEntailmentResult::SaturatorProof(Box::new(SaturatorProofData {
-                    vocab_num_classes: internal.vocabulary.num_classes(),
-                    num_axioms: internal.axioms.len(),
-                    root,
-                    trace,
-                })),
-                ProveFlags::default(),
-            ));
-        }
+    if subsumption_is_tautology(sub, sup) {
+        return Ok((prove_tautology(&internal), ProveFlags::default()));
+    }
+    if let Some(step) = prove_step(&internal, sub, sup) {
+        return Ok((step, ProveFlags::default()));
     }
 
     // Check if the entailment holds at all (possibly via tableau). A give-up is
@@ -14563,7 +14738,8 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
 
     /// #409: an unknown class IRI is `UnknownClass` (sub reported first), never
     /// `NotEntailed`, on both prove entry points. `Aa ⊑ Aa` is a tautology for
-    /// any class, so "not entailed" there was a wrong definite answer.
+    /// any class, so "not entailed" there was a wrong definite answer. #427: the
+    /// built-ins resolve, but a typo beside one (a would-be tautology) still errors.
     #[test]
     fn prove_reports_an_unknown_class_iri_as_an_error() {
         let onto = parse(
@@ -14578,8 +14754,9 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             (typo, b, typo),
             (a, typo, typo),
             (typo, "http://ex/#Bb", typo),
-            (a, thing, thing),
-            (nothing, a, nothing),
+            (typo, thing, typo),
+            (nothing, typo, typo),
+            (thing, typo, typo),
         ] {
             let generic = prove_entailment(&onto, sub, sup);
             assert!(

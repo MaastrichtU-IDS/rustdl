@@ -3710,6 +3710,35 @@ fn classify_derived_same_stalls() -> usize {
         .unwrap_or(8)
 }
 
+/// #368, `RUSTDL_CLASSIFY_DERIVED_SAME_PREFILTER` (**default ON**, `=0` reverts):
+/// [`derive_nominal_same`] drops, before any probe, a candidate pair already
+/// PROVED distinct: some `DifferentIndividuals` axiom names a member of each
+/// side's equality class, or a told type of one side is told-disjoint from a told
+/// type of the other. Each such pair has `x ≠ y` entailed, so no probe could
+/// confirm it; dropping it loses no equality. It also stops re-probing a pair that
+/// a confirmed merge has renamed (the same check under new representatives).
+#[must_use]
+pub fn classify_derived_same_prefilter_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_DERIVED_SAME_PREFILTER").is_none_or(|v| v != "0")
+}
+
+/// #368, `RUSTDL_CLASSIFY_DERIVED_SAME_SIGNED` (**default ON**, `=0` reverts): the
+/// candidates of [`derive_nominal_same`] are grouped by direction. A counting
+/// construct on a signed role `c` bounds `c`-successors, so two individuals that
+/// share a SUBJECT through `R`-edges are a candidate only if `R ⊑ c` for some
+/// counted `c`, and two that share an OBJECT only if `R⁻ ⊑ c` (signed inclusion,
+/// through declared inverses, symmetry and equivalences). Off, both shapes use
+/// the id-space super-roles of the edge's role, which is wrong both ways: it pairs
+/// individuals with a common object under a bound on successors (`≤2 hasOperand`
+/// made every two units with a common operand a candidate, which it can never
+/// merge), and it misses a bound reached through a declared inverse (`r ≡ s⁻` with
+/// `InverseFunctional(s)` forces the `r`-objects of one subject equal, and `s` is no
+/// super-role of `r`).
+#[must_use]
+pub fn classify_derived_same_signed_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_DERIVED_SAME_SIGNED").is_none_or(|v| v != "0")
+}
+
 /// What [`derive_nominal_same`] found.
 #[derive(Debug, Default)]
 pub(crate) struct DerivedSame {
@@ -3723,6 +3752,9 @@ pub(crate) struct DerivedSame {
     pub(crate) candidates: usize,
     /// Probes run.
     pub(crate) probes: usize,
+    /// Candidates dropped unprobed because they were already proved distinct, or
+    /// already tried under other representatives (#368).
+    pub(crate) prefiltered: usize,
 }
 
 /// #354: individual equalities the KB forces, for the classify wedge.
@@ -3747,8 +3779,19 @@ pub(crate) struct DerivedSame {
 /// [`classify_derived_same_stalls`] consecutive `Stalled` probes. Candidates not
 /// decided are counted in [`DerivedSame::undecided`].
 ///
+/// **Narrowing (#368):** with [`classify_derived_same_signed_enabled`] a shared
+/// subject groups its `R`-objects only under a counted signed role `c` with
+/// `R ⊑ c`, and a shared object its `R`-subjects only under one with `R⁻ ⊑ c`;
+/// with [`classify_derived_same_prefilter_enabled`] a candidate already proved
+/// distinct (`DifferentIndividuals`, told-disjoint told types) or already tried
+/// under other representatives is dropped unprobed and not counted undecided.
+///
 /// Misses, by design (sound): equalities whose individuals share no asserted edge
-/// (e.g. `X ⊑ ∃f.{a}` with `x : X`, or `C ⊑ {a}` with `b : C`).
+/// (e.g. `X ⊑ ∃f.{a}` with `x : X`, or `C ⊑ {a}` with `b : C`); those forced
+/// through a role chain (`r ∘ s ⊑ t` with `t` counted): only asserted edges and
+/// told role inclusions are read, with or without the narrowing; and those forced
+/// without any counting construct (`x : ∀r.{a}`, `x r b`, `x r c` gives
+/// `b = a = c`), since candidates are sought only under a counted role.
 pub(crate) fn derive_nominal_same(
     internal: &InternalOntology,
     cache: Option<ConsistencyCache>,
@@ -3761,12 +3804,25 @@ pub(crate) fn derive_nominal_same(
         classify_derived_same_max(),
         std::time::Duration::from_millis(classify_derived_same_ms()),
         classify_derived_same_stalls(),
+        DerivedSameNarrowing {
+            prefilter: classify_derived_same_prefilter_enabled(),
+            signed: classify_derived_same_signed_enabled(),
+        },
         |a, b, deadline| {
             cache
                 .get_or_insert_with(|| ConsistencyCache::build(internal))
                 .distinct_clashes(a, b, deadline)
         },
     )
+}
+
+/// The #368 candidate narrowings, passed in so a test can compare both settings.
+#[derive(Debug, Clone, Copy)]
+struct DerivedSameNarrowing {
+    /// [`classify_derived_same_prefilter_enabled`].
+    prefilter: bool,
+    /// [`classify_derived_same_signed_enabled`].
+    signed: bool,
 }
 
 /// [`derive_nominal_same`] with its bounds and its probe passed in, so a test can
@@ -3777,6 +3833,7 @@ fn derive_nominal_same_with(
     max: usize,
     per_probe: std::time::Duration,
     stalls_max: usize,
+    narrowing: DerivedSameNarrowing,
     mut probe: impl FnMut(
         owl_dl_core::ir::IndividualId,
         owl_dl_core::ir::IndividualId,
@@ -3793,9 +3850,10 @@ fn derive_nominal_same_with(
     let trace = |out: &DerivedSame, candidates: usize, probes: usize| {
         if std::env::var_os("RUSTDL_TRACE_DERIVED_SAME").is_some() {
             eprintln!(
-                "[dsame] candidates={candidates} probes={probes} confirmed={} undecided={} ms={}",
+                "[dsame] candidates={candidates} probes={probes} confirmed={} undecided={} prefiltered={} ms={}",
                 out.pairs.len(),
                 out.undecided,
+                out.prefiltered,
                 start.elapsed().as_millis()
             );
         }
@@ -3827,13 +3885,45 @@ fn derive_nominal_same_with(
     if counted.is_empty() {
         return out;
     }
+    // #368: the same constructs as SIGNED roles. `≤n r` / `≥n r` (as written, so
+    // `≤n r⁻` keeps its polarity) and `Functional(r)` bound `r`-successors;
+    // `InverseFunctional(r)` bounds `r⁻`-successors. `≥n` stays in because it can
+    // sit in a negative position, where it bounds.
+    let signed = narrowing.signed;
+    let mut counted_signed: Vec<owl_dl_core::ir::Role> = internal
+        .concepts
+        .iter_exprs()
+        .filter_map(|e| match e {
+            ConceptExpr::Min(_, r, _) | ConceptExpr::Max(_, r, _) => Some(*r),
+            _ => None,
+        })
+        .collect();
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::FunctionalRole(r) => counted_signed.push(*r),
+            Axiom::InverseFunctionalRole(r) => counted_signed.push(r.flip()),
+            _ => {}
+        }
+    }
+    counted_signed.sort_unstable();
+    counted_signed.dedup();
     let reach = nominal_reach(internal, true, classify_nominal_opa_enabled());
     if reach.is_empty() {
         return out;
     }
     let hierarchy = build_role_hierarchy(internal);
-    // Asserted edges `(subject, object, counted super-roles of the edge's role)`.
-    let edges: Vec<(IndividualId, IndividualId, Vec<owl_dl_core::ir::RoleId>)> = internal
+    // Asserted edges `(subject, object, subject-shape keys, object-shape keys)`: the
+    // counted roles under which the edge's subject groups its objects, and under
+    // which its object groups its subjects. Unsigned (the flag off) both are the
+    // counted super-role ids; signed, `R ⊑ c` and `R⁻ ⊑ c` respectively, for the
+    // edge read as `s -R-> o` with `R` named.
+    type Edge = (
+        IndividualId,
+        IndividualId,
+        Vec<owl_dl_core::ir::Role>,
+        Vec<owl_dl_core::ir::Role>,
+    );
+    let edges: Vec<Edge> = internal
         .axioms
         .iter()
         .filter_map(|ax| match ax {
@@ -3847,13 +3937,27 @@ fn derive_nominal_same_with(
                 } else {
                     (*subject, *object)
                 };
-                let sups: Vec<owl_dl_core::ir::RoleId> = hierarchy
-                    .super_roles(role.role_id())
-                    .iter()
-                    .copied()
-                    .filter(|r| counted.contains(r))
-                    .collect();
-                (!sups.is_empty()).then_some((s, o, sups))
+                let named = owl_dl_core::ir::Role::named(role.role_id());
+                let (fwd, bwd) = if signed {
+                    let pick = |r: owl_dl_core::ir::Role| -> Vec<owl_dl_core::ir::Role> {
+                        counted_signed
+                            .iter()
+                            .copied()
+                            .filter(|&c| hierarchy.is_signed_sub(r, c))
+                            .collect()
+                    };
+                    (pick(named), pick(named.flip()))
+                } else {
+                    let sups: Vec<owl_dl_core::ir::Role> = hierarchy
+                        .super_roles(role.role_id())
+                        .iter()
+                        .copied()
+                        .filter(|r| counted.contains(r))
+                        .map(owl_dl_core::ir::Role::named)
+                        .collect();
+                    (sups.clone(), sups)
+                };
+                (!fwd.is_empty() || !bwd.is_empty()).then_some((s, o, fwd, bwd))
             }
             _ => None,
         })
@@ -3872,16 +3976,24 @@ fn derive_nominal_same_with(
     }
     let mut stalls = 0usize;
     let mut tried: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    let prefilter = narrowing.prefilter;
+    // #368: built on the first round that has candidates.
+    let mut proved: Option<ProvedDistinct> = None;
+    // Pairs probed (or dropped) so far, as individuals; re-keyed through `uf`
+    // each time they are checked, so a renamed representative cannot bring one back.
+    let mut tried_members: Vec<(u32, u32)> = Vec::new();
     loop {
         // Members of each group of individuals sharing a subject (or an object),
         // one representative per equality class, in id order.
-        type Key = (bool, u32, owl_dl_core::ir::RoleId);
+        type Key = (bool, u32, owl_dl_core::ir::Role);
         let mut groups: std::collections::BTreeMap<Key, std::collections::BTreeSet<u32>> =
             std::collections::BTreeMap::new();
-        for (s, o, sups) in &edges {
+        for (s, o, fwd, bwd) in &edges {
             let (rs, ro) = (uf.find(s.index()), uf.find(o.index()));
-            for &r in sups {
+            for &r in fwd {
                 groups.entry((false, rs, r)).or_default().insert(ro);
+            }
+            for &r in bwd {
                 groups.entry((true, ro, r)).or_default().insert(rs);
             }
         }
@@ -3910,11 +4022,45 @@ fn derive_nominal_same_with(
             break;
         }
         seen_candidates += cands.len();
+        // #368: drop the pairs already proved distinct, or already tried under
+        // other representatives, before the cap can count them as undecided.
+        let mut tried_now: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+        if prefilter {
+            let pd = proved.get_or_insert_with(|| ProvedDistinct::build(internal));
+            tried_now = tried_members
+                .iter()
+                .map(|&(a, b)| norm_pair(uf.find(a), uf.find(b)))
+                .collect();
+            let classes = pd.classes(&mut uf);
+            let before = cands.len();
+            cands.retain(|&(x, y)| {
+                let keep = !tried_now.contains(&norm_pair(x, y)) && !classes.distinct(x, y);
+                if !keep {
+                    tried.insert((x, y));
+                    tried_members.push((x, y));
+                }
+                keep
+            });
+            out.prefiltered += before - cands.len();
+            if cands.is_empty() {
+                break;
+            }
+        }
         let mut merged = false;
         for (k, &(x, y)) in cands.iter().enumerate() {
             tried.insert((x, y));
             if uf.same(x, y) {
                 continue;
+            }
+            if prefilter {
+                // A merge earlier in this round can make this pair the same
+                // question as one already probed: skip it, counted once.
+                let key = norm_pair(uf.find(x), uf.find(y));
+                tried_members.push((x, y));
+                if !tried_now.insert(key) {
+                    out.prefiltered += 1;
+                    continue;
+                }
             }
             if probes >= max || (stalls_max > 0 && stalls >= stalls_max) {
                 out.undecided += cands.len() - k;
@@ -3940,6 +4086,13 @@ fn derive_nominal_same_with(
                     out.pairs.push((a, b));
                     merged = true;
                     stalls = 0;
+                    if prefilter {
+                        // The merge can rename a representative: re-key.
+                        tried_now = tried_members
+                            .iter()
+                            .map(|&(p, q)| norm_pair(uf.find(p), uf.find(q)))
+                            .collect();
+                    }
                 }
                 HyperResult::Sat => stalls = 0,
                 HyperResult::Stalled => {
@@ -3956,6 +4109,125 @@ fn derive_nominal_same_with(
     out.candidates = seen_candidates;
     out.probes = probes;
     out
+}
+
+fn norm_pair(a: u32, b: u32) -> (u32, u32) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// #368: the facts [`derive_nominal_same`] uses to drop a candidate pair already
+/// proved distinct. Both are entailed: a `DifferentIndividuals` axiom asserts its
+/// members pairwise distinct, and two individuals with told-disjoint told types
+/// cannot be equal. An equality class inherits both from every member.
+struct ProvedDistinct {
+    /// Per individual: the `DifferentIndividuals` axioms naming it.
+    diff_axioms: Vec<Vec<u32>>,
+    /// Per individual: atomic `ClassAssertion` types (and atomic conjuncts),
+    /// closed under told subsumers.
+    told_types: Vec<Vec<owl_dl_core::ir::ClassId>>,
+    told: owl_dl_core::told::ToldTables,
+}
+
+/// [`ProvedDistinct`] summed over the current equality classes.
+struct ProvedDistinctClasses<'a> {
+    diff_axioms: std::collections::HashMap<u32, std::collections::BTreeSet<u32>>,
+    told_types:
+        std::collections::HashMap<u32, std::collections::BTreeSet<owl_dl_core::ir::ClassId>>,
+    told: &'a owl_dl_core::told::ToldTables,
+}
+
+impl ProvedDistinct {
+    fn build(internal: &InternalOntology) -> Self {
+        use owl_dl_core::ir::ConceptExpr;
+        use owl_dl_core::ontology::Axiom;
+        let n = internal.vocabulary.num_individuals();
+        let told = owl_dl_core::told::build_told_tables(internal);
+        let told_n = told.num_classes();
+        let mut diff_axioms = vec![Vec::new(); n];
+        let mut told_types: Vec<Vec<owl_dl_core::ir::ClassId>> = vec![Vec::new(); n];
+        let mut k = 0u32;
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::DifferentIndividuals(inds) => {
+                    for i in inds {
+                        diff_axioms[i.index() as usize].push(k);
+                    }
+                    k += 1;
+                }
+                Axiom::ClassAssertion { class, individual } => {
+                    let mut atoms = Vec::new();
+                    match internal.concepts.get(*class) {
+                        ConceptExpr::Atomic(c) => atoms.push(*c),
+                        ConceptExpr::And(parts) => {
+                            for p in parts {
+                                if let ConceptExpr::Atomic(c) = internal.concepts.get(*p) {
+                                    atoms.push(*c);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    for c in atoms {
+                        if (c.index() as usize) < told_n {
+                            told_types[individual.index() as usize]
+                                .extend(told.super_classes(c).iter().copied());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self {
+            diff_axioms,
+            told_types,
+            told,
+        }
+    }
+
+    fn classes(&self, uf: &mut crate::union_find::UnionFind) -> ProvedDistinctClasses<'_> {
+        let mut out = ProvedDistinctClasses {
+            diff_axioms: std::collections::HashMap::new(),
+            told_types: std::collections::HashMap::new(),
+            told: &self.told,
+        };
+        for i in 0..self.diff_axioms.len() {
+            let (d, t) = (&self.diff_axioms[i], &self.told_types[i]);
+            if d.is_empty() && t.is_empty() {
+                continue;
+            }
+            let r = uf.find(u32::try_from(i).expect("individual index fits u32"));
+            out.diff_axioms
+                .entry(r)
+                .or_default()
+                .extend(d.iter().copied());
+            out.told_types
+                .entry(r)
+                .or_default()
+                .extend(t.iter().copied());
+        }
+        out
+    }
+}
+
+impl ProvedDistinctClasses<'_> {
+    /// `x ≠ y` is entailed, for two distinct representatives `x` and `y`.
+    fn distinct(&self, x: u32, y: u32) -> bool {
+        let empty_d = std::collections::BTreeSet::new();
+        let (dx, dy) = (
+            self.diff_axioms.get(&x).unwrap_or(&empty_d),
+            self.diff_axioms.get(&y).unwrap_or(&empty_d),
+        );
+        // Members of one axiom sit in at most one class each in a consistent KB,
+        // so an axiom shared by both classes names a member of each.
+        if dx.intersection(dy).next().is_some() {
+            return true;
+        }
+        let empty_t = std::collections::BTreeSet::new();
+        let tx = self.told_types.get(&x).unwrap_or(&empty_t);
+        let ty = self.told_types.get(&y).unwrap_or(&empty_t);
+        tx.iter()
+            .any(|&c| ty.iter().any(|&d| self.told.are_told_disjoint(c, d)))
+    }
 }
 
 /// `internal` with each pair of `pairs` added as `SameIndividual` (#354).
@@ -12162,6 +12434,10 @@ mod tests {
                 64,
                 std::time::Duration::from_secs(1),
                 stalls_max,
+                DerivedSameNarrowing {
+                    prefilter: true,
+                    signed: true,
+                },
                 |_, _, _| {
                     calls += 1;
                     match calls {
@@ -12179,6 +12455,209 @@ mod tests {
         let full = run(0);
         assert!(full.probes > 8);
         assert_eq!(full.pairs.len(), 1, "the 9th probe confirms an equality");
+    }
+
+    /// #368: run [`derive_nominal_same_with`] on `axioms` (plus a nominal `Nᵢ` for
+    /// each of `inds`, so each is in nominal reach) with a probe that answers `Sat`
+    /// unless `unsat` names the pair. Returns the probed pairs as local names, and
+    /// the result.
+    fn derived_same_probed(
+        axioms: &str,
+        inds: &[&str],
+        narrowing: DerivedSameNarrowing,
+        unsat: &[(&str, &str)],
+    ) -> (Vec<(String, String)>, DerivedSame) {
+        use owl_dl_tableau::hyper::HyperResult;
+        use std::fmt::Write as _;
+        let mut src = format!("{HEADER}Ontology(<http://rustdl.test/o>\n{axioms}\n");
+        for (i, n) in inds.iter().enumerate() {
+            let _ = writeln!(src, "EquivalentClasses(:N{i} ObjectHasValue(:nom :{n}))");
+        }
+        src.push(')');
+        let internal = parse_internal_lib(&src);
+        let name = |id: owl_dl_core::ir::IndividualId| {
+            internal
+                .vocabulary
+                .individual_iri(id)
+                .trim_start_matches("http://rustdl.test/")
+                .to_owned()
+        };
+        let mut probed = Vec::new();
+        let out = derive_nominal_same_with(
+            &internal,
+            None,
+            64,
+            std::time::Duration::from_secs(1),
+            0,
+            narrowing,
+            |a, b, _| {
+                let (na, nb) = (name(a), name(b));
+                let hit = unsat
+                    .iter()
+                    .any(|&(x, y)| (x == na && y == nb) || (x == nb && y == na));
+                probed.push((na, nb));
+                if hit {
+                    HyperResult::Unsat
+                } else {
+                    HyperResult::Sat
+                }
+            },
+        );
+        (probed, out)
+    }
+
+    const NARROW: DerivedSameNarrowing = DerivedSameNarrowing {
+        prefilter: true,
+        signed: true,
+    };
+    const WIDE: DerivedSameNarrowing = DerivedSameNarrowing {
+        prefilter: false,
+        signed: false,
+    };
+    const SIGNED_ONLY: DerivedSameNarrowing = DerivedSameNarrowing {
+        prefilter: false,
+        signed: true,
+    };
+
+    /// #368: `≤2 r` bounds `r`-successors, so two `r`-subjects of one object are
+    /// never a candidate once grouping is signed; unsigned, they were.
+    #[test]
+    fn derived_same_signed_drops_an_unbounded_shared_object() {
+        let ax = "SubClassOf(:W ObjectMaxCardinality(2 :r)) ClassAssertion(:W :a) \
+                  ObjectPropertyAssertion(:r :a :o) ObjectPropertyAssertion(:r :b :o)";
+        let (wide, _) = derived_same_probed(ax, &["a", "b"], WIDE, &[]);
+        assert_eq!(wide.len(), 1, "unsigned grouping pairs the two subjects");
+        let (signed, out) = derived_same_probed(ax, &["a", "b"], SIGNED_ONLY, &[]);
+        assert!(signed.is_empty(), "{signed:?}");
+        assert_eq!(out.candidates, 0);
+    }
+
+    /// #368: every construct that bounds `R⁻` keeps the object shape `r(a,o)`,
+    /// `r(b,o)` a candidate under signed grouping.
+    #[test]
+    fn derived_same_signed_keeps_each_bound_on_the_inverse() {
+        let edges = "ObjectPropertyAssertion(:r :a :o) ObjectPropertyAssertion(:r :b :o)";
+        for (what, bound) in [
+            // Not discriminating for the `r.flip()` on its own: conversion also emits
+            // `≤1 r⁻` (`RUSTDL_INVERSE_FUNC_MAX`). `classify_derived_same.rs` pins the
+            // flip with that flag off.
+            (
+                "InverseFunctional(r)",
+                "InverseFunctionalObjectProperty(:r)",
+            ),
+            (
+                "≤1 r⁻ on o",
+                "SubClassOf(:W ObjectMaxCardinality(1 ObjectInverseOf(:r))) ClassAssertion(:W :o)",
+            ),
+            (
+                "=1 r⁻ on o",
+                "SubClassOf(:W ObjectExactCardinality(1 ObjectInverseOf(:r))) ClassAssertion(:W :o)",
+            ),
+            (
+                "Functional(t), r⁻ ⊑ t",
+                "SubObjectPropertyOf(ObjectInverseOf(:r) :t) FunctionalObjectProperty(:t)",
+            ),
+            (
+                "≤1 t on o, r⁻ ⊑ t",
+                "SubObjectPropertyOf(ObjectInverseOf(:r) :t) \
+                 SubClassOf(:W ObjectMaxCardinality(1 :t)) ClassAssertion(:W :o)",
+            ),
+            (
+                "Functional(s), InverseOf(s, r)",
+                "InverseObjectProperties(:s :r) FunctionalObjectProperty(:s)",
+            ),
+            (
+                "InverseFunctional(q), r ≡ q",
+                "EquivalentObjectProperties(:r :q) InverseFunctionalObjectProperty(:q)",
+            ),
+            (
+                "InverseFunctional(q), r ⊑ q",
+                "SubObjectPropertyOf(:r :q) InverseFunctionalObjectProperty(:q)",
+            ),
+            (
+                "Functional(r), Symmetric(r)",
+                "FunctionalObjectProperty(:r) SymmetricObjectProperty(:r)",
+            ),
+        ] {
+            let (probed, _) =
+                derived_same_probed(&format!("{bound} {edges}"), &["a", "b"], NARROW, &[]);
+            assert_eq!(probed.len(), 1, "{what}: the object-shape pair must stay");
+        }
+    }
+
+    /// #368: the subject shape under a successor bound stays, including through an
+    /// inverse-role assertion `f⁻(a, x)`, which reads as `f(x, a)`.
+    #[test]
+    fn derived_same_signed_keeps_the_subject_shape() {
+        for edges in [
+            "ObjectPropertyAssertion(:f :x :a) ObjectPropertyAssertion(:f :x :b)",
+            "ObjectPropertyAssertion(ObjectInverseOf(:f) :a :x) \
+             ObjectPropertyAssertion(ObjectInverseOf(:f) :b :x)",
+        ] {
+            let ax = format!("FunctionalObjectProperty(:f) {edges}");
+            let (probed, _) = derived_same_probed(&ax, &["a", "b"], NARROW, &[]);
+            assert_eq!(probed.len(), 1, "{edges}");
+        }
+    }
+
+    /// #368: a pair under an asserted inequality, directly or through an equality
+    /// class, or with told-disjoint told types, is dropped unprobed and not counted
+    /// undecided; a pair with merely different told types is still probed.
+    #[test]
+    fn derived_same_prefilter_drops_only_proved_distinct_pairs() {
+        let base = "FunctionalObjectProperty(:f) \
+                    ObjectPropertyAssertion(:f :x :a) ObjectPropertyAssertion(:f :x :b)";
+        for (what, extra, dropped) in [
+            ("DifferentIndividuals", "DifferentIndividuals(:a :b)", true),
+            (
+                "through SameIndividual",
+                "SameIndividual(:a :a2) DifferentIndividuals(:a2 :b)",
+                true,
+            ),
+            (
+                "told-disjoint types",
+                "DisjointClasses(:A :B) SubClassOf(:A1 :A) ClassAssertion(:A1 :a) \
+                 ClassAssertion(:B :b)",
+                true,
+            ),
+            (
+                "different, not disjoint, types",
+                "ClassAssertion(:A :a) ClassAssertion(:B :b)",
+                false,
+            ),
+            (
+                "an inequality on someone else",
+                "DifferentIndividuals(:a :c)",
+                false,
+            ),
+        ] {
+            let ax = format!("{base} {extra}");
+            let (probed, out) = derived_same_probed(&ax, &["a", "b"], NARROW, &[]);
+            assert_eq!(probed.is_empty(), dropped, "{what}: {probed:?}");
+            assert_eq!(out.prefiltered, usize::from(dropped), "{what}");
+            assert_eq!(out.undecided, 0, "{what}");
+            let (wide, _) = derived_same_probed(&ax, &["a", "b"], WIDE, &[]);
+            assert_eq!(wide.len(), 1, "{what}: off, the pair is probed");
+        }
+    }
+
+    /// #368: after `a = b` is confirmed, `(a, c)` and `(b, c)` are one question; it
+    /// is probed once, not once per spelling.
+    #[test]
+    fn derived_same_prefilter_does_not_reprobe_a_renamed_pair() {
+        let ax = "FunctionalObjectProperty(:f) ObjectPropertyAssertion(:f :x :a) \
+                  ObjectPropertyAssertion(:f :x :b) ObjectPropertyAssertion(:f :x :c)";
+        let inds = ["a", "b", "c"];
+        let (narrow, out) = derived_same_probed(ax, &inds, NARROW, &[("a", "b")]);
+        assert_eq!(out.pairs.len(), 1);
+        let with_c = narrow.iter().filter(|(x, y)| x == "c" || y == "c").count();
+        assert_eq!(
+            with_c, 1,
+            "one probe of the merged class against c: {narrow:?}"
+        );
+        let (wide, _) = derived_same_probed(ax, &inds, WIDE, &[("a", "b")]);
+        let with_c = wide.iter().filter(|(x, y)| x == "c" || y == "c").count();
+        assert_eq!(with_c, 2, "off, both spellings are probed: {wide:?}");
     }
 
     const HEADER: &str = "\

@@ -401,6 +401,16 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_CLASSIFY_DERIVED_SAME_PREFILTER",
+            owl_dl_reasoner::classify_derived_same_prefilter_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_CLASSIFY_DERIVED_SAME_SIGNED",
+            owl_dl_reasoner::classify_derived_same_signed_enabled,
+            true,
+        ),
+        (
             "RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED",
             owl_dl_reasoner::report_wedge_clauses_refused_enabled,
             true,

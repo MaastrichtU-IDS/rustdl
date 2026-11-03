@@ -195,3 +195,73 @@ fn the_flag_off_reverts() {
     assert!(!c.is_subclass(C1, C2));
     assert_eq!(c.stats().derived_same, 0);
 }
+
+/// #368: the object shape that must merge stays a candidate under signed grouping
+/// (`RUSTDL_CLASSIFY_DERIVED_SAME_SIGNED`, default ON): `a` and `b` share the
+/// object `x` through an inverse-functional `f`.
+#[test]
+fn a_shared_object_under_an_inverse_functional_role_forces_the_equality() {
+    let _g = lock();
+    let c = classify(
+        "InverseFunctionalObjectProperty(:f)\n\
+         ObjectPropertyAssertion(:f :a :x) ObjectPropertyAssertion(:f :b :x)",
+    );
+    assert!(equivalent(&c));
+    assert_eq!(c.stats().derived_same, 1);
+}
+
+/// #368: candidates already proved distinct are dropped unprobed
+/// (`RUSTDL_CLASSIFY_DERIVED_SAME_PREFILTER`, default ON), so even with the probe
+/// cap at 0 they are not undecided; with the pre-filter off, all three are. (`≤3`
+/// over three objects keeps the KB consistent.)
+#[test]
+fn a_proved_distinct_candidate_is_not_undecided() {
+    let _g = lock();
+    let body = "ClassAssertion(:W :x) SubClassOf(:W ObjectMaxCardinality(3 :f))\n\
+         ObjectPropertyAssertion(:f :x :a) ObjectPropertyAssertion(:f :x :b)\n\
+         ObjectPropertyAssertion(:f :x :c) DifferentIndividuals(:a :b :c)";
+    let _cap = SetEnvGuard::set("RUSTDL_CLASSIFY_DERIVED_SAME_MAX", "0");
+    let c = classify(body);
+    assert_eq!(c.stats().derived_same_undecided, 0);
+    assert!(!c.is_subclass(C1, C2));
+    let _off = SetEnvGuard::set("RUSTDL_CLASSIFY_DERIVED_SAME_PREFILTER", "0");
+    let c = classify(body);
+    assert_eq!(c.stats().derived_same_undecided, 3);
+}
+
+/// #368: `InverseFunctional(f)` keeps the shared-object pair a candidate on its
+/// own. By default conversion also emits `≤1 f⁻` (`RUSTDL_INVERSE_FUNC_MAX`), which
+/// counts on its own; with that off, only the inverse-functional bound read as
+/// `f⁻` keeps it. The probe cap at 0 makes the kept candidate visible as undecided.
+#[test]
+fn an_inverse_functional_role_alone_keeps_the_shared_object_candidate() {
+    let _g = lock();
+    let _ifm = SetEnvGuard::set("RUSTDL_INVERSE_FUNC_MAX", "0");
+    let _cap = SetEnvGuard::set("RUSTDL_CLASSIFY_DERIVED_SAME_MAX", "0");
+    let c = classify(
+        "InverseFunctionalObjectProperty(:f)\n\
+         ObjectPropertyAssertion(:f :a :x) ObjectPropertyAssertion(:f :b :x)",
+    );
+    assert_eq!(c.stats().derived_same_undecided, 1);
+}
+
+/// #368: signed grouping also FINDS candidates the unsigned test missed. `x r a`,
+/// `x r b` with `r ≡ s⁻` and `InverseFunctional(s)` force `a = b`, but `s` is not an
+/// id-space super-role of `r`, so the unsigned grouping never paired them.
+#[test]
+fn a_bound_reached_through_a_declared_inverse_forces_the_equality() {
+    let _g = lock();
+    let body = "Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+         InverseObjectProperties(:r :s) InverseFunctionalObjectProperty(:s)\n\
+         ObjectPropertyAssertion(:r :x :a) ObjectPropertyAssertion(:r :x :b)";
+    let c = classify(body);
+    assert!(equivalent(&c));
+    assert_eq!(c.stats().derived_same, 1);
+    let _off = SetEnvGuard::set("RUSTDL_CLASSIFY_DERIVED_SAME_SIGNED", "0");
+    let c = classify(body);
+    assert_eq!(
+        c.stats().derived_same,
+        0,
+        "unsigned grouping misses the pair"
+    );
+}

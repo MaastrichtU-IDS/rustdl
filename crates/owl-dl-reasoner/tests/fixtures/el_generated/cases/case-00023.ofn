@@ -1,0 +1,22 @@
+# gen 97f692139103 seed 20261106 case 23 profile el_guaranteed
+# motif: none
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C0))
+Declaration(Class(:C1))
+Declaration(Class(:C2))
+Declaration(Class(:C3))
+Declaration(Class(:C4))
+Declaration(Class(:C5))
+Declaration(ObjectProperty(:r0))
+Declaration(ObjectProperty(:r1))
+Declaration(ObjectProperty(:r2))
+TransitiveObjectProperty(:r2)
+EquivalentClasses(:C5 ObjectSomeValuesFrom(:r2 ObjectSomeValuesFrom(:r1 :C4)))
+EquivalentClasses(:C0 ObjectSomeValuesFrom(:r1 ObjectSomeValuesFrom(:r1 owl:Thing)))
+ObjectPropertyRange(:r2 :C1)
+SubClassOf(:C2 :C3)
+EquivalentClasses(:C5 ObjectSomeValuesFrom(:r2 ObjectSomeValuesFrom(:r1 owl:Thing)))
+)

@@ -93,6 +93,9 @@ class IncompleteClassificationWarning(UserWarning):
 
     * a timeout fired (`result.complete is False`): pass
       `per_pair_timeout_ms=0, global_timeout_ms=0` for the unbounded result;
+    * a probe hit the tableau's search-depth limit
+      (`result.depth_capped_pairs > 0`, #288): a larger `per_pair_timeout_ms`
+      does not help; the unbounded run has a far larger limit but may not terminate;
     * the global budget ran out during preparation
       (`result.prep_timed_out is True`): only a partial saturation closure is
       reported; give a larger `global_timeout_ms`, or `0` for no budget. With
@@ -139,6 +142,21 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             "saturation closure is reported and consistency was not fully "
             "checked. It is still sound (no false subsumptions); check "
             "result.prep_timed_out.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    # #288: probes cut by the tableau's search-depth limit did not exceed a
+    # timeout; name them separately. With none, the warning is unchanged.
+    d = min(result.depth_capped_pairs, n)
+    n -= d
+    if d:
+        _warnings.warn(
+            f"{d} probe(s) hit the tableau's search-depth limit and were left "
+            "undecided — this classification may be missing real subsumptions. "
+            "It is still sound (no false subsumptions). A larger "
+            "per_pair_timeout_ms does not recover these; per_pair_timeout_ms=0, "
+            "global_timeout_ms=0 has a far larger limit, but may not terminate. "
+            "Check result.complete / result.depth_capped_pairs.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )

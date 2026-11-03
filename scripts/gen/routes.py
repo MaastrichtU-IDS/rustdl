@@ -224,7 +224,8 @@ with open(out, "w") as fh:
                                   if x != y and x not in unsat and y not in unsat
                                   and c.is_subclass(x, y)]
             # interleaved query: the realistic thread-local leak path. Not is_subclass_of:
-            # it runs no inconsistency guard and does not finish on an inconsistent KB.
+            # it runs no inconsistency guard and does not finish on an inconsistent KB
+            # (default case 438). That is #428; re-include is_subclass_of once #428 lands.
             try:
                 rustdl.is_consistent(path)
             except Exception:  # noqa: BLE001 (a give-up is an error here; the call still ran)

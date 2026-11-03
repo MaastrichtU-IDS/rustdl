@@ -630,6 +630,7 @@ while both legs were decided, leaves the matrix non-transitive. The CLI's
 - The warm route covers what the Python API exposes: `classify`, `Classification` queries and
   an interleaved `is_consistent`. `is_subclass_of` was dropped from the interleave because it
   runs no inconsistency guard and does not finish on an inconsistent KB (default case 438).
+  That is #428; once it lands, the interleave can include `is_subclass_of` again.
   Classify in the warm route uses a 25 s global budget, standing in for the CLI's 30 s kill.
 - R5.1's predictor is token-based. Degenerate `ObjectUnionOf(:C :C)` is excluded: it is the only
   predictor token in 4 control cases, 3 of which report pure-EL. `ObjectComplementOf` (neg-to-⊥)

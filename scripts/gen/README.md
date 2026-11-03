@@ -4,7 +4,7 @@ The net generates small, legal OWL 2 DL ontologies and runs rustdl on each. It f
 
 | file | role |
 |---|---|
-| `gen.py` | seeded generator: 11 families; legality (regularity, simplicity) by construction and re-checked |
+| `gen.py` | seeded generator: 11 families; legality (regularity, simplicity) by construction and re-checked. Profile `el_guaranteed` (#363 step 3a) is a separate generator that stays inside rustdl's pure-EL gate, so `completeness_guaranteed` holds and a missed entailment is a finding; it plants #114/#81-shaped motifs and records them as `# motif:` |
 | `oracle.py` | Konclude ∩ HermiT agreement oracle, cached by sha256 |
 | `run.py` | runs three rustdl arms per case and scores them; `report`, `detect` (mutant vs control) |
 | `shrink.py` | ddmin to a minimal reproducer of one finding, gated on peer agreement |

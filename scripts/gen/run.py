@@ -177,7 +177,10 @@ def one_case(path, binary, env, cache, out_dir):
     text = Path(path).read_text()
     classes = orc.declared_classes(text)
     ora = orc.oracle(path, cache)
-    rec = {"case": Path(path).stem, "header": text.splitlines()[0], "sha256": ora["sha256"],
+    motif = next((l.split(":", 1)[1].strip() for l in text.splitlines()[:3]
+                  if l.startswith("# motif:")), None)
+    rec = {"case": Path(path).stem, "header": text.splitlines()[0], "motif": motif,
+           "sha256": ora["sha256"],
            "oracle": {"verdict": ora["verdict"], "kinds": ora["kinds"]}, "arms": {},
            "findings": []}
     if ora["verdict"] in ("agree", "peer-disagree"):
@@ -306,8 +309,25 @@ def cmd_report(a):
                     for arm, a2 in r["arms"].items() if a2.get("status") != "ok")
     peer_fail = Counter(tuple(r["oracle"]["kinds"]) for r in recs.values()
                         if r["bucket"] in ("peer-fail", "invalid"))
+    def guaranteed(rs):
+        """Share of agreed, consistent, classify-ok cases reporting completeness_guaranteed:
+        the cases on which a classify miss is a finding."""
+        n = g = 0
+        for r in rs:
+            s = (r["arms"].get("classify") or {}).get("summary") or {}
+            if r["oracle"]["verdict"] == "agree" and s.get("consistent"):
+                n += 1
+                g += bool(s.get("completeness_guaranteed"))
+        return {"scored": n, "guaranteed": g, "rate": round(g / n, 4) if n else None}
+
+    by_motif = {}
+    for r in recs.values():
+        if r.get("motif"):
+            by_motif.setdefault(r["motif"], []).append(r)
     rep = {
         "tag": a.tag, "n": len(recs), "buckets": dict(buckets),
+        "guaranteed": guaranteed(recs.values()),
+        "guaranteed_by_motif": {m: guaranteed(rs) for m, rs in sorted(by_motif.items())},
         "findings_by_kind_tier": {f"{k}/{t}": n for (k, t), n in sorted(kinds.items())},
         "cases_by_kind_tier": {f"{k}/{t}": n for (k, t), n in sorted(case_kinds.items())},
         "finding_cases": sorted(c for c, r in recs.items() if r["bucket"] == "finding"),

@@ -1851,3 +1851,76 @@ mod verdict_tests {
         assert_eq!(guarded(true, NotEntailed), NotEntailed);
     }
 }
+
+#[cfg(test)]
+mod oracle_trust_tests {
+    use super::{Entailment, Verdict, entails_reporting, note_oracle_trust, with_oracle_trust};
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    /// #392's fixture: the wedge decides it `Sat`.
+    fn fixture() -> SetOntology<RcStr> {
+        let src = "Prefix(:=<http://ex/#>) Ontology(<http://ex/o> \
+             Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) \
+             Declaration(Class(:D)) Declaration(ObjectProperty(:r)) \
+             SubClassOf(:A ObjectUnionOf(:C :D)) SubClassOf(:C :B) SubClassOf(:D :B) \
+             ClassAssertion(:A :a) ObjectPropertyAssertion(:r :a :b))";
+        read(&mut Cursor::new(src), ParserConfiguration::default())
+            .expect("parse")
+            .0
+    }
+
+    fn sub(sub: &str, sup: &str) -> Entailment {
+        Entailment::SubClassOf {
+            sub: format!("http://ex/#{sub}"),
+            sup: format!("http://ex/#{sup}"),
+        }
+    }
+
+    /// #429: #401's lent consistency reports the trust on an entailed class check
+    /// too (`decide_query_raw` returns `trusted` whatever the verdict), so the
+    /// oracle masks it: only a "not entailed" verdict, the only one a wrong `Sat`
+    /// could have produced, marks the scope.
+    #[test]
+    fn only_a_not_entailed_verdict_marks() {
+        let trusted = crate::QueryStats {
+            relies_on_trusted_consistency: true,
+            ..crate::QueryStats::default()
+        };
+        let ((), marked) = with_oracle_trust(|| note_oracle_trust(false, &trusted));
+        assert!(!marked, "an entailed verdict never rests on the trust");
+        let ((), marked) = with_oracle_trust(|| note_oracle_trust(true, &trusted));
+        assert!(marked);
+        let ((), marked) =
+            with_oracle_trust(|| note_oracle_trust(true, &crate::QueryStats::default()));
+        assert!(!marked, "no trust, no mark");
+        // End to end: `Inconsistent` on the consistent fixture is "not entailed"
+        // on #392's trusted `Sat`.
+        let o = fixture();
+        let (v, marked) = with_oracle_trust(|| entails_reporting(&o, &Entailment::Inconsistent));
+        assert_eq!(v.expect("oracle"), Verdict::NotEntailed);
+        assert!(marked);
+    }
+
+    /// Scopes nest: an inner mark reaches the outer scope, and an outer scope
+    /// keeps its own mark across an unmarked inner one. `Inconsistent` on the
+    /// consistent fixture is "not entailed" on #392's trusted `Sat`.
+    #[test]
+    fn scopes_nest() {
+        let o = fixture();
+        let ((), outer) = with_oracle_trust(|| {
+            let (_, inner) = with_oracle_trust(|| entails_reporting(&o, &Entailment::Inconsistent));
+            assert!(inner);
+        });
+        assert!(outer);
+        let ((), outer) = with_oracle_trust(|| {
+            let _ = entails_reporting(&o, &Entailment::Inconsistent);
+            let (_, inner) = with_oracle_trust(|| entails_reporting(&o, &sub("A", "B")));
+            assert!(!inner);
+        });
+        assert!(outer, "the inner scope must restore the outer mark");
+    }
+}

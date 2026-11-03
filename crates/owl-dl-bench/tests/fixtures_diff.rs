@@ -103,6 +103,9 @@ fn rustdl_agrees_with_manifest() {
         let onto = parse_fixture(&entry.file);
         match is_class_satisfiable(&onto, &entry.test_class) {
             Ok(actual) if actual == entry.expected => {}
+            // #428: on an inconsistent KB the class query errors; every class is
+            // then unsatisfiable, which is what an "unsat" entry expects.
+            Err(owl_dl_reasoner::ReasonError::Inconsistent) if !entry.expected => {}
             Ok(actual) => {
                 failures.push(format!(
                     "{}: expected={} rustdl={}",

@@ -14697,7 +14697,11 @@ Ontology(<http://rustdl.test/test>\n\
     EquivalentClasses(:Test ObjectOneOf(:alice))\n\
 )\n"
         ));
-        assert!(!check(&onto, "http://rustdl.test/Test"));
+        // #428: the named class queries report the inconsistency.
+        assert!(matches!(
+            is_class_satisfiable(&onto, "http://rustdl.test/Test"),
+            Err(ReasonError::Inconsistent)
+        ));
     }
 
     #[test]

@@ -468,3 +468,14 @@ fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
     let (_, flags) = prove_entailment_rcstr_reporting(&p2(), Y, W).unwrap();
     assert!(flags.kb_inconsistent, "P2");
 }
+
+/// `RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS` defaults to 5,000,000 (measured: nothing
+/// in the ORE pool lies between 4.77 M and 14.1 M lowered axioms) and overrides.
+#[test]
+fn the_light_lazy_check_size_limit_defaults_to_five_million() {
+    let _g = lock();
+    assert_eq!(owl_dl_reasoner::LAZY_LIGHT_MAX_AXIOMS, 5_000_000);
+    assert_eq!(owl_dl_reasoner::lazy_light_max_axioms(), 5_000_000);
+    let _o = SetEnvGuard::set("RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS", "0");
+    assert_eq!(owl_dl_reasoner::lazy_light_max_axioms(), 0);
+}

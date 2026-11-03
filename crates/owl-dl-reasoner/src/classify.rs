@@ -4319,6 +4319,10 @@ fn classify_top_down_internal_impl(
             }
             v
         };
+        // #404 option A, stage 0: report-only, default OFF.
+        if crate::classify_nominal_core_enabled() {
+            prepared.nominal_core_report();
+        }
         (0..n)
             .into_par_iter()
             .map(|i| {

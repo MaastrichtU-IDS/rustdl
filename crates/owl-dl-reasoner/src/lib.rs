@@ -5902,6 +5902,90 @@ impl HyperCache {
         (result, engine.stats())
     }
 
+    /// #404 option A, stage 0 (report-only, changes nothing): build the shared
+    /// nominal core — one node per head-nominal individual (an `{a}` some clause
+    /// head, `sup_neg` or the ∃-seed can put on a node), configured as a label
+    /// probe's engine is — run it to a verdict under
+    /// `RUSTDL_CLASSIFY_NOMINAL_CORE_MS`, and print one stderr line: verdict,
+    /// wall, nodes, branches, max depth. Nothing reads the result. The stop rule
+    /// of the plan: if this does not reach `Sat` within seconds on `ore_ont_9540`,
+    /// option A cannot help it. No nominal range: prints nothing.
+    pub(crate) fn nominal_core_report(&self) {
+        use owl_dl_core::clause::Atom;
+        use owl_dl_tableau::hyper::HyperEngine;
+        let Some((st, ct)) = self.nominal_range else {
+            return;
+        };
+        let nominal = |c: owl_dl_core::ir::ClassId| c.index() >= st && c.index() < st + ct;
+        let mut heads: std::collections::BTreeSet<owl_dl_core::ir::ClassId> =
+            std::collections::BTreeSet::new();
+        let mut note = |a: &Atom| match *a {
+            Atom::Class(c, _) | Atom::Exists(_, c, _) if nominal(c) => {
+                heads.insert(c);
+            }
+            Atom::AtMost(_, Some(q), _, _) | Atom::AtLeast(_, Some(q), _, _) if nominal(q) => {
+                heads.insert(q);
+            }
+            _ => {}
+        };
+        for cl in &self.clauses {
+            cl.head.iter().for_each(&mut note);
+        }
+        self.sup_neg.values().flatten().for_each(&mut note);
+        if let Some(t) = &self.exists_seed {
+            for &(_, c) in t.iter().flatten() {
+                if nominal(c) {
+                    heads.insert(c);
+                }
+            }
+        }
+        let ids: Vec<owl_dl_core::ir::ClassId> = heads.into_iter().collect();
+        let mut engine = HyperEngine::new_nominal_core(&self.clauses, &ids);
+        if self.layer_a {
+            engine = engine.with_sub_roles(self.sub_roles.clone());
+        }
+        if crate::incremental_fixpoint_enabled() {
+            engine = engine.with_incremental_fixpoint();
+        }
+        if crate::semantic_branching_enabled() {
+            engine = engine.with_semantic_branching();
+        }
+        if hyper_double_block_enabled() {
+            engine = engine.with_double_blocking();
+        }
+        engine = engine.with_nominals(st, ct);
+        if hyper_precise_card_deps_enabled() {
+            engine = engine.with_precise_card_deps();
+        }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
+        }
+        if let Some(p) = &self.tautology_pairs {
+            engine = engine.with_tautology_skip(p.clone());
+        }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
+        }
+        if crate::adaptive_budget_enabled() {
+            engine = engine.with_adaptive_budget();
+        }
+        let ms = classify_nominal_core_ms();
+        let start = std::time::Instant::now();
+        let deadline = (ms != 0).then(|| start + std::time::Duration::from_millis(ms));
+        let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        let stats = engine.stats();
+        eprintln!(
+            "# nominal-core: verdict={verdict:?} wall_ms={:.1} budget_ms={ms} individuals={} \
+             nodes={} branches={} max_depth={} restores={}",
+            start.elapsed().as_secs_f64() * 1000.0,
+            ids.len(),
+            engine.node_count(),
+            stats.branches_taken,
+            stats.max_branch_depth,
+            stats.restores,
+        );
+    }
+
     /// Run wedge satisfiability of `c` alone (no negated sup) and return
     /// a [`LabelOracle`] capturing the seed-node's labels. Sound basis
     /// for the per-class label heuristic — see
@@ -6114,6 +6198,24 @@ impl HyperCache {
             HyperResult::Stalled => LabelOracle::NoVerdict,
         }
     }
+}
+
+/// `RUSTDL_CLASSIFY_NOMINAL_CORE` (#404 option A) — **default OFF**. Stage 0 is
+/// report-only: when set to `1`, classify builds the shared nominal core once
+/// before the label probes and prints its verdict and cost to stderr; nothing
+/// reads it.
+#[must_use]
+pub fn classify_nominal_core_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_NOMINAL_CORE").is_some_and(|v| v == "1")
+}
+
+/// `RUSTDL_CLASSIFY_NOMINAL_CORE_MS`: the core build's budget (default 2000;
+/// `0` = unbounded).
+fn classify_nominal_core_ms() -> u64 {
+    std::env::var("RUSTDL_CLASSIFY_NOMINAL_CORE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000)
 }
 
 /// Whether `ABox`-seeded **wedge** consistency checking is enabled
@@ -10672,6 +10774,15 @@ impl PreparedOntology {
         self.hyper
             .as_ref()
             .map_or(HyperVerdict::NoWedge, |hc| hc.decide(sub, sup, deadline))
+    }
+
+    /// #404 option A, stage 0 (report-only): build the shared nominal core on
+    /// this ontology's classify wedge and print what it took. See
+    /// [`HyperCache::nominal_core_report`].
+    pub(crate) fn nominal_core_report(&self) {
+        if let Some(hc) = self.hyper.as_ref() {
+            hc.nominal_core_report();
+        }
     }
 
     /// Per-class label heuristic: run wedge satisfiability of `c` and

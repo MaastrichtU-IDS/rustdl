@@ -4151,21 +4151,75 @@ impl<'c> HyperEngine<'c> {
         }
         // Build N empty nodes (node i ↔ individual index i), each
         // labelled with its nominal class `nominal_base + i`.
+        let labels: Vec<ClassId> = (0..seed.num_individuals)
+            .map(|i| ClassId::new(seed.nominal_base + i))
+            .collect();
+        let mut engine = Self::with_labelled_nodes(clauses, &labels);
+        // Asserted ObjectPropertyAssertion edges: mirror as edge +
+        // reverse pred (matches `from_snapshot` bookkeeping). Indices
+        // out of range (defensive) are skipped — a missing edge only
+        // under-detects (sound).
+        for &(from, role, to) in &seed.property_assertions {
+            let (fi, ti) = (from as usize, to as usize);
+            if fi >= n || ti >= n {
+                continue;
+            }
+            let (src, tgt) = (HNode(from), HNode(to));
+            engine.nodes[fi].edges.push((role, tgt));
+            engine.nodes[ti].preds.push((role, src));
+        }
+        // Asserted SameIndividual merges. `merge` resolves through the
+        // union-find, redirects edges/labels, and (in this design) never
+        // clashes since distinctness is clause-only. Out-of-range indices
+        // are skipped (sound under-seed).
+        for &(a, b) in &seed.same_pairs {
+            if (a as usize) >= n || (b as usize) >= n {
+                continue;
+            }
+            // `merge` returns `true` only on a `≠` violation, which cannot
+            // happen here (no engine `neq`); the boolean is ignored on
+            // purpose — a real `Same+Different` clash surfaces via the
+            // disjointness clause during `decide`.
+            let _ = engine.merge(HNode(a), HNode(b));
+        }
+        engine
+    }
+
+    /// #404 option A, stage 0: an engine over `clauses` whose graph is one node per
+    /// class in `nominals` (each a nominal class `{a}`), and nothing else — the
+    /// shared nominal core, before any probe's root exists. Every individual is
+    /// interpreted in every model, so these facts add no constraint beyond what the
+    /// clauses force (the principle [`Self::new_seeded`] rests on). Configure it
+    /// (`with_nominals`, sub-roles, blocking) exactly as a probe engine, then
+    /// `decide_with_deadline`. Empty `nominals` falls back to [`Self::new`]'s
+    /// single node.
+    #[must_use]
+    pub fn new_nominal_core(clauses: &'c [DlClause], nominals: &[ClassId]) -> Self {
+        if nominals.is_empty() {
+            return Self::new(clauses, ClassId::new(0));
+        }
+        Self::with_labelled_nodes(clauses, nominals)
+    }
+
+    /// One fresh node per entry of `labels` (node `i` labelled `labels[i]`), with
+    /// default engine state otherwise. Shared by [`Self::new_seeded`] and
+    /// [`Self::new_nominal_core`]; `labels` is non-empty.
+    fn with_labelled_nodes(clauses: &'c [DlClause], labels: &[ClassId]) -> Self {
+        let n = labels.len();
         let mut nodes: Vec<HyperNode> = Vec::with_capacity(n);
-        for i in 0..n {
+        for (i, &label) in labels.iter().enumerate() {
             let order = u32::try_from(i).expect("individual count fits u32");
             let mut hn = HyperNode {
                 order,
                 ..HyperNode::default()
             };
-            let nominal = ClassId::new(seed.nominal_base + order);
-            hn.add(nominal, DepSet::EMPTY);
+            hn.add(label, DepSet::EMPTY);
             nodes.push(hn);
         }
         let representative: Vec<HNode> = (0..n)
             .map(|i| HNode(u32::try_from(i).expect("fits u32")))
             .collect();
-        let mut engine = Self {
+        Self {
             clauses,
             extra_clauses: &[],
             disjoint_pairs: std::sync::Arc::new(build_disjoint_pairs(clauses)),
@@ -4232,35 +4286,7 @@ impl<'c> HyperEngine<'c> {
             sat_lookahead: None,
             shadow_dep_probe: false,
             current_branch_level: 0,
-        };
-        // Asserted ObjectPropertyAssertion edges: mirror as edge +
-        // reverse pred (matches `from_snapshot` bookkeeping). Indices
-        // out of range (defensive) are skipped — a missing edge only
-        // under-detects (sound).
-        for &(from, role, to) in &seed.property_assertions {
-            let (fi, ti) = (from as usize, to as usize);
-            if fi >= n || ti >= n {
-                continue;
-            }
-            let (src, tgt) = (HNode(from), HNode(to));
-            engine.nodes[fi].edges.push((role, tgt));
-            engine.nodes[ti].preds.push((role, src));
         }
-        // Asserted SameIndividual merges. `merge` resolves through the
-        // union-find, redirects edges/labels, and (in this design) never
-        // clashes since distinctness is clause-only. Out-of-range indices
-        // are skipped (sound under-seed).
-        for &(a, b) in &seed.same_pairs {
-            if (a as usize) >= n || (b as usize) >= n {
-                continue;
-            }
-            // `merge` returns `true` only on a `≠` violation, which cannot
-            // happen here (no engine `neq`); the boolean is ignored on
-            // purpose — a real `Same+Different` clash surfaces via the
-            // disjointness clause during `decide`.
-            let _ = engine.merge(HNode(a), HNode(b));
-        }
-        engine
     }
 
     /// Compute the live (non-dead) disjunct indices for clause `ci` at `node`,

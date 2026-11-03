@@ -6808,6 +6808,7 @@ fn atomic_or_tseitin_body_with_extras(
 /// with `∃S.C ⊑ M`, then the outer body becomes the And of atomic
 /// operands ∪ {M}). Returns None if any operand can't be reduced to
 /// an atomic id this way.
+#[allow(clippy::too_many_arguments)]
 fn atomic_classes_with_existential_markers(
     ids: &[ConceptId],
     pool: &ConceptPool,

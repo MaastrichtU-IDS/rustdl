@@ -1,7 +1,7 @@
 //! #435 / #436: a ⊤ filler (`∃r.⊤`) in the EL saturator, in every position the
 //! pure-EL gate admits it. On main each POSITIVE case below was a missed entailment
 //! reported with `completeness_guaranteed: true` (the D10 shape); the reproducers are
-//! the generated net's (`el_guaranteed`, seed 20261106), Konclude and HermiT agreeing.
+//! the generated net's (`el_guaranteed`, seed 20261106), Konclude and `HermiT` agreeing.
 //!
 //! Every positive case asserts the subsumption on BOTH surfaces (classify, which
 //! takes the pure-EL saturation path, and the per-pair `is_subclass_of`), and that

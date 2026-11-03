@@ -1373,6 +1373,24 @@ impl WorklistEngine {
         }
     }
 
+    /// The proof rule for a domain step that gives some class the domain head `dom`.
+    /// #436: a trigger ⊤-marker `T_R ≡ ∃R.⊤` is a domain head by its own
+    /// definition, not by an axiom (the step is `∃R.· ⊑ ∃R.⊤`), so it is a
+    /// `SyntheticDefinition`, which needs no axiom; any other head keeps `axiom_rule`.
+    fn domain_step_rule(&self, dom: ClassId, axiom_rule: ElRule) -> ElRule {
+        let by_definition = self.proof_trace.as_ref().is_some_and(|t| {
+            matches!(
+                t.synthetic_defs.get(&dom),
+                Some(proof::SyntheticDef::TopMarker { .. })
+            )
+        });
+        if by_definition {
+            ElRule::SyntheticDefinition
+        } else {
+            axiom_rule
+        }
+    }
+
     /// Push `(c, d)` onto the subsumer worklist if not yet asserted.
     fn enqueue_subsumer(&mut self, c: ClassId, d: ClassId) {
         // Flag OFF: `contains` is the only (weak) filter — a pair already in
@@ -1897,21 +1915,8 @@ impl WorklistEngine {
                                     .find(|(r, d_, _)| r == super_role && *d_ == dom)
                                     .map(|(_, _, idx)| AxiomRef(*idx))
                             });
-                            // #436: a trigger ⊤-marker `T_R ≡ ∃R.⊤` is a domain head by
-                            // its own definition, not by an axiom: the step is
-                            // `∃R.· ⊑ ∃R.⊤`, which needs none.
-                            let by_definition = self.proof_trace.as_ref().is_some_and(|t| {
-                                matches!(
-                                    t.synthetic_defs.get(&dom),
-                                    Some(proof::SyntheticDef::TopMarker { .. })
-                                )
-                            });
                             let inf = Inference {
-                                rule: if by_definition {
-                                    ElRule::SyntheticDefinition
-                                } else {
-                                    ElRule::DomainSub
-                                },
+                                rule: self.domain_step_rule(dom, ElRule::DomainSub),
                                 premise_facts: vec![
                                     DerivedFact::Sub(c, d),
                                     DerivedFact::Exist(d, fact.role, fact.target),
@@ -2273,7 +2278,7 @@ impl WorklistEngine {
                                 .map(|(_, _, idx)| AxiomRef(*idx))
                         });
                         let inf = Inference {
-                            rule: ElRule::DomainFact,
+                            rule: self.domain_step_rule(dom, ElRule::DomainFact),
                             premise_facts: vec![DerivedFact::Exist(
                                 fact.sub,
                                 fact.role,
@@ -2295,7 +2300,7 @@ impl WorklistEngine {
                                     .map(|(_, _, idx)| AxiomRef(*idx))
                             });
                             let inf = Inference {
-                                rule: ElRule::DomainFact,
+                                rule: self.domain_step_rule(dom, ElRule::DomainFact),
                                 premise_facts: vec![
                                     DerivedFact::Sub(*y, fact.sub),
                                     DerivedFact::Exist(fact.sub, fact.role, fact.target),
@@ -3343,7 +3348,10 @@ struct TseitinAllocator {
     /// whatever its filler and through sub-roles, makes its source `⊑ T_R`. A fact
     /// lowering would wait on the witness `TW_R` and fire only on facts targeting
     /// it. Sound as a one-way trigger marker: every model extends with
-    /// `T_Rᴵ := (∃R.⊤)ᴵ`. Distinct from `top_witness_by_role` by construction.
+    /// `T_Rᴵ := (∃R.⊤)ᴵ`. It gets no subsumers or facts of its own. Inside a deeper
+    /// trigger (`∃r.∃s.∃R.⊤ ⊑ W`) it can be the body of an enclosing two-way marker
+    /// `M ≡ ∃s.T_R`, which stays correct under the same reading. Distinct from
+    /// `top_witness_by_role` by construction.
     top_marker_by_role: HashMap<RoleId, ClassId>,
     /// Stable opaque synthetic standing in for a **provably-empty** existential
     /// filler (`∃r.⊥`, `∃r.(A ⊓ ⊥)`, `∃r.∃s.⊥`, …). Allocated lazily by
@@ -3387,7 +3395,7 @@ impl TseitinAllocator {
         synthetic
     }
 
-    /// Get-or-allocate the opaque ⊤-witness synthetic for `∃R.⊤`. See
+    /// Get-or-allocate the per-role ⊤-witness synthetic for `∃R.⊤`. See
     /// `top_witness_by_role`.
     fn introduce_top_witness(&mut self, role: RoleId) -> ClassId {
         if let Some(&existing) = self.top_witness_by_role.get(&role) {
@@ -5014,11 +5022,11 @@ fn lower_sub_class_of(
             for &op in operands {
                 match pool.get(op) {
                     ConceptExpr::Atomic(id) => bodies.push(*id),
-                    // #436: an `∃R.⊤` (or `≥1 R.⊤`) operand asks only for SOME
+                    // #436: an `∃R.⊤` operand asks only for SOME
                     // `R`-successor, so it is the domain-driven ⊤-marker `T_R` itself,
                     // with no outer marker. Its body has no lowering of its own (`⊤`
                     // under no edge), so this operand used to drop the whole trigger.
-                    ConceptExpr::Some(role, body) | ConceptExpr::Min(1, role, body)
+                    ConceptExpr::Some(role, body)
                         if !role.is_inverse() && matches!(pool.get(*body), ConceptExpr::Top) =>
                     {
                         bodies.push(tseitin.introduce_top_marker(role.role_id(), rules));
@@ -5438,9 +5446,11 @@ fn atomic_existential_rhs(
     // `∃R.⊤` (ObjectSomeValuesFrom(R, owl:Thing)): the ⊤ filler has no
     // atomic_or_tseitin body, so previously this made no fact and the subject never
     // got an R-marker — the domain rule (`∃R.⊤ ⊑ C` = domain(R)=C) then never fired
-    // on it. Emit a fact to an opaque ⊤-witness so the domain inference fires (e.g.
-    // `A ≡ ∃R.⊤`, `B ≡ ∃R.⊤` ⟹ A ≡ B via domain(R) ⊒ {A,B}). Sound: the witness has
-    // no subsumers (⊤-equivalent), so it only ever triggers domain(R).
+    // on it. Emit a fact to the per-role ⊤-witness so the domain inference fires (e.g.
+    // `A ≡ ∃R.⊤`, `B ≡ ∃R.⊤` ⟹ A ≡ B via domain(R) ⊒ {A,B}). Sound: the witness
+    // stands for "an R-successor" (`∃R⁻.⊤`), and its only subsumers are the ranges
+    // of R and every `⊤ ⊑ C` (#435, `top_witness_subsumers`), both true of every
+    // R-successor.
     if matches!(pool.get(*body), ConceptExpr::Top) {
         return Some((
             role.role_id(),
@@ -5469,7 +5479,7 @@ fn atomic_existential_rhs(
 /// ⊤-weakening fallback for an RHS existential whose body
 /// [`atomic_existential_rhs`] refuses (a union filler, a negation, any
 /// out-of-fragment shape): `X ⊑ ∃R.body` entails `X ⊑ ∃R.⊤` for EVERY body,
-/// so emit the fact to the same opaque per-role ⊤-witness the `∃R.⊤` arm
+/// so emit the fact to the same per-role ⊤-witness the `∃R.⊤` arm
 /// uses. That is all the domain machinery needs — `DomainSub` walks
 /// `role_super`, so `Domain(S)` for every told super `S ⊒ R` now fires on
 /// `X` even though the filler itself stays unrepresented (the COSMO shape
@@ -5484,9 +5494,10 @@ fn atomic_existential_rhs(
 /// R-successor, asserting the original (stronger) head off the weakened
 /// premise. The And-LHS arm therefore still drops these bodies.
 ///
-/// The ⊤-witness has no subsumers by design, so the only triggers this fact
-/// can feed are `∃R.⊤ ⊑ Z` forms (domain axioms and `≡ ∃R.⊤` definitions) —
-/// each of which is genuinely entailed by "X has SOME R-successor".
+/// The ⊤-witness carries only what every `R`-successor has (the ranges of `R`
+/// and every `⊤ ⊑ C`, #435), so the triggers this fact can feed are `∃R.⊤ ⊑ Z`
+/// forms (domain axioms, `≡ ∃R.⊤` definitions) and `∃R.F ⊑ Z` with `F` such a
+/// range or `⊤`-subsumer — each genuinely entailed by "X has SOME R-successor".
 fn top_weakened_existential_rhs(
     c: ConceptId,
     pool: &ConceptPool,
@@ -6684,9 +6695,9 @@ fn atomic_or_tseitin_body_with_extras(
             outer_role,
             pos,
         )?,
-        // #436: `∃R.⊤` (or `≥1 R.⊤`) in a TRIGGER body means "has some `R`-successor",
+        // #436: `∃R.⊤` in a TRIGGER body means "has some `R`-successor",
         // whatever the filler: the domain-driven ⊤-marker `T_R`.
-        ConceptExpr::Some(role, inner_body) | ConceptExpr::Min(1, role, inner_body)
+        ConceptExpr::Some(role, inner_body)
             if pos == Pos::Trigger
                 && !role.is_inverse()
                 && matches!(pool.get(*inner_body), ConceptExpr::Top) =>
@@ -6824,7 +6835,7 @@ fn atomic_classes_with_existential_markers(
         match pool.get(c) {
             ConceptExpr::Atomic(id) => out.push(*id),
             // #436: see the same arm in `atomic_or_tseitin_body_with_extras`.
-            ConceptExpr::Some(role, inner_body) | ConceptExpr::Min(1, role, inner_body)
+            ConceptExpr::Some(role, inner_body)
                 if pos == Pos::Trigger
                     && !role.is_inverse()
                     && matches!(pool.get(*inner_body), ConceptExpr::Top) =>

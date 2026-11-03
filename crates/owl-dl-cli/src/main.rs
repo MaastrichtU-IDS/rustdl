@@ -1350,8 +1350,9 @@ fn sorted_verify_el_violations(
 /// 2026-09-04, cascade reports `Violated` with **zero** build reasons — #81
 /// changed it, and the citation went stale. Every `verify-el` fixture was
 /// checked: the two `Violated` ones (`cascade.ofn`,
-/// `conjexists-builder-gap.ofn`) both carry no reasons, and the three that do
-/// carry reasons (`chainrange.ofn`, `chainrange_ctl.ofn`) are
+/// `conjexists-builder-gap.ofn`) both carry no reasons, and the two that do
+/// carry reasons (`chainrange.ofn`, `chainrange_ctl.ofn`; `topwitness.ofn` was a
+/// third until #435 closed its gap) are
 /// all `Unresolved`.
 /// Does this build reason mean the MODEL ITSELF is incomplete by construction, as
 /// opposed to naming a localized gap in an otherwise-complete model?

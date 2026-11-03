@@ -90,3 +90,29 @@ fn nested_top_trigger_proof() {
          SubClassOf(ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s owl:Thing)) :W)",
     );
 }
+
+/// #436, fact position: the nested witness carries `Range(s)` through a
+/// conjunction synthetic (`TW_s ⊓ F`), which must render and check.
+#[test]
+fn nested_top_fact_proof() {
+    proves_cleanly(
+        "fact",
+        "SubClassOf(:X ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s owl:Thing)))
+         ObjectPropertyRange(:s :F)
+         SubClassOf(ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :F)) :W)",
+    );
+}
+
+/// #436: the ⊤-marker reached by the domain rule on a chain-COMPOSED fact (the
+/// `DomainFact` recording site): still a definition, not a gap.
+#[test]
+fn top_marker_on_a_composed_fact_proof() {
+    proves_cleanly(
+        "chain",
+        "Declaration(ObjectProperty(:t)) Declaration(Class(:A))
+         SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t)
+         SubClassOf(:X ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :B)))
+         SubClassOf(:X :A)
+         SubClassOf(ObjectIntersectionOf(:A ObjectSomeValuesFrom(:t owl:Thing)) :W)",
+    );
+}

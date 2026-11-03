@@ -542,3 +542,79 @@ both, the gate certifies completeness and the engine drops the inference: the D1
 curated corpus does not carry either; the FP=0 net reports MISSED=0 on every fixture. Issue
 drafts went to the manager; no fix is in this change.
 
+
+## Route-pair laws (#363 package E, stateful half)
+
+`scripts/gen/routes.py` asks the same question by different routes and checks that the
+semantic answer (`consistent`, the unsat set, the closure) does not depend on the route. It runs
+over the 4000 generated cases (the default control, `el_only`, `data_heavy`, `el_guaranteed`),
+whose cached Konclude ∩ HermiT oracle breaks ties. A law compares two runs only when neither
+gave up; R4 is the exception and skips only if the full run gave up. A run gave up if any of
+these holds: `incomplete`, `consistency_undetermined`, `derived_same_undecided`, prep,
+conversion or parse timed out, or the run was killed at the 30 s cap. Plan:
+`notes/plans/2026-11-03-363-package-e-stateful.md` (v2, Fable-reviewed).
+
+Measured 2026-11-03 on a5a2e063, cores 92–94. R1–R3 use `--pair-timeout-ms 1000` on both
+sides.
+
+| law | route pair | compared | held | budget-cut | violations |
+|---|---|---:|---:|---:|---:|
+| R1 | `RAYON_NUM_THREADS` 1 vs 8 (one core) | 3984 | 3984 | 16 | 0 |
+| R2 (a) | default vs `HYPERTABLEAU_TRUST_SAT=0` | 3959 | 3950 | 41 | 0 |
+| R2 (b) | default vs `HYPERTABLEAU=0` | 3926 | 3898 | 74 | 0 |
+| R3.1 | cold CLI vs warm Python (one process, 4000 ontologies) | 3984 | 3984 | 16 | 0 |
+| R3.2 | warm in order vs warm shuffled | 3985 | 3985 | 15 | 0 |
+| R3.3 | `is_subclass` vs `direct_subsumers` + `equivalent_classes` | 4000 | 3999 | – | 1, unconfirmed (below) |
+| R4 | `--global-timeout-ms` 1, 5, 25 and `--pair-timeout-ms 1` vs full | 3984 each | 3984 each | 16 | 0 |
+| R5.1 | a must-leave-PureEl token, yet `# fragment: pure-EL` | 2721 | 2721 | – | 0 |
+| R5.2 | an `el_guaranteed` case reports PureEl | 1000 | 998 | – | 2: the #108 composed-chain-range exit, as pre-declared |
+| R5.3 | text output vs JSON output | 3984 | 3984 | 16 | 0 |
+
+**R2 is not "default ⊆ reference".** All 37 differences in R2 were adjudicated against the
+oracle, and none is an FP on either route:
+- 14: the reference recovers an oracle-confirmed entailment the default misses. The default
+  reports `completeness_guaranteed: false` on all of them, so these are its declared exposure.
+- 3: the no-wedge route misses what the default finds.
+- 6: no oracle.
+- 14: the difference is only on classes the oracle excludes (unsat or Thing-equivalent).
+
+**R4 found a non-monotonic budget, and it is explained.** On `data_heavy` case 422, a
+`--pair-timeout-ms 1` run derives `C4 ⊑ C6` and `C2 ⊑ C6`, which the 1000 ms run misses.
+- The oracle confirms both pairs.
+- The 1000 ms run reports 34 trusted Sat refutations, and `TRUST_SAT=0` recovers the pairs.
+- So the longer budget lets the wedge reach a `Sat` that is trusted and wrong, while the 1 ms
+  cut falls through to the tableau.
+
+This is the documented `trust_sat` exposure, not a finding.
+
+**R3.3, unconfirmed.** In the first warm pass, default case 812's `Classification` reported
+`C1 ⊑ C7` and `C7 ⊑ C0` through `direct_subsumers`, but `is_subclass(C1, C0)` was false; `C4`
+behaved the same.
+- The run was incomplete: 10 pairs cut, under a 25 s global budget, while the host was loaded.
+- It did not reproduce in 120 targeted runs, at per-pair budgets of 1, 5, 25 and 100 ms and
+  global budgets of 20 ms to 3 s. In all 120 the relation stayed transitive.
+- A 300-case transitivity probe at 1 ms found none either.
+- The mechanism (a cut pair leaving the matrix non-transitive) is plausible but unproven. It is
+  kept here as an observation, not filed.
+
+**Mutants.** Two new mutants are in `scripts/mutants/`. Both are detected, as pre-declared. On
+500 cases (125 per set):
+- **ME1** (a cut per-pair probe published as subsumed) was caught by R4.1 in 5 cases: FPs under
+  a cut that the oracle refutes. Four came at `--pair-timeout-ms 1` and one at
+  `--global-timeout-ms 25`.
+- **ME2** (a process-global saturation memo keyed by class count) was caught only by the warm
+  route, in 97 cases: R3.2 on all 97, R3.1 on 48, R3.3 on 7. The CLI routes see nothing, because
+  they run one ontology per process. ME2 is the third version. Two earlier versions changed no
+  measured answer and were replaced before measurement:
+  - the first cached the told tables, which do not decide the hierarchy;
+  - the second memoised only `saturate()`, which a classify with a global budget bypasses.
+
+**Limits.**
+- R1 compares 1 and 8 threads on one core. It tests interleavings, not real parallel speed, and
+  no thread mutant was built: a planted race cannot be made to fire on purpose.
+- The warm route covers what the Python API exposes: `classify`, `Classification` queries and
+  an interleaved `is_consistent`. `is_subclass_of` was dropped from the interleave because it
+  runs no inconsistency guard and does not finish on an inconsistent KB (default case 438).
+  Classify in the warm route uses a 25 s global budget, standing in for the CLI's 30 s kill.
+- R5.1's predictor is token-based. Degenerate `ObjectUnionOf(:C :C)` (3 control cases) and
+  `ObjectComplementOf` (neg-to-⊥) are not predictors, because the gate correctly admits them.

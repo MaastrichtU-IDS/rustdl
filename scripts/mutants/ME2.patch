@@ -1,0 +1,56 @@
+# rustdl package E mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Detector: scripts/gen/routes.py (route-pair laws), not the laws harness.
+# id: ME2
+# base: a5a2e0636f0624f40dbc24f558e2d83c38be37cc
+# layer: EL saturation entry points (owl-dl-saturation), process-global state
+# reopens: state leaking across ontologies in one process (a memo keyed by class count)
+# env: -
+# expect: none
+# expect-routes: R3.1/R3.2 (warm only; the one-ontology-per-process CLI routes cannot see it)
+# note: two earlier versions changed no measured answer and were replaced: a told-tables
+#       cache (told tables do not decide the hierarchy), and a memo in saturate() alone
+#       (classify with a global budget takes saturate_with_deadline instead).
+--- a/crates/owl-dl-saturation/src/lib.rs	2026-11-03 18:30:25.775157339 +0000
++++ b/crates/owl-dl-saturation/src/lib.rs	2026-11-03 18:30:25.911158807 +0000
+@@ -305,9 +305,30 @@
+ /// pushed onto a worklist; the loop pops and fires *only* the rules
+ /// that depend on that specific fact. Replaces the previous
+ /// full-table sweep on each fixed-point iteration.
++// ME2 mutant: a process-global memo keyed by class count only, not by ontology. Shared by
++// both classify entry points (`saturate` and `saturate_with_deadline`).
++static ME2_MEMO: std::sync::Mutex<Option<(usize, Subsumers)>> = std::sync::Mutex::new(None);
++
++fn me2_get(n: usize) -> Option<Subsumers> {
++    let g = ME2_MEMO.lock().ok()?;
++    g.as_ref().filter(|(k, _)| *k == n).map(|(_, s)| s.clone())
++}
++
++fn me2_put(n: usize, s: &Subsumers) {
++    if let Ok(mut g) = ME2_MEMO.lock() {
++        *g = Some((n, s.clone()));
++    }
++}
++
+ #[must_use]
+ pub fn saturate(internal: &InternalOntology) -> Subsumers {
+-    saturate_with_config(internal, &SaturateConfig::default()).0
++    let n = internal.vocabulary.num_classes();
++    if let Some(s) = me2_get(n) {
++        return s;
++    }
++    let s = saturate_with_config(internal, &SaturateConfig::default()).0;
++    me2_put(n, &s);
++    s
+ }
+ 
+ /// How many units of work happen between two `Instant::now()` reads in
+@@ -335,6 +356,9 @@
+     let Some(deadline) = deadline else {
+         return (saturate(internal), false);
+     };
++    if let Some(s) = me2_get(internal.vocabulary.num_classes()) {
++        return (s, false);
++    }
+     let n = internal.vocabulary.num_classes();
+     let role_super_map = build_role_super(internal);
+     let (rules, tseitin, num_total_classes, maybe_trace) =

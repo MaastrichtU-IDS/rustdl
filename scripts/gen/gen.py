@@ -53,6 +53,8 @@ PROFILES = {
     "el_only": {"el": 6, "domrange": 2, "roles": 1, "bot": 1},
     "card_heavy": {**FAMILIES, "card": 6, "forall": 4, "neg_or": 4},
     "data_heavy": {**FAMILIES, "data": 6},
+    # Strict pure EL with motifs (#363 step 3a): a separate generator, ElCase below.
+    "el_guaranteed": {},
 }
 
 
@@ -346,6 +348,202 @@ class Case:
         return render(self.header(), self.classes, self.roles, self.dprops, self.inds, axioms)
 
 
+EL_KINDS = {"sub": 4, "equiv": 3, "bot": 1, "disjoint": 1, "domrange": 2, "gci_domain": 2}
+MOTIFS = ("gci_domain", "nested_range")
+
+
+class ElCase:
+    """`el_guaranteed` (#363 step 3a): strictly what `is_pure_el` admits, so rustdl's
+    `completeness_guaranteed` holds and a classify miss is a finding.
+
+    EL concepts (atomic, ⊓, forward ∃, ⊤, ⊥) in SubClassOf / EquivalentClasses; atomic
+    DisjointClasses; forward sub-roles, length-2 chains, transitivity and role
+    equivalence; atomic Domain/Range; non-atomic domain heads only in the GCI spelling
+    `∃r.⊤ ⊑ X`. No inverses, data properties or individuals. With probability 0.5 one
+    motif is planted with distinct picks, so the axiom it targets changes an answer:
+      gci_domain   (#114, M8a): ∃r.⊤ ⊑ P ⊓ ∃s.S, C ⊑ ∃r.B, ∃s.S ⊑ Z  ⟹ C ⊑ Z, C ⊑ P
+      nested_range (#81): three sub-shapes, each ⟹ C ⊑ D
+    The default `Case` is not touched: this class has its own RNG stream."""
+
+    profile = "el_guaranteed"
+
+    def __init__(self, seed, index, profile="el_guaranteed"):
+        self.seed, self.index = seed, index
+        self.rng = random.Random(f"{seed}:{index}:el_guaranteed")
+        r = self.rng
+        self.classes = [f"C{i}" for i in range(r.randint(4, 10))]
+        self.roles = [f"r{i}" for i in range(r.randint(2, 4))]
+        self.dprops, self.inds = [], []
+        self.role_axioms, self.axioms = [], []
+        self.n_target = r.randint(3, 15)
+        self.motif = "none"
+        if r.random() < 0.5:
+            self._plant_motif()
+        self._draw_roles()
+        self.simple = simple_roles(self.roles, self.role_axioms)
+        tries = 0
+        kinds = list(EL_KINDS)
+        w = [EL_KINDS[k] for k in kinds]
+        while len(self.axioms) < self.n_target and tries < 200:
+            tries += 1
+            ax = getattr(self, f"el_{r.choices(kinds, w)[0]}")()
+            if ax and ax not in self.axioms:
+                self.axioms.append(ax)
+
+    def _plant_motif(self):
+        r = self.rng
+        kind = r.choice(MOTIFS)
+        if len(self.roles) < 2:
+            return
+        if kind == "gci_domain":
+            if len(self.classes) < 5:
+                return
+            c, b, p, s_, z = r.sample(self.classes, 5)
+            ro, so = r.sample(self.roles, 2)
+            ax = [f"SubClassOf(ObjectSomeValuesFrom(:{ro} owl:Thing) "
+                  f"ObjectIntersectionOf(:{p} ObjectSomeValuesFrom(:{so} :{s_})))",
+                  f"SubClassOf(:{c} ObjectSomeValuesFrom(:{ro} :{b}))",
+                  f"SubClassOf(ObjectSomeValuesFrom(:{so} :{s_}) :{z})"]
+            name = "gci_domain"
+        else:
+            sub = r.choice("abc")
+            need = 5 if sub == "c" else 4
+            if len(self.classes) < need:
+                return
+            pick = r.sample(self.classes, need)
+            ro, so = r.sample(self.roles, 2)
+            if sub == "a":
+                c, a, f, d = pick
+                ax = [f"ObjectPropertyRange(:{ro} :{f})",
+                      f"SubClassOf(:{c} ObjectSomeValuesFrom(:{ro} ObjectSomeValuesFrom(:{so} :{a})))",
+                      f"SubClassOf(ObjectSomeValuesFrom(:{ro} ObjectIntersectionOf(:{f} "
+                      f"ObjectSomeValuesFrom(:{so} :{a}))) :{d})"]
+            elif sub == "b":
+                c, a, f, d = pick
+                ax = [f"ObjectPropertyRange(:{so} :{f})",
+                      f"SubClassOf(:{c} ObjectSomeValuesFrom(:{ro} ObjectSomeValuesFrom(:{so} :{a})))",
+                      f"SubClassOf(ObjectSomeValuesFrom(:{ro} ObjectSomeValuesFrom(:{so} "
+                      f"ObjectIntersectionOf(:{a} :{f}))) :{d})"]
+            else:
+                c, e, a, f, d = pick
+                ax = [f"SubClassOf(:{c} :{e})",
+                      f"SubClassOf(ObjectIntersectionOf(:{c} :{e}) ObjectSomeValuesFrom(:{ro} :{a}))",
+                      f"ObjectPropertyRange(:{ro} :{f})",
+                      f"SubClassOf(ObjectSomeValuesFrom(:{ro} ObjectIntersectionOf(:{a} :{f})) :{d})"]
+            name = f"nested_range_{sub}"
+        self.axioms.extend(ax)
+        self.n_target = max(self.n_target, len(ax))
+        self.motif = name
+
+    def _draw_roles(self):
+        r = self.rng
+        rank = {x: i for i, x in enumerate(self.roles)}
+        drawn = []
+        for _ in range(r.randint(0, min(4, self.n_target // 2))):
+            kind = r.choice(["sub", "sub", "transitive", "equivrole", "chain", "chain"])
+            if kind in ("sub", "equivrole"):
+                a, b = sorted(r.sample(self.roles, 2), key=rank.get)
+                drawn.append((kind, a, b))
+            elif kind == "transitive":
+                drawn.append(("transitive", r.choice(self.roles)))
+            else:
+                top = r.choice(self.roles)
+                below = [x for x in self.roles if rank[x] < rank[top]]
+                form = r.choice(["below", "rr", "rs", "sr"])
+                if form == "rr":
+                    legs = (top, top)
+                elif form in ("rs", "sr") and below:
+                    s_ = r.choice(below)
+                    legs = (top, s_) if form == "rs" else (s_, top)
+                elif below:
+                    legs = (r.choice(below), r.choice(below))
+                else:
+                    continue
+                drawn.append(("chain", legs, top))
+        for ax in drawn:
+            if ax not in self.role_axioms and regular(self.roles, self.role_axioms + [ax]):
+                self.role_axioms.append(ax)
+                self.axioms.append(role_axiom_ofn(ax))
+
+    def C(self):
+        return ":" + self.rng.choice(self.classes)
+
+    def R(self):
+        return ":" + self.rng.choice(self.roles)
+
+    def ce(self, depth):
+        r = self.rng
+        k = r.choice(["atom", "atom"] + (["and", "some", "some", "top"] if depth > 0 else []))
+        if k == "atom":
+            return self.C()
+        if k == "and":
+            a, b = self.ce(depth - 1), self.ce(depth - 1)
+            return None if a == b or None in (a, b) else f"ObjectIntersectionOf({a} {b})"
+        if k == "top":
+            return f"ObjectSomeValuesFrom({self.R()} owl:Thing)"
+        f = self.ce(depth - 1)
+        return None if f is None else f"ObjectSomeValuesFrom({self.R()} {f})"
+
+    def complex_ce(self):
+        for _ in range(10):
+            x = self.ce(2)
+            if x and not x.startswith(":"):
+                return x
+        return None
+
+    def el_sub(self):
+        r = self.rng
+        k = r.choice(["atom", "rhs", "lhs"])
+        if k == "atom":
+            a, b = r.sample(self.classes, 2)
+            return f"SubClassOf(:{a} :{b})"
+        x = self.complex_ce()
+        if x is None:
+            return None
+        return f"SubClassOf({self.C()} {x})" if k == "rhs" else f"SubClassOf({x} {self.C()})"
+
+    def el_equiv(self):
+        x = self.complex_ce()
+        return None if x is None else f"EquivalentClasses({self.C()} {x})"
+
+    def el_bot(self):
+        r = self.rng
+        if r.random() < 0.5:
+            return f"SubClassOf({self.C()} owl:Nothing)"
+        a, b = r.sample(self.classes, 2)
+        return f"SubClassOf(ObjectIntersectionOf(:{a} :{b}) owl:Nothing)"
+
+    def el_disjoint(self):
+        a, b = self.rng.sample(self.classes, 2)
+        return f"DisjointClasses(:{a} :{b})"
+
+    def el_domrange(self):
+        k = self.rng.choice(["ObjectPropertyDomain", "ObjectPropertyRange"])
+        return f"{k}({self.R()} {self.C()})"
+
+    def el_gci_domain(self):
+        x = self.complex_ce()
+        return None if x is None else f"SubClassOf(ObjectSomeValuesFrom({self.R()} owl:Thing) {x})"
+
+    def header(self):
+        return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile el_guaranteed\n"
+                f"# motif: {self.motif}")
+
+    def ofn(self, axioms=None):
+        axioms = self.axioms if axioms is None else axioms
+        return render(self.header(), self.classes, self.roles, [], [], axioms)
+
+
+def make_case(seed, index, profile="default"):
+    return ElCase(seed, index) if profile == "el_guaranteed" else Case(seed, index, profile)
+
+
+EL_FORBIDDEN = ("ObjectInverseOf", "Union", "Complement", "AllValues", "Cardinality", "OneOf",
+                "HasValue", "HasSelf", "Data", "Functional", "Individual", "DisjointUnion",
+                "Symmetric", "InverseObjectProperties", "Reflexive", "Irreflexive", "Asymmetric",
+                "DisjointObjectProperties", "Assertion")
+
+
 def render(header, classes, roles, dprops, inds, axioms):
     lines = [header,
              f"Prefix(:=<{NS}>)",
@@ -373,6 +571,8 @@ def role_axiom_ofn(ax):
         return f"SymmetricObjectProperty(:{ax[1]})"
     if k == "transitive":
         return f"TransitiveObjectProperty(:{ax[1]})"
+    if k == "equivrole":
+        return f"EquivalentObjectProperties(:{ax[1]} :{ax[2]})"
     if k == "chain":
         (a, b), top = ax[1], ax[2]
         return f"SubObjectPropertyOf(ObjectPropertyChain(:{a} :{b}) :{top})"
@@ -397,6 +597,9 @@ def _edges(role_axioms):
         elif k == "inverse":
             e.add(((ax[1], False), (ax[2], True)))
             e.add(((ax[2], True), (ax[1], False)))
+        elif k == "equivrole":
+            e.add(((ax[1], False), (ax[2], False)))
+            e.add(((ax[2], False), (ax[1], False)))
         elif k == "symmetric":
             e.add(((ax[1], False), (ax[1], True)))
             e.add(((ax[1], True), (ax[1], False)))
@@ -544,7 +747,7 @@ def generate(seed, n, out, profile="default", start=0):
     out.mkdir(parents=True, exist_ok=True)
     bad = 0
     for i in range(start, start + n):
-        c = Case(seed, i, profile)
+        c = make_case(seed, i, profile)
         errs = check(c)
         if errs:
             bad += 1
@@ -588,6 +791,23 @@ def self_test():
     ok("500 cases pass the checker", illegal, 0)
     sizes = [len(Case(1, i).axioms) for i in range(200)]
     ok("axiom counts within 3..15", (min(sizes) >= 1, max(sizes) <= 15), (True, True))
+    ok("equivalent roles ranked with a chain head are irregular",
+       regular(R, [("equivrole", "r0", "r2"), ("chain", ("r0", "r1"), "r2")]), False)
+    ok("equivalent roles alone are regular", regular(R, [("equivrole", "r0", "r1")]), True)
+    els = [ElCase(11, i) for i in range(500)]
+    ok("500 el_guaranteed cases pass the checker", sum(bool(check(c)) for c in els), 0)
+    bad = [c.index for c in els if any(t in "\n".join(c.axioms) for t in EL_FORBIDDEN)]
+    ok("el_guaranteed emits no construct outside PureEl", bad, [])
+    ok("el_guaranteed declares no data property or individual",
+       any("DataProperty" in c.ofn() or "NamedIndividual" in c.ofn() for c in els), False)
+    motifs = {c.motif for c in els}
+    ok("both motifs are planted", {"gci_domain", "none"} <= motifs and
+       any(m.startswith("nested_range") for m in motifs), True)
+    m1 = [c for c in els if c.motif == "gci_domain"]
+    import re as _re
+    distinct = all(len(set(_re.findall(r":(C\d+)", " ".join(c.axioms[:3])))) == 5 for c in m1[:50])
+    ok("gci_domain motif picks five distinct classes", distinct, True)
+    ok("el_guaranteed is deterministic", ElCase(5, 7).ofn() == ElCase(5, 7).ofn(), True)
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

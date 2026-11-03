@@ -383,8 +383,10 @@ case 1283. The two targeted controls below add 1000 cases, also with 0 findings.
 
 **What the scored cases exercised.**
 - **The guaranteed tier is thin.** Of the 1794 agreed-consistent cases, 79 (4.4%) report
-  `completeness_guaranteed: true`. So a classify miss could be a finding on only those;
-  "0 findings" for misses rests almost entirely on the exposed tier.
+  `completeness_guaranteed: true`. So a classify miss could be a finding on only those.
+  **"0 findings" here is not evidence of completeness.** The `el_guaranteed` profile below
+  (step 3a) puts 99.8% of cases in that tier and finds guaranteed-tier misses on unmodified
+  main in 101 of 1000 cases.
 - **The oracle branches all got real cases:** 162 agreed-inconsistent, 283 with a
   Thing-equivalent class, 537 with an unsat class.
 - **Noise floor.** A control-vs-control rerun of the first 500 cases differs on 0.
@@ -473,3 +475,54 @@ env sabotage of the per-pair path.
 - Exposed-tier results are budget-sensitive under load.
 - The net does not run in CI: a 2000-case control took 89 minutes on 3 cores, against the
   plan's estimate of about 25.
+
+### A guaranteed-tier profile: `el_guaranteed` (#363 step 3a)
+
+The default profile rarely stays inside rustdl's pure-EL gate, so `completeness_guaranteed`
+held on 4% of its cases. The `el_guaranteed` profile is a separate generator (`ElCase`) that
+emits only what `is_pure_el` admits:
+- EL concepts (atomic, ⊓, forward ∃, ⊤, ⊥);
+- atomic `DisjointClasses`;
+- forward sub-roles, length-2 chains, transitivity and role equivalence;
+- atomic domain and range;
+- non-atomic domain heads only as the GCI `∃r.⊤ ⊑ X`.
+
+Half the cases carry a planted #114- or #81-shaped motif, recorded as `# motif:`.
+
+The default, `el_only` and `data_heavy` outputs are unchanged: all 3000 earlier cases
+regenerate byte-identically, checked in full.
+
+Measured 2026-11-03 on 21b1986e: seed 20261106, N = 1000.
+
+| | result |
+|---|---|
+| `completeness_guaranteed` | **998 of 1000** scored cases (99.8%); 100% on motif-free cases. Both exceptions (cases 64, 731) are the pre-declared `has_composed_chain_range` (#108) exit |
+| buckets | 899 clean, **101 finding**; no peer disagreement, peer failure, rustdl failure or invalid case |
+| findings | all guaranteed-tier misses (146 pairs and 50 unsat classes over the 101 cases); **0 FP** |
+| control-vs-control | 0 of 500 differ |
+| M8a (pre-declared: detected within B = 500) | **held**: 103 of 500, first at case 2, all finding tier; 211 of 1000. Fixture `fixtures/mutants/M8a.ofn`: motif 1's three axioms |
+| guaranteed rate (pre-declared ≥ 50%; expected ≥ 80%) | **held**: 99.8% |
+
+**The 101 findings on unmodified main have two mechanisms, both about `∃r.⊤`.** Every case is
+attributed by an entailment-preserving rewrite that makes the miss disappear. On every rewritten
+file the miss disappears with `completeness_guaranteed` still true, so the route does not change.
+The attribution is **sequential**: the range rewrite is tried first. The ⊤-filler rewrite repairs
+the range gap at every depth as well, so some of the 89 also contain a nested instance of
+mechanism 1.
+
+1. **12 cases: the ⊤-witness for `X ⊑ ∃r.⊤` never receives `Range(r)`.** The minimal case is
+   `X ⊑ ∃r.⊤`, `Range(r,F)`, `∃r.F ⊑ W`, which misses `X ⊑ W`. CLAUDE.md records the
+   subsumer-less witness as a design decision (`topwitness.ofn`).
+2. **89 cases: `∃s.⊤` below the top level has no lowering.** `atomic_or_tseitin_body_with_extras`
+   has no `Top` arm, so a nested `∃r.∃s.⊤`, or a domain-GCI head containing `∃s.⊤`, returns
+   `None` and the axiom is dropped. The minimal case is `X ⊑ ∃r.∃s.⊤`, `∃r.∃s.⊤ ⊑ W`, which
+   misses `X ⊑ W`.
+
+They share a root: a ⊤ filler has no typed representation, an untyped witness at the top level
+and nothing below it. One fix can close both, provided the range part lands first. Both are
+confirmed by Konclude and HermiT (`work-363-gen/el/repro/` holds the reproducers and their
+oracle records), and missed by `classify` and `subclass` alike. In
+both, the gate certifies completeness and the engine drops the inference: the D10 shape. The
+curated corpus does not carry either; the FP=0 net reports MISSED=0 on every fixture. Issue
+drafts went to the manager; no fix is in this change.
+

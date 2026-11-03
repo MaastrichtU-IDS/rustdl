@@ -5,8 +5,14 @@
 20261103    default      0-1999    bd63a61a6921   control (N=2000), mutant sensitivity (first B=500), B->N
 20261104    el_only      0-499     0199786c97ac   targeted secondary result for M8a
 20261105    data_heavy   0-499     0199786c97ac   targeted secondary result for M8b
+20261106    el_guaranteed 0-999    97f692139103   #363 step 3a: strict pure EL + motifs, control and M8a
 #
 # 0199786c97ac differs from bd63a61a6921 only in ax_domrange: a non-atomic domain/range head
 # now draws only from the profile's enabled families, so el_only stays EL. On the default
 # profile both families are enabled and the output is unchanged: the case bodies (everything
 # after the header line) regenerate byte-identically, checked on 286 of the 2000 control cases.
+#
+# 97f692139103 adds the el_guaranteed profile (a separate ElCase class with its own RNG
+# stream) and an equivrole role-axiom kind to the legality checker. The default, el_only and
+# data_heavy paths are untouched: all 3000 cases above regenerate byte-identically (bodies)
+# under both 0199786c97ac and 97f692139103, checked in full on 2026-11-03.

@@ -15,9 +15,9 @@
 //! - `CTL`: `T2` with `≥1`, consistent.
 //!
 //! `RUSTDL_WEDGE_CONSISTENCY=0` makes the wedge route undetermined, which is how
-//! these tests reach the signal and the tail. `sat-expr` / `subclass-expr` are not
-//! wired yet (they would newly pay a prepare; a follow-up prices them with
-//! `materialize_*` and `property-values`), so they keep main's answers here.
+//! these tests reach the signal and the tail. The follow-up's surfaces
+//! (`sat-expr`, `subclass-expr`, `materialize_*`, `property-values`, the property
+//! disjointness queries) are pinned in `lazy_query_consistency_followup.rs`.
 //! Every test locks the env mutex.
 
 #![allow(clippy::unwrap_used)]
@@ -124,15 +124,13 @@ fn every_surface_errors_on_a_tableau_only_inconsistency() {
             is_inconsistent(&instances_of_reporting(&o, X)),
             "{name} instances"
         );
-        // Not wired yet (follow-up): main's vacuous answers, no error.
+        // The #369 follow-up wires these two (the light route).
         assert!(
-            !class_expression_satisfiable(&o, &y).unwrap().holds(),
+            is_inconsistent(&class_expression_satisfiable(&o, &y)),
             "{name} sat-expr"
         );
         assert!(
-            class_expression_entailed_subclass(&o, &y, &thing)
-                .unwrap()
-                .holds(),
+            is_inconsistent(&class_expression_entailed_subclass(&o, &y, &thing)),
             "{name} subclass-expr"
         );
         assert!(

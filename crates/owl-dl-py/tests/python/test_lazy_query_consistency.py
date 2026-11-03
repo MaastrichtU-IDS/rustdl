@@ -27,6 +27,8 @@ X, Y, A = "http://ex/#X", "http://ex/#Y", "http://ex/#a"
 CALLS = [
     ("is_instance_of", (X, A)),
     ("instances_of", (X,)),
+    ("class_expression_satisfiable", (":Y",)),
+    ("class_expression_entailed_subclass", (":Y", "owl:Thing")),
     ("class_expression_instances", (":X",)),
     ("same_individuals", ()),
     ("different_individuals", ()),
@@ -77,4 +79,58 @@ def test_an_undetermined_kb_warns_and_keeps_the_answer(tmp_path, monkeypatch, na
 def test_a_consistent_kb_does_not_warn(tmp_path):
     members, cats = _call("instances_of", _onto(tmp_path, 1), (Y,))
     assert members == ["http://ex/#a", "http://ex/#c"]
+    assert rustdl.ConsistencyUndeterminedWarning not in cats, cats
+
+
+# #369 follow-up: the property and materialize functions, on SRC plus property
+# assertions, sub-properties and property disjointness.
+PROPS = SRC.replace(
+    "  ClassAssertion(:Y :a) ClassAssertion(:Y :c)\n",
+    "  ClassAssertion(:Y :a) ClassAssertion(:Y :c)\n"
+    "  Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))"
+    " Declaration(ObjectProperty(:s))\n"
+    "  Declaration(DataProperty(:d)) Declaration(DataProperty(:e))"
+    " Declaration(DataProperty(:f))\n"
+    '  ObjectPropertyAssertion(:p :a :c) DataPropertyAssertion(:d :a "1")\n'
+    "  SubObjectPropertyOf(:p :s) SubDataPropertyOf(:d :f)\n"
+    "  DisjointObjectProperties(:p :q) DisjointDataProperties(:d :e)\n",
+)
+
+PROP_CALLS = [
+    "object_property_values",
+    "data_property_values",
+    "disjoint_object_properties",
+    "disjoint_data_properties",
+    "materialize_inferred_property_assertions",
+    "materialize_inferred_data_property_assertions",
+    "materialize_inferred_subobjectproperty_axioms",
+    "materialize_inferred_subdataproperty_axioms",
+]
+
+
+def _props(tmp_path, minimum):
+    p = tmp_path / "props.ofn"
+    assert "DisjointObjectProperties" in PROPS
+    p.write_text(PROPS.replace("MIN", str(minimum)))
+    return str(p)
+
+
+@pytest.mark.parametrize("name", PROP_CALLS)
+def test_a_property_surface_raises_on_an_inconsistent_kb(tmp_path, name):
+    with pytest.raises(rustdl.RustdlError, match="inconsistent"):
+        getattr(rustdl, name)(_props(tmp_path, 2))
+
+
+@pytest.mark.parametrize("name", PROP_CALLS)
+def test_a_property_surface_warns_when_undetermined(tmp_path, monkeypatch, name):
+    monkeypatch.setenv("RUSTDL_WEDGE_CONSISTENCY", "0")
+    result, cats = _call(name, _props(tmp_path, 2), ())
+    assert result, f"{name}: the fixture answers non-empty"
+    assert rustdl.ConsistencyUndeterminedWarning in cats, cats
+
+
+@pytest.mark.parametrize("name", PROP_CALLS)
+def test_a_property_surface_on_a_consistent_kb_does_not_warn(tmp_path, name):
+    result, cats = _call(name, _props(tmp_path, 1), ())
+    assert result, name
     assert rustdl.ConsistencyUndeterminedWarning not in cats, cats

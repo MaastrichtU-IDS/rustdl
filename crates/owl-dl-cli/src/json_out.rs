@@ -266,6 +266,10 @@ pub(crate) struct DisjointJson {
     pub(crate) disjoint_classes: Vec<[String; 2]>,
     pub(crate) disjoint_object_properties: Vec<[String; 2]>,
     pub(crate) disjoint_data_properties: Vec<[String; 2]>,
+    /// #369: the property half's answer is non-empty and the KB's consistency
+    /// stayed undetermined (see `sat-expr`). The class half reports through
+    /// classify's own inconsistency verdict.
+    pub(crate) consistency_undetermined: bool,
     /// #389/#390: constructs present that the property half of this surface (the class half reports through `incomplete`) ignores and that
     /// can entail a relation it would report (see
     /// `owl_dl_reasoner::property_structural_gaps`). Empty means none of the known
@@ -296,6 +300,11 @@ pub(crate) struct SatExprJson {
     /// wrong `Sat` there could only make the answer a miss, never a false
     /// positive. Separate from `incomplete`; not a give-up.
     pub(crate) relies_on_trusted_consistency: bool,
+    /// #369: a positive answer whose KB consistency stayed undetermined (the
+    /// consistency wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`),
+    /// so it may be the vacuous answer of an inconsistent KB. Separate from
+    /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
+    pub(crate) consistency_undetermined: bool,
     pub(crate) satisfiable: bool,
 }
 
@@ -321,6 +330,11 @@ pub(crate) struct SubclassExprJson {
     /// wrong `Sat` there could only make the answer a miss, never a false
     /// positive. Separate from `incomplete`; not a give-up.
     pub(crate) relies_on_trusted_consistency: bool,
+    /// #369: a positive answer whose KB consistency stayed undetermined (the
+    /// consistency wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`),
+    /// so it may be the vacuous answer of an inconsistent KB. Separate from
+    /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
+    pub(crate) consistency_undetermined: bool,
     pub(crate) entailed: bool,
 }
 
@@ -351,6 +365,7 @@ pub(crate) fn build_sat_expr_json(v: owl_dl_reasoner::CeVerdict) -> SatExprJson 
         incomplete: v.incomplete(),
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
+        consistency_undetermined: v.consistency_undetermined(),
         satisfiable: v.holds(),
     }
 }
@@ -362,6 +377,7 @@ pub(crate) fn build_subclass_expr_json(v: owl_dl_reasoner::CeVerdict) -> Subclas
         incomplete: v.incomplete(),
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
+        consistency_undetermined: v.consistency_undetermined(),
         entailed: v.holds(),
     }
 }
@@ -631,6 +647,7 @@ pub(crate) fn build_disjoint_json(
     classes: &Disjointness,
     obj: Vec<(String, String)>,
     data: Vec<(String, String)>,
+    consistency_undetermined: bool,
     structural_gaps: Vec<String>,
 ) -> DisjointJson {
     let to_arr = |v: Vec<(String, String)>| {
@@ -650,6 +667,7 @@ pub(crate) fn build_disjoint_json(
         disjoint_classes: dc,
         disjoint_object_properties: to_arr(obj),
         disjoint_data_properties: to_arr(data),
+        consistency_undetermined,
         structural_gaps,
     }
 }
@@ -709,6 +727,11 @@ pub(crate) struct PropertyValuesJson {
     pub(crate) incomplete: bool,
     pub(crate) object_property_values: Vec<[String; 3]>,
     pub(crate) data_property_values: Vec<[String; 5]>,
+    /// #369: a non-empty answer whose KB consistency stayed undetermined (the
+    /// consistency wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`),
+    /// so it may be the vacuous answer of an inconsistent KB. Separate from
+    /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
+    pub(crate) consistency_undetermined: bool,
     /// #389/#390: constructs present that the data half of this surface (the object half reports through `incomplete`) ignores and that
     /// can entail a relation it would report (see
     /// `owl_dl_reasoner::property_structural_gaps`). Empty means none of the known
@@ -743,6 +766,7 @@ pub(crate) fn build_property_values_json(
         schema_version: SCHEMA_VERSION,
         incomplete: obj.incomplete() || data.incomplete(),
         object_property_values,
+        consistency_undetermined: obj.consistency_undetermined() || data.consistency_undetermined(),
         data_property_values,
         structural_gaps,
     }

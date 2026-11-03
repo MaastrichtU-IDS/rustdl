@@ -6,7 +6,8 @@ Work package A2 of the correctness assurance programme (#363). The
 **when a probe reaches no verdict, does the caller find out?**
 
 Checked against `main` at `0bbe276c` (31 October 2026); the `consistent` trust row
-(#392) against `83853936`, and the #369 consistency rows against `47c28f32`
+(#392) against `83853936`, the #369 consistency rows against `47c28f32`, and the
+#369 follow-up against `997a1334`
 (both 2 November 2026).
 
 ## The rule
@@ -67,6 +68,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `disjoint` (classes) | per-pair deadline, node cap | `DisjointClasses::incomplete` | yes | `incomplete` | warns | `disjoint_nodecap.rs` |
 | `individuals` | per-pair deadline, node cap | `incomplete` | yes | `incomplete` | warns | individuals tests |
 | `instance`, `instances`, `instances-expr`, `individuals`: consistency (#369) | not a give-up: a POSITIVE answer (an instance, a merge, a difference) on a KB whose consistency the lazy check left undetermined (the consistency wedge stalled or was cut; the main-tableau tail `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL` is off by default). An inconsistency the check witnesses is `Err(Inconsistent)`, exit 1, "ontology is inconsistent". A negative answer never runs the check | `InstanceFlags::consistency_undetermined`; `SameIndividuals` / `DifferentIndividuals` / `CeInstances` `consistency_undetermined()` | answer unchanged, exit 0, one stderr warning | `consistency_undetermined` (`individuals`, `instances-expr`); `instance` / `instances` have no `--json` | `ConsistencyUndeterminedWarning` | `lazy_query_consistency.rs`, `lazy_query_consistency_cli.rs`, `test_lazy_query_consistency.py` |
+| `sat-expr`, `subclass-expr`, `materialize_*` (object/data assertions, sub-property axioms), `property-values`, property disjointness: consistency (#369 follow-up) | not a give-up: a POSITIVE answer ("unsatisfiable", "subsumed", or non-empty) on a KB whose consistency the lazy check left undetermined: the wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS` (default 2000; #419's surfaces keep `RUSTDL_CONSISTENCY_FALLBACK_MS`, 10 000). These hold no prepared ontology, so the check runs the wedge straight from the converted ontology (no saturation or full prepare); a tableau-answered expression and `property-values` reuse the one they built. A witnessed inconsistency is `Err(Inconsistent)`, exit 1. No individual: no wedge seed, not checked and not flagged | `CeVerdict::consistency_undetermined()`; `ObjectPropertyValues` / `DataPropertyValues` `consistency_undetermined()`; `materialize_*_reporting` and `disjoint_*_properties_reporting` return `(rows, consistency_undetermined)` | answer unchanged, exit 0, one stderr warning | `consistency_undetermined` (`sat-expr`, `subclass-expr`, `property-values`, `disjoint` for its property half) | `ConsistencyUndeterminedWarning` | `lazy_query_consistency_followup.rs`, `lazy_query_consistency_cli.rs`, `test_lazy_query_consistency.py` |
 | `property-values` (object) | per-pair deadline, node cap; fragment whitelist | `incomplete` | yes | `incomplete` | warns | property-values tests |
 | `justify` (incl. `--all`, `--laconic`) | any probe under it: node cap (`RUSTDL_MAX_NODES`), a cut instance probe, the consistency fallback deadline. Top-level probe → no verdict; a QuickXplain subset probe → non-minimal; an enumeration branch probe → a justification may be missing (#396) | `JustifyOutcome { status: Verdict, incomplete }` from the `*_reporting` finders; `minimal_guaranteed` cleared on a QuickXplain give-up | top level: `unknown`, exit 3; otherwise stderr warning | `status: "unknown"` (exit 3), `incomplete`; `enumeration_complete: false` under `--all` | `justify`, `justify_all`, `PreparedOntology.justify*` warn | `justify_give_up.rs` (CLI, reasoner); `test_justify_give_up.py` |
 | `repair` | as `justify`, plus each candidate's verification probe | `Repairs::incomplete`; `complete` cleared; a candidate whose verification gave up is dropped and counted in `unverified_gave_up` | top level: `unknown`, exit 3; otherwise stderr warning and a note | no `--json` | `repair` warns | same |
@@ -113,19 +115,32 @@ about its signal, so each is filed rather than fixed here.
   one-line change. A wrong trusted `Sat` there is a miss, never a
   false positive. The Protégé plugin reads `classify --json`'s `consistent`, not
   `consistent --json`. Not filed.
-- **#369's lazy consistency check, not yet on every surface.** `instance`,
-  `instances`, `instances-expr` and `individuals` run it after a positive answer,
-  on the ontology their probes already prepared. `sat-expr`, `subclass-expr`,
-  `materialize_*` and `property-values` (`inferred_object_property_values`) still
-  have only the #313 pre-checks, so on a KB only the wedge or the tableau finds
-  inconsistent they return the vacuous answers. They hold no prepared ontology,
-  so the check would newly cost a full prepare: measured on the ORE pool,
-  `subclass-expr C owl:Thing` lost 23 of 1,054 answers to a 30 s cap. A follow-up
-  PR under #369 covers the four together, aimed at reusing or bounding that prepare.
-  `disjoint_classes` already errors on classify's inconsistency verdict, which
-  includes the wedge. With the tail off, an inconsistency only the main tableau
-  can find (the wedge stalls) is reported as `consistency_undetermined`, not as an
-  error; on the ORE pool the tail ran 82 times and found none.
+- **#369's lazy consistency check: what it does not cover.** All the query
+  surfaces above run it after a positive answer. Left out or partial:
+  - `materialize_existential_successors` runs `realize`, which already errors
+    on classify's wedge pre-check, so a check there would be redundant.
+  - `realize --properties` prints a `materialize_*` error as a `# … unavailable`
+    comment and continues (the realization above it has already printed); its
+    `consistency_undetermined` is not reported. Unchanged by design.
+  - An ontology with no individual in an `ABox` assertion (class, object property,
+    negative object property, same or different) and no nominal: the wedge needs a
+    seed, so nothing is checked or flagged (the gate classify's pre-check and
+    `PreparedOntology` use). Individuals that occur only in data property
+    assertions or declarations do not count, so `materialize_data_property_assertions`
+    and `data_property_values` on such a KB are unchecked too. A TBox inconsistency
+    only the tableau finds is missed there, as on main. The gate is also a
+    soundness guard: run unseeded, the wedge tests the first class instead
+    (`lazy_query_consistency_followup.rs` pins it).
+  - With the tail off (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL`, default off), an
+    inconsistency only the main tableau can find (the wedge stalls) is reported
+    as `consistency_undetermined`, not as an error; on the ORE pool the tail ran
+    82 times and found none.
+  - The wedge's build (one clausify) has no deadline, and its `decide` can run
+    past its budget: on `ore_ont_15655` the light check took about 6.6 s (build
+    3.4 s, decide 3.2 s against a 2 s budget). No answer was lost to the 30 s
+    cap; gating the build by a size predictor is a follow-up (#369).
+  - The light route skips #344's data-counting verification, so a wedge `Sat` on
+    a data-counting KB is trusted there (as on main), unlike #419's surfaces.
 - **single queries that drop the `ABox` (#401)**: `sat`, `subclass`, `explain`,
   `sat-expr` and `subclass-expr` drop the `ABox` seed when the ontology and the
   query have no nominal and the KB is consistent (`RUSTDL_QUERY_TBOX_ONLY`,

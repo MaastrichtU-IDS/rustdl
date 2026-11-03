@@ -158,8 +158,14 @@ nothing was dropped).
 { "schema_version": 1, "incomplete": bool,
   "disjoint_classes": [[a_iri, b_iri], ...],
   "disjoint_object_properties": [[a_iri, b_iri], ...],
-  "disjoint_data_properties": [[a_iri, b_iri], ...] }
+  "disjoint_data_properties": [[a_iri, b_iri], ...],
+  "consistency_undetermined": bool }
 ```
+
+`consistency_undetermined` (#369 follow-up, no `schema_version` bump): the property half's
+answer is non-empty and the KB's consistency stayed undetermined (see the `*-expr` section). An
+inconsistency the consistency wedge finds is an error (exit 1). The class half reports through
+classify's own inconsistency verdict.
 
 `disjoint_classes` pairs (`a < b` by IRI, sorted, deduplicated) are entailed
 disjoint named classes — `A ⊓ B` proven unsatisfiable, or told-disjoint
@@ -237,8 +243,13 @@ merges/distinctions.
 ```json
 { "schema_version": 1, "incomplete": bool,
   "object_property_values": [[s_iri, p_iri, o_iri], ...],
-  "data_property_values": [[s_iri, p_iri, lexical, datatype_iri], ...] }
+  "data_property_values": [[s_iri, p_iri, lexical, datatype_iri], ...],
+  "consistency_undetermined": bool }
 ```
+
+`consistency_undetermined` (#369 follow-up, no `schema_version` bump): the answer is non-empty
+and the KB's consistency stayed undetermined (see the `*-expr` section). An inconsistency the
+consistency wedge finds is an error (exit 1).
 
 `object_property_values` = the sound `materialize_object_property_assertions`
 seed (asserted + sub-property/inverse/symmetric/role-chain/transitive
@@ -381,9 +392,11 @@ main-tableau model. It is not a give-up and does not set `incomplete`.
 
 ```json
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
-  "relies_on_trusted_consistency": bool, "satisfiable": bool }      // sat-expr
+  "relies_on_trusted_consistency": bool, "consistency_undetermined": bool,
+  "satisfiable": bool }                                              // sat-expr
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
-  "relies_on_trusted_consistency": bool, "entailed": bool }         // subclass-expr
+  "relies_on_trusted_consistency": bool, "consistency_undetermined": bool,
+  "entailed": bool }                                                 // subclass-expr
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
   "consistency_undetermined": bool, "instances": [iri] }             // instances-expr
 ```
@@ -398,14 +411,17 @@ main-tableau model. It is not a give-up and does not set `incomplete`.
   "satisfiable" / "not entailed" / member list is not proven complete, not that it is wrong (the
   meaning `classify --json` uses).
 - `relies_on_trusted_consistency` (#401): see the `prove --json` note above.
-- `consistency_undetermined` (`instances-expr` only; #369, added without a `schema_version`
-  bump): set only when a probe answered positively (anonymous members count, so
-  `instances` may be empty) and the KB's
-  consistency stayed undetermined: the consistency wedge stalled or was cut, and the
-  main-tableau tail (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`) is off by default. On an
+- `consistency_undetermined` (#369; `instances-expr` since #419, `sat-expr` /
+  `subclass-expr` since the follow-up; added without a `schema_version` bump): set only on a
+  positive answer (`satisfiable: false`, `entailed: true`, or a probe found a member, anonymous
+  members included, so `instances` may be empty) when the KB's consistency stayed undetermined:
+  the consistency wedge stalled or ran out of budget (`RUSTDL_QUERY_LAZY_CONSISTENCY_MS`, default
+  2000, for `sat-expr` / `subclass-expr`), and the main-tableau tail
+  (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`) is off by default. An ontology with no individual is
+  not checked and never sets it. On an
   inconsistent KB every such answer holds vacuously, so the answer is then not known to be more
   than that. Not a give-up; does not set `incomplete`.
 - All three run under the single-query node cap (`RUSTDL_QUERY_MAX_NODES`, default 500000). On an
   inconsistent KB all three error (`Inconsistent`, exit 1) instead of printing JSON. Since #369
-  `instances-expr` also errors on an inconsistency only the consistency wedge finds, checked
-  after a positive answer; `sat-expr` / `subclass-expr` do not yet (a follow-up).
+  that includes an inconsistency only the consistency wedge finds, checked after a positive
+  answer.

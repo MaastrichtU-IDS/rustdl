@@ -277,3 +277,18 @@ fn a_single_edge_is_not_a_double_edge() {
         "W",
     );
 }
+
+/// FP control for the invariant `T_s` ≠ `TW_s` (the trigger ⊤-marker is not the
+/// ⊤-witness). A ⊤ trigger on `s` makes every `s`-SOURCE a `T_s` (the domain rule);
+/// the witness stands for `s`-SUCCESSORS and carries `Range(s)`. Were they one class,
+/// every `s`-source would inherit `Range(s)`: here `X ⊑ F`, which nothing entails.
+#[test]
+fn the_trigger_marker_is_not_the_witness() {
+    does_not_derive(
+        "SubClassOf(:X ObjectSomeValuesFrom(:s :B)) ObjectPropertyRange(:s :F)
+         SubClassOf(:A ObjectSomeValuesFrom(:s owl:Thing))
+         SubClassOf(ObjectIntersectionOf(:A ObjectSomeValuesFrom(:s owl:Thing)) :W)",
+        "X",
+        "F",
+    );
+}

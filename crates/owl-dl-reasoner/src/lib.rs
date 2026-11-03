@@ -17984,4 +17984,3 @@ mod class_query_guard_tests {
         );
     }
 }
-

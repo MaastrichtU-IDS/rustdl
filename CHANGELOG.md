@@ -181,7 +181,26 @@ All notable changes to rustdl are documented here. Format is based on
     `kb_inconsistent`; the text mode points at `justify <file> inconsistent`.
   - `justify`'s subclass, equivalence, disjointness and unsatisfiability checks map the guard's
     `Inconsistent` to "entailed", as its instance check already did.
-
+- **The EL saturator handles a `⊤` filler in every position the pure-EL gate admits (#435,
+  #436).** These were missed entailments under `completeness_guaranteed: true`, found by the
+  #363 generated net (`el_guaranteed`, 101 findings in 1000 cases; Konclude and HermiT agree).
+  - #435: the ⊤-witness for `X ⊑ ∃r.⊤` had no subsumers, so `Range(r, F)` never reached it and
+    `∃r.F ⊑ W` could not fire. It now stands for the set of `r`-successors and carries every
+    range of `r` and its super-roles, plus every `⊤ ⊑ C`. The `domain(r)` inference is
+    unchanged.
+  - #436: a nested `∃s.⊤` lowered to nothing.
+    - As a trigger (`∃r.∃s.⊤ ⊑ W`), it dropped the axiom. It now fires on any `s`-successor.
+    - As a domain-GCI head (`∃r.⊤ ⊑ C ⊓ ∃r.⊤`), it dropped the whole head, `C` included.
+    - As a fact, it lost the inner edge. It now keeps it, with `Range(s)` and the #84 chain
+      ranges.
+    - An `∃r.⊤` operand of a conjunction on the left side, and the consequent of
+      `∃r.B ⊑ ∃s.⊤`, used to drop their axiom. Both are lowered now.
+    - The consequent of `∃r.B ⊑ ∃s.D` also gains the `Range(s)` fold.
+  - On the generated net's 1000 cases, 1000 are now clean against 899 before, with the
+    guarantee unchanged (998).
+  - `prove` renders the two new synthetic classes, `∃r⁻.⊤` and `∃r.⊤`.
+  - `verify-el`: `topwitness.ofn`'s `LabelNotClosed` residue rested on this defect and is
+    gone. The fixture gains a consumer row (`A ⊑ W`).
 - **The named-class queries answer `owl:Thing` / `owl:Nothing` as the built-in ⊤ / ⊥
   (#427).** `sat`, `subclass` (also `--saturation-only`), `instance`, `instances`, `explain`,
   `justify` and `prove`, plus the matching Rust and Python functions, used to refuse both

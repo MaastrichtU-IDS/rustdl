@@ -233,9 +233,9 @@ fn a_as_a_class_and_a_as_a_u_successor_are_distinct_elements() {
 // Issue #81 threads them through, so the witness now carries `Range(u) = F`
 // and the gap is closed rather than merely reported.
 //
-// The report-only contract now lives on `topwitness.ofn`, whose gap is a
-// documented design decision instead of a defect — see
-// `verified_check_can_still_carry_nonempty_build_reasons`.
+// The report-only contract later lived on `topwitness.ofn`, until #435 closed
+// that gap too; the CLI's downgrade arm is now pinned on a hand-built residue
+// (`owl-dl-cli`'s `fold_build_reasons` unit tests).
 const AND_WRAPPED_NESTED_RANGE: &str = r"Prefix(:=<http://ex.org/>)
 Ontology(<http://ex.org/andwrapped>
 Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:F))
@@ -643,9 +643,8 @@ fn two_rounds_suffice_for_label_closure_range_sub() {
 // only non-trivial row and which the pre-fix engine missed entirely.
 //
 // The report-only contract — that a genuine unclosable gap is surfaced rather
-// than silently dropped — is pinned on `topwitness.ofn` instead, whose gap is
-// a documented design decision rather than a defect. See
-// `verified_check_can_still_carry_nonempty_build_reasons`.
+// than silently dropped — is pinned on a hand-built residue in `owl-dl-cli`'s
+// `fold_build_reasons` unit tests, since #435 closed `topwitness.ofn`'s gap too.
 #[test]
 fn cascade_converges_in_one_round_with_no_residual() {
     let ofn = std::fs::read_to_string("tests/fixtures/cascade.ofn").expect("fixture");
@@ -963,41 +962,33 @@ fn conjunctive_trigger_is_insufficient_at_one_round() {
 // built on the same bug. An `#[ignore]`d or bug-pinned test is a claim about
 // the engine that goes stale silently; these at least failed loudly.
 //
-// `topwitness.ofn` is durable for a reason no engine fix can erase:
-// `A ⊑ ∃u.⊤` lowers via `atomic_existential_rhs`'s `Top` arm to a
-// DELIBERATELY subsumer-less witness ("the witness has no subsumers
-// (⊤-equivalent), so it only ever triggers domain(R)"). Folding `Range(u)`
-// into it would destroy the domain inference that arm exists for, so the
-// unclosable augmentation is a documented design decision, not a defect.
-// Nothing in the fixture checks the witness's own label, so every WRITTEN
-// axiom holds and the CHECK verdict is `Verified` regardless.
+// `topwitness.ofn` WAS this vehicle, chosen as "durable for a reason no engine
+// fix can erase": `A ⊑ ∃u.⊤` lowered to a subsumer-less ⊤-witness, which was
+// recorded as a design decision, so `Range(u)` never reached it and
+// `build_model` reported `LabelNotClosed` beside a `Verified` check. Issue #435
+// showed the decision was a defect: with a consumer `∃u.G ⊑ W`, classify missed
+// `A ⊑ W` under a pure-EL completeness claim. The witness now carries
+// `Range(u)`, the label closes, and this residue is gone. That is the history of
+// `markerresidue.ofn` again (#81): a residue that rests on an engine defect is not
+// durable.
 //
-// Do not repoint this at a fixture whose residue is an engine defect — that
-// is exactly what broke its predecessor.
+// No fixture now produces `Verified` with non-empty build reasons, so the CLI's
+// downgrade arm is pinned on a hand-built residue in `owl-dl-cli`'s
+// `fold_build_reasons` unit tests. This test pins the closure.
 #[test]
-fn verified_check_can_still_carry_nonempty_build_reasons() {
+fn topwitness_closes_its_label_once_the_witness_carries_its_range() {
     let ofn = std::fs::read_to_string("tests/fixtures/topwitness.ofn").expect("fixture");
     let internal = load(&ofn);
     let (m, build_reasons) =
         owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
     assert!(
-        !build_reasons.is_empty(),
-        "topwitness.ofn must produce a residual LabelNotClosed from build_model \
-         (the ⊤-witness is subsumer-less by design, so Range(u) cannot be folded \
-         into it) — pairing that with a Verified check is the whole point of this \
-         fixture: {build_reasons:?}"
-    );
-    assert!(
-        build_reasons
-            .iter()
-            .all(|r| matches!(r, UnresolvedReason::LabelNotClosed { .. })),
-        "expected only LabelNotClosed reasons on this fixture, got: {build_reasons:?}"
+        build_reasons.is_empty(),
+        "#435: the ⊤-witness carries Range(u), so build_model closes its label: \
+         {build_reasons:?}"
     );
     let (verdict, _verified_model) = owl_dl_verify::verify(m, &internal, None);
     assert!(
         matches!(verdict, Verdict::Verified { .. }),
-        "every WRITTEN axiom in topwitness.ofn holds in the model as built — \
-         nothing checks the ⊤-witness's own label — so the CHECK result must be \
-         Verified even though build_model's own reasons are non-empty: {verdict:?}"
+        "every written axiom of topwitness.ofn holds in the built model: {verdict:?}"
     );
 }

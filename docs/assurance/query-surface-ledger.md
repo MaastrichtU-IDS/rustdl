@@ -539,11 +539,16 @@ mechanism 1.
 
 1. **12 cases: the ⊤-witness for `X ⊑ ∃r.⊤` never receives `Range(r)`.** The minimal case is
    `X ⊑ ∃r.⊤`, `Range(r,F)`, `∃r.F ⊑ W`, which misses `X ⊑ W`. CLAUDE.md records the
-   subsumer-less witness as a design decision (`topwitness.ofn`).
+   subsumer-less witness as a design decision (`topwitness.ofn`). **Closed by #435:** the
+   witness now stands for the set of `r`-successors and carries the ranges of `r` and every
+   `⊤ ⊑ C`.
 2. **89 cases: `∃s.⊤` below the top level has no lowering.** `atomic_or_tseitin_body_with_extras`
    has no `Top` arm, so a nested `∃r.∃s.⊤`, or a domain-GCI head containing `∃s.⊤`, returns
    `None` and the axiom is dropped. The minimal case is `X ⊑ ∃r.∃s.⊤`, `∃r.∃s.⊤ ⊑ W`, which
    misses `X ⊑ W`.
+   **Closed by #436:** a nested ⊤ filler lowers by position. In a fact or head it is the
+   ⊤-witness with its range folds; in a trigger it is a ⊤-marker that any `s`-successor fires.
+   The `el_guaranteed` rerun on the fix gives 1000 of 1000 cases clean, against 899 before.
 
 They share a root: a ⊤ filler has no typed representation, an untyped witness at the top level
 and nothing below it. One fix can close both, provided the range part lands first. Both are

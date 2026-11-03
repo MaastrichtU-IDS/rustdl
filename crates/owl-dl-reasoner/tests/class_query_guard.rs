@@ -119,7 +119,10 @@ fn queries(o: &SetOntology<RcStr>) -> Vec<(&'static str, Answer)> {
             "is_class_satisfiable",
             is_class_satisfiable(o, X).map(|s| (!s, QueryStats::default())),
         ),
-        ("is_subclass_of_with_stats", is_subclass_of_with_stats(o, X, Z)),
+        (
+            "is_subclass_of_with_stats",
+            is_subclass_of_with_stats(o, X, Z),
+        ),
         (
             "is_subclass_of",
             is_subclass_of(o, X, Z).map(|h| (h, QueryStats::default())),
@@ -256,16 +259,26 @@ fn the_guard_abox_budget_is_unbounded_for_low_work_and_3s_for_high_work() {
         asserted_edges: 1337,
         multiplying_rules: 38,
     };
-    assert_eq!(query_guard_abox_budget_rule_ms(family), 0, "family: unbounded");
+    assert_eq!(
+        query_guard_abox_budget_rule_ms(family),
+        0,
+        "family: unbounded"
+    );
     // ore_ont_15846: 78,441 edges x 55 multiplying rules.
     let runaway = AboxCostPredictors {
         asserted_edges: 78_441,
         multiplying_rules: 55,
     };
-    assert_eq!(query_guard_abox_budget_rule_ms(runaway), INCONSISTENCY_STINGY_MS);
+    assert_eq!(
+        query_guard_abox_budget_rule_ms(runaway),
+        INCONSISTENCY_STINGY_MS
+    );
     assert_eq!(INCONSISTENCY_STINGY_MS, 3000);
     assert_eq!(at(INCONSISTENCY_WORK_THRESHOLD), 0);
-    assert_eq!(at(INCONSISTENCY_WORK_THRESHOLD + 1), INCONSISTENCY_STINGY_MS);
+    assert_eq!(
+        at(INCONSISTENCY_WORK_THRESHOLD + 1),
+        INCONSISTENCY_STINGY_MS
+    );
 }
 
 /// `RUSTDL_QUERY_GUARD_ABOX_MS` overrides the rule, `0` included.
@@ -335,14 +348,20 @@ fn an_oversized_light_lazy_check_keeps_the_answer_and_flags_it() {
         let (sat, st) = is_class_satisfiable_with_stats(&ctl(), N).unwrap();
         assert!(!sat && st.consistency_undetermined, "ctl: unsat N flagged");
         let (holds, st) = is_subclass_of_with_stats(&p2(), Y, W).unwrap();
-        assert!(holds && st.consistency_undetermined, "P2: Y ⊑ W kept and flagged");
+        assert!(
+            holds && st.consistency_undetermined,
+            "P2: Y ⊑ W kept and flagged"
+        );
         let build: Build<RcStr> = Build::new_rc();
         let v = owl_dl_reasoner::class_expression_satisfiable(
             &ctl(),
             &ClassExpression::Class(build.class(N)),
         )
         .unwrap();
-        assert!(!v.holds() && v.consistency_undetermined(), "sat-expr N flagged");
+        assert!(
+            !v.holds() && v.consistency_undetermined(),
+            "sat-expr N flagged"
+        );
     }
     // Default: the wedge decides ctl consistent, P2 inconsistent.
     let (sat, st) = is_class_satisfiable_with_stats(&ctl(), N).unwrap();
@@ -368,7 +387,10 @@ Ontology(<http://ex/el>
     let run = || {
         let mut out = Vec::new();
         for (o, classes) in [
-            (ctl(), vec![X.to_owned(), Y.to_owned(), W.to_owned(), N.to_owned()]),
+            (
+                ctl(),
+                vec![X.to_owned(), Y.to_owned(), W.to_owned(), N.to_owned()],
+            ),
             (el.clone(), vec![e("A"), e("B"), e("C")]),
         ] {
             for a in &classes {
@@ -401,7 +423,9 @@ Ontology(<http://ex/el>
 /// saturator has a step proof for it. A consistent KB never sets the flag.
 #[test]
 fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
-    use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment, prove_entailment_rcstr_reporting};
+    use owl_dl_reasoner::{
+        ProveEntailmentResult, prove_entailment, prove_entailment_rcstr_reporting,
+    };
     let _g = lock();
     let o = parse(ABOX_CLASH);
     let (r, flags) = prove_entailment_rcstr_reporting(&o, X, Z).unwrap();
@@ -417,7 +441,10 @@ fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
     ));
     let (r, flags) = prove_entailment_rcstr_reporting(&told, X, Z).unwrap();
     assert!(flags.kb_inconsistent);
-    assert!(matches!(r, ProveEntailmentResult::JustificationFallback(_)), "{r:?}");
+    assert!(
+        matches!(r, ProveEntailmentResult::JustificationFallback(_)),
+        "{r:?}"
+    );
     {
         // The guard, not the lazy check after the step proof, reports it: with
         // the wedge off the lazy check is undetermined.
@@ -432,7 +459,10 @@ fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
     // Consistent: a step proof, no flag.
     let (r, flags) = prove_entailment_rcstr_reporting(&ctl(), Y, W).unwrap();
     assert!(!flags.kb_inconsistent);
-    assert!(matches!(r, ProveEntailmentResult::SaturatorProof(_)), "{r:?}");
+    assert!(
+        matches!(r, ProveEntailmentResult::SaturatorProof(_)),
+        "{r:?}"
+    );
     // A wedge-only inconsistency is found by the lazy check after the check
     // held: still entailed and flagged.
     let (_, flags) = prove_entailment_rcstr_reporting(&p2(), Y, W).unwrap();

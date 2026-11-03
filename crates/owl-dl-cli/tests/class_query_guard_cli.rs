@@ -76,7 +76,10 @@ fn sat_subclass_and_explain_error_on_an_inconsistent_ontology() {
     ] {
         let (code, stdout, stderr) = run(&args);
         assert_eq!(code, 1, "{args:?}\nstdout: {stdout}\nstderr: {stderr}");
-        assert!(stderr.contains("ontology is inconsistent"), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("ontology is inconsistent"),
+            "{args:?}: {stderr}"
+        );
     }
 }
 
@@ -89,7 +92,11 @@ fn prove_json_reports_the_inconsistent_kb_and_its_core() {
     assert_eq!(j["entailed"], true);
     assert_eq!(j["kb_inconsistent"], true);
     let fallback = j["justification_fallback"].as_str().unwrap();
-    for axiom in ["DisjointClasses", "ClassAssertion(:A :a)", "ClassAssertion(:B :a)"] {
+    for axiom in [
+        "DisjointClasses",
+        "ClassAssertion(:A :a)",
+        "ClassAssertion(:B :a)",
+    ] {
         assert!(fallback.contains(axiom), "{axiom} missing from {fallback}");
     }
     // Text mode points at `justify … inconsistent`.

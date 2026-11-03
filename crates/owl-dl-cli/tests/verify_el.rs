@@ -72,23 +72,10 @@ fn cascade_fixture() -> &'static str {
     )
 }
 
-/// Non-empty `build_model` reasons paired with a model that still satisfies
-/// every WRITTEN axiom, i.e. a `Verified` CHECK result. This is the ONLY
-/// fixture in this suite that exercises `fold_build_reasons`'s
-/// `Verified -> Unresolved` downgrade arm — the single most safety-critical
-/// line in `main.rs`, since an accidental pass-through there would report
-/// exit 0 over an admitted, unclosed gap.
-///
-/// WAS `markerresidue.ofn`, whose residue was a SATURATOR DEFECT (nested
-/// existential bodies lowered without folding `ObjectPropertyRange`). Issue
-/// #81 fixed it and this test failed — correctly, and loudly. `topwitness.ofn`
-/// is durable instead: `A ⊑ ∃u.⊤` lowers to a deliberately subsumer-less
-/// ⊤-witness, so `Range(u)` cannot be folded into it WITHOUT breaking the
-/// domain inference that witness exists for. That gap is a documented design
-/// decision, not a bug waiting to be closed. See
-/// `crates/owl-dl-verify/tests/model.rs`'s
-/// `verified_check_can_still_carry_nonempty_build_reasons`.
-fn residue_fixture() -> &'static str {
+/// `topwitness.ofn`: once the residue vehicle (see its `.oracle` and
+/// `owl-dl-verify`'s `topwitness_closes_its_label_once_the_witness_carries_its_range`),
+/// closed by #435. Now an ordinary fixture that verifies.
+fn topwitness_fixture() -> &'static str {
     concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../owl-dl-verify/tests/fixtures/topwitness.ofn"
@@ -385,59 +372,34 @@ fn json_violated_has_the_expected_shape() {
     assert!(v["dropped"].is_object());
 }
 
-/// Exercises `fold_build_reasons`'s `Verified -> Unresolved` downgrade arm
-/// through the ACTUAL BINARY, end to end: `topwitness.ofn`'s check verdict is
-/// `Verified` (every written axiom holds), but `build_model` admits, in its
-/// own `reasons`, that it could not close the ⊤-witness's label. Without the downgrade, the CLI would report exit 0 here — a false
-/// all-clear over an admitted gap. With it, this must be exit 3, and the
-/// build reason must be visible on both the text and `--json` surfaces, not
-/// swallowed.
+/// #435 closed `topwitness.ofn`'s residue (the ⊤-witness carries `Range(u)`), so
+/// it now verifies end to end: exit 0 on both surfaces. This test used to run
+/// `fold_build_reasons`' `Verified -> Unresolved` downgrade through the binary on
+/// that residue. No fixture produces the combination any more, so the downgrade arm
+/// is pinned on a hand-built residue in `main.rs`'s `fold_build_reasons` unit tests.
 #[test]
-fn build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_three() {
+fn topwitness_verifies_once_the_witness_carries_its_range() {
     let out = rustdl()
         .arg("verify-el")
-        .arg(residue_fixture())
+        .arg(topwitness_fixture())
         .output()
         .unwrap();
     assert_eq!(
         out.status.code(),
-        Some(3),
-        "a Verified check paired with non-empty build_model reasons must be \
-         downgraded to Unresolved (exit 3), never reported as exit 0 \
-         (Verified) or exit 2 (Violated) — stdout: {}, stderr: {}",
+        Some(0),
+        "stdout: {}, stderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.starts_with("unresolved:"),
-        "expected an unresolved: line, got {stdout:?}"
-    );
-    assert!(
-        stdout.contains("LabelNotClosed"),
-        "the build-time reason must be surfaced on the text path, not \
-         swallowed by the downgrade: {stdout:?}"
-    );
-
+    assert!(stdout.starts_with("verified:"), "{stdout:?}");
     let json_out = rustdl()
         .arg("verify-el")
         .arg("--json")
-        .arg(residue_fixture())
+        .arg(topwitness_fixture())
         .output()
         .unwrap();
-    assert_eq!(json_out.status.code(), Some(3));
+    assert_eq!(json_out.status.code(), Some(0));
     let v: serde_json::Value = serde_json::from_slice(&json_out.stdout).expect("valid JSON");
-    assert_eq!(v["verdict"], "unresolved");
-    assert_eq!(v["axioms_checked"], 0);
-    let unresolved = v["unresolved"].as_array().expect("unresolved array");
-    assert!(
-        !unresolved.is_empty(),
-        "the build reason must be surfaced on the --json path too: {v:?}"
-    );
-    assert!(
-        unresolved
-            .iter()
-            .any(|r| r.as_str().unwrap_or("").contains("LabelNotClosed")),
-        "expected a LabelNotClosed entry in unresolved: {unresolved:?}"
-    );
+    assert_eq!(v["verdict"], "verified");
 }

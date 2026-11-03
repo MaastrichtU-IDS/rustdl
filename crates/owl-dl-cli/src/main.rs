@@ -2336,13 +2336,30 @@ fn main() -> Result<()> {
             } else {
                 " (closure didn't witness it; tableau adjudicated)"
             };
+            // #427: `owl:Thing ⊑ owl:Nothing` IS the consistency check.
+            let is_consistency_query =
+                sub == owl_dl_core::OWL_THING_IRI && sup == owl_dl_core::OWL_NOTHING_IRI;
             if stats.incomplete {
+                if is_consistency_query {
+                    println!("{sub} ⊑ {sup} : unknown — the consistency check gave up");
+                    eprintln!(
+                        "warning: no inconsistency was found within budget; that is not a \
+                         verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS (default 10000) or, for \
+                         ontologies that count data values, \
+                         RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000)."
+                    );
+                    std::process::exit(3);
+                }
                 println!(
                     "{sub} ⊑ {sup} : unknown — tableau gave up (node cap, RUSTDL_QUERY_MAX_NODES)"
                 );
                 std::process::exit(3);
             }
-            note_trusted_consistency(&stats);
+            if is_consistency_query {
+                note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
+            } else {
+                note_trusted_consistency(&stats);
+            }
             println!(
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },

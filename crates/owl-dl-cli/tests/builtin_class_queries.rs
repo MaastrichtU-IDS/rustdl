@@ -143,6 +143,14 @@ fn prove_and_justify_the_built_in_forms() {
     assert_eq!(json["justification_minimal"], true);
     assert_eq!(json["incomplete"], false);
 
+    // `U ⊑ owl:Nothing`: the JSON proof's root concludes exactly the goal, which is
+    // what the Protégé plugin builds its proof from.
+    let json: serde_json::Value =
+        serde_json::from_str(&ok(&["prove", "--json", p, U, NOTHING])).unwrap();
+    assert_eq!(json["has_proof"], true);
+    let root = json["proof"]["conclusion"].as_str().unwrap();
+    assert!(root.contains("SubClassOf(:U owl:Nothing)"), "{root}");
+
     // `U ⊑ owl:Nothing`: a step proof, and it checks.
     let r = run(&["prove", "--verify-proof", p, U, NOTHING]);
     assert_eq!(r.code, 0, "{}", r.stderr);

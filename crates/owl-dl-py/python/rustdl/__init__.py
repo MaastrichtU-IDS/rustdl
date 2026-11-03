@@ -397,7 +397,10 @@ def is_class_satisfiable(path, class_iri):
 
     `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427), declared or not:
     `owl:Nothing` is unsatisfiable, and `owl:Thing` is satisfiable iff the ontology
-    is consistent (this IS `is_consistent`, with its warnings)."""
+    is consistent (this IS the consistency check). For `owl:Thing`, a
+    `TrustedConsistencyWarning` means what it means on `is_consistent`: the
+    verdict rests on the consistency wedge's model alone (#392); no `ABox` was
+    dropped, whatever the warning's text says."""
     sat, incomplete, trusted = _is_class_satisfiable_native(path, class_iri)
     _warn_if_query_incomplete("is_class_satisfiable", incomplete)
     _warn_if_trusted_consistency("is_class_satisfiable", trusted)

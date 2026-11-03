@@ -98,8 +98,11 @@ entailed" instead, even for `Aa ⊑ Aa` (#409).
   they carry its `incomplete` (a give-up reported as consistent: CLI exit 3 with
   the consistency-budget wording) and its #392 `relies_on_trusted_consistency`
   (CLI: `consistent`'s note). Instance queries of either built-in keep the
-  #313/#419 `Inconsistent` error. `Classification::is_subclass` answers `⊤ ⊑ C`
-  `false` (not materialised), as for anything it does not hold. Pinned by
+  #313/#419 `Inconsistent` error (they take the ordinary instance path on a
+  fresh `Q ≡ ⊤` / `Q ≡ ⊥`). `Classification::is_subclass` answers `⊤ ⊑ C`
+  `false` (not materialised) unless the ontology is inconsistent, where
+  everything holds. `explain owl:Thing owl:Nothing` uses the consistency wording
+  and note too. Pinned by
   `builtin_class_queries.rs` (reasoner, CLI) and `test_builtin_classes.py`.
 
 ## Not a give-up, but still a gap (filed)

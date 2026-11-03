@@ -141,8 +141,8 @@ All notable changes to rustdl are documented here. Format is based on
   positive.
   - A declaration of either built-in now interns nothing, so a declared file behaves exactly
     like the undeclared one. `Classification::classes()` no longer lists the two IRIs, and
-    `classify`'s `# classes` count matches. `DisjointUnion(owl:Thing …)` still interns one; it
-    is a follow-up.
+    `classify`'s `# classes` count matches, and `convert_back` no longer emits the
+    declaration. `DisjointUnion(owl:Thing …)` still interns one; it is a follow-up.
   - `C ⊑ owl:Thing` and `owl:Nothing ⊑ C` are true in every ontology. `C ⊑ owl:Nothing` is the
     unsatisfiability of `C`. `sat owl:Thing` and `owl:Thing ⊑ owl:Nothing` are the consistency
     check, with its flags and notes. `owl:Thing ⊑ C` is decided through a fresh class
@@ -151,8 +151,8 @@ All notable changes to rustdl are documented here. Format is based on
     (#313, #419). `a : owl:Thing` holds anyway, but that error is how callers learn the
     ontology is broken.
   - `Classification::is_subclass` (Rust and Python) answers the built-in forms that the
-    taxonomy determines. `owl:Thing ⊑ C` reads `false` there, as any fact it does not hold
-    does; ask `is_subclass_of`.
+    taxonomy determines. `owl:Thing ⊑ C` reads `false` there unless the ontology is
+    inconsistent, as any fact it does not hold does; ask `is_subclass_of`.
   - `prove C owl:Nothing` gives a step proof when the EL closure derives it, and a
     justification otherwise. A tautology prints `holds in every ontology: no axioms needed`,
     and `prove --json` gains `justification_minimal`. An empty justification is reported as

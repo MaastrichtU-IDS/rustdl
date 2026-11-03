@@ -12289,8 +12289,8 @@ fn prove_step(
 /// # Errors
 /// Propagates `ReasonError` from conversion; [`ReasonError::UnknownClass`] for
 /// a class IRI not in the ontology (sub checked first), as `is_subclass_of`
-/// (#409). `owl:Thing` / `owl:Nothing` are not in the vocabulary either,
-/// unless the ontology declares them.
+/// (#409). `owl:Thing` / `owl:Nothing` resolve to `⊤` / `⊥`, declared or not
+/// (#427); a typo beside one is still `UnknownClass`.
 pub fn prove_entailment<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     sub_iri: &str,

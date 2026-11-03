@@ -147,7 +147,7 @@ fn subsumption_with_the_built_ins() {
         );
         assert!(sub(&o, A, NOTHING), "declared={declared}");
         // Saturation-only does not see this ABox clash: "no" is its sound default.
-        assert!(owl_dl_reasoner::is_subclass_of_saturation_only(&o, THING, NOTHING).is_ok());
+        assert!(!owl_dl_reasoner::is_subclass_of_saturation_only(&o, THING, NOTHING).unwrap());
         // A TBox inconsistency the closure does witness (`⊤ ⊑ U ⊑ ⊥`).
         let tbox = onto(
             "Declaration(Class(:U)) SubClassOf(:U owl:Nothing) SubClassOf(owl:Thing :U)",
@@ -158,6 +158,30 @@ fn subsumption_with_the_built_ins() {
             "declared={declared}: saturation-only ⊤ ⊑ ⊥ on ⊤ ⊑ U ⊑ ⊥"
         );
         assert!(sub(&tbox, THING, NOTHING), "declared={declared}");
+    }
+}
+
+/// `⊤ ⊑ C` that only the tableau witnesses: `P ⊑ C` and `¬P ⊑ C` (excluded
+/// middle). The closure cannot see it (saturation-only says "no", its sound
+/// default); the full query goes through the `Q ≡ ⊤` probe to the tableau.
+#[test]
+fn top_subsumption_witnessed_only_by_the_tableau() {
+    let body = "Declaration(Class(:P)) Declaration(Class(:C))
+      SubClassOf(:P :C) SubClassOf(ObjectComplementOf(:P) :C)";
+    let c = "http://ex/#C";
+    for declared in [false, true] {
+        let o = onto(body, declared);
+        let (holds, stats) = owl_dl_reasoner::is_subclass_of_with_stats(&o, THING, c).unwrap();
+        assert!(holds && !stats.incomplete, "declared={declared}");
+        assert!(
+            !stats.answered_by_saturation,
+            "declared={declared}: the tableau decided"
+        );
+        assert!(!sub(&o, THING, "http://ex/#P"), "declared={declared}");
+        assert!(
+            !owl_dl_reasoner::is_subclass_of_saturation_only(&o, THING, c).unwrap(),
+            "declared={declared}: the closure cannot witness excluded middle"
+        );
     }
 }
 
@@ -227,7 +251,9 @@ fn instances_of_the_built_ins() {
 
 /// On an inconsistent ontology every instance query errors (#313 / #419), and ⊤ is
 /// no exception: `a : ⊤` holds anyway, but the error is how callers learn the
-/// ontology is broken.
+/// ontology is broken. The built-ins take the ordinary instance path (on a fresh
+/// `Q ≡ ⊤` / `Q ≡ ⊥`), so they get every guard it has; this fixture exercises the
+/// #313 one (an `ABox` clash the pre-check sees), not #419's tableau-only case.
 #[test]
 fn instance_queries_on_the_built_ins_keep_the_inconsistency_error() {
     for declared in [false, true] {

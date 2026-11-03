@@ -76,6 +76,8 @@ fn surfaces(path: &str) -> Vec<Vec<&str>> {
         vec!["instances", path, "http://ex/#X"],
         vec!["instances-expr", path, "<http://ex/#X>"],
         vec!["individuals", path],
+        vec!["sat-expr", path, "<http://ex/#Y>"],
+        vec!["subclass-expr", path, "<http://ex/#Y>", "owl:Thing"],
     ]
 }
 
@@ -87,25 +89,6 @@ fn every_surface_exits_1_on_a_tableau_only_inconsistency() {
         assert_eq!(r.code, 1, "{args:?}: {}", r.stderr);
         assert!(r.stderr.contains(INCONSISTENT), "{args:?}: {}", r.stderr);
     }
-}
-
-/// Not wired yet: they would newly pay a prepare, so a follow-up prices them
-/// with `materialize_*` and `property-values`. Until then, main's answers.
-#[test]
-fn sat_expr_and_subclass_expr_are_unchanged() {
-    let f = Fixture::new("expr", 2);
-    let r = run(&["sat-expr", f.path(), "<http://ex/#Y>"], &[]);
-    assert_eq!(
-        (r.code, r.stdout.as_str()),
-        (0, "unsatisfiable\n"),
-        "{}",
-        r.stderr
-    );
-    let r = run(
-        &["subclass-expr", f.path(), "<http://ex/#Y>", "owl:Thing"],
-        &[],
-    );
-    assert_eq!((r.code, r.stdout.as_str()), (0, "yes\n"), "{}", r.stderr);
 }
 
 #[test]
@@ -203,5 +186,75 @@ fn justify_never_runs_the_check() {
             &[("RUSTDL_TRACE", "1")],
         );
         assert!(!r.stderr.contains(TRACE), "min {min}: {}", r.stderr);
+    }
+}
+
+/// The #369 follow-up's surfaces, on `T2` plus property assertions and property
+/// disjointness: exit 1 when the wedge finds the inconsistency; with the wedge
+/// off, the answer is kept and `consistency_undetermined` is in `--json`.
+#[test]
+fn followup_surfaces_error_or_flag() {
+    let path = std::env::temp_dir().join(format!(
+        "rustdl-lazy-consistency-{}-props.ofn",
+        std::process::id()
+    ));
+    let src = T2.replace("MIN", "2").replace(
+        "  ClassAssertion(:Y :a) ClassAssertion(:Y :c)",
+        "  ClassAssertion(:Y :a) ClassAssertion(:Y :c)\n  \
+         Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n  \
+         ObjectPropertyAssertion(:p :a :c) DisjointObjectProperties(:p :q)",
+    );
+    std::fs::write(&path, src).unwrap();
+    let f = path.to_str().unwrap();
+    for args in [vec!["property-values", f], vec!["disjoint", f]] {
+        let r = run(&args, &[]);
+        assert_eq!(r.code, 1, "{args:?}: {}", r.stderr);
+        assert!(r.stderr.contains(INCONSISTENT), "{args:?}: {}", r.stderr);
+    }
+    let wedge_off = [("RUSTDL_WEDGE_CONSISTENCY", "0")];
+    for args in [
+        vec!["property-values", f, "--json"],
+        vec!["disjoint", f, "--json"],
+        vec!["sat-expr", f, "--json", "<http://ex/#Y>"],
+        vec!["subclass-expr", f, "--json", "<http://ex/#Y>", "owl:Thing"],
+    ] {
+        let r = run(&args, &wedge_off);
+        let v: serde_json::Value = serde_json::from_str(&r.stdout)
+            .unwrap_or_else(|e| panic!("{args:?}: {e}: {} / {}", r.stdout, r.stderr));
+        assert_eq!(
+            v["consistency_undetermined"], true,
+            "{args:?}: {}",
+            r.stdout
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// #369 follow-up: as `the_check_runs_only_after_a_positive_answer`, for
+/// `subclass-expr` (the light route).
+#[test]
+fn subclass_expr_checks_only_after_a_positive_answer() {
+    let f = Fixture::new("trace-expr", 1);
+    let trace = [("RUSTDL_TRACE", "1")];
+    let neg = run(
+        &["subclass-expr", f.path(), "owl:Thing", "<http://ex/#Y>"],
+        &trace,
+    );
+    assert_eq!(neg.stdout, "no\n", "{}", neg.stderr);
+    assert!(!neg.stderr.contains(TRACE), "{}", neg.stderr);
+    let pos = run(
+        &["subclass-expr", f.path(), "<http://ex/#Y>", "owl:Thing"],
+        &trace,
+    );
+    assert_eq!(pos.stdout, "yes\n", "{}", pos.stderr);
+    assert!(pos.stderr.contains(TRACE), "{}", pos.stderr);
+    // A negative sat-expr ("satisfiable") and an empty property-values run none.
+    for args in [
+        vec!["sat-expr", f.path(), "<http://ex/#Y>"],
+        vec!["property-values", f.path()],
+    ] {
+        let r = run(&args, &trace);
+        assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
+        assert!(!r.stderr.contains(TRACE), "{args:?}: {}", r.stderr);
     }
 }

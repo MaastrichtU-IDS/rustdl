@@ -73,7 +73,8 @@ pub use classify::{
 };
 pub use diagnose::{DerivedClass, Diagnosis, diagnose};
 pub use disjointness::{
-    Disjointness, disjoint_classes, disjoint_data_properties, disjoint_object_properties,
+    Disjointness, disjoint_classes, disjoint_data_properties, disjoint_data_properties_reporting,
+    disjoint_object_properties, disjoint_object_properties_reporting,
 };
 pub use individuals::{
     DifferentIndividuals, SameIndividuals, different_individuals, same_individuals,
@@ -136,9 +137,43 @@ pub fn abox_sat_inconsistent<A: horned_owl::model::ForIRI>(
 pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String, String)>, ReasonError> {
+    materialize_object_property_assertions_reporting(onto).map(|(out, _)| out)
+}
+
+/// [`materialize_object_property_assertions`] plus #369's
+/// `consistency_undetermined`.
+///
+/// The second value is #369's `consistency_undetermined`: the answer is
+/// non-empty and the KB's consistency stayed undetermined (the consistency wedge
+/// stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`), so it may be the
+/// vacuous answer of an inconsistent KB. A KB the wedge finds inconsistent is
+/// `Err(Inconsistent)`.
+///
+/// # Errors
+/// As [`materialize_object_property_assertions`].
+#[allow(clippy::type_complexity)]
+pub fn materialize_object_property_assertions_reporting<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(Vec<(String, String, String)>, bool), ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
-    let result = abox_saturation::saturate_abox_consistency(&internal);
-    if result.clash || query_kb_inconsistent_beyond_abox(&internal) {
+    let out = materialize_object_property_assertions_from(&internal)?;
+    // #369: a non-empty answer on a KB only the wedge finds inconsistent is vacuous.
+    let undetermined = !out.is_empty()
+        && lazy_inconsistency_check_light(&internal, "materialize_object_property_assertions")?;
+    Ok((out, undetermined))
+}
+
+/// [`materialize_object_property_assertions`] on an already-converted ontology,
+/// with the #313 guard but without #369's lazy consistency check: the seed of
+/// `inferred_object_property_values`, which checks on its own prepared ontology.
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] when the #313 guard finds a clash.
+pub(crate) fn materialize_object_property_assertions_from(
+    internal: &InternalOntology,
+) -> Result<Vec<(String, String, String)>, ReasonError> {
+    let result = abox_saturation::saturate_abox_consistency(internal);
+    if result.clash || query_kb_inconsistent_beyond_abox(internal) {
         return Err(ReasonError::Inconsistent);
     }
     let vocab = &internal.vocabulary;
@@ -200,6 +235,24 @@ pub fn data_values_anonymous_enabled() -> bool {
 pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String, String, String, String)>, ReasonError> {
+    materialize_data_property_assertions_reporting(onto).map(|(out, _)| out)
+}
+
+/// [`materialize_data_property_assertions`] plus #369's
+/// `consistency_undetermined`.
+///
+/// The second value is #369's `consistency_undetermined`: the answer is
+/// non-empty and the KB's consistency stayed undetermined (the consistency wedge
+/// stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`), so it may be the
+/// vacuous answer of an inconsistent KB. A KB the wedge finds inconsistent is
+/// `Err(Inconsistent)`.
+///
+/// # Errors
+/// As [`materialize_data_property_assertions`].
+#[allow(clippy::type_complexity)]
+pub fn materialize_data_property_assertions_reporting<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(Vec<(String, String, String, String, String)>, bool), ReasonError> {
     use horned_owl::model::{Component as C, Individual, Literal};
     use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -345,7 +398,10 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     out.sort();
     out.dedup();
     out.retain(|(s, ..)| !s.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX));
-    Ok(out)
+    // #369: a non-empty answer on a KB only the wedge finds inconsistent is vacuous.
+    let undetermined = !out.is_empty()
+        && lazy_inconsistency_check_light(&internal, "materialize_data_property_assertions")?;
+    Ok((out, undetermined))
 }
 
 /// Materialize the entailed existential successors of named individuals as a
@@ -508,13 +564,33 @@ pub fn materialize_existential_successors_reporting<A: horned_owl::model::ForIRI
 pub fn materialize_subobjectproperty_axioms<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String)>, ReasonError> {
+    materialize_subobjectproperty_axioms_reporting(onto).map(|(pairs, _)| pairs)
+}
+
+/// [`materialize_subobjectproperty_axioms`] plus #369's `consistency_undetermined`.
+///
+/// The second value is #369's `consistency_undetermined`: the answer is
+/// non-empty and the KB's consistency stayed undetermined (the consistency wedge
+/// stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`), so it may be the
+/// vacuous answer of an inconsistent KB. A KB the wedge finds inconsistent is
+/// `Err(Inconsistent)`.
+///
+/// # Errors
+/// As [`materialize_subobjectproperty_axioms`].
+pub fn materialize_subobjectproperty_axioms_reporting<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(Vec<(String, String)>, bool), ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
     if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
     let edges = crate::property_closure::object_edges(onto);
-    Ok(crate::property_closure::object_named_pairs(&edges))
+    let pairs = crate::property_closure::object_named_pairs(&edges);
+    // #369: a non-empty answer on a KB only the wedge finds inconsistent is vacuous.
+    let undetermined = !pairs.is_empty()
+        && lazy_inconsistency_check_light(&internal, "materialize_subobjectproperty_axioms")?;
+    Ok((pairs, undetermined))
 }
 
 /// Materialize the inferred DATA property-subsumption axioms `(sub, sup)` over named
@@ -526,13 +602,33 @@ pub fn materialize_subobjectproperty_axioms<A: horned_owl::model::ForIRI>(
 pub fn materialize_subdataproperty_axioms<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String)>, ReasonError> {
+    materialize_subdataproperty_axioms_reporting(onto).map(|(pairs, _)| pairs)
+}
+
+/// [`materialize_subdataproperty_axioms`] plus #369's `consistency_undetermined`.
+///
+/// The second value is #369's `consistency_undetermined`: the answer is
+/// non-empty and the KB's consistency stayed undetermined (the consistency wedge
+/// stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`), so it may be the
+/// vacuous answer of an inconsistent KB. A KB the wedge finds inconsistent is
+/// `Err(Inconsistent)`.
+///
+/// # Errors
+/// As [`materialize_subdataproperty_axioms`].
+pub fn materialize_subdataproperty_axioms_reporting<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(Vec<(String, String)>, bool), ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(onto)?;
     if query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
 
     let edges = crate::property_closure::data_edges(onto);
-    Ok(crate::property_closure::data_named_pairs(&edges))
+    let pairs = crate::property_closure::data_named_pairs(&edges);
+    // #369: as in `materialize_subobjectproperty_axioms`.
+    let undetermined = !pairs.is_empty()
+        && lazy_inconsistency_check_light(&internal, "materialize_subdataproperty_axioms")?;
+    Ok((pairs, undetermined))
 }
 
 /// Compute a sparse summary of the signature-locality partition
@@ -3345,8 +3441,9 @@ pub(crate) fn saturation_says_inconsistent(closure: &owl_dl_saturation::Subsumer
 /// individuals and `instances-expr` queries run the wedge lazily, only after a
 /// positive answer ([`PreparedOntology::lazy_inconsistency_check`]), so a consistent
 /// KB with negative answers still pays nothing; `sat-expr`, `subclass-expr`,
-/// `materialize_*` and `property-values` do not yet (they hold no prepared ontology,
-/// so the check would cost a full prepare). Default **ON**; `RUSTDL_QUERY_INCONSISTENCY_GUARD=0` reverts to the
+/// `materialize_*`, `property-values` and the property disjointness queries do too,
+/// on the light route ([`lazy_inconsistency_check_light`]) where they hold no
+/// prepared ontology. Default **ON**; `RUSTDL_QUERY_INCONSISTENCY_GUARD=0` reverts to the
 /// `ABox`-saturation check alone, and turns the #369 check off too.
 pub(crate) fn query_kb_inconsistent(internal: &InternalOntology) -> bool {
     abox_saturation::saturate_abox_consistency(internal).clash
@@ -5950,7 +6047,7 @@ pub(crate) fn ontology_uses_nominals(internal: &InternalOntology) -> bool {
 /// no inconsistency was witnessed) with an incompleteness trace.
 /// Override with `RUSTDL_CONSISTENCY_FALLBACK_MS`; default 10 000 ms.
 #[must_use]
-fn consistency_fallback_ms() -> u64 {
+pub fn consistency_fallback_ms() -> u64 {
     const DEFAULT_MS: u64 = 10_000;
     std::env::var("RUSTDL_CONSISTENCY_FALLBACK_MS")
         .ok()
@@ -7339,6 +7436,15 @@ fn is_class_satisfiable_internal_full(
     internal: InternalOntology,
     class_iri: &str,
 ) -> Result<(bool, QueryStats), ReasonError> {
+    is_class_satisfiable_keeping(internal, class_iri).map(|(sat, stats, _)| (sat, stats))
+}
+
+/// [`is_class_satisfiable_internal_full`], also returning what the query left for
+/// the #369 lazy consistency check ([`QueryOntology`]).
+pub(crate) fn is_class_satisfiable_keeping(
+    internal: InternalOntology,
+    class_iri: &str,
+) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     let class_id = internal
         .vocabulary
         .class_id(class_iri)
@@ -7360,6 +7466,7 @@ fn is_class_satisfiable_internal_full(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
             },
+            QueryOntology::Unprepared(Box::new(internal)),
         ));
     }
     if pure_el {
@@ -7372,10 +7479,11 @@ fn is_class_satisfiable_internal_full(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
             },
+            QueryOntology::Unprepared(Box::new(internal)),
         ));
     }
-    let (sat, cut, trusted, refused) =
-        run_satisfiability_reporting(internal, move |pool| pool.atomic(class_id))?;
+    let ((sat, cut, trusted, refused), prepared) =
+        run_satisfiability_keeping(internal, move |pool| pool.atomic(class_id))?;
     Ok((
         sat,
         QueryStats {
@@ -7385,6 +7493,7 @@ fn is_class_satisfiable_internal_full(
             wedge_clauses_refused: refused,
             relies_on_trusted_consistency: trusted,
         },
+        QueryOntology::Prepared(Box::new(prepared)),
     ))
 }
 
@@ -8130,6 +8239,16 @@ fn is_subclass_of_internal_full(
     sub_iri: &str,
     super_iri: &str,
 ) -> Result<(bool, QueryStats), ReasonError> {
+    is_subclass_of_keeping(internal, sub_iri, super_iri).map(|(holds, stats, _)| (holds, stats))
+}
+
+/// [`is_subclass_of_internal_full`], also returning what the query left for the
+/// #369 lazy consistency check ([`QueryOntology`]).
+pub(crate) fn is_subclass_of_keeping(
+    internal: InternalOntology,
+    sub_iri: &str,
+    super_iri: &str,
+) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     let sub_id = internal
         .vocabulary
         .class_id(sub_iri)
@@ -8148,7 +8267,11 @@ fn is_subclass_of_internal_full(
     };
     // Reflexive shortcut.
     if sub_id == super_id {
-        return Ok((true, sat_stats));
+        return Ok((
+            true,
+            sat_stats,
+            QueryOntology::Unprepared(Box::new(internal)),
+        ));
     }
     // Saturation fast path: the EL closure is sound (every entry is a
     // genuine entailment) but only complete for the EL fragment of the
@@ -8157,17 +8280,29 @@ fn is_subclass_of_internal_full(
     // tableau still needs to run.
     let closure = owl_dl_saturation::saturate(&internal);
     if closure.contains(sub_id, super_id) {
-        return Ok((true, sat_stats));
+        return Ok((
+            true,
+            sat_stats,
+            QueryOntology::Unprepared(Box::new(internal)),
+        ));
     }
     // If `sub` is itself unsat in the closure, every superclass —
     // including `super` — vacuously subsumes it.
     if closure.is_unsatisfiable(sub_id) {
-        return Ok((true, sat_stats));
+        return Ok((
+            true,
+            sat_stats,
+            QueryOntology::Unprepared(Box::new(internal)),
+        ));
     }
     // Pure-EL inputs: the closure is complete, so a miss is the
     // verdict, no tableau needed.
     if pure_el {
-        return Ok((false, sat_stats));
+        return Ok((
+            false,
+            sat_stats,
+            QueryOntology::Unprepared(Box::new(internal)),
+        ));
     }
     // H4 sound-accelerator wedge: a hyper `Unsat` proves the
     // subsumption (sound for any ontology), skipping the tableau. A
@@ -8185,16 +8320,18 @@ fn is_subclass_of_internal_full(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
             },
+            QueryOntology::Unprepared(Box::new(internal)),
         ));
     }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
-    let (sat, cut, trusted, refused) = run_satisfiability_reporting(internal, move |pool| {
-        let sub_concept = pool.atomic(sub_id);
-        let super_concept = pool.atomic(super_id);
-        let not_super = pool.not(super_concept);
-        pool.and(vec![sub_concept, not_super])
-    })?;
+    let ((sat, cut, trusted, refused), prepared) =
+        run_satisfiability_keeping(internal, move |pool| {
+            let sub_concept = pool.atomic(sub_id);
+            let super_concept = pool.atomic(super_id);
+            let not_super = pool.not(super_concept);
+            pool.and(vec![sub_concept, not_super])
+        })?;
     Ok((
         !sat,
         QueryStats {
@@ -8204,6 +8341,7 @@ fn is_subclass_of_internal_full(
             wedge_clauses_refused: refused,
             relies_on_trusted_consistency: trusted,
         },
+        QueryOntology::Prepared(Box::new(prepared)),
     ))
 }
 
@@ -8283,6 +8421,119 @@ pub fn lazy_query_consistency_enabled() -> bool {
 pub fn lazy_query_consistency_tail_enabled() -> bool {
     std::env::var_os("RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL")
         .is_some_and(|v| v == "1" || v == "true" || v == "yes" || v == "on")
+}
+
+/// #369 follow-up: the wedge budget of the lazy consistency check on the surfaces
+/// that hold no prepared ontology of their own (`sat-expr`, `subclass-expr`,
+/// `materialize_*`, `property-values`, the property disjointness queries), in ms
+/// (`RUSTDL_QUERY_LAZY_CONSISTENCY_MS`, default 2000; `0` unbounded). Over it
+/// the verdict is undetermined: the answer is kept and flagged, never lost.
+/// Measured on the ORE pool: every inconsistency the wedge found took under
+/// 60 ms, while stalls at classify's 12 s budget lost 7 `subclass-expr` answers
+/// to a 30 s cap. #419's surfaces (`instance`, `instances`, `instances-expr`,
+/// `individuals`) keep #401's [`consistency_fallback_ms`], which cost them no
+/// answer. The wedge's build (one clausify) has no deadline: on `ore_ont_15655`
+/// the check took about 6.6 s.
+#[must_use]
+pub fn lazy_query_consistency_ms() -> u64 {
+    std::env::var("RUSTDL_QUERY_LAZY_CONSISTENCY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000)
+}
+
+/// #369 follow-up: [`PreparedOntology::lazy_inconsistency_check`] for a query that
+/// holds no prepared ontology (the shortcut answers of `sat-expr` /
+/// `subclass-expr`, `materialize_*`, the property disjointness queries). It runs
+/// the `ABox`-seeded consistency wedge straight from `internal`, as classify's
+/// pre-check does ([`classify_wedge_consistency`]): one clausify and the
+/// `decide`, no saturation, NNF or absorption. The #313 pre-checks are not re-run:
+/// every caller already ran them.
+///
+/// Same verdicts as the prepared route, except that #344's data-counting
+/// verification (which needs the main tableau) is skipped, so a wedge `Sat` on a
+/// data-counting KB is trusted. A wedge `Stalled` or over its budget
+/// ([`lazy_query_consistency_ms`]) is undetermined (`Ok(true)`), unless the
+/// opt-in tail decides it. A lent verdict is final and never flags.
+///
+/// With no individual (and no nominal) the wedge has no seed and is not run:
+/// that is a SOUNDNESS gate (the seeded engine would otherwise test the first
+/// class, and its `Unsat` is not an inconsistency), and the result is
+/// `Ok(false)`, not undetermined, as classify's pre-check does not flag a wedge
+/// it could not run. A `TBox` inconsistency only the tableau finds is then missed,
+/// as on main. The wedge turned off by `RUSTDL_WEDGE_CONSISTENCY=0` is
+/// undetermined (the tail can decide it), as on #419's surfaces.
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] on a witnessed inconsistency, and nothing else.
+pub(crate) fn lazy_inconsistency_check_light(
+    internal: &InternalOntology,
+    surface: &str,
+) -> Result<bool, ReasonError> {
+    use owl_dl_tableau::hyper::HyperResult;
+    let mode = lazy_query_consistency_mode();
+    if mode == LazyConsistencyMode::Off
+        || SKIP_LAZY_QUERY_CONSISTENCY.with(std::cell::Cell::get)
+        || INHERITED_QUERY_CONSISTENCY
+            .with(std::cell::Cell::get)
+            .is_some()
+    {
+        return Ok(false);
+    }
+    let report = mode == LazyConsistencyMode::Report || std::env::var_os("RUSTDL_TRACE").is_some();
+    let started = std::time::Instant::now();
+    // The soundness gate: with no individual the wedge has no seed, and the
+    // seeded engine would test the first class instead (its `Unsat` is no
+    // inconsistency). Not flagged, as classify's pre-check does not flag it.
+    if !internal_has_individuals(internal) {
+        if report {
+            eprintln!(
+                "lazy consistency (#369): surface={surface} verdict=NoSeed tail=None \
+                 inconsistent=false us={} route=light has_individuals=false",
+                started.elapsed().as_micros()
+            );
+        }
+        return Ok(false);
+    }
+    // `None`: the wedge turned off (`RUSTDL_WEDGE_CONSISTENCY=0`), undetermined.
+    let (verdict, build_us) = if wedge_consistency_enabled() {
+        let cache = ConsistencyCache::build(internal);
+        let build_us = started.elapsed().as_micros();
+        let ms = lazy_query_consistency_ms();
+        let deadline =
+            (ms > 0).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+        (Some(cache.decide(deadline)), build_us)
+    } else {
+        (None, 0)
+    };
+    let decide_us = started.elapsed().as_micros() - build_us;
+    let stalled = !matches!(verdict, Some(HyperResult::Sat | HyperResult::Unsat));
+    let tail = if stalled && lazy_query_consistency_tail_enabled() {
+        let tail_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
+        let _full = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
+        Some(
+            PreparedOntology::from_internal(internal.clone())
+                .and_then(|p| p.decide_consistency(Some(tail_deadline)))
+                .unwrap_or(None),
+        )
+    } else {
+        None
+    };
+    let inconsistent = verdict == Some(HyperResult::Unsat) || tail == Some(Some(false));
+    let undetermined = stalled && tail != Some(Some(true));
+    if report {
+        eprintln!(
+            "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail:?} \
+             inconsistent={inconsistent} us={} route=light has_individuals=true \
+             build_us={build_us} decide_us={decide_us}",
+            started.elapsed().as_micros()
+        );
+    }
+    if inconsistent && mode == LazyConsistencyMode::On {
+        return Err(ReasonError::Inconsistent);
+    }
+    Ok(undetermined)
 }
 
 /// #369: while the returned guard lives, the lazy consistency check of the query
@@ -8418,20 +8669,48 @@ impl Drop for AssumedQueryConsistency {
 /// [`QueryStats::incomplete`] (#363 A2). There is deliberately no variant that
 /// folds the cut away. The probe drops the `ABox` seed where it provably cannot
 /// matter (#401, [`PreparedOntology::decide_query_raw`]); `relies_on_trusted` is
-/// reported as [`QueryStats::relies_on_trusted_consistency`].
-pub(crate) fn run_satisfiability_reporting<F>(
+/// reported as [`QueryStats::relies_on_trusted_consistency`]. The prepared
+/// ontology is returned too, for the #369 lazy consistency check
+/// ([`QueryOntology`]).
+#[allow(clippy::type_complexity)]
+fn run_satisfiability_keeping<F>(
     internal: InternalOntology,
     build_test_concept: F,
-) -> Result<(bool, bool, bool, usize), ReasonError>
+) -> Result<((bool, bool, bool, usize), PreparedOntology), ReasonError>
 where
     F: Fn(&mut ConceptPool) -> ConceptId,
 {
     let prepared = PreparedOntology::from_internal(internal)?;
     let (verdict, trusted, refused) = prepared.decide_query_raw(build_test_concept)?;
-    Ok(match verdict {
+    let r = match verdict {
         Some(sat) => (sat, false, trusted, refused),
         None => (true, true, trusted, refused),
-    })
+    };
+    Ok((r, prepared))
+}
+
+/// #369 follow-up: what a single query leaves for the lazy consistency check.
+/// A shortcut answer hands its ontology back unconsumed (checked on the light
+/// route); a tableau answer hands back the prepared ontology it built, whose
+/// #401 verdict may already be settled.
+pub(crate) enum QueryOntology {
+    /// Answered without a prepare.
+    Unprepared(Box<InternalOntology>),
+    /// Answered by the tableau on this prepared ontology.
+    Prepared(Box<PreparedOntology>),
+}
+
+impl QueryOntology {
+    /// The lazy consistency check on whichever ontology the query left.
+    ///
+    /// # Errors
+    /// [`ReasonError::Inconsistent`] on a witnessed inconsistency.
+    pub(crate) fn lazy_inconsistency_check(&self, surface: &str) -> Result<bool, ReasonError> {
+        match self {
+            Self::Unprepared(internal) => lazy_inconsistency_check_light(internal, surface),
+            Self::Prepared(prepared) => prepared.lazy_inconsistency_check_bounded(surface),
+        }
+    }
 }
 
 /// Owned backing store for [`abox_check::AboxCheckInputs`], for callers that need
@@ -8867,6 +9146,9 @@ pub(crate) struct PreparedOntology {
     /// #369: the bounded main-tableau tail of [`Self::lazy_inconsistency_check`],
     /// run at most once, only when [`Self::query_consistency`] is undetermined.
     lazy_consistency_tail: std::sync::OnceLock<Option<bool>>,
+    /// #369: the lazy check's own verdict, settled under
+    /// [`lazy_query_consistency_ms`] when the query left none.
+    lazy_query_consistency: std::sync::OnceLock<QueryConsistency>,
     /// EL saturator closure over the un-mutated input ontology.
     /// Used by [`abox_check`] (P1 `is_unsatisfiable`, P2 `subsumers_of`).
     /// Computed once at build time; classify already computes the same
@@ -9645,6 +9927,7 @@ impl PreparedOntology {
             query_abox_droppable,
             query_consistency: std::sync::OnceLock::new(),
             lazy_consistency_tail: std::sync::OnceLock::new(),
+            lazy_query_consistency: std::sync::OnceLock::new(),
             closure,
             told,
             axioms,
@@ -9918,43 +10201,57 @@ impl PreparedOntology {
     /// and the #182 component retry: anything they would have decided is
     /// [`QueryConsistency::Undetermined`] here, which keeps today's seeded path.
     pub(crate) fn query_consistency(&self) -> Result<QueryConsistency, ReasonError> {
-        use owl_dl_tableau::hyper::HyperResult;
         if let Some(inherited) = INHERITED_QUERY_CONSISTENCY.with(std::cell::Cell::get) {
             return Ok(inherited);
         }
         if let Some(v) = self.query_consistency.get() {
             return Ok(*v);
         }
-        let verdict = if self
-            .closure
-            .as_ref()
-            .is_some_and(saturation_says_inconsistent)
-            || matches!(
-                self.abox_verdict(),
-                abox_check::AboxVerdict::Inconsistent { .. }
-            ) {
-            QueryConsistency::Inconsistent
-        } else {
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_millis(consistency_fallback_ms());
-            match self.consistency_wedge(Some(deadline)) {
-                Some(HyperResult::Unsat) => QueryConsistency::Inconsistent,
-                Some(HyperResult::Sat) if self.wedge_sat_skips_data_counting => {
-                    match self.verify_wedge_sat(None)? {
-                        (false, _) => QueryConsistency::Inconsistent,
-                        // The main tableau confirmed the wedge's model.
-                        (true, false) => QueryConsistency::Consistent { trusted: false },
-                        (true, true) => QueryConsistency::Undetermined,
-                    }
-                }
-                Some(HyperResult::Sat) => QueryConsistency::Consistent { trusted: true },
-                Some(HyperResult::Stalled) | None => QueryConsistency::Undetermined,
-            }
-        };
+        // `now + ms`, as before #369: `RUSTDL_CONSISTENCY_FALLBACK_MS=0` is a
+        // deadline already passed (the "starve the budget" idiom), not unbounded.
+        let verdict = self.settle_query_consistency(Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms()),
+        ))?;
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("query consistency (#401): {verdict:?}");
         }
         Ok(*self.query_consistency.get_or_init(|| verdict))
+    }
+
+    /// The routes of [`Self::query_consistency`], with the wedge bounded by
+    /// `deadline` (`None` unbounded), uncached and ignoring any inherited verdict.
+    fn settle_query_consistency(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<QueryConsistency, ReasonError> {
+        use owl_dl_tableau::hyper::HyperResult;
+        Ok(
+            if self
+                .closure
+                .as_ref()
+                .is_some_and(saturation_says_inconsistent)
+                || matches!(
+                    self.abox_verdict(),
+                    abox_check::AboxVerdict::Inconsistent { .. }
+                )
+            {
+                QueryConsistency::Inconsistent
+            } else {
+                match self.consistency_wedge(deadline) {
+                    Some(HyperResult::Unsat) => QueryConsistency::Inconsistent,
+                    Some(HyperResult::Sat) if self.wedge_sat_skips_data_counting => {
+                        match self.verify_wedge_sat(None)? {
+                            (false, _) => QueryConsistency::Inconsistent,
+                            // The main tableau confirmed the wedge's model.
+                            (true, false) => QueryConsistency::Consistent { trusted: false },
+                            (true, true) => QueryConsistency::Undetermined,
+                        }
+                    }
+                    Some(HyperResult::Sat) => QueryConsistency::Consistent { trusted: true },
+                    Some(HyperResult::Stalled) | None => QueryConsistency::Undetermined,
+                }
+            },
+        )
     }
 
     /// #369: the lazy consistency check of the query surfaces. Call it only after
@@ -9985,6 +10282,32 @@ impl PreparedOntology {
     /// [`ReasonError::Inconsistent`] as above, and nothing else: a route that
     /// fails while settling the verdict counts as no verdict.
     pub(crate) fn lazy_inconsistency_check(&self, surface: &str) -> Result<bool, ReasonError> {
+        self.lazy_inconsistency_check_with(surface, None)
+    }
+
+    /// [`Self::lazy_inconsistency_check`] for the surfaces that hold this prepared
+    /// ontology only incidentally (`sat-expr` / `subclass-expr` answered by the
+    /// tableau, `property-values`): when the query settled no verdict, the wedge
+    /// gets [`lazy_query_consistency_ms`] (default 2000 ms) instead of #401's
+    /// [`consistency_fallback_ms`], cached apart from #401's verdict.
+    ///
+    /// # Errors
+    /// As [`Self::lazy_inconsistency_check`].
+    pub(crate) fn lazy_inconsistency_check_bounded(
+        &self,
+        surface: &str,
+    ) -> Result<bool, ReasonError> {
+        self.lazy_inconsistency_check_with(surface, Some(lazy_query_consistency_ms()))
+    }
+
+    /// `wedge_ms`: `None` settles through [`Self::query_consistency`] (#401's
+    /// cached verdict, [`consistency_fallback_ms`]); `Some(ms)` reuses a verdict
+    /// the query already settled, else settles one under `ms`.
+    fn lazy_inconsistency_check_with(
+        &self,
+        surface: &str,
+        wedge_ms: Option<u64>,
+    ) -> Result<bool, ReasonError> {
         let mode = lazy_query_consistency_mode();
         if mode == LazyConsistencyMode::Off
             || SKIP_LAZY_QUERY_CONSISTENCY.with(std::cell::Cell::get)
@@ -9997,9 +10320,27 @@ impl PreparedOntology {
             .is_some();
         // A route that fails (a tableau bail-out, an internal limit) is no verdict:
         // the check must never turn an answer into any error but `Inconsistent`.
-        let verdict = self
-            .query_consistency()
-            .unwrap_or(QueryConsistency::Undetermined);
+        // The verdict the query already settled (or a lent one) is free; otherwise
+        // settle it under the lazy check's own, shorter budget, cached apart from
+        // #401's so a short-budget "undetermined" never reaches the single queries.
+        let verdict = match wedge_ms {
+            None => self
+                .query_consistency()
+                .unwrap_or(QueryConsistency::Undetermined),
+            Some(ms) => match INHERITED_QUERY_CONSISTENCY
+                .with(std::cell::Cell::get)
+                .or_else(|| self.query_consistency.get().copied())
+            {
+                Some(v) => v,
+                None => *self.lazy_query_consistency.get_or_init(|| {
+                    // `RUSTDL_QUERY_LAZY_CONSISTENCY_MS=0` is unbounded.
+                    let deadline = (ms > 0)
+                        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+                    self.settle_query_consistency(deadline)
+                        .unwrap_or(QueryConsistency::Undetermined)
+                }),
+            },
+        };
         let tail = if verdict == QueryConsistency::Undetermined
             && !inherited
             && lazy_query_consistency_tail_enabled()
@@ -10014,12 +10355,18 @@ impl PreparedOntology {
             None
         };
         let inconsistent = verdict == QueryConsistency::Inconsistent || tail == Some(Some(false));
-        let undetermined = verdict == QueryConsistency::Undetermined && tail != Some(Some(true));
+        // No individual: no wedge seed, not flagged, as in
+        // [`lazy_inconsistency_check_light`]. The wedge turned off by
+        // `RUSTDL_WEDGE_CONSISTENCY=0` is undetermined, as in #419.
+        let no_seed = self.consistency.is_none() && wedge_consistency_enabled();
+        let undetermined =
+            verdict == QueryConsistency::Undetermined && !no_seed && tail != Some(Some(true));
         if mode == LazyConsistencyMode::Report || std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!(
                 "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail:?} \
-                 inconsistent={inconsistent} us={}",
-                started.elapsed().as_micros()
+                 inconsistent={inconsistent} us={} route=prepared has_individuals={}",
+                started.elapsed().as_micros(),
+                self.consistency.is_some()
             );
         }
         if inconsistent && mode == LazyConsistencyMode::On {

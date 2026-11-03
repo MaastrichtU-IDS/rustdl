@@ -129,28 +129,39 @@ pub(crate) fn gaps<A: horned_owl::model::ForIRI>(
     owl_dl_reasoner::property_structural_gaps(onto).map_err(reason_error_to_py)
 }
 
-/// Told-disjoint object property pairs `(a, b)`, plus the structural gaps (#389).
-/// The Python wrapper unpacks the tuple and emits `StructuralGapWarning`.
+/// Told-disjoint object property pairs `(a, b)`, plus the structural gaps (#389)
+/// and #369's `consistency_undetermined`. The Python wrapper unpacks the tuple
+/// and emits `StructuralGapWarning` / `ConsistencyUndeterminedWarning`.
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn disjoint_object_properties(
     path: &str,
-) -> PyResult<(Vec<(String, String)>, Vec<String>)> {
+) -> PyResult<(Vec<(String, String)>, Vec<String>, bool)> {
     let ontology = load::load_path(path)?;
-    let pairs =
-        owl_dl_reasoner::disjoint_object_properties(&ontology).map_err(reason_error_to_py)?;
-    Ok((pairs, gaps(&ontology)?.object_disjoint().to_vec()))
+    let (pairs, undetermined) = owl_dl_reasoner::disjoint_object_properties_reporting(&ontology)
+        .map_err(reason_error_to_py)?;
+    Ok((
+        pairs,
+        gaps(&ontology)?.object_disjoint().to_vec(),
+        undetermined,
+    ))
 }
 
-/// Told-disjoint data property pairs `(a, b)`, plus the structural gaps (#389).
+/// Told-disjoint data property pairs `(a, b)`, plus the structural gaps (#389)
+/// and #369's `consistency_undetermined`.
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn disjoint_data_properties(
     path: &str,
-) -> PyResult<(Vec<(String, String)>, Vec<String>)> {
+) -> PyResult<(Vec<(String, String)>, Vec<String>, bool)> {
     let ontology = load::load_path(path)?;
-    let pairs = owl_dl_reasoner::disjoint_data_properties(&ontology).map_err(reason_error_to_py)?;
-    Ok((pairs, gaps(&ontology)?.data_disjoint().to_vec()))
+    let (pairs, undetermined) = owl_dl_reasoner::disjoint_data_properties_reporting(&ontology)
+        .map_err(reason_error_to_py)?;
+    Ok((
+        pairs,
+        gaps(&ontology)?.data_disjoint().to_vec(),
+        undetermined,
+    ))
 }
 
 /// Inferred object property hierarchy: `(equivalent_groups, direct_subsumptions,
@@ -227,10 +238,16 @@ pub(crate) fn different_individuals(path: &str) -> PyResult<(Vec<(String, String
 #[allow(clippy::type_complexity)]
 pub(crate) fn object_property_values(
     path: &str,
-) -> PyResult<(Vec<(String, String, String)>, bool)> {
+) -> PyResult<(Vec<(String, String, String)>, bool, bool)> {
     let o = load::load_path(path)?;
     owl_dl_reasoner::inferred_object_property_values(&o, Some(std::time::Duration::from_secs(1)))
-        .map(|v| (v.triples().to_vec(), v.incomplete()))
+        .map(|v| {
+            (
+                v.triples().to_vec(),
+                v.incomplete(),
+                v.consistency_undetermined(),
+            )
+        })
         .map_err(reason_error_to_py)
 }
 
@@ -240,12 +257,18 @@ pub(crate) fn object_property_values(
 #[allow(clippy::type_complexity)]
 pub(crate) fn data_property_values(
     path: &str,
-) -> PyResult<(Vec<(String, String, String, String, String)>, Vec<String>)> {
+) -> PyResult<(
+    Vec<(String, String, String, String, String)>,
+    Vec<String>,
+    bool,
+)> {
     let o = load::load_path(path)?;
-    let quints = owl_dl_reasoner::inferred_data_property_values(&o)
-        .map(|v| v.quints().to_vec())
-        .map_err(reason_error_to_py)?;
-    Ok((quints, gaps(&o)?.data_values().to_vec()))
+    let v = owl_dl_reasoner::inferred_data_property_values(&o).map_err(reason_error_to_py)?;
+    Ok((
+        v.quints().to_vec(),
+        gaps(&o)?.data_values().to_vec(),
+        v.consistency_undetermined(),
+    ))
 }
 
 /// Kinds and counts of axioms conversion could not represent (a sound
@@ -271,23 +294,33 @@ fn parse_ce(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("class expression: {e}")))
 }
 
-/// `(satisfiable, incomplete, relies_on_trusted_consistency)` for the class
-/// expression `ce`: `incomplete` means the probe gave up (node cap) and
+/// `(satisfiable, incomplete, relies_on_trusted_consistency,
+/// consistency_undetermined)` for the class expression `ce` (the last is #369's,
+/// set on an "unsatisfiable" whose KB consistency stayed undetermined): `incomplete` means the probe gave up (node cap) and
 /// "satisfiable" is the sound direction (#363 A2); an answer off pure EL is not
 /// `incomplete`. Runs under the single-query node cap, like
 /// `is_class_satisfiable`.
 #[pyfunction]
-pub(crate) fn class_expression_satisfiable(path: &str, ce: &str) -> PyResult<(bool, bool, bool)> {
+pub(crate) fn class_expression_satisfiable(
+    path: &str,
+    ce: &str,
+) -> PyResult<(bool, bool, bool, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
     let ce = parse_ce(ce, &pm, &build)?;
     let v = owl_dl_reasoner::class_expression_satisfiable(&o, &ce).map_err(reason_error_to_py)?;
-    Ok((v.holds(), v.incomplete(), v.relies_on_trusted_consistency()))
+    Ok((
+        v.holds(),
+        v.incomplete(),
+        v.relies_on_trusted_consistency(),
+        v.consistency_undetermined(),
+    ))
 }
 
-/// `(entailed, incomplete, relies_on_trusted_consistency)` for
-/// `sub_ce ⊑ sup_ce`: `incomplete` means the probe gave up and "not entailed"
+/// `(entailed, incomplete, relies_on_trusted_consistency,
+/// consistency_undetermined)` for `sub_ce ⊑ sup_ce` (the last as in
+/// `class_expression_satisfiable`): `incomplete` means the probe gave up and "not entailed"
 /// is the sound direction; an answer off pure EL is not `incomplete`. Runs
 /// under the single-query node cap, like `is_subclass_of`.
 #[pyfunction]
@@ -295,7 +328,7 @@ pub(crate) fn class_expression_entailed_subclass(
     path: &str,
     sub_ce: &str,
     sup_ce: &str,
-) -> PyResult<(bool, bool, bool)> {
+) -> PyResult<(bool, bool, bool, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
@@ -303,7 +336,12 @@ pub(crate) fn class_expression_entailed_subclass(
     let sup_ce = parse_ce(sup_ce, &pm, &build)?;
     let v = owl_dl_reasoner::class_expression_entailed_subclass(&o, &sub_ce, &sup_ce)
         .map_err(reason_error_to_py)?;
-    Ok((v.holds(), v.incomplete(), v.relies_on_trusted_consistency()))
+    Ok((
+        v.holds(),
+        v.incomplete(),
+        v.relies_on_trusted_consistency(),
+        v.consistency_undetermined(),
+    ))
 }
 
 /// `(individuals, incomplete)`: named individuals provably in `ce`;

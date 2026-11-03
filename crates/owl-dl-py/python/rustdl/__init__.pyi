@@ -131,10 +131,12 @@ class TrustedConsistencyWarning(UserWarning):
     cut."""
 
 class ConsistencyUndeterminedWarning(UserWarning):
-    """Emitted by `is_instance_of`, `instances_of`, `same_individuals`,
-    `different_individuals` and `class_expression_instances` when the answer
-    was positive and the KB's consistency stayed undetermined (#369), so it may
-    be the vacuous answer of an inconsistent KB. Not an
+    """Emitted when a positive answer's KB consistency stayed undetermined (#369),
+    so it may be the vacuous answer of an inconsistent KB: by `is_instance_of`,
+    `instances_of`, `same_individuals`, `different_individuals`, the
+    `class_expression_*` queries, `object_property_values`,
+    `data_property_values`, the property disjointness queries and the
+    `materialize_inferred_*` property functions. Not an
     `IncompleteQueryWarning`: nothing was cut."""
 
 class Root(Mapping[str, object]):
@@ -357,7 +359,7 @@ def materialize_inferred_class_assertions(path: str) -> list[tuple[str, str]]:
 
 def materialize_inferred_property_assertions(path: str) -> list[tuple[str, str, str]]:
     """Inferred object property assertions (subject, property, object) over named
-    individuals."""
+    individuals. Emits `ConsistencyUndeterminedWarning` (#369)."""
     ...
 
 def materialize_inferred_data_property_assertions(

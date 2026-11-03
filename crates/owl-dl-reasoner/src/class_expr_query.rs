@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use crate::{QueryStats, ReasonError, is_class_satisfiable_with_stats, is_subclass_of_with_stats};
+use crate::{QueryStats, ReasonError};
 use horned_owl::model::{
     Build, ClassExpression, Component, EquivalentClasses, ForIRI, MutableOntology,
 };
@@ -24,6 +24,7 @@ pub struct CeVerdict {
     incomplete: bool,
     completeness_guaranteed: bool,
     relies_on_trusted_consistency: bool,
+    consistency_undetermined: bool,
 }
 
 impl CeVerdict {
@@ -58,6 +59,16 @@ impl CeVerdict {
     #[must_use]
     pub fn relies_on_trusted_consistency(&self) -> bool {
         self.relies_on_trusted_consistency
+    }
+
+    /// #369: the answer was positive ("unsatisfiable" / "subsumed") and the KB's
+    /// consistency stayed undetermined (the consistency wedge stalled or ran past
+    /// `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`), so it may be the vacuous answer of an
+    /// inconsistent KB. Not a give-up, so separate from [`Self::incomplete`]. See
+    /// [`crate::InstanceFlags::consistency_undetermined`].
+    #[must_use]
+    pub fn consistency_undetermined(&self) -> bool {
+        self.consistency_undetermined
     }
 }
 
@@ -211,21 +222,30 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     onto: &SetOntology<A>,
     ce: &ClassExpression<A>,
 ) -> Result<CeVerdict, ReasonError> {
-    // #313: the inconsistent-KB guard, on the ontology as given.
-    if crate::query_kb_inconsistent(&owl_dl_core::convert::convert_ontology(onto)?) {
-        return Err(ReasonError::Inconsistent);
-    }
+    // Before the probe axiom is added: an input that already declares the probe
+    // IRI is refused, not extended.
     ensure_fresh(onto, PROBE_IRI)?;
+    // One conversion, of the probed ontology: `Q ≡ ce` with a fresh `Q` is a
+    // conservative extension, so its consistency is the input's (#369).
     let mut probed = onto.clone();
     let build: Build<A> = Build::new();
     probed.insert(probe_axiom(&build, PROBE_IRI, ce));
-    let (holds, stats) = is_class_satisfiable_with_stats(&probed, PROBE_IRI)?;
+    let internal = owl_dl_core::convert::convert_ontology(&probed)?;
+    // #313: the inconsistent-KB guard.
+    if crate::query_kb_inconsistent(&internal) {
+        return Err(ReasonError::Inconsistent);
+    }
+    let (holds, stats, left) = crate::is_class_satisfiable_keeping(internal, PROBE_IRI)?;
+    // #369: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
+    let consistency_undetermined =
+        !holds && left.lazy_inconsistency_check("class_expression_satisfiable")?;
     let (incomplete, completeness_guaranteed) = verdict_flags(stats);
     Ok(CeVerdict {
         holds,
         incomplete,
         completeness_guaranteed,
         relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
+        consistency_undetermined,
     })
 }
 
@@ -239,23 +259,29 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     sub_ce: &ClassExpression<A>,
     sup_ce: &ClassExpression<A>,
 ) -> Result<CeVerdict, ReasonError> {
-    // #313: the inconsistent-KB guard, on the ontology as given.
-    if crate::query_kb_inconsistent(&owl_dl_core::convert::convert_ontology(onto)?) {
-        return Err(ReasonError::Inconsistent);
-    }
     ensure_fresh(onto, PROBE_IRI)?;
     ensure_fresh(onto, PROBE_IRI_2)?;
+    // One conversion, of the probed ontology (see `class_expression_satisfiable`).
     let mut probed = onto.clone();
     let build: Build<A> = Build::new();
     probed.insert(probe_axiom(&build, PROBE_IRI, sub_ce));
     probed.insert(probe_axiom(&build, PROBE_IRI_2, sup_ce));
-    let (holds, stats) = is_subclass_of_with_stats(&probed, PROBE_IRI, PROBE_IRI_2)?;
+    let internal = owl_dl_core::convert::convert_ontology(&probed)?;
+    // #313: the inconsistent-KB guard.
+    if crate::query_kb_inconsistent(&internal) {
+        return Err(ReasonError::Inconsistent);
+    }
+    let (holds, stats, left) = crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2)?;
+    // #369: as in `class_expression_satisfiable`.
+    let consistency_undetermined =
+        holds && left.lazy_inconsistency_check("class_expression_entailed_subclass")?;
     let (incomplete, completeness_guaranteed) = verdict_flags(stats);
     Ok(CeVerdict {
         holds,
         incomplete,
         completeness_guaranteed,
         relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
+        consistency_undetermined,
     })
 }
 

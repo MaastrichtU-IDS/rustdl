@@ -956,6 +956,7 @@ fn warn_classify_incomplete(
     warn_if_incomplete(
         stats.timed_out_pairs.saturating_sub(prep_cut),
         stats.stall_tail_skips + stats.diverged_tail_skips,
+        stats.depth_capped_pairs,
         pair_timeout_ms,
         global_timeout_ms,
     );
@@ -964,6 +965,7 @@ fn warn_classify_incomplete(
 fn warn_if_incomplete(
     timed_out_pairs: usize,
     tail_bound_skips: usize,
+    depth_capped: usize,
     pair_timeout_ms: u64,
     global_timeout_ms: u64,
 ) {
@@ -979,13 +981,19 @@ fn warn_if_incomplete(
     // stall on depth-schedule exhaustion with no deadline at all, so an
     // unbounded re-run with the flag still set skips the same pairs and the
     // caption would claim they "hit the 0 ms timeout".
-    let timed_out = timed_out_pairs.saturating_sub(tail_bound_skips);
+    // #288: probes cut by the tableau's decision-depth limit did not hit a
+    // timeout either, and no larger per-pair budget recovers them. They are
+    // reported on their own line; with none, the output is unchanged.
+    let timed_out = timed_out_pairs
+        .saturating_sub(tail_bound_skips)
+        .saturating_sub(depth_capped);
     let bound = match (pair_timeout_ms, global_timeout_ms) {
         (p, 0) => format!("{p} ms per-pair timeout"),
         (0, g) => format!("{g} ms global timeout"),
         (p, g) => format!("{p} ms per-pair / {g} ms global timeout"),
     };
     match (timed_out, tail_bound_skips) {
+        (0, 0) => {}
         (t, 0) => eprintln!(
             "\n⚠  INCOMPLETE: {t} class pair(s) hit the {bound} and were recorded as \
              'not subsumed'."
@@ -1001,7 +1009,28 @@ fn warn_if_incomplete(
              'not subsumed'."
         ),
     }
-    if tail_bound_skips == 0 {
+    if depth_capped > 0 {
+        let lead = if timed_out == 0 && tail_bound_skips == 0 {
+            "\n⚠  INCOMPLETE:"
+        } else {
+            "  "
+        };
+        eprintln!(
+            "{lead} {depth_capped} probe(s) hit the tableau's search-depth limit ({} decision \
+             levels) and were left undecided. A larger --pair-timeout-ms does not recover \
+             these; the unbounded search has a far larger limit, but it may not terminate.",
+            owl_dl_reasoner::MAX_SEARCH_DEPTH
+        );
+    }
+    if tail_bound_skips == 0 && timed_out == 0 {
+        // Every cut is a depth-limit cut (#288): the unbounded run is not promised
+        // to complete, as the line above says.
+        eprintln!(
+            "   The classification is SOUND (no false subsumptions) but may be missing real \
+             ones. Re-run with `--pair-timeout-ms 0 --global-timeout-ms 0` for the unbounded \
+             result."
+        );
+    } else if tail_bound_skips == 0 {
         eprintln!(
             "   The classification is SOUND (no false subsumptions) but may be missing real \
              ones. Re-run with `--pair-timeout-ms 0 --global-timeout-ms 0` for the complete \

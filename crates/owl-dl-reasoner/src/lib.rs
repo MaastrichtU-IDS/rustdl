@@ -6752,7 +6752,10 @@ use owl_dl_tableau::{NodeId, TableauContext};
 /// so a modest cap is fine: hitting it yields `DepthLimit`, which the caller
 /// maps to a sound MISS/NoVerdict. Kept small so it runs on the default
 /// (rayon-worker) stack with zero overhead.
-const MAX_SEARCH_DEPTH: usize = 256;
+///
+/// Public so the CLI can name it when it reports a probe cut by it (#288,
+/// `ClassificationStats::depth_capped_pairs`).
+pub const MAX_SEARCH_DEPTH: usize = 256;
 
 // ---------------------------------------------------------------------------
 // Main-tableau iterative deepening (RUSTDL_TABLEAU_ITERATIVE_DEEPENING)
@@ -6811,6 +6814,27 @@ pub(crate) fn tableau_early_abandon_enabled() -> bool {
     // not redundant with the net: the net's frame is drawn from COMPLETERS and
     // structurally cannot observe an `ok → dnf` in the DNF tail.
     std::env::var_os("RUSTDL_TABLEAU_EARLY_ABANDON").is_none_or(|v| v != "0")
+}
+
+std::thread_local! {
+    /// #288: whether the CURRENT thread's last main-tableau probe
+    /// (`decide_capturing`) ended without a verdict because it hit the search's
+    /// decision-depth limit (`MAX_SEARCH_DEPTH`), directly or through
+    /// early-abandon (which fires only after repeated depth-limit hits), rather
+    /// than a deadline or the node cap. Reset at the start of every probe and set
+    /// once its verdict is mapped, on the calling thread (the deep search's
+    /// spawned thread is joined before that), so a caller reads it right after
+    /// the call with [`last_probe_depth_capped`]. Report-only: it changes no
+    /// verdict, it only lets classify say WHY a probe was cut. A larger time
+    /// budget does not recover a depth-capped probe.
+    static PROBE_DEPTH_CAPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// #288: whether this thread's last main-tableau probe was cut by the
+/// decision-depth limit rather than a deadline or the node cap (see
+/// `PROBE_DEPTH_CAPPED`). Read it directly after the probe on the same thread.
+pub(crate) fn last_probe_depth_capped() -> bool {
+    PROBE_DEPTH_CAPPED.with(std::cell::Cell::get)
 }
 
 std::thread_local! {
@@ -11474,6 +11498,7 @@ fn decide_capturing<F>(
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
+    PROBE_DEPTH_CAPPED.with(|c| c.set(false));
     // Fast-exit if the deadline is already spent — BEFORE the expensive
     // `pool.clone()` + context setup below. On large ontologies that per-call
     // ConceptPool clone dominates: under a global classify deadline,
@@ -11698,6 +11723,11 @@ where
                 }),
         );
     }
+    // #288: an early abandon or a depth limit with time left is a depth-cap cut;
+    // a depth limit after the deadline is a deadline cut. Mirrors the arms below.
+    let depth_capped = matches!(outcome, owl_dl_tableau::SearchVerdict::DepthLimit)
+        && (ctx.early_abandoned() || !ctx.deadline_reached());
+    PROBE_DEPTH_CAPPED.with(|c| c.set(depth_capped));
     match outcome {
         owl_dl_tableau::SearchVerdict::Sat => Ok(Some(true)),
         owl_dl_tableau::SearchVerdict::Unsat(_) => Ok(Some(false)),

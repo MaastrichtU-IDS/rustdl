@@ -29,6 +29,11 @@ class Classification:
         """Number of subsumption pairs that hit the per-pair timeout."""
         ...
     @property
+    def depth_capped_pairs(self) -> int:
+        """Of `timed_out_pairs`, the probes cut by the tableau's search-depth
+        limit rather than a timeout; a larger timeout does not recover them."""
+        ...
+    @property
     def complete(self) -> bool:
         """True iff no pair timed out. `True` does NOT mean no entailment is
         missing: that is the stronger `completeness_guaranteed`. See also

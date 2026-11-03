@@ -279,3 +279,30 @@ def test_dropped_axiom_voids_the_guarantee():
     assert r.complete is True
     assert not r.is_subclass("http://e#A", "http://e#E")
     assert r.completeness_guaranteed is False
+
+
+def _unions_ofn(n):
+    body = " ".join(f"ObjectUnionOf(:A{k} :B{k})" for k in range(n))
+    return (
+        "Prefix(:=<http://example.org/d#>)\nOntology(<http://example.org/d>\n"
+        f"SubClassOf(:X ObjectIntersectionOf({body}))\n)\n"
+    ).encode()
+
+
+def test_depth_limit_cut_is_warned_as_such():
+    # #288: X's unsat probe needs 280 decision levels, past the tableau's
+    # search-depth limit (256): it is cut whatever the per-pair budget, and the
+    # warning must say so rather than call it a timeout.
+    import warnings
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify_bytes(_unions_ofn(280), format="ofn", per_pair_timeout_ms=20000)
+    assert r.complete is False
+    assert r.depth_capped_pairs == r.timed_out_pairs >= 1
+    msgs = [
+        str(w.message)
+        for w in rec
+        if issubclass(w.category, rustdl.IncompleteClassificationWarning)
+    ]
+    assert any("search-depth limit" in m for m in msgs), msgs
+    assert not any("exceeded the timeout" in m for m in msgs), msgs

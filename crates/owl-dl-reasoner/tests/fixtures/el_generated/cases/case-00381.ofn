@@ -1,0 +1,18 @@
+# gen 97f692139103 seed 20261106 case 381 profile el_guaranteed
+# motif: gci_domain
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C0))
+Declaration(Class(:C1))
+Declaration(Class(:C2))
+Declaration(Class(:C3))
+Declaration(Class(:C4))
+Declaration(ObjectProperty(:r0))
+Declaration(ObjectProperty(:r1))
+SubClassOf(ObjectSomeValuesFrom(:r0 owl:Thing) ObjectIntersectionOf(:C1 ObjectSomeValuesFrom(:r1 :C0)))
+SubClassOf(:C3 ObjectSomeValuesFrom(:r0 :C4))
+SubClassOf(ObjectSomeValuesFrom(:r1 :C0) :C2)
+SubObjectPropertyOf(ObjectPropertyChain(:r0 :r1) :r1)
+)

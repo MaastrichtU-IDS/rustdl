@@ -779,8 +779,10 @@ pub struct WitnessPruneReasons {
     pub deferred_clauses: bool,
     /// The witness engine's matcher refuses some clauses, so they never fire.
     pub refused_clauses: bool,
-    /// `RUSTDL_RESEED_VERIFY=0` with the incremental fixpoint on: nothing re-fires
-    /// an `∃` skipped at a node that is later unblocked (#137).
+    /// The #137 re-seed net is not running (`RUSTDL_RESEED_VERIFY=0`, or
+    /// `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0`, since the net exists only on the
+    /// incremental drain): nothing re-fires an `∃` skipped at a node that is
+    /// later unblocked.
     pub reseed_net_off: bool,
     /// `RUSTDL_INVERSE_FUNC_MAX=0`: the witness misses merges an
     /// inverse-functional role forces, with no choice involved.

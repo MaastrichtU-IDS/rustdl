@@ -45,7 +45,8 @@ All notable changes to rustdl are documented here. Format is based on
   `witness_prune_active` is true on almost every off-fragment ontology with individuals, and
   Python reported nothing. The new flag is set when the prune ran AND its witness has a known
   reason to lack a type: the search branched, the clausifier deferred axioms, the matcher
-  refused clauses, or `RUSTDL_RESEED_VERIFY=0` / `RUSTDL_INVERSE_FUNC_MAX=0`. `false` means
+  refused clauses, the #137 re-seed net is off (`RUSTDL_RESEED_VERIFY=0` or
+  `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0`), or `RUSTDL_INVERSE_FUNC_MAX=0`. `false` means
   no known reason for loss, not a guarantee. Rust: `Realization::witness_prune_may_drop()`,
   `witness_prune_reasons()` (`WitnessPruneReasons`), and
   `ExistentialSuccessorFlags::witness_prune_may_drop`. CLI: `realize --json` fields

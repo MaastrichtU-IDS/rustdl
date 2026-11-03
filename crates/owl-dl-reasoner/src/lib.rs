@@ -6239,8 +6239,11 @@ impl ConsistencyCache {
                     branched: engine.stats().branches_taken > 0,
                     deferred_clauses: self.deferred_clauses > 0,
                     refused_clauses: engine.refused_clauses() > 0,
-                    reseed_net_off: crate::incremental_fixpoint_enabled()
-                        && !crate::reseed_verify_enabled(),
+                    // The #137 net runs only on the incremental drain
+                    // (`HyperEngine::reseed_net_due`), so either flag at `=0`
+                    // leaves a skipped `∃` unrecovered.
+                    reseed_net_off: !(crate::incremental_fixpoint_enabled()
+                        && crate::reseed_verify_enabled()),
                     inverse_functional_max_off:
                         !owl_dl_core::convert::inverse_functional_max_enabled(),
                 };

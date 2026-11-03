@@ -103,12 +103,16 @@ fn a_refused_clause_reads_refused_clauses() {
     assert_eq!(reasons(&v), ["refused_clauses"]);
 }
 
-/// The two flags whose `=0` makes the witness miss work with no choice involved.
+/// The flags whose `=0` makes the witness miss work with no choice involved. The
+/// #137 net runs only on the incremental drain, so turning that off also
+/// turns the net off.
 #[test]
 fn the_reseed_net_and_inverse_functional_max_flags_read_their_own_reasons() {
-    let v = realize_json("horn.ofn", &[("RUSTDL_RESEED_VERIFY", "0")]);
-    assert_eq!(reasons(&v), ["reseed_net_off"]);
-    assert_eq!(v["witness_prune_may_drop"], true);
+    for flag in ["RUSTDL_RESEED_VERIFY", "RUSTDL_HYPER_INCREMENTAL_FIXPOINT"] {
+        let v = realize_json("horn.ofn", &[(flag, "0")]);
+        assert_eq!(reasons(&v), ["reseed_net_off"], "{flag}=0");
+        assert_eq!(v["witness_prune_may_drop"], true, "{flag}=0");
+    }
     let v = realize_json("horn.ofn", &[("RUSTDL_INVERSE_FUNC_MAX", "0")]);
     assert_eq!(reasons(&v), ["inverse_functional_max_off"]);
     assert_eq!(v["witness_prune_may_drop"], true);

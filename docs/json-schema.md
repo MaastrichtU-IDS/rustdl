@@ -132,7 +132,8 @@ another:
     labels are one branch's pre-model;
   - `deferred_clauses`: the clausifier set axioms aside from the witness engine;
   - `refused_clauses`: the witness engine's matcher refuses some clauses;
-  - `reseed_net_off`: `RUSTDL_RESEED_VERIFY=0` with the incremental fixpoint on;
+  - `reseed_net_off`: the #137 re-seed net is not running (`RUSTDL_RESEED_VERIFY=0`
+    or `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0`);
   - `inverse_functional_max_off`: `RUSTDL_INVERSE_FUNC_MAX=0`.
 
   `false` with the prune applied means **no known reason for loss**: the witness

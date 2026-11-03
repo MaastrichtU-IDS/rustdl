@@ -527,9 +527,10 @@ All notable changes to rustdl are documented here. Format is based on
   Over the 309-ontology #354 frame, with the arms off, pre-filter only, and both on:
   - Answers (consistency, unsatisfiable classes, equivalence groups, Hasse rows) are identical on
     all 293 ontologies that finish in every arm. One more (`ore_ont_4796`) is cap-borderline, and
-    its 5 serial reps per arm give the same answer.
+    its 10 serial runs (5 per arm) give the same answer.
   - `derived_same_undecided` drops to 0 on the seven SWEET ontologies and on `ore_ont_9540` (525).
-    No `completeness_guaranteed` bit changes, because each of these has another open condition.
+    No `completeness_guaranteed` bit changes, and none can: the guarantee needs the PureEl
+    fragment, which admits neither the nominals nor the property assertions this check needs.
   - CPU, 5 interleaved serial reps: the eight targets drop 10–68% (`ore_ont_11647` 14.9 → 4.8 s)
     and `ore_ont_9540` 41.9 → 33.9 s. `ore_ont_8911` rises 25.8 → 34.0 s and goes from 0 to 4
     undecided: those are the declared-inverse candidates the old test missed, and its 4 probes

@@ -3787,9 +3787,11 @@ pub(crate) struct DerivedSame {
 /// under other representatives is dropped unprobed and not counted undecided.
 ///
 /// Misses, by design (sound): equalities whose individuals share no asserted edge
-/// (e.g. `X ⊑ ∃f.{a}` with `x : X`, or `C ⊑ {a}` with `b : C`), and those forced
+/// (e.g. `X ⊑ ∃f.{a}` with `x : X`, or `C ⊑ {a}` with `b : C`); those forced
 /// through a role chain (`r ∘ s ⊑ t` with `t` counted): only asserted edges and
-/// told role inclusions are read, with or without the narrowing.
+/// told role inclusions are read, with or without the narrowing; and those forced
+/// without any counting construct (`x : ∀r.{a}`, `x r b`, `x r c` gives
+/// `b = a = c`), since candidates are sought only under a counted role.
 pub(crate) fn derive_nominal_same(
     internal: &InternalOntology,
     cache: Option<ConsistencyCache>,
@@ -12506,6 +12508,9 @@ mod tests {
     fn derived_same_signed_keeps_each_bound_on_the_inverse() {
         let edges = "ObjectPropertyAssertion(:r :a :o) ObjectPropertyAssertion(:r :b :o)";
         for (what, bound) in [
+            // Not discriminating for the `r.flip()` on its own: conversion also emits
+            // `≤1 r⁻` (`RUSTDL_INVERSE_FUNC_MAX`). `classify_derived_same.rs` pins the
+            // flip with that flag off.
             (
                 "InverseFunctional(r)",
                 "InverseFunctionalObjectProperty(:r)",

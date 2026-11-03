@@ -1897,8 +1897,21 @@ impl WorklistEngine {
                                     .find(|(r, d_, _)| r == super_role && *d_ == dom)
                                     .map(|(_, _, idx)| AxiomRef(*idx))
                             });
+                            // #436: a trigger ⊤-marker `T_R ≡ ∃R.⊤` is a domain head by
+                            // its own definition, not by an axiom: the step is
+                            // `∃R.· ⊑ ∃R.⊤`, which needs none.
+                            let by_definition = self.proof_trace.as_ref().is_some_and(|t| {
+                                matches!(
+                                    t.synthetic_defs.get(&dom),
+                                    Some(proof::SyntheticDef::TopMarker { .. })
+                                )
+                            });
                             let inf = Inference {
-                                rule: ElRule::DomainSub,
+                                rule: if by_definition {
+                                    ElRule::SyntheticDefinition
+                                } else {
+                                    ElRule::DomainSub
+                                },
                                 premise_facts: vec![
                                     DerivedFact::Sub(c, d),
                                     DerivedFact::Exist(d, fact.role, fact.target),
@@ -3308,10 +3321,30 @@ struct TseitinAllocator {
     /// `∃R.⊤` existential (`ObjectSomeValuesFrom(R, owl:Thing)` on the RHS). ⊤ has
     /// no `atomic_or_tseitin_body` representation, so `A ⊑ ∃R.⊤` previously created
     /// no fact — A never got an R-marker, so the domain rule (`∃R.⊤ ⊑ C`, i.e.
-    /// domain(R)=C) never fired on A. The witness is an opaque atom (no subsumers →
-    /// ⊤-equivalent), so it only ever triggers domain(R); sound. Keyed per role so
-    /// all `∃R.⊤` facts share one witness (they mean the same thing).
+    /// domain(R)=C) never fired on A. Keyed per role so all `∃R.⊤` facts share one
+    /// witness (they mean the same thing).
+    ///
+    /// **Meaning: the set of `R`-successors, `∃R⁻.⊤`** (#435). Every told fact,
+    /// weakened fact and `MinKey` targeting it is true under that reading, and so
+    /// are its told subsumers: [`top_witness_subsumers`] gives it
+    /// `effective_ranges(R)` (every `R`-successor is in every range of `R` and its
+    /// super-roles) and every `⊤ ⊑ C`. It was subsumer-less before #435, so
+    /// `X ⊑ ∃R.⊤`, `Range(R, F)`, `∃R.F ⊑ W` missed `X ⊑ W` under a pure-EL
+    /// completeness claim.
+    ///
+    /// Never use it as a domain head: that is [`Self::introduce_top_marker`]'s
+    /// `T_R` (`∃R.⊤`), a different class. `∃S.TW_S ⊑ M` triggers exist (the
+    /// two-way markers and `MinKey`s over the witness), so a user class made
+    /// `⊑ TW_S` by a domain rule would fire them on `∃S.∃S.⊤` — unsound.
     top_witness_by_role: HashMap<RoleId, ClassId>,
+    /// #436: the per-role ⊤-marker `T_R ≡ ∃R.⊤` for a ⊤ filler in TRIGGER position
+    /// (`∃r.∃R.⊤ ⊑ W`, an And-LHS operand `∃R.⊤`). Registered once as a domain
+    /// head (`role_domains[R] += T_R`, i.e. `∃R.⊤ ⊑ T_R`), so ANY `R`-successor,
+    /// whatever its filler and through sub-roles, makes its source `⊑ T_R`. A fact
+    /// lowering would wait on the witness `TW_R` and fire only on facts targeting
+    /// it. Sound as a one-way trigger marker: every model extends with
+    /// `T_Rᴵ := (∃R.⊤)ᴵ`. Distinct from `top_witness_by_role` by construction.
+    top_marker_by_role: HashMap<RoleId, ClassId>,
     /// Stable opaque synthetic standing in for a **provably-empty** existential
     /// filler (`∃r.⊥`, `∃r.(A ⊓ ⊥)`, `∃r.∃s.⊥`, …). Allocated lazily by
     /// [`TseitinAllocator::introduce_bot_key`], which also registers it once in
@@ -3335,6 +3368,7 @@ impl TseitinAllocator {
             forall_key_by_role: HashMap::new(),
             forall_atomic_key_by_role: HashMap::new(),
             top_witness_by_role: HashMap::new(),
+            top_marker_by_role: HashMap::new(),
             bot_key: None,
         }
     }
@@ -3362,6 +3396,19 @@ impl TseitinAllocator {
         let synthetic = ClassId::new(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
         self.top_witness_by_role.insert(role, synthetic);
+        synthetic
+    }
+
+    /// #436: get-or-allocate the trigger-position ⊤-marker `T_R ≡ ∃R.⊤`, registering
+    /// it once as a domain head of `R`. See `top_marker_by_role`.
+    fn introduce_top_marker(&mut self, role: RoleId, rules: &mut ElRules) -> ClassId {
+        if let Some(&existing) = self.top_marker_by_role.get(&role) {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.top_marker_by_role.insert(role, synthetic);
+        rules.role_domains.entry(role).or_default().push(synthetic);
         synthetic
     }
 
@@ -3950,6 +3997,14 @@ fn collect_el_rules_with_provenance(
             proof::SyntheticDef::ExistMarkerOneWay { role, body }
         };
         synthetic_defs.insert(marker, def);
+    }
+    // #435/#436: the ⊤-witness `TW_R` (the `R`-successors, `∃R⁻.⊤`) and the
+    // trigger-position ⊤-marker `T_R ≡ ∃R.⊤`.
+    for (&role, &witness) in &tseitin.top_witness_by_role {
+        synthetic_defs.insert(witness, proof::SyntheticDef::TopWitness { role });
+    }
+    for (&role, &marker) in &tseitin.top_marker_by_role {
+        synthetic_defs.insert(marker, proof::SyntheticDef::TopMarker { role });
     }
     // Nominal keys: NomKey(ind) → stand-in for {ind}
     for (&ind, &nomkey) in &tseitin.nominal_by_ind {
@@ -4610,7 +4665,97 @@ fn collect_el_rules(
         }
     }
 
+    top_witness_subsumers(
+        internal,
+        role_super,
+        &effective_ranges,
+        &mut rules,
+        &tseitin,
+    );
+
     (rules, tseitin, total_classes)
+}
+
+/// #435: the told subsumers of every per-role ⊤-witness `TW_R`, read as the set of
+/// `R`-successors (`∃R⁻.⊤`):
+/// - `TW_R ⊑ F` for each `F` in `effective_ranges(R)`: every `R`-successor is in
+///   every range of `R` and of its super-roles;
+/// - `TW_R ⊑ C` for each `⊤ ⊑ C` (`top_subsumers`), which `seed`'s broadcast gives
+///   the user classes only.
+///
+/// Runs once, after every axiom has been lowered, so both tables and the witness map
+/// are complete and the per-axiom provenance cursors are untouched. Each push is
+/// attributed (`late_sub_axiom`) to the range/domain or `⊤ ⊑ C` axiom it rests on,
+/// for `prove`'s provenance; an axiom not found (an inherited range of an
+/// undeclared shape) leaves the step coarse, which the checker accepts.
+fn top_witness_subsumers(
+    internal: &InternalOntology,
+    role_super: &HashMap<RoleId, HashSet<RoleId>>,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    rules: &mut ElRules,
+    tseitin: &TseitinAllocator,
+) {
+    if tseitin.top_witness_by_role.is_empty() {
+        return;
+    }
+    let pool = &internal.concepts;
+    let is_super = |r: RoleId, s: RoleId| {
+        s == r || role_super.get(&r).is_some_and(|supers| supers.contains(&s))
+    };
+    // The axiom a `TW_R ⊑ F` rests on: `Range(S, F…)` or `Domain(S⁻, F…)` with
+    // `R ⊑ S`.
+    let range_axiom = |r: RoleId, f: ClassId| {
+        internal.axioms.iter().position(|ax| match ax {
+            Axiom::ObjectPropertyRange { role, range } => {
+                !role.is_inverse()
+                    && is_super(r, role.role_id())
+                    && atomic_conjuncts(pool, *range).contains(&f)
+            }
+            Axiom::ObjectPropertyDomain { role, domain } => {
+                role.is_inverse()
+                    && is_super(r, role.role_id())
+                    && atomic_conjuncts(pool, *domain).contains(&f)
+            }
+            _ => false,
+        })
+    };
+    let top_axiom = |c: ClassId| {
+        internal.axioms.iter().position(|ax| match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                matches!(pool.get(*sub), ConceptExpr::Top)
+                    && atomic_operands_on_right(*sup, pool).contains(&c)
+            }
+            _ => false,
+        })
+    };
+    let mut witnesses: Vec<(RoleId, ClassId)> = tseitin
+        .top_witness_by_role
+        .iter()
+        .map(|(&r, &w)| (r, w))
+        .collect();
+    witnesses.sort_unstable_by_key(|&(r, _)| r.index());
+    let tops = rules.top_subsumers.clone();
+    for (r, w) in witnesses {
+        let mut sups: Vec<(ClassId, Option<usize>)> = Vec::new();
+        for &f in effective_ranges.get(&r).map_or(&[][..], Vec::as_slice) {
+            sups.push((f, range_axiom(r, f)));
+        }
+        for &c in &tops {
+            if !sups.iter().any(|&(f, _)| f == c) {
+                sups.push((c, top_axiom(c)));
+            }
+        }
+        for (sup, axiom) in sups {
+            if let Some(i) = axiom {
+                rules
+                    .late_sub_axiom
+                    .push((rules.atomic_subsumptions.len(), i));
+            }
+            rules
+                .atomic_subsumptions
+                .push(AtomicSubsumption { sub: w, sup });
+        }
+    }
 }
 
 /// The `Atomic(sub) ⊑ sup` arm of [`lower_sub_class_of`], for a class id. Also used for an
@@ -4762,6 +4907,7 @@ fn lower_atomic_sub(
                     effective_ranges,
                     chain_ranges,
                     None,
+                    Pos::Fact,
                 )
             {
                 let key = tseitin.introduce_inverse_exists_key(role.role_id(), body_id);
@@ -4868,6 +5014,15 @@ fn lower_sub_class_of(
             for &op in operands {
                 match pool.get(op) {
                     ConceptExpr::Atomic(id) => bodies.push(*id),
+                    // #436: an `∃R.⊤` (or `≥1 R.⊤`) operand asks only for SOME
+                    // `R`-successor, so it is the domain-driven ⊤-marker `T_R` itself,
+                    // with no outer marker. Its body has no lowering of its own (`⊤`
+                    // under no edge), so this operand used to drop the whole trigger.
+                    ConceptExpr::Some(role, body) | ConceptExpr::Min(1, role, body)
+                        if !role.is_inverse() && matches!(pool.get(*body), ConceptExpr::Top) =>
+                    {
+                        bodies.push(tseitin.introduce_top_marker(role.role_id(), rules));
+                    }
                     ConceptExpr::Some(role, body) if !role.is_inverse() => {
                         let Some(body_ids) = existential_body_alternatives(
                             *body,
@@ -5062,6 +5217,7 @@ fn lower_sub_class_of(
                         effective_ranges,
                         chain_ranges,
                         None,
+                        Pos::Fact,
                     )
                 {
                     let key = tseitin.introduce_inverse_exists_key(role.role_id(), body_id);
@@ -5170,38 +5326,24 @@ fn lower_sub_class_of(
             // `(role, body)`), so `X ⊓ D`-style defined classes are recognized.
             // Sound: `M` is defined ≡ `∃s.D`, so this only adds the genuinely-
             // entailed `∃r.B ⊑ ∃s.D` (negative control test guards over-firing).
-            let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
-                ConceptExpr::Some(s_role, s_body) if !s_role.is_inverse() => {
-                    atomic_or_tseitin_body(
-                        *s_body,
-                        pool,
-                        rules,
-                        tseitin,
-                        effective_ranges,
-                        chain_ranges,
+            //
+            // #436: the consequent is lowered through `atomic_existential_rhs`, the
+            // entry point every other ⊑-existential uses (its And-LHS twin already
+            // does). That folds `Range(s)` in (the logical identity
+            // `∃s.D ≡ ∃s.(D ⊓ Range(s))`), and it lowers a ⊤ filler: `∃r.B ⊑ ∃s.⊤`
+            // used to drop the whole consequent.
+            let sup_existentials: Vec<(RoleId, ClassId)> = self_or_conjuncts(sup, pool)
+                .into_iter()
+                .filter(|&op| {
+                    matches!(
+                        pool.get(op),
+                        ConceptExpr::Some(_, _) | ConceptExpr::Min(_, _, _)
                     )
-                    .map(|b| vec![(s_role.role_id(), b)])
-                    .unwrap_or_default()
-                }
-                ConceptExpr::And(operands) => operands
-                    .iter()
-                    .filter_map(|&op| match pool.get(op) {
-                        ConceptExpr::Some(s_role, s_body) if !s_role.is_inverse() => {
-                            atomic_or_tseitin_body(
-                                *s_body,
-                                pool,
-                                rules,
-                                tseitin,
-                                effective_ranges,
-                                chain_ranges,
-                            )
-                            .map(|b| (s_role.role_id(), b))
-                        }
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
+                })
+                .filter_map(|op| {
+                    atomic_existential_rhs(op, pool, rules, tseitin, effective_ranges, chain_ranges)
+                })
+                .collect();
             for (s_role, s_body_id) in sup_existentials {
                 let marker =
                     tseitin.introduce_equivalent_existential_marker(s_role, s_body_id, rules);
@@ -5319,6 +5461,7 @@ fn atomic_existential_rhs(
         // This body hangs off a `role` edge, so a nested existential inside
         // it can compose with `role` (issue #84).
         Some(role.role_id()),
+        Pos::Fact,
     )?;
     Some((role.role_id(), body_id))
 }
@@ -5426,6 +5569,7 @@ fn top_level_min_key(
         effective_ranges,
         chain_ranges,
         Some(r),
+        Pos::Fact,
     )?;
     Some(tseitin.introduce_min_key(*n, r, body, rules))
 }
@@ -5526,6 +5670,7 @@ fn domain_heads_el(
         effective_ranges,
         chain_ranges,
         None,
+        Pos::Fact,
     )
     .into_iter()
     .collect()
@@ -5684,6 +5829,7 @@ fn atomic_or_tseitin_body(
         effective_ranges,
         chain_ranges,
         None,
+        Pos::Trigger,
     )
 }
 
@@ -6454,8 +6600,26 @@ fn forall_filler_key(
         effective_ranges,
         chain_ranges,
         None,
+        Pos::Fact,
     )?;
     Some(tseitin.introduce_forall_atomic_key(role, filler))
+}
+
+/// #436: where a body being lowered sits, which decides how a ⊤ filler lowers.
+///
+/// - `Fact`: a body that is ASSERTED (an RHS `X ⊑ ∃R.B` filler, a domain-GCI head,
+///   a `MinKey`/`InvExKey`/`∀`-key body, all matched by key identity). `∃S.⊤` lowers
+///   to the ⊤-witness `TW_S` with its range folds, under the usual two-way marker.
+/// - `Trigger`: a body that must be RECOGNISED (`∃R.B ⊑ C`, an And-LHS operand).
+///   `∃S.⊤` lowers to the domain-driven ⊤-marker `T_S`, which every `S`-successor
+///   fires, whatever its filler.
+///
+/// Every other shape lowers the same in both, and a nested body inherits its
+/// caller's position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pos {
+    Fact,
+    Trigger,
 }
 
 /// Like `atomic_or_tseitin_body`, but additionally folds `extras`
@@ -6479,6 +6643,7 @@ fn atomic_or_tseitin_body_with_extras(
     // chain can apply. See [`nested_extras`].
     chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
     outer_role: Option<RoleId>,
+    pos: Pos,
 ) -> Option<ClassId> {
     // `RUSTDL_EL_BOT_FILLER` (default ON, `=0` opts out): a filler that provably denotes `⊥`
     // lowers to the opaque, seeded-unsat bot key instead of returning `None` and
@@ -6499,6 +6664,16 @@ fn atomic_or_tseitin_body_with_extras(
         // singleton/cardinality semantics of `{a}` are deliberately
         // not modeled (under-approximation — the tableau handles those).
         ConceptExpr::Nominal(ind) => vec![tseitin.introduce_nominal(*ind)],
+        // #436: a ⊤ filler under an `outer_role` edge, in a FACT body: the edge's
+        // ⊤-witness (an `outer_role`-successor), so the `extras` fold below gives it
+        // `Range(outer_role)` and the #84 chain ranges like any other filler. A
+        // trigger never reaches here with ⊤: the `Some`/`Min` arms below (and the
+        // conjunction helper) lower a trigger's `∃R.⊤` to the ⊤-marker `T_R`. With
+        // no edge, ⊤ stays unlowered: its own arms (domain GCI, `⊤ ⊑ C`) handle it.
+        ConceptExpr::Top => match outer_role {
+            Some(r) => vec![tseitin.introduce_top_witness(r)],
+            None => return None,
+        },
         ConceptExpr::And(operands) => atomic_classes_with_existential_markers(
             operands,
             pool,
@@ -6507,7 +6682,17 @@ fn atomic_or_tseitin_body_with_extras(
             effective_ranges,
             chain_ranges,
             outer_role,
+            pos,
         )?,
+        // #436: `∃R.⊤` (or `≥1 R.⊤`) in a TRIGGER body means "has some `R`-successor",
+        // whatever the filler: the domain-driven ⊤-marker `T_R`.
+        ConceptExpr::Some(role, inner_body) | ConceptExpr::Min(1, role, inner_body)
+            if pos == Pos::Trigger
+                && !role.is_inverse()
+                && matches!(pool.get(*inner_body), ConceptExpr::Top) =>
+        {
+            vec![tseitin.introduce_top_marker(role.role_id(), rules)]
+        }
         ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
             // Top-level nested existential as the outer body: `∃R.∃S.X`.
             //
@@ -6533,6 +6718,7 @@ fn atomic_or_tseitin_body_with_extras(
                 effective_ranges,
                 chain_ranges,
                 Some(role.role_id()),
+                pos,
             )?;
             let marker =
                 tseitin.introduce_equivalent_existential_marker(role.role_id(), inner_id, rules);
@@ -6564,6 +6750,7 @@ fn atomic_or_tseitin_body_with_extras(
                 effective_ranges,
                 chain_ranges,
                 Some(role.role_id()),
+                pos,
             )?;
             let marker = if *n >= 2 {
                 tseitin.introduce_min_key(*n, role.role_id(), inner_id, rules)
@@ -6575,6 +6762,8 @@ fn atomic_or_tseitin_body_with_extras(
         ConceptExpr::Some(role, inner_body)
             if role.is_inverse() && sat_nominal_inverse_exists_enabled() =>
         {
+            // Matched by key identity against the told `∃S⁻.E` fact, so the body is
+            // lowered the same way at both: `Fact`.
             let inner_id = atomic_or_tseitin_body_with_extras(
                 *inner_body,
                 &[],
@@ -6584,6 +6773,7 @@ fn atomic_or_tseitin_body_with_extras(
                 effective_ranges,
                 chain_ranges,
                 None,
+                Pos::Fact,
             )?;
             vec![tseitin.introduce_inverse_exists_key(role.role_id(), inner_id)]
         }
@@ -6626,11 +6816,20 @@ fn atomic_classes_with_existential_markers(
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
     chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
     outer_role: Option<RoleId>,
+    pos: Pos,
 ) -> Option<Vec<ClassId>> {
     let mut out = Vec::with_capacity(ids.len());
     for &c in ids {
         match pool.get(c) {
             ConceptExpr::Atomic(id) => out.push(*id),
+            // #436: see the same arm in `atomic_or_tseitin_body_with_extras`.
+            ConceptExpr::Some(role, inner_body) | ConceptExpr::Min(1, role, inner_body)
+                if pos == Pos::Trigger
+                    && !role.is_inverse()
+                    && matches!(pool.get(*inner_body), ConceptExpr::Top) =>
+            {
+                out.push(tseitin.introduce_top_marker(role.role_id(), rules));
+            }
             ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
                 let inner_id = atomic_or_tseitin_body_with_extras(
                     *inner_body,
@@ -6641,6 +6840,7 @@ fn atomic_classes_with_existential_markers(
                     effective_ranges,
                     chain_ranges,
                     Some(role.role_id()),
+                    pos,
                 )?;
                 let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),
@@ -6665,6 +6865,7 @@ fn atomic_classes_with_existential_markers(
                     effective_ranges,
                     chain_ranges,
                     Some(role.role_id()),
+                    pos,
                 )?;
                 let marker = if *n >= 2 {
                     tseitin.introduce_min_key(*n, role.role_id(), inner_id, rules)
@@ -6685,6 +6886,7 @@ fn atomic_classes_with_existential_markers(
                     effective_ranges,
                     chain_ranges,
                     None,
+                    Pos::Fact,
                 )?;
                 out.push(tseitin.introduce_inverse_exists_key(role.role_id(), inner_id));
             }

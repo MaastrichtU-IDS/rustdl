@@ -1011,6 +1011,22 @@ fn synthetic_def_to_class_expression(
             ope: role_id_to_ope(*role, vocab, build),
             bce: Box::new(class_id_to_class_expression(*filler, vocab, defs, build)?),
         },
+        // #435: the ⊤-witness is the set of `R`-successors, `∃R⁻.⊤`.
+        SyntheticDef::TopWitness { role } => ClassExpression::ObjectSomeValuesFrom {
+            ope: horned_owl::model::ObjectPropertyExpression::InverseObjectProperty(
+                build.object_property(vocab.role_iri(*role)),
+            ),
+            bce: Box::new(ClassExpression::Class(
+                build.class(owl_dl_core::OWL_THING_IRI),
+            )),
+        },
+        // #436: the trigger-position ⊤-marker `∃R.⊤`.
+        SyntheticDef::TopMarker { role } => ClassExpression::ObjectSomeValuesFrom {
+            ope: role_id_to_ope(*role, vocab, build),
+            bce: Box::new(ClassExpression::Class(
+                build.class(owl_dl_core::OWL_THING_IRI),
+            )),
+        },
         // Not reached in practice: `DKey` classes are interned as real named
         // vocabulary entries at conversion time (`owl_dl_core::convert`'s
         // `urn:rustdl-dkey:` classes), so they resolve via the `vocab` branch

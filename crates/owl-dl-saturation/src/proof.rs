@@ -165,6 +165,11 @@ pub enum SyntheticDef {
     /// `ForallAtomicKey`: stands in for `∀R.F`, where `F` is a class id (named, or a
     /// synthetic with its own definition).
     ForallAtomicKey { role: RoleId, filler: ClassId },
+    /// #435: the per-role ⊤-witness, the fact target of `X ⊑ ∃R.⊤`. It stands for
+    /// the set of `R`-successors, `∃R⁻.⊤`, so `TW_R ⊑ F` reads `Range(R, F)`.
+    TopWitness { role: RoleId },
+    /// #436: the trigger-position ⊤-marker `T_R ≡ ∃R.⊤` (a domain head of `R`).
+    TopMarker { role: RoleId },
 }
 
 /// Side-table mapping every derived fact to the inference that first produced it.
@@ -1446,6 +1451,14 @@ fn render_synthetic_def<S: std::hash::BuildHasher>(
         }
         SyntheticDef::DKey(iri_suffix) => {
             format!("DataRange({iri_suffix})")
+        }
+        SyntheticDef::TopWitness { role } => {
+            let r_str = render_role(*role, vocab);
+            format!("ObjectSomeValuesFrom(ObjectInverseOf({r_str}) owl:Thing)")
+        }
+        SyntheticDef::TopMarker { role } => {
+            let r_str = render_role(*role, vocab);
+            format!("ObjectSomeValuesFrom({r_str} owl:Thing)")
         }
     }
 }

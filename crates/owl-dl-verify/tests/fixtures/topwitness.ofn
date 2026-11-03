@@ -1,8 +1,9 @@
 Prefix(:=<http://ex.org/>)
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
 Ontology(<http://ex.org/topwitness>
-Declaration(Class(:A)) Declaration(Class(:G))
+Declaration(Class(:A)) Declaration(Class(:G)) Declaration(Class(:W))
 Declaration(ObjectProperty(:u))
 ObjectPropertyRange(:u :G)
 SubClassOf(:A ObjectSomeValuesFrom(:u owl:Thing))
+SubClassOf(ObjectSomeValuesFrom(:u :G) :W)
 )

@@ -1,0 +1,20 @@
+# rustdl package E mutant (#363). DATA: never applied in the tree, never built by
+# CI or cargo test. Detector: scripts/gen/routes.py (route-pair laws), not the laws harness.
+# id: ME1
+# base: a5a2e0636f0624f40dbc24f558e2d83c38be37cc
+# layer: classify per-pair deadline (tableau fall-through)
+# reopens: a CUT pair published as subsumed instead of "not subsumed"
+# env: -
+# expect: none
+# expect-routes: R4.1@cut_p1 and cut_g25, R2.3 (FPs under a cut, refuted by the oracle)
+--- a/crates/owl-dl-reasoner/src/classify.rs	2026-11-03 16:43:19.665927390 +0000
++++ b/crates/owl-dl-reasoner/src/classify.rs	2026-11-03 16:43:19.885929763 +0000
+@@ -5964,7 +5964,7 @@
+                         stall_diverged,
+                         None,
+                     );
+-                    Ok(None)
++                    Ok(Some(true))
+                 }
+                 Err(other) => Err(other),
+             }

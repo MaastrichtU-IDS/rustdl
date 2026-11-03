@@ -1,0 +1,611 @@
+#!/usr/bin/env python3
+"""Route-pair laws over the generated cases (#363 package E, stateful half).
+
+Same question, different route: does rustdl give the same semantic answer? Plan:
+notes/plans/2026-11-03-363-package-e-stateful.md (v2). Laws:
+
+  R1  thread count: RAYON_NUM_THREADS=1 vs 8 (one core), --pair-timeout-ms 1000: equal.
+  R2  default vs reference (a: RUSTDL_HYPERTABLEAU_TRUST_SAT=0, b: RUSTDL_HYPERTABLEAU=0),
+      both at --pair-timeout-ms 1000. NOT "default ⊆ reference": asymmetries are
+      adjudicated by the oracle. Violations: an FP on either route (R2.3), differing
+      `consistent` (R2.4), a difference where the default reports completeness_guaranteed
+      (R2.2, vacuous by construction: kept as a sanity check).
+  R3  cold (one CLI process per case) vs warm (one Python process for every case, in
+      order and shuffled, queries interleaved): equal answers (R3.1), order-independent
+      (R3.2), Classification.is_subclass agrees with the closure (R3.3).
+  R4  interruption: --global-timeout-ms 1/5/25 and --pair-timeout-ms 1 vs the full run.
+      Compared whatever the CUT run's flags say; excluded only if the FULL run gave up.
+      R4.1 cut ⊄ full (an FP when the oracle refutes it), R4.2 cut ≠ full without a
+      give-up flag (a silent cut), R4.3 cut `consistent: false` while full is true.
+  R5  fragment: R5.1 a case with a must-leave-PureEl token reports `pure-EL`;
+      R5.2 an el_guaranteed case does not (gate cost, reported apart);
+      R5.3 text output ≠ JSON output (serialisation only).
+
+A law compares two answers only when neither run gave up (R4: only the full run).
+
+  routes.py run    --set NAME=DIR ... --bin BIN --tag TAG --out OUT [--first N]
+  routes.py warm   --set NAME=DIR ... --python VENV_PY --tag TAG --out OUT [--first N]
+  routes.py laws   --out OUT --tag TAG [--warm TAG] --oracle-cache DIR
+  routes.py detect --out OUT --control TAG --mutant TAG
+  routes.py --self-test
+"""
+import argparse
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+from collections import Counter
+from concurrent import futures
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
+import oracle as orc  # noqa: E402
+import run  # noqa: E402
+from owl_readers import closure  # noqa: E402
+
+CAP = int(os.environ.get("ROUTES_CAP", "30"))
+FULL = ["--pair-timeout-ms", "1000"]
+ROUTES = {
+    "full": (["classify", "--json", *FULL], {"RAYON_NUM_THREADS": "1"}),
+    "t8": (["classify", "--json", *FULL], {"RAYON_NUM_THREADS": "8"}),
+    "refA": (["classify", "--json", *FULL],
+             {"RAYON_NUM_THREADS": "1", "RUSTDL_HYPERTABLEAU_TRUST_SAT": "0"}),
+    "refB": (["classify", "--json", *FULL],
+             {"RAYON_NUM_THREADS": "1", "RUSTDL_HYPERTABLEAU": "0"}),
+    "cut_g1": (["classify", "--json", "--global-timeout-ms", "1"], {"RAYON_NUM_THREADS": "1"}),
+    "cut_g5": (["classify", "--json", "--global-timeout-ms", "5"], {"RAYON_NUM_THREADS": "1"}),
+    "cut_g25": (["classify", "--json", "--global-timeout-ms", "25"], {"RAYON_NUM_THREADS": "1"}),
+    "cut_p1": (["classify", "--json", "--pair-timeout-ms", "1"], {"RAYON_NUM_THREADS": "1"}),
+    "text": (["classify", *FULL], {"RAYON_NUM_THREADS": "1"}),
+}
+CUTS = ("cut_g1", "cut_g5", "cut_g25", "cut_p1")
+GIVE_UP_FLAGS = ("incomplete", "prep_timed_out", "conversion_timed_out", "parse_timed_out",
+                 "consistency_undetermined")
+FLAGS = GIVE_UP_FLAGS + ("derived_same_undecided", "completeness_guaranteed",
+                         "trusted_sat_refutations", "wedge_hierarchy_blind",
+                         "wedge_clauses_refused", "relies_on_trusted_consistency")
+PURE_EL = "pure-EL"
+# Tokens whose presence takes a case outside is_pure_el (plan v2 [F5]). Deliberately NOT
+# here: ObjectComplementOf (neg-to-⊥), data ∃/value/domain/range/sub-properties, and bare
+# Symmetric/InverseObjectProperties: the gate admits or rewrites those.
+LEAVES_PURE_EL = ("ObjectAllValuesFrom", "ObjectUnionOf", "DisjointUnion",
+                  "ObjectMinCardinality", "ObjectMaxCardinality", "ObjectExactCardinality",
+                  "DataMinCardinality", "DataMaxCardinality", "DataExactCardinality",
+                  "ObjectOneOf", "ObjectHasValue", "ObjectHasSelf", "FunctionalObjectProperty",
+                  "InverseFunctionalObjectProperty", "FunctionalDataProperty",
+                  "ReflexiveObjectProperty", "IrreflexiveObjectProperty",
+                  "AsymmetricObjectProperty", "DisjointObjectProperties", "ClassAssertion",
+                  "ObjectPropertyAssertion", "DataPropertyAssertion", "SameIndividual",
+                  "DifferentIndividuals", "ObjectInverseOf")
+
+
+# ------------------------------------------------------------------ answers
+def answer_of_json(j, classes):
+    unsat, te, clo = run.hierarchy_of(j, classes)
+    return {"consistent": bool(j.get("consistent")), "unsat": sorted(unsat),
+            "closure": sorted([s, t] for s, t in clo), "flags": {k: j.get(k) for k in FLAGS}}
+
+
+def answer_of_text(out, classes):
+    """The text output, normalised as JSON is: unsat classes are dropped from `equiv`."""
+    edges, groups, unsat, fragment = [], [], set(), None
+    for line in out.splitlines():
+        if line.startswith("# fragment:"):
+            fragment = line.split(":", 1)[1].strip()
+        elif line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if parts[0] == "direct" and len(parts) == 3:
+            edges.append((parts[1], parts[2]))
+        elif parts[0] == "equiv" and len(parts) >= 3:
+            groups.append(parts[1:])
+        elif parts[0] == "unsat" and len(parts) == 2:
+            unsat.add(parts[1])
+    groups = [[m for m in g if m not in unsat] for g in groups]
+    groups = [g for g in groups if len(g) >= 2]
+    clo = {(s, t) for s, t in closure(edges, groups) if s in classes and t in classes}
+    return {"unsat": sorted(unsat & classes), "closure": sorted([s, t] for s, t in clo),
+            "fragment": fragment}
+
+
+def gave_up(rec):
+    if rec.get("status") != "ok":
+        return True
+    f = rec["answer"]["flags"]
+    return any(f.get(k) for k in GIVE_UP_FLAGS) or bool(f.get("derived_same_undecided"))
+
+
+def key(ans):
+    return (ans["consistent"], tuple(ans["unsat"]), tuple(map(tuple, ans["closure"])))
+
+
+# ------------------------------------------------------------------ run (CLI routes)
+def run_route(binary, route, path, classes):
+    args, env = ROUTES[route]
+    try:
+        p = subprocess.run([binary, *args, str(path)], capture_output=True, text=True,
+                           timeout=CAP, env={**os.environ, **env}, preexec_fn=run._limit)
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout"}
+    if route == "text":
+        if p.returncode != 0:
+            return {"status": "fail", "rc": p.returncode}
+        return {"status": "ok", "answer": answer_of_text(p.stdout, classes)}
+    try:
+        return {"status": "ok", "answer": answer_of_json(json.loads(p.stdout), classes)}
+    except (json.JSONDecodeError, KeyError):
+        return {"status": "fail", "rc": p.returncode, "stderr": p.stderr[-300:]}
+
+
+def one_case(setname, path, binary, out_dir, routes):
+    dest = Path(out_dir) / "cases" / setname / (Path(path).stem + ".json")
+    if dest.exists():
+        return json.loads(dest.read_text())
+    text = Path(path).read_text()
+    classes = orc.declared_classes(text)
+    rec = {"set": setname, "case": Path(path).stem, "sha256": orc.sha(text), "routes": {}}
+    for r in routes:
+        rec["routes"][r] = run_route(binary, r, path, classes)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.with_suffix(".part").write_text(json.dumps(rec))
+    dest.with_suffix(".part").replace(dest)
+    return rec
+
+
+def case_files(sets, first):
+    out = []
+    for spec in sets:
+        name, _, d = spec.partition("=")
+        files = sorted(Path(d).glob("case-*.ofn"))
+        out += [(name, f) for f in (files[:first] if first else files)]
+    return out
+
+
+def cmd_run(a):
+    out = Path(a.out) / a.tag
+    out.mkdir(parents=True, exist_ok=True)
+    files = case_files(a.set, a.first)
+    routes = a.routes.split(",") if a.routes else list(ROUTES)
+    (out / "manifest.json").write_text(json.dumps({"tag": a.tag, "binary": a.bin,
+                                                   "routes": routes, "n": len(files),
+                                                   "cap_s": CAP, "sets": a.set}, indent=1))
+    cores = [int(c) for c in a.cores.split(",")]
+    import multiprocessing as mp
+    q = mp.Manager().Queue()
+    for c in cores:
+        q.put(c)
+    done = 0
+    with futures.ProcessPoolExecutor(max_workers=len(cores), initializer=run._pin,
+                                     initargs=(q,)) as ex:
+        futs = {ex.submit(one_case, s, str(f), a.bin, str(out), routes): (s, f)
+                for s, f in files}
+        for fu in futures.as_completed(futs):
+            done += 1
+            try:
+                fu.result()
+                if done % 100 == 0 or done == len(files):
+                    print(f"[{done}/{len(files)}]", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[{done}/{len(files)}] {futs[fu]} ERROR {exc!r}", flush=True)
+    return 0
+
+
+# ------------------------------------------------------------------ warm (Python)
+WARM_DRIVER = r'''
+import json, random, sys, warnings
+warnings.simplefilter("ignore")
+import rustdl
+files, out, seed = json.load(open(sys.argv[1])), sys.argv[2], int(sys.argv[3])
+order = list(range(len(files)))
+if seed:
+    random.Random(seed).shuffle(order)
+with open(out, "w") as fh:
+    for i in order:
+        setname, path, classes = files[i]
+        rec = {"set": setname, "case": path.rsplit("/", 1)[-1][:-4]}
+        try:
+            # 25 s global budget: a long case gives up (budget-cut) as the CLI's 30 s cap does.
+            c = rustdl.classify(path, per_pair_timeout_ms=1000, global_timeout_ms=25000)
+            unsat = set(c.unsatisfiable) & set(classes)
+            edges = [(x, y) for x in classes if x not in unsat for y in c.direct_subsumers(x)]
+            groups = [[x] + list(c.equivalent_classes(x)) for x in classes if x not in unsat]
+            rec.update(status="ok", consistent=not c.inconsistent, unsat=sorted(unsat),
+                       edges=edges, groups=groups,
+                       complete=c.complete, derived_same_undecided=c.derived_same_undecided,
+                       consistency_undetermined=c.consistency_undetermined,
+                       prep_timed_out=c.prep_timed_out,
+                       conversion_timed_out=c.conversion_timed_out)
+            # R3.3: is_subclass over every declared satisfiable pair
+            rec["is_subclass"] = [[x, y] for x in classes for y in classes
+                                  if x != y and x not in unsat and y not in unsat
+                                  and c.is_subclass(x, y)]
+            # interleaved query: the realistic thread-local leak path. Not is_subclass_of:
+            # it runs no inconsistency guard and does not finish on an inconsistent KB
+            # (default case 438). That is #428; re-include is_subclass_of once #428 lands.
+            try:
+                rustdl.is_consistent(path)
+            except Exception:  # noqa: BLE001 (a give-up is an error here; the call still ran)
+                pass
+        except Exception as e:  # noqa: BLE001
+            rec.update(status="fail", error=repr(e)[:300])
+        fh.write(json.dumps(rec) + "\n")
+        fh.flush()
+        print(f"{order.index(i) + 1}/{len(order)} {rec['set']} {rec['case']} {rec['status']}",
+              file=sys.stderr, flush=True)
+'''
+
+
+def cmd_warm(a):
+    out = Path(a.out) / a.tag
+    out.mkdir(parents=True, exist_ok=True)
+    files = [(s, str(f), sorted(orc.declared_classes(f.read_text())))
+             for s, f in case_files(a.set, a.first)]
+    drv = out / "warm_driver.py"
+    drv.write_text(WARM_DRIVER)
+    lst = out / "warm_files.json"  # passed as a file: 4000 paths exceed ARG_MAX
+    lst.write_text(json.dumps(files))
+    for seed in (0, 363):
+        dest = out / f"warm-{seed}.jsonl"
+        subprocess.run(["taskset", "-c", a.core, a.python, str(drv), str(lst), str(dest),
+                        str(seed)], check=True)
+        print(f"warm pass seed={seed} -> {dest}", flush=True)
+    return 0
+
+
+def warm_answer(r, classes):
+    clo = {(s, t) for s, t in closure([tuple(e) for e in r["edges"]],
+                                      [g for g in r["groups"] if len(g) >= 2])
+           if s in classes and t in classes}
+    gave = (not r["complete"]) or r["consistency_undetermined"] or r["prep_timed_out"] \
+        or r["conversion_timed_out"] or r["derived_same_undecided"]
+    return {"consistent": r["consistent"], "unsat": sorted(r["unsat"]),
+            "closure": sorted([s, t] for s, t in clo)}, bool(gave), clo
+
+
+# ------------------------------------------------------------------ laws
+def oracle_answer(cache, sha):
+    p = Path(cache) / sha[:2] / f"{sha}.json"
+    if not p.exists():
+        return None
+    o = json.loads(p.read_text())
+    return o["answer"] if o["verdict"] == "agree" else None
+
+
+def fp_findings(oans, classes, ans):
+    """FP kinds of one route's answer against the oracle (run.score on a fake arm)."""
+    j = {"consistent": ans["consistent"], "unsatisfiable": ans["unsat"],
+         "equivalent_groups": [], "direct_subsumptions": ans["closure"],
+         "completeness_guaranteed": False, "incomplete": False}
+    arms = {"classify": {"status": "ok", "json": j}}
+    return [f for f in run.score(oans, classes, arms) if f["kind"].endswith("-FP")]
+
+
+def evaluate(rec, oans, classes, text_of_case, warm=None):
+    """[(law, outcome, detail)] for one case; outcome in ok/violation/budget-cut/info."""
+    out = []
+    R = rec["routes"]
+    full = R.get("full", {})
+    full_gave = gave_up(full)
+
+    def add(law, outcome, detail=""):
+        out.append((law, outcome, detail))
+
+    # R1 threads
+    t8 = R.get("t8")
+    if t8 is not None:
+        if full_gave or gave_up(t8):
+            add("R1", "budget-cut")
+        else:
+            add("R1", "ok" if key(full["answer"]) == key(t8["answer"]) else "violation")
+    # R2 references
+    for ref in ("refA", "refB"):
+        rr = R.get(ref)
+        if rr is None:
+            continue
+        # R2.3, the FP check, is never budget-exempt: it runs on every completed run, as a
+        # cut-publishing bug is exactly what makes a run `incomplete`.
+        if oans is not None and oans["consistent"]:
+            for name, run_ in (("default", full), (ref, rr)):
+                if run_.get("status") == "ok":
+                    for f in fp_findings(oans, classes, run_["answer"]):
+                        add(f"R2.3.{ref}", "violation", f"{name} {f['kind']} {f['witness']}")
+        if full_gave or gave_up(rr):
+            add(f"R2.{ref}", "budget-cut")
+            continue
+        fa, ra = full["answer"], rr["answer"]
+        if fa["consistent"] != ra["consistent"]:
+            add(f"R2.4.{ref}", "violation", "consistent differs")
+        if key(fa) == key(ra):
+            add(f"R2.{ref}", "ok")
+        else:
+            if fa["flags"].get("completeness_guaranteed"):
+                add(f"R2.2.{ref}", "violation", "guaranteed default differs")
+            add(f"R2.{ref}", "info", "asymmetric (oracle adjudicates)" if oans
+                else "asymmetric, no oracle")
+    # R4 interruption
+    for cut in CUTS:
+        cr = R.get(cut)
+        if cr is None:
+            continue
+        if full_gave or cr.get("status") != "ok":
+            add(f"R4.{cut}", "budget-cut")
+            continue
+        fa, ca = full["answer"], cr["answer"]
+        # A pair whose subclass the full run calls unsatisfiable is implied by it (an unsat
+        # class is below everything), so it is not "more" than the full answer.
+        extra = {(s, t) for s, t in map(tuple, ca["closure"])
+                 if (s, t) not in set(map(tuple, fa["closure"])) and s not in fa["unsat"]}
+        extra_u = set(ca["unsat"]) - set(fa["unsat"])
+        if extra or extra_u:
+            fps = fp_findings(oans, classes, ca) if (oans and oans["consistent"]) else []
+            if fps:
+                add(f"R4.1.{cut}", "violation", f"FP {fps[0]['kind']} {fps[0]['witness']}")
+            else:
+                add(f"R4.1.{cut}", "info", "cut ⊄ full, not refuted by the oracle")
+        flagged = any(ca["flags"].get(k) for k in GIVE_UP_FLAGS) \
+            or bool(ca["flags"].get("derived_same_undecided"))
+        broke = False
+        if key(ca) != key(fa) and not flagged:
+            add(f"R4.2.{cut}", "violation", "silent cut")
+            broke = True
+        if not ca["consistent"] and fa["consistent"]:
+            add(f"R4.3.{cut}", "violation", "cut says inconsistent")
+            broke = True
+        if any(l == f"R4.1.{cut}" and o == "violation" for l, o, _ in out):
+            broke = True
+        if not broke:
+            add(f"R4.{cut}", "ok")
+    # R5 fragment and serialisation
+    tx = R.get("text")
+    if tx is not None and tx.get("status") == "ok":
+        frag = tx["answer"]["fragment"] or ""
+        # A degenerate `ObjectUnionOf(:C :C)` is just `C`, which the gate admits.
+        scan = re.sub(r"ObjectUnionOf\((:C\d+) \1\)", r"\1", text_of_case)
+        leaves = [t for t in LEAVES_PURE_EL if t in scan]
+        if leaves and frag.startswith(PURE_EL):
+            add("R5.1", "violation", f"pure-EL despite {leaves[:3]}")
+        elif leaves:
+            add("R5.1", "ok")
+        if rec["set"] == "el_guaranteed":
+            add("R5.2", "ok" if frag.startswith(PURE_EL) else "info", frag[:40])
+        if not full_gave:
+            same = (tx["answer"]["unsat"] == full["answer"]["unsat"]
+                    and tx["answer"]["closure"] == full["answer"]["closure"])
+            add("R5.3", "ok" if same else "violation")
+    # R3 warm
+    if warm is not None:
+        w0, w1 = warm
+        if w0 is None or w0.get("status") != "ok":
+            add("R3.1", "budget-cut" if w0 else "info", "no warm record")
+        else:
+            wa, wgave, wclo = warm_answer(w0, classes)
+            if full_gave or wgave:
+                add("R3.1", "budget-cut")
+            else:
+                add("R3.1", "ok" if key(wa) == key(full["answer"]) else "violation")
+            iss = {tuple(p) for p in w0["is_subclass"]}
+            sat = classes - set(w0["unsat"])
+            want = {(s, t) for s, t in wclo if s in sat and t in sat}
+            add("R3.3", "ok" if iss == want else "violation",
+                f"{len(iss ^ want)} pairs differ" if iss != want else "")
+            if w1 is not None and w1.get("status") == "ok":
+                wb, wbg, _ = warm_answer(w1, classes)
+                if wgave or wbg:
+                    add("R3.2", "budget-cut")
+                else:
+                    add("R3.2", "ok" if key(wa) == key(wb) else "violation")
+    return out
+
+
+def load_tag(out, tag):
+    recs = {}
+    for p in (Path(out) / tag / "cases").glob("*/case-*.json"):
+        r = json.loads(p.read_text())
+        recs[(r["set"], r["case"])] = r
+    return recs
+
+
+def load_warm(out, tag):
+    res = {}
+    for seed in (0, 363):
+        p = Path(out) / tag / f"warm-{seed}.jsonl"
+        if p.exists():
+            for line in p.read_text().splitlines():
+                r = json.loads(line)
+                res.setdefault((r["set"], r["case"]), [None, None])[0 if seed == 0 else 1] = r
+    return res
+
+
+def case_text(rec, sets):
+    d = dict(s.split("=", 1) for s in sets)
+    return (Path(d[rec["set"]]) / f"{rec['case']}.ofn").read_text()
+
+
+def all_outcomes(a):
+    man = json.loads((Path(a.out) / a.tag / "manifest.json").read_text())
+    recs = load_tag(a.out, a.tag)
+    warm = load_warm(a.out, a.warm) if a.warm else {}
+    res = {}
+    for k, rec in recs.items():
+        text = case_text(rec, man["sets"])
+        classes = orc.declared_classes(text)
+        oans = oracle_answer(a.oracle_cache, rec["sha256"])
+        res[k] = evaluate(rec, oans, classes, text, warm.get(k) if a.warm else None)
+    return res
+
+
+def cmd_laws(a):
+    res = all_outcomes(a)
+    tally = {}
+    viol = []
+    for k, outs in sorted(res.items()):
+        for law, outcome, detail in outs:
+            tally.setdefault(law, Counter())[outcome] += 1
+            if outcome == "violation":
+                viol.append([k[0], k[1], law, detail])
+    rep = {"tag": a.tag, "warm": a.warm, "cases": len(res),
+           "laws": {l: dict(c) for l, c in sorted(tally.items())},
+           "violations": len(viol), "violation_list": viol[:200]}
+    Path(a.out, a.tag, "laws.json").write_text(json.dumps(rep, indent=1))
+    print(json.dumps({k: v for k, v in rep.items() if k != "violation_list"}, indent=1))
+    for v in viol[:40]:
+        print("VIOLATION", *v)
+    return 0
+
+
+def cmd_detect(a):
+    """Law violations in the mutant run that the control run lacks on the same case."""
+    a_c = argparse.Namespace(**{**vars(a), "tag": a.control, "warm": a.control_warm})
+    a_m = argparse.Namespace(**{**vars(a), "tag": a.mutant, "warm": a.mutant_warm})
+    c, m = all_outcomes(a_c), all_outcomes(a_m)
+    new = []
+    for k, outs in m.items():
+        base = {(l, d) for l, o, d in c.get(k, []) if o == "violation"}
+        for l, o, d in outs:
+            if o == "violation" and (l, d) not in base:
+                new.append([k[0], k[1], l, d])
+    by_law = Counter(v[2] for v in new)
+    rep = {"control": a.control, "mutant": a.mutant, "detecting_cases": len({(v[0], v[1]) for v in new}),
+           "by_law": dict(by_law), "first": new[:20]}
+    Path(a.out, a.mutant, f"detect-vs-{a.control}.json").write_text(json.dumps(rep, indent=1))
+    print(json.dumps(rep, indent=1))
+    return 0
+
+
+# ------------------------------------------------------------------ self-test
+def self_test():
+    A, B, C = "http://g#A", "http://g#B", "http://g#C"
+    classes = {A, B, C}
+    flags0 = {k: False for k in FLAGS}
+    flags0["derived_same_undecided"] = 0
+
+    def r(clo, unsat=(), cons=True, **fl):
+        return {"status": "ok", "answer": {"consistent": cons, "unsat": sorted(unsat),
+                                           "closure": sorted(map(list, clo)),
+                                           "flags": {**flags0, **fl}}}
+
+    def txt(clo, unsat=(), frag="out-of-EL"):
+        return {"status": "ok", "answer": {"unsat": sorted(unsat),
+                                           "closure": sorted(map(list, clo)), "fragment": frag}}
+
+    base = {(A, B)}
+    oans = {"consistent": True, "unsat": [], "thing_equiv": [], "pairs": [[A, B]]}
+
+    def laws(routes, setname="default", text="", warm=None):
+        rec = {"set": setname, "case": "c", "routes": routes}
+        return {(l, o) for l, o, _ in evaluate(rec, oans, classes, text, warm)}
+
+    fails = 0
+
+    def ok(name, got, want):
+        nonlocal fails
+        good = want <= got if isinstance(want, set) else got == want
+        fails += not good
+        print(f"{'ok  ' if good else 'FAIL'} {name}: got {sorted(got) if isinstance(got, set) else got}")
+
+    full = r(base)
+    ok("R1 equal", laws({"full": full, "t8": r(base)}), {("R1", "ok")})
+    ok("R1 differs", laws({"full": full, "t8": r(set())}), {("R1", "violation")})
+    ok("R1 give-up is budget-cut", laws({"full": full, "t8": r(set(), incomplete=True)}),
+       {("R1", "budget-cut")})
+    ok("R1 derived_same_undecided is a give-up",
+       laws({"full": full, "t8": r(set(), derived_same_undecided=2)}), {("R1", "budget-cut")})
+    ok("R2 reference FP", laws({"full": full, "refA": r(base | {(B, C)})}),
+       {("R2.3.refA", "violation")})
+    ok("R2 reference miss is info, not a violation", laws({"full": full, "refB": r(set())}),
+       {("R2.refB", "info")})
+    ok("R2.4 consistency differs", laws({"full": full, "refA": r(base, cons=False)}),
+       {("R2.4.refA", "violation")})
+    ok("R2.2 guaranteed default differs",
+       laws({"full": r(base, completeness_guaranteed=True), "refA": r(set())}),
+       {("R2.2.refA", "violation")})
+    ok("R4.1 FP under a cut, flags ignored",
+       laws({"full": full, "cut_p1": r(base | {(B, C)}, incomplete=True)}),
+       {("R4.1.cut_p1", "violation")})
+    ok("R4 is not tallied ok when R4.1 fired",
+       ("R4.cut_p1", "ok") in laws({"full": full, "cut_p1": r(base | {(B, C)}, incomplete=True)}),
+       False)
+    ok("R2.3 FP check runs on a given-up reference run",
+       laws({"full": full, "refA": r(base | {(B, C)}, incomplete=True)}),
+       {("R2.3.refA", "violation"), ("R2.refA", "budget-cut")})
+    ok("R4.2 silent cut", laws({"full": full, "cut_g1": r(set())}), {("R4.2.cut_g1", "violation")})
+    ok("R4.2 flagged cut is fine", laws({"full": full, "cut_g1": r(set(), incomplete=True)}),
+       {("R4.cut_g1", "ok")})
+    ok("R4.3 cut inconsistent", laws({"full": full, "cut_g5": r(set(), cons=False, incomplete=True)}),
+       {("R4.3.cut_g5", "violation")})
+    ok("R4.1 a cut missing an unsat class is not 'more'",
+       laws({"full": r(set(), unsat={C}), "cut_g1": r({(C, A)}, incomplete=True)}),
+       {("R4.cut_g1", "ok")})
+    ok("R4 skipped when the full run gave up",
+       laws({"full": r(base, incomplete=True), "cut_g5": r(set())}), {("R4.cut_g5", "budget-cut")})
+    ok("R5.1 pure-EL despite ∀", laws({"full": full, "text": txt(base, frag="pure-EL (x)")},
+                                      text="ObjectAllValuesFrom(:r :A)"), {("R5.1", "violation")})
+    ok("R5.1 complement alone is not a predictor",
+       laws({"full": full, "text": txt(base, frag="pure-EL (x)")}, text="ObjectComplementOf(:A)"),
+       {("R5.3", "ok")})
+    ok("R5.1 a degenerate union is not a predictor",
+       {x for x in laws({"full": full, "text": txt(base, frag="pure-EL (x)")},
+                        text="SubClassOf(:A ObjectUnionOf(:C1 :C1))") if x[0] == "R5.1"}, set())
+    ok("R5.2 el_guaranteed not pure-EL is info",
+       laws({"full": full, "text": txt(base, frag="Horn")}, setname="el_guaranteed"),
+       {("R5.2", "info")})
+    ok("R5.3 text differs", laws({"full": full, "text": txt(set())}), {("R5.3", "violation")})
+    w = {"status": "ok", "consistent": True, "unsat": [], "edges": [[A, B]], "groups": [],
+         "complete": True, "derived_same_undecided": 0, "consistency_undetermined": False,
+         "prep_timed_out": False, "conversion_timed_out": False, "is_subclass": [[A, B]]}
+    ok("R3 warm equal", laws({"full": full}, warm=(w, w)),
+       {("R3.1", "ok"), ("R3.2", "ok"), ("R3.3", "ok")})
+    w2 = {**w, "edges": []}
+    ok("R3.1 warm differs", laws({"full": full}, warm=(w2, w)), {("R3.1", "violation")})
+    ok("R3.2 order matters", laws({"full": full}, warm=(w, w2)), {("R3.2", "violation")})
+    ok("R3.3 is_subclass disagrees", laws({"full": full}, warm=({**w, "is_subclass": []}, w)),
+       {("R3.3", "violation")})
+    ok("text parser drops unsat from equiv",
+       answer_of_text("unsat\thttp://g#C\nequiv\thttp://g#A\thttp://g#C\ndirect\thttp://g#A\thttp://g#B\n",
+                      classes)["closure"], [[A, B]])
+    print(f"routes self-test: {'all ok' if not fails else f'{fails} FAILED'}")
+    return 1 if fails else 0
+
+
+def main():
+    if "--self-test" in sys.argv:
+        return self_test()
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("run")
+    p.add_argument("--set", action="append", required=True)
+    p.add_argument("--bin", required=True)
+    p.add_argument("--tag", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--first", type=int)
+    p.add_argument("--routes")
+    p.add_argument("--cores", default="92,93,94")
+    p = sub.add_parser("warm")
+    p.add_argument("--set", action="append", required=True)
+    p.add_argument("--python", required=True)
+    p.add_argument("--tag", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--first", type=int)
+    p.add_argument("--core", default="94")
+    p = sub.add_parser("laws")
+    p.add_argument("--out", required=True)
+    p.add_argument("--tag", required=True)
+    p.add_argument("--warm")
+    p.add_argument("--oracle-cache", required=True)
+    p = sub.add_parser("detect")
+    p.add_argument("--out", required=True)
+    p.add_argument("--control", required=True)
+    p.add_argument("--mutant", required=True)
+    p.add_argument("--control-warm")
+    p.add_argument("--mutant-warm")
+    p.add_argument("--oracle-cache", required=True)
+    a = ap.parse_args()
+    return {"run": cmd_run, "warm": cmd_warm, "laws": cmd_laws, "detect": cmd_detect}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

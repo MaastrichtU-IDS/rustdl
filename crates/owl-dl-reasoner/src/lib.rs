@@ -17938,7 +17938,10 @@ mod class_query_guard_tests {
     use super::*;
 
     fn internal(src: &str) -> InternalOntology {
-        let (o, _) = horned_owl::io::ofn::reader::read(
+        let (o, _): (
+            horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+            _,
+        ) = horned_owl::io::ofn::reader::read(
             &mut std::io::Cursor::new(src),
             horned_owl::io::ParserConfiguration::default(),
         )

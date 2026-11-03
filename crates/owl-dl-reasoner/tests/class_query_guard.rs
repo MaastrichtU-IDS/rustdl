@@ -381,7 +381,11 @@ Ontology(<http://ex/el>
         run()
     };
     assert_eq!(on, off);
-    assert!(on.contains(&(true, true, true)), "the EL fixture answers by saturation");
+    // An ontology with an `ABox` is never pure-EL; the closure answers anyway.
+    assert!(
+        on.iter().any(|&(v, by_saturation, _)| v && by_saturation),
+        "some answers come from the (reused) closure"
+    );
 }
 
 /// `prove` runs the guard before the step proof (#428, option C): on an

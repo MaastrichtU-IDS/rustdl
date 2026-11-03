@@ -222,6 +222,9 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     onto: &SetOntology<A>,
     ce: &ClassExpression<A>,
 ) -> Result<CeVerdict, ReasonError> {
+    // Before the probe axiom is added: an input that already declares the probe
+    // IRI is refused, not extended.
+    ensure_fresh(onto, PROBE_IRI)?;
     // One conversion, of the probed ontology: `Q ≡ ce` with a fresh `Q` is a
     // conservative extension, so its consistency is the input's (#369).
     let mut probed = onto.clone();
@@ -232,7 +235,6 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     if crate::query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
-    ensure_fresh(onto, PROBE_IRI)?;
     let (holds, stats, left) = crate::is_class_satisfiable_keeping(internal, PROBE_IRI)?;
     // #369: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
     let consistency_undetermined =
@@ -257,6 +259,8 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     sub_ce: &ClassExpression<A>,
     sup_ce: &ClassExpression<A>,
 ) -> Result<CeVerdict, ReasonError> {
+    ensure_fresh(onto, PROBE_IRI)?;
+    ensure_fresh(onto, PROBE_IRI_2)?;
     // One conversion, of the probed ontology (see `class_expression_satisfiable`).
     let mut probed = onto.clone();
     let build: Build<A> = Build::new();
@@ -267,8 +271,6 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     if crate::query_kb_inconsistent(&internal) {
         return Err(ReasonError::Inconsistent);
     }
-    ensure_fresh(onto, PROBE_IRI)?;
-    ensure_fresh(onto, PROBE_IRI_2)?;
     let (holds, stats, left) = crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2)?;
     // #369: as in `class_expression_satisfiable`.
     let consistency_undetermined =

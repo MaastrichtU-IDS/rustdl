@@ -294,8 +294,9 @@ fn parse_ce(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("class expression: {e}")))
 }
 
-/// `(satisfiable, incomplete, relies_on_trusted_consistency)` for the class
-/// expression `ce`: `incomplete` means the probe gave up (node cap) and
+/// `(satisfiable, incomplete, relies_on_trusted_consistency,
+/// consistency_undetermined)` for the class expression `ce` (the last is #369's,
+/// set on an "unsatisfiable" whose KB consistency stayed undetermined): `incomplete` means the probe gave up (node cap) and
 /// "satisfiable" is the sound direction (#363 A2); an answer off pure EL is not
 /// `incomplete`. Runs under the single-query node cap, like
 /// `is_class_satisfiable`.
@@ -317,8 +318,9 @@ pub(crate) fn class_expression_satisfiable(
     ))
 }
 
-/// `(entailed, incomplete, relies_on_trusted_consistency)` for
-/// `sub_ce ⊑ sup_ce`: `incomplete` means the probe gave up and "not entailed"
+/// `(entailed, incomplete, relies_on_trusted_consistency,
+/// consistency_undetermined)` for `sub_ce ⊑ sup_ce` (the last as in
+/// `class_expression_satisfiable`): `incomplete` means the probe gave up and "not entailed"
 /// is the sound direction; an answer off pure EL is not `incomplete`. Runs
 /// under the single-query node cap, like `is_subclass_of`.
 #[pyfunction]

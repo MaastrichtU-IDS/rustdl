@@ -248,4 +248,13 @@ fn subclass_expr_checks_only_after_a_positive_answer() {
     );
     assert_eq!(pos.stdout, "yes\n", "{}", pos.stderr);
     assert!(pos.stderr.contains(TRACE), "{}", pos.stderr);
+    // A negative sat-expr ("satisfiable") and an empty property-values run none.
+    for args in [
+        vec!["sat-expr", f.path(), "<http://ex/#Y>"],
+        vec!["property-values", f.path()],
+    ] {
+        let r = run(&args, &trace);
+        assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
+        assert!(!r.stderr.contains(TRACE), "{args:?}: {}", r.stderr);
+    }
 }

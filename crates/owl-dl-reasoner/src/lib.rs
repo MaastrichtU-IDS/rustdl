@@ -10207,7 +10207,11 @@ impl PreparedOntology {
         if let Some(v) = self.query_consistency.get() {
             return Ok(*v);
         }
-        let verdict = self.settle_query_consistency(consistency_fallback_ms())?;
+        // `now + ms`, as before #369: `RUSTDL_CONSISTENCY_FALLBACK_MS=0` is a
+        // deadline already passed (the "starve the budget" idiom), not unbounded.
+        let verdict = self.settle_query_consistency(Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms()),
+        ))?;
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("query consistency (#401): {verdict:?}");
         }
@@ -10215,8 +10219,11 @@ impl PreparedOntology {
     }
 
     /// The routes of [`Self::query_consistency`], with the wedge bounded by
-    /// `wedge_ms` (`0` unbounded), uncached and ignoring any inherited verdict.
-    fn settle_query_consistency(&self, wedge_ms: u64) -> Result<QueryConsistency, ReasonError> {
+    /// `deadline` (`None` unbounded), uncached and ignoring any inherited verdict.
+    fn settle_query_consistency(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<QueryConsistency, ReasonError> {
         use owl_dl_tableau::hyper::HyperResult;
         Ok(
             if self
@@ -10230,9 +10237,6 @@ impl PreparedOntology {
             {
                 QueryConsistency::Inconsistent
             } else {
-                let deadline = (wedge_ms > 0).then(|| {
-                    std::time::Instant::now() + std::time::Duration::from_millis(wedge_ms)
-                });
                 match self.consistency_wedge(deadline) {
                     Some(HyperResult::Unsat) => QueryConsistency::Inconsistent,
                     Some(HyperResult::Sat) if self.wedge_sat_skips_data_counting => {
@@ -10329,7 +10333,10 @@ impl PreparedOntology {
             {
                 Some(v) => v,
                 None => *self.lazy_query_consistency.get_or_init(|| {
-                    self.settle_query_consistency(ms)
+                    // `RUSTDL_QUERY_LAZY_CONSISTENCY_MS=0` is unbounded.
+                    let deadline = (ms > 0)
+                        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+                    self.settle_query_consistency(deadline)
                         .unwrap_or(QueryConsistency::Undetermined)
                 }),
             },

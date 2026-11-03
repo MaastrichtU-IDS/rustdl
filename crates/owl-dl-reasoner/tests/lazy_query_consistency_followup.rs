@@ -30,7 +30,7 @@ use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     ReasonError, class_expression_entailed_subclass, class_expression_satisfiable,
     disjoint_data_properties_reporting, disjoint_object_properties_reporting,
-    inferred_data_property_values, inferred_object_property_values,
+    inferred_data_property_values, inferred_object_property_values, is_instance_of_reporting,
     materialize_data_property_assertions_reporting,
     materialize_object_property_assertions_reporting, materialize_subdataproperty_axioms_reporting,
     materialize_subobjectproperty_axioms_reporting,
@@ -271,4 +271,15 @@ fn a_negative_answer_never_runs_the_check() {
     );
     let (rows, undetermined) = materialize_object_property_assertions_reporting(&none).unwrap();
     assert!(rows.is_empty() && !undetermined);
+}
+
+/// #401/#419's budget keeps its meaning: `RUSTDL_CONSISTENCY_FALLBACK_MS=0` is a
+/// deadline already passed (the "starve the budget" idiom), so #419's lazy check
+/// on `instance` is undetermined, not an unbounded wedge's "consistent".
+#[test]
+fn a_zero_fallback_budget_starves_the_419_check() {
+    let _g = lock();
+    let _zero = SetEnvGuard::set("RUSTDL_CONSISTENCY_FALLBACK_MS", "0");
+    let (holds, flags) = is_instance_of_reporting(&ctl(), Y, "http://ex/#a").unwrap();
+    assert!(holds && flags.consistency_undetermined, "{flags:?}");
 }

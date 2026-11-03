@@ -129,8 +129,12 @@ about its signal, so each is filed rather than fixed here.
   - `realize --properties` prints a `materialize_*` error as a `# … unavailable`
     comment and continues (the realization above it has already printed); its
     `consistency_undetermined` is not reported. Unchanged by design.
-  - An ontology with no individual (and no nominal): the wedge needs a seed, so
-    nothing is checked or flagged (as classify's pre-check). A TBox inconsistency
+  - An ontology with no individual in an `ABox` assertion (class, object property,
+    negative object property, same or different) and no nominal: the wedge needs a
+    seed, so nothing is checked or flagged (the gate classify's pre-check and
+    `PreparedOntology` use). Individuals that occur only in data property
+    assertions or declarations do not count, so `materialize_data_property_assertions`
+    and `data_property_values` on such a KB are unchecked too. A TBox inconsistency
     only the tableau finds is missed there, as on main. The gate is also a
     soundness guard: run unseeded, the wedge tests the first class instead
     (`lazy_query_consistency_followup.rs` pins it).

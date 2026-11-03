@@ -26,8 +26,9 @@ All notable changes to rustdl are documented here. Format is based on
     - CLI: `--json` (`sat-expr`, `subclass-expr`, `property-values`, `disjoint`) and a stderr
       warning;
     - Python: `ConsistencyUndeterminedWarning`.
-  - An ontology with no individual is not checked or flagged (the wedge needs a seed; run
-    unseeded it would test the first class, which is unsound). `materialize_existential_successors`
+  - An ontology with no individual in an `ABox` assertion (data property assertions do not
+    count) and no nominal is not checked or flagged: the wedge needs a seed, and run unseeded
+    it would test the first class, which is unsound. `materialize_existential_successors`
     is not wired, since its `realize` already errors.
   - `consistency_fallback_ms` and `lazy_query_consistency_ms` are public, pinned in
     `flag_defaults.rs`.

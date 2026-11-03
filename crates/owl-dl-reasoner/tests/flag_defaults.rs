@@ -771,8 +771,11 @@ fn query_seeded_first_ms_default_is_pinned() {
 /// (10 000; it cost them no answer); the follow-up's surfaces (`sat-expr`,
 /// `subclass-expr`, `materialize_*`, `property-values`, the property disjointness
 /// queries) use `RUSTDL_QUERY_LAZY_CONSISTENCY_MS` (2000; at 12 s they lost 7
-/// answers to a 30 s cap). Unset is the default, a number is honoured, `0` is
-/// unbounded, and garbage falls back to the default.
+/// answers to a 30 s cap). Unset is the default, a number is honoured, and
+/// garbage falls back to the default. `0` reads as `0`: for
+/// `RUSTDL_QUERY_LAZY_CONSISTENCY_MS` that means unbounded, while for
+/// `RUSTDL_CONSISTENCY_FALLBACK_MS` it is a deadline already passed (the
+/// "starve the budget" idiom of `consistency_give_up.rs`).
 #[test]
 fn lazy_consistency_budgets_are_pinned() {
     let _lock = ENV_MUTEX

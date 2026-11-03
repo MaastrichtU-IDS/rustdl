@@ -4157,7 +4157,7 @@ impl ProvedDistinct {
                     match internal.concepts.get(*class) {
                         ConceptExpr::Atomic(c) => atoms.push(*c),
                         ConceptExpr::And(parts) => {
-                            for p in parts.iter() {
+                            for p in parts {
                                 if let ConceptExpr::Atomic(c) = internal.concepts.get(*p) {
                                     atoms.push(*c);
                                 }

@@ -257,18 +257,21 @@ public class RustdlProofTest {
     }
 
     /**
-     * #409: owl:Thing / owl:Nothing are not in rustdl's named-class vocabulary, so
-     * `rustdl prove` refuses them (exit 1). hasProof must not claim them, so that
-     * Protégé falls through to the explanation generator (X ⊑ owl:Nothing is its
-     * unsatisfiability query) instead of a failed proof.
+     * #427: `rustdl prove` resolves owl:Thing / owl:Nothing to ⊤ / ⊥, so hasProof claims
+     * X ⊑ owl:Nothing (Protégé's unsatisfiability query) and owl:Thing ⊑ X. The
+     * tautologies X ⊑ owl:Thing and owl:Nothing ⊑ X hold with no axioms: there is no
+     * proof to show, so they stay declined (#409 declined all four, when prove refused
+     * them).
      */
     @Test
-    public void hasProofDeclinesOwlThingAndOwlNothing() {
+    public void hasProofClaimsTheBuiltInFormsWithAProof() {
         RustdlProofService service = new RustdlProofService();
         assertTrue(service.hasProof(DF.getOWLSubClassOfAxiom(cls("A"), cls("B"))));
+        assertTrue(service.hasProof(DF.getOWLSubClassOfAxiom(cls("A"), DF.getOWLNothing())));
+        assertTrue(service.hasProof(DF.getOWLSubClassOfAxiom(DF.getOWLThing(), cls("A"))));
+        assertTrue(service.hasProof(
+            DF.getOWLSubClassOfAxiom(DF.getOWLThing(), DF.getOWLNothing())));
         assertFalse(service.hasProof(DF.getOWLSubClassOfAxiom(cls("A"), DF.getOWLThing())));
-        assertFalse(service.hasProof(DF.getOWLSubClassOfAxiom(cls("A"), DF.getOWLNothing())));
-        assertFalse(service.hasProof(DF.getOWLSubClassOfAxiom(DF.getOWLThing(), cls("A"))));
         assertFalse(service.hasProof(DF.getOWLSubClassOfAxiom(DF.getOWLNothing(), cls("A"))));
     }
 }

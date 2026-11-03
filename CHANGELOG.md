@@ -131,6 +131,34 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The named-class queries answer `owl:Thing` / `owl:Nothing` as the built-in ⊤ / ⊥
+  (#427).** `sat`, `subclass` (also `--saturation-only`), `instance`, `instances`, `explain`,
+  `justify` and `prove`, plus the matching Rust and Python functions, used to refuse both
+  IRIs (`class IRI not in ontology`, exit 1). With a `Declaration(Class(owl:Thing))` they
+  answered **wrongly**, because the declaration interned an axiom-free ordinary class under the
+  built-in's IRI. So `sat owl:Nothing` said `sat`, `subclass A owl:Thing` said `no`, and
+  `instances owl:Thing` was empty. Every wrong answer was a missed entailment; none was a false
+  positive.
+  - A declaration of either built-in now interns nothing, so a declared file behaves exactly
+    like the undeclared one. `Classification::classes()` no longer lists the two IRIs, and
+    `classify`'s `# classes` count matches, and `convert_back` no longer emits the
+    declaration. `DisjointUnion(owl:Thing …)` still interns one; it is a follow-up.
+  - `C ⊑ owl:Thing` and `owl:Nothing ⊑ C` are true in every ontology. `C ⊑ owl:Nothing` is the
+    unsatisfiability of `C`. `sat owl:Thing` and `owl:Thing ⊑ owl:Nothing` are the consistency
+    check, with its flags and notes. `owl:Thing ⊑ C` is decided through a fresh class
+    equivalent to ⊤. A typo beside a built-in is still refused (#409).
+  - `instance` / `instances` of either built-in still error on an inconsistent ontology
+    (#313, #419). `a : owl:Thing` holds anyway, but that error is how callers learn the
+    ontology is broken.
+  - `Classification::is_subclass` (Rust and Python) answers the built-in forms that the
+    taxonomy determines. `owl:Thing ⊑ C` reads `false` there unless the ontology is
+    inconsistent, as any fact it does not hold does; ask `is_subclass_of`.
+  - `prove C owl:Nothing` gives a step proof when the EL closure derives it, and a
+    justification otherwise. A tautology prints `holds in every ontology: no axioms needed`,
+    and `prove --json` gains `justification_minimal`. An empty justification is reported as
+    minimal on every fragment.
+  - The Protégé plugin's `hasProof` now claims `C ⊑ owl:Nothing` and `owl:Thing ⊑ C`. It
+    still declines the tautologies, which have no proof to show.
 - **The materialize functions over `realize` and `classify` report their answer may be short
   (#391).** `materialize_existential_successors` and Python's
   `materialize_inferred_class_assertions` called `realize` and returned bare lists, so a cut

@@ -231,11 +231,10 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     let build: Build<A> = Build::new();
     probed.insert(probe_axiom(&build, PROBE_IRI, ce));
     let internal = owl_dl_core::convert::convert_ontology(&probed)?;
-    // #313: the inconsistent-KB guard.
-    if crate::query_kb_inconsistent(&internal) {
-        return Err(ReasonError::Inconsistent);
-    }
-    let (holds, stats, left) = crate::is_class_satisfiable_keeping(internal, PROBE_IRI)?;
+    // #313: the inconsistent-KB guard, its `ABox` saturation bounded (#428); the
+    // query reuses the EL closure it builds.
+    let closure = crate::bounded_query_guard(&internal, "sat-expr")?;
+    let (holds, stats, left) = crate::is_class_satisfiable_keeping(internal, PROBE_IRI, closure)?;
     // #369: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
     let consistency_undetermined =
         !holds && left.lazy_inconsistency_check("class_expression_satisfiable")?;
@@ -267,11 +266,10 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     probed.insert(probe_axiom(&build, PROBE_IRI, sub_ce));
     probed.insert(probe_axiom(&build, PROBE_IRI_2, sup_ce));
     let internal = owl_dl_core::convert::convert_ontology(&probed)?;
-    // #313: the inconsistent-KB guard.
-    if crate::query_kb_inconsistent(&internal) {
-        return Err(ReasonError::Inconsistent);
-    }
-    let (holds, stats, left) = crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2)?;
+    // #313: the inconsistent-KB guard, as in `class_expression_satisfiable`.
+    let closure = crate::bounded_query_guard(&internal, "subclass-expr")?;
+    let (holds, stats, left) =
+        crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2, closure)?;
     // #369: as in `class_expression_satisfiable`.
     let consistency_undetermined =
         holds && left.lazy_inconsistency_check("class_expression_entailed_subclass")?;

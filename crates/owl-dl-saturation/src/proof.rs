@@ -421,6 +421,18 @@ pub fn prove_subsumption<S: BuildHasher>(
     prove_fact(trace, &DerivedFact::Sub(sub, sup), memo)
 }
 
+/// Build a proof tree for `c ⊑ ⊥` (#427: `prove C owl:Nothing`), from the
+/// unsatisfiability facts the trace records. `None` when the trace holds no
+/// derivation of `Unsat(c)`: e.g. on a globally inconsistent KB, where `c` is
+/// unsatisfiable by broadcast rather than by a recorded step.
+pub fn prove_unsatisfiability<S: BuildHasher>(
+    trace: &ProofTrace,
+    c: ClassId,
+    memo: &mut HashMap<DerivedFact, ProofNode, S>,
+) -> Option<ProofNode> {
+    prove_fact(trace, &DerivedFact::Unsat(c), memo)
+}
+
 fn prove_fact<S: BuildHasher>(
     trace: &ProofTrace,
     fact: &DerivedFact,

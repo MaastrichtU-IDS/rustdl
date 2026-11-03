@@ -228,3 +228,45 @@ fn justify_returns_the_inconsistency_core() {
         assert_eq!(j.axioms.len(), 3, "{q:?}: {:?}", j.axioms);
     }
 }
+
+/// The guard's `ABox` budget rule (#428, option (b)): unbounded in classify's
+/// low-work class (`family.ofn` needs 6–12 s there, and a cut lets the query
+/// stall), 3 s in the high-work class (where the six measured runaways sit).
+#[test]
+fn the_guard_abox_budget_is_unbounded_for_low_work_and_3s_for_high_work() {
+    use owl_dl_reasoner::{
+        AboxCostPredictors, INCONSISTENCY_STINGY_MS, INCONSISTENCY_WORK_THRESHOLD,
+        query_guard_abox_budget_rule_ms,
+    };
+    let at = |edges: u64| {
+        query_guard_abox_budget_rule_ms(AboxCostPredictors {
+            asserted_edges: usize::try_from(edges).unwrap(),
+            multiplying_rules: 1,
+        })
+    };
+    // family.ofn: 1,337 asserted edges, work 50,806.
+    let family = AboxCostPredictors {
+        asserted_edges: 1337,
+        multiplying_rules: 38,
+    };
+    assert_eq!(query_guard_abox_budget_rule_ms(family), 0, "family: unbounded");
+    // ore_ont_15846: 78,441 edges x 55 multiplying rules.
+    let runaway = AboxCostPredictors {
+        asserted_edges: 78_441,
+        multiplying_rules: 55,
+    };
+    assert_eq!(query_guard_abox_budget_rule_ms(runaway), INCONSISTENCY_STINGY_MS);
+    assert_eq!(INCONSISTENCY_STINGY_MS, 3000);
+    assert_eq!(at(INCONSISTENCY_WORK_THRESHOLD), 0);
+    assert_eq!(at(INCONSISTENCY_WORK_THRESHOLD + 1), INCONSISTENCY_STINGY_MS);
+}
+
+/// `RUSTDL_QUERY_GUARD_ABOX_MS` overrides the rule, `0` included.
+#[test]
+fn the_guard_abox_budget_override_wins() {
+    let _g = lock();
+    let internal = owl_dl_core::convert::convert_ontology(&parse(ABOX_CLASH)).unwrap();
+    assert_eq!(owl_dl_reasoner::query_guard_abox_budget_ms(&internal), 0);
+    let _o = SetEnvGuard::set("RUSTDL_QUERY_GUARD_ABOX_MS", "7");
+    assert_eq!(owl_dl_reasoner::query_guard_abox_budget_ms(&internal), 7);
+}

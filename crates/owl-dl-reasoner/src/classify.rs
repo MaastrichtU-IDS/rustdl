@@ -800,12 +800,31 @@ impl Classification {
     /// Returns `false` if either IRI is not a declared class
     /// (callers wanting a hard error should use
     /// [`crate::is_subclass_of`] directly).
+    ///
+    /// `owl:Thing` / `owl:Nothing` are the built-in `⊤` / `⊥`, never classes of
+    /// the taxonomy (#427). `C ⊑ ⊤` and `⊥ ⊑ C` are true, `C ⊑ ⊥` is `C`'s
+    /// unsatisfiability and `⊤ ⊑ ⊥` the ontology's inconsistency. `⊤ ⊑ C` is not
+    /// materialised by classification, so it reads `false` like any fact this
+    /// object does not hold; ask [`crate::is_subclass_of`] for it.
     #[must_use]
     pub fn is_subclass(&self, sub: &str, sup: &str) -> bool {
-        let (Some(&i), Some(&j)) = (self.index.get(sub), self.index.get(sup)) else {
+        use owl_dl_core::{OWL_NOTHING_IRI, OWL_THING_IRI};
+        let known = |c: &str| owl_dl_core::is_builtin_class_iri(c) || self.index.contains_key(c);
+        if !known(sub) || !known(sup) {
             return false;
-        };
-        self.entails(i, j)
+        }
+        if sup == OWL_THING_IRI || sub == OWL_NOTHING_IRI {
+            return true;
+        }
+        if sub == OWL_THING_IRI {
+            // On an inconsistent ontology everything holds; otherwise not known.
+            return self.stats.inconsistent;
+        }
+        let i = self.index[sub];
+        if sup == OWL_NOTHING_IRI {
+            return self.unsatisfiable_idxs.contains(&i) || self.stats.inconsistent;
+        }
+        self.entails(i, self.index[sup])
     }
 
     /// All classes equivalent to `c` (including `c` itself), in

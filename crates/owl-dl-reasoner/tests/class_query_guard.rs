@@ -270,3 +270,153 @@ fn the_guard_abox_budget_override_wins() {
     let _o = SetEnvGuard::set("RUSTDL_QUERY_GUARD_ABOX_MS", "7");
     assert_eq!(owl_dl_reasoner::query_guard_abox_budget_ms(&internal), 7);
 }
+
+const THING: &str = "http://www.w3.org/2002/07/owl#Thing";
+const NOTHING: &str = "http://www.w3.org/2002/07/owl#Nothing";
+
+/// `sat owl:Thing` and `owl:Thing ⊑ owl:Nothing` ARE the consistency check
+/// (#427): on an inconsistent KB they answer "unsat" / "yes", never an error.
+/// `owl:Nothing` is not exempt from the guard: `sat owl:Nothing` errors, as
+/// `sat-expr owl:Nothing` does. `⊤ ⊑ C` goes through the guard too.
+#[test]
+fn the_consistency_check_is_exempt_and_nothing_else_is() {
+    let _g = lock();
+    let o = parse(ABOX_CLASH);
+    let (sat, _) = is_class_satisfiable_with_stats(&o, THING).unwrap();
+    assert!(!sat, "sat owl:Thing is the consistency check");
+    let (holds, _) = is_subclass_of_with_stats(&o, THING, NOTHING).unwrap();
+    assert!(holds, "owl:Thing ⊑ owl:Nothing is the consistency check");
+    let r = is_class_satisfiable_with_stats(&o, NOTHING);
+    assert!(is_inconsistent(&r), "sat owl:Nothing: {r:?}");
+    let r = is_subclass_of_with_stats(&o, THING, X);
+    assert!(is_inconsistent(&r), "owl:Thing ⊑ X: {r:?}");
+    // Consistent control: `⊤ ⊑ Y` is a plain "no", unflagged.
+    let (holds, st) = is_subclass_of_with_stats(&ctl(), THING, Y).unwrap();
+    assert!(!holds && !st.consistency_undetermined);
+}
+
+/// `C ⊑ owl:Nothing` is `C`'s unsatisfiability: flagged like `sat C` when
+/// positive and undetermined; tautologies (`C ⊑ owl:Thing`, `owl:Nothing ⊑ C`,
+/// `sat owl:Nothing`) are never flagged.
+#[test]
+fn bottom_and_tautology_answers_are_flagged_only_when_they_can_be_vacuous() {
+    let _g = lock();
+    let _wedge = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
+    let c = ctl();
+    let (holds, st) = is_subclass_of_with_stats(&c, N, NOTHING).unwrap();
+    assert!(holds && st.consistency_undetermined, "N ⊑ ⊥");
+    let (holds, st) = is_subclass_of_with_stats(&c, Y, NOTHING).unwrap();
+    assert!(!holds && !st.consistency_undetermined, "Y ⋢ ⊥");
+    let (holds, st) = is_subclass_of_with_stats(&c, Y, THING).unwrap();
+    assert!(holds && !st.consistency_undetermined, "Y ⊑ ⊤");
+    let (holds, st) = is_subclass_of_with_stats(&c, NOTHING, Y).unwrap();
+    assert!(holds && !st.consistency_undetermined, "⊥ ⊑ Y");
+    let (sat, st) = is_class_satisfiable_with_stats(&c, NOTHING).unwrap();
+    assert!(!sat && !st.consistency_undetermined, "sat ⊥");
+}
+
+/// The light lazy route builds no wedge above `RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS`
+/// lowered axioms: the positive answer is kept and flagged, even on a KB only
+/// the wedge finds inconsistent (the honest cost of the skip), for the named
+/// and the expression queries alike.
+#[test]
+fn an_oversized_light_lazy_check_keeps_the_answer_and_flags_it() {
+    use horned_owl::model::{Build, ClassExpression};
+    let _g = lock();
+    {
+        let _max = SetEnvGuard::set("RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS", "1");
+        let (sat, st) = is_class_satisfiable_with_stats(&ctl(), N).unwrap();
+        assert!(!sat && st.consistency_undetermined, "ctl: unsat N flagged");
+        let (holds, st) = is_subclass_of_with_stats(&p2(), Y, W).unwrap();
+        assert!(holds && st.consistency_undetermined, "P2: Y ⊑ W kept and flagged");
+        let build: Build<RcStr> = Build::new_rc();
+        let v = owl_dl_reasoner::class_expression_satisfiable(
+            &ctl(),
+            &ClassExpression::Class(build.class(N)),
+        )
+        .unwrap();
+        assert!(!v.holds() && v.consistency_undetermined(), "sat-expr N flagged");
+    }
+    // Default: the wedge decides ctl consistent, P2 inconsistent.
+    let (sat, st) = is_class_satisfiable_with_stats(&ctl(), N).unwrap();
+    assert!(!sat && !st.consistency_undetermined);
+    assert!(is_inconsistent(&is_subclass_of_with_stats(&p2(), Y, W)));
+}
+
+/// The guard hands its EL closure to the query: answers and how they were
+/// reached are those of `RUSTDL_CLASS_QUERY_GUARD=0`, which saturates in the
+/// query itself.
+#[test]
+fn reusing_the_guard_closure_changes_no_answer() {
+    const EL: &str = r"Prefix(:=<http://ex/#>)
+Ontology(<http://ex/el>
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+  Declaration(ObjectProperty(:r)) Declaration(NamedIndividual(:i))
+  SubClassOf(:A ObjectSomeValuesFrom(:r :B)) SubClassOf(ObjectSomeValuesFrom(:r :B) :C)
+  ClassAssertion(:A :i)
+)";
+    let _g = lock();
+    let el = parse(EL);
+    let e = |s: &str| format!("http://ex/#{s}");
+    let run = || {
+        let mut out = Vec::new();
+        for (o, classes) in [
+            (ctl(), vec![X.to_owned(), Y.to_owned(), W.to_owned(), N.to_owned()]),
+            (el.clone(), vec![e("A"), e("B"), e("C")]),
+        ] {
+            for a in &classes {
+                let (sat, st) = is_class_satisfiable_with_stats(&o, a).unwrap();
+                out.push((sat, st.answered_by_saturation, st.pure_el_mode));
+                for b in &classes {
+                    let (h, st) = is_subclass_of_with_stats(&o, a, b).unwrap();
+                    out.push((h, st.answered_by_saturation, st.pure_el_mode));
+                }
+            }
+        }
+        out
+    };
+    let on = run();
+    let off = {
+        let _off = SetEnvGuard::set("RUSTDL_CLASS_QUERY_GUARD", "0");
+        run()
+    };
+    assert_eq!(on, off);
+    assert!(on.contains(&(true, true, true)), "the EL fixture answers by saturation");
+}
+
+/// `prove` runs the guard before the step proof (#428, option C): on an
+/// inconsistent KB the entailment is reported entailed with `kb_inconsistent`
+/// and a minimal entailing set (the inconsistency core), whether or not the
+/// saturator has a step proof for it. A consistent KB never sets the flag.
+#[test]
+fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
+    use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment, prove_entailment_rcstr_reporting};
+    let _g = lock();
+    let o = parse(ABOX_CLASH);
+    let (r, flags) = prove_entailment_rcstr_reporting(&o, X, Z).unwrap();
+    assert!(flags.kb_inconsistent);
+    match r {
+        ProveEntailmentResult::JustificationFallback(j) => assert_eq!(j.axioms.len(), 3),
+        other => panic!("{other:?}"),
+    }
+    // With a told `X ⊑ Z` the saturator has a step proof; the flag still comes.
+    let told = parse(&ABOX_CLASH.replace(
+        "DisjointClasses(:A :B)",
+        "DisjointClasses(:A :B) SubClassOf(:X :Z)",
+    ));
+    let (r, flags) = prove_entailment_rcstr_reporting(&told, X, Z).unwrap();
+    assert!(flags.kb_inconsistent);
+    assert!(matches!(r, ProveEntailmentResult::JustificationFallback(_)), "{r:?}");
+    assert!(matches!(
+        prove_entailment(&o, X, Z).unwrap(),
+        ProveEntailmentResult::JustificationFallback(_)
+    ));
+    // Consistent: a step proof, no flag.
+    let (r, flags) = prove_entailment_rcstr_reporting(&ctl(), Y, W).unwrap();
+    assert!(!flags.kb_inconsistent);
+    assert!(matches!(r, ProveEntailmentResult::SaturatorProof(_)), "{r:?}");
+    // A wedge-only inconsistency is found by the lazy check after the check
+    // held: still entailed and flagged.
+    let (_, flags) = prove_entailment_rcstr_reporting(&p2(), Y, W).unwrap();
+    assert!(flags.kb_inconsistent, "P2");
+}

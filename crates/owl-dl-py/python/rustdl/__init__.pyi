@@ -150,7 +150,9 @@ class TrustedConsistencyWarning(UserWarning):
 
 class ConsistencyUndeterminedWarning(UserWarning):
     """Emitted when a positive answer's KB consistency stayed undetermined (#369),
-    so it may be the vacuous answer of an inconsistent KB: by `is_instance_of`,
+    so it may be the vacuous answer of an inconsistent KB: by
+    `is_class_satisfiable` ("unsatisfiable"), `is_subclass_of` (entailed),
+    `is_instance_of`,
     `instances_of`, `same_individuals`, `different_individuals`, the
     `class_expression_*` queries, `object_property_values`,
     `data_property_values`, the property disjointness queries and the
@@ -239,12 +241,18 @@ def is_consistent(path: str) -> bool:
 
 def is_class_satisfiable(path: str, class_iri: str) -> bool:
     """True iff `class_iri` is satisfiable (not ⊑ ⊥). If the probe gave up (node
-    cap), returns `True` and emits `IncompleteQueryWarning`."""
+    cap), returns `True` and emits `IncompleteQueryWarning`. Raises `RustdlError`
+    on a KB found inconsistent (#428), except for `owl:Thing`, which is the
+    consistency check; emits `ConsistencyUndeterminedWarning` on an
+    "unsatisfiable" whose KB consistency stayed undetermined."""
     ...
 
 def is_subclass_of(path: str, sub: str, sup: str) -> bool:
     """True iff `sub ⊑ sup` is entailed. If the probe gave up (node cap),
-    returns `False` and emits `IncompleteQueryWarning`."""
+    returns `False` and emits `IncompleteQueryWarning`. Raises `RustdlError` on a
+    KB found inconsistent (#428), except for `owl:Thing ⊑ owl:Nothing`, which is
+    the consistency check; emits `ConsistencyUndeterminedWarning` on an entailed
+    answer whose KB consistency stayed undetermined."""
     ...
 
 def is_instance_of(path: str, class_iri: str, individual_iri: str) -> bool:

@@ -2648,6 +2648,13 @@ fn main() -> Result<()> {
                     );
                 }
                 note_trusted_consistency_flag(flags.relies_on_trusted_consistency);
+                if flags.kb_inconsistent {
+                    eprintln!(
+                        "note: the ontology is inconsistent, so {sub} ⊑ {sup} holds vacuously; \
+                         the justification shown is a minimal entailing set. \
+                         `rustdl justify <file> inconsistent` explains the inconsistency."
+                    );
+                }
             };
             if json {
                 let internal = owl_dl_core::convert::convert_ontology(&onto)

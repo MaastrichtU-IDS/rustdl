@@ -7927,7 +7927,11 @@ fn is_class_satisfiable_internal_full(
     let closure = class_query_guard(&internal)?;
     let (sat, mut stats, left) = is_class_satisfiable_keeping(internal, class_iri, closure)?;
     // #428: "unsatisfiable" may be the vacuous answer of an inconsistent KB;
-    // `owl:Nothing` is unsatisfiable in every KB.
+    // `owl:Nothing` is unsatisfiable in every KB. Neither check sets
+    // `relies_on_trusted_consistency` (#429): the guard's three checks only ever
+    // derive a clash, and the lazy check runs after a POSITIVE answer, which is
+    // entailed whether or not the KB is consistent. Its wedge `Sat` only rules out
+    // that the answer is vacuous; no answer rests on it.
     stats.consistency_undetermined = !sat
         && class != QueryClass::Bottom
         && class_query_lazy_check(&left, "is_class_satisfiable")?;
@@ -7990,14 +7994,31 @@ pub(crate) fn bounded_query_guard(
     internal: &InternalOntology,
     surface: &str,
 ) -> Result<Option<owl_dl_saturation::Subsumers>, ReasonError> {
-    let started = std::time::Instant::now();
     let ms = query_guard_abox_budget_ms(internal);
-    let deadline = (ms > 0).then(|| started + std::time::Duration::from_millis(ms));
+    let deadline =
+        (ms > 0).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    bounded_query_guard_until(internal, surface, deadline, ms)
+}
+
+/// [`bounded_query_guard`] with its `ABox`-saturation deadline given (`ms` is only
+/// traced). A cut saturation is no verdict.
+fn bounded_query_guard_until(
+    internal: &InternalOntology,
+    surface: &str,
+    deadline: Option<std::time::Instant>,
+    ms: u64,
+) -> Result<Option<owl_dl_saturation::Subsumers>, ReasonError> {
+    let started = std::time::Instant::now();
     // Only the verdict is kept: the saturation's edges are dropped before the EL
     // closure is built, so the two never coexist in memory.
-    let (clash, cut) = {
+    // No `ABox`, no seed: the saturation could only walk every axiom in its
+    // prelude for nothing (a nominal-only `{a} ⊑ ⊥` is the EL saturator's
+    // `top_is_unsat`, checked below). As `abox_saturation_inconsistent_bounded`.
+    let (clash, cut) = if classify::has_abox_axioms(internal) {
         let abox = abox_saturation::saturate_abox_consistency_bounded(internal, deadline);
         (abox.clash, abox.timed_out)
+    } else {
+        (false, false)
     };
     let abox_us = started.elapsed().as_micros();
     let (inconsistent, closure) = if clash {
@@ -8980,7 +9001,8 @@ pub(crate) fn is_subclass_of_keeping(
         (QueryClass::Top, _) => {
             let mut internal = internal;
             let probe = add_builtin_probe(&mut internal, true)?;
-            // The probe changed the ontology, so the guard's closure is stale.
+            // The probe changed the ontology, so the guard's closure is stale
+            // (and `⊤ ⊑ C` saturates twice: once in the guard, once here).
             return is_subclass_of_keeping(internal, probe, super_iri, None);
         }
         (QueryClass::Named(sub_id), QueryClass::Named(super_id)) => (sub_id, super_id),
@@ -9177,6 +9199,35 @@ pub fn lazy_query_consistency_ms() -> u64 {
         .unwrap_or(2000)
 }
 
+/// #428: the default of [`lazy_light_max_axioms`]. Measured on `subclass` over the
+/// 1,146 `ABox`-bearing ORE ontologies (peak RSS, lazy check on vs off): the build
+/// adds about 0.5 GB per million lowered axioms (`ore_ont_15655`, 4.77 M axioms:
+/// +2.4 GB, 3.8 GB peak; `ore_ont_10425`, 4.25 M: +2.1 GB), nothing measurable
+/// below ~1.2 M, and ~7 GB on `ore_ont_1833` (14.1 M) and `ore_ont_5368` (18.7 M),
+/// which then abort under an 8 GB address-space limit where main answered.
+/// Nothing in the pool lies between 4.77 M and 14.1 M; the cut sits just above the
+/// largest ontology measured safe.
+pub const LAZY_LIGHT_MAX_AXIOMS: usize = 5_000_000;
+
+/// #428: the largest ontology, in lowered axioms (`internal.axioms.len()`), for
+/// which [`lazy_inconsistency_check_light`] builds its wedge
+/// (`RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS`, default [`LAZY_LIGHT_MAX_AXIOMS`]; `0`:
+/// no limit). The build is one clausify of every axiom and has no deadline. Above
+/// the limit the check is not run and the verdict is undetermined: the answer is
+/// kept and flagged, never lost.
+#[must_use]
+pub fn lazy_light_max_axioms() -> usize {
+    std::env::var("RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(LAZY_LIGHT_MAX_AXIOMS)
+}
+
+fn lazy_light_oversized(internal: &InternalOntology) -> bool {
+    let max = lazy_light_max_axioms();
+    max != 0 && internal.axioms.len() > max
+}
+
 /// #369 follow-up: [`PreparedOntology::lazy_inconsistency_check`] for a query that
 /// holds no prepared ontology (the shortcut answers of `sat-expr` /
 /// `subclass-expr`, `materialize_*`, the property disjointness queries). It runs
@@ -9230,8 +9281,10 @@ pub(crate) fn lazy_inconsistency_check_light(
         }
         return Ok(false);
     }
-    // `None`: the wedge turned off (`RUSTDL_WEDGE_CONSISTENCY=0`), undetermined.
-    let (verdict, build_us) = if wedge_consistency_enabled() {
+    // `None`: the wedge turned off (`RUSTDL_WEDGE_CONSISTENCY=0`), or not built
+    // because the ontology is over [`lazy_light_max_axioms`]: undetermined.
+    let oversized = lazy_light_oversized(internal);
+    let (verdict, build_us) = if wedge_consistency_enabled() && !oversized {
         let cache = ConsistencyCache::build(internal);
         let build_us = started.elapsed().as_micros();
         let ms = lazy_query_consistency_ms();
@@ -9243,7 +9296,8 @@ pub(crate) fn lazy_inconsistency_check_light(
     };
     let decide_us = started.elapsed().as_micros() - build_us;
     let stalled = !matches!(verdict, Some(HyperResult::Sat | HyperResult::Unsat));
-    let tail = if stalled && lazy_query_consistency_tail_enabled() {
+    // The opt-in tail builds a prepared ontology: not on an oversized one either.
+    let tail = if stalled && !oversized && lazy_query_consistency_tail_enabled() {
         let tail_deadline =
             std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
         let _full = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
@@ -9261,7 +9315,7 @@ pub(crate) fn lazy_inconsistency_check_light(
         eprintln!(
             "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail:?} \
              inconsistent={inconsistent} us={} route=light has_individuals=true \
-             build_us={build_us} decide_us={decide_us}",
+             build_us={build_us} decide_us={decide_us} oversized={oversized}",
             started.elapsed().as_micros()
         );
     }
@@ -12546,13 +12600,34 @@ pub fn prove_entailment<A: horned_owl::model::ForIRI>(
     if subsumption_is_tautology(sub, sup) {
         return Ok(prove_tautology(&internal));
     }
+    // #428: on a KB found inconsistent the entailment holds vacuously. This
+    // generic path has no justification fallback (see
+    // [`prove_entailment_rcstr_reporting`], which also reports `kb_inconsistent`).
+    let vacuous = || {
+        ProveEntailmentResult::JustificationFallback(justify::Justification {
+            axioms: vec![],
+            fragment: classify::FragmentClassification::OutOfFragment,
+            minimal_guaranteed: false,
+        })
+    };
+    match class_query_guard(&internal) {
+        Err(ReasonError::Inconsistent) => return Ok(vacuous()),
+        Err(e) => return Err(e),
+        Ok(_) => {}
+    }
     if let Some(step) = prove_step(&internal, sub, sup) {
+        if prove_lazy_check(&internal) {
+            return Ok(vacuous());
+        }
         return Ok(step);
     }
 
     // Check if the entailment holds at all. A give-up is `Unknown`, not a
     // non-entailment (#402).
-    let (held, stats) = is_subclass_of_with_stats(ontology, sub_iri, sup_iri)?;
+    let (held, stats) = match is_subclass_of_with_stats(ontology, sub_iri, sup_iri) {
+        Err(ReasonError::Inconsistent) => return Ok(vacuous()),
+        r => r?,
+    };
     if !held {
         return Ok(if stats.incomplete {
             ProveEntailmentResult::Unknown
@@ -12603,6 +12678,14 @@ pub struct ProveFlags {
     /// on it: dropping the `ABox` can only lose entailments, so an entailment
     /// found without it holds regardless. Separate from `incomplete`.
     pub relies_on_trusted_consistency: bool,
+    /// #428: the ontology was found inconsistent, by the named class queries'
+    /// guard ([`class_query_guard`], run before anything else) or by the #369 lazy
+    /// check after the entailment held. The entailment then holds vacuously and
+    /// the justification is a minimal entailing set, typically an inconsistency
+    /// core (`justify <file> inconsistent` explains the inconsistency itself).
+    /// `false` is not a proof of consistency: the guard is a sound
+    /// under-approximation.
+    pub kb_inconsistent: bool,
 }
 
 /// [`prove_entailment_rcstr`] plus its [`ProveFlags`].
@@ -12622,28 +12705,50 @@ pub fn prove_entailment_rcstr_reporting(
     if subsumption_is_tautology(sub, sup) {
         return Ok((prove_tautology(&internal), ProveFlags::default()));
     }
+    // #428: the named class queries' guard, before the step proof, so that
+    // `kb_inconsistent` does not depend on whether the saturator has a step
+    // proof. On an inconsistent KB the explanation of `sub ⊑ sup` is the
+    // inconsistency: a minimal entailing set, as `justify` returns.
+    match class_query_guard(&internal) {
+        Err(ReasonError::Inconsistent) => {
+            return prove_on_inconsistent_kb(ontology, sub_iri, sup_iri);
+        }
+        Err(e) => return Err(e),
+        Ok(_) => {}
+    }
     if let Some(step) = prove_step(&internal, sub, sup) {
+        // A step proof is a positive answer, so the #369 lazy check runs after it
+        // as after `subclass`'s: a wedge-only inconsistency is reported too.
+        if prove_lazy_check(&internal) {
+            return prove_on_inconsistent_kb(ontology, sub_iri, sup_iri);
+        }
         return Ok((step, ProveFlags::default()));
     }
 
     // Check if the entailment holds at all (possibly via tableau). A give-up is
-    // `Unknown`, not a non-entailment (#402).
-    let (held, stats) = is_subclass_of_with_stats(ontology, sub_iri, sup_iri)?;
+    // `Unknown`, not a non-entailment (#402). The #369 lazy check can still find
+    // the KB inconsistent after a positive answer.
+    let (held, stats) = match is_subclass_of_with_stats(ontology, sub_iri, sup_iri) {
+        Err(ReasonError::Inconsistent) => {
+            return prove_on_inconsistent_kb(ontology, sub_iri, sup_iri);
+        }
+        r => r?,
+    };
     if !held {
         return Ok(if stats.incomplete {
             (
                 ProveEntailmentResult::Unknown,
                 ProveFlags {
                     incomplete: true,
-                    relies_on_trusted_consistency: false,
+                    ..ProveFlags::default()
                 },
             )
         } else {
             (
                 ProveEntailmentResult::NotEntailed,
                 ProveFlags {
-                    incomplete: false,
                     relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
+                    ..ProveFlags::default()
                 },
             )
         });
@@ -12660,7 +12765,43 @@ pub fn prove_entailment_rcstr_reporting(
         result,
         ProveFlags {
             incomplete,
-            relies_on_trusted_consistency: false,
+            ..ProveFlags::default()
+        },
+    ))
+}
+
+/// #428: whether the #369 lazy check (light route) witnesses an inconsistency
+/// after `prove`'s step proof. An undetermined verdict is not reported: the
+/// entailment holds either way, and `kb_inconsistent: false` claims nothing.
+fn prove_lazy_check(internal: &InternalOntology) -> bool {
+    class_query_guard_enabled()
+        && matches!(
+            lazy_inconsistency_check_light(internal, "prove"),
+            Err(ReasonError::Inconsistent)
+        )
+}
+
+/// #428: `prove` on a KB found inconsistent. The entailment holds vacuously; its
+/// justification comes from `justify`, whose oracle maps the class queries'
+/// `Err(Inconsistent)` to "entailed", so it is a minimal entailing set
+/// (typically an inconsistency core).
+fn prove_on_inconsistent_kb(
+    ontology: &horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+    sub_iri: &str,
+    sup_iri: &str,
+) -> Result<(ProveEntailmentResult, ProveFlags), ReasonError> {
+    let q = justify::Entailment::SubClassOf {
+        sub: sub_iri.to_string(),
+        sup: sup_iri.to_string(),
+    };
+    let outcome = justify::find_one_justification_reporting(ontology, &q)?;
+    let (result, incomplete) = fallback_after_held(outcome);
+    Ok((
+        result,
+        ProveFlags {
+            incomplete,
+            kb_inconsistent: true,
+            ..ProveFlags::default()
         },
     ))
 }
@@ -17791,3 +17932,53 @@ ClassAssertion(:A :a) ObjectPropertyAssertion(:r :a :b) ClassAssertion(:C :b)
         assert!(!st.relies_on_trusted_consistency);
     }
 }
+
+#[cfg(test)]
+mod class_query_guard_tests {
+    use super::*;
+
+    fn internal(src: &str) -> InternalOntology {
+        let (o, _) = horned_owl::io::ofn::reader::read(
+            &mut std::io::Cursor::new(src),
+            horned_owl::io::ParserConfiguration::default(),
+        )
+        .expect("fixture parses");
+        owl_dl_core::convert::convert_ontology(&o).expect("converts")
+    }
+
+    /// An inconsistency only the `ABox` saturation derives: the chain-derived
+    /// range of `t` puts `c` in `D`, and `c : E` with `D`, `E` disjoint.
+    const CHAIN_RANGE_CLASH: &str = "Prefix(:=<http://ex/#>) Ontology(<http://ex/o> \
+        Declaration(Class(:D)) Declaration(Class(:E)) Declaration(ObjectProperty(:r)) \
+        Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:t)) \
+        SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t) ObjectPropertyRange(:t :D) \
+        DisjointClasses(:D :E) ObjectPropertyAssertion(:r :a :b) \
+        ObjectPropertyAssertion(:s :b :c) ClassAssertion(:E :c))";
+
+    /// #428: a cut `ABox` saturation is no verdict, never a clash: with its
+    /// deadline already past, the guard does not error on the clash only that
+    /// saturation finds (and, run in full, it does).
+    #[test]
+    fn a_cut_abox_saturation_is_no_verdict() {
+        let i = internal(CHAIN_RANGE_CLASH);
+        assert!(
+            matches!(
+                bounded_query_guard_until(&i, "test", None, 0),
+                Err(ReasonError::Inconsistent)
+            ),
+            "the full saturation finds the clash"
+        );
+        assert!(
+            !query_kb_inconsistent_beyond_abox(&i),
+            "precondition: only the ABox saturation finds it"
+        );
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("the clock is past one second");
+        assert!(
+            bounded_query_guard_until(&i, "test", Some(past), 1).is_ok(),
+            "a cut saturation is no verdict"
+        );
+    }
+}
+

@@ -892,6 +892,11 @@ pub(crate) struct ProveJson {
     /// main-tableau model). Not a give-up; separate from `incomplete`. Always
     /// `false` for the other statuses.
     pub(crate) relies_on_trusted_consistency: bool,
+    /// #428: the ontology was found inconsistent, so the entailment holds
+    /// vacuously and `justification_fallback` is a minimal entailing set,
+    /// typically an inconsistency core (`rustdl justify <file> inconsistent`).
+    /// `false` does not prove consistency.
+    pub(crate) kb_inconsistent: bool,
     pub(crate) has_proof: bool,
     /// `true` when every proof step cites the axiom its rule applies (or needs none) and
     /// every premise has a sub-proof; `false` when some step cannot be completed from
@@ -1160,6 +1165,7 @@ pub(crate) fn build_prove_json(
         status: status.to_owned(),
         incomplete: flags.incomplete,
         relies_on_trusted_consistency: flags.relies_on_trusted_consistency,
+        kb_inconsistent: flags.kb_inconsistent,
         has_proof: false,
         proof_complete: None,
         proof: None,

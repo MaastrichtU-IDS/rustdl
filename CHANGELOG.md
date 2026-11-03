@@ -152,6 +152,36 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`sat`, `subclass` and `explain` run the inconsistency guard (#428).** They went straight to
+  the `ABox`-seeded tableau: on `family.ofn` (inconsistent) `sat :Aunt` ran past 60 s with no
+  answer, and on other inconsistent KBs they returned the vacuous "unsat" / "yes". Now they run
+  #313's guard first (`ABox` saturation, the EL saturator's `⊤ ⊑ ⊥`, `abox_check`, the reflexive
+  empty clause) and error `Inconsistent` (exit 1). After a positive answer that is not a
+  tautology they run the #369 lazy check, as `sat-expr` / `subclass-expr` do; an undetermined
+  consistency keeps the answer and sets the new `QueryStats::consistency_undetermined` (CLI
+  stderr warning, Python `ConsistencyUndeterminedWarning`). `sat owl:Thing` and
+  `owl:Thing ⊑ owl:Nothing` are the consistency check itself (#427) and run neither.
+  `RUSTDL_CLASS_QUERY_GUARD=0` reverts. family: an error in ~7–12 s instead of no answer.
+  - **The guard is cheaper and bounded, for `sat-expr` / `subclass-expr` too.** Its EL closure is
+    handed to the query, which no longer saturates twice. Its `ABox` saturation, unbounded on
+    main, is bounded at 3 s in classify's high-work class and unbounded in the low-work class
+    (`RUSTDL_QUERY_GUARD_ABOX_MS` overrides, `0` = unbounded). Unbounded, it never finished on
+    `ore_ont_{10838,15846,16315,3087,1199,7557}`, which the query alone answers in under 10 s.
+    A cut saturation is no verdict.
+  - **The light lazy check builds no wedge above 5 M lowered axioms**
+    (`RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS`, `0` = no limit); the verdict is then undetermined.
+    The build takes ~0.5 GB per million axioms: on `ore_ont_1833` / `ore_ont_5368` (14–18 M) it
+    took ~7 GB and `subclass-expr` aborted under an 8 GB limit on main.
+  - Measured against main over the 1,146 `ABox`-bearing ORE ontologies (20 s cap): 0 answer
+    changes; every new error has an inconsistency witness; CPU `sat` +2.1%, `subclass` +27% (the
+    lazy check it never ran before), `sat-expr` −3.9%, `subclass-expr` −10.1%.
+  - **`prove`** runs the guard before its step proof and the lazy check after one. On an
+    inconsistent KB it reports the entailment as holding, with a minimal entailing set (typically
+    the inconsistency core) and the new `ProveFlags::kb_inconsistent` / `prove --json`
+    `kb_inconsistent`; the text mode points at `justify <file> inconsistent`.
+  - `justify`'s subclass, equivalence, disjointness and unsatisfiability checks map the guard's
+    `Inconsistent` to "entailed", as its instance check already did.
+
 - **The named-class queries answer `owl:Thing` / `owl:Nothing` as the built-in ⊤ / ⊥
   (#427).** `sat`, `subclass` (also `--saturation-only`), `instance`, `instances`, `explain`,
   `justify` and `prove`, plus the matching Rust and Python functions, used to refuse both

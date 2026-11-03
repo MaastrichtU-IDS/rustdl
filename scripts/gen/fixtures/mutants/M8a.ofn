@@ -1,0 +1,19 @@
+# Mutant detection fixture (#363 step 3a): M8a, scripts/mutants/M8a.patch at 21b1986e.
+# The el_guaranteed profile detects it as pair-MISSED (finding tier, completeness_guaranteed: true)
+# on the classify arm, witness :C0 ⊑ :C5. Shrunk by scripts/gen/shrink.py --tier finding from gen 97f692139103 seed 20261106 case 2 profile el_guaranteed
+# (6 -> 3 axioms); Konclude and HermiT agree on it, and the unmutated build derives it.
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C0))
+Declaration(Class(:C1))
+Declaration(Class(:C2))
+Declaration(Class(:C4))
+Declaration(Class(:C5))
+Declaration(ObjectProperty(:r0))
+Declaration(ObjectProperty(:r1))
+SubClassOf(ObjectSomeValuesFrom(:r1 owl:Thing) ObjectIntersectionOf(:C4 ObjectSomeValuesFrom(:r0 :C2)))
+SubClassOf(:C0 ObjectSomeValuesFrom(:r1 :C1))
+SubClassOf(ObjectSomeValuesFrom(:r0 :C2) :C5)
+)

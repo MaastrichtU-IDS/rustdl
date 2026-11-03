@@ -252,9 +252,13 @@ def justify(path, query):
     """One minimal justification (Manchester axioms) for `query` (CLI-style
     tokens, e.g. ["unsat", c] / ["subclass", s, t] / ["inconsistent"]). Empty if
     not entailed. Emits `IncompleteQueryWarning` when a reasoner check gave up:
-    an empty list then means unknown, and a justification may not be minimal."""
-    axioms, incomplete = _justify_native(path, query)
+    an empty list then means unknown, and a justification may not be minimal.
+    Emits `TrustedConsistencyWarning` (#429) when a check answered "not entailed"
+    on the consistency wedge's model alone: an empty list may then be wrong, and
+    a justification may not be minimal."""
+    axioms, incomplete, trusted = _justify_native(path, query)
     _warn_if_explanation_incomplete("justify", incomplete)
+    _warn_if_oracle_trusted("justify", trusted)
     return axioms
 
 
@@ -262,8 +266,9 @@ def justify_all(path, query, max=10):
     """Up to `max` minimal justifications for `query`. Emits
     `IncompleteQueryWarning` when a reasoner check gave up (see `justify`; some
     justifications may also be missing)."""
-    js, incomplete = _justify_all_native(path, query, max)
+    js, incomplete, trusted = _justify_all_native(path, query, max)
     _warn_if_explanation_incomplete("justify_all", incomplete)
+    _warn_if_oracle_trusted("justify_all", trusted)
     return js
 
 
@@ -272,8 +277,10 @@ def diagnose(path):
     Emits `IncompleteQueryWarning` when a reasoner check under it gave up: a
     class's unsatisfiability check (unsatisfiable classes may be missing), or
     the consistency check of an all-classes-unsatisfiable ontology
-    (`consistent` is not witnessed)."""
-    consistent, roots, derived, incomplete = _diagnose_native(path)
+    (`consistent` is not witnessed). Emits `TrustedConsistencyWarning` (#429)
+    when `consistent` rests on the consistency wedge's model alone."""
+    consistent, roots, derived, incomplete, trusted = _diagnose_native(path)
+    _warn_if_trusted_wedge_consistency("diagnose", trusted)
     if incomplete:
         _warnings.warn(
             "diagnose: a reasoner check gave up (node cap, RUSTDL_MAX_NODES): "
@@ -289,9 +296,13 @@ def diagnose(path):
 def repair(path, query, max=10):
     """Minimal axiom-removal sets (Manchester) that break `query`, each verified.
     Emits `IncompleteQueryWarning` when a reasoner check gave up: an empty list
-    may then mean unknown, and repairs may be missing."""
-    repairs, incomplete = _repair_native(path, query, max)
+    may then mean unknown, and repairs may be missing. Emits
+    `TrustedConsistencyWarning` (#429) when a check answered "not entailed" on
+    the consistency wedge's model alone: a repair may then break the query only
+    if that model is right."""
+    repairs, incomplete, trusted = _repair_native(path, query, max)
     _warn_if_explanation_incomplete("repair", incomplete)
+    _warn_if_oracle_trusted("repair", trusted)
     return repairs
 
 
@@ -299,8 +310,9 @@ def _prepared_justify(self: "PreparedOntology", query):
     """One minimal justification (Manchester axioms) for `query`. Emits
     `IncompleteQueryWarning` when a reasoner check gave up (see
     `rustdl.justify`)."""
-    axioms, incomplete = self._justify_reporting(query)
+    axioms, incomplete, trusted = self._justify_reporting(query)
     _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete)
+    _warn_if_oracle_trusted("PreparedOntology.justify", trusted)
     return axioms
 
 
@@ -308,8 +320,9 @@ def _prepared_justify_all(self: "PreparedOntology", query, max=10):
     """Up to `max` minimal justifications for `query`. Emits
     `IncompleteQueryWarning` when a reasoner check gave up (see
     `rustdl.justify_all`)."""
-    js, incomplete = self._justify_all_reporting(query, max)
+    js, incomplete, trusted = self._justify_all_reporting(query, max)
     _warn_if_explanation_incomplete("PreparedOntology.justify_all", incomplete)
+    _warn_if_oracle_trusted("PreparedOntology.justify_all", trusted)
     return js
 
 
@@ -347,7 +360,16 @@ class TrustedConsistencyWarning(UserWarning):
       the ABox, which is exact when the KB is consistent and has no nominals. If
       that consistency were ever wrong the answer could only be a miss
       ("satisfiable" / "not subsumed"), never a false positive.
-      `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead."""
+      `RUSTDL_QUERY_TBOX_ONLY=0` seeds the ABox instead.
+    - `classify`, `classify_bytes`, `realize`, `diagnose` and the
+      `materialize_*` functions over them (#429): the classification took the
+      ontology as consistent on the consistency wedge's model alone. If that model
+      is wrong the ontology is inconsistent, every class is unsatisfiable, and
+      realize should have raised.
+    - `justify`, `justify_all`, `repair` (#429): an oracle call answered "not
+      entailed" on a trusted wedge model. On a "not entailed" result the verdict
+      rests on it; on a justification only its minimality can (every returned
+      justification still entails)."""
 
 
 def _warn_if_trusted_consistency(name: str, relies: bool) -> None:
@@ -359,6 +381,39 @@ def _warn_if_trusted_consistency(name: str, relies: bool) -> None:
             TrustedConsistencyWarning,
             stacklevel=3,
         )
+
+
+def _warn_if_trusted_wedge_consistency(name: str, trusted: bool, stacklevel: int = 3) -> None:
+    # #429: the #392 fact reached through a classification (or justify's oracle).
+    if trusted:
+        _warnings.warn(
+            f"{name} took the ontology as consistent on the consistency wedge's "
+            "model alone, which is not proven complete; if that model is wrong the "
+            "ontology is inconsistent (see TrustedConsistencyWarning).",
+            TrustedConsistencyWarning,
+            stacklevel=stacklevel,
+        )
+
+
+def _warn_if_oracle_trusted(name: str, trusted: bool) -> None:
+    # #429: a justify / repair oracle call said "not entailed" on a trusted wedge model.
+    if trusted:
+        _warnings.warn(
+            f"{name}: a reasoner check answered 'not entailed' on the consistency "
+            "wedge's model alone, which is not proven complete. An empty result may "
+            "then be wrong; a non-empty one still holds but may not be minimal, and a "
+            "repair may break the query only if that model is right "
+            "(see TrustedConsistencyWarning).",
+            TrustedConsistencyWarning,
+            stacklevel=3,
+        )
+
+
+def _warn_if_classification_trusted(result: "Classification") -> "Classification":
+    _warn_if_trusted_wedge_consistency(
+        "classify", result.relies_on_trusted_consistency, stacklevel=4
+    )
+    return result
 
 
 class ConsistencyUndeterminedWarning(UserWarning):
@@ -495,9 +550,12 @@ def realize(path):
     missing), and `DirectTypesUnverifiedWarning` when two most-specific types
     of an individual could not be compared (a listed type may not be the most
     specific), and `WitnessPruneWarning` when the pseudo-model prune may have
-    dropped an entailed type (#387)."""
-    types, incomplete, unverified, may_drop = _realize_native(path)
+    dropped an entailed type (#387). Emits `TrustedConsistencyWarning` when the
+    classification underneath took the ontology as consistent on the
+    consistency wedge's model alone (#429)."""
+    types, incomplete, unverified, may_drop, trusted = _realize_native(path)
     _warn_if_query_incomplete("realize", incomplete)
+    _warn_if_trusted_wedge_consistency("realize", trusted)
     _warn_if_direct_types_unverified("realize", unverified)
     _warn_if_witness_prune_may_drop("realize", may_drop)
     return types
@@ -524,6 +582,10 @@ def materialize_inferred_subclass_axioms(path):
     `result` refers to `rustdl.classify`, which exposes both."""
     pairs, classification = _materialize_inferred_subclass_axioms_native(path)
     _warn_if_incomplete(classification)
+    _warn_if_trusted_wedge_consistency(
+        "materialize_inferred_subclass_axioms",
+        classification.relies_on_trusted_consistency,
+    )
     return pairs
 
 
@@ -534,8 +596,11 @@ def materialize_inferred_class_assertions(path):
     missing) and `DirectTypesUnverifiedWarning` when a listed type may be a
     superclass of another (#388, #391), and `WitnessPruneWarning` when the
     pseudo-model prune may have dropped a type (#387)."""
-    pairs, incomplete, unverified, may_drop = _materialize_inferred_class_assertions_native(path)
+    pairs, incomplete, unverified, may_drop, trusted = (
+        _materialize_inferred_class_assertions_native(path)
+    )
     _warn_if_query_incomplete("materialize_inferred_class_assertions", incomplete)
+    _warn_if_trusted_wedge_consistency("materialize_inferred_class_assertions", trusted)
     _warn_if_direct_types_unverified("materialize_inferred_class_assertions", unverified)
     _warn_if_witness_prune_may_drop("materialize_inferred_class_assertions", may_drop)
     return pairs
@@ -548,8 +613,9 @@ def materialize_existential_successors(path):
     `realize` run underneath was cut, so rows may be missing (#391), and
     `WitnessPruneWarning` when its pseudo-model prune may have dropped a type
     (#387)."""
-    rows, incomplete, may_drop = _materialize_existential_successors_native(path)
+    rows, incomplete, may_drop, trusted = _materialize_existential_successors_native(path)
     _warn_if_query_incomplete("materialize_existential_successors", incomplete)
+    _warn_if_trusted_wedge_consistency("materialize_existential_successors", trusted)
     _warn_if_witness_prune_may_drop("materialize_existential_successors", may_drop)
     return rows
 
@@ -770,14 +836,14 @@ def classify(
 
     `global_deadline_ms` is a deprecated alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_incomplete(
+    return _warn_if_classification_trusted(_warn_if_incomplete(
         _classify_native(
             path,
             per_pair_timeout_ms=per_pair_timeout_ms,
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    )
+    ))
 
 
 def classify_bytes(
@@ -794,7 +860,7 @@ def classify_bytes(
     timeout/completeness semantics. `global_deadline_ms` is a deprecated
     alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_incomplete(
+    return _warn_if_classification_trusted(_warn_if_incomplete(
         _classify_bytes_native(
             data,
             format=format,
@@ -802,7 +868,7 @@ def classify_bytes(
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    )
+    ))
 
 
 def debug(path):

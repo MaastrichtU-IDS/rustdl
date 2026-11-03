@@ -367,7 +367,10 @@ def test_direct_types_unverified_warning(tmp_path, monkeypatch):
     p = tmp_path / "two.ofn"
     p.write_text(_TWO_TYPES_ONTOLOGY)
     with warnings.catch_warnings():
-        warnings.simplefilter("error")
+        # Only this warning is under test: the fixture's ABox is consistent on the
+        # wedge's model alone, so realize also emits TrustedConsistencyWarning (#429).
+        warnings.simplefilter("error", rustdl.DirectTypesUnverifiedWarning)
+        warnings.simplefilter("error", rustdl.IncompleteQueryWarning)
         types = rustdl.realize(str(p))
     assert sorted(types["http://ex/#a"]) == ["http://ex/#X", "http://ex/#Y"]
 

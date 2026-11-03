@@ -1,0 +1,14 @@
+# Mutant detection fixture (#363 step 3): M8b, scripts/mutants/M8b.patch at 7b5c0f9f.
+# Generated net detects it as unsat-FP on the classify arm, witness :C5 (found at N, case 1560, not within B=500).
+# env: -. Shrunk by scripts/gen/shrink.py from gen bd63a61a6921 seed 20261103 case 1560 profile default
+# (11 -> 2 axioms); Konclude and HermiT agree on it, and the unmutated build has no such finding.
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C2))
+Declaration(Class(:C5))
+Declaration(DataProperty(:d0))
+SubClassOf(:C5 ObjectIntersectionOf(ObjectComplementOf(:C2) DataMinCardinality(1 :d0)))
+FunctionalDataProperty(:d0)
+)

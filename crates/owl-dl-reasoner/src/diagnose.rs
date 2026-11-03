@@ -20,6 +20,9 @@ pub struct DerivedClass {
 }
 
 /// The result of diagnosing an ontology.
+// `struct_excessive_bools`: each bool is an independent signal of the public
+// result (#429 added the trust flag); they are not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnosis {
     /// Whether the ontology is consistent. When `false`, `roots`/`derived` are
@@ -44,6 +47,13 @@ pub struct Diagnosis {
     /// and so were reported satisfiable without a verdict: classify's
     /// `timed_out_pairs`. Roots and derived classes may be missing.
     pub unsat_probes_cut: usize,
+    /// #429: `consistent: true` rests on a consistency-wedge `Sat` that no
+    /// main-tableau run verified, from the classification underneath or from the
+    /// all-classes-unsatisfiable gate's consistency check. When that gate ran and
+    /// its check neither trusted the wedge nor gave up, consistency is verified and
+    /// this is `false` whatever the classification trusted. A trust decision, not a
+    /// give-up: separate from `incomplete`. Never set when `consistent` is `false`.
+    pub relies_on_trusted_consistency: bool,
 }
 
 /// An empty `Diagnosis` for an ontology found inconsistent (caller justifies the
@@ -58,6 +68,7 @@ fn inconsistent_diagnosis() -> Diagnosis {
         incomplete: false,
         consistency_gave_up: false,
         unsat_probes_cut: 0,
+        relies_on_trusted_consistency: false,
     }
 }
 
@@ -119,12 +130,20 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
     // correctly falls through to a partition (verdict: consistent).
     let n_declared = classification.classes().len();
     let mut consistency_gave_up = false;
+    let mut trusted = classification.stats().relies_on_trusted_consistency;
     if n_declared > 0 && unsat.len() == n_declared {
         let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
         if !consistent {
             return Ok(inconsistent_diagnosis());
         }
         consistency_gave_up = stats.incomplete;
+        // #429: this check is the authority here. Unless it gave up, what it rests
+        // on replaces what the classification rested on (a verified model clears it).
+        if stats.incomplete {
+            trusted |= stats.relies_on_trusted_consistency;
+        } else {
+            trusted = stats.relies_on_trusted_consistency;
+        }
     }
     // No deadline here, so a cut pair is an unsat probe that tripped the node cap
     // and was reported satisfiable (#218): an unsatisfiable class may be missing.
@@ -133,6 +152,7 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
         incomplete: consistency_gave_up || unsat_probes_cut > 0,
         consistency_gave_up,
         unsat_probes_cut,
+        relies_on_trusted_consistency: trusted,
         ..inconsistent_diagnosis()
     };
 
@@ -153,6 +173,7 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
         incomplete: gave_up.incomplete,
         consistency_gave_up,
         unsat_probes_cut,
+        relies_on_trusted_consistency: trusted,
         ..partition(&unsat, &edges)
     })
 }
@@ -329,6 +350,7 @@ fn partition(unsat: &BTreeSet<String>, edges: &BTreeMap<String, BTreeSet<String>
         incomplete: false,
         consistency_gave_up: false,
         unsat_probes_cut: 0,
+        relies_on_trusted_consistency: false,
     }
 }
 

@@ -1,0 +1,23 @@
+# Mutant detection fixture (#363 step 3): M3, scripts/mutants/M3.patch at 7b5c0f9f.
+# Generated net detects it as pair-MISSED on the classify arm, witness :C4|:C1.
+# env: -. Shrunk by scripts/gen/shrink.py from gen bd63a61a6921 seed 20261103 case 198 profile default
+# (10 -> 6 axioms); Konclude and HermiT agree on it, and the unmutated build has no such finding.
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C1))
+Declaration(Class(:C3))
+Declaration(Class(:C4))
+Declaration(Class(:C5))
+Declaration(Class(:C7))
+Declaration(ObjectProperty(:r0))
+Declaration(ObjectProperty(:r1))
+Declaration(ObjectProperty(:r2))
+InverseObjectProperties(:r1 :r2)
+EquivalentClasses(:C5 ObjectSomeValuesFrom(:r2 :C1))
+SubClassOf(:C3 :C5)
+SubClassOf(:C4 :C3)
+EquivalentClasses(:C7 ObjectSomeValuesFrom(:r1 owl:Thing))
+SubClassOf(:C7 ObjectIntersectionOf(ObjectAllValuesFrom(:r1 ObjectUnionOf(:C1 ObjectComplementOf(:C4))) ObjectMaxCardinality(3 :r0 :C4)))
+)

@@ -434,6 +434,9 @@ pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
 ///
 /// `direct_types_unverified` (#388) is deliberately absent: the rows join on
 /// ENTAILED types, which that flag does not affect.
+// `struct_excessive_bools`: each bool is an independent signal of the public
+// result (#429 added the trust flag); they are not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExistentialSuccessorFlags {
     /// An instance probe was cut ([`Realization::incomplete`]), so an entailed
@@ -445,6 +448,10 @@ pub struct ExistentialSuccessorFlags {
     /// The prune ran and its witness may lack an entailed type
     /// ([`Realization::witness_prune_may_drop`], #387), so rows may be missing.
     pub witness_prune_may_drop: bool,
+    /// #429: the `realize` run took the ontology as consistent on a
+    /// consistency-wedge `Sat` alone ([`Realization::relies_on_trusted_consistency`]).
+    /// Not a give-up.
+    pub relies_on_trusted_consistency: bool,
 }
 
 /// [`materialize_existential_successors`], plus the completeness flags of the
@@ -534,6 +541,7 @@ pub fn materialize_existential_successors_reporting<A: horned_owl::model::ForIRI
         incomplete: realization.incomplete(),
         witness_prune_active: realization.witness_prune_active(),
         witness_prune_may_drop: realization.witness_prune_may_drop(),
+        relies_on_trusted_consistency: realization.relies_on_trusted_consistency(),
     };
     // Distinct (a, R, C) with a:X entailed and X ⊑ ∃R.C told.
     let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
@@ -3545,8 +3553,12 @@ pub(crate) fn classify_inconsistency_precheck(
     // Route 2: the ABox-seeded wedge (#89).
     match classify_wedge_consistency(internal, route_deadline(), wedge_cache) {
         Some(HyperResult::Unsat) => return true,
-        // A wedge model decides consistency, whatever route 1 did.
-        Some(HyperResult::Sat) => cut = false,
+        // A wedge model decides consistency, whatever route 1 did. Nothing verifies
+        // it here, so classify's "consistent" now rests on it (#429).
+        Some(HyperResult::Sat) => {
+            cut = false;
+            mark_consistency_trusted_wedge();
+        }
         Some(HyperResult::Stalled) => cut = true,
         None => {}
     }
@@ -3640,6 +3652,33 @@ pub(crate) fn mark_consistency_undetermined() {
 /// Read and clear the flag (see [`mark_consistency_undetermined`]).
 pub(crate) fn take_consistency_undetermined() -> bool {
     CONSISTENCY_UNDETERMINED.with(|f| f.replace(false))
+}
+
+thread_local! {
+    /// #429: classify decided "consistent" on a consistency-wedge `Sat` that no
+    /// main-tableau run verified. Set by [`classify_inconsistency_precheck`] and by
+    /// layer 2 of classify's consistency probe; cleared by that probe's layer 3
+    /// when the main tableau finds a model. Same discipline as
+    /// [`CONSISTENCY_UNDETERMINED`]: the classify drivers clear it before the run
+    /// and move it (masked by `inconsistent`) into
+    /// `ClassificationStats::relies_on_trusted_consistency` after. Every site runs
+    /// on the driver's thread.
+    static CONSISTENCY_TRUSTED_WEDGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Record that classify's consistency rests on a trusted wedge `Sat` (#429).
+pub(crate) fn mark_consistency_trusted_wedge() {
+    CONSISTENCY_TRUSTED_WEDGE.with(|f| f.set(true));
+}
+
+/// A main-tableau model verified consistency: nothing rests on the wedge (#429).
+pub(crate) fn clear_consistency_trusted_wedge() {
+    CONSISTENCY_TRUSTED_WEDGE.with(|f| f.set(false));
+}
+
+/// Read and clear the flag (see [`mark_consistency_trusted_wedge`]).
+pub(crate) fn take_consistency_trusted_wedge() -> bool {
+    CONSISTENCY_TRUSTED_WEDGE.with(|f| f.replace(false))
 }
 
 /// The wedge half of [`classify_inconsistency_precheck`]: its verdict, or `None`
@@ -7971,9 +8010,10 @@ pub(crate) fn bounded_query_guard(
     {
         eprintln!(
             "class query guard (#428): surface={surface} inconsistent={inconsistent} us={} \
-             abox_us={abox_us} abox_cut={} abox_budget_ms={ms}",
+             abox_us={abox_us} abox_cut={} abox_budget_ms={ms} axioms={}",
             started.elapsed().as_micros(),
-            cut
+            cut,
+            internal.axioms.len()
         );
     }
     if inconsistent {
@@ -14994,6 +15034,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             status: justify::Verdict::Unknown,
             justifications: vec![],
             incomplete: true,
+            relies_on_trusted_consistency: false,
         };
         let (result, incomplete) = fallback_after_held(gave_up);
         assert!(
@@ -15010,6 +15051,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
                 minimal_guaranteed: false,
             }],
             incomplete: true,
+            relies_on_trusted_consistency: false,
         };
         let (result, incomplete) = fallback_after_held(not_minimal);
         assert!(matches!(

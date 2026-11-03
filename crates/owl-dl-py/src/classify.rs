@@ -120,6 +120,15 @@ impl PyClassification {
         st.consistency_undetermined && !st.inconsistent
     }
 
+    /// True iff `inconsistent is False` rests on a consistency-wedge model that no
+    /// main-tableau run verified (#429; the #392 fact `is_consistent` warns on).
+    /// Not a give-up. If that model is wrong the ontology is inconsistent and every
+    /// class is unsatisfiable. `classify` emits `TrustedConsistencyWarning`.
+    #[getter]
+    fn relies_on_trusted_consistency(&self) -> bool {
+        self.inner.stats().relies_on_trusted_consistency
+    }
+
     /// True iff the wedge ran without its role-hierarchy matching (Layer A
     /// off, by flag or above the role-closure cost cap) on an ontology with a
     /// non-trivial role hierarchy (#214). Then entailments needing sub-role,

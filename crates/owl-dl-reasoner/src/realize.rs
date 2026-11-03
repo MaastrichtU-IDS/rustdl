@@ -861,6 +861,9 @@ impl WitnessPruneReasons {
 /// Per-individual realization: every entailed type plus the
 /// most-specific named classes (the leaves of the subclass relation
 /// restricted to the entailed types).
+// `struct_excessive_bools`: each bool is an independent signal of the public
+// result (#429 added the trust flag); they are not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default)]
 pub struct Realization {
     /// All declared individual IRIs that the realization examined.
@@ -948,6 +951,13 @@ pub struct Realization {
     /// the types and the hierarchy come from one saturation closure on a fragment
     /// where it is complete.
     direct_types_unverified: bool,
+    /// #429: the classification this realization ran took the ontology as
+    /// consistent on a consistency-wedge `Sat` that no main-tableau run verified
+    /// (`ClassificationStats::relies_on_trusted_consistency`). If that `Sat` is
+    /// wrong the ontology is inconsistent and realize should have errored. A trust
+    /// decision, not a give-up: separate from [`Self::incomplete`]. Always `false`
+    /// on the saturation paths, whose classification runs no wedge.
+    relies_on_trusted_consistency: bool,
 }
 
 impl Realization {
@@ -979,6 +989,13 @@ impl Realization {
     #[must_use]
     pub fn witness_prune_reasons(&self) -> WitnessPruneReasons {
         self.witness_prune_reasons
+    }
+
+    /// #429: the ontology was taken as consistent on a consistency-wedge `Sat`
+    /// alone. See the field doc.
+    #[must_use]
+    pub fn relies_on_trusted_consistency(&self) -> bool {
+        self.relies_on_trusted_consistency
     }
 
     /// See [`Self::direct_types_unverified`] — `true` iff some individual has two
@@ -1314,6 +1331,7 @@ pub fn realize_saturation_only_internal(
         witness_prune_reasons: WitnessPruneReasons::default(),
         // No tableau on this path by contract, so an undecided pair stays undecided.
         direct_types_unverified,
+        relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
     })
 }
 
@@ -1515,6 +1533,7 @@ pub(crate) fn realize_via_saturation_internal(
         // Types and hierarchy come from one saturation closure on a fragment where
         // it is complete (see the field doc).
         direct_types_unverified: false,
+        relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
     })
 }
 
@@ -1816,6 +1835,7 @@ pub(crate) fn realize_tableau_internal(
         witness_prune_active: base_model.is_some(),
         witness_prune_reasons,
         direct_types_unverified,
+        relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
     })
 }
 

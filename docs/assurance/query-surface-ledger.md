@@ -118,18 +118,34 @@ about its signal, so each is filed rather than fixed here.
   top/bottom, one-leg chains, anonymous individuals). `incomplete` stays a
   give-up signal. See the
   [completeness ledger](completeness-guarantee-ledger.md#structural-property-surfaces-389-390).
-- **other readers of a trusted consistency `Sat`** do not pass #392's flag on.
-  `consistent` itself reports it (see its row). These also trust the wedge's
-  `Sat` and do not say so: `classify`'s consistency pre-check (`lib.rs`,
-  `classify_inconsistency_precheck`) and its second probe (`classify.rs`,
-  `probe_says_inconsistent`), so `classify --json`'s `consistent: true`, and
-  `realize` and `diagnose`, which read `Classification::stats().inconsistent`;
-  `justify`'s inconsistency oracle (`justify.rs`,
-  `Verdict::from_check(!consistent, stats.incomplete)`); and `diagnose`'s
-  all-classes-unsatisfiable gate (`diagnose.rs`), where passing the flag on is a
-  one-line change. A wrong trusted `Sat` there is a miss, never a
-  false positive. The Protégé plugin reads `classify --json`'s `consistent`, not
-  `consistent --json`. Not filed.
+- **other readers of a trusted consistency `Sat` (#429, fixed).** `consistent`
+  reports the fact itself (see its row). Since #429 the other readers report it
+  under the same name, `relies_on_trusted_consistency`, as a trust decision, not a
+  give-up. It is never set beside an inconsistency and changes no verdict.
+  - **classify**: the pre-check's wedge `Sat` (`classify_inconsistency_precheck`)
+    or the probe's wedge layer (`probe_says_inconsistent`, not counting) sets it.
+    The probe's main-tableau layer finding a model clears it. Reported as
+    `ClassificationStats` and `classify --json`, one stderr note, and the Python
+    `Classification` getter plus `TrustedConsistencyWarning` from `classify`,
+    `classify_bytes` and `materialize_inferred_subclass_axioms`. It is condition 8
+    of the completeness guarantee, which cannot fail beside PureEl today.
+  - **realize** and the `materialize_*` functions over it: copied from that
+    classification (`Realization`, `realize --json`, note, warning).
+  - **justify** (`--all`, laconic, prepared) and **repair**: set when an oracle
+    call answered "not entailed" on a trusted `Sat`, whether the trust came from
+    #392's consistency check or #401's lent consistency. On a not-entailed
+    result the verdict rests on it; on a justification only its minimality can.
+    For repair, a repair may break the query only if the wedge is right.
+    `JustifyOutcome` / `Repairs`, `justify --json`, note, warning. Inside justify
+    the instance arm takes no trust (`_no_lazy`, nothing lent for `InstanceOf`).
+  - **diagnose**: the classification's flag, unless the all-classes-unsatisfiable
+    gate's consistency check ran and did not give up, in which case that check
+    decides it. `Diagnosis`, note, warning.
+
+  Still not reported: the instance queries outside justify (`InstanceFlags` has
+  no trust field) and prove's justification fallback (`ProveFlags`' flag is
+  defined on `NotEntailed` only). Pinned by `trusted_consistency_surfaces.rs`,
+  `trusted_consistency_cli.rs` and `test_trusted_consistency_surfaces.py`.
 - **#369's lazy consistency check: what it does not cover.** All the query
   surfaces above run it after a positive answer. Left out or partial:
   - `materialize_existential_successors` runs `realize`, which already errors
@@ -324,8 +340,10 @@ applied: the net fails on `unsat_FP=41` at `ore_ont_10080`, the new default-run
 Still open: M8a is caught only by its own canaries; no oracle gate carries its shape (0 of 157
 ORE GCI-domain ontologies have a non-atomic head). The inconsistent-oracle branch of
 `unsat_diff` is covered by unit tests only: no fixture oracle puts `owl:Thing` in its
-`owl:Nothing` group. The harness repo's scorers (`normalise.compare`, `missed-net`,
-`cross-check.sh`, `release-corpus-report`) have the same exclusion and are not changed here.
+`owl:Nothing` group. The harness repo's scorers had the same exclusion. `normalise.compare`,
+`missed-net` and `cross-check.sh` were fixed in owl-reasoner-harness#2 (merged as 8060fc94),
+with no movement in the recorded MISSED baselines. `release-corpus-report` compares arms with
+each other, not with an oracle, and is unchanged.
 
 Other limits, stated:
 
@@ -346,3 +364,181 @@ neither L4 nor R3 applies there), and `individuals` was killed at 30 s on pizza 
 
 The quick mode is a local gate:
 `cargo test --release -p owl-dl-cli --test cross_command_laws -- --ignored`.
+
+## Generated-ontology oracle net (#363 step 3)
+
+`scripts/gen/` (see its README) generates small, legal OWL 2 DL ontologies:
+- 4–10 classes, 2–4 roles, 0–2 data properties, 0–3 individuals and 3–15 axioms;
+- drawn from 11 construct families;
+- regularity and simplicity by construction.
+
+It runs `classify`, `classify --saturation-only` and `consistent` on each case, and scores
+the answers against what Konclude and HermiT **both** agree on. A case where the peers
+disagree or fail is counted and never scored. FP kinds are never exempted for a budget cut.
+A miss is a finding only where rustdl claims completeness (`completeness_guaranteed`, or the
+`consistent --json` gates); otherwise it is "exposed", a limitation rustdl declares.
+
+Measured 2026-11-03 on 7b5c0f9f (0.4.42): seed 20261103, default profile, cores 92–94,
+peers capped at 60 s, rustdl at 30 s. Seeds and generator hashes: `scripts/gen/seeds.txt`.
+
+**Control, N = 2000: no findings, so 0 false alarms.**
+
+| bucket | cases |
+|---|---:|
+| clean | 1945 |
+| peer-disagree | 32 |
+| peer-fail | 12 (Konclude: 10 timeouts, 2 failures; HermiT ok on all) |
+| exposed | 10: 17 misses (13 pairs, 4 unsat classes), each under a declared limitation (trusted Sat refutations on 7 cases, a deadline on 3, case 1646 has both, `completeness_guaranteed: false` alone on 1) |
+| rustdl-fail | 1 (case 1283, below) |
+| invalid | 0 (HermiT accepted every file as legal) |
+| finding | **0** |
+
+Two more control cases have a classify pre-check consistency miss (`consistent: true` on a KB
+both peers call inconsistent): case 475, bucketed clean because that tier is informational, and
+case 1283. The two targeted controls below add 1000 cases, also with 0 findings.
+
+**What the scored cases exercised.**
+- **The guaranteed tier is thin.** Of the 1794 agreed-consistent cases, 79 (4.4%) report
+  `completeness_guaranteed: true`. So a classify miss could be a finding on only those.
+  **"0 findings" here is not evidence of completeness.** The `el_guaranteed` profile below
+  (step 3a) puts 99.8% of cases in that tier and finds guaranteed-tier misses on unmodified
+  main in 101 of 1000 cases.
+- **The oracle branches all got real cases:** 162 agreed-inconsistent, 283 with a
+  Thing-equivalent class, 537 with an unsat class.
+- **Noise floor.** A control-vs-control rerun of the first 500 cases differs on 0.
+- **Load-driven deadlines.** Under load, a per-pair deadline can fire in one run and not the
+  next. `detect` therefore reports exposed-tier differences whose arm says `incomplete: true` as
+  "budget-cut", and never counts them (see M8a below).
+
+**Peer disagreements (32, not scored).**
+- 31 are HermiT reporting more than Konclude:
+  - 21 Konclude-consistent and HermiT-inconsistent;
+  - 5 unsat classes;
+  - 3 Thing-equivalent classes;
+  - 2 pairs.
+- 1 is Konclude reporting a Thing-equivalent class HermiT lacks.
+- rustdl sides with HermiT in 30 of 32.
+
+The 2 where it sides with Konclude are unadjudicated:
+- **case 723**: HermiT has `C4 ⊑ C7`;
+- **case 1725**: HermiT has `C1` unsatisfiable.
+
+JFact (via robot) sides with Konclude and rustdl on both, so HermiT's claims stand 1 against 3.
+rustdl reports `completeness_guaranteed: false` on both, so they would be exposed-tier either way.
+
+**A known oracle defect, and the blind spot it makes.** The 21 Konclude-consistent /
+HermiT-inconsistent cases all declare a named individual. There are two shapes:
+- **5 are `ReflexiveObjectProperty(r)` + `AsymmetricObjectProperty(r)`** (fixture
+  `scripts/gen/fixtures/konclude-reflexive-asymmetric.ofn`). Konclude answers that pair
+  correctly with no individual, and says consistent once one is declared, even with no
+  assertion about it.
+- **16 are ABox role assertions** (`r(a,a)` or `r(a,b)`) that break `Asymmetric`,
+  `Irreflexive` or `DisjointObjectProperties`, some through the role hierarchy, plus one
+  `EquivalentClasses(C ObjectComplementOf(C))`.
+
+HermiT, JFact (checked on the fixture) and rustdl say inconsistent. The oracle rule stays
+"both peers must agree", so **these inconsistencies are never scored**: a rustdl miss of this
+kind would be invisible to the net.
+
+**rustdl-fail, case 1283 (an issue draft, not filed).** `consistent` and `sat` fail with
+`ReasonError::NoVerdict` ("bug indicator") instead of answering or giving up with exit 3.
+- Shrunk under peer agreement to 5 axioms (consistent KB) and 6 axioms (inconsistent KB).
+- It fails in about 5 s; the 13-axiom original takes 18–24 s.
+- classify answers the 5-axiom KB correctly.
+
+**Sensitivity.** Each mutant runs on the first B = 500 cases. A detection is a new result in
+the mutant's run that the control run lacks on the same case under the same env. It counts if
+it is finding-tier, or exposed-tier with no deadline in the mutant's arm.
+
+| mutant | detected at B | cases | first case | kind (tier) | note |
+|---|---|---:|---|---|---|
+| M1 | **yes** | 1 | 160 | consistency-FP on classify's `consistent` (finding) | |
+| M3 | **yes** | 2 | 198 | pair-MISSED (exposed, no deadline) | 5/5 runs per arm identical |
+| M7 | **yes** | 209 | 0 | unsat-FP (366), consistency-FP (7) | under its env; the env's own control has 0 findings and 41 exposed. Pre-declared as a likely non-detection; it was not |
+| M8a | no | 0 | – | – | pre-declared. At N = 2000: 0 (3 budget-cut, 1 pre-check difference). Targeted `el_only`, 500: 0 (1 budget-cut). Every candidate gave identical answers in both arms on rerun |
+| M8b | no | 0 | – | – | **not** pre-declared. At N = 2000: 1 (case 1560, unsat-FP, `C ⊑ ¬A ⊓ ≥1 d` + `Functional(d)`). Targeted `data_heavy`, 500: 2 (cases 202, 361, unsat-FP) |
+| M9 | **yes** | 340 | 1 | pair-FP (also satonly-FP) | |
+| M12 | **yes** | 304 | 1 | satonly-FP | structural, as in the laws harness |
+
+So 5 of 7 are detected within B. M8b is detected at N and under its targeted profile. **M8a
+is not detected anywhere.**
+
+M8a and M8b live on paths every surface shares (the EL saturator, D4 conversion). The
+cross-command laws cannot see them; only an oracle can, and only on an input with the shape.
+The generator rarely draws those shapes:
+- M8b needs `Functional(d)` with `≥1 d` reachable by D4: 1 of 2000 default cases, 2 of 500
+  `data_heavy` cases.
+- M8a needs a pure-EL KB with a non-atomic GCI domain head and an entailment that depends on
+  it: 2 of 500 `el_only` cases have the head, and the mutant changes no answer on either.
+
+Each detection is shrunk under peer agreement, at the tier it was found, to a fixture in
+`scripts/gen/fixtures/mutants/`. The unmutated build shows no such finding on any of them.
+- M1: 4 axioms (every named class unsatisfiable on a consistent KB);
+- M3: 6 axioms, carrying `∀r.(B ⊔ ¬C)`;
+- M7: 1 axiom (timing-dependent: it fired in 20 of 20 runs on one core, and in 9 of 12);
+- M8b: 2 axioms;
+- M9 and M12: 1 axiom each.
+
+Out of scope, because the net does not query those surfaces: M4, M5, M6, M10, M11. M2 is an
+env sabotage of the per-pair path.
+
+**Limits.**
+- The oracle is agreement-only, so it is blind where the peers disagree: the 21 ABox and
+  role-characteristic inconsistencies above, and the unadjudicated cases.
+- The guaranteed tier covers 4% of scored cases, so this net mostly tests soundness, not
+  completeness.
+- One default profile and seed: the family weights decide what is reachable (M8a, M8b).
+- Exposed-tier results are budget-sensitive under load.
+- The net does not run in CI: a 2000-case control took 89 minutes on 3 cores, against the
+  plan's estimate of about 25.
+
+### A guaranteed-tier profile: `el_guaranteed` (#363 step 3a)
+
+The default profile rarely stays inside rustdl's pure-EL gate, so `completeness_guaranteed`
+held on 4% of its cases. The `el_guaranteed` profile is a separate generator (`ElCase`) that
+emits only what `is_pure_el` admits:
+- EL concepts (atomic, ⊓, forward ∃, ⊤, ⊥);
+- atomic `DisjointClasses`;
+- forward sub-roles, length-2 chains, transitivity and role equivalence;
+- atomic domain and range;
+- non-atomic domain heads only as the GCI `∃r.⊤ ⊑ X`.
+
+Half the cases carry a planted #114- or #81-shaped motif, recorded as `# motif:`.
+
+The default, `el_only` and `data_heavy` outputs are unchanged: all 3000 earlier cases
+regenerate byte-identically, checked in full.
+
+Measured 2026-11-03 on 21b1986e: seed 20261106, N = 1000.
+
+| | result |
+|---|---|
+| `completeness_guaranteed` | **998 of 1000** scored cases (99.8%); 100% on motif-free cases. Both exceptions (cases 64, 731) are the pre-declared `has_composed_chain_range` (#108) exit |
+| buckets | 899 clean, **101 finding**; no peer disagreement, peer failure, rustdl failure or invalid case |
+| findings | all guaranteed-tier misses (146 pairs and 50 unsat classes over the 101 cases); **0 FP** |
+| control-vs-control | 0 of 500 differ |
+| M8a (pre-declared: detected within B = 500) | **held**: 103 of 500, first at case 2, all finding tier; 211 of 1000. Fixture `fixtures/mutants/M8a.ofn`: motif 1's three axioms |
+| guaranteed rate (pre-declared ≥ 50%; expected ≥ 80%) | **held**: 99.8% |
+
+**The 101 findings on unmodified main have two mechanisms, both about `∃r.⊤`.** Every case is
+attributed by an entailment-preserving rewrite that makes the miss disappear. On every rewritten
+file the miss disappears with `completeness_guaranteed` still true, so the route does not change.
+The attribution is **sequential**: the range rewrite is tried first. The ⊤-filler rewrite repairs
+the range gap at every depth as well, so some of the 89 also contain a nested instance of
+mechanism 1.
+
+1. **12 cases: the ⊤-witness for `X ⊑ ∃r.⊤` never receives `Range(r)`.** The minimal case is
+   `X ⊑ ∃r.⊤`, `Range(r,F)`, `∃r.F ⊑ W`, which misses `X ⊑ W`. CLAUDE.md records the
+   subsumer-less witness as a design decision (`topwitness.ofn`).
+2. **89 cases: `∃s.⊤` below the top level has no lowering.** `atomic_or_tseitin_body_with_extras`
+   has no `Top` arm, so a nested `∃r.∃s.⊤`, or a domain-GCI head containing `∃s.⊤`, returns
+   `None` and the axiom is dropped. The minimal case is `X ⊑ ∃r.∃s.⊤`, `∃r.∃s.⊤ ⊑ W`, which
+   misses `X ⊑ W`.
+
+They share a root: a ⊤ filler has no typed representation, an untyped witness at the top level
+and nothing below it. One fix can close both, provided the range part lands first. Both are
+confirmed by Konclude and HermiT (`work-363-gen/el/repro/` holds the reproducers and their
+oracle records), and missed by `classify` and `subclass` alike. In
+both, the gate certifies completeness and the engine drops the inference: the D10 shape. The
+curated corpus does not carry either; the FP=0 net reports MISSED=0 on every fixture. Issue
+drafts went to the manager; no fix is in this change.
+

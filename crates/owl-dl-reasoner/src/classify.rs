@@ -28,9 +28,10 @@ use owl_dl_saturation::saturate;
 
 use crate::{PreparedOntology, ReasonError};
 
-/// `(i, j, entailed, used_saturation, timed_out)` — one entry per
+/// `(i, j, entailed, used_saturation, timed_out, depth_capped)` — one entry per
 /// pairwise subsumption check returned from the parallel work loop.
-type PairResult = (usize, usize, bool, bool, bool);
+/// `depth_capped` (#288) is meaningful only with `timed_out`.
+type PairResult = (usize, usize, bool, bool, bool, bool);
 
 // ─── BEGIN report-position ↔ ClassId conversion boundary ─────────────────
 //
@@ -472,6 +473,16 @@ pub struct ClassificationStats {
     /// which is the exact failure it exists to prevent. The merges are hand-maintained
     /// field lists; adding a counter without adding it there is silent.
     pub stall_tail_skips: usize,
+    /// #288: of `timed_out_pairs`, the main-tableau probes (per-class unsat
+    /// probes and pair probes) that were cut by the search's decision-depth
+    /// limit (`MAX_SEARCH_DEPTH`), directly or through early-abandon, rather
+    /// than by a deadline or the node cap. No per-pair timeout recovers these:
+    /// only the deadline-free search, which has no such limit, does. The CLI
+    /// banner and the Python warning report them separately so they are not
+    /// described as timeouts.
+    ///
+    /// MUST be added to BOTH worker-stat merge sites (see `stall_tail_skips`).
+    pub depth_capped_pairs: usize,
     pub fallthrough_ran: usize,
     pub fallthrough_subsumed: usize,
     pub fallthrough_notsubsumed: usize,
@@ -1461,6 +1472,7 @@ fn fold_probe_stats(stats: &mut ClassificationStats, sd: ClassificationStats) {
     stats.fallthrough_from_diverged += sd.fallthrough_from_diverged;
     stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
     stats.timed_out_pairs += sd.timed_out_pairs;
+    stats.depth_capped_pairs += sd.depth_capped_pairs;
     stats
         .timed_out_pair_ids
         .extend(sd.timed_out_pair_ids.iter().copied());
@@ -1699,8 +1711,8 @@ fn classify_internal_with_timeout_impl(
             let sub_class = reported.class_id(i);
             let super_class = reported.class_id(j);
             if closure.contains(sub_class, super_class) {
-                // (i, j, entailed, used_saturation, timed_out)
-                return Ok((i, j, true, true, false));
+                // (i, j, entailed, used_saturation, timed_out, depth_capped)
+                return Ok((i, j, true, true, false, false));
             }
             let build = move |pool: &mut ConceptPool| {
                 let sub_concept = pool.atomic(sub_class);
@@ -1711,7 +1723,7 @@ fn classify_internal_with_timeout_impl(
             match per_pair_timeout {
                 None => {
                     let sat = prepared.decide_classify(build)?;
-                    Ok((i, j, !sat, false, false))
+                    Ok((i, j, !sat, false, false, false))
                 }
                 Some(timeout) => {
                     // Cooperative deadline: the tableau's search loop
@@ -1721,16 +1733,17 @@ fn classify_internal_with_timeout_impl(
                     // worker stays bound to this single decide call.
                     let deadline = Instant::now() + timeout;
                     match prepared.decide_classify_with_deadline(deadline, build)? {
-                        Some(sat) => Ok((i, j, !sat, false, false)),
-                        None => Ok((i, j, false, false, true)),
+                        Some(sat) => Ok((i, j, !sat, false, false, false)),
+                        None => Ok((i, j, false, false, true, crate::last_probe_depth_capped())),
                     }
                 }
             }
         })
         .collect();
-    for (i, j, is_entailed, used_saturation, timed_out) in pair_results? {
+    for (i, j, is_entailed, used_saturation, timed_out, depth_capped) in pair_results? {
         if timed_out {
             stats.timed_out_pairs += 1;
+            stats.depth_capped_pairs += usize::from(depth_capped);
             stats.timed_out_pair_ids.push((
                 u32::try_from(i).expect("class index fits in u32"),
                 u32::try_from(j).expect("class index fits in u32"),
@@ -3624,13 +3637,16 @@ fn wedge_clauses_refused(prepared: &PreparedOntology) -> usize {
     }
 }
 
-/// Record that class `i`'s per-class unsat probe was cut (deadline or
-/// `NoVerdict`) and defaulted to "satisfiable" (#218).
-fn record_cut_probe(cut: &std::sync::Mutex<Vec<usize>>, i: usize) {
+/// Record that class `i`'s per-class unsat probe was cut (deadline, node cap
+/// or depth limit) and defaulted to "satisfiable" (#218). Call it directly after
+/// the probe, on the probe's thread: it reads [`crate::last_probe_depth_capped`]
+/// to keep a depth-limit cut apart from a timeout (#288).
+fn record_cut_probe(cut: &std::sync::Mutex<Vec<(usize, bool)>>, i: usize) {
     if crate::unsat_probe_cut_incomplete_enabled() {
+        let depth_capped = crate::last_probe_depth_capped();
         cut.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(i);
+            .push((i, depth_capped));
     }
 }
 
@@ -3639,14 +3655,15 @@ fn record_cut_probe(cut: &std::sync::Mutex<Vec<usize>>, i: usize) {
 /// not complete. Each is recorded as a `(c, c)` marker, the same shape the
 /// global-deadline bail uses for "this class is undecided", which keeps the
 /// `undecided_pairs().len() == timed_out_pairs` invariant.
-fn flag_cut_probes(cut: std::sync::Mutex<Vec<usize>>, stats: &mut ClassificationStats) {
+fn flag_cut_probes(cut: std::sync::Mutex<Vec<(usize, bool)>>, stats: &mut ClassificationStats) {
     let mut cut = cut
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     cut.sort_unstable();
-    for i in cut {
+    for (i, depth_capped) in cut {
         let c = u32::try_from(i).expect("class index fits in u32");
         stats.timed_out_pairs += 1;
+        stats.depth_capped_pairs += usize::from(depth_capped);
         stats.timed_out_pair_ids.push((c, c));
     }
 }
@@ -4665,6 +4682,7 @@ fn classify_top_down_internal_impl(
             stats.fallthrough_from_diverged += sd.fallthrough_from_diverged;
             stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
             stats.timed_out_pairs += sd.timed_out_pairs;
+            stats.depth_capped_pairs += sd.depth_capped_pairs;
             stats
                 .timed_out_pair_ids
                 .extend(sd.timed_out_pair_ids.iter().copied());
@@ -5880,6 +5898,7 @@ fn subsumes_via_tableau(
                 }
                 Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                     stats.timed_out_pairs += 1;
+                    stats.depth_capped_pairs += usize::from(crate::last_probe_depth_capped());
                     push_undecided_pair(stats, reported, sub, sup);
                     record_fallthrough_outcome(
                         stats,

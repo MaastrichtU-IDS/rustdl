@@ -7,6 +7,21 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **A probe cut by the tableau's search-depth limit is reported as one, not as a timeout
+  (#288).** A bounded main-tableau probe stops at `MAX_SEARCH_DEPTH` (256) decision levels,
+  directly or through early-abandon. No per-pair budget recovers such a probe, yet the
+  INCOMPLETE banner said it "hit the N ms per-pair timeout", and the Python warning said it
+  "exceeded the timeout". On the PMD core ontology, all 9 cut probes at 100, 300 and 1000 ms
+  were of this kind.
+  - New `ClassificationStats::depth_capped_pairs` (Rust) and
+    `Classification.depth_capped_pairs` (Python): the part of `timed_out_pairs` cut by the
+    depth limit. `owl_dl_reasoner::MAX_SEARCH_DEPTH` is now public.
+  - The CLI banner and the Python warning report these on their own line: a larger
+    `--pair-timeout-ms` does not help, and the unbounded run has no such limit but may not
+    terminate. With no depth-capped probe, both are unchanged. No verdict changes.
+  - Plus a regression guard for #382's fix of #288: `sat PMD_0010100` on the 15-axiom PMD
+    core must answer within 10 s. It answers in ~0.01 s, against ~34 s with
+    `RUSTDL_MAX_FIRST=0 RUSTDL_TOP_FILLER=0`.
 - **The expression, property and materialize queries catch an inconsistency their pre-checks
   miss (#369 follow-up).** `sat-expr`, `subclass-expr`, the `materialize_*` property functions
   (object/data assertions, sub-property axioms), `property-values` and the property

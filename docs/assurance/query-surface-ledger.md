@@ -496,7 +496,7 @@ Measured 2026-11-03 on 21b1986e: seed 20261106, N = 1000.
 
 | | result |
 |---|---|
-| `completeness_guaranteed` | **998 of 1000** scored cases (99.8%); 100% on motif-free cases |
+| `completeness_guaranteed` | **998 of 1000** scored cases (99.8%); 100% on motif-free cases. Both exceptions (cases 64, 731) are the pre-declared `has_composed_chain_range` (#108) exit |
 | buckets | 899 clean, **101 finding**; no peer disagreement, peer failure, rustdl failure or invalid case |
 | findings | all guaranteed-tier misses (146 pairs and 50 unsat classes over the 101 cases); **0 FP** |
 | control-vs-control | 0 of 500 differ |
@@ -504,7 +504,11 @@ Measured 2026-11-03 on 21b1986e: seed 20261106, N = 1000.
 | guaranteed rate (pre-declared ≥ 50%; expected ≥ 80%) | **held**: 99.8% |
 
 **The 101 findings on unmodified main have two mechanisms, both about `∃r.⊤`.** Every case is
-attributed by an entailment-preserving rewrite that makes the miss disappear:
+attributed by an entailment-preserving rewrite that makes the miss disappear. On every rewritten
+file the miss disappears with `completeness_guaranteed` still true, so the route does not change.
+The attribution is **sequential**: the range rewrite is tried first. The ⊤-filler rewrite repairs
+the range gap at every depth as well, so some of the 89 also contain a nested instance of
+mechanism 1.
 
 1. **12 cases: the ⊤-witness for `X ⊑ ∃r.⊤` never receives `Range(r)`.** The minimal case is
    `X ⊑ ∃r.⊤`, `Range(r,F)`, `∃r.F ⊑ W`, which misses `X ⊑ W`. CLAUDE.md records the
@@ -514,7 +518,10 @@ attributed by an entailment-preserving rewrite that makes the miss disappear:
    `None` and the axiom is dropped. The minimal case is `X ⊑ ∃r.∃s.⊤`, `∃r.∃s.⊤ ⊑ W`, which
    misses `X ⊑ W`.
 
-Both are confirmed by Konclude and HermiT, and missed by `classify` and `subclass` alike. In
+They share a root: a ⊤ filler has no typed representation, an untyped witness at the top level
+and nothing below it. One fix can close both, provided the range part lands first. Both are
+confirmed by Konclude and HermiT (`work-363-gen/el/repro/` holds the reproducers and their
+oracle records), and missed by `classify` and `subclass` alike. In
 both, the gate certifies completeness and the engine drops the inference: the D10 shape. The
 curated corpus does not carry either; the FP=0 net reports MISSED=0 on every fixture. Issue
 drafts went to the manager; no fix is in this change.

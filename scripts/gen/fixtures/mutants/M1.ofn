@@ -1,0 +1,17 @@
+# Mutant detection fixture (#363 step 3): M1, scripts/mutants/M1.patch at 7b5c0f9f.
+# Generated net detects it as consistency-FP on the classify arm, witness KB.
+# env: -. Shrunk by scripts/gen/shrink.py from gen bd63a61a6921 seed 20261103 case 160 profile default
+# (10 -> 4 axioms); Konclude and HermiT agree on it, and the unmutated build has no such finding.
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C0))
+Declaration(Class(:C1))
+Declaration(Class(:C2))
+Declaration(Class(:C3))
+SubClassOf(:C0 :C1)
+SubClassOf(:C3 owl:Nothing)
+SubClassOf(:C1 :C3)
+SubClassOf(:C2 :C0)
+)

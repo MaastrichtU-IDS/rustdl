@@ -1,0 +1,20 @@
+# Known oracle defect, not a rustdl finding (#363 step 3, control case 83, shrunk).
+# Reflexive(r0) makes r0(x,x) hold for every x; Asymmetric(r0) forbids it. A domain is
+# never empty, so the ontology is inconsistent. HermiT (InconsistentOntologyException),
+# JFact (via robot) and rustdl say inconsistent. Konclude v0.7.0-1138 writes a consistent
+# hierarchy, but only when a named individual is declared: without the
+# NamedIndividual declaration it answers inconsistent. This is one of two shapes behind the
+# 21 Konclude-consistent/HermiT-inconsistent control cases: 5 are this one, 16 are an ABox role
+# assertion breaking Asymmetric/Irreflexive/DisjointObjectProperties (through the role
+# hierarchy), plus one EquivalentClasses(C ObjectComplementOf(C)); all 21 declare an individual.
+# The generated net keeps "both peers must agree", so these are peer-disagree, never scored:
+# such inconsistencies are a blind spot of the net.
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C0))
+Declaration(ObjectProperty(:r0))
+Declaration(NamedIndividual(:a0))
+AsymmetricObjectProperty(:r0)
+ReflexiveObjectProperty(:r0)
+)

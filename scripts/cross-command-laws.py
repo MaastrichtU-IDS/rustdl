@@ -80,6 +80,9 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from owl_readers import closure, ofn_named_closure, owx_closure  # noqa: E402  (shared with scripts/gen)
+
 OWL = "http://www.w3.org/2002/07/owl#"
 THING, NOTHING = OWL + "Thing", OWL + "Nothing"
 REPO = Path(__file__).resolve().parent.parent
@@ -172,29 +175,7 @@ def outcome(law, onto, kind, reason, *operands):
 # --------------------------------------------------------------------------
 # Closure (fresh BFS per node: no shared memo, see closure-diff.py's warning)
 # --------------------------------------------------------------------------
-def closure(edges, equiv_groups=(), drop=()):
-    g = defaultdict(set)
-    for s, t in edges:
-        g[s].add(t)
-    for grp in equiv_groups:
-        for a in grp:
-            for b in grp:
-                if a != b:
-                    g[a].add(b)
-    out = set()
-    for s in list(g):
-        seen, stack = set(), list(g[s])
-        while stack:
-            x = stack.pop()
-            if x in seen:
-                continue
-            seen.add(x)
-            stack.extend(g.get(x, ()))
-        for t in seen:
-            if t != s:
-                out.add((s, t))
-    bad = set(drop) | {THING, NOTHING}
-    return {(s, t) for s, t in out if s not in bad and t not in bad}
+# `closure` lives in owl_readers.py.
 
 
 # --------------------------------------------------------------------------
@@ -224,26 +205,7 @@ def declarations(path):
 # --------------------------------------------------------------------------
 # Konclude OWX oracle (SubClassOf / EquivalentClasses between named classes)
 # --------------------------------------------------------------------------
-def owx_closure(path):
-    text = Path(path).read_text(errors="replace")
-    edges, groups, unsat = [], [], set()
-    for kind, body in re.findall(r"<(SubClassOf|EquivalentClasses)>(.*?)</\1>", text, re.S):
-        iris = re.findall(r'<Class IRI="([^"]*)"\s*/>', body)
-        if re.search(r"<Object|<Data", body):
-            continue
-        if kind == "SubClassOf" and len(iris) == 2:
-            # OWLAPI-style oracles write an unsat class as `C ⊑ owl:Nothing`.
-            if iris[1] in (NOTHING, "Nothing") and iris[0] not in (NOTHING, "Nothing"):
-                unsat.add(iris[0])
-            else:
-                edges.append(tuple(iris))
-        elif kind == "EquivalentClasses" and len(iris) >= 2:
-            if NOTHING in iris or "Nothing" in iris:
-                # ROBOT writes owl:Nothing as the relative IRI "Nothing".
-                unsat |= {THING if i == "Thing" else i for i in iris} - {NOTHING, "Nothing"}
-            else:
-                groups.append(iris)
-    return closure(edges, groups, drop=unsat), unsat
+# `owx_closure` lives in owl_readers.py.
 
 
 # --------------------------------------------------------------------------
@@ -764,37 +726,7 @@ def hermit_check(spec, d):
     return "confirms" if (s, t) in clo or s in unsat else "refutes"
 
 
-_TERM = r"(<[^>]*>|[\w.-]*:[^\s()]*)"
-
-
-def ofn_named_closure(text):
-    """Closure over named classes from an OFN document (robot's output uses
-    prefixed names), plus the classes equivalent to or below owl:Nothing."""
-    pfx = {p: i for p, i in _PFX.findall(text)}
-
-    def iri(term):
-        if term.startswith("<"):
-            return term[1:-1]
-        p, _, local = term.partition(":")
-        return pfx[p] + local if p in pfx else None
-
-    edges, groups, unsat = [], [], set()
-    for a, b in re.findall(rf"SubClassOf\(\s*{_TERM}\s+{_TERM}\s*\)", text):
-        x, y = iri(a), iri(b)
-        if x and y:
-            if y == NOTHING:
-                unsat.add(x)
-            else:
-                edges.append((x, y))
-    for body in re.findall(r"EquivalentClasses\(([^()]*)\)", text):
-        members = [iri(m) for m in re.findall(_TERM, body)]
-        if None in members or len(members) < 2:
-            continue
-        if NOTHING in members:
-            unsat |= set(members) - {NOTHING}
-        else:
-            groups.append(members)
-    return closure(edges, groups, drop=unsat), unsat
+# `ofn_named_closure` lives in owl_readers.py.
 
 
 # --------------------------------------------------------------------------

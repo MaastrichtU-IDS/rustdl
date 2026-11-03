@@ -77,7 +77,15 @@ fn uncapped_nothing_is_cut_and_the_rows_match_the_bare_form() {
     let _off = SetEnv::new("RUSTDL_PSEUDO_MODEL", "0");
     let o = parse(SRC);
     let (rows, flags) = materialize_existential_successors_reporting(&o).unwrap();
-    assert_eq!(flags, ExistentialSuccessorFlags::default());
+    // Nothing is cut. The fixture's consistency rests on the wedge's model, which
+    // #429 reports beside the cut flags; it is not a cut.
+    assert_eq!(
+        flags,
+        ExistentialSuccessorFlags {
+            relies_on_trusted_consistency: flags.relies_on_trusted_consistency,
+            ..ExistentialSuccessorFlags::default()
+        }
+    );
     assert_eq!(rows, materialize_existential_successors(&o).unwrap());
     assert_eq!(rows.len(), 1);
 }

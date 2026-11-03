@@ -61,11 +61,12 @@ pub(crate) fn materialize_inferred_subclass_axioms(
 /// missing) and `direct_types_unverified` (#388: a listed type may be a
 /// superclass of another) and `witness_prune_may_drop` (#387: the pseudo-model
 /// prune may have dropped a type); the Python wrapper warns on them (#391).
+/// The last value is #429's `relies_on_trusted_consistency`.
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_class_assertions(
     path: &str,
-) -> PyResult<(Vec<(String, String)>, bool, bool, bool)> {
+) -> PyResult<(Vec<(String, String)>, bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     let mut out = Vec::new();
@@ -79,6 +80,7 @@ pub(crate) fn materialize_inferred_class_assertions(
         realization.incomplete(),
         realization.direct_types_unverified(),
         realization.witness_prune_may_drop(),
+        realization.relies_on_trusted_consistency(),
     ))
 }
 
@@ -172,10 +174,17 @@ pub(crate) fn materialize_inferred_subdataproperty_axioms(
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_existential_successors(
     path: &str,
-) -> PyResult<(Vec<(String, String, String, String)>, bool, bool)> {
+) -> PyResult<(Vec<(String, String, String, String)>, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::materialize_existential_successors_reporting(&ontology)
-        .map(|(rows, flags)| (rows, flags.incomplete, flags.witness_prune_may_drop))
+        .map(|(rows, flags)| {
+            (
+                rows,
+                flags.incomplete,
+                flags.witness_prune_may_drop,
+                flags.relies_on_trusted_consistency,
+            )
+        })
         .map_err(reason_error_to_py)
 }
 

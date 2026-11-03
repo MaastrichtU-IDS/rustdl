@@ -118,18 +118,34 @@ about its signal, so each is filed rather than fixed here.
   top/bottom, one-leg chains, anonymous individuals). `incomplete` stays a
   give-up signal. See the
   [completeness ledger](completeness-guarantee-ledger.md#structural-property-surfaces-389-390).
-- **other readers of a trusted consistency `Sat`** do not pass #392's flag on.
-  `consistent` itself reports it (see its row). These also trust the wedge's
-  `Sat` and do not say so: `classify`'s consistency pre-check (`lib.rs`,
-  `classify_inconsistency_precheck`) and its second probe (`classify.rs`,
-  `probe_says_inconsistent`), so `classify --json`'s `consistent: true`, and
-  `realize` and `diagnose`, which read `Classification::stats().inconsistent`;
-  `justify`'s inconsistency oracle (`justify.rs`,
-  `Verdict::from_check(!consistent, stats.incomplete)`); and `diagnose`'s
-  all-classes-unsatisfiable gate (`diagnose.rs`), where passing the flag on is a
-  one-line change. A wrong trusted `Sat` there is a miss, never a
-  false positive. The Protégé plugin reads `classify --json`'s `consistent`, not
-  `consistent --json`. Not filed.
+- **other readers of a trusted consistency `Sat` (#429, fixed).** `consistent`
+  reports the fact itself (see its row). Since #429 the other readers report it
+  under the same name, `relies_on_trusted_consistency`, as a trust decision, not a
+  give-up. It is never set beside an inconsistency and changes no verdict.
+  - **classify**: the pre-check's wedge `Sat` (`classify_inconsistency_precheck`)
+    or the probe's wedge layer (`probe_says_inconsistent`, not counting) sets it.
+    The probe's main-tableau layer finding a model clears it. Reported as
+    `ClassificationStats` and `classify --json`, one stderr note, and the Python
+    `Classification` getter plus `TrustedConsistencyWarning` from `classify`,
+    `classify_bytes` and `materialize_inferred_subclass_axioms`. It is condition 8
+    of the completeness guarantee, which cannot fail beside PureEl today.
+  - **realize** and the `materialize_*` functions over it: copied from that
+    classification (`Realization`, `realize --json`, note, warning).
+  - **justify** (`--all`, laconic, prepared) and **repair**: set when an oracle
+    call answered "not entailed" on a trusted `Sat`, whether the trust came from
+    #392's consistency check or #401's lent consistency. On a not-entailed
+    result the verdict rests on it; on a justification only its minimality can.
+    For repair, a repair may break the query only if the wedge is right.
+    `JustifyOutcome` / `Repairs`, `justify --json`, note, warning. Inside justify
+    the instance arm takes no trust (`_no_lazy`, nothing lent for `InstanceOf`).
+  - **diagnose**: the classification's flag, unless the all-classes-unsatisfiable
+    gate's consistency check ran and did not give up, in which case that check
+    decides it. `Diagnosis`, note, warning.
+
+  Still not reported: the instance queries outside justify (`InstanceFlags` has
+  no trust field) and prove's justification fallback (`ProveFlags`' flag is
+  defined on `NotEntailed` only). Pinned by `trusted_consistency_surfaces.rs`,
+  `trusted_consistency_cli.rs` and `test_trusted_consistency_surfaces.py`.
 - **#369's lazy consistency check: what it does not cover.** All the query
   surfaces above run it after a positive answer. Left out or partial:
   - `materialize_existential_successors` runs `realize`, which already errors

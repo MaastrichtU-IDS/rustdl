@@ -268,6 +268,38 @@ fn classify_reports_the_inconsistency() {
         stats.inconsistent,
         "classify must report the KB inconsistent"
     );
+    // #429: the pre-check trusted the wedge's (non-counting) `Sat` here, and the
+    // probe's main tableau then found the clash. Trust is never reported beside
+    // an inconsistency.
+    assert!(
+        !stats.relies_on_trusted_consistency,
+        "an inconsistent classification never relies on a trusted Sat"
+    );
+}
+
+/// #429: on a counting ontology the pre-check trusts the wedge's (non-counting)
+/// `Sat`, and the consistency probe is admitted for counting, skips its wedge
+/// layer and asks the main tableau, whose model clears the trust. One asserted
+/// value against the one-value limit: consistent, and verified.
+#[test]
+fn classify_clears_the_trust_when_the_main_tableau_finds_a_model() {
+    let _g = lock();
+    let body = format!(
+        "SubClassOf(:P {LIMIT}) ClassAssertion(:P :a)\n\
+         DataPropertyAssertion(:p :a \"1\"^^xsd:integer)"
+    );
+    let stats = classify_top_down_with_timeout(&onto(&body), Duration::from_secs(10))
+        .expect("classify")
+        .stats();
+    assert!(!stats.inconsistent);
+    assert!(
+        stats.consistency_probe_admitted,
+        "the counting probe must run for this to test the clear"
+    );
+    assert!(
+        !stats.relies_on_trusted_consistency,
+        "a main-tableau model verified consistency: {stats:?}"
+    );
 }
 
 /// KNOWN MISSES, sound: the main tableau does not count these either. `HermiT` says

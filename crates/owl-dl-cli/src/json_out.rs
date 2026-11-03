@@ -128,6 +128,10 @@ pub(crate) struct ClassifyJson {
     /// folding it into `incomplete` would change that flag's meaning on about a
     /// fifth of `ABox`-bearing ORE ontologies.
     pub(crate) consistency_undetermined: bool,
+    /// #429: `consistent: true` rests on a consistency-wedge `Sat` that no
+    /// main-tableau run verified (the #392 name, as on `consistent --json`). Not a
+    /// give-up, and never set with `consistent: false`.
+    pub(crate) relies_on_trusted_consistency: bool,
     /// #124: the honest calibration signal — `Classification::
     /// completeness_guaranteed()`, i.e. **this hierarchy is provably free of
     /// missed subsumptions**. `true` only on a fragment where the engine that
@@ -255,6 +259,11 @@ pub(crate) struct RealizeJson {
     /// missing) and from `witness_prune_active`, not implied by either, and does not
     /// cover them. See `Realization::direct_types_unverified`.
     pub(crate) direct_types_unverified: bool,
+    /// #429: the classification under this realization took the ontology as
+    /// consistent on a consistency-wedge `Sat` alone (the `consistent --json` /
+    /// `classify --json` field). Not a give-up. See
+    /// `Realization::relies_on_trusted_consistency`.
+    pub(crate) relies_on_trusted_consistency: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -464,6 +473,7 @@ pub(crate) fn build_classify_json(
         conversion_timed_out: deadline_flags(&stats).2,
         parse_timed_out: false,
         consistency_undetermined: stats.consistency_undetermined && !stats.inconsistent,
+        relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
@@ -490,6 +500,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         conversion_timed_out: true,
         parse_timed_out: true,
         consistency_undetermined: true,
+        relies_on_trusted_consistency: false,
         trusted_sat_refutations: 0,
         completeness_guaranteed: false,
         wedge_hierarchy_blind: false,
@@ -587,6 +598,7 @@ pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>
             Vec::new()
         },
         direct_types_unverified: r.direct_types_unverified(),
+        relies_on_trusted_consistency: r.relies_on_trusted_consistency(),
         individuals,
         dropped,
     }
@@ -785,6 +797,11 @@ pub(crate) struct JustifyJson {
     pub(crate) enumeration_complete: bool,
     pub(crate) minimal: bool, // all justifications minimal_guaranteed
     pub(crate) laconic: bool,
+    /// #429: an oracle call answered "not entailed" on a consistency-wedge `Sat`
+    /// alone (the name `prove --json` and `consistent --json` use). With
+    /// `status: "not-entailed"` that verdict rests on it; with `"entailed"` only
+    /// minimality can. Not a give-up. See `JustifyOutcome::relies_on_trusted_consistency`.
+    pub(crate) relies_on_trusted_consistency: bool,
     pub(crate) justifications: Vec<JustificationJson>,
 }
 
@@ -845,6 +862,7 @@ pub(crate) fn build_justify_json(
         enumeration_complete,
         minimal,
         laconic,
+        relies_on_trusted_consistency: outcome.relies_on_trusted_consistency,
         justifications,
     }
 }

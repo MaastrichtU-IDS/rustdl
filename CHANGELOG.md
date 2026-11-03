@@ -7,6 +7,27 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **classify, realize, justify, repair and diagnose report a consistency that rests on the
+  consistency wedge's `Sat` alone (#429).** #392 made `consistent` report this as
+  `relies_on_trusted_consistency`. These surfaces reached the same trust decision and said
+  nothing. Each now reports the same field: a trust decision, not a give-up, never set beside an
+  inconsistency, and never changing a verdict or an exit code.
+  - `ClassificationStats::relies_on_trusted_consistency` and `classify --json`: set by the
+    inconsistency pre-check's wedge `Sat`, or by the consistency probe's wedge layer, and
+    cleared when the probe's main tableau finds a model. It is also condition 8 of
+    `completeness_guaranteed()`, which cannot fail beside `PureEl` today (PureEl names no
+    individual, so the wedge never runs there).
+  - `Realization::relies_on_trusted_consistency()` and `realize --json`, copied from that
+    classification. `ExistentialSuccessorFlags` carries it too.
+  - `JustifyOutcome::relies_on_trusted_consistency`, `Repairs::relies_on_trusted_consistency`
+    and `justify --json`: an oracle call answered "not entailed" on a trusted `Sat` (#392's
+    check or #401's lent consistency). A not-entailed result then rests on it; a
+    justification's minimality, or a repair, may rest on it.
+  - `Diagnosis::relies_on_trusted_consistency`.
+  - CLI: one stderr note on each command; stdout is unchanged. Python:
+    `Classification.relies_on_trusted_consistency`, plus `TrustedConsistencyWarning` from
+    `classify`, `classify_bytes`, `realize`, the `materialize_*` functions over them,
+    `justify`, `justify_all`, `PreparedOntology.justify*`, `repair` and `diagnose`.
 - **A probe cut by the tableau's search-depth limit is reported as one, not as a timeout
   (#288).** A bounded main-tableau probe stops at `MAX_SEARCH_DEPTH` (256) decision levels,
   directly or through early-abandon. No per-pair budget recovers such a probe, yet the

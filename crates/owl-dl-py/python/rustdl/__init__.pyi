@@ -68,6 +68,12 @@ class Classification:
         consistent" (#162)."""
         ...
     @property
+    def relies_on_trusted_consistency(self) -> bool:
+        """True iff `inconsistent is False` rests on a consistency-wedge model
+        that no main-tableau run verified (#429). Not a give-up; `classify`
+        emits `TrustedConsistencyWarning`."""
+        ...
+    @property
     def wedge_hierarchy_blind(self) -> bool:
         """True iff the wedge ran without role-hierarchy matching (Layer A
         off) over a non-trivial role hierarchy, so entailments needing

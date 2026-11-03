@@ -874,6 +874,24 @@ pub struct SearchStats {
     /// Sum of `current_branch_level` at the opt-bounded clashes — the decision
     /// depth to compare popcount against (`popcount << depth` ⇒ real backjump room).
     pub at_most_exhaust_opt_level_sum: u64,
+    /// #404 (report-only): `≠`-violating merges (`merge_with_cause` on two
+    /// `≠` nodes, e.g. an NN-merge of two pairwise-distinct `≥n` witnesses),
+    /// each reported with `clash_deps = DepSet::ALL`.
+    pub neq_merge_clashes: u64,
+    /// #404 (report-only): `⊔` children that came back `Unsat` with
+    /// `clash_deps == DepSet::ALL` (no backjump possible past them).
+    pub disj_unsat_all: u64,
+    /// #404 (report-only): `⊔` children that came back `Unsat` with a
+    /// bounded dep-set.
+    pub disj_unsat_bounded: u64,
+    /// #404 (report-only): backjumps taken at a `⊔` decision (child clash
+    /// did not depend on it, so the remaining disjuncts were skipped).
+    pub disj_backjumps: u64,
+    /// #404 (report-only): widest `⊔` decision (live disjuncts) branched on.
+    pub max_disj_width: u64,
+    /// #404 (report-only): most nodes in the graph at any branch point
+    /// (sampled in `save`), i.e. before the deadline unwind restores it.
+    pub peak_nodes: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -2950,6 +2968,17 @@ impl<'c> HyperEngine<'c> {
         self.indexes.refused_clauses()
     }
 
+    /// #404 (report-only): `(nodes, live nodes, max out-degree, neq pairs)` of
+    /// the completion graph as it stands now. Diagnostic; reads only.
+    #[must_use]
+    pub fn graph_size(&self) -> (usize, usize, usize, usize) {
+        let live = (0..self.nodes.len())
+            .filter(|&i| self.representative[i].index() == i)
+            .count();
+        let deg = self.nodes.iter().map(|n| n.edges.len()).max().unwrap_or(0);
+        (self.nodes.len(), live, deg, self.neq.len())
+    }
+
     /// Search instrumentation from the last [`decide`] call.
     #[must_use]
     pub fn stats(&self) -> SearchStats {
@@ -4453,6 +4482,30 @@ impl<'c> HyperEngine<'c> {
                 return HyperResult::Stalled;
             }
             self.track_depth(depth);
+            // #404 (report-only): one stderr line per `⊔` decision.
+            static DECISION_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *DECISION_TRACE
+                .get_or_init(|| std::env::var_os("RUSTDL_HYPER_DECISION_TRACE").is_some())
+            {
+                let n = &self.nodes[node.index()];
+                let noms: Vec<u32> = n
+                    .labels
+                    .iter()
+                    .filter(|c| self.is_nominal(**c))
+                    .map(|c| c.index())
+                    .collect();
+                eprintln!(
+                    "decision depth={depth} node={} parent={:?} nodes={} labels={} edges={} noms={noms:?} clause={ci} head={:?} match_attempts={} passes={}",
+                    node.index(),
+                    n.parent.map(HNode::index),
+                    self.nodes.len(),
+                    n.labels.len(),
+                    n.edges.len(),
+                    self.clause(ci).head,
+                    self.stats.match_attempts,
+                    self.stats.fixpoint_passes,
+                );
+            }
             let d = u32::try_from(self.init_depth - depth).unwrap_or(u32::MAX);
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
@@ -4601,6 +4654,7 @@ impl<'c> HyperEngine<'c> {
             // flag-OFF loop would have branched and clashed those, folding their
             // dep-sets into `combined`. EMPTY when the flag is off (byte-identical).
             let mut combined = prune_deps;
+            self.stats.max_disj_width = self.stats.max_disj_width.max(live.len() as u64);
             for k in live {
                 let head_atom = self.clause(ci).head[k];
                 let saved = self.save();
@@ -4612,7 +4666,13 @@ impl<'c> HyperEngine<'c> {
                     HyperResult::Unsat => {
                         let child_deps = self.clash_deps;
                         self.restore(saved);
+                        if child_deps == DepSet::ALL {
+                            self.stats.disj_unsat_all += 1;
+                        } else {
+                            self.stats.disj_unsat_bounded += 1;
+                        }
                         if !child_deps.contains(d) {
+                            self.stats.disj_backjumps += 1;
                             // This decision wasn't responsible for the
                             // clash — backjump: propagate the child's
                             // dep-set up, skipping the remaining
@@ -4771,6 +4831,7 @@ impl<'c> HyperEngine<'c> {
     /// revert on a failed branch.
     fn save(&mut self) -> Snapshot {
         self.stats.node_clones += 1;
+        self.stats.peak_nodes = self.stats.peak_nodes.max(self.nodes.len() as u64);
         // Settle `nn_possible` before saving it: a snapshot holding `None` would
         // put `None` back on every restore, and each branch would rescan every node.
         let nn_possible = if self.nn_guard {
@@ -5629,6 +5690,7 @@ impl<'c> HyperEngine<'c> {
             // ≠ violated — merging is impossible. Conservative deps
             // (precise `≠`/merge provenance isn't tracked).
             self.clash_deps = DepSet::ALL;
+            self.stats.neq_merge_clashes += 1;
             // Shadow: record the ≠-clash. The shadow dep is the union of
             // both nodes' shadow birth/merge deps + cause_deps (the precise
             // causation that the real path discards via ALL).

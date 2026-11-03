@@ -5774,7 +5774,45 @@ impl HyperCache {
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
-        match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
+        let t0 = std::time::Instant::now();
+        let res = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        // #404 (report-only): one stderr line of search counters per label
+        // probe. Off unless `RUSTDL_LABEL_STATS` is set; reads only.
+        if std::env::var_os("RUSTDL_LABEL_STATS").is_some() {
+            let st = engine.stats();
+            let (nodes, live, deg, neq) = engine.graph_size();
+            eprintln!(
+                "label-stats class={} res={res:?} us={} branches={} disj={} merge={} restores={} \
+                 max_depth={} max_width={} neq_merge_clash={} disj_unsat_all={} \
+                 disj_unsat_bounded={} backjumps={} exhaust={} sem_prunes={} nodes={nodes} \
+                 live={live} max_deg={deg} neq={neq} match_attempts={} peak_nodes={} \
+                 blocked_calls={} block_eligible={} blocks_fired={} nn_guard_checks={} \
+                 nn_guard_refusals={} diverged={}",
+                c.index(),
+                t0.elapsed().as_micros(),
+                st.branches_taken,
+                st.disj_branches,
+                st.merge_branches,
+                st.restores,
+                st.max_branch_depth,
+                st.max_disj_width,
+                st.neq_merge_clashes,
+                st.disj_unsat_all,
+                st.disj_unsat_bounded,
+                st.disj_backjumps,
+                st.at_most_exhaust_total,
+                st.semantic_prunes,
+                st.match_attempts,
+                st.peak_nodes,
+                st.is_blocked_calls,
+                st.block_eligible,
+                st.blocks_fired,
+                st.nn_guard_checks,
+                st.nn_guard_refusals,
+                st.diverged,
+            );
+        }
+        match res {
             HyperResult::Unsat => LabelOracle::Unsat,
             HyperResult::Sat => {
                 engine

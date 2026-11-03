@@ -197,6 +197,10 @@ fn instrument_never_verifies_a_classification_that_disagrees_with_the_oracle() {
         "cascade",
         "chainrange",
         "chainrange_ctl",
+        // #435: the former report-only vehicle, now with a consumer
+        // (`∃u.G ⊑ W`). Before #435 rustdl missed `A ⊑ W`; kept as an agreement
+        // fixture.
+        "topwitness",
         // Added when #84 made `chainrange` agree and emptied the detection set
         // (this test fired, as designed). The #108 certificate fix then made
         // THIS one agree too (2026-09-21) — kept as an agreement fixture, with
@@ -376,6 +380,7 @@ fn the_detection_set_has_not_silently_gone_vacuous() {
         "cascade",
         "chainrange",
         "chainrange_ctl",
+        "topwitness",
         // See the notes on the same entries in the list above.
         "chaincompose",
         "invfunc-inverse",

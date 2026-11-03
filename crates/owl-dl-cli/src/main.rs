@@ -1350,8 +1350,9 @@ fn sorted_verify_el_violations(
 /// 2026-09-04, cascade reports `Violated` with **zero** build reasons — #81
 /// changed it, and the citation went stale. Every `verify-el` fixture was
 /// checked: the two `Violated` ones (`cascade.ofn`,
-/// `conjexists-builder-gap.ofn`) both carry no reasons, and the three that do
-/// carry reasons (`chainrange.ofn`, `chainrange_ctl.ofn`, `topwitness.ofn`) are
+/// `conjexists-builder-gap.ofn`) both carry no reasons, and the two that do
+/// carry reasons (`chainrange.ofn`, `chainrange_ctl.ofn`; `topwitness.ofn` was a
+/// third until #435 closed its gap) are
 /// all `Unresolved`.
 /// Does this build reason mean the MODEL ITSELF is incomplete by construction, as
 /// opposed to naming a localized gap in an otherwise-complete model?
@@ -1386,19 +1387,12 @@ fn fold_build_reasons(
         // `build_model` has already admitted it could not fully close. An
         // accidental `verdict` pass-through here would be a false all-clear
         // reaching a user — exactly the failure direction this whole crate
-        // exists to prevent — and it would be silent, since a `Verified`
-        // check result with non-empty build reasons is a real, reachable
-        // combination: `crates/owl-dl-verify/tests/fixtures/topwitness.ofn`
-        // produces it (`∃u.⊤` lowers to a deliberately subsumer-less
-        // ⊤-witness, so `Range(u)` cannot be folded into it and
-        // `build_model` cannot inject the gap away, while the model still
-        // satisfies every WRITTEN axiom), and
-        // `crates/owl-dl-cli/tests/verify_el.rs`'s
-        // `build_reasons_downgrade_a_verified_check_to_unresolved_and_exit_
-        // three` runs it through this exact function via the real binary and
-        // asserts exit 3, not 0. See `crates/owl-dl-verify/tests/model.rs`'s
-        // `verified_check_can_still_carry_nonempty_build_reasons` for the
-        // library-level trace of why the combination arises.
+        // exists to prevent — and it would be silent: a `Verified` check with
+        // non-empty build reasons means `build_model` admitted a gap the check
+        // could not see. `topwitness.ofn` produced that combination until #435
+        // closed its gap (the ⊤-witness now carries `Range(u)`). No fixture
+        // produces it today, so `fold_build_reasons_tests` below pins this arm
+        // on a hand-built residue.
         Verdict::Verified { domain_size, .. } => Verdict::Unresolved {
             domain_size,
             reasons: build_reasons,

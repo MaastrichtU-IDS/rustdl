@@ -54,29 +54,37 @@ fn is_logical_axiom(c: &Component<RcStr>) -> bool {
 }
 
 /// The first justification's axioms as Manchester strings (empty if none),
-/// with the outcome's give-up flag (#396).
+/// with the outcome's give-up flag (#396) and its #429 trust flag.
 fn first_rendered(
     outcome: &owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
-) -> (Vec<String>, bool) {
+) -> (Vec<String>, bool, bool) {
     let axioms = outcome
         .justifications
         .first()
         .map(|j| j.axioms.iter().map(render).collect())
         .unwrap_or_default();
-    (axioms, outcome.incomplete)
+    (
+        axioms,
+        outcome.incomplete,
+        outcome.relies_on_trusted_consistency,
+    )
 }
 
 /// Every justification's axioms as Manchester strings, with the outcome's
-/// give-up flag (#396).
+/// give-up flag (#396) and its #429 trust flag.
 fn all_rendered(
     outcome: &owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
-) -> (Vec<Vec<String>>, bool) {
+) -> (Vec<Vec<String>>, bool, bool) {
     let js = outcome
         .justifications
         .iter()
         .map(|j| j.axioms.iter().map(render).collect())
         .collect();
-    (js, outcome.incomplete)
+    (
+        js,
+        outcome.incomplete,
+        outcome.relies_on_trusted_consistency,
+    )
 }
 
 /// One minimal justification for a query (CLI-style tokens, e.g.
@@ -87,7 +95,7 @@ fn all_rendered(
 /// `IncompleteQueryWarning`.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<(Vec<String>, bool)> {
+pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool)> {
     let onto = load::load_path(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_one_justification_reporting(&onto, &q)
@@ -104,7 +112,7 @@ pub(crate) fn justify_all(
     path: &str,
     query: Vec<String>,
     max: usize,
-) -> PyResult<(Vec<Vec<String>>, bool)> {
+) -> PyResult<(Vec<Vec<String>>, bool, bool)> {
     let onto = load::load_path(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_all_justifications_reporting(&onto, &q, max)
@@ -113,7 +121,8 @@ pub(crate) fn justify_all(
 }
 
 /// Root/derived unsatisfiability partition:
-/// `(consistent, roots, [(derived_iri, [root_iri, ...]), ...], incomplete)`.
+/// `(consistent, roots, [(derived_iri, [root_iri, ...]), ...], incomplete,
+/// relies_on_trusted_consistency)` (the last is #429's).
 /// `incomplete` (#396): the consistency check of an all-classes-unsatisfiable
 /// ontology gave up (`consistent` is not witnessed), or a class's
 /// unsatisfiability check hit the node cap (unsatisfiable classes may be
@@ -122,11 +131,17 @@ pub(crate) fn justify_all(
 #[allow(clippy::type_complexity)]
 pub(crate) fn diagnose(
     path: &str,
-) -> PyResult<(bool, Vec<String>, Vec<(String, Vec<String>)>, bool)> {
+) -> PyResult<(bool, Vec<String>, Vec<(String, Vec<String>)>, bool, bool)> {
     let onto = load::load_path(path)?;
     let d = owl_dl_reasoner::diagnose(&onto).map_err(reason_error_to_py)?;
     let derived = d.derived.into_iter().map(|dc| (dc.iri, dc.roots)).collect();
-    Ok((d.consistent, d.roots, derived, d.incomplete))
+    Ok((
+        d.consistent,
+        d.roots,
+        derived,
+        d.incomplete,
+        d.relies_on_trusted_consistency,
+    ))
 }
 
 /// Minimal repairs for a query: each is a list of Manchester axioms to remove.
@@ -140,7 +155,7 @@ pub(crate) fn repair(
     path: &str,
     query: Vec<String>,
     max: usize,
-) -> PyResult<(Vec<Vec<String>>, bool)> {
+) -> PyResult<(Vec<Vec<String>>, bool, bool)> {
     let onto = load::load_path(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let r = owl_dl_reasoner::find_repairs(&onto, &q, max).map_err(reason_error_to_py)?;
@@ -149,7 +164,7 @@ pub(crate) fn repair(
         .into_iter()
         .map(|rep| rep.remove.iter().map(render).collect())
         .collect();
-    Ok((repairs, r.incomplete))
+    Ok((repairs, r.incomplete, r.relies_on_trusted_consistency))
 }
 
 /// A loaded ontology with the per-ontology justification state precomputed once
@@ -168,7 +183,7 @@ impl PyPreparedOntology {
     /// `PreparedOntology.justify` wrapper over this that warns instead.
     #[pyo3(name = "_justify_reporting")]
     #[allow(clippy::needless_pass_by_value)]
-    fn justify_reporting(&self, query: Vec<String>) -> PyResult<(Vec<String>, bool)> {
+    fn justify_reporting(&self, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool)> {
         let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
         let outcome = self
             .inner
@@ -185,7 +200,7 @@ impl PyPreparedOntology {
         &self,
         query: Vec<String>,
         max: usize,
-    ) -> PyResult<(Vec<Vec<String>>, bool)> {
+    ) -> PyResult<(Vec<Vec<String>>, bool, bool)> {
         let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
         let outcome = self
             .inner

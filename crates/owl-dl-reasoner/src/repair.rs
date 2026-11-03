@@ -27,6 +27,9 @@ pub struct Repair<A: ForIRI> {
 }
 
 /// The result of a repair query.
+// `struct_excessive_bools`: each bool is an independent signal of the public
+// result (#429 added the trust flag); they are not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct Repairs<A: ForIRI> {
     /// Whether `η` was entailed at all (`false` → nothing to repair, unless
@@ -49,6 +52,12 @@ pub struct Repairs<A: ForIRI> {
     /// `true` iff any probe gave up (#396): the top-level check (`entailed` is then
     /// `false`), a justification probe, or a repair verification.
     pub incomplete: bool,
+    /// #429: an oracle call answered "not entailed" on a consistency-wedge `Sat`
+    /// that no main-tableau run verified: the top-level check (`entailed: false`
+    /// then rests on it), a justification probe (a justification, so a repair, may
+    /// be non-minimal), or a verification (that repair breaks `η` only if the
+    /// wedge is right). A trust decision, not a give-up: separate from `incomplete`.
+    pub relies_on_trusted_consistency: bool,
 }
 
 /// Compute verified minimal repairs for `q` in `onto`.
@@ -81,6 +90,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
     // All justifications (generous internal cap, independent of the repair `max`).
     let outcome = prepared.find_all_reporting(q, REPAIR_JUSTIFICATION_CAP)?;
     let justifications = outcome.justifications;
+    let mut trusted = outcome.relies_on_trusted_consistency;
     if justifications.is_empty() {
         return Ok(Repairs {
             entailed: false,
@@ -90,6 +100,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
             dropped_unverified: 0,
             unverified_gave_up: 0,
             incomplete: outcome.incomplete,
+            relies_on_trusted_consistency: trusted,
         });
     }
     // A give-up in the search can hide a justification (a pruned branch), and so
@@ -122,7 +133,10 @@ pub fn find_repairs_prepared<A: ForIRI>(
         }
         let kept: Vec<Component<A>> = logical.iter().filter(|a| !h.contains(a)).cloned().collect();
         let reduced = ontology_from(fixed, &kept);
-        match entails_reporting(&reduced, q)? {
+        let (verdict, verdict_trusted) =
+            crate::justify::with_oracle_trust(|| entails_reporting(&reduced, q));
+        trusted |= verdict_trusted;
+        match verdict? {
             Verdict::Entailed => {
                 // An unfound justification survives — not a real repair.
                 dropped_unverified += 1;
@@ -149,6 +163,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
         dropped_unverified,
         unverified_gave_up,
         incomplete,
+        relies_on_trusted_consistency: trusted,
     })
 }
 

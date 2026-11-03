@@ -346,6 +346,39 @@ fn canonical_builtin_query(q: &Entailment) -> Option<Entailment> {
     }
 }
 
+thread_local! {
+    /// #429: an oracle call answered "not entailed" on a consistency-wedge `Sat`
+    /// that no main-tableau run verified (`QueryStats::relies_on_trusted_consistency`
+    /// on a not-entailed verdict). Read only through [`with_oracle_trust`], which
+    /// clears it on entry; a direct [`entails_reporting`] call outside one (laconic
+    /// weakening checks, tests) leaves it set, harmlessly, for the next scope to
+    /// clear. Justify is single-threaded, so a thread-local is exact here.
+    static ORACLE_TRUSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark the current [`with_oracle_trust`] scope when an oracle verdict is "not
+/// entailed" and rests on a trusted wedge `Sat` (#429). An entailed verdict never
+/// marks: #401's lent consistency reports the trust whatever the verdict, but only
+/// a "not entailed" can be wrong because of it.
+fn note_oracle_trust(not_entailed: bool, stats: &crate::QueryStats) {
+    if not_entailed && stats.relies_on_trusted_consistency {
+        ORACLE_TRUSTED.with(|c| c.set(true));
+    }
+}
+
+/// Run `f` and report whether any oracle call inside it answered "not entailed"
+/// on a trusted wedge `Sat` (#429). Scopes nest: an inner scope's mark also
+/// reaches the enclosing one.
+pub(crate) fn with_oracle_trust<T>(f: impl FnOnce() -> T) -> (T, bool) {
+    let prior = ORACLE_TRUSTED.with(|c| c.replace(false));
+    let r = f();
+    let inner = ORACLE_TRUSTED.with(|c| c.replace(prior));
+    if inner {
+        ORACLE_TRUSTED.with(|c| c.set(true));
+    }
+    (r, inner)
+}
+
 pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool, ReasonError> {
     Ok(entails_reporting(onto, q)? == Verdict::Entailed)
 }
@@ -365,6 +398,7 @@ pub fn entails_reporting<A: ForIRI>(
     let q = canonical.as_ref().unwrap_or(q);
     let subclass = |sub: &str, sup: &str| -> Result<Verdict, ReasonError> {
         let (holds, stats) = crate::is_subclass_of_with_stats(onto, sub, sup)?;
+        note_oracle_trust(!holds, &stats);
         Ok(Verdict::from_check(holds, stats.incomplete))
     };
     match q {
@@ -381,10 +415,12 @@ pub fn entails_reporting<A: ForIRI>(
                 ]),
             ])));
             let (sat, stats) = crate::is_class_satisfiable_with_stats(&probed, PROBE_IRI)?;
+            note_oracle_trust(sat, &stats);
             Ok(Verdict::from_check(!sat, stats.incomplete))
         }
         Entailment::Unsatisfiable { class } => {
             let (sat, stats) = crate::is_class_satisfiable_with_stats(onto, class)?;
+            note_oracle_trust(sat, &stats);
             Ok(Verdict::from_check(!sat, stats.incomplete))
         }
         // is_instance_of is (class, individual) — class first.
@@ -408,6 +444,7 @@ pub fn entails_reporting<A: ForIRI>(
                     (saturation_inconsistent(onto), false, "saturation-only")
                 } else {
                     let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
+                    note_oracle_trust(consistent, &stats);
                     let engine = if stats.answered_by_saturation {
                         "saturation"
                     } else {
@@ -430,6 +467,7 @@ pub fn entails_reporting<A: ForIRI>(
                 Ok(Verdict::from_check(saturation_inconsistent(onto), false))
             } else {
                 let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
+                note_oracle_trust(consistent, &stats);
                 Ok(Verdict::from_check(!consistent, stats.incomplete))
             }
         }
@@ -716,6 +754,7 @@ fn inconsistent_with<A: ForIRI>(
         probed.insert(c);
     }
     let (consistent, stats) = crate::is_consistent_with_stats(&probed)?;
+    note_oracle_trust(consistent, &stats);
     Ok(Verdict::from_check(!consistent, stats.incomplete))
 }
 
@@ -1295,6 +1334,15 @@ pub struct JustifyOutcome<A: ForIRI> {
     /// cleared), or an enumeration branch probe (a justification may be missing).
     /// Every justification returned still entails the query.
     pub incomplete: bool,
+    /// #429: some oracle call answered "not entailed" on a consistency-wedge `Sat`
+    /// that no main-tableau run verified (the #392/#401 name). What rests on it
+    /// depends on `status`: on `NotEntailed` the verdict itself ("not entailed if
+    /// the wedge is right"); on `Entailed` only minimality, since a subset probe
+    /// that trusted a wrong `Sat` can only have kept an axiom (every justification
+    /// returned still entails; `minimal_guaranteed` is not cleared, as it is a
+    /// fragment-and-give-up claim). A trust decision, not a give-up: separate from
+    /// `incomplete`.
+    pub relies_on_trusted_consistency: bool,
 }
 
 impl<A: ForIRI> JustifyOutcome<A> {
@@ -1336,6 +1384,8 @@ struct Search<A: ForIRI> {
     status: Verdict,
     found: Vec<(Vec<Component<A>>, bool)>,
     gave_up: bool,
+    /// #429: see [`JustifyOutcome::relies_on_trusted_consistency`].
+    trusted: bool,
 }
 
 impl<A: ForIRI> Search<A> {
@@ -1344,6 +1394,7 @@ impl<A: ForIRI> Search<A> {
             status,
             found: Vec::new(),
             gave_up: false,
+            trusted: false,
         }
     }
 
@@ -1363,6 +1414,7 @@ impl<A: ForIRI> Search<A> {
             status: self.status,
             justifications,
             incomplete: self.status == Verdict::Unknown || self.gave_up,
+            relies_on_trusted_consistency: self.trusted,
         }
     }
 }
@@ -1512,6 +1564,15 @@ fn search_one<A: ForIRI>(
     all_candidates: &[Component<A>],
     q: &Entailment,
 ) -> Result<Search<A>, ReasonError> {
+    let (search, trusted) = with_oracle_trust(|| search_one_inner(fixed, all_candidates, q));
+    search.map(|s| Search { trusted, ..s })
+}
+
+fn search_one_inner<A: ForIRI>(
+    fixed: &[Component<A>],
+    all_candidates: &[Component<A>],
+    q: &Entailment,
+) -> Result<Search<A>, ReasonError> {
     let canonical = canonical_builtin_query(q);
     let q = canonical.as_ref().unwrap_or(q);
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
@@ -1529,11 +1590,22 @@ fn search_one<A: ForIRI>(
         status: Verdict::Entailed,
         found: vec![(j, give_ups.gave_up)],
         gave_up: give_ups.gave_up,
+        trusted: false, // set by `search_one`
     })
 }
 
 /// The HST search over an already-split ontology; see [`search_one`].
 fn search_all<A: ForIRI>(
+    fixed: &[Component<A>],
+    all_candidates: &[Component<A>],
+    q: &Entailment,
+    max: usize,
+) -> Result<Search<A>, ReasonError> {
+    let (search, trusted) = with_oracle_trust(|| search_all_inner(fixed, all_candidates, q, max));
+    search.map(|s| Search { trusted, ..s })
+}
+
+fn search_all_inner<A: ForIRI>(
     fixed: &[Component<A>],
     all_candidates: &[Component<A>],
     q: &Entailment,
@@ -1598,6 +1670,7 @@ fn search_all<A: ForIRI>(
         status: Verdict::Entailed,
         found,
         gave_up: branch_give_ups.gave_up,
+        trusted: false, // set by `search_all`
     })
 }
 

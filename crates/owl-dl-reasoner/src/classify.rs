@@ -409,6 +409,17 @@ pub struct ClassificationStats {
     /// (#204 review: a pigeonhole over `TBox`-only individuals read
     /// `consistent: true, incomplete: false`).
     pub consistency_undetermined: bool,
+    /// #429: "consistent" rests on a consistency-wedge `Sat` that no main-tableau
+    /// run verified: the pre-check's wedge route, or the consistency probe's
+    /// wedge layer, decided it (the probe's main-tableau layer finding a model
+    /// clears it). The wedge is not proven complete (it missed clashes in #290 and
+    /// #376), so if that `Sat` is wrong the KB is inconsistent and every class is
+    /// unsatisfiable. A trust decision, not a give-up: separate from
+    /// `consistency_undetermined` (a route gave up) and from
+    /// `trusted_sat_refutations` (per pair). Never set when `inconsistent`. It can
+    /// stand beside `consistency_undetermined` after a conversion cut (a wedge
+    /// `Sat` on the partial KB). The #392/#401 name for the same fact.
+    pub relies_on_trusted_consistency: bool,
     /// #214: the wedge decided pairs with Layer A OFF (`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`,
     /// or above `layer_a_affordable`'s cap) on an ontology whose role hierarchy is
     /// non-trivial. Its exact-id role matching cannot see sub-role, inverse or
@@ -732,7 +743,11 @@ impl ClassificationStats {
     /// 5. no candidate individual equality was left undecided (#354);
     /// 6. consistency was determined (#162);
     /// 7. no axiom was dropped at conversion (#246): the engine would otherwise
-    ///    have reasoned over a strictly weaker KB than the input.
+    ///    have reasoned over a strictly weaker KB than the input;
+    /// 8. consistency does not rest on a trusted wedge `Sat` (#429). Unreachable
+    ///    beside condition 1 today: `PureEl` admits no `ABox` assertion and no
+    ///    nominal, so no individual exists and the consistency wedge never runs.
+    ///    Kept so the invariant holds if `PureEl` ever admits one.
     ///
     /// `docs/assurance/completeness-guarantee-ledger.md` records each condition
     /// with its source issue, the CLI/Python field that reports it and the test
@@ -773,6 +788,7 @@ impl ClassificationStats {
             && self.derived_same_undecided == 0
             && !self.consistency_undetermined
             && self.dropped.is_empty()
+            && !self.relies_on_trusted_consistency
     }
 }
 
@@ -1467,9 +1483,12 @@ pub(crate) fn classify_internal_with_timeout(
     per_pair_timeout: Option<std::time::Duration>,
 ) -> Result<Classification, ReasonError> {
     crate::take_consistency_undetermined();
+    crate::take_consistency_trusted_wedge();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
     c.stats.consistency_undetermined = crate::take_consistency_undetermined();
+    c.stats.relies_on_trusted_consistency =
+        crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
     Ok(c)
 }
 
@@ -2170,7 +2189,12 @@ fn probe_says_inconsistent(
     // (2) Wedge consistency route — the cheap one `is_consistent` tries first.
     match prepared.consistency_wedge(Some(std::time::Instant::now() + budget)) {
         Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return true,
-        Some(owl_dl_tableau::hyper::HyperResult::Sat) if !counting => return false,
+        // #429: an unverified wedge model; classify's "consistent" rests on it. A
+        // counting `Sat` is not relied on (layer 3 decides), so it marks nothing.
+        Some(owl_dl_tableau::hyper::HyperResult::Sat) if !counting => {
+            crate::mark_consistency_trusted_wedge();
+            return false;
+        }
         _ => {}
     }
     // (3) ONE BOUNDED `⊤`-satisfiability probe, mirroring `is_consistent`'s
@@ -2190,7 +2214,16 @@ fn probe_says_inconsistent(
     // Sound: `Some(false)` is a real `⊤`-unsatisfiability. A timeout yields `None` ⇒
     // no verdict ⇒ today's behaviour, which is the trusted direction.
     let dl = std::time::Instant::now() + budget;
-    matches!(prepared.decide_consistency(Some(dl)), Ok(Some(false)))
+    match prepared.decide_consistency(Some(dl)) {
+        Ok(Some(false)) => true,
+        // #429: a main-tableau model: consistency is verified, so nothing rests on
+        // a wedge `Sat` the pre-check may have trusted.
+        Ok(Some(true)) => {
+            crate::clear_consistency_trusted_wedge();
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Build a `Classification` representing an inconsistent ontology:
@@ -3828,9 +3861,12 @@ pub(crate) fn classify_top_down_internal(
         }
     }
     crate::take_consistency_undetermined();
+    crate::take_consistency_trusted_wedge();
     let mut c = classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline)?;
     c.stats.dropped = internal.dropped.clone();
     c.stats.consistency_undetermined = crate::take_consistency_undetermined();
+    c.stats.relies_on_trusted_consistency =
+        crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
     Ok(c)
 }
 

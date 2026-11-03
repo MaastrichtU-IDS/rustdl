@@ -152,7 +152,7 @@ fn each_condition_alone_voids_the_guarantee() {
     );
 
     type Flip = fn(&mut ClassificationStats);
-    let rows: [(&str, Flip); 8] = [
+    let rows: [(&str, Flip); 9] = [
         ("fragment Horn (#124)", |s| {
             s.fragment = FragmentClassification::Horn;
         }),
@@ -175,8 +175,13 @@ fn each_condition_alone_voids_the_guarantee() {
         ("dropped (#246)", |s| {
             s.dropped.record("TestKind".to_owned());
         }),
+        // #429: unreachable beside `PureEl` today (a PureEl ontology names no
+        // individual, so the consistency wedge never runs); pinned all the same.
+        ("relies_on_trusted_consistency (#429)", |s| {
+            s.relies_on_trusted_consistency = true;
+        }),
     ];
-    // Seven conditions; the fragment condition has two failing values. Keep the
+    // Eight conditions; the fragment condition has two failing values. Keep the
     // rows in step with the predicate and the ledger.
 
     for (name, flip) in rows {

@@ -831,9 +831,11 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
         warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
+        note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
         return Ok(());
     }
     print_classification(&h);
+    note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
     warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
     warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
     warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
@@ -1077,6 +1079,20 @@ fn note_trusted_wedge_sat(trusted: bool) {
     }
 }
 
+/// #429: a surface took the ontology as consistent on the consistency wedge's
+/// model alone (the #392 fact, reached by classify's pre-check or probe). Not a
+/// give-up: stdout and the exit code are unchanged.
+fn note_trusted_wedge_consistency(surface: &str, trusted: bool) {
+    if trusted {
+        eprintln!(
+            "note: {surface} took the ontology as consistent on the consistency wedge's \
+             model alone; the wedge is not proven complete and no main-tableau model was \
+             built. If that model is wrong the ontology is inconsistent and every class is \
+             unsatisfiable (`rustdl consistent` reports the same trust)."
+        );
+    }
+}
+
 /// #369: a positive answer whose KB consistency stayed undetermined. Not a
 /// give-up: stdout and the exit code are unchanged.
 fn warn_consistency_undetermined(command: &str, undetermined: bool) {
@@ -1225,6 +1241,10 @@ fn find_all_justifications_outcome(
 /// which callers turn into exit 3; a give-up inside the search leaves a sound
 /// result, so it only warns.
 fn warn_if_justify_gave_up(outcome: &JustifyOutcome<RcStr>) -> bool {
+    note_oracle_trusted_wedge(
+        outcome.status == Verdict::NotEntailed,
+        outcome.relies_on_trusted_consistency,
+    );
     if outcome.status == Verdict::Unknown {
         eprintln!(
             "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before deciding \
@@ -1236,6 +1256,25 @@ fn warn_if_justify_gave_up(outcome: &JustifyOutcome<RcStr>) -> bool {
         warn_search_gave_up();
     }
     false
+}
+
+/// #429: a justify / repair oracle call answered "not entailed" on the
+/// consistency wedge's model alone. Not a give-up: stdout and the exit code are
+/// unchanged.
+fn note_oracle_trusted_wedge(not_entailed: bool, trusted: bool) {
+    if !trusted {
+        return;
+    }
+    let what = if not_entailed {
+        "\"not entailed\" rests on it"
+    } else {
+        "every result shown still holds, but its minimality may rest on it"
+    };
+    eprintln!(
+        "note: a reasoner check answered \"not entailed\" because the consistency wedge \
+         found a model, which is not proven complete and no main-tableau run verified; \
+         {what}."
+    );
 }
 
 /// #396: the warning for a give-up inside a justification or repair search.
@@ -2262,9 +2301,11 @@ fn main() -> Result<()> {
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_realize_json(&r, dropped))?
                 );
+                note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
                 return Ok(());
             }
             print_realization(&r);
+            note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
             if r.incomplete() {
                 warn_probes_cut("realize", "RUSTDL_MAX_NODES");
             }
@@ -2496,6 +2537,21 @@ fn main() -> Result<()> {
                 owl_dl_reasoner::justify::parse_query(&query).map_err(|e| anyhow::anyhow!(e))?;
             let label_map = labels.then(|| build_label_map(&onto));
             let r = owl_dl_reasoner::find_repairs(&onto, &q, max).context("find_repairs")?;
+            // #429: for repair, a trusted "not entailed" in a verification means
+            // that repair breaks the query only if the wedge is right.
+            if r.relies_on_trusted_consistency {
+                eprintln!(
+                    "note: a reasoner check answered \"not entailed\" because the consistency \
+                     wedge found a model, which is not proven complete and no main-tableau run \
+                     verified; {}.",
+                    if r.entailed {
+                        "a repair shown may break the query only if that model is right, \
+                         and may not be minimal"
+                    } else {
+                        "\"not entailed\" rests on it"
+                    }
+                );
+            }
 
             if !r.entailed && r.incomplete {
                 // #396: the top-level check gave up — not a non-entailment.
@@ -2793,6 +2849,7 @@ fn main() -> Result<()> {
             } else {
                 println!("# consistency: consistent");
             }
+            note_trusted_wedge_consistency("diagnose", d.relies_on_trusted_consistency);
             if d.all_unsat.is_empty() {
                 if d.unsat_probes_cut > 0 {
                     println!(

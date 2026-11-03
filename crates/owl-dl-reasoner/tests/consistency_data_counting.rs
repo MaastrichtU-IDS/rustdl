@@ -268,6 +268,13 @@ fn classify_reports_the_inconsistency() {
         stats.inconsistent,
         "classify must report the KB inconsistent"
     );
+    // #429: the pre-check trusted the wedge's (non-counting) `Sat` here, and the
+    // probe's main tableau then found the clash. Trust is never reported beside
+    // an inconsistency.
+    assert!(
+        !stats.relies_on_trusted_consistency,
+        "an inconsistent classification never relies on a trusted Sat"
+    );
 }
 
 /// KNOWN MISSES, sound: the main tableau does not count these either. `HermiT` says

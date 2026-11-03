@@ -1,0 +1,12 @@
+# Mutant detection fixture (#363 step 3): M12, scripts/mutants/M12.patch at 7b5c0f9f.
+# Generated net detects it as satonly-FP on the satonly arm, witness :C1|:C3.
+# env: -. Shrunk by scripts/gen/shrink.py from gen bd63a61a6921 seed 20261103 case 1 profile default
+# (4 -> 1 axioms); Konclude and HermiT agree on it, and the unmutated build has no such finding.
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C1))
+Declaration(Class(:C3))
+SubClassOf(:C3 :C1)
+)

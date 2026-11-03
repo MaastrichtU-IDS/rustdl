@@ -324,8 +324,10 @@ applied: the net fails on `unsat_FP=41` at `ore_ont_10080`, the new default-run
 Still open: M8a is caught only by its own canaries; no oracle gate carries its shape (0 of 157
 ORE GCI-domain ontologies have a non-atomic head). The inconsistent-oracle branch of
 `unsat_diff` is covered by unit tests only: no fixture oracle puts `owl:Thing` in its
-`owl:Nothing` group. The harness repo's scorers (`normalise.compare`, `missed-net`,
-`cross-check.sh`, `release-corpus-report`) have the same exclusion and are not changed here.
+`owl:Nothing` group. The harness repo's scorers had the same exclusion. `normalise.compare`,
+`missed-net` and `cross-check.sh` were fixed in owl-reasoner-harness#2 (merged as 8060fc94),
+with no movement in the recorded MISSED baselines. `release-corpus-report` compares arms with
+each other, not with an oracle, and is unchanged.
 
 Other limits, stated:
 
@@ -346,3 +348,128 @@ neither L4 nor R3 applies there), and `individuals` was killed at 30 s on pizza 
 
 The quick mode is a local gate:
 `cargo test --release -p owl-dl-cli --test cross_command_laws -- --ignored`.
+
+## Generated-ontology oracle net (#363 step 3)
+
+`scripts/gen/` (see its README) generates small, legal OWL 2 DL ontologies:
+- 4–10 classes, 2–4 roles, 0–2 data properties, 0–3 individuals and 3–15 axioms;
+- drawn from 11 construct families;
+- regularity and simplicity by construction.
+
+It runs `classify`, `classify --saturation-only` and `consistent` on each case, and scores
+the answers against what Konclude and HermiT **both** agree on. A case where the peers
+disagree or fail is counted and never scored. FP kinds are never exempted for a budget cut.
+A miss is a finding only where rustdl claims completeness (`completeness_guaranteed`, or the
+`consistent --json` gates); otherwise it is "exposed", a limitation rustdl declares.
+
+Measured 2026-11-03 on 7b5c0f9f (0.4.42): seed 20261103, default profile, cores 92–94,
+peers capped at 60 s, rustdl at 30 s. Seeds and generator hashes: `scripts/gen/seeds.txt`.
+
+**Control, N = 2000: no findings, so 0 false alarms.**
+
+| bucket | cases |
+|---|---:|
+| clean | 1945 |
+| peer-disagree | 32 |
+| peer-fail | 12 (Konclude: 10 timeouts, 2 failures; HermiT ok on all) |
+| exposed | 10: 17 misses (13 pairs, 4 unsat classes), each under a declared limitation (trusted Sat refutations on 7 cases, a deadline on 3, case 1646 has both, `completeness_guaranteed: false` alone on 1) |
+| rustdl-fail | 1 (case 1283, below) |
+| invalid | 0 (HermiT accepted every file as legal) |
+| finding | **0** |
+
+Two more control cases have a classify pre-check consistency miss (`consistent: true` on a KB
+both peers call inconsistent): case 475, bucketed clean because that tier is informational, and
+case 1283. The two targeted controls below add 1000 cases, also with 0 findings.
+
+**What the scored cases exercised.**
+- **The guaranteed tier is thin.** Of the 1794 agreed-consistent cases, 79 (4.4%) report
+  `completeness_guaranteed: true`. So a classify miss could be a finding on only those;
+  "0 findings" for misses rests almost entirely on the exposed tier.
+- **The oracle branches all got real cases:** 162 agreed-inconsistent, 283 with a
+  Thing-equivalent class, 537 with an unsat class.
+- **Noise floor.** A control-vs-control rerun of the first 500 cases differs on 0.
+- **Load-driven deadlines.** Under load, a per-pair deadline can fire in one run and not the
+  next. `detect` therefore reports exposed-tier differences whose arm says `incomplete: true` as
+  "budget-cut", and never counts them (see M8a below).
+
+**Peer disagreements (32, not scored).**
+- 31 are HermiT reporting more than Konclude:
+  - 21 Konclude-consistent and HermiT-inconsistent;
+  - 5 unsat classes;
+  - 3 Thing-equivalent classes;
+  - 2 pairs.
+- 1 is Konclude reporting a Thing-equivalent class HermiT lacks.
+- rustdl sides with HermiT in 30 of 32.
+
+The 2 where it sides with Konclude are unadjudicated:
+- **case 723**: HermiT has `C4 ⊑ C7`;
+- **case 1725**: HermiT has `C1` unsatisfiable.
+
+JFact (via robot) sides with Konclude and rustdl on both, so HermiT's claims stand 1 against 3.
+rustdl reports `completeness_guaranteed: false` on both, so they would be exposed-tier either way.
+
+**A known oracle defect, and the blind spot it makes.** The 21 Konclude-consistent /
+HermiT-inconsistent cases all declare a named individual. There are two shapes:
+- **5 are `ReflexiveObjectProperty(r)` + `AsymmetricObjectProperty(r)`** (fixture
+  `scripts/gen/fixtures/konclude-reflexive-asymmetric.ofn`). Konclude answers that pair
+  correctly with no individual, and says consistent once one is declared, even with no
+  assertion about it.
+- **16 are ABox role assertions** (`r(a,a)` or `r(a,b)`) that break `Asymmetric`,
+  `Irreflexive` or `DisjointObjectProperties`, some through the role hierarchy, plus one
+  `EquivalentClasses(C ObjectComplementOf(C))`.
+
+HermiT, JFact (checked on the fixture) and rustdl say inconsistent. The oracle rule stays
+"both peers must agree", so **these inconsistencies are never scored**: a rustdl miss of this
+kind would be invisible to the net.
+
+**rustdl-fail, case 1283 (an issue draft, not filed).** `consistent` and `sat` fail with
+`ReasonError::NoVerdict` ("bug indicator") instead of answering or giving up with exit 3.
+- Shrunk under peer agreement to 5 axioms (consistent KB) and 6 axioms (inconsistent KB).
+- It fails in about 5 s; the 13-axiom original takes 18–24 s.
+- classify answers the 5-axiom KB correctly.
+
+**Sensitivity.** Each mutant runs on the first B = 500 cases. A detection is a new result in
+the mutant's run that the control run lacks on the same case under the same env. It counts if
+it is finding-tier, or exposed-tier with no deadline in the mutant's arm.
+
+| mutant | detected at B | cases | first case | kind (tier) | note |
+|---|---|---:|---|---|---|
+| M1 | **yes** | 1 | 160 | consistency-FP on classify's `consistent` (finding) | |
+| M3 | **yes** | 2 | 198 | pair-MISSED (exposed, no deadline) | 5/5 runs per arm identical |
+| M7 | **yes** | 209 | 0 | unsat-FP (366), consistency-FP (7) | under its env; the env's own control has 0 findings and 41 exposed. Pre-declared as a likely non-detection; it was not |
+| M8a | no | 0 | – | – | pre-declared. At N = 2000: 0 (3 budget-cut, 1 pre-check difference). Targeted `el_only`, 500: 0 (1 budget-cut). Every candidate gave identical answers in both arms on rerun |
+| M8b | no | 0 | – | – | **not** pre-declared. At N = 2000: 1 (case 1560, unsat-FP, `C ⊑ ¬A ⊓ ≥1 d` + `Functional(d)`). Targeted `data_heavy`, 500: 2 (cases 202, 361, unsat-FP) |
+| M9 | **yes** | 340 | 1 | pair-FP (also satonly-FP) | |
+| M12 | **yes** | 304 | 1 | satonly-FP | structural, as in the laws harness |
+
+So 5 of 7 are detected within B. M8b is detected at N and under its targeted profile. **M8a
+is not detected anywhere.**
+
+M8a and M8b live on paths every surface shares (the EL saturator, D4 conversion). The
+cross-command laws cannot see them; only an oracle can, and only on an input with the shape.
+The generator rarely draws those shapes:
+- M8b needs `Functional(d)` with `≥1 d` reachable by D4: 1 of 2000 default cases, 2 of 500
+  `data_heavy` cases.
+- M8a needs a pure-EL KB with a non-atomic GCI domain head and an entailment that depends on
+  it: 2 of 500 `el_only` cases have the head, and the mutant changes no answer on either.
+
+Each detection is shrunk under peer agreement, at the tier it was found, to a fixture in
+`scripts/gen/fixtures/mutants/`. The unmutated build shows no such finding on any of them.
+- M1: 4 axioms (every named class unsatisfiable on a consistent KB);
+- M3: 6 axioms, carrying `∀r.(B ⊔ ¬C)`;
+- M7: 1 axiom (timing-dependent: it fired in 20 of 20 runs on one core, and in 9 of 12);
+- M8b: 2 axioms;
+- M9 and M12: 1 axiom each.
+
+Out of scope, because the net does not query those surfaces: M4, M5, M6, M10, M11. M2 is an
+env sabotage of the per-pair path.
+
+**Limits.**
+- The oracle is agreement-only, so it is blind where the peers disagree: the 21 ABox and
+  role-characteristic inconsistencies above, and the unadjudicated cases.
+- The guaranteed tier covers 4% of scored cases, so this net mostly tests soundness, not
+  completeness.
+- One default profile and seed: the family weights decide what is reachable (M8a, M8b).
+- Exposed-tier results are budget-sensitive under load.
+- The net does not run in CI: a 2000-case control took 89 minutes on 3 cores, against the
+  plan's estimate of about 25.

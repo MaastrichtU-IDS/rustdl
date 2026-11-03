@@ -195,7 +195,8 @@ def one_case(path, binary, env, cache, out_dir):
             a["summary"] = {k: j.get(k) for k in (
                 "consistent", "incomplete", "completeness_guaranteed",
                 "relies_on_trusted_consistency", "wedge_clauses_refused",
-                "trusted_sat_refutations", "wedge_hierarchy_blind", "dropped")}
+                "trusted_sat_refutations", "wedge_hierarchy_blind", "dropped",
+                "consistency_undetermined")}
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
     tmp.write_text(json.dumps(rec))
@@ -349,17 +350,47 @@ def cmd_resides(a):
     return cmd_report(argparse.Namespace(out=a.out, tag=a.tag, first=None))
 
 
+def split_detections(mutant, diff):
+    """Split a differential by how much it can be trusted.
+
+    `finding`: a new finding-tier result (FPs are never budget-exempt).
+    `exposed`: a new exposed-tier miss, with no deadline in the mutant's arm.
+    `budget_cut`: a new exposed-tier miss where the mutant's arm reported
+      `incomplete: true`; under load these appear with no fault at all, so they are
+      reported but never counted as a detection.
+    `pre_check`: classify's consistency pre-check tier, informational only."""
+    out = {"finding": {}, "exposed": {}, "budget_cut": {}, "pre_check": {}}
+    for case, fs in diff.items():
+        arms = mutant[case]["arms"]
+        for f in fs:
+            if f["tier"] == "finding":
+                key = "finding"
+            elif f["tier"] == "pre-check":
+                key = "pre_check"
+            elif (arms.get(f["arm"], {}).get("summary") or {}).get("incomplete"):
+                key = "budget_cut"
+            else:
+                key = "exposed"
+            out[key].setdefault(case, []).append(f)
+    return out
+
+
 def cmd_detect(a):
     control = load(a.out, a.control, a.first)
     mutant = load(a.out, a.mutant, a.first)
     diff = differential(control, mutant)
+    split = split_detections(mutant, diff)
+    counted = sorted(set(split["finding"]) | set(split["exposed"]))
     first = {}
     for case in sorted(diff):
         for f in diff[case]:
             first.setdefault(f["kind"], case)
     rep = {
         "control": a.control, "mutant": a.mutant, "n_compared": len(mutant),
-        "detecting_cases": len(diff),
+        "detecting_cases": len(counted),
+        "detecting_cases_by_split": {k: len(v) for k, v in split.items()},
+        "first_detecting_case": counted[0] if counted else None,
+        "differing_cases": len(diff),
         "by_kind": dict(Counter(f["kind"] for fs in diff.values() for f in fs)),
         "by_kind_tier": dict(Counter(f"{f['kind']}/{f['tier']}" for fs in diff.values()
                                      for f in fs)),
@@ -456,6 +487,15 @@ def self_test():
                "findings": [{"kind": "pair-MISSED", "tier": "exposed", "witness": "c|d"}]}}
     ok("differential keeps only new findings",
        [f["kind"] for f in differential(c, m)["x"]], ["pair-FP"])
+    mm = {"x": {"arms": {"classify": {"summary": {"incomplete": True}}},
+                "oracle": {"verdict": "agree"}}}
+    sp = split_detections(mm, {"x": [{"kind": "pair-MISSED", "tier": "exposed", "arm": "classify",
+                                       "witness": "a|b"},
+                                      {"kind": "pair-FP", "tier": "finding", "arm": "classify",
+                                       "witness": "c|d"}]})
+    ok("a deadline-cut exposed miss is not a detection, an FP is",
+       ({k: len(v) for k, v in sp.items()}),
+       {"finding": 1, "exposed": 0, "budget_cut": 1, "pre_check": 0})
     print(f"run self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

@@ -297,7 +297,8 @@ class Case:
 
     def ax_domrange(self):
         r = self.rng
-        head = self.C() if r.random() < 0.6 else self.ce(1, {"el": 1, "neg_or": 1})
+        fams = {f: 1 for f in ("el", "neg_or") if f in self.weights} or {"el": 1}
+        head = self.C() if r.random() < 0.6 else self.ce(1, fams)
         k = r.choice(["ObjectPropertyDomain", "ObjectPropertyRange", "gci"])
         if k == "gci":
             return f"SubClassOf(ObjectSomeValuesFrom({self.R()} owl:Thing) {head})"

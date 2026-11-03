@@ -1,0 +1,18 @@
+# Mutant detection fixture (#363 step 3): M7, scripts/mutants/M7.patch at 7b5c0f9f.
+# Generated net detects it as unsat-FP on the classify arm, witness :C0.
+# env: RUSTDL_UNSAT_PROBE_MS=1 RUSTDL_LABEL_HEURISTIC=0. Shrunk by scripts/gen/shrink.py from gen bd63a61a6921 seed 20261103 case 0 profile default
+# (7 -> 1 axioms); Konclude and HermiT agree on it, and the unmutated build has no such finding.
+# The finding carries incomplete: true: M7's env cuts the probe; FPs are never budget-exempt.
+# Timing-dependent by construction (a 1 ms probe cut): it fired in 20/20 and 9/12 runs on one core,
+# and the unmutated build reported no unsat class in 20/20.
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C0))
+Declaration(Class(:C6))
+Declaration(Class(:C7))
+Declaration(ObjectProperty(:r2))
+Declaration(ObjectProperty(:r3))
+EquivalentClasses(:C6 ObjectSomeValuesFrom(:r2 ObjectAllValuesFrom(:r3 :C7)))
+)

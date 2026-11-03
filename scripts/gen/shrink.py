@@ -60,6 +60,7 @@ class Pred:
         path.write_text(text)
         ora = orc.oracle(path, self.a.oracle_cache)
         if self.a.kind.startswith("peer:"):
+            assert self.a.kind == "peer:konclude-consistent", "the only peer predicate"
             # Not a rustdl finding: a peer disagreement to record as an oracle defect.
             # `peer:konclude-consistent` keeps Konclude saying consistent while HermiT
             # says inconsistent. Both peers must finish, as everywhere else.
@@ -85,11 +86,13 @@ class Pred:
                           "finding": {"kind": self.a.kind, "witness": self.a.witness}}
                     if hit else None)
         found = [f for f in run.score(ora["answer"], orc.declared_classes(text), arms)
-                 if f["kind"] == self.a.kind and f["witness"] == self.a.witness]
+                 if f["kind"] == self.a.kind and f["witness"] == self.a.witness
+                 and (self.a.tier is None or f["tier"] == self.a.tier)]
         if not found:
             return False, None
         arm = arms.get(found[0]["arm"], {})
-        if arm.get("status") != "ok" or arm["json"].get("incomplete"):
+        if arm.get("status") != "ok" or (arm["json"].get("incomplete")
+                                          and not self.a.allow_incomplete):
             return False, None
         return True, {"oracle": ora, "arms": arms, "finding": found[0], "path": str(path)}
 
@@ -139,6 +142,12 @@ def main():
     ap.add_argument("--oracle-cache", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--env", action="append")
+    ap.add_argument("--tier", choices=["finding", "exposed", "pre-check"],
+                    help="also require the same tier: a MISSED can change tier when a "
+                         "reduction changes the fragment. run.py's detect output gives it")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                    help="keep a finding whose arm reports incomplete: true (an FP made by "
+                         "a budget-cutting env, e.g. M7's); recorded in record.json")
     ap.add_argument("--oracle-consistent", choices=["true", "false"],
                     help="also require the peers' agreed consistency verdict")
     a = ap.parse_args()
@@ -169,7 +178,7 @@ def main():
     ora = info["oracle"]
     rec = {
         "original": a.case, "header": text.splitlines()[0], "kind": a.kind,
-        "witness": a.witness, "env": env, "binary": a.bin, "binary_sha256": binsha,
+        "witness": a.witness, "tier": a.tier, "env": env, "allow_incomplete": a.allow_incomplete, "binary": a.bin, "binary_sha256": binsha,
         "axioms_before": len(body), "axioms_after": len(core), "predicate_calls": test.calls,
         "peers": {"verdict": ora["verdict"], "answer": ora["answer"],
                   "konclude": ora["konclude"], "hermit": ora["hermit"]},

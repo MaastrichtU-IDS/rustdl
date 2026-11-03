@@ -38,6 +38,8 @@ A case goes into the first bucket that applies:
 4. **rustdl-fail**: a rustdl arm crashed or hit its 30 s cap.
 5. **finding**: an FP of any kind (never budget-exempt), a pair or unsat MISSED with `completeness_guaranteed: true`, or a gated `consistent --json` miss.
 6. **exposed**: only misses that rustdl itself declares possible (`completeness_guaranteed: false`, trusted Sat, refused clauses, a deadline).
+
+   A consistency miss on classify's `consistent` field is the pre-check tier: it is reported, but it does not change the bucket (a case with only that is **clean**).
 7. **clean**: none of the above.
 
 Peer verdicts are read from output content, never from exit codes:

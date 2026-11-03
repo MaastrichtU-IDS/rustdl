@@ -1,3 +1,12 @@
 # #363 step 3: committed seeds for the generated-ontology oracle net.
-# seed      profile   cases     use
-20261103    default   0-1999    control (N=2000) and mutant sensitivity (first B=500)
+# Each case header records the generator hash (sha256 of gen.py, first 12 hex) it came from.
+#
+# seed      profile      cases     generator      use
+20261103    default      0-1999    bd63a61a6921   control (N=2000), mutant sensitivity (first B=500), B->N
+20261104    el_only      0-499     0199786c97ac   targeted secondary result for M8a
+20261105    data_heavy   0-499     0199786c97ac   targeted secondary result for M8b
+#
+# 0199786c97ac differs from bd63a61a6921 only in ax_domrange: a non-atomic domain/range head
+# now draws only from the profile's enabled families, so el_only stays EL. On the default
+# profile both families are enabled and the output is unchanged: the case bodies (everything
+# after the header line) regenerate byte-identically, checked on 286 of the 2000 control cases.

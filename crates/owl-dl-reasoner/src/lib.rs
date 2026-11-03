@@ -3728,8 +3728,12 @@ pub fn classify_derived_same_prefilter_enabled() -> bool {
 /// share a SUBJECT through `R`-edges are a candidate only if `R ⊑ c` for some
 /// counted `c`, and two that share an OBJECT only if `R⁻ ⊑ c` (signed inclusion,
 /// through declared inverses, symmetry and equivalences). Off, both shapes use
-/// the unsigned role id, a superset: e.g. `≤2 hasOperand` made every pair of
-/// individuals with a common operand a candidate, which it can never merge.
+/// the id-space super-roles of the edge's role, which is wrong both ways: it pairs
+/// individuals with a common object under a bound on successors (`≤2 hasOperand`
+/// made every two units with a common operand a candidate, which it can never
+/// merge), and it misses a bound reached through a declared inverse (`r ≡ s⁻` with
+/// `InverseFunctional(s)` forces the `r`-objects of one subject equal, and `s` is no
+/// super-role of `r`).
 #[must_use]
 pub fn classify_derived_same_signed_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_DERIVED_SAME_SIGNED").is_none_or(|v| v != "0")
@@ -4018,8 +4022,7 @@ fn derive_nominal_same_with(
         seen_candidates += cands.len();
         // #368: drop the pairs already proved distinct, or already tried under
         // other representatives, before the cap can count them as undecided.
-        let mut tried_now: std::collections::HashSet<(u32, u32)> =
-            std::collections::HashSet::new();
+        let mut tried_now: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
         if prefilter {
             let pd = proved.get_or_insert_with(|| ProvedDistinct::build(internal));
             tried_now = tried_members
@@ -4126,7 +4129,8 @@ struct ProvedDistinct {
 /// [`ProvedDistinct`] summed over the current equality classes.
 struct ProvedDistinctClasses<'a> {
     diff_axioms: std::collections::HashMap<u32, std::collections::BTreeSet<u32>>,
-    told_types: std::collections::HashMap<u32, std::collections::BTreeSet<owl_dl_core::ir::ClassId>>,
+    told_types:
+        std::collections::HashMap<u32, std::collections::BTreeSet<owl_dl_core::ir::ClassId>>,
     told: &'a owl_dl_core::told::ToldTables,
 }
 
@@ -4190,8 +4194,14 @@ impl ProvedDistinct {
                 continue;
             }
             let r = uf.find(u32::try_from(i).expect("individual index fits u32"));
-            out.diff_axioms.entry(r).or_default().extend(d.iter().copied());
-            out.told_types.entry(r).or_default().extend(t.iter().copied());
+            out.diff_axioms
+                .entry(r)
+                .or_default()
+                .extend(d.iter().copied());
+            out.told_types
+                .entry(r)
+                .or_default()
+                .extend(t.iter().copied());
         }
         out
     }
@@ -12496,7 +12506,10 @@ mod tests {
     fn derived_same_signed_keeps_each_bound_on_the_inverse() {
         let edges = "ObjectPropertyAssertion(:r :a :o) ObjectPropertyAssertion(:r :b :o)";
         for (what, bound) in [
-            ("InverseFunctional(r)", "InverseFunctionalObjectProperty(:r)"),
+            (
+                "InverseFunctional(r)",
+                "InverseFunctionalObjectProperty(:r)",
+            ),
             (
                 "≤1 r⁻ on o",
                 "SubClassOf(:W ObjectMaxCardinality(1 ObjectInverseOf(:r))) ClassAssertion(:W :o)",
@@ -12603,7 +12616,10 @@ mod tests {
         let (narrow, out) = derived_same_probed(ax, &inds, NARROW, &[("a", "b")]);
         assert_eq!(out.pairs.len(), 1);
         let with_c = narrow.iter().filter(|(x, y)| x == "c" || y == "c").count();
-        assert_eq!(with_c, 1, "one probe of the merged class against c: {narrow:?}");
+        assert_eq!(
+            with_c, 1,
+            "one probe of the merged class against c: {narrow:?}"
+        );
         let (wide, _) = derived_same_probed(ax, &inds, WIDE, &[("a", "b")]);
         let with_c = wide.iter().filter(|(x, y)| x == "c" || y == "c").count();
         assert_eq!(with_c, 2, "off, both spellings are probed: {wide:?}");

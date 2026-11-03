@@ -244,3 +244,24 @@ fn an_inverse_functional_role_alone_keeps_the_shared_object_candidate() {
     );
     assert_eq!(c.stats().derived_same_undecided, 1);
 }
+
+/// #368: signed grouping also FINDS candidates the unsigned test missed. `x r a`,
+/// `x r b` with `r ≡ s⁻` and `InverseFunctional(s)` force `a = b`, but `s` is not an
+/// id-space super-role of `r`, so the unsigned grouping never paired them.
+#[test]
+fn a_bound_reached_through_a_declared_inverse_forces_the_equality() {
+    let _g = lock();
+    let body = "Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+         InverseObjectProperties(:r :s) InverseFunctionalObjectProperty(:s)\n\
+         ObjectPropertyAssertion(:r :x :a) ObjectPropertyAssertion(:r :x :b)";
+    let c = classify(body);
+    assert!(equivalent(&c));
+    assert_eq!(c.stats().derived_same, 1);
+    let _off = SetEnvGuard::set("RUSTDL_CLASSIFY_DERIVED_SAME_SIGNED", "0");
+    let c = classify(body);
+    assert_eq!(
+        c.stats().derived_same,
+        0,
+        "unsigned grouping misses the pair"
+    );
+}

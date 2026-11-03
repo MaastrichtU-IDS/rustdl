@@ -509,6 +509,32 @@ All notable changes to rustdl are documented here. Format is based on
   `sat`/`subclass` DNF rows in the sample are unchanged, with identical peak RSS (max 4.85 GB),
   and the issue #35 v4 reproducer still terminates.
 
+### Performance
+- **Classify's derived-equality check probes fewer pairs (#368).** #354 confirms each candidate
+  individual equality with a per-pair probe (at most 64 of them). Almost all probes came back
+  `Sat`, which finds no equality, and on seven SWEET ontologies the cap left 251–268 candidates
+  undecided. Two changes, each behind its own flag (`=0` reverts):
+  - `RUSTDL_CLASSIFY_DERIVED_SAME_PREFILTER` drops, unprobed, a pair already proved distinct: an
+    asserted `DifferentIndividuals`, through equality classes, or told-disjoint told types. Such a
+    pair is not counted undecided. A pair that a confirmed merge has renamed is no longer probed
+    twice.
+  - `RUSTDL_CLASSIFY_DERIVED_SAME_SIGNED` groups candidates by signed role. Two individuals sharing
+    an object are a candidate only under a bound on the inverse role: `≤2 hasOperand` can never
+    merge two units with a common operand. A bound reached through a declared inverse now counts
+    too; the old id-space test missed it, so `r ≡ s⁻` with `InverseFunctional(s)` and
+    `x r a`, `x r b` left `a = b` underived.
+
+  Over the 309-ontology #354 frame, with the arms off, pre-filter only, and both on:
+  - Answers (consistency, unsatisfiable classes, equivalence groups, Hasse rows) are identical on
+    all 293 ontologies that finish in every arm. One more (`ore_ont_4796`) is cap-borderline, and
+    its 5 serial reps per arm give the same answer.
+  - `derived_same_undecided` drops to 0 on the seven SWEET ontologies and on `ore_ont_9540` (525).
+    No `completeness_guaranteed` bit changes, because each of these has another open condition.
+  - CPU, 5 interleaved serial reps: the eight targets drop 10–68% (`ore_ont_11647` 14.9 → 4.8 s)
+    and `ore_ont_9540` 41.9 → 33.9 s. `ore_ont_8911` rises 25.8 → 34.0 s and goes from 0 to 4
+    undecided: those are the declared-inverse candidates the old test missed, and its 4 probes
+    stall.
+
 ## [0.4.42] — 2026-10-25
 
 ### Fixed

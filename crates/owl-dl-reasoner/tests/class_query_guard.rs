@@ -136,6 +136,13 @@ fn an_abox_clash_errors_inconsistent() {
     for (name, r) in queries(&o) {
         assert!(is_inconsistent(&r), "{name}: {r:?}");
     }
+    // With the wedge off the lazy check cannot see the clash: the guard alone.
+    {
+        let _wedge = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
+        for (name, r) in queries(&o) {
+            assert!(is_inconsistent(&r), "wedge off, {name}: {r:?}");
+        }
+    }
     let _off = SetEnvGuard::set("RUSTDL_CLASS_QUERY_GUARD", "0");
     for (name, r) in queries(&o) {
         let (positive, st) = r.unwrap();
@@ -411,6 +418,13 @@ fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
     let (r, flags) = prove_entailment_rcstr_reporting(&told, X, Z).unwrap();
     assert!(flags.kb_inconsistent);
     assert!(matches!(r, ProveEntailmentResult::JustificationFallback(_)), "{r:?}");
+    {
+        // The guard, not the lazy check after the step proof, reports it: with
+        // the wedge off the lazy check is undetermined.
+        let _wedge = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
+        let (r, flags) = prove_entailment_rcstr_reporting(&told, X, Z).unwrap();
+        assert!(flags.kb_inconsistent, "wedge off: {r:?}");
+    }
     assert!(matches!(
         prove_entailment(&o, X, Z).unwrap(),
         ProveEntailmentResult::JustificationFallback(_)

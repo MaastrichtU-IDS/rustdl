@@ -425,15 +425,41 @@ class DirectTypesUnverifiedWarning(UserWarning):
     runs no check."""
 
 
+class WitnessPruneWarning(UserWarning):
+    """Raised by `realize`, `materialize_inferred_class_assertions` and
+    `materialize_existential_successors` when the pseudo-model prune answered
+    "not a type" from a witness model with a known reason to lack an entailed
+    type (#387): the witness search chose a disjunct or a merge, or the engine
+    that built it set axioms aside. An entailed type may then be MISSING,
+    although no probe was cut (so this is not an `IncompleteQueryWarning`).
+    Its absence is not a guarantee: it means no known reason for loss, not a
+    proof that none was dropped. `RUSTDL_PSEUDO_MODEL=0` probes every pair
+    instead, which can be much slower."""
+
+
+def _warn_if_witness_prune_may_drop(name: str, may_drop: bool) -> None:
+    if may_drop:
+        _warnings.warn(
+            f"{name}: the pseudo-model prune answered 'not a type' from a "
+            "witness model built by a choice (or with axioms set aside), so an "
+            "entailed type may be missing; RUSTDL_PSEUDO_MODEL=0 probes every "
+            "pair instead (slower).",
+            WitnessPruneWarning,
+            stacklevel=3,
+        )
+
+
 def realize(path):
     """Map each named individual to its most-specific entailed types. Emits
     `IncompleteQueryWarning` when an instance probe was cut (types may be
     missing), and `DirectTypesUnverifiedWarning` when two most-specific types
     of an individual could not be compared (a listed type may not be the most
-    specific)."""
-    types, incomplete, unverified = _realize_native(path)
+    specific), and `WitnessPruneWarning` when the pseudo-model prune may have
+    dropped an entailed type (#387)."""
+    types, incomplete, unverified, may_drop = _realize_native(path)
     _warn_if_query_incomplete("realize", incomplete)
     _warn_if_direct_types_unverified("realize", unverified)
+    _warn_if_witness_prune_may_drop("realize", may_drop)
     return types
 
 
@@ -466,10 +492,12 @@ def materialize_inferred_class_assertions(path):
     named individual, as `realize` reports them (not every entailed type).
     Emits `IncompleteQueryWarning` when an instance probe was cut (types may be
     missing) and `DirectTypesUnverifiedWarning` when a listed type may be a
-    superclass of another (#388, #391)."""
-    pairs, incomplete, unverified = _materialize_inferred_class_assertions_native(path)
+    superclass of another (#388, #391), and `WitnessPruneWarning` when the
+    pseudo-model prune may have dropped a type (#387)."""
+    pairs, incomplete, unverified, may_drop = _materialize_inferred_class_assertions_native(path)
     _warn_if_query_incomplete("materialize_inferred_class_assertions", incomplete)
     _warn_if_direct_types_unverified("materialize_inferred_class_assertions", unverified)
+    _warn_if_witness_prune_may_drop("materialize_inferred_class_assertions", may_drop)
     return pairs
 
 
@@ -477,9 +505,12 @@ def materialize_existential_successors(path):
     """Entailed existential successors as `(subject, property, witness_blank,
     filler_class)`: a blank-node representation of entailed `a : ∃R.C`, not
     ground triples. Emits `IncompleteQueryWarning` when an instance probe of the
-    `realize` run underneath was cut, so rows may be missing (#391)."""
-    rows, incomplete = _materialize_existential_successors_native(path)
+    `realize` run underneath was cut, so rows may be missing (#391), and
+    `WitnessPruneWarning` when its pseudo-model prune may have dropped a type
+    (#387)."""
+    rows, incomplete, may_drop = _materialize_existential_successors_native(path)
     _warn_if_query_incomplete("materialize_existential_successors", incomplete)
+    _warn_if_witness_prune_may_drop("materialize_existential_successors", may_drop)
     return rows
 
 
@@ -784,6 +815,7 @@ __all__ = [
     "IncompleteClassificationWarning",
     "IncompleteQueryWarning",
     "DirectTypesUnverifiedWarning",
+    "WitnessPruneWarning",
     "StructuralGapWarning",
     "TrustedConsistencyWarning",
     "ConsistencyUndeterminedWarning",

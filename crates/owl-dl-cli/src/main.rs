@@ -2212,6 +2212,18 @@ fn main() -> Result<()> {
                      another; every listed type is a genuine type."
                 );
             }
+            if r.witness_prune_may_drop() {
+                // #387: no probe was cut, so `incomplete` stays false; the
+                // prune answered "not a type" from a witness with a known
+                // reason to lack an entailed type.
+                eprintln!(
+                    "warning: realize: the pseudo-model prune answered \"not a type\" from a \
+                     witness model with a known reason to lack an entailed type ({}), so an \
+                     entailed type may be missing; RUSTDL_PSEUDO_MODEL=0 probes every pair \
+                     instead (slower).",
+                    r.witness_prune_reasons().names().join(", ")
+                );
+            }
             warn_if_dropped(&dropped);
             if properties {
                 match owl_dl_reasoner::materialize_object_property_assertions(&onto) {

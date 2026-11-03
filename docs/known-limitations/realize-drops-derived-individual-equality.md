@@ -385,6 +385,8 @@ predates the evidence and only half of it is right.** Measured with the flag ON:
 So the general failure — a `Sat` completion is a **pre-model** whose labels miss entailments
 requiring case analysis — is untouched. Only the inverse-functional arm is closed.
 `witness_prune_active` remains the signal, and `ore_ont_3892` remains the discriminator.
+(Superseded 2026-11-02, #387: `witness_prune_may_drop` is the actionable signal, set when the
+witness has a known reason to lack a type; `ore_ont_3892` no longer loses a type on main.)
 
 **Transferable: a sentinel's own instruction can be stale.** This one was written when
 inverse-functional was believed to be the only mechanism; following it literally would have

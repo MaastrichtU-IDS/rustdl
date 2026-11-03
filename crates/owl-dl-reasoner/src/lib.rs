@@ -97,8 +97,8 @@ pub use property_values::{
     inferred_object_property_values,
 };
 pub use realize::{
-    InstanceFlags, Realization, instances_of, instances_of_internal, instances_of_reporting,
-    instances_of_reporting_internal, instances_of_saturation_only,
+    InstanceFlags, Realization, WitnessPruneReasons, instances_of, instances_of_internal,
+    instances_of_reporting, instances_of_reporting_internal, instances_of_saturation_only,
     instances_of_saturation_only_internal, is_instance_of, is_instance_of_internal,
     is_instance_of_reporting, is_instance_of_reporting_internal, is_instance_of_saturation_only,
     is_instance_of_saturation_only_internal, realize, realize_internal, realize_saturation_only,
@@ -439,9 +439,12 @@ pub struct ExistentialSuccessorFlags {
     /// An instance probe was cut ([`Realization::incomplete`]), so an entailed
     /// type and the rows it yields may be missing.
     pub incomplete: bool,
-    /// The pseudo-model prune ran ([`Realization::witness_prune_active`]). It can
-    /// drop an entailed type without cutting a probe; #387 tracks a sharper signal.
+    /// The pseudo-model prune ran ([`Realization::witness_prune_active`]). True on
+    /// almost every off-fragment `ABox`; see `witness_prune_may_drop`.
     pub witness_prune_active: bool,
+    /// The prune ran and its witness may lack an entailed type
+    /// ([`Realization::witness_prune_may_drop`], #387), so rows may be missing.
+    pub witness_prune_may_drop: bool,
 }
 
 /// [`materialize_existential_successors`], plus the completeness flags of the
@@ -530,6 +533,7 @@ pub fn materialize_existential_successors_reporting<A: horned_owl::model::ForIRI
     let flags = ExistentialSuccessorFlags {
         incomplete: realization.incomplete(),
         witness_prune_active: realization.witness_prune_active(),
+        witness_prune_may_drop: realization.witness_prune_may_drop(),
     };
     // Distinct (a, R, C) with a:X entailed and X ⊑ ∃R.C told.
     let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
@@ -6089,6 +6093,10 @@ pub(crate) struct ConsistencyCache {
     /// Pre-built seed-saturator for the ⊔ look-ahead gate
     /// (`RUSTDL_SAT_LOOKAHEAD`, default OFF). `None` when the flag is off.
     sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>>,
+    /// Axioms the clausifier deferred out of `clauses` (`ClauseStats::deferred`):
+    /// the engine never sees them, so a witness built here can lack what they
+    /// entail (#387).
+    deferred_clauses: usize,
 }
 
 impl ConsistencyCache {
@@ -6124,7 +6132,8 @@ impl ConsistencyCache {
             });
         }
 
-        let (mut clauses, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let (mut clauses, clause_stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let deferred_clauses = clause_stats.deferred;
         // DifferentIndividuals → `{a}⊓{b}⊑⊥` disjointness clauses (the
         // SAME mechanism the classify wedge uses; never engine `neq`).
         push_different_individuals_disjoint(&internal, num_classes, &mut clauses);
@@ -6187,6 +6196,7 @@ impl ConsistencyCache {
             num_classes,
             num_individuals,
             sat_lookahead,
+            deferred_clauses,
         }
     }
 
@@ -6297,15 +6307,22 @@ impl ConsistencyCache {
     /// Consumed via [`Self::realize_base_model_types`], the
     /// realize-loop's pseudo-model shortcut (`RUSTDL_PSEUDO_MODEL`,
     /// see `realize::pseudo_model_enabled`).
+    ///
+    /// Also returns why the witness may not be the engine's deterministic closure
+    /// over the whole KB ([`realize::WitnessPruneReasons`], #387), read off the
+    /// same engine run.
     pub(crate) fn base_model_types(
         &self,
         deadline: Option<std::time::Instant>,
-    ) -> Option<Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>> {
+    ) -> Option<(
+        Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>,
+        realize::WitnessPruneReasons,
+    )> {
         use owl_dl_tableau::hyper::HyperResult;
         let mut engine = self.build_seeded_engine();
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
-            HyperResult::Sat => Some(
-                (0..self.num_individuals)
+            HyperResult::Sat => {
+                let types = (0..self.num_individuals)
                     .map(|i| {
                         engine
                             .seeded_individual_labels(i)
@@ -6313,8 +6330,22 @@ impl ConsistencyCache {
                             .into_iter()
                             .collect()
                     })
-                    .collect(),
-            ),
+                    .collect();
+                // `stats` is reset per decide and this is the only decide here.
+                let reasons = realize::WitnessPruneReasons {
+                    branched: engine.stats().branches_taken > 0,
+                    deferred_clauses: self.deferred_clauses > 0,
+                    refused_clauses: engine.refused_clauses() > 0,
+                    // The #137 net runs only on the incremental drain
+                    // (`HyperEngine::reseed_net_due`), so either flag at `=0`
+                    // leaves a skipped `∃` unrecovered.
+                    reseed_net_off: !(crate::incremental_fixpoint_enabled()
+                        && crate::reseed_verify_enabled()),
+                    inverse_functional_max_off:
+                        !owl_dl_core::convert::inverse_functional_max_enabled(),
+                };
+                Some((types, reasons))
+            }
             HyperResult::Unsat | HyperResult::Stalled => None,
         }
     }
@@ -10010,7 +10041,10 @@ impl PreparedOntology {
     pub(crate) fn realize_base_model_types(
         &self,
         deadline: Option<std::time::Instant>,
-    ) -> Option<Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>> {
+    ) -> Option<(
+        Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>,
+        realize::WitnessPruneReasons,
+    )> {
         self.consistency
             .as_ref()
             .and_then(|c| c.base_model_types(deadline))
@@ -12354,9 +12388,10 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             .individual_id("http://ex/#a")
             .expect("a is declared");
         let prepared = PreparedOntology::from_internal(internal).expect("prepares");
-        let types = prepared
+        let (types, reasons) = prepared
             .realize_base_model_types(None)
             .expect("a consistent ABox yields a witness model");
+        assert!(!reasons.any(), "a Horn ABox needs no choice: {reasons:?}");
         let a_types = types
             .get(a.index() as usize)
             .expect("witness types indexed by individual");

@@ -87,12 +87,14 @@ public final class RustdlProofService extends ProofService {
         OWLSubClassOfAxiom subClassOf = (OWLSubClassOfAxiom) entailment;
         OWLClassExpression sub = subClassOf.getSubClass();
         OWLClassExpression sup = subClassOf.getSuperClass();
-        // #409: rustdl prove refuses owl:Thing / owl:Nothing (they are not in its
-        // named-class vocabulary); declining them here lets Protégé use the explanation
-        // generator instead (X ⊑ owl:Nothing is its unsatisfiability query).
+        // #427: rustdl prove resolves owl:Thing / owl:Nothing to ⊤ / ⊥ (#409 had to
+        // decline them, when prove refused them). Claimed: X ⊑ owl:Nothing (Protégé's
+        // unsatisfiability query; a step proof in EL), owl:Thing ⊑ X and
+        // owl:Thing ⊑ owl:Nothing. Still declined: the tautologies X ⊑ owl:Thing and
+        // owl:Nothing ⊑ X, which hold with no axioms, so there is no proof to show (and
+        // RustdlProof refuses an empty justification).
         return !sub.isAnonymous() && !sup.isAnonymous()
-            && !sub.isOWLThing() && !sub.isOWLNothing()
-            && !sup.isOWLThing() && !sup.isOWLNothing();
+            && !sup.isOWLThing() && !sub.isOWLNothing();
     }
 
     /**

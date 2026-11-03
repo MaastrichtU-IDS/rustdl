@@ -1102,6 +1102,20 @@ fn exit_unknown_node_cap() -> ! {
     std::process::exit(3);
 }
 
+/// #427: a query that IS the consistency check (`sat owl:Thing`,
+/// `subclass owl:Thing owl:Nothing`) gave up: print `unknown` and exit 3, naming
+/// the consistency budgets as `consistent` does.
+fn exit_unknown_consistency_gave_up() -> ! {
+    println!("unknown");
+    eprintln!(
+        "warning: this query is the consistency check, and no inconsistency was found \
+         within budget; that is not a verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS \
+         (default 10000) or, for ontologies that count data values, \
+         RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000) for more budget."
+    );
+    std::process::exit(3);
+}
+
 /// An `instance` probe was cut (deadline, node cap or depth bail-out): print
 /// `unknown` and exit 3, as for [`exit_unknown_node_cap`] (#363 A2).
 fn exit_unknown_probe_cut() -> ! {
@@ -2003,9 +2017,19 @@ fn main() -> Result<()> {
             let (verdict, stats) = is_class_satisfiable_with_stats(&onto, &class_iri)
                 .context("is_class_satisfiable_with_stats")?;
             if stats.incomplete {
+                // #427: `sat owl:Thing` is the consistency check, whose give-up is
+                // not the node cap's.
+                if class_iri == owl_dl_core::OWL_THING_IRI {
+                    exit_unknown_consistency_gave_up();
+                }
                 exit_unknown_node_cap();
             }
-            note_trusted_consistency(&stats);
+            if class_iri == owl_dl_core::OWL_THING_IRI {
+                // #427: the verdict IS `consistent`'s, with its #392 note.
+                note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
+            } else {
+                note_trusted_consistency(&stats);
+            }
             println!("{}", if verdict { "sat" } else { "unsat" });
         }
         Command::Subclass {
@@ -2023,10 +2047,20 @@ fn main() -> Result<()> {
                 let _cap = owl_dl_reasoner::single_query_node_cap();
                 let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
                     .context("is_subclass_of_with_stats")?;
+                let is_consistency_query =
+                    sub == owl_dl_core::OWL_THING_IRI && sup == owl_dl_core::OWL_NOTHING_IRI;
                 if stats.incomplete {
+                    if is_consistency_query {
+                        exit_unknown_consistency_gave_up();
+                    }
                     exit_unknown_node_cap();
                 }
-                note_trusted_consistency(&stats);
+                if is_consistency_query {
+                    // #427: `⊤ ⊑ ⊥` IS the consistency check, with its #392 note.
+                    note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
+                } else {
+                    note_trusted_consistency(&stats);
+                }
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
@@ -2284,12 +2318,18 @@ fn main() -> Result<()> {
             let _cap = owl_dl_reasoner::single_query_node_cap();
             let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
                 .context("is_subclass_of_with_stats")?;
-            let answered_by = if stats.answered_by_saturation {
+            // #427: `C ⊑ owl:Thing` / `owl:Nothing ⊑ C` are answered without reasoning.
+            let structural = owl_dl_reasoner::is_builtin_tautology(&sub, &sup);
+            let answered_by = if structural {
+                "structure"
+            } else if stats.answered_by_saturation {
                 "saturation"
             } else {
                 "tableau"
             };
-            let completeness = if stats.pure_el_mode {
+            let completeness = if structural {
+                " (owl:Thing / owl:Nothing: holds in every ontology)"
+            } else if stats.pure_el_mode {
                 " (input is pure EL; closure is complete)"
             } else if stats.answered_by_saturation {
                 " (closure produced a positive witness)"
@@ -2607,6 +2647,15 @@ fn main() -> Result<()> {
                             }
                         }
                     }
+                }
+                // #427: a tautology (`C ⊑ owl:Thing`, `owl:Nothing ⊑ C`) needs no axioms.
+                ProveEntailmentResult::JustificationFallback(j)
+                    if j.axioms.is_empty() && j.minimal_guaranteed =>
+                {
+                    println!(
+                        "# {sub} SubClassOf {sup} holds in every ontology \
+                         (owl:Thing / owl:Nothing): no axioms needed"
+                    );
                 }
                 ProveEntailmentResult::JustificationFallback(j) => {
                     println!(

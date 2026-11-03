@@ -328,6 +328,24 @@ impl Verdict {
 ///
 /// # Errors
 /// Propagates [`ReasonError`] from the underlying reasoner.
+/// #427: the class queries whose goal is `⊥`, restated as the dedicated forms,
+/// so they get those forms' oracle (the `Inconsistent` arm's saturation mode and
+/// #401 consistency inheritance): `C ⊑ owl:Nothing` is `Unsatisfiable(C)`, and
+/// `owl:Thing ⊑ owl:Nothing` / `Unsatisfiable(owl:Thing)` are `Inconsistent`.
+/// `None` when `q` is already canonical. A named argument is kept as given, so an
+/// unknown IRI still errors in the oracle.
+fn canonical_builtin_query(q: &Entailment) -> Option<Entailment> {
+    match q {
+        Entailment::SubClassOf { sub, sup } if sup == OWL_NOTHING => Some(if sub == OWL_THING {
+            Entailment::Inconsistent
+        } else {
+            Entailment::Unsatisfiable { class: sub.clone() }
+        }),
+        Entailment::Unsatisfiable { class } if class == OWL_THING => Some(Entailment::Inconsistent),
+        _ => None,
+    }
+}
+
 pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool, ReasonError> {
     Ok(entails_reporting(onto, q)? == Verdict::Entailed)
 }
@@ -343,6 +361,8 @@ pub fn entails_reporting<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
 ) -> Result<Verdict, ReasonError> {
+    let canonical = canonical_builtin_query(q);
+    let q = canonical.as_ref().unwrap_or(q);
     let subclass = |sub: &str, sup: &str| -> Result<Verdict, ReasonError> {
         let (holds, stats) = crate::is_subclass_of_with_stats(onto, sub, sup)?;
         Ok(Verdict::from_check(holds, stats.incomplete))
@@ -1434,14 +1454,18 @@ fn justification<A: ForIRI>(
     fragment: FragmentClassification,
     gave_up: bool,
 ) -> Justification<A> {
+    // The empty set is minimal whatever the fragment (#427: the justification of
+    // a tautology such as `C ⊑ owl:Thing`).
+    let empty = axioms.is_empty();
     Justification {
         axioms,
         fragment,
-        minimal_guaranteed: !gave_up
-            && matches!(
-                fragment,
-                FragmentClassification::PureEl | FragmentClassification::Horn
-            ),
+        minimal_guaranteed: empty
+            || (!gave_up
+                && matches!(
+                    fragment,
+                    FragmentClassification::PureEl | FragmentClassification::Horn
+                )),
     }
 }
 
@@ -1488,6 +1512,8 @@ fn search_one<A: ForIRI>(
     all_candidates: &[Component<A>],
     q: &Entailment,
 ) -> Result<Search<A>, ReasonError> {
+    let canonical = canonical_builtin_query(q);
+    let q = canonical.as_ref().unwrap_or(q);
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
     let _consistency = inherited_query_consistency(fixed, all_candidates, q);
     // #369: this oracle maps `Err(Inconsistent)` to the vacuous answer's verdict.
@@ -1513,6 +1539,8 @@ fn search_all<A: ForIRI>(
     q: &Entailment,
     max: usize,
 ) -> Result<Search<A>, ReasonError> {
+    let canonical = canonical_builtin_query(q);
+    let q = canonical.as_ref().unwrap_or(q);
     let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
     let _consistency = inherited_query_consistency(fixed, all_candidates, q);
     // #369: this oracle maps `Err(Inconsistent)` to the vacuous answer's verdict.

@@ -56,6 +56,20 @@ pub const DKEY_IRI_PREFIX: &str = "urn:rustdl-dkey:";
 /// output surfaces (they have no real IRI). Cannot collide with an input individual IRI.
 pub const ANON_IRI_PREFIX: &str = "urn:rustdl-anon:";
 
+/// `owl:Thing`, which every class-expression use lowers to the pool's `⊤`.
+pub const OWL_THING_IRI: &str = "http://www.w3.org/2002/07/owl#Thing";
+
+/// `owl:Nothing`, which every class-expression use lowers to the pool's `⊥`.
+pub const OWL_NOTHING_IRI: &str = "http://www.w3.org/2002/07/owl#Nothing";
+
+/// Is `iri` one of the two built-in classes, `owl:Thing` or `owl:Nothing`?
+/// They are never named classes in the vocabulary (#427): a use lowers to `⊤`/`⊥`,
+/// and a declaration interns nothing. A query naming one must resolve it to `⊤`/`⊥`.
+#[must_use]
+pub fn is_builtin_class_iri(iri: &str) -> bool {
+    iri == OWL_THING_IRI || iri == OWL_NOTHING_IRI
+}
+
 /// Datatype tag for the `xsd:float` (f32-precision) `DKey` namespace.
 /// Full prefix is `urn:rustdl-dkey:f:`.
 const DKEY_FLOAT_TAG: &str = "f:";
@@ -1274,8 +1288,8 @@ pub fn convert_class_expression<A: ForIRI>(
             // structural Top/Bot rather than interning the IRI as if
             // it were an arbitrary user class.
             match iri {
-                "http://www.w3.org/2002/07/owl#Thing" => Ok(pool.top()),
-                "http://www.w3.org/2002/07/owl#Nothing" => Ok(pool.bot()),
+                OWL_THING_IRI => Ok(pool.top()),
+                OWL_NOTHING_IRI => Ok(pool.bot()),
                 _ => {
                     let class_id = vocab.intern_class(iri);
                     Ok(pool.atomic(class_id))
@@ -2283,6 +2297,13 @@ pub fn convert_component<A: ForIRI>(
         | C::AnnotationPropertyRange(_) => Ok(None),
 
         // ── Declarations ────────────────────────────────────────────────
+        // #427: declaring a built-in interns nothing. It used to intern an
+        // axiom-free ordinary class under the built-in's IRI, a "twin" that every
+        // use of the IRI bypasses (they lower to ⊤/⊥ above), so queries resolving
+        // the IRI through the vocabulary answered for the twin: `sat owl:Nothing`
+        // said "sat", `A ⊑ owl:Thing` said "no". Now a declared built-in is
+        // exactly the undeclared one.
+        C::DeclareClass(d) if is_builtin_class_iri(d.0.0.as_ref()) => Ok(None),
         C::DeclareClass(d) => Ok(Some(Axiom::DeclareClass(intern_class_decl(&d.0, vocab)))),
         C::DeclareObjectProperty(d) => {
             let iri: &str = d.0.0.as_ref();
@@ -2329,6 +2350,9 @@ pub fn convert_component<A: ForIRI>(
             Ok(Some(Axiom::DisjointClasses(ids)))
         }
         C::DisjointUnion(ax) => {
+            // A built-in as the union's class still interns an ordinary twin here
+            // (#427 follow-up): `Twin ≡ ⊔members` plus the disjointness, a sound
+            // weakening that loses the covering of ⊤ / the emptiness of the members.
             let class = intern_class_decl(&ax.0, vocab);
             let mut members = Vec::with_capacity(ax.1.len());
             for ce in &ax.1 {

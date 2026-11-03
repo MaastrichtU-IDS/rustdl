@@ -393,7 +393,11 @@ def is_class_satisfiable(path, class_iri):
     """True iff `class_iri` is satisfiable (not ⊑ ⊥). If the probe gave up (node
     cap), returns `True` and emits `IncompleteQueryWarning`. Emits
     `TrustedConsistencyWarning` when the answer relies on a trusted consistency
-    verdict."""
+    verdict.
+
+    `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427), declared or not:
+    `owl:Nothing` is unsatisfiable, and `owl:Thing` is satisfiable iff the ontology
+    is consistent (this IS `is_consistent`, with its warnings)."""
     sat, incomplete, trusted = _is_class_satisfiable_native(path, class_iri)
     _warn_if_query_incomplete("is_class_satisfiable", incomplete)
     _warn_if_trusted_consistency("is_class_satisfiable", trusted)
@@ -402,7 +406,11 @@ def is_class_satisfiable(path, class_iri):
 
 def is_subclass_of(path, sub, sup):
     """True iff `sub ⊑ sup` is entailed. If the probe gave up (node cap), returns
-    `False` and emits `IncompleteQueryWarning`."""
+    `False` and emits `IncompleteQueryWarning`.
+
+    `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427): `C ⊑ owl:Thing` and
+    `owl:Nothing ⊑ C` are always `True`, `C ⊑ owl:Nothing` is `C`'s
+    unsatisfiability. An unknown IRI still raises, whatever the other argument."""
     subsumed, incomplete, trusted = _is_subclass_of_native(path, sub, sup)
     _warn_if_query_incomplete("is_subclass_of", incomplete)
     _warn_if_trusted_consistency("is_subclass_of", trusted)
@@ -412,7 +420,11 @@ def is_subclass_of(path, sub, sup):
 def is_instance_of(path, class_iri, individual_iri):
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
     cut (deadline, node cap, depth limit), returns `False` and emits
-    `IncompleteQueryWarning`. Emits `ConsistencyUndeterminedWarning` (#369)."""
+    `IncompleteQueryWarning`. Emits `ConsistencyUndeterminedWarning` (#369).
+
+    `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427). Like every class,
+    they raise on an inconsistent ontology: `a : owl:Thing` holds anyway, but the
+    error is how callers learn the ontology is broken, so ⊤ is no exception."""
     is_inst, incomplete, undetermined = _is_instance_of_native(
         path, class_iri, individual_iri
     )

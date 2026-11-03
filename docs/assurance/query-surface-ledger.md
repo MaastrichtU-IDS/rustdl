@@ -85,10 +85,22 @@ chain-induced poison residual, surfaces as a guaranteed answer, the same exposur
 An unknown class IRI is not a give-up and gets no verdict on any of these
 surfaces: `sat`, `subclass`, `explain`, `instance`, `instances`, `justify` and
 `prove` return `ReasonError::UnknownClass` (CLI: `class IRI not in ontology`,
-exit 1, which is not the exit 3 of `unknown`). That includes `owl:Thing` and
-`owl:Nothing`, which are not in the named-class vocabulary unless the ontology
-declares them (a declared one resolves to an ordinary, axiom-free class).
-`prove` used to answer "NOT entailed" instead, even for `Aa ⊑ Aa` (#409).
+exit 1, which is not the exit 3 of `unknown`). `prove` used to answer "NOT
+entailed" instead, even for `Aa ⊑ Aa` (#409).
+
+- **`owl:Thing` / `owl:Nothing` are not unknown (#427).** Every surface above
+  resolves them to the built-in ⊤ / ⊥ before the vocabulary, declared or not. A
+  declaration interns nothing; it used to intern an axiom-free ordinary class,
+  which gave wrong answers such as `sat owl:Nothing` → `sat`. Each argument
+  resolves before any shortcut, so a typo beside a built-in is still
+  `UnknownClass`. The tautologies (`C ⊑ ⊤`, `⊥ ⊑ C`) are answered without
+  reasoning and carry no flag. `sat ⊤` and `⊤ ⊑ ⊥` are the consistency check, so
+  they carry its `incomplete` (a give-up reported as consistent: CLI exit 3 with
+  the consistency-budget wording) and its #392 `relies_on_trusted_consistency`
+  (CLI: `consistent`'s note). Instance queries of either built-in keep the
+  #313/#419 `Inconsistent` error. `Classification::is_subclass` answers `⊤ ⊑ C`
+  `false` (not materialised), as for anything it does not hold. Pinned by
+  `builtin_class_queries.rs` (reasoner, CLI) and `test_builtin_classes.py`.
 
 ## Not a give-up, but still a gap (filed)
 

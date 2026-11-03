@@ -1,7 +1,7 @@
 //! #409: `prove` with a class IRI that is not in the ontology is an error
 //! (`class IRI not in ontology`, exit 1), as for `subclass`, never
-//! "NOT entailed". `owl:Thing` / `owl:Nothing` are not in the named-class
-//! vocabulary (unless declared), so they are refused the same way.
+//! "NOT entailed". `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427), so
+//! they are answered, but a typo beside one is still refused.
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
@@ -100,11 +100,28 @@ fn prove_json_refuses_an_unknown_sup_class() {
 }
 
 #[test]
-fn prove_refuses_owl_thing() {
-    // `A ⊑ owl:Thing` holds; it used to print "NOT entailed".
+fn prove_answers_owl_thing_but_refuses_a_typo_beside_it() {
+    // #427: `A ⊑ owl:Thing` holds in every ontology. It used to be refused (and,
+    // with owl:Thing declared, printed "NOT entailed").
     let thing = "http://www.w3.org/2002/07/owl#Thing";
+    let nothing = "http://www.w3.org/2002/07/owl#Nothing";
     let f = Fixture::new("thing");
-    assert_refused(&run(&["prove", f.path(), "http://ex/#A", thing]), thing);
+    let held = run(&["prove", f.path(), "http://ex/#A", thing]);
+    assert_eq!(held.code, 0, "{}", held.stderr);
+    assert!(
+        held.stdout.contains("holds in every ontology"),
+        "{}",
+        held.stdout
+    );
+    // The tautology shortcut must not swallow the #409 typo check.
+    assert_refused(
+        &run(&["prove", f.path(), "http://ex/#Aa", thing]),
+        "http://ex/#Aa",
+    );
+    assert_refused(
+        &run(&["prove", f.path(), nothing, "http://ex/#Aa"]),
+        "http://ex/#Aa",
+    );
 }
 
 #[test]

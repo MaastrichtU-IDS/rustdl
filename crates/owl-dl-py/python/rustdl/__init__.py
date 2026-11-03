@@ -311,8 +311,8 @@ def _prepared_justify(self: "PreparedOntology", query):
     `IncompleteQueryWarning` when a reasoner check gave up (see
     `rustdl.justify`)."""
     axioms, incomplete, trusted = self._justify_reporting(query)
-    _warn_if_oracle_trusted("PreparedOntology.justify", trusted)
     _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete)
+    _warn_if_oracle_trusted("PreparedOntology.justify", trusted)
     return axioms
 
 
@@ -321,8 +321,8 @@ def _prepared_justify_all(self: "PreparedOntology", query, max=10):
     `IncompleteQueryWarning` when a reasoner check gave up (see
     `rustdl.justify_all`)."""
     js, incomplete, trusted = self._justify_all_reporting(query, max)
-    _warn_if_oracle_trusted("PreparedOntology.justify_all", trusted)
     _warn_if_explanation_incomplete("PreparedOntology.justify_all", incomplete)
+    _warn_if_oracle_trusted("PreparedOntology.justify_all", trusted)
     return js
 
 

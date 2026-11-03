@@ -210,9 +210,10 @@ fn justify_reports_a_trusted_not_entailed() {
     assert_eq!(out.status, Verdict::Entailed);
 }
 
-/// An entailed query marks the flag only through a subset probe that answered
-/// "not entailed" on a trusted `Sat`; never because #401 lent the trust to an
-/// entailed check. `A ⊑ B` on the `ABox`-free `TBox` lends nothing.
+/// Control: an entailed justification over an `ABox`-free `TBox` (nothing lent,
+/// no wedge) is not flagged. That #401's lent trust on an ENTAILED check never
+/// marks is pinned by the unit test `justify::oracle_trust_tests::
+/// only_a_not_entailed_verdict_marks`, which a mark-on-entailed sabotage turns red.
 #[test]
 fn an_entailed_check_alone_never_marks() {
     let _g = lock();

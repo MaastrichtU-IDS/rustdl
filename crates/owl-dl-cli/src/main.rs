@@ -1241,10 +1241,7 @@ fn find_all_justifications_outcome(
 /// which callers turn into exit 3; a give-up inside the search leaves a sound
 /// result, so it only warns.
 fn warn_if_justify_gave_up(outcome: &JustifyOutcome<RcStr>) -> bool {
-    note_oracle_trusted_wedge(
-        outcome.status == Verdict::NotEntailed,
-        outcome.relies_on_trusted_consistency,
-    );
+    note_oracle_trusted_wedge(outcome.status, outcome.relies_on_trusted_consistency);
     if outcome.status == Verdict::Unknown {
         eprintln!(
             "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before deciding \
@@ -1261,14 +1258,14 @@ fn warn_if_justify_gave_up(outcome: &JustifyOutcome<RcStr>) -> bool {
 /// #429: a justify / repair oracle call answered "not entailed" on the
 /// consistency wedge's model alone. Not a give-up: stdout and the exit code are
 /// unchanged.
-fn note_oracle_trusted_wedge(not_entailed: bool, trusted: bool) {
+fn note_oracle_trusted_wedge(status: Verdict, trusted: bool) {
     if !trusted {
         return;
     }
-    let what = if not_entailed {
-        "\"not entailed\" rests on it"
-    } else {
-        "every result shown still holds, but its minimality may rest on it"
+    let what = match status {
+        Verdict::NotEntailed => "\"not entailed\" rests on it",
+        Verdict::Entailed => "every result shown still holds, but its minimality may rest on it",
+        Verdict::Unknown => "the give-up aside, a check below the top level rested on it",
     };
     eprintln!(
         "note: a reasoner check answered \"not entailed\" because the consistency wedge \

@@ -13,20 +13,27 @@ Ontology(<http://ex/trusted429py>
   Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
   Declaration(Class(:D)) Declaration(ObjectProperty(:r))
   SubClassOf(:A ObjectUnionOf(:C :D)) SubClassOf(:C :B) SubClassOf(:D :B)
+  SubClassOf(:B ObjectSomeValuesFrom(:r :D))
   ClassAssertion(:A :a) ObjectPropertyAssertion(:r :a :b))
 """
+# The told `B ⊑ ∃r.D` gives materialize_existential_successors a row to produce;
+# with none it returns before realizing and reports no flag at all.
 
 NOT_ENTAILED = ["subclass", "http://ex/#A", "http://ex/#C"]
 
 SURFACES = [
     ("classify", lambda p: rustdl.classify(p)),
+    ("classify_bytes", lambda p: rustdl.classify_bytes(open(p, "rb").read(), format="ofn")),
     ("realize", lambda p: rustdl.realize(p)),
     ("materialize_inferred_subclass_axioms", lambda p: rustdl.materialize_inferred_subclass_axioms(p)),
     ("materialize_inferred_class_assertions", lambda p: rustdl.materialize_inferred_class_assertions(p)),
+    ("materialize_existential_successors", lambda p: rustdl.materialize_existential_successors(p)),
     ("diagnose", lambda p: rustdl.diagnose(p)),
     ("justify", lambda p: rustdl.justify(p, NOT_ENTAILED)),
     ("justify_all", lambda p: rustdl.justify_all(p, NOT_ENTAILED)),
     ("repair", lambda p: rustdl.repair(p, NOT_ENTAILED)),
+    ("PreparedOntology.justify", lambda p: rustdl.prepare(p).justify(NOT_ENTAILED)),
+    ("PreparedOntology.justify_all", lambda p: rustdl.prepare(p).justify_all(NOT_ENTAILED)),
 ]
 
 

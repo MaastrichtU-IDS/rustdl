@@ -936,6 +936,7 @@ dependencies = [
  "owl-dl-tableau",
  "proptest",
  "rayon",
+ "serde_json",
  "thiserror 2.0.20",
  "tracing",
 ]

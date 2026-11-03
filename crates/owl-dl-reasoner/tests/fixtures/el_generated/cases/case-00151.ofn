@@ -1,0 +1,22 @@
+# gen 97f692139103 seed 20261106 case 151 profile el_guaranteed
+# motif: nested_range_b
+Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C0))
+Declaration(Class(:C1))
+Declaration(Class(:C2))
+Declaration(Class(:C3))
+Declaration(ObjectProperty(:r0))
+Declaration(ObjectProperty(:r1))
+Declaration(ObjectProperty(:r2))
+ObjectPropertyRange(:r0 :C0)
+SubClassOf(:C3 ObjectSomeValuesFrom(:r2 ObjectSomeValuesFrom(:r0 :C1)))
+SubClassOf(ObjectSomeValuesFrom(:r2 ObjectSomeValuesFrom(:r0 ObjectIntersectionOf(:C1 :C0))) :C2)
+SubObjectPropertyOf(:r1 :r2)
+DisjointClasses(:C0 :C3)
+SubClassOf(:C2 :C3)
+SubClassOf(ObjectIntersectionOf(:C3 :C0) owl:Nothing)
+EquivalentClasses(:C1 ObjectSomeValuesFrom(:r1 owl:Thing))
+)

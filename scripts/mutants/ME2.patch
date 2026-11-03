@@ -7,6 +7,8 @@
 # env: -
 # expect: none
 # expect-routes: R3.1/R3.2 (warm only; the one-ontology-per-process CLI routes cannot see it)
+# note: the memo is WRITTEN only by saturate(); detection rides on a call that takes that path
+#       (prep, or the warm driver's interleaved is_consistent).
 # note: two earlier versions changed no measured answer and were replaced: a told-tables
 #       cache (told tables do not decide the hierarchy), and a memo in saturate() alone
 #       (classify with a global budget takes saturate_with_deadline instead).

@@ -305,16 +305,19 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
         rr = R.get(ref)
         if rr is None:
             continue
+        # R2.3, the FP check, is never budget-exempt: it runs on every completed run, as a
+        # cut-publishing bug is exactly what makes a run `incomplete`.
+        if oans is not None and oans["consistent"]:
+            for name, run_ in (("default", full), (ref, rr)):
+                if run_.get("status") == "ok":
+                    for f in fp_findings(oans, classes, run_["answer"]):
+                        add(f"R2.3.{ref}", "violation", f"{name} {f['kind']} {f['witness']}")
         if full_gave or gave_up(rr):
             add(f"R2.{ref}", "budget-cut")
             continue
         fa, ra = full["answer"], rr["answer"]
         if fa["consistent"] != ra["consistent"]:
             add(f"R2.4.{ref}", "violation", "consistent differs")
-        if oans is not None and oans["consistent"]:
-            for name, ans in (("default", fa), (ref, ra)):
-                for f in fp_findings(oans, classes, ans):
-                    add(f"R2.3.{ref}", "violation", f"{name} {f['kind']} {f['witness']}")
         if key(fa) == key(ra):
             add(f"R2.{ref}", "ok")
         else:
@@ -344,11 +347,16 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
                 add(f"R4.1.{cut}", "info", "cut ⊄ full, not refuted by the oracle")
         flagged = any(ca["flags"].get(k) for k in GIVE_UP_FLAGS) \
             or bool(ca["flags"].get("derived_same_undecided"))
+        broke = False
         if key(ca) != key(fa) and not flagged:
             add(f"R4.2.{cut}", "violation", "silent cut")
+            broke = True
         if not ca["consistent"] and fa["consistent"]:
             add(f"R4.3.{cut}", "violation", "cut says inconsistent")
-        if key(ca) == key(fa) or flagged:
+            broke = True
+        if any(l == f"R4.1.{cut}" and o == "violation" for l, o, _ in out):
+            broke = True
+        if not broke:
             add(f"R4.{cut}", "ok")
     # R5 fragment and serialisation
     tx = R.get("text")
@@ -435,7 +443,6 @@ def cmd_laws(a):
     viol = []
     for k, outs in sorted(res.items()):
         for law, outcome, detail in outs:
-            base = law.split(".")[0] if law.count(".") == 1 and not law[1:2].isdigit() else law
             tally.setdefault(law, Counter())[outcome] += 1
             if outcome == "violation":
                 viol.append([k[0], k[1], law, detail])
@@ -518,6 +525,12 @@ def self_test():
     ok("R4.1 FP under a cut, flags ignored",
        laws({"full": full, "cut_p1": r(base | {(B, C)}, incomplete=True)}),
        {("R4.1.cut_p1", "violation")})
+    ok("R4 is not tallied ok when R4.1 fired",
+       ("R4.cut_p1", "ok") in laws({"full": full, "cut_p1": r(base | {(B, C)}, incomplete=True)}),
+       False)
+    ok("R2.3 FP check runs on a given-up reference run",
+       laws({"full": full, "refA": r(base | {(B, C)}, incomplete=True)}),
+       {("R2.3.refA", "violation"), ("R2.refA", "budget-cut")})
     ok("R4.2 silent cut", laws({"full": full, "cut_g1": r(set())}), {("R4.2.cut_g1", "violation")})
     ok("R4.2 flagged cut is fine", laws({"full": full, "cut_g1": r(set(), incomplete=True)}),
        {("R4.cut_g1", "ok")})

@@ -564,13 +564,15 @@ sides.
 | R2 (b) | default vs `HYPERTABLEAU=0` | 3926 | 3898 | 74 | 0 |
 | R3.1 | cold CLI vs warm Python (one process, 4000 ontologies) | 3984 | 3984 | 16 | 0 |
 | R3.2 | warm in order vs warm shuffled | 3985 | 3985 | 15 | 0 |
-| R3.3 | `is_subclass` vs `direct_subsumers` + `equivalent_classes` | 4000 | 3999 | – | 1, unconfirmed (below) |
+| R3.3 | `is_subclass` vs `direct_subsumers` + `equivalent_classes` | 4000 (also on the 15 given-up runs) | 3999 | – | **1, reproduced (below)** |
 | R4 | `--global-timeout-ms` 1, 5, 25 and `--pair-timeout-ms 1` vs full | 3984 each | 3984 each | 16 | 0 |
 | R5.1 | a must-leave-PureEl token, yet `# fragment: pure-EL` | 2721 | 2721 | – | 0 |
 | R5.2 | an `el_guaranteed` case reports PureEl | 1000 | 998 | – | 2: the #108 composed-chain-range exit, as pre-declared |
 | R5.3 | text output vs JSON output | 3984 | 3984 | 16 | 0 |
 
-**R2 is not "default ⊆ reference".** All 37 differences in R2 were adjudicated against the
+**R2 is not "default ⊆ reference".** R2.3, the FP check, runs on every completed run, given-up
+runs included, because a cut that publishes a wrong answer is exactly what makes a run
+`incomplete`. It finds 0 FPs on main. All 37 differences in R2 were adjudicated against the
 oracle, and none is an FP on either route:
 - 14: the reference recovers an oracle-confirmed entailment the default misses. The default
   reports `completeness_guaranteed: false` on all of them, so these are its declared exposure.
@@ -587,27 +589,40 @@ oracle, and none is an FP on either route:
 
 This is the documented `trust_sat` exposure, not a finding.
 
-**R3.3, unconfirmed.** In the first warm pass, default case 812's `Classification` reported
-`C1 ⊑ C7` and `C7 ⊑ C0` through `direct_subsumers`, but `is_subclass(C1, C0)` was false; `C4`
-behaved the same.
-- The run was incomplete: 10 pairs cut, under a 25 s global budget, while the host was loaded.
-- It did not reproduce in 120 targeted runs, at per-pair budgets of 1, 5, 25 and 100 ms and
-  global budgets of 20 ms to 3 s. In all 120 the relation stayed transitive.
-- A 300-case transitivity probe at 1 ms found none either.
-- The mechanism (a cut pair leaving the matrix non-transitive) is plausible but unproven. It is
-  kept here as an observation, not filed.
+**R3.3: a reproduced contradiction on an incomplete classification (issue draft sent to the
+manager).** On default case 812, at `per_pair_timeout_ms=1000` and `global_timeout_ms=25000`,
+one Python `Classification` object contradicts itself:
+- `direct_subsumers` gives `C1 ⊑ C7` and `C7 ⊑ C0`, yet `is_subclass(C1, C0)` is false;
+  `C4` behaves the same.
+- The oracle confirms `C1 ⊑ C0`, so the answer is still sound: it misses a subsumption its own
+  direct relation implies.
+- It reproduced in both warm passes, then 5 of 5 times in isolation at those settings (11 cut
+  pairs each time).
+- My first attempts at 1–100 ms per pair, or with global budgets of 20 ms to 3 s, did not
+  reproduce it. They never used the observed settings, so they are not evidence against it.
+
+The mechanism is in the code. `direct_subsumers` is the Hasse reduction of the subsumption
+matrix, and `is_subclass` reads the matrix itself. A cut that records `C1 ⊑ C0` as not subsumed,
+while both legs were decided, leaves the matrix non-transitive. The CLI's
+`direct_subsumptions` is the same reduction, so a consumer closing it gets the (true) pair that
+`is_subclass` denies.
 
 **Mutants.** Two new mutants are in `scripts/mutants/`. Both are detected, as pre-declared. On
 500 cases (125 per set):
-- **ME1** (a cut per-pair probe published as subsumed) was caught by R4.1 in 5 cases: FPs under
-  a cut that the oracle refutes. Four came at `--pair-timeout-ms 1` and one at
-  `--global-timeout-ms 25`.
-- **ME2** (a process-global saturation memo keyed by class count) was caught only by the warm
-  route, in 97 cases: R3.2 on all 97, R3.1 on 48, R3.3 on 7. The CLI routes see nothing, because
-  they run one ontology per process. ME2 is the third version. Two earlier versions changed no
-  measured answer and were replaced before measurement:
-  - the first cached the told tables, which do not decide the hierarchy;
-  - the second memoised only `saturate()`, which a classify with a global budget bypasses.
+- **ME1** (a cut per-pair probe published as subsumed) was caught in **8 cases**:
+  - by R4.1, as an FP under a cut that the oracle refutes (4 cases at `--pair-timeout-ms 1`,
+    1 at `--global-timeout-ms 25`);
+  - by R2.3, as an oracle-refuted FP on the reference routes (3 on refA, 26 findings on refB).
+- **ME2** (a process-global saturation memo keyed by class count) was caught by the warm route
+  in **97 cases**: R3.2 on all 97, R3.1 on 48, R3.3 on 7.
+  - The memo is written only by `saturate()`. Warm detection relies on a call that takes that
+    path: prep, or the interleaved `is_consistent`.
+  - Only the cold `full` CLI route was run on ME2. Its answers are identical to main's on all
+    500, as expected for one ontology per process. R1, R2, R4 and R5 were not run on ME2.
+  - ME2 is the third version. Two earlier versions were also measured on these 500 cases and
+    detected by nothing, so they were replaced:
+    - the first cached the told tables, which do not decide the hierarchy;
+    - the second memoised only `saturate()`, which a classify with a global budget bypasses.
 
 **Limits.**
 - R1 compares 1 and 8 threads on one core. It tests interleavings, not real parallel speed, and
@@ -616,5 +631,12 @@ behaved the same.
   an interleaved `is_consistent`. `is_subclass_of` was dropped from the interleave because it
   runs no inconsistency guard and does not finish on an inconsistent KB (default case 438).
   Classify in the warm route uses a 25 s global budget, standing in for the CLI's 30 s kill.
-- R5.1's predictor is token-based. Degenerate `ObjectUnionOf(:C :C)` (3 control cases) and
-  `ObjectComplementOf` (neg-to-⊥) are not predictors, because the gate correctly admits them.
+- R5.1's predictor is token-based. Degenerate `ObjectUnionOf(:C :C)` is excluded: it is the only
+  predictor token in 4 control cases, 3 of which report pure-EL. `ObjectComplementOf` (neg-to-⊥)
+  is not a predictor. The gate correctly admits both.
+- R4.2 accepts a cut flagged only by `consistency_undetermined`. In three `--global-timeout-ms 1`
+  runs (default 242 and 1766, `data_heavy` 354), an inconsistent KB comes back
+  `consistent: true`, `incomplete: false`, with a hierarchy, and that flag is set. This is
+  permitted by the plan: the flag is the give-up signal for that case.
+- The warm give-up set lacks `parse_timed_out`, because the Python `Classification` does not
+  expose it.

@@ -6,7 +6,7 @@
 # reopens: a CUT pair published as subsumed instead of "not subsumed"
 # env: -
 # expect: none
-# expect-routes: R4.1@cut_p1 (an FP under a cut, refuted by the oracle)
+# expect-routes: R4.1@cut_p1 and cut_g25, R2.3 (FPs under a cut, refuted by the oracle)
 --- a/crates/owl-dl-reasoner/src/classify.rs	2026-11-03 16:43:19.665927390 +0000
 +++ b/crates/owl-dl-reasoner/src/classify.rs	2026-11-03 16:43:19.885929763 +0000
 @@ -5964,7 +5964,7 @@

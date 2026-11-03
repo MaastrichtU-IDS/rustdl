@@ -1018,11 +1018,19 @@ fn warn_if_incomplete(
         eprintln!(
             "{lead} {depth_capped} probe(s) hit the tableau's search-depth limit ({} decision \
              levels) and were left undecided. A larger --pair-timeout-ms does not recover \
-             these; the unbounded search has no such limit, but it may not terminate.",
+             these; the unbounded search has a far larger limit, but it may not terminate.",
             owl_dl_reasoner::MAX_SEARCH_DEPTH
         );
     }
-    if tail_bound_skips == 0 {
+    if tail_bound_skips == 0 && timed_out == 0 {
+        // Every cut is a depth-limit cut (#288): the unbounded run is not promised
+        // to complete, as the line above says.
+        eprintln!(
+            "   The classification is SOUND (no false subsumptions) but may be missing real \
+             ones. Re-run with `--pair-timeout-ms 0 --global-timeout-ms 0` for the unbounded \
+             result."
+        );
+    } else if tail_bound_skips == 0 {
         eprintln!(
             "   The classification is SOUND (no false subsumptions) but may be missing real \
              ones. Re-run with `--pair-timeout-ms 0 --global-timeout-ms 0` for the complete \

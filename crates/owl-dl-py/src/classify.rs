@@ -59,7 +59,7 @@ impl PyClassification {
     /// Of `timed_out_pairs`, the probes cut by the tableau's search-depth limit
     /// rather than by a timeout (#288). A larger `per_pair_timeout_ms` does not
     /// recover these; the unbounded run (`per_pair_timeout_ms=0,
-    /// global_timeout_ms=0`) has no such limit, but it may not terminate.
+    /// global_timeout_ms=0`) has a far larger limit, but it may not terminate.
     #[getter]
     fn depth_capped_pairs(&self) -> usize {
         self.inner.stats().depth_capped_pairs

@@ -477,7 +477,9 @@ pub struct ClassificationStats {
     /// probes and pair probes) that were cut by the search's decision-depth
     /// limit (`MAX_SEARCH_DEPTH`), directly or through early-abandon, rather
     /// than by a deadline or the node cap. No per-pair timeout recovers these:
-    /// only the deadline-free search, which has no such limit, does. The CLI
+    /// only the deadline-free search, whose limit (`DEEP_SEARCH_DEPTH`) is far
+    /// larger, can. With the opt-in `RUSTDL_TABLEAU_ITERATIVE_DEEPENING`, the
+    /// limit is the schedule's last level rather than 256. The CLI
     /// banner and the Python warning report them separately so they are not
     /// described as timeouts.
     ///

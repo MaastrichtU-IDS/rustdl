@@ -2007,6 +2007,7 @@ fn main() -> Result<()> {
             }
             note_trusted_consistency(&stats);
             println!("{}", if verdict { "sat" } else { "unsat" });
+            warn_consistency_undetermined("sat", stats.consistency_undetermined);
         }
         Command::Subclass {
             file,
@@ -2027,6 +2028,7 @@ fn main() -> Result<()> {
                     exit_unknown_node_cap();
                 }
                 note_trusted_consistency(&stats);
+                warn_consistency_undetermined("subclass", stats.consistency_undetermined);
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
@@ -2307,6 +2309,7 @@ fn main() -> Result<()> {
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },
             );
+            warn_consistency_undetermined("explain", stats.consistency_undetermined);
         }
         Command::Justify {
             file,

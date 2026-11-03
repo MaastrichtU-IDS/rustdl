@@ -3468,10 +3468,13 @@ pub(crate) fn query_kb_inconsistent_keeping_closure(
     if !query_inconsistency_guard_enabled() {
         return (false, None);
     }
+    let t = std::time::Instant::now();
     if reflexive_empty_clause_inconsistent(internal) {
         return (true, None);
     }
+    let refl_us = t.elapsed().as_micros();
     let closure = owl_dl_saturation::saturate(internal);
+    let sat_us = t.elapsed().as_micros() - refl_us;
     if saturation_says_inconsistent(&closure) {
         return (true, Some(closure));
     }
@@ -3481,6 +3484,12 @@ pub(crate) fn query_kb_inconsistent_keeping_closure(
             abox_check::check(&build_abox_check_inputs(internal).as_inputs(&closure)),
             abox_check::AboxVerdict::Inconsistent { .. }
         );
+    if std::env::var_os("RUSTDL_TRACE_CLASS_QUERY_GUARD").is_some() {
+        eprintln!(
+            "guard split (#428): refl_us={refl_us} sat_us={sat_us} abox_check_us={}",
+            t.elapsed().as_micros() - refl_us - sat_us
+        );
+    }
     (inconsistent, Some(closure))
 }
 
@@ -7618,6 +7627,14 @@ pub struct QueryStats {
     ///   If the `Sat` were ever wrong, the effect is a miss in the sound direction
     ///   ("satisfiable" / "not subsumed"), never a false positive.
     pub relies_on_trusted_consistency: bool,
+    /// #428: a positive answer ("unsatisfiable" / "subsumed") whose KB
+    /// consistency stayed undetermined (the #369 lazy check's wedge stalled or was
+    /// cut). On an inconsistent KB that answer holds vacuously. Set only by
+    /// [`is_class_satisfiable_with_stats`] and [`is_subclass_of_with_stats`] (and
+    /// their plain and `_internal` forms); a KB found inconsistent is
+    /// `Err(ReasonError::Inconsistent)` instead. Separate from `incomplete`:
+    /// nothing was cut. See [`crate::InstanceFlags::consistency_undetermined`].
+    pub consistency_undetermined: bool,
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -7763,7 +7780,85 @@ fn is_class_satisfiable_internal_full(
     internal: InternalOntology,
     class_iri: &str,
 ) -> Result<(bool, QueryStats), ReasonError> {
-    is_class_satisfiable_keeping(internal, class_iri).map(|(sat, stats, _)| (sat, stats))
+    if internal.vocabulary.class_id(class_iri).is_none() {
+        return Err(ReasonError::UnknownClass(class_iri.to_owned()));
+    }
+    class_query_guard(&internal)?;
+    let (sat, mut stats, left) = is_class_satisfiable_keeping(internal, class_iri)?;
+    // #428: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
+    stats.consistency_undetermined =
+        !sat && class_query_lazy_check(&left, "is_class_satisfiable")?;
+    Ok((sat, stats))
+}
+
+/// #428: the #313 inconsistency guard of the named class queries
+/// ([`is_class_satisfiable_with_stats`], [`is_subclass_of_with_stats`] and their
+/// plain and `_internal` forms, so `sat`, `subclass` and `explain`). They went
+/// straight to the `ABox`-seeded tableau, which on `family.ofn` (inconsistent; the
+/// `ABox` saturation finds it in ~11 s) ran past 60 s with no answer, while
+/// `sat-expr` errored `Inconsistent`. Now they run [`query_kb_inconsistent`] first
+/// and, after a positive answer, the #369 lazy check, as `sat-expr` and
+/// `subclass-expr` do.
+///
+/// Skipped when a caller lent a "consistent" verdict
+/// ([`inherit_query_consistency`]): justify lends its whole ontology's verdict to
+/// the subsets it probes, and a subset of a consistent KB is consistent. Default
+/// **ON**; `RUSTDL_CLASS_QUERY_GUARD=0` reverts (no guard, no lazy check).
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] when the guard proves the KB inconsistent.
+fn class_query_guard(internal: &InternalOntology) -> Result<(), ReasonError> {
+    if !class_query_guard_enabled()
+        || matches!(
+            INHERITED_QUERY_CONSISTENCY.with(std::cell::Cell::get),
+            Some(QueryConsistency::Consistent { .. })
+        )
+    {
+        return Ok(());
+    }
+    // `query_kb_inconsistent`, split so the trace can time its two halves.
+    let started = std::time::Instant::now();
+    let abox = abox_saturation::saturate_abox_consistency(internal).clash;
+    let abox_us = started.elapsed().as_micros();
+    let inconsistent = abox || query_kb_inconsistent_beyond_abox(internal);
+    if std::env::var_os("RUSTDL_TRACE").is_some()
+        || std::env::var_os("RUSTDL_TRACE_CLASS_QUERY_GUARD").is_some()
+    {
+        eprintln!(
+            "class query guard (#428): inconsistent={inconsistent} us={} abox_us={abox_us}",
+            started.elapsed().as_micros()
+        );
+    }
+    if inconsistent {
+        return Err(ReasonError::Inconsistent);
+    }
+    Ok(())
+}
+
+/// #428: the #369 lazy check after a positive named class query answer, when
+/// [`class_query_guard_enabled`]. `Ok(true)`: consistency undetermined.
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] on a witnessed inconsistency.
+fn class_query_lazy_check(left: &QueryOntology, surface: &str) -> Result<bool, ReasonError> {
+    if !class_query_guard_enabled() {
+        return Ok(false);
+    }
+    let started = std::time::Instant::now();
+    let r = left.lazy_inconsistency_check(surface);
+    if std::env::var_os("RUSTDL_TRACE_CLASS_QUERY_GUARD").is_some() {
+        eprintln!(
+            "class query lazy check (#428): {r:?} us={}",
+            started.elapsed().as_micros()
+        );
+    }
+    r
+}
+
+/// See [`class_query_guard`].
+#[must_use]
+pub fn class_query_guard_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASS_QUERY_GUARD").is_none_or(|v| v != "0")
 }
 
 /// [`is_class_satisfiable_internal_full`], also returning what the query left for
@@ -7792,6 +7887,7 @@ pub(crate) fn is_class_satisfiable_keeping(
                 incomplete: false,
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
+                consistency_undetermined: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -7805,6 +7901,7 @@ pub(crate) fn is_class_satisfiable_keeping(
                 incomplete: false,
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
+                consistency_undetermined: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -7819,6 +7916,7 @@ pub(crate) fn is_class_satisfiable_keeping(
             incomplete: cut,
             wedge_clauses_refused: refused,
             relies_on_trusted_consistency: trusted,
+            consistency_undetermined: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -8018,6 +8116,7 @@ fn is_consistent_internal_full(
                 incomplete: false,
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
+                consistency_undetermined: false,
             },
         ));
     }
@@ -8051,6 +8150,7 @@ fn is_consistent_internal_full(
                 incomplete: false,
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
+                consistency_undetermined: false,
             },
         ));
     }
@@ -8067,6 +8167,7 @@ fn is_consistent_internal_full(
                 incomplete: false,
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
+                consistency_undetermined: false,
             },
         ));
     }
@@ -8093,6 +8194,7 @@ fn is_consistent_internal_full(
                     incomplete: false,
                     wedge_clauses_refused: refused,
                     relies_on_trusted_consistency: false,
+                    consistency_undetermined: false,
                 },
             ));
         }
@@ -8115,6 +8217,7 @@ fn is_consistent_internal_full(
                     incomplete: gave_up,
                     wedge_clauses_refused: refused,
                     relies_on_trusted_consistency: false,
+                    consistency_undetermined: false,
                 },
             ));
         }
@@ -8133,6 +8236,7 @@ fn is_consistent_internal_full(
                     incomplete: false,
                     wedge_clauses_refused: refused,
                     relies_on_trusted_consistency: true,
+                    consistency_undetermined: false,
                 },
             ));
         }
@@ -8208,6 +8312,7 @@ fn is_consistent_internal_full(
             incomplete,
             wedge_clauses_refused: refused,
             relies_on_trusted_consistency: false,
+            consistency_undetermined: false,
         },
     ))
 }
@@ -8566,7 +8671,18 @@ fn is_subclass_of_internal_full(
     sub_iri: &str,
     super_iri: &str,
 ) -> Result<(bool, QueryStats), ReasonError> {
-    is_subclass_of_keeping(internal, sub_iri, super_iri).map(|(holds, stats, _)| (holds, stats))
+    for iri in [sub_iri, super_iri] {
+        if internal.vocabulary.class_id(iri).is_none() {
+            return Err(ReasonError::UnknownClass(iri.to_owned()));
+        }
+    }
+    class_query_guard(&internal)?;
+    let (holds, mut stats, left) = is_subclass_of_keeping(internal, sub_iri, super_iri)?;
+    // #428: as in `is_class_satisfiable_internal_full`. `C ⊑ C` holds in every
+    // KB, so it is never the vacuous answer.
+    stats.consistency_undetermined =
+        holds && sub_iri != super_iri && class_query_lazy_check(&left, "is_subclass_of")?;
+    Ok((holds, stats))
 }
 
 /// [`is_subclass_of_internal_full`], also returning what the query left for the
@@ -8591,6 +8707,7 @@ pub(crate) fn is_subclass_of_keeping(
         incomplete: false,
         wedge_clauses_refused: 0,
         relies_on_trusted_consistency: false,
+        consistency_undetermined: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -8646,6 +8763,7 @@ pub(crate) fn is_subclass_of_keeping(
                 incomplete: false,
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
+                consistency_undetermined: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8667,6 +8785,7 @@ pub(crate) fn is_subclass_of_keeping(
             incomplete: cut,
             wedge_clauses_refused: refused,
             relies_on_trusted_consistency: trusted,
+            consistency_undetermined: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))

@@ -1,0 +1,230 @@
+//! #428: the named class queries (`is_class_satisfiable*`, `is_subclass_of*`, so
+//! `sat`, `subclass` and `explain`) run the #313 inconsistency guard first and,
+//! after a positive answer ("unsatisfiable" / "subsumed"), the #369 lazy check,
+//! as `sat-expr` / `subclass-expr` do. A witnessed inconsistency is
+//! `Err(Inconsistent)`; an undetermined one keeps the answer and sets
+//! `QueryStats::consistency_undetermined`.
+//!
+//! Fixtures:
+//! - `ABOX_CLASH`: `a : A`, `a : B`, `A ⊓ B ⊑ ⊥` — the `ABox` saturation (the #313
+//!   guard) finds it;
+//! - `P2`: #419's `T2` (`{b} ⊑ ≥2 r.⊤`, `r` functional): inconsistent, and only the
+//!   wedge (the #369 lazy check) finds it;
+//! - `ctl()`: `P2` with `≥1`, consistent. Both also carry `Y ⊑ W` and `N ⊑ ⊥`.
+//!
+//! Every test locks the env mutex.
+
+#![allow(clippy::unwrap_used)]
+
+use horned_owl::io::ParserConfiguration;
+use horned_owl::io::ofn::reader::read as read_ofn;
+use horned_owl::model::RcStr;
+use horned_owl::ontology::set::SetOntology;
+use owl_dl_reasoner::justify::{Entailment, find_one_justification};
+use owl_dl_reasoner::{
+    QueryStats, ReasonError, assume_query_consistency, is_class_satisfiable,
+    is_class_satisfiable_with_stats, is_subclass_of, is_subclass_of_with_stats,
+};
+use std::io::Cursor;
+
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct SetEnvGuard {
+    key: &'static str,
+    prior: Option<std::ffi::OsString>,
+}
+impl SetEnvGuard {
+    #[allow(unsafe_code)]
+    fn set(key: &'static str, value: &str) -> Self {
+        let prior = std::env::var_os(key);
+        // SAFETY: set_var is unsafe under edition 2024. Serialized via ENV_MUTEX,
+        // restored on Drop.
+        unsafe { std::env::set_var(key, value) };
+        Self { key, prior }
+    }
+}
+impl Drop for SetEnvGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: see `set`.
+        unsafe {
+            match &self.prior {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
+const ABOX_CLASH: &str = r"Prefix(:=<http://ex/#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://ex/aboxclash>
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:X)) Declaration(Class(:Z))
+  Declaration(NamedIndividual(:a))
+  DisjointClasses(:A :B) ClassAssertion(:A :a) ClassAssertion(:B :a)
+)";
+
+const P2: &str = r"Prefix(:=<http://ex/#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://ex/p2>
+  Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(ObjectProperty(:r))
+  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+  SubClassOf(ObjectOneOf(:b) ObjectMinCardinality(MIN :r owl:Thing))
+  FunctionalObjectProperty(:r)
+  Declaration(Class(:W)) Declaration(Class(:N))
+  ClassAssertion(:Y :a) SubClassOf(:Y :W) SubClassOf(:N owl:Nothing)
+)";
+
+const X: &str = "http://ex/#X";
+const Y: &str = "http://ex/#Y";
+const Z: &str = "http://ex/#Z";
+const W: &str = "http://ex/#W";
+const N: &str = "http://ex/#N";
+
+fn parse(src: &str) -> SetOntology<RcStr> {
+    read_ofn(&mut Cursor::new(src), ParserConfiguration::default())
+        .unwrap()
+        .0
+}
+
+fn p2() -> SetOntology<RcStr> {
+    parse(&P2.replace("MIN", "2"))
+}
+
+fn ctl() -> SetOntology<RcStr> {
+    parse(&P2.replace("MIN", "1"))
+}
+
+fn is_inconsistent<T: std::fmt::Debug>(r: &Result<T, ReasonError>) -> bool {
+    matches!(r, Err(ReasonError::Inconsistent))
+}
+
+type Answer = Result<(bool, QueryStats), ReasonError>;
+
+/// `sat X` (as "unsatisfiable": positive) and `subclass X Z`, through every
+/// public form.
+fn queries(o: &SetOntology<RcStr>) -> Vec<(&'static str, Answer)> {
+    vec![
+        (
+            "is_class_satisfiable_with_stats",
+            is_class_satisfiable_with_stats(o, X).map(|(s, st)| (!s, st)),
+        ),
+        (
+            "is_class_satisfiable",
+            is_class_satisfiable(o, X).map(|s| (!s, QueryStats::default())),
+        ),
+        ("is_subclass_of_with_stats", is_subclass_of_with_stats(o, X, Z)),
+        (
+            "is_subclass_of",
+            is_subclass_of(o, X, Z).map(|h| (h, QueryStats::default())),
+        ),
+    ]
+}
+
+/// The #313 guard: an `ABox` clash errors on every form; off, the vacuous
+/// answers come back.
+#[test]
+fn an_abox_clash_errors_inconsistent() {
+    let _g = lock();
+    let o = parse(ABOX_CLASH);
+    for (name, r) in queries(&o) {
+        assert!(is_inconsistent(&r), "{name}: {r:?}");
+    }
+    let _off = SetEnvGuard::set("RUSTDL_CLASS_QUERY_GUARD", "0");
+    for (name, r) in queries(&o) {
+        let (positive, st) = r.unwrap();
+        assert!(positive && !st.consistency_undetermined, "{name}");
+    }
+}
+
+/// An unknown class is reported as such, before the guard runs.
+#[test]
+fn an_unknown_class_is_reported_before_the_guard() {
+    let _g = lock();
+    let o = parse(ABOX_CLASH);
+    let nope = "http://ex/#Nope";
+    assert!(matches!(
+        is_class_satisfiable_with_stats(&o, nope),
+        Err(ReasonError::UnknownClass(_))
+    ));
+    assert!(matches!(
+        is_subclass_of_with_stats(&o, X, nope),
+        Err(ReasonError::UnknownClass(_))
+    ));
+}
+
+/// The #369 lazy check: a wedge-only inconsistency errors after a positive
+/// answer; a consistent KB keeps its answers with no flag.
+#[test]
+fn a_wedge_only_inconsistency_errors_after_a_positive_answer() {
+    let _g = lock();
+    let o = p2();
+    let r = is_class_satisfiable_with_stats(&o, Y);
+    assert!(is_inconsistent(&r), "sat Y: {r:?}");
+    let r = is_subclass_of_with_stats(&o, Y, X);
+    assert!(is_inconsistent(&r), "subclass Y X: {r:?}");
+    let c = ctl();
+    let (sat, st) = is_class_satisfiable_with_stats(&c, Y).unwrap();
+    assert!(sat && !st.consistency_undetermined);
+    let (holds, st) = is_subclass_of_with_stats(&c, Y, W).unwrap();
+    assert!(holds && !st.consistency_undetermined);
+    let (sat, st) = is_class_satisfiable_with_stats(&c, N).unwrap();
+    assert!(!sat && !st.consistency_undetermined);
+}
+
+/// With the wedge off the verdict is undetermined: a positive answer is kept and
+/// flagged; a negative one never runs the check; `C ⊑ C` is never vacuous.
+#[test]
+fn an_undetermined_wedge_flags_only_a_non_trivial_positive_answer() {
+    let _g = lock();
+    let _wedge = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
+    let c = ctl();
+    let (sat, st) = is_class_satisfiable_with_stats(&c, N).unwrap();
+    assert!(!sat && st.consistency_undetermined, "unsat N");
+    let (holds, st) = is_subclass_of_with_stats(&c, Y, W).unwrap();
+    assert!(holds && st.consistency_undetermined, "Y ⊑ W");
+    let (sat, st) = is_class_satisfiable_with_stats(&c, Y).unwrap();
+    assert!(sat && !st.consistency_undetermined, "sat Y");
+    let (holds, st) = is_subclass_of_with_stats(&c, Y, X).unwrap();
+    assert!(!holds && !st.consistency_undetermined, "Y ⋢ X");
+    let (holds, st) = is_subclass_of_with_stats(&c, Y, Y).unwrap();
+    assert!(holds && !st.consistency_undetermined, "Y ⊑ Y");
+}
+
+/// A lent "consistent" verdict (justify lends its ontology's to the subsets it
+/// probes) skips the guard: an answer comes back, not `Inconsistent`.
+#[test]
+fn a_lent_consistent_verdict_skips_the_guard() {
+    let _g = lock();
+    let o = parse(ABOX_CLASH);
+    let _lent = assume_query_consistency(false);
+    assert!(is_class_satisfiable_with_stats(&o, X).is_ok());
+    assert!(is_subclass_of_with_stats(&o, X, Z).is_ok());
+}
+
+/// justify maps the guard's `Inconsistent` to "entailed", as for instance
+/// queries: the justification of `X ⊑ Z` on an inconsistent KB is its
+/// inconsistency core.
+#[test]
+fn justify_returns_the_inconsistency_core() {
+    let _g = lock();
+    let o = parse(ABOX_CLASH);
+    for q in [
+        Entailment::SubClassOf {
+            sub: X.to_owned(),
+            sup: Z.to_owned(),
+        },
+        Entailment::Unsatisfiable {
+            class: X.to_owned(),
+        },
+    ] {
+        let j = find_one_justification(&o, &q).unwrap().expect("entailed");
+        assert_eq!(j.axioms.len(), 3, "{q:?}: {:?}", j.axioms);
+    }
+}

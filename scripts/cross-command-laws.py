@@ -18,8 +18,9 @@ Hard laws (a violation fails the run):
       never exercised on the curated corpus here: family's classify reports
       `consistency_undetermined: true` at `--pair-timeout-ms 1000` on this host)
   L5  `consistent` = inconsistent       => the guarded surfaces (instance,
-      realize, disjoint, individuals, *-expr, and since #428 `sat` / `subclass`)
-      answer yes or error `Inconsistent`, never "no" (`sat`: never "satisfiable").
+      realize, disjoint, individuals, *-expr, and since #428 `sat` / `subclass` /
+      `explain`) answer yes or error `Inconsistent`, never "no" (`sat`: never
+      "satisfiable").
       `sat owl:Thing` is the consistency check itself (#427) and is not sampled.
   L6  named vs expression surface (smoke): sat = sat-expr,
       subclass = subclass-expr, instance = membership in instances-expr
@@ -289,6 +290,18 @@ def read_token(r, yes, no):
     return ans("unknown", f"unparsed output {tok[:60]!r}", cmdline(r), r["rc"])
 
 
+def read_explain(r):
+    """`explain`: `<sub> ⊑ <sup> : yes|no — answered by …`; exit 3 is a give-up."""
+    b = _base(r)
+    if b:
+        return b
+    line = r["stdout"].strip().splitlines()[-1] if r["stdout"].strip() else ""
+    verdict = line.split(" : ", 1)[1].split()[0] if " : " in line else ""
+    if verdict in ("yes", "no"):
+        return ans(verdict, "", cmdline(r), 0)
+    return ans("unknown", f"unparsed output {line[:60]!r}", cmdline(r), r["rc"])
+
+
 def read_json(r, field, give_up="incomplete"):
     b = _base(r)
     if b:
@@ -412,6 +425,7 @@ def observe(spec, runner, caps, seed, log=print):
         f"pos={len(pos)} neg={len(neg)} sat={len(sat_classes)} eq={len(eq)} inst={len(inst_pairs)}")
 
     sub = lambda a, b: read_token(runner.run(oid, ["subclass", path, a, b]), "yes", "no")
+    expl = lambda a, b: read_explain(runner.run(oid, ["explain", path, a, b]))
     subx = lambda a, b: read_json(runner.run(oid, ["subclass-expr", "--json", path,
                                                    f"<{a}>", f"<{b}>"]), "entailed")
     satq = lambda x: read_token(runner.run(oid, ["sat", path, x]), "sat", "unsat")
@@ -447,6 +461,10 @@ def observe(spec, runner, caps, seed, log=print):
                 q[("sat", x)] = satq(x)
             for a, b in l5_pairs:
                 q[("subclass", a, b)] = sub(a, b)
+            # `explain` shares `subclass`'s probe but is a separate CLI path; one pair
+            # covers it without doubling the per-pair cost on a slow inconsistent KB.
+            for a, b in l5_pairs[:1]:
+                q[("explain", a, b)] = expl(a, b)
 
     if want("L5", "L6", "L10") and inst_pairs:
         for cl_, a in inst_pairs:
@@ -623,6 +641,8 @@ def evaluate(obs):
                 bad = "sat says satisfiable"
             elif key[0] == "subclass" and a["v"] == "no":
                 bad = "subclass says not entailed"
+            elif key[0] == "explain" and a["v"] == "no":
+                bad = "explain says not entailed"
             elif key[0] == "sat-expr" and a["v"] == "yes":
                 bad = "sat-expr says satisfiable"
             elif key[0] == "subclass-expr" and a["v"] == "no":
@@ -779,6 +799,15 @@ def self_test():
     ob = dict(onto="t", q={("consistent",): N, ("sat", "C"): I, ("subclass", "C", "D"): Y},
               classify=base(consistent=False)["classify"])
     cases.append(("L5 sat error / subclass yes -> no violation", laws_of(ob, "violation"), []))
+    ob = dict(onto="t", q={("consistent",): N, ("explain", "C", "D"): N},
+              classify=base(consistent=False)["classify"])
+    cases.append(("L5 fires on explain", laws_of(ob, "violation"), ["L5"]))
+    ob = dict(onto="t", q={("consistent",): N, ("explain", "C", "D"): I},
+              classify=base(consistent=False)["classify"])
+    cases.append(("L5 explain error -> no violation", laws_of(ob, "violation"), []))
+    fake = dict(killed=False, rc=0, stderr="", stdout="http://x#C ⊑ http://x#D : no — answered by tableau\n",
+                args=["explain", "f", "C", "D"])
+    cases.append(("read_explain parses no", [read_explain(fake)["v"]], ["no"]))
     # L6
     ob = dict(onto="t", q={("sat", "C"): Y, ("sat-expr", "C"): N}, classify=base()["classify"])
     cases.append(("L6 fires", laws_of(ob, "violation"), ["L6"]))

@@ -24,6 +24,10 @@
 //!   sample has no inconsistent and no ⊤-equivalent case, so those branches are
 //!   present for fidelity, not exercised.
 //!
+//! Layer 2 rides along: on every case the fast path certifies, the EL lowering must drop
+//! nothing (`certified_unlowered`; see `el_unlowered_guard.rs` for the rest of the repo's
+//! fixtures). That catches a drop whose answer happens not to change on these cases.
+//!
 //! Vacuity: a regression that de-certifies cases would turn their misses into skips.
 //! So each case records whether it was certified on the build the fixture was frozen
 //! against, and a case that WAS certified and is not now fails the test. A floor on
@@ -102,6 +106,9 @@ fn check(e: &Expected) -> (Vec<String>, bool) {
     let onto: SetOntology<RcStr> = read_ofn(&mut Cursor::new(src), ParserConfiguration::default())
         .unwrap_or_else(|err| panic!("{path}: {err:?}"))
         .0;
+    let unlowered = owl_dl_reasoner::certified_unlowered(&onto)
+        .unwrap_or_else(|err| panic!("{path}: {err}"))
+        .classify;
     let c = owl_dl_reasoner::classify(&onto).unwrap_or_else(|err| panic!("{path}: {err}"));
     let stats = c.stats();
     let certified = stats.completeness_guaranteed();
@@ -132,6 +139,13 @@ fn check(e: &Expected) -> (Vec<String>, bool) {
             vec![format!("got {classes:?}, declared {:?}", e.classes)],
         );
     }
+    note(
+        "UNLOWERED under the fast-path certification",
+        unlowered
+            .iter()
+            .map(|u| format!("axiom {} {}: {}", u.axiom, u.site, u.concept))
+            .collect(),
+    );
     if e.certified && !certified {
         note(
             "DE-CERTIFIED (was completeness_guaranteed on the frozen build)",

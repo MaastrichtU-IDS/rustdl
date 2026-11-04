@@ -59,6 +59,15 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Diagnostic (layer 2 of the pure-EL guard): what the EL lowering drops or weakens
+    /// on an input the saturation fast path certifies complete. Empty `classify` and
+    /// `realize` lists mean the certification is backed by the rules the saturator got.
+    /// One JSON object on stdout.
+    #[command(hide = true)]
+    Unlowered {
+        /// Path to an ontology file.
+        file: PathBuf,
+    },
     /// Decide whether the input ontology is consistent (has any model).
     Consistent {
         /// Path to an OWL functional-syntax (.ofn) ontology.
@@ -1806,6 +1815,26 @@ fn main() -> Result<()> {
     };
 
     match command {
+        Command::Unlowered { file } => {
+            let onto = parse_ofn(&file)?;
+            let found =
+                owl_dl_reasoner::certified_unlowered(&onto).context("certified_unlowered")?;
+            let rows = |v: &[owl_dl_reasoner::UnloweredReport]| {
+                v.iter()
+                    .map(|u| serde_json::json!({"axiom": u.axiom, "site": u.site, "concept": u.concept}))
+                    .collect::<Vec<_>>()
+            };
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema_version": 1,
+                    "classify_certified": found.classify_certified,
+                    "realize_certified": found.realize_certified,
+                    "classify": rows(&found.classify),
+                    "realize": rows(&found.realize),
+                })
+            );
+        }
         Command::Consistent { file, json } => {
             let onto = parse_ofn(&file)?;
             // #182: the stats-bearing form, so a GIVE-UP (fall-through

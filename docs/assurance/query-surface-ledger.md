@@ -559,6 +559,47 @@ curated corpus does not carry either; the FP=0 net reports MISSED=0 on every fix
 drafts went to the manager; no fix is in this change.
 
 
+## In-repo pure-EL guard (#440, and layer 2)
+
+The `el_guaranteed` net needs Konclude and HermiT, so it never ran in CI, and #435/#436 reached
+main through that gap. Two layers now guard the pure-EL claim in CI.
+
+- **Layer 1 (#440)** checks answers. `tests/el_generated_guard.rs` classifies 300 frozen
+  `el_guaranteed` cases: all 101 former findings, plus a motif-stratified sample. It compares
+  them with the Konclude ∩ HermiT answers. It fails if a case that was certified is no longer
+  certified, and there is a floor of 250 certified cases. Reverting #439's range push, its
+  `Top` arm, or its trigger lowering turns it red (8, 52 and 11 of 300 cases), and so does
+  reverting #114 (93).
+- **Layer 2** checks the lowering itself. `owl_dl_saturation::unlowered` records, at 13 call
+  sites, every construct the lowering drops, or weakens to `∃r.⊤`, after its fallbacks.
+  `certified_unlowered` keeps the records that contradict the fast-path gate. It needs no
+  oracle, so it also catches shapes the frozen sample lacks (for example `∃r.⊥`) and drops
+  whose answer happens not to change. It does not catch a rule that is emitted but too weak:
+  #440's range-push and trigger sabotages stay green under layer 2, and layer 1 catches them.
+
+Measured 2026-11-04. The sweep ran on pin `rustdl-l2-95f94101`, the build before review.
+The review change only skips work when no recorder is installed; the sites record the same
+when one is. Answer identity and wall were re-measured on the final build:
+
+| population | certified (classify / realize) | drops under certification |
+|---|---|---|
+| tracked `.ofn` fixtures (CI) | 113 / 100 of 261 | 0 |
+| frozen `el_guaranteed` sample (CI) | 300 / 300 | 0 |
+| full `el_guaranteed` set, N = 1000 | 998 / 998 | 0 |
+| curated (`ontologies/real`, `external`) | 4 / 4 of 21 | 0 |
+| ORE pool, 1920 files | 926 / 900 of 1863 read | 0 |
+
+ORE exclusions: 46 files over 100 MB were skipped. 11 were rejected by the front end: 8 do
+not parse, and 3 stopped at about 6 GB peak RSS under the 8 GB per-job limit.
+
+**Found while surveying: `⊤ ⊑ ∃r.B` loses the `∃`.** The `Top`-LHS arm of
+`lower_sub_class_of` keeps only the atomic conjuncts. So `⊤ ⊑ ∃r.B` with `∃r.B ⊑ X` misses
+`X ≡ ⊤` under `completeness_guaranteed: true`. Konclude and HermiT agree on four reproducers.
+Site `top-lhs-nonatomic` records it, and a test pins that the guard reports it. It reaches no
+certified file in the populations above: the generator never plants a ⊤-LHS GCI, and the ORE
+pool has none that is certified. An issue draft went to the manager; no fix is in this
+change.
+
 ## Route-pair laws (#363 package E, stateful half)
 
 `scripts/gen/routes.py` asks the same question by different routes and checks that the

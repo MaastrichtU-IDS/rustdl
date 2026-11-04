@@ -1133,8 +1133,13 @@ impl Classification {
     /// True iff `classes[i] ⊑ classes[j]`.
     ///
     /// INVARIANT (the sparse-row contract): a satisfiable class's row
-    /// contains only satisfiable supers — every builder skips
-    /// unsatisfiable `j` when filling a satisfiable row `i`. An
+    /// normally contains only satisfiable supers — the builders skip
+    /// unsatisfiable `j` when filling a satisfiable row `i`. EXCEPTION
+    /// (#448): the top-down driver's closure seed keeps a told unsat super
+    /// of a class whose own unsat probe was cut, and the matrix closure
+    /// carries such a "stray" column to the class's subsumees. Each stray
+    /// is a sound pair (that class is in fact unsat, a silent MISS that its
+    /// `(c, c)` undecided marker flags). An
     /// unsatisfiable `i` subsumes everything (⊥ ⊑ *); its row is NOT
     /// materialized, so the short-circuit below is the ONLY place that
     /// fact is reintroduced. Every accessor MUST route through here —
@@ -1190,8 +1195,9 @@ impl Classification {
             idxs.sort_unstable();
             return idxs.into_iter().map(|j| self.classes[j].as_str()).collect();
         }
-        // Satisfiable subject: candidates are i's supers (all
-        // satisfiable, by the `entails` invariant) — O(k), not O(n).
+        // Satisfiable subject: candidates are i's supers (satisfiable, by
+        // the `entails` invariant, except for its #448 strays: a stray `u`
+        // then lists as a peer, sound since `i` is in fact unsat) — O(k).
         // Merge the reflexive `i` in sorted position so the output
         // stays ascending even if a row ever lacked its reflexive bit.
         let mut candidates = self.entailed.row_ascending(i);

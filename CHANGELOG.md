@@ -170,6 +170,21 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`classify` reports when its consistency probe gives up (#446).** The probe that
+  `classify` runs when it found an unsatisfiable class (or on an incomplete `ABox` run, or
+  with counted data values) ends with a bounded `⊤` check (200 ms,
+  `RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS`). When that check was cut, or hit the search's
+  depth limit, it recorded nothing, so `classify --json` said `consistent: true` with
+  `consistency_undetermined: false`. #437's reproducer B read that way under a zero budget.
+  It now sets `consistency_undetermined: true`, and the new
+  `ClassificationStats::consistency_probe_gave_up` records the probe's last outcome; a later
+  verdict replaces an earlier give-up. `incomplete` is unchanged: it still means only that a
+  pair deadline fired. `completeness_guaranteed` cannot change, because the probe never runs
+  on the pure-EL path. Over the 1,920 ORE ontologies (two arms, 60 s cap) the answers are
+  identical on all 1,753 that both arms finished. `consistency_undetermined` flips on 8 in
+  the sweep, of which 4 reproduce serially on an idle core: `ore_ont_6132` and `9899` give up
+  even at 30 s, `6934` hits the depth limit, and `4903` decides at 30 s, so 200 ms is tight
+  there.
 - **The EL saturator lowers `⊤ ⊑ D` in full, and gives `⊤ ⊑ C` to every class (#444,
   #445).** Both were pure-EL misses reported under `completeness_guaranteed: true` (Konclude
   and HermiT agree on every reproducer).

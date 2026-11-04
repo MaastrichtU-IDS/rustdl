@@ -535,6 +535,12 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::lazy_query_consistency_enabled,
             true,
         ),
+        // #428: the named class queries' inconsistency guard and lazy check.
+        (
+            "RUSTDL_CLASS_QUERY_GUARD",
+            owl_dl_reasoner::class_query_guard_enabled,
+            true,
+        ),
         // #369: the main-tableau tail found no inconsistency in 82 runs on the ORE
         // pool and took about 90% of the check's wall time; an undetermined verdict
         // is reported as `consistency_undetermined` instead.

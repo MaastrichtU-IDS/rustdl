@@ -115,6 +115,10 @@ fn issue_reproducer_q_is_unsatisfiable() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto(ISSUE_356);
+    // #428: the named queries error on an inconsistent KB; the #356 path below
+    // the guard still decides `Q` unsatisfiable.
+    assert!(owl_dl_reasoner::is_class_satisfiable(&o, &iri("Q")).is_err());
+    let _g = SetEnvGuard::set("RUSTDL_CLASS_QUERY_GUARD", "0");
     assert!(!sat(&o, "Q"), "inconsistent KB: Q is unsatisfiable");
     // On an inconsistent KB every subsumption holds.
     assert!(subclass(&o, "Q", "A1"), "inconsistent KB: Q ⊑ A1");
@@ -126,6 +130,9 @@ fn an_individual_that_cannot_exist_makes_every_class_unsatisfiable() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let o = onto(B_CANNOT_EXIST);
+    // #428: as in `issue_reproducer_q_is_unsatisfiable`.
+    assert!(owl_dl_reasoner::is_class_satisfiable(&o, &iri("Q")).is_err());
+    let _g = SetEnvGuard::set("RUSTDL_CLASS_QUERY_GUARD", "0");
     assert!(!sat(&o, "Q"));
     assert!(
         !sat(&o, "B"),

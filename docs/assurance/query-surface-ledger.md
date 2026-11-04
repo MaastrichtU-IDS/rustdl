@@ -69,6 +69,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `individuals` | per-pair deadline, node cap | `incomplete` | yes | `incomplete` | warns | individuals tests |
 | `instance`, `instances`, `instances-expr`, `individuals`: consistency (#369) | not a give-up: a POSITIVE answer (an instance, a merge, a difference) on a KB whose consistency the lazy check left undetermined (the consistency wedge stalled or was cut; the main-tableau tail `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL` is off by default). An inconsistency the check witnesses is `Err(Inconsistent)`, exit 1, "ontology is inconsistent". A negative answer never runs the check | `InstanceFlags::consistency_undetermined`; `SameIndividuals` / `DifferentIndividuals` / `CeInstances` `consistency_undetermined()` | answer unchanged, exit 0, one stderr warning | `consistency_undetermined` (`individuals`, `instances-expr`); `instance` / `instances` have no `--json` | `ConsistencyUndeterminedWarning` | `lazy_query_consistency.rs`, `lazy_query_consistency_cli.rs`, `test_lazy_query_consistency.py` |
 | `sat-expr`, `subclass-expr`, `materialize_*` (object/data assertions, sub-property axioms), `property-values`, property disjointness: consistency (#369 follow-up) | not a give-up: a POSITIVE answer ("unsatisfiable", "subsumed", or non-empty) on a KB whose consistency the lazy check left undetermined: the wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS` (default 2000; #419's surfaces keep `RUSTDL_CONSISTENCY_FALLBACK_MS`, 10 000). These hold no prepared ontology, so the check runs the wedge straight from the converted ontology (no saturation or full prepare); a tableau-answered expression and `property-values` reuse the one they built. A witnessed inconsistency is `Err(Inconsistent)`, exit 1. No individual: no wedge seed, not checked and not flagged | `CeVerdict::consistency_undetermined()`; `ObjectPropertyValues` / `DataPropertyValues` `consistency_undetermined()`; `materialize_*_reporting` and `disjoint_*_properties_reporting` return `(rows, consistency_undetermined)` | answer unchanged, exit 0, one stderr warning | `consistency_undetermined` (`sat-expr`, `subclass-expr`, `property-values`, `disjoint` for its property half) | `ConsistencyUndeterminedWarning` | `lazy_query_consistency_followup.rs`, `lazy_query_consistency_cli.rs`, `test_lazy_query_consistency.py` |
+| `sat`, `subclass`, `explain`, `prove`: consistency (#428) | not a give-up. First the #313 guard, shared with `sat-expr` / `subclass-expr`: the `ABox` saturation (bounded at 3 s in classify's high-work class, unbounded in the low-work class; `RUSTDL_QUERY_GUARD_ABOX_MS` overrides, `0` = unbounded; a cut is no verdict), the EL saturator's `⊤ ⊑ ⊥`, `abox_check` and the reflexive empty clause. A proved inconsistency is `Err(Inconsistent)`, exit 1, "ontology is inconsistent" (on main: the vacuous unsat / yes, or no answer on `family.ofn`). Then, after a POSITIVE answer that is not a tautology ("unsatisfiable" other than `owl:Nothing`; "subsumed" other than `C ⊑ C`, `C ⊑ ⊤`, `⊥ ⊑ C`), the #369 lazy check; an undetermined verdict keeps the answer and flags it. `sat owl:Thing` and `owl:Thing ⊑ owl:Nothing` are the consistency check (#427) and run neither. A lent consistent verdict (justify's subsets) skips the guard. `prove` runs the guard before its step proof and the lazy check after one, and reports an inconsistent KB as entailed with a minimal entailing set (typically an inconsistency core); `false` claims nothing. `RUSTDL_CLASS_QUERY_GUARD=0` reverts | `QueryStats::consistency_undetermined`; `ProveFlags::kb_inconsistent` | `sat`/`subclass`/`explain`: answer unchanged, exit 0, one stderr warning; `prove`: a stderr note pointing at `justify <file> inconsistent` | no `--json` (`sat`/`subclass`/`explain`); `prove --json` `kb_inconsistent` | `is_class_satisfiable` / `is_subclass_of` warn `ConsistencyUndeterminedWarning` | `class_query_guard.rs`, `class_query_guard_cli.rs` |
 | `property-values` (object) | per-pair deadline, node cap; fragment whitelist | `incomplete` | yes | `incomplete` | warns | property-values tests |
 | `justify` (incl. `--all`, `--laconic`) | any probe under it: node cap (`RUSTDL_MAX_NODES`), a cut instance probe, the consistency fallback deadline. Top-level probe → no verdict; a QuickXplain subset probe → non-minimal; an enumeration branch probe → a justification may be missing (#396) | `JustifyOutcome { status: Verdict, incomplete }` from the `*_reporting` finders; `minimal_guaranteed` cleared on a QuickXplain give-up | top level: `unknown`, exit 3; otherwise stderr warning | `status: "unknown"` (exit 3), `incomplete`; `enumeration_complete: false` under `--all` | `justify`, `justify_all`, `PreparedOntology.justify*` warn | `justify_give_up.rs` (CLI, reasoner); `test_justify_give_up.py` |
 | `repair` | as `justify`, plus each candidate's verification probe | `Repairs::incomplete`; `complete` cleared; a candidate whose verification gave up is dropped and counted in `unverified_gave_up` | top level: `unknown`, exit 3; otherwise stderr warning and a note | no `--json` | `repair` warns | same |
@@ -94,7 +95,9 @@ entailed" instead, even for `Aa ⊑ Aa` (#409).
   which gave wrong answers such as `sat owl:Nothing` → `sat`. Each argument
   resolves before any shortcut, so a typo beside a built-in is still
   `UnknownClass`. The tautologies (`C ⊑ ⊤`, `⊥ ⊑ C`) are answered without
-  reasoning and carry no flag. `sat ⊤` and `⊤ ⊑ ⊥` are the consistency check, so
+  reasoning and carry no flag. On `sat`/`subclass`/`explain` the #428 guard runs
+  first, so a proved inconsistency still errors, as with `subclass-expr`; `prove`
+  answers them before its guard (the proof uses no axiom). `sat ⊤` and `⊤ ⊑ ⊥` are the consistency check, so
   they carry its `incomplete` (a give-up reported as consistent: CLI exit 3 with
   the consistency-budget wording) and its #392 `relies_on_trusted_consistency`
   (CLI: `consistent`'s note). Instance queries of either built-in keep the
@@ -168,8 +171,18 @@ about its signal, so each is filed rather than fixed here.
     82 times and found none.
   - The wedge's build (one clausify) has no deadline, and its `decide` can run
     past its budget: on `ore_ont_15655` the light check took about 6.6 s (build
-    3.4 s, decide 3.2 s against a 2 s budget). No answer was lost to the 30 s
-    cap; gating the build by a size predictor is a follow-up (#369).
+    3.4 s, decide 3.2 s against a 2 s budget). Its memory is about 0.5 GB per
+    million lowered axioms, so since #428 the light route builds no wedge above
+    `RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS` (default 5,000,000; `0` = no limit) and
+    the verdict is undetermined. On the ORE pool that skips `ore_ont_1833` and
+    `ore_ont_5368` (14.1 M and 18.7 M axioms), where the build took ~7 GB and
+    `subclass-expr` (and #428's `subclass`) aborted under an 8 GB limit; nothing
+    lies between 4.77 M and 14.1 M. The prepared route (a tableau-answered query)
+    still builds the cache inside `PreparedOntology`, as on main.
+  - **Not guarded** (#428): `is_class_satisfiable_with_timeout` (`owl-dl-bench
+    --timeout`) and `subclass --saturation-only` / `is_subclass_of_saturation_only`.
+    L5 does not sample them. The guard's `abox_check` clones its inputs: ~2.3 GB
+    extra on `ore_ont_1833`, within an 8 GB limit (as on `sat-expr` before).
   - The light route skips #344's data-counting verification, so a wedge `Sat` on
     a data-counting KB is trusted there (as on main), unlike #419's surfaces.
 - **single queries that drop the `ABox` (#401)**: `sat`, `subclass`, `explain`,
@@ -235,7 +248,7 @@ unresolved, with the reason.
 | L1, L2 | a classify subsumption or equivalence ⇒ `subclass` = yes |
 | L3 | a classify-unsatisfiable class ⇒ `sat` = unsat |
 | L4 | `classify --json` `consistent: false` ⇒ `consistent` = inconsistent (smoke) |
-| L5 | inconsistent KB ⇒ `instance`, `realize`, `disjoint`, `individuals`, `*-expr` answer yes or error `Inconsistent`, never "no". `sat`/`subclass`/`explain` are excluded: they run no inconsistency guard and do not finish on `family.ofn` |
+| L5 | inconsistent KB ⇒ `instance`, `realize`, `disjoint`, `individuals`, `*-expr`, and since #428 `sat` / `subclass`, answer yes or error `Inconsistent`, never "no" (`sat`: never "satisfiable"). `sat owl:Thing` is the consistency check (#427) and is not sampled |
 | L6 | named and expression surfaces agree (smoke: they differ only by the injected `Q ≡ C`) |
 | L7 | a `disjoint` pair (A, B) ⇒ `sat-expr "A and B"` = unsat, and `subclass A B` ≠ yes unless A is unsatisfiable |
 | L8 | the `classify --saturation-only` closure ⊆ the classify closure |

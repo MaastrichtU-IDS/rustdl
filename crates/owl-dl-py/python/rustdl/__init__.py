@@ -419,7 +419,8 @@ def _warn_if_classification_trusted(result: "Classification") -> "Classification
 class ConsistencyUndeterminedWarning(UserWarning):
     """Raised when a POSITIVE answer's KB consistency stayed undetermined (#369):
     the consistency wedge stalled or ran out of budget, so the answer may be the
-    vacuous one of an inconsistent KB. Emitted by `is_instance_of`,
+    vacuous one of an inconsistent KB. Emitted by `is_class_satisfiable`
+    ("unsatisfiable"), `is_subclass_of` (entailed), `is_instance_of`,
     `instances_of`, `same_individuals`, `different_individuals`,
     `class_expression_instances`, `class_expression_satisfiable` ("unsatisfiable"),
     `class_expression_entailed_subclass` (entailed), `object_property_values`,
@@ -448,7 +449,9 @@ def is_class_satisfiable(path, class_iri):
     """True iff `class_iri` is satisfiable (not ⊑ ⊥). If the probe gave up (node
     cap), returns `True` and emits `IncompleteQueryWarning`. Emits
     `TrustedConsistencyWarning` when the answer relies on a trusted consistency
-    verdict.
+    verdict, and `ConsistencyUndeterminedWarning` (#428) on an "unsatisfiable"
+    whose KB consistency stayed undetermined. A KB found inconsistent raises
+    `RustdlError`.
 
     `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427), declared or not:
     `owl:Nothing` is unsatisfiable, and `owl:Thing` is satisfiable iff the ontology
@@ -456,22 +459,26 @@ def is_class_satisfiable(path, class_iri):
     `TrustedConsistencyWarning` means what it means on `is_consistent`: the
     verdict rests on the consistency wedge's model alone (#392); no `ABox` was
     dropped, whatever the warning's text says."""
-    sat, incomplete, trusted = _is_class_satisfiable_native(path, class_iri)
+    sat, incomplete, trusted, undetermined = _is_class_satisfiable_native(path, class_iri)
     _warn_if_query_incomplete("is_class_satisfiable", incomplete)
     _warn_if_trusted_consistency("is_class_satisfiable", trusted)
+    _warn_if_consistency_undetermined("is_class_satisfiable", undetermined)
     return sat
 
 
 def is_subclass_of(path, sub, sup):
     """True iff `sub ⊑ sup` is entailed. If the probe gave up (node cap), returns
-    `False` and emits `IncompleteQueryWarning`.
+    `False` and emits `IncompleteQueryWarning`. Emits
+    `ConsistencyUndeterminedWarning` (#428) on an entailed answer whose KB
+    consistency stayed undetermined. A KB found inconsistent raises `RustdlError`.
 
     `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427): `C ⊑ owl:Thing` and
     `owl:Nothing ⊑ C` are always `True`, `C ⊑ owl:Nothing` is `C`'s
     unsatisfiability. An unknown IRI still raises, whatever the other argument."""
-    subsumed, incomplete, trusted = _is_subclass_of_native(path, sub, sup)
+    subsumed, incomplete, trusted, undetermined = _is_subclass_of_native(path, sub, sup)
     _warn_if_query_incomplete("is_subclass_of", incomplete)
     _warn_if_trusted_consistency("is_subclass_of", trusted)
+    _warn_if_consistency_undetermined("is_subclass_of", undetermined)
     return subsumed
 
 

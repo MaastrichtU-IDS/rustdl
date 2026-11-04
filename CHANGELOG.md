@@ -170,6 +170,24 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`classify` no longer loses `family.ofn`'s inconsistency to its 12 s pre-check budget
+  (#447).** The `ABox`-saturation pre-check took 6–12.6 s on the coder host, not the
+  2585 ms the budget was sized on, so the budget cut it in about 1 run of 10 and classify
+  reported `consistent: true` with no unsatisfiable classes. The cost was Rule 4 (role
+  chains, transitivity): its ~101 M candidates for 228 149 new edges were each a lookup in
+  the global edge set. That loop is memory-latency-bound, and a flag-off codegen change at
+  9f74f15b had doubled its instructions. Rule 4 now checks each candidate in a small set of
+  the partners already known for its fixed endpoint, and touches the global set only for a
+  new conclusion. The rounds, rule order and fixpoint are unchanged.
+  - family: pre-check 0.8–1.6 s (was 7.0–12.6 s), classify 2.3–3.6 CPU-s (was 7.9–11.5, and
+    37.6 on the cut run); 12 runs per arm, interleaved. Max RSS 31–34 MB (was 27–30).
+  - `RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE=1` restores the global check, for A/B. New diagnostic
+    counters `chain_join_attempts` and `chain_edge_set_probes` on `SaturationResult`.
+  - Tests: a differential proptest (local vs global over random 2-/3-hop chains of every
+    leg polarity), per-polarity canaries, an exact host-independent guard (Rule 4's lookups
+    in the global set equal its new conclusions), and the release-only family budget test
+    now requires 3× headroom instead of "above the cost".
+  - No budget or default changed.
 - **`classify` reports when its consistency probe gives up (#446).** The probe that
   `classify` runs when it found an unsatisfiable class (or on an incomplete `ABox` run, or
   with counted data values) ends with a bounded `⊤` check (200 ms,

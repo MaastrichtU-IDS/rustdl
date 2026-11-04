@@ -370,3 +370,30 @@ or score above the threshold.
 the `family.ofn` detection on a moderately slower host, and it cannot lower any
 budget below the value the four DNF regressions were validated under. `=0` and
 any explicit `RUSTDL_CLASSIFY_INCONSISTENCY_MS` remain available.
+
+## Addendum 2026-11-04 (#447): the family figure did not travel
+
+The 2585 ms above was measured on another host. On the coder host (AMD EPYC 7402 VM, shared),
+`family.ofn`'s pre-check took **6.1–12.6 s** on main 64c9b720, so the 12 s generous budget cut it in
+about 1 run of 10 and classify reported `consistent: true` with no unsatisfiable classes (1 of 12
+interleaved classify runs did, at 37.6 CPU-s).
+
+Two causes, both in Rule 4 of the fixpoint (role chains and transitivity):
+
+- **The join's cost is memory latency.** family's 5 rounds produce ~101 M chain candidates for
+  228 149 new edges, and each candidate was a lookup in the global 267 112-entry edge `HashSet`.
+  A faster hasher cut instructions 3.3× and left the wall unchanged; L1-dcache misses were
+  ~280 M in every build tried.
+- **A codegen regression doubled it.** Bisected on `perf stat instructions:u` (deterministic to
+  ~0.01%) over 559 first-parent commits: 15.4 G at 8a358120, 31.3 G at 9f74f15b. That commit's code
+  is behind `RUSTDL_INVERSE_PAIR_FUNC` (default OFF) and does not run; it adds a second
+  instantiation of `HashSet<(RoleId, IndividualId, IndividualId)>`, after which the fixpoint's
+  `insert` is no longer inlined (93% of instructions inline before, 85% in an out-of-line `insert`
+  after).
+
+The fix (#447) checks each candidate in a per-endpoint set of the partners already known (every
+candidate of one outer edge shares that endpoint), and touches the global set only for a new
+conclusion. Same rounds, rule order and fixpoint. family on the coder host: **0.8–1.6 s** (12 runs,
+4 in parallel), 2.3–2.6 G cycles instead of 19.4–19.9 G. The budget levels and the threshold are
+unchanged. The cost this record's table quotes for other ontologies may also be stale for the same
+reason; re-measure with `examples/abox_precheck_probe.rs` before relying on one.

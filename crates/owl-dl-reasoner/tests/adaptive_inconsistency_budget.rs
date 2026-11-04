@@ -82,8 +82,15 @@ const FAMILY_EDGES: usize = 1337;
 const FAMILY_MULTIPLIERS: usize = 38;
 
 /// `family.ofn`'s measured pre-check cost, in isolation, release profile.
-/// The classify-level detection flips between 2600 and 2700 ms.
-const FAMILY_PRECHECK_MS: u64 = 2585;
+///
+/// It was 2585 ms (another host, 2026-08-03; the classify-level detection
+/// flipped between 2600 and 2700 ms). On the coder host that figure did not hold:
+/// 6–12.6 s, cut by the 12 s budget about 1 run in 10 (#447). Since #447's
+/// per-endpoint dedupe in Rule 4 it is 0.8–1.6 s there (12 runs, 4 in parallel,
+/// 2026-11-04); this is the worst of those, rounded up. A recorded number can
+/// go stale again, which is why `shipped_default_budget_covers_family_precheck`
+/// (release only) measures it live.
+const FAMILY_PRECHECK_MS: u64 = 1600;
 
 /// The budget this change supersedes. Pinned as a literal on purpose: several
 /// assertions below are "never worse than the thing we replaced", and that
@@ -180,8 +187,9 @@ fn family_predictors_get_generous_budget() {
 }
 
 /// The headroom gate, stated as a ratio against a measured wall rather than as
-/// a bare constant: 3× the 2585 ms `family.ofn` actually needs. The flat 3000 ms
-/// gave 1.16×, which is what made a 15%-slower host lose the detection.
+/// a bare constant: 3× what `family.ofn` needs ([`FAMILY_PRECHECK_MS`]). The flat
+/// 3000 ms gave 1.16× over the then-measured 2585 ms, which is what made a
+/// 15%-slower host lose the detection.
 #[test]
 fn family_budget_has_at_least_3x_headroom() {
     let p = AboxCostPredictors {

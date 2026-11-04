@@ -167,6 +167,12 @@ pub(crate) struct ClassifyJson {
     /// global deadline or the probe cap), so it may be missing entailments that need
     /// them. A SEPARATE field: no class pair's deadline fired.
     pub(crate) derived_same_undecided: usize,
+    /// #448: pairs the transitive closure of the recorded relation added
+    /// (`RUSTDL_CLASSIFY_CLOSE_MATRIX=1`): pairs recorded "not subsumed" (a cut, or
+    /// a trusted wedge `Sat`) that recorded subsumptions imply. Each is sound, since
+    /// every recorded pair is. Diagnostic only: it neither sets nor clears
+    /// `incomplete` (a cut also prunes the walk below it). 0 when the closure is off.
+    pub(crate) matrix_closure_added_pairs: usize,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
@@ -479,6 +485,7 @@ pub(crate) fn build_classify_json(
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
         wedge_clauses_refused: stats.wedge_clauses_refused,
         derived_same_undecided: stats.derived_same_undecided,
+        matrix_closure_added_pairs: stats.matrix_closure_added_pairs,
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,
@@ -506,6 +513,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         wedge_hierarchy_blind: false,
         wedge_clauses_refused: 0,
         derived_same_undecided: 0,
+        matrix_closure_added_pairs: 0,
         unsatisfiable: Vec::new(),
         equivalent_groups: Vec::new(),
         direct_subsumptions: Vec::new(),

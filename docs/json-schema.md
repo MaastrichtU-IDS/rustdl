@@ -10,6 +10,7 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
   "prep_timed_out": bool, "conversion_timed_out": bool, "parse_timed_out": bool,
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
+  "matrix_closure_added_pairs": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...] }
 ```
@@ -73,6 +74,15 @@ HermiT derive while `incomplete` is `false`, `trusted_sat_refutations` is `0`, a
 `trusted_sat_refutations` = pairs concluded not-subsumed from the wedge's own
 `Sat` verdict outside the fragment where that verdict is complete. An exposure
 count, not a defect count; `0` does not imply completeness either.
+
+`matrix_closure_added_pairs` = pairs the transitive closure of the recorded
+relation added (#448, `RUSTDL_CLASSIFY_CLOSE_MATRIX=1`): pairs recorded
+not-subsumed (a cut, or a trusted wedge `Sat`) that recorded subsumptions
+imply. Each is sound, since every recorded pair is. Diagnostic only: it does
+not set or clear `incomplete`. `0` when the closure is off. With the closure
+on, an incomplete run's `direct_subsumptions` and `equivalent_groups` are
+those of the closed relation, so they can differ from the closure-off output
+while the transitive closure of the answer is the same.
 
 `equivalent_groups` lists only *satisfiable* equivalence classes; unsatisfiable
 classes are reported in `unsatisfiable` (they are all mutually equivalent to

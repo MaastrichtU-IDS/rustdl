@@ -89,6 +89,13 @@ class Classification:
         """How many candidate individual equalities classify did not decide,
         so entailments that need them may be missing (#354)."""
         ...
+    @property
+    def matrix_closure_added_pairs(self) -> int:
+        """How many pairs the transitive closure of the recorded relation added
+        (#448, `RUSTDL_CLASSIFY_CLOSE_MATRIX=1`): pairs recorded "not subsumed"
+        that recorded subsumptions imply. Each is sound; `complete` is unchanged.
+        0 when the closure is off."""
+        ...
     def is_subclass(self, sub: str, sup: str) -> bool:
         """True iff `sub ⊑ sup` is entailed."""
         ...

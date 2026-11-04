@@ -6277,6 +6277,7 @@ mod tests {
     use horned_owl::io::ofn::reader::read;
     use horned_owl::model::RcStr;
     use horned_owl::ontology::set::SetOntology;
+    use std::collections::BTreeSet;
     use std::io::Cursor;
 
     fn parse(src: &str) -> SetOntology<RcStr> {
@@ -8323,6 +8324,98 @@ Ontology(\n\
                     "{name}: {x}"
                 );
             }
+        }
+    }
+
+    /// The answer as `classify --json` reports it (taxonomy edges plus equivalence
+    /// groups), closed transitively. Unsat classes have no taxonomy edges.
+    fn answer_closure(h: &Classification) -> BTreeSet<(String, String)> {
+        let mut edges = BTreeSet::new();
+        for c in h.classes() {
+            for s in h.taxonomy_direct_subsumers(c) {
+                edges.insert((c.clone(), s.to_owned()));
+            }
+            for e in h.equivalent_classes(c) {
+                edges.insert((c.clone(), e.to_owned()));
+                edges.insert((e.to_owned(), c.clone()));
+            }
+        }
+        loop {
+            let mut add = Vec::new();
+            for (a, b) in &edges {
+                for (c, d) in edges.range((b.clone(), String::new())..) {
+                    if c != b {
+                        break;
+                    }
+                    if a != d && !edges.contains(&(a.clone(), d.clone())) {
+                        add.push((a.clone(), d.clone()));
+                    }
+                }
+            }
+            if add.is_empty() {
+                return edges;
+            }
+            edges.extend(add);
+        }
+    }
+
+    const CUT_EQ_SRC: &str = "Prefix(:=<http://t/>)\n\
+Ontology(\n\
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+  Declaration(Class(:E)) Declaration(Class(:F)) Declaration(Class(:G)) Declaration(Class(:H))\n\
+  SubClassOf(:A :B) SubClassOf(:B :C) SubClassOf(:C :D) EquivalentClasses(:E :B)\n\
+  SubClassOf(:G ObjectUnionOf(:F :H))\n)\n";
+
+    /// #448 F3: on an incomplete run the closure changes the reported Hasse rows and
+    /// equivalence groups, but not what they mean. With several cuts along a chain
+    /// and through an equivalence, the transitive closure of the reported answer is
+    /// identical with the flag OFF and ON; with it ON, `is_subclass` agrees with that
+    /// closure on every pair (the R3.3 law), and with it OFF it does not (so the
+    /// check can fail).
+    #[test]
+    fn close_matrix_keeps_the_answer_closure_and_makes_is_subclass_agree() {
+        let onto = parse(CUT_EQ_SRC);
+        let cuts = "http://t/A http://t/C;http://t/A http://t/D;http://t/B http://t/D;\
+                    http://t/E http://t/D;http://t/E http://t/C";
+        type Driver = fn(&SetOntology<RcStr>) -> Result<Classification, ReasonError>;
+        let drivers: [(&str, Driver); 2] = [("top-down", classify), ("n2", classify_n2)];
+        for (name, drive) in drivers {
+            let run = |flag: &str| {
+                let _g = EnvGuard::set(&[
+                    ("RUSTDL_CLASSIFY_TEST_CUT_PAIRS", cuts),
+                    ("RUSTDL_CLASSIFY_CLOSE_MATRIX", flag),
+                ]);
+                drive(&onto).expect("classify")
+            };
+            let (off, on) = (run("0"), run("1"));
+            assert_eq!(
+                off.stats().fragment,
+                FragmentClassification::OutOfFragment,
+                "{name}"
+            );
+            assert!(
+                off.stats().timed_out_pairs >= 3,
+                "{name}: the cuts must land"
+            );
+            let (c_off, c_on) = (answer_closure(&off), answer_closure(&on));
+            assert_eq!(c_off, c_on, "{name}: the answer's closure moved");
+            let disagree = |h: &Classification, clo: &BTreeSet<(String, String)>| {
+                let mut v = Vec::new();
+                for x in h.classes() {
+                    for y in h.classes() {
+                        if x != y && h.is_subclass(x, y) != clo.contains(&(x.clone(), y.clone())) {
+                            v.push((x.clone(), y.clone()));
+                        }
+                    }
+                }
+                v
+            };
+            assert_eq!(disagree(&on, &c_on), Vec::new(), "{name}: ON violates R3.3");
+            assert!(
+                !disagree(&off, &c_off).is_empty(),
+                "{name}: the check cannot fail"
+            );
+            assert!(on.stats().matrix_closure_added_pairs >= 3, "{name}");
         }
     }
 

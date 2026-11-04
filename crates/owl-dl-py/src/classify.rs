@@ -47,7 +47,8 @@ impl PyClassification {
     }
 
     /// Number of class pairs that exceeded the per-pair timeout and
-    /// were recorded as "not subsumed". `> 0` means the classification
+    /// were recorded as "not subsumed" (unless recorded subsumptions imply them:
+    /// see `matrix_closure_added_pairs`). `> 0` means the classification
     /// is a sound under-approximation — no false subsumptions, but real
     /// ones may be missing. `0` when classification ran to completion
     /// (or no timeout was set).
@@ -153,6 +154,15 @@ impl PyClassification {
     #[getter]
     fn derived_same_undecided(&self) -> usize {
         self.inner.stats().derived_same_undecided
+    }
+
+    /// How many pairs the transitive closure of the recorded relation added (#448,
+    /// `RUSTDL_CLASSIFY_CLOSE_MATRIX=1`): pairs recorded "not subsumed" (a cut or a
+    /// trusted wedge `Sat`) that recorded subsumptions imply. Each is sound. It does
+    /// not change `complete`. 0 when the closure is off.
+    #[getter]
+    fn matrix_closure_added_pairs(&self) -> usize {
+        self.inner.stats().matrix_closure_added_pairs
     }
 
     /// True iff `sub ⊑ sup` is entailed.

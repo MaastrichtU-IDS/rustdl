@@ -180,7 +180,9 @@ All notable changes to rustdl are documented here. Format is based on
   `owl:Thing ⊑ owl:Nothing` are the consistency check itself (#427) and run neither.
   `RUSTDL_CLASS_QUERY_GUARD=0` reverts this for the named queries only; the expression queries'
   new bounds below revert with `RUSTDL_QUERY_GUARD_ABOX_MS=0` and
-  `RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS=0`. family: an error in ~7–12 s instead of no answer.
+  `RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS=0`. family: `sat`/`subclass`/`explain` error in ~7–12 s
+  instead of no answer. `prove` on family still does not finish (600 s, as on main): its
+  justification search decides the entailment on each subset.
   - **The guard is cheaper and bounded, for `sat-expr` / `subclass-expr` too.** Its EL closure is
     handed to the query, which no longer saturates twice. Its `ABox` saturation, unbounded on
     main, is bounded at 3 s in classify's high-work class and unbounded in the low-work class

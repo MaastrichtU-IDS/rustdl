@@ -291,13 +291,43 @@ fn the_guard_abox_budget_override_wins() {
     assert_eq!(owl_dl_reasoner::query_guard_abox_budget_ms(&internal), 7);
 }
 
+/// On a high-work `ABox` (3 s by the rule) the override still wins, and `0` means
+/// unbounded rather than "use the rule". 6,001 asserted edges × 50 transitive roles
+/// is a work proxy of 300,050, just over the threshold.
+#[test]
+fn a_zero_override_unbounds_a_high_work_abox() {
+    use std::fmt::Write as _;
+    let _g = lock();
+    let mut src = String::from("Prefix(:=<http://ex/#>)\nOntology(<http://ex/hw>\n");
+    for i in 0..50 {
+        writeln!(
+            src,
+            "Declaration(ObjectProperty(:t{i})) TransitiveObjectProperty(:t{i})"
+        )
+        .unwrap();
+    }
+    for i in 0..6001 {
+        writeln!(src, "ObjectPropertyAssertion(:t0 :a{i} :a{})", i + 1).unwrap();
+    }
+    src.push(')');
+    let internal = owl_dl_core::convert::convert_ontology(&parse(&src)).unwrap();
+    assert_eq!(
+        owl_dl_reasoner::query_guard_abox_budget_ms(&internal),
+        owl_dl_reasoner::INCONSISTENCY_STINGY_MS,
+        "precondition: the rule bounds this ABox"
+    );
+    let _o = SetEnvGuard::set("RUSTDL_QUERY_GUARD_ABOX_MS", "0");
+    assert_eq!(owl_dl_reasoner::query_guard_abox_budget_ms(&internal), 0);
+}
+
 const THING: &str = "http://www.w3.org/2002/07/owl#Thing";
 const NOTHING: &str = "http://www.w3.org/2002/07/owl#Nothing";
 
 /// `sat owl:Thing` and `owl:Thing ⊑ owl:Nothing` ARE the consistency check
 /// (#427): on an inconsistent KB they answer "unsat" / "yes", never an error.
-/// `owl:Nothing` is not exempt from the guard: `sat owl:Nothing` errors, as
-/// `sat-expr owl:Nothing` does. `⊤ ⊑ C` goes through the guard too.
+/// Nothing else is exempt from the guard: `sat owl:Nothing`, `⊤ ⊑ C`, and the
+/// tautologies `C ⊑ ⊤` and `⊥ ⊑ C` error, as their `sat-expr` / `subclass-expr`
+/// forms do.
 #[test]
 fn the_consistency_check_is_exempt_and_nothing_else_is() {
     let _g = lock();
@@ -310,6 +340,14 @@ fn the_consistency_check_is_exempt_and_nothing_else_is() {
     assert!(is_inconsistent(&r), "sat owl:Nothing: {r:?}");
     let r = is_subclass_of_with_stats(&o, THING, X);
     assert!(is_inconsistent(&r), "owl:Thing ⊑ X: {r:?}");
+    // The tautologies are exempt from the lazy check only, not from the guard: on a
+    // proved inconsistency they error like every other named query, as
+    // `sat-expr` / `subclass-expr` do. (`prove` answers them structurally, before its
+    // guard: a tautology's proof uses no axiom.)
+    let r = is_subclass_of_with_stats(&o, X, THING);
+    assert!(is_inconsistent(&r), "X ⊑ owl:Thing: {r:?}");
+    let r = is_subclass_of_with_stats(&o, NOTHING, X);
+    assert!(is_inconsistent(&r), "owl:Nothing ⊑ X: {r:?}");
     // Consistent control: `⊤ ⊑ Y` is a plain "no", unflagged.
     let (holds, st) = is_subclass_of_with_stats(&ctl(), THING, Y).unwrap();
     assert!(!holds && !st.consistency_undetermined);

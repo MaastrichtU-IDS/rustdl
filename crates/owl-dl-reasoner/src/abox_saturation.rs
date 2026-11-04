@@ -195,14 +195,16 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
 /// can never turn a consistent KB inconsistent, because a verdict is only ever
 /// derived from a clash that was actually found.
 ///
-/// Only the **classify** path passes a deadline (see
-/// `classify_inconsistency_precheck`): there the pre-check is an accelerator
+/// Two paths pass a deadline. The **classify** path (see
+/// `classify_inconsistency_precheck`), where the pre-check is an accelerator
 /// bolted onto an answer classify can produce anyway, and on ABoxes with
 /// ~60k–110k assertions it dominated the whole classify wall (four ORE
 /// ontologies regressed from ~2–4 s to DNF at 60 s when it was made default-ON
-/// in v0.4.8). `is_consistent` / `realize` / `materialize_*` / `diagnose` keep
-/// calling the unbounded entry point — for them the pre-check *is* the point of
-/// the call.
+/// in v0.4.8). And the #428 guard of the named class queries
+/// (`bounded_query_guard`), which bounds it only when classify's work predictor
+/// calls the `ABox` expensive (`query_guard_abox_budget_ms`). `is_consistent` /
+/// `realize` / `materialize_*` / `diagnose` keep calling the unbounded entry
+/// point — for them the pre-check *is* the point of the call.
 #[allow(clippy::too_many_lines)]
 pub fn saturate_abox_consistency_bounded(
     internal: &InternalOntology,

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const X: &str = "http://ex/#X";
+const THING: &str = "http://www.w3.org/2002/07/owl#Thing";
 const Z: &str = "http://ex/#Z";
 
 const INCONSISTENT: &str = "Prefix(:=<http://ex/#>)
@@ -73,6 +74,8 @@ fn sat_subclass_and_explain_error_on_an_inconsistent_ontology() {
         vec!["sat", f.path(), X],
         vec!["subclass", f.path(), X, Z],
         vec!["explain", f.path(), X, Z],
+        // A tautology goes through the guard too, as with `subclass-expr`.
+        vec!["subclass", f.path(), X, THING],
     ] {
         let (code, stdout, stderr) = run(&args);
         assert_eq!(code, 1, "{args:?}\nstdout: {stdout}\nstderr: {stderr}");
@@ -99,6 +102,12 @@ fn prove_json_reports_the_inconsistent_kb_and_its_core() {
     ] {
         assert!(fallback.contains(axiom), "{axiom} missing from {fallback}");
     }
+    // A tautology's proof uses no axiom, so `prove` answers it before its guard.
+    let (code, stdout, stderr) = run(&["prove", "--json", f.path(), X, THING]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let j: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(j["entailed"], true);
+    assert_eq!(j["kb_inconsistent"], false);
     // Text mode points at `justify … inconsistent`.
     let (code, _, stderr) = run(&["prove", f.path(), X, Z]);
     assert_eq!(code, 0);

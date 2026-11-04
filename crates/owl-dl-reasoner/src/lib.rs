@@ -12830,6 +12830,10 @@ fn fallback_after_held(
         // The same axioms, under the same cap, just witnessed the entailment: a
         // definite "no" here is a contradiction, not a give-up. Never report it
         // as a non-entailment; `incomplete` below carries it to the caller.
+        // #428: from `prove_on_inconsistent_kb` the witness is the inconsistency
+        // guard, not the justify oracle. A sound guard clash makes every subset
+        // search find the core, so this still fires only if something upstream is
+        // unsound (e.g. a wedge `Sat` lent to the probes that hides the clash).
         debug_assert!(
             false,
             "prove: the justification search refuted an entailment the check just witnessed"

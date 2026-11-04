@@ -95,7 +95,9 @@ entailed" instead, even for `Aa ⊑ Aa` (#409).
   which gave wrong answers such as `sat owl:Nothing` → `sat`. Each argument
   resolves before any shortcut, so a typo beside a built-in is still
   `UnknownClass`. The tautologies (`C ⊑ ⊤`, `⊥ ⊑ C`) are answered without
-  reasoning and carry no flag. `sat ⊤` and `⊤ ⊑ ⊥` are the consistency check, so
+  reasoning and carry no flag. On `sat`/`subclass`/`explain` the #428 guard runs
+  first, so a proved inconsistency still errors, as with `subclass-expr`; `prove`
+  answers them before its guard (the proof uses no axiom). `sat ⊤` and `⊤ ⊑ ⊥` are the consistency check, so
   they carry its `incomplete` (a give-up reported as consistent: CLI exit 3 with
   the consistency-budget wording) and its #392 `relies_on_trusted_consistency`
   (CLI: `consistent`'s note). Instance queries of either built-in keep the

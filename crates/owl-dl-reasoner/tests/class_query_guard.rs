@@ -532,7 +532,7 @@ fn assert_is_the_abox_clash_core(r: &owl_dl_reasoner::ProveEntailmentResult) {
 /// #456: on an inconsistent KB, `prove` answers with the inconsistency core, not
 /// a minimal set entailing `sub ⊑ sup`. Here `X ⊑ Y ⊑ Z` is a two-axiom
 /// justification of `X ⊑ Z` that never touches the clash: before #456 `prove`
-/// returned it (the QuickXplain search over `SubClassOf(X, Z)` reached it first);
+/// returned it (the `QuickXplain` search over `SubClassOf(X, Z)` reached it first);
 /// now it returns the three clash axioms. The `ABox` saturation (the guard) sees
 /// the clash; the P2 arm of the test above covers the #369 lazy-check route.
 #[test]

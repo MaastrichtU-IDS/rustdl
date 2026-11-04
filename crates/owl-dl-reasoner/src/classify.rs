@@ -405,7 +405,9 @@ pub struct ClassificationStats {
     /// (layer 3) was cut by its budget, the node cap or the depth limit. Each
     /// admitted call sets it to that call's outcome, so a later verdict replaces an
     /// earlier give-up. The classify drivers fold it into
-    /// `consistency_undetermined`. Diagnostic and for tests, like
+    /// `consistency_undetermined`, whatever `RUSTDL_CLASSIFY_INCONSISTENCY` says:
+    /// the probe has its own switch (`RUSTDL_CLASSIFY_CONSISTENCY_PROBE`) and only
+    /// reports when it ran. Diagnostic and for tests, like
     /// `consistency_probe_admitted`; not in `classify --json`.
     pub consistency_probe_gave_up: bool,
     /// The inconsistency pre-check reached no verdict: a route gave up (wedge

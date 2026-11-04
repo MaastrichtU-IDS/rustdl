@@ -61,7 +61,9 @@ fired: it does not set `incomplete`.
 
 `consistency_undetermined` = the KB-level inconsistency pre-check reached no
 verdict: a route gave up, or was skipped because `--global-timeout-ms` had
-already run out (#162). `consistent: true` then means "no clash found", not
+already run out (#162), or classify's consistency probe was admitted (an
+unsatisfiable class, an incomplete `ABox` run, or counted data values) and gave
+up (#446). `consistent: true` then means "no clash found", not
 "proven consistent". A separate field; it does not set `incomplete`.
 
 **`incomplete: false` does NOT mean complete.** It means no deadline fired.

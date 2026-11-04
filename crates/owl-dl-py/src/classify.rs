@@ -111,7 +111,8 @@ impl PyClassification {
     }
 
     /// True iff the inconsistency pre-check reached no verdict: a route gave
-    /// up, or was skipped because the global deadline had run out (#162).
+    /// up, or was skipped because the global deadline had run out (#162), or
+    /// classify's consistency probe was admitted and gave up (#446).
     /// `inconsistent is False` then means "no clash found", not "proven
     /// consistent", and the hierarchy may miss entailments.
     #[getter]

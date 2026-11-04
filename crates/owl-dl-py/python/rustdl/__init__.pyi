@@ -63,9 +63,10 @@ class Classification:
         ...
     @property
     def consistency_undetermined(self) -> bool:
-        """True iff the inconsistency pre-check reached no verdict, so
+        """True iff the inconsistency pre-check reached no verdict (#162), or
+        classify's consistency probe was admitted and gave up (#446), so
         `inconsistent is False` means "no clash found", not "proven
-        consistent" (#162)."""
+        consistent"."""
         ...
     @property
     def relies_on_trusted_consistency(self) -> bool:

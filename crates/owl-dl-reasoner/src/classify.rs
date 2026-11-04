@@ -289,6 +289,167 @@ impl EntailmentMatrix {
             Self::Sparse(rows) => rows[i].iter().map(|&j| j as usize).collect(),
         }
     }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Dense(rows) => rows.len(),
+            Self::Sparse(rows) => rows.len(),
+        }
+    }
+
+    /// #448: close the recorded relation transitively; returns the number of pairs
+    /// added. Every recorded pair is a sound entailment, so every added one is too.
+    ///
+    /// A cut probe (or a trusted wedge `Sat`) records `(a, c)` as "not subsumed" while
+    /// `(a, b)` and `(b, c)` are recorded; `is_subclass` then denies what
+    /// `direct_subsumers` implies. One pass over the strongly connected components
+    /// (iterative Tarjan), which come out supers-first: each component's closed row is
+    /// its members plus the closed rows of its successor components, taken nearest
+    /// first and skipped when already covered, so only the direct ones are ORed.
+    ///
+    /// UNSAT rows stay elided (empty) and satisfiable rows only hold satisfiable
+    /// columns (the sparse-row contract), so a union never adds an unsat column.
+    fn close_transitively(&mut self, unsat: &HashSet<usize>) -> usize {
+        let n = self.len();
+        let succ: Vec<Vec<u32>> = (0..n)
+            .map(|i| {
+                if unsat.contains(&i) {
+                    Vec::new()
+                } else {
+                    self.row_ascending(i)
+                        .into_iter()
+                        .filter(|&j| j != i)
+                        .map(|j| u32::try_from(j).expect("class index fits in u32"))
+                        .collect()
+                }
+            })
+            .collect();
+        let comp = tarjan_components(&succ);
+        let ncomp = comp.iter().map(|&c| c as usize + 1).max().unwrap_or(0);
+        let mut members: Vec<Vec<u32>> = vec![Vec::new(); ncomp];
+        for (i, &c) in comp.iter().enumerate() {
+            if !unsat.contains(&i) {
+                members[c as usize].push(u32::try_from(i).expect("class index fits in u32"));
+            }
+        }
+        let mut added = 0usize;
+        for (c, mem) in members.iter().enumerate() {
+            if mem.is_empty() {
+                continue;
+            }
+            // Successor components, nearest first: Tarjan finishes a component after
+            // every component it reaches, so a higher id is closer to `c`.
+            let mut nexts: Vec<u32> = mem
+                .iter()
+                .flat_map(|&m| succ[m as usize].iter().map(|&k| comp[k as usize]))
+                .filter(|&d| d as usize != c)
+                .collect();
+            nexts.sort_unstable_by(|a, b| b.cmp(a));
+            nexts.dedup();
+            let rep_of = |d: u32| members[d as usize][0] as usize;
+            match self {
+                Self::Dense(rows) => {
+                    let mut acc = FixedBitSet::with_capacity(n);
+                    for &m in mem {
+                        acc.insert(m as usize);
+                    }
+                    for &d in &nexts {
+                        let r = rep_of(d);
+                        if !acc.contains(r) {
+                            acc.union_with(&rows[r]);
+                        }
+                    }
+                    let total = acc.count_ones(..);
+                    for &m in mem {
+                        added += total - rows[m as usize].count_ones(..);
+                        rows[m as usize].clone_from(&acc);
+                    }
+                }
+                Self::Sparse(rows) => {
+                    let mut acc: HashSet<u32> = mem.iter().copied().collect();
+                    for &d in &nexts {
+                        let r = rep_of(d);
+                        if !acc.contains(&u32::try_from(r).expect("class index fits in u32")) {
+                            acc.extend(rows[r].iter().copied());
+                        }
+                    }
+                    let mut row: Vec<u32> = acc.into_iter().collect();
+                    row.sort_unstable();
+                    for &m in mem {
+                        added += row.len() - rows[m as usize].len();
+                        rows[m as usize].clone_from(&row);
+                    }
+                }
+            }
+        }
+        added
+    }
+}
+
+/// Strongly connected components of `succ`, as a component id per node. Ids are
+/// assigned in completion order, so every component reachable from `c` has an id
+/// below `c`'s (iterative Tarjan: no recursion depth limit on deep hierarchies).
+fn tarjan_components(succ: &[Vec<u32>]) -> Vec<u32> {
+    const UNSEEN: u32 = u32::MAX;
+    let n = succ.len();
+    let mut index = vec![UNSEEN; n];
+    let mut low = vec![0u32; n];
+    let mut on_stack = vec![false; n];
+    let mut comp = vec![UNSEEN; n];
+    let mut stack: Vec<u32> = Vec::new();
+    let mut next_index = 0u32;
+    let mut next_comp = 0u32;
+    // Explicit DFS frames: (node, position in its successor list).
+    let mut frames: Vec<(u32, usize)> = Vec::new();
+    for root in 0..n {
+        if index[root] != UNSEEN {
+            continue;
+        }
+        let root = u32::try_from(root).expect("class index fits in u32");
+        frames.push((root, 0));
+        index[root as usize] = next_index;
+        low[root as usize] = next_index;
+        next_index += 1;
+        stack.push(root);
+        on_stack[root as usize] = true;
+        while let Some(&(v, pos)) = frames.last() {
+            let vu = v as usize;
+            if pos < succ[vu].len() {
+                let w = succ[vu][pos];
+                if let Some(top) = frames.last_mut() {
+                    top.1 += 1;
+                }
+                let wu = w as usize;
+                if index[wu] == UNSEEN {
+                    index[wu] = next_index;
+                    low[wu] = next_index;
+                    next_index += 1;
+                    stack.push(w);
+                    on_stack[wu] = true;
+                    frames.push((w, 0));
+                } else if on_stack[wu] {
+                    low[vu] = low[vu].min(index[wu]);
+                }
+            } else {
+                frames.pop();
+                if let Some(&(parent, _)) = frames.last() {
+                    let pu = parent as usize;
+                    low[pu] = low[pu].min(low[vu]);
+                }
+                if low[vu] == index[vu] {
+                    while let Some(w) = stack.pop() {
+                        on_stack[w as usize] = false;
+                        comp[w as usize] = next_comp;
+                        if w == v {
+                            break;
+                        }
+                    }
+                    next_comp += 1;
+                }
+            }
+        }
+    }
+    comp
 }
 
 /// Result of [`classify`]. Holds the complete pairwise subsumption
@@ -536,6 +697,13 @@ pub struct ClassificationStats {
     /// `C ≡ D₁ ⊔ … ⊔ Dₙ` ⊑ a primitive sup `X` where every `Dᵢ ⊑ X` holds
     /// in the EL closure (sound by construction). Added directly, no tableau.
     pub defined_sub_sweep_recovered: usize,
+    /// #448 (`RUSTDL_CLASSIFY_CLOSE_MATRIX`): subsumptions added by closing the
+    /// recorded relation transitively. Non-zero only where a pair was recorded "not
+    /// subsumed" (a cut, or a trusted wedge `Sat`) while a chain through it was
+    /// recorded; every added pair follows from recorded, sound ones. Diagnostic.
+    pub matrix_closure_added_pairs: usize,
+    /// #448: wall time of that closure pass, in milliseconds. Diagnostic.
+    pub matrix_closure_ms: u64,
     /// Subsumptions recovered by the label-cache back-fold (Task 3,
     /// `RUSTDL_CLASSIFY_BACKFOLD`): entailed defined-`∃` names
     /// (`LabelOracle::Sat::derived_sups`) that `HyperEngine::backfold_derived`
@@ -789,6 +957,29 @@ impl ClassificationStats {
             && !self.consistency_undetermined
             && self.dropped.is_empty()
             && !self.relies_on_trusted_consistency
+    }
+}
+
+/// #448: close the classification matrix transitively (`RUSTDL_CLASSIFY_CLOSE_MATRIX`,
+/// **default OFF** while its cost is measured; `=1` enables). See
+/// [`EntailmentMatrix::close_transitively`].
+pub(crate) fn classify_close_matrix_enabled() -> bool {
+    std::env::var("RUSTDL_CLASSIFY_CLOSE_MATRIX").is_ok_and(|v| v == "1")
+}
+
+impl Classification {
+    /// #448: make the matrix transitive, so `is_subclass` agrees with the hierarchy
+    /// that `direct_subsumers` hands out. Runs at construction, before the lazily
+    /// built `direct_index` exists. A no-op on an already transitive matrix.
+    fn close_matrix(&mut self) {
+        if !classify_close_matrix_enabled() {
+            return;
+        }
+        let t = std::time::Instant::now();
+        let added = self.entailed.close_transitively(&self.unsatisfiable_idxs);
+        self.stats.matrix_closure_added_pairs += added;
+        self.stats.matrix_closure_ms +=
+            u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
     }
 }
 
@@ -1054,11 +1245,16 @@ impl Classification {
     /// configured deadline — the flagged-undecided set. A timed-out pair is
     /// reported "not subsumed" but recorded here, so a consumer knows
     /// exactly which subsumptions are unverified (the anytime contract).
+    /// A pair the #448 closure recovered (it follows from recorded subsumptions) is
+    /// left out, so the list can be shorter than `stats.timed_out_pairs`.
     #[must_use]
     pub fn undecided_pairs(&self) -> Vec<(&str, &str)> {
         self.stats
             .timed_out_pair_ids
             .iter()
+            // #448: a cut pair the transitive closure recovered is decided after all.
+            // `(c, c)` markers (a cut unsat probe, #219) are reflexive and always kept.
+            .filter(|&&(i, j)| i == j || !self.entails(i as usize, j as usize))
             .map(|&(i, j)| {
                 (
                     self.classes[i as usize].as_str(),
@@ -1810,14 +2006,16 @@ fn classify_internal_with_timeout_impl(
     ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
-    Ok(Classification {
+    let mut c = Classification {
         classes,
         index,
         entailed,
         unsatisfiable_idxs,
         stats,
         direct_index: std::sync::OnceLock::new(),
-    })
+    };
+    c.close_matrix();
+    Ok(c)
 }
 
 /// #162: does this (possibly partial) closure carry anything a caller could use?
@@ -1914,6 +2112,9 @@ fn classify_prep_timeout(
     if !reported.iris().is_empty() {
         h.stats.timed_out_pair_ids.push((0, 0));
     }
+    // A PARTIAL saturation (abandoned mid-worklist) is not transitive, unlike the
+    // complete EL fixpoint this read-off was written for (#448).
+    h.close_matrix();
     h
 }
 
@@ -5382,14 +5583,16 @@ fn classify_top_down_internal_impl(
     ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
-    Ok(Classification {
+    let mut c = Classification {
         classes,
         index,
         entailed,
         unsatisfiable_idxs,
         stats,
         direct_index: std::sync::OnceLock::new(),
-    })
+    };
+    c.close_matrix();
+    Ok(c)
 }
 
 /// Task 3 (label-cache back-fold): inject the entailed

@@ -15,9 +15,12 @@
 //! `RUSTDL_HYPERTABLEAU=0` both derive it). Normally the wedge's trusted `Sat`
 //! decides it first. The likely way it gets past the wedge is the defined-sup sweep
 //! (`W` is defined), which gives the wedge a 200 ms budget and falls through to the
-//! tableau when it runs out. So a `classify` control failed about once in a busy
-//! workspace test run, and never in 1,200 isolated runs under load. The rule lives in the
-//! saturator, which is where the control asks. Keep it there. The FP guards stay on
+//! tableau when it runs out. So a `classify` control failed twice (once in a busy
+//! workspace test run, once in ~24 runs of this file) and never in 1,200 isolated runs
+//! under load. The rule lives in the
+//! saturator, which is where the control asks. Keep it there. (The saturator
+//! positive also needs `RUSTDL_SAT_NOMINAL_EDGES`, default on: a failure there is
+//! not necessarily #297's.) The FP guards stay on
 //! `classify`: their non-subsumptions are genuine, so no route can derive them.
 //! The `TBox` cases run through the saturation-only API, because in `classify` the
 //! wedge already derives them.

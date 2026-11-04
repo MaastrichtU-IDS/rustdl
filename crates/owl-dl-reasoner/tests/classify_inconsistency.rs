@@ -249,3 +249,38 @@ fn ddmin_core_residual_divergence() {
         "residual: classify's pre-checks do not reach this wedge-tier clash"
     );
 }
+
+/// #437 reproducer B, a `TBox`-only inconsistency that needs the main tableau
+/// (`ObjectHasSelf(ObjectInverseOf(…))`, `∀`, `⊔`, `DisjointUnion`). classify's
+/// consistency probe is admitted here (four classes are unsatisfiable), and its
+/// bounded `⊤`-satisfiability check (layer 3) used to hit the self-loop livelock and
+/// run out its budget, so `classify` reported `consistent`. Konclude, HermiT and
+/// `is_consistent` say inconsistent; now `classify` agrees.
+#[test]
+fn a_tbox_only_tableau_inconsistency_is_found_by_classify() {
+    let onto = parse(
+        "Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C1)) Declaration(Class(:C2)) Declaration(Class(:C4)) Declaration(Class(:C5))
+Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1))
+SubClassOf(ObjectSomeValuesFrom(:r1 owl:Thing) :C4)
+DisjointUnion(:C2 :C1 :C4)
+SubClassOf(:C5 :C4)
+EquivalentClasses(:C5 ObjectAllValuesFrom(:r1 ObjectUnionOf(:C5 :C2)))
+SubClassOf(:C2 ObjectSomeValuesFrom(:r0 ObjectHasSelf(ObjectInverseOf(:r1))))
+EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
+)
+",
+    );
+    assert!(!is_consistent(&onto).expect("is_consistent reaches a verdict"));
+
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let c = classify(&onto).expect("classify succeeds");
+    assert!(
+        !classify_says_consistent(&c),
+        "classify's consistency probe must find the clash"
+    );
+}

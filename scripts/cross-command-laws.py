@@ -461,6 +461,9 @@ def observe(spec, runner, caps, seed, log=print):
                 q[("sat", x)] = satq(x)
             for a, b in l5_pairs:
                 q[("subclass", a, b)] = sub(a, b)
+            # `explain` shares `subclass`'s probe but is a separate CLI path; one pair
+            # covers it without doubling the per-pair cost on a slow inconsistent KB.
+            for a, b in l5_pairs[:1]:
                 q[("explain", a, b)] = expl(a, b)
 
     if want("L5", "L6", "L10") and inst_pairs:

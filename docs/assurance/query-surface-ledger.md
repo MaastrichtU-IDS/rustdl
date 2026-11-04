@@ -690,9 +690,11 @@ while both legs were decided, leaves the matrix non-transitive. The CLI's
   an interleaved `is_consistent`. In the measured run, `is_subclass_of` was left out of the
   interleave because it ran no inconsistency guard and did not finish on an inconsistent KB
   (default case 438). #442 (#428) made it error on an inconsistent KB that its guard detects,
-  but case 438's inconsistency is one the guard misses, and `is_subclass_of` still does not
-  finish there: measured on 0df06f64, more than 150 s, shrunk to 8 axioms, and drafted as a
-  #428 residual. The driver keeps it out until that is fixed.
+  but case 438 is TBox-only (no individuals), so the pre-checks miss its inconsistency and the
+  lazy check has no seed, and `is_subclass_of` still does not finish there: measured on
+  0df06f64, more than 150 s, shrunk to 8 axioms, and drafted as a #428 residual. The driver now
+  calls `is_subclass_of` only when `is_consistent` returns True, which skips exactly the
+  inconsistent cases; it is ungated once that residual is fixed.
   Classify in the warm route uses a 25 s global budget, standing in for the CLI's 30 s kill.
 - R5.1's predictor is token-based. Degenerate `ObjectUnionOf(:C :C)` is excluded: it is the only
   predictor token in 4 control cases, 3 of which report pure-EL. `ObjectComplementOf` (neg-to-⊥)

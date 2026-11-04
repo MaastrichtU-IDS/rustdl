@@ -280,7 +280,7 @@ Env sabotages (`--sabotage`), each FIRES on the unmutated binary and not in its 
   and on the Stanford pizza both together still give 499 = 499, so `per_pair_fp_gate.rs`
   has no live sabotage; this is #76's live guard;
 - R2: `RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` on `complex_qualifier_98.ofn`;
-- R3: `RUSTDL_CLASSIFY_INCONSISTENCY=0` on `family.ofn`.
+- R3: `RUSTDL_CLASSIFY_INCONSISTENCY=0 RUSTDL_CLASSIFY_CONSISTENCY_PROBE=0` on `family.ofn`. The probe is off too since #446: otherwise a probe give-up (timing-dependent on family) sets `consistency_undetermined`, which R3 exempts.
 
 Source mutants (package F-lite, `scripts/mutants/`): each patch plants one known fault,
 built as its own binary and run through the quick mode with `--hermit`. A law catches a

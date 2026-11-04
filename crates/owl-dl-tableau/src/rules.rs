@@ -1761,20 +1761,36 @@ fn chain_edge_already_present(
     }
 }
 
+/// #437: whether a self-loop stored as `r(x, x)` satisfies `wanted`. A loop is also
+/// `r⁻(x, x)`, so it is read in both polarities: `Self(r⁻)` is satisfied by a stored
+/// `r`-loop, and a declared inverse or a sub-role of either polarity counts through
+/// [`TableauContext::edge_satisfies`]. Both views are entailed, so a match is never
+/// spurious.
+fn self_loop_satisfies(ctx: &TableauContext<'_, '_, '_>, r: RoleId, wanted: Role) -> bool {
+    ctx.edge_satisfies(Role::Named(r), wanted) || ctx.edge_satisfies(Role::Inverse(r), wanted)
+}
+
 /// Self-restriction rule for SROIQ's `ObjectHasSelf` concept.
 ///
 /// Two halves at one node:
 /// - **Positive:** for every `SelfRestriction(r)` in `L(node)`, ensure
 ///   a self-edge `node —r→ node` (or any sub-role / inverse-equivalent
-///   self-edge already witnessing it). Since `r(x, x) ⇔ r⁻(x, x)` for
-///   any self pair, an inverse-role wanted is satisfied by the named
-///   self-edge through [`TableauContext::edge_satisfies`].
+///   self-edge already witnessing it).
 /// - **Negative:** for every `Not(SelfRestriction(r))` in `L(node)`,
 ///   if any existing self-edge `node —s→ node` satisfies `r`, the
 ///   model would have to both contain and forbid `r(node, node)` —
 ///   add `⊥` to flag the clash. (The `Bot` label is what
 ///   [`TableauContext::clash_in`] looks for; adding it surfaces the
 ///   clash on the next sweep iteration.)
+///
+/// A self-loop is always STORED as a forward `r(x, x)`, whatever the polarity of the
+/// `Self` that asked for it, and must therefore be READ in both polarities
+/// ([`self_loop_satisfies`]). #437: both halves used to read it only as `Named(r)`, and
+/// `edge_satisfies(Named(r), Inverse(r))` is false without a declared inverse. So
+/// `Self(r⁻)` never saw the loop it had just added and added another every sweep
+/// (`add_edge` does not deduplicate): saturation never stabilised and ran out of
+/// iterations, and `consistent`/`sat` failed with `NoVerdict` on a 5-axiom `TBox`. The
+/// negative half missed the clash between `Self(r)` and `¬Self(r⁻)` the same way.
 ///
 /// Skipped at blocked nodes: the blocking ancestor witnesses any
 /// self-restriction by label inclusion plus the (well-known)
@@ -1829,7 +1845,7 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
         |wanted: Role, edges: &[(RoleId, DepSet)], ctx: &TableauContext<'_, '_, '_>| -> bool {
             edges
                 .iter()
-                .any(|(r, _)| ctx.edge_satisfies(Role::Named(*r), wanted))
+                .any(|(r, _)| self_loop_satisfies(ctx, *r, wanted))
         };
     let mut applied = false;
     // Negatives first — a fresh positive added below could shadow an
@@ -1844,7 +1860,7 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
         // past the choice and called a satisfiable class unsat.
         let Some((_, edge_deps)) = self_edges
             .iter()
-            .find(|(r, _)| ctx.edge_satisfies(Role::Named(*r), *wanted))
+            .find(|(r, _)| self_loop_satisfies(ctx, *r, *wanted))
         else {
             continue;
         };

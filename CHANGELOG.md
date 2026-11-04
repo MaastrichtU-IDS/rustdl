@@ -222,6 +222,18 @@ All notable changes to rustdl are documented here. Format is based on
     `kb_inconsistent`; the text mode points at `justify <file> inconsistent`.
   - `justify`'s subclass, equivalence, disjointness and unsatisfiability checks map the guard's
     `Inconsistent` to "entailed", as its instance check already did.
+- **`consistent` and `sat` no longer fail with `NoVerdict` on `ObjectHasSelf` over an inverse
+  role (#437).** The main tableau stores a self-loop as a forward `r(x, x)` but read it only as
+  `r`, so `Self(r⁻)` never saw the loop it had added and added another on every sweep, until
+  saturation ran out of iterations. A 5-axiom `TBox` exited 1 with "tableau bailed out without a
+  verdict" on `consistent` and on `sat` for every class. The loop is now read in both
+  polarities (it is `r(x, x)` and `r⁻(x, x)` at once). The same fix finds the clash between
+  `Self(r)` and `¬Self(r⁻)` (or `¬Self(s)` with `s ≡ r⁻`, or `¬Self(s⁻)` with `r ⊑ s`), where
+  `sat` used to answer `sat` for an unsatisfiable class. Both #437 reproducers now match
+  Konclude and HermiT: A is consistent, and B is inconsistent. `classify` now reports B
+  inconsistent too: its consistency probe's bounded `⊤` check hit the same livelock and ran
+  out its budget, so it reported `consistent: true`. The wedge already read a loop in both
+  polarities, so `classify`'s class answers were right on every shape.
 - **The EL saturator handles a `⊤` filler in every position the pure-EL gate admits (#435,
   #436).** These were missed entailments under `completeness_guaranteed: true`, found by the
   #363 generated net (`el_guaranteed`, 101 findings in 1000 cases; Konclude and HermiT agree).

@@ -1,6 +1,6 @@
 //! #437: `consistent` exited 1 with "tableau bailed out without a verdict" on these
 //! two ontologies. The main tableau never recognised the self-loop it added for
-//! `ObjectHasSelf(ObjectInverseOf(:r1))`, so it added it forever. Konclude and HermiT:
+//! `ObjectHasSelf(ObjectInverseOf(:r1))`, so it added it forever. Konclude and `HermiT`:
 //! A is consistent, B (A plus one axiom) is inconsistent.
 #![allow(clippy::unwrap_used)]
 
@@ -87,7 +87,8 @@ fn consistent_answers_both_reproducers() {
 fn sat_answers_every_class_of_reproducer_a() {
     let a = Fixture::new("a-sat", &format!("{REPRO_A})\n"));
     for (class, want) in [("C1", "unsat"), ("C2", "sat"), ("C4", "sat"), ("C5", "sat")] {
-        let (code, stdout, stderr) = run(&["sat", a.path(), &format!("http://gen.rustdl/o#{class}")]);
+        let (code, stdout, stderr) =
+            run(&["sat", a.path(), &format!("http://gen.rustdl/o#{class}")]);
         assert_eq!(code, 0, "{class}: {stderr}");
         assert_eq!(stdout.trim(), want, "{class}");
     }

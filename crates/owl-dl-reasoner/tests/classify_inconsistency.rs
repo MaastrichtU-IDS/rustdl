@@ -254,7 +254,7 @@ fn ddmin_core_residual_divergence() {
 /// (`ObjectHasSelf(ObjectInverseOf(…))`, `∀`, `⊔`, `DisjointUnion`). classify's
 /// consistency probe is admitted here (four classes are unsatisfiable), and its
 /// bounded `⊤`-satisfiability check (layer 3) used to hit the self-loop livelock and
-/// run out its budget, so `classify` reported `consistent`. Konclude, HermiT and
+/// run out its budget, so `classify` reported `consistent`. Konclude, `HermiT` and
 /// `is_consistent` say inconsistent; now `classify` agrees.
 #[test]
 fn a_tbox_only_tableau_inconsistency_is_found_by_classify() {

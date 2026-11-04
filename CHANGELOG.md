@@ -180,8 +180,10 @@ All notable changes to rustdl are documented here. Format is based on
   - #444: `⊤ ⊑ C` reached the user classes only, so a synthetic fact target (a marker for
     `∃s.B`, a Tseitin conjunction) never got `C`, and `⊤ ⊑ T`, `X ⊑ ∃r.∃s.B`, `∃r.T ⊑ W`
     missed `X ⊑ W`. The broadcast now covers every class id.
-  - `prove` gives complete step proofs through both: `X ⊑ K⊤` is a definition, and a
-    synthetic's `⊑ C` cites the `⊤ ⊑ C` axiom.
+  - `prove` gives a complete step proof where the derivation goes through `K⊤` or through a
+    synthetic's `⊑ C`: `X ⊑ K⊤` is a definition, and a synthetic's `⊑ C` cites the `⊤ ⊑ C`
+    axiom. A named class's `⊑ C` from a told `⊤ ⊑ C` is still unrecorded, so `prove` falls
+    back to a justification there, as before.
   - Layer 2's `top-lhs-nonatomic` site, which recorded the #445 drop, is retired (12 sites
     remain). A new `el_top` generator profile plants ⊤-LHS GCIs, which `el_guaranteed`
     never emits.

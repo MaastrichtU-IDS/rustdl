@@ -128,6 +128,18 @@ fn top_lhs_existential_proof() {
     );
 }
 
+/// #445 through a ⊤-witness: `TW_s ⊑ K⊤` is a definition (the broadcast's), not an
+/// axiom-less told step, so `X ⊑ W` via `X →s TW_s →r B` has no gap.
+#[test]
+fn top_key_on_a_top_witness_proof() {
+    proves_cleanly(
+        "witnesstop",
+        "SubClassOf(owl:Thing ObjectSomeValuesFrom(:r :B))
+         SubClassOf(:X ObjectSomeValuesFrom(:s owl:Thing))
+         SubClassOf(ObjectSomeValuesFrom(:s ObjectSomeValuesFrom(:r :B)) :W)",
+    );
+}
+
 /// #444: the marker target `M ≡ ∃s.B` gets `T` from `⊤ ⊑ T`; that step cites the
 /// `⊤ ⊑ T` axiom, so the proof of `X ⊑ W` has no gap.
 #[test]

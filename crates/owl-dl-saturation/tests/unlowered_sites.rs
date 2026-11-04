@@ -1,8 +1,8 @@
 //! One `+`/`-` pair per [`owl_dl_saturation::unlowered`] site.
 //!
 //! `+` is a shape that reaches the site today. Every site is unreachable from EL input
-//! on main, so its `+` is the nearest non-EL shape that takes the same branch. `-` is the nearest EL shape the same code lowers fully; it must
-//! record nothing at all.
+//! on main, so its `+` is the nearest non-EL shape that takes the same branch. `-` is
+//! the nearest EL shape the same code lowers fully; it must record nothing at all.
 //!
 //! `rhs-exists-dropped`'s `+` needs `RUSTDL_EL_BOT_FILLER=0` and lives in its own test
 //! binary (`unlowered_bot_filler_off.rs`), so the env change cannot race these tests.

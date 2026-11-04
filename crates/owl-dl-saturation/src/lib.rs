@@ -4894,7 +4894,9 @@ fn top_witness_subsumers(
         for &f in effective_ranges.get(&r).map_or(&[][..], Vec::as_slice) {
             sups.push((f, range_axiom(r, f)));
         }
-        for &c in &tops {
+        // `TW_R ⊑ K⊤` is left to `seed`'s broadcast, which records it as a definition;
+        // a told copy here would cite no axiom and leave a gap in the proof.
+        for &c in tops.iter().filter(|&&c| Some(c) != tseitin.top_key) {
             if !sups.iter().any(|&(f, _)| f == c) {
                 sups.push((c, top_axiom(c)));
             }

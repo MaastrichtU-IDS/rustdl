@@ -209,6 +209,32 @@ fn the_top_key_reaches_a_marker_target() {
     );
 }
 
+/// A nominal stand-in is a synthetic too: `X ⊑ ∃s.{a}`, `⊤ ⊑ ∃r.B`, `∃s.∃r.B ⊑ W` ⟹
+/// `X ⊑ W`, and with `⊤ ⊑ T`, `∃s.T ⊑ Y` ⟹ `X ⊑ Y`. Nominals are outside the pure-EL
+/// gate, so this checks the answer on both surfaces whichever engine gives it.
+#[test]
+fn a_nominal_stand_in_gets_the_top_axioms() {
+    let o = onto(
+        "Declaration(NamedIndividual(:a)) Declaration(Class(:Y))
+         SubClassOf(:X ObjectSomeValuesFrom(:s ObjectOneOf(:a)))
+         SubClassOf(owl:Thing ObjectSomeValuesFrom(:r :B))
+         SubClassOf(ObjectSomeValuesFrom(:s ObjectSomeValuesFrom(:r :B)) :W)
+         SubClassOf(owl:Thing :T)
+         SubClassOf(ObjectSomeValuesFrom(:s :T) :Y)",
+    );
+    let c = owl_dl_reasoner::classify(&o).unwrap();
+    for sup in ["W", "Y"] {
+        assert!(
+            c.is_subclass(&iri("X"), &iri(sup)),
+            "classify misses X ⊑ {sup}"
+        );
+        assert!(
+            owl_dl_reasoner::is_subclass_of(&o, &iri("X"), &iri(sup)).unwrap(),
+            "subclass misses X ⊑ {sup}"
+        );
+    }
+}
+
 // ---- FP controls --------------------------------------------------------------------
 
 /// `⊤ ⊑ ∃r.B` says nothing about another role, or another filler.

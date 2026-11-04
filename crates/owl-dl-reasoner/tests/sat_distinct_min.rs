@@ -7,9 +7,20 @@
 //! distinct successors. Fillers count as distinct when some class of one is disjoint
 //! from some class of the other, or when they are nominals of `DifferentIndividuals`.
 //!
-//! The nominal cases run through `classify`, where the wedge does not see the
-//! assertions (`RUSTDL_CLASSIFY_NOMINAL_OPA` is off). The `TBox` cases run through
-//! the saturation-only API, because in `classify` the wedge already derives them.
+//! The nominal positives run end to end through `classify`, where the wedge does not
+//! see the assertions (`RUSTDL_CLASSIFY_NOMINAL_OPA` is off), and also through the
+//! saturation-only API. Their rule-off CONTROL runs through the saturation-only API
+//! only. With the rule off, `classify` still reaches `X ⊑ W` whenever the pair gets
+//! to the main tableau (`RUSTDL_HYPERTABLEAU_TRUST_SAT=0` and
+//! `RUSTDL_HYPERTABLEAU=0` both derive it). Normally the wedge's trusted `Sat`
+//! decides it first. The likely way it gets past the wedge is the defined-sup sweep
+//! (`W` is defined), which gives the wedge a 200 ms budget and falls through to the
+//! tableau when it runs out. So a `classify` control failed about once in a busy
+//! workspace test run, and never in 1,200 isolated runs under load. The rule lives in the
+//! saturator, which is where the control asks. Keep it there. The FP guards stay on
+//! `classify`: their non-subsumptions are genuine, so no route can derive them.
+//! The `TBox` cases run through the saturation-only API, because in `classify` the
+//! wedge already derives them.
 //! `HermiT` agrees with every verdict below (2026-10-20).
 //!
 //! Run: `cargo test -p owl-dl-reasoner --test sat_distinct_min`
@@ -106,6 +117,21 @@ fn derived_only_by_the_rule(holds: impl Fn(&str) -> bool) {
     assert!(!holds("0"), "control: without the rule it is missed");
 }
 
+/// A nominal case: `classify` derives `X ⊑ W` with the flag on (end to end), the
+/// saturator derives it with the flag on, and the saturator misses it with the flag
+/// off. The control stays in the saturator; see the file header.
+fn nominal_derived_only_by_the_rule(body: &str) {
+    assert!(classify_x_is_w(body, "1"), "classify must derive it");
+    assert!(
+        saturation_sub_is_w(body, "X", "1"),
+        "the rule must derive it"
+    );
+    assert!(
+        !saturation_sub_is_w(body, "X", "0"),
+        "control: without the rule the saturator misses it"
+    );
+}
+
 // ---------------------------------------------------------------- nominals
 
 #[test]
@@ -115,7 +141,7 @@ fn two_different_individuals_give_min_two() {
     DifferentIndividuals(:b :c)
     EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectMinCardinality(2 :S)))"
     );
-    derived_only_by_the_rule(|f| classify_x_is_w(&body, f));
+    nominal_derived_only_by_the_rule(&body);
 }
 
 #[test]
@@ -125,7 +151,7 @@ fn three_pairwise_different_individuals_give_min_three() {
     ObjectPropertyAssertion(:S :a :d) DifferentIndividuals(:b :c :d)
     EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectMinCardinality(3 :S)))"
     );
-    derived_only_by_the_rule(|f| classify_x_is_w(&body, f));
+    nominal_derived_only_by_the_rule(&body);
 }
 
 #[test]
@@ -135,7 +161,7 @@ fn a_qualified_min_counts_fillers_of_the_qualifier() {
     DifferentIndividuals(:b :c) ClassAssertion(:C :b) ClassAssertion(:C :c)
     EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectMinCardinality(2 :S :C)))"
     );
-    derived_only_by_the_rule(|f| classify_x_is_w(&body, f));
+    nominal_derived_only_by_the_rule(&body);
 }
 
 #[test]
@@ -146,7 +172,7 @@ fn edges_on_two_sub_roles_count_for_the_super_role() {
     DifferentIndividuals(:b :c)
     EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectMinCardinality(2 :S)))"
     );
-    derived_only_by_the_rule(|f| classify_x_is_w(&body, f));
+    nominal_derived_only_by_the_rule(&body);
 }
 
 /// FP guard: without `DifferentIndividuals`, `b` and `c` may be one individual.

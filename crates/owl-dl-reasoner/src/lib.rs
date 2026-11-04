@@ -3476,13 +3476,10 @@ pub(crate) fn query_kb_inconsistent_keeping_closure(
     if !query_inconsistency_guard_enabled() {
         return (false, None);
     }
-    let t = std::time::Instant::now();
     if reflexive_empty_clause_inconsistent(internal) {
         return (true, None);
     }
-    let refl_us = t.elapsed().as_micros();
     let closure = owl_dl_saturation::saturate(internal);
-    let sat_us = t.elapsed().as_micros() - refl_us;
     if saturation_says_inconsistent(&closure) {
         return (true, Some(closure));
     }
@@ -3492,12 +3489,6 @@ pub(crate) fn query_kb_inconsistent_keeping_closure(
             abox_check::check(&build_abox_check_inputs(internal).as_inputs(&closure)),
             abox_check::AboxVerdict::Inconsistent { .. }
         );
-    if std::env::var_os("RUSTDL_TRACE_CLASS_QUERY_GUARD").is_some() {
-        eprintln!(
-            "guard split (#428): refl_us={refl_us} sat_us={sat_us} abox_check_us={}",
-            t.elapsed().as_micros() - refl_us - sat_us
-        );
-    }
     (inconsistent, Some(closure))
 }
 

@@ -62,6 +62,10 @@ fn tableau_sat(body: &str) -> bool {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _wedge = EnvGuard::set("RUSTDL_HYPERTABLEAU", "0");
+    // The merge fixtures assert `a : A`, so an unsatisfiable `A` makes the KB
+    // inconsistent, which the #428 guard reports first. These tests are about
+    // the tableau's verdict, so they run below the guard.
+    let _guard = EnvGuard::set("RUSTDL_CLASS_QUERY_GUARD", "0");
     owl_dl_reasoner::is_class_satisfiable(&onto(body), "http://ex#A").expect("sat")
 }
 

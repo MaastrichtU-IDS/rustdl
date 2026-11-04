@@ -145,7 +145,15 @@ fn subsumption_with_the_built_ins() {
             sub(&o, THING, NOTHING),
             "declared={declared}: ⊤ ⊑ ⊥ when inconsistent"
         );
-        assert!(sub(&o, A, NOTHING), "declared={declared}");
+        // #428: `A ⊑ ⊥` is `A`'s unsatisfiability, which errors on an inconsistent
+        // KB; only `⊤ ⊑ ⊥`, the consistency check itself, answers.
+        assert!(
+            matches!(
+                owl_dl_reasoner::is_subclass_of_with_stats(&o, A, NOTHING),
+                Err(ReasonError::Inconsistent)
+            ),
+            "declared={declared}"
+        );
         // Saturation-only does not see this ABox clash: "no" is its sound default.
         assert!(!owl_dl_reasoner::is_subclass_of_saturation_only(&o, THING, NOTHING).unwrap());
         // A TBox inconsistency the closure does witness (`⊤ ⊑ U ⊑ ⊥`).

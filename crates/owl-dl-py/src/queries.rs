@@ -25,24 +25,39 @@ pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool)> {
     ))
 }
 
-/// `(satisfiable, incomplete, relies_on_trusted_consistency)`: `incomplete`
-/// means the tableau probe gave up (node cap) and "satisfiable" is the sound
-/// direction of no verdict; the third flag is #401's
-/// `QueryStats::relies_on_trusted_consistency`.
+/// `(satisfiable, incomplete, relies_on_trusted_consistency,
+/// consistency_undetermined)`: `incomplete` means the tableau probe gave up (node
+/// cap) and "satisfiable" is the sound direction of no verdict; the third flag is
+/// #401's `QueryStats::relies_on_trusted_consistency`, the fourth #428's
+/// `QueryStats::consistency_undetermined`.
 #[pyfunction]
-pub(crate) fn is_class_satisfiable(path: &str, class_iri: &str) -> PyResult<(bool, bool, bool)> {
+pub(crate) fn is_class_satisfiable(
+    path: &str,
+    class_iri: &str,
+) -> PyResult<(bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (sat, stats) = owl_dl_reasoner::is_class_satisfiable_with_stats(&ontology, class_iri)
         .map_err(reason_error_to_py)?;
-    Ok((sat, stats.incomplete, stats.relies_on_trusted_consistency))
+    Ok((
+        sat,
+        stats.incomplete,
+        stats.relies_on_trusted_consistency,
+        stats.consistency_undetermined,
+    ))
 }
 
-/// `(subsumed, incomplete, relies_on_trusted_consistency)`: `incomplete` means
-/// the probe gave up and "not subsumed" is the sound direction of no verdict;
-/// the third flag is #401's `QueryStats::relies_on_trusted_consistency`.
+/// `(subsumed, incomplete, relies_on_trusted_consistency,
+/// consistency_undetermined)`: `incomplete` means the probe gave up and "not
+/// subsumed" is the sound direction of no verdict; the third flag is #401's
+/// `QueryStats::relies_on_trusted_consistency`, the fourth #428's
+/// `QueryStats::consistency_undetermined`.
 #[pyfunction]
-pub(crate) fn is_subclass_of(path: &str, sub: &str, sup: &str) -> PyResult<(bool, bool, bool)> {
+pub(crate) fn is_subclass_of(
+    path: &str,
+    sub: &str,
+    sup: &str,
+) -> PyResult<(bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (subsumed, stats) = owl_dl_reasoner::is_subclass_of_with_stats(&ontology, sub, sup)
@@ -51,6 +66,7 @@ pub(crate) fn is_subclass_of(path: &str, sub: &str, sup: &str) -> PyResult<(bool
         subsumed,
         stats.incomplete,
         stats.relies_on_trusted_consistency,
+        stats.consistency_undetermined,
     ))
 }
 

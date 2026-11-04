@@ -18,10 +18,9 @@ Hard laws (a violation fails the run):
       never exercised on the curated corpus here: family's classify reports
       `consistency_undetermined: true` at `--pair-timeout-ms 1000` on this host)
   L5  `consistent` = inconsistent       => the guarded surfaces (instance,
-      realize, disjoint, individuals, *-expr) answer yes or error
-      `Inconsistent`, never "no". `sat`/`subclass`/`explain` are excluded: they
-      run no inconsistency guard and do not finish on family.ofn (issue draft
-      pending).
+      realize, disjoint, individuals, *-expr, and since #428 `sat` / `subclass`)
+      answer yes or error `Inconsistent`, never "no" (`sat`: never "satisfiable").
+      `sat owl:Thing` is the consistency check itself (#427) and is not sampled.
   L6  named vs expression surface (smoke): sat = sat-expr,
       subclass = subclass-expr, instance = membership in instances-expr
   L7  `disjoint` pair (A, B)            => `sat-expr "A and B"` = unsat, and
@@ -418,7 +417,7 @@ def observe(spec, runner, caps, seed, log=print):
     satq = lambda x: read_token(runner.run(oid, ["sat", path, x]), "sat", "unsat")
     satx = lambda ce: read_json(runner.run(oid, ["sat-expr", "--json", path, ce]), "satisfiable")
 
-    # sat / subclass are skipped on an inconsistent KB (unguarded, see L5).
+    # On an inconsistent KB only a few of each are sampled, for L5 (#428).
     if not inconsistent:
         if want("L1", "R1", "L6"):
             for a, b in pos + neg:
@@ -440,8 +439,14 @@ def observe(spec, runner, caps, seed, log=print):
     else:
         for x in sat_classes:
             q[("sat-expr", x)] = satx(f"<{x}>")
-        for a, b in (pos + neg + [(x, y) for x in sat_classes[:2] for y in sat_classes[2:4]])[:5]:
+        l5_pairs = (pos + neg + [(x, y) for x in sat_classes[:2] for y in sat_classes[2:4]])[:5]
+        for a, b in l5_pairs:
             q[("subclass-expr", a, b)] = subx(a, b)
+        if want("L5"):
+            for x in [x for x in sat_classes if x not in (THING, NOTHING)][:5]:
+                q[("sat", x)] = satq(x)
+            for a, b in l5_pairs:
+                q[("subclass", a, b)] = sub(a, b)
 
     if want("L5", "L6", "L10") and inst_pairs:
         for cl_, a in inst_pairs:
@@ -605,7 +610,7 @@ def evaluate(obs):
     # L5: guarded surfaces on an inconsistent KB
     if kb_inconsistent:
         for key, a in q.items():
-            if key[0] in ("consistent", "sat", "subclass"):
+            if key[0] == "consistent":
                 continue
             if a["v"] in ("inconsistent", "unknown"):
                 out.append(check("L5", o, True, "", cons, a) if a["v"] == "inconsistent"
@@ -614,6 +619,10 @@ def evaluate(obs):
             bad = None
             if key[0] == "instance" and a["v"] == "no":
                 bad = "instance says no"
+            elif key[0] == "sat" and a["v"] == "yes":
+                bad = "sat says satisfiable"
+            elif key[0] == "subclass" and a["v"] == "no":
+                bad = "subclass says not entailed"
             elif key[0] == "sat-expr" and a["v"] == "yes":
                 bad = "sat-expr says satisfiable"
             elif key[0] == "subclass-expr" and a["v"] == "no":
@@ -762,6 +771,14 @@ def self_test():
     ob = dict(onto="t", q={("consistent",): N, ("instance", "C", "a"): N, ("sat-expr", "C"): I},
               classify=base(consistent=False)["classify"])
     cases.append(("L5 fires", laws_of(ob, "violation"), ["L5"]))
+    ob = dict(onto="t", q={("consistent",): N, ("sat", "C"): Y}, classify=base(consistent=False)["classify"])
+    cases.append(("L5 fires on sat", laws_of(ob, "violation"), ["L5"]))
+    ob = dict(onto="t", q={("consistent",): N, ("subclass", "C", "D"): N},
+              classify=base(consistent=False)["classify"])
+    cases.append(("L5 fires on subclass", laws_of(ob, "violation"), ["L5"]))
+    ob = dict(onto="t", q={("consistent",): N, ("sat", "C"): I, ("subclass", "C", "D"): Y},
+              classify=base(consistent=False)["classify"])
+    cases.append(("L5 sat error / subclass yes -> no violation", laws_of(ob, "violation"), []))
     # L6
     ob = dict(onto="t", q={("sat", "C"): Y, ("sat-expr", "C"): N}, classify=base()["classify"])
     cases.append(("L6 fires", laws_of(ob, "violation"), ["L6"]))

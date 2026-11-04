@@ -396,10 +396,27 @@ pub fn entails_reporting<A: ForIRI>(
 ) -> Result<Verdict, ReasonError> {
     let canonical = canonical_builtin_query(q);
     let q = canonical.as_ref().unwrap_or(q);
+    // #428: the class queries error `Inconsistent` on a KB their guard proves
+    // inconsistent; there everything is entailed, as for the instance arm below.
     let subclass = |sub: &str, sup: &str| -> Result<Verdict, ReasonError> {
-        let (holds, stats) = crate::is_subclass_of_with_stats(onto, sub, sup)?;
-        note_oracle_trust(!holds, &stats);
-        Ok(Verdict::from_check(holds, stats.incomplete))
+        match crate::is_subclass_of_with_stats(onto, sub, sup) {
+            Ok((holds, stats)) => {
+                note_oracle_trust(!holds, &stats);
+                Ok(Verdict::from_check(holds, stats.incomplete))
+            }
+            Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),
+            Err(e) => Err(e),
+        }
+    };
+    let unsat = |o: &SetOntology<A>, class: &str| -> Result<Verdict, ReasonError> {
+        match crate::is_class_satisfiable_with_stats(o, class) {
+            Ok((sat, stats)) => {
+                note_oracle_trust(sat, &stats);
+                Ok(Verdict::from_check(!sat, stats.incomplete))
+            }
+            Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),
+            Err(e) => Err(e),
+        }
     };
     match q {
         Entailment::SubClassOf { sub, sup } => subclass(sub, sup),
@@ -414,15 +431,9 @@ pub fn entails_reporting<A: ForIRI>(
                     ClassExpression::Class(build.class(b.as_str())),
                 ]),
             ])));
-            let (sat, stats) = crate::is_class_satisfiable_with_stats(&probed, PROBE_IRI)?;
-            note_oracle_trust(sat, &stats);
-            Ok(Verdict::from_check(!sat, stats.incomplete))
+            unsat(&probed, PROBE_IRI)
         }
-        Entailment::Unsatisfiable { class } => {
-            let (sat, stats) = crate::is_class_satisfiable_with_stats(onto, class)?;
-            note_oracle_trust(sat, &stats);
-            Ok(Verdict::from_check(!sat, stats.incomplete))
-        }
+        Entailment::Unsatisfiable { class } => unsat(onto, class),
         // is_instance_of is (class, individual) — class first.
         Entailment::InstanceOf { individual, class } => {
             match crate::is_instance_of_reporting(onto, class, individual) {

@@ -1796,7 +1796,38 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
 }
 
 #[allow(clippy::too_many_lines)]
+/// #449: a tableau `NoVerdict` (an internal limit: the deterministic saturation ran out of
+/// iterations, or the search hit its depth cap with time left) is a give-up, like the node
+/// cap's, not a crash. Every command that lets it reach `main` prints `unknown` and exits
+/// 3; `consistent --json` and `explain` handle it at their own sites to keep their formats.
 fn main() -> Result<()> {
+    match run() {
+        Err(e) if is_no_verdict(&e) => exit_unknown_no_verdict(),
+        r => r,
+    }
+}
+
+/// Whether `e` is, or wraps, `ReasonError::NoVerdict`.
+fn is_no_verdict(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<owl_dl_reasoner::ReasonError>()
+            .is_some_and(|r| matches!(r, owl_dl_reasoner::ReasonError::NoVerdict))
+    })
+}
+
+/// The stderr line for a `NoVerdict` give-up (#449). It keeps the error's "bug indicator"
+/// meaning: no input in the implemented fragment should reach it.
+const NO_VERDICT_NOTE: &str = "warning: the tableau reached an internal limit without a verdict \
+     (NoVerdict). This is likely a reasoner bug; please report the input.";
+
+/// #449: print `unknown`, explain on stderr and exit 3.
+fn exit_unknown_no_verdict() -> ! {
+    println!("unknown");
+    eprintln!("{NO_VERDICT_NOTE}");
+    std::process::exit(3);
+}
+
+fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1842,8 +1873,22 @@ fn main() -> Result<()> {
             // bare `is_consistent` folded both into `true`, and the CLI
             // printed a definitive-looking `consistent` for an answer the
             // engine never actually reached.
-            let (verdict, stats) =
-                owl_dl_reasoner::is_consistent_with_stats(&onto).context("is_consistent")?;
+            let (verdict, stats) = match owl_dl_reasoner::is_consistent_with_stats(&onto) {
+                // #449: a give-up in its sound direction, as for the fall-through
+                // deadline and the node cap; no stats exist on this path.
+                Err(owl_dl_reasoner::ReasonError::NoVerdict) if json => {
+                    let dropped = json_out::dropped_block(&onto);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json_out::build_consistent_json(
+                            true, true, false, 0, dropped
+                        ))?
+                    );
+                    eprintln!("{NO_VERDICT_NOTE}");
+                    std::process::exit(3);
+                }
+                r => r.context("is_consistent")?,
+            };
             let incomplete = verdict && stats.incomplete;
             // NOTE: `dropped_block` re-runs `convert_ontology` (see its doc
             // comment) — one extra conversion per invocation, negligible
@@ -2379,8 +2424,15 @@ fn main() -> Result<()> {
         Command::Explain { file, sub, sup } => {
             let onto = parse_ofn(&file)?;
             let _cap = owl_dl_reasoner::single_query_node_cap();
-            let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
-                .context("is_subclass_of_with_stats")?;
+            let (verdict, stats) = match is_subclass_of_with_stats(&onto, &sub, &sup) {
+                // #449: `explain`'s own give-up format.
+                Err(owl_dl_reasoner::ReasonError::NoVerdict) => {
+                    println!("{sub} ⊑ {sup} : unknown — the tableau reached an internal limit");
+                    eprintln!("{NO_VERDICT_NOTE}");
+                    std::process::exit(3);
+                }
+                r => r.context("is_subclass_of_with_stats")?,
+            };
             // #427: `C ⊑ owl:Thing` / `owl:Nothing ⊑ C` are answered without reasoning.
             let structural = owl_dl_reasoner::is_builtin_tautology(&sub, &sup);
             let answered_by = if structural {

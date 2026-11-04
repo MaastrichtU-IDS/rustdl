@@ -170,6 +170,18 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **A tableau `NoVerdict` is a give-up on the CLI, not a crash (#449).** `NoVerdict` is the
+  tableau's internal limit: the deterministic saturation ran out of iterations (as in the #437
+  livelock), or the search hit its depth cap with time left. Every command passed it up as exit 1
+  with an error chain and no output, while its other give-ups print `unknown` and exit 3. Now
+  every command that lets it reach `main` prints `unknown`, writes "the tableau reached an internal
+  limit without a verdict (NoVerdict). This is likely a reasoner bug; please report the input." to
+  stderr, and exits 3. `consistent --json` emits its object with `consistent: true,
+  incomplete: true`, as for its other give-ups, and `explain` keeps its
+  `{sub} ⊑ {sup} : unknown — …` line. The other `--json` commands print `unknown` without a JSON
+  object on this path. The Rust API and Python still return the error. New knob
+  `RUSTDL_TABLEAU_SATURATE_ITERS` (default 4096): the saturation's per-frame iteration cap, which
+  the tests set to 1 to force the give-up. No known input reaches `NoVerdict` since #437.
 - **`classify` reports when its consistency probe gives up (#446).** The probe that
   `classify` runs when it found an unsatisfiable class (or on an incomplete `ABox` run, or
   with counted data values) ends with a bounded `⊤` check (200 ms,

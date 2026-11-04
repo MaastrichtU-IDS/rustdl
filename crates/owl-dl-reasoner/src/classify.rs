@@ -1138,8 +1138,10 @@ impl Classification {
     /// (#448): the top-down driver's closure seed keeps a told unsat super
     /// of a class whose own unsat probe was cut, and the matrix closure
     /// carries such a "stray" column to the class's subsumees. Each stray
-    /// is a sound pair (that class is in fact unsat, a silent MISS that its
-    /// `(c, c)` undecided marker flags). An
+    /// is a sound pair, and a row holding one belongs to a class that is in
+    /// fact unsat but not reported so: a MISS that the seed class's `(c, c)`
+    /// undecided marker flags, while a subsumee that inherits the stray
+    /// carries no marker of its own. An
     /// unsatisfiable `i` subsumes everything (⊥ ⊑ *); its row is NOT
     /// materialized, so the short-circuit below is the ONLY place that
     /// fact is reintroduced. Every accessor MUST route through here —

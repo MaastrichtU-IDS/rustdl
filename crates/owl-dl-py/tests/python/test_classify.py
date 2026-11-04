@@ -166,8 +166,8 @@ def test_derived_same_undecided_is_its_own_signal(tmp_path, monkeypatch):
 
 def test_matrix_closure_added_pairs_reports_the_recovered_cut(tmp_path, monkeypatch):
     # #448: with A ⊑ B ⊑ C and the pair (A, C) cut by the test hook, the flag-OFF
-    # result denies A ⊑ C; the closure (RUSTDL_CLASSIFY_CLOSE_MATRIX=1) recovers it,
-    # counts it, and the timeout warning says so. `complete` stays False either way.
+    # result denies A ⊑ C; the closure (RUSTDL_CLASSIFY_CLOSE_MATRIX, default on)
+    # recovers it, counts it, and the timeout warning says so. `complete` stays False either way.
     import warnings
     fixture = tmp_path / "cut.ofn"
     fixture.write_text(

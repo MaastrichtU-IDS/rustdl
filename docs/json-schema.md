@@ -78,10 +78,10 @@ HermiT derive while `incomplete` is `false`, `trusted_sat_refutations` is `0`, a
 count, not a defect count; `0` does not imply completeness either.
 
 `matrix_closure_added_pairs` = pairs the transitive closure of the recorded
-relation added (#448, `RUSTDL_CLASSIFY_CLOSE_MATRIX=1`): pairs recorded
+relation added (#448, `RUSTDL_CLASSIFY_CLOSE_MATRIX`, default on; `=0` disables): pairs recorded
 not-subsumed (a cut, or a trusted wedge `Sat`) that recorded subsumptions
 imply. Each is sound, since every recorded pair is. Diagnostic only: it does
-not set or clear `incomplete`. `0` when the closure is off. With the closure
+not set or clear `incomplete`. `0` when the closure is off (`=0`). With the closure
 on, an incomplete run's `direct_subsumptions` and `equivalent_groups` are
 those of the closed relation, so they can differ from the closure-off output
 while the transitive closure of the answer is the same.

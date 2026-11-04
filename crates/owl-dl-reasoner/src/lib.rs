@@ -17806,7 +17806,7 @@ mod internal_flag_defaults {
             (
                 "RUSTDL_CLASSIFY_CLOSE_MATRIX",
                 crate::classify::classify_close_matrix_enabled,
-                false,
+                true,
             ),
             (
                 "RUSTDL_CLASSIFY_DEFINED_SWEEP",

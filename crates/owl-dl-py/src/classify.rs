@@ -158,9 +158,9 @@ impl PyClassification {
     }
 
     /// How many pairs the transitive closure of the recorded relation added (#448,
-    /// `RUSTDL_CLASSIFY_CLOSE_MATRIX=1`): pairs recorded "not subsumed" (a cut or a
-    /// trusted wedge `Sat`) that recorded subsumptions imply. Each is sound. It does
-    /// not change `complete`. 0 when the closure is off.
+    /// `RUSTDL_CLASSIFY_CLOSE_MATRIX`, default on): pairs recorded "not subsumed" (a cut
+    /// or a trusted wedge `Sat`) that recorded subsumptions imply. Each is sound. It
+    /// does not change `complete`. 0 when the closure is off (`=0`).
     #[getter]
     fn matrix_closure_added_pairs(&self) -> usize {
         self.inner.stats().matrix_closure_added_pairs

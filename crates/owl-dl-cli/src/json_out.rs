@@ -170,10 +170,11 @@ pub(crate) struct ClassifyJson {
     /// them. A SEPARATE field: no class pair's deadline fired.
     pub(crate) derived_same_undecided: usize,
     /// #448: pairs the transitive closure of the recorded relation added
-    /// (`RUSTDL_CLASSIFY_CLOSE_MATRIX=1`): pairs recorded "not subsumed" (a cut, or
-    /// a trusted wedge `Sat`) that recorded subsumptions imply. Each is sound, since
-    /// every recorded pair is. Diagnostic only: it neither sets nor clears
-    /// `incomplete` (a cut also prunes the walk below it). 0 when the closure is off.
+    /// (`RUSTDL_CLASSIFY_CLOSE_MATRIX`, default on; `=0` disables): pairs recorded
+    /// "not subsumed" (a cut, or a trusted wedge `Sat`) that recorded subsumptions
+    /// imply. Each is sound, since every recorded pair is. Diagnostic only: it neither
+    /// sets nor clears `incomplete` (a cut also prunes the walk below it). 0 when the
+    /// closure is off.
     pub(crate) matrix_closure_added_pairs: usize,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,

@@ -1067,10 +1067,11 @@ impl ClassificationStats {
 }
 
 /// #448: close the classification matrix transitively (`RUSTDL_CLASSIFY_CLOSE_MATRIX`,
-/// **default OFF** while its cost is measured; `=1` enables). See
+/// **default ON**; `=0` disables). Its own time is median 0.33%, p95 0.83% and at most
+/// about 1% of classify CPU on the 32 largest hybrid ORE ontologies (2026-11-04). See
 /// [`EntailmentMatrix::close_transitively`].
 pub(crate) fn classify_close_matrix_enabled() -> bool {
-    std::env::var("RUSTDL_CLASSIFY_CLOSE_MATRIX").is_ok_and(|v| v == "1")
+    std::env::var_os("RUSTDL_CLASSIFY_CLOSE_MATRIX").is_none_or(|v| v != "0")
 }
 
 impl Classification {

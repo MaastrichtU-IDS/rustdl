@@ -633,6 +633,25 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`classify` closes its subsumption matrix transitively, so `is_subclass` agrees with the
+  hierarchy `direct_subsumers` reports (#448).** When a pair `(a, c)` was recorded "not subsumed"
+  (a per-pair deadline cut, or a trusted wedge `Sat`) while `(a, b)` and `(b, c)` were recorded
+  subsumed, the two accessors disagreed; the generated net's route law R3.3 found it (default
+  case 812). Every pair the closure adds is implied by recorded subsumptions, so it is sound.
+  - **Output change on incomplete runs:** `direct_subsumptions` and `equivalent_groups` become
+    those of the closed relation, so they can differ from earlier releases while the transitive
+    closure of the answer does not. Byte-comparison baselines will see diffs on incomplete rows.
+    On complete runs the matrix is already transitive and nothing changes.
+  - New field `matrix_closure_added_pairs` (`classify --json`, Python
+    `Classification.matrix_closure_added_pairs`), a `# matrix closure:` banner line, and a note
+    under the INCOMPLETE warning. `incomplete` and `timed_out_pairs` are unchanged;
+    `undecided_pairs()` drops the pairs the closure recovers.
+  - Default on; `RUSTDL_CLASSIFY_CLOSE_MATRIX=0` disables it. Cost, measured on the 32 largest
+    hybrid ORE ontologies (5 reps, one core): the closure's own time is median 0.33%, p95 0.83%
+    and at most about 1% of classify CPU (the largest absolute cost is ~145 ms, on ore_ont_12012
+    with 41,717 classes). The answers equal the previous release's on all 32 (ore_ont_12698,
+    budget-truncated, at a non-truncating budget), and the closure added 0 pairs on all 388 ORE
+    ontologies with timed-out pairs or trusted-`Sat` refutations.
 - **`sat-expr`, `subclass-expr` and `instances-expr`: `incomplete` now means only "a probe gave
   up" (package 2 prerequisite, #363).** It used to be set whenever the ontology was not pure EL,
   so it could not tell an answer off the EL fragment from a cut probe, against the rule the other

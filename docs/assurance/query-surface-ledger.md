@@ -248,7 +248,7 @@ unresolved, with the reason.
 | L1, L2 | a classify subsumption or equivalence ⇒ `subclass` = yes |
 | L3 | a classify-unsatisfiable class ⇒ `sat` = unsat |
 | L4 | `classify --json` `consistent: false` ⇒ `consistent` = inconsistent (smoke) |
-| L5 | inconsistent KB ⇒ `instance`, `realize`, `disjoint`, `individuals`, `*-expr`, and since #428 `sat` / `subclass`, answer yes or error `Inconsistent`, never "no" (`sat`: never "satisfiable"). `sat owl:Thing` is the consistency check (#427) and is not sampled |
+| L5 | inconsistent KB ⇒ `instance`, `realize`, `disjoint`, `individuals`, `*-expr`, and since #428 `sat` / `subclass` / `explain`, answer yes or error `Inconsistent`, never "no" (`sat`: never "satisfiable"). `sat owl:Thing` is the consistency check (#427) and is not sampled |
 | L6 | named and expression surfaces agree (smoke: they differ only by the injected `Q ≡ C`) |
 | L7 | a `disjoint` pair (A, B) ⇒ `sat-expr "A and B"` = unsat, and `subclass A B` ≠ yes unless A is unsatisfiable |
 | L8 | the `classify --saturation-only` closure ⊆ the classify closure |
@@ -687,9 +687,12 @@ while both legs were decided, leaves the matrix non-transitive. The CLI's
 - R1 compares 1 and 8 threads on one core. It tests interleavings, not real parallel speed, and
   no thread mutant was built: a planted race cannot be made to fire on purpose.
 - The warm route covers what the Python API exposes: `classify`, `Classification` queries and
-  an interleaved `is_consistent`. `is_subclass_of` was dropped from the interleave because it
-  runs no inconsistency guard and does not finish on an inconsistent KB (default case 438).
-  That is #428; once it lands, the interleave can include `is_subclass_of` again.
+  an interleaved `is_consistent`. In the measured run, `is_subclass_of` was left out of the
+  interleave because it ran no inconsistency guard and did not finish on an inconsistent KB
+  (default case 438). #442 (#428) made it error on an inconsistent KB that its guard detects,
+  but case 438's inconsistency is one the guard misses, and `is_subclass_of` still does not
+  finish there: measured on 0df06f64, more than 150 s, shrunk to 8 axioms, and drafted as a
+  #428 residual. The driver keeps it out until that is fixed.
   Classify in the warm route uses a 25 s global budget, standing in for the CLI's 30 s kill.
 - R5.1's predictor is token-based. Degenerate `ObjectUnionOf(:C :C)` is excluded: it is the only
   predictor token in 4 control cases, 3 of which report pure-EL. `ObjectComplementOf` (neg-to-⊥)

@@ -223,18 +223,15 @@ with open(out, "w") as fh:
             rec["is_subclass"] = [[x, y] for x in classes for y in classes
                                   if x != y and x not in unsat and y not in unsat
                                   and c.is_subclass(x, y)]
-            # interleaved queries: the realistic thread-local leak path. is_subclass_of
-            # runs the inconsistency guard since #428, so it finishes (raising) on an
-            # inconsistent KB such as default case 438.
+            # interleaved query: the realistic thread-local leak path. Not is_subclass_of:
+            # #428 (#442) made it raise on an inconsistent KB that its guard detects, but
+            # default case 438's inconsistency is one the guard misses, and is_subclass_of
+            # still does not finish there (measured on 0df06f64: > 150 s; drafted
+            # 2026-11-04 as a #428 residual). Re-include it once that is fixed.
             try:
                 rustdl.is_consistent(path)
             except Exception:  # noqa: BLE001 (a give-up is an error here; the call still ran)
                 pass
-            if len(classes) >= 2:
-                try:
-                    rustdl.is_subclass_of(path, classes[0], classes[1])
-                except Exception:  # noqa: BLE001 (an inconsistent KB raises; the call still ran)
-                    pass
         except Exception as e:  # noqa: BLE001
             rec.update(status="fail", error=repr(e)[:300])
         fh.write(json.dumps(rec) + "\n")

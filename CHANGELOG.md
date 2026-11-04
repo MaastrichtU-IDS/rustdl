@@ -161,7 +161,9 @@ All notable changes to rustdl are documented here. Format is based on
   consistency keeps the answer and sets the new `QueryStats::consistency_undetermined` (CLI
   stderr warning, Python `ConsistencyUndeterminedWarning`). `sat owl:Thing` and
   `owl:Thing ⊑ owl:Nothing` are the consistency check itself (#427) and run neither.
-  `RUSTDL_CLASS_QUERY_GUARD=0` reverts. family: an error in ~7–12 s instead of no answer.
+  `RUSTDL_CLASS_QUERY_GUARD=0` reverts this for the named queries only; the expression queries'
+  new bounds below revert with `RUSTDL_QUERY_GUARD_ABOX_MS=0` and
+  `RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS=0`. family: an error in ~7–12 s instead of no answer.
   - **The guard is cheaper and bounded, for `sat-expr` / `subclass-expr` too.** Its EL closure is
     handed to the query, which no longer saturates twice. Its `ABox` saturation, unbounded on
     main, is bounded at 3 s in classify's high-work class and unbounded in the low-work class
@@ -172,6 +174,8 @@ All notable changes to rustdl are documented here. Format is based on
     (`RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS`, `0` = no limit); the verdict is then undetermined.
     The build takes ~0.5 GB per million axioms: on `ore_ont_1833` / `ore_ont_5368` (14–18 M) it
     took ~7 GB and `subclass-expr` aborted under an 8 GB limit on main.
+  - Residual: an inconsistent KB in the high-work class whose `ABox` clash takes longer than 3 s
+    to derive still reaches the tableau and can stall, as `sat-expr` already could.
   - Measured against main over the 1,146 `ABox`-bearing ORE ontologies (20 s cap): 0 answer
     changes; every new error has an inconsistency witness; CPU `sat` +2.1%, `subclass` +27% (the
     lazy check it never ran before), `sat-expr` −3.9%, `subclass-expr` −10.1%.

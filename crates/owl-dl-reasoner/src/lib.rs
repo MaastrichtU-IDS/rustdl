@@ -8952,6 +8952,20 @@ fn is_subclass_of_internal_full(
             .map(|(holds, stats, _)| (holds, stats));
     }
     let closure = class_query_guard(&internal)?;
+    is_subclass_of_after_guard(internal, sub_iri, super_iri, closure)
+}
+
+/// The part of [`is_subclass_of_internal_full`] after the guard: the query on the
+/// guard's closure, then the #369 lazy check. For callers that ran
+/// [`class_query_guard`] themselves (`prove`), so it does not run twice.
+fn is_subclass_of_after_guard(
+    internal: InternalOntology,
+    sub_iri: &str,
+    super_iri: &str,
+    closure: Option<owl_dl_saturation::Subsumers>,
+) -> Result<(bool, QueryStats), ReasonError> {
+    let sub = resolve_query_class(&internal.vocabulary, sub_iri)?;
+    let sup = resolve_query_class(&internal.vocabulary, super_iri)?;
     let (holds, mut stats, left) = is_subclass_of_keeping(internal, sub_iri, super_iri, closure)?;
     // #428: as in `is_class_satisfiable_internal_full`. `C ⊑ C`, `C ⊑ ⊤` and
     // `⊥ ⊑ C` hold in every KB, so they are never the vacuous answer.
@@ -12581,6 +12595,11 @@ fn prove_step(
 /// a class IRI not in the ontology (sub checked first), as `is_subclass_of`
 /// (#409). `owl:Thing` / `owl:Nothing` resolve to `⊤` / `⊥`, declared or not
 /// (#427); a typo beside one is still `UnknownClass`.
+///
+/// On an ontology found inconsistent (#428) this returns an empty
+/// [`ProveEntailmentResult::JustificationFallback`] with nothing to tell it from
+/// "entailed, no justification": use [`prove_entailment_rcstr_reporting`], whose
+/// [`ProveFlags::kb_inconsistent`] says so.
 pub fn prove_entailment<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     sub_iri: &str,
@@ -12601,11 +12620,11 @@ pub fn prove_entailment<A: horned_owl::model::ForIRI>(
             minimal_guaranteed: false,
         })
     };
-    match class_query_guard(&internal) {
+    let closure = match class_query_guard(&internal) {
         Err(ReasonError::Inconsistent) => return Ok(vacuous()),
         Err(e) => return Err(e),
-        Ok(_) => {}
-    }
+        Ok(closure) => closure,
+    };
     if let Some(step) = prove_step(&internal, sub, sup) {
         if prove_lazy_check(&internal) {
             return Ok(vacuous());
@@ -12615,7 +12634,7 @@ pub fn prove_entailment<A: horned_owl::model::ForIRI>(
 
     // Check if the entailment holds at all. A give-up is `Unknown`, not a
     // non-entailment (#402).
-    let (held, stats) = match is_subclass_of_with_stats(ontology, sub_iri, sup_iri) {
+    let (held, stats) = match is_subclass_of_after_guard(internal, sub_iri, sup_iri, closure) {
         Err(ReasonError::Inconsistent) => return Ok(vacuous()),
         r => r?,
     };
@@ -12700,13 +12719,13 @@ pub fn prove_entailment_rcstr_reporting(
     // `kb_inconsistent` does not depend on whether the saturator has a step
     // proof. On an inconsistent KB the explanation of `sub ⊑ sup` is the
     // inconsistency: a minimal entailing set, as `justify` returns.
-    match class_query_guard(&internal) {
+    let closure = match class_query_guard(&internal) {
         Err(ReasonError::Inconsistent) => {
             return prove_on_inconsistent_kb(ontology, sub_iri, sup_iri);
         }
         Err(e) => return Err(e),
-        Ok(_) => {}
-    }
+        Ok(closure) => closure,
+    };
     if let Some(step) = prove_step(&internal, sub, sup) {
         // A step proof is a positive answer, so the #369 lazy check runs after it
         // as after `subclass`'s: a wedge-only inconsistency is reported too.
@@ -12716,10 +12735,11 @@ pub fn prove_entailment_rcstr_reporting(
         return Ok((step, ProveFlags::default()));
     }
 
-    // Check if the entailment holds at all (possibly via tableau). A give-up is
+    // Check if the entailment holds at all (possibly via tableau), on the guard's
+    // closure: the guard has run, so it does not run again. A give-up is
     // `Unknown`, not a non-entailment (#402). The #369 lazy check can still find
     // the KB inconsistent after a positive answer.
-    let (held, stats) = match is_subclass_of_with_stats(ontology, sub_iri, sup_iri) {
+    let (held, stats) = match is_subclass_of_after_guard(internal, sub_iri, sup_iri, closure) {
         Err(ReasonError::Inconsistent) => {
             return prove_on_inconsistent_kb(ontology, sub_iri, sup_iri);
         }

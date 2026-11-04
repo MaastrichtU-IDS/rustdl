@@ -1034,6 +1034,8 @@ fn synthetic_def_to_class_expression(
                 build.class(owl_dl_core::OWL_THING_IRI),
             )),
         },
+        // #444/#445: the shared ⊤ key `K⊤` is the whole domain.
+        SyntheticDef::TopKey => ClassExpression::Class(build.class(owl_dl_core::OWL_THING_IRI)),
         // Not reached in practice: `DKey` classes are interned as real named
         // vocabulary entries at conversion time (`owl_dl_core::convert`'s
         // `urn:rustdl-dkey:` classes), so they resolve via the `vocab` branch

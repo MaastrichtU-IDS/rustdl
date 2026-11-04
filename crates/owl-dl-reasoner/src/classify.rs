@@ -1966,7 +1966,8 @@ fn classify_pure_el(
     //
     // 2. `top_is_unsat()` — set when a named class `C` declared as a
     //    `⊤`-subsumer (i.e. `SubClassOf(owl:Thing, C)`) ended up unsatisfiable
-    //    after saturation.  Covers the derived case such as `{⊤ ⊑ E, E ⊑ ⊥}`.
+    //    after saturation.  Covers the derived case such as `{⊤ ⊑ E, E ⊑ ⊥}`,
+    //    and (#445) the ⊤ key of a non-atomic `⊤ ⊑ D`: `{⊤ ⊑ ∃r.B, B ⊑ ⊥}`.
     //    Crucially it does NOT fire for `{A ⊑ ⊥, B ⊑ ⊥}` (consistent KB with
     //    every user class empty but no `⊤ ⊑ …` axiom), avoiding a false positive.
     //    Since #307 it is also set by an unsatisfiable nominal stand-in: an

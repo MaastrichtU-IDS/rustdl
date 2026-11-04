@@ -181,24 +181,18 @@ fn parse(axioms: &str) -> SetOntology<RcStr> {
         .0
 }
 
-/// The live drop the layer-2 survey found (issue draft `top-lhs-existential`, with the
-/// manager): `⊤ ⊑ ∃r.B` is certified and its `∃` dropped. This pins that the guard SEES
-/// it end to end, through the certification filter. When the fix lands this flips:
-/// replace it with a test that the drop is gone.
+/// The live drop the layer-2 survey found, `⊤ ⊑ ∃r.B` losing its `∃` (#445), is gone:
+/// certified, and nothing dropped. That a certified drop IS reported end to end is
+/// pinned in `el_unlowered_guard_bot_filler_off.rs`.
 #[test]
-fn the_known_top_lhs_drop_is_reported_under_certification() {
+fn the_top_lhs_existential_now_lowers() {
     let found = owl_dl_reasoner::certified_unlowered(&parse(
         "SubClassOf(owl:Thing ObjectSomeValuesFrom(:r :B)) \
          SubClassOf(ObjectSomeValuesFrom(:r :B) :X)",
     ))
     .expect("converts");
     assert!(found.classify_certified);
-    let sites: Vec<_> = found
-        .classify
-        .iter()
-        .map(|u| (u.site, u.concept.as_str()))
-        .collect();
-    assert_eq!(sites, [("top-lhs-nonatomic", "∃r.B")]);
+    assert!(found.classify.is_empty(), "{found:?}");
 }
 
 /// Not certified, so not reported: the same drop on an input outside the fast-path

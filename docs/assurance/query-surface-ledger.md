@@ -602,6 +602,13 @@ certified file in the populations above: the generator never plants a ⊤-LHS GC
 pool has none that is certified. An issue draft went to the manager; no fix is in this
 change.
 
+**Fixed (#444, #445).** A non-atomic `⊤ ⊑ D` now lowers as `K⊤ ⊑ D` for a shared ⊤ key
+`K⊤`, and `seed` broadcasts every `⊤ ⊑ C` (and `K⊤`) to every class id, not only the user
+classes. The site `top-lhs-nonatomic` is retired; the end-to-end "a certified drop is
+reported" check now uses `A ⊑ ∃r.⊥` with `RUSTDL_EL_BOT_FILLER=0`
+(`el_unlowered_guard_bot_filler_off.rs`, and the CLI's `reports_a_certified_drop`). The
+`el_top` generator profile plants ⊤-LHS GCIs, so the off-CI net now covers the shape.
+
 ## Route-pair laws (#363 package E, stateful half)
 
 `scripts/gen/routes.py` asks the same question by different routes and checks that the

@@ -11,7 +11,7 @@ All notable changes to rustdl are documented here. Format is based on
   inputs (layer 2 of the pure-EL guard; #440 is layer 1).** Every D10-class bug so far (the
   `∃r.⊥` filler, `And(..) ⊑ ∃R.B`, the SWEET domain trigger, #110, #119, #435, #436) was a
   construct the fast-path gate certified and the lowering silently turned into no rule.
-  - `owl_dl_saturation::unlowered`: 13 sites record a construct the lowering drops, or
+  - `owl_dl_saturation::unlowered`: 13 sites (12 since #445) record a construct the lowering drops, or
     weakens to `∃r.⊤`, after every fallback. They sit in the callers, so a helper that
     degrades is caught too. With no recorder installed, a site costs one relaxed atomic load:
     `classify --json` is byte-identical on the curated set and the 1000 `el_guaranteed` cases,
@@ -23,7 +23,8 @@ All notable changes to rustdl are documented here. Format is based on
     fixture (261; 113 certified); `el_generated_guard.rs` checks the 300 frozen cases.
     Sabotaging the D10 bot filler, #439's `⊤` arm or #114's domain heads turns them red.
   - Found on main: `⊤ ⊑ ∃r.B` loses the `∃` under `completeness_guaranteed: true`
-    (Konclude and HermiT agree). It is reported, pinned by a test, and left for its own fix.
+    (Konclude and HermiT agree). It is reported, pinned by a test, and left for its own fix
+    (since fixed, #445).
 - **classify, realize, justify, repair and diagnose report a consistency that rests on the
   consistency wedge's `Sat` alone (#429).** #392 made `consistent` report this as
   `relies_on_trusted_consistency`. These surfaces reached the same trust decision and said
@@ -169,6 +170,21 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The EL saturator lowers `⊤ ⊑ D` in full, and gives `⊤ ⊑ C` to every class (#444,
+  #445).** Both were pure-EL misses reported under `completeness_guaranteed: true` (Konclude
+  and HermiT agree on every reproducer).
+  - #445: the `⊤`-LHS arm kept only `D`'s atomic conjuncts, so `⊤ ⊑ ∃r.B`, `∃r.B ⊑ X` missed
+    `X ≡ ⊤`. A non-atomic `D` now lowers as `K⊤ ⊑ D` through the ordinary atomic-LHS
+    lowering, for one shared ⊤ key `K⊤` that every class is below. `⊤ ⊑ ∃r.B`, `B ⊑ ⊥` is
+    now reported inconsistent by `classify` (it said `consistent: true`).
+  - #444: `⊤ ⊑ C` reached the user classes only, so a synthetic fact target (a marker for
+    `∃s.B`, a Tseitin conjunction) never got `C`, and `⊤ ⊑ T`, `X ⊑ ∃r.∃s.B`, `∃r.T ⊑ W`
+    missed `X ⊑ W`. The broadcast now covers every class id.
+  - `prove` gives complete step proofs through both: `X ⊑ K⊤` is a definition, and a
+    synthetic's `⊑ C` cites the `⊤ ⊑ C` axiom.
+  - Layer 2's `top-lhs-nonatomic` site, which recorded the #445 drop, is retired (12 sites
+    remain). A new `el_top` generator profile plants ⊤-LHS GCIs, which `el_guaranteed`
+    never emits.
 - **`sat`, `subclass` and `explain` run the inconsistency guard (#428).** They went straight to
   the `ABox`-seeded tableau: on `family.ofn` (inconsistent) `sat :Aunt` ran past 60 s with no
   answer, and on other inconsistent KBs they returned the vacuous "unsat" / "yes". Now they run

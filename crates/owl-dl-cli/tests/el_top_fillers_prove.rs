@@ -20,7 +20,7 @@ impl Fixture {
             "Prefix(:=<http://ex/#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
              Ontology(<http://ex/o>\n\
              Declaration(Class(:X)) Declaration(Class(:F)) Declaration(Class(:W)) \
-             Declaration(Class(:B)) Declaration(ObjectProperty(:r)) \
+             Declaration(Class(:B)) Declaration(Class(:T)) Declaration(ObjectProperty(:r)) \
              Declaration(ObjectProperty(:s))\n{body}\n)\n"
         );
         std::fs::write(&path, src).unwrap();
@@ -114,5 +114,28 @@ fn top_marker_on_a_composed_fact_proof() {
          SubClassOf(:X ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :B)))
          SubClassOf(:X :A)
          SubClassOf(ObjectIntersectionOf(:A ObjectSomeValuesFrom(:t owl:Thing)) :W)",
+    );
+}
+
+/// #445: a step through the ⊤ key `K⊤` (`⊤ ⊑ ∃r.B` lowers as `K⊤ ⊑ ∃r.B`). `X ⊑ K⊤`
+/// is a definition (`X ⊑ ⊤`) and `K⊤`'s fact cites the ⊤-LHS axiom: no gap.
+#[test]
+fn top_lhs_existential_proof() {
+    proves_cleanly(
+        "topkey",
+        "SubClassOf(owl:Thing ObjectSomeValuesFrom(:r :B))
+         SubClassOf(ObjectSomeValuesFrom(:r :B) :W)",
+    );
+}
+
+/// #444: the marker target `M ≡ ∃s.B` gets `T` from `⊤ ⊑ T`; that step cites the
+/// `⊤ ⊑ T` axiom, so the proof of `X ⊑ W` has no gap.
+#[test]
+fn top_subsumer_on_a_marker_target_proof() {
+    proves_cleanly(
+        "markertop",
+        "SubClassOf(owl:Thing :T)
+         SubClassOf(:X ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :B)))
+         SubClassOf(ObjectSomeValuesFrom(:r :T) :W)",
     );
 }

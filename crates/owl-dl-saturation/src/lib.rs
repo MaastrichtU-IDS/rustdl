@@ -1114,15 +1114,58 @@ impl WorklistEngine {
                 self.push_subsumer(rule.sub, rule.sup);
             }
         }
-        // `⊤ ⊑ C` broadcast: C is Top-equivalent ⟹ every named class ⊑ C. Seed
-        // `(X, C)` for every named class X and every top subsumer C; the fixpoint
-        // then closes transitively (X ⊑ C ⊑ D ⟹ X ⊑ D) and fires C's downstream
-        // rules on each X. No-op unless the ontology has a `⊤ ⊑ NamedClass` axiom.
+        // `⊤ ⊑ C` broadcast: C is Top-equivalent ⟹ every class ⊑ C. Seed `(X, C)`
+        // for every class X and every top subsumer C; the fixpoint then closes
+        // transitively (X ⊑ C ⊑ D ⟹ X ⊑ D) and fires C's downstream rules on each X.
+        // No-op unless the ontology has a `⊤ ⊑ …` axiom.
+        //
+        // #444: X ranges over every class id, synthetic ones included (markers,
+        // Tseitin synthetics, ⊤-witnesses, keys, nominal stand-ins, the reserved
+        // query class). `⊤ ⊑ C` holds of every element, so of every synthetic's
+        // extension too; over the user classes only, a marker fact target `M ≡ ∃s.B`
+        // never got `C`, and `X ⊑ ∃r.M`, `∃r.C ⊑ W` missed `X ⊑ W`. Synthetics minted
+        // at runtime are conjunctions `F ⊑ Bᵢ` and inherit through the closure.
+        //
+        // Cost: every fact of a top subsumer (`K⊤ →r B` for `⊤ ⊑ ∃r.B`) is copied
+        // onto every class by fact inheritance, O(classes × facts(K⊤)), which
+        // completeness needs in this engine.
         if !self.rules.top_subsumers.is_empty() {
             let tops = self.rules.top_subsumers.clone();
-            for i in 0..self.num_user_classes {
+            let top_key = self.tseitin_runtime.top_key;
+            // Proof steps: `x ⊑ K⊤` is `x ⊑ ⊤`, definitional. A synthetic `x ⊑ C`
+            // cites the `⊤ ⊑ C` axiom, so a proof through a marker (#444) has no gap.
+            // A user class's `x ⊑ C` stays unrecorded, as before (`prove` falls back
+            // to a justification).
+            let top_axioms: Vec<Option<usize>> = if self.record_proofs {
+                tops.iter()
+                    .map(|&c| top_subsumer_axiom(internal, c))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for i in 0..self.num_total_classes {
                 let x = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
-                for &c in &tops {
+                for (k, &c) in tops.iter().enumerate() {
+                    if self.record_proofs && !self.subsumers.contains(x, c) {
+                        let inf = if Some(c) == top_key {
+                            Some(Inference {
+                                rule: ElRule::SyntheticDefinition,
+                                premise_facts: vec![],
+                                axiom_refs: vec![],
+                            })
+                        } else if i >= self.num_user_classes {
+                            Some(Inference {
+                                rule: ElRule::ToldSubsumer,
+                                premise_facts: vec![],
+                                axiom_refs: top_axioms[k].map(AxiomRef).into_iter().collect(),
+                            })
+                        } else {
+                            None
+                        };
+                        if let (Some(inf), Some(t)) = (inf, self.proof_trace.as_mut()) {
+                            t.record(DerivedFact::Sub(x, c), inf);
+                        }
+                    }
                     self.push_subsumer(x, c);
                 }
             }
@@ -1324,7 +1367,8 @@ impl WorklistEngine {
         // reported `globally_inconsistent == false` on a `⊤ ⊑ ⊥` KB (FINDING 2).
         self.subsumers.globally_inconsistent = self.rules.global_unsat;
         // Detect derived global inconsistency: if any `⊤`-subsumer class (a named
-        // `C` with `SubClassOf(owl:Thing, C)`) ended up unsatisfiable, then ⊤ is
+        // `C` with `SubClassOf(owl:Thing, C)`, or the ⊤ key `K⊤` of a non-atomic
+        // `⊤ ⊑ D`, #445) ended up unsatisfiable, then ⊤ is
         // itself unsat → the KB is inconsistent even without a syntactic `⊤ ⊑ ⊥`.
         // Example: `{⊤ ⊑ E, E ⊑ ⊥}` — `E` is in `top_subsumers` and gets marked
         // unsat by `process_unsat`; this flag lets callers report inconsistency
@@ -2946,7 +2990,8 @@ pub struct Subsumers {
     /// read via the [`Subsumers::globally_inconsistent`] accessor.
     globally_inconsistent: bool,
     /// Set when at least one `top_subsumers` class (i.e. a named `C` such that
-    /// `⊤ ⊑ C` was asserted) ended up unsatisfiable after saturation.  This
+    /// `⊤ ⊑ C` was asserted, or the ⊤ key `K⊤` of a non-atomic `⊤ ⊑ D`, #445: e.g.
+    /// `⊤ ⊑ ∃r.B`, `B ⊑ ⊥`) ended up unsatisfiable after saturation.  This
     /// means owl:Thing itself is unsat → the KB is globally inconsistent, even
     /// though no *syntactic* `⊤ ⊑ ⊥` axiom was present.  Example:
     /// `SubClassOf(owl:Thing :E)` + `SubClassOf(:E owl:Nothing)` — `E` is in
@@ -3084,9 +3129,10 @@ struct ElRules {
     /// and `(index into atomic_subsumptions, axiom)`. Read only by proof provenance.
     late_fact_axiom: Vec<(usize, usize)>,
     late_sub_axiom: Vec<(usize, usize)>,
-    /// Atomic subsumers of `⊤` (from `SubClassOf(owl:Thing, C)` / `⊤ ⊑ C⊓…`).
-    /// Every named class ⊑ each of these (C is Top-equivalent). Broadcast to all
-    /// classes in `seed`; empty unless the ontology has a `⊤ ⊑ NamedClass` axiom.
+    /// Atomic subsumers of `⊤` (from `SubClassOf(owl:Thing, C)` / `⊤ ⊑ C⊓…`), plus
+    /// the ⊤ key `K⊤` when a `⊤ ⊑ D` has a non-atomic conjunct (#445). Every class ⊑
+    /// each of these (each is Top-equivalent). Broadcast to every class id in `seed`
+    /// (#444); empty unless the ontology has a `⊤ ⊑ …` axiom.
     top_subsumers: Vec<ClassId>,
     /// Conjunctive triggers: when a class accumulates every `body`
     /// among its subsumers, it gains `head`.
@@ -3414,6 +3460,12 @@ struct TseitinAllocator {
     /// [`ElRules::directly_unsat`]; the existing unsat propagation then marks
     /// every class that reaches it. See [`el_bot_filler_enabled`].
     bot_key: Option<ClassId>,
+    /// #444/#445: the shared ⊤ key `K⊤`, read as the whole domain. A ⊤-LHS GCI
+    /// `⊤ ⊑ D` with a non-atomic conjunct lowers as `K⊤ ⊑ D` through
+    /// [`lower_atomic_sub`], and `K⊤` sits in `top_subsumers`, so `seed`'s broadcast
+    /// makes every class `⊑ K⊤`. Allocated lazily by
+    /// [`TseitinAllocator::introduce_top_key`].
+    top_key: Option<ClassId>,
 }
 
 impl TseitinAllocator {
@@ -3434,6 +3486,7 @@ impl TseitinAllocator {
             top_witness_by_role: HashMap::new(),
             top_marker_by_role: HashMap::new(),
             bot_key: None,
+            top_key: None,
         }
     }
 
@@ -3448,6 +3501,19 @@ impl TseitinAllocator {
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
         self.bot_key = Some(synthetic);
         rules.directly_unsat.push(synthetic);
+        synthetic
+    }
+
+    /// #444/#445: get-or-allocate the shared ⊤ key, registering it once in
+    /// [`ElRules::top_subsumers`]. See `top_key`.
+    fn introduce_top_key(&mut self, rules: &mut ElRules) -> ClassId {
+        if let Some(existing) = self.top_key {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.top_key = Some(synthetic);
+        rules.top_subsumers.push(synthetic);
         synthetic
     }
 
@@ -4069,6 +4135,10 @@ fn collect_el_rules_with_provenance(
     }
     for (&role, &marker) in &tseitin.top_marker_by_role {
         synthetic_defs.insert(marker, proof::SyntheticDef::TopMarker { role });
+    }
+    // #444/#445: the shared ⊤ key `K⊤`, the whole domain.
+    if let Some(top_key) = tseitin.top_key {
+        synthetic_defs.insert(top_key, proof::SyntheticDef::TopKey);
     }
     // Nominal keys: NomKey(ind) → stand-in for {ind}
     for (&ind, &nomkey) in &tseitin.nominal_by_ind {
@@ -4747,12 +4817,33 @@ fn collect_el_rules(
     (rules, tseitin, total_classes)
 }
 
+/// The axiom that puts the atomic `c` into `top_subsumers`: `⊤ ⊑ D` (or
+/// `EquivalentClasses(⊤, D, …)`) with `c` an atomic conjunct of `D`. `None` for the ⊤
+/// key, which no single axiom introduces. Read only for proof provenance.
+fn top_subsumer_axiom(internal: &InternalOntology, c: ClassId) -> Option<usize> {
+    let pool = &internal.concepts;
+    let is_top = |x: ConceptId| matches!(pool.get(x), ConceptExpr::Top);
+    internal.axioms.iter().position(|ax| match ax {
+        Axiom::SubClassOf { sub, sup } => {
+            is_top(*sub) && atomic_operands_on_right(*sup, pool).contains(&c)
+        }
+        Axiom::EquivalentClasses(members) => {
+            members.iter().any(|&m| is_top(m))
+                && members
+                    .iter()
+                    .any(|&m| atomic_operands_on_right(m, pool).contains(&c))
+        }
+        _ => false,
+    })
+}
+
 /// #435: the told subsumers of every per-role ⊤-witness `TW_R`, read as the set of
 /// `R`-successors (`∃R⁻.⊤`):
 /// - `TW_R ⊑ F` for each `F` in `effective_ranges(R)`: every `R`-successor is in
 ///   every range of `R` and of its super-roles;
-/// - `TW_R ⊑ C` for each `⊤ ⊑ C` (`top_subsumers`), which `seed`'s broadcast gives
-///   the user classes only.
+/// - `TW_R ⊑ C` for each `⊤ ⊑ C` (`top_subsumers`). Since #444 `seed`'s broadcast
+///   gives these to every class, `TW_R` included; this pass stays for the
+///   `late_sub_axiom` provenance it attaches.
 ///
 /// Runs once, after every axiom has been lowered, so both tables and the witness map
 /// are complete and the per-axiom provenance cursors are untouched. Each push is
@@ -4790,15 +4881,7 @@ fn top_witness_subsumers(
             _ => false,
         })
     };
-    let top_axiom = |c: ClassId| {
-        internal.axioms.iter().position(|ax| match ax {
-            Axiom::SubClassOf { sub, sup } => {
-                matches!(pool.get(*sub), ConceptExpr::Top)
-                    && atomic_operands_on_right(*sup, pool).contains(&c)
-            }
-            _ => false,
-        })
-    };
+    let top_axiom = |c: ClassId| top_subsumer_axiom(internal, c);
     let mut witnesses: Vec<(RoleId, ClassId)> = tseitin
         .top_witness_by_role
         .iter()
@@ -5507,10 +5590,19 @@ fn lower_sub_class_of(
             }
         }
         // `⊤ ⊑ C` (a named class equivalent to owl:Thing): C subsumes EVERYTHING,
-        // so every named class ⊑ C. Record each atomic sup as a "top subsumer";
+        // so every class ⊑ C. Record each atomic sup as a "top subsumer";
         // `seed` broadcasts these to all classes and the fixpoint closes them
         // transitively. Without this the axiom was silently dropped here — a real
         // EL-incompleteness (ORE ore_ont_11522: 522 vs whelk's complete 1490).
+        //
+        // #445: any other conjunct (`⊤ ⊑ ∃r.B`, `⊤ ⊑ C ⊓ ∃r.⊤`, `≥n` …) lowers as
+        // `K⊤ ⊑ sup` through the ordinary `lower_atomic_sub`, so it gets exactly what
+        // an atomic left-hand side would. `K⊤` is a top subsumer, so the broadcast
+        // makes every class `⊑ K⊤`. Sound: read `K⊤` as the whole domain; then
+        // `K⊤ ⊑ sup` is the axiom and every `X ⊑ K⊤` is trivially true. Only a
+        // conjunct other than an atom or `⊤` allocates `K⊤`: the pool has already
+        // folded `⊤` and `⊥` out of a conjunction, so `⊤ ⊑ ⊤` and atom-only GCIs
+        // keep their old rules exactly.
         //
         // Task 2b Bug 1: `⊤ ⊑ ⊥` — the `Bot` case. `atomic_operands_on_right(Bot, _)`
         // returns empty, so without this guard the axiom was silently DROPPED while the
@@ -5525,11 +5617,20 @@ fn lower_sub_class_of(
             for c in atomic_operands_on_right(sup, pool) {
                 rules.top_subsumers.push(c);
             }
-            // Live drop (issue draft `top-lhs-existential`): `⊤ ⊑ ∃r.B` loses the `∃`.
-            for op in self_or_conjuncts(sup, pool) {
-                if !matches!(pool.get(op), ConceptExpr::Atomic(_)) {
-                    note("top-lhs-nonatomic", op);
-                }
+            let rest = self_or_conjuncts(sup, pool)
+                .into_iter()
+                .any(|op| !matches!(pool.get(op), ConceptExpr::Atomic(_) | ConceptExpr::Top));
+            if rest {
+                let top_key = tseitin.introduce_top_key(rules);
+                lower_atomic_sub(
+                    top_key,
+                    sup,
+                    pool,
+                    rules,
+                    tseitin,
+                    effective_ranges,
+                    chain_ranges,
+                );
             }
         }
         // #297: `≥n R.B ⊑ C` (`n ≥ 2`, e.g. the `⊒` half of `W ≡ ≥2 R`) as `MinKey ⊑ C`.
@@ -6450,8 +6551,8 @@ fn seed_nominal_abox_edges(
             }
         }
     }
-    // `⊤ ⊑ C` holds of every individual, but `seed` broadcasts it to the named
-    // classes only, so give it to each reached individual's stand-in here.
+    // `⊤ ⊑ C` holds of every individual. Since #444 `seed` broadcasts it to every
+    // class, these stand-ins included, so this is redundant but harmless.
     if !rules.top_subsumers.is_empty() {
         let mut inds: Vec<IndividualId> = reach.into_iter().collect();
         inds.sort_unstable();

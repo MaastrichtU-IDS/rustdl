@@ -11,7 +11,8 @@
 //! Every positive case asserts the subsumption on BOTH surfaces (classify, which takes
 //! the pure-EL saturation path, and the per-pair `is_subclass_of`) and that the file is
 //! pure EL with the guarantee on, so a pass is a pass under the claim. The negative
-//! cases are FP controls.
+//! cases are FP controls, and two positive-looking cases are marked as controls (they
+//! hold on main by another route).
 #![allow(clippy::unwrap_used)]
 
 use horned_owl::io::ParserConfiguration;
@@ -186,7 +187,9 @@ fn a_marker_target_gets_top_subsumers() {
     );
 }
 
-/// The same through a Tseitin target (`Range(r, F)` makes the target `M ⊓ F`).
+/// A control, true on main too: with `Range(r, F)` the target is the Tseitin `M ⊓ F`,
+/// which already reached `T` through its user conjunct `F` (sabotaging the #444
+/// broadcast leaves it green). Kept so the broadcast change cannot break it.
 #[test]
 fn a_tseitin_target_gets_top_subsumers() {
     derives(
@@ -211,7 +214,8 @@ fn the_top_key_reaches_a_marker_target() {
 
 /// A nominal stand-in is a synthetic too: `X ⊑ ∃s.{a}`, `⊤ ⊑ ∃r.B`, `∃s.∃r.B ⊑ W` ⟹
 /// `X ⊑ W`, and with `⊤ ⊑ T`, `∃s.T ⊑ Y` ⟹ `X ⊑ Y`. Nominals are outside the pure-EL
-/// gate, so this checks the answer on both surfaces whichever engine gives it.
+/// gate, so this checks the answer on both surfaces whichever engine gives it. A control:
+/// the tableau answers it, so it holds on main too.
 #[test]
 fn a_nominal_stand_in_gets_the_top_axioms() {
     let o = onto(

@@ -325,16 +325,19 @@ impl EntailmentMatrix {
     /// columns (the sparse-row contract), so a union never adds an unsat column.
     fn close_transitively(&mut self, unsat: &HashSet<usize>) -> usize {
         let n = self.len();
+        let to_u32 = |j: usize| u32::try_from(j).expect("class index fits in u32");
         let succ: Vec<Vec<u32>> = (0..n)
             .map(|i| {
                 if unsat.contains(&i) {
-                    Vec::new()
-                } else {
-                    self.row_ascending(i)
-                        .into_iter()
-                        .filter(|&j| j != i)
-                        .map(|j| u32::try_from(j).expect("class index fits in u32"))
-                        .collect()
+                    return Vec::new();
+                }
+                match self {
+                    Self::Dense(rows) => rows[i].ones().filter(|&j| j != i).map(to_u32).collect(),
+                    Self::Sparse(rows) => rows[i]
+                        .iter()
+                        .copied()
+                        .filter(|&j| j as usize != i)
+                        .collect(),
                 }
             })
             .collect();
@@ -343,9 +346,14 @@ impl EntailmentMatrix {
         let mut members: Vec<Vec<u32>> = vec![Vec::new(); ncomp];
         for (i, &c) in comp.iter().enumerate() {
             if !unsat.contains(&i) {
-                members[c as usize].push(u32::try_from(i).expect("class index fits in u32"));
+                members[c as usize].push(to_u32(i));
             }
         }
+        // One scratch accumulator for every component (cleared per component, never
+        // reallocated): a fresh n-bit set per component was most of a no-op pass's cost.
+        // The sparse arm clears only the bits it set, so it stays O(row) per component.
+        let mut acc = FixedBitSet::with_capacity(n);
+        let mut touched: Vec<u32> = Vec::new();
         let mut added = 0usize;
         for (c, mem) in members.iter().enumerate() {
             if mem.is_empty() {
@@ -361,9 +369,15 @@ impl EntailmentMatrix {
             nexts.sort_unstable_by(|a, b| b.cmp(a));
             nexts.dedup();
             let rep_of = |d: u32| members[d as usize][0] as usize;
+            // `acc` ends as the closed row of `c`, and every member's recorded row is a
+            // SUBSET of it: each recorded super lies in `c` (seeded below) or in a
+            // successor component, which is either merged or covered by a nearer
+            // successor's row, already closed (ids are completion-ordered). So merging
+            // `acc` into a row equals overwriting the row with it, and the bits it adds
+            // are exactly `|acc| - |row|`.
             match self {
                 Self::Dense(rows) => {
-                    let mut acc = FixedBitSet::with_capacity(n);
+                    acc.clear();
                     for &m in mem {
                         acc.insert(m as usize);
                     }
@@ -373,25 +387,49 @@ impl EntailmentMatrix {
                             acc.union_with(&rows[r]);
                         }
                     }
-                    let total = acc.count_ones(..);
+                    // One word-level pass per member, writing only the words that change
+                    // (a no-op pass then only reads the row).
                     for &m in mem {
-                        added += total - rows[m as usize].count_ones(..);
-                        rows[m as usize].clone_from(&acc);
+                        for (w, &a) in rows[m as usize]
+                            .as_mut_slice()
+                            .iter_mut()
+                            .zip(acc.as_slice())
+                        {
+                            let new = a & !*w;
+                            if new != 0 {
+                                added += new.count_ones() as usize;
+                                *w |= new;
+                            }
+                        }
                     }
                 }
                 Self::Sparse(rows) => {
-                    let mut acc: HashSet<u32> = mem.iter().copied().collect();
-                    for &d in &nexts {
-                        let r = rep_of(d);
-                        if !acc.contains(&u32::try_from(r).expect("class index fits in u32")) {
-                            acc.extend(rows[r].iter().copied());
+                    touched.clear();
+                    for &m in mem {
+                        if !acc.put(m as usize) {
+                            touched.push(m);
                         }
                     }
-                    let mut row: Vec<u32> = acc.into_iter().collect();
-                    row.sort_unstable();
+                    for &d in &nexts {
+                        let r = rep_of(d);
+                        if !acc.contains(r) {
+                            for &j in &rows[r] {
+                                if !acc.put(j as usize) {
+                                    touched.push(j);
+                                }
+                            }
+                        }
+                    }
+                    for &j in &touched {
+                        acc.set(j as usize, false);
+                    }
+                    touched.sort_unstable();
                     for &m in mem {
-                        added += row.len() - rows[m as usize].len();
-                        rows[m as usize].clone_from(&row);
+                        let row = &mut rows[m as usize];
+                        if row.len() != touched.len() {
+                            added += touched.len() - row.len();
+                            row.clone_from(&touched);
+                        }
                     }
                 }
             }

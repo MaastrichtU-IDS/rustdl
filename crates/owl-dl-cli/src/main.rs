@@ -2090,6 +2090,7 @@ fn main() -> Result<()> {
                 note_trusted_consistency(&stats);
             }
             println!("{}", if verdict { "sat" } else { "unsat" });
+            warn_consistency_undetermined("sat", stats.consistency_undetermined);
         }
         Command::Subclass {
             file,
@@ -2120,6 +2121,7 @@ fn main() -> Result<()> {
                 } else {
                     note_trusted_consistency(&stats);
                 }
+                warn_consistency_undetermined("subclass", stats.consistency_undetermined);
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
@@ -2425,6 +2427,7 @@ fn main() -> Result<()> {
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },
             );
+            warn_consistency_undetermined("explain", stats.consistency_undetermined);
         }
         Command::Justify {
             file,
@@ -2668,6 +2671,13 @@ fn main() -> Result<()> {
                     );
                 }
                 note_trusted_consistency_flag(flags.relies_on_trusted_consistency);
+                if flags.kb_inconsistent {
+                    eprintln!(
+                        "note: the ontology is inconsistent, so {sub} ⊑ {sup} holds vacuously; \
+                         the justification shown is a minimal entailing set. \
+                         `rustdl justify <file> inconsistent` explains the inconsistency."
+                    );
+                }
             };
             if json {
                 let internal = owl_dl_core::convert::convert_ontology(&onto)

@@ -173,6 +173,13 @@ ClassAssertion(:A :a) ClassAssertion(:E :a)";
 fn an_inconsistent_kb_answers_unsatisfiable_and_subsumed() {
     let _l = lock();
     let o = parse(INCONSISTENT);
+    // #428: the named queries now error, as `sat-expr` below does.
+    assert!(matches!(
+        owl_dl_reasoner::is_class_satisfiable_with_stats(&o, &iri("B")),
+        Err(ReasonError::Inconsistent)
+    ));
+    // Below the guard, the #401 path still must not answer "satisfiable".
+    let _g = SetEnvGuard::set("RUSTDL_CLASS_QUERY_GUARD", "0");
     assert!(!sat(&o, "B").0, "every class is unsatisfiable");
     assert!(sub(&o, "C", "A").0, "every subsumption holds");
     let x: ClassExpression<RcStr> = Build::<RcStr>::new().class(iri("B")).into();
@@ -259,6 +266,13 @@ ClassAssertion(ObjectSomeValuesFrom(:r :E) :a)";
 fn a_wedge_only_inconsistency_answers_unsatisfiable() {
     let _l = lock();
     let o = parse(WEDGE_ONLY_INCONSISTENT);
+    // #428: the lazy check after the positive answer finds it.
+    assert!(matches!(
+        owl_dl_reasoner::is_class_satisfiable_with_stats(&o, &iri("B")),
+        Err(ReasonError::Inconsistent)
+    ));
+    // Below the guard and the lazy check, the #401 path.
+    let _g = SetEnvGuard::set("RUSTDL_CLASS_QUERY_GUARD", "0");
     let (s, st) = sat(&o, "B");
     assert!(!s, "every class is unsatisfiable in an inconsistent KB");
     assert!(!st.relies_on_trusted_consistency);

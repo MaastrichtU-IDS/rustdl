@@ -7,6 +7,23 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **The EL lowering reports what it drops, and CI asserts it drops nothing on certified
+  inputs (layer 2 of the pure-EL guard; #440 is layer 1).** Every D10-class bug so far (the
+  `∃r.⊥` filler, `And(..) ⊑ ∃R.B`, the SWEET domain trigger, #110, #119, #435, #436) was a
+  construct the fast-path gate certified and the lowering silently turned into no rule.
+  - `owl_dl_saturation::unlowered`: 13 sites record a construct the lowering drops, or
+    weakens to `∃r.⊤`, after every fallback. They sit in the callers, so a helper that
+    degrades is caught too. With no recorder installed, a site costs one relaxed atomic load:
+    `classify --json` is byte-identical on the curated set and the 1000 `el_guaranteed` cases,
+    and galen and go-basic wall is unchanged (interleaved, five rounds).
+  - `owl_dl_reasoner::certified_unlowered` (doc-hidden) keeps the records that contradict the
+    gate `classify` dispatches on, or `realize`'s, and `rustdl unlowered <file>` (hidden)
+    prints them as JSON.
+  - Tests: one `+`/`-` pair per site; `el_unlowered_guard.rs` checks every tracked `.ofn`
+    fixture (261; 113 certified); `el_generated_guard.rs` checks the 300 frozen cases.
+    Sabotaging the D10 bot filler, #439's `⊤` arm or #114's domain heads turns them red.
+  - Found on main: `⊤ ⊑ ∃r.B` loses the `∃` under `completeness_guaranteed: true`
+    (Konclude and HermiT agree). It is reported, pinned by a test, and left for its own fix.
 - **classify, realize, justify, repair and diagnose report a consistency that rests on the
   consistency wedge's `Sat` alone (#429).** #392 made `consistent` report this as
   `relies_on_trusted_consistency`. These surfaces reached the same trust decision and said

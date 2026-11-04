@@ -59,6 +59,7 @@ mod realize;
 pub mod repair;
 mod rss_probe;
 mod union_find;
+mod unlowered_guard;
 
 pub use class_expr_query::{
     CeInstances, CeVerdict, class_expression_entailed_subclass, class_expression_instances,
@@ -105,6 +106,8 @@ pub use realize::{
     realize_saturation_only_internal,
 };
 pub use repair::{Repair, Repairs, find_repairs, find_repairs_prepared};
+#[doc(hidden)]
+pub use unlowered_guard::{CertifiedUnlowered, UnloweredReport, certified_unlowered};
 
 /// Run the standalone `ABox` consequence-based saturator on `ontology` and return
 /// `true` iff a disjoint-class clash was detected under named-only semantics.

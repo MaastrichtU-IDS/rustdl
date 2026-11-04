@@ -62,6 +62,8 @@
 
 pub mod proof;
 pub mod seed_sat;
+pub mod unlowered;
+pub use unlowered::Unlowered;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -427,11 +429,61 @@ pub fn saturate_for_realize(
     let role_super_map = build_role_super(internal);
     let (mut rules, mut tseitin, _old_total, _trace) =
         collect_el_rules_with_provenance(internal, &role_super_map, false);
+    seed_realize_abox(internal, &role_super_map, &mut rules, &mut tseitin);
 
+    let nominal_by_ind = tseitin.nominal_by_ind.clone();
+    let num_total_classes = tseitin.next_id as usize;
+    let role_super = freeze_role_super(&role_super_map);
+    let mut engine = WorklistEngine::new(
+        n,
+        num_total_classes,
+        rules,
+        tseitin,
+        role_super,
+        false,
+        None,
+    );
+    engine.seed(internal);
+    engine.run();
+    (engine.subsumers, nominal_by_ind)
+}
+
+/// Run the EL lowering with an [`unlowered`] recorder installed, and return every
+/// construct it dropped or weakened. A diagnostic: the lowering is the real one
+/// (`collect_el_rules`, as every `saturate*` entry point runs it), nothing saturates,
+/// and the result says nothing about whether the input is in a certified fragment; the
+/// reasoner's gates decide that.
+#[must_use]
+pub fn unlowered_el_constructs(internal: &InternalOntology) -> Vec<Unlowered> {
+    let role_super_map = build_role_super(internal);
+    unlowered::recorded(|| collect_el_rules(internal, &role_super_map)).1
+}
+
+/// Like [`unlowered_el_constructs`], for the `ABox` seeding of
+/// [`saturate_for_realize`] only: what that seeding drops of a `ClassAssertion` or an
+/// `ObjectPropertyAssertion`.
+#[must_use]
+pub fn unlowered_realize_abox(internal: &InternalOntology) -> Vec<Unlowered> {
+    let role_super_map = build_role_super(internal);
+    let (mut rules, mut tseitin, _) = collect_el_rules(internal, &role_super_map);
+    unlowered::recorded(|| {
+        seed_realize_abox(internal, &role_super_map, &mut rules, &mut tseitin);
+    })
+    .1
+}
+
+/// [`saturate_for_realize`]'s `ABox` seeding: a nominal class per named individual, its
+/// atomic types, and its role edges with their effective ranges.
+fn seed_realize_abox(
+    internal: &InternalOntology,
+    role_super_map: &HashMap<RoleId, HashSet<RoleId>>,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+) {
     // Effective (super-role-closed) ranges: `Range(s)` applies to every `r ⊑ s`,
     // because an `r`-successor is also an `s`-successor.
     let mut effective_ranges: HashMap<RoleId, Vec<ClassId>> = HashMap::new();
-    for (&r, supers) in &role_super_map {
+    for (&r, supers) in role_super_map {
         let mut union: Vec<ClassId> = supers
             .iter()
             .flat_map(|s| rules.role_ranges.get(s).into_iter().flatten().copied())
@@ -451,7 +503,8 @@ pub fn saturate_for_realize(
         tseitin.introduce_nominal(IndividualId::new(u32::try_from(i).expect("fits u32")));
     }
 
-    for ax in &internal.axioms {
+    for (i, ax) in internal.axioms.iter().enumerate() {
+        unlowered::set_axiom(i);
         match ax {
             Axiom::ClassAssertion { class, individual } => {
                 let nom = tseitin.introduce_nominal(*individual);
@@ -460,6 +513,21 @@ pub fn saturate_for_realize(
                         .atomic_subsumptions
                         .push(AtomicSubsumption { sub: nom, sup });
                 }
+                for op in unlowered::active()
+                    .then(|| self_or_conjuncts(*class, &internal.concepts))
+                    .into_iter()
+                    .flatten()
+                {
+                    if !matches!(
+                        internal.concepts.get(op),
+                        ConceptExpr::Atomic(_) | ConceptExpr::Top
+                    ) {
+                        unlowered::note("abox-class-nonatomic", op);
+                    }
+                }
+            }
+            Axiom::ObjectPropertyAssertion { role, .. } if role.is_inverse() => {
+                unlowered::note_axiom("abox-inverse-edge");
             }
             Axiom::ObjectPropertyAssertion {
                 role,
@@ -484,22 +552,6 @@ pub fn saturate_for_realize(
             _ => {}
         }
     }
-
-    let nominal_by_ind = tseitin.nominal_by_ind.clone();
-    let num_total_classes = tseitin.next_id as usize;
-    let role_super = freeze_role_super(&role_super_map);
-    let mut engine = WorklistEngine::new(
-        n,
-        num_total_classes,
-        rules,
-        tseitin,
-        role_super,
-        false,
-        None,
-    );
-    engine.seed(internal);
-    engine.run();
-    (engine.subsumers, nominal_by_ind)
 }
 
 /// Like [`saturate`] but also supports optional proof recording.
@@ -3268,6 +3320,9 @@ struct ExistentialTrigger {
 #[derive(Debug, Clone)]
 struct TseitinAllocator {
     next_id: u32,
+    /// The first synthetic id: ids below it are user classes. Read only by the
+    /// [`unlowered`] diagnostic (`domain-heads-lossy`).
+    first_synthetic: u32,
     by_body: HashMap<Vec<ClassId>, ClassId>,
     /// Cache for existential markers used to lower LHS conjunctions
     /// containing existential operands (e.g. `∃R.B ⊓ A ⊑ C`). Keyed
@@ -3365,6 +3420,7 @@ impl TseitinAllocator {
     fn new(num_original_classes: usize) -> Self {
         Self {
             next_id: u32::try_from(num_original_classes).expect("class count fits in u32"),
+            first_synthetic: u32::try_from(num_original_classes).expect("class count fits in u32"),
             by_body: HashMap::new(),
             by_existential: HashMap::new(),
             by_union_existential: HashMap::new(),
@@ -4098,14 +4154,19 @@ fn collect_el_rules(
     // Pass 1: metadata that the SubClassOf lowering needs to see — in
     // particular `role_ranges`, used below to fold range constraints
     // into RHS existential bodies via Tseitin synthetics.
-    for ax in &internal.axioms {
+    for (ax_idx, ax) in internal.axioms.iter().enumerate() {
+        unlowered::set_axiom(ax_idx);
         match ax {
             Axiom::DisjointClasses(members) => {
                 let atomics: Vec<ClassId> = members
                     .iter()
-                    .filter_map(|c| match internal.concepts.get(*c) {
-                        ConceptExpr::Atomic(id) => Some(*id),
-                        _ => None,
+                    .filter_map(|c| {
+                        if let ConceptExpr::Atomic(id) = internal.concepts.get(*c) {
+                            Some(*id)
+                        } else {
+                            unlowered::note("disjoint-nonatomic-member", *c);
+                            None
+                        }
                     })
                     .collect();
                 for i in 0..atomics.len() {
@@ -4177,7 +4238,8 @@ fn collect_el_rules(
     // Pass 2: lower SubClassOf / EquivalentClasses with effective_ranges
     // available so RHS existential bodies can be Tseitin-folded with
     // their role's range constraint.
-    for ax in &internal.axioms {
+    for (ax_idx, ax) in internal.axioms.iter().enumerate() {
+        unlowered::set_axiom(ax_idx);
         match ax {
             Axiom::SubClassOf { sub, sup } => {
                 lower_sub_class_of(
@@ -4249,6 +4311,7 @@ fn collect_el_rules(
                 && let Some(&nomkey) = tseitin.nominal_by_ind.get(individual)
                 && !is_data_value_assertion(*class, internal)
             {
+                unlowered::set_axiom(i);
                 let (b_sub, b_fact) = (
                     rules.atomic_subsumptions.len(),
                     rules.existential_facts.len(),
@@ -4930,8 +4993,7 @@ fn lower_atomic_sub(
     // synthetic atomic if the body is a compound And, OR if
     // r has a range constraint that needs to be folded in.
     if let Some((role, target)) =
-        atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges, chain_ranges)
-            .or_else(|| top_weakened_existential_rhs(sup, pool, tseitin))
+        rhs_existential_fact(sup, pool, rules, tseitin, effective_ranges, chain_ranges)
     {
         rules.existential_facts.push(ExistentialFact {
             sub: sub_id,
@@ -4944,8 +5006,7 @@ fn lower_atomic_sub(
     if let ConceptExpr::And(operands) = pool.get(sup) {
         for op in operands {
             if let Some((role, target)) =
-                atomic_existential_rhs(*op, pool, rules, tseitin, effective_ranges, chain_ranges)
-                    .or_else(|| top_weakened_existential_rhs(*op, pool, tseitin))
+                rhs_existential_fact(*op, pool, rules, tseitin, effective_ranges, chain_ranges)
             {
                 rules.existential_facts.push(ExistentialFact {
                     sub: sub_id,
@@ -4955,6 +5016,40 @@ fn lower_atomic_sub(
             }
         }
     }
+}
+
+/// A non-inverse `∃r.C`: the only non-atomic conjunct an EL concept can have.
+fn is_forward_exists(c: ConceptId, pool: &ConceptPool) -> bool {
+    matches!(pool.get(c), ConceptExpr::Some(role, _) if !role.is_inverse())
+}
+
+/// The fact an RHS `∃r.C` (or `≥n r.C`) contributes: [`atomic_existential_rhs`], else
+/// the sound `∃r.⊤` weakening. A non-inverse `∃` that only the weakening could lower
+/// lost its filler, and one neither could lower was dropped: both are recorded
+/// ([`unlowered`] sites `rhs-exists-weakened` / `rhs-exists-dropped`).
+fn rhs_existential_fact(
+    op: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    chain_ranges: &HashMap<(RoleId, RoleId), Vec<ClassId>>,
+) -> Option<(RoleId, ClassId)> {
+    if let Some(pair) =
+        atomic_existential_rhs(op, pool, rules, tseitin, effective_ranges, chain_ranges)
+    {
+        return Some(pair);
+    }
+    let weakened = top_weakened_existential_rhs(op, pool, tseitin);
+    if is_forward_exists(op, pool) {
+        let site = if weakened.is_some() {
+            "rhs-exists-weakened"
+        } else {
+            "rhs-exists-dropped"
+        };
+        unlowered::note(site, op);
+    }
+    weakened
 }
 
 /// Lower a single `SubClassOf(sub, sup)` axiom into atomic facts
@@ -4995,6 +5090,14 @@ fn lower_sub_class_of(
                 .push(atomic.into_boxed_slice());
         }
     }
+    // Vacuous axioms need no rule, so dropping (part of) one is not an [`unlowered`] event.
+    let vacuous =
+        matches!(pool.get(sup), ConceptExpr::Top) || matches!(pool.get(sub), ConceptExpr::Bot);
+    let note = |site: &'static str, c: ConceptId| {
+        if !vacuous {
+            unlowered::note(site, c);
+        }
+    };
     match pool.get(sub) {
         ConceptExpr::Atomic(sub_id) => {
             lower_atomic_sub(
@@ -5040,6 +5143,7 @@ fn lower_sub_class_of(
                             effective_ranges,
                             chain_ranges,
                         ) else {
+                            note("lhs-and-unsalvageable", op);
                             salvageable = false;
                             break;
                         };
@@ -5089,6 +5193,7 @@ fn lower_sub_class_of(
                         bodies.push(tseitin.introduce_forall_atomic_key(role, k));
                     }
                     _ => {
+                        note("lhs-and-unsalvageable", op);
                         salvageable = false;
                         break;
                     }
@@ -5154,19 +5259,30 @@ fn lower_sub_class_of(
                     effective_ranges,
                     chain_ranges,
                 )
-                .map(|pair| vec![pair])
-                .unwrap_or_default(),
+                .map_or_else(
+                    || {
+                        if is_forward_exists(sup, pool) {
+                            note("and-lhs-rhs-exists-dropped", sup);
+                        }
+                        Vec::new()
+                    },
+                    |pair| vec![pair],
+                ),
                 ConceptExpr::And(operands) => operands
                     .iter()
                     .filter_map(|&op| {
-                        atomic_existential_rhs(
+                        let pair = atomic_existential_rhs(
                             op,
                             pool,
                             rules,
                             tseitin,
                             effective_ranges,
                             chain_ranges,
-                        )
+                        );
+                        if pair.is_none() && is_forward_exists(op, pool) {
+                            note("and-lhs-rhs-exists-dropped", op);
+                        }
+                        pair
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -5265,6 +5381,19 @@ fn lower_sub_class_of(
                 // `domain_heads_el`.
                 let heads =
                     domain_heads_el(sup, pool, rules, tseitin, effective_ranges, chain_ranges);
+                // Checked here, at the caller, so a `domain_heads_el` that degrades (#114:
+                // atomic heads only) is caught too. An `∃` conjunct can only be carried by a
+                // synthetic head (`index >= first_synthetic`): all-user heads lost it.
+                if unlowered::active()
+                    && !matches!(pool.get(sup), ConceptExpr::Top)
+                    && (heads.is_empty()
+                        || (self_or_conjuncts(sup, pool)
+                            .iter()
+                            .any(|&op| is_forward_exists(op, pool))
+                            && heads.iter().all(|h| h.index() < tseitin.first_synthetic)))
+                {
+                    note("domain-heads-lossy", sup);
+                }
                 rules
                     .role_domains
                     .entry(role.role_id())
@@ -5293,6 +5422,7 @@ fn lower_sub_class_of(
                     effective_ranges,
                     chain_ranges,
                 ) else {
+                    note("some-lhs-body", sub);
                     return;
                 };
                 for body_id in body_ids {
@@ -5310,6 +5440,7 @@ fn lower_sub_class_of(
                 effective_ranges,
                 chain_ranges,
             ) else {
+                note("some-lhs-body", sub);
                 return;
             };
             for head in atomic_operands_on_right(sup, pool) {
@@ -5349,7 +5480,18 @@ fn lower_sub_class_of(
                     )
                 })
                 .filter_map(|op| {
-                    atomic_existential_rhs(op, pool, rules, tseitin, effective_ranges, chain_ranges)
+                    let pair = atomic_existential_rhs(
+                        op,
+                        pool,
+                        rules,
+                        tseitin,
+                        effective_ranges,
+                        chain_ranges,
+                    );
+                    if pair.is_none() && is_forward_exists(op, pool) {
+                        note("some-lhs-rhs-exists-dropped", op);
+                    }
+                    pair
                 })
                 .collect();
             for (s_role, s_body_id) in sup_existentials {
@@ -5383,6 +5525,12 @@ fn lower_sub_class_of(
             for c in atomic_operands_on_right(sup, pool) {
                 rules.top_subsumers.push(c);
             }
+            // Live drop (issue draft `top-lhs-existential`): `⊤ ⊑ ∃r.B` loses the `∃`.
+            for op in self_or_conjuncts(sup, pool) {
+                if !matches!(pool.get(op), ConceptExpr::Atomic(_)) {
+                    note("top-lhs-nonatomic", op);
+                }
+            }
         }
         // #297: `≥n R.B ⊑ C` (`n ≥ 2`, e.g. the `⊒` half of `W ≡ ≥2 R`) as `MinKey ⊑ C`.
         // The key holds only where `≥n R.B` itself is derived, so this is the axiom read
@@ -5398,7 +5546,7 @@ fn lower_sub_class_of(
                 }
             }
         }
-        _ => {}
+        _ => note("sub-kind-unhandled", sub),
     }
 }
 
@@ -5777,6 +5925,15 @@ fn lower_domain_or_range(
     // `Domain(r, P ⊓ Q)` ≡ `∃r.⊤ ⊑ P` AND `∃r.⊤ ⊑ Q` — a logical identity, so
     // splitting is sound (#110); a non-atomic part contributes nothing rather than
     // dropping the whole filler (#119).
+    for op in unlowered::active()
+        .then(|| self_or_conjuncts(filler, pool))
+        .into_iter()
+        .flatten()
+    {
+        if !matches!(pool.get(op), ConceptExpr::Atomic(_) | ConceptExpr::Top) {
+            unlowered::note("domain-range-nonatomic", op);
+        }
+    }
     let ids = atomic_conjuncts(pool, filler);
     if ids.is_empty() {
         return;

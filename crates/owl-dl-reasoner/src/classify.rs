@@ -753,8 +753,11 @@ pub struct ClassificationStats {
     /// subsumed" (a cut, or a trusted wedge `Sat`) while a chain through it was
     /// recorded; every added pair follows from recorded, sound ones. Diagnostic.
     pub matrix_closure_added_pairs: usize,
-    /// #448: wall time of that closure pass, in milliseconds. Diagnostic.
-    pub matrix_closure_ms: u64,
+    /// #448: wall time of the closure passes, in microseconds (a no-op pass on a
+    /// transitive matrix is far below a millisecond). Diagnostic.
+    pub matrix_closure_us: u64,
+    /// #448: how many closure passes ran (0 when the flag is off). Diagnostic.
+    pub matrix_closure_runs: usize,
     /// Subsumptions recovered by the label-cache back-fold (Task 3,
     /// `RUSTDL_CLASSIFY_BACKFOLD`): entailed defined-`∃` names
     /// (`LabelOracle::Sat::derived_sups`) that `HyperEngine::backfold_derived`
@@ -1029,7 +1032,8 @@ impl Classification {
         let t = std::time::Instant::now();
         let added = self.entailed.close_transitively(&self.unsatisfiable_idxs);
         self.stats.matrix_closure_added_pairs += added;
-        self.stats.matrix_closure_ms += u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.stats.matrix_closure_us += u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.stats.matrix_closure_runs += 1;
     }
 }
 

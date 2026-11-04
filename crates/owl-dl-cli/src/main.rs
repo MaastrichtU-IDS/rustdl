@@ -1707,11 +1707,12 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.timed_out_pairs
         )?;
     }
-    if stats.matrix_closure_added_pairs > 0 {
+    if stats.matrix_closure_runs > 0 {
         writeln!(
             out,
-            "# matrix closure: {} pair(s) added, implied by recorded subsumptions (sound; #448)",
-            stats.matrix_closure_added_pairs
+            "# matrix closure: {} pair(s) added, implied by recorded subsumptions (sound; #448); \
+             {} us over {} pass(es)",
+            stats.matrix_closure_added_pairs, stats.matrix_closure_us, stats.matrix_closure_runs
         )?;
     }
     if stats.wedge_hierarchy_blind {

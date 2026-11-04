@@ -2082,6 +2082,9 @@ fn probe_budget() -> std::time::Duration {
 /// since classify's own per-class unsat detection is incomplete. A positive
 /// verdict is a wedge `Unsat`, which `is_consistent` already trusts as a real
 /// inconsistency on the same justification.
+// The budget is a parameter (not read from the env here) so a unit test can vary it
+// without touching the process environment; that takes the count to eight.
+#[allow(clippy::too_many_arguments)]
 fn probe_says_inconsistent(
     internal: &InternalOntology,
     prepared: &PreparedOntology,
@@ -6108,7 +6111,7 @@ EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
         let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepare");
         let unsat: HashSet<usize> = [0].into_iter().collect();
         let mut stats = ClassificationStats::default();
-        let mut probe = |stats: &mut ClassificationStats, ms: u64| {
+        let probe = |stats: &mut ClassificationStats, ms: u64| {
             probe_says_inconsistent(
                 &internal,
                 &prepared,

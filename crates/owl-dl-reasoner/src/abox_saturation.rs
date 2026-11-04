@@ -76,6 +76,48 @@ type TypeMap = HashMap<IndividualId, HashSet<ClassId>>;
 /// canonical: `Named(r)` → (r, a, b); `Inverse(r)` → (r, b, a) and store forward.
 type RawEdge = (RoleId, IndividualId, IndividualId);
 
+/// The fixpoint's global edge set, counting its lookups (#447). Its fields are
+/// private to this module, so every lookup the fixpoint makes is counted, wherever
+/// it sits; Rule 4 reports its share as
+/// [`SaturationResult::chain_edge_set_probes`].
+mod edge_set {
+    use super::RawEdge;
+    use std::collections::HashSet;
+
+    #[derive(Default)]
+    pub(super) struct EdgeSet {
+        set: HashSet<RawEdge>,
+        lookups: u64,
+    }
+
+    impl EdgeSet {
+        pub(super) fn insert(&mut self, e: RawEdge) -> bool {
+            self.lookups += 1;
+            self.set.insert(e)
+        }
+
+        pub(super) fn len(&self) -> usize {
+            self.set.len()
+        }
+
+        pub(super) fn iter(&self) -> std::collections::hash_set::Iter<'_, RawEdge> {
+            self.set.iter()
+        }
+
+        pub(super) fn lookups(&self) -> u64 {
+            self.lookups
+        }
+    }
+
+    impl<'a> IntoIterator for &'a EdgeSet {
+        type Item = &'a RawEdge;
+        type IntoIter = std::collections::hash_set::Iter<'a, RawEdge>;
+        fn into_iter(self) -> Self::IntoIter {
+            self.set.iter()
+        }
+    }
+}
+
 // ─── Saturator ────────────────────────────────────────────────────────────────
 
 /// Result of `saturate_abox_consistency` with diagnostic counters.
@@ -87,6 +129,16 @@ pub struct SaturationResult {
     pub chain2_fires: u64,
     /// Number of times a 3-hop role chain fired to produce a new edge.
     pub chain3_fires: u64,
+    /// Candidate conclusions Rule 4 (role chains, transitivity) produced, new or
+    /// not. On `family.ofn`, 101 M of them for 228 149 new edges.
+    pub chain_join_attempts: u64,
+    /// How many of those candidates Rule 4 looked up in the global edge set (#447).
+    /// With [`ChainDedupe::Local`] (the default) only the new ones are, so this
+    /// equals `chain2_fires + chain3_fires`; with [`ChainDedupe::Global`] every
+    /// candidate is, so it equals `chain_join_attempts`. Deterministic and
+    /// host-independent, so a test can pin it where a timing cannot. It cannot
+    /// see a change in what one lookup costs (codegen, hasher).
+    pub chain_edge_set_probes: u64,
     /// Number of individuals that have BOTH `:Man` and `:Woman` in their atomic
     /// type set after full saturation. This is the precondition for the
     /// functional-hasSex clash (Man ≡ ∃hasSex.Male, Woman ≡ ∃hasSex.Female,
@@ -205,10 +257,95 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
 /// calls the `ABox` expensive (`query_guard_abox_budget_ms`). `is_consistent` /
 /// `realize` / `materialize_*` / `diagnose` keep calling the unbounded entry
 /// point — for them the pre-check *is* the point of the call.
-#[allow(clippy::too_many_lines)]
 pub fn saturate_abox_consistency_bounded(
     internal: &InternalOntology,
     deadline: Option<std::time::Instant>,
+) -> SaturationResult {
+    saturate_with(internal, deadline, ChainDedupe::from_env())
+}
+
+/// How Rule 4 (role chains and transitivity) tells a new conclusion from a
+/// known one (#447). Both modes run the same join over the same rounds, so they
+/// reach the same edge set after every round, and the same types, `clash`,
+/// `edges`, `derived_same` and counters of first insertions. Only the cost of a
+/// candidate differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChainDedupe {
+    /// **Default.** Every candidate of one outer edge `r1(a, b)` concludes
+    /// `sup(a, x)` for the same `a`, so it is checked against `a`'s own set of
+    /// known `sup`-partners ([`ChainMirror`]), fetched once per outer edge and
+    /// small enough to stay in cache. Only a new conclusion touches `edges`.
+    Local,
+    /// Every candidate is a lookup in the global `edges` set, as before #447. On
+    /// `family.ofn` that is 101 M random lookups into a 267 112-entry table, which
+    /// is memory-latency-bound: 6–10 s on the coder host, near the classify
+    /// pre-check's 12 s budget. `RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE=1` selects it,
+    /// for A/B validation.
+    Global,
+}
+
+impl ChainDedupe {
+    fn from_env() -> Self {
+        if std::env::var_os("RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE").is_some_and(|v| v == "1") {
+            Self::Global
+        } else {
+            Self::Local
+        }
+    }
+}
+
+/// Rule 4's copy of the edge set, indexed by each endpoint (#447), for
+/// [`ChainDedupe::Local`]. It is kept equal to `edges` whenever Rule 4 reads it:
+/// an edge enters it when the edge queue pops it (every inserted edge is
+/// enqueued, and the queue is empty when Rule 4 starts) or when Rule 4 itself
+/// derives it.
+#[derive(Default)]
+struct ChainMirror {
+    /// `(r, a)` → every `b` with `r(a, b)`.
+    out: HashMap<(RoleId, IndividualId), hashbrown::HashSet<IndividualId>>,
+    /// `(r, b)` → every `a` with `r(a, b)`.
+    inn: HashMap<(RoleId, IndividualId), hashbrown::HashSet<IndividualId>>,
+}
+
+impl ChainMirror {
+    fn add(&mut self, (r, a, b): RawEdge) {
+        self.out.entry((r, a)).or_default().insert(b);
+        self.inn.entry((r, b)).or_default().insert(a);
+    }
+
+    /// For conclusions "`sup` holds from `a` to `x`" (in direction `sup_inv`):
+    /// the set of the `x` already known, plus the opposite-endpoint map, in which
+    /// a new `x` must also record `a` under `(sup, x)`. A forward conclusion is
+    /// the edge `sup(a, x)`, an inverse one the edge `sup(x, a)`.
+    fn anchored(
+        &mut self,
+        sup: RoleId,
+        sup_inv: bool,
+        a: IndividualId,
+    ) -> (
+        &mut hashbrown::HashSet<IndividualId>,
+        &mut HashMap<(RoleId, IndividualId), hashbrown::HashSet<IndividualId>>,
+    ) {
+        let (anchor, other) = if sup_inv {
+            (&mut self.inn, &mut self.out)
+        } else {
+            (&mut self.out, &mut self.inn)
+        };
+        (anchor.entry((sup, a)).or_default(), other)
+    }
+
+    fn len(&self) -> usize {
+        self.out.values().map(hashbrown::HashSet::len).sum()
+    }
+}
+
+/// The body of [`saturate_abox_consistency_bounded`], with the [`ChainDedupe`]
+/// mode a parameter so tests can compare the modes without the environment.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn saturate_with(
+    internal: &InternalOntology,
+    deadline: Option<std::time::Instant>,
+    chain_dedupe: ChainDedupe,
 ) -> SaturationResult {
     let trace = std::env::var("RUSTDL_TRACE").map_or(false, |v| v == "1");
     let mut budget = Deadline::new(deadline);
@@ -647,7 +784,7 @@ pub fn saturate_abox_consistency_bounded(
     // ── ABox state ────────────────────────────────────────────────────────────
 
     let mut types: TypeMap = HashMap::new();
-    let mut edges: HashSet<RawEdge> = HashSet::new(); // (role_id, a, b)
+    let mut edges = edge_set::EdgeSet::default(); // (role_id, a, b)
 
     // Existential markers: per-individual (role_id, filler_class) markers.
     // An individual X has marker (R, C) if X has some type A with A ⊑ ∃R.C.
@@ -658,11 +795,17 @@ pub fn saturate_abox_consistency_bounded(
     // Worklists for types and edges
     let mut type_queue: VecDeque<(IndividualId, ClassId)> = VecDeque::new();
     let mut edge_queue: VecDeque<RawEdge> = VecDeque::new();
+    // #447: Rule 4's per-endpoint copy of `edges`, filled as the edge queue drains.
+    let mirror_on =
+        chain_dedupe == ChainDedupe::Local && !(chains2.is_empty() && chains3.is_empty());
+    let mut mirror = ChainMirror::default();
 
     let mut result = SaturationResult {
         clash: false,
         chain2_fires: 0,
         chain3_fires: 0,
+        chain_join_attempts: 0,
+        chain_edge_set_probes: 0,
         sex_clash_candidates: 0,
         type_additions: 0,
         edge_additions: 0,
@@ -821,6 +964,9 @@ pub fn saturate_abox_consistency_bounded(
             }
             result.edge_additions += 1;
             changed = true;
+            if mirror_on {
+                mirror.add((rid, a, b));
+            }
 
             // Rule 2: inverse materialization
             if let Some(inv_rules) = inverse_rules.get(&(rid, false)) {
@@ -906,6 +1052,14 @@ pub fn saturate_abox_consistency_bounded(
             timed_out = true;
             break 'fixpoint;
         }
+        // The mirror holds exactly `edges` here: every inserted edge was enqueued,
+        // and the drain above popped all of them.
+        debug_assert!(
+            edge_queue.is_empty() && result.edge_additions == edges.len() as u64,
+            "an `edges.insert` site did not enqueue its edge"
+        );
+        debug_assert!(!mirror_on || mirror.len() == edges.len());
+        let lookups_before_rule4 = edges.lookups();
         let edge_vec: Vec<RawEdge> = edges.iter().copied().collect();
 
         // Phase 1a (perf/abox-chain-index): index the snapshot by (role, src)
@@ -968,8 +1122,34 @@ pub fn saturate_abox_consistency_bounded(
                 // r1_inv=true : Inverse(r1)(a,b)=Named(r1)(b,a) → (a,b)=(eb,ea).
                 let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
+                if mirror_on {
+                    let candidates = neighbors(r2_id, b, r2_inv);
+                    if candidates.is_empty() {
+                        // No candidate, so no anchored set to create.
+                        continue;
+                    }
+                    let (known, other) = mirror.anchored(sup_id, sup_inv, a);
+                    for c in candidates {
+                        result.chain_join_attempts += 1;
+                        if known.insert(c) {
+                            other.entry((sup_id, c)).or_default().insert(a);
+                            let e = if sup_inv {
+                                (sup_id, c, a)
+                            } else {
+                                (sup_id, a, c)
+                            };
+                            let fresh = edges.insert(e);
+                            debug_assert!(fresh, "Rule 4's mirror fell behind `edges`");
+                            edge_queue.push_back(e);
+                            result.chain2_fires += 1;
+                            changed = true;
+                        }
+                    }
+                    continue;
+                }
                 for c in neighbors(r2_id, b, r2_inv) {
                     let (na, nc) = if !sup_inv { (a, c) } else { (c, a) };
+                    result.chain_join_attempts += 1;
                     if edges.insert((sup_id, na, nc)) {
                         edge_queue.push_back((sup_id, na, nc));
                         result.chain2_fires += 1;
@@ -995,9 +1175,32 @@ pub fn saturate_abox_consistency_bounded(
                 }
                 let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
+                if mirror_on {
+                    let (known, other) = mirror.anchored(sup_id, sup_inv, a);
+                    for c in neighbors(r2_id, b, r2_inv) {
+                        for d in neighbors(r3_id, c, r3_inv) {
+                            result.chain_join_attempts += 1;
+                            if known.insert(d) {
+                                other.entry((sup_id, d)).or_default().insert(a);
+                                let e = if sup_inv {
+                                    (sup_id, d, a)
+                                } else {
+                                    (sup_id, a, d)
+                                };
+                                let fresh = edges.insert(e);
+                                debug_assert!(fresh, "Rule 4's mirror fell behind `edges`");
+                                edge_queue.push_back(e);
+                                result.chain3_fires += 1;
+                                changed = true;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 for c in neighbors(r2_id, b, r2_inv) {
                     for d in neighbors(r3_id, c, r3_inv) {
                         let (na, nd) = if !sup_inv { (a, d) } else { (d, a) };
+                        result.chain_join_attempts += 1;
                         if edges.insert((sup_id, na, nd)) {
                             edge_queue.push_back((sup_id, na, nd));
                             result.chain3_fires += 1;
@@ -1007,6 +1210,8 @@ pub fn saturate_abox_consistency_bounded(
                 }
             }
         }
+
+        result.chain_edge_set_probes += edges.lookups() - lookups_before_rule4;
 
         // Rule 7: functional role merge
         // For each functional role R and each individual a that has ≥2 distinct R-fillers,
@@ -1317,6 +1522,7 @@ fn enqueue_concept_types(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     /// Parse an OFN string and lower it to an `InternalOntology`, mirroring
     /// the `read_ofn` → `convert_ontology` pattern used across this crate's
@@ -1332,6 +1538,310 @@ mod tests {
         let (onto, _): (SetOntology<RcStr>, _) =
             read_ofn(&mut r, ParserConfiguration::default()).expect("parse ofn");
         owl_dl_core::convert::convert_ontology(&onto).expect("convert")
+    }
+
+    // ── #447: local vs global dedupe in Rule 4 ────────────────────────────────
+
+    const EX: &str = "http://ex/#";
+
+    /// A role expression of the generated ontologies: `(role index, inverse?)`.
+    type Ope = (usize, bool);
+
+    fn ope((r, inv): Ope) -> String {
+        if inv {
+            format!("ObjectInverseOf(:r{r})")
+        } else {
+            format!(":r{r}")
+        }
+    }
+
+    fn role_of(internal: &InternalOntology, (r, inv): Ope) -> Role {
+        let id = internal
+            .vocabulary
+            .role_id(&format!("{EX}r{r}"))
+            .expect("declared role");
+        if inv {
+            Role::inverse(id)
+        } else {
+            Role::named(id)
+        }
+    }
+
+    /// Everything the two modes must agree on: the verdict, every counter of
+    /// first insertions, the attempts, and the closure itself. On a clash, only
+    /// the verdict: the fixpoint stops part-way through a round there, and how far
+    /// it got depends on `HashMap` iteration order, which shifts with every map
+    /// created before it (measured: `type_additions` 12–16 on one input, in
+    /// either mode alone). A full fixpoint is order-independent.
+    #[allow(clippy::type_complexity)]
+    fn observable(
+        r: &SaturationResult,
+    ) -> (
+        (bool, bool, u64, u64, u64, u64, u64, u64),
+        Vec<RawEdge>,
+        Vec<(IndividualId, IndividualId)>,
+    ) {
+        if r.clash {
+            return (
+                (true, r.timed_out, 0, 0, 0, 0, 0, 0),
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+        let mut edges = r.edges.clone();
+        edges.sort_unstable();
+        (
+            (
+                r.clash,
+                r.timed_out,
+                r.type_additions,
+                r.edge_additions,
+                r.chain2_fires,
+                r.chain3_fires,
+                r.chain_join_attempts,
+                r.sex_clash_candidates,
+            ),
+            edges,
+            r.derived_same.clone(),
+        )
+    }
+
+    /// Run both modes on `internal`, check each mode's probe identity, and
+    /// return the local result after asserting that it equals the global one.
+    fn both_modes(internal: &InternalOntology) -> SaturationResult {
+        let local = saturate_with(internal, None, ChainDedupe::Local);
+        let global = saturate_with(internal, None, ChainDedupe::Global);
+        assert_eq!(
+            observable(&local),
+            observable(&global),
+            "Local and Global dedupe diverge"
+        );
+        assert_eq!(
+            local.chain_edge_set_probes,
+            local.chain2_fires + local.chain3_fires,
+            "Local looks up only new conclusions in `edges`"
+        );
+        assert_eq!(global.chain_edge_set_probes, global.chain_join_attempts);
+        local
+    }
+
+    /// The generated ontology: a small ABox over `i0..i5`, roles `r0..r3` and
+    /// classes `C0..C2`, with every role axiom Rule 4 and its neighbours read.
+    #[derive(Debug, Clone)]
+    struct Spec {
+        assertions: Vec<(usize, usize, usize)>,
+        chains2: Vec<(Ope, Ope, Ope)>,
+        chains3: Vec<(Ope, Ope, Ope, Ope)>,
+        transitive: Vec<usize>,
+        sub_roles: Vec<(Ope, Ope)>,
+        inverse_pairs: Vec<(usize, usize)>,
+        symmetric: Vec<usize>,
+        functional: Vec<Ope>,
+        dom_rng: Vec<(bool, Ope, usize)>,
+        class_assertions: Vec<(usize, usize)>,
+        disjoint: Vec<(usize, usize)>,
+    }
+
+    fn spec_strategy() -> impl proptest::strategy::Strategy<Value = Spec> {
+        use proptest::prelude::*;
+        let o = || (0usize..4, any::<bool>());
+        (
+            prop::collection::vec((0usize..4, 0usize..6, 0usize..6), 1..14),
+            prop::collection::vec((o(), o(), o()), 0..4),
+            prop::collection::vec((o(), o(), o(), o()), 0..3),
+            prop::collection::vec(0usize..4, 0..3),
+            prop::collection::vec((o(), o()), 0..3),
+            prop::collection::vec((0usize..4, 0usize..4), 0..2),
+            prop::collection::vec(0usize..4, 0..2),
+            prop::collection::vec(o(), 0..2),
+            prop::collection::vec((any::<bool>(), o(), 0usize..3), 0..4),
+            prop::collection::vec((0usize..3, 0usize..6), 0..4),
+            prop::collection::vec((0usize..3, 0usize..3), 0..2),
+        )
+            .prop_map(
+                |(
+                    assertions,
+                    chains2,
+                    chains3,
+                    transitive,
+                    sub_roles,
+                    inverse_pairs,
+                    symmetric,
+                    functional,
+                    dom_rng,
+                    class_assertions,
+                    disjoint,
+                )| Spec {
+                    assertions,
+                    chains2,
+                    chains3,
+                    transitive,
+                    sub_roles,
+                    inverse_pairs,
+                    symmetric,
+                    functional,
+                    dom_rng,
+                    class_assertions,
+                    disjoint,
+                },
+            )
+    }
+
+    /// Lower `spec`. 3-hop chains go straight into the IR: conversion splits
+    /// every longer chain into 2-hop ones, so OFN input never reaches Rule 4's
+    /// 3-hop join.
+    fn build(spec: &Spec) -> InternalOntology {
+        let mut ax = String::new();
+        for r in 0..4 {
+            let _ = write!(ax, "Declaration(ObjectProperty(:r{r})) ");
+        }
+        for c in 0..3 {
+            let _ = write!(ax, "Declaration(Class(:C{c})) ");
+        }
+        for i in 0..6 {
+            let _ = write!(ax, "Declaration(NamedIndividual(:i{i})) ");
+        }
+        for &(r, a, b) in &spec.assertions {
+            let _ = write!(ax, "ObjectPropertyAssertion(:r{r} :i{a} :i{b}) ");
+        }
+        for &(x, y, sup) in &spec.chains2 {
+            let _ = write!(
+                ax,
+                "SubObjectPropertyOf(ObjectPropertyChain({} {}) {}) ",
+                ope(x),
+                ope(y),
+                ope(sup)
+            );
+        }
+        for &r in &spec.transitive {
+            let _ = write!(ax, "TransitiveObjectProperty(:r{r}) ");
+        }
+        for &(sub, sup) in &spec.sub_roles {
+            let _ = write!(ax, "SubObjectPropertyOf({} {}) ", ope(sub), ope(sup));
+        }
+        for &(x, y) in &spec.inverse_pairs {
+            let _ = write!(ax, "InverseObjectProperties(:r{x} :r{y}) ");
+        }
+        for &r in &spec.symmetric {
+            let _ = write!(ax, "SymmetricObjectProperty(:r{r}) ");
+        }
+        for &r in &spec.functional {
+            let _ = write!(ax, "FunctionalObjectProperty({}) ", ope(r));
+        }
+        for &(dom, r, c) in &spec.dom_rng {
+            let kind = if dom { "Domain" } else { "Range" };
+            let _ = write!(ax, "ObjectProperty{kind}({} :C{c}) ", ope(r));
+        }
+        for &(c, i) in &spec.class_assertions {
+            let _ = write!(ax, "ClassAssertion(:C{c} :i{i}) ");
+        }
+        for &(x, y) in &spec.disjoint {
+            if x != y {
+                let _ = write!(ax, "DisjointClasses(:C{x} :C{y}) ");
+            }
+        }
+        let mut internal = parse_internal(&format!("Prefix(:=<{EX}>) Ontology(<http://ex/> {ax})"));
+        for &(x, y, z, sup) in &spec.chains3 {
+            let chain = vec![
+                role_of(&internal, x),
+                role_of(&internal, y),
+                role_of(&internal, z),
+            ];
+            let sup = role_of(&internal, sup);
+            internal.axioms.push(Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(chain),
+                sup,
+            });
+        }
+        internal
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// #447: the per-endpoint dedupe must reach the same fixpoint as the
+        /// global one, with the same counters, over random 2- and 3-hop chains of
+        /// every leg and super polarity, mixed with transitive roles, sub-roles,
+        /// inverses, symmetry, functionality, domain/range and disjointness.
+        #[test]
+        fn local_and_global_chain_dedupe_agree(spec in spec_strategy()) {
+            both_modes(&build(&spec));
+        }
+    }
+
+    /// The canary ontology for one chain shape: `i0 → i1 → … → i_hops` along the
+    /// legs, each assertion written in the direction its leg's polarity needs,
+    /// the chain `legs ⊑ sup` (if `with_chain`), and `sup`'s range `C1` clashing
+    /// with `C0` at the individual the conclusion's object lands on.
+    fn chain_canary(legs: &[Ope], sup: Ope, with_chain: bool) -> InternalOntology {
+        let hops = legs.len();
+        let mut ax = String::from(
+            "Declaration(Class(:C0)) Declaration(Class(:C1)) DisjointClasses(:C0 :C1) ",
+        );
+        for r in 0..=hops {
+            let _ = write!(ax, "Declaration(ObjectProperty(:r{r})) ");
+        }
+        for i in 0..=hops {
+            let _ = write!(ax, "Declaration(NamedIndividual(:i{i})) ");
+        }
+        for (k, &(r, inv)) in legs.iter().enumerate() {
+            let (s, o) = if inv { (k + 1, k) } else { (k, k + 1) };
+            let _ = write!(ax, "ObjectPropertyAssertion(:r{r} :i{s} :i{o}) ");
+        }
+        // The conclusion is sup(i0, i_hops) read in `sup`'s direction; the stored
+        // edge's object gets `sup`'s range.
+        let object = if sup.1 { 0 } else { hops };
+        let _ = write!(
+            ax,
+            "ObjectPropertyRange(:r{} :C1) ClassAssertion(:C0 :i{object}) ",
+            sup.0
+        );
+        if with_chain && hops == 2 {
+            let _ = write!(
+                ax,
+                "SubObjectPropertyOf(ObjectPropertyChain({} {}) {}) ",
+                ope(legs[0]),
+                ope(legs[1]),
+                ope(sup)
+            );
+        }
+        let mut internal = parse_internal(&format!("Prefix(:=<{EX}>) Ontology(<http://ex/> {ax})"));
+        if with_chain && hops == 3 {
+            let chain = legs.iter().map(|&l| role_of(&internal, l)).collect();
+            let sup = role_of(&internal, sup);
+            internal.axioms.push(Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(chain),
+                sup,
+            });
+        }
+        internal
+    }
+
+    /// #447: every leg and super polarity, 2- and 3-hop: the chain's conclusion
+    /// is what clashes, in both modes; without the chain nothing does. A swapped
+    /// anchor (`out` vs `inn`) in [`ChainMirror::anchored`] loses the conclusion
+    /// for one `sup` polarity, so one of these fails.
+    #[test]
+    fn each_chain_polarity_concludes_in_both_modes() {
+        for hops in [2usize, 3] {
+            for mask in 0u32..(1 << (hops + 1)) {
+                let legs: Vec<Ope> = (0..hops).map(|k| (k, mask & (1 << k) != 0)).collect();
+                let sup = (hops, mask & (1 << hops) != 0);
+                let res = both_modes(&chain_canary(&legs, sup, true));
+                assert!(res.clash, "no clash for legs {legs:?} ⊑ {sup:?}");
+                let fires = if hops == 2 {
+                    res.chain2_fires
+                } else {
+                    res.chain3_fires
+                };
+                assert_eq!(fires, 1, "legs {legs:?} ⊑ {sup:?}");
+                let control = both_modes(&chain_canary(&legs, sup, false));
+                assert!(
+                    !control.clash,
+                    "control clashed for legs {legs:?} ⊑ {sup:?}"
+                );
+            }
+        }
     }
 
     #[test]

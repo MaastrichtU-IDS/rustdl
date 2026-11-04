@@ -1605,10 +1605,7 @@ fn classify_internal_with_timeout_impl(
     // classified Horn-but-not-EL inputs (∀ + disjointness) and reported
     // complete; see `saturator_complete_fragment`. Gated by
     // RUSTDL_HORN_SHORTCIRCUIT (default ON) for A/B isolation.
-    if is_pure_el(internal)
-        || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
-        || (crate::classify_tbox_fragment_enabled() && tbox_only_saturator_eligible(internal))
-    {
+    if saturation_fast_path_admits(internal) {
         // Lever 1 admits ABox-bearing ontologies to this fast path, so — like
         // the top-down path — run the sound ABox-driven inconsistency pre-check
         // first (nominal-free ABox is irrelevant to subsumption, but an
@@ -2763,6 +2760,55 @@ fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
 /// regardless. GALEN/notgalen (functional, no disjoint, no ∀, no chains>2,
 /// no inverse) stay on the fast path — verified by
 /// `galen_notgalen_in_saturator_fragment` + the corpus FP/MISSED gate.
+/// The gate both `classify` dispatch sites use for the saturation fast path: an input it
+/// admits is classified by the EL saturator alone and reported complete. Shared with
+/// [`crate::certified_unlowered`], so layer 2 of the pure-EL guard checks exactly this.
+pub(crate) fn saturation_fast_path_admits(internal: &InternalOntology) -> bool {
+    is_pure_el(internal)
+        || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
+        || (crate::classify_tbox_fragment_enabled() && tbox_only_saturator_eligible(internal))
+}
+
+/// An axiom the fast-path gates admit although the EL lowering deliberately makes no
+/// rule of it, so an `unlowered` record on it is no certification gap:
+/// - the conversion-derived `∃R.⊤ ⊑ ≤1 R` (functional) and its inverse-functional twin,
+///   which `is_saturator_axiom` recognises and the saturator's functional bitset
+///   enforces instead;
+/// - an `ABox` axiom, which `tbox_only_saturator_eligible` skips (a nominal-free `ABox`
+///   is irrelevant to class subsumption).
+pub(crate) fn admitted_without_lowering(ax: &Axiom, internal: &InternalOntology) -> bool {
+    if is_abox_axiom(ax) {
+        return true;
+    }
+    let Axiom::SubClassOf { sub, sup } = ax else {
+        return false;
+    };
+    let pool = &internal.concepts;
+    let roles = |pick: fn(&Axiom) -> Option<Role>| -> HashSet<Role> {
+        internal.axioms.iter().filter_map(pick).collect()
+    };
+    let functional = roles(|a| match a {
+        Axiom::FunctionalRole(r) => Some(*r),
+        _ => None,
+    });
+    let inverse_functional = roles(|a| match a {
+        Axiom::InverseFunctionalRole(r) => Some(*r),
+        _ => None,
+    });
+    let top_exists_over = |accept: &dyn Fn(&Role) -> bool| {
+        matches!(
+            pool.get(*sub),
+            ConceptExpr::Some(role, filler)
+                if matches!(pool.get(*filler), ConceptExpr::Top) && accept(role)
+        )
+    };
+    (is_derived_functional_max(*sup, pool, &functional)
+        && top_exists_over(&|r| functional.contains(r)))
+        || (owl_dl_core::convert::inverse_functional_max_enabled()
+            && is_derived_inverse_functional_max(*sup, pool, &inverse_functional)
+            && top_exists_over(&|r| inverse_functional.contains(&r.flip())))
+}
+
 pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
     saturator_complete_fragment_impl(internal, false)
 }
@@ -4019,10 +4065,7 @@ fn classify_top_down_internal_impl(
     // — NOT clausal-Horn; the latter silently mis-classified Horn-but-not-EL
     // ∀ inputs). See spec §5 + docs/phase2a-recon.md. Gated by
     // RUSTDL_HORN_SHORTCIRCUIT.
-    if is_pure_el(internal)
-        || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
-        || (crate::classify_tbox_fragment_enabled() && tbox_only_saturator_eligible(internal))
-    {
+    if saturation_fast_path_admits(internal) {
         // Skip the `ABox` check entirely on `ABox`-free inputs — `abox_check`
         // itself would early-return `Unknown` on empty `individuals` (no
         // clash is possible without individuals, by construction). The

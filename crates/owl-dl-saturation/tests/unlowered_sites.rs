@@ -1,9 +1,8 @@
 //! One `+`/`-` pair per [`owl_dl_saturation::unlowered`] site.
 //!
-//! `+` is a shape that reaches the site today. Every site but `top-lhs-nonatomic` is
-//! unreachable from EL input on main, so its `+` is the nearest non-EL shape that takes
-//! the same branch. `-` is the nearest EL shape the same code lowers fully; it must
-//! record nothing at all.
+//! `+` is a shape that reaches the site today. Every site is unreachable from EL input
+//! on main, so its `+` is the nearest non-EL shape that takes the same branch. `-` is
+//! the nearest EL shape the same code lowers fully; it must record nothing at all.
 //!
 //! `rhs-exists-dropped`'s `+` needs `RUSTDL_EL_BOT_FILLER=0` and lives in its own test
 //! binary (`unlowered_bot_filler_off.rs`), so the env change cannot race these tests.
@@ -150,18 +149,17 @@ fn domain_heads_lossy() {
     );
 }
 
-/// The live drop (issue draft `top-lhs-existential`): `⊤ ⊑ ∃r.B` loses the `∃`.
+/// #445: the ⊤-LHS consequent lowers in full as `K⊤ ⊑ D` (the retired site
+/// `top-lhs-nonatomic` recorded its `∃` as dropped). The pool folds `⊤` out of a
+/// conjunction, so a `⊤ ⊓ A` left-hand side is plain `A`.
 #[test]
-fn top_lhs_nonatomic() {
-    records(
-        "top-lhs-nonatomic",
-        "SubClassOf(owl:Thing ObjectSomeValuesFrom(:r :B))",
-    );
-    records(
-        "top-lhs-nonatomic",
-        "EquivalentClasses(owl:Thing ObjectSomeValuesFrom(:r :B))",
-    );
+fn top_lhs_lowers_in_full() {
+    clean("SubClassOf(owl:Thing ObjectSomeValuesFrom(:r :B))");
+    clean("EquivalentClasses(owl:Thing ObjectSomeValuesFrom(:r :B))");
+    clean("SubClassOf(owl:Thing ObjectSomeValuesFrom(:r owl:Thing))");
+    clean("SubClassOf(owl:Thing ObjectIntersectionOf(:A ObjectSomeValuesFrom(:r :B)))");
     clean("SubClassOf(owl:Thing ObjectIntersectionOf(:A :B))");
+    clean("SubClassOf(ObjectIntersectionOf(owl:Thing :A) :B)");
 }
 
 #[test]

@@ -33,12 +33,19 @@ impl Drop for Fixture {
 }
 
 fn unlowered(f: &Fixture) -> serde_json::Value {
+    unlowered_with(f, &[])
+}
+
+/// `rustdl unlowered` with every inherited `RUSTDL_*` removed, then `env` set on the
+/// child only.
+fn unlowered_with(f: &Fixture, env: &[(&str, &str)]) -> serde_json::Value {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("RUSTDL_") {
             cmd.env_remove(key);
         }
     }
+    cmd.envs(env.iter().copied());
     let out = cmd.arg("unlowered").arg(&f.0).output().unwrap();
     assert!(
         out.status.success(),
@@ -48,22 +55,32 @@ fn unlowered(f: &Fixture) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-/// The known live drop (issue draft `top-lhs-existential`) is reported, with its site and
-/// the dropped construct.
+/// A certified drop is reported, with its site and the dropped construct. No EL shape
+/// drops anything on main since #445, so the D10 chokepoint is switched off on the child
+/// (`RUSTDL_EL_BOT_FILLER=0`), which leaves `A ⊑ ∃r.⊥` unlowered.
 #[test]
-fn reports_the_known_top_lhs_drop() {
+fn reports_a_certified_drop() {
+    let f = Fixture::new("bot", "SubClassOf(:A ObjectSomeValuesFrom(:r owl:Nothing))");
+    let v = unlowered_with(&f, &[("RUSTDL_EL_BOT_FILLER", "0")]);
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["classify_certified"], true);
+    let rows = v["classify"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{v}");
+    assert_eq!(rows[0]["site"], "rhs-exists-dropped");
+    assert_eq!(rows[0]["concept"], "∃r.⊥");
+}
+
+/// #445: `⊤ ⊑ ∃r.B`, the drop this diagnostic found on main, lowers in full.
+#[test]
+fn the_top_lhs_existential_reports_nothing() {
     let f = Fixture::new(
         "top",
         "SubClassOf(owl:Thing ObjectSomeValuesFrom(:r :B)) \
          SubClassOf(ObjectSomeValuesFrom(:r :B) :X)",
     );
     let v = unlowered(&f);
-    assert_eq!(v["schema_version"], 1);
     assert_eq!(v["classify_certified"], true);
-    let rows = v["classify"].as_array().unwrap();
-    assert_eq!(rows.len(), 1, "{v}");
-    assert_eq!(rows[0]["site"], "top-lhs-nonatomic");
-    assert_eq!(rows[0]["concept"], "∃r.B");
+    assert_eq!(v["classify"].as_array().unwrap().len(), 0, "{v}");
 }
 
 #[test]

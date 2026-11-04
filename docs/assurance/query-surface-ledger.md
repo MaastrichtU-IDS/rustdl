@@ -248,7 +248,7 @@ unresolved, with the reason.
 | L1, L2 | a classify subsumption or equivalence ⇒ `subclass` = yes |
 | L3 | a classify-unsatisfiable class ⇒ `sat` = unsat |
 | L4 | `classify --json` `consistent: false` ⇒ `consistent` = inconsistent (smoke) |
-| L5 | inconsistent KB ⇒ `instance`, `realize`, `disjoint`, `individuals`, `*-expr`, and since #428 `sat` / `subclass`, answer yes or error `Inconsistent`, never "no" (`sat`: never "satisfiable"). `sat owl:Thing` is the consistency check (#427) and is not sampled |
+| L5 | inconsistent KB ⇒ `instance`, `realize`, `disjoint`, `individuals`, `*-expr`, and since #428 `sat` / `subclass` / `explain`, answer yes or error `Inconsistent`, never "no" (`sat`: never "satisfiable"). `sat owl:Thing` is the consistency check (#427) and is not sampled |
 | L6 | named and expression surfaces agree (smoke: they differ only by the injected `Q ≡ C`) |
 | L7 | a `disjoint` pair (A, B) ⇒ `sat-expr "A and B"` = unsat, and `subclass A B` ≠ yes unless A is unsatisfiable |
 | L8 | the `classify --saturation-only` closure ⊆ the classify closure |
@@ -602,6 +602,13 @@ certified file in the populations above: the generator never plants a ⊤-LHS GC
 pool has none that is certified. An issue draft went to the manager; no fix is in this
 change.
 
+**Fixed (#444, #445).** A non-atomic `⊤ ⊑ D` now lowers as `K⊤ ⊑ D` for a shared ⊤ key
+`K⊤`, and `seed` broadcasts every `⊤ ⊑ C` (and `K⊤`) to every class id, not only the user
+classes. The site `top-lhs-nonatomic` is retired; the end-to-end "a certified drop is
+reported" check now uses `A ⊑ ∃r.⊥` with `RUSTDL_EL_BOT_FILLER=0`
+(`el_unlowered_guard_bot_filler_off.rs`, and the CLI's `reports_a_certified_drop`). The
+`el_top` generator profile plants ⊤-LHS GCIs, so the off-CI net now covers the shape.
+
 ## Route-pair laws (#363 package E, stateful half)
 
 `scripts/gen/routes.py` asks the same question by different routes and checks that the
@@ -687,9 +694,14 @@ while both legs were decided, leaves the matrix non-transitive. The CLI's
 - R1 compares 1 and 8 threads on one core. It tests interleavings, not real parallel speed, and
   no thread mutant was built: a planted race cannot be made to fire on purpose.
 - The warm route covers what the Python API exposes: `classify`, `Classification` queries and
-  an interleaved `is_consistent`. `is_subclass_of` was dropped from the interleave because it
-  runs no inconsistency guard and does not finish on an inconsistent KB (default case 438).
-  That is #428; once it lands, the interleave can include `is_subclass_of` again.
+  an interleaved `is_consistent`. In the measured run, `is_subclass_of` was left out of the
+  interleave because it ran no inconsistency guard and did not finish on an inconsistent KB
+  (default case 438). #442 (#428) made it error on an inconsistent KB that its guard detects,
+  but case 438 is TBox-only (no individuals), so the pre-checks miss its inconsistency and the
+  lazy check has no seed, and `is_subclass_of` still does not finish there: measured on
+  0df06f64, more than 150 s, shrunk to 8 axioms, and drafted as a #428 residual. The driver now
+  calls `is_subclass_of` only when `is_consistent` returns True, which skips exactly the
+  inconsistent cases; it is ungated once that residual is fixed.
   Classify in the warm route uses a 25 s global budget, standing in for the CLI's 30 s kill.
 - R5.1's predictor is token-based. Degenerate `ObjectUnionOf(:C :C)` is excluded: it is the only
   predictor token in 4 control cases, 3 of which report pure-EL. `ObjectComplementOf` (neg-to-⊥)

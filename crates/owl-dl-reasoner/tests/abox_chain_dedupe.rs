@@ -84,10 +84,13 @@ fn fires(r: &SaturationResult) -> u64 {
 
 /// The guard. Sabotage: turn the cache off, or probe the global set per
 /// candidate anywhere in Rule 4, and the lookups climb to the attempts.
+///
+/// The fixture's fan-out (16 per layer) must stay above the cache threshold
+/// (`CHAIN_CACHE_MIN_CANDIDATES`, 8): outer edges below it skip the cache.
 #[test]
 fn rule4_looks_up_few_candidates_in_the_global_edge_set() {
     let _l = lock();
-    let r = saturate_abox_consistency(&internal(&layered(6, 10)));
+    let r = saturate_abox_consistency(&internal(&layered(6, 16)));
     assert!(!r.clash);
     assert!(fires(&r) > 0, "the fixture exercises Rule 4");
     assert!(
@@ -109,7 +112,7 @@ fn rule4_looks_up_few_candidates_in_the_global_edge_set() {
 #[test]
 fn global_dedupe_switch_reaches_the_public_entry() {
     let _l = lock();
-    let onto = internal(&layered(6, 10));
+    let onto = internal(&layered(6, 16));
     let local = saturate_abox_consistency(&onto);
     // SAFETY: set_var is unsafe under edition 2024; every env access in this
     // binary holds `lock()`.

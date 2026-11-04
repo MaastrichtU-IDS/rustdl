@@ -137,8 +137,10 @@ pub struct SaturationResult {
     /// [`ChainDedupe::Local`] (the default), the cache misses plus the candidates
     /// of outer edges below [`CHAIN_CACHE_MIN_CANDIDATES`]: a known conclusion
     /// misses at most once per anchor, so on a dense join this is far below the
-    /// attempts. Host-independent, so a test can bound it where a timing cannot;
-    /// the exact count can vary with `HashSet` iteration order. It cannot see a
+    /// attempts. Host-independent, so a test can bound it where a timing cannot.
+    /// The exact count can vary from run to run when Rule 7 merges types (the
+    /// round count then depends on `HashMap` order); without functional roles
+    /// it is set-determined. It cannot see a
     /// change in what one lookup costs (codegen, hasher).
     pub chain_edge_set_probes: u64,
     /// Number of individuals that have BOTH `:Man` and `:Woman` in their atomic
@@ -1150,7 +1152,14 @@ pub(crate) fn saturate_with(
                 let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
                 let mids = neighbors(r2_id, b, r2_inv);
-                if local_dedupe && !mids.is_empty() && min_candidates <= mids.len() {
+                let n_candidates: usize = if local_dedupe {
+                    mids.iter()
+                        .map(|&c| neighbors(r3_id, c, r3_inv).len())
+                        .sum()
+                } else {
+                    0
+                };
+                if local_dedupe && n_candidates > 0 && min_candidates <= n_candidates {
                     // As the 2-hop case. Reached only from a hand-built IR:
                     // conversion splits longer chains into 2-hop ones.
                     let known = chain_cache
@@ -1829,6 +1838,58 @@ mod tests {
                     "control clashed for legs {legs:?} ⊑ {sup:?}"
                 );
             }
+        }
+    }
+
+    /// #447: one anchor concludes `sup` in both directions. `s(a, y)` is
+    /// asserted; chain 1 (`r0 ∘ r1 ⊑ s`) anchors a forward conclusion at `a`
+    /// first, so `a`'s forward cache entry holds `y`; chain 2 (`r2 ∘ r3 ⊑ s⁻`)
+    /// then concludes `s(y, a)`, anchored at `a` in the inverse direction, and
+    /// `s`'s range `C1` clashes with `a : C0`. Were the cache key to drop the
+    /// direction, the inverse candidate `y` would hit the forward entry and the
+    /// clash would be lost. The chains go into the IR in this order on purpose.
+    #[test]
+    fn an_anchor_concluding_both_directions_keeps_them_apart() {
+        let src = format!(
+            "Prefix(:=<{EX}>) Ontology(<http://ex/> \
+             Declaration(Class(:C0)) Declaration(Class(:C1)) DisjointClasses(:C0 :C1) \
+             Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1)) \
+             Declaration(ObjectProperty(:r2)) Declaration(ObjectProperty(:r3)) \
+             Declaration(ObjectProperty(:r4)) \
+             Declaration(NamedIndividual(:i0)) Declaration(NamedIndividual(:i1)) \
+             Declaration(NamedIndividual(:i2)) Declaration(NamedIndividual(:i3)) \
+             Declaration(NamedIndividual(:i4)) \
+             ObjectPropertyAssertion(:r4 :i0 :i1) \
+             ObjectPropertyAssertion(:r0 :i0 :i2) ObjectPropertyAssertion(:r1 :i2 :i3) \
+             ObjectPropertyAssertion(:r2 :i0 :i4) ObjectPropertyAssertion(:r3 :i4 :i1) \
+             ObjectPropertyRange(:r4 :C1) ClassAssertion(:C0 :i0))"
+        );
+        for with_inverse_chain in [true, false] {
+            let mut internal = parse_internal(&src);
+            let s = (4, false);
+            let fwd = vec![
+                role_of(&internal, (0, false)),
+                role_of(&internal, (1, false)),
+            ];
+            internal.axioms.push(Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(fwd),
+                sup: role_of(&internal, s),
+            });
+            if with_inverse_chain {
+                let inv = vec![
+                    role_of(&internal, (2, false)),
+                    role_of(&internal, (3, false)),
+                ];
+                internal.axioms.push(Axiom::SubObjectPropertyOf {
+                    sub: SubRolePath::Chain(inv),
+                    sup: role_of(&internal, (4, true)),
+                });
+            }
+            let res = both_modes(&internal);
+            assert_eq!(
+                res.clash, with_inverse_chain,
+                "inverse chain present: {with_inverse_chain}"
+            );
         }
     }
 

@@ -53,7 +53,7 @@ baseline entry therefore needs a recorded HermiT verdict, never Konclude alone.
 COVERAGE, stated: `--self-test` shows each law CAN fire, on fabricated operands;
 that checks the harness, not the engine. Env sabotages (`--sabotage`) cover R1
 (#76, both `RUSTDL_MAX_*` merge flags off on maxmerge_fp), R2 (#98) and R3
-(family.ofn). Source mutants for every hard law are in scripts/mutants/ (replay
+(family.ofn, with the pre-check and the consistency probe off). Source mutants for every hard law are in scripts/mutants/ (replay
 with scripts/mutants/replay-mutants.sh); their table, including the two faults
 no law catches (both on a path every surface shares), is in
 docs/assurance/query-surface-ledger.md.
@@ -145,8 +145,14 @@ QUICK_CAPS = dict(pos=10, neg=10, sat=10, inst=10, disj=10, eq=5)
 SABOTAGES = [
     dict(name="R2: RUSTDL_COMPLEX_QUALIFIER_VERIFY=0 on #98", onto="complex_qualifier_98",
          env={"RUSTDL_COMPLEX_QUALIFIER_VERIFY": "0"}, expect="R2"),
-    dict(name="R3: RUSTDL_CLASSIFY_INCONSISTENCY=0 on family", onto="family",
-         env={"RUSTDL_CLASSIFY_INCONSISTENCY": "0"}, expect="R3"),
+    # #446: the consistency probe is off too. With the pre-check off, family's run is
+    # admitted to the probe whenever a pair hits the deadline (`incomplete_abox`), and a
+    # probe give-up now sets `consistency_undetermined`, which R3 exempts. So without
+    # this the sabotage fired or not depending on timing.
+    dict(name="R3: RUSTDL_CLASSIFY_INCONSISTENCY=0 RUSTDL_CLASSIFY_CONSISTENCY_PROBE=0 on family",
+         onto="family",
+         env={"RUSTDL_CLASSIFY_INCONSISTENCY": "0", "RUSTDL_CLASSIFY_CONSISTENCY_PROBE": "0"},
+         expect="R3"),
     # #76: both flags off restore the first-pair `≤n` merge, so `subclass A I` says
     # yes on the synthetic (HermiT refutes it). One flag alone is not enough: the
     # #293 choice point and the #76 trial merge each prevent it.

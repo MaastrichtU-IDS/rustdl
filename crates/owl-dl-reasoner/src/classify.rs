@@ -400,9 +400,21 @@ pub struct ClassificationStats {
     /// from "the probe never ran". Two sabotages of an earlier verdict-only canary
     /// both passed for exactly that reason.
     pub consistency_probe_admitted: bool,
+    /// #446: the consistency probe ([`probe_says_inconsistent`]) was admitted and
+    /// reached no verdict: its wedge layer did not decide and its bounded `⊤` probe
+    /// (layer 3) was cut by its budget, the node cap or the depth limit. Each
+    /// admitted call sets it to that call's outcome, so a later verdict replaces an
+    /// earlier give-up. The classify drivers fold it into
+    /// `consistency_undetermined`, whatever `RUSTDL_CLASSIFY_INCONSISTENCY` says:
+    /// the probe has its own switch (`RUSTDL_CLASSIFY_CONSISTENCY_PROBE`) and only
+    /// reports when it ran. Diagnostic and for tests, like
+    /// `consistency_probe_admitted`; not in `classify --json`.
+    pub consistency_probe_gave_up: bool,
     /// The inconsistency pre-check reached no verdict: a route gave up (wedge
     /// `Stalled`, or an `ABox`-saturation timeout with no wedge model) or was
-    /// skipped because the global deadline had already passed (#162). So `inconsistent == false` is "no clash found", not a proof. On
+    /// skipped because the global deadline had already passed (#162), or the
+    /// consistency probe was admitted and gave up (#446,
+    /// `consistency_probe_gave_up`). So `inconsistent == false` is "no clash found", not a proof. On
     /// a KB that really is inconsistent every class is unsatisfiable, so the
     /// hierarchy may be missing entailments; `completeness_guaranteed()` is then
     /// false, and `classify --json` reports it as `consistency_undetermined`
@@ -418,7 +430,9 @@ pub struct ClassificationStats {
     /// `consistency_undetermined` (a route gave up) and from
     /// `trusted_sat_refutations` (per pair). Never set when `inconsistent`. It can
     /// stand beside `consistency_undetermined` after a conversion cut (a wedge
-    /// `Sat` on the partial KB). The #392/#401 name for the same fact.
+    /// `Sat` on the partial KB), or when the pre-check's wedge said `Sat` and the
+    /// consistency probe, admitted later, then gave up (#446). The #392/#401 name
+    /// for the same fact.
     pub relies_on_trusted_consistency: bool,
     /// #214: the wedge decided pairs with Layer A OFF (`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`,
     /// or above `layer_a_affordable`'s cap) on an ontology whose role hierarchy is
@@ -1486,7 +1500,10 @@ pub(crate) fn classify_internal_with_timeout(
     crate::take_consistency_trusted_wedge();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
-    c.stats.consistency_undetermined = crate::take_consistency_undetermined();
+    // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
+    // so that a probe verdict cannot clear a route's give-up.
+    c.stats.consistency_undetermined = crate::take_consistency_undetermined()
+        || (c.stats.consistency_probe_gave_up && !c.stats.inconsistent);
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
     Ok(c)
@@ -1807,6 +1824,7 @@ fn classify_internal_with_timeout_impl(
         n,
         &mut stats,
         false,
+        probe_budget(),
     ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
@@ -2032,6 +2050,13 @@ fn classify_pure_el(
     }
 }
 
+/// The consistency probe's budget, `RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS` (a
+/// parameter of [`probe_says_inconsistent`] so a unit test can vary it without the
+/// environment).
+fn probe_budget() -> std::time::Duration {
+    std::time::Duration::from_millis(crate::classify_consistency_probe_ms())
+}
+
 /// Gated wedge-consistency probe for the classify path
 /// (`RUSTDL_CLASSIFY_CONSISTENCY_PROBE`, **default ON** — `=0` reverts).
 ///
@@ -2059,6 +2084,9 @@ fn classify_pure_el(
 /// since classify's own per-class unsat detection is incomplete. A positive
 /// verdict is a wedge `Unsat`, which `is_consistent` already trusts as a real
 /// inconsistency on the same justification.
+// The budget is a parameter (not read from the env here) so a unit test can vary it
+// without touching the process environment; that takes the count to eight.
+#[allow(clippy::too_many_arguments)]
 fn probe_says_inconsistent(
     internal: &InternalOntology,
     prepared: &PreparedOntology,
@@ -2067,6 +2095,7 @@ fn probe_says_inconsistent(
     n_classes: usize,
     stats: &mut ClassificationStats,
     extra_admission: bool,
+    budget: std::time::Duration,
 ) -> bool {
     if !crate::classify_consistency_probe_enabled() || stats.inconsistent {
         return false;
@@ -2183,14 +2212,17 @@ fn probe_says_inconsistent(
     }
     // Past every admission test: layers 2-3 are about to run.
     stats.consistency_probe_admitted = true;
-    let budget = std::time::Duration::from_millis(crate::classify_consistency_probe_ms());
     // (2) Wedge consistency route — the cheap one `is_consistent` tries first.
     match prepared.consistency_wedge(Some(std::time::Instant::now() + budget)) {
-        Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return true,
+        Some(owl_dl_tableau::hyper::HyperResult::Unsat) => {
+            stats.consistency_probe_gave_up = false;
+            return true;
+        }
         // #429: an unverified wedge model; classify's "consistent" rests on it. A
         // counting `Sat` is not relied on (layer 3 decides), so it marks nothing.
         Some(owl_dl_tableau::hyper::HyperResult::Sat) if !counting => {
             crate::mark_consistency_trusted_wedge();
+            stats.consistency_probe_gave_up = false;
             return false;
         }
         _ => {}
@@ -2213,14 +2245,31 @@ fn probe_says_inconsistent(
     // no verdict ⇒ today's behaviour, which is the trusted direction.
     let dl = std::time::Instant::now() + budget;
     match prepared.decide_consistency(Some(dl)) {
-        Ok(Some(false)) => true,
+        Ok(Some(false)) => {
+            stats.consistency_probe_gave_up = false;
+            true
+        }
         // #429: a main-tableau model: consistency is verified, so nothing rests on
-        // a wedge `Sat` the pre-check may have trusted.
+        // a wedge `Sat` the pre-check may have trusted. (It does not clear a
+        // pre-check route's give-up, which the drivers keep separately: a
+        // deliberate asymmetry with the trusted-wedge flag, recorded on #446.)
         Ok(Some(true)) => {
             crate::clear_consistency_trusted_wedge();
+            stats.consistency_probe_gave_up = false;
             false
         }
-        _ => false,
+        // #446: no verdict. A cut (`Ok(None)`: the budget, the node cap or early
+        // abandon) or the search's depth limit (`Err(NoVerdict)`, the only error
+        // `decide_consistency` returns). The answer stays "consistent", which is
+        // only "no clash found", so the drivers report it as undetermined. Not
+        // propagated: classify answers either way.
+        Ok(None) | Err(_) => {
+            if std::env::var_os("RUSTDL_TRACE").is_some() {
+                eprintln!("classify consistency probe: gave up (layer 3 reached no verdict)");
+            }
+            stats.consistency_probe_gave_up = true;
+            false
+        }
     }
 }
 
@@ -3911,7 +3960,10 @@ pub(crate) fn classify_top_down_internal(
     crate::take_consistency_trusted_wedge();
     let mut c = classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline)?;
     c.stats.dropped = internal.dropped.clone();
-    c.stats.consistency_undetermined = crate::take_consistency_undetermined();
+    // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
+    // so that a probe verdict cannot clear a route's give-up.
+    c.stats.consistency_undetermined = crate::take_consistency_undetermined()
+        || (c.stats.consistency_probe_gave_up && !c.stats.inconsistent);
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
     Ok(c)
@@ -4648,6 +4700,7 @@ fn classify_top_down_internal_impl(
             n,
             &mut stats,
             true,
+            probe_budget(),
         )
     {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
@@ -5380,6 +5433,7 @@ fn classify_top_down_internal_impl(
         n,
         &mut stats,
         false,
+        probe_budget(),
     ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
@@ -6030,6 +6084,60 @@ mod tests {
         let (ontology, _prefixes) =
             read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
         ontology
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // #446: the consistency probe reports its own give-up, and each admitted
+    // call replaces the previous call's outcome.
+
+    /// #437 reproducer B: `TBox` only (so the probe's wedge layer has nothing to
+    /// seed and layer 3 decides), inconsistent, four classes unsatisfiable.
+    const PROBE_B: &str = "Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C1)) Declaration(Class(:C2)) Declaration(Class(:C4)) Declaration(Class(:C5))
+Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1))
+SubClassOf(ObjectSomeValuesFrom(:r1 owl:Thing) :C4)
+DisjointUnion(:C2 :C1 :C4)
+SubClassOf(:C5 :C4)
+EquivalentClasses(:C5 ObjectAllValuesFrom(:r1 ObjectUnionOf(:C5 :C2)))
+SubClassOf(:C2 ObjectSomeValuesFrom(:r0 ObjectHasSelf(ObjectInverseOf(:r1))))
+EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
+)";
+
+    #[test]
+    fn a_later_probe_outcome_replaces_an_earlier_one() {
+        let internal = owl_dl_core::convert::convert_ontology(&parse(PROBE_B)).expect("convert");
+        let reported = ReportedClasses::collect(&internal);
+        let n = reported.len();
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepare");
+        let unsat: HashSet<usize> = [0].into_iter().collect();
+        let mut stats = ClassificationStats::default();
+        let probe = |stats: &mut ClassificationStats, ms: u64| {
+            probe_says_inconsistent(
+                &internal,
+                &prepared,
+                &reported,
+                &unsat,
+                n,
+                stats,
+                false,
+                std::time::Duration::from_millis(ms),
+            )
+        };
+        // A zero budget cuts layer 3 at once: no verdict, a give-up.
+        assert!(!probe(&mut stats, 0));
+        assert!(stats.consistency_probe_admitted);
+        assert!(stats.consistency_probe_gave_up, "a cut probe gave up");
+        // A generous budget finds the clash: the give-up is replaced.
+        assert!(probe(&mut stats, 30_000), "B is inconsistent");
+        assert!(
+            !stats.consistency_probe_gave_up,
+            "a verdict replaces the give-up"
+        );
+        // And back: a later give-up replaces the earlier verdict.
+        assert!(!probe(&mut stats, 0));
+        assert!(stats.consistency_probe_gave_up);
     }
 
     // ───────────────────────────────────────────────────────────────────────

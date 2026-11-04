@@ -133,11 +133,13 @@ pub struct SaturationResult {
     /// not. On `family.ofn`, 101 M of them for 228 149 new edges.
     pub chain_join_attempts: u64,
     /// How many of those candidates Rule 4 looked up in the global edge set (#447).
-    /// With [`ChainDedupe::Local`] (the default) only the new ones are, so this
-    /// equals `chain2_fires + chain3_fires`; with [`ChainDedupe::Global`] every
-    /// candidate is, so it equals `chain_join_attempts`. Deterministic and
-    /// host-independent, so a test can pin it where a timing cannot. It cannot
-    /// see a change in what one lookup costs (codegen, hasher).
+    /// With [`ChainDedupe::Global`], every one (`== chain_join_attempts`). With
+    /// [`ChainDedupe::Local`] (the default), the cache misses plus the candidates
+    /// of outer edges below [`CHAIN_CACHE_MIN_CANDIDATES`]: a known conclusion
+    /// misses at most once per anchor, so on a dense join this is far below the
+    /// attempts. Host-independent, so a test can bound it where a timing cannot;
+    /// the exact count can vary with `HashSet` iteration order. It cannot see a
+    /// change in what one lookup costs (codegen, hasher).
     pub chain_edge_set_probes: u64,
     /// Number of individuals that have BOTH `:Man` and `:Woman` in their atomic
     /// type set after full saturation. This is the precondition for the
@@ -265,17 +267,21 @@ pub fn saturate_abox_consistency_bounded(
 }
 
 /// How Rule 4 (role chains and transitivity) tells a new conclusion from a
-/// known one (#447). Both modes run the same join over the same rounds, so they
-/// reach the same edge set after every round, and the same types, `clash`,
-/// `edges`, `derived_same` and counters of first insertions. Only the cost of a
-/// candidate differs.
+/// known one (#447). From the same snapshot, both modes derive exactly the same
+/// conclusions (only the duplicate test differs), so they reach the same
+/// fixpoint: the same types, `clash`, `edges` and `derived_same`. Rule 4's own
+/// counters can differ from run to run in either mode (see the tests'
+/// `observable`). Only the cost of a candidate differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChainDedupe {
     /// **Default.** Every candidate of one outer edge `r1(a, b)` concludes
-    /// `sup(a, x)` for the same `a`, so it is checked against `a`'s own set of
-    /// known `sup`-partners ([`ChainMirror`]), fetched once per outer edge and
-    /// small enough to stay in cache. Only a new conclusion touches `edges`.
-    Local,
+    /// "`sup` from `a` to x" for the same `a`, so it is first checked in `a`'s
+    /// cached set of known `sup`-partners ([`ChainCache`]), fetched once per outer
+    /// edge and small enough to stay in the CPU cache. Only a miss touches
+    /// `edges`. Outer edges with fewer than `min_candidates` candidates skip the
+    /// cache ([`CHAIN_CACHE_MIN_CANDIDATES`] by default; tests lower it so their
+    /// small inputs exercise the cache).
+    Local { min_candidates: usize },
     /// Every candidate is a lookup in the global `edges` set, as before #447. On
     /// `family.ofn` that is 101 M random lookups into a 267 112-entry table, which
     /// is memory-latency-bound: 6–10 s on the coder host, near the classify
@@ -289,55 +295,31 @@ impl ChainDedupe {
         if std::env::var_os("RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE").is_some_and(|v| v == "1") {
             Self::Global
         } else {
-            Self::Local
+            Self::Local {
+                min_candidates: CHAIN_CACHE_MIN_CANDIDATES,
+            }
         }
     }
 }
 
-/// Rule 4's copy of the edge set, indexed by each endpoint (#447), for
-/// [`ChainDedupe::Local`]. It is kept equal to `edges` whenever Rule 4 reads it:
-/// an edge enters it when the edge queue pops it (every inserted edge is
-/// enqueued, and the queue is empty when Rule 4 starts) or when Rule 4 itself
-/// derives it.
-#[derive(Default)]
-struct ChainMirror {
-    /// `(r, a)` → every `b` with `r(a, b)`.
-    out: HashMap<(RoleId, IndividualId), hashbrown::HashSet<IndividualId>>,
-    /// `(r, b)` → every `a` with `r(a, b)`.
-    inn: HashMap<(RoleId, IndividualId), hashbrown::HashSet<IndividualId>>,
-}
+/// Below this many candidates, an outer edge's candidates go straight to the
+/// global edge set (#447): filling a cache entry costs one pass over the
+/// anchor's known partners, which a handful of candidates do not repay. On
+/// `ore_ont_1579` (no chain ever fires) and `ore_ont_13647` (~1.5 candidates per
+/// new edge) a cache for every outer edge cost 25-50% of the pre-check.
+const CHAIN_CACHE_MIN_CANDIDATES: usize = 8;
 
-impl ChainMirror {
-    fn add(&mut self, (r, a, b): RawEdge) {
-        self.out.entry((r, a)).or_default().insert(b);
-        self.inn.entry((r, b)).or_default().insert(a);
-    }
-
-    /// For conclusions "`sup` holds from `a` to `x`" (in direction `sup_inv`):
-    /// the set of the `x` already known, plus the opposite-endpoint map, in which
-    /// a new `x` must also record `a` under `(sup, x)`. A forward conclusion is
-    /// the edge `sup(a, x)`, an inverse one the edge `sup(x, a)`.
-    fn anchored(
-        &mut self,
-        sup: RoleId,
-        sup_inv: bool,
-        a: IndividualId,
-    ) -> (
-        &mut hashbrown::HashSet<IndividualId>,
-        &mut HashMap<(RoleId, IndividualId), hashbrown::HashSet<IndividualId>>,
-    ) {
-        let (anchor, other) = if sup_inv {
-            (&mut self.inn, &mut self.out)
-        } else {
-            (&mut self.out, &mut self.inn)
-        };
-        (anchor.entry((sup, a)).or_default(), other)
-    }
-
-    fn len(&self) -> usize {
-        self.out.values().map(hashbrown::HashSet::len).sum()
-    }
-}
+/// Rule 4's cache of known conclusions per anchor (#447), for
+/// [`ChainDedupe::Local`]: `(sup, sup_inv, a)` → `x` such that "`sup` from `a`
+/// to `x`" (in direction `sup_inv`) is a known edge. An entry is filled from the
+/// round's snapshot index the first time an outer edge with enough candidates
+/// anchors at `a`, and gains every candidate tested after.
+///
+/// **It is only ever a subset of `edges`** (it holds snapshot edges and
+/// candidates already inserted, and edges are never removed), so a hit is a
+/// known conclusion and a miss is decided by `edges` itself. Nothing has to keep
+/// it complete.
+type ChainCache = HashMap<(RoleId, bool, IndividualId), hashbrown::HashSet<IndividualId>>;
 
 /// The body of [`saturate_abox_consistency_bounded`], with the [`ChainDedupe`]
 /// mode a parameter so tests can compare the modes without the environment.
@@ -795,10 +777,12 @@ pub(crate) fn saturate_with(
     // Worklists for types and edges
     let mut type_queue: VecDeque<(IndividualId, ClassId)> = VecDeque::new();
     let mut edge_queue: VecDeque<RawEdge> = VecDeque::new();
-    // #447: Rule 4's per-endpoint copy of `edges`, filled as the edge queue drains.
-    let mirror_on =
-        chain_dedupe == ChainDedupe::Local && !(chains2.is_empty() && chains3.is_empty());
-    let mut mirror = ChainMirror::default();
+    // #447: Rule 4's cache of known conclusions per anchor; a subset of `edges`.
+    let (local_dedupe, min_candidates) = match chain_dedupe {
+        ChainDedupe::Local { min_candidates } => (true, min_candidates),
+        ChainDedupe::Global => (false, usize::MAX),
+    };
+    let mut chain_cache: ChainCache = HashMap::new();
 
     let mut result = SaturationResult {
         clash: false,
@@ -964,9 +948,6 @@ pub(crate) fn saturate_with(
             }
             result.edge_additions += 1;
             changed = true;
-            if mirror_on {
-                mirror.add((rid, a, b));
-            }
 
             // Rule 2: inverse materialization
             if let Some(inv_rules) = inverse_rules.get(&(rid, false)) {
@@ -1052,13 +1033,6 @@ pub(crate) fn saturate_with(
             timed_out = true;
             break 'fixpoint;
         }
-        // The mirror holds exactly `edges` here: every inserted edge was enqueued,
-        // and the drain above popped all of them.
-        debug_assert!(
-            edge_queue.is_empty() && result.edge_additions == edges.len() as u64,
-            "an `edges.insert` site did not enqueue its edge"
-        );
-        debug_assert!(!mirror_on || mirror.len() == edges.len());
         let lookups_before_rule4 = edges.lookups();
         let edge_vec: Vec<RawEdge> = edges.iter().copied().collect();
 
@@ -1122,24 +1096,24 @@ pub(crate) fn saturate_with(
                 // r1_inv=true : Inverse(r1)(a,b)=Named(r1)(b,a) → (a,b)=(eb,ea).
                 let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
-                if mirror_on {
-                    let candidates = neighbors(r2_id, b, r2_inv);
-                    if candidates.is_empty() {
-                        // No candidate, so no anchored set to create.
-                        continue;
-                    }
-                    let (known, other) = mirror.anchored(sup_id, sup_inv, a);
+                let candidates = neighbors(r2_id, b, r2_inv);
+                if local_dedupe && candidates.len() >= min_candidates {
+                    // `a`'s known partners: the snapshot's, then every candidate
+                    // tested. A subset of `edges`, so only a miss needs `edges`.
+                    let known = chain_cache
+                        .entry((sup_id, sup_inv, a))
+                        .or_insert_with(|| neighbors(sup_id, a, sup_inv).into_iter().collect());
                     for c in candidates {
                         result.chain_join_attempts += 1;
-                        if known.insert(c) {
-                            other.entry((sup_id, c)).or_default().insert(a);
-                            let e = if sup_inv {
-                                (sup_id, c, a)
-                            } else {
-                                (sup_id, a, c)
-                            };
-                            let fresh = edges.insert(e);
-                            debug_assert!(fresh, "Rule 4's mirror fell behind `edges`");
+                        if !known.insert(c) {
+                            continue;
+                        }
+                        let e = if sup_inv {
+                            (sup_id, c, a)
+                        } else {
+                            (sup_id, a, c)
+                        };
+                        if edges.insert(e) {
                             edge_queue.push_back(e);
                             result.chain2_fires += 1;
                             changed = true;
@@ -1147,7 +1121,7 @@ pub(crate) fn saturate_with(
                     }
                     continue;
                 }
-                for c in neighbors(r2_id, b, r2_inv) {
+                for c in candidates {
                     let (na, nc) = if !sup_inv { (a, c) } else { (c, a) };
                     result.chain_join_attempts += 1;
                     if edges.insert((sup_id, na, nc)) {
@@ -1175,20 +1149,25 @@ pub(crate) fn saturate_with(
                 }
                 let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
-                if mirror_on {
-                    let (known, other) = mirror.anchored(sup_id, sup_inv, a);
-                    for c in neighbors(r2_id, b, r2_inv) {
+                let mids = neighbors(r2_id, b, r2_inv);
+                if local_dedupe && !mids.is_empty() && min_candidates <= mids.len() {
+                    // As the 2-hop case. Reached only from a hand-built IR:
+                    // conversion splits longer chains into 2-hop ones.
+                    let known = chain_cache
+                        .entry((sup_id, sup_inv, a))
+                        .or_insert_with(|| neighbors(sup_id, a, sup_inv).into_iter().collect());
+                    for c in mids {
                         for d in neighbors(r3_id, c, r3_inv) {
                             result.chain_join_attempts += 1;
-                            if known.insert(d) {
-                                other.entry((sup_id, d)).or_default().insert(a);
-                                let e = if sup_inv {
-                                    (sup_id, d, a)
-                                } else {
-                                    (sup_id, a, d)
-                                };
-                                let fresh = edges.insert(e);
-                                debug_assert!(fresh, "Rule 4's mirror fell behind `edges`");
+                            if !known.insert(d) {
+                                continue;
+                            }
+                            let e = if sup_inv {
+                                (sup_id, d, a)
+                            } else {
+                                (sup_id, a, d)
+                            };
+                            if edges.insert(e) {
                                 edge_queue.push_back(e);
                                 result.chain3_fires += 1;
                                 changed = true;
@@ -1567,26 +1546,28 @@ mod tests {
         }
     }
 
-    /// Everything the two modes must agree on: the verdict, every counter of
-    /// first insertions, the attempts, and the closure itself. On a clash, only
-    /// the verdict: the fixpoint stops part-way through a round there, and how far
-    /// it got depends on `HashMap` iteration order, which shifts with every map
-    /// created before it (measured: `type_additions` 12–16 on one input, in
-    /// either mode alone). A full fixpoint is order-independent.
+    /// Everything the modes must agree on: the fixpoint. That is the verdict,
+    /// the closure, `derived_same`, and the counts that equal the size of a
+    /// fixpoint set (`type_additions` is the number of types, `edge_additions`
+    /// of edges).
+    ///
+    /// Not Rule 4's own counters: they depend on how many rounds the fixpoint
+    /// takes, which can depend on `HashMap` iteration order through Rule 7's
+    /// type merges (measured: `chain_join_attempts` 12 or 16 on one input with a
+    /// functional role, in either mode, run to run), and every round re-joins
+    /// the whole snapshot. And on a clash, only the verdict: the fixpoint stops
+    /// part-way through a round, and how far it got depends on the same order
+    /// (`type_additions` 12–16 on one input, in either mode alone).
     #[allow(clippy::type_complexity)]
     fn observable(
         r: &SaturationResult,
     ) -> (
-        (bool, bool, u64, u64, u64, u64, u64, u64),
+        (bool, bool, u64, u64, u64),
         Vec<RawEdge>,
         Vec<(IndividualId, IndividualId)>,
     ) {
         if r.clash {
-            return (
-                (true, r.timed_out, 0, 0, 0, 0, 0, 0),
-                Vec::new(),
-                Vec::new(),
-            );
+            return ((true, r.timed_out, 0, 0, 0), Vec::new(), Vec::new());
         }
         let mut edges = r.edges.clone();
         edges.sort_unstable();
@@ -1596,9 +1577,6 @@ mod tests {
                 r.timed_out,
                 r.type_additions,
                 r.edge_additions,
-                r.chain2_fires,
-                r.chain3_fires,
-                r.chain_join_attempts,
                 r.sex_clash_candidates,
             ),
             edges,
@@ -1606,20 +1584,30 @@ mod tests {
         )
     }
 
-    /// Run both modes on `internal`, check each mode's probe identity, and
-    /// return the local result after asserting that it equals the global one.
+    /// Run Global, the shipped Local, and Local with cache threshold 1 (so every
+    /// outer edge with a candidate uses the cache) on `internal`; assert that all
+    /// three agree, check the probe bounds, and return the threshold-1 result.
     fn both_modes(internal: &InternalOntology) -> SaturationResult {
-        let local = saturate_with(internal, None, ChainDedupe::Local);
         let global = saturate_with(internal, None, ChainDedupe::Global);
+        let shipped = saturate_with(internal, None, ChainDedupe::from_env());
+        assert_eq!(
+            observable(&shipped),
+            observable(&global),
+            "shipped Local and Global diverge"
+        );
+        let local = saturate_with(internal, None, ChainDedupe::Local { min_candidates: 1 });
         assert_eq!(
             observable(&local),
             observable(&global),
             "Local and Global dedupe diverge"
         );
-        assert_eq!(
+        let fires = local.chain2_fires + local.chain3_fires;
+        assert!(
+            (fires..=local.chain_join_attempts).contains(&local.chain_edge_set_probes),
+            "Local's lookups in `edges` ({}) lie between its new conclusions ({fires}) \
+             and its candidates ({})",
             local.chain_edge_set_probes,
-            local.chain2_fires + local.chain3_fires,
-            "Local looks up only new conclusions in `edges`"
+            local.chain_join_attempts
         );
         assert_eq!(global.chain_edge_set_probes, global.chain_join_attempts);
         local
@@ -1760,7 +1748,7 @@ mod tests {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
 
         /// #447: the per-endpoint dedupe must reach the same fixpoint as the
-        /// global one, with the same counters, over random 2- and 3-hop chains of
+        /// global one, over random 2- and 3-hop chains of
         /// every leg and super polarity, mixed with transitive roles, sub-roles,
         /// inverses, symmetry, functionality, domain/range and disjointness.
         #[test]
@@ -1819,7 +1807,7 @@ mod tests {
 
     /// #447: every leg and super polarity, 2- and 3-hop: the chain's conclusion
     /// is what clashes, in both modes; without the chain nothing does. A swapped
-    /// anchor (`out` vs `inn`) in [`ChainMirror::anchored`] loses the conclusion
+    /// anchor direction in Rule 4's [`ChainCache`] key loses the conclusion
     /// for one `sup` polarity, so one of these fails.
     #[test]
     fn each_chain_polarity_concludes_in_both_modes() {

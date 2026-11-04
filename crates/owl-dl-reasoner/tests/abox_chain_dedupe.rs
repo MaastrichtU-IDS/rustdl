@@ -1,23 +1,23 @@
-//! #447: Rule 4 of the `ABox` saturation (role chains, transitivity) tells a new
-//! conclusion from a known one in a small per-endpoint set, not in the global
-//! edge set.
+//! #447: Rule 4 of the `ABox` saturation (role chains, transitivity) first
+//! checks a candidate in a small per-anchor cache of known conclusions, and
+//! looks it up in the global edge set only on a miss.
 //!
 //! Why this is pinned by counters and not by a timing: on `family.ofn` the
 //! join tries ~101 M candidates for 228 149 new edges. Testing each one in the
 //! global 267 112-entry `HashSet` was memory-latency-bound, cost 6–10 s on the
-//! coder host (the classify pre-check's budget is 12 s, so 2 runs in 10 were
-//! cut) and doubled with an unrelated codegen change (9f74f15b). A timing guard
-//! can only see that on the host and build where it happens.
+//! coder host (the classify pre-check's budget is 12 s, so about 1 run in 10
+//! was cut) and doubled with an unrelated codegen change (9f74f15b). A timing
+//! guard can only see that on the host and build where it happens.
 //! `chain_edge_set_probes` counts every lookup the fixpoint makes in its global
 //! edge set during Rule 4 (the set's fields are private, so no lookup escapes
-//! the count), which makes the property exact and host-independent: probes ==
-//! new chain conclusions.
+//! the count). It is host-independent; it can vary slightly with `HashSet`
+//! iteration order, so the guard bounds it rather than pinning it.
 //!
 //! Not covered here: what one lookup costs. A slower hasher or a codegen change
 //! is invisible to these counters; `shipped_default_budget_covers_family_precheck`
 //! (release only) is the timing guard.
 //!
-//! The equivalence of the two modes (same fixpoint, same counters) is the
+//! The equivalence of the modes (same fixpoint, same counters) is the
 //! differential property test `local_and_global_chain_dedupe_agree` in
 //! `src/abox_saturation.rs`, with per-polarity canaries beside it.
 
@@ -82,29 +82,25 @@ fn fires(r: &SaturationResult) -> u64 {
     r.chain2_fires + r.chain3_fires
 }
 
-/// The guard. Sabotage: route the local check back through the global set, or
-/// probe it per candidate anywhere in Rule 4, and probes become attempts.
+/// The guard. Sabotage: turn the cache off, or probe the global set per
+/// candidate anywhere in Rule 4, and the lookups climb to the attempts.
 #[test]
-fn rule4_looks_up_only_new_conclusions_in_the_global_edge_set() {
+fn rule4_looks_up_few_candidates_in_the_global_edge_set() {
     let _l = lock();
-    let r = saturate_abox_consistency(&internal(&layered(8, 6)));
+    let r = saturate_abox_consistency(&internal(&layered(6, 10)));
     assert!(!r.clash);
     assert!(fires(&r) > 0, "the fixture exercises Rule 4");
-    assert_eq!(
-        r.chain_edge_set_probes,
-        fires(&r),
-        "Rule 4 looked up {} candidates in the global edge set for {} new \
-         conclusions: the per-endpoint dedupe (#447) is bypassed",
-        r.chain_edge_set_probes,
-        fires(&r)
+    assert!(
+        r.chain_edge_set_probes >= fires(&r),
+        "every new conclusion is inserted into the global set"
     );
-    // The fixture must be one where the difference is large, or the guard
-    // above cannot tell the modes apart.
     assert!(
         r.chain_join_attempts >= 10 * r.chain_edge_set_probes,
-        "fixture too sparse: {} attempts for {} new conclusions",
+        "Rule 4 looked up {} of its {} candidates in the global edge set ({} new): \
+         the per-anchor cache (#447) is bypassed",
+        r.chain_edge_set_probes,
         r.chain_join_attempts,
-        r.chain_edge_set_probes
+        fires(&r)
     );
 }
 
@@ -113,7 +109,7 @@ fn rule4_looks_up_only_new_conclusions_in_the_global_edge_set() {
 #[test]
 fn global_dedupe_switch_reaches_the_public_entry() {
     let _l = lock();
-    let onto = internal(&layered(8, 6));
+    let onto = internal(&layered(6, 10));
     let local = saturate_abox_consistency(&onto);
     // SAFETY: set_var is unsafe under edition 2024; every env access in this
     // binary holds `lock()`.
@@ -127,6 +123,7 @@ fn global_dedupe_switch_reaches_the_public_entry() {
         std::env::remove_var("RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE");
     }
     assert_eq!(global.chain_edge_set_probes, global.chain_join_attempts);
+    assert!(10 * local.chain_edge_set_probes <= global.chain_edge_set_probes);
     assert_eq!(local.chain_join_attempts, global.chain_join_attempts);
     assert_eq!(fires(&local), fires(&global));
     let sorted = |r: &SaturationResult| {
@@ -137,16 +134,17 @@ fn global_dedupe_switch_reaches_the_public_entry() {
     assert_eq!(sorted(&local), sorted(&global));
 }
 
-/// The same identity on `family.ofn`, the ontology #447 was measured on.
+/// The same bound on `family.ofn`, the ontology #447 was measured on (measured:
+/// 315 257 lookups for 101 466 357 candidates and 228 149 new edges).
 /// `#[ignore]`d because the corpus file is gitignored, and slow in debug.
 #[test]
 #[ignore = "needs ontologies/real/family.ofn (gitignored); slow in the debug profile"]
-fn family_rule4_looks_up_only_new_conclusions() {
+fn family_rule4_looks_up_few_candidates() {
     let _l = lock();
     let src = std::fs::read_to_string("../../ontologies/real/family.ofn")
         .expect("ontologies/real/family.ofn (run ./scripts/fetch-real-ontologies.sh)");
     let r = saturate_abox_consistency(&internal(&src));
     assert!(r.clash, "family.ofn is inconsistent");
-    assert_eq!(r.chain_edge_set_probes, fires(&r));
+    assert!(r.chain_edge_set_probes >= fires(&r));
     assert!(r.chain_join_attempts >= 100 * r.chain_edge_set_probes);
 }

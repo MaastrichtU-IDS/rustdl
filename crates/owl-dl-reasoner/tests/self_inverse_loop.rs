@@ -177,6 +177,9 @@ fn the_clash_is_found_at_a_successor() {
 }
 
 /// The loop is also seen by `∀`: `r⁻(x, x)` is `r(x, x)`, so `∀r.D` applies to `x`.
+/// `sat C` is what the fix changes (it was a `NoVerdict`). The subsumption is a
+/// control: it already held on main, because the `¬D` clash via `∀` fires before
+/// the livelock runs out of iterations.
 #[test]
 fn self_inverse_with_forall_gives_the_subsumption() {
     let o = onto(

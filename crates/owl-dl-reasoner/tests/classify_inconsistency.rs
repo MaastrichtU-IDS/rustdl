@@ -278,6 +278,10 @@ EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
     let _lock = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The probe's default 200 ms is ample in release (0.01 s) but not guaranteed in
+    // the debug test profile; a cut probe would read as the fix regressing. (`0` is a
+    // zero budget for this flag, not unbounded.)
+    let _budget = SetEnvGuard::set("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS", "30000");
     let c = classify(&onto).expect("classify succeeds");
     assert!(
         !classify_says_consistent(&c),

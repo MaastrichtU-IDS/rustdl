@@ -258,21 +258,7 @@ fn ddmin_core_residual_divergence() {
 /// `is_consistent` say inconsistent; now `classify` agrees.
 #[test]
 fn a_tbox_only_tableau_inconsistency_is_found_by_classify() {
-    let onto = parse(
-        "Prefix(:=<http://gen.rustdl/o#>)
-Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
-Ontology(<http://gen.rustdl/o>
-Declaration(Class(:C1)) Declaration(Class(:C2)) Declaration(Class(:C4)) Declaration(Class(:C5))
-Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1))
-SubClassOf(ObjectSomeValuesFrom(:r1 owl:Thing) :C4)
-DisjointUnion(:C2 :C1 :C4)
-SubClassOf(:C5 :C4)
-EquivalentClasses(:C5 ObjectAllValuesFrom(:r1 ObjectUnionOf(:C5 :C2)))
-SubClassOf(:C2 ObjectSomeValuesFrom(:r0 ObjectHasSelf(ObjectInverseOf(:r1))))
-EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
-)
-",
-    );
+    let onto = parse(REPRO_B);
     assert!(!is_consistent(&onto).expect("is_consistent reaches a verdict"));
 
     let _lock = ENV_MUTEX
@@ -287,4 +273,91 @@ EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
         !classify_says_consistent(&c),
         "classify's consistency probe must find the clash"
     );
+    // An inconsistent result is built afresh (`classify_inconsistent`), so the probe's
+    // admission is not carried over; only the verdict and the flag are asserted.
+    assert!(!c.stats().consistency_undetermined, "the probe decided");
+}
+
+/// #437 reproducer B: `TBox` only, inconsistent (Konclude and `HermiT`).
+const REPRO_B: &str = "Prefix(:=<http://gen.rustdl/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://gen.rustdl/o>
+Declaration(Class(:C1)) Declaration(Class(:C2)) Declaration(Class(:C4)) Declaration(Class(:C5))
+Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1))
+SubClassOf(ObjectSomeValuesFrom(:r1 owl:Thing) :C4)
+DisjointUnion(:C2 :C1 :C4)
+SubClassOf(:C5 :C4)
+EquivalentClasses(:C5 ObjectAllValuesFrom(:r1 ObjectUnionOf(:C5 :C2)))
+SubClassOf(:C2 ObjectSomeValuesFrom(:r0 ObjectHasSelf(ObjectInverseOf(:r1))))
+EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
+)
+";
+
+/// #446: the consistency probe is admitted on B (four classes are unsatisfiable),
+/// and with no budget its `⊤` check is cut. `classify` then says consistent, which is
+/// only "no clash found", so it must report `consistency_undetermined`. Before #446
+/// that flag stayed false here.
+#[test]
+fn a_consistency_probe_that_gives_up_reports_undetermined() {
+    let onto = parse(REPRO_B);
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _budget = SetEnvGuard::set("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS", "0");
+    let c = classify(&onto).expect("classify succeeds");
+    assert!(classify_says_consistent(&c), "a cut probe finds no clash");
+    assert!(c.stats().consistency_probe_admitted);
+    assert!(c.stats().consistency_probe_gave_up);
+    assert!(c.stats().consistency_undetermined);
+    assert!(!c.completeness_guaranteed());
+}
+
+/// A CONSISTENT ontology the probe is admitted on (an unsatisfiable class, and a `∀`
+/// so it leaves the EL fast path, which never runs the probe). With a budget the
+/// probe finds a model and nothing is undetermined; with none it gives up and says
+/// so. The flag tracks the give-up, not the admission.
+#[test]
+fn the_undetermined_flag_tracks_the_give_up_not_the_admission() {
+    let onto = parse(
+        "Prefix(:=<http://ex/#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://ex/c>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:U))
+Declaration(ObjectProperty(:r))
+SubClassOf(:A ObjectAllValuesFrom(:r :B))
+SubClassOf(:U owl:Nothing)
+)",
+    );
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (ms, gave_up) in [("30000", false), ("0", true)] {
+        let _budget = SetEnvGuard::set("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS", ms);
+        let c = classify(&onto).expect("classify succeeds");
+        assert!(classify_says_consistent(&c), "{ms}: consistent");
+        assert!(c.stats().consistency_probe_admitted, "{ms}: admitted");
+        assert_eq!(c.stats().consistency_probe_gave_up, gave_up, "{ms}");
+        assert_eq!(c.stats().consistency_undetermined, gave_up, "{ms}");
+    }
+}
+
+/// Not admitted (no unsatisfiable class, `TBox` only): the budget is irrelevant,
+/// because the probe never runs.
+#[test]
+fn a_probe_that_is_not_admitted_reports_nothing() {
+    let onto = parse(
+        "Prefix(:=<http://ex/#>)
+Ontology(<http://ex/n>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(ObjectProperty(:r))
+SubClassOf(:A ObjectAllValuesFrom(:r :B))
+)",
+    );
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _budget = SetEnvGuard::set("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS", "0");
+    let c = classify(&onto).expect("classify succeeds");
+    assert!(!c.stats().consistency_probe_admitted);
+    assert!(!c.stats().consistency_probe_gave_up);
+    assert!(!c.stats().consistency_undetermined);
 }

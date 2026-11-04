@@ -97,8 +97,9 @@ pub enum ElRule {
     UnsatSubclass,
     /// Unsat propagation (`process_unsat`, fact-source): `(D,r,C)`, `C ⊑ ⊥` ⟹ `D ⊑ ⊥`.
     UnsatFactSource,
-    /// `F ⊑ Bᵢ` for a conjunction `F ≡ B₁ ⊓ … ⊓ Bₙ` the saturator introduced at runtime
-    /// (no axiom mentions it): true by `F`'s definition.
+    /// A step true by a synthetic's definition, citing no axiom: `F ⊑ Bᵢ` for a
+    /// conjunction `F ≡ B₁ ⊓ … ⊓ Bₙ` the saturator introduced at runtime, a domain step
+    /// to a ⊤-marker `T_R ≡ ∃R.⊤` (#436), and `X ⊑ K⊤` for the ⊤ key (#444/#445).
     SyntheticDefinition,
     /// #180 functional merge across an inverse: `(X,R,T)`, `(T,S,B)`, `R⁻ ⊑ F`,
     /// `S ⊑ F`, `F` functional ⟹ `X ⊑ B`.
@@ -170,6 +171,9 @@ pub enum SyntheticDef {
     TopWitness { role: RoleId },
     /// #436: the trigger-position ⊤-marker `T_R ≡ ∃R.⊤` (a domain head of `R`).
     TopMarker { role: RoleId },
+    /// #444/#445: the shared ⊤ key `K⊤`, the whole domain. A ⊤-LHS GCI `⊤ ⊑ D` lowers
+    /// as `K⊤ ⊑ D`, and every class is `⊑ K⊤` by definition.
+    TopKey,
 }
 
 /// Side-table mapping every derived fact to the inference that first produced it.
@@ -1460,6 +1464,7 @@ fn render_synthetic_def<S: std::hash::BuildHasher>(
             let r_str = render_role(*role, vocab);
             format!("ObjectSomeValuesFrom({r_str} owl:Thing)")
         }
+        SyntheticDef::TopKey => "owl:Thing".to_string(),
     }
 }
 

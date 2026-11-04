@@ -55,6 +55,8 @@ PROFILES = {
     "data_heavy": {**FAMILIES, "data": 6},
     # Strict pure EL with motifs (#363 step 3a): a separate generator, ElCase below.
     "el_guaranteed": {},
+    # el_guaranteed plus ⊤-LHS GCIs (#444/#445): ElTopCase below, its own RNG stream.
+    "el_top": {},
 }
 
 
@@ -366,10 +368,13 @@ class ElCase:
     The default `Case` is not touched: this class has its own RNG stream."""
 
     profile = "el_guaranteed"
+    kinds = EL_KINDS
+    motifs = MOTIFS
+    motif_p = 0.5
 
-    def __init__(self, seed, index, profile="el_guaranteed"):
+    def __init__(self, seed, index, profile=None):
         self.seed, self.index = seed, index
-        self.rng = random.Random(f"{seed}:{index}:el_guaranteed")
+        self.rng = random.Random(f"{seed}:{index}:{self.profile}")
         r = self.rng
         self.classes = [f"C{i}" for i in range(r.randint(4, 10))]
         self.roles = [f"r{i}" for i in range(r.randint(2, 4))]
@@ -377,13 +382,13 @@ class ElCase:
         self.role_axioms, self.axioms = [], []
         self.n_target = r.randint(3, 15)
         self.motif = "none"
-        if r.random() < 0.5:
+        if r.random() < self.motif_p:
             self._plant_motif()
         self._draw_roles()
         self.simple = simple_roles(self.roles, self.role_axioms)
         tries = 0
-        kinds = list(EL_KINDS)
-        w = [EL_KINDS[k] for k in kinds]
+        kinds = list(self.kinds)
+        w = [self.kinds[k] for k in kinds]
         while len(self.axioms) < self.n_target and tries < 200:
             tries += 1
             ax = getattr(self, f"el_{r.choices(kinds, w)[0]}")()
@@ -392,12 +397,23 @@ class ElCase:
 
     def _plant_motif(self):
         r = self.rng
-        kind = r.choice(MOTIFS)
+        kind = r.choice(self.motifs)
         if len(self.roles) < 2:
             return
+        planted = self._motif_axioms(kind)
+        if planted is None:
+            return
+        ax, name = planted
+        self.axioms.extend(ax)
+        self.n_target = max(self.n_target, len(ax))
+        self.motif = name
+
+    def _motif_axioms(self, kind):
+        """The motif's axioms and name, or None when the case is too small for it."""
+        r = self.rng
         if kind == "gci_domain":
             if len(self.classes) < 5:
-                return
+                return None
             c, b, p, s_, z = r.sample(self.classes, 5)
             ro, so = r.sample(self.roles, 2)
             ax = [f"SubClassOf(ObjectSomeValuesFrom(:{ro} owl:Thing) "
@@ -409,7 +425,7 @@ class ElCase:
             sub = r.choice("abc")
             need = 5 if sub == "c" else 4
             if len(self.classes) < need:
-                return
+                return None
             pick = r.sample(self.classes, need)
             ro, so = r.sample(self.roles, 2)
             if sub == "a":
@@ -431,9 +447,7 @@ class ElCase:
                       f"ObjectPropertyRange(:{ro} :{f})",
                       f"SubClassOf(ObjectSomeValuesFrom(:{ro} ObjectIntersectionOf(:{a} :{f})) :{d})"]
             name = f"nested_range_{sub}"
-        self.axioms.extend(ax)
-        self.n_target = max(self.n_target, len(ax))
-        self.motif = name
+        return ax, name
 
     def _draw_roles(self):
         r = self.rng
@@ -526,7 +540,7 @@ class ElCase:
         return None if x is None else f"SubClassOf(ObjectSomeValuesFrom({self.R()} owl:Thing) {x})"
 
     def header(self):
-        return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile el_guaranteed\n"
+        return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile {self.profile}\n"
                 f"# motif: {self.motif}")
 
     def ofn(self, axioms=None):
@@ -534,8 +548,62 @@ class ElCase:
         return render(self.header(), self.classes, self.roles, [], [], axioms)
 
 
+class ElTopCase(ElCase):
+    """`el_top` (#444/#445): `el_guaranteed` plus ⊤-LHS GCIs, which `el_guaranteed` never
+    emits. Same fragment (`is_pure_el` admits `⊤` on the left), its own RNG stream, so
+    `el_guaranteed` cases are untouched. Extra kind `top_gci`: `⊤ ⊑ X` or `⊤ ≡ X` for an
+    atom or a complex EL concept. Motifs, each ending in a SCORED pair (the net does not
+    score ⊤-equivalence):
+      top_exists (#445): ⊤ ⊑ ∃r.B, A ⊓ ∃r.B ⊑ X                     ⟹ A ⊑ X
+      top_chain  (#445): ⊤ ⊑ ∃r.B, ∃r.B ⊑ T, C ⊑ ∃s.D, ∃s.T ⊑ W     ⟹ C ⊑ W
+      top_marker (#444): ⊤ ⊑ T, X ⊑ ∃r.∃s.B, ∃r.T ⊑ W               ⟹ X ⊑ W
+    plus el_guaranteed's own motifs."""
+
+    profile = "el_top"
+    kinds = {**EL_KINDS, "top_gci": 2}
+    motifs = MOTIFS + ("top_exists", "top_chain", "top_marker")
+    motif_p = 0.8
+
+    def _motif_axioms(self, kind):
+        r = self.rng
+        if kind not in ("top_exists", "top_chain", "top_marker"):
+            return super()._motif_axioms(kind)
+        if len(self.classes) < 5:
+            return None
+        ro, so = r.sample(self.roles, 2)
+        if kind == "top_exists":
+            a, b, x = r.sample(self.classes, 3)
+            ax = [f"SubClassOf(owl:Thing ObjectSomeValuesFrom(:{ro} :{b}))",
+                  f"SubClassOf(ObjectIntersectionOf(:{a} ObjectSomeValuesFrom(:{ro} :{b})) :{x})"]
+        elif kind == "top_chain":
+            b, t, c, d, w = r.sample(self.classes, 5)
+            ax = [f"SubClassOf(owl:Thing ObjectSomeValuesFrom(:{ro} :{b}))",
+                  f"SubClassOf(ObjectSomeValuesFrom(:{ro} :{b}) :{t})",
+                  f"SubClassOf(:{c} ObjectSomeValuesFrom(:{so} :{d}))",
+                  f"SubClassOf(ObjectSomeValuesFrom(:{so} :{t}) :{w})"]
+        else:
+            t, x, b, w = r.sample(self.classes, 4)
+            ax = [f"SubClassOf(owl:Thing :{t})",
+                  f"SubClassOf(:{x} ObjectSomeValuesFrom(:{ro} ObjectSomeValuesFrom(:{so} :{b})))",
+                  f"SubClassOf(ObjectSomeValuesFrom(:{ro} :{t}) :{w})"]
+        return ax, kind
+
+    def el_top_gci(self):
+        r = self.rng
+        x = self.complex_ce() if r.random() < 0.7 else self.C()
+        if x is None:
+            return None
+        if x.startswith(":") or r.random() < 0.8:
+            return f"SubClassOf(owl:Thing {x})"
+        return f"EquivalentClasses(owl:Thing {x})"
+
+
 def make_case(seed, index, profile="default"):
-    return ElCase(seed, index) if profile == "el_guaranteed" else Case(seed, index, profile)
+    if profile == "el_guaranteed":
+        return ElCase(seed, index)
+    if profile == "el_top":
+        return ElTopCase(seed, index)
+    return Case(seed, index, profile)
 
 
 EL_FORBIDDEN = ("ObjectInverseOf", "Union", "Complement", "AllValues", "Cardinality", "OneOf",
@@ -808,6 +876,18 @@ def self_test():
     distinct = all(len(set(_re.findall(r":(C\d+)", " ".join(c.axioms[:3])))) == 5 for c in m1[:50])
     ok("gci_domain motif picks five distinct classes", distinct, True)
     ok("el_guaranteed is deterministic", ElCase(5, 7).ofn() == ElCase(5, 7).ofn(), True)
+    tops = [ElTopCase(11, i) for i in range(500)]
+    ok("500 el_top cases pass the checker", sum(bool(check(c)) for c in tops), 0)
+    bad = [c.index for c in tops if any(t in "\n".join(c.axioms) for t in EL_FORBIDDEN)]
+    ok("el_top emits no construct outside PureEl", bad, [])
+    with_top = sum(any(a.startswith(("SubClassOf(owl:Thing ", "EquivalentClasses(owl:Thing "))
+                       for a in c.axioms) for c in tops)
+    ok("most el_top cases have a ⊤-LHS GCI", with_top >= 350, True)
+    ok("every el_top motif is planted",
+       {"top_exists", "top_chain", "top_marker"} <= {c.motif for c in tops}, True)
+    ok("el_top is deterministic", ElTopCase(5, 7).ofn() == ElTopCase(5, 7).ofn(), True)
+    ok("el_top and el_guaranteed streams differ",
+       ElTopCase(5, 7).axioms == ElCase(5, 7).axioms, False)
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

@@ -319,7 +319,7 @@ impl EntailmentMatrix {
     /// `direct_subsumers` implies. One pass over the strongly connected components
     /// (iterative Tarjan), which come out supers-first: each component's closed row is
     /// its members plus the closed rows of its successor components, taken nearest
-    /// first and skipped when already covered, so only the direct ones are ORed.
+    /// first and skipped when already covered, so only the direct ones are merged in.
     ///
     /// UNSAT rows stay elided (empty) and satisfiable rows only hold satisfiable
     /// columns (the sparse-row contract), so a union never adds an unsat column.
@@ -1029,8 +1029,7 @@ impl Classification {
         let t = std::time::Instant::now();
         let added = self.entailed.close_transitively(&self.unsatisfiable_idxs);
         self.stats.matrix_closure_added_pairs += added;
-        self.stats.matrix_closure_ms +=
-            u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.stats.matrix_closure_ms += u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
     }
 }
 
@@ -8036,9 +8035,12 @@ Ontology(\n\
         let onto = parse(src);
         let h =
             classify_with_timeout(&onto, std::time::Duration::from_millis(1)).expect("classify");
-        // The set length must equal the count stat (consistency), regardless of
-        // whether this tiny ontology actually times out.
-        assert_eq!(h.undecided_pairs().len(), h.stats().timed_out_pairs);
+        // The set length plus the cut pairs the #448 closure recovered must equal the
+        // count stat (consistency), regardless of whether this tiny ontology times out.
+        assert_eq!(
+            h.undecided_pairs().len() + recovered_cuts(&h),
+            h.stats().timed_out_pairs
+        );
     }
 
     /// Global wall-clock deadline is sound and bounded.
@@ -8071,7 +8073,10 @@ Ontology(\n  Declaration(Class(:A)) Declaration(Class(:B))\n  SubClassOf(:A :B)\
             "told subsumption A ⊑ B must survive global deadline"
         );
         // Anytime invariant holds even when nothing times out.
-        assert_eq!(h_el.undecided_pairs().len(), h_el.stats().timed_out_pairs);
+        assert_eq!(
+            h_el.undecided_pairs().len() + recovered_cuts(&h_el),
+            h_el.stats().timed_out_pairs
+        );
 
         // Out-of-EL ontology (∀ + ∃): forces the tableau path, exercising the
         // actual deadline threading. A 1 ms global budget means most pairs will
@@ -8092,10 +8097,233 @@ Ontology(\n\
         );
         // Anytime invariant: every timed-out pair is recorded in undecided_pairs().
         assert_eq!(
-            h_oe.undecided_pairs().len(),
+            h_oe.undecided_pairs().len() + recovered_cuts(&h_oe),
             h_oe.stats().timed_out_pairs,
-            "undecided_pairs() must mirror timed_out_pairs count"
+            "undecided_pairs() must mirror timed_out_pairs count, less #448 recoveries"
         );
+    }
+
+    /// Cut pairs (`i != j`) that the #448 closure recovered: entailed after all, so
+    /// `undecided_pairs()` leaves them out.
+    fn recovered_cuts(h: &Classification) -> usize {
+        h.stats
+            .timed_out_pair_ids
+            .iter()
+            .filter(|&&(i, j)| i != j && h.entails(i as usize, j as usize))
+            .count()
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // #448: `EntailmentMatrix::close_transitively` (`RUSTDL_CLASSIFY_CLOSE_MATRIX`).
+    // ───────────────────────────────────────────────────────────────────────
+
+    fn matrix_from(rows: &[Vec<usize>], dense: bool) -> EntailmentMatrix {
+        let n = rows.len();
+        let mut m = if dense {
+            EntailmentMatrix::Dense((0..n).map(|_| FixedBitSet::with_capacity(n)).collect())
+        } else {
+            EntailmentMatrix::Sparse(vec![Vec::new(); n])
+        };
+        for (i, r) in rows.iter().enumerate() {
+            for &j in r {
+                m.insert(i, j);
+            }
+        }
+        m
+    }
+
+    fn rows_of(m: &EntailmentMatrix) -> Vec<Vec<usize>> {
+        (0..m.len()).map(|i| m.row_ascending(i)).collect()
+    }
+
+    /// Reference closure: a naive fixpoint over the satisfiable rows.
+    fn naive_closure(rows: &[Vec<usize>], unsat: &HashSet<usize>) -> Vec<Vec<usize>> {
+        let mut r: Vec<std::collections::BTreeSet<usize>> =
+            rows.iter().map(|x| x.iter().copied().collect()).collect();
+        loop {
+            let mut changed = false;
+            for i in 0..r.len() {
+                if unsat.contains(&i) {
+                    continue;
+                }
+                let cur: Vec<usize> = r[i].iter().copied().collect();
+                for k in cur {
+                    let add: Vec<usize> = r[k].iter().copied().collect();
+                    for x in add {
+                        changed |= r[i].insert(x);
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        r.into_iter().map(|s| s.into_iter().collect()).collect()
+    }
+
+    /// Close `rows` in both arms; both must give `want` and report `added`.
+    fn assert_closes_to(rows: &[Vec<usize>], unsat: &HashSet<usize>, want: &[Vec<usize>]) {
+        let added_want: usize = want.iter().zip(rows).map(|(w, r)| w.len() - r.len()).sum();
+        for dense in [true, false] {
+            let mut m = matrix_from(rows, dense);
+            let added = m.close_transitively(unsat);
+            assert_eq!(rows_of(&m), want, "dense={dense}");
+            assert_eq!(added, added_want, "added count, dense={dense}");
+        }
+    }
+
+    #[test]
+    fn close_matrix_closes_a_chain() {
+        // 0 ⊑ 1 ⊑ 2 with (0, 2) cut.
+        let rows = vec![vec![0, 1], vec![1, 2], vec![2]];
+        assert_closes_to(
+            &rows,
+            &HashSet::new(),
+            &[vec![0, 1, 2], vec![1, 2], vec![2]],
+        );
+    }
+
+    #[test]
+    fn close_matrix_closes_an_equivalence_component() {
+        // 0 ≡ 1 (a cycle), 1 ⊑ 2 ⊑ 3, with (0, 2), (0, 3) and (1, 3) cut.
+        let rows = vec![vec![0, 1], vec![0, 1, 2], vec![2, 3], vec![3]];
+        let all = vec![0, 1, 2, 3];
+        assert_closes_to(
+            &rows,
+            &HashSet::new(),
+            &[all.clone(), all, vec![2, 3], vec![3]],
+        );
+    }
+
+    #[test]
+    fn close_matrix_leaves_unsat_rows_elided() {
+        // 2 is unsat (row elided, never a column of a satisfiable row).
+        let rows = vec![vec![0, 1], vec![1, 3], vec![], vec![3]];
+        let unsat: HashSet<usize> = [2].into_iter().collect();
+        assert_closes_to(&rows, &unsat, &[vec![0, 1, 3], vec![1, 3], vec![], vec![3]]);
+    }
+
+    #[test]
+    fn close_matrix_is_a_no_op_on_a_transitive_matrix() {
+        let rows = vec![vec![0, 1, 2], vec![1, 2], vec![2], vec![1, 2, 3]];
+        assert_closes_to(&rows, &HashSet::new(), &rows);
+    }
+
+    /// Random matrices (reflexive satisfiable rows, cycles, unsat rows), both arms,
+    /// against the naive fixpoint. A second pass must add nothing.
+    #[test]
+    fn close_matrix_matches_a_naive_closure_on_random_matrices() {
+        let mut state: u64 = 0x448;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (state >> 33) as usize
+        };
+        for _case in 0..60 {
+            let n = 2 + next() % 40;
+            let unsat: HashSet<usize> = (0..n).filter(|_| next() % 10 == 0).collect();
+            let rows: Vec<Vec<usize>> = (0..n)
+                .map(|i| {
+                    if unsat.contains(&i) {
+                        return Vec::new();
+                    }
+                    let mut r: Vec<usize> = (0..n)
+                        .filter(|&j| j != i && !unsat.contains(&j) && next() % 12 == 0)
+                        .collect();
+                    r.push(i);
+                    r.sort_unstable();
+                    r
+                })
+                .collect();
+            let want = naive_closure(&rows, &unsat);
+            assert_closes_to(&rows, &unsat, &want);
+            for dense in [true, false] {
+                let mut m = matrix_from(&want, dense);
+                assert_eq!(
+                    m.close_transitively(&unsat),
+                    0,
+                    "second pass, dense={dense}"
+                );
+            }
+        }
+    }
+
+    /// Iterative Tarjan: no recursion, so a deep hierarchy cannot overflow the stack.
+    /// Components come out in completion order (reachable ones first).
+    #[test]
+    fn tarjan_components_handles_a_deep_chain() {
+        let n = 200_000u32;
+        let succ: Vec<Vec<u32>> = (0..n)
+            .map(|i| if i + 1 < n { vec![i + 1] } else { vec![] })
+            .collect();
+        let comp = tarjan_components(&succ);
+        assert!(
+            comp.windows(2).all(|w| w[0] > w[1]),
+            "a successor finishes first"
+        );
+        let cyc = vec![vec![1], vec![2], vec![0, 3], vec![]];
+        let c = tarjan_components(&cyc);
+        assert!(c[0] == c[1] && c[1] == c[2] && c[3] < c[0]);
+    }
+
+    const CUT_SRC: &str = "Prefix(:=<http://t/>)\n\
+Ontology(\n\
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+  Declaration(Class(:E)) Declaration(Class(:F))\n\
+  SubClassOf(:A :B) SubClassOf(:B :C)\n\
+  SubClassOf(:D ObjectUnionOf(:E :F))\n)\n";
+
+    /// #448 end to end, through the deterministic cut hook, on both drivers. With
+    /// `A ⊑ C` cut, the flag-OFF object denies what its own `direct_subsumers` chain
+    /// implies; the flag-ON object recovers it, drops it from `undecided_pairs()`, and
+    /// keeps `timed_out_pairs` (a cut still happened). The direct relation is the same.
+    #[test]
+    fn close_matrix_recovers_a_cut_pair_on_both_drivers() {
+        let onto = parse(CUT_SRC);
+        let (a, b, c) = ("http://t/A", "http://t/B", "http://t/C");
+        type Driver = fn(&SetOntology<RcStr>) -> Result<Classification, ReasonError>;
+        let drivers: [(&str, Driver); 2] = [("top-down", classify), ("n2", classify_n2)];
+        for (name, drive) in drivers {
+            let off = {
+                let _g = EnvGuard::set(&[
+                    ("RUSTDL_CLASSIFY_TEST_CUT_PAIRS", "http://t/A http://t/C"),
+                    ("RUSTDL_CLASSIFY_CLOSE_MATRIX", "0"),
+                ]);
+                drive(&onto).expect("classify")
+            };
+            let on = {
+                let _g = EnvGuard::set(&[
+                    ("RUSTDL_CLASSIFY_TEST_CUT_PAIRS", "http://t/A http://t/C"),
+                    ("RUSTDL_CLASSIFY_CLOSE_MATRIX", "1"),
+                ]);
+                drive(&onto).expect("classify")
+            };
+            assert_eq!(
+                off.stats().fragment,
+                FragmentClassification::OutOfFragment,
+                "{name}"
+            );
+            assert!(!off.is_subclass(a, c), "{name}: the hook must cut A ⊑ C");
+            assert!(off.is_subclass(a, b) && off.is_subclass(b, c), "{name}");
+            assert_eq!(off.undecided_pairs(), vec![(a, c)], "{name}");
+            assert!(on.is_subclass(a, c), "{name}: the closure recovers A ⊑ C");
+            assert!(on.undecided_pairs().is_empty(), "{name}");
+            assert_eq!(
+                on.stats().timed_out_pairs,
+                1,
+                "{name}: the cut is still reported"
+            );
+            assert_eq!(on.stats().matrix_closure_added_pairs, 1, "{name}");
+            assert_eq!(off.stats().matrix_closure_added_pairs, 0, "{name}");
+            for x in [a, b, c, "http://t/D"] {
+                assert_eq!(
+                    on.direct_subsumers(x),
+                    off.direct_subsumers(x),
+                    "{name}: {x}"
+                );
+            }
+        }
     }
 
     /// Global deadline must bound the label-cache build phase, not just

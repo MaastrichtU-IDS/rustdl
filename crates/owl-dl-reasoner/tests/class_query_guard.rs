@@ -457,8 +457,8 @@ Ontology(<http://ex/el>
 
 /// `prove` runs the guard before the step proof (#428, option C): on an
 /// inconsistent KB the entailment is reported entailed with `kb_inconsistent`
-/// and a minimal entailing set (the inconsistency core), whether or not the
-/// saturator has a step proof for it. A consistent KB never sets the flag.
+/// and the inconsistency core (#456), whether or not the saturator has a step
+/// proof for it. A consistent KB never sets the flag.
 #[test]
 fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
     use owl_dl_reasoner::{
@@ -479,10 +479,7 @@ fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
     ));
     let (r, flags) = prove_entailment_rcstr_reporting(&told, X, Z).unwrap();
     assert!(flags.kb_inconsistent);
-    assert!(
-        matches!(r, ProveEntailmentResult::JustificationFallback(_)),
-        "{r:?}"
-    );
+    assert_is_the_abox_clash_core(&r);
     {
         // The guard, not the lazy check after the step proof, reports it: with
         // the wedge off the lazy check is undetermined.
@@ -503,8 +500,57 @@ fn prove_reports_an_inconsistent_kb_whatever_answers_it() {
     );
     // A wedge-only inconsistency is found by the lazy check after the check
     // held: still entailed and flagged.
-    let (_, flags) = prove_entailment_rcstr_reporting(&p2(), Y, W).unwrap();
+    let (r, flags) = prove_entailment_rcstr_reporting(&p2(), Y, W).unwrap();
     assert!(flags.kb_inconsistent, "P2");
+    // #456: the justification is P2's inconsistency core (`{b} ⊑ ≥2 r`, `r`
+    // functional), not the told `Y ⊑ W` that entails the subsumption.
+    match &r {
+        ProveEntailmentResult::JustificationFallback(j) => {
+            let text = format!("{:?}", j.axioms);
+            assert_eq!(j.axioms.len(), 2, "{text}");
+            assert!(text.contains("FunctionalObjectProperty"), "{text}");
+            assert!(text.contains("ObjectMinCardinality"), "{text}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!flags.incomplete, "P2: the core search finished");
+}
+
+/// The fallback is exactly `ABOX_CLASH`'s three clash axioms, with no `SubClassOf`.
+fn assert_is_the_abox_clash_core(r: &owl_dl_reasoner::ProveEntailmentResult) {
+    match r {
+        owl_dl_reasoner::ProveEntailmentResult::JustificationFallback(j) => {
+            let text = format!("{:?}", j.axioms);
+            assert_eq!(j.axioms.len(), 3, "{text}");
+            assert!(!text.contains("SubClassOf"), "{text}");
+            assert!(text.contains("DisjointClasses"), "{text}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// #456: on an inconsistent KB, `prove` answers with the inconsistency core, not
+/// a minimal set entailing `sub ⊑ sup`. Here `X ⊑ Y ⊑ Z` is a two-axiom
+/// justification of `X ⊑ Z` that never touches the clash: before #456 `prove`
+/// returned it (the QuickXplain search over `SubClassOf(X, Z)` reached it first);
+/// now it returns the three clash axioms. The `ABox` saturation (the guard) sees
+/// the clash; the P2 arm of the test above covers the #369 lazy-check route.
+#[test]
+fn prove_on_an_inconsistent_kb_answers_with_the_inconsistency_core() {
+    use owl_dl_reasoner::prove_entailment_rcstr_reporting;
+    let _g = lock();
+    let chain = parse(&ABOX_CLASH.replace(
+        "DisjointClasses(:A :B)",
+        "Declaration(Class(:Y)) SubClassOf(:X :Y) SubClassOf(:Y :Z) DisjointClasses(:A :B)",
+    ));
+    let (r, flags) = prove_entailment_rcstr_reporting(&chain, X, Z).unwrap();
+    assert!(flags.kb_inconsistent);
+    assert!(!flags.incomplete);
+    assert_is_the_abox_clash_core(&r);
+    // The same answer for a pair with no entailment of its own.
+    let (r, flags) = prove_entailment_rcstr_reporting(&chain, Z, X).unwrap();
+    assert!(flags.kb_inconsistent);
+    assert_is_the_abox_clash_core(&r);
 }
 
 /// `RUSTDL_QUERY_LAZY_LIGHT_MAX_AXIOMS` defaults to 5,000,000 (measured: nothing

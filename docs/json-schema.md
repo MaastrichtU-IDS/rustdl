@@ -327,6 +327,7 @@ below).
 { "schema_version": 1, "entailed": bool,
   "status": "entailed" | "not-entailed" | "unknown", "incomplete": bool,
   "relies_on_trusted_consistency": bool,
+  "kb_inconsistent": bool,
   "has_proof": bool,
   "proof_complete": bool | null,
   "proof": ProofNodeJson | null,
@@ -389,6 +390,16 @@ default 500000), like `subclass` and `explain`.
 the `ABox` (no nominals, so the `ABox` cannot change it on a consistent KB) and
 the consistency verdict rests on a trusted wedge `Sat` rather than a
 main-tableau model. It is not a give-up and does not set `incomplete`.
+
+`kb_inconsistent` was added in #428, also without a bump. It is `true` when the
+ontology was found inconsistent: by the named class queries' guard (before the
+step proof), or by the #369 lazy check after the entailment held. The entailment
+then holds vacuously, the payload has the justification-fallback shape, and since
+#456 `justification_fallback` is the inconsistency core: the minimal inconsistent
+subset `rustdl justify <file> inconsistent` returns. It is minimal for the
+inconsistency, not for `SUB ⊑ SUP`; a smaller set entailing `SUB ⊑ SUP` by
+ordinary reasoning is not sought. If the core search finds none, the fallback has
+no axioms and `incomplete` is `true`. `false` is not a proof of consistency.
 
 ## `sat-expr --json`, `subclass-expr --json`, `instances-expr --json`
 

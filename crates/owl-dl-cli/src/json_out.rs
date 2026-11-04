@@ -895,9 +895,9 @@ pub(crate) struct ProveJson {
     /// `false` for the other statuses.
     pub(crate) relies_on_trusted_consistency: bool,
     /// #428: the ontology was found inconsistent, so the entailment holds
-    /// vacuously and `justification_fallback` is a minimal entailing set,
-    /// typically an inconsistency core (`rustdl justify <file> inconsistent`).
-    /// `false` does not prove consistency.
+    /// vacuously and `justification_fallback` is the inconsistency core (#456),
+    /// as `rustdl justify <file> inconsistent` returns. `false` does not prove
+    /// consistency.
     pub(crate) kb_inconsistent: bool,
     pub(crate) has_proof: bool,
     /// `true` when every proof step cites the axiom its rule applies (or needs none) and

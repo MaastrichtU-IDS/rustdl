@@ -2674,8 +2674,8 @@ fn main() -> Result<()> {
                 if flags.kb_inconsistent {
                     eprintln!(
                         "note: the ontology is inconsistent, so {sub} ⊑ {sup} holds vacuously; \
-                         the justification shown is a minimal entailing set. \
-                         `rustdl justify <file> inconsistent` explains the inconsistency."
+                         the justification shown is the inconsistency core, as \
+                         `rustdl justify <file> inconsistent` returns."
                     );
                 }
             };

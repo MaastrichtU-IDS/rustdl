@@ -290,6 +290,20 @@ impl EntailmentMatrix {
         }
     }
 
+    /// Forget `classes[i] ⊑ classes[j]` (test hook only, see [`apply_test_cuts`]).
+    fn remove(&mut self, i: usize, j: usize) {
+        match self {
+            Self::Dense(rows) => rows[i].set(j, false),
+            Self::Sparse(rows) => {
+                if let Ok(j) = u32::try_from(j)
+                    && let Ok(pos) = rows[i].binary_search(&j)
+                {
+                    rows[i].remove(pos);
+                }
+            }
+        }
+    }
+
     fn len(&self) -> usize {
         match self {
             Self::Dense(rows) => rows.len(),
@@ -450,6 +464,43 @@ fn tarjan_components(succ: &[Vec<u32>]) -> Vec<u32> {
         }
     }
     comp
+}
+
+/// Test-only hook (`RUSTDL_CLASSIFY_TEST_CUT_PAIRS`, not a user knob; precedent
+/// `RUSTDL_CLASSIFY_DENSE_MAX`): `"<sub> <sup>;<sub> <sup>"` makes each named pair a
+/// deterministic cut, as if its probe had hit the deadline: the pair is dropped from
+/// the matrix and recorded in `timed_out_pair_ids`. #448's closure tests need a cut
+/// that does not depend on timing. Applied at matrix assembly, so it covers the n²
+/// and top-down drivers alike. Unknown IRIs, reflexive pairs and unsat subjects are
+/// ignored.
+fn apply_test_cuts(
+    entailed: &mut EntailmentMatrix,
+    stats: &mut ClassificationStats,
+    iris: &[String],
+    unsat: &HashSet<usize>,
+) {
+    let Ok(spec) = std::env::var("RUSTDL_CLASSIFY_TEST_CUT_PAIRS") else {
+        return;
+    };
+    let pos = |iri: &str| iris.iter().position(|c| c == iri);
+    for pair in spec.split(';') {
+        let mut it = pair.split_whitespace();
+        let (Some(a), Some(b)) = (it.next(), it.next()) else {
+            continue;
+        };
+        let (Some(i), Some(j)) = (pos(a), pos(b)) else {
+            continue;
+        };
+        if i == j || unsat.contains(&i) {
+            continue;
+        }
+        entailed.remove(i, j);
+        stats.timed_out_pairs += 1;
+        stats.timed_out_pair_ids.push((
+            u32::try_from(i).expect("class index fits in u32"),
+            u32::try_from(j).expect("class index fits in u32"),
+        ));
+    }
 }
 
 /// Result of [`classify`]. Holds the complete pairwise subsumption
@@ -2006,6 +2057,7 @@ fn classify_internal_with_timeout_impl(
     ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
+    apply_test_cuts(&mut entailed, &mut stats, &classes, &unsatisfiable_idxs);
     let mut c = Classification {
         classes,
         index,
@@ -5583,6 +5635,7 @@ fn classify_top_down_internal_impl(
     ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
+    apply_test_cuts(&mut entailed, &mut stats, &classes, &unsatisfiable_idxs);
     let mut c = Classification {
         classes,
         index,

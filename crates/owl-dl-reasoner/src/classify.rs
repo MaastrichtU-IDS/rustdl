@@ -321,26 +321,43 @@ impl EntailmentMatrix {
     /// its members plus the closed rows of its successor components, taken nearest
     /// first and skipped when already covered, so only the direct ones are merged in.
     ///
-    /// UNSAT rows stay elided (empty) and satisfiable rows only hold satisfiable
-    /// columns (the sparse-row contract), so a union never adds an unsat column.
+    /// UNSAT rows stay elided (empty). A satisfiable row can still hold an unsat
+    /// column: the top-down driver's closure seed keeps a told unsat super of a class
+    /// whose own unsat probe was cut (`RUSTDL_MAX_NODES`, a deadline). Such a "stray"
+    /// column is no node of the component graph (its row is empty, it has no
+    /// members); it is carried into its row's closed row instead, so predecessors
+    /// inherit it (`p ⊑ a ⊑ u` gives `p ⊑ u`, sound) and the subset invariant below
+    /// holds. Collected once here, so a matrix without strays pays nothing for them.
     fn close_transitively(&mut self, unsat: &HashSet<usize>) -> usize {
         let n = self.len();
         let to_u32 = |j: usize| u32::try_from(j).expect("class index fits in u32");
-        let succ: Vec<Vec<u32>> = (0..n)
-            .map(|i| {
-                if unsat.contains(&i) {
-                    return Vec::new();
-                }
+        // A bit test, not a hash lookup, on every recorded pair.
+        let mut unsat_bits = FixedBitSet::with_capacity(n);
+        for &u in unsat {
+            unsat_bits.insert(u);
+        }
+        let mut strays: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut succ: Vec<Vec<u32>> = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut row: Vec<u32> = Vec::new();
+            if !unsat_bits.contains(i) {
+                let mut push = |j: usize| {
+                    if j == i {
+                        return;
+                    }
+                    if unsat_bits.contains(j) {
+                        strays.entry(to_u32(i)).or_default().push(to_u32(j));
+                    } else {
+                        row.push(to_u32(j));
+                    }
+                };
                 match self {
-                    Self::Dense(rows) => rows[i].ones().filter(|&j| j != i).map(to_u32).collect(),
-                    Self::Sparse(rows) => rows[i]
-                        .iter()
-                        .copied()
-                        .filter(|&j| j as usize != i)
-                        .collect(),
+                    Self::Dense(rows) => rows[i].ones().for_each(&mut push),
+                    Self::Sparse(rows) => rows[i].iter().for_each(|&j| push(j as usize)),
                 }
-            })
-            .collect();
+            }
+            succ.push(row);
+        }
         let comp = tarjan_components(&succ);
         let ncomp = comp.iter().map(|&c| c as usize + 1).max().unwrap_or(0);
         let mut members: Vec<Vec<u32>> = vec![Vec::new(); ncomp];
@@ -370,11 +387,14 @@ impl EntailmentMatrix {
             nexts.dedup();
             let rep_of = |d: u32| members[d as usize][0] as usize;
             // `acc` ends as the closed row of `c`, and every member's recorded row is a
-            // SUBSET of it: each recorded super lies in `c` (seeded below) or in a
-            // successor component, which is either merged or covered by a nearer
-            // successor's row, already closed (ids are completion-ordered). So merging
-            // `acc` into a row equals overwriting the row with it, and the bits it adds
-            // are exactly `|acc| - |row|`.
+            // SUBSET of it: each recorded satisfiable super lies in `c` (seeded below)
+            // or in a successor component, which is either merged or covered by a
+            // nearer successor's row, already closed (ids are completion-ordered), and
+            // each stray is added after the successors. So merging `acc` into a row
+            // equals overwriting the row with it, and the bits it adds are exactly
+            // `|acc| - |row|`. (The coverage skip stays valid: a stray is unsat, never a
+            // component's representative.)
+            let member_strays = || mem.iter().filter_map(|m| strays.get(m)).flatten().copied();
             match self {
                 Self::Dense(rows) => {
                     acc.clear();
@@ -386,6 +406,9 @@ impl EntailmentMatrix {
                         if !acc.contains(r) {
                             acc.union_with(&rows[r]);
                         }
+                    }
+                    for u in member_strays() {
+                        acc.insert(u as usize);
                     }
                     // One word-level pass per member, writing only the words that change
                     // (a no-op pass then only reads the row).
@@ -420,12 +443,21 @@ impl EntailmentMatrix {
                             }
                         }
                     }
+                    for u in member_strays() {
+                        if !acc.put(u as usize) {
+                            touched.push(u);
+                        }
+                    }
                     for &j in &touched {
                         acc.set(j as usize, false);
                     }
                     touched.sort_unstable();
                     for &m in mem {
                         let row = &mut rows[m as usize];
+                        debug_assert!(
+                            row.iter().all(|j| touched.binary_search(j).is_ok()),
+                            "#448 subset invariant: row {m} is not a subset of its closed row"
+                        );
                         if row.len() != touched.len() {
                             added += touched.len() - row.len();
                             row.clone_from(&touched);
@@ -1067,8 +1099,9 @@ impl ClassificationStats {
 }
 
 /// #448: close the classification matrix transitively (`RUSTDL_CLASSIFY_CLOSE_MATRIX`,
-/// **default ON**; `=0` disables). Its own time is median 0.33%, p95 0.83% and at most
-/// about 1% of classify CPU on the 32 largest hybrid ORE ontologies (2026-11-04). See
+/// **default ON**; `=0` disables). Its own time is a median 0.33%, p95 0.8-1.0% and max
+/// 1.05% of classify CPU (per-ontology medians; single runs up to 1.32%) on the 32
+/// largest hybrid ORE ontologies (2026-11-04). See
 /// [`EntailmentMatrix::close_transitively`].
 pub(crate) fn classify_close_matrix_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_CLOSE_MATRIX").is_none_or(|v| v != "0")
@@ -8356,14 +8389,39 @@ Ontology(\n\
         assert_closes_to(&rows, &unsat, &[vec![0, 1, 3], vec![1, 3], vec![], vec![3]]);
     }
 
+    /// A satisfiable row holding an unsat column (the top-down seed keeps a told unsat
+    /// super when the class's own unsat probe was cut): the closure used to index the
+    /// column's member-less component and panic. Now the column is carried along.
+    #[test]
+    fn close_matrix_carries_an_unsat_column_through_a_chain() {
+        // 0 ⊑ 1 ⊑ 2, with 2 unsat but recorded in 1's row; (0, 2) missing.
+        let rows = vec![vec![0, 1], vec![1, 2], vec![]];
+        let unsat: HashSet<usize> = [2].into_iter().collect();
+        assert_closes_to(&rows, &unsat, &[vec![0, 1, 2], vec![1, 2], vec![]]);
+    }
+
+    #[test]
+    fn close_matrix_carries_an_unsat_column_through_an_equivalence() {
+        // 0 ≡ 1, only 1 records the unsat 3; 2 ⊑ 0 records neither 1 nor 3.
+        let rows = vec![vec![0, 1], vec![0, 1, 3], vec![0, 2], vec![]];
+        let unsat: HashSet<usize> = [3].into_iter().collect();
+        assert_closes_to(
+            &rows,
+            &unsat,
+            &[vec![0, 1, 3], vec![0, 1, 3], vec![0, 1, 2, 3], vec![]],
+        );
+    }
+
     #[test]
     fn close_matrix_is_a_no_op_on_a_transitive_matrix() {
         let rows = vec![vec![0, 1, 2], vec![1, 2], vec![2], vec![1, 2, 3]];
         assert_closes_to(&rows, &HashSet::new(), &rows);
     }
 
-    /// Random matrices (reflexive satisfiable rows, cycles, unsat rows), both arms,
-    /// against the naive fixpoint. A second pass must add nothing.
+    /// Random matrices (reflexive satisfiable rows, cycles, unsat rows, and unsat
+    /// columns in satisfiable rows), both arms, against the naive fixpoint. Every fourth
+    /// `n` is past 64, so the dense merge spans two words. A second pass must add
+    /// nothing.
     #[test]
     fn close_matrix_matches_a_naive_closure_on_random_matrices() {
         let mut state: u64 = 0x448;
@@ -8373,8 +8431,16 @@ Ontology(\n\
                 .wrapping_add(1);
             (state >> 33) as usize
         };
-        for _case in 0..60 {
-            let n = 2 + next() % 40;
+        for case in 0..120 {
+            // Every fourth case spans two words (n in 65..105); the naive reference is
+            // cubic, so the rest stay small.
+            let n = if case % 4 == 0 {
+                65 + next() % 40
+            } else {
+                2 + next() % 40
+            };
+            // Half the cases allow unsat columns in satisfiable rows ("strays").
+            let strays = case % 2 == 1;
             let unsat: HashSet<usize> = (0..n).filter(|_| next() % 10 == 0).collect();
             let rows: Vec<Vec<usize>> = (0..n)
                 .map(|i| {
@@ -8382,7 +8448,7 @@ Ontology(\n\
                         return Vec::new();
                     }
                     let mut r: Vec<usize> = (0..n)
-                        .filter(|&j| j != i && !unsat.contains(&j) && next() % 12 == 0)
+                        .filter(|&j| j != i && (strays || !unsat.contains(&j)) && next() % 12 == 0)
                         .collect();
                     r.push(i);
                     r.sort_unstable();

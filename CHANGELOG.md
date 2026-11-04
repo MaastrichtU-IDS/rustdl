@@ -647,9 +647,10 @@ All notable changes to rustdl are documented here. Format is based on
     under the INCOMPLETE warning. `incomplete` and `timed_out_pairs` are unchanged;
     `undecided_pairs()` drops the pairs the closure recovers.
   - Default on; `RUSTDL_CLASSIFY_CLOSE_MATRIX=0` disables it. Cost, measured on the 32 largest
-    hybrid ORE ontologies (5 reps, one core): the closure's own time is median 0.33%, p95 0.83%
-    and at most about 1% of classify CPU (the largest absolute cost is ~145 ms, on ore_ont_12012
-    with 41,717 classes). The answers equal the previous release's on all 32 (ore_ont_12698,
+    hybrid ORE ontologies (5 reps, one core): per ontology, the closure's median time is a median
+    0.33%, a p95 of 0.8–1.0% and at most 1.05% of the median classify CPU; single runs reach 1.32%
+    (ore_ont_12012, 41,717 classes, 181 ms), and the longest single closure is 337 ms in a 45 s run
+    (ore_ont_15226). The answers equal the previous release's on all 32 (ore_ont_12698,
     budget-truncated, at a non-truncating budget), and the closure added 0 pairs on all 388 ORE
     ontologies with timed-out pairs or trusted-`Sat` refutations.
 - **`sat-expr`, `subclass-expr` and `instances-expr`: `incomplete` now means only "a probe gave

@@ -841,6 +841,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
         warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
         note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
+        exit_if_no_verdict(h.stats().no_verdict_pairs > 0);
         return Ok(());
     }
     print_classification(&h);
@@ -849,6 +850,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
     warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
     warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
     warn_if_dropped(&dropped);
+    exit_if_no_verdict(h.stats().no_verdict_pairs > 0);
     Ok(())
 }
 
@@ -964,8 +966,20 @@ fn warn_classify_incomplete(
              empty) and consistency was not checked."
         );
     }
+    // #462: probes with no deadline that ended in `NoVerdict` are timed-out pairs too,
+    // but no budget cut them: they get their own line (and #449's note at exit).
+    if stats.no_verdict_pairs > 0 {
+        eprintln!(
+            "\n⚠  INCOMPLETE: {} probe(s) with no deadline ended without a verdict \
+             (NoVerdict) and were left undecided ('satisfiable' / 'not subsumed').",
+            stats.no_verdict_pairs
+        );
+    }
     warn_if_incomplete(
-        stats.timed_out_pairs.saturating_sub(prep_cut),
+        stats
+            .timed_out_pairs
+            .saturating_sub(prep_cut)
+            .saturating_sub(stats.no_verdict_pairs),
         stats.stall_tail_skips + stats.diverged_tail_skips,
         stats.depth_capped_pairs,
         pair_timeout_ms,
@@ -1261,6 +1275,12 @@ fn find_all_justifications_outcome(
 /// result, so it only warns.
 fn warn_if_justify_gave_up(outcome: &JustifyOutcome<RcStr>) -> bool {
     note_oracle_trusted_wedge(outcome.status, outcome.relies_on_trusted_consistency);
+    // #462: a deadline-free probe ended in `NoVerdict`: #449's note, not the node-cap
+    // warning, and exit 3 whatever the status.
+    if outcome.no_verdict {
+        eprintln!("{NO_VERDICT_NOTE}");
+        return true;
+    }
     if outcome.status == Verdict::Unknown {
         eprintln!(
             "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before deciding \
@@ -1813,6 +1833,31 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     Ok(())
 }
 
+/// `realize --properties`' two sections. #462: an error is propagated, not printed as a
+/// "# … unavailable" comment with exit 0, which bypassed `main`'s #449 net for a
+/// `NoVerdict` and hid every other error too. The object section is written before the
+/// data half runs, as before.
+fn write_materialized_properties(
+    out: &mut impl std::io::Write,
+    object: Result<Vec<(String, String, String)>, owl_dl_reasoner::ReasonError>,
+    data: impl FnOnce() -> Result<
+        Vec<(String, String, String, String, String)>,
+        owl_dl_reasoner::ReasonError,
+    >,
+) -> Result<()> {
+    let object = object.context("materialize_object_property_assertions")?;
+    writeln!(out, "# inferred object property assertions")?;
+    for (s, p, o) in object {
+        writeln!(out, "{s}\t{p}\t{o}")?;
+    }
+    let data = data().context("materialize_data_property_assertions")?;
+    writeln!(out, "# inferred data property assertions")?;
+    for (s, p, lex, dt, lang) in data {
+        writeln!(out, "{s}\t{p}\t{lex}\t{dt}\t{lang}")?;
+    }
+    Ok(())
+}
+
 /// #449: a tableau `NoVerdict` (an internal limit: the deterministic saturation ran out of
 /// iterations, or the search hit its depth cap with time left) is a give-up, like the node
 /// cap's, not a crash. Every command that lets it reach `main` prints `unknown` and exits
@@ -1842,6 +1887,16 @@ fn exit_unknown_no_verdict() -> ! {
     println!("unknown");
     eprintln!("{NO_VERDICT_NOTE}");
     std::process::exit(3);
+}
+
+/// #462: the command's output is printed; if a deadline-free probe under it ended in
+/// `NoVerdict` (its result's `no_verdict` / `no_verdict_pairs`), add #449's note and exit
+/// 3, before any generic give-up warning (those name budgets, which do not apply).
+fn exit_if_no_verdict(no_verdict: bool) {
+    if no_verdict {
+        eprintln!("{NO_VERDICT_NOTE}");
+        std::process::exit(3);
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1899,7 +1954,7 @@ fn run() -> Result<()> {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&json_out::build_consistent_json(
-                            true, true, false, 0, dropped
+                            true, true, false, 0, true, dropped
                         ))?
                     );
                     eprintln!("{NO_VERDICT_NOTE}");
@@ -1920,6 +1975,7 @@ fn run() -> Result<()> {
                         incomplete,
                         stats.relies_on_trusted_consistency,
                         stats.wedge_clauses_refused,
+                        false,
                         dropped
                     ))?
                 );
@@ -1996,6 +2052,7 @@ fn run() -> Result<()> {
                         gaps
                     ))?
                 );
+                exit_if_no_verdict(classes.no_verdict());
                 return Ok(());
             }
             println!("# disjoint classes");
@@ -2017,6 +2074,7 @@ fn run() -> Result<()> {
             }
             warn_structural_gaps("property disjointness", &gaps);
             warn_consistency_undetermined("disjoint (properties)", undetermined);
+            exit_if_no_verdict(classes.no_verdict());
         }
         Command::Individuals {
             file,
@@ -2038,6 +2096,7 @@ fn run() -> Result<()> {
                         &same, &different
                     ))?
                 );
+                exit_if_no_verdict(same.no_verdict() || different.no_verdict());
                 return Ok(());
             }
             println!("# same individuals");
@@ -2057,6 +2116,7 @@ fn run() -> Result<()> {
                 "individuals",
                 same.consistency_undetermined() || different.consistency_undetermined(),
             );
+            exit_if_no_verdict(same.no_verdict() || different.no_verdict());
         }
         Command::PropertyValues {
             file,
@@ -2082,6 +2142,7 @@ fn run() -> Result<()> {
                         &obj, &data, gaps
                     ))?
                 );
+                exit_if_no_verdict(obj.no_verdict());
                 return Ok(());
             }
             println!("# object property values");
@@ -2106,6 +2167,7 @@ fn run() -> Result<()> {
                 "property-values",
                 obj.consistency_undetermined() || data.consistency_undetermined(),
             );
+            exit_if_no_verdict(obj.no_verdict());
         }
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
@@ -2282,12 +2344,17 @@ fn run() -> Result<()> {
                     serde_json::to_string_pretty(&json_out::build_sat_expr_json(v))?
                 );
                 note_trusted_consistency_flag(v.relies_on_trusted_consistency());
+                exit_if_no_verdict(v.no_verdict());
                 if v.incomplete() {
                     std::process::exit(3);
                 }
                 return Ok(());
             }
-            // A give-up is `unknown`, exit 3, as on `sat` (#363 A2).
+            // A give-up is `unknown`, exit 3, as on `sat` (#363 A2), and a
+            // deadline-free `NoVerdict` exactly as on `sat` (#449, #462).
+            if v.no_verdict() {
+                exit_unknown_no_verdict();
+            }
             if v.incomplete() {
                 exit_unknown_node_cap();
             }
@@ -2322,12 +2389,17 @@ fn run() -> Result<()> {
                     serde_json::to_string_pretty(&json_out::build_subclass_expr_json(v))?
                 );
                 note_trusted_consistency_flag(v.relies_on_trusted_consistency());
+                exit_if_no_verdict(v.no_verdict());
                 if v.incomplete() {
                     std::process::exit(3);
                 }
                 return Ok(());
             }
-            // A give-up is `unknown`, exit 3, as on `subclass` (#363 A2).
+            // A give-up is `unknown`, exit 3, as on `subclass` (#363 A2), and a
+            // deadline-free `NoVerdict` exactly as on `subclass` (#449, #462).
+            if v.no_verdict() {
+                exit_unknown_no_verdict();
+            }
             if v.incomplete() {
                 exit_unknown_node_cap();
             }
@@ -2415,28 +2487,11 @@ fn run() -> Result<()> {
             }
             warn_if_dropped(&dropped);
             if properties {
-                match owl_dl_reasoner::materialize_object_property_assertions(&onto) {
-                    Ok(triples) => {
-                        println!("# inferred object property assertions");
-                        for (s, p, o2) in triples {
-                            println!("{s}\t{p}\t{o2}");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("# object property assertions unavailable: {e}");
-                    }
-                }
-                match owl_dl_reasoner::materialize_data_property_assertions(&onto) {
-                    Ok(triples) => {
-                        println!("# inferred data property assertions");
-                        for (s, p, lex, dt, lang) in triples {
-                            println!("{s}\t{p}\t{lex}\t{dt}\t{lang}");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("# data property assertions unavailable: {e}");
-                    }
-                }
+                write_materialized_properties(
+                    &mut std::io::stdout().lock(),
+                    owl_dl_reasoner::materialize_object_property_assertions(&onto),
+                    || owl_dl_reasoner::materialize_data_property_assertions(&onto),
+                )?;
             }
         }
         Command::Explain { file, sub, sup } => {
@@ -2649,10 +2704,15 @@ fn run() -> Result<()> {
             if !r.entailed && r.incomplete {
                 // #396: the top-level check gave up — not a non-entailment.
                 println!("unknown (a reasoner check gave up before deciding)");
-                eprintln!(
-                    "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before \
-                     deciding whether the query is entailed — this is not a non-entailment."
-                );
+                if r.no_verdict {
+                    // #462: an internal limit, not the node cap.
+                    eprintln!("{NO_VERDICT_NOTE}");
+                } else {
+                    eprintln!(
+                        "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before \
+                         deciding whether the query is entailed — this is not a non-entailment."
+                    );
+                }
                 std::process::exit(3);
             }
             if !r.entailed {
@@ -2674,6 +2734,7 @@ fn run() -> Result<()> {
             if r.repairs.is_empty() {
                 println!("entailed, but no verifiable axiom removal found");
                 note_gave_up();
+                exit_if_no_verdict(r.no_verdict);
                 return Ok(());
             }
 
@@ -2708,6 +2769,7 @@ fn run() -> Result<()> {
                 );
             }
             note_gave_up();
+            exit_if_no_verdict(r.no_verdict);
         }
         Command::Prove {
             file,
@@ -2726,7 +2788,10 @@ fn run() -> Result<()> {
             let unknown = matches!(result, ProveEntailmentResult::Unknown);
             // #402: a give-up is never "NOT entailed".
             let warn_gave_up = || {
-                if unknown {
+                if flags.no_verdict {
+                    // #462: an internal limit, not the node cap; exit 3 below.
+                    eprintln!("{NO_VERDICT_NOTE}");
+                } else if unknown {
                     eprintln!(
                         "warning: the reasoner check gave up (node cap: RUSTDL_QUERY_MAX_NODES, or \
                          RUSTDL_MAX_NODES if set) \
@@ -2756,7 +2821,7 @@ fn run() -> Result<()> {
                     .context("rendering prove --json proof tree")?;
                 println!("{}", serde_json::to_string_pretty(&prove_json)?);
                 warn_gave_up();
-                if unknown {
+                if unknown || flags.no_verdict {
                     std::process::exit(3);
                 }
                 return Ok(());
@@ -2856,7 +2921,7 @@ fn run() -> Result<()> {
                 }
             }
             warn_gave_up();
-            if unknown {
+            if unknown || flags.no_verdict {
                 std::process::exit(3);
             }
         }
@@ -2898,6 +2963,9 @@ fn run() -> Result<()> {
                 }
             };
 
+            // #462: a justification search's deadline-free `NoVerdict`. Its note is
+            // printed by `warn_if_justify_gave_up`; the command exits 3 at the end.
+            let justify_no_verdict = std::cell::Cell::new(false);
             // Render either one or all justifications for an entailment.
             let render_q = |q: &Entailment, indent: &str| -> anyhow::Result<()> {
                 let outcome = if all {
@@ -2916,10 +2984,21 @@ fn run() -> Result<()> {
                 }
                 // #396: the stderr warning, once per justified entailment.
                 warn_if_justify_gave_up(&outcome);
+                if outcome.no_verdict {
+                    justify_no_verdict.set(true);
+                }
                 Ok(())
             };
 
             let d = owl_dl_reasoner::diagnose(&onto).context("diagnose")?;
+            // #462: exit 3 if any deadline-free probe ended in `NoVerdict`; #449's note
+            // once (a justification search already printed its own).
+            let exit_if_diagnose_no_verdict = || {
+                if justify_no_verdict.get() {
+                    std::process::exit(3);
+                }
+                exit_if_no_verdict(d.no_verdict);
+            };
             println!("# diagnose: {}", file.display());
             if d.consistency_gave_up {
                 eprintln!(
@@ -2930,10 +3009,15 @@ fn run() -> Result<()> {
             }
             if d.unsat_probes_cut > 0 {
                 eprintln!(
-                    "warning: {} class(es) hit the node cap (RUSTDL_MAX_NODES) in their \
+                    "warning: {} class(es) hit the node cap (RUSTDL_MAX_NODES){} in their \
                      unsatisfiability check and were treated as satisfiable (#396): \
                      unsatisfiable classes may be missing below.",
-                    d.unsat_probes_cut
+                    d.unsat_probes_cut,
+                    if d.no_verdict {
+                        " or ended without a verdict (NoVerdict)"
+                    } else {
+                        ""
+                    }
                 );
             }
 
@@ -2941,6 +3025,7 @@ fn run() -> Result<()> {
                 println!("# consistency: INCONSISTENT");
                 println!("## responsible axioms:");
                 render_q(&Entailment::Inconsistent, "  ")?;
+                exit_if_diagnose_no_verdict();
                 return Ok(());
             }
 
@@ -2959,6 +3044,7 @@ fn run() -> Result<()> {
                 } else {
                     println!("# coherent: no unsatisfiable classes");
                 }
+                exit_if_diagnose_no_verdict();
                 return Ok(());
             }
             println!(
@@ -2987,6 +3073,7 @@ fn run() -> Result<()> {
                     println!("DERIVED {}   <= {}", dc.iri, dc.roots.join(", "));
                 }
             }
+            exit_if_diagnose_no_verdict();
         }
         Command::Report {
             file,
@@ -2997,7 +3084,8 @@ fn run() -> Result<()> {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             let label_map = labels.then(|| build_label_map(&onto));
             let report = report::build_report(&onto, file.display().to_string(), max_roots)?;
-            if report.incomplete {
+            // #462: a `NoVerdict` gets #449's note at exit instead of the node-cap warning.
+            if report.incomplete && !report.no_verdict {
                 warn_search_gave_up();
             }
             let html = report::render_html(&report, &pm, label_map.as_ref());
@@ -3009,6 +3097,7 @@ fn run() -> Result<()> {
                 }
                 None => println!("{html}"),
             }
+            exit_if_no_verdict(report.no_verdict);
         }
         Command::TboxStats { file } => {
             let onto = parse_ofn(&file)?;
@@ -3908,5 +3997,63 @@ mod fold_build_reasons_tests {
             fold_build_reasons(violated(2), Vec::new()),
             Verdict::Violated { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod materialized_properties_tests {
+    use super::{is_no_verdict, write_materialized_properties};
+    use owl_dl_reasoner::ReasonError;
+
+    #[test]
+    fn both_sections_are_written() {
+        let mut out = Vec::new();
+        write_materialized_properties(
+            &mut out,
+            Ok(vec![("a".into(), "r".into(), "b".into())]),
+            || {
+                Ok(vec![(
+                    "a".into(),
+                    "p".into(),
+                    "1".into(),
+                    "int".into(),
+                    String::new(),
+                )])
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "# inferred object property assertions\na\tr\tb\n\
+             # inferred data property assertions\na\tp\t1\tint\t\n"
+        );
+    }
+
+    /// #462: an error is the command's error, not an "unavailable" comment with exit 0;
+    /// a `NoVerdict` reaches `main`'s #449 net.
+    #[test]
+    fn an_error_propagates() {
+        let mut out = Vec::new();
+        let e = write_materialized_properties(&mut out, Err(ReasonError::NoVerdict), || {
+            panic!("the data half must not run after the object half failed")
+        })
+        .unwrap_err();
+        assert!(is_no_verdict(&e), "{e:#}");
+        assert!(out.is_empty());
+        let mut out = Vec::new();
+        let e = write_materialized_properties(&mut out, Ok(Vec::new()), || {
+            Err(ReasonError::Inconsistent)
+        })
+        .unwrap_err();
+        assert!(!is_no_verdict(&e));
+        assert!(
+            format!("{e:#}").contains("materialize_data_property_assertions"),
+            "{e:#}"
+        );
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "# inferred object property assertions\n"
+        );
     }
 }

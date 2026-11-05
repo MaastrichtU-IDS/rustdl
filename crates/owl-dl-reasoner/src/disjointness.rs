@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 pub struct Disjointness {
     pairs: Vec<(String, String)>,
     incomplete: bool,
+    no_verdict: bool,
 }
 
 impl Disjointness {
@@ -28,6 +29,16 @@ impl Disjointness {
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// #462: a deadline-free probe ended in `NoVerdict` (an internal limit, likely a
+    /// reasoner bug, #449): a `C ⊓ D` probe, or a probe of the classification pass
+    /// (its `no_verdict_pairs`). [`Self::incomplete`] is set too. A `NoVerdict` on a
+    /// probe with a pair deadline is the routine depth-cap cut and only sets
+    /// `incomplete`.
+    #[must_use]
+    pub fn no_verdict(&self) -> bool {
+        self.no_verdict
     }
 }
 
@@ -71,6 +82,7 @@ pub fn disjoint_classes<A: ForIRI>(
     let unsat: std::collections::HashSet<&str> =
         classification.unsatisfiable_classes().into_iter().collect();
     let mut incomplete = !classification.completeness_guaranteed();
+    let mut no_verdict = classification.stats().no_verdict_pairs > 0;
     // `from_internal` clones `internal.vocabulary` before consuming `internal`,
     // so `prepared.vocabulary` resolves the same IRI ↔ id mapping.
     let prepared = PreparedOntology::from_internal(internal)?;
@@ -99,7 +111,16 @@ pub fn disjoint_classes<A: ForIRI>(
                 continue;
             }
             let deadline = pair_deadline.map(|d| Instant::now() + d);
-            match prepared.pair_disjoint_with_deadline(ci, cj, deadline)? {
+            let probe = match prepared.pair_disjoint_with_deadline(ci, cj, deadline) {
+                // #462: no verdict, so not reported disjoint. Only a deadline-free
+                // probe's `NoVerdict` is an internal limit.
+                Err(ReasonError::NoVerdict) => {
+                    no_verdict |= deadline.is_none();
+                    None
+                }
+                r => r?,
+            };
+            match probe {
                 Some(true) => {
                     let (a, b) = (&names[i].0, &names[j].0);
                     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
@@ -112,7 +133,11 @@ pub fn disjoint_classes<A: ForIRI>(
     }
     pairs.sort();
     pairs.dedup();
-    Ok(Disjointness { pairs, incomplete })
+    Ok(Disjointness {
+        pairs,
+        incomplete: incomplete || no_verdict,
+        no_verdict,
+    })
 }
 
 fn pairwise_sorted(names: &[String]) -> Vec<(String, String)> {

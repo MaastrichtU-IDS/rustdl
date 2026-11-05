@@ -180,6 +180,30 @@ All notable changes to rustdl are documented here. Format is based on
   wedge counter is identical); that input now decides in ~3.7 CPU-s. The other two
   slow #465 cases are a generate-before-merge loop in the wedge (part B, to follow)
   and #460.
+- **Every command keeps its output format on a tableau `NoVerdict`, and a deadline-free one is
+  reported per result (#462).** After #449, a `NoVerdict` reaching `main` printed a bare `unknown`.
+  For a `--json` command that is not JSON.
+  - **Commands affected:** `prove`, `justify`, `sat-expr` and `subclass-expr`; `disjoint`,
+    `individuals` and `property-values` with `--pair-timeout-ms 0`; `classify --pair-timeout-ms 0`
+    and `--n2-classify` (and the library's `classify()` with no budget, which used to return the
+    error); and the text commands `repair`, `diagnose` and `report`.
+  - **What they do now:** keep their own output, with the give-up slot set (`incomplete`, or
+    `status: "unknown"`) and a new field: `no_verdict` (bool), or `no_verdict_pairs` (int) on
+    `classify`. `consistent --json` gains `no_verdict` too. The CLI still prints #449's "likely a
+    reasoner bug" note and exits 3. Python: `Classification.no_verdict_pairs` and an
+    `IncompleteClassificationWarning`.
+  - **Meaning: `NoVerdict` on a probe with NO deadline.** On a budgeted probe (`classify`'s default
+    pair budget, `disjoint` / `individuals` / `property-values`' default 1000 ms) a `NoVerdict` is
+    the routine decision-depth cut (#288). It changes nothing: `incomplete` only, exit 0, as before.
+    So PMD core and the ORE depth-cut ontologies are unaffected.
+  - **Budgeted probes in the n² driver:** a `NoVerdict` is now that depth-cut too. It used to abort
+    `--n2-classify` and `disjoint`.
+  - **`consistent`'s bounded fall-through probe** (the wedge route, `RUSTDL_CONSISTENCY_FALLBACK_MS`):
+    a `NoVerdict` there is now that probe's ordinary give-up (`incomplete`, exit 3), without
+    #449's bug note. So `justify`, `repair` and `prove` on an inconsistent KB no longer read it
+    as one either.
+  - **`realize --properties`** no longer turns an error of its property step into a
+    `# … unavailable` comment with exit 0; the error is the command's.
 - **classify no longer reports a `TBox`-only inconsistent ontology as determined-consistent
   when its unsat probes were cut (#466).** classify's consistency probe is admitted on an
   empty unsat set only where that set may be incomplete, and that admission required an

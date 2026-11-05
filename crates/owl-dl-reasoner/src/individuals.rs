@@ -21,6 +21,7 @@ pub struct SameIndividuals {
     groups: Vec<Vec<String>>,
     incomplete: bool,
     consistency_undetermined: bool,
+    no_verdict: bool,
 }
 
 impl SameIndividuals {
@@ -53,6 +54,14 @@ impl SameIndividuals {
     pub fn consistency_undetermined(&self) -> bool {
         self.consistency_undetermined
     }
+
+    /// #462: a deadline-free probe ended in `NoVerdict` (an internal limit, likely a
+    /// reasoner bug, #449). [`Self::incomplete`] is set too. A `NoVerdict` on a probe
+    /// with a pair deadline is the routine depth-cap cut and only sets `incomplete`.
+    #[must_use]
+    pub fn no_verdict(&self) -> bool {
+        self.no_verdict
+    }
 }
 
 /// Entailed different-individual pairs, plus a completeness flag.
@@ -61,6 +70,7 @@ pub struct DifferentIndividuals {
     pairs: Vec<(String, String)>,
     incomplete: bool,
     consistency_undetermined: bool,
+    no_verdict: bool,
 }
 
 impl DifferentIndividuals {
@@ -84,6 +94,14 @@ impl DifferentIndividuals {
     #[must_use]
     pub fn consistency_undetermined(&self) -> bool {
         self.consistency_undetermined
+    }
+
+    /// #462: a deadline-free probe ended in `NoVerdict` (an internal limit, likely a
+    /// reasoner bug, #449). [`Self::incomplete`] is set too. A `NoVerdict` on a probe
+    /// with a pair deadline is the routine depth-cap cut and only sets `incomplete`.
+    #[must_use]
+    pub fn no_verdict(&self) -> bool {
+        self.no_verdict
     }
 }
 
@@ -150,6 +168,7 @@ pub fn same_individuals<A: ForIRI>(
     let names = named_individuals(&prepared.vocabulary);
 
     let mut incomplete = false;
+    let mut no_verdict = false;
     let mut probe_merged = false;
     for i in 0..names.len() {
         for j in (i + 1)..names.len() {
@@ -164,7 +183,17 @@ pub fn same_individuals<A: ForIRI>(
             // incomplete (see `SameIndividuals::incomplete`).
             incomplete = true;
             let deadline = pair_deadline.map(|d| Instant::now() + d);
-            if prepared.consistent_with_extra(&[(*a, *b)], &[], deadline)? == Some(false) {
+            let merged = match prepared.consistent_with_extra(&[(*a, *b)], &[], deadline) {
+                // #462: no verdict, so no merge (`incomplete` is already set). Only a
+                // deadline-free probe's `NoVerdict` is an internal limit; with a
+                // deadline it is the routine depth-cap cut.
+                Err(ReasonError::NoVerdict) => {
+                    no_verdict |= deadline.is_none();
+                    false
+                }
+                r => r? == Some(false),
+            };
+            if merged {
                 uf.union(a.index(), b.index());
                 probe_merged = true;
             }
@@ -195,6 +224,7 @@ pub fn same_individuals<A: ForIRI>(
         groups,
         incomplete,
         consistency_undetermined,
+        no_verdict,
     })
 }
 
@@ -236,6 +266,7 @@ pub fn different_individuals<A: ForIRI>(
 
     let mut pairs: Vec<(String, String)> = Vec::new();
     let mut incomplete = false;
+    let mut no_verdict = false;
     let mut probe_different = false;
     for i in 0..names.len() {
         for j in (i + 1)..names.len() {
@@ -245,7 +276,16 @@ pub fn different_individuals<A: ForIRI>(
                 true
             } else {
                 let deadline = pair_deadline.map(|d| Instant::now() + d);
-                match prepared.pair_individuals_disjoint_with_deadline(*a, *b, deadline)? {
+                let probe = match prepared.pair_individuals_disjoint_with_deadline(*a, *b, deadline)
+                {
+                    // #462: as in `same_individuals`.
+                    Err(ReasonError::NoVerdict) => {
+                        no_verdict |= deadline.is_none();
+                        None
+                    }
+                    r => r?,
+                };
+                match probe {
                     Some(true) => {
                         probe_different = true;
                         true
@@ -277,5 +317,6 @@ pub fn different_individuals<A: ForIRI>(
         pairs,
         incomplete,
         consistency_undetermined,
+        no_verdict,
     })
 }

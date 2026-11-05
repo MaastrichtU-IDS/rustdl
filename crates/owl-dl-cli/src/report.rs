@@ -30,6 +30,8 @@ pub(crate) struct Section {
 }
 
 /// Everything the HTML renderer needs — assembled by `build_report`.
+// `struct_excessive_bools`: each bool is an independent signal the page renders.
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Report {
     pub(crate) ontology_path: String,
     pub(crate) class_count: usize,
@@ -46,6 +48,10 @@ pub(crate) struct Report {
     /// A reasoner check under the report gave up (#396): a justification or repair
     /// search, or diagnose's consistency check. Rendered as a warning banner.
     pub(crate) incomplete: bool,
+    /// #462: a deadline-free probe under the report ended in `NoVerdict` (an internal
+    /// limit, likely a reasoner bug, #449). `incomplete` is set too; the CLI adds #449's
+    /// note and exits 3.
+    pub(crate) no_verdict: bool,
 }
 
 /// HTML-escape text for safe, faithful embedding as element content.
@@ -295,6 +301,7 @@ pub(crate) fn build_report(
         let rep = owl_dl_reasoner::find_repairs_prepared(&prepared, &q, 10)
             .context("repair inconsistency")?;
         let incomplete = diag.incomplete || outcome.incomplete || rep.incomplete;
+        let no_verdict = diag.no_verdict || outcome.no_verdict || rep.no_verdict;
         let justification = outcome
             .justifications
             .into_iter()
@@ -319,6 +326,7 @@ pub(crate) fn build_report(
             repairs_complete: rep.complete,
             truncated_roots: 0,
             incomplete,
+            no_verdict,
         });
     }
 
@@ -329,6 +337,7 @@ pub(crate) fn build_report(
     let truncated_roots = n_root.saturating_sub(max_roots);
     let mut repairs_complete = true;
     let mut incomplete = diag.incomplete;
+    let mut no_verdict = diag.no_verdict;
     let mut roots = Vec::new();
     // Every root is justified AND repaired against the SAME ontology, so the
     // per-ontology state (axiom split + fragment) is derived once and reused by
@@ -339,6 +348,7 @@ pub(crate) fn build_report(
         let prepared = justifier.get_or_insert_with(|| PreparedJustifier::prepare(onto));
         let outcome = prepared.find_one_reporting(&q).context("justify root")?;
         incomplete |= outcome.incomplete;
+        no_verdict |= outcome.no_verdict;
         let justification = outcome
             .justifications
             .into_iter()
@@ -349,6 +359,7 @@ pub(crate) fn build_report(
             owl_dl_reasoner::find_repairs_prepared(prepared, &q, 10).context("repair root")?;
         repairs_complete &= rep.complete;
         incomplete |= rep.incomplete;
+        no_verdict |= rep.no_verdict;
         let derives = diag.root_derives.get(iri).cloned().unwrap_or_default();
         roots.push(RootEntry {
             iri: iri.clone(),
@@ -377,6 +388,7 @@ pub(crate) fn build_report(
         repairs_complete,
         truncated_roots,
         incomplete,
+        no_verdict,
     })
 }
 
@@ -427,6 +439,7 @@ mod render_tests {
             repairs_complete: true,
             truncated_roots: 0,
             incomplete: false,
+            no_verdict: false,
         }
     }
 

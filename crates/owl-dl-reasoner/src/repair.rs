@@ -58,6 +58,10 @@ pub struct Repairs<A: ForIRI> {
     /// be non-minimal), or a verification (that repair breaks `η` only if the
     /// wedge is right). A trust decision, not a give-up: separate from `incomplete`.
     pub relies_on_trusted_consistency: bool,
+    /// #462: an oracle call's deadline-free probe ended in `NoVerdict` (an internal
+    /// limit, likely a reasoner bug, #449): the top-level check, a justification probe
+    /// or a verification. `incomplete` is set too.
+    pub no_verdict: bool,
 }
 
 /// Compute verified minimal repairs for `q` in `onto`.
@@ -91,6 +95,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
     let outcome = prepared.find_all_reporting(q, REPAIR_JUSTIFICATION_CAP)?;
     let justifications = outcome.justifications;
     let mut trusted = outcome.relies_on_trusted_consistency;
+    let mut no_verdict = outcome.no_verdict;
     if justifications.is_empty() {
         return Ok(Repairs {
             entailed: false,
@@ -101,6 +106,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
             unverified_gave_up: 0,
             incomplete: outcome.incomplete,
             relies_on_trusted_consistency: trusted,
+            no_verdict,
         });
     }
     // A give-up in the search can hide a justification (a pruned branch), and so
@@ -133,9 +139,12 @@ pub fn find_repairs_prepared<A: ForIRI>(
         }
         let kept: Vec<Component<A>> = logical.iter().filter(|a| !h.contains(a)).cloned().collect();
         let reduced = ontology_from(fixed, &kept);
-        let (verdict, verdict_trusted) =
-            crate::justify::with_oracle_trust(|| entails_reporting(&reduced, q));
+        let ((verdict, verdict_trusted), verdict_no_verdict) =
+            crate::justify::with_oracle_no_verdict(|| {
+                crate::justify::with_oracle_trust(|| entails_reporting(&reduced, q))
+            });
         trusted |= verdict_trusted;
+        no_verdict |= verdict_no_verdict;
         match verdict? {
             Verdict::Entailed => {
                 // An unfound justification survives — not a real repair.
@@ -164,6 +173,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
         unverified_gave_up,
         incomplete,
         relies_on_trusted_consistency: trusted,
+        no_verdict,
     })
 }
 

@@ -1795,7 +1795,6 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 /// #449: a tableau `NoVerdict` (an internal limit: the deterministic saturation ran out of
 /// iterations, or the search hit its depth cap with time left) is a give-up, like the node
 /// cap's, not a crash. Every command that lets it reach `main` prints `unknown` and exits
@@ -1827,6 +1826,7 @@ fn exit_unknown_no_verdict() -> ! {
     std::process::exit(3);
 }
 
+#[allow(clippy::too_many_lines)]
 fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)

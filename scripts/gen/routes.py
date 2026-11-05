@@ -228,7 +228,11 @@ with open(out, "w") as fh:
             # added. is_subclass_of used to run only when is_consistent said True: on
             # default case 438 (TBox-only, inconsistent) its H4 wedge had no deadline and
             # did not finish (> 150 s on 0df06f64). #457 bounds that wedge
-            # (RUSTDL_QUERY_WEDGE_MS), so it runs ungated again.
+            # (RUSTDL_QUERY_WEDGE_MS), so it runs ungated again. The call is still
+            # unbounded where the MAIN tableau does not finish, and the Python API has no
+            # timeout: on the generated sets this driver's pair hangs on default case 1911
+            # (#460; consistent, so the old gate did not skip it either). Checked on the
+            # #457 branch via the CLI: the 2,624 other cases with a pair answer within 60 s.
             try:
                 rustdl.is_consistent(path)
             except Exception:  # noqa: BLE001 (a give-up is an error here; the call still ran)

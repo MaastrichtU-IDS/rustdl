@@ -81,3 +81,44 @@ fn a_tiny_wedge_budget_still_answers() {
     assert_eq!(code, 0, "{stdout}");
     assert_eq!(stdout.trim(), "yes");
 }
+
+/// The budget must leave the wedge time to prove what it proves (Fable review of
+/// #467: an already-expired deadline passed every other test, since the main
+/// tableau then gives the same answer). On a pair outside the EL closure, the
+/// `RUSTDL_TRACE` line must report the wedge's `Subsumed`, not a stall.
+#[test]
+fn the_wedge_still_proves_under_the_default_budget() {
+    let f = format!(
+        "{}/tests/fixtures/query_wedge_proves_457.ofn",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("RUSTDL_") {
+            cmd.env_remove(key);
+        }
+    }
+    let out = cmd
+        .env("RUSTDL_TRACE", "1")
+        .args([
+            "subclass",
+            &f,
+            "http://example.org/w457#A",
+            "http://example.org/w457#D",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(stdout.trim(), "yes", "{stderr}");
+    let wedge: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.starts_with("query wedge (#457)"))
+        .collect();
+    assert_eq!(wedge.len(), 1, "one wedge call expected: {stderr}");
+    assert!(
+        wedge[0].starts_with("query wedge (#457): Subsumed after"),
+        "{}",
+        wedge[0]
+    );
+}

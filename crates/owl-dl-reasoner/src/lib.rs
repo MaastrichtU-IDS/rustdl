@@ -6281,9 +6281,13 @@ pub const QUERY_WEDGE_DEFAULT_MS: u64 = 3_000;
 ///
 /// The wedge is an accelerator: only its `Subsumed` is used, and any other
 /// verdict, a stall at this deadline included, falls through to the main
-/// tableau, which decides the pair under the query node cap. So the budget
-/// costs no answer, only time on a pair the wedge would prove after it. It
-/// spans the whole iterative-deepening schedule. Unbounded, the wedge did not
+/// tableau under the query node cap. A cut never becomes an answer. It can lose
+/// one only where the wedge would prove the pair after the budget and the main
+/// tableau cannot decide it under its cap: that is then a node-cap give-up
+/// (`incomplete`, `unknown`), not a wrong answer. The #457 sweep (9,335
+/// `subclass` / `explain` calls, main vs this budget) found none. The budget
+/// spans the wedge's build (one clausify, so a large ontology leaves less for
+/// the search) and its whole iterative-deepening schedule. Unbounded, the wedge did not
 /// finish on an 8-axiom inconsistent `TBox` (#457), where the main tableau
 /// answers in milliseconds. The default follows [`query_seeded_first_ms`], the
 /// other fast path that falls through.
@@ -9026,16 +9030,19 @@ fn query_wedge_subsumes(
     let started = std::time::Instant::now();
     let deadline = (ms > 0).then(|| started + std::time::Duration::from_millis(ms));
     let verdict = HyperCache::build(internal).decide(sub, sup, deadline);
-    if std::env::var_os("RUSTDL_TRACE").is_some()
-        && matches!(
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        let stalled = matches!(
             verdict,
             HyperVerdict::Unknown | HyperVerdict::UnknownDiverged
-        )
-    {
+        );
         eprintln!(
-            "query wedge (#457): {verdict:?} after {} ms (budget {ms} ms); falling through \
-             to the main tableau",
-            started.elapsed().as_millis()
+            "query wedge (#457): {verdict:?} after {} ms (budget {ms} ms){}",
+            started.elapsed().as_millis(),
+            if stalled {
+                "; falling through to the main tableau"
+            } else {
+                ""
+            }
         );
     }
     verdict == HyperVerdict::Subsumed

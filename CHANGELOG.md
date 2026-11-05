@@ -176,8 +176,10 @@ All notable changes to rustdl are documented here. Format is based on
   searched without end (killed at 300 s), while the main tableau answers in milliseconds;
   the query node cap never fired, since it bounds only the main tableau. The wedge now runs
   under `RUSTDL_QUERY_WEDGE_MS` (default 3000 ms, `0` = unbounded), and a stall falls
-  through to the main tableau, as any non-proof already did. No answer changes; only
-  `Subsumed` from the wedge is used. The vacuous answer on that inconsistent `TBox` still
+  through to the main tableau, as any non-proof already did. Only `Subsumed` from the wedge
+  is used, so a cut never becomes an answer; a pair the wedge would prove only after the
+  budget, and the main tableau cannot decide under its node cap, would become `unknown`
+  (exit 3), and a 9,335-call sweep against main found none. The vacuous answer on that inconsistent `TBox` still
   carries no signal (#457's second residual, tracked apart).
 - **A tableau `NoVerdict` is a give-up on the CLI, not a crash (#449).** `NoVerdict` is the
   tableau's internal limit: the deterministic saturation ran out of iterations (as in the #437

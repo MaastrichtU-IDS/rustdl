@@ -170,6 +170,42 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`consistent` answers inputs classify's saturation fast path admits, with no individual, from
+  the EL saturator, as classify does (#459).** Such an input reached no verdict-bearing route: the
+  EL closure can only prove inconsistency, and without an individual there is no consistency
+  wedge. It fell through to the unbounded main-tableau `decide(Top)`, which a `⊤ ⊑ ∃r.B` GCI with
+  cyclic existential definitions kept busy for minutes (12 of the 1000 el_top cases past 30 s;
+  case 74 past 300 s). classify answered the same inputs in under a second.
+  - Now, when the IR names no individual (no ABox axiom, no TBox nominal) and
+    `saturation_fast_path_admits` holds, `consistent` = `!(globally_inconsistent || top_is_unsat)`
+    on the saturator's closure, with `answered_by_saturation` and `pure_el_mode` set. The bounded
+    API saturates under its deadline, and a cut closure is no verdict (`None`), never `true`.
+  - Reproducer `min-00074`: 0.05 CPU-s (was 6.9). el_top net (1000 cases, 30 s cap): no rustdl
+    failures (main: the 12 cases), no findings, classify's guarantee rate unchanged.
+  - ORE pool (1,920 files, `consistent`, 60 s cap, main vs branch): no verdict changes and no
+    `incomplete` changes. The shortcut answers at least 567 files (all consistent), at a median
+    0.81× main's CPU (`ore_ont_2658`: 25 → 2 s); elsewhere 1.01×. `ore_ont_13224` now answers in
+    ~18 s (main: past 180 s).
+  - `RUSTDL_CONSISTENT_EL_FASTPATH=0` restores the old route. With
+    `RUSTDL_SAT_INCONSISTENCY_ALL_SURFACES=0` the shortcut is off too.
+  - Tests: `consistent_el_fastpath.rs` has 15 inconsistent and 3 consistent gate-admitted
+    canaries. Each runs through `consistent` (with its stats), classify, the bounded API and
+    (inconsistent ones) the flag-off route, and has an empty `certified_unlowered`. Scope tests
+    cover inputs with individuals (also with the wedge off) and inputs outside the gate (a
+    union, a functional data role with clashing values). Unit tests pin that a cut saturation is
+    no verdict, also through the bounded API, which must return soon after its deadline. Nine
+    sabotages (including dropping K⊤ from `top_is_unsat`) each turn a named test red.
+- **`subclass`, `explain` and `is_subclass_of` no longer hang in the hypertableau wedge
+  (#457).** The named subsumption query tried its H4 wedge with no deadline before the main
+  tableau. On an 8-axiom inconsistent `TBox` (shrunk from generated case 438) the wedge
+  searched without end (killed at 300 s), while the main tableau answers in milliseconds;
+  the query node cap never fired, since it bounds only the main tableau. The wedge now runs
+  under `RUSTDL_QUERY_WEDGE_MS` (default 3000 ms, `0` = unbounded), and a stall falls
+  through to the main tableau, as any non-proof already did. Only `Subsumed` from the wedge
+  is used, so a cut never becomes an answer; a pair the wedge would prove only after the
+  budget, and the main tableau cannot decide under its node cap, would become `unknown`
+  (exit 3), and a 9,335-call sweep against main found none. The vacuous answer on that inconsistent `TBox` still
+  carries no signal (#457's second residual, tracked apart).
 - **A tableau `NoVerdict` is a give-up on the CLI, not a crash (#449).** `NoVerdict` is the
   tableau's internal limit: the deterministic saturation ran out of iterations (as in the #437
   livelock), or the search hit its depth cap with time left. Every command passed it up as exit 1

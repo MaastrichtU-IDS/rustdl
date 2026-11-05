@@ -307,7 +307,7 @@ fn inputs_with_individuals_keep_their_route() {
 /// Outside the gate the shortcut does not apply, whatever the saturator says.
 ///
 /// The second input pins that a functional data role with two clashing values
-/// stays off the shortcut: its DKey value-space disjointness is seeded as
+/// stays off the shortcut: its `DKey` value-space disjointness is seeded as
 /// `DisjointClasses`, which the gate rejects beside a functional role. That is the
 /// one place where the tableau's datatype reasoning could otherwise go beyond the
 /// saturator's.

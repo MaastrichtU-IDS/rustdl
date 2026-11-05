@@ -8452,7 +8452,9 @@ fn consistent_from_el_saturator(
 
 #[cfg(test)]
 mod consistent_el_fastpath_tests {
-    use super::{ElSaturatorConsistency, consistent_from_el_saturator};
+    use super::{
+        ElSaturatorConsistency, consistent_from_el_saturator, is_consistent_internal_bounded,
+    };
     use horned_owl::io::ParserConfiguration;
     use horned_owl::io::ofn::reader::read as read_ofn;
     use horned_owl::model::RcStr;

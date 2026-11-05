@@ -163,7 +163,14 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
     if n:
         _warnings.warn(
             f"{n} class pair(s) exceeded the timeout and were recorded as "
-            "'not subsumed' — this classification may be missing real subsumptions. "
+            "'not subsumed'"
+            + (
+                f" ({result.matrix_closure_added_pairs} pair(s) implied by recorded "
+                "subsumptions were added back by the transitive closure, #448)"
+                if getattr(result, "matrix_closure_added_pairs", 0)
+                else ""
+            )
+            + " — this classification may be missing real subsumptions. "
             "It is still sound (no false subsumptions). Pass per_pair_timeout_ms=0, "
             "global_timeout_ms=0 for the complete (unbounded) result, or check "
             "result.complete / result.timed_out_pairs.",

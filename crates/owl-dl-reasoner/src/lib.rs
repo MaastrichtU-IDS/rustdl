@@ -3025,9 +3025,11 @@ pub fn classify_consistency_probe_ms() -> u64 {
 /// as satisfiable, which is sound, but the class may in fact be unsatisfiable.
 /// Without this, nothing recorded the cut, so `classify --json` could report
 /// a genuinely unsat class as satisfiable with `incomplete: false`. Each cut
-/// adds a `(c, c)` undecided marker to `timed_out_pairs`. Reporting only: no
-/// answer changes, though `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`'s `ABox` probe
-/// may now be admitted earlier on such runs.
+/// adds a `(c, c)` undecided marker to `timed_out_pairs` and counts in
+/// `ClassificationStats::cut_unsat_probes`. Reporting only: no answer changes,
+/// but `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`'s consistency probe keys on the
+/// record: an `ABox` run is admitted on any cut, a `TBox`-only run (#466) only on
+/// a recorded cut unsat probe. So `=0` also removes the #466 admission.
 #[must_use]
 pub fn unsat_probe_cut_incomplete_enabled() -> bool {
     std::env::var_os("RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE").is_none_or(|v| v != "0")
@@ -3105,6 +3107,44 @@ pub fn classify_tableau_labels_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_TABLEAU_LABELS").is_none_or(|v| v != "0")
 }
 
+/// Admit the classify consistency probe on an INCOMPLETE run even when no class was
+/// proved unsatisfiable (`RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`, **default ON**, `=0`
+/// reverts; this line said "default OFF" until #466).
+///
+/// The probe's existing admission test is the unsatisfiable FRACTION, which is
+/// budget-sensitive: a timed-out per-class probe defaults to *satisfiable*, so a small
+/// `--pair-timeout-ms` empties `unsatisfiable_idxs` and the gate reads "no evidence of
+/// inconsistency" when the truth is "we did not look long enough to have evidence".
+/// Those are different states and the gate conflates them.
+///
+/// `ore_ont_16372` is inconsistent (Konclude, `HermiT` and rustdl's own `consistent`
+/// agree) and its entire admission signal is **3** unsat proofs out of 744 classes,
+/// each needing >25 ms. At `--pair-timeout-ms 5` all three are lost and `classify`
+/// reports `consistent: true`. See `docs/2026-08-15-ore16372-verdict-rootcause.md`.
+///
+/// Scope: `timed_out_pairs > 0` AND either the ontology has `ABox` axioms or (#466) a
+/// per-class unsat probe was cut (`ClassificationStats::cut_unsat_probes`): on a
+/// `TBox`-only KB with cut unsat probes, an empty unsat set read as "consistent" with
+/// `consistency_undetermined: false`. A cut subsumption pair alone does not admit a
+/// `TBox`-only run, since it hides no unsatisfiable class. For the `ABox` arm,
+/// measured over the 424-ontology release population at a 5 ms budget, that is
+/// **49** ontologies — one bounded probe each, so ≤ 200 ms × 49 ≈ 9.8 s across the
+/// whole population in the worst case where every probe burns its budget.
+///
+/// The cost hazard the fraction gate was added for is ALREADY mitigated by bounding.
+/// Forcing the probe on the five ontologies that regression names
+/// (`ore_ont_14881`, `6108`, `7416`, `7803`, `1966`) costs −0.9 s … +0.9 s — noise
+/// against a 200 ms budget. The 8h47m FP=0-net disaster on record was the EARLIER
+/// mechanism: `k` UNBOUNDED probes, 58 of them on `wine`.
+#[must_use]
+pub fn classify_probe_on_incomplete() -> bool {
+    // Default-ON idiom (house convention): an EMPTY value enables, `=0` reverts.
+    // Not opt-in, because the v0.4.19 per-pair default (5 ms) is exactly what empties
+    // `unsatisfiable_idxs`; shipping that budget without this flag reports
+    // `consistent: true` on `ore_ont_16372`. The two move together.
+    std::env::var_os("RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE").is_none_or(|v| v != "0")
+}
+
 /// Minimum unsatisfiable-class fraction, in PER MILLE, for the expensive
 /// consistency-probe layers to run. **Default 2 (= 0.2%).** `0` disables the gate.
 ///
@@ -3125,39 +3165,6 @@ pub fn classify_tableau_labels_enabled() -> bool {
 /// `0` is the diagnostic setting: it restores the pre-gate behaviour, which is the
 /// only way to exercise the `decide_with_deadline` overshoot this gate masks.
 #[must_use]
-/// Admit the classify consistency probe on an INCOMPLETE, `ABox`-bearing run even when
-/// no class was proved unsatisfiable (`RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`, **default
-/// OFF**, `=1` enables).
-///
-/// The probe's existing admission test is the unsatisfiable FRACTION, which is
-/// budget-sensitive: a timed-out per-class probe defaults to *satisfiable*, so a small
-/// `--pair-timeout-ms` empties `unsatisfiable_idxs` and the gate reads "no evidence of
-/// inconsistency" when the truth is "we did not look long enough to have evidence".
-/// Those are different states and the gate conflates them.
-///
-/// `ore_ont_16372` is inconsistent (Konclude, `HermiT` and rustdl's own `consistent`
-/// agree) and its entire admission signal is **3** unsat proofs out of 744 classes,
-/// each needing >25 ms. At `--pair-timeout-ms 5` all three are lost and `classify`
-/// reports `consistent: true`. See `docs/2026-08-15-ore16372-verdict-rootcause.md`.
-///
-/// Scope: `timed_out_pairs > 0` AND the ontology has `ABox` axioms. Measured over the
-/// 424-ontology release population at a 5 ms budget, that is **49** ontologies — one
-/// bounded probe each, so ≤ 200 ms × 49 ≈ 9.8 s across the whole population in the
-/// worst case where every probe burns its budget.
-///
-/// The cost hazard the fraction gate was added for is ALREADY mitigated by bounding.
-/// Forcing the probe on the five ontologies that regression names
-/// (`ore_ont_14881`, `6108`, `7416`, `7803`, `1966`) costs −0.9 s … +0.9 s — noise
-/// against a 200 ms budget. The 8h47m FP=0-net disaster on record was the EARLIER
-/// mechanism: `k` UNBOUNDED probes, 58 of them on `wine`.
-pub fn classify_probe_on_incomplete() -> bool {
-    // Default-ON idiom (house convention): an EMPTY value enables, `=0` reverts.
-    // Not opt-in, because the v0.4.19 per-pair default (5 ms) is exactly what empties
-    // `unsatisfiable_idxs`; shipping that budget without this flag reports
-    // `consistent: true` on `ore_ont_16372`. The two move together.
-    std::env::var_os("RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE").is_none_or(|v| v != "0")
-}
-
 pub fn classify_probe_min_frac_permille() -> u64 {
     std::env::var("RUSTDL_CLASSIFY_PROBE_MIN_FRAC_PERMILLE")
         .ok()

@@ -22,9 +22,17 @@ EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
 )
 ";
 
-fn classify_json(probe_ms: &str) -> serde_json::Value {
+/// `classify --json` on reproB with no inherited `RUSTDL_*` setting, the probe
+/// budget `probe_ms`, plus `env` and `args`. `tag` keeps parallel tests' temp files
+/// apart.
+fn classify_json(
+    tag: &str,
+    probe_ms: &str,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> serde_json::Value {
     let path: PathBuf = std::env::temp_dir().join(format!(
-        "rustdl-probe-giveup-{}-{probe_ms}.ofn",
+        "rustdl-probe-giveup-{}-{tag}-{probe_ms}.ofn",
         std::process::id()
     ));
     std::fs::write(&path, REPRO_B).unwrap();
@@ -36,7 +44,11 @@ fn classify_json(probe_ms: &str) -> serde_json::Value {
     }
     let out = cmd
         .env("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS", probe_ms)
-        .args(["classify", "--json", path.to_str().unwrap()])
+        .envs(env.iter().copied())
+        .arg("classify")
+        .arg("--json")
+        .args(args)
+        .arg(&path)
         .output()
         .unwrap();
     let _ = std::fs::remove_file(&path);
@@ -48,13 +60,42 @@ fn classify_json(probe_ms: &str) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+/// Unbounded pair and global budgets: every unsat probe finishes, so the probe is
+/// admitted on the four unsat classes and `incomplete` is false whatever the build's
+/// speed (#466: with the default 5 ms pair budget a slow debug build sometimes cut
+/// the unsat probes, and this test flaked).
+const NO_CUTS: &[&str] = &["--pair-timeout-ms", "0", "--global-timeout-ms", "0"];
+
 #[test]
 fn a_cut_consistency_probe_is_reported_as_undetermined() {
-    let j = classify_json("0");
+    let j = classify_json("nocut", "0", &[], NO_CUTS);
     assert_eq!(j["consistent"], true);
     assert_eq!(j["consistency_undetermined"], true);
     assert_eq!(j["incomplete"], false);
     // With room to finish, the probe finds the clash.
-    let j = classify_json("30000");
+    let j = classify_json("nocut", "30000", &[], NO_CUTS);
     assert_eq!(j["consistent"], false);
+}
+
+/// #466: with every per-class unsat probe cut (a 2-node tableau cap, the wedge off),
+/// no class is found unsatisfiable, and before #466 the probe was not admitted on a
+/// `TBox`-only KB: `consistent: true` with `consistency_undetermined: false` on an
+/// inconsistent ontology. Now a cut unsat probe admits it. Its layer 3 runs under
+/// the same node cap and gives up, so the verdict is flagged undetermined.
+#[test]
+fn cut_unsat_probes_on_a_tbox_only_kb_leave_consistency_undetermined() {
+    let cut = [("RUSTDL_MAX_NODES", "2"), ("RUSTDL_HYPERTABLEAU", "0")];
+    for probe_ms in ["0", "200"] {
+        let j = classify_json("cut", probe_ms, &cut, &[]);
+        // The precondition: the unsat probes really were cut.
+        assert_eq!(j["incomplete"], true, "{probe_ms}: {j}");
+        assert_eq!(j["unsatisfiable"], serde_json::json!([]), "{probe_ms}: {j}");
+        assert!(
+            j["consistent"] == false || j["consistency_undetermined"] == true,
+            "{probe_ms}: an inconsistent KB read as determined-consistent: {j}"
+        );
+    }
+    // A zero probe budget can only give up.
+    let j = classify_json("cut0", "0", &cut, &[]);
+    assert_eq!(j["consistency_undetermined"], true, "{j}");
 }

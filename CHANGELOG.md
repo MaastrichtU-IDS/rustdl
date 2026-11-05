@@ -170,6 +170,16 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **classify no longer reports a `TBox`-only inconsistent ontology as determined-consistent
+  when its unsat probes were cut (#466).** classify's consistency probe is admitted on an
+  empty unsat set only where that set may be incomplete, and that admission required an
+  `ABox`. On a `TBox`-only KB whose per-class unsat probes were all cut (a slow build, a
+  tight budget or the node cap), the probe never ran, and `classify --json` read
+  `consistent: true, consistency_undetermined: false` with `unsatisfiable: []`. A cut unsat
+  probe (`ClassificationStats::cut_unsat_probes`, new) now admits the probe on any run: it
+  proves the inconsistency or reports `consistency_undetermined`. A cut subsumption pair
+  alone does not admit a `TBox`-only run, since it hides no unsatisfiable class. This also
+  fixes the flaky `classify_probe_giveup_cli` test.
 - **`consistent` answers inputs classify's saturation fast path admits, with no individual, from
   the EL saturator, as classify does (#459).** Such an input reached no verdict-bearing route: the
   EL closure can only prove inconsistency, and without an individual there is no consistency

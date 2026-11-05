@@ -170,6 +170,15 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`subclass`, `explain` and `is_subclass_of` no longer hang in the hypertableau wedge
+  (#457).** The named subsumption query tried its H4 wedge with no deadline before the main
+  tableau. On an 8-axiom inconsistent `TBox` (shrunk from generated case 438) the wedge
+  searched without end (killed at 300 s), while the main tableau answers in milliseconds;
+  the query node cap never fired, since it bounds only the main tableau. The wedge now runs
+  under `RUSTDL_QUERY_WEDGE_MS` (default 3000 ms, `0` = unbounded), and a stall falls
+  through to the main tableau, as any non-proof already did. No answer changes; only
+  `Subsumed` from the wedge is used. The vacuous answer on that inconsistent `TBox` still
+  carries no signal (#457's second residual, tracked apart).
 - **`classify` no longer loses `family.ofn`'s inconsistency to its 12 s pre-check budget
   (#447).** The `ABox`-saturation pre-check took 5.4–12.6 s on the coder host, not the
   2585 ms the budget was sized on (another host, August), so the budget cut it: 1 of 12

@@ -6270,6 +6270,31 @@ pub fn query_seeded_first_ms() -> u64 {
         .unwrap_or(QUERY_SEEDED_FIRST_DEFAULT_MS)
 }
 
+/// #457: the default of [`query_wedge_ms`].
+pub const QUERY_WEDGE_DEFAULT_MS: u64 = 3_000;
+
+/// #457: the wall-clock budget, in ms, of the hypertableau wedge that the named
+/// subsumption query (`subclass`, `explain`, `is_subclass_of`, justify's
+/// `SubClassOf` oracle) tries before the main tableau (`RUSTDL_QUERY_WEDGE_MS`,
+/// default [`QUERY_WEDGE_DEFAULT_MS`]; `0` = unbounded, as before #457;
+/// unparsable values fall back to the default).
+///
+/// The wedge is an accelerator: only its `Subsumed` is used, and any other
+/// verdict, a stall at this deadline included, falls through to the main
+/// tableau, which decides the pair under the query node cap. So the budget
+/// costs no answer, only time on a pair the wedge would prove after it. It
+/// spans the whole iterative-deepening schedule. Unbounded, the wedge did not
+/// finish on an 8-axiom inconsistent `TBox` (#457), where the main tableau
+/// answers in milliseconds. The default follows [`query_seeded_first_ms`], the
+/// other fast path that falls through.
+#[must_use]
+pub fn query_wedge_ms() -> u64 {
+    std::env::var("RUSTDL_QUERY_WEDGE_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(QUERY_WEDGE_DEFAULT_MS)
+}
+
 /// Lever 1 (2026-07-20): when the ontology is nominal-free, evaluate the
 /// Horn-shortcircuit FRAGMENT gate on the `TBox` axioms only, ignoring the `ABox`.
 /// An EL/saturator-fragment `TBox` carrying a large `ABox` is otherwise kicked off
@@ -8990,6 +9015,32 @@ fn is_subclass_of_after_guard(
     Ok((holds, stats))
 }
 
+/// #457: the named subsumption query's H4 wedge under [`query_wedge_ms`]:
+/// `true` iff it proves `sub ⊑ sup`.
+fn query_wedge_subsumes(
+    internal: &InternalOntology,
+    sub: owl_dl_core::ir::ClassId,
+    sup: owl_dl_core::ir::ClassId,
+) -> bool {
+    let ms = query_wedge_ms();
+    let started = std::time::Instant::now();
+    let deadline = (ms > 0).then(|| started + std::time::Duration::from_millis(ms));
+    let verdict = HyperCache::build(internal).decide(sub, sup, deadline);
+    if std::env::var_os("RUSTDL_TRACE").is_some()
+        && matches!(
+            verdict,
+            HyperVerdict::Unknown | HyperVerdict::UnknownDiverged
+        )
+    {
+        eprintln!(
+            "query wedge (#457): {verdict:?} after {} ms (budget {ms} ms); falling through \
+             to the main tableau",
+            started.elapsed().as_millis()
+        );
+    }
+    verdict == HyperVerdict::Subsumed
+}
+
 /// [`is_subclass_of_internal_full`], also returning what the query left for the
 /// #369 lazy consistency check ([`QueryOntology`]).
 pub(crate) fn is_subclass_of_keeping(
@@ -9083,9 +9134,8 @@ pub(crate) fn is_subclass_of_keeping(
     // subsumption (sound for any ontology), skipping the tableau. A
     // non-proof falls through. No-op when the wedge is disabled.
     // (HF5 `Sat`-trust is wired in the classify path, not here.)
-    if hyper_wedge_enabled()
-        && HyperCache::build(&internal).decide(sub_id, super_id, None) == HyperVerdict::Subsumed
-    {
+    // #457: under [`query_wedge_ms`]; a stall falls through like any non-proof.
+    if hyper_wedge_enabled() && query_wedge_subsumes(&internal, sub_id, super_id) {
         return Ok((
             true,
             QueryStats {

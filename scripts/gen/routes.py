@@ -223,20 +223,18 @@ with open(out, "w") as fh:
             rec["is_subclass"] = [[x, y] for x in classes for y in classes
                                   if x != y and x not in unsat and y not in unsat
                                   and c.is_subclass(x, y)]
-            # interleaved queries: the realistic thread-local leak path. is_subclass_of
-            # exercises the per-thread query-consistency cells #428 (#442) added, but runs
-            # only when is_consistent says True: default case 438 is TBox-only (no
-            # individuals), so the pre-checks miss its inconsistency and the lazy check has
-            # no seed, and is_subclass_of does not finish there (measured on 0df06f64:
-            # > 150 s; drafted 2026-11-04 as a #428 residual). The Python API has no
-            # timeout, so an ungated call is the one this driver could not bound.
-            # Ungate it once that is fixed.
+            # interleaved queries: the realistic thread-local leak path. is_consistent and
+            # is_subclass_of exercise the per-thread query-consistency cells #428 (#442)
+            # added. is_subclass_of used to run only when is_consistent said True: on
+            # default case 438 (TBox-only, inconsistent) its H4 wedge had no deadline and
+            # did not finish (> 150 s on 0df06f64). #457 bounds that wedge
+            # (RUSTDL_QUERY_WEDGE_MS), so it runs ungated again.
             try:
-                ok = rustdl.is_consistent(path)
+                rustdl.is_consistent(path)
             except Exception:  # noqa: BLE001 (a give-up is an error here; the call still ran)
-                ok = False
+                pass
             pair = [x for x in classes if x not in unsat][:2]
-            if ok and len(pair) == 2:
+            if len(pair) == 2:
                 try:
                     rustdl.is_subclass_of(path, pair[0], pair[1])
                 except Exception:  # noqa: BLE001 (the answer is not compared; the call ran)

@@ -8062,7 +8062,8 @@ mod tests {
         for _ in 0..400 {
             let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(nominal_start, nominal_count);
             eng.inverse_func_merge = next(2) == 0;
-            let n_nodes = 4 + next(10) as usize;
+            let n_u32 = 4 + next(10);
+            let n_nodes = n_u32 as usize;
             let nodes: Vec<HNode> = (0..n_nodes).map(|_| eng.new_node()).collect();
             for &x in &nodes {
                 for c in [1, 2, nominal_start, nominal_start + 1] {
@@ -8081,10 +8082,7 @@ mod tests {
                 }
             }
             for _ in 0..(2 * n_nodes + next(20) as usize) {
-                let (a, b) = (
-                    nodes[next(n_nodes as u32) as usize],
-                    nodes[next(n_nodes as u32) as usize],
-                );
+                let (a, b) = (nodes[next(n_u32) as usize], nodes[next(n_u32) as usize]);
                 let r = roles[next(3) as usize];
                 eng.nodes[a.index()].edges.push((r, b));
                 eng.nodes[b.index()].preds.push((r, a));

@@ -66,6 +66,16 @@ impl PyClassification {
         self.inner.stats().depth_capped_pairs
     }
 
+    /// #462: of `timed_out_pairs`, probes with NO deadline (e.g. under
+    /// `per_pair_timeout_ms=0`) that ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), not a cut. Not every `NoVerdict`: one on a probe with a
+    /// deadline is the routine search-depth cut (`depth_capped_pairs`). 0 when there is
+    /// none.
+    #[getter]
+    fn no_verdict_pairs(&self) -> usize {
+        self.inner.stats().no_verdict_pairs
+    }
+
     /// True iff classification ran to completion — no pair hit the
     /// timeout. When `False`, the hierarchy may be missing real
     /// subsumptions (see `timed_out_pairs`); re-classify with

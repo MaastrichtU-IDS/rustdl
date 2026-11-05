@@ -25,9 +25,24 @@ pub struct CeVerdict {
     completeness_guaranteed: bool,
     relies_on_trusted_consistency: bool,
     consistency_undetermined: bool,
+    no_verdict: bool,
 }
 
 impl CeVerdict {
+    /// #462: the deadline-free probe ended in `NoVerdict`, an internal limit (likely a
+    /// reasoner bug, #449). [`Self::holds`] is then the sound direction ("satisfiable" /
+    /// "not entailed") and [`Self::incomplete`] is set too.
+    fn from_no_verdict(holds: bool) -> Self {
+        Self {
+            holds,
+            incomplete: true,
+            completeness_guaranteed: false,
+            relies_on_trusted_consistency: false,
+            consistency_undetermined: false,
+            no_verdict: true,
+        }
+    }
+
     /// Whether the query holds.
     #[must_use]
     pub fn holds(&self) -> bool {
@@ -69,6 +84,14 @@ impl CeVerdict {
     #[must_use]
     pub fn consistency_undetermined(&self) -> bool {
         self.consistency_undetermined
+    }
+
+    /// #462: the deadline-free probe ended in `NoVerdict` (an internal limit, likely a
+    /// reasoner bug, #449) rather than a verdict. [`Self::incomplete`] is set too; this
+    /// is its own signal so a caller can tell it from a node-cap give-up.
+    #[must_use]
+    pub fn no_verdict(&self) -> bool {
+        self.no_verdict
     }
 }
 
@@ -234,7 +257,12 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     // #313: the inconsistent-KB guard, its `ABox` saturation bounded (#428); the
     // query reuses the EL closure it builds.
     let closure = crate::bounded_query_guard(&internal, "sat-expr")?;
-    let (holds, stats, left) = crate::is_class_satisfiable_keeping(internal, PROBE_IRI, closure)?;
+    let (holds, stats, left) =
+        match crate::is_class_satisfiable_keeping(internal, PROBE_IRI, closure) {
+            // #462: the sound direction of no verdict is "satisfiable".
+            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(true)),
+            r => r?,
+        };
     // #369: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
     let consistency_undetermined =
         !holds && left.lazy_inconsistency_check("class_expression_satisfiable")?;
@@ -245,6 +273,7 @@ pub fn class_expression_satisfiable<A: ForIRI>(
         completeness_guaranteed,
         relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
         consistency_undetermined,
+        no_verdict: false,
     })
 }
 
@@ -269,7 +298,11 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     // #313: the inconsistent-KB guard, as in `class_expression_satisfiable`.
     let closure = crate::bounded_query_guard(&internal, "subclass-expr")?;
     let (holds, stats, left) =
-        crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2, closure)?;
+        match crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2, closure) {
+            // #462: the sound direction of no verdict is "not entailed".
+            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(false)),
+            r => r?,
+        };
     // #369: as in `class_expression_satisfiable`.
     let consistency_undetermined =
         holds && left.lazy_inconsistency_check("class_expression_entailed_subclass")?;
@@ -280,6 +313,7 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
         completeness_guaranteed,
         relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
         consistency_undetermined,
+        no_verdict: false,
     })
 }
 

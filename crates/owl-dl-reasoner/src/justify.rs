@@ -379,6 +379,33 @@ pub(crate) fn with_oracle_trust<T>(f: impl FnOnce() -> T) -> (T, bool) {
     (r, inner)
 }
 
+thread_local! {
+    /// #462: set when an oracle's deadline-free probe ended in `NoVerdict` inside the
+    /// current [`with_oracle_no_verdict`] scope. Read only through that scope, which
+    /// clears it on entry, so one query's mark never reaches another.
+    static ORACLE_NO_VERDICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// #462: an oracle's deadline-free probe ended in `NoVerdict` (an internal limit, likely
+/// a reasoner bug, #449). Mark the current scope and answer `Unknown`, the oracle's
+/// existing give-up.
+fn oracle_no_verdict() -> Verdict {
+    ORACLE_NO_VERDICT.with(|c| c.set(true));
+    Verdict::Unknown
+}
+
+/// Run `f` and report whether any oracle call inside it ended in `NoVerdict` (#462).
+/// Scopes nest like [`with_oracle_trust`].
+pub(crate) fn with_oracle_no_verdict<T>(f: impl FnOnce() -> T) -> (T, bool) {
+    let prior = ORACLE_NO_VERDICT.with(|c| c.replace(false));
+    let r = f();
+    let inner = ORACLE_NO_VERDICT.with(|c| c.replace(prior));
+    if inner {
+        ORACLE_NO_VERDICT.with(|c| c.set(true));
+    }
+    (r, inner)
+}
+
 pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool, ReasonError> {
     Ok(entails_reporting(onto, q)? == Verdict::Entailed)
 }
@@ -405,6 +432,7 @@ pub fn entails_reporting<A: ForIRI>(
                 Ok(Verdict::from_check(holds, stats.incomplete))
             }
             Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),
+            Err(ReasonError::NoVerdict) => Ok(oracle_no_verdict()),
             Err(e) => Err(e),
         }
     };
@@ -415,6 +443,7 @@ pub fn entails_reporting<A: ForIRI>(
                 Ok(Verdict::from_check(!sat, stats.incomplete))
             }
             Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),
+            Err(ReasonError::NoVerdict) => Ok(oracle_no_verdict()),
             Err(e) => Err(e),
         }
     };
@@ -440,6 +469,7 @@ pub fn entails_reporting<A: ForIRI>(
                 // Inconsistent ⇒ everything is entailed, as for property assertions above;
                 // QuickXplain then returns the inconsistency core (#313).
                 Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),
+                Err(ReasonError::NoVerdict) => Ok(oracle_no_verdict()),
                 r => r.map(|(holds, flags)| Verdict::from_check(holds, flags.incomplete)),
             }
         }
@@ -454,7 +484,10 @@ pub fn entails_reporting<A: ForIRI>(
                 let (inconsistent, gave_up, engine) = if sat_mode {
                     (saturation_inconsistent(onto), false, "saturation-only")
                 } else {
-                    let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
+                    let (consistent, stats) = match crate::is_consistent_with_stats(onto) {
+                        Err(ReasonError::NoVerdict) => return Ok(oracle_no_verdict()),
+                        r => r?,
+                    };
                     note_oracle_trust(consistent, &stats);
                     let engine = if stats.answered_by_saturation {
                         "saturation"
@@ -477,7 +510,10 @@ pub fn entails_reporting<A: ForIRI>(
             } else if sat_mode {
                 Ok(Verdict::from_check(saturation_inconsistent(onto), false))
             } else {
-                let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
+                let (consistent, stats) = match crate::is_consistent_with_stats(onto) {
+                    Err(ReasonError::NoVerdict) => return Ok(oracle_no_verdict()),
+                    r => r?,
+                };
                 note_oracle_trust(consistent, &stats);
                 Ok(Verdict::from_check(!consistent, stats.incomplete))
             }
@@ -764,7 +800,10 @@ fn inconsistent_with<A: ForIRI>(
     for c in extra {
         probed.insert(c);
     }
-    let (consistent, stats) = crate::is_consistent_with_stats(&probed)?;
+    let (consistent, stats) = match crate::is_consistent_with_stats(&probed) {
+        Err(ReasonError::NoVerdict) => return Ok(oracle_no_verdict()),
+        r => r?,
+    };
     note_oracle_trust(consistent, &stats);
     Ok(Verdict::from_check(!consistent, stats.incomplete))
 }
@@ -1354,6 +1393,10 @@ pub struct JustifyOutcome<A: ForIRI> {
     /// fragment-and-give-up claim). A trust decision, not a give-up: separate from
     /// `incomplete`.
     pub relies_on_trusted_consistency: bool,
+    /// #462: some oracle call's deadline-free probe ended in `NoVerdict` (an internal
+    /// limit, likely a reasoner bug, #449) and answered `Unknown`. `incomplete` is set
+    /// too; this is its own signal so a caller can tell it from a node-cap give-up.
+    pub no_verdict: bool,
 }
 
 impl<A: ForIRI> JustifyOutcome<A> {
@@ -1397,6 +1440,8 @@ struct Search<A: ForIRI> {
     gave_up: bool,
     /// #429: see [`JustifyOutcome::relies_on_trusted_consistency`].
     trusted: bool,
+    /// #462: see [`JustifyOutcome::no_verdict`].
+    no_verdict: bool,
 }
 
 impl<A: ForIRI> Search<A> {
@@ -1406,6 +1451,7 @@ impl<A: ForIRI> Search<A> {
             found: Vec::new(),
             gave_up: false,
             trusted: false,
+            no_verdict: false,
         }
     }
 
@@ -1424,8 +1470,9 @@ impl<A: ForIRI> Search<A> {
         JustifyOutcome {
             status: self.status,
             justifications,
-            incomplete: self.status == Verdict::Unknown || self.gave_up,
+            incomplete: self.status == Verdict::Unknown || self.gave_up || self.no_verdict,
             relies_on_trusted_consistency: self.trusted,
+            no_verdict: self.no_verdict,
         }
     }
 }
@@ -1575,8 +1622,13 @@ fn search_one<A: ForIRI>(
     all_candidates: &[Component<A>],
     q: &Entailment,
 ) -> Result<Search<A>, ReasonError> {
-    let (search, trusted) = with_oracle_trust(|| search_one_inner(fixed, all_candidates, q));
-    search.map(|s| Search { trusted, ..s })
+    let ((search, trusted), no_verdict) =
+        with_oracle_no_verdict(|| with_oracle_trust(|| search_one_inner(fixed, all_candidates, q)));
+    search.map(|s| Search {
+        trusted,
+        no_verdict,
+        ..s
+    })
 }
 
 fn search_one_inner<A: ForIRI>(
@@ -1601,7 +1653,8 @@ fn search_one_inner<A: ForIRI>(
         status: Verdict::Entailed,
         found: vec![(j, give_ups.gave_up)],
         gave_up: give_ups.gave_up,
-        trusted: false, // set by `search_one`
+        trusted: false,    // set by `search_one`
+        no_verdict: false, // set by `search_one`
     })
 }
 
@@ -1612,8 +1665,14 @@ fn search_all<A: ForIRI>(
     q: &Entailment,
     max: usize,
 ) -> Result<Search<A>, ReasonError> {
-    let (search, trusted) = with_oracle_trust(|| search_all_inner(fixed, all_candidates, q, max));
-    search.map(|s| Search { trusted, ..s })
+    let ((search, trusted), no_verdict) = with_oracle_no_verdict(|| {
+        with_oracle_trust(|| search_all_inner(fixed, all_candidates, q, max))
+    });
+    search.map(|s| Search {
+        trusted,
+        no_verdict,
+        ..s
+    })
 }
 
 fn search_all_inner<A: ForIRI>(
@@ -1681,7 +1740,8 @@ fn search_all_inner<A: ForIRI>(
         status: Verdict::Entailed,
         found,
         gave_up: branch_give_ups.gave_up,
-        trusted: false, // set by `search_all`
+        trusted: false,    // set by `search_all`
+        no_verdict: false, // set by `search_all`
     })
 }
 

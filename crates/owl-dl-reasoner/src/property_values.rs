@@ -33,6 +33,7 @@ pub struct ObjectPropertyValues {
     triples: Vec<(String, String, String)>,
     incomplete: bool,
     consistency_undetermined: bool,
+    no_verdict: bool,
 }
 
 impl ObjectPropertyValues {
@@ -63,6 +64,15 @@ impl ObjectPropertyValues {
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// #462: a deadline-free extension probe ended in `NoVerdict` (an internal limit,
+    /// likely a reasoner bug, #449). [`Self::incomplete`] is set too. A `NoVerdict` on a
+    /// probe with a pair deadline is the routine depth-cap cut and only sets
+    /// `incomplete`.
+    #[must_use]
+    pub fn no_verdict(&self) -> bool {
+        self.no_verdict
     }
 
     /// #369: the answer is non-empty and the KB's consistency stayed
@@ -456,6 +466,7 @@ pub fn inferred_object_property_values<A: ForIRI>(
     // a real edge went undetected. See `object_property_edge_complete`'s doc
     // for the full enumerated whitelist.
     let mut incomplete = !object_property_edge_complete(&internal);
+    let mut no_verdict = false;
 
     // `from_internal` clones `internal.vocabulary` before consuming
     // `internal`, so `prepared.vocabulary` resolves the same IRI ↔ id mapping
@@ -488,7 +499,16 @@ pub fn inferred_object_property_values<A: ForIRI>(
             }
             incomplete = true;
             let deadline = pair_deadline.map(|d| Instant::now() + d);
-            if prepared.consistent_with_extra(&[], &[(a, r, b)], deadline)? == Some(false) {
+            let entailed = match prepared.consistent_with_extra(&[], &[(a, r, b)], deadline) {
+                // #462: no verdict, so not entailed (`incomplete` is already set). Only
+                // a deadline-free probe's `NoVerdict` is an internal limit.
+                Err(ReasonError::NoVerdict) => {
+                    no_verdict |= deadline.is_none();
+                    false
+                }
+                r => r? == Some(false),
+            };
+            if entailed {
                 // KB ∪ {¬R(a,b)} is inconsistent ⇒ R(a,b) is entailed.
                 seed_set.insert(candidate.clone());
                 triples.push(candidate);
@@ -506,6 +526,7 @@ pub fn inferred_object_property_values<A: ForIRI>(
         triples,
         incomplete,
         consistency_undetermined,
+        no_verdict,
     })
 }
 

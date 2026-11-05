@@ -188,6 +188,10 @@ All notable changes to rustdl are documented here. Format is based on
     So PMD core and the ORE depth-cut ontologies are unaffected.
   - **Budgeted probes in the n² driver:** a `NoVerdict` is now that depth-cut too. It used to abort
     `--n2-classify` and `disjoint`.
+  - **`consistent`'s bounded fall-through probe** (the wedge route, `RUSTDL_CONSISTENCY_FALLBACK_MS`):
+    a `NoVerdict` there is now that probe's ordinary give-up (`incomplete`, exit 3), without
+    #449's bug note. So `justify`, `repair` and `prove` on an inconsistent KB no longer read it
+    as one either.
   - **`realize --properties`** no longer turns an error of its property step into a
     `# … unavailable` comment with exit 0; the error is the command's.
 - **classify no longer reports a `TBox`-only inconsistent ontology as determined-consistent

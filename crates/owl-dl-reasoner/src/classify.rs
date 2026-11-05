@@ -797,13 +797,15 @@ pub struct ClassificationStats {
     /// `NoVerdict` on a **deadline-free** probe. Such a probe searches to
     /// `DEEP_SEARCH_DEPTH`, so a `NoVerdict` there is an internal limit, likely a reasoner
     /// bug (#449), not a budget cut. Each is also a `timed_out_pairs` entry with an undecided
-    /// marker (under `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` for the per-class probes), and the
-    /// probe takes its sound default, but it is **not** counted in `depth_capped_pairs`. A
+    /// marker (whatever `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` says), and the probe takes its sound default, but it is **not** counted in `depth_capped_pairs`. A
     /// `NoVerdict` on a BUDGETED probe is the routine depth-cap cut (#288) and is not
     /// counted here. `classify --json` reports it as `no_verdict_pairs`; the CLI prints the
     /// #449 note and exits 3 when it is non-zero.
     ///
-    /// MUST be added to BOTH worker-stat merge sites (see `stall_tail_skips`).
+    /// MUST be added to BOTH worker-stat merge sites (see `stall_tail_skips`). The
+    /// label-sweep site (`fold_probe_stats`) always sees 0 today, because the sweeps are
+    /// always budgeted; it is there for a future deadline-free sweep, and no test can
+    /// pin it until one exists.
     pub no_verdict_pairs: usize,
     pub fallthrough_ran: usize,
     pub fallthrough_subsumed: usize,
@@ -1881,6 +1883,7 @@ fn fold_probe_stats(stats: &mut ClassificationStats, sd: ClassificationStats) {
     stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
     stats.timed_out_pairs += sd.timed_out_pairs;
     stats.depth_capped_pairs += sd.depth_capped_pairs;
+    // Always 0 today (the label sweeps are budgeted): future-proofing, unpinned by construction.
     stats.no_verdict_pairs += sd.no_verdict_pairs;
     stats
         .timed_out_pair_ids
@@ -4181,11 +4184,15 @@ fn wedge_clauses_refused(prepared: &PreparedOntology) -> usize {
 /// or depth limit) and defaulted to "satisfiable" (#218). Call it directly after
 /// the probe, on the probe's thread: it reads [`crate::last_probe_depth_capped`]
 /// to keep a depth-limit cut apart from a timeout (#288). `no_verdict` marks a
-/// deadline-free probe's `NoVerdict` (#462): it is counted in `no_verdict_pairs` whatever
-/// `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` says, and never as a depth-cap cut.
+/// deadline-free probe's `NoVerdict` (#462): it is counted in `no_verdict_pairs` and marked
+/// whatever `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` says, and never as a depth-cap cut.
 fn record_cut_probe(cut: &std::sync::Mutex<Vec<CutProbe>>, i: usize, no_verdict: bool) {
-    let mark = crate::unsat_probe_cut_incomplete_enabled();
-    if mark || no_verdict {
+    // A deadline-free `NoVerdict` is always marked, whatever the flag says: it is
+    // counted in `no_verdict_pairs`, which must stay within `timed_out_pairs` so that
+    // `incomplete` is set with it (the JSON docs promise that). There is no older
+    // behaviour to keep: before #462 such a probe aborted classify.
+    let mark = no_verdict || crate::unsat_probe_cut_incomplete_enabled();
+    if mark {
         let depth_capped = !no_verdict && crate::last_probe_depth_capped();
         cut.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

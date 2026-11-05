@@ -8745,7 +8745,15 @@ fn is_consistent_internal_full(
         // `inconsistent` → `consistent` at ~124 ABox individuals purely on the
         // abandon threshold, and decides correctly in 2.5 s without it.
         let guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
-        if let Some(sat) = prepared.decide_consistency(Some(dl))? {
+        // #462: this probe has a deadline, so a `NoVerdict` here is the routine
+        // decision-depth cut (#288), a give-up like the deadline's `None`. Letting it
+        // escape made every caller read it as a deadline-free `NoVerdict` (the bug
+        // signal): `consistent --json` set `no_verdict`, and justify's oracles did too.
+        let probe = match prepared.decide_consistency(Some(dl)) {
+            Err(ReasonError::NoVerdict) => None,
+            r => r?,
+        };
+        if let Some(sat) = probe {
             (sat, false)
         } else {
             // Deadline elapsed (or node cap): no inconsistency witnessed within

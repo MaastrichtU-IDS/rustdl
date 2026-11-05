@@ -91,6 +91,11 @@ struct Run {
 /// Runs the binary with no inherited `RUSTDL_*` settings, the wedge off (so the main
 /// tableau decides), and, when `forced`, a one-iteration saturation cap.
 fn run(forced: bool, args: &[&str]) -> Run {
+    run_with(forced, &[], args)
+}
+
+/// [`run`] with extra `RUSTDL_*` settings, applied last so they override its defaults.
+fn run_with(forced: bool, env: &[(&str, &str)], args: &[&str]) -> Run {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("RUSTDL_") {
@@ -101,6 +106,9 @@ fn run(forced: bool, args: &[&str]) -> Run {
         .env("RUSTDL_WEDGE_CONSISTENCY", "0");
     if forced {
         cmd.env("RUSTDL_TABLEAU_SATURATE_ITERS", "1");
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
     }
     let out = cmd.args(args).output().unwrap();
     Run {
@@ -401,4 +409,78 @@ fn a_budgeted_depth_cut_is_not_a_no_verdict() {
     let j = json(&r, "classify");
     assert_eq!(j["incomplete"], true, "{j}");
     assert_eq!(j["no_verdict_pairs"], 0, "{j}");
+}
+
+/// The 280-union class `X` with an individual in it. With the consistency wedge on,
+/// the wedge stalls on it and `consistent` falls through to its BOUNDED tableau probe
+/// (`RUSTDL_CONSISTENCY_FALLBACK_MS`).
+fn unions_abox() -> String {
+    let body: Vec<String> = (0..280)
+        .map(|k| format!("ObjectUnionOf(:A{k} :B{k})"))
+        .collect();
+    format!(
+        "Prefix(:=<http://example.org/d#>)\nOntology(<http://example.org/d>\n\
+         Declaration(NamedIndividual(:a))\n\
+         SubClassOf(:X ObjectIntersectionOf({}))\nClassAssertion(:X :a)\n)\n",
+        body.join(" ")
+    )
+}
+
+/// #462 option (i), the consistency check (Fable's review of #471): its wedge-route
+/// fall-through probe has a deadline, so a `NoVerdict` there is a give-up like the
+/// deadline's, not the deadline-free bug signal. It used to escape through `?`, and
+/// `consistent --json` then reported `no_verdict: true` with the note.
+#[test]
+fn a_budgeted_consistency_probe_is_not_a_no_verdict() {
+    let f = Fixture::with("consistency-fallthrough", &unions_abox());
+    let on = [("RUSTDL_WEDGE_CONSISTENCY", "1"), ("RUSTDL_TRACE", "1")];
+    let r = run_with(true, &on, &["consistent", "--json", f.path()]);
+    // The route: the wedge stalled and the bounded fall-through ran.
+    assert!(
+        r.stderr.contains("bounded tableau fall-through"),
+        "the bounded fall-through ran: {}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains(MARKER), "{}", r.stderr);
+    let j = json(&r, "consistent");
+    assert_eq!(j["no_verdict"], false, "{j}");
+    assert_eq!(j["incomplete"], true, "{j}");
+    assert_eq!(j["consistent"], true, "{j}");
+    // `consistent`'s own give-up convention: exit 3, without the bug note.
+    assert_eq!(r.code, 3, "{}", r.stderr);
+    // Control: the deadline-free path (wedge route off) on the same input still
+    // reports the signal, so the forced stall does reach a `NoVerdict` here. (No
+    // unforced arm: an unbounded search on this input is slow in a debug build.)
+    let r = run(true, &["consistent", "--json", f.path()]);
+    assert_gave_up(&r, "consistent, deadline-free");
+    assert_eq!(json(&r, "consistent")["no_verdict"], true);
+}
+
+/// #462: a deadline-free `NoVerdict` cut is marked even when
+/// `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE=0` stops recording other cut unsat probes, so
+/// `no_verdict_pairs` never comes with `incomplete: false` (Fable's review of #471).
+#[test]
+fn a_no_verdict_cut_is_incomplete_whatever_the_cut_flag_says() {
+    let f = Fixture::new("cut-flag-off");
+    let off = [("RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE", "0")];
+    for driver in [&[][..], &["--n2-classify"][..]] {
+        let mut args = vec!["classify", "--json", "--pair-timeout-ms", "0"];
+        args.extend_from_slice(driver);
+        args.push(f.path());
+        let r = run_with(true, &off, &args);
+        let j = json(&r, "classify");
+        assert!(j["no_verdict_pairs"].as_u64().unwrap() > 0, "{args:?}: {j}");
+        assert_eq!(j["incomplete"], true, "{args:?}: {j}");
+        // The cut unsat probes count in `cut_unsat_probes` (#470), which admits the
+        // consistency probe on this TBox-only input; under the forced stall it gives up.
+        // An unmarked cut would leave classes undecided with consistency claimed
+        // determined (#466's shape). `incomplete` alone cannot see it here: the pair
+        // probes' own `NoVerdict` cuts set it anyway.
+        assert_eq!(j["consistency_undetermined"], true, "{args:?}: {j}");
+        assert!(
+            !r.stderr.contains("class pair(s) hit the"),
+            "{args:?}: {}",
+            r.stderr
+        );
+    }
 }

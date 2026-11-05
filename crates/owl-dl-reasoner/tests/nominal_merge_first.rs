@@ -201,6 +201,16 @@ const UNSATISFIABLE: &[(&str, &str, &str)] = &[
          SubClassOf(:D ObjectOneOf(:a)) DifferentIndividuals(:a :b)",
         "C",
     ),
+    // The nominal only opens the label-fixpoint gate; the clash needs the `∃r.D`
+    // successor that `C1` reaches after a told chain. Pins that a node whose
+    // labels grow over several rounds still generates.
+    (
+        "told_chain_then_successor",
+        "SubClassOf(:C1 :C7) SubClassOf(:C7 :C8) SubClassOf(:C8 ObjectSomeValuesFrom(:r :D)) \
+         SubClassOf(:C1 ObjectAllValuesFrom(:r ObjectComplementOf(:D))) \
+         SubClassOf(ObjectOneOf(:a) :G)",
+        "C1",
+    ),
     // `{a}` holds on one branch only; both branches must generate to clash.
     (
         "branch_dependent_nominal",

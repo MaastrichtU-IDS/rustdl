@@ -1661,6 +1661,16 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.nominal_block_guard
     }
 
+    /// #460: whether a node's node-local label rules run to a fixpoint before it
+    /// generates. Only on a pool with nominals, where a nominal can reach a node
+    /// through a chain of told subsumptions (`C4 ⊑ C7 ⊑ C3 ≡ {a}`) that one round of
+    /// the concept rules unfolds a step at a time; generating before the chain
+    /// lands builds a successor that [`Self::awaits_nominal_merge`] would have held
+    /// back ([`nominal_merge_first_enabled`]).
+    pub(crate) fn settles_labels_before_generating(&self) -> bool {
+        self.nominal_merge_first && !self.pool.nominal_ids().is_empty()
+    }
+
     /// #460: whether `node` carries a nominal `{a}` whose canonical node is another
     /// node it can merge with, so [`crate::rules::apply_nominal_assignment`] will
     /// fold it into that node in this same rule pass. The generating rules wait for
@@ -1671,16 +1681,6 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// A pair marked distinct is never waited on: its merge is refused (a clash), so
     /// the node keeps generating as before and never waits for a merge that cannot
     /// come.
-    /// #460: whether the generating rules wait while a node's labels are still
-    /// growing in this rule pass. Only on a pool with nominals, where a nominal
-    /// can reach a node through a chain of told subsumptions (`C4 ⊑ C7 ⊑ C3 ≡ {a}`)
-    /// that the concept rules unfold one step per pass; generating before the
-    /// chain lands builds a successor that [`Self::awaits_nominal_merge`] would
-    /// have held back ([`nominal_merge_first_enabled`]).
-    pub(crate) fn generation_waits_for_labels(&self) -> bool {
-        self.nominal_merge_first && !self.pool.nominal_ids().is_empty()
-    }
-
     pub(crate) fn awaits_nominal_merge(&self, node: NodeId) -> bool {
         if !self.nominal_merge_first {
             return false;
@@ -5328,10 +5328,10 @@ pub fn nominal_block_guard_enabled() -> bool {
 /// Merging first lets the nominal's self-loop witness the `∃`.
 /// See [`TableauContext::awaits_nominal_merge`].
 ///
-/// The same flag makes generation wait, on a pool with nominals, until a node's
-/// labels stop growing in a pass ([`TableauContext::generation_waits_for_labels`]):
-/// a nominal reached through a told chain (`⊤ ⊑ C1 ≡ C4 ⊑ C7 ⊑ C3 ≡ {a}`) lands
-/// a pass or more after the `∃` it should hold back.
+/// On a pool with nominals the same flag runs a node's node-local label rules to a
+/// fixpoint before it generates ([`TableauContext::settles_labels_before_generating`]):
+/// a nominal reached through a told chain (`⊤ ⊑ C1 ≡ C4 ⊑ C7 ⊑ C3 ≡ {a}`) otherwise
+/// lands a pass or more after the `∃` it should hold back.
 #[must_use]
 pub fn nominal_merge_first_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_MERGE_FIRST").is_none_or(|v| v != "0")

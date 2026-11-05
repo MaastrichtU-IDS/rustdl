@@ -170,6 +170,14 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
                     }
                 }};
             }
+            // #460: on a pool with nominals, generate only once this pass adds no
+            // label to the node (`generation_waits_for_labels`).
+            let settle = ctx.generation_waits_for_labels();
+            let labels_before = if settle {
+                ctx.graph().node(node).labels().len()
+            } else {
+                0
+            };
             step!(apply_residual_gcis(ctx, node));
             step!(apply_and(ctx, node));
             step!(apply_concept_rules(ctx, node));
@@ -179,8 +187,16 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
             step!(apply_role_chains(ctx, node));
             step!(apply_self_restriction(ctx, node));
             step!(apply_role_axioms(ctx, node));
-            step!(apply_exists(ctx, node));
-            step!(apply_min(ctx, node));
+            if settle && ctx.graph().node(node).labels().len() > labels_before {
+                // It generates on a later pass. Registered like a blocked skip for
+                // incremental saturation's revisit.
+                ctx.graph_mut().set_dirty(node, true);
+                ctx.note_blocked_skip(node);
+                changed = true;
+            } else {
+                step!(apply_exists(ctx, node));
+                step!(apply_min(ctx, node));
+            }
             if apply_max(ctx, node) == RuleOutcome::Applied {
                 changed = true;
             }

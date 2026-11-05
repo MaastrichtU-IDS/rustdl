@@ -70,7 +70,8 @@ fn parse(axioms: &str) -> SetOntology<RcStr> {
 const DECLS: &str = "Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E)) \
      Declaration(Class(:F)) Declaration(Class(:G)) Declaration(Class(:C0)) \
      Declaration(Class(:C1)) Declaration(Class(:C2)) Declaration(Class(:C5)) \
-     Declaration(Class(:C7)) \
+     Declaration(Class(:C7)) Declaration(Class(:C3)) Declaration(Class(:C4)) \
+     Declaration(Class(:C6)) Declaration(Class(:C8)) Declaration(ObjectProperty(:r2)) \
      Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s)) \
      Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1)) \
      Declaration(ObjectProperty(:r3)) \
@@ -88,6 +89,17 @@ const CASE_1911: &str = "ObjectPropertyDomain(:r1 :C7) ObjectPropertyDomain(:r1 
 const CASE_812: &str = "SubObjectPropertyOf(ObjectInverseOf(:r0) ObjectInverseOf(:r1)) \
      SubObjectPropertyOf(ObjectPropertyChain(:r1 :r1) :r1) \
      SubClassOf(:C2 ObjectIntersectionOf(ObjectSomeValuesFrom(:r0 :C2) ObjectOneOf(:a0)))";
+
+/// Generated case 1908 (seed 20261103). Every element is `a0` (`⊤ ⊑ C1 ≡ C4 ⊑ C7 ⊑
+/// C3 ≡ {a0}`), and `{a0}` reaches a fresh node only through that told chain, a
+/// pass or more after its `∃r2`. With the merge-first rule alone the `∃` fired
+/// first and the run never finished (main gives up with `NoVerdict`); classify
+/// says consistent with no unsatisfiable class.
+const CASE_1908: &str = "ObjectPropertyDomain(ObjectInverseOf(:r1) :C8) \
+     EquivalentClasses(:C3 ObjectOneOf(:a0)) SubClassOf(owl:Thing :C1) SubClassOf(:C4 :C7) \
+     EquivalentClasses(:C8 :C6) SubClassOf(:C7 :C3) EquivalentClasses(:C4 :C1) \
+     EquivalentClasses(:C4 ObjectSomeValuesFrom(:r2 \
+       ObjectExactCardinality(1 ObjectInverseOf(:r0) :C0)))";
 
 /// Runs `f` on a worker thread and waits at most `secs`. A query that does not
 /// return in time fails the test (its thread is left running until exit).
@@ -114,6 +126,8 @@ fn sat(name: &str, axioms: &str, class: &str) -> bool {
 const SATISFIABLE: &[(&str, &str, &str)] = &[
     ("case_1911", CASE_1911, "C7"),
     ("case_812", CASE_812, "C2"),
+    ("case_1908_c0", CASE_1908, "C0"),
+    ("case_1908_c1", CASE_1908, "C1"),
     (
         "self_loop_on_the_nominal",
         "SubClassOf(:C ObjectIntersectionOf(ObjectOneOf(:a) ObjectSomeValuesFrom(:r :C))) \

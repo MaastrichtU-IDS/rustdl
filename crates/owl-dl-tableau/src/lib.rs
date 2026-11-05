@@ -280,6 +280,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     anywhere_blocking: bool,
     /// `RUSTDL_NOMINAL_BLOCK_GUARD`, cached (#361/#362).
     nominal_block_guard: bool,
+    /// `RUSTDL_NOMINAL_MERGE_FIRST`, cached (#460).
+    nominal_merge_first: bool,
     /// `RUSTDL_MERGE_EXACT_DEPS`, cached (#370).
     merge_exact_deps: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
@@ -417,6 +419,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            nominal_merge_first: nominal_merge_first_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -466,6 +469,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            nominal_merge_first: nominal_merge_first_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -520,6 +524,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            nominal_merge_first: nominal_merge_first_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -1654,6 +1659,44 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Whether `RUSTDL_NOMINAL_BLOCK_GUARD` is on (cached).
     pub(crate) fn nominal_block_guard(&self) -> bool {
         self.nominal_block_guard
+    }
+
+    /// #460: whether `node` carries a nominal `{a}` whose canonical node is another
+    /// node it can merge with, so [`crate::rules::apply_nominal_assignment`] will
+    /// fold it into that node in this same rule pass. The generating rules wait for
+    /// that merge: a successor built here first is moved onto the nominal, where it
+    /// carries the same labels and builds the next one, without end
+    /// ([`nominal_merge_first_enabled`]).
+    ///
+    /// A pair marked distinct is never waited on: its merge is refused (a clash), so
+    /// the node keeps generating as before and never waits for a merge that cannot
+    /// come.
+    pub(crate) fn awaits_nominal_merge(&self, node: NodeId) -> bool {
+        if !self.nominal_merge_first {
+            return false;
+        }
+        let nominals = self.pool.nominal_ids();
+        if nominals.is_empty() {
+            return false;
+        }
+        let here = self.resolve(node);
+        let waits_on = |c: ConceptId| match self.pool.get(c) {
+            ConceptExpr::Nominal(i) => self.graph.nominal_node(*i).is_some_and(|other| {
+                let other = self.resolve(other);
+                other != here && !self.are_distinct(here, other)
+            }),
+            _ => false,
+        };
+        let labels = &self.graph.node(node).labels;
+        // As in `node_is_nominal` (#288): few nominal concepts, so look each up in
+        // the sorted labels unless the node has fewer labels than that.
+        if nominals.len() <= labels.len() {
+            nominals
+                .iter()
+                .any(|&n| labels.binary_search(&n).is_ok() && waits_on(n))
+        } else {
+            labels.iter().any(|&c| waits_on(c))
+        }
     }
 
     /// Whether `≤n` merges use exact distinctness deps (#370,
@@ -4521,6 +4564,40 @@ mod tests {
         assert_eq!(ctx.graph.had_child.len(), ctx.graph.len());
     }
 
+    /// #460: a node bound to a nominal waits for its merge only while that merge
+    /// can happen. The canonical node itself never waits, and a node marked
+    /// distinct from the canonical node never waits (its merge is refused, so
+    /// waiting would withhold its successors for good).
+    #[test]
+    fn awaits_nominal_merge_only_while_the_merge_can_come() {
+        let mut pool = ConceptPool::new();
+        let a = IndividualId::new(0);
+        let nom_a = pool.nominal(a);
+        let mut ctx = TableauContext::new(&pool);
+        let canonical = ctx.new_node();
+        ctx.add_label(canonical, nom_a);
+        ctx.assign_nominal(a, canonical);
+        let fresh = ctx.new_node();
+        assert!(
+            !ctx.awaits_nominal_merge(fresh),
+            "no nominal label: no wait"
+        );
+        ctx.add_label(fresh, nom_a);
+        assert!(
+            ctx.awaits_nominal_merge(fresh),
+            "bound to `a`, canonical elsewhere"
+        );
+        assert!(
+            !ctx.awaits_nominal_merge(canonical),
+            "the canonical node never waits"
+        );
+        ctx.mark_distinct(fresh, canonical);
+        assert!(
+            !ctx.awaits_nominal_merge(fresh),
+            "a refused merge never comes: the node must not wait for it"
+        );
+    }
+
     #[test]
     fn merge_into_does_not_create_parent_pointer_cycle() {
         // root —r→ s1 —r→ s2 —r→ s3. Merge s1 into s3: step 5 re-parents
@@ -5173,6 +5250,21 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
 #[must_use]
 pub fn nominal_block_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")
+}
+
+/// #460 `RUSTDL_NOMINAL_MERGE_FIRST` (default ON, `=0` reverts), main tableau: a
+/// node that carries a nominal `{a}` merges into `a`'s canonical node before it
+/// generates `∃`/`≥n` successors (the SHOIQ priority of the o-rule over the
+/// generating rules). The rule block ran the generating rules first, so with
+/// `C ⊑ {a}` and `C ⊑ ∃r.C` each fresh `C` node built its successor, then merged;
+/// the merge moved that successor onto the nominal, where it did the same, without
+/// end, and each merge added duplicate edges that made the next round slower.
+/// `sat` and `subclass` never finished on 4-axiom KBs that classify answers at once.
+/// Merging first lets the nominal's self-loop witness the `∃`.
+/// See [`TableauContext::awaits_nominal_merge`].
+#[must_use]
+pub fn nominal_merge_first_enabled() -> bool {
+    std::env::var_os("RUSTDL_NOMINAL_MERGE_FIRST").is_none_or(|v| v != "0")
 }
 
 /// #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): in the wedge's

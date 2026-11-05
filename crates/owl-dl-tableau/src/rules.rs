@@ -724,6 +724,13 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
     if crate::nominal_first_enabled() && ctx.has_pending_nominal_disjunction(node) {
         return RuleOutcome::NoChange;
     }
+    // #460: a node bound to a nominal merges first; its labels, this `∃` among
+    // them, then generate on the nominal's node. Registered like the #362
+    // deferral, so incremental saturation revisits the node.
+    if ctx.awaits_nominal_merge(node) {
+        ctx.note_blocked_skip(node);
+        return RuleOutcome::NoChange;
+    }
     // `(role, body, deps_of_the_some_label)` triples.
     let pending: Vec<(Role, ConceptId, DepSet)> = {
         let n = ctx.graph().node(node);
@@ -829,6 +836,11 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
 pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_min);
     if ctx.is_blocked(node) {
+        ctx.note_blocked_skip(node);
+        return RuleOutcome::NoChange;
+    }
+    // #460: as in `apply_exists`.
+    if ctx.awaits_nominal_merge(node) {
         ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
@@ -1475,9 +1487,14 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                     } else {
                         (other_res, resolved_node)
                     };
-                    if !ctx.merge_into_with_deps(source, keep, merge_deps.as_slice())
-                        && let Some(bot) = ctx.pool().bot_id()
-                    {
+                    let merged = ctx.merge_into_with_deps(source, keep, merge_deps.as_slice());
+                    // A refused merge (the pair is marked distinct) is a clash,
+                    // recorded as `⊥`. Without `⊥` in the pool it would be lost.
+                    debug_assert!(
+                        merged || ctx.pool().bot_id().is_some(),
+                        "refused nominal merge with no ⊥ interned: the clash is lost"
+                    );
+                    if !merged && let Some(bot) = ctx.pool().bot_id() {
                         // Conservative deps for the failed-merge clash:
                         // active branches ⊇ the precise merge-cond deps.
                         let deps: DepSet = DepSet::from_slice(ctx.active_branches());

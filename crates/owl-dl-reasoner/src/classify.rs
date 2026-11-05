@@ -2547,6 +2547,9 @@ fn probe_says_inconsistent(
     // behaviour, so this can only fail to fix, never break.
     let min_permille = crate::classify_probe_min_frac_permille();
     let min_permille = usize::try_from(min_permille).unwrap_or(usize::MAX);
+    // `incomplete_evidence` bypasses it as well: on an incomplete run the count is
+    // budget-truncated, so a small fraction is not evidence of consistency. Since #466
+    // that includes a `TBox`-only run with a cut unsat probe and a few unsat classes.
     // `extra_admission` bypasses this minimum-fraction guard for the same reason it
     // bypasses the admission above: at the #128 pre-walk call site
     // `unsatisfiable_idxs` is empty, so the guard would reject on a count that has

@@ -1,5 +1,6 @@
 //! `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE` — admit the classify consistency probe on an
-//! INCOMPLETE, `ABox`-bearing run even when no class was proved unsatisfiable.
+//! INCOMPLETE run even when no class was proved unsatisfiable: an `ABox`-bearing run on
+//! any cut, and (#466) a `TBox`-only run on a cut per-class unsat probe.
 //!
 //! The probe's normal admission test is the unsatisfiable FRACTION, which is
 //! budget-sensitive: a timed-out per-class probe defaults to *satisfiable*, so a small
@@ -110,8 +111,8 @@ fn consistent_of(src: &str, per_pair_ms: u64) -> bool {
     !h.stats().inconsistent
 }
 
-/// Off (the default) must be inert on both an ABox-bearing and an ABox-free ontology,
-/// at a generous budget and at a punishing one.
+/// Unset (the default, ON) and an explicit `0` must agree on both an ABox-bearing and an
+/// ABox-free consistent ontology, at a generous budget and at a punishing one.
 #[test]
 fn unset_is_inert() {
     let _l = ENV_MUTEX
@@ -158,10 +159,11 @@ fn widened_admission_never_manufactures_inconsistency() {
     }
 }
 
-/// An ABox-FREE ontology must never reach the widened admission, however incomplete
-/// the run: the condition is `timed_out_pairs > 0 AND has_abox_axioms`. Pins the
-/// `has_abox_axioms` conjunct — dropping it would widen the probe to every incomplete
-/// ontology in the corpus.
+/// An ABox-FREE ontology with no cut unsat probe must never reach the widened
+/// admission, however incomplete the run: the condition is `timed_out_pairs > 0 AND
+/// (has_abox_axioms OR cut_unsat_probes > 0)` (#466 added the second arm; this
+/// fixture is pure EL, so it never records a cut probe). Dropping the `ABox` conjunct
+/// entirely would widen the probe to every incomplete ontology in the corpus.
 #[test]
 fn abox_free_ontology_is_not_admitted() {
     let _l = ENV_MUTEX

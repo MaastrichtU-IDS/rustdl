@@ -177,9 +177,9 @@ All notable changes to rustdl are documented here. Format is based on
   tight budget or the node cap), the probe never ran, and `classify --json` read
   `consistent: true, consistency_undetermined: false` with `unsatisfiable: []`. A cut unsat
   probe (`ClassificationStats::cut_unsat_probes`, new) now admits the probe on any run: it
-  proves the inconsistency or reports `consistency_undetermined`. A cut subsumption pair
-  alone does not admit a `TBox`-only run, since it hides no unsatisfiable class. This also
-  fixes the flaky `classify_probe_giveup_cli` test.
+  proves the inconsistency, finds a model, or reports `consistency_undetermined`. A cut
+  subsumption pair alone does not admit a `TBox`-only run, since it hides no unsatisfiable
+  class. This also fixes the flaky `classify_probe_giveup_cli` test.
 - **`consistent` answers inputs classify's saturation fast path admits, with no individual, from
   the EL saturator, as classify does (#459).** Such an input reached no verdict-bearing route: the
   EL closure can only prove inconsistency, and without an individual there is no consistency

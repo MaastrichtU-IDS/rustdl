@@ -6275,6 +6275,35 @@ pub fn query_seeded_first_ms() -> u64 {
         .unwrap_or(QUERY_SEEDED_FIRST_DEFAULT_MS)
 }
 
+/// #457: the default of [`query_wedge_ms`].
+pub const QUERY_WEDGE_DEFAULT_MS: u64 = 3_000;
+
+/// #457: the wall-clock budget, in ms, of the hypertableau wedge that the named
+/// subsumption query (`subclass`, `explain`, `is_subclass_of`, justify's
+/// `SubClassOf` oracle) tries before the main tableau (`RUSTDL_QUERY_WEDGE_MS`,
+/// default [`QUERY_WEDGE_DEFAULT_MS`]; `0` = unbounded, as before #457;
+/// unparsable values fall back to the default).
+///
+/// The wedge is an accelerator: only its `Subsumed` is used, and any other
+/// verdict, a stall at this deadline included, falls through to the main
+/// tableau under the query node cap. A cut never becomes an answer. It can lose
+/// one only where the wedge would prove the pair after the budget and the main
+/// tableau cannot decide it under its cap: that is then a node-cap give-up
+/// (`incomplete`, `unknown`), not a wrong answer. The #457 sweep (9,335
+/// `subclass` / `explain` calls, main vs this budget) found none. The budget
+/// spans the wedge's build (one clausify, so a large ontology leaves less for
+/// the search) and its whole iterative-deepening schedule. Unbounded, the wedge did not
+/// finish on an 8-axiom inconsistent `TBox` (#457), where the main tableau
+/// answers in milliseconds. The default follows [`query_seeded_first_ms`], the
+/// other fast path that falls through.
+#[must_use]
+pub fn query_wedge_ms() -> u64 {
+    std::env::var("RUSTDL_QUERY_WEDGE_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(QUERY_WEDGE_DEFAULT_MS)
+}
+
 /// Lever 1 (2026-07-20): when the ontology is nominal-free, evaluate the
 /// Horn-shortcircuit FRAGMENT gate on the `TBox` axioms only, ignoring the `ABox`.
 /// An EL/saturator-fragment `TBox` carrying a large `ABox` is otherwise kicked off
@@ -8220,8 +8249,10 @@ pub fn is_consistent_internal(internal: InternalOntology) -> Result<bool, Reason
 /// Stats-returning variant of [`is_consistent`].
 ///
 /// `answered_by_saturation` is `true` when a saturation pre-check decided the answer:
-/// the `ABox` saturation, or (#310) the EL closure proving `⊤` or an individual's
-/// stand-in unsatisfiable. Otherwise the wedge or the tableau answered.
+/// the `ABox` saturation, (#310) the EL closure proving `⊤` or an individual's
+/// stand-in unsatisfiable, or (#459) the EL closure deciding an input classify's
+/// saturation fast path admits and that names no individual, either way (then
+/// `pure_el_mode` is set too). Otherwise the wedge or the tableau answered.
 ///
 /// `incomplete` marks a give-up reported as `true` (#182, #363 A2).
 /// `relies_on_trusted_consistency` marks a `true` whose only evidence is the
@@ -8325,6 +8356,13 @@ pub fn is_consistent_internal_bounded(
     if std::time::Instant::now() >= deadline {
         return Ok(None);
     }
+    // #459: as in `is_consistent_internal_full`. A saturation the deadline cut is
+    // no verdict here, so it answers `None`, never `true`.
+    match consistent_from_el_saturator(&internal, Some(deadline)) {
+        ElSaturatorConsistency::NotApplicable => {}
+        ElSaturatorConsistency::Cut => return Ok(None),
+        ElSaturatorConsistency::Decided(consistent) => return Ok(Some(consistent)),
+    }
     let prepared = PreparedOntology::from_internal(internal)?;
     // #310: as in `is_consistent_internal_full`.
     if prepared
@@ -8365,6 +8403,158 @@ pub fn is_consistent_internal_bounded(
     prepared.decide_consistency(Some(deadline))
 }
 
+/// `RUSTDL_CONSISTENT_EL_FASTPATH` (#459) — **default ON**, `=0` reverts.
+/// `consistent` (and the bounded `is_consistent` APIs) answer an input from the
+/// EL saturator when classify's saturation fast path admits it
+/// ([`classify::saturation_fast_path_admits`]) and it names no individual. See
+/// `consistent_from_el_saturator`.
+#[must_use]
+pub fn consistent_el_fastpath_enabled() -> bool {
+    std::env::var_os("RUSTDL_CONSISTENT_EL_FASTPATH").is_none_or(|v| v != "0")
+}
+
+/// What [`consistent_from_el_saturator`] concluded (#459).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElSaturatorConsistency {
+    /// The shortcut does not apply; take the usual route.
+    NotApplicable,
+    /// It applies, but the saturation hit the deadline: no verdict.
+    Cut,
+    /// It applies and decided: `true` means consistent.
+    Decided(bool),
+}
+
+/// #459: decide consistency from the EL saturator, as classify does, when that
+/// verdict is complete.
+///
+/// **When it applies.** All of:
+/// - [`consistent_el_fastpath_enabled`] and [`sat_inconsistency_all_surfaces_enabled`]
+///   (with the latter OFF the saturator's verdict is not read anywhere, and the
+///   shortcut would degrade to an unconditional `true`);
+/// - **no individual** ([`internal_has_individuals`]: no `ABox` axiom, no `TBox`
+///   nominal), tested on the IR. Not "no consistency wedge": the wedge is also
+///   absent under `RUSTDL_WEDGE_CONSISTENCY=0`, and an `ABox` input would then be
+///   answered by a saturator that never saw its `ABox`. With individuals, the
+///   `ABox` checks and the wedge decide, as before. No gate admits a nominal
+///   today, so the nominal half of this test is redundant with the gate (and no
+///   test can tell it apart); it stays for a future widening of the gate;
+/// - [`classify::saturation_fast_path_admits`], the gate under which classify
+///   reports its own `consistent` with `completeness_guaranteed`. Its third
+///   disjunct (`tbox_only_saturator_eligible`) requires an `ABox`, so with no
+///   individual only pure EL and `saturator_complete_fragment` can admit.
+///
+/// **Why the verdict is complete there.** With no individual, the KB is
+/// inconsistent exactly when `⊤` is unsatisfiable. The saturator reports that as
+/// `globally_inconsistent()` (a syntactic `⊤ ⊑ ⊥`) or `top_is_unsat()` (a class
+/// every element must belong to, including the synthetic key of a non-atomic
+/// `⊤ ⊑ D` since #445, saturated to `⊥`), and it is complete for these gates:
+/// the same closure is what classify's `consistent` reports on them.
+///
+/// **Why it exists.** Before this, such an input skipped every verdict-bearing
+/// route (the closure only proves inconsistency, and there is no wedge without
+/// individuals) and fell through to the unbounded main-tableau `decide(Top)`. A
+/// `⊤ ⊑ ∃r.B` GCI with cyclic existential definitions sent that search down deep
+/// chains: 12 of 1000 `el_top` generator cases ran past 30 s, one past 300 s,
+/// while classify answered in under a second.
+fn consistent_from_el_saturator(
+    internal: &InternalOntology,
+    deadline: Option<std::time::Instant>,
+) -> ElSaturatorConsistency {
+    if !consistent_el_fastpath_enabled()
+        || !sat_inconsistency_all_surfaces_enabled()
+        || internal_has_individuals(internal)
+        || !classify::saturation_fast_path_admits(internal)
+    {
+        return ElSaturatorConsistency::NotApplicable;
+    }
+    let (closure, aborted) = owl_dl_saturation::saturate_with_deadline(internal, deadline);
+    let inconsistent = saturation_says_inconsistent(&closure);
+    // A cut closure is sound but partial: a `⊥` it found is real, its silence is
+    // not a verdict.
+    let verdict = if inconsistent {
+        ElSaturatorConsistency::Decided(false)
+    } else if aborted {
+        ElSaturatorConsistency::Cut
+    } else {
+        ElSaturatorConsistency::Decided(true)
+    };
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        eprintln!("consistency: EL saturator decides (gate-admitted, no individual): {verdict:?}");
+    }
+    verdict
+}
+
+#[cfg(test)]
+mod consistent_el_fastpath_tests {
+    use super::{
+        ElSaturatorConsistency, consistent_from_el_saturator, is_consistent_internal_bounded,
+    };
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use owl_dl_core::ontology::InternalOntology;
+    use std::fmt::Write as _;
+
+    fn internal(axioms: &str) -> InternalOntology {
+        let src = format!("Prefix(:=<http://ex/#>) Ontology(<http://ex/> {axioms})");
+        let (onto, _): (SetOntology<RcStr>, _) = read_ofn(
+            &mut std::io::Cursor::new(src),
+            ParserConfiguration::default(),
+        )
+        .expect("parse ofn");
+        owl_dl_core::convert::convert_ontology(&onto).expect("convert")
+    }
+
+    /// #459: a saturation the deadline cut is no verdict. Its closure is sound but
+    /// partial, so "nothing unsatisfiable found" must not become `consistent`.
+    #[test]
+    fn a_cut_saturation_is_no_verdict() {
+        // A subsumption chain long enough that the engine reaches its first clock
+        // check (every 4096 steps) before the fixpoint.
+        let mut ax = String::new();
+        for i in 0..3000 {
+            let _ = write!(ax, "SubClassOf(:A{i} :A{}) ", i + 1);
+        }
+        let onto = internal(&ax);
+        let past = std::time::Instant::now();
+        assert_eq!(
+            consistent_from_el_saturator(&onto, Some(past)),
+            ElSaturatorConsistency::Cut
+        );
+        assert_eq!(
+            consistent_from_el_saturator(&internal("SubClassOf(:A :B)"), None),
+            ElSaturatorConsistency::Decided(true)
+        );
+    }
+
+    /// #459: the bounded API turns a cut saturation into `None`, never `true`,
+    /// and returns soon after its deadline. The deadline is in the future, so the
+    /// earlier `now >= deadline` guard does not answer for it; the chain's
+    /// saturation needs far longer than 20 ms. Falling through to the old route
+    /// instead also answers `None`, but only after an unbounded saturation
+    /// (28 min in a debug build here), which the time bound catches.
+    #[test]
+    fn bounded_api_answers_none_when_the_saturation_is_cut() {
+        let mut ax = String::new();
+        for i in 0..3000 {
+            let _ = write!(ax, "SubClassOf(:A{i} :A{}) ", i + 1);
+        }
+        let onto = internal(&ax);
+        let start = std::time::Instant::now();
+        let deadline = start + std::time::Duration::from_millis(20);
+        assert_eq!(
+            is_consistent_internal_bounded(onto, deadline).expect("no error"),
+            None
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "a 20 ms budget took {elapsed:?}: the cut saturation did not return"
+        );
+    }
+}
+
 fn is_consistent_internal_full(
     internal: InternalOntology,
 ) -> Result<(bool, QueryStats), ReasonError> {
@@ -8382,6 +8572,24 @@ fn is_consistent_internal_full(
             QueryStats {
                 answered_by_saturation: true,
                 pure_el_mode: false,
+                incomplete: false,
+                wedge_clauses_refused: 0,
+                relies_on_trusted_consistency: false,
+                consistency_undetermined: false,
+            },
+        ));
+    }
+    // #459: an input classify's saturation fast path admits, with no individual,
+    // is decided by the EL saturator, as classify decides it. Without this it
+    // reached the unbounded `decide(Top)` below and could run for minutes.
+    if let ElSaturatorConsistency::Decided(consistent) =
+        consistent_from_el_saturator(&internal, None)
+    {
+        return Ok((
+            consistent,
+            QueryStats {
+                answered_by_saturation: true,
+                pure_el_mode: true,
                 incomplete: false,
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
@@ -8995,6 +9203,35 @@ fn is_subclass_of_after_guard(
     Ok((holds, stats))
 }
 
+/// #457: the named subsumption query's H4 wedge under [`query_wedge_ms`]:
+/// `true` iff it proves `sub ⊑ sup`.
+fn query_wedge_subsumes(
+    internal: &InternalOntology,
+    sub: owl_dl_core::ir::ClassId,
+    sup: owl_dl_core::ir::ClassId,
+) -> bool {
+    let ms = query_wedge_ms();
+    let started = std::time::Instant::now();
+    let deadline = (ms > 0).then(|| started + std::time::Duration::from_millis(ms));
+    let verdict = HyperCache::build(internal).decide(sub, sup, deadline);
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        let stalled = matches!(
+            verdict,
+            HyperVerdict::Unknown | HyperVerdict::UnknownDiverged
+        );
+        eprintln!(
+            "query wedge (#457): {verdict:?} after {} ms (budget {ms} ms){}",
+            started.elapsed().as_millis(),
+            if stalled {
+                "; falling through to the main tableau"
+            } else {
+                ""
+            }
+        );
+    }
+    verdict == HyperVerdict::Subsumed
+}
+
 /// [`is_subclass_of_internal_full`], also returning what the query left for the
 /// #369 lazy consistency check ([`QueryOntology`]).
 pub(crate) fn is_subclass_of_keeping(
@@ -9088,9 +9325,8 @@ pub(crate) fn is_subclass_of_keeping(
     // subsumption (sound for any ontology), skipping the tableau. A
     // non-proof falls through. No-op when the wedge is disabled.
     // (HF5 `Sat`-trust is wired in the classify path, not here.)
-    if hyper_wedge_enabled()
-        && HyperCache::build(&internal).decide(sub_id, super_id, None) == HyperVerdict::Subsumed
-    {
+    // #457: under [`query_wedge_ms`]; a stall falls through like any non-proof.
+    if hyper_wedge_enabled() && query_wedge_subsumes(&internal, sub_id, super_id) {
         return Ok((
             true,
             QueryStats {

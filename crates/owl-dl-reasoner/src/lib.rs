@@ -3175,7 +3175,8 @@ pub fn classify_probe_min_frac_permille() -> u64 {
 /// and `ObjectPropertyAssertion` count **do not track cost, in either
 /// direction** — `ore_ont_4510` carries 114 957 `ObjectPropertyAssertion` and
 /// saturates in **136 ms**, while `family.ofn` carries 1 337 and takes
-/// **2585 ms**. `ore_ont_6233` (176 043 `ClassAssertion`) takes 17 ms.
+/// **2585 ms** (2026-08-03, another host; 0.6–1.4 s on the coder host since
+/// #447, 6–12.6 s there before it). `ore_ont_6233` (176 043 `ClassAssertion`) takes 17 ms.
 ///
 /// What does separate them is whether the ontology has a rule that *multiplies*
 /// edges. The fixpoint's cost is the size of the derived edge closure; without a
@@ -3274,9 +3275,20 @@ pub fn abox_cost_predictors(internal: &InternalOntology) -> AboxCostPredictors {
 /// So a mid-gap value is preferred to one hugging the expensive end.
 pub const INCONSISTENCY_WORK_THRESHOLD: u64 = 300_000;
 
-/// Budget granted to the low-work class. 4.6× `family.ofn`'s measured 2585 ms
-/// (4.4× its 2700 ms classify-level flip point) — the headroom the flat 3000 ms
-/// did not have.
+/// Budget granted to the low-work class. Sized as 4.6× `family.ofn`'s 2585 ms
+/// (4.4× its 2700 ms classify-level flip point), measured on another host on
+/// 2026-08-03 — the headroom the flat 3000 ms did not have.
+///
+/// **That figure did not travel (#447).** On the coder host the same fixpoint
+/// took 5.4–12.6 s, so this budget cut it: 1 of 12 classify runs reported
+/// family consistent (and 2 of 10 runs of the same saturation behind `sat`,
+/// #428). The cost was Rule 4 of the `ABox` saturation
+/// testing ~101 M chain candidates in the global edge set (memory-latency-bound,
+/// and doubled by a codegen change at 9f74f15b). With the per-anchor cache of
+/// known conclusions it takes 0.6–1.4 s there (12 runs, 4 in parallel), ≥9×
+/// headroom. The
+/// release-only `shipped_default_budget_covers_family_precheck` requires 3× on
+/// the host running it.
 pub const INCONSISTENCY_GENEROUS_MS: u64 = 12_000;
 
 /// Budget granted to the high-work class. Deliberately **identical to the
@@ -8043,9 +8055,9 @@ fn bounded_query_guard_until(
 /// ([`AboxCostPredictors::work_proxy`] against [`INCONSISTENCY_WORK_THRESHOLD`]),
 /// with different levels:
 /// - **low work: unbounded.** The fixpoint cannot run away there, and the guard
-///   *is* the answer on an inconsistent KB: `family.ofn` (low work) needs 6–12 s of
+///   *is* the answer on an inconsistent KB: `family.ofn` (low work) needed 6–12 s of
 ///   it on the reference host, so classify's 12 s cut it 2 runs in 10, and the
-///   query then stalled, which is #428 itself;
+///   query then stalled, which is #428 itself (0.6–1.4 s since #447);
 /// - **high work: [`INCONSISTENCY_STINGY_MS`] (3 s)**, as classify. Unbounded, the
 ///   saturation never finished on `ore_ont_{10838,15846,16315,3087,1199,7557}`,
 ///   all high work, where the query alone answers in under 10 s.

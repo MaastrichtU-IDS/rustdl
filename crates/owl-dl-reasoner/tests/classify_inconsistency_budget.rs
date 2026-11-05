@@ -720,15 +720,24 @@ fn shipped_default_budget_covers_family_precheck() {
          was added to fix. Raise the default, or re-measure the flip table in \
          the section header if the pre-check itself got faster."
     );
-    // Headroom used to be thin by necessity, because one flat constant had to
-    // serve both family and the 60k-110k-assertion ontologies whose unbounded
-    // pre-check caused the v0.4.8 DNF regression. The adaptive rule removes that
-    // conflict, so the ratio should now be comfortable; it is reported rather
-    // than asserted, to avoid pinning a second arbitrary constant.
     eprintln!(
         "shipped default {default_ms} ms vs measured family pre-check \
          {measured_ms} ms (headroom {:.2}x)",
         f64::from(u32::try_from(default_ms).unwrap_or(u32::MAX))
             / f64::from(u32::try_from(measured_ms.max(1)).unwrap_or(u32::MAX))
+    );
+    // #447: "above the cost" was not enough. On the coder host the pre-check took
+    // 6-10 s against the 12 s default (headroom 1.14x at worst; #428's runs behind
+    // `sat`), and the budget cut it in 2 runs of 10 there (1 of 12 classify runs
+    // in #447's re-run), because Rule 4 tested every chain candidate in the
+    // global edge set. With the per-anchor cache it takes ~0.6-1.4 s there, so
+    // 3x is a margin a correct build clears on a loaded host and the old join
+    // does not.
+    assert!(
+        default_ms >= 3 * measured_ms,
+        "family.ofn's pre-check took {measured_ms} ms, leaving under 3x headroom \
+         in the {default_ms} ms default: one slow run on a busy host and classify \
+         reports family consistent (#447). Look for a slowdown in \
+         abox_saturation's fixpoint (Rule 4's join) before touching the budget."
     );
 }

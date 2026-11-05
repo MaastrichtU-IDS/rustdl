@@ -14,7 +14,13 @@
 //!
 //! One CSV row per invocation on stdout (header with `--header`):
 //! `file,individuals,class_assertions,opa,chain_rules,transitive_roles,`
-//! `functional_roles,axioms,convert_ms,precheck_ms,clash,timed_out,edges,type_adds,edge_adds`
+//! `functional_roles,axioms,convert_ms,precheck_ms,clash,timed_out,edges,type_adds,edge_adds,`
+//! `chain2_fires,chain3_fires,chain_join_attempts,chain_edge_set_probes,edges_digest,same_digest`
+//!
+//! The two digests are order-independent hashes of the fixpoint's edge set and
+//! `derived_same`, over IRIs (individual ids are not stable across processes), so
+//! two runs (e.g. `RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE=1` against the default, #447) can be
+//! compared for the same closure.
 //!
 //! `budget_ms` (default 0 = unbounded) bounds the pre-check exactly the way the
 //! classify path does, so a probe on a runaway `ABox` can still be capped.
@@ -99,7 +105,8 @@ fn main() {
     if args.iter().any(|a| a == "--header") {
         println!(
             "file,individuals,class_assertions,opa,chain_rules,transitive_roles,\
-             functional_roles,axioms,convert_ms,precheck_ms,clash,timed_out,edges,type_adds,edge_adds"
+             functional_roles,axioms,convert_ms,precheck_ms,clash,timed_out,edges,type_adds,edge_adds,\
+             chain2_fires,chain3_fires,chain_join_attempts,chain_edge_set_probes,edges_digest,same_digest"
         );
         if args.len() == 1 {
             return;
@@ -133,8 +140,28 @@ fn main() {
     let name = std::path::Path::new(path)
         .file_stem()
         .map_or_else(|| path.clone(), |s| s.to_string_lossy().into_owned());
+    let vocab = &internal.vocabulary;
+    let h = |parts: &[&str]| {
+        use std::hash::{Hash, Hasher};
+        // `DefaultHasher::new()` has fixed keys, so the digest is stable across runs.
+        let mut st = std::collections::hash_map::DefaultHasher::new();
+        parts.hash(&mut st);
+        st.finish()
+    };
+    let edges_digest = res.edges.iter().fold(0u64, |acc, &(r, a, b)| {
+        acc.wrapping_add(h(&[
+            vocab.role_iri(r),
+            vocab.individual_iri(a),
+            vocab.individual_iri(b),
+        ]))
+    });
+    let same_digest = res.derived_same.iter().fold(0u64, |acc, &(a, b)| {
+        let (x, y) = (vocab.individual_iri(a), vocab.individual_iri(b));
+        let (x, y) = if x <= y { (x, y) } else { (y, x) };
+        acc.wrapping_add(h(&[x, y]))
+    });
     println!(
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:016x},{:016x}",
         name,
         p.individuals,
         p.class_assertions,
@@ -149,7 +176,13 @@ fn main() {
         res.timed_out,
         res.edges.len(),
         res.type_additions,
-        res.edge_additions
+        res.edge_additions,
+        res.chain2_fires,
+        res.chain3_fires,
+        res.chain_join_attempts,
+        res.chain_edge_set_probes,
+        edges_digest,
+        same_digest
     );
 }
 

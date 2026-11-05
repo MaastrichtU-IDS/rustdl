@@ -76,6 +76,48 @@ type TypeMap = HashMap<IndividualId, HashSet<ClassId>>;
 /// canonical: `Named(r)` → (r, a, b); `Inverse(r)` → (r, b, a) and store forward.
 type RawEdge = (RoleId, IndividualId, IndividualId);
 
+/// The fixpoint's global edge set, counting its lookups (#447). Its fields are
+/// private to this module, so every lookup the fixpoint makes is counted, wherever
+/// it sits; Rule 4 reports its share as
+/// [`SaturationResult::chain_edge_set_probes`].
+mod edge_set {
+    use super::RawEdge;
+    use std::collections::HashSet;
+
+    #[derive(Default)]
+    pub(super) struct EdgeSet {
+        set: HashSet<RawEdge>,
+        lookups: u64,
+    }
+
+    impl EdgeSet {
+        pub(super) fn insert(&mut self, e: RawEdge) -> bool {
+            self.lookups += 1;
+            self.set.insert(e)
+        }
+
+        pub(super) fn len(&self) -> usize {
+            self.set.len()
+        }
+
+        pub(super) fn iter(&self) -> std::collections::hash_set::Iter<'_, RawEdge> {
+            self.set.iter()
+        }
+
+        pub(super) fn lookups(&self) -> u64 {
+            self.lookups
+        }
+    }
+
+    impl<'a> IntoIterator for &'a EdgeSet {
+        type Item = &'a RawEdge;
+        type IntoIter = std::collections::hash_set::Iter<'a, RawEdge>;
+        fn into_iter(self) -> Self::IntoIter {
+            self.set.iter()
+        }
+    }
+}
+
 // ─── Saturator ────────────────────────────────────────────────────────────────
 
 /// Result of `saturate_abox_consistency` with diagnostic counters.
@@ -87,6 +129,20 @@ pub struct SaturationResult {
     pub chain2_fires: u64,
     /// Number of times a 3-hop role chain fired to produce a new edge.
     pub chain3_fires: u64,
+    /// Candidate conclusions Rule 4 (role chains, transitivity) produced, new or
+    /// not. On `family.ofn`, 101 M of them for 228 149 new edges.
+    pub chain_join_attempts: u64,
+    /// How many of those candidates Rule 4 looked up in the global edge set (#447).
+    /// With [`ChainDedupe::Global`], every one (`== chain_join_attempts`). With
+    /// [`ChainDedupe::Local`] (the default), the cache misses plus the candidates
+    /// of outer edges below [`CHAIN_CACHE_MIN_CANDIDATES`]: a known conclusion
+    /// misses at most once per anchor, so on a dense join this is far below the
+    /// attempts. Host-independent, so a test can bound it where a timing cannot.
+    /// The exact count can vary from run to run when Rule 7 merges types (the
+    /// round count then depends on `HashMap` order); without functional roles
+    /// it is set-determined. It cannot see a
+    /// change in what one lookup costs (codegen, hasher).
+    pub chain_edge_set_probes: u64,
     /// Number of individuals that have BOTH `:Man` and `:Woman` in their atomic
     /// type set after full saturation. This is the precondition for the
     /// functional-hasSex clash (Man ≡ ∃hasSex.Male, Woman ≡ ∃hasSex.Female,
@@ -205,10 +261,75 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
 /// calls the `ABox` expensive (`query_guard_abox_budget_ms`). `is_consistent` /
 /// `realize` / `materialize_*` / `diagnose` keep calling the unbounded entry
 /// point — for them the pre-check *is* the point of the call.
-#[allow(clippy::too_many_lines)]
 pub fn saturate_abox_consistency_bounded(
     internal: &InternalOntology,
     deadline: Option<std::time::Instant>,
+) -> SaturationResult {
+    saturate_with(internal, deadline, ChainDedupe::from_env())
+}
+
+/// How Rule 4 (role chains and transitivity) tells a new conclusion from a
+/// known one (#447). From the same snapshot, both modes derive exactly the same
+/// conclusions (only the duplicate test differs), so they reach the same
+/// fixpoint: the same types, `clash`, `edges` and `derived_same`. Rule 4's own
+/// counters can differ from run to run in either mode (see the tests'
+/// `observable`). Only the cost of a candidate differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChainDedupe {
+    /// **Default.** Every candidate of one outer edge `r1(a, b)` concludes
+    /// "`sup` from `a` to x" for the same `a`, so it is first checked in `a`'s
+    /// cached set of known `sup`-partners ([`ChainCache`]), fetched once per outer
+    /// edge and small enough to stay in the CPU cache. Only a miss touches
+    /// `edges`. Outer edges with fewer than `min_candidates` candidates skip the
+    /// cache ([`CHAIN_CACHE_MIN_CANDIDATES`] by default; tests lower it so their
+    /// small inputs exercise the cache).
+    Local { min_candidates: usize },
+    /// Every candidate is a lookup in the global `edges` set, as before #447. On
+    /// `family.ofn` that is 101 M random lookups into a 267 112-entry table, which
+    /// is memory-latency-bound: 6–10 s on the coder host, near the classify
+    /// pre-check's 12 s budget. `RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE=1` selects it,
+    /// for A/B validation.
+    Global,
+}
+
+impl ChainDedupe {
+    fn from_env() -> Self {
+        if std::env::var_os("RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE").is_some_and(|v| v == "1") {
+            Self::Global
+        } else {
+            Self::Local {
+                min_candidates: CHAIN_CACHE_MIN_CANDIDATES,
+            }
+        }
+    }
+}
+
+/// Below this many candidates, an outer edge's candidates go straight to the
+/// global edge set (#447): filling a cache entry costs one pass over the
+/// anchor's known partners, which a handful of candidates do not repay. On
+/// `ore_ont_1579` (no chain ever fires) and `ore_ont_13647` (~1.5 candidates per
+/// new edge) a cache for every outer edge cost 25-50% of the pre-check.
+const CHAIN_CACHE_MIN_CANDIDATES: usize = 8;
+
+/// Rule 4's cache of known conclusions per anchor (#447), for
+/// [`ChainDedupe::Local`]: `(sup, sup_inv, a)` → `x` such that "`sup` from `a`
+/// to `x`" (in direction `sup_inv`) is a known edge. An entry is filled from the
+/// round's snapshot index the first time an outer edge with enough candidates
+/// anchors at `a`, and gains every candidate tested after.
+///
+/// **It is only ever a subset of `edges`** (it holds snapshot edges and
+/// candidates already inserted, and edges are never removed), so a hit is a
+/// known conclusion and a miss is decided by `edges` itself. Nothing has to keep
+/// it complete.
+type ChainCache = HashMap<(RoleId, bool, IndividualId), hashbrown::HashSet<IndividualId>>;
+
+/// The body of [`saturate_abox_consistency_bounded`], with the [`ChainDedupe`]
+/// mode a parameter so tests can compare the modes without the environment.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn saturate_with(
+    internal: &InternalOntology,
+    deadline: Option<std::time::Instant>,
+    chain_dedupe: ChainDedupe,
 ) -> SaturationResult {
     let trace = std::env::var("RUSTDL_TRACE").map_or(false, |v| v == "1");
     let mut budget = Deadline::new(deadline);
@@ -647,7 +768,7 @@ pub fn saturate_abox_consistency_bounded(
     // ── ABox state ────────────────────────────────────────────────────────────
 
     let mut types: TypeMap = HashMap::new();
-    let mut edges: HashSet<RawEdge> = HashSet::new(); // (role_id, a, b)
+    let mut edges = edge_set::EdgeSet::default(); // (role_id, a, b)
 
     // Existential markers: per-individual (role_id, filler_class) markers.
     // An individual X has marker (R, C) if X has some type A with A ⊑ ∃R.C.
@@ -658,11 +779,19 @@ pub fn saturate_abox_consistency_bounded(
     // Worklists for types and edges
     let mut type_queue: VecDeque<(IndividualId, ClassId)> = VecDeque::new();
     let mut edge_queue: VecDeque<RawEdge> = VecDeque::new();
+    // #447: Rule 4's cache of known conclusions per anchor; a subset of `edges`.
+    let (local_dedupe, min_candidates) = match chain_dedupe {
+        ChainDedupe::Local { min_candidates } => (true, min_candidates),
+        ChainDedupe::Global => (false, usize::MAX),
+    };
+    let mut chain_cache: ChainCache = HashMap::new();
 
     let mut result = SaturationResult {
         clash: false,
         chain2_fires: 0,
         chain3_fires: 0,
+        chain_join_attempts: 0,
+        chain_edge_set_probes: 0,
         sex_clash_candidates: 0,
         type_additions: 0,
         edge_additions: 0,
@@ -906,6 +1035,7 @@ pub fn saturate_abox_consistency_bounded(
             timed_out = true;
             break 'fixpoint;
         }
+        let lookups_before_rule4 = edges.lookups();
         let edge_vec: Vec<RawEdge> = edges.iter().copied().collect();
 
         // Phase 1a (perf/abox-chain-index): index the snapshot by (role, src)
@@ -968,8 +1098,34 @@ pub fn saturate_abox_consistency_bounded(
                 // r1_inv=true : Inverse(r1)(a,b)=Named(r1)(b,a) → (a,b)=(eb,ea).
                 let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
-                for c in neighbors(r2_id, b, r2_inv) {
+                let candidates = neighbors(r2_id, b, r2_inv);
+                if local_dedupe && candidates.len() >= min_candidates {
+                    // `a`'s known partners: the snapshot's, then every candidate
+                    // tested. A subset of `edges`, so only a miss needs `edges`.
+                    let known = chain_cache
+                        .entry((sup_id, sup_inv, a))
+                        .or_insert_with(|| neighbors(sup_id, a, sup_inv).into_iter().collect());
+                    for c in candidates {
+                        result.chain_join_attempts += 1;
+                        if !known.insert(c) {
+                            continue;
+                        }
+                        let e = if sup_inv {
+                            (sup_id, c, a)
+                        } else {
+                            (sup_id, a, c)
+                        };
+                        if edges.insert(e) {
+                            edge_queue.push_back(e);
+                            result.chain2_fires += 1;
+                            changed = true;
+                        }
+                    }
+                    continue;
+                }
+                for c in candidates {
                     let (na, nc) = if !sup_inv { (a, c) } else { (c, a) };
+                    result.chain_join_attempts += 1;
                     if edges.insert((sup_id, na, nc)) {
                         edge_queue.push_back((sup_id, na, nc));
                         result.chain2_fires += 1;
@@ -995,9 +1151,44 @@ pub fn saturate_abox_consistency_bounded(
                 }
                 let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
+                let mids = neighbors(r2_id, b, r2_inv);
+                let n_candidates: usize = if local_dedupe {
+                    mids.iter()
+                        .map(|&c| neighbors(r3_id, c, r3_inv).len())
+                        .sum()
+                } else {
+                    0
+                };
+                if local_dedupe && n_candidates > 0 && min_candidates <= n_candidates {
+                    // As the 2-hop case. Reached only from a hand-built IR:
+                    // conversion splits longer chains into 2-hop ones.
+                    let known = chain_cache
+                        .entry((sup_id, sup_inv, a))
+                        .or_insert_with(|| neighbors(sup_id, a, sup_inv).into_iter().collect());
+                    for c in mids {
+                        for d in neighbors(r3_id, c, r3_inv) {
+                            result.chain_join_attempts += 1;
+                            if !known.insert(d) {
+                                continue;
+                            }
+                            let e = if sup_inv {
+                                (sup_id, d, a)
+                            } else {
+                                (sup_id, a, d)
+                            };
+                            if edges.insert(e) {
+                                edge_queue.push_back(e);
+                                result.chain3_fires += 1;
+                                changed = true;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 for c in neighbors(r2_id, b, r2_inv) {
                     for d in neighbors(r3_id, c, r3_inv) {
                         let (na, nd) = if !sup_inv { (a, d) } else { (d, a) };
+                        result.chain_join_attempts += 1;
                         if edges.insert((sup_id, na, nd)) {
                             edge_queue.push_back((sup_id, na, nd));
                             result.chain3_fires += 1;
@@ -1007,6 +1198,10 @@ pub fn saturate_abox_consistency_bounded(
                 }
             }
         }
+
+        // Not reached when the deadline breaks out of Rule 4: the counters of a
+        // timed-out run are partial anyway.
+        result.chain_edge_set_probes += edges.lookups() - lookups_before_rule4;
 
         // Rule 7: functional role merge
         // For each functional role R and each individual a that has ≥2 distinct R-fillers,
@@ -1317,6 +1512,7 @@ fn enqueue_concept_types(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     /// Parse an OFN string and lower it to an `InternalOntology`, mirroring
     /// the `read_ofn` → `convert_ontology` pattern used across this crate's
@@ -1332,6 +1528,376 @@ mod tests {
         let (onto, _): (SetOntology<RcStr>, _) =
             read_ofn(&mut r, ParserConfiguration::default()).expect("parse ofn");
         owl_dl_core::convert::convert_ontology(&onto).expect("convert")
+    }
+
+    // ── #447: local vs global dedupe in Rule 4 ────────────────────────────────
+
+    const EX: &str = "http://ex/#";
+
+    /// A role expression of the generated ontologies: `(role index, inverse?)`.
+    type Ope = (usize, bool);
+
+    fn ope((r, inv): Ope) -> String {
+        if inv {
+            format!("ObjectInverseOf(:r{r})")
+        } else {
+            format!(":r{r}")
+        }
+    }
+
+    fn role_of(internal: &InternalOntology, (r, inv): Ope) -> Role {
+        let id = internal
+            .vocabulary
+            .role_id(&format!("{EX}r{r}"))
+            .expect("declared role");
+        if inv {
+            Role::inverse(id)
+        } else {
+            Role::named(id)
+        }
+    }
+
+    /// Everything the modes must agree on: the fixpoint. That is the verdict,
+    /// the closure, `derived_same`, and the counts that equal the size of a
+    /// fixpoint set (`type_additions` is the number of types, `edge_additions`
+    /// of edges).
+    ///
+    /// Not Rule 4's own counters: they depend on how many rounds the fixpoint
+    /// takes, which can depend on `HashMap` iteration order through Rule 7's
+    /// type merges (measured: `chain_join_attempts` 12 or 16 on one input with a
+    /// functional role, in either mode, run to run), and every round re-joins
+    /// the whole snapshot. And on a clash, only the verdict: the fixpoint stops
+    /// part-way through a round, and how far it got depends on the same order
+    /// (`type_additions` 12–16 on one input, in either mode alone).
+    #[allow(clippy::type_complexity)]
+    fn observable(
+        r: &SaturationResult,
+    ) -> (
+        (bool, bool, u64, u64, u64),
+        Vec<RawEdge>,
+        Vec<(IndividualId, IndividualId)>,
+    ) {
+        if r.clash {
+            return ((true, r.timed_out, 0, 0, 0), Vec::new(), Vec::new());
+        }
+        let mut edges = r.edges.clone();
+        edges.sort_unstable();
+        (
+            (
+                r.clash,
+                r.timed_out,
+                r.type_additions,
+                r.edge_additions,
+                r.sex_clash_candidates,
+            ),
+            edges,
+            r.derived_same.clone(),
+        )
+    }
+
+    /// Run Global, the shipped Local, and Local with cache threshold 1 (so every
+    /// outer edge with a candidate uses the cache) on `internal`; assert that all
+    /// three agree, check the probe bounds, and return the threshold-1 result.
+    ///
+    /// The generated inputs have 6 individuals, so no outer edge reaches the
+    /// shipped threshold ([`CHAIN_CACHE_MIN_CANDIDATES`], 8): the shipped arm pins
+    /// the gate, the threshold-1 arm the cache. The cache code does not depend on
+    /// the threshold; `tests/abox_chain_dedupe.rs` runs it at the shipped one.
+    fn both_modes(internal: &InternalOntology) -> SaturationResult {
+        let global = saturate_with(internal, None, ChainDedupe::Global);
+        let shipped = saturate_with(internal, None, ChainDedupe::from_env());
+        assert_eq!(
+            observable(&shipped),
+            observable(&global),
+            "shipped Local and Global diverge"
+        );
+        let local = saturate_with(internal, None, ChainDedupe::Local { min_candidates: 1 });
+        assert_eq!(
+            observable(&local),
+            observable(&global),
+            "Local and Global dedupe diverge"
+        );
+        let fires = local.chain2_fires + local.chain3_fires;
+        assert!(
+            (fires..=local.chain_join_attempts).contains(&local.chain_edge_set_probes),
+            "Local's lookups in `edges` ({}) lie between its new conclusions ({fires}) \
+             and its candidates ({})",
+            local.chain_edge_set_probes,
+            local.chain_join_attempts
+        );
+        assert_eq!(global.chain_edge_set_probes, global.chain_join_attempts);
+        local
+    }
+
+    /// The generated ontology: a small ABox over `i0..i5`, roles `r0..r3` and
+    /// classes `C0..C2`, with every role axiom Rule 4 and its neighbours read.
+    #[derive(Debug, Clone)]
+    struct Spec {
+        assertions: Vec<(usize, usize, usize)>,
+        chains2: Vec<(Ope, Ope, Ope)>,
+        chains3: Vec<(Ope, Ope, Ope, Ope)>,
+        transitive: Vec<usize>,
+        sub_roles: Vec<(Ope, Ope)>,
+        inverse_pairs: Vec<(usize, usize)>,
+        symmetric: Vec<usize>,
+        functional: Vec<Ope>,
+        dom_rng: Vec<(bool, Ope, usize)>,
+        class_assertions: Vec<(usize, usize)>,
+        disjoint: Vec<(usize, usize)>,
+    }
+
+    fn spec_strategy() -> impl proptest::strategy::Strategy<Value = Spec> {
+        use proptest::prelude::*;
+        let o = || (0usize..4, any::<bool>());
+        (
+            prop::collection::vec((0usize..4, 0usize..6, 0usize..6), 1..14),
+            prop::collection::vec((o(), o(), o()), 0..4),
+            prop::collection::vec((o(), o(), o(), o()), 0..3),
+            prop::collection::vec(0usize..4, 0..3),
+            prop::collection::vec((o(), o()), 0..3),
+            prop::collection::vec((0usize..4, 0usize..4), 0..2),
+            prop::collection::vec(0usize..4, 0..2),
+            prop::collection::vec(o(), 0..2),
+            prop::collection::vec((any::<bool>(), o(), 0usize..3), 0..4),
+            prop::collection::vec((0usize..3, 0usize..6), 0..4),
+            prop::collection::vec((0usize..3, 0usize..3), 0..2),
+        )
+            .prop_map(
+                |(
+                    assertions,
+                    chains2,
+                    chains3,
+                    transitive,
+                    sub_roles,
+                    inverse_pairs,
+                    symmetric,
+                    functional,
+                    dom_rng,
+                    class_assertions,
+                    disjoint,
+                )| Spec {
+                    assertions,
+                    chains2,
+                    chains3,
+                    transitive,
+                    sub_roles,
+                    inverse_pairs,
+                    symmetric,
+                    functional,
+                    dom_rng,
+                    class_assertions,
+                    disjoint,
+                },
+            )
+    }
+
+    /// Lower `spec`. 3-hop chains go straight into the IR: conversion splits
+    /// every longer chain into 2-hop ones, so OFN input never reaches Rule 4's
+    /// 3-hop join.
+    fn build(spec: &Spec) -> InternalOntology {
+        let mut ax = String::new();
+        for r in 0..4 {
+            let _ = write!(ax, "Declaration(ObjectProperty(:r{r})) ");
+        }
+        for c in 0..3 {
+            let _ = write!(ax, "Declaration(Class(:C{c})) ");
+        }
+        for i in 0..6 {
+            let _ = write!(ax, "Declaration(NamedIndividual(:i{i})) ");
+        }
+        for &(r, a, b) in &spec.assertions {
+            let _ = write!(ax, "ObjectPropertyAssertion(:r{r} :i{a} :i{b}) ");
+        }
+        for &(x, y, sup) in &spec.chains2 {
+            let _ = write!(
+                ax,
+                "SubObjectPropertyOf(ObjectPropertyChain({} {}) {}) ",
+                ope(x),
+                ope(y),
+                ope(sup)
+            );
+        }
+        for &r in &spec.transitive {
+            let _ = write!(ax, "TransitiveObjectProperty(:r{r}) ");
+        }
+        for &(sub, sup) in &spec.sub_roles {
+            let _ = write!(ax, "SubObjectPropertyOf({} {}) ", ope(sub), ope(sup));
+        }
+        for &(x, y) in &spec.inverse_pairs {
+            let _ = write!(ax, "InverseObjectProperties(:r{x} :r{y}) ");
+        }
+        for &r in &spec.symmetric {
+            let _ = write!(ax, "SymmetricObjectProperty(:r{r}) ");
+        }
+        for &r in &spec.functional {
+            let _ = write!(ax, "FunctionalObjectProperty({}) ", ope(r));
+        }
+        for &(dom, r, c) in &spec.dom_rng {
+            let kind = if dom { "Domain" } else { "Range" };
+            let _ = write!(ax, "ObjectProperty{kind}({} :C{c}) ", ope(r));
+        }
+        for &(c, i) in &spec.class_assertions {
+            let _ = write!(ax, "ClassAssertion(:C{c} :i{i}) ");
+        }
+        for &(x, y) in &spec.disjoint {
+            if x != y {
+                let _ = write!(ax, "DisjointClasses(:C{x} :C{y}) ");
+            }
+        }
+        let mut internal = parse_internal(&format!("Prefix(:=<{EX}>) Ontology(<http://ex/> {ax})"));
+        for &(x, y, z, sup) in &spec.chains3 {
+            let chain = vec![
+                role_of(&internal, x),
+                role_of(&internal, y),
+                role_of(&internal, z),
+            ];
+            let sup = role_of(&internal, sup);
+            internal.axioms.push(Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(chain),
+                sup,
+            });
+        }
+        internal
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// #447: the per-endpoint dedupe must reach the same fixpoint as the
+        /// global one, over random 2- and 3-hop chains of
+        /// every leg and super polarity, mixed with transitive roles, sub-roles,
+        /// inverses, symmetry, functionality, domain/range and disjointness.
+        #[test]
+        fn local_and_global_chain_dedupe_agree(spec in spec_strategy()) {
+            both_modes(&build(&spec));
+        }
+    }
+
+    /// The canary ontology for one chain shape: `i0 → i1 → … → i_hops` along the
+    /// legs, each assertion written in the direction its leg's polarity needs,
+    /// the chain `legs ⊑ sup` (if `with_chain`), and `sup`'s range `C1` clashing
+    /// with `C0` at the individual the conclusion's object lands on.
+    fn chain_canary(legs: &[Ope], sup: Ope, with_chain: bool) -> InternalOntology {
+        let hops = legs.len();
+        let mut ax = String::from(
+            "Declaration(Class(:C0)) Declaration(Class(:C1)) DisjointClasses(:C0 :C1) ",
+        );
+        for r in 0..=hops {
+            let _ = write!(ax, "Declaration(ObjectProperty(:r{r})) ");
+        }
+        for i in 0..=hops {
+            let _ = write!(ax, "Declaration(NamedIndividual(:i{i})) ");
+        }
+        for (k, &(r, inv)) in legs.iter().enumerate() {
+            let (s, o) = if inv { (k + 1, k) } else { (k, k + 1) };
+            let _ = write!(ax, "ObjectPropertyAssertion(:r{r} :i{s} :i{o}) ");
+        }
+        // The conclusion is sup(i0, i_hops) read in `sup`'s direction; the stored
+        // edge's object gets `sup`'s range.
+        let object = if sup.1 { 0 } else { hops };
+        let _ = write!(
+            ax,
+            "ObjectPropertyRange(:r{} :C1) ClassAssertion(:C0 :i{object}) ",
+            sup.0
+        );
+        if with_chain && hops == 2 {
+            let _ = write!(
+                ax,
+                "SubObjectPropertyOf(ObjectPropertyChain({} {}) {}) ",
+                ope(legs[0]),
+                ope(legs[1]),
+                ope(sup)
+            );
+        }
+        let mut internal = parse_internal(&format!("Prefix(:=<{EX}>) Ontology(<http://ex/> {ax})"));
+        if with_chain && hops == 3 {
+            let chain = legs.iter().map(|&l| role_of(&internal, l)).collect();
+            let sup = role_of(&internal, sup);
+            internal.axioms.push(Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(chain),
+                sup,
+            });
+        }
+        internal
+    }
+
+    /// #447: every leg and super polarity, 2- and 3-hop: the chain's conclusion
+    /// is what clashes, in both modes; without the chain nothing does. A swapped
+    /// anchor direction in Rule 4's [`ChainCache`] key loses the conclusion
+    /// for one `sup` polarity, so one of these fails.
+    #[test]
+    fn each_chain_polarity_concludes_in_both_modes() {
+        for hops in [2usize, 3] {
+            for mask in 0u32..(1 << (hops + 1)) {
+                let legs: Vec<Ope> = (0..hops).map(|k| (k, mask & (1 << k) != 0)).collect();
+                let sup = (hops, mask & (1 << hops) != 0);
+                let res = both_modes(&chain_canary(&legs, sup, true));
+                assert!(res.clash, "no clash for legs {legs:?} ⊑ {sup:?}");
+                let fires = if hops == 2 {
+                    res.chain2_fires
+                } else {
+                    res.chain3_fires
+                };
+                assert_eq!(fires, 1, "legs {legs:?} ⊑ {sup:?}");
+                let control = both_modes(&chain_canary(&legs, sup, false));
+                assert!(
+                    !control.clash,
+                    "control clashed for legs {legs:?} ⊑ {sup:?}"
+                );
+            }
+        }
+    }
+
+    /// #447: one anchor concludes `sup` in both directions. `s(a, y)` is
+    /// asserted; chain 1 (`r0 ∘ r1 ⊑ s`) anchors a forward conclusion at `a`
+    /// first, so `a`'s forward cache entry holds `y`; chain 2 (`r2 ∘ r3 ⊑ s⁻`)
+    /// then concludes `s(y, a)`, anchored at `a` in the inverse direction, and
+    /// `s`'s range `C1` clashes with `a : C0`. Were the cache key to drop the
+    /// direction, the inverse candidate `y` would hit the forward entry and the
+    /// clash would be lost. The chains go into the IR in this order on purpose.
+    #[test]
+    fn an_anchor_concluding_both_directions_keeps_them_apart() {
+        let src = format!(
+            "Prefix(:=<{EX}>) Ontology(<http://ex/> \
+             Declaration(Class(:C0)) Declaration(Class(:C1)) DisjointClasses(:C0 :C1) \
+             Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1)) \
+             Declaration(ObjectProperty(:r2)) Declaration(ObjectProperty(:r3)) \
+             Declaration(ObjectProperty(:r4)) \
+             Declaration(NamedIndividual(:i0)) Declaration(NamedIndividual(:i1)) \
+             Declaration(NamedIndividual(:i2)) Declaration(NamedIndividual(:i3)) \
+             Declaration(NamedIndividual(:i4)) \
+             ObjectPropertyAssertion(:r4 :i0 :i1) \
+             ObjectPropertyAssertion(:r0 :i0 :i2) ObjectPropertyAssertion(:r1 :i2 :i3) \
+             ObjectPropertyAssertion(:r2 :i0 :i4) ObjectPropertyAssertion(:r3 :i4 :i1) \
+             ObjectPropertyRange(:r4 :C1) ClassAssertion(:C0 :i0))"
+        );
+        for with_inverse_chain in [true, false] {
+            let mut internal = parse_internal(&src);
+            let s = (4, false);
+            let fwd = vec![
+                role_of(&internal, (0, false)),
+                role_of(&internal, (1, false)),
+            ];
+            internal.axioms.push(Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(fwd),
+                sup: role_of(&internal, s),
+            });
+            if with_inverse_chain {
+                let inv = vec![
+                    role_of(&internal, (2, false)),
+                    role_of(&internal, (3, false)),
+                ];
+                internal.axioms.push(Axiom::SubObjectPropertyOf {
+                    sub: SubRolePath::Chain(inv),
+                    sup: role_of(&internal, (4, true)),
+                });
+            }
+            let res = both_modes(&internal);
+            assert_eq!(
+                res.clash, with_inverse_chain,
+                "inverse chain present: {with_inverse_chain}"
+            );
+        }
     }
 
     #[test]

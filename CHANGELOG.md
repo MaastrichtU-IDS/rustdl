@@ -182,6 +182,34 @@ All notable changes to rustdl are documented here. Format is based on
   object on this path. The Rust API and Python still return the error. New knob
   `RUSTDL_TABLEAU_SATURATE_ITERS` (default 4096): the saturation's per-frame iteration cap, which
   the tests set to 1 to force the give-up. No known input reaches `NoVerdict` since #437.
+- **`classify` no longer loses `family.ofn`'s inconsistency to its 12 s pre-check budget
+  (#447).** The `ABox`-saturation pre-check took 5.4–12.6 s on the coder host, not the
+  2585 ms the budget was sized on (another host, August), so the budget cut it: 1 of 12
+  classify runs reported `consistent: true` with no unsatisfiable classes (2 of 10 cuts in
+  #428's runs of the same saturation behind `sat`). The cost
+  was Rule 4 (role chains, transitivity): its ~101 M candidates for 228 149 new edges were
+  each a lookup in the global edge set. That loop is memory-latency-bound, and a flag-off
+  codegen change at 9f74f15b had doubled its instructions. Now, when an outer edge has at
+  least 8 candidates, Rule 4 first checks them in a small cache of the conclusions already
+  known for that edge's fixed endpoint. A miss is still decided by the global edge set.
+  The cache only ever holds known edges, and the rounds, rule order and fixpoint are
+  unchanged.
+  - family: pre-check 0.6–1.4 s (was 5.4–11.2 s), classify 1.4–2.9 CPU-s (was 6.4–11.0),
+    same max RSS; 12 runs per arm, interleaved. `ore_ont_16315`'s unbounded pre-check: 42 s
+    (the global check exceeds a 120 s cap; 295 s in an earlier unbounded run);
+    `ore_ont_4609`: 0.7 s (was 5.1 s).
+  - Over the 1,920-ontology ORE pool, local vs global check (same binary): the fixpoint is
+    identical on all 1,891 inputs where both finish, and max RSS grows by at most 2.8 MB.
+    Chain-sparse inputs, where the cache is not used, are unchanged within noise. The cache
+    holds at most two ids per derived edge, so on a fixpoint of millions of edges (only the
+    unbounded callers, `consistent` and `realize`, get that far) it costs memory in proportion.
+  - `RUSTDL_ABOX_CHAIN_GLOBAL_DEDUPE=1` restores the global check, for A/B. New diagnostic
+    counters `chain_join_attempts` and `chain_edge_set_probes` on `SaturationResult`.
+  - Tests: a differential proptest (global vs local at the shipped threshold and at 1, over
+    random 2-/3-hop chains of every polarity), per-polarity and both-direction canaries, a
+    host-independent guard on the global lookups, and the release-only family budget test
+    now requires 3× headroom instead of "above the cost".
+  - No budget or default changed.
 - **`classify` reports when its consistency probe gives up (#446).** The probe that
   `classify` runs when it found an unsatisfiable class (or on an incomplete `ABox` run, or
   with counted data values) ends with a bounded `⊤` check (200 ms,

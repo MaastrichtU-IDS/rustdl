@@ -12756,10 +12756,10 @@ pub struct ProveFlags {
     /// #428: the ontology was found inconsistent, by the named class queries'
     /// guard ([`class_query_guard`], run before anything else) or by the #369 lazy
     /// check after the entailment held. The entailment then holds vacuously and
-    /// the justification is a minimal entailing set, typically an inconsistency
-    /// core (`justify <file> inconsistent` explains the inconsistency itself).
-    /// `false` is not a proof of consistency: the guard is a sound
-    /// under-approximation.
+    /// the justification is the inconsistency core (#456): a minimal inconsistent
+    /// subset, found by the search `justify <file> inconsistent` runs. It is minimal for
+    /// the inconsistency, not for `sub ⊑ sup`. `false` is not a proof of
+    /// consistency: the guard is a sound under-approximation.
     pub kb_inconsistent: bool,
 }
 
@@ -12783,10 +12783,10 @@ pub fn prove_entailment_rcstr_reporting(
     // #428: the named class queries' guard, before the step proof, so that
     // `kb_inconsistent` does not depend on whether the saturator has a step
     // proof. On an inconsistent KB the explanation of `sub ⊑ sup` is the
-    // inconsistency: a minimal entailing set, as `justify` returns.
+    // inconsistency: its core, as `justify <file> inconsistent` searches for (#456).
     let closure = match class_query_guard(&internal) {
         Err(ReasonError::Inconsistent) => {
-            return prove_on_inconsistent_kb(ontology, sub_iri, sup_iri);
+            return prove_on_inconsistent_kb(ontology);
         }
         Err(e) => return Err(e),
         Ok(closure) => closure,
@@ -12795,7 +12795,7 @@ pub fn prove_entailment_rcstr_reporting(
         // A step proof is a positive answer, so the #369 lazy check runs after it
         // as after `subclass`'s: a wedge-only inconsistency is reported too.
         if prove_lazy_check(&internal) {
-            return prove_on_inconsistent_kb(ontology, sub_iri, sup_iri);
+            return prove_on_inconsistent_kb(ontology);
         }
         return Ok((step, ProveFlags::default()));
     }
@@ -12806,7 +12806,7 @@ pub fn prove_entailment_rcstr_reporting(
     // the KB inconsistent after a positive answer.
     let (held, stats) = match is_subclass_of_after_guard(internal, sub_iri, sup_iri, closure) {
         Err(ReasonError::Inconsistent) => {
-            return prove_on_inconsistent_kb(ontology, sub_iri, sup_iri);
+            return prove_on_inconsistent_kb(ontology);
         }
         r => r?,
     };
@@ -12857,21 +12857,21 @@ fn prove_lazy_check(internal: &InternalOntology) -> bool {
         )
 }
 
-/// #428: `prove` on a KB found inconsistent. The entailment holds vacuously; its
-/// justification comes from `justify`, whose oracle maps the class queries'
-/// `Err(Inconsistent)` to "entailed", so it is a minimal entailing set
-/// (typically an inconsistency core).
+/// #428, #456: `prove` on a KB found inconsistent. The entailment holds
+/// vacuously, and its justification is the inconsistency core: the minimal
+/// inconsistent subset that `justify <file> inconsistent` searches for (under
+/// `prove`'s node cap, so a give-up can leave a different valid core). It is minimal
+/// for the inconsistency, not for `sub ⊑ sup`: a smaller set entailing
+/// `sub ⊑ sup` by ordinary reasoning is not sought. Searching for one ran
+/// `sub ⊑ sup` on every consistent subset, which did not finish on `family.ofn`.
+///
+/// Every caller reaches this only on a witnessed `Err(Inconsistent)`.
 fn prove_on_inconsistent_kb(
     ontology: &horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
-    sub_iri: &str,
-    sup_iri: &str,
 ) -> Result<(ProveEntailmentResult, ProveFlags), ReasonError> {
-    let q = justify::Entailment::SubClassOf {
-        sub: sub_iri.to_string(),
-        sup: sup_iri.to_string(),
-    };
-    let outcome = justify::find_one_justification_reporting(ontology, &q)?;
-    let (result, incomplete) = fallback_after_held(outcome);
+    let outcome =
+        justify::find_one_justification_reporting(ontology, &justify::Entailment::Inconsistent)?;
+    let (result, incomplete) = fallback_after_inconsistency(outcome);
     Ok((
         result,
         ProveFlags {
@@ -12880,6 +12880,26 @@ fn prove_on_inconsistent_kb(
             ..ProveFlags::default()
         },
     ))
+}
+
+/// #456: maps the inconsistency-core search's outcome to `prove`'s result. The
+/// entailment holds whatever the search says (a sound check witnessed the
+/// inconsistency), so no outcome is a non-entailment. A `NotEntailed` is not a
+/// contradiction here, unlike in [`fallback_after_held`]: the justify oracle is
+/// `is_consistent`, which can trust a wedge `Sat` that misses a clash the guard
+/// or the lazy check found. It is reported as `incomplete` (entailed, no
+/// justification found), as is any give-up.
+fn fallback_after_inconsistency(
+    outcome: justify::JustifyOutcome<horned_owl::model::RcStr>,
+) -> (ProveEntailmentResult, bool) {
+    if outcome.status != justify::Verdict::Entailed && std::env::var_os("RUSTDL_TRACE").is_some() {
+        eprintln!(
+            "prove (#456): the inconsistency-core search answered {:?} on a KB found \
+             inconsistent; no justification is shown",
+            outcome.status
+        );
+    }
+    first_justification(outcome)
 }
 
 /// Maps prove's justification-fallback outcome, reached only after the check
@@ -12891,19 +12911,22 @@ fn fallback_after_held(
     if outcome.status == Verdict::NotEntailed {
         // The same axioms, under the same cap, just witnessed the entailment: a
         // definite "no" here is a contradiction, not a give-up. Never report it
-        // as a non-entailment; `incomplete` below carries it to the caller.
-        // #428: from `prove_on_inconsistent_kb` the witness is the inconsistency
-        // guard, not the justify oracle. A sound guard clash makes every subset
-        // search find the core, so this still fires only if something upstream is
-        // unsound (e.g. a wedge `Sat` lent to the probes that hides the clash).
+        // as a non-entailment; [`first_justification`] flags it `incomplete`.
         debug_assert!(
             false,
             "prove: the justification search refuted an entailment the check just witnessed"
         );
     }
-    // After a witnessed `held`, no outcome is a non-entailment: an empty or
-    // given-up search is "entailed, no justification available".
-    let incomplete = outcome.incomplete || outcome.status != Verdict::Entailed;
+    first_justification(outcome)
+}
+
+/// After a witnessed entailment, no justify outcome is a non-entailment: an
+/// empty or given-up search is "entailed, no justification available", and is
+/// `incomplete` (#402).
+fn first_justification(
+    outcome: justify::JustifyOutcome<horned_owl::model::RcStr>,
+) -> (ProveEntailmentResult, bool) {
+    let incomplete = outcome.incomplete || outcome.status != justify::Verdict::Entailed;
     let j = outcome
         .justifications
         .into_iter()
@@ -12948,6 +12971,37 @@ mod tests {
         let ni = u32::try_from(internal.vocabulary.num_individuals())
             .expect("individual count fits u32");
         (HyperCache::build(&internal), nc, ni)
+    }
+
+    /// #456: on an inconsistent KB no core-search outcome is a non-entailment.
+    /// A refuted (`NotEntailed`: the justify oracle trusted a wedge `Sat`) or
+    /// given-up search is "entailed, no justification", flagged `incomplete`;
+    /// only a found core is complete.
+    #[test]
+    fn a_core_search_without_a_core_is_entailed_and_incomplete() {
+        use justify::{JustifyOutcome, Verdict};
+        let outcome = |status, incomplete| JustifyOutcome::<RcStr> {
+            status,
+            justifications: Vec::new(),
+            incomplete,
+            relies_on_trusted_consistency: false,
+        };
+        for (status, incomplete) in [(Verdict::NotEntailed, false), (Verdict::Unknown, true)] {
+            let (r, inc) = fallback_after_inconsistency(outcome(status, incomplete));
+            assert!(inc, "{status:?} must be incomplete");
+            match r {
+                ProveEntailmentResult::JustificationFallback(j) => assert!(j.axioms.is_empty()),
+                other => panic!("{status:?}: {other:?}"),
+            }
+        }
+        let mut found = outcome(Verdict::Entailed, false);
+        found.justifications.push(justify::Justification {
+            axioms: Vec::new(),
+            fragment: classify::FragmentClassification::OutOfFragment,
+            minimal_guaranteed: true,
+        });
+        let (_, inc) = fallback_after_inconsistency(found);
+        assert!(!inc, "a found core is complete");
     }
 
     /// `RUSTDL_CLASSIFY_WEDGE_NOMINALS`: individuals that occur only in the `ABox` put no

@@ -92,8 +92,11 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
 ```
 
 `incomplete` (#182) means `consistent: true` is a give-up in its sound
-direction (the fall-through tableau's deadline or node cap, or the #344
-data-counting verification giving up), not a verdict; the exit code is then 3.
+direction (the fall-through tableau's deadline or node cap, the #344
+data-counting verification giving up, or (#449) the tableau's internal limit,
+`NoVerdict`, reported on stderr as a likely bug), not a verdict; the exit code is
+then 3. On the `NoVerdict` path `wedge_clauses_refused` is not reported (0) and
+`relies_on_trusted_consistency` is `false`.
 `wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
 match, so a wedge `consistent` may miss a clash; 0 when the wedge was not
 consulted. `dropped` counts the axioms rustdl does not reason with, as in
@@ -327,6 +330,7 @@ below).
 { "schema_version": 1, "entailed": bool,
   "status": "entailed" | "not-entailed" | "unknown", "incomplete": bool,
   "relies_on_trusted_consistency": bool,
+  "kb_inconsistent": bool,
   "has_proof": bool,
   "proof_complete": bool | null,
   "proof": ProofNodeJson | null,
@@ -389,6 +393,17 @@ default 500000), like `subclass` and `explain`.
 the `ABox` (no nominals, so the `ABox` cannot change it on a consistent KB) and
 the consistency verdict rests on a trusted wedge `Sat` rather than a
 main-tableau model. It is not a give-up and does not set `incomplete`.
+
+`kb_inconsistent` was added in #428, also without a bump. It is `true` when the
+ontology was found inconsistent: by the named class queries' guard (before the
+step proof), or by the #369 lazy check after the entailment held. The entailment
+then holds vacuously, the payload has the justification-fallback shape, and since
+#456 `justification_fallback` is the inconsistency core: the minimal inconsistent
+subset `rustdl justify <file> inconsistent` searches for (`prove` runs it under its own
+node cap, so a give-up can leave a different, still inconsistent, set). It is minimal for the
+inconsistency, not for `SUB ⊑ SUP`; a smaller set entailing `SUB ⊑ SUP` by
+ordinary reasoning is not sought. If the core search finds none, the fallback has
+no axioms and `incomplete` is `true`. `false` is not a proof of consistency.
 
 ## `sat-expr --json`, `subclass-expr --json`, `instances-expr --json`
 

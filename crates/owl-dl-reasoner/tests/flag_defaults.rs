@@ -142,6 +142,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_CONSISTENT_EL_FASTPATH",
+            owl_dl_reasoner::consistent_el_fastpath_enabled,
+            true,
+        ),
+        (
             "RUSTDL_QUERY_INCONSISTENCY_GUARD",
             owl_dl_reasoner::query_inconsistency_guard_enabled,
             true,

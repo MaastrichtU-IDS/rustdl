@@ -791,7 +791,9 @@ fn query_seeded_first_ms_default_is_pinned() {
 /// garbage falls back to the default. `0` reads as `0`: for
 /// `RUSTDL_QUERY_LAZY_CONSISTENCY_MS` that means unbounded, while for
 /// `RUSTDL_CONSISTENCY_FALLBACK_MS` it is a deadline already passed (the
-/// "starve the budget" idiom of `consistency_give_up.rs`).
+/// "starve the budget" idiom of `consistency_give_up.rs`). #457 adds
+/// `RUSTDL_QUERY_WEDGE_MS` (3000; `0` = unbounded), the named subsumption
+/// query's H4 wedge budget.
 #[test]
 fn lazy_consistency_budgets_are_pinned() {
     let _lock = ENV_MUTEX
@@ -807,6 +809,12 @@ fn lazy_consistency_budgets_are_pinned() {
             "RUSTDL_QUERY_LAZY_CONSISTENCY_MS",
             2_000,
             owl_dl_reasoner::lazy_query_consistency_ms,
+        ),
+        // #457: the named subsumption query's H4 wedge; `0` = unbounded.
+        (
+            "RUSTDL_QUERY_WEDGE_MS",
+            3_000,
+            owl_dl_reasoner::query_wedge_ms,
         ),
     ] {
         let _restore = EnvGuard::unset(key);

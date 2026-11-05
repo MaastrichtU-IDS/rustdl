@@ -1,0 +1,13 @@
+# #457 control: a subsumption the EL closure misses and the H4 wedge proves well inside its
+# default budget: A has 2 r-successors in B and at most 1 in C, so one is in B ⊓ ¬C.
+Prefix(:=<http://example.org/w457#>)
+Ontology(<http://example.org/w457>
+Declaration(Class(:A))
+Declaration(Class(:B))
+Declaration(Class(:C))
+Declaration(Class(:D))
+Declaration(ObjectProperty(:r))
+SubClassOf(:A ObjectMinCardinality(2 :r :B))
+SubClassOf(:A ObjectMaxCardinality(1 :r :C))
+EquivalentClasses(:D ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B ObjectComplementOf(:C))))
+)

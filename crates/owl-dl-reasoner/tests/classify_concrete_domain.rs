@@ -417,7 +417,10 @@ Ontology(<http://t/x>\n\
 ///
 /// Like the headline, **answered by the saturator since #297** at the default
 /// `RUSTDL_SAT_DISTINCT_MIN` (`counting_verified_pairs: 0`, the same answer with the
-/// gate off), so it no longer exercises the subsumer expansion (#458).
+/// gate off). Even with the wedge deciding, this fixture would not pin the subsumer
+/// expansion: `D` is itself a counting class, so the pair is counting-relevant through
+/// the sup (a sabotage that disables the expansion leaves the wedge route's answer
+/// unchanged). No test in this file pins the expansion (#458).
 #[test]
 fn phase2_inherited_counting_subsumption_is_found() {
     let _lock = phase2_lock();
@@ -537,7 +540,8 @@ fn phase2_gate_on_verifies_the_counting_pair() {
     assert!(
         stats.counting_verified_pairs >= 1,
         "gate on: C ⊑ D must be verified by counting-pair verification (counting_verified_pairs \
-         {}; if the pair was found another way, e.g. after a wedge stall, the route changed: \
+         {}; check that RUSTDL_COUNTING_PAIR_VERIFY=0 is not set in the environment; if the \
+         pair was found another way, e.g. after a wedge stall, the route changed: \
          tableau_subsumption_calls {}, timed_out_pairs {})",
         stats.counting_verified_pairs,
         stats.tableau_subsumption_calls,

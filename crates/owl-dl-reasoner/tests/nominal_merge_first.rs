@@ -265,6 +265,10 @@ fn non_subsumptions_on_the_reproducers_are_decided() {
 
 /// With the flag off the old order returns: the reproducer runs past a short
 /// deadline instead of answering.
+///
+/// This test pins the #460 defect on the flag-off path. If a later change makes
+/// the flag-off path answer here, that is a fix, not a regression: flip this test
+/// to assert the answer instead of deleting it.
 #[test]
 fn flag_off_restores_the_old_rule_order() {
     let _l = lock();

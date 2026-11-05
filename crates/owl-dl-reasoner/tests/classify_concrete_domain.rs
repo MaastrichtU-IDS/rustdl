@@ -17,7 +17,7 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::classify;
+use owl_dl_reasoner::{classify, classify_top_down_with_timeout};
 use std::io::Cursor;
 
 const PFX: &str = "Prefix(:=<http://t/>)\nPrefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n";
@@ -351,6 +351,12 @@ fn phase2_lock() -> std::sync::MutexGuard<'static, ()> {
 /// (cardinality monotonicity `≥5 ⟹ ≥3`). The default classifier trusted the
 /// wedge `NotSubsumed` and missed this; counting-pair verification routes it
 /// to the main tableau's `concrete_domain_clash`.
+///
+/// **Answered by the saturator since #297**, not by counting-pair verification:
+/// at the default `RUSTDL_SAT_DISTINCT_MIN` the EL saturator derives `≥5 p ⊑ ≥3 p`
+/// itself (`saturation_subsumption_hits: 1`, `counting_verified_pairs: 0`), so this
+/// test passes with the gate on or off. It pins the default end-to-end answer;
+/// `phase2_gate_on_verifies_the_counting_pair` pins the gate's mechanism (#458).
 #[test]
 fn phase2_cardinality_monotonicity_subsumption_is_found() {
     let _lock = phase2_lock();
@@ -408,6 +414,10 @@ Ontology(<http://t/x>\n\
 /// Subsumer-inheritance: C ⊑ X, X ⊑ ≥5 p.int, D ≡ ≥3 p.int ⇒ C ⊑ D found
 /// (exercises the `counting_relevant` subsumer expansion — C carries no
 /// counting axiom directly, only via its subsumer X).
+///
+/// Like the headline, **answered by the saturator since #297** at the default
+/// `RUSTDL_SAT_DISTINCT_MIN` (`counting_verified_pairs: 0`, the same answer with the
+/// gate off), so it no longer exercises the subsumer expansion (#458).
 #[test]
 fn phase2_inherited_counting_subsumption_is_found() {
     let _lock = phase2_lock();
@@ -441,8 +451,32 @@ impl Drop for RemoveEnvGuard {
     }
 }
 
+/// The phase 2 fixture with the saturator's `≥n` rule off (`RUSTDL_SAT_DISTINCT_MIN=0`),
+/// so the pair reaches the wedge, classified with a 30 s per-pair budget. Without a
+/// per-pair budget the defined-sup sweep gives its wedge a hardcoded 200 ms, and a wedge
+/// that runs out falls through to the tableau, which derives `C ⊑ D` whatever the gate
+/// says (#458). Must be called with `PHASE2_ENV_MUTEX` held.
+fn classify_phase2_fixture_via_wedge() -> owl_dl_reasoner::Classification {
+    let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(<http://t/x>\n\
+  Declaration(Class(:C)) Declaration(Class(:D)) Declaration(DataProperty(:p))\n\
+  SubClassOf(:C DataMinCardinality(5 :p xsd:integer))\n\
+  EquivalentClasses(:D DataMinCardinality(3 :p xsd:integer))\n\
+)\n";
+    classify_top_down_with_timeout(&parse(src), std::time::Duration::from_secs(30))
+        .expect("classify")
+}
+
 /// Gate: with RUSTDL_COUNTING_PAIR_VERIFY=0 the headline miss returns
 /// (verifies the gate disables cleanly).
+///
+/// #458: the miss holds only while the wedge's trusted `Sat` decides `C ⊑ D`, so the
+/// test asserts the route before the answer. (a) is the gate property itself and holds
+/// on any route; (b) says the wedge, not the tableau, decided the pair. A failure at (b)
+/// means the route changed (a wedge stall, or `RUSTDL_HYPER_TRUST_SAT_MIN_MS > 0` in the
+/// environment, which moves the count to `hyper_refuted_fast_pairs`), not a gate
+/// regression.
 #[test]
 fn phase2_gate_off_restores_the_miss() {
     let _lock = phase2_lock();
@@ -461,17 +495,56 @@ fn phase2_gate_off_restores_the_miss() {
         std::env::set_var("RUSTDL_SAT_DISTINCT_MIN", "0");
     }
     let _guard2 = RemoveEnvGuard("RUSTDL_SAT_DISTINCT_MIN");
-    let src = "Prefix(:=<http://t/>)\n\
-Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
-Ontology(<http://t/x>\n\
-  Declaration(Class(:C)) Declaration(Class(:D)) Declaration(DataProperty(:p))\n\
-  SubClassOf(:C DataMinCardinality(5 :p xsd:integer))\n\
-  EquivalentClasses(:D DataMinCardinality(3 :p xsd:integer))\n\
-)\n";
-    let result = classify(&parse(src)).expect("classify");
-    let found = result.is_subclass("http://t/C", "http://t/D");
+    let result = classify_phase2_fixture_via_wedge();
+    let stats = result.stats();
+    assert_eq!(
+        stats.counting_verified_pairs, 0,
+        "(a) gate off: no pair may be routed to counting-pair verification"
+    );
     assert!(
-        !found,
-        "with the gate off, the wedge Sat is trusted and C⊑D is missed"
+        stats.hyper_refuted_pairs >= 1
+            && stats.tableau_subsumption_calls == 0
+            && stats.timed_out_pairs == 0,
+        "(b) route changed, NOT a gate regression: the wedge's trusted Sat did not decide \
+         C ⊑ D alone (hyper_refuted_pairs {}, tableau_subsumption_calls {}, timed_out_pairs {}, \
+         hyper_refuted_fast_pairs {})",
+        stats.hyper_refuted_pairs,
+        stats.tableau_subsumption_calls,
+        stats.timed_out_pairs,
+        stats.hyper_refuted_fast_pairs
+    );
+    assert!(
+        !result.is_subclass("http://t/C", "http://t/D"),
+        "(c) with the gate off, the wedge Sat is trusted and C⊑D is missed"
+    );
+}
+
+/// Gate on (the default), with the saturator's `≥n` rule off so the pair reaches the
+/// wedge: the wedge's `NotSubsumed` on a counting-relevant pair is not trusted but
+/// verified by the main tableau, which finds `C ⊑ D` (#458). The headline test cannot
+/// show this, since the saturator answers it. A wedge stall would also give "found"
+/// but `counting_verified_pairs == 0`: that is a route change, not a gate regression.
+#[test]
+fn phase2_gate_on_verifies_the_counting_pair() {
+    let _lock = phase2_lock();
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("RUSTDL_SAT_DISTINCT_MIN", "0");
+    }
+    let _guard = RemoveEnvGuard("RUSTDL_SAT_DISTINCT_MIN");
+    let result = classify_phase2_fixture_via_wedge();
+    let stats = result.stats();
+    assert!(
+        stats.counting_verified_pairs >= 1,
+        "gate on: C ⊑ D must be verified by counting-pair verification (counting_verified_pairs \
+         {}; if the pair was found another way, e.g. after a wedge stall, the route changed: \
+         tableau_subsumption_calls {}, timed_out_pairs {})",
+        stats.counting_verified_pairs,
+        stats.tableau_subsumption_calls,
+        stats.timed_out_pairs
+    );
+    assert!(
+        result.is_subclass("http://t/C", "http://t/D"),
+        "gate on: C ⊑ D must be found (≥5 ⟹ ≥3)"
     );
 }

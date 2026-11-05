@@ -198,7 +198,11 @@ fn abox_free_ontology_is_not_admitted() {
 /// Sabotage results for this test, measured: making the admission ignore the flag IS
 /// caught. Dropping the `has_abox_axioms` conjunct is NOT — that sabotage only shows
 /// up on an ontology that both lacks an `ABox` and times out pairs, which is the same
-/// fixture that cannot be written.
+/// fixture that cannot be written. Since #466 the admission also takes a `TBox`-only
+/// run with a cut unsat probe; its scope (a cut unsat probe admits, a cut pair alone
+/// does not) is pinned directly on the probe by the unit test
+/// `a_cut_unsat_probe_admits_the_probe_on_a_tbox_only_kb` in `classify.rs`, and end to
+/// end by `classify_probe_giveup_cli.rs` (the cut forced with `RUSTDL_MAX_NODES=2`).
 #[test]
 fn admission_is_not_granted_without_the_flag_or_without_an_abox() {
     let _l = ENV_MUTEX

@@ -534,6 +534,14 @@ pub struct ClassificationStats {
     /// entailment matrix — sound (never reports a false positive),
     /// but may under-report subsumption.
     pub timed_out_pairs: usize,
+    /// #466: how many of [`Self::timed_out_pairs`] are cut per-class unsat
+    /// probes (`flag_cut_probes`): classes whose satisfiability was left
+    /// undecided and defaulted to satisfiable. Not the `(c, c)` markers of
+    /// [`Self::timed_out_pair_ids`], which the global-deadline bails also push for
+    /// classes whose satisfiability was decided. An empty unsat set proves
+    /// nothing about consistency while this is non-zero, so it admits the
+    /// consistency probe ([`probe_says_inconsistent`]) on a `TBox`-only KB too.
+    pub cut_unsat_probes: usize,
     /// The `(sub, sup)` pairs whose subsumption probe timed out (defaulted to
     /// "not subsumed"). Parallel to `timed_out_pairs` (the count); this is the
     /// *set*, used to verify the anytime calibration claim (every miss is a
@@ -2102,26 +2110,30 @@ fn probe_says_inconsistent(
     }
     // ADMISSION. Normally: at least one class proved unsatisfiable (layers 1-3 have
     // something to go on). Additionally, under
-    // `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`: an INCOMPLETE `ABox`-bearing run, where
-    // an empty unsat set means "we did not look long enough", not "there is nothing".
-    // Conflating those two states is what makes the verdict budget-sensitive — see
-    // `classify_probe_on_incomplete`.
-    let incomplete_abox = crate::classify_probe_on_incomplete()
+    // `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`: an INCOMPLETE run where an empty unsat
+    // set means "we did not look long enough", not "there is nothing". Conflating
+    // those two states is what makes the verdict budget-sensitive — see
+    // `classify_probe_on_incomplete`. That is any cut on an `ABox`-bearing run, and
+    // (#466) a cut unsat probe on any run: "zero unsat classes ⇒ consistent" needs
+    // every class's satisfiability decided. A `TBox`-only KB with cut unsat probes
+    // was reported `consistent: true` with `consistency_undetermined: false`. A cut
+    // subsumption pair hides no such evidence, so it does not admit a `TBox`-only run.
+    let incomplete_evidence = crate::classify_probe_on_incomplete()
         && stats.timed_out_pairs > 0
-        && has_abox_axioms(internal);
+        && (has_abox_axioms(internal) || stats.cut_unsat_probes > 0);
     // `extra_admission` is the #128 early-exit arm: at the pre-walk call site
     // `unsatisfiable_idxs` is still empty (the unsat classes are found BY the walk)
     // and `timed_out_pairs` counts only cut unsat probes (#218), so absent those
     // BOTH standing admissions reject and the
     // probe returns before doing any work. The caller supplies its own evidence
     // there — a large `NoVerdict` share of the label cache, the same "did not look
-    // long enough" species `incomplete_abox` already admits on. Always `false` at
+    // long enough" species `incomplete_evidence` already admits on. Always `false` at
     // the post-walk call site, which therefore behaves exactly as before.
     // #344: an ontology that counts data values gets the probe whatever the unsat
     // set says, since the wedge's `Sat` (the cheap layer 2) does not count them.
     // A layer-3 give-up keeps the old answer, as everywhere else in this probe.
     let counting = prepared.wedge_sat_skips_data_counting;
-    if unsatisfiable_idxs.is_empty() && !incomplete_abox && !extra_admission && !counting {
+    if unsatisfiable_idxs.is_empty() && !incomplete_evidence && !extra_admission && !counting {
         return false;
     }
     // (1) ASSERTED INSTANCE OF AN UNSATISFIABLE CLASS ⟹ inconsistent.
@@ -2203,7 +2215,7 @@ fn probe_says_inconsistent(
     // bypasses the admission above: at the #128 pre-walk call site
     // `unsatisfiable_idxs` is empty, so the guard would reject on a count that has
     // not been computed yet rather than on one that came back small.
-    if !incomplete_abox
+    if !incomplete_evidence
         && !extra_admission
         && !counting
         && unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * min_permille
@@ -3813,6 +3825,7 @@ fn flag_cut_probes(cut: std::sync::Mutex<Vec<(usize, bool)>>, stats: &mut Classi
     for (i, depth_capped) in cut {
         let c = u32::try_from(i).expect("class index fits in u32");
         stats.timed_out_pairs += 1;
+        stats.cut_unsat_probes += 1;
         stats.depth_capped_pairs += usize::from(depth_capped);
         stats.timed_out_pair_ids.push((c, c));
     }
@@ -6138,6 +6151,59 @@ EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 :C4))
         // And back: a later give-up replaces the earlier verdict.
         assert!(!probe(&mut stats, 0));
         assert!(stats.consistency_probe_gave_up);
+    }
+
+    /// #466: on a `TBox`-only KB with NO unsat class found, a cut per-class unsat
+    /// probe admits the probe (the empty unsat set proves nothing), and a cut
+    /// SUBSUMPTION pair alone does not. Before #466 neither admitted, so a
+    /// `TBox`-only inconsistent KB whose unsat probes were all cut read
+    /// `consistent: true` with `consistency_undetermined: false`.
+    #[test]
+    fn a_cut_unsat_probe_admits_the_probe_on_a_tbox_only_kb() {
+        let internal = owl_dl_core::convert::convert_ontology(&parse(PROBE_B)).expect("convert");
+        assert!(!has_abox_axioms(&internal), "the fixture must be TBox-only");
+        let reported = ReportedClasses::collect(&internal);
+        let n = reported.len();
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepare");
+        let no_unsat: HashSet<usize> = HashSet::new();
+        let probe = |stats: &mut ClassificationStats, ms: u64| {
+            probe_says_inconsistent(
+                &internal,
+                &prepared,
+                &reported,
+                &no_unsat,
+                n,
+                stats,
+                false,
+                std::time::Duration::from_millis(ms),
+            )
+        };
+        // Control: a cut subsumption pair `(0, 1)`, no cut unsat probe. Not admitted.
+        let mut stats = ClassificationStats {
+            timed_out_pairs: 1,
+            timed_out_pair_ids: vec![(0, 1)],
+            ..ClassificationStats::default()
+        };
+        assert!(!probe(&mut stats, 30_000));
+        assert!(
+            !stats.consistency_probe_admitted,
+            "a pair cut must not admit"
+        );
+        // A cut unsat probe of class 0: admitted. A zero budget gives up (reported
+        // as undetermined); a generous one finds B's clash.
+        let cut = || ClassificationStats {
+            timed_out_pairs: 1,
+            cut_unsat_probes: 1,
+            timed_out_pair_ids: vec![(0, 0)],
+            ..ClassificationStats::default()
+        };
+        let mut stats = cut();
+        assert!(!probe(&mut stats, 0));
+        assert!(stats.consistency_probe_admitted, "a cut unsat probe admits");
+        assert!(stats.consistency_probe_gave_up);
+        let mut stats = cut();
+        assert!(probe(&mut stats, 30_000), "B is inconsistent");
+        assert!(stats.consistency_probe_admitted);
     }
 
     // ───────────────────────────────────────────────────────────────────────

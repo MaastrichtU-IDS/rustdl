@@ -92,8 +92,11 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
 ```
 
 `incomplete` (#182) means `consistent: true` is a give-up in its sound
-direction (the fall-through tableau's deadline or node cap, or the #344
-data-counting verification giving up), not a verdict; the exit code is then 3.
+direction (the fall-through tableau's deadline or node cap, the #344
+data-counting verification giving up, or (#449) the tableau's internal limit,
+`NoVerdict`, reported on stderr as a likely bug), not a verdict; the exit code is
+then 3. On the `NoVerdict` path `wedge_clauses_refused` is not reported (0) and
+`relies_on_trusted_consistency` is `false`.
 `wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
 match, so a wedge `consistent` may miss a clash; 0 when the wedge was not
 consulted. `dropped` counts the axioms rustdl does not reason with, as in

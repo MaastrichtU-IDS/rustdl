@@ -51,11 +51,11 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 
 | Surface | Give-up sources | Rust | CLI text | CLI `--json` | Python | Pinned by |
 |---|---|---|---|---|---|---|
-| `consistent` | fall-through tableau deadline (`RUSTDL_CONSISTENCY_FALLBACK_MS`), node cap, abandon (#182); #344 data-counting verification gives up | `is_consistent_with_stats` → `incomplete` | `unknown`, exit 3 | `incomplete`, exit 3 | `is_consistent` warns | `consistency_data_counting.rs`; CLI `consistent` tests |
+| `consistent` | fall-through tableau deadline (`RUSTDL_CONSISTENCY_FALLBACK_MS`), node cap, abandon (#182); #344 data-counting verification gives up; the tableau's internal limit, `NoVerdict` (#449: stderr names it a likely bug) | `is_consistent_with_stats` → `incomplete` | `unknown`, exit 3 | `incomplete`, exit 3 | `is_consistent` warns | `consistency_data_counting.rs`; CLI `consistent` tests |
 | `consistent` trusted wedge `Sat` (#392) | not a give-up: `consistent` rests only on the consistency wedge's `Sat`, which no main-tableau run verified (the wedge missed clashes in #290 and #376). Never set on `inconsistent`, on a main-tableau model, or on a #344-verified `Sat`. Broader than `wedge_clauses_refused` | `QueryStats::relies_on_trusted_consistency` (the #401 flag, same meaning) | stdout `consistent`, exit 0, one stderr note | `relies_on_trusted_consistency`, exit 0; the same stderr note | `is_consistent` warns `TrustedConsistencyWarning` | `consistent_trusted_sat.rs` (reasoner, CLI); `consistency_data_counting.rs`; `test_consistent_trusted_sat.py` |
-| `sat` | node cap (`RUSTDL_QUERY_MAX_NODES` on the CLI/Python entry point; early abandon is armed only under a deadline). A deadline-free depth bail-out is an error (exit 1), not `unknown` | `is_class_satisfiable_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_class_satisfiable` warns | `query_give_up.rs`; `test_query_give_up.py` |
-| `subclass` | node cap (`RUSTDL_QUERY_MAX_NODES`) | `is_subclass_of_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_subclass_of` warns | same |
-| `explain` | node cap | `is_subclass_of_with_stats` | `: unknown — tableau gave up`, exit 3 | — | — | `query_give_up.rs` |
+| `sat` | node cap (`RUSTDL_QUERY_MAX_NODES` on the CLI/Python entry point; early abandon is armed only under a deadline). A `NoVerdict` (the tableau's internal limit: saturation out of iterations, or a depth bail-out with time left) is `unknown`, exit 3, with a "likely a reasoner bug" stderr line (#449; it was exit 1) | `is_class_satisfiable_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_class_satisfiable` warns | `query_give_up.rs`; `test_query_give_up.py` |
+| `subclass` | node cap (`RUSTDL_QUERY_MAX_NODES`); `NoVerdict`, as for `sat` (#449) | `is_subclass_of_with_stats` → `incomplete` | `unknown`, exit 3 | no `--json` | `is_subclass_of` warns | same |
+| `explain` | node cap; `NoVerdict` (#449) | `is_subclass_of_with_stats` | `: unknown — tableau gave up` (`: unknown — the tableau reached an internal limit` for `NoVerdict`), exit 3 | — | — | `query_give_up.rs` |
 | `instance` | per-probe deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, default 750 ms), node cap, depth bail-out | `is_instance_of_reporting` | `unknown`, exit 3 | no `--json` | `is_instance_of` warns | `query_give_up.rs`; `test_query_give_up.py` |
 | `instances` | same | `instances_of_reporting` | stderr warning | no `--json` | `instances_of` warns | same |
 | `realize` | same, plus the node cap with the per-probe deadline disabled (`=0`) | `Realization::incomplete()` | stderr warning | `incomplete` | `realize` warns | same |
@@ -453,8 +453,11 @@ HermiT, JFact (checked on the fixture) and rustdl say inconsistent. The oracle r
 "both peers must agree", so **these inconsistencies are never scored**: a rustdl miss of this
 kind would be invisible to the net.
 
-**rustdl-fail, case 1283 (an issue draft, not filed).** `consistent` and `sat` fail with
+**rustdl-fail, case 1283 (#437, fixed).** `consistent` and `sat` failed with
 `ReasonError::NoVerdict` ("bug indicator") instead of answering or giving up with exit 3.
+#437 removed the cause (a `Self(r⁻)` self-loop livelock); since #449 any `NoVerdict` that
+reaches the CLI is `unknown`, exit 3. The `--json` commands other than `consistent` then print
+`unknown` without a JSON object (#462).
 - Shrunk under peer agreement to 5 axioms (consistent KB) and 6 axioms (inconsistent KB).
 - It fails in about 5 s; the 13-axiom original takes 18–24 s.
 - classify answers the 5-axiom KB correctly.

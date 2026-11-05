@@ -40,6 +40,29 @@ use owl_dl_core::{ConceptExpr, ConceptId, ConceptPool};
 /// defensive against rule bugs.
 const SATURATE_ITERS: usize = 4096;
 
+/// The deterministic saturation's iteration cap per search frame:
+/// `RUSTDL_TABLEAU_SATURATE_ITERS`, default [`SATURATE_ITERS`]. Read once. Running out
+/// of iterations is `Stalled`, which a deadline-free probe reports as
+/// `ReasonError::NoVerdict` (#437 hit it through a livelock). The knob gives a deep
+/// deterministic saturation more room, and lets a test force the give-up (#449).
+fn saturate_iters() -> usize {
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        parse_saturate_iters(
+            std::env::var("RUSTDL_TABLEAU_SATURATE_ITERS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// A positive integer; anything else (unset, `0`, garbage) is the default.
+fn parse_saturate_iters(v: Option<&str>) -> usize {
+    v.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(SATURATE_ITERS)
+}
+
 /// Outcome of a search, or of one decision frame within it.
 ///
 /// Generalises the previous `Option<bool>` API: `Sat` is what
@@ -173,7 +196,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
             }
             return Expanded::Done(SearchVerdict::DepthLimit);
         }
-        let verdict = match saturate(ctx, SATURATE_ITERS) {
+        let verdict = match saturate(ctx, saturate_iters()) {
             SaturationResult::Clash(_, deps) => {
                 if trace_enabled() {
                     eprintln!(
@@ -271,7 +294,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                 // so run one: if it changes anything, search the new state.
                 if crate::sat_leaf_resaturate_enabled() {
                     let before = ctx.trail().len();
-                    match saturate(ctx, SATURATE_ITERS) {
+                    match saturate(ctx, saturate_iters()) {
                         SaturationResult::Stable if !ctx.trail().mutated_since(before) => {}
                         // Search the new state at the same depth.
                         SaturationResult::Stable => continue,
@@ -1145,6 +1168,22 @@ fn first_open_disjunction_by_rank(
 mod tests {
     use crate::TableauContext;
     use owl_dl_core::{ClassId, ConceptExpr, ConceptPool, IndividualId};
+
+    #[test]
+    fn saturate_iters_parses_a_positive_integer_and_defaults_otherwise() {
+        assert_eq!(super::parse_saturate_iters(None), super::SATURATE_ITERS);
+        assert_eq!(super::parse_saturate_iters(Some("1")), 1);
+        assert_eq!(super::parse_saturate_iters(Some(" 12 ")), 12);
+        assert_eq!(
+            super::parse_saturate_iters(Some("0")),
+            super::SATURATE_ITERS
+        );
+        assert_eq!(
+            super::parse_saturate_iters(Some("x")),
+            super::SATURATE_ITERS
+        );
+        assert_eq!(super::SATURATE_ITERS, 4096);
+    }
 
     #[test]
     #[ignore = "nominal-first deferred (A redesign); opt-in RUSTDL_NOMINAL_FIRST=1, run with --ignored"]

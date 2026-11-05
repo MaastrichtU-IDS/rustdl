@@ -193,8 +193,8 @@ All notable changes to rustdl are documented here. Format is based on
     (inconsistent ones) the flag-off route, and has an empty `certified_unlowered`. Scope tests
     cover inputs with individuals (also with the wedge off) and inputs outside the gate (a
     union, a functional data role with clashing values). Unit tests pin that a cut saturation is
-    no verdict, also through the bounded API. Seven sabotages (including dropping K⊤ from
-    `top_is_unsat`) each turn a named test red.
+    no verdict, also through the bounded API, which must return soon after its deadline. Nine
+    sabotages (including dropping K⊤ from `top_is_unsat`) each turn a named test red.
 - **A tableau `NoVerdict` is a give-up on the CLI, not a crash (#449).** `NoVerdict` is the
   tableau's internal limit: the deterministic saturation ran out of iterations (as in the #437
   livelock), or the search hit its depth cap with time left. Every command passed it up as exit 1

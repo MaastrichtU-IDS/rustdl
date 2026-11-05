@@ -4598,6 +4598,61 @@ mod tests {
         );
     }
 
+    /// #460: `apply_exists` and `apply_min` build nothing at a node waiting for its
+    /// nominal merge, and register it for incremental saturation's revisit (as the
+    /// #362 deferral does); after the merge the canonical node generates.
+    #[test]
+    fn generating_rules_wait_for_the_nominal_merge() {
+        let mut pool = ConceptPool::new();
+        let a = IndividualId::new(0);
+        let nom_a = pool.nominal(a);
+        let c = pool.atomic(ClassId::new(0));
+        let r = Role::Named(RoleId::new(0));
+        let some = pool.some(r, c);
+        let min2 = pool.min(2, r, c);
+        let mut ctx = TableauContext::new(&pool);
+        assert!(
+            ctx.incremental_saturate_enabled(),
+            "default: incremental saturation"
+        );
+        let canonical = ctx.new_node();
+        ctx.add_label(canonical, nom_a);
+        ctx.assign_nominal(a, canonical);
+        let fresh = ctx.new_node();
+        ctx.add_label(fresh, nom_a);
+        ctx.add_label(fresh, some);
+        ctx.add_label(fresh, min2);
+        let len = ctx.graph().len();
+        assert_eq!(
+            crate::rules::apply_exists(&mut ctx, fresh),
+            RuleOutcome::NoChange
+        );
+        assert_eq!(
+            crate::rules::apply_min(&mut ctx, fresh),
+            RuleOutcome::NoChange
+        );
+        assert_eq!(ctx.graph().len(), len, "no successor before the merge");
+        assert_eq!(
+            ctx.deferred_seen.get(fresh.index() as usize).copied(),
+            Some(true),
+            "the waiting node is registered for the incremental revisit"
+        );
+        assert_eq!(
+            crate::rules::apply_nominal_assignment(&mut ctx, fresh),
+            RuleOutcome::Applied
+        );
+        assert_eq!(
+            ctx.resolve(fresh),
+            canonical,
+            "merged into the canonical node"
+        );
+        assert_eq!(
+            crate::rules::apply_exists(&mut ctx, canonical),
+            RuleOutcome::Applied,
+            "the moved `∃` generates on the canonical node"
+        );
+    }
+
     #[test]
     fn merge_into_does_not_create_parent_pointer_cycle() {
         // root —r→ s1 —r→ s2 —r→ s3. Merge s1 into s3: step 5 re-parents

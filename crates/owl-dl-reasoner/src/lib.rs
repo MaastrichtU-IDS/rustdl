@@ -12933,6 +12933,9 @@ pub fn prove_entailment_rcstr(
 }
 
 /// What [`prove_entailment_rcstr_reporting`] reports beside the result.
+// `struct_excessive_bools`: each bool is an independent signal a caller reads
+// (the #395 contract: one field per give-up cause), not a state machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProveFlags {
     /// A reasoner check gave up (#402): the top-level check (the result is
@@ -12954,6 +12957,11 @@ pub struct ProveFlags {
     /// the inconsistency, not for `sub ⊑ sup`. `false` is not a proof of
     /// consistency: the guard is a sound under-approximation.
     pub kb_inconsistent: bool,
+    /// #462: a deadline-free probe ended in `NoVerdict` (an internal limit, likely a
+    /// reasoner bug, #449): the top-level check (the result is then
+    /// [`ProveEntailmentResult::Unknown`]) or a justification-search oracle.
+    /// `incomplete` is set too.
+    pub no_verdict: bool,
 }
 
 /// [`prove_entailment_rcstr`] plus its [`ProveFlags`].
@@ -13001,6 +13009,17 @@ pub fn prove_entailment_rcstr_reporting(
         Err(ReasonError::Inconsistent) => {
             return prove_on_inconsistent_kb(ontology);
         }
+        // #462: an internal limit, not a verdict: `Unknown`, as for a give-up.
+        Err(ReasonError::NoVerdict) => {
+            return Ok((
+                ProveEntailmentResult::Unknown,
+                ProveFlags {
+                    incomplete: true,
+                    no_verdict: true,
+                    ..ProveFlags::default()
+                },
+            ));
+        }
         r => r?,
     };
     if !held {
@@ -13029,11 +13048,13 @@ pub fn prove_entailment_rcstr_reporting(
         sup: sup_iri.to_string(),
     };
     let outcome = justify::find_one_justification_reporting(ontology, &q)?;
+    let no_verdict = outcome.no_verdict;
     let (result, incomplete) = fallback_after_held(outcome);
     Ok((
         result,
         ProveFlags {
-            incomplete,
+            incomplete: incomplete || no_verdict,
+            no_verdict,
             ..ProveFlags::default()
         },
     ))
@@ -13064,12 +13085,14 @@ fn prove_on_inconsistent_kb(
 ) -> Result<(ProveEntailmentResult, ProveFlags), ReasonError> {
     let outcome =
         justify::find_one_justification_reporting(ontology, &justify::Entailment::Inconsistent)?;
+    let no_verdict = outcome.no_verdict;
     let (result, incomplete) = fallback_after_inconsistency(outcome);
     Ok((
         result,
         ProveFlags {
-            incomplete,
+            incomplete: incomplete || no_verdict,
             kb_inconsistent: true,
+            no_verdict,
             ..ProveFlags::default()
         },
     ))
@@ -13178,6 +13201,7 @@ mod tests {
             justifications: Vec::new(),
             incomplete,
             relies_on_trusted_consistency: false,
+            no_verdict: false,
         };
         for (status, incomplete) in [(Verdict::NotEntailed, false), (Verdict::Unknown, true)] {
             let (r, inc) = fallback_after_inconsistency(outcome(status, incomplete));
@@ -15507,6 +15531,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             justifications: vec![],
             incomplete: true,
             relies_on_trusted_consistency: false,
+            no_verdict: false,
         };
         let (result, incomplete) = fallback_after_held(gave_up);
         assert!(
@@ -15524,6 +15549,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             }],
             incomplete: true,
             relies_on_trusted_consistency: false,
+            no_verdict: false,
         };
         let (result, incomplete) = fallback_after_held(not_minimal);
         assert!(matches!(

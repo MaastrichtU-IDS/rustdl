@@ -31,7 +31,8 @@ use crate::{PreparedOntology, ReasonError};
 /// `(i, j, entailed, used_saturation, timed_out, depth_capped)` — one entry per
 /// pairwise subsumption check returned from the parallel work loop.
 /// `depth_capped` (#288) is meaningful only with `timed_out`.
-type PairResult = (usize, usize, bool, bool, bool, bool);
+/// `(i, j, entailed, used_saturation, timed_out, depth_capped, no_verdict)`.
+type PairResult = (usize, usize, bool, bool, bool, bool, bool);
 
 // ─── BEGIN report-position ↔ ClassId conversion boundary ─────────────────
 //
@@ -792,6 +793,18 @@ pub struct ClassificationStats {
     ///
     /// MUST be added to BOTH worker-stat merge sites (see `stall_tail_skips`).
     pub depth_capped_pairs: usize,
+    /// #462: main-tableau probes (per-class unsat probes and pair probes) that ended in
+    /// `NoVerdict` on a **deadline-free** probe. Such a probe searches to
+    /// `DEEP_SEARCH_DEPTH`, so a `NoVerdict` there is an internal limit, likely a reasoner
+    /// bug (#449), not a budget cut. Each is also a `timed_out_pairs` entry with an undecided
+    /// marker (under `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` for the per-class probes), and the
+    /// probe takes its sound default, but it is **not** counted in `depth_capped_pairs`. A
+    /// `NoVerdict` on a BUDGETED probe is the routine depth-cap cut (#288) and is not
+    /// counted here. `classify --json` reports it as `no_verdict_pairs`; the CLI prints the
+    /// #449 note and exits 3 when it is non-zero.
+    ///
+    /// MUST be added to BOTH worker-stat merge sites (see `stall_tail_skips`).
+    pub no_verdict_pairs: usize,
     pub fallthrough_ran: usize,
     pub fallthrough_subsumed: usize,
     pub fallthrough_notsubsumed: usize,
@@ -1868,6 +1881,7 @@ fn fold_probe_stats(stats: &mut ClassificationStats, sd: ClassificationStats) {
     stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
     stats.timed_out_pairs += sd.timed_out_pairs;
     stats.depth_capped_pairs += sd.depth_capped_pairs;
+    stats.no_verdict_pairs += sd.no_verdict_pairs;
     stats
         .timed_out_pair_ids
         .extend(sd.timed_out_pair_ids.iter().copied());
@@ -2039,24 +2053,36 @@ fn classify_internal_with_timeout_impl(
                 // sound, since assuming sat can never cause a false
                 // subsumption later. But the class may be unsat, so the cut is
                 // recorded and flags the result incomplete (#218).
-                // `Err(NoVerdict)` (a depth cap) still propagates via `?` here,
-                // aborting this driver, whereas `classify_top_down_internal`
-                // treats it as a cut. Pre-existing asymmetry, deliberately left
-                // alone by #218: this is the non-default driver.
-                let verdict = prepared
-                    .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))?;
+                // #462: `Err(NoVerdict)` on this budgeted probe is the routine
+                // depth-cap cut (#288), as in `classify_top_down_internal`; it used
+                // to abort this driver through `?`.
+                let verdict = match prepared
+                    .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))
+                {
+                    Err(ReasonError::NoVerdict) => None,
+                    r => r?,
+                };
                 if verdict.is_none() {
-                    record_cut_probe(&cut_probes, i);
+                    record_cut_probe(&cut_probes, i, false);
                 }
                 Ok((i, verdict.unwrap_or(true), false))
             } else {
                 // No deadline, but a `RUSTDL_MAX_NODES` trip still yields no
                 // verdict; record it like a deadline cut (#218).
-                let verdict = prepared.decide_classify_raw(move |pool| pool.atomic(class_id))?;
-                if verdict.is_none() {
-                    record_cut_probe(&cut_probes, i);
+                // #462: a deadline-free `NoVerdict` is a cut too, counted apart.
+                match prepared.decide_classify_raw(move |pool| pool.atomic(class_id)) {
+                    Err(ReasonError::NoVerdict) => {
+                        record_cut_probe(&cut_probes, i, true);
+                        Ok((i, true, false))
+                    }
+                    r => {
+                        let verdict = r?;
+                        if verdict.is_none() {
+                            record_cut_probe(&cut_probes, i, false);
+                        }
+                        Ok((i, verdict.unwrap_or(true), false))
+                    }
                 }
-                Ok((i, verdict.unwrap_or(true), false))
             }
         })
         .collect();
@@ -2103,8 +2129,8 @@ fn classify_internal_with_timeout_impl(
             let sub_class = reported.class_id(i);
             let super_class = reported.class_id(j);
             if closure.contains(sub_class, super_class) {
-                // (i, j, entailed, used_saturation, timed_out, depth_capped)
-                return Ok((i, j, true, true, false, false));
+                // (i, j, entailed, used_saturation, timed_out, depth_capped, no_verdict)
+                return Ok((i, j, true, true, false, false, false));
             }
             let build = move |pool: &mut ConceptPool| {
                 let sub_concept = pool.atomic(sub_class);
@@ -2113,10 +2139,11 @@ fn classify_internal_with_timeout_impl(
                 pool.and(vec![sub_concept, not_super])
             };
             match per_pair_timeout {
-                None => {
-                    let sat = prepared.decide_classify(build)?;
-                    Ok((i, j, !sat, false, false, false))
-                }
+                None => match prepared.decide_classify(build) {
+                    // #462: a deadline-free `NoVerdict`: undecided, counted apart.
+                    Err(ReasonError::NoVerdict) => Ok((i, j, false, false, true, false, true)),
+                    r => Ok((i, j, !r?, false, false, false, false)),
+                },
                 Some(timeout) => {
                     // Cooperative deadline: the tableau's search loop
                     // checks `Instant::now()` against this deadline on
@@ -2124,18 +2151,30 @@ fn classify_internal_with_timeout_impl(
                     // extra threads, no cancellation race — the rayon
                     // worker stays bound to this single decide call.
                     let deadline = Instant::now() + timeout;
-                    match prepared.decide_classify_with_deadline(deadline, build)? {
-                        Some(sat) => Ok((i, j, !sat, false, false, false)),
-                        None => Ok((i, j, false, false, true, crate::last_probe_depth_capped())),
+                    // #462: `Err(NoVerdict)` on this budgeted probe is the routine
+                    // depth-cap cut (#288); it used to abort this driver.
+                    match prepared.decide_classify_with_deadline(deadline, build) {
+                        Ok(Some(sat)) => Ok((i, j, !sat, false, false, false, false)),
+                        Ok(None) | Err(ReasonError::NoVerdict) => Ok((
+                            i,
+                            j,
+                            false,
+                            false,
+                            true,
+                            crate::last_probe_depth_capped(),
+                            false,
+                        )),
+                        Err(other) => Err(other),
                     }
                 }
             }
         })
         .collect();
-    for (i, j, is_entailed, used_saturation, timed_out, depth_capped) in pair_results? {
+    for (i, j, is_entailed, used_saturation, timed_out, depth_capped, no_verdict) in pair_results? {
         if timed_out {
             stats.timed_out_pairs += 1;
             stats.depth_capped_pairs += usize::from(depth_capped);
+            stats.no_verdict_pairs += usize::from(no_verdict);
             stats.timed_out_pair_ids.push((
                 u32::try_from(i).expect("class index fits in u32"),
                 u32::try_from(j).expect("class index fits in u32"),
@@ -4141,14 +4180,32 @@ fn wedge_clauses_refused(prepared: &PreparedOntology) -> usize {
 /// Record that class `i`'s per-class unsat probe was cut (deadline, node cap
 /// or depth limit) and defaulted to "satisfiable" (#218). Call it directly after
 /// the probe, on the probe's thread: it reads [`crate::last_probe_depth_capped`]
-/// to keep a depth-limit cut apart from a timeout (#288).
-fn record_cut_probe(cut: &std::sync::Mutex<Vec<(usize, bool)>>, i: usize) {
-    if crate::unsat_probe_cut_incomplete_enabled() {
-        let depth_capped = crate::last_probe_depth_capped();
+/// to keep a depth-limit cut apart from a timeout (#288). `no_verdict` marks a
+/// deadline-free probe's `NoVerdict` (#462): it is counted in `no_verdict_pairs` whatever
+/// `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` says, and never as a depth-cap cut.
+fn record_cut_probe(cut: &std::sync::Mutex<Vec<CutProbe>>, i: usize, no_verdict: bool) {
+    let mark = crate::unsat_probe_cut_incomplete_enabled();
+    if mark || no_verdict {
+        let depth_capped = !no_verdict && crate::last_probe_depth_capped();
         cut.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((i, depth_capped));
+            .push(CutProbe {
+                class: i,
+                depth_capped,
+                no_verdict,
+                mark,
+            });
     }
+}
+
+/// One cut per-class unsat probe (see [`record_cut_probe`]).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CutProbe {
+    class: usize,
+    depth_capped: bool,
+    no_verdict: bool,
+    /// Whether `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` records it as a `(c, c)` marker.
+    mark: bool,
 }
 
 /// Fold cut unsat probes into the incompleteness signal (#218). A cut probe
@@ -4156,17 +4213,20 @@ fn record_cut_probe(cut: &std::sync::Mutex<Vec<(usize, bool)>>, i: usize) {
 /// not complete. Each is recorded as a `(c, c)` marker, the same shape the
 /// global-deadline bail uses for "this class is undecided", which keeps the
 /// `undecided_pairs().len() == timed_out_pairs` invariant.
-fn flag_cut_probes(cut: std::sync::Mutex<Vec<(usize, bool)>>, stats: &mut ClassificationStats) {
+fn flag_cut_probes(cut: std::sync::Mutex<Vec<CutProbe>>, stats: &mut ClassificationStats) {
     let mut cut = cut
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     cut.sort_unstable();
-    for (i, depth_capped) in cut {
-        let c = u32::try_from(i).expect("class index fits in u32");
-        stats.timed_out_pairs += 1;
-        stats.cut_unsat_probes += 1;
-        stats.depth_capped_pairs += usize::from(depth_capped);
-        stats.timed_out_pair_ids.push((c, c));
+    for p in cut {
+        stats.no_verdict_pairs += usize::from(p.no_verdict);
+        if p.mark {
+            let c = u32::try_from(p.class).expect("class index fits in u32");
+            stats.timed_out_pairs += 1;
+            stats.cut_unsat_probes += 1;
+            stats.depth_capped_pairs += usize::from(p.depth_capped);
+            stats.timed_out_pair_ids.push((c, c));
+        }
     }
 }
 
@@ -4958,8 +5018,9 @@ fn classify_top_down_internal_impl(
                     Ok(Some(s)) => s,
                     Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                         // Possibly unsat: recorded so the result is flagged
-                        // incomplete (#218).
-                        record_cut_probe(&cut_probes, i);
+                        // incomplete (#218). A budgeted `NoVerdict` is the routine
+                        // depth-cap cut (#288), not a #462 no-verdict.
+                        record_cut_probe(&cut_probes, i, false);
                         true
                     }
                     Err(other) => return Err(other),
@@ -4969,18 +5030,24 @@ fn classify_top_down_internal_impl(
                 // No deadline, but a `RUSTDL_MAX_NODES` trip still yields no
                 // verdict; record it like a deadline cut (#218).
                 let mut labels = Vec::new();
-                let verdict = if want_labels(i) {
+                let probe = if want_labels(i) {
                     prepared.decide_classify_labelled(
                         None,
                         move |pool| pool.atomic(class_id),
                         &mut labels,
-                    )?
+                    )
                 } else {
-                    prepared.decide_classify_raw(move |pool| pool.atomic(class_id))?
+                    prepared.decide_classify_raw(move |pool| pool.atomic(class_id))
                 };
                 keep_labels(i, labels);
+                // #462: a deadline-free `NoVerdict` is a cut too, counted apart; it
+                // used to abort classify.
+                let (verdict, no_verdict) = match probe {
+                    Err(crate::ReasonError::NoVerdict) => (None, true),
+                    r => (r?, false),
+                };
                 if verdict.is_none() {
-                    record_cut_probe(&cut_probes, i);
+                    record_cut_probe(&cut_probes, i, no_verdict);
                 }
                 Ok((i, verdict.unwrap_or(true), false))
             }
@@ -5189,6 +5256,7 @@ fn classify_top_down_internal_impl(
             stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
             stats.timed_out_pairs += sd.timed_out_pairs;
             stats.depth_capped_pairs += sd.depth_capped_pairs;
+            stats.no_verdict_pairs += sd.no_verdict_pairs;
             stats
                 .timed_out_pair_ids
                 .extend(sd.timed_out_pair_ids.iter().copied());
@@ -6362,7 +6430,25 @@ fn subsumes_via_tableau(
     // tableau probe even when per_pair_timeout is None (global-only mode).
     match effective_deadline(global_deadline, per_pair_timeout) {
         None => {
-            let sat = prepared.decide_classify(build)?;
+            let sat = match prepared.decide_classify(build) {
+                // #462: a deadline-free `NoVerdict`: the pair is undecided (the sound
+                // "not subsumed"), counted apart from the depth-cap cut. It used to
+                // abort classify.
+                Err(crate::ReasonError::NoVerdict) => {
+                    stats.timed_out_pairs += 1;
+                    stats.no_verdict_pairs += 1;
+                    push_undecided_pair(stats, reported, sub, sup);
+                    record_fallthrough_outcome(
+                        stats,
+                        &prepared.stall_gauge,
+                        stall_fallthrough,
+                        stall_diverged,
+                        None,
+                    );
+                    return Ok(None);
+                }
+                r => r?,
+            };
             stats.tableau_subsumption_calls += 1;
             let subsumed = !sat;
             if was_fast_refuted && subsumed {

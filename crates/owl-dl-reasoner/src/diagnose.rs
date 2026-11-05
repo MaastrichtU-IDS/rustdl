@@ -54,6 +54,11 @@ pub struct Diagnosis {
     /// this is `false` whatever the classification trusted. A trust decision, not a
     /// give-up: separate from `incomplete`. Never set when `consistent` is `false`.
     pub relies_on_trusted_consistency: bool,
+    /// #462: a deadline-free probe under the diagnosis ended in `NoVerdict` (an
+    /// internal limit, likely a reasoner bug, #449): an unsat probe of the
+    /// classification (also counted in `unsat_probes_cut`) or the consistency check
+    /// (also `consistency_gave_up`). `incomplete` is set too.
+    pub no_verdict: bool,
 }
 
 /// An empty `Diagnosis` for an ontology found inconsistent (caller justifies the
@@ -69,6 +74,7 @@ fn inconsistent_diagnosis() -> Diagnosis {
         consistency_gave_up: false,
         unsat_probes_cut: 0,
         relies_on_trusted_consistency: false,
+        no_verdict: false,
     }
 }
 
@@ -131,8 +137,22 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
     let n_declared = classification.classes().len();
     let mut consistency_gave_up = false;
     let mut trusted = classification.stats().relies_on_trusted_consistency;
+    let mut no_verdict = classification.stats().no_verdict_pairs > 0;
     if n_declared > 0 && unsat.len() == n_declared {
-        let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
+        // #462: a `NoVerdict` here is a give-up in the sound direction ("consistent").
+        let (consistent, stats) = match crate::is_consistent_with_stats(onto) {
+            Err(ReasonError::NoVerdict) => {
+                no_verdict = true;
+                (
+                    true,
+                    crate::QueryStats {
+                        incomplete: true,
+                        ..crate::QueryStats::default()
+                    },
+                )
+            }
+            r => r?,
+        };
         if !consistent {
             return Ok(inconsistent_diagnosis());
         }
@@ -153,6 +173,7 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
         consistency_gave_up,
         unsat_probes_cut,
         relies_on_trusted_consistency: trusted,
+        no_verdict,
         ..inconsistent_diagnosis()
     };
 
@@ -174,6 +195,7 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
         consistency_gave_up,
         unsat_probes_cut,
         relies_on_trusted_consistency: trusted,
+        no_verdict,
         ..partition(&unsat, &edges)
     })
 }
@@ -351,6 +373,7 @@ fn partition(unsat: &BTreeSet<String>, edges: &BTreeMap<String, BTreeSet<String>
         consistency_gave_up: false,
         unsat_probes_cut: 0,
         relies_on_trusted_consistency: false,
+        no_verdict: false,
     }
 }
 

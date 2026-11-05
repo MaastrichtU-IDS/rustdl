@@ -3,6 +3,26 @@
 Consumed by the Protégé plugin. Every object carries `"schema_version": 1`.
 All arrays are sorted (byte order); pairs are `[sub, sup]`.
 
+## `no_verdict` / `no_verdict_pairs` (#462)
+
+Added without a `schema_version` bump to `classify` (`no_verdict_pairs`, an int) and to
+`consistent`, `disjoint`, `individuals`, `property-values`, `justify`, `prove`, `sat-expr` and
+`subclass-expr` (`no_verdict`, a bool).
+
+**Meaning: a probe with NO deadline ended in `NoVerdict`.** Such a probe searches to a far larger
+decision depth, so a `NoVerdict` there is an internal limit (a saturation stall, as in #437),
+likely a reasoner bug (#449). The command also prints a "likely a reasoner bug" note on stderr and
+**exits 3**. The probe takes its sound default ("satisfiable", "not subsumed", "not entailed",
+"consistent"), and `incomplete` (or `status: "unknown"`) is set too.
+
+It does **not** mean "any `NoVerdict`". On a probe with a deadline (a pair budget, such as
+`classify`'s default `--pair-timeout-ms` or the 1000 ms default of `disjoint`, `individuals` and
+`property-values`), a `NoVerdict` is the routine decision-depth cut (#288): it sets only
+`incomplete` (and, in `classify`, the depth-limit banner line), not this field, and the exit code
+follows the command's usual give-up convention. So these fields are `false` / `0` on a
+budgeted run whatever the tableau did, and `--pair-timeout-ms 0` is the setting under which they
+can fire.
+
 ## `classify --json`
 
 ```json
@@ -10,7 +30,7 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
   "prep_timed_out": bool, "conversion_timed_out": bool, "parse_timed_out": bool,
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
-  "matrix_closure_added_pairs": int,
+  "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...] }
 ```
@@ -86,6 +106,10 @@ on, an incomplete run's `direct_subsumptions` and `equivalent_groups` are
 those of the closed relation, so they can differ from the closure-off output
 while the transitive closure of the answer is the same.
 
+`no_verdict_pairs` (#462) = of the timed-out pairs, probes with no deadline (per-class unsat
+probes and pair probes, e.g. under `--pair-timeout-ms 0`) that ended in `NoVerdict`; see the
+`no_verdict` section above. Each also counts toward `incomplete`, but not as a depth-limit cut.
+
 `equivalent_groups` lists only *satisfiable* equivalence classes; unsatisfiable
 classes are reported in `unsatisfiable` (they are all mutually equivalent to
 `owl:Nothing`).
@@ -98,6 +122,7 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
   "incomplete": bool,
   "relies_on_trusted_consistency": bool,
   "wedge_clauses_refused": int,
+  "no_verdict": bool,
   "dropped": { "<axiom kind>": int } }
 ```
 
@@ -105,8 +130,8 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
 direction (the fall-through tableau's deadline or node cap, the #344
 data-counting verification giving up, or (#449) the tableau's internal limit,
 `NoVerdict`, reported on stderr as a likely bug), not a verdict; the exit code is
-then 3. On the `NoVerdict` path `wedge_clauses_refused` is not reported (0) and
-`relies_on_trusted_consistency` is `false`.
+then 3. On the `NoVerdict` path `wedge_clauses_refused` is not reported (0),
+`relies_on_trusted_consistency` is `false` and `no_verdict` (#462) is `true`.
 `wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
 match, so a wedge `consistent` may miss a clash; 0 when the wedge was not
 consulted. `dropped` counts the axioms rustdl does not reason with, as in
@@ -174,7 +199,7 @@ nothing was dropped).
   "disjoint_classes": [[a_iri, b_iri], ...],
   "disjoint_object_properties": [[a_iri, b_iri], ...],
   "disjoint_data_properties": [[a_iri, b_iri], ...],
-  "consistency_undetermined": bool }
+  "no_verdict": bool, "consistency_undetermined": bool }
 ```
 
 `consistency_undetermined` (#369 follow-up, no `schema_version` bump): the property half's
@@ -227,7 +252,7 @@ or under-approximate.
 
 ```json
 { "schema_version": 1, "incomplete": bool,
-  "consistency_undetermined": bool,
+  "consistency_undetermined": bool, "no_verdict": bool,
   "same_groups": [[iri, ...], ...],
   "different_pairs": [[a_iri, b_iri], ...] }
 ```
@@ -259,7 +284,7 @@ merges/distinctions.
 { "schema_version": 1, "incomplete": bool,
   "object_property_values": [[s_iri, p_iri, o_iri], ...],
   "data_property_values": [[s_iri, p_iri, lexical, datatype_iri], ...],
-  "consistency_undetermined": bool }
+  "consistency_undetermined": bool, "no_verdict": bool }
 ```
 
 `consistency_undetermined` (#369 follow-up, no `schema_version` bump): the answer is non-empty
@@ -302,7 +327,7 @@ edges may be missing.
 
 ```json
 { "schema_version": 1, "status": "entailed" | "not-entailed" | "unknown",
-  "incomplete": bool,
+  "incomplete": bool, "no_verdict": bool,
   "enumeration_complete": bool, "minimal": bool, "laconic": bool,
   "justifications": [ { "ofn": ofn_document } ] }
 ```
@@ -340,7 +365,7 @@ below).
 { "schema_version": 1, "entailed": bool,
   "status": "entailed" | "not-entailed" | "unknown", "incomplete": bool,
   "relies_on_trusted_consistency": bool,
-  "kb_inconsistent": bool,
+  "kb_inconsistent": bool, "no_verdict": bool,
   "has_proof": bool,
   "proof_complete": bool | null,
   "proof": ProofNodeJson | null,
@@ -420,10 +445,10 @@ no axioms and `incomplete` is `true`. `false` is not a proof of consistency.
 ```json
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
   "relies_on_trusted_consistency": bool, "consistency_undetermined": bool,
-  "satisfiable": bool }                                              // sat-expr
+  "no_verdict": bool, "satisfiable": bool }                          // sat-expr
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
   "relies_on_trusted_consistency": bool, "consistency_undetermined": bool,
-  "entailed": bool }                                                 // subclass-expr
+  "no_verdict": bool, "entailed": bool }                             // subclass-expr
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
   "consistency_undetermined": bool, "instances": [iri] }             // instances-expr
 ```

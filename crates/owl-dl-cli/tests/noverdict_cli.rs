@@ -11,6 +11,12 @@
 //!
 //! `sat` and `subclass` reach the top-level net in `main`; `explain` and
 //! `consistent --json` handle it at their own sites, to keep their output formats.
+//!
+//! #462: every other command keeps its own output format too. A `NoVerdict` on a probe
+//! with NO deadline sets the command's give-up slot plus its own `no_verdict` /
+//! `no_verdict_pairs` field, and the command adds #449's note and exits 3. A
+//! `NoVerdict` on a probe WITH a deadline is the routine decision-depth cut (#288) and
+//! changes nothing, so the deadline-free arms run with `--pair-timeout-ms 0`.
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
@@ -32,6 +38,21 @@ Ontology(<http://ex/noverdict>
 )
 ";
 
+/// `SRC` with two individuals, so the `ABox` commands probe pairs.
+const SRC_ABOX: &str = r"Prefix(:=<http://ex/#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://ex/noverdict-abox>
+  Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))
+  Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+  SubClassOf(:C ObjectSomeValuesFrom(:r :C))
+  SubClassOf(:D ObjectSomeValuesFrom(:r :D))
+  SubClassOf(:C ObjectAllValuesFrom(:s :E))
+  SubClassOf(owl:Thing :E)
+  ClassAssertion(:C :a) ClassAssertion(:D :b) ObjectPropertyAssertion(:r :a :b)
+)
+";
+
 const C: &str = "http://ex/#C";
 const D: &str = "http://ex/#D";
 const MARKER: &str = "likely a reasoner bug";
@@ -40,9 +61,13 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn new(tag: &str) -> Self {
+        Self::with(tag, SRC)
+    }
+
+    fn with(tag: &str, src: &str) -> Self {
         let path =
             std::env::temp_dir().join(format!("rustdl-noverdict-{}-{tag}.ofn", std::process::id()));
-        std::fs::write(&path, SRC).unwrap();
+        std::fs::write(&path, src).unwrap();
         Self(path)
     }
 
@@ -141,10 +166,239 @@ fn consistent_reports_unknown_and_json_reports_incomplete() {
     let j: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
     assert_eq!(j["consistent"], true);
     assert_eq!(j["incomplete"], true);
+    assert_eq!(j["no_verdict"], true);
     // Control.
     let r = run(false, &["consistent", "--json", f.path()]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     let j: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
     assert_eq!(j["consistent"], true);
     assert_eq!(j["incomplete"], false);
+    assert_eq!(j["no_verdict"], false);
+}
+
+/// The JSON object, which must parse whatever the exit code.
+fn json(r: &Run, what: &str) -> serde_json::Value {
+    serde_json::from_str(&r.stdout)
+        .unwrap_or_else(|e| panic!("{what}: stdout is JSON ({e})\nstdout: {}", r.stdout))
+}
+
+/// FORCED: JSON with `incomplete` and `no_verdict` (or `no_verdict_pairs > 0`), #449's
+/// note, exit 3. Control: JSON, the field clear, exit 0. `flag` is the field's name.
+fn assert_json_flags_no_verdict(f: &Fixture, args: &[&str], flag: &str) {
+    let mut full: Vec<&str> = args.to_vec();
+    full.push(f.path());
+    let what = args.join(" ");
+    let r = run(true, &full);
+    assert_gave_up(&r, &what);
+    let j = json(&r, &what);
+    assert_eq!(j["incomplete"], true, "{what}: {j}");
+    match flag {
+        "no_verdict_pairs" => assert!(j[flag].as_u64().unwrap() > 0, "{what}: {j}"),
+        _ => assert_eq!(j[flag], true, "{what}: {j}"),
+    }
+    let r = run(false, &full);
+    assert_eq!(r.code, 0, "{what} control: {}", r.stderr);
+    assert!(!r.stderr.contains(MARKER), "{what} control: {}", r.stderr);
+    let j = json(&r, &what);
+    match flag {
+        "no_verdict_pairs" => assert_eq!(j[flag], 0, "{what} control: {j}"),
+        _ => assert_eq!(j[flag], false, "{what} control: {j}"),
+    }
+}
+
+#[test]
+fn query_json_keeps_its_object() {
+    let f = Fixture::new("queries");
+    for (args, status) in [
+        (vec!["prove", "--json", "PATH", C, D], Some("unknown")),
+        (
+            vec!["justify", "--json", "PATH", "subclass", C, D],
+            Some("unknown"),
+        ),
+        (vec!["sat-expr", "--json", "PATH", "C"], None),
+        (vec!["subclass-expr", "--json", "PATH", "C", "D"], None),
+    ] {
+        let full: Vec<&str> = args
+            .iter()
+            .map(|a| if *a == "PATH" { f.path() } else { a })
+            .collect();
+        let what = args[0];
+        let r = run(true, &full);
+        assert_gave_up(&r, what);
+        let j = json(&r, what);
+        assert_eq!(
+            (j["incomplete"].clone(), j["no_verdict"].clone()),
+            (true.into(), true.into()),
+            "{what}: {j}"
+        );
+        if let Some(s) = status {
+            assert_eq!(j["status"], s, "{what}: {j}");
+        }
+        let r = run(false, &full);
+        assert_eq!(r.code, 0, "{what} control: {}", r.stderr);
+        let j = json(&r, what);
+        assert_eq!(j["no_verdict"], false, "{what} control: {j}");
+        assert_eq!(j["incomplete"], false, "{what} control: {j}");
+    }
+}
+
+#[test]
+fn hierarchy_json_with_no_pair_budget_keeps_its_object() {
+    let f = Fixture::new("hierarchy");
+    assert_json_flags_no_verdict(
+        &f,
+        &["classify", "--json", "--pair-timeout-ms", "0"],
+        "no_verdict_pairs",
+    );
+    assert_json_flags_no_verdict(
+        &f,
+        &[
+            "classify",
+            "--n2-classify",
+            "--json",
+            "--pair-timeout-ms",
+            "0",
+        ],
+        "no_verdict_pairs",
+    );
+    assert_json_flags_no_verdict(
+        &f,
+        &["disjoint", "--json", "--pair-timeout-ms", "0"],
+        "no_verdict",
+    );
+    // Not reported as a decision-depth cut: no budget cut these probes. And every cut
+    // is counted as a NoVerdict: with no deadline nothing else cuts a probe here, so a
+    // cut left out of `no_verdict_pairs` (a mapping site that drops the flag, or a
+    // worker-stats merge that drops the field) shows up as a "class pair(s) hit the
+    // ..." timeout line. `> 0` alone would not see it: both drivers make several cuts.
+    for driver in [&[][..], &["--n2-classify"][..]] {
+        let mut args = vec!["classify", "--json", "--pair-timeout-ms", "0"];
+        args.extend_from_slice(driver);
+        args.push(f.path());
+        let r = run(true, &args);
+        assert!(
+            r.stderr.contains("without a verdict (NoVerdict)"),
+            "{args:?}: {}",
+            r.stderr
+        );
+        assert!(
+            !r.stderr.contains("search-depth limit"),
+            "{args:?}: {}",
+            r.stderr
+        );
+        assert!(
+            !r.stderr.contains("class pair(s) hit the"),
+            "{args:?}: a cut was not counted in no_verdict_pairs: {}",
+            r.stderr
+        );
+    }
+}
+
+#[test]
+fn abox_json_with_no_pair_budget_keeps_its_object() {
+    let f = Fixture::with("abox", SRC_ABOX);
+    assert_json_flags_no_verdict(
+        &f,
+        &["individuals", "--json", "--pair-timeout-ms", "0"],
+        "no_verdict",
+    );
+    assert_json_flags_no_verdict(
+        &f,
+        &["property-values", "--json", "--pair-timeout-ms", "0"],
+        "no_verdict",
+    );
+}
+
+#[test]
+fn text_commands_give_up_in_their_own_format() {
+    let f = Fixture::new("text");
+    for args in [
+        vec!["justify", f.path(), "subclass", C, D],
+        vec!["repair", f.path(), "subclass", C, D],
+        vec!["diagnose", f.path()],
+        vec!["report", f.path()],
+    ] {
+        let what = args[0];
+        let r = run(true, &args);
+        assert_gave_up(&r, what);
+        assert_ne!(
+            r.stdout.trim(),
+            "unknown",
+            "{what}: its own format, not the bare token"
+        );
+        // Never blamed on the node cap alone (`diagnose` names both causes, since it
+        // counts cut unsat probes together).
+        assert!(
+            r.stderr
+                .lines()
+                .filter(|l| l.contains("RUSTDL_MAX_NODES"))
+                .all(|l| l.contains("NoVerdict")),
+            "{what}: not blamed on the node cap: {}",
+            r.stderr
+        );
+        let r = run(false, &args);
+        assert_eq!(r.code, 0, "{what} control: {}", r.stderr);
+        assert!(!r.stderr.contains(MARKER), "{what} control: {}", r.stderr);
+    }
+}
+
+/// #462 option (i): with a pair budget, a `NoVerdict` is the routine decision-depth cut
+/// (#288). The forced stall there is reported as a cut, as before: `incomplete` only,
+/// exit 0, no note.
+#[test]
+fn budgeted_runs_are_unchanged() {
+    let f = Fixture::new("budgeted");
+    let a = Fixture::with("budgeted-abox", SRC_ABOX);
+    for (args, flag) in [
+        (vec!["classify", "--json", f.path()], "no_verdict_pairs"),
+        (
+            vec!["classify", "--n2-classify", "--json", f.path()],
+            "no_verdict_pairs",
+        ),
+        (vec!["disjoint", "--json", f.path()], "no_verdict"),
+        (vec!["individuals", "--json", a.path()], "no_verdict"),
+        (vec!["property-values", "--json", a.path()], "no_verdict"),
+    ] {
+        let what = args[..args.len() - 1].join(" ");
+        let r = run(true, &args);
+        assert_eq!(r.code, 0, "{what}: {}", r.stderr);
+        assert!(!r.stderr.contains(MARKER), "{what}: {}", r.stderr);
+        let j = json(&r, &what);
+        assert_eq!(j["incomplete"], true, "{what}: {j}");
+        match flag {
+            "no_verdict_pairs" => assert_eq!(j[flag], 0, "{what}: {j}"),
+            _ => assert_eq!(j[flag], false, "{what}: {j}"),
+        }
+    }
+}
+
+/// #462: a real decision-depth cut (#288's fixture: `X`'s unsat probe needs 280 levels,
+/// past the limit of 256) at a budget, unforced: exit 0, no note, `no_verdict_pairs: 0`,
+/// and the depth-limit banner line. A `NoVerdict` on a budgeted probe must never read as
+/// a reasoner bug (PMD core and several ORE ontologies hit this at the default).
+#[test]
+fn a_budgeted_depth_cut_is_not_a_no_verdict() {
+    let body: Vec<String> = (0..280)
+        .map(|k| format!("ObjectUnionOf(:A{k} :B{k})"))
+        .collect();
+    let src = format!(
+        "Prefix(:=<http://example.org/d#>)\nOntology(<http://example.org/d>\n\
+         SubClassOf(:X ObjectIntersectionOf({}))\n)\n",
+        body.join(" ")
+    );
+    let f = Fixture::with("depth-cut", &src);
+    let r = run(
+        false,
+        &["classify", "--json", "--pair-timeout-ms", "20000", f.path()],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains(MARKER), "{}", r.stderr);
+    assert!(
+        r.stderr.contains("search-depth limit"),
+        "the cut happened: {}",
+        r.stderr
+    );
+    let j = json(&r, "classify");
+    assert_eq!(j["incomplete"], true, "{j}");
+    assert_eq!(j["no_verdict_pairs"], 0, "{j}");
 }

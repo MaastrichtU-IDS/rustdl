@@ -176,12 +176,22 @@ pub(crate) struct ClassifyJson {
     /// sets nor clears `incomplete` (a cut also prunes the walk below it). 0 when the
     /// closure is off.
     pub(crate) matrix_closure_added_pairs: usize,
+    /// #462: probes with NO deadline (per-class unsat probes and pair probes, e.g. under
+    /// `--pair-timeout-ms 0`) that ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. Each took its sound default and is also a timed-out pair, so
+    /// `incomplete` is set; it is not counted as a decision-depth cut. It does NOT count
+    /// every `NoVerdict`: on a probe with a deadline (the default pair budget) a
+    /// `NoVerdict` is the routine decision-depth cut (#288). 0 when there is none.
+    pub(crate) no_verdict_pairs: usize,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct ConsistentJson {
     pub(crate) schema_version: u32,
@@ -201,6 +211,12 @@ pub(crate) struct ConsistentJson {
     /// `incomplete` (a give-up), as in `classify --json`. Counted whenever the
     /// consistency wedge was consulted; 0 when it was not.
     pub(crate) wedge_clauses_refused: usize,
+    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
+    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    pub(crate) no_verdict: bool,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
 
@@ -284,6 +300,12 @@ pub(crate) struct DisjointJson {
     pub(crate) disjoint_classes: Vec<[String; 2]>,
     pub(crate) disjoint_object_properties: Vec<[String; 2]>,
     pub(crate) disjoint_data_properties: Vec<[String; 2]>,
+    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
+    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    pub(crate) no_verdict: bool,
     /// #369: the property half's answer is non-empty and the KB's consistency
     /// stayed undetermined (see `sat-expr`). The class half reports through
     /// classify's own inconsistency verdict.
@@ -323,6 +345,12 @@ pub(crate) struct SatExprJson {
     /// so it may be the vacuous answer of an inconsistent KB. Separate from
     /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
+    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
+    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    pub(crate) no_verdict: bool,
     pub(crate) satisfiable: bool,
 }
 
@@ -353,6 +381,12 @@ pub(crate) struct SubclassExprJson {
     /// so it may be the vacuous answer of an inconsistent KB. Separate from
     /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
+    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
+    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    pub(crate) no_verdict: bool,
     pub(crate) entailed: bool,
 }
 
@@ -384,6 +418,7 @@ pub(crate) fn build_sat_expr_json(v: owl_dl_reasoner::CeVerdict) -> SatExprJson 
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         consistency_undetermined: v.consistency_undetermined(),
+        no_verdict: v.no_verdict(),
         satisfiable: v.holds(),
     }
 }
@@ -396,6 +431,7 @@ pub(crate) fn build_subclass_expr_json(v: owl_dl_reasoner::CeVerdict) -> Subclas
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
         consistency_undetermined: v.consistency_undetermined(),
+        no_verdict: v.no_verdict(),
         entailed: v.holds(),
     }
 }
@@ -489,6 +525,7 @@ pub(crate) fn build_classify_json(
         wedge_clauses_refused: stats.wedge_clauses_refused,
         derived_same_undecided: stats.derived_same_undecided,
         matrix_closure_added_pairs: stats.matrix_closure_added_pairs,
+        no_verdict_pairs: stats.no_verdict_pairs,
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,
@@ -517,6 +554,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         wedge_clauses_refused: 0,
         derived_same_undecided: 0,
         matrix_closure_added_pairs: 0,
+        no_verdict_pairs: 0,
         unsatisfiable: Vec::new(),
         equivalent_groups: Vec::new(),
         direct_subsumptions: Vec::new(),
@@ -536,12 +574,15 @@ fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool, 
     )
 }
 
+// `fn_params_excessive_bools`: one parameter per `ConsistentJson` schema field.
+#[allow(clippy::fn_params_excessive_bools)]
 #[must_use]
 pub(crate) fn build_consistent_json(
     consistent: bool,
     incomplete: bool,
     relies_on_trusted_consistency: bool,
     wedge_clauses_refused: usize,
+    no_verdict: bool,
     dropped: BTreeMap<String, u64>,
 ) -> ConsistentJson {
     ConsistentJson {
@@ -550,6 +591,7 @@ pub(crate) fn build_consistent_json(
         incomplete,
         relies_on_trusted_consistency,
         wedge_clauses_refused,
+        no_verdict,
         dropped,
     }
 }
@@ -690,6 +732,7 @@ pub(crate) fn build_disjoint_json(
         disjoint_classes: dc,
         disjoint_object_properties: to_arr(obj),
         disjoint_data_properties: to_arr(data),
+        no_verdict: classes.no_verdict(),
         consistency_undetermined,
         structural_gaps,
     }
@@ -704,6 +747,12 @@ pub(crate) struct IndividualsJson {
     /// vacuous answer of an inconsistent KB. Separate from `incomplete`; not a
     /// give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
+    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
+    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    pub(crate) no_verdict: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
 }
@@ -739,6 +788,7 @@ pub(crate) fn build_individuals_json(
         incomplete: same.incomplete() || different.incomplete(),
         consistency_undetermined: same.consistency_undetermined()
             || different.consistency_undetermined(),
+        no_verdict: same.no_verdict() || different.no_verdict(),
         same_groups,
         different_pairs,
     }
@@ -755,6 +805,12 @@ pub(crate) struct PropertyValuesJson {
     /// so it may be the vacuous answer of an inconsistent KB. Separate from
     /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
+    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
+    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    pub(crate) no_verdict: bool,
     /// #389/#390: constructs present that the data half of this surface (the object half reports through `incomplete`) ignores and that
     /// can entail a relation it would report (see
     /// `owl_dl_reasoner::property_structural_gaps`). Empty means none of the known
@@ -790,6 +846,7 @@ pub(crate) fn build_property_values_json(
         incomplete: obj.incomplete() || data.incomplete(),
         object_property_values,
         consistency_undetermined: obj.consistency_undetermined() || data.consistency_undetermined(),
+        no_verdict: obj.no_verdict(),
         data_property_values,
         structural_gaps,
     }
@@ -813,6 +870,12 @@ pub(crate) struct JustifyJson {
     /// `status: "not-entailed"` that verdict rests on it; with `"entailed"` only
     /// minimality can. Not a give-up. See `JustifyOutcome::relies_on_trusted_consistency`.
     pub(crate) relies_on_trusted_consistency: bool,
+    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
+    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    pub(crate) no_verdict: bool,
     pub(crate) justifications: Vec<JustificationJson>,
 }
 
@@ -874,6 +937,7 @@ pub(crate) fn build_justify_json(
         minimal,
         laconic,
         relies_on_trusted_consistency: outcome.relies_on_trusted_consistency,
+        no_verdict: outcome.no_verdict,
         justifications,
     }
 }
@@ -908,6 +972,12 @@ pub(crate) struct ProveJson {
     /// as `rustdl justify <file> inconsistent` searches for. `false` does not prove
     /// consistency.
     pub(crate) kb_inconsistent: bool,
+    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
+    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
+    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
+    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    pub(crate) no_verdict: bool,
     pub(crate) has_proof: bool,
     /// `true` when every proof step cites the axiom its rule applies (or needs none) and
     /// every premise has a sub-proof; `false` when some step cannot be completed from
@@ -1195,6 +1265,7 @@ pub(crate) fn build_prove_json(
         incomplete: flags.incomplete,
         relies_on_trusted_consistency: flags.relies_on_trusted_consistency,
         kb_inconsistent: flags.kb_inconsistent,
+        no_verdict: flags.no_verdict,
         has_proof: false,
         proof_complete: None,
         proof: None,

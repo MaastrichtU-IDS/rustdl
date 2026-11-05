@@ -34,6 +34,13 @@ class Classification:
         limit rather than a timeout; a larger timeout does not recover them."""
         ...
     @property
+    def no_verdict_pairs(self) -> int:
+        """Of `timed_out_pairs`, probes with NO deadline that ended in
+        `NoVerdict` (#462): an internal limit, likely a reasoner bug (#449).
+        A `NoVerdict` on a probe with a deadline is the routine search-depth
+        cut (`depth_capped_pairs`), not counted here."""
+        ...
+    @property
     def complete(self) -> bool:
         """True iff no pair timed out. `True` does NOT mean no entailment is
         missing: that is the stronger `completeness_guaranteed`. See also

@@ -456,8 +456,10 @@ kind would be invisible to the net.
 **rustdl-fail, case 1283 (#437, fixed).** `consistent` and `sat` failed with
 `ReasonError::NoVerdict` ("bug indicator") instead of answering or giving up with exit 3.
 #437 removed the cause (a `Self(r⁻)` self-loop livelock); since #449 any `NoVerdict` that
-reaches the CLI is `unknown`, exit 3. The `--json` commands other than `consistent` then print
-`unknown` without a JSON object (#462).
+reaches the CLI is `unknown`, exit 3. Since #462 every other command keeps its own output on a
+`NoVerdict`: `incomplete` (or `status: "unknown"`) plus a `no_verdict` / `no_verdict_pairs` field
+for a probe with no deadline, still with #449's note and exit 3. On a budgeted probe a `NoVerdict`
+is the routine decision-depth cut (#288) and sets only `incomplete`.
 - Shrunk under peer agreement to 5 axioms (consistent KB) and 6 axioms (inconsistent KB).
 - It fails in about 5 s; the 13-axiom original takes 18–24 s.
 - classify answers the 5-axiom KB correctly.

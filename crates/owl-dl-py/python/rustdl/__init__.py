@@ -110,7 +110,10 @@ class IncompleteClassificationWarning(UserWarning):
     * the wedge cannot match some clauses' bodies
       (`result.wedge_clauses_refused > 0`): those clauses never fire (#353);
     * candidate individual equalities went undecided
-      (`result.derived_same_undecided > 0`): a probe was cut or capped (#354).
+      (`result.derived_same_undecided > 0`): a probe was cut or capped (#354);
+    * a probe with no deadline ended without a verdict
+      (`result.no_verdict_pairs > 0`, #462): an internal limit, likely a
+      reasoner bug (#449); please report the input.
 
     `result.consistency_undetermined` is reported but not warned about, matching
     the CLI, which notes it only in the banner.
@@ -142,6 +145,19 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             "saturation closure is reported and consistency was not fully "
             "checked. It is still sound (no false subsumptions); check "
             "result.prep_timed_out.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    # #462: probes with no deadline that ended in NoVerdict are timed-out pairs
+    # too, but no budget cut them: name them, as the CLI does.
+    v = min(getattr(result, "no_verdict_pairs", 0), n)
+    n -= v
+    if v:
+        _warnings.warn(
+            f"{v} probe(s) with no deadline ended without a verdict (NoVerdict) "
+            "and were left undecided. This is likely a reasoner bug; please "
+            "report the input. The classification is still sound (no false "
+            "subsumptions). Check result.no_verdict_pairs.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )

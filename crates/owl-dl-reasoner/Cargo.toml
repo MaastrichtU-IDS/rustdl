@@ -13,6 +13,7 @@ categories.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+hashbrown.workspace = true
 owl-dl-core.workspace = true
 owl-dl-saturation.workspace = true
 owl-dl-tableau.workspace = true

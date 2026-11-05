@@ -370,3 +370,34 @@ or score above the threshold.
 the `family.ofn` detection on a moderately slower host, and it cannot lower any
 budget below the value the four DNF regressions were validated under. `=0` and
 any explicit `RUSTDL_CLASSIFY_INCONSISTENCY_MS` remain available.
+
+## Addendum 2026-11-04 (#447): the family figure did not travel
+
+The 2585 ms above was measured on another host. On the coder host (AMD EPYC 7402 VM, shared),
+`family.ofn`'s pre-check took **6.1–12.6 s** on main 64c9b720, so the 12 s generous budget cut it in
+about 1 run of 10 and classify reported `consistent: true` with no unsatisfiable classes (1 of 12
+interleaved classify runs did, at 37.6 CPU-s).
+
+Two causes, both in Rule 4 of the fixpoint (role chains and transitivity):
+
+- **The join's cost is memory latency.** family's 5 rounds produce ~101 M chain candidates for
+  228 149 new edges, and each candidate was a lookup in the global 267 112-entry edge `HashSet`.
+  A faster hasher cut instructions 3.3× and left the wall unchanged; L1-dcache misses were
+  ~280 M in every build tried.
+- **A codegen regression doubled it.** Bisected on `perf stat instructions:u` (deterministic to
+  ~0.01%) over 559 first-parent commits: 15.4 G at 8a358120, 31.3 G at 9f74f15b. That commit's code
+  is behind `RUSTDL_INVERSE_PAIR_FUNC` (default OFF) and does not run; it adds a second
+  instantiation of `HashSet<(RoleId, IndividualId, IndividualId)>`, after which the fixpoint's
+  `insert` is no longer inlined (93% of instructions inline before, 85% in an out-of-line `insert`
+  after).
+
+The fix (#447): when an outer edge `r1(a, b)` has at least 8 candidates, Rule 4 first checks them in a
+per-anchor cache of the conclusions already known for `a` (all of one outer edge's candidates share
+it). The cache is filled from the round's snapshot index on first use and is only ever a subset of the
+edge set, so a miss is still decided by the global set. Same rounds, rule order and fixpoint. family on
+the coder host: **0.6–1.4 s** (12 runs, 4 in parallel), from 5.4–11.2 s on main in the same run. A
+first version mirrored every edge into per-endpoint sets as the queue drained. It cost 25–50% of
+the pre-check on chain-sparse ontologies (`ore_ont_1579`, `5295`, `13647`) and was replaced. The
+budget levels and the threshold are unchanged. The costs this record's table quotes for other
+ontologies may also be stale for the same reason; re-measure with `examples/abox_precheck_probe.rs`
+before relying on one.

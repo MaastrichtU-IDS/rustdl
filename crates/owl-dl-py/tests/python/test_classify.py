@@ -164,6 +164,32 @@ def test_derived_same_undecided_is_its_own_signal(tmp_path, monkeypatch):
     assert r.is_subclass("http://ex.org/C1", "http://ex.org/C2")
 
 
+def test_matrix_closure_added_pairs_reports_the_recovered_cut(tmp_path, monkeypatch):
+    # #448: with A ⊑ B ⊑ C and the pair (A, C) cut by the test hook, the flag-OFF
+    # result denies A ⊑ C; the closure (RUSTDL_CLASSIFY_CLOSE_MATRIX, default on)
+    # recovers it, counts it, and the timeout warning says so. `complete` stays False either way.
+    import warnings
+    fixture = tmp_path / "cut.ofn"
+    fixture.write_text(
+        "Prefix(:=<http://t/>)\nOntology(\n"
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n"
+        "Declaration(Class(:D)) Declaration(Class(:E)) Declaration(Class(:F))\n"
+        "SubClassOf(:A :B) SubClassOf(:B :C) SubClassOf(:D ObjectUnionOf(:E :F))\n)\n"
+    )
+    monkeypatch.setenv("RUSTDL_CLASSIFY_TEST_CUT_PAIRS", "http://t/A http://t/C")
+    for flag, added in (("0", 0), ("1", 1)):
+        monkeypatch.setenv("RUSTDL_CLASSIFY_CLOSE_MATRIX", flag)
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            r = rustdl.classify(str(fixture))
+        assert r.matrix_closure_added_pairs == added
+        assert r.is_subclass("http://t/A", "http://t/C") is bool(added)
+        assert r.complete is False
+        msgs = [str(w.message) for w in rec
+                if issubclass(w.category, rustdl.IncompleteClassificationWarning)]
+        assert any("added back by the transitive closure" in m for m in msgs) is bool(added)
+
+
 def test_prep_timed_out_is_its_own_signal(tmp_path, monkeypatch):
     # #162: a preparation cut by the global deadline is reported by
     # `prep_timed_out` and warned about once as a cut preparation, not as a

@@ -8494,9 +8494,12 @@ mod consistent_el_fastpath_tests {
         );
     }
 
-    /// #459: the bounded API turns a cut saturation into `None`, never `true`.
-    /// The deadline is in the future, so the earlier `now >= deadline` guard does
-    /// not answer for it; the chain's saturation needs far longer than 20 ms.
+    /// #459: the bounded API turns a cut saturation into `None`, never `true`,
+    /// and returns soon after its deadline. The deadline is in the future, so the
+    /// earlier `now >= deadline` guard does not answer for it; the chain's
+    /// saturation needs far longer than 20 ms. Falling through to the old route
+    /// instead also answers `None`, but only after an unbounded saturation
+    /// (28 min in a debug build here), which the time bound catches.
     #[test]
     fn bounded_api_answers_none_when_the_saturation_is_cut() {
         let mut ax = String::new();
@@ -8504,10 +8507,16 @@ mod consistent_el_fastpath_tests {
             let _ = write!(ax, "SubClassOf(:A{i} :A{}) ", i + 1);
         }
         let onto = internal(&ax);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+        let start = std::time::Instant::now();
+        let deadline = start + std::time::Duration::from_millis(20);
         assert_eq!(
             is_consistent_internal_bounded(onto, deadline).expect("no error"),
             None
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "a 20 ms budget took {elapsed:?}: the cut saturation did not return"
         );
     }
 }

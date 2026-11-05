@@ -141,6 +141,14 @@ const RESEED_MAX_INTERVAL: u32 = 1024;
 /// frame from there.
 const RESEED_INITIAL_INTERVAL: u32 = 16;
 
+// #465: work counters for the cost pin `nn_counted_work_is_bounded_on_a_dead_edge_hub`.
+// Test builds only; a release build has neither the statics nor the increments.
+#[cfg(test)]
+thread_local! {
+    static RESOLVE_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static COUNT_SUCC_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Node id in the hyper completion graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HNode(u32);
@@ -595,7 +603,7 @@ impl std::ops::IndexMut<usize> for Nodes {
 /// untouched by branching.
 struct Snapshot {
     nodes: Nodes,
-    representative: Vec<HNode>,
+    representative: Vec<std::cell::Cell<HNode>>,
     neq: Vec<(HNode, HNode)>,
     block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
     /// `nn_holders`, saved with the graph so a restore drops the holders the
@@ -934,7 +942,11 @@ pub struct HyperEngine<'c> {
     /// `j` is merged into `i`, `representative[j] = i`. Identity for
     /// un-merged nodes. Resolve role-successors through this when
     /// counting/following edges so a merged node is seen once.
-    representative: Vec<HNode>,
+    ///
+    /// A `Cell` so that [`Self::resolve`] can halve paths through `&self` (#465).
+    /// Compression only shortens a chain; every `resolve` result, and whether a node
+    /// is merged (`representative[i] != i`), is unchanged.
+    representative: Vec<std::cell::Cell<HNode>>,
     /// HF2 role hierarchy: an `R`-edge satisfies an `S`-atom when
     /// `R ⊑* S`. Unlike inverse pairs (an equivalence, canonicalized in
     /// the clausifier), `⊑` is one-way, so it must be consulted at match
@@ -1983,7 +1995,7 @@ impl<'c> HyperEngine<'c> {
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
-            representative: vec![HNode(0)],
+            representative: vec![std::cell::Cell::new(HNode(0))],
             sub_roles: None,
             neq: Vec::new(),
             nominals: None,
@@ -2071,7 +2083,7 @@ impl<'c> HyperEngine<'c> {
             indexes,
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
-            representative: vec![HNode(0)],
+            representative: vec![std::cell::Cell::new(HNode(0))],
             sub_roles: None,
             neq: Vec::new(),
             nominals: None,
@@ -2622,6 +2634,8 @@ impl<'c> HyperEngine<'c> {
         qual: Option<ClassId>,
         limit: usize,
     ) -> usize {
+        #[cfg(test)]
+        COUNT_SUCC_CALLS.with(|c| c.set(c.get() + 1));
         let hier = self.sub_roles.as_ref();
         let mut seen: SmallVec<[HNode; 4]> = SmallVec::new();
         let n = &self.nodes[node.index()];
@@ -2673,11 +2687,21 @@ impl<'c> HyperEngine<'c> {
             .iter()
             .filter(|&&(e, w)| !(node.parent == Some(w) && node.parent_role == Some(e)))
             .map(|&(e, w)| (e, w, false));
+        // #465: `(resolved w, edge role, stored_on_m)` triples already examined at this
+        // `m`. A repeat cannot change the answer, and skipping it is exact:
+        // - If `w` carries a nominal, the repeat runs the same `≤` loop, which already
+        //   returned false.
+        // - Otherwise `w` is in `visited` from the first examination, so the recursion
+        //   returns false before touching `visited` and the repeat is skipped anyway.
+        // Without this, a nominal whose merged-away neighbours all resolve to one node
+        // re-ran `count_role_succ_upto` over its whole edge list once per dead edge.
+        let mut examined: SmallVec<[(HNode, Role, bool); 8]> = SmallVec::new();
         for (e, w, stored_on_m) in on_m.chain(on_w) {
             let w = self.resolve(w);
-            if w == rm {
+            if w == rm || examined.contains(&(w, e, stored_on_m)) {
                 continue;
             }
+            examined.push((w, e, stored_on_m));
             let nominal_like = self.node_carries_nominal(w)
                 || (depth > 0 && self.nn_counted(w, depth - 1, visited));
             if !nominal_like {
@@ -2808,10 +2832,23 @@ impl<'c> HyperEngine<'c> {
     /// representative (H3c). Identity for un-merged nodes.
     fn resolve(&self, n: HNode) -> HNode {
         let mut r = n;
-        while self.representative[r.index()] != r {
-            r = self.representative[r.index()];
+        // Path halving (#465): each step points a node at its grandparent, so a chain
+        // walked once is about half as long next time. Without it, an NN-rule merge,
+        // which makes the new node the survivor, lengthened the chain behind every
+        // earlier ghost, and `nn_counted` spent most of its time walking those chains.
+        // Exact: a node is only ever repointed to another node on its own chain, so
+        // the root that `resolve` returns does not change.
+        loop {
+            #[cfg(test)]
+            RESOLVE_STEPS.with(|c| c.set(c.get() + 1));
+            let p = self.representative[r.index()].get();
+            if p == r {
+                return r;
+            }
+            let gp = self.representative[p.index()].get();
+            self.representative[r.index()].set(gp);
+            r = gp;
         }
-        r
     }
 
     /// Add class `c` to node `n` with backjumping dep-set `deps`,
@@ -2970,7 +3007,7 @@ impl<'c> HyperEngine<'c> {
             ..HyperNode::default()
         });
         let n = HNode(id);
-        self.representative.push(n);
+        self.representative.push(std::cell::Cell::new(n));
         // Nodes created during decide are NOT snapshot-origin; the
         // sentinel only fires on labels propagated INTO the original
         // snapshot's reconstructed nodes.
@@ -3362,7 +3399,7 @@ impl<'c> HyperEngine<'c> {
             l += n.labels.len();
             e += n.edges.len();
             am += n.at_most.len();
-            if self.representative[i] != HNode(u32::try_from(i).expect("fits")) {
+            if self.representative[i].get() != HNode(u32::try_from(i).expect("fits")) {
                 m += 1;
             }
         }
@@ -4048,9 +4085,9 @@ impl<'c> HyperEngine<'c> {
             engine.nodes.push(hn);
         }
         for i in 0..n_nodes {
-            engine
-                .representative
-                .push(HNode(u32::try_from(i).expect("node count fits u32")));
+            engine.representative.push(std::cell::Cell::new(HNode(
+                u32::try_from(i).expect("node count fits u32"),
+            )));
         }
         // Sentinel infrastructure: every reconstructed node is
         // snapshot-origin. Any add_label_via_backprop call targeting
@@ -4162,8 +4199,8 @@ impl<'c> HyperEngine<'c> {
             hn.add(nominal, DepSet::EMPTY);
             nodes.push(hn);
         }
-        let representative: Vec<HNode> = (0..n)
-            .map(|i| HNode(u32::try_from(i).expect("fits u32")))
+        let representative: Vec<std::cell::Cell<HNode>> = (0..n)
+            .map(|i| std::cell::Cell::new(HNode(u32::try_from(i).expect("fits u32"))))
             .collect();
         let mut engine = Self {
             clauses,
@@ -5644,7 +5681,7 @@ impl<'c> HyperEngine<'c> {
             }
             return true;
         }
-        self.representative[s_j.index()] = s_i;
+        self.representative[s_j.index()].set(s_i);
         if cause_deps != DepSet::EMPTY {
             // Fold the merge-causation dep into the survivor's `birth_deps`.
             // `clause_body_deps` unions `birth_deps` of the firing node AND
@@ -7863,12 +7900,225 @@ mod tests {
         assert_eq!(check(&mut eng, n1, a), None);
         // A merged-away holder is skipped, the survivor is found.
         eng.add_label(n3, a, DepSet::EMPTY);
-        eng.representative[n1.index()] = n3;
+        eng.representative[n1.index()].set(n3);
         assert_eq!(check(&mut eng, n2, a), Some(n3));
         // Two live holders: the lowest index wins, as in the scan.
         let n4 = eng.new_node();
         eng.add_label(n2, a, DepSet::EMPTY);
         assert_eq!(check(&mut eng, n4, a), Some(n2));
+    }
+
+    /// #465: `resolve` halves paths through `&self`. A branch restore must bring the
+    /// union-find back exactly, with no link the abandoned branch compressed: after
+    /// merging, compressing, restoring and resolving, every node resolves to what it
+    /// resolved to at the save, and nodes merged only inside the branch are their own
+    /// representatives again.
+    #[test]
+    fn path_halving_is_invisible_after_a_restore() {
+        let mut eng = HyperEngine::new(&[], cls(0));
+        let n: Vec<HNode> = (0..6).map(|_| eng.new_node()).collect();
+        // Before the save: n0 → n1 → n2 (each merge makes the first argument the
+        // survivor). Resolve once so a compressed link is part of the saved state.
+        assert!(!eng.merge(n[1], n[0]));
+        assert!(!eng.merge(n[2], n[1]));
+        assert_eq!(eng.resolve(n[0]), n[2]);
+        let before: Vec<HNode> = n.iter().map(|&x| eng.resolve(x)).collect();
+        let saved = eng.save();
+        // Inside the branch: n2 → n3 → n4 → n5, then resolve from the far end of the
+        // chain, which repoints n0, n1 and n3 past nodes that are unmerged at the save.
+        assert!(!eng.merge(n[3], n[2]));
+        assert!(!eng.merge(n[4], n[3]));
+        assert!(!eng.merge(n[5], n[4]));
+        assert_eq!(eng.resolve(n[0]), n[5]);
+        assert_eq!(eng.resolve(n[1]), n[5]);
+        assert_ne!(
+            eng.representative[n[0].index()].get(),
+            n[1],
+            "precondition: halving must have rewritten n0's link inside the branch"
+        );
+        eng.restore(saved);
+        let after: Vec<HNode> = n.iter().map(|&x| eng.resolve(x)).collect();
+        assert_eq!(
+            after, before,
+            "a restore must undo every link the branch wrote"
+        );
+        for &x in &n[2..] {
+            assert_eq!(
+                eng.representative[x.index()].get(),
+                x,
+                "a node unmerged at the save must be its own representative again"
+            );
+        }
+    }
+
+    /// #465 cost pin, deterministic (counts work, not time). A nominal hub `w` with
+    /// `≤1 r` reaches `m` through 1,000 dead `r`-preds: merged-away nodes chained one
+    /// behind the other into `w`, as repeated NN-rule merges leave them. Before #465,
+    /// one `nn_counted(m)` walked every chain to its end (~500,000 resolve steps) and
+    /// re-counted `w`'s successors once per dead pred (1,000 calls). The per-`m` dedup
+    /// counts once, and path halving keeps the walks short.
+    #[test]
+    fn nn_counted_work_is_bounded_on_a_dead_edge_hub() {
+        let r = Role::Named(RoleId::new(0));
+        let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(10, 1);
+        let w = eng.new_node();
+        eng.nodes[w.index()].add(cls(10), DepSet::EMPTY);
+        eng.nodes[w.index()].at_most.push((r, None, 1));
+        let m = eng.new_node();
+        // Two live `r`-successors, so `w`'s `≤1` is over-full: no early `true`, and
+        // `nn_counted` scans every pred.
+        let other = eng.new_node();
+        eng.nodes[w.index()].edges.push((r, m));
+        eng.nodes[w.index()].edges.push((r, other));
+        let ghosts: Vec<HNode> = (0..1000).map(|_| eng.new_node()).collect();
+        for (i, &g) in ghosts.iter().enumerate() {
+            let next = ghosts.get(i + 1).copied().unwrap_or(w);
+            eng.representative[g.index()].set(next);
+            eng.nodes[m.index()].preds.push((r, g));
+        }
+        RESOLVE_STEPS.with(|c| c.set(0));
+        COUNT_SUCC_CALLS.with(|c| c.set(0));
+        assert!(!eng.nn_counted(m, NN_CASCADE_DEPTH, &mut SmallVec::new()));
+        let steps = RESOLVE_STEPS.with(std::cell::Cell::get);
+        let calls = COUNT_SUCC_CALLS.with(std::cell::Cell::get);
+        assert_eq!(
+            calls, 1,
+            "w's successors are counted once, not once per dead pred"
+        );
+        assert!(
+            steps < 20_000,
+            "{steps} resolve steps: chains are walked without halving"
+        );
+    }
+
+    /// #465: the pre-#465 `nn_counted`, without the per-`m` dedup of examined
+    /// neighbours, kept verbatim as the reference for the differential test below.
+    fn nn_counted_reference(
+        eng: &HyperEngine<'_>,
+        m: HNode,
+        depth: u8,
+        visited: &mut SmallVec<[HNode; 8]>,
+    ) -> bool {
+        let rm = eng.resolve(m);
+        if visited.contains(&rm) {
+            return false;
+        }
+        visited.push(rm);
+        let hier = eng.sub_roles.as_ref();
+        let node = &eng.nodes[rm.index()];
+        let on_m = node.edges.iter().map(|&(e, w)| (e, w, true));
+        let on_w = node
+            .preds
+            .iter()
+            .filter(|&&(e, w)| !(node.parent == Some(w) && node.parent_role == Some(e)))
+            .map(|&(e, w)| (e, w, false));
+        for (e, w, stored_on_m) in on_m.chain(on_w) {
+            let w = eng.resolve(w);
+            if w == rm {
+                continue;
+            }
+            let nominal_like = eng.node_carries_nominal(w)
+                || (depth > 0 && nn_counted_reference(eng, w, depth - 1, visited));
+            if !nominal_like {
+                continue;
+            }
+            for &(r, q, k) in &eng.nodes[w.index()].at_most {
+                let counts = if stored_on_m {
+                    eng.inverse_func_merge && role_matches(e.flip(), r, hier)
+                } else {
+                    role_matches(e, r, hier)
+                };
+                if !counts || q.is_some_and(|q| !node.has(q)) {
+                    continue;
+                }
+                if eng.count_role_succ_upto(w, r, q, k as usize + 1) <= k as usize {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// #465: `nn_counted` (with the per-`m` dedup) agrees with the reference on
+    /// random graphs. The graphs are dense in what the dedup collapses: merged-away
+    /// nodes that resolve to one nominal, the same neighbour reached through
+    /// different roles and from both sides, and `≤` constraints on nominals.
+    #[test]
+    fn nn_counted_agrees_with_the_undeduplicated_reference() {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move |bound: u32| -> u32 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            u32::try_from(state % u64::from(bound)).expect("bounded")
+        };
+        let roles = [
+            Role::Named(RoleId::new(0)),
+            Role::Named(RoleId::new(1)),
+            Role::Named(RoleId::new(0)).flip(),
+        ];
+        let (nominal_start, nominal_count) = (10u32, 2u32);
+        let (mut trues, mut checked) = (0usize, 0usize);
+        for _ in 0..400 {
+            let mut eng = HyperEngine::new(&[], cls(0)).with_nominals(nominal_start, nominal_count);
+            eng.inverse_func_merge = next(2) == 0;
+            let n_nodes = 4 + next(10) as usize;
+            let nodes: Vec<HNode> = (0..n_nodes).map(|_| eng.new_node()).collect();
+            for &x in &nodes {
+                for c in [1, 2, nominal_start, nominal_start + 1] {
+                    if next(3) == 0 {
+                        eng.nodes[x.index()].add(cls(c), DepSet::EMPTY);
+                    }
+                }
+                if next(3) == 0 {
+                    let r = roles[next(3) as usize];
+                    let q = if next(2) == 0 {
+                        None
+                    } else {
+                        Some(cls(1 + next(2)))
+                    };
+                    eng.nodes[x.index()].at_most.push((r, q, next(4)));
+                }
+            }
+            for _ in 0..(2 * n_nodes + next(20) as usize) {
+                let (a, b) = (
+                    nodes[next(n_nodes as u32) as usize],
+                    nodes[next(n_nodes as u32) as usize],
+                );
+                let r = roles[next(3) as usize];
+                eng.nodes[a.index()].edges.push((r, b));
+                eng.nodes[b.index()].preds.push((r, a));
+                if eng.nodes[b.index()].parent.is_none() && next(2) == 0 {
+                    eng.nodes[b.index()].parent = Some(a);
+                    eng.nodes[b.index()].parent_role = Some(r);
+                }
+            }
+            // Merge some nodes into later ones (acyclic), so many raw neighbours
+            // resolve to one representative.
+            for i in 0..n_nodes - 1 {
+                if next(3) == 0 {
+                    let j = i + 1 + next(u32::try_from(n_nodes - i - 1).expect("fits")) as usize;
+                    let target = eng.resolve(nodes[j]);
+                    if target != nodes[i] && eng.resolve(nodes[i]) == nodes[i] {
+                        eng.representative[nodes[i].index()].set(target);
+                    }
+                }
+            }
+            for &m in &nodes {
+                for depth in [0, 1, NN_CASCADE_DEPTH] {
+                    let got = eng.nn_counted(m, depth, &mut SmallVec::new());
+                    let want = nn_counted_reference(&eng, m, depth, &mut SmallVec::new());
+                    assert_eq!(got, want, "nn_counted({m:?}, depth {depth}) diverged");
+                    trues += usize::from(want);
+                    checked += 1;
+                }
+            }
+        }
+        // The generator must exercise both answers, or the test proves little.
+        assert!(
+            trues >= 200 && checked - trues >= 200,
+            "{trues}/{checked} true"
+        );
     }
 
     /// `RUSTDL_NN_INDEX` with `RUSTDL_NN_UNDO_LOG=0`: restoring a snapshot saved
@@ -8330,7 +8580,7 @@ mod tests {
                 .representative
                 .iter()
                 .enumerate()
-                .any(|(i, rep)| rep.index() != i),
+                .any(|(i, rep)| rep.get().index() != i),
             "precondition: the ≤1 merge must fold a node, or this test proves nothing"
         );
         assert_eq!(

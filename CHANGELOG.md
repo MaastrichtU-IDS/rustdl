@@ -170,6 +170,16 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The consistency wedge no longer spends its whole budget on the #376 NN-guard check
+  (#465, part A).** On a nominal that the NN rule merges into many times, `nn_counted`
+  re-read the nominal's dead merged edges once per edge, through union-find chains
+  that every merge lengthened. On a 2-axiom input (`C ≡ ∃r.(=3 r.D)`, `C ≡ {a, b}`)
+  the wedge stalled at the 10 s budget, so `consistent` and `justify … inconsistent`
+  took ~10 s each. Two exact changes: `nn_counted` examines each `(neighbour, role,
+  side)` once per node, and `resolve` halves paths. The search is unchanged (every
+  wedge counter is identical); that input now decides in ~3.7 CPU-s. The other two
+  slow #465 cases are a generate-before-merge loop in the wedge (part B, to follow)
+  and #460.
 - **classify no longer reports a `TBox`-only inconsistent ontology as determined-consistent
   when its unsat probes were cut (#466).** classify's consistency probe is admitted on an
   empty unsat set only where that set may be incomplete, and that admission required an

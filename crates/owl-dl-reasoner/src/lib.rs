@@ -3175,7 +3175,7 @@ pub fn classify_probe_min_frac_permille() -> u64 {
 /// and `ObjectPropertyAssertion` count **do not track cost, in either
 /// direction** — `ore_ont_4510` carries 114 957 `ObjectPropertyAssertion` and
 /// saturates in **136 ms**, while `family.ofn` carries 1 337 and takes
-/// **2585 ms** (2026-08-03, another host; 0.8–1.6 s on the coder host since
+/// **2585 ms** (2026-08-03, another host; 0.6–1.3 s on the coder host since
 /// #447, 6–12.6 s there before it). `ore_ont_6233` (176 043 `ClassAssertion`) takes 17 ms.
 ///
 /// What does separate them is whether the ontology has a rule that *multiplies*
@@ -3283,8 +3283,9 @@ pub const INCONSISTENCY_WORK_THRESHOLD: u64 = 300_000;
 /// took 6–12.6 s, so this budget cut it in about 1 run of 10 and classify
 /// reported family consistent. The cost was Rule 4 of the `ABox` saturation
 /// testing ~101 M chain candidates in the global edge set (memory-latency-bound,
-/// and doubled by a codegen change at 9f74f15b). With the per-endpoint dedupe
-/// it takes 0.8–1.6 s there (12 runs, 4 in parallel), ≥7.7× headroom. The
+/// and doubled by a codegen change at 9f74f15b). With the per-anchor cache of
+/// known conclusions it takes 0.6–1.3 s there (12 runs, 4 in parallel), ≥9×
+/// headroom. The
 /// release-only `shipped_default_budget_covers_family_precheck` requires 3× on
 /// the host running it.
 pub const INCONSISTENCY_GENEROUS_MS: u64 = 12_000;
@@ -8055,7 +8056,7 @@ fn bounded_query_guard_until(
 /// - **low work: unbounded.** The fixpoint cannot run away there, and the guard
 ///   *is* the answer on an inconsistent KB: `family.ofn` (low work) needed 6–12 s of
 ///   it on the reference host, so classify's 12 s cut it 2 runs in 10, and the
-///   query then stalled, which is #428 itself (0.8–1.6 s since #447);
+///   query then stalled, which is #428 itself (0.6–1.3 s since #447);
 /// - **high work: [`INCONSISTENCY_STINGY_MS`] (3 s)**, as classify. Unbounded, the
 ///   saturation never finished on `ore_ont_{10838,15846,16315,3087,1199,7557}`,
 ///   all high work, where the query alone answers in under 10 s.

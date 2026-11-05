@@ -729,7 +729,7 @@ fn shipped_default_budget_covers_family_precheck() {
     // #447: "above the cost" was not enough. On the coder host the pre-check took
     // 6-10 s against the 12 s default (headroom 1.14x at worst), and the budget
     // cut it in 2 runs of 10, because Rule 4 tested every chain candidate in the
-    // global edge set. With the per-endpoint dedupe it takes ~1.1-1.7 s there, so
+    // global edge set. With the per-anchor cache it takes ~0.6-1.3 s there, so
     // 3x is a margin a correct build clears on a loaded host and the old join
     // does not.
     assert!(

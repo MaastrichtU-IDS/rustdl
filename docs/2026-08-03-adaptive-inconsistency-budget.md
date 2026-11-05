@@ -391,9 +391,13 @@ Two causes, both in Rule 4 of the fixpoint (role chains and transitivity):
   `insert` is no longer inlined (93% of instructions inline before, 85% in an out-of-line `insert`
   after).
 
-The fix (#447) checks each candidate in a per-endpoint set of the partners already known (every
-candidate of one outer edge shares that endpoint), and touches the global set only for a new
-conclusion. Same rounds, rule order and fixpoint. family on the coder host: **0.8–1.6 s** (12 runs,
-4 in parallel), 2.3–2.6 G cycles instead of 19.4–19.9 G. The budget levels and the threshold are
-unchanged. The cost this record's table quotes for other ontologies may also be stale for the same
-reason; re-measure with `examples/abox_precheck_probe.rs` before relying on one.
+The fix (#447): when an outer edge `r1(a, b)` has at least 8 candidates, Rule 4 first checks them in a
+per-anchor cache of the conclusions already known for `a` (all of one outer edge's candidates share
+it). The cache is filled from the round's snapshot index on first use and is only ever a subset of the
+edge set, so a miss is still decided by the global set. Same rounds, rule order and fixpoint. family on
+the coder host: **0.6–1.3 s** (12 runs, 4 in parallel), from 5.5–11.2 s on main in the same run. A
+first version mirrored every edge into per-endpoint sets as the queue drained. It cost 25–50% of
+the pre-check on chain-sparse ontologies (`ore_ont_1579`, `5295`, `13647`) and was replaced. The
+budget levels and the threshold are unchanged. The costs this record's table quotes for other
+ontologies may also be stale for the same reason; re-measure with `examples/abox_precheck_probe.rs`
+before relying on one.

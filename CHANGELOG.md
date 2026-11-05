@@ -170,6 +170,18 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **A tableau `NoVerdict` is a give-up on the CLI, not a crash (#449).** `NoVerdict` is the
+  tableau's internal limit: the deterministic saturation ran out of iterations (as in the #437
+  livelock), or the search hit its depth cap with time left. Every command passed it up as exit 1
+  with an error chain and no output, while its other give-ups print `unknown` and exit 3. Now
+  every command that lets it reach `main` prints `unknown`, writes "the tableau reached an internal
+  limit without a verdict (NoVerdict). This is likely a reasoner bug; please report the input." to
+  stderr, and exits 3. `consistent --json` emits its object with `consistent: true,
+  incomplete: true`, as for its other give-ups, and `explain` keeps its
+  `{sub} ⊑ {sup} : unknown — …` line. The other `--json` commands print `unknown` without a JSON
+  object on this path. The Rust API and Python still return the error. New knob
+  `RUSTDL_TABLEAU_SATURATE_ITERS` (default 4096): the saturation's per-frame iteration cap, which
+  the tests set to 1 to force the give-up. No known input reaches `NoVerdict` since #437.
 - **`classify` no longer loses `family.ofn`'s inconsistency to its 12 s pre-check budget
   (#447).** The `ABox`-saturation pre-check took 5.4–12.6 s on the coder host, not the
   2585 ms the budget was sized on (another host, August), so the budget cut it: 1 of 12
@@ -681,6 +693,17 @@ All notable changes to rustdl are documented here. Format is based on
     (ore_ont_15226). The answers equal the previous release's on all 32 (ore_ont_12698,
     budget-truncated, at a non-truncating budget), and the closure added 0 pairs on all 388 ORE
     ontologies with timed-out pairs or trusted-`Sat` refutations.
+- **`prove` on an inconsistent ontology answers with the inconsistency core (#456).** Since
+  #428 it searched for a minimal set entailing `SUB ⊑ SUP`, deciding the subsumption on every
+  consistent subset; on `family.ofn` that did not finish in 600 s. The justification is now
+  the minimal inconsistent subset that `justify <file> inconsistent` returns: minimal for the
+  inconsistency, not for the subsumption. `kb_inconsistent: true` as before; if the core
+  search finds nothing, the fallback is empty and `incomplete` is `true`. The cost is the core
+  search's: on most inputs it is cheaper (189 measured: 433 → 200 CPU-s; family 300 s kill →
+  43 s), but where the inconsistency is not `ABox`-saturation-detected a consistent subset
+  probe can wait out `RUSTDL_CONSISTENCY_FALLBACK_MS` (10 s), so 3 small generated cases went
+  from under 0.2 s to 10–20 s, one of them with `incomplete: true` (a probe gave up, so the
+  core may not be minimal).
 - **`sat-expr`, `subclass-expr` and `instances-expr`: `incomplete` now means only "a probe gave
   up" (package 2 prerequisite, #363).** It used to be set whenever the ontology was not pure EL,
   so it could not tell an answer off the EL fragment from a cut probe, against the rule the other

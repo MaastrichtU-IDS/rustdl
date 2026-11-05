@@ -120,3 +120,69 @@ fn prove_json_reports_the_inconsistent_kb_and_its_core() {
     assert_eq!(j["kb_inconsistent"], false);
     assert_eq!(j["has_proof"], true);
 }
+
+/// #456: `prove` on `family.ofn` (inconsistent) answers with the inconsistency
+/// core. Before #456 it searched for a minimal set entailing `Aunt ⊑ Ancestor`
+/// and was killed at 600 s. The fallback must itself be inconsistent, checked
+/// with `consistent` on the returned document. `incomplete: false` is deterministic
+/// here: family's inconsistency is `ABox`-saturation-detected, so every probe uses the
+/// saturation-only oracle (`RUSTDL_JUSTIFY_TRACE=1`: 171 probes), which has no deadline.
+///
+/// Ignored: the fixture is gitignored (`./scripts/fetch-real-ontologies.sh`) and
+/// the search takes tens of CPU-seconds in release, far more in a debug build.
+/// Run with `cargo test --release -p owl-dl-cli --test class_query_guard_cli --
+/// --ignored`. A missing fixture fails.
+#[test]
+#[ignore = "release-only: family.ofn (fetched) and a tens-of-seconds core search"]
+fn prove_on_family_answers_with_the_inconsistency_core() {
+    use std::time::{Duration, Instant};
+    let family = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../ontologies/real/family.ofn"
+    );
+    assert!(
+        std::path::Path::new(family).exists(),
+        "{family} is missing: run ./scripts/fetch-real-ontologies.sh"
+    );
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("RUSTDL_") {
+            cmd.env_remove(key);
+        }
+    }
+    let mut child = cmd
+        .args([
+            "prove",
+            "--json",
+            family,
+            "http://www.co-ode.org/roberts/family-tree.owl#Aunt",
+            "http://www.co-ode.org/roberts/family-tree.owl#Ancestor",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let budget = Duration::from_secs(300);
+    let started = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > budget {
+            let _ = child.kill();
+            panic!("prove family Aunt Ancestor did not finish in {budget:?}");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
+    let j: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(j["entailed"], true);
+    assert_eq!(j["kb_inconsistent"], true);
+    assert_eq!(j["incomplete"], false, "{stderr}");
+    let core = j["justification_fallback"].as_str().unwrap();
+    assert!(core.contains("Assertion"), "an ABox inconsistency: {core}");
+    let f = Fixture::new("family-core", core);
+    let (code, stdout, stderr) = run(&["consistent", f.path()]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert_eq!(stdout.trim(), "inconsistent", "the core: {core}");
+}

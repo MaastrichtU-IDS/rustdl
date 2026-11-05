@@ -124,7 +124,9 @@ fn prove_json_reports_the_inconsistent_kb_and_its_core() {
 /// #456: `prove` on `family.ofn` (inconsistent) answers with the inconsistency
 /// core. Before #456 it searched for a minimal set entailing `Aunt ⊑ Ancestor`
 /// and was killed at 600 s. The fallback must itself be inconsistent, checked
-/// with `consistent` on the returned document.
+/// with `consistent` on the returned document. `incomplete: false` is deterministic
+/// here: family's inconsistency is `ABox`-saturation-detected, so every probe uses the
+/// saturation-only oracle (`RUSTDL_JUSTIFY_TRACE=1`: 171 probes), which has no deadline.
 ///
 /// Ignored: the fixture is gitignored (`./scripts/fetch-real-ontologies.sh`) and
 /// the search takes tens of CPU-seconds in release, far more in a debug build.

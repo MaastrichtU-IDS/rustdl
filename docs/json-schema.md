@@ -396,7 +396,8 @@ ontology was found inconsistent: by the named class queries' guard (before the
 step proof), or by the #369 lazy check after the entailment held. The entailment
 then holds vacuously, the payload has the justification-fallback shape, and since
 #456 `justification_fallback` is the inconsistency core: the minimal inconsistent
-subset `rustdl justify <file> inconsistent` returns. It is minimal for the
+subset `rustdl justify <file> inconsistent` searches for (`prove` runs it under its own
+node cap, so a give-up can leave a different, still inconsistent, set). It is minimal for the
 inconsistency, not for `SUB ⊑ SUP`; a smaller set entailing `SUB ⊑ SUP` by
 ordinary reasoning is not sought. If the core search finds none, the fallback has
 no axioms and `incomplete` is `true`. `false` is not a proof of consistency.

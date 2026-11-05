@@ -12707,7 +12707,7 @@ pub struct ProveFlags {
     /// guard ([`class_query_guard`], run before anything else) or by the #369 lazy
     /// check after the entailment held. The entailment then holds vacuously and
     /// the justification is the inconsistency core (#456): a minimal inconsistent
-    /// subset, the one `justify <file> inconsistent` returns. It is minimal for
+    /// subset, found by the search `justify <file> inconsistent` runs. It is minimal for
     /// the inconsistency, not for `sub ⊑ sup`. `false` is not a proof of
     /// consistency: the guard is a sound under-approximation.
     pub kb_inconsistent: bool,
@@ -12733,7 +12733,7 @@ pub fn prove_entailment_rcstr_reporting(
     // #428: the named class queries' guard, before the step proof, so that
     // `kb_inconsistent` does not depend on whether the saturator has a step
     // proof. On an inconsistent KB the explanation of `sub ⊑ sup` is the
-    // inconsistency: its core, as `justify <file> inconsistent` returns (#456).
+    // inconsistency: its core, as `justify <file> inconsistent` searches for (#456).
     let closure = match class_query_guard(&internal) {
         Err(ReasonError::Inconsistent) => {
             return prove_on_inconsistent_kb(ontology);
@@ -12809,7 +12809,8 @@ fn prove_lazy_check(internal: &InternalOntology) -> bool {
 
 /// #428, #456: `prove` on a KB found inconsistent. The entailment holds
 /// vacuously, and its justification is the inconsistency core: the minimal
-/// inconsistent subset that `justify <file> inconsistent` returns. It is minimal
+/// inconsistent subset that `justify <file> inconsistent` searches for (under
+/// `prove`'s node cap, so a give-up can leave a different valid core). It is minimal
 /// for the inconsistency, not for `sub ⊑ sup`: a smaller set entailing
 /// `sub ⊑ sup` by ordinary reasoning is not sought. Searching for one ran
 /// `sub ⊑ sup` on every consistent subset, which did not finish on `family.ofn`.

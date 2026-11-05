@@ -971,6 +971,16 @@ fn warn_classify_incomplete(
         pair_timeout_ms,
         global_timeout_ms,
     );
+    // #448: the closure can turn some of those 'not subsumed' pairs back into
+    // subsumptions that recorded ones imply; say so rather than leave the line above
+    // claiming every cut pair reads 'not subsumed'.
+    if stats.timed_out_pairs > 0 && stats.matrix_closure_added_pairs > 0 {
+        eprintln!(
+            "   The transitive closure then added {} pair(s) implied by recorded \
+             subsumptions (#448); cut pairs among them now read 'subsumed'.",
+            stats.matrix_closure_added_pairs
+        );
+    }
 }
 
 fn warn_if_incomplete(
@@ -1695,6 +1705,14 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             out,
             "# timed-out pairs: {} (defaulted to not-subsumed)",
             stats.timed_out_pairs
+        )?;
+    }
+    if stats.matrix_closure_runs > 0 {
+        writeln!(
+            out,
+            "# matrix closure: {} pair(s) added, implied by recorded subsumptions (sound; #448); \
+             {} us over {} pass(es)",
+            stats.matrix_closure_added_pairs, stats.matrix_closure_us, stats.matrix_closure_runs
         )?;
     }
     if stats.wedge_hierarchy_blind {

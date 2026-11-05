@@ -929,6 +929,7 @@ dependencies = [
  "anyhow",
  "dashmap",
  "fixedbitset",
+ "hashbrown 0.15.5",
  "horned-owl",
  "owl-dl-core",
  "owl-dl-datatypes",

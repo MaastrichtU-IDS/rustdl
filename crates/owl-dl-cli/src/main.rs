@@ -2718,16 +2718,16 @@ fn run() -> Result<()> {
                 } else if incomplete {
                     eprintln!(
                         "warning: a reasoner check gave up in the justification fallback (node \
-                         cap): the entailment holds, but the justification shown may not be \
-                         minimal, or none was found."
+                         cap or deadline), or found no justification: the entailment holds, but \
+                         the justification shown may not be minimal, or none was found."
                     );
                 }
                 note_trusted_consistency_flag(flags.relies_on_trusted_consistency);
                 if flags.kb_inconsistent {
                     eprintln!(
                         "note: the ontology is inconsistent, so {sub} ⊑ {sup} holds vacuously; \
-                         the justification shown is a minimal entailing set. \
-                         `rustdl justify <file> inconsistent` explains the inconsistency."
+                         the justification shown, if any, is an inconsistency core, as \
+                         `rustdl justify <file> inconsistent` searches for."
                     );
                 }
             };

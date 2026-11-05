@@ -673,6 +673,17 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`prove` on an inconsistent ontology answers with the inconsistency core (#456).** Since
+  #428 it searched for a minimal set entailing `SUB ⊑ SUP`, deciding the subsumption on every
+  consistent subset; on `family.ofn` that did not finish in 600 s. The justification is now
+  the minimal inconsistent subset that `justify <file> inconsistent` returns: minimal for the
+  inconsistency, not for the subsumption. `kb_inconsistent: true` as before; if the core
+  search finds nothing, the fallback is empty and `incomplete` is `true`. The cost is the core
+  search's: on most inputs it is cheaper (189 measured: 433 → 200 CPU-s; family 300 s kill →
+  43 s), but where the inconsistency is not `ABox`-saturation-detected a consistent subset
+  probe can wait out `RUSTDL_CONSISTENCY_FALLBACK_MS` (10 s), so 3 small generated cases went
+  from under 0.2 s to 10–20 s, one of them with `incomplete: true` (a probe gave up, so the
+  core may not be minimal).
 - **`sat-expr`, `subclass-expr` and `instances-expr`: `incomplete` now means only "a probe gave
   up" (package 2 prerequisite, #363).** It used to be set whenever the ontology was not pure EL,
   so it could not tell an answer off the EL fragment from a cut probe, against the rule the other

@@ -1199,6 +1199,8 @@ pub(crate) fn saturate_with(
             }
         }
 
+        // Not reached when the deadline breaks out of Rule 4: the counters of a
+        // timed-out run are partial anyway.
         result.chain_edge_set_probes += edges.lookups() - lookups_before_rule4;
 
         // Rule 7: functional role merge
@@ -1596,6 +1598,11 @@ mod tests {
     /// Run Global, the shipped Local, and Local with cache threshold 1 (so every
     /// outer edge with a candidate uses the cache) on `internal`; assert that all
     /// three agree, check the probe bounds, and return the threshold-1 result.
+    ///
+    /// The generated inputs have 6 individuals, so no outer edge reaches the
+    /// shipped threshold ([`CHAIN_CACHE_MIN_CANDIDATES`], 8): the shipped arm pins
+    /// the gate, the threshold-1 arm the cache. The cache code does not depend on
+    /// the threshold; `tests/abox_chain_dedupe.rs` runs it at the shipped one.
     fn both_modes(internal: &InternalOntology) -> SaturationResult {
         let global = saturate_with(internal, None, ChainDedupe::Global);
         let shipped = saturate_with(internal, None, ChainDedupe::from_env());

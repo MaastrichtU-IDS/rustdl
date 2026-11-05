@@ -727,9 +727,10 @@ fn shipped_default_budget_covers_family_precheck() {
             / f64::from(u32::try_from(measured_ms.max(1)).unwrap_or(u32::MAX))
     );
     // #447: "above the cost" was not enough. On the coder host the pre-check took
-    // 6-10 s against the 12 s default (headroom 1.14x at worst), and the budget
-    // cut it in 2 runs of 10, because Rule 4 tested every chain candidate in the
-    // global edge set. With the per-anchor cache it takes ~0.6-1.3 s there, so
+    // 6-10 s against the 12 s default (headroom 1.14x at worst; #428's runs behind
+    // `sat`), and the budget cut it in 2 runs of 10 there (1 of 12 classify runs
+    // in #447's re-run), because Rule 4 tested every chain candidate in the
+    // global edge set. With the per-anchor cache it takes ~0.6-1.4 s there, so
     // 3x is a margin a correct build clears on a loaded host and the old join
     // does not.
     assert!(

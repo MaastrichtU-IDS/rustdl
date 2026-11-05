@@ -17,7 +17,7 @@
 //! is invisible to these counters; `shipped_default_budget_covers_family_precheck`
 //! (release only) is the timing guard.
 //!
-//! The equivalence of the modes (same fixpoint, same counters) is the
+//! The equivalence of the modes (the same fixpoint) is the
 //! differential property test `local_and_global_chain_dedupe_agree` in
 //! `src/abox_saturation.rs`, with per-polarity canaries beside it.
 

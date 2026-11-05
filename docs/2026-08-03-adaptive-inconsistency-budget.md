@@ -395,7 +395,7 @@ The fix (#447): when an outer edge `r1(a, b)` has at least 8 candidates, Rule 4 
 per-anchor cache of the conclusions already known for `a` (all of one outer edge's candidates share
 it). The cache is filled from the round's snapshot index on first use and is only ever a subset of the
 edge set, so a miss is still decided by the global set. Same rounds, rule order and fixpoint. family on
-the coder host: **0.6–1.3 s** (12 runs, 4 in parallel), from 5.5–11.2 s on main in the same run. A
+the coder host: **0.6–1.4 s** (12 runs, 4 in parallel), from 5.4–11.2 s on main in the same run. A
 first version mirrored every edge into per-endpoint sets as the queue drained. It cost 25–50% of
 the pre-check on chain-sparse ontologies (`ore_ont_1579`, `5295`, `13647`) and was replaced. The
 budget levels and the threshold are unchanged. The costs this record's table quotes for other

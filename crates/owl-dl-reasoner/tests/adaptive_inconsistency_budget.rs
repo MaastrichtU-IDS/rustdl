@@ -86,7 +86,7 @@ const FAMILY_MULTIPLIERS: usize = 38;
 /// It was 2585 ms (another host, 2026-08-03; the classify-level detection
 /// flipped between 2600 and 2700 ms). On the coder host that figure did not hold:
 /// 6–12.6 s, cut by the 12 s budget about 1 run in 10 (#447). Since #447's
-/// per-anchor cache in Rule 4 it is 0.6–1.3 s there (5906aa37, 12 runs, 4 in
+/// per-anchor cache in Rule 4 it is 0.6–1.4 s there (5906aa37, 12 runs, 4 in
 /// parallel, 2026-11-05; an earlier version of the fix measured up to 1.55 s);
 /// this is the worst of all of those, rounded up. A recorded number can
 /// go stale again, which is why `shipped_default_budget_covers_family_precheck`

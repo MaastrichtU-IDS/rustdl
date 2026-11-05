@@ -179,7 +179,42 @@ All notable changes to rustdl are documented here. Format is based on
   side)` once per node, and `resolve` halves paths. The search is unchanged (every
   wedge counter is identical); that input now decides in ~3.7 CPU-s. The other two
   slow #465 cases are a generate-before-merge loop in the wedge (part B, to follow)
-  and #460.
+  and case 1457, which #460 fixes.
+- **Per-query `sat` / `subclass` / `explain` / `is_subclass_of` finish on small consistent
+  SHOIQ KBs whose nominal node kept rebuilding its successors (#460).** A fresh node carrying a
+  nominal `{a}` generated its `∃` / `≥` successors in the same rule pass, before
+  `apply_nominal_assignment` merged it into `a`'s node. The merge moved each new successor onto
+  `a`, which built the next one, without end (`classify` answered the same KBs in 0.25 s).
+  - On a pool with nominals, `apply_exists` / `apply_min` now wait while a node carries `{a}`
+    and can still merge into `a`'s canonical node. A node marked distinct from that node never
+    waits, because its merge is refused. The merge runs later in the same rule block, so no
+    node stays deferred.
+  - Before generating, a node's label rules (residual GCIs, `and`, concept and nominal rules)
+    run to a fixpoint. A nominal reached through a told chain (`C4 ⊑ C7 ⊑ C3 ≡ {a}`) is then on
+    the node in time. It ends because each extra round adds a label from the finite pool.
+  - Reproducers: min1911 `sat C7` 0.07 CPU-s and min812 `sat C2` 0.04 s (main: past 20 s);
+    case 1908 `sat C0` 0.05 s (main: `unknown` after 6.4 s). Case 1457 (one of #465's
+    justify-stall cases) answers in 0.70 s, where the main tableau gave up after 10 s.
+  - Nominal-bearing ORE files (448, classify): no lost answers or rescues, and median CPU
+    0.993× main. Three files differ, all deadline-cut on both arms, and serial rechecks at a
+    longer per-pair timeout match on both arms.
+  - Per-pair (1,642 ORE queries; 6,763 on generated nominal cases): no lost answers and no
+    changed verdicts. 25 generated queries gain an answer, all matching the Konclude ∩ HermiT
+    oracle. The 5 one-sided ORE timeouts at the 30 s cap give the same answers on both arms
+    when rechecked serially at 180 s.
+  - CPU on the nine nominal-bearing ORE files with the most rule passes (ranked by `apply_exists`
+    calls; 5 interleaved reps, serial): same content on both arms, and median ratios of
+    0.93–1.05 with overlapping ranges.
+  - `RUSTDL_NOMINAL_MERGE_FIRST=0` restores the old rule order. `RUSTDL_NOMINAL_FIRST` is
+    unchanged.
+  - Tests: `nominal_merge_first.rs`:
+    - 7 satisfiable cases decided within a deadline;
+    - 8 unsatisfiable canaries, run with the flag on and off;
+    - non-subsumptions on the reproducers;
+    - with the flag off, the old order still hangs.
+
+    Two unit tests pin when a node waits. Six sabotages each turn a named test red, among them
+    "always wait", "drop the distinct exclusion" and "drop the label fixpoint".
 - **Every command keeps its output format on a tableau `NoVerdict`, and a deadline-free one is
   reported per result (#462).** After #449, a `NoVerdict` reaching `main` printed a bare `unknown`.
   For a `--json` command that is not JSON.

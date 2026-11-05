@@ -140,6 +140,24 @@ const ADMITTED: &[(&str, &str, bool)] = &[
            DatatypeRestriction(xsd:integer xsd:maxExclusive \"3\"^^xsd:integer))))",
         false,
     ),
+    (
+        "domain_unsat",
+        "ObjectPropertyDomain(:r :X) SubClassOf(:X owl:Nothing) \
+         SubClassOf(owl:Thing ObjectSomeValuesFrom(:r owl:Thing))",
+        false,
+    ),
+    (
+        "role_chain_reaches_unsat",
+        "SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t) \
+         SubClassOf(owl:Thing ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :A))) \
+         SubClassOf(ObjectSomeValuesFrom(:t :A) owl:Nothing)",
+        false,
+    ),
+    (
+        "data_value_outside_range",
+        "DataPropertyRange(:p xsd:integer) SubClassOf(owl:Thing DataHasValue(:p \"a\"))",
+        false,
+    ),
     // The #459 reproducer (6-axiom shrink of el_top case 74).
     (
         "reproducer_min_00074",
@@ -287,18 +305,34 @@ fn inputs_with_individuals_keep_their_route() {
 }
 
 /// Outside the gate the shortcut does not apply, whatever the saturator says.
+///
+/// The second input pins that a functional data role with two clashing values
+/// stays off the shortcut: its DKey value-space disjointness is seeded as
+/// `DisjointClasses`, which the gate rejects beside a functional role. That is the
+/// one place where the tableau's datatype reasoning could otherwise go beyond the
+/// saturator's.
 #[test]
 fn inputs_outside_the_gate_keep_their_route() {
     let _l = lock();
-    let onto = parse(&format!(
-        "{DECLS} SubClassOf(owl:Thing ObjectUnionOf(:A :B)) SubClassOf(:A owl:Nothing) \
-         SubClassOf(:B owl:Nothing)"
-    ));
-    assert!(!certified_unlowered(&onto).unwrap().classify_certified);
-    let (verdict, stats) = is_consistent_with_stats(&onto).expect("decides");
-    assert!(
-        !verdict,
-        "⊤ ⊑ A ⊔ B with both unsatisfiable is inconsistent"
-    );
-    assert!(!stats.pure_el_mode, "{stats:?}");
+    for (name, axioms) in [
+        (
+            "top_sub_union_of_unsat",
+            "SubClassOf(owl:Thing ObjectUnionOf(:A :B)) SubClassOf(:A owl:Nothing) \
+             SubClassOf(:B owl:Nothing)",
+        ),
+        (
+            "functional_data_role_two_values",
+            "FunctionalDataProperty(:p) SubClassOf(owl:Thing ObjectIntersectionOf(\
+             DataHasValue(:p \"1\"^^xsd:integer) DataHasValue(:p \"2\"^^xsd:integer)))",
+        ),
+    ] {
+        let onto = parse(&format!("{DECLS} {axioms}"));
+        assert!(
+            !certified_unlowered(&onto).unwrap().classify_certified,
+            "{name}: must be outside the gate"
+        );
+        let (verdict, stats) = is_consistent_with_stats(&onto).expect("decides");
+        assert!(!verdict, "{name}: inconsistent");
+        assert!(!stats.pure_el_mode, "{name}: {stats:?}");
+    }
 }

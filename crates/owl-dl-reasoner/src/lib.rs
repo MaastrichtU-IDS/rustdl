@@ -8215,8 +8215,10 @@ pub fn is_consistent_internal(internal: InternalOntology) -> Result<bool, Reason
 /// Stats-returning variant of [`is_consistent`].
 ///
 /// `answered_by_saturation` is `true` when a saturation pre-check decided the answer:
-/// the `ABox` saturation, or (#310) the EL closure proving `⊤` or an individual's
-/// stand-in unsatisfiable. Otherwise the wedge or the tableau answered.
+/// the `ABox` saturation, (#310) the EL closure proving `⊤` or an individual's
+/// stand-in unsatisfiable, or (#459) the EL closure deciding an input classify's
+/// saturation fast path admits and that names no individual, either way (then
+/// `pure_el_mode` is set too). Otherwise the wedge or the tableau answered.
 ///
 /// `incomplete` marks a give-up reported as `true` (#182, #363 A2).
 /// `relies_on_trusted_consistency` marks a `true` whose only evidence is the
@@ -8399,7 +8401,9 @@ enum ElSaturatorConsistency {
 ///   nominal), tested on the IR. Not "no consistency wedge": the wedge is also
 ///   absent under `RUSTDL_WEDGE_CONSISTENCY=0`, and an `ABox` input would then be
 ///   answered by a saturator that never saw its `ABox`. With individuals, the
-///   `ABox` checks and the wedge decide, as before;
+///   `ABox` checks and the wedge decide, as before. No gate admits a nominal
+///   today, so the nominal half of this test is redundant with the gate (and no
+///   test can tell it apart); it stays for a future widening of the gate;
 /// - [`classify::saturation_fast_path_admits`], the gate under which classify
 ///   reports its own `consistent` with `completeness_guaranteed`. Its third
 ///   disjunct (`tbox_only_saturator_eligible`) requires an `ABox`, so with no
@@ -8485,6 +8489,23 @@ mod consistent_el_fastpath_tests {
         assert_eq!(
             consistent_from_el_saturator(&internal("SubClassOf(:A :B)"), None),
             ElSaturatorConsistency::Decided(true)
+        );
+    }
+
+    /// #459: the bounded API turns a cut saturation into `None`, never `true`.
+    /// The deadline is in the future, so the earlier `now >= deadline` guard does
+    /// not answer for it; the chain's saturation needs far longer than 20 ms.
+    #[test]
+    fn bounded_api_answers_none_when_the_saturation_is_cut() {
+        let mut ax = String::new();
+        for i in 0..3000 {
+            let _ = write!(ax, "SubClassOf(:A{i} :A{}) ", i + 1);
+        }
+        let onto = internal(&ax);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+        assert_eq!(
+            is_consistent_internal_bounded(onto, deadline).expect("no error"),
+            None
         );
     }
 }

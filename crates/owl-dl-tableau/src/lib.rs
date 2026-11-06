@@ -5553,6 +5553,11 @@ pub fn nominal_merge_first_enabled() -> bool {
 ///
 /// This is the deferral half of `RUSTDL_NOMINAL_FIRST` (default OFF), without its
 /// search preference for nominal disjunctions, which case 939 does not need.
+#[must_use]
+pub fn nominal_disjunction_wait_enabled() -> bool {
+    std::env::var_os("RUSTDL_NOMINAL_DISJUNCTION_WAIT").is_none_or(|v| v != "0")
+}
+
 /// #474 `RUSTDL_NOMINAL_MERGE_PRUNE` (default ON, `=0` reverts), main tableau: when
 /// a node merges into a nominal's canonical node ([`crate::rules::apply_nominal_assignment`]),
 /// its blockable subtree is pruned first ([`TableauContext::prune_subtree`], the SHOIQ
@@ -5573,11 +5578,6 @@ pub fn nominal_merge_first_enabled() -> bool {
 #[must_use]
 pub fn nominal_merge_prune_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_MERGE_PRUNE").is_none_or(|v| v != "0")
-}
-
-#[must_use]
-pub fn nominal_disjunction_wait_enabled() -> bool {
-    std::env::var_os("RUSTDL_NOMINAL_DISJUNCTION_WAIT").is_none_or(|v| v != "0")
 }
 
 /// #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): in the wedge's

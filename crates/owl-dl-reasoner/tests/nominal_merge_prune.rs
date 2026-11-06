@@ -252,7 +252,9 @@ const UNSATISFIABLE: &[(&str, &str, &str)] = &[
          SubClassOf(:Y ObjectAllValuesFrom(:s ObjectComplementOf(:D)))",
         "D",
     ),
-    // As above, but branch `Y` needs a restored node to fire its own `∃` again.
+    // As above, but branch `Y` needs a node of branch `X`'s graph to fire its own
+    // `∃` again. (No prune fires here either; it stays as an unsat canary through a
+    // nominal merge and a backtrack.)
     (
         "restored_node_fires_again",
         "SubClassOf(:D ObjectSomeValuesFrom(:t ObjectOneOf(:a))) \

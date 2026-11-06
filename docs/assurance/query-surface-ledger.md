@@ -741,7 +741,9 @@ taken).
     the oracle says consistent.
   - If full is undetermined (or timed out) and the oracle says inconsistent, it is a violation.
   - If full makes the same claim on an oracle-inconsistent KB, it is info, "shared pre-check
-    miss": the cut did not cause it (cases 475 and 1283 in the R2 notes are of this kind).
+    miss": the cut did not cause it. Only a5a2e063 had such a case (1283). On main, rustdl
+    decides that case inconsistent, so this arm fires only in the self-test.
+  - If full is undetermined and there is no oracle, it is info: there is no reference.
 - **R6.1, format.** Every forced route prints the command's JSON. A run killed at the cap is
   counted separately as a timeout, not as a violation.
 - **R6.2, one signal.** The field is set ⇔ #449's note ("likely a reasoner bug") is on stderr.
@@ -765,15 +767,23 @@ taken).
 | `nv_cons` | `consistent --json`, `RUSTDL_TRACE=1` | forced | on |
 
 - **Why the forced classify routes run with the wedge off.** The stall knob is read only by
-  the main tableau's `search.rs`. With the wedge on, the wedge answers nearly every probe
-  before that search runs. In the 12-case smoke test, the forced stall reached 0 cases with the
-  wedge on and 6–7 with it off.
+  the main tableau's `search.rs`. With the wedge on, plain classify's wedge answers the
+  generated cases before that search runs.
+  - On the 12 smoke cases, measured again on 9cbf2b55: `nv_free` reached the stall on 0 cases
+    with the wedge on and on 7 with it off.
+  - `--n2-classify` reached it on the same 7, with identical no-verdict counts either way, so
+    the wedge setting makes no difference to `nv_free_n2`.
 - **Why `nv_cons` keeps the wedge on.** The route R6.3 must watch is the wedge's
   `Stalled` → bounded tableau fall-through, and it exists only with the wedge on.
 - Each `consistent` run is classified by its trace line:
   - "wedge Stalled — bounded tableau fall-through": budgeted;
-  - any other wedge or saturation verdict: decided;
+  - any other wedge or saturation verdict, or the ABox pre-check or `abox_check` finding an
+    inconsistency: decided;
   - no line: deadline-free (a TBox-only KB takes `decide_consistency(None)`).
+- The measured run's classifier did not yet know the two pre-check lines. Its deadline-free
+  bucket therefore also holds runs that the ABox pre-check decided: in Fable's review, 9 of 12
+  sampled inconsistent runs from that bucket were pre-check runs. No outcome changes, because
+  the field cannot be set on a pre-check path.
 
 **Measured 2026-11-06.** The arms ran in parallel, one core each, at a host load of about 12.
 
@@ -806,7 +816,8 @@ oracle-consistent KBs. R1–R5 were not re-run.
   - `nv_free_n2`: 2476 of 3999 (plus 1 timeout);
   - `nv_cons`: 1223 of 4000, every one deadline-free, so that is correct.
 - `nv_budget` never sets it (R6.3).
-- `consistent` probes by trace: 2337 decided, 1655 deadline-free, **8 budgeted**.
+- `consistent` probes by trace: 2337 decided, 1655 deadline-free (including the pre-check
+  runs; see above), **8 budgeted**.
   - The 8 are default cases 181, 321, 939, 1269, 1646, 1747, 1942 and 1998. They are budgeted
     on both `cons` and `nv_cons`, because the wedge stalls on them without being forced.
   - The unforced `cons` route never set the field (R6.5: 0) and never timed out.
@@ -835,14 +846,17 @@ oracle-consistent KBs. R1–R5 were not re-run.
   - So the generated sets do reach S10's route, on 8 of 4000 cases.
 - **R6.4: covered by the self-test only.** No env mutant turns a stall into a definite answer.
 
-**Noise, rechecked serially on core 92 (120 s cap).** Each deadline-touching one-arm
-difference finished well inside the cap:
+**One-arm timeouts, rechecked serially on core 92 (120 s cap).** None reproduced:
 - A's `nv_free_n2` timeout (case 1897): 0.9–1.4 s, exit 3, 87 no-verdict pairs.
-- A's `full` timeout on case 1898: 0.3–1.5 s.
+- A's `full` timeout (case 1898): 0.3–1.5 s wall. Fable re-ran it 3 times on core 93 at
+  0.05 CPU-s each.
 - B's `nv_free` timeout (case 1368): 0.5–0.6 s.
 
-These were load artefacts. The other 9 `full` timeouts (cases 321, 438, 812, 939, 1269, 1475,
-1646, 1747 and 1998) are the same on every tag, the stored ones included.
+Host load does not plausibly turn a run of about one second into a 30 s timeout. So these 3
+(out of about 76,000 runs) are recorded as unexplained, unreproduced one-sided timeouts, not as
+load artefacts. A hang of the #460 kind is a candidate cause. They do not affect any law: each
+counts as a timeout or a budget cut on one case. The other 9 `full` timeouts (cases 321, 438,
+812, 939, 1269, 1475, 1646, 1747 and 1998) are the same on every tag, the stored ones included.
 
 **Limits.**
 - The stall knob reaches only `search.rs`. The wedge, the EL fast path and the pre-checks
@@ -855,6 +869,14 @@ These were load artefacts. The other 9 `full` timeouts (cases 321, 438, 812, 939
   - S10 fired on neither. It still fired on the 2 natural cases.
 - R6 tests the `classify` and `consistent` commands only. The other query commands are not
   covered.
+- Some arms have self-test positives only:
+  - R6.4;
+  - R6.3's classify arm (`nv_budget` and the unforced routes);
+  - R6.2's "field without the note" arm and its "field without exit 3 or `incomplete`" arm;
+  - R4.4's two info arms.
+
+  The arms with engine positives are R6.1, R6.2's "note without the field", R6.3 on `nv_cons`,
+  and both of R4.4's violation arms.
 - R6.5 is effective on `cons` alone: classify's 5 ms default pair budget makes a natural
   `NoVerdict` a depth cut, which R6.3 covers instead.
 - When #475 (a stall latch) lands, R6.3 becomes "never on a depth cut".

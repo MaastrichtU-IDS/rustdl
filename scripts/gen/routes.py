@@ -91,9 +91,11 @@ FLAGS = GIVE_UP_FLAGS + ("derived_same_undecided", "completeness_guaranteed",
 # R6 (#462): forced-stall routes and the consistency route. Their records also keep the exit
 # code, whether #449's note was printed, and (consistent) which probe ran, from the trace.
 # The forced classify routes run with the wedge off: the stall knob is read only by the main
-# tableau's search, and with the wedge on it answers the generated cases before the main
-# tableau runs (smoke: 0 of 12 cases reached it). `nv_cons` keeps the wedge on, so that the
-# budgeted wedge-route fall-through stays reachable.
+# tableau's search, and with the wedge on, plain classify's wedge answers the generated cases
+# before the main tableau runs (smoke: `nv_free` reached the stall on 0 of 12 cases with the
+# wedge on, 7 with it off). `--n2-classify` reached it on the same 7 with identical counts
+# either way, so the wedge setting is immaterial for `nv_free_n2`. `nv_cons` keeps the wedge
+# on, so that the budgeted wedge-route fall-through stays reachable.
 STALL = {"RUSTDL_TABLEAU_SATURATE_ITERS": "1"}
 NO_WEDGE = {"RUSTDL_HYPERTABLEAU": "0"}
 ROUTES.update({
@@ -157,8 +159,6 @@ def answer_of_text(out, classes):
 def gave_up(rec):
     if rec.get("status") != "ok":
         return True
-    if "flags" not in rec["answer"]:  # a `consistent` record
-        return bool(rec["answer"].get("incomplete"))
     f = rec["answer"]["flags"]
     return any(f.get(k) for k in GIVE_UP_FLAGS) or bool(f.get("derived_same_undecided"))
 
@@ -173,7 +173,9 @@ def consistency_probe(stderr):
         return "budgeted"
     if any(m in stderr for m in ("consistency: wedge Unsat", "consistency: wedge Sat",
                                  "consistency: saturation proves",
-                                 "consistency: EL saturator decides")):
+                                 "consistency: EL saturator decides",
+                                 "consistency pre-check: inconsistent",
+                                 "abox_check: inconsistent")):
         return "decided"
     return "free"
 
@@ -383,6 +385,8 @@ def r44(cr, full, oans):
         if full_undetermined:
             return ("violation", "cut claims consistent; oracle inconsistent, full undetermined")
         return ("info", "shared pre-check miss")
+    if full_undetermined and oans is None:
+        return ("info", "no reference: full undetermined and no oracle")
     return ("ok", "")
 
 
@@ -743,6 +747,9 @@ def self_test():
     ok("R4.4 shared pre-check miss is info",
        laws_o({"full": r(set()), "cut_g5": r(set(), incomplete=True)}, inc),
        {("R4.4.cut_g5", "info")})
+    ok("R4.4 full undetermined, no oracle: info, not ok",
+       laws_o({"full": r(set(), consistency_undetermined=True), "cut_g5": r(set(), incomplete=True)},
+              None), {("R4.4.cut_g5", "info")})
     ok("R4.4 agreeing claim is ok", laws({"full": full, "cut_g25": r(base)}), {("R4.4.cut_g25", "ok")})
     # R6 (#462)
 
@@ -787,8 +794,10 @@ def self_test():
        {("R6.4", "violation")})
     ok("consistency_probe reads the trace",
        [consistency_probe(x) for x in ("consistency: wedge Stalled — bounded tableau fall-through",
-                                       "consistency: wedge Sat — consistent (trusted)", "")],
-       ["budgeted", "decided", "free"])
+                                       "consistency: wedge Sat — consistent (trusted)",
+                                       "consistency pre-check: inconsistent (abox_saturation or empty clause)",
+                                       "abox_check: inconsistent — Clash", "")],
+       ["budgeted", "decided", "decided", "decided", "free"])
     ok("text parser drops unsat from equiv",
        answer_of_text("unsat\thttp://g#C\nequiv\thttp://g#A\thttp://g#C\ndirect\thttp://g#A\thttp://g#B\n",
                       classes)["closure"], [[A, B]])

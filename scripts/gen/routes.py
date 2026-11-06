@@ -20,6 +20,25 @@ notes/plans/2026-11-03-363-package-e-stateful.md (v2). Laws:
   R5  fragment: R5.1 a case with a must-leave-PureEl token reports `pure-EL`;
       R5.2 an el_guaranteed case does not (gate cost, reported apart);
       R5.3 text output ≠ JSON output (serialisation only).
+  R4.4 (#466) a cut route claims consistency determined (`consistent: true`,
+      `consistency_undetermined: false`) while the full route says `consistent: false`,
+      or the full route is undetermined and the oracle says inconsistent. `incomplete`
+      does not excuse it: consistency has its own give-up field (the #395 contract). Where
+      the full route makes the same unflagged claim on an oracle-inconsistent KB, the miss
+      is not the cut's: info, "shared pre-check miss".
+  R6  the `no_verdict` contract (#462): `no_verdict` / `no_verdict_pairs` mean "a probe
+      with NO deadline ended in NoVerdict"; then the CLI prints #449's note and exits 3.
+      Forced routes run with RUSTDL_TABLEAU_SATURATE_ITERS=1 (a deterministic stall).
+      R6.1 every `nv_*` / `cons` route prints its command's JSON (never a bare `unknown`).
+      R6.2 field set <=> note on stderr; field set => exit 3 and `incomplete`.
+      R6.3 a budgeted probe never sets the field: `nv_budget` and every classify route
+           with a pair or global budget, and `consistent` wherever its trace shows a
+           budgeted probe (the wedge-route fall-through, the #344 data-counting check) or
+           no main-tableau probe at all. A TBox-only `consistent` runs deadline-free, so
+           there the field is allowed.
+      R6.4 a stall cut is sound: no FP against the oracle, and never `consistent: false`
+           on an oracle-consistent KB.
+      R6.5 a natural stall: the unforced `cons` route sets the field (a finding, #437's kind).
 
 A law compares two answers only when neither run gave up (R4: only the full run).
 
@@ -49,6 +68,7 @@ from owl_readers import closure  # noqa: E402
 
 CAP = int(os.environ.get("ROUTES_CAP", "30"))
 FULL = ["--pair-timeout-ms", "1000"]
+CUTS = ("cut_g1", "cut_g5", "cut_g25", "cut_p1")
 ROUTES = {
     "full": (["classify", "--json", *FULL], {"RAYON_NUM_THREADS": "1"}),
     "t8": (["classify", "--json", *FULL], {"RAYON_NUM_THREADS": "8"}),
@@ -62,12 +82,36 @@ ROUTES = {
     "cut_p1": (["classify", "--json", "--pair-timeout-ms", "1"], {"RAYON_NUM_THREADS": "1"}),
     "text": (["classify", *FULL], {"RAYON_NUM_THREADS": "1"}),
 }
-CUTS = ("cut_g1", "cut_g5", "cut_g25", "cut_p1")
 GIVE_UP_FLAGS = ("incomplete", "prep_timed_out", "conversion_timed_out", "parse_timed_out",
                  "consistency_undetermined")
 FLAGS = GIVE_UP_FLAGS + ("derived_same_undecided", "completeness_guaranteed",
                          "trusted_sat_refutations", "wedge_hierarchy_blind",
-                         "wedge_clauses_refused", "relies_on_trusted_consistency")
+                         "wedge_clauses_refused", "relies_on_trusted_consistency",
+                         "no_verdict_pairs")
+# R6 (#462): forced-stall routes and the consistency route. Their records also keep the exit
+# code, whether #449's note was printed, and (consistent) which probe ran, from the trace.
+# The forced classify routes run with the wedge off: the stall knob is read only by the main
+# tableau's search, and with the wedge on, plain classify's wedge answers the generated cases
+# before the main tableau runs (smoke: `nv_free` reached the stall on 0 of 12 cases with the
+# wedge on, 7 with it off). `--n2-classify` reached it on the same 7 with identical counts
+# either way, so the wedge setting is immaterial for `nv_free_n2`. `nv_cons` keeps the wedge
+# on, so that the budgeted wedge-route fall-through stays reachable.
+STALL = {"RUSTDL_TABLEAU_SATURATE_ITERS": "1"}
+NO_WEDGE = {"RUSTDL_HYPERTABLEAU": "0"}
+ROUTES.update({
+    "nv_free": (["classify", "--json", "--pair-timeout-ms", "0"],
+                {"RAYON_NUM_THREADS": "1", **STALL, **NO_WEDGE}),
+    "nv_free_n2": (["classify", "--n2-classify", "--json", "--pair-timeout-ms", "0"],
+                   {"RAYON_NUM_THREADS": "1", **STALL, **NO_WEDGE}),
+    "nv_budget": (["classify", "--json", *FULL], {"RAYON_NUM_THREADS": "1", **STALL, **NO_WEDGE}),
+    "cons": (["consistent", "--json"], {"RAYON_NUM_THREADS": "1", "RUSTDL_TRACE": "1"}),
+    "nv_cons": (["consistent", "--json"], {"RAYON_NUM_THREADS": "1", "RUSTDL_TRACE": "1", **STALL}),
+})
+NV_CLASSIFY = ("nv_free", "nv_free_n2", "nv_budget")
+CONS = ("cons", "nv_cons")
+FORCED = ("nv_free", "nv_free_n2", "nv_budget", "nv_cons")
+BUDGETED_CLASSIFY = ("full", "t8", "refA", "refB", *CUTS, "nv_budget")
+NOTE = "likely a reasoner bug"
 PURE_EL = "pure-EL"
 # Tokens whose presence takes a case outside is_pure_el (plan v2 [F5]). Deliberately NOT
 # here: ObjectComplementOf (neg-to-⊥), data ∃/value/domain/range/sub-properties, and bare
@@ -123,6 +167,19 @@ def key(ans):
     return (ans["consistent"], tuple(ans["unsat"]), tuple(map(tuple, ans["closure"])))
 
 
+def consistency_probe(stderr):
+    """Which probe decided `consistent`, from its RUSTDL_TRACE lines (lib.rs)."""
+    if "bounded tableau fall-through" in stderr or "data counting verified" in stderr:
+        return "budgeted"
+    if any(m in stderr for m in ("consistency: wedge Unsat", "consistency: wedge Sat",
+                                 "consistency: saturation proves",
+                                 "consistency: EL saturator decides",
+                                 "consistency pre-check: inconsistent",
+                                 "abox_check: inconsistent")):
+        return "decided"
+    return "free"
+
+
 # ------------------------------------------------------------------ run (CLI routes)
 def run_route(binary, route, path, classes):
     args, env = ROUTES[route]
@@ -135,6 +192,19 @@ def run_route(binary, route, path, classes):
         if p.returncode != 0:
             return {"status": "fail", "rc": p.returncode}
         return {"status": "ok", "answer": answer_of_text(p.stdout, classes)}
+    if route in NV_CLASSIFY or route in CONS:
+        io = {"rc": p.returncode, "note": NOTE in p.stderr}
+        try:
+            j = json.loads(p.stdout)
+            if route in CONS:
+                ans = {"consistent": j["consistent"], "incomplete": j["incomplete"],
+                       "no_verdict": j.get("no_verdict"), "probe": consistency_probe(p.stderr)}
+            else:
+                ans = answer_of_json(j, classes)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return {"status": "fail", **io, "stdout_head": p.stdout[:80],
+                    "stderr": p.stderr[-300:]}
+        return {"status": "ok", "answer": ans, **io}
     try:
         return {"status": "ok", "answer": answer_of_json(json.loads(p.stdout), classes)}
     except (json.JSONDecodeError, KeyError):
@@ -297,6 +367,29 @@ def fp_findings(oans, classes, ans):
     return [f for f in run.score(oans, classes, arms) if f["kind"].endswith("-FP")]
 
 
+def r44(cr, full, oans):
+    """R4.4 (#466) for one cut route: (outcome, detail), or None if the cut makes no
+    determined-consistency claim."""
+    if cr.get("status") != "ok":
+        return None
+    ca = cr["answer"]
+    if not ca["consistent"] or ca["flags"].get("consistency_undetermined"):
+        return None
+    full_ok = full.get("status") == "ok"
+    if full_ok and full["answer"]["consistent"] is False:
+        if oans is not None and oans["consistent"]:
+            return ("info", "full says inconsistent, the oracle consistent")
+        return ("violation", "cut claims consistent; full says inconsistent")
+    full_undetermined = (not full_ok) or bool(full["answer"]["flags"].get("consistency_undetermined"))
+    if oans is not None and not oans["consistent"]:
+        if full_undetermined:
+            return ("violation", "cut claims consistent; oracle inconsistent, full undetermined")
+        return ("info", "shared pre-check miss")
+    if full_undetermined and oans is None:
+        return ("info", "no reference: full undetermined and no oracle")
+    return ("ok", "")
+
+
 def evaluate(rec, oans, classes, text_of_case, warm=None):
     """[(law, outcome, detail)] for one case; outcome in ok/violation/budget-cut/info."""
     out = []
@@ -344,6 +437,11 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
         cr = R.get(cut)
         if cr is None:
             continue
+        # R4.4 runs before the full-gave-up skip: an undetermined full run is where the
+        # oracle arm applies.
+        r44_out = r44(cr, full, oans)
+        if r44_out is not None:
+            add(f"R4.4.{cut}", *r44_out)
         if full_gave or cr.get("status") != "ok":
             add(f"R4.{cut}", "budget-cut")
             continue
@@ -368,10 +466,58 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
         if not ca["consistent"] and fa["consistent"]:
             add(f"R4.3.{cut}", "violation", "cut says inconsistent")
             broke = True
-        if any(l == f"R4.1.{cut}" and o == "violation" for l, o, _ in out):
+        if any(l in (f"R4.1.{cut}", f"R4.4.{cut}") and o == "violation" for l, o, _ in out):
             broke = True
         if not broke:
             add(f"R4.{cut}", "ok")
+    # R6 the no_verdict contract (#462)
+    for name in BUDGETED_CLASSIFY:
+        rr = R.get(name)
+        if rr is not None and rr.get("status") == "ok" and name != "nv_budget":
+            if rr["answer"]["flags"].get("no_verdict_pairs"):
+                add("R6.3", "violation", f"{name}: no_verdict_pairs on a budgeted route")
+    for name in (*NV_CLASSIFY, *CONS):
+        rr = R.get(name)
+        if rr is None:
+            continue
+        if rr.get("status") == "timeout":
+            add("R6.1", "timeout", name)
+            continue
+        if rr.get("status") != "ok":
+            add("R6.1", "violation",
+                f"{name}: not JSON (rc {rr.get('rc')}): {rr.get('stdout_head', '')!r}")
+            continue
+        add("R6.1", "ok")
+        a = rr["answer"]
+        if name in CONS:
+            field, incomplete = bool(a["no_verdict"]), bool(a["incomplete"])
+            budgeted = a["probe"] != "free"
+        else:
+            field = bool(a["flags"].get("no_verdict_pairs"))
+            incomplete = bool(a["flags"].get("incomplete"))
+            budgeted = name == "nv_budget"
+        if field != rr["note"]:
+            add("R6.2", "violation", f"{name}: field {field}, note {rr['note']}")
+        elif field and (rr["rc"] != 3 or not incomplete):
+            add("R6.2", "violation", f"{name}: field set, rc {rr['rc']}, incomplete {incomplete}")
+        else:
+            add("R6.2", "ok")
+        if budgeted:
+            add("R6.3", "violation" if field else "ok",
+                f"{name}: field set on a budgeted probe ({a.get('probe', 'pair budget')})"
+                if field else "")
+        if name == "cons":
+            add("R6.5", "violation" if field else "ok",
+                "a natural NoVerdict on a deadline-free probe" if field else "")
+        if name in FORCED and oans is not None and oans["consistent"]:
+            if not a["consistent"]:
+                add("R6.4", "violation", f"{name}: inconsistent under the stall")
+            elif name in NV_CLASSIFY:
+                fps = fp_findings(oans, classes, a)
+                add("R6.4", "violation" if fps else "ok",
+                    f"{name}: FP {fps[0]['kind']} {fps[0]['witness']}" if fps else "")
+            else:
+                add("R6.4", "ok")
     # R5 fragment and serialisation
     tx = R.get("text")
     if tx is not None and tx.get("status") == "ok":
@@ -577,6 +723,81 @@ def self_test():
     ok("R3.2 order matters", laws({"full": full}, warm=(w, w2)), {("R3.2", "violation")})
     ok("R3.3 is_subclass disagrees", laws({"full": full}, warm=({**w, "is_subclass": []}, w)),
        {("R3.3", "violation")})
+    # R4.4 (#466)
+    inc = {**oans, "consistent": False}
+
+    def laws_o(routes, o):
+        rec = {"set": "default", "case": "c", "routes": routes}
+        return {(l, x) for l, x, _ in evaluate(rec, o, classes, "", None)}
+    ok("R4.4 cut claims consistent, full inconsistent (no oracle)",
+       laws_o({"full": r(set(), cons=False), "cut_g1": r(set(), incomplete=True)}, None),
+       {("R4.4.cut_g1", "violation")})
+    ok("R4.4 is not tallied R4 ok", ("R4.cut_g1", "ok") in
+       laws_o({"full": r(set(), cons=False), "cut_g1": r(set(), incomplete=True)}, None), False)
+    ok("R4.4 full inconsistent but the oracle consistent is info (full's FP is R2's)",
+       laws({"full": r(set(), cons=False), "cut_g1": r(set(), incomplete=True)}),
+       {("R4.4.cut_g1", "info")})
+    ok("R4.4 flagged cut is fine",
+       {x for x in laws({"full": r(set(), cons=False),
+                         "cut_g1": r(set(), incomplete=True, consistency_undetermined=True)})
+        if x[0].startswith("R4.4")}, set())
+    ok("R4.4 full undetermined, oracle inconsistent",
+       laws_o({"full": r(set(), consistency_undetermined=True), "cut_g5": r(set(), incomplete=True)},
+              inc), {("R4.4.cut_g5", "violation")})
+    ok("R4.4 shared pre-check miss is info",
+       laws_o({"full": r(set()), "cut_g5": r(set(), incomplete=True)}, inc),
+       {("R4.4.cut_g5", "info")})
+    ok("R4.4 full undetermined, no oracle: info, not ok",
+       laws_o({"full": r(set(), consistency_undetermined=True), "cut_g5": r(set(), incomplete=True)},
+              None), {("R4.4.cut_g5", "info")})
+    ok("R4.4 agreeing claim is ok", laws({"full": full, "cut_g25": r(base)}), {("R4.4.cut_g25", "ok")})
+    # R6 (#462)
+
+    def nv(field, note, rc=3, incomplete=True, cons=True, **fl):
+        return {"status": "ok", "rc": rc, "note": note,
+                "answer": {"consistent": cons, "unsat": [], "closure": [[A, B]],
+                           "flags": {**flags0, "incomplete": incomplete,
+                                     "no_verdict_pairs": 2 if field else 0, **fl}}}
+
+    def cs(field, note, probe, rc=3, incomplete=True, cons=True):
+        return {"status": "ok", "rc": rc, "note": note,
+                "answer": {"consistent": cons, "incomplete": incomplete, "no_verdict": field,
+                           "probe": probe}}
+    bare = {"status": "fail", "rc": 3, "note": True, "stdout_head": "unknown\n"}
+    ok("R6.1 bare unknown", laws({"full": full, "nv_free": bare}), {("R6.1", "violation")})
+    ok("R6.1 timeout is not a violation", laws({"full": full, "nv_free": {"status": "timeout"}}),
+       {("R6.1", "timeout")})
+    ok("R6 deadline-free stall reported", laws({"full": full, "nv_free": nv(True, True)}),
+       {("R6.1", "ok"), ("R6.2", "ok")})
+    ok("R6.2 field without the note", laws({"full": full, "nv_free": nv(True, False)}),
+       {("R6.2", "violation")})
+    ok("R6.2 note without the field", laws({"full": full, "nv_free_n2": nv(False, True)}),
+       {("R6.2", "violation")})
+    ok("R6.2 field with exit 0", laws({"full": full, "nv_free": nv(True, True, rc=0)}),
+       {("R6.2", "violation")})
+    ok("R6.3 field on the budgeted classify", laws({"full": full, "nv_budget": nv(True, True)}),
+       {("R6.3", "violation")})
+    ok("R6.3 budgeted classify clear", laws({"full": full, "nv_budget": nv(False, False, rc=0)}),
+       {("R6.3", "ok")})
+    ok("R6.3 field on an unforced budgeted route",
+       laws({"full": r(base, no_verdict_pairs=1)}), {("R6.3", "violation")})
+    ok("R6.3 consistent fall-through sets the field",
+       laws({"full": full, "nv_cons": cs(True, True, "budgeted")}), {("R6.3", "violation")})
+    ok("R6.3 deadline-free consistent may set it",
+       {x for x in laws({"full": full, "nv_cons": cs(True, True, "free")}) if x[0] == "R6.3"},
+       set())
+    ok("R6.5 natural stall", laws({"full": full, "cons": cs(True, True, "free")}),
+       {("R6.5", "violation")})
+    ok("R6.4 stall FP", laws({"full": full, "nv_free": {**nv(True, True), "answer": {
+        **nv(True, True)["answer"], "closure": [[A, B], [B, C]]}}}), {("R6.4", "violation")})
+    ok("R6.4 stall says inconsistent", laws({"full": full, "nv_cons": cs(True, True, "free", cons=False)}),
+       {("R6.4", "violation")})
+    ok("consistency_probe reads the trace",
+       [consistency_probe(x) for x in ("consistency: wedge Stalled — bounded tableau fall-through",
+                                       "consistency: wedge Sat — consistent (trusted)",
+                                       "consistency pre-check: inconsistent (abox_saturation or empty clause)",
+                                       "abox_check: inconsistent — Clash", "")],
+       ["budgeted", "decided", "decided", "decided", "free"])
     ok("text parser drops unsat from equiv",
        answer_of_text("unsat\thttp://g#C\nequiv\thttp://g#A\thttp://g#C\ndirect\thttp://g#A\thttp://g#B\n",
                       classes)["closure"], [[A, B]])

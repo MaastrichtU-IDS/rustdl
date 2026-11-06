@@ -260,6 +260,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_WEDGE_GENERATE_LAST",
+            owl_dl_tableau::wedge_generate_last_enabled,
+            true,
+        ),
+        (
             "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
             owl_dl_reasoner::property_asymmetric_disjoint_enabled,
             true,

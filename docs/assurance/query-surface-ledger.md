@@ -714,6 +714,147 @@ while both legs were decided, leaves the matrix non-transitive. The CLI's
 - R4.2 accepts a cut flagged only by `consistency_undetermined`. In three `--global-timeout-ms 1`
   runs (default 242 and 1766, `data_heavy` 354), an inconsistent KB comes back
   `consistent: true`, `incomplete: false`, with a hierarchy, and that flag is set. This is
-  permitted by the plan: the flag is the give-up signal for that case.
+  permitted by the plan: the flag is the give-up signal for that case. The opposite shape (an
+  unflagged consistency claim under a cut) is R4.4's, below.
 - The warm give-up set lacks `parse_timed_out`, because the Python `Classification` does not
   expose it.
+
+### The give-up contract: R4.4 and R6 (#466, #462)
+
+Two defects stayed invisible to the laws above. They come from the same contract: a run that
+gives up has to say so in the field meant for it.
+- **#466:** a cut run said `consistent: true` with `consistency_undetermined: false` on an
+  inconsistent KB. It set `incomplete: true`, and that was enough for R4.2, which any flag
+  satisfies.
+- **#462:** a tableau `NoVerdict` printed a bare `unknown` instead of the command's JSON. Its
+  signal was later split by budget: under #462 option (i), `no_verdict` (`classify`:
+  `no_verdict_pairs`) means only that a probe with no deadline ended in `NoVerdict`. A
+  budgeted `NoVerdict` is a depth cut and sets only `incomplete`.
+
+Plan: `notes/plans/2026-11-05-363-giveup-contract-laws.md` (Fable: go with changes, all
+taken).
+
+**The laws.**
+- **R4.4 (#466).** For each cut route, a claim of `consistent: true` with
+  `consistency_undetermined: false` must agree with full.
+  - If full says inconsistent, it is a violation, whatever `incomplete` says. It is info if
+    the oracle says consistent.
+  - If full is undetermined (or timed out) and the oracle says inconsistent, it is a violation.
+  - If full makes the same claim on an oracle-inconsistent KB, it is info, "shared pre-check
+    miss": the cut did not cause it (cases 475 and 1283 in the R2 notes are of this kind).
+- **R6.1, format.** Every forced route prints the command's JSON. A run killed at the cap is
+  counted separately as a timeout, not as a violation.
+- **R6.2, one signal.** The field is set ⇔ #449's note ("likely a reasoner bug") is on stderr.
+  When the field is set, the run exits 3 and sets `incomplete`.
+- **R6.3, option (i).** A budgeted probe never sets the field. The budgeted routes are:
+  - `nv_budget` and every unforced classify route;
+  - a `consistent` run whose trace shows the wedge stalled into the bounded fall-through.
+- **R6.4, a stall cut is sound.** On an oracle-consistent KB, a forced route publishes no FP
+  and never says `consistent: false`.
+- **R6.5, a natural stall.** The field set on an unforced route is a finding (the #437 kind).
+
+**New routes.** All run with `RAYON_NUM_THREADS=1`. The forced stall is
+`RUSTDL_TABLEAU_SATURATE_ITERS=1`.
+
+| route | command | stall | wedge |
+|---|---|---|---|
+| `nv_free` | `classify --json --pair-timeout-ms 0` | forced | off |
+| `nv_free_n2` | the same with `--n2-classify` | forced | off |
+| `nv_budget` | `classify --json --pair-timeout-ms 1000` | forced | off |
+| `cons` | `consistent --json`, `RUSTDL_TRACE=1` | – | on |
+| `nv_cons` | `consistent --json`, `RUSTDL_TRACE=1` | forced | on |
+
+- **Why the forced classify routes run with the wedge off.** The stall knob is read only by
+  the main tableau's `search.rs`. With the wedge on, the wedge answers nearly every probe
+  before that search runs. In the 12-case smoke test, the forced stall reached 0 cases with the
+  wedge on and 6–7 with it off.
+- **Why `nv_cons` keeps the wedge on.** The route R6.3 must watch is the wedge's
+  `Stalled` → bounded tableau fall-through, and it exists only with the wedge on.
+- Each `consistent` run is classified by its trace line:
+  - "wedge Stalled — bounded tableau fall-through": budgeted;
+  - any other wedge or saturation verdict: decided;
+  - no line: deadline-free (a TBox-only KB takes `decide_consistency(None)`).
+
+**Measured 2026-11-06.** The arms ran in parallel, one core each, at a host load of about 12.
+
+| arm | binary | core(s) | routes |
+|---|---|---|---|
+| A | 9cbf2b55 (main) | 92–93 | full, the four cuts, all five new routes |
+| B | 364b88ab (pre-#462) | 94 | full and the five new routes |
+| C | S10 (9cbf2b55 with #471's review fix 1 reverted) | 95 | full, `cons`, `nv_cons` |
+
+On A (main), 0 violations:
+
+| law | compared | held | info / timeout | violations |
+|---|---:|---:|---:|---:|
+| R4.4 `cut_g1` | 2729 | 2729 | – | 0 |
+| R4.4 `cut_g5` | 2727 | 2727 | – | 0 |
+| R4.4 `cut_g25` | 2965 | 2965 | – | 0 |
+| R4.4 `cut_p1` | 3723 | 3723 | – | 0 |
+| R6.1 | 20000 | 19999 | 1 timeout | 0 |
+| R6.2 | 19999 | 19999 | – | 0 |
+| R6.3 | 8690 | 8690 | – | 0 |
+| R6.4 | 14803 | 14803 | – | 0 |
+| R6.5 | 4000 | 4000 | – | 0 |
+
+R4.4 compares only the runs where the cut claims determined consistency. R6.4 compares only
+oracle-consistent KBs. R1–R5 were not re-run.
+
+**Reach on A.**
+- The field is set on:
+  - `nv_free`: 2454 of 4000 cases;
+  - `nv_free_n2`: 2476 of 3999 (plus 1 timeout);
+  - `nv_cons`: 1223 of 4000, every one deadline-free, so that is correct.
+- `nv_budget` never sets it (R6.3).
+- `consistent` probes by trace: 2337 decided, 1655 deadline-free, **8 budgeted**.
+  - The 8 are default cases 181, 321, 939, 1269, 1646, 1747, 1942 and 1998. They are budgeted
+    on both `cons` and `nv_cons`, because the wedge stalls on them without being forced.
+  - The unforced `cons` route never set the field (R6.5: 0) and never timed out.
+
+**Positives, declared in advance; each fired.**
+- **R4.4, offline on the stored records of the R1–R5 run.**
+  - Before #470: a5a2e063 had 26 violations over 10 cases; 0df06f64 had 25 over 11 cases.
+  - After #470: 364b88ab (`f462-main`) and the #471 branch had 0 each.
+  - R4.2 had passed all 26 hits on a5a2e063 and 24 of the 25 on 0df06f64, because each one
+    set `incomplete`. The remaining one is the case-85 candidate (0df06f64, `cut_p1`, no flag
+    at all), which R4.2 also catches.
+  - Case 438 fires through the oracle arm: full is undetermined there.
+- **R4.4, reproB (the #466 reproducer, by hand).** It ran with `RUSTDL_HYPERTABLEAU=0`, the cut
+  being `RUSTDL_MAX_NODES=2`.
+  - On 0df06f64, the cut says `consistent: true` with `consistency_undetermined: false`, and
+    full says inconsistent (4 unsat): a violation.
+  - On 9cbf2b55, the cut sets `consistency_undetermined`.
+  - The planned `--extra-case` flag was dropped. The offline positive replaced it.
+- **R6 on B (pre-#462): 6162 violations over 2492 cases.**
+  - R6.1: 4931, the bare `unknown` on `nv_free` (2454) and `nv_free_n2` (2477).
+  - R6.2: 1231, the note without the field (the field did not exist yet). This is A's 1223
+    deadline-free probes plus the 8 budgeted ones.
+- **R6.3 on C (S10): 8 violations.**
+  - These are exactly the 8 budgeted probes. All 8 reproduced serially on core 92: S10 sets
+    `no_verdict: true` with the note, and main does not.
+  - So the generated sets do reach S10's route, on 8 of 4000 cases.
+- **R6.4: covered by the self-test only.** No env mutant turns a stall into a definite answer.
+
+**Noise, rechecked serially on core 92 (120 s cap).** Each deadline-touching one-arm
+difference finished well inside the cap:
+- A's `nv_free_n2` timeout (case 1897): 0.9–1.4 s, exit 3, 87 no-verdict pairs.
+- A's `full` timeout on case 1898: 0.3–1.5 s.
+- B's `nv_free` timeout (case 1368): 0.5–0.6 s.
+
+These were load artefacts. The other 9 `full` timeouts (cases 321, 438, 812, 939, 1269, 1475,
+1646, 1747 and 1998) are the same on every tag, the stored ones included.
+
+**Limits.**
+- The stall knob reaches only `search.rs`. The wedge, the EL fast path and the pre-checks
+  bypass it. So R6 tests how the main tableau's `NoVerdict` reaches the output, at 61% case
+  reach on classify. It does not test a `NoVerdict` inside the wedge.
+- S10's route is reached by 8 default cases, and only where the wedge stalls without being
+  forced. `RUSTDL_CONSISTENCY_FALLBACK_MS=1` does not widen it.
+  - The check ran 6 cases the wedge decides plus 2 of the 8, on main and on S10.
+  - The lever sent 2 of the 6 into the fall-through, and one of those only on main.
+  - S10 fired on neither. It still fired on the 2 natural cases.
+- R6 tests the `classify` and `consistent` commands only. The other query commands are not
+  covered.
+- R6.5 is effective on `cons` alone: classify's 5 ms default pair budget makes a natural
+  `NoVerdict` a depth cut, which R6.3 covers instead.
+- When #475 (a stall latch) lands, R6.3 becomes "never on a depth cut".

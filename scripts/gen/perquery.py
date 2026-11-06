@@ -95,9 +95,16 @@ EL_SETS = ("el_only", "el_guaranteed")
 UNDET = "consistency could not be determined"
 TRUST = ("relies on the KB being consistent",
          "took the ontology as consistent on the consistency wedge's model alone")
-ABOX = re.compile(r"ClassAssertion|ObjectPropertyAssertion|DataPropertyAssertion|NamedIndividual"
+# ABox content the #428 guard can seed from: assertions and nominals. A bare
+# `Declaration(NamedIndividual(..))` is not: the guard reports has_individuals=false there, so
+# such a KB is #457's TBox-only shape.
+ABOX = re.compile(r"ClassAssertion|ObjectPropertyAssertion|DataPropertyAssertion"
                   r"|SameIndividual|DifferentIndividuals|NegativeObjectPropertyAssertion"
                   r"|NegativeDataPropertyAssertion|ObjectOneOf|ObjectHasValue")
+
+
+def tbox_only(text):
+    return not ABOX.search(text)
 
 
 # ------------------------------------------------------------------ calls
@@ -187,7 +194,7 @@ def one_case(setname, path, binary, env, out_dir):
     classes = orc.declared_classes(text)
     sha = orc.sha(text)
     rec = {"set": setname, "case": Path(path).stem, "sha256": sha, "path": str(path),
-           "classes": sorted(classes), "tbox_only": not ABOX.search(text), "env": env}
+           "classes": sorted(classes), "tbox_only": tbox_only(text), "env": env}
     rec["full"] = classify_route(binary, path, env, classes)
     rec["vr"] = classify_route(binary, path, {**env, **VR_ENV}, classes)
     q, hung = {}, set()
@@ -419,6 +426,9 @@ def load_tag(out, tag):
 def all_outcomes(out, tag, cache):
     res = {}
     for rec in load_tag(out, tag):
+        p = Path(rec.get("path", ""))
+        if p.is_file():  # recomputed: records written before the declaration fix stored it
+            rec["tbox_only"] = tbox_only(p.read_text())
         res[(rec["set"], rec["case"])] = evaluate(rec, oracle_view(cache, rec["sha256"]))
     return res
 
@@ -633,6 +643,10 @@ def self_test():
     r4 = {**r, "stdout": "http://g#A ⊑ http://g#B : yes — answered by tableau\n", "stderr": TRUST[0]}
     ok("op_of reads explain and the trust note", (op_of(r4, "explain")["v"], op_of(r4, "explain")["trust"]),
        ("yes", True))
+    ok("tbox_only: a bare individual declaration is still TBox-only",
+       (tbox_only("Declaration(NamedIndividual(:a0))\nSubClassOf(:A :B)"),
+        tbox_only("ClassAssertion(:A :a0)"), tbox_only("SubClassOf(:A ObjectOneOf(:a0))")),
+       (True, False, False))
     ok("explain_pairs: 3 with a positive, 2 without",
        (len(explain_pairs("s", {A, B, C}, cl([(A, B)]))), len(explain_pairs("s", {A, B, C}, cl()))),
        (3, 2))

@@ -239,8 +239,9 @@ const UNSATISFIABLE: &[(&str, &str, &str)] = &[
          DifferentIndividuals(:a :b)",
         "D",
     ),
-    // Branch `X` merges and prunes, then clashes; branch `Y` clashes only through
-    // the `s`-successor that branch pruned, so the prune must be undone.
+    // Branch `X` merges, then clashes; branch `Y` clashes through the `s`-successor.
+    // (Here the merging nodes have no children, so no prune fires; the
+    // `pruned_child_needed_after_backtrack_*` canaries below pin the undo.)
     (
         "prune_undone_on_backtrack",
         "SubClassOf(:D ObjectSomeValuesFrom(:t ObjectOneOf(:a))) \
@@ -262,6 +263,32 @@ const UNSATISFIABLE: &[(&str, &str, &str)] = &[
          SubClassOf(:Y ObjectAllValuesFrom(:s :G)) SubClassOf(:G ObjectSomeValuesFrom(:q :H)) \
          SubClassOf(:H ObjectAllValuesFrom(ObjectInverseOf(:q) ObjectComplementOf(:D)))",
         "D",
+    ),
+    // The root is `a`'s canonical node. On the branch that puts `{a}` on the
+    // `s`-successor, it merges into the root and its `q`-child is pruned, then
+    // clashes; the other branch clashes only on that `q`-child, so the prune must
+    // be undone. Both disjunct orders, so whichever branch the search tries first,
+    // one of the two runs the prune before the backtrack (`nominal_merge_prunes`
+    // fires on both).
+    (
+        "pruned_child_needed_after_backtrack_xy",
+        "SubClassOf(:C ObjectSomeValuesFrom(:r :E)) \
+         SubClassOf(:E ObjectAllValuesFrom(ObjectInverseOf(:r) ObjectOneOf(:a))) \
+         SubClassOf(:C ObjectComplementOf(:X)) SubClassOf(:C ObjectSomeValuesFrom(:s :D)) \
+         SubClassOf(:D ObjectSomeValuesFrom(:q :H)) SubClassOf(:D ObjectUnionOf(:X :Y)) \
+         SubClassOf(:X ObjectOneOf(:a)) \
+         SubClassOf(:Y ObjectAllValuesFrom(:q ObjectComplementOf(:H)))",
+        "C",
+    ),
+    (
+        "pruned_child_needed_after_backtrack_yx",
+        "SubClassOf(:C ObjectSomeValuesFrom(:r :E)) \
+         SubClassOf(:E ObjectAllValuesFrom(ObjectInverseOf(:r) ObjectOneOf(:a))) \
+         SubClassOf(:C ObjectComplementOf(:Y)) SubClassOf(:C ObjectSomeValuesFrom(:s :D)) \
+         SubClassOf(:D ObjectSomeValuesFrom(:q :H)) SubClassOf(:D ObjectUnionOf(:X :Y)) \
+         SubClassOf(:Y ObjectOneOf(:a)) \
+         SubClassOf(:X ObjectAllValuesFrom(:q ObjectComplementOf(:H)))",
+        "C",
     ),
     // Both disjuncts on the pruned `r`-successor lead to the clash.
     (

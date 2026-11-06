@@ -51,7 +51,8 @@
 //! (2026-11-06, an 8-thread workspace run). The run reported the cut in its
 //! `# timed-out pairs` header, but these tests drop `#` lines. A cut can also make
 //! the miss-pinning test below pass vacuously. None of these canaries is about
-//! budgets, so they run unbudgeted in effect, and a cut is an error, not an answer.
+//! budgets, so they run unbudgeted in effect, and a cut of any kind is an error,
+//! not an answer. Inherited `RUSTDL_*` settings are cleared for the same reason.
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
@@ -76,6 +77,14 @@ fn fixture(name: &str) -> PathBuf {
 /// `RUSTDL_WEDGE_BODY_DECOMPOSE=0`, so the over-cap body reaches the matcher.
 fn classify(ofn: &Path, wide: Option<bool>, trace: bool, decompose: bool) -> (Vec<String>, String) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_rustdl"));
+    // No inherited `RUSTDL_*` settings: a stray budget or engine flag in the caller's
+    // shell would re-introduce cuts or silently change an arm's route. The flags each
+    // arm needs are set below.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("RUSTDL_") {
+            c.env_remove(key);
+        }
+    }
     c.arg("classify")
         .arg("--pair-timeout-ms")
         .arg(PAIR_BUDGET_MS)
@@ -102,8 +111,9 @@ fn classify(ofn: &Path, wide: Option<bool>, trace: bool, decompose: bool) -> (Ve
     let out = c.output().expect("run rustdl");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    // A deadline that still fired makes every answer below meaningless: a cut pair
+    // A cut that still happened makes every answer below meaningless: a cut pair
     // reads as "not subsumed", which can fail a derivation or vacuously pass a miss.
+    // `# timed-out pairs` counts every cut probe, not only deadlines.
     let cut: Vec<&str> = stdout
         .lines()
         .filter(|l| {
@@ -112,8 +122,9 @@ fn classify(ofn: &Path, wide: Option<bool>, trace: bool, decompose: bool) -> (Ve
         .collect();
     assert!(
         cut.is_empty() && !stderr.contains("INCOMPLETE"),
-        "a deadline cut this run of {} even at --pair-timeout-ms {PAIR_BUDGET_MS}; \
-         its answer cannot be read as the canary's verdict.\nheaders: {cut:?}\nstderr:\n{stderr}",
+        "a probe of {} was cut (a deadline, the search-depth cap, a NoVerdict or a tail \
+         bound; stderr names which) even at --pair-timeout-ms {PAIR_BUDGET_MS}; its answer \
+         cannot be read as the canary's verdict.\nheaders: {cut:?}\nstderr:\n{stderr}",
         ofn.display()
     );
     let lines = stdout

@@ -238,6 +238,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::nominal_merge_first_enabled,
             true,
         ),
+        (
+            "RUSTDL_NOMINAL_DISJUNCTION_WAIT",
+            owl_dl_tableau::nominal_disjunction_wait_enabled,
+            true,
+        ),
         // OFF until its fuzz differential, sweeps and MISSED net pass (#370).
         (
             "RUSTDL_MERGE_EXACT_DEPS",

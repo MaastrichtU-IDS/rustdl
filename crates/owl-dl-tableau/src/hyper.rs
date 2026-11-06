@@ -624,6 +624,8 @@ struct Snapshot {
     /// SP1: the pending event worklist, saved/restored only when
     /// `incremental_fixpoint` is on. Empty (and never read) when off.
     worklist: Vec<Event>,
+    /// #465 B: the deferred generating clauses, carried like `worklist`.
+    pending_gen: std::collections::VecDeque<(usize, HNode)>,
 }
 
 /// Phase 1b.5 lazy expansion state for snapshot replay. When set
@@ -787,6 +789,10 @@ pub struct SearchStats {
     /// `self.nodes` clones (one per branch decision). Profiling
     /// counter: the save/restore cost the trail would remove.
     pub node_clones: u64,
+    /// #465 B: generating clause firings deferred to an empty worklist.
+    pub gen_deferred: u64,
+    /// #465 B: deferred generating clauses fired from `pending_gen`.
+    pub gen_drained: u64,
     /// `horn_fixpoint` worklist drains (one per call) across the search.
     pub fixpoint_passes: u64,
     /// `is_blocked` invocations. HF2 double-blocking profiling: if this
@@ -973,6 +979,16 @@ pub struct HyperEngine<'c> {
     nominal_guard: bool,
     /// `RUSTDL_WEDGE_NN_GUARD` (#376): see `nn_counted`.
     nn_guard: bool,
+    /// `RUSTDL_WEDGE_GENERATE_LAST` (#465 B): on a pool with nominals, a Horn
+    /// clause whose head generates (`∃` / `≥n`) is not fired when its trigger
+    /// pops. It waits in `pending_gen` until the worklist is empty, so a node's
+    /// nominal label is merged before the node builds successors. See
+    /// [`Self::fire_deferred_gen`].
+    generate_last: bool,
+    /// #465 B: deferred generating clauses `(clause, node)`, oldest first.
+    pending_gen: std::collections::VecDeque<(usize, HNode)>,
+    /// #465 B: set while a deferred clause fires, so it generates now.
+    draining_gen: bool,
     /// [`Self::nn_counted_possible`], cached: `None` until first asked. Only a
     /// node gaining a `≤` while carrying a nominal, or a nominal while holding a
     /// `≤`, can turn it true, and those two sites set it; a restore puts back the
@@ -2003,6 +2019,9 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            generate_last: crate::wedge_generate_last_enabled(),
+            pending_gen: std::collections::VecDeque::new(),
+            draining_gen: false,
             nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
@@ -2091,6 +2110,9 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            generate_last: crate::wedge_generate_last_enabled(),
+            pending_gen: std::collections::VecDeque::new(),
+            draining_gen: false,
             nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
@@ -3229,7 +3251,17 @@ impl<'c> HyperEngine<'c> {
         } else {
             FIXPOINT_DEADLINE_STRIDE
         };
-        while let Some(ev) = self.worklist.pop() {
+        // #465 B: a deferred generating clause runs only once the worklist is
+        // empty, one at a time, so the events it causes (a new node's labels,
+        // a nominal merge) are drained before the next one generates.
+        loop {
+            let (ev, deferred) = match self.worklist.pop() {
+                Some(ev) => (Some(ev), None),
+                None => match self.pending_gen.pop_front() {
+                    Some(g) => (None, Some(g)),
+                    None => break,
+                },
+            };
             steps += 1;
             if steps > max_iters && !self.deadline_bounds_fixpoint() {
                 return HyperResult::Stalled;
@@ -3260,7 +3292,12 @@ impl<'c> HyperEngine<'c> {
                         FIXPOINT_DEADLINE_STRIDE
                     };
             }
-            if matches!(self.process_event(ev), FireOutcome::Clash) {
+            let outcome = match (ev, deferred) {
+                (Some(ev), _) => self.process_event(ev),
+                (None, Some((ci, node))) => self.fire_deferred_gen(ci, node),
+                (None, None) => unreachable!("the loop breaks when both are empty"),
+            };
+            if matches!(outcome, FireOutcome::Clash) {
                 return HyperResult::Unsat;
             }
         }
@@ -3449,6 +3486,9 @@ impl<'c> HyperEngine<'c> {
 
     fn seed_worklist_from_graph(&mut self) {
         self.worklist.clear();
+        // A re-seed re-fires every clause from the graph, the deferred
+        // generating ones included.
+        self.pending_gen.clear();
         for idx in 0..self.nodes.len() {
             let n = HNode(u32::try_from(idx).expect("fits u32"));
             // Skip merged-away (non-canonical) nodes — their facts live
@@ -4059,6 +4099,7 @@ impl<'c> HyperEngine<'c> {
         engine.representative.clear();
         engine.neq.clear();
         engine.worklist.clear();
+        engine.pending_gen.clear();
         engine.clash_deps = DepSet::EMPTY;
         engine.snapshot_origin.clear();
         engine.snapshot_backprop_aborted = false;
@@ -4223,6 +4264,9 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
+            generate_last: crate::wedge_generate_last_enabled(),
+            pending_gen: std::collections::VecDeque::new(),
+            draining_gen: false,
             nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
@@ -4833,6 +4877,18 @@ impl<'c> HyperEngine<'c> {
             } else {
                 Vec::new()
             },
+            // Only `horn_fixpoint` fills the queue (through `process_event`), and it
+            // returns `Sat` only once the queue is empty; both `save` sites run
+            // after a `Sat` fixpoint. Carried anyway, like `worklist`.
+            pending_gen: if self.incremental_fixpoint {
+                debug_assert!(
+                    self.pending_gen.is_empty(),
+                    "#465 B: a branch saved with deferred generating clauses"
+                );
+                self.pending_gen.clone()
+            } else {
+                std::collections::VecDeque::new()
+            },
         }
     }
 
@@ -4860,6 +4916,11 @@ impl<'c> HyperEngine<'c> {
         self.nn_possible = saved.nn_possible;
         if self.incremental_fixpoint {
             self.worklist = saved.worklist;
+            self.pending_gen = saved.pending_gen;
+        } else {
+            // The next pass re-seeds; an entry of the abandoned branch may
+            // name a node that no longer exists.
+            self.pending_gen.clear();
         }
         self.stats.restores += 1;
     }
@@ -5850,6 +5911,43 @@ impl<'c> HyperEngine<'c> {
         self.fire_clause_with(ci, node, None)
     }
 
+    /// #465 B: whether firing Horn clause `ci` now is deferred to `pending_gen`.
+    ///
+    /// Generating rules go last, as in `HermiT`. On a pool with nominals, a
+    /// node's label rules can still be about to give it a nominal `{a}` (a
+    /// queued `Event::Label`) when one of its labels fires `∃` / `≥n`. Fired at
+    /// once, the node builds its successors and only then merges into `a`'s
+    /// node. Since the merge keeps the new node, each round can rebuild them,
+    /// which ran until the deadline (#465's case 01976, #473's case 00939).
+    /// Deferred, the node merges first and then finds `a`'s successors as
+    /// witnesses. Without nominals no merge can arrive this way, so nothing is
+    /// deferred and the search is unchanged.
+    fn defers_generation(&self, ci: usize) -> bool {
+        self.generate_last
+            && !self.draining_gen
+            && self.nominals.is_some_and(|(_, count)| count > 0)
+            && matches!(
+                self.clause(ci).head.first(),
+                Some(Atom::Exists(..) | Atom::AtLeast(..))
+            )
+    }
+
+    /// #465 B: fire a deferred generating clause.
+    ///
+    /// It re-matches the body at `node`'s representative, on the graph as it
+    /// is now: the binding, the body's dep-set (merge causes included), the
+    /// witness check and blocking are all read then, as for any other firing.
+    /// A clause whose body no longer matches, or whose `∃` now has a witness,
+    /// does nothing.
+    fn fire_deferred_gen(&mut self, ci: usize, node: HNode) -> FireOutcome {
+        self.stats.gen_drained += 1;
+        let n = self.resolve(node);
+        self.draining_gen = true;
+        let outcome = self.fire_clause(ci, n);
+        self.draining_gen = false;
+        outcome
+    }
+
     /// Fire clause `ci` at `node` for the edge event `src —role→ tgt`. Under
     /// `RUSTDL_HYPER_EDGE_PIN` only bindings that use that edge are enumerated (a
     /// binding using it at two atom positions is emitted twice, see
@@ -5877,6 +5975,11 @@ impl<'c> HyperEngine<'c> {
     ) -> FireOutcome {
         // Disjunctive clauses are branch points, not Horn-fired here.
         if !self.clause(ci).is_horn() {
+            return FireOutcome::NoChange;
+        }
+        if self.defers_generation(ci) {
+            self.pending_gen.push_back((ci, node));
+            self.stats.gen_deferred += 1;
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
@@ -8125,6 +8228,73 @@ mod tests {
     /// `RUSTDL_NN_INDEX` with `RUSTDL_NN_UNDO_LOG=0`: restoring a snapshot saved
     /// before the index existed drops the index, and the next lookup rebuilds it
     /// from the restored labels.
+    /// #473's case 00939, minimised, as wedge clauses: `⊤ ⊑ C0 ⊔ C1`,
+    /// `C0 ⊑ ∃r1.Q`, `Q ⊑ ∃r0.C0`, `C0 ⊑ C1`, `C1 ⊑ {a}`, seeded with `C0`.
+    fn min_939_clauses() -> Vec<DlClause> {
+        let (r0, r1) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (c0, c1, q, a) = (cls(0), cls(1), cls(2), cls(10));
+        vec![
+            DlClause {
+                body: vec![],
+                head: vec![Atom::Class(c0, X), Atom::Class(c1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Exists(r1, q, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Exists(r0, c0, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Class(c1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c1, X)],
+                head: vec![Atom::Class(a, X)],
+            },
+        ]
+    }
+
+    /// #465 B: with generation deferred, every node merges into `{a}` before it
+    /// builds successors, so the wedge settles at once on a tiny model. With the
+    /// old order it rebuilt the successors after every merge and never settled.
+    #[test]
+    fn generation_waits_for_the_nominal_merge() {
+        let clauses = min_939_clauses();
+        let run = |generate_last: bool, budget_ms: u64| {
+            let mut eng = HyperEngine::new(&clauses, cls(0)).with_nominals(10, 1);
+            eng.generate_last = generate_last;
+            let deadline = Instant::now() + std::time::Duration::from_millis(budget_ms);
+            let r = eng.decide_with_deadline(64, Some(deadline));
+            (r, eng)
+        };
+        let (r, eng) = run(true, 10_000);
+        assert_eq!(r, HyperResult::Sat, "the deferred order settles");
+        assert!(
+            eng.stats.gen_deferred > 0 && eng.stats.gen_drained > 0,
+            "precondition: generation was deferred and drained ({} / {})",
+            eng.stats.gen_deferred,
+            eng.stats.gen_drained
+        );
+        assert!(
+            eng.pending_gen.is_empty(),
+            "`Sat` with a deferred clause left"
+        );
+        assert!(
+            eng.node_count() <= 8,
+            "the model is the nominal and a few successors, not {} nodes",
+            eng.node_count()
+        );
+        let (r_old, _) = run(false, 300);
+        assert_ne!(
+            r_old,
+            HyperResult::Sat,
+            "the old order does not settle (if it now does, this test no longer pins #465)"
+        );
+    }
+
     #[test]
     fn nn_index_rebuilds_after_restoring_a_pre_build_snapshot() {
         let a = cls(10);

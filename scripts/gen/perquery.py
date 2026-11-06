@@ -45,6 +45,9 @@ Laws (outcomes: ok / violation / info / unresolved / known):
               silent answer: `sat` = unsat or `subclass`/`explain` = yes, exit 0, without the
                             "consistency could not be determined" warning. Correct, but a breach
                             of #428: "known #457" on a TBox-only KB, a violation otherwise.
+                            Since #457's A″ only the light route (told, saturation or
+                            query-wedge answers) stays silent there; the law does not
+                            read the route, so "known #457" covers both.
               With the warning it is signalled: ok. `inconsistent` (the error): ok.
             A wrong answer stays a violation even with the "undetermined" warning: today the
             CLI prints that warning only after a positive answer (lib.rs: `!sat && …`), so a

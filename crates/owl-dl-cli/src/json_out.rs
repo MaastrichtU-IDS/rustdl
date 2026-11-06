@@ -341,9 +341,11 @@ pub(crate) struct SatExprJson {
     /// positive. Separate from `incomplete`; not a give-up.
     pub(crate) relies_on_trusted_consistency: bool,
     /// #369: a positive answer whose KB consistency stayed undetermined (the
-    /// consistency wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`),
-    /// so it may be the vacuous answer of an inconsistent KB. Separate from
-    /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
+    /// consistency wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`;
+    /// on a KB with no individual, #457's bounded main-tableau check ran past
+    /// `RUSTDL_CONSISTENCY_FALLBACK_MS`), so it may be the vacuous answer of an
+    /// inconsistent KB. Separate from `incomplete`; not a give-up. A KB found
+    /// inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
     /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
     /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
@@ -377,9 +379,11 @@ pub(crate) struct SubclassExprJson {
     /// positive. Separate from `incomplete`; not a give-up.
     pub(crate) relies_on_trusted_consistency: bool,
     /// #369: a positive answer whose KB consistency stayed undetermined (the
-    /// consistency wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`),
-    /// so it may be the vacuous answer of an inconsistent KB. Separate from
-    /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
+    /// consistency wedge stalled or ran past `RUSTDL_QUERY_LAZY_CONSISTENCY_MS`;
+    /// on a KB with no individual, #457's bounded main-tableau check ran past
+    /// `RUSTDL_CONSISTENCY_FALLBACK_MS`), so it may be the vacuous answer of an
+    /// inconsistent KB. Separate from `incomplete`; not a give-up. A KB found
+    /// inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
     /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
     /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on

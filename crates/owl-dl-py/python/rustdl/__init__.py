@@ -449,9 +449,13 @@ class ConsistencyUndeterminedWarning(UserWarning):
     `class_expression_entailed_subclass` (entailed), `object_property_values`,
     `data_property_values`, `disjoint_object_properties`,
     `disjoint_data_properties` and the `materialize_inferred_*` property functions
-    (a non-empty answer). Ontologies with no individual in an ABox assertion
-    (class, object property, same, different) and no nominal are not checked
-    (the wedge needs a seed) and never warn. A KB found inconsistent raises `RustdlError` instead.
+    (a non-empty answer). On an ontology with no individual in an ABox assertion
+    (class, object property, same, different) and no nominal, the wedge has no
+    seed: an answer the main tableau found is checked by a bounded main-tableau
+    consistency check instead (#457, `RUSTDL_QUERY_NO_SEED_TAIL`), and warns when
+    that check is cut; a told, saturation or query-wedge answer is not checked and
+    never warns (docs/known-limitations/tbox-only-inconsistency-light-route.md).
+    A KB found inconsistent raises `RustdlError` instead.
     Nothing was cut, so this is NOT an `IncompleteQueryWarning`.
     `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1` also runs a bounded main-tableau
     check, at a cost."""

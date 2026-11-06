@@ -4073,7 +4073,7 @@ mod tests {
         pool.all(Role::named(RoleId::new(0)), inner)
     }
 
-    fn reverse_chain_ctx<'p>(pool: &'p ConceptPool, top: ConceptId) -> TableauContext<'p, 'p, 'p> {
+    fn reverse_chain_ctx(pool: &ConceptPool, top: ConceptId) -> TableauContext<'_, '_, '_> {
         let mut ctx = TableauContext::new(pool);
         let z = ctx.new_node();
         let y = ctx.new_node();

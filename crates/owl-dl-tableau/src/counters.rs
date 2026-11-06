@@ -59,6 +59,12 @@ pub(crate) struct RuleCounters {
     pub(crate) nominal_merge_prunes: Cell<u64>,
     /// #485: `¬C` labels `apply_forall` added from a `≤0 R.C`.
     pub(crate) max_zero_forall: Cell<u64>,
+    /// #486 probe: `max_witnesses` results holding a redirected node; `≤` firings
+    /// only the stale entry makes over-full; the same for `nominal_max_overfull`.
+    pub(crate) stale_witness_max: Cell<u64>,
+    pub(crate) stale_witness_max_overfires: Cell<u64>,
+    pub(crate) stale_witness_overfull: Cell<u64>,
+    pub(crate) stale_witness_overfull_flips: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
 
@@ -158,6 +164,16 @@ impl RuleCounters {
             ("nominal_merges", self.nominal_merges.get()),
             ("nominal_merge_prunes", self.nominal_merge_prunes.get()),
             ("max_zero_forall", self.max_zero_forall.get()),
+            ("stale_witness_max", self.stale_witness_max.get()),
+            (
+                "stale_witness_max_overfires",
+                self.stale_witness_max_overfires.get(),
+            ),
+            ("stale_witness_overfull", self.stale_witness_overfull.get()),
+            (
+                "stale_witness_overfull_flips",
+                self.stale_witness_overfull_flips.get(),
+            ),
             (
                 "is_blocked_prefilter_rejects",
                 self.is_blocked_prefilter_rejects.get(),

@@ -453,6 +453,12 @@ fn first_open_max(ctx: &TableauContext<'_, '_, '_>, bound: u32) -> Option<(u32, 
                 continue;
             }
             let mut witnesses = crate::rules::max_witnesses(ctx, node_id, *role, *body);
+            #[cfg(feature = "counters")]
+            if witnesses.len() > *n as usize
+                && crate::rules::resolved_witness_count(ctx, &witnesses) <= *n as usize
+            {
+                crate::bump_counter!(ctx, stale_witness_max_overfires);
+            }
             if witnesses.len() <= *n as usize
                 || crate::rules::mergeable_pairs(ctx, &witnesses).len() < 2
             {

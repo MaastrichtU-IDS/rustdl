@@ -61,8 +61,8 @@ const WEDGE: &str = "RUSTDL_HYPERTABLEAU";
 const DECLS: &str = "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) \
      Declaration(Class(:D)) Declaration(Class(:D1)) Declaration(Class(:D2)) \
      Declaration(Class(:E)) Declaration(Class(:E1)) Declaration(Class(:E2)) \
-     Declaration(Class(:X)) Declaration(Class(:C0)) Declaration(Class(:C2)) \
-     Declaration(Class(:C5)) \
+     Declaration(Class(:F)) Declaration(Class(:X)) Declaration(Class(:C0)) \
+     Declaration(Class(:C2)) Declaration(Class(:C5)) \
      Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s)) \
      Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1)) \
      Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))";
@@ -227,6 +227,15 @@ const SATISFIABLE: &[(&str, &str)] = &[
          SubClassOf(:A ObjectSomeValuesFrom(:r ObjectOneOf(:b))) ClassAssertion(:B :b)",
     ),
     (
+        // The `≤0` sits on the successor with no decision in its deps; its `¬A` goes
+        // back to the root (a lower index) through the edge, which carries `E1`. The
+        // only end-to-end canary for dropped edge deps: in `edge_deps_to_a_nominal`
+        // the nominal merge adds `E1` back.
+        "edge_deps_through_an_inverse",
+        "SubClassOf(owl:Thing ObjectMaxCardinality(0 ObjectInverseOf(:r) :A)) \
+         SubClassOf(:A ObjectUnionOf(:E1 :E2)) SubClassOf(:E1 ObjectSomeValuesFrom(:r :F))",
+    ),
+    (
         "nested_disjunct_through_an_inverse",
         "SubClassOf(:A ObjectUnionOf(:D1 :D2)) SubClassOf(:D1 ObjectSomeValuesFrom(:s \
          ObjectMaxCardinality(0 ObjectInverseOf(:s) :A))) SubClassOf(:D2 :C)",
@@ -272,6 +281,30 @@ const SATISFIABLE: &[(&str, &str)] = &[
 /// `(name, axioms, sub, sup, expected)`: the disjunct the `≤0` sits on is refuted,
 /// so `A` is in the other one; it is in no unrelated class.
 const SUBSUMPTIONS: &[(&str, &str, &str, &str, bool)] = &[
+    (
+        "edge_deps_through_an_inverse",
+        "SubClassOf(owl:Thing ObjectMaxCardinality(0 ObjectInverseOf(:r) :A)) \
+         SubClassOf(:A ObjectUnionOf(:E1 :E2)) SubClassOf(:E1 ObjectSomeValuesFrom(:r :F))",
+        "A",
+        "E2",
+        true,
+    ),
+    (
+        "edge_deps_through_an_inverse",
+        "SubClassOf(owl:Thing ObjectMaxCardinality(0 ObjectInverseOf(:r) :A)) \
+         SubClassOf(:A ObjectUnionOf(:E1 :E2)) SubClassOf(:E1 ObjectSomeValuesFrom(:r :F))",
+        "A",
+        "E1",
+        false,
+    ),
+    (
+        "edge_deps_through_an_inverse",
+        "SubClassOf(owl:Thing ObjectMaxCardinality(0 ObjectInverseOf(:r) :A)) \
+         SubClassOf(:A ObjectUnionOf(:E1 :E2)) SubClassOf(:E1 ObjectSomeValuesFrom(:r :F))",
+        "A",
+        "X",
+        false,
+    ),
     (
         "label_deps",
         "SubClassOf(:A ObjectUnionOf(:D1 :D2)) SubClassOf(:D1 ObjectMaxCardinality(0 :r :B)) \

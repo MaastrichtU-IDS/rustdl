@@ -106,9 +106,20 @@ pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         let n = ctx.graph().node(node);
         let pool = ctx.pool();
         let mut out = Vec::new();
+        let max0 = std::env::var_os("RUSTDL_DBG485_MAX0").is_some_and(|v| v == "1");
         for (pos, &c) in n.labels().iter().enumerate() {
-            if let ConceptExpr::All(role, body) = pool.get(c) {
-                let wanted: Role = *role;
+            // #485 prototype: `≤0 R.C` acts as `∀R.¬C` (its choose rule's `C`
+            // option always over-fills the `≤0`).
+            let as_all = match pool.get(c) {
+                ConceptExpr::All(role, body) => Some((*role, *body)),
+                ConceptExpr::Max(0, role, body) if max0 && ctx.dkey_range_of(*body).is_none() => {
+                    ctx.complement_of(*body).map(|nb| (*role, nb))
+                }
+                _ => None,
+            };
+            if let Some((role, body)) = as_all {
+                let body = &body;
+                let wanted: Role = role;
                 let all_deps = &n.label_deps[pos];
                 // Outgoing edges first, in `edges` order — index into
                 // `edge_deps` matches.

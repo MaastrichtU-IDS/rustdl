@@ -231,6 +231,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                 } else {
                     first_open_choose(ctx, bound)
                 };
+                dbg485_dump(ctx);
                 if choose.is_none()
                     && disj.is_none()
                     && let Some((_, open)) = max
@@ -2452,4 +2453,65 @@ mod counting_tests {
             logs[1]
         );
     }
+}
+
+
+/// #485 debug only.
+fn dbg485_render(pool: &owl_dl_core::ConceptPool, c: owl_dl_core::ConceptId, depth: u32) -> String {
+    use owl_dl_core::{ConceptExpr, Role};
+    let role = |r: &Role| match r {
+        Role::Named(x) => format!("r{}", x.index()),
+        Role::Inverse(x) => format!("r{}-", x.index()),
+    };
+    if depth > 6 {
+        return "…".into();
+    }
+    let sub = |x: owl_dl_core::ConceptId| dbg485_render(pool, x, depth + 1);
+    match pool.get(c) {
+        ConceptExpr::Top => "T".into(),
+        ConceptExpr::Bot => "F".into(),
+        ConceptExpr::Atomic(a) => format!("A{}", a.index()),
+        ConceptExpr::Nominal(i) => format!("{{i{}}}", i.index()),
+        ConceptExpr::SelfRestriction(r) => format!("self({})", role(r)),
+        ConceptExpr::Not(x) => format!("¬{}", sub(*x)),
+        ConceptExpr::And(xs) => format!("({})", xs.iter().map(|&x| sub(x)).collect::<Vec<_>>().join(" ⊓ ")),
+        ConceptExpr::Or(xs) => format!("({})", xs.iter().map(|&x| sub(x)).collect::<Vec<_>>().join(" ⊔ ")),
+        ConceptExpr::Some(r, x) => format!("∃{}.{}", role(r), sub(*x)),
+        ConceptExpr::All(r, x) => format!("∀{}.{}", role(r), sub(*x)),
+        ConceptExpr::Min(n, r, x) => format!("≥{n}{}.{}", role(r), sub(*x)),
+        ConceptExpr::Max(n, r, x) => format!("≤{n}{}.{}", role(r), sub(*x)),
+    }
+}
+
+/// #485 debug only: dump the graph once at `RUSTDL_DEBUG485_DUMP_AT` nodes, then exit.
+fn dbg485_dump(ctx: &TableauContext<'_, '_, '_>) {
+    let Some(at) = std::env::var("RUSTDL_DEBUG485_DUMP_AT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    else {
+        return;
+    };
+    if ctx.graph().len() < at {
+        return;
+    }
+    let pool = ctx.pool();
+    eprintln!("# dbg485 dump graph_nodes={}", ctx.graph().len());
+    for i in 0..ctx.graph().len() {
+        let id = crate::graph::NodeId::new(u32::try_from(i).unwrap());
+        let n = ctx.graph().node(id);
+        let mut labels: Vec<String> = n.labels().iter().map(|&c| dbg485_render(pool, c, 0)).collect();
+        labels.sort();
+        eprintln!(
+            "n{i} parent={:?} prole={:?} redirected={} pruned={} blocked={} edges={:?} ineq={:?}\n    {}",
+            n.parent().map(|p| p.index()),
+            n.parent_role().map(|r| format!("{r:?}")),
+            n.is_redirected(),
+            n.pruned,
+            !n.is_redirected() && ctx.is_blocked(id),
+            n.edges.iter().map(|(r, t)| (r.index(), t.index())).collect::<Vec<_>>(),
+            n.inequalities.iter().map(|t| t.index()).collect::<Vec<_>>(),
+            labels.join("  |  ")
+        );
+    }
+    std::process::exit(3);
 }

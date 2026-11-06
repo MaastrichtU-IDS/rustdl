@@ -938,7 +938,10 @@ are skipped as "after-hang".
   - a silent answer (correct, exit 0, no undetermined warning) is "known #457" on a TBox-only
     KB, and a violation otherwise;
     since #457 residual 2 (A″), a tableau-answered query there errors instead, so "known #457"
-    is in effect the light-route gap (told, saturation or query-wedge answers);
+    is in effect the light-route gap (told, saturation or query-wedge answers). On the 39
+    known cases the A″ pin left 1418 of the 1622 (204 became `Inconsistent`: 152 `sat`,
+    49 `subclass`, 3 `explain`), with 0 violations on 1350 TBox-only cases; its new
+    `Inconsistent` errors on cases 214 and 1281 (no oracle verdict) are correct by hand;
   - an answer with the warning, or the `Inconsistent` error, is ok.
   - "TBox-only" means no assertions and no nominals. A bare `Declaration(NamedIndividual)` is
     TBox-only: the guard reports `has_individuals=false` there.

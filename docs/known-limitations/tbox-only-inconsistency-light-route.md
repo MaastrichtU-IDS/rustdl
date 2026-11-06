@@ -35,6 +35,15 @@ case 438; inconsistent per Konclude and HermiT):
 | `subclass C0 C1` | prepared (the tableau answers) | error: ontology is inconsistent (exit 1) |
 | `subclass C0 C6` | light (`SubClassOf(:C0 :C6)` is told) | `yes`, exit 0, no warning |
 
+## How often
+
+The gap is not an edge case. On the 39 generated `TBox`-only cases that are inconsistent per the
+oracle (the per-query laws, R7.5), the prepared-route check turned 204 of the 1,622 silent answers
+into the `Inconsistent` error: 152 `sat`, 49 `subclass` and 3 `explain`, on 38 of the 39 cases.
+The other 1,418 silent answers come from the light route, and every one of the 39 cases still has
+at least one. On an inconsistent KB the EL closure often finds the queried classes unsatisfiable,
+which answers the query before the tableau runs.
+
 ## Why the light route does not check
 
 Option A of #457 ran the same check on the light route too, preparing the KB when the query had

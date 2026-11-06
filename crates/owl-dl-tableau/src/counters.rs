@@ -54,6 +54,12 @@ pub(crate) struct RuleCounters {
     pub(crate) is_blocked_true: Cell<u64>,
     /// #473: `apply_exists` / `apply_min` waits on an open nominal disjunction.
     pub(crate) nominal_disjunction_waits: Cell<u64>,
+    /// #486 probe: `max_witnesses` results holding a redirected node; `≤` firings
+    /// only the stale entry makes over-full; the same for `nominal_max_overfull`.
+    pub(crate) stale_witness_max: Cell<u64>,
+    pub(crate) stale_witness_max_overfires: Cell<u64>,
+    pub(crate) stale_witness_overfull: Cell<u64>,
+    pub(crate) stale_witness_overfull_flips: Cell<u64>,
     /// #474: nominal-assignment merges, and how many of them pruned a subtree first.
     pub(crate) nominal_merges: Cell<u64>,
     pub(crate) nominal_merge_prunes: Cell<u64>,
@@ -152,6 +158,16 @@ impl RuleCounters {
             (
                 "nominal_disjunction_waits",
                 self.nominal_disjunction_waits.get(),
+            ),
+            ("stale_witness_max", self.stale_witness_max.get()),
+            (
+                "stale_witness_max_overfires",
+                self.stale_witness_max_overfires.get(),
+            ),
+            ("stale_witness_overfull", self.stale_witness_overfull.get()),
+            (
+                "stale_witness_overfull_flips",
+                self.stale_witness_overfull_flips.get(),
             ),
             ("nominal_merges", self.nominal_merges.get()),
             ("nominal_merge_prunes", self.nominal_merge_prunes.get()),

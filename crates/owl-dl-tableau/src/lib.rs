@@ -1654,6 +1654,17 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                         cands.push(x);
                     }
                 }
+                #[cfg(feature = "counters")]
+                {
+                    if cands.iter().any(|&x| self.graph.node(x).is_redirected()) {
+                        crate::bump_counter!(self, stale_witness_overfull);
+                    }
+                    if cands.len() > *n as usize
+                        && crate::rules::resolved_witness_count(self, &cands) <= *n as usize
+                    {
+                        crate::bump_counter!(self, stale_witness_overfull_flips);
+                    }
+                }
                 if cands.contains(&v) {
                     let over = cands.len() > *n as usize;
                     if over {

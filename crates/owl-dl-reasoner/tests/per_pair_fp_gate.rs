@@ -26,32 +26,34 @@
 //! inputs — `bibtex` is Horn and is deliberately not a case here, because a
 //! fixture where the flag cannot engage would pad the gate without testing it.
 //!
-//! ## Sabotage: STALE, this gate currently has no known way to fail
+//! ## Sabotage: none on these fixtures; the live control is a separate file
 //!
 //! When #76 landed, `RUSTDL_MAX_TRIAL_MERGE=0` (which then reverted the fix)
 //! made this test FAIL: pizza closure **501 vs oracle 499, FP=2**, naming
 //! `Margherita ⊑ InterestingPizza` and `QuattroFormaggi ⊑ InterestingPizza`.
 //!
-//! That no longer holds (measured 2026-11-02 on main b7eb21b8, Stanford pizza
-//! v2.0 from owlcs/pizza-ontology @ dc48fca9 with its own Konclude oracle). The
-//! test passes at pizza 499 = 499 under `RUSTDL_MAX_TRIAL_MERGE=0`, under
-//! `RUSTDL_MAX_CHOICE_POINT=0`, and under both (two runs each). `rustdl subclass`
-//! answers `no` on both pizza pairs even with every `RUSTDL_MAX_*` lever off. The
-//! #293 merge choice point superseded the trial merge (the Rust source at
-//! 0090dc9f is identical).
+//! That no longer holds. The #293 merge choice point superseded the trial merge,
+//! so only `RUSTDL_MAX_TRIAL_MERGE=0` and `RUSTDL_MAX_CHOICE_POINT=0` together
+//! restore #76's first-pair commit; either alone recovers. Measured 2026-11-06 on
+//! main 3d0fb8b0: this test passes, FP=0 on all four fixtures, under the default,
+//! under each flag alone, and under both. On pizza the bad first choice never
+//! decides a pair any more, so these fixtures cannot make the gate fail.
 //!
-//! Turning BOTH off does restore the first-pair commit (either alone does not,
-//! two runs each): on the five-axiom #76
-//! synthetic (`crates/owl-dl-cli/tests/fixtures/laws/maxmerge_fp.ofn`) `subclass
-//! A I` then answers `yes`, which HermiT refutes. The cross-command law harness
-//! catches that as a HermiT-confirmed R1 false positive. On pizza the same
-//! sabotage changes nothing, so this gate has no live sabotage; the #76 guard
-//! now lives in the law harness. See the package F-lite mutant table in
-//! `docs/assurance/query-surface-ledger.md`.
+//! The live control is `per_pair_fp_gate_synthetic.rs`. It runs the same
+//! `VERIFY_REFUTATIONS` mechanism on the in-repo five-axiom #76 synthetic
+//! (`crates/owl-dl-cli/tests/fixtures/laws/maxmerge_fp.ofn`) and runs in CI. With
+//! both flags off it FAILS (`A ⊑ I`, which HermiT refutes), and without
+//! `VERIFY_REFUTATIONS` the same sabotage is invisible to `classify`. That pair of
+//! facts is what licenses this gate's mechanism. The cross-command law harness
+//! (R1 on the same fixture) covers the `subclass` / `explain` commands themselves.
 //!
-//! The pizza case needs the Stanford pizza (`scripts/fetch-real-ontologies.sh`)
-//! and an oracle generated from that same file (`scripts/konclude-oracle.sh`).
-//! Another pizza vintage with a matching oracle passes without testing #76.
+//! The pizza case needs the Stanford pizza v2.0 (`scripts/fetch-real-ontologies.sh`,
+//! pinned to owlcs/pizza-ontology @ dc48fca9) and an oracle generated from that same
+//! file (`scripts/konclude-oracle.sh`). Another vintage with a matching oracle would
+//! pass without testing #76's classes. On the shared dev host that happened from
+//! 2026-09-07 to 2026-11-06: `ontologies/real/pizza.ofn` was ontostart pizza 1.0.1
+//! (69 classes, 112 pairs, neither class). `require_pizza_v2` now fails such a
+//! fixture instead of letting it pass.
 //!
 //! Fixtures live under the gitignored `ontologies/`, so this is `#[ignore]`d and
 //! **panics** when they are absent rather than passing vacuously — the failure
@@ -111,6 +113,22 @@ fn load(path: &Path) -> SetOntology<RcStr> {
     onto
 }
 
+/// The pizza fixture must be the Stanford v2.0 that #76 was found on. Another
+/// vintage (e.g. ontostart pizza 1.0.1) lacks #76's classes, and with a matching
+/// oracle it passes without testing them.
+fn require_pizza_v2(path: &Path) {
+    let src =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    assert!(
+        src.contains("Margherita") && src.contains("InterestingPizza"),
+        "[pp-fp] {} is not the Stanford pizza v2.0 (no Margherita / InterestingPizza), so it \
+         cannot test #76's pairs. Refetch it with ./scripts/fetch-real-ontologies.sh (pinned \
+         to owlcs/pizza-ontology @ dc48fca9) and regenerate its oracle with \
+         scripts/konclude-oracle.sh.",
+        path.display()
+    );
+}
+
 /// `(label, ontology, oracle)`. Every case is REQUIRED: a missing fixture fails
 /// the test with the path, because a skipped case is indistinguishable from a
 /// passing one in the log.
@@ -150,6 +168,9 @@ fn per_pair_path_has_no_false_positives() {
             truth.display(),
         );
 
+        if label == "pizza" {
+            require_pizza_v2(&input);
+        }
         let onto = load(&input);
         let c = classify_top_down_with_timeout(&onto, Duration::from_millis(200))
             .unwrap_or_else(|e| panic!("classify {label}: {e:?}"));

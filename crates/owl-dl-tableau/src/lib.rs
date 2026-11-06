@@ -282,6 +282,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     nominal_block_guard: bool,
     /// `RUSTDL_NOMINAL_MERGE_FIRST`, cached (#460).
     nominal_merge_first: bool,
+    /// `RUSTDL_NOMINAL_DISJUNCTION_WAIT`, cached (#473).
+    nominal_disjunction_wait: bool,
     /// `RUSTDL_MERGE_EXACT_DEPS`, cached (#370).
     merge_exact_deps: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
@@ -420,6 +422,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
+            nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -470,6 +473,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
+            nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -525,6 +529,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
+            nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -1346,6 +1351,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
     }
 
+    /// True iff `node` carries a materialized open `Or` with a `Nominal` disjunct
+    /// (branch (1) of [`Self::has_pending_nominal_disjunction`]).
+    #[must_use]
+    pub fn has_open_nominal_disjunction(&self, node: NodeId) -> bool {
+        let labels = self.graph.node(node).labels();
+        labels.iter().any(|&c| self.is_open_nominal_or(c, labels))
+    }
+
     /// True iff `node` carries a pending nominal-covering disjunction: either
     /// a materialized open `Or`-with-`Nominal` label, OR an `Atomic(class)`
     /// whose absorbed concept-rule conclusion is such an `Or` not yet
@@ -1356,11 +1369,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// the node has only the atomic trigger label.
     #[must_use]
     pub fn has_pending_nominal_disjunction(&self, node: NodeId) -> bool {
-        let labels = self.graph.node(node).labels();
         // (1) materialized open Or on the node.
-        if labels.iter().any(|&c| self.is_open_nominal_or(c, labels)) {
+        if self.has_open_nominal_disjunction(node) {
             return true;
         }
+        let labels = self.graph.node(node).labels();
         // (2) pending via TBox concept-rule keyed by an atomic label's class.
         let Some(tbox) = self.tbox else {
             return false;
@@ -1713,6 +1726,37 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// [`merge_exact_deps_enabled`], cached at construction).
     pub(crate) fn merge_exact_deps(&self) -> bool {
         self.merge_exact_deps
+    }
+
+    /// #473: whether `node` waits to generate because it carries an open `Or` with a
+    /// nominal disjunct ([`Self::has_open_nominal_disjunction`]). Such a node is not
+    /// yet bound to a nominal, so [`Self::awaits_nominal_merge`] does not hold it
+    /// back; a successor built now is moved onto the nominal once the search picks
+    /// that disjunct, and builds the next one there, without end
+    /// ([`nominal_disjunction_wait_enabled`]).
+    ///
+    /// The wait only defers. The search branches on every open `Or` of every
+    /// non-redirected node before it answers `Sat`, so no `Sat` is reached while a
+    /// node waits. Picking a disjunct closes the `Or` and dirties the node: a nominal
+    /// disjunct then merges first (#460), and any other lets the node generate.
+    ///
+    /// Only a materialized `Or` counts. An `Or` concept-rule conclusion is added at
+    /// stable state, so a fresh node may generate once before it lands; blocking
+    /// bounds that, and from then on the node waits. Also waiting on the pending
+    /// conclusion (as `RUSTDL_NOMINAL_FIRST`'s [`Self::has_pending_nominal_disjunction`]
+    /// does) changed no test or reproducer and costs a rule lookup per atomic label
+    /// on every visit.
+    pub(crate) fn awaits_nominal_disjunction(&self, node: NodeId) -> bool {
+        self.nominal_disjunction_wait
+            && !self.pool.nominal_ids().is_empty()
+            && self.has_open_nominal_disjunction(node)
+    }
+
+    /// Test-only override of the cached `RUSTDL_NOMINAL_DISJUNCTION_WAIT`, so tests
+    /// do not set a process-wide env var under parallel test threads.
+    #[cfg(test)]
+    pub(crate) fn set_nominal_disjunction_wait(&mut self, on: bool) {
+        self.nominal_disjunction_wait = on;
     }
 
     /// Test-only override of the cached `RUSTDL_MERGE_EXACT_DEPS`, so tests do
@@ -4663,6 +4707,81 @@ mod tests {
         );
     }
 
+    /// #473: a node waits to generate while an open disjunction on it has a nominal
+    /// disjunct, and only then: not once a disjunct is on the node, not for a
+    /// nominal-free `Or`, and not with the flag off. While it waits, `apply_exists`
+    /// builds nothing and registers the node for the incremental revisit.
+    #[test]
+    fn generation_waits_while_a_nominal_disjunction_is_open() {
+        let mut pool = ConceptPool::new();
+        let nom_a = pool.nominal(IndividualId::new(0));
+        let nom_b = pool.nominal(IndividualId::new(1));
+        let c = pool.atomic(ClassId::new(0));
+        let d = pool.atomic(ClassId::new(1));
+        let r = Role::Named(RoleId::new(0));
+        let some = pool.some(r, c);
+        let or_ab = pool.or([nom_a, nom_b]);
+        let or_ad = pool.or([nom_a, d]);
+        let or_cd = pool.or([c, d]);
+        let mut ctx = TableauContext::new(&pool);
+        assert!(
+            ctx.incremental_saturate_enabled(),
+            "default: incremental saturation"
+        );
+        let plain = ctx.new_node();
+        ctx.add_label(plain, or_cd);
+        assert!(
+            !ctx.awaits_nominal_disjunction(plain),
+            "a nominal-free `Or` never waits"
+        );
+        let mixed = ctx.new_node();
+        ctx.add_label(mixed, or_ad);
+        assert!(
+            ctx.awaits_nominal_disjunction(mixed),
+            "one nominal disjunct is enough"
+        );
+        ctx.add_label(mixed, d);
+        assert!(
+            !ctx.awaits_nominal_disjunction(mixed),
+            "closed by a non-nominal disjunct"
+        );
+        let fresh = ctx.new_node();
+        ctx.add_label(fresh, or_ab);
+        ctx.add_label(fresh, some);
+        assert!(
+            ctx.awaits_nominal_disjunction(fresh),
+            "`{{a}} ⊔ {{b}}` open"
+        );
+        let len = ctx.graph().len();
+        assert_eq!(
+            crate::rules::apply_exists(&mut ctx, fresh),
+            RuleOutcome::NoChange
+        );
+        assert_eq!(
+            ctx.graph().len(),
+            len,
+            "no successor while the `Or` is open"
+        );
+        assert_eq!(
+            ctx.deferred_seen.get(fresh.index() as usize).copied(),
+            Some(true),
+            "the waiting node is registered for the incremental revisit"
+        );
+        ctx.set_nominal_disjunction_wait(false);
+        assert!(!ctx.awaits_nominal_disjunction(fresh), "flag off: no wait");
+        ctx.set_nominal_disjunction_wait(true);
+        ctx.add_label(fresh, nom_a);
+        assert!(
+            !ctx.awaits_nominal_disjunction(fresh),
+            "closed once the search picks `{{a}}`"
+        );
+        assert_eq!(
+            crate::rules::apply_exists(&mut ctx, fresh),
+            RuleOutcome::Applied,
+            "the `∃` generates once the `Or` is closed (no canonical node for `a` yet)"
+        );
+    }
+
     #[test]
     fn merge_into_does_not_create_parent_pointer_cycle() {
         // root —r→ s1 —r→ s2 —r→ s3. Merge s1 into s3: step 5 re-parents
@@ -5335,6 +5454,23 @@ pub fn nominal_block_guard_enabled() -> bool {
 #[must_use]
 pub fn nominal_merge_first_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_MERGE_FIRST").is_none_or(|v| v != "0")
+}
+
+/// #473 `RUSTDL_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts), main tableau:
+/// a node that carries an open disjunction with a nominal disjunct (`{a} ⊔ {b}`,
+/// `{a} ⊔ D`) does not generate `∃`/`≥n` successors until a disjunct is on it (the
+/// search picked one, or a `∀` or concept rule added one). #460's merge-first
+/// rule needs the node bound to one nominal; with `C ⊑ {a} ⊔ {b}` and `C ⊑ ∃r.C`
+/// each fresh `C` node built its successor first, the search then merged it into
+/// `a` or `b`, and the moved successor did the same, without end (generated case
+/// 939: `sat` and `subclass` never finished). See
+/// [`TableauContext::awaits_nominal_disjunction`].
+///
+/// This is the deferral half of `RUSTDL_NOMINAL_FIRST` (default OFF), without its
+/// search preference for nominal disjunctions, which case 939 does not need.
+#[must_use]
+pub fn nominal_disjunction_wait_enabled() -> bool {
+    std::env::var_os("RUSTDL_NOMINAL_DISJUNCTION_WAIT").is_none_or(|v| v != "0")
 }
 
 /// #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): in the wedge's

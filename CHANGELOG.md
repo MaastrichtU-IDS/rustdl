@@ -225,6 +225,45 @@ All notable changes to rustdl are documented here. Format is based on
 
     Two unit tests pin when a node waits. Six sabotages each turn a named test red, among them
     "always wait", "drop the distinct exclusion" and "drop the label fixpoint".
+- **Per-query `sat` / `subclass` / `explain` / `is_subclass_of` finish on SHOIQ KBs where a
+  node with an open nominal disjunction kept rebuilding its successors (#473).** #460's fix
+  holds back a node bound to one nominal `{a}`. A node carrying `{a2} ⊔ {a0}` is bound to
+  neither until the search picks one, so it built its `∃` / `≥` successors first. The search
+  then merged it into `a2` or `a0`, the merge moved those successors onto the nominal, and
+  each one did the same, without end (generated case 939: `sat C1` never finished; classify
+  answered).
+  - `RUSTDL_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts): `apply_exists` / `apply_min`
+    wait while the node carries an open `Or` with a nominal disjunct. The wait only defers:
+    the search branches on every open `Or` before it answers `Sat`, and picking a disjunct
+    closes the `Or`. This is the deferral half of `RUSTDL_NOMINAL_FIRST` (unchanged, default
+    OFF), without its search preference, which case 939 does not need.
+  - Reproducers: case 939 `sat` C0/C1/C2/C4 and its 3-axiom shrink, a direct
+    `C1 ⊑ {a} ⊔ {b}`, and a `≥2` variant answer in under 0.01 s. Main runs to its cap.
+  - Nominal-bearing ORE files (448, classify): no lost answers or rescues. Median CPU is
+    1.008× main. Two files differ, both deadline-cut on both arms; the wait never fires on
+    either, and serial rechecks at `--pair-timeout-ms 1000` match on both arms. The wait fires
+    in classify on 3 of the 448 files.
+  - Per-pair (1,642 ORE queries; 6,763 on generated nominal cases): no lost answers and no
+    changed verdicts. 12 generated queries gain an answer (cases 939, 1646, 306), all matching
+    the Konclude ∩ HermiT oracle. The two one-sided ORE results at the 30 s cap (one each
+    way, on one file) give the same answers on both arms when rechecked serially at 180 s.
+  - CPU on the nine nominal-bearing ORE files with the most rule passes, plus ore_ont_10702,
+    where the wait fires most (5 interleaved reps, serial): same content on both arms.
+    Median ratios are 0.82–1.04, with a geometric mean of 0.97. The 0.82 (ore_ont_8141) is
+    noise: the wait never fires there, and the only change is a label scan.
+  - wine, ore_ont_2182 and ore_ont_16481 (`consistent` and `classify`, 5 interleaved reps):
+    same content on both arms. Median ratios are 0.95–1.00, except a bimodal 0.69 on
+    ore_ont_16481 `classify`, where both arms span 0.77–1.2 s.
+  - Tests: `nominal_disjunction_wait.rs`:
+    - 5 satisfiable reproducers decided within a deadline;
+    - 6 unsatisfiable canaries, run with the flag on and off;
+    - a subsumption through a waiting node, with the flag on and off;
+    - consistency on the main tableau and through the wedge;
+    - with the flag off, the old order still hangs.
+
+    A unit test pins when a node waits. Four sabotages each turn a named test red: "never
+    wait", "wait even when the `Or` is closed", "no wait in `apply_min`", and "drop the
+    incremental revisit". The last is caught only by the unit test.
 - **Every command keeps its output format on a tableau `NoVerdict`, and a deadline-free one is
   reported per result (#462).** After #449, a `NoVerdict` reaching `main` printed a bare `unknown`.
   For a `--json` command that is not JSON.

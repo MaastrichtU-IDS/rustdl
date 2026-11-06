@@ -75,6 +75,23 @@ fn require(label: &str, input: &Path, truth: &Path) {
             missing.join("\n")
         );
     }
+    // Another pizza vintage with a matching oracle passes without testing the
+    // documented closure (499 pairs) or #76's classes. On the shared dev host that
+    // happened from 2026-09-07 to 2026-11-06: ontostart pizza 1.0.1 (112 pairs).
+    if label == "pizza" {
+        let src = std::fs::read_to_string(input)
+            .unwrap_or_else(|e| panic!("read {}: {e}", input.display()));
+        if !(src.contains("Margherita") && src.contains("InterestingPizza")) {
+            eprintln!("[fp0] {label}: NOT VERIFIED (wrong pizza vintage — see error below)");
+            panic!(
+                "[fp0] {} is not the Stanford pizza v2.0 (no Margherita / InterestingPizza). \
+                 Refetch it with ./scripts/fetch-real-ontologies.sh (pinned to \
+                 owlcs/pizza-ontology @ dc48fca9) and regenerate its oracle with \
+                 scripts/konclude-oracle.sh.",
+                input.display()
+            );
+        }
+    }
 }
 
 /// Check whether `input` and `truth` both exist for an OPTIONAL fixture.

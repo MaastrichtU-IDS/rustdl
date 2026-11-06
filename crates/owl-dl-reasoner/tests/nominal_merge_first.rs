@@ -264,18 +264,34 @@ fn non_subsumptions_on_the_reproducers_are_decided() {
 }
 
 /// With the flag off the old order returns: the reproducer runs past a short
-/// deadline instead of answering.
+/// deadline instead of answering, unless #474's prune on a nominal merge
+/// (`RUSTDL_NOMINAL_MERGE_PRUNE`, default ON) cuts the loop instead.
 ///
-/// This test pins the #460 defect on the flag-off path. If a later change makes
-/// the flag-off path answer here, that is a fix, not a regression: flip this test
-/// to assert the answer instead of deleting it.
+/// This test pinned the #460 defect on the flag-off path, and #474 made that path
+/// answer, so it now asserts the answer with the prune on and keeps the defect
+/// pinned with both off. If a later change makes the both-off path answer, that is
+/// a fix too: flip that half instead of deleting it.
 #[test]
 fn flag_off_restores_the_old_rule_order() {
     let _l = lock();
     let _g = EnvGuard::set("RUSTDL_NOMINAL_MERGE_FIRST", "0");
-    let onto = parse(CASE_812);
-    let verdict =
-        is_class_satisfiable_with_timeout(&onto, &format!("{NS}C2"), Duration::from_secs(2))
-            .expect("no error");
-    assert_eq!(verdict, None, "flag off: the old order does not finish");
+    let ask = || {
+        is_class_satisfiable_with_timeout(
+            &parse(CASE_812),
+            &format!("{NS}C2"),
+            Duration::from_secs(2),
+        )
+        .expect("no error")
+    };
+    assert_eq!(
+        ask(),
+        Some(true),
+        "flag off, prune on: the prune cuts the loop and C2 is satisfiable"
+    );
+    let _p = EnvGuard::set("RUSTDL_NOMINAL_MERGE_PRUNE", "0");
+    assert_eq!(
+        ask(),
+        None,
+        "flag and prune off: the old order does not finish"
+    );
 }

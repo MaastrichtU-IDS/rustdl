@@ -289,6 +289,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     nominal_merge_first: bool,
     /// `RUSTDL_NOMINAL_DISJUNCTION_WAIT`, cached (#473).
     nominal_disjunction_wait: bool,
+    /// `RUSTDL_NOMINAL_MERGE_PRUNE`, cached (#474).
+    nominal_merge_prune: bool,
     /// `RUSTDL_MERGE_EXACT_DEPS`, cached (#370).
     merge_exact_deps: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
@@ -429,6 +431,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             nominal_block_guard: nominal_block_guard_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
+            nominal_merge_prune: nominal_merge_prune_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -481,6 +484,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             nominal_block_guard: nominal_block_guard_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
+            nominal_merge_prune: nominal_merge_prune_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -538,6 +542,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             nominal_block_guard: nominal_block_guard_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
+            nominal_merge_prune: nominal_merge_prune_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -1777,6 +1782,18 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.nominal_disjunction_wait
             && !self.pool.nominal_ids().is_empty()
             && self.has_open_nominal_disjunction(node)
+    }
+
+    /// #474: whether a node that merges into a nominal's canonical node first has
+    /// its blockable subtree pruned ([`nominal_merge_prune_enabled`]).
+    pub(crate) fn nominal_merge_prune(&self) -> bool {
+        self.nominal_merge_prune
+    }
+
+    /// Test-only override of the cached `RUSTDL_NOMINAL_MERGE_PRUNE`.
+    #[cfg(test)]
+    pub(crate) fn set_nominal_merge_prune(&mut self, on: bool) {
+        self.nominal_merge_prune = on;
     }
 
     /// Test-only override of the cached `RUSTDL_NOMINAL_DISJUNCTION_WAIT`, so tests
@@ -4866,6 +4883,74 @@ mod tests {
         );
     }
 
+    /// #474: a node that merges into a nominal's canonical node has its blockable
+    /// subtree pruned first, so the successor it built before the nominal arrived
+    /// is not moved onto the nominal. With the flag off the old merge moves it. A
+    /// pair marked distinct is never pruned (its merge is refused).
+    #[test]
+    fn nominal_merge_prunes_the_merging_nodes_subtree() {
+        let mut pool = ConceptPool::new();
+        let ind = IndividualId::new(0);
+        let nom_a = pool.nominal(ind);
+        let c = pool.atomic(ClassId::new(0));
+        let r = RoleId::new(0);
+        for prune in [true, false] {
+            let mut ctx = TableauContext::new(&pool);
+            ctx.set_nominal_merge_prune(prune);
+            let canonical = ctx.new_node();
+            ctx.add_label(canonical, nom_a);
+            ctx.assign_nominal(ind, canonical);
+            let fresh = ctx.new_node();
+            let child = ctx.new_successor(fresh, r);
+            ctx.add_label(child, c);
+            ctx.add_label(fresh, nom_a);
+            assert_eq!(
+                crate::rules::apply_nominal_assignment(&mut ctx, fresh),
+                RuleOutcome::Applied
+            );
+            assert_eq!(
+                ctx.resolve(fresh),
+                canonical,
+                "merged into the canonical node"
+            );
+            if prune {
+                assert!(
+                    ctx.graph().node(child).is_redirected(),
+                    "the successor built before the nominal arrived is pruned"
+                );
+                assert!(
+                    ctx.graph().node(canonical).edges.is_empty(),
+                    "nothing is moved onto the nominal"
+                );
+            } else {
+                assert!(
+                    !ctx.graph().node(child).is_redirected(),
+                    "flag off: the successor is moved, not pruned"
+                );
+                assert_eq!(ctx.graph().node(child).parent(), Some(canonical));
+            }
+        }
+        // A distinct pair: the merge is refused (a `⊥` clash), and nothing is pruned.
+        let mut pool = ConceptPool::new();
+        let nom_a = pool.nominal(ind);
+        let _bot = pool.bot();
+        let c = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        let canonical = ctx.new_node();
+        ctx.add_label(canonical, nom_a);
+        ctx.assign_nominal(ind, canonical);
+        let fresh = ctx.new_node();
+        let child = ctx.new_successor(fresh, r);
+        ctx.add_label(child, c);
+        ctx.add_label(fresh, nom_a);
+        ctx.mark_distinct(fresh, canonical);
+        crate::rules::apply_nominal_assignment(&mut ctx, fresh);
+        assert!(
+            !ctx.graph().node(child).is_redirected(),
+            "a refused merge prunes nothing"
+        );
+    }
+
     #[test]
     fn merge_into_does_not_create_parent_pointer_cycle() {
         // root —r→ s1 —r→ s2 —r→ s3. Merge s1 into s3: step 5 re-parents
@@ -5555,6 +5640,28 @@ pub fn nominal_merge_first_enabled() -> bool {
 #[must_use]
 pub fn nominal_disjunction_wait_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_DISJUNCTION_WAIT").is_none_or(|v| v != "0")
+}
+
+/// #474 `RUSTDL_NOMINAL_MERGE_PRUNE` (default ON, `=0` reverts), main tableau: when
+/// a node merges into a nominal's canonical node ([`crate::rules::apply_nominal_assignment`]),
+/// its blockable subtree is pruned first ([`TableauContext::prune_subtree`], the SHOIQ
+/// o-rule's prune) instead of being moved onto the nominal. #460 and #473 make a node
+/// merge before it generates when the nominal is already on it; a nominal that
+/// arrives only after generation, from the node's own successor (`D ⊑ ∃r.E`,
+/// `E ⊑ ∀r⁻.{a}`, `D ⊑ ∃s.D`), still moved each built successor onto the nominal,
+/// where it did the same, until the node cap (`sat D` gave up with `NoVerdict`).
+///
+/// Sound: the prune only removes facts, and writes no deps. Every pruned node
+/// descends from the merging node, whose labels move to the canonical node with the
+/// merge deps, so what the subtree derived is derived again there; a label the
+/// subtree had already passed up stays on the merging node and moves too. The prune
+/// is trailed with the merge, and a distinct pair (a refused merge) is never pruned.
+/// The canonical node carries its nominal, so if it lies inside the subtree it is
+/// re-rooted, not pruned. Needs [`nominal_block_guard_enabled`] (otherwise
+/// `prune_subtree` prunes nothing and the merge order is reversed).
+#[must_use]
+pub fn nominal_merge_prune_enabled() -> bool {
+    std::env::var_os("RUSTDL_NOMINAL_MERGE_PRUNE").is_none_or(|v| v != "0")
 }
 
 /// #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): in the wedge's

@@ -1500,7 +1500,21 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                     } else {
                         (other_res, resolved_node)
                     };
+                    // #474: prune `source`'s blockable subtree first (the SHOIQ
+                    // o-rule's prune), so successors it built before the nominal
+                    // reached it are not moved onto the nominal, where each would
+                    // build the next. Never for a distinct pair: that merge is
+                    // refused below, and the branch closes on `⊥`.
+                    if ctx.nominal_merge_prune()
+                        && !ctx.are_distinct(source, keep)
+                        && ctx.prune_subtree(source, keep)
+                    {
+                        crate::bump_counter!(ctx, nominal_merge_prunes);
+                    }
                     let merged = ctx.merge_into_with_deps(source, keep, merge_deps.as_slice());
+                    if merged {
+                        crate::bump_counter!(ctx, nominal_merges);
+                    }
                     // A refused merge (the pair is marked distinct) is a clash,
                     // recorded as `⊥`. Without `⊥` in the pool it would be lost.
                     debug_assert!(

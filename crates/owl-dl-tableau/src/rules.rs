@@ -1108,6 +1108,10 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         if c_neighbours.len() <= n as usize {
             continue;
         }
+        #[cfg(feature = "counters")]
+        if resolved_witness_count(ctx, &c_neighbours) <= n as usize {
+            crate::bump_counter!(ctx, stale_witness_max_overfires);
+        }
         // #293: with two or more pairs that may merge, which one to merge is a
         // real choice. Leave it to the search, which branches over the pairs
         // and backtracks (`search::first_open_max`); one pair, or none, is
@@ -1339,7 +1343,28 @@ pub(crate) fn max_witnesses(
             out.push(w);
         }
     }
+    #[cfg(feature = "counters")]
+    if out.iter().any(|&w| ctx.graph().node(w).is_redirected()) {
+        crate::bump_counter!(ctx, stale_witness_max);
+    }
     out
+}
+
+/// #486 probe: the witness count with merged nodes resolved, pruned ones
+/// dropped, and duplicates removed.
+#[cfg(feature = "counters")]
+pub(crate) fn resolved_witness_count(ctx: &TableauContext<'_, '_, '_>, ws: &[NodeId]) -> usize {
+    let mut v: Vec<NodeId> = Vec::new();
+    for &w in ws {
+        if ctx.graph().node(w).pruned {
+            continue;
+        }
+        let r = ctx.resolve(w);
+        if !v.contains(&r) {
+            v.push(r);
+        }
+    }
+    v.len()
 }
 
 /// The union of the deps of every distinctness mark among `witnesses[..upto]`
@@ -2007,6 +2032,53 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
 // `--features counters` until T4 adds the field — that is the intended
 // gap.  Without the feature flag, `cargo test -p owl-dl-tableau` never
 // sees the canary and the build stays clean.
+
+#[cfg(all(test, feature = "counters"))]
+mod probe_486 {
+    use super::*;
+    use owl_dl_core::{ClassId, ConceptPool};
+
+    /// #486 positive control: a stale `(r, y)` in-edge beside the live
+    /// `(r, y_eff)` after `y` merged into `y_eff` (the #38 shape) is counted
+    /// twice by `max_witnesses`, and the probe counters see it.
+    #[test]
+    fn stale_in_edge_is_seen_by_the_probe() {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_one = pool.max(1, Role::Inverse(r), c);
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let y = ctx.new_node();
+        let y_eff = ctx.new_node();
+        ctx.add_label(y, c);
+        ctx.add_label(y_eff, c);
+        ctx.add_edge(y, r, v);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        assert_eq!(max_witnesses(&ctx, v, Role::Inverse(r), c), vec![y_eff]);
+        assert_eq!(ctx.counters.stale_witness_max.get(), 0);
+        // Plant the stale mirror the #38 comment describes.
+        let n = ctx.graph_mut().node_mut(v);
+        n.in_edges.push((r, y));
+        n.in_edge_deps.push(DepSet::new());
+        let ws = max_witnesses(&ctx, v, Role::Inverse(r), c);
+        assert_eq!(ws.len(), 2, "one individual counted twice: {ws:?}");
+        assert_eq!(resolved_witness_count(&ctx, &ws), 1);
+        assert_eq!(ctx.counters.stale_witness_max.get(), 1);
+        ctx.add_label(v, at_most_one);
+        let out = apply_max(&mut ctx, v);
+        // Read the redirects directly: `resolve` would not return on a cycle.
+        let ry = ctx.graph().node(y).merged_into;
+        let re = ctx.graph().node(y_eff).merged_into;
+        eprintln!(
+            "probe_486: apply_max -> {out:?}; overfires={}; y={y:?} merged_into={ry:?}; \
+             y_eff={y_eff:?} merged_into={re:?}; cycle={}",
+            ctx.counters.stale_witness_max_overfires.get(),
+            ry == Some(y_eff) && re == Some(y)
+        );
+        assert!(ctx.counters.stale_witness_max_overfires.get() >= 1);
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::many_single_char_names)]

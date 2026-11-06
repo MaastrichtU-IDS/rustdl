@@ -9,7 +9,7 @@
 //!
 //! Pruning removes facts, and the danger in that direction is an unsound
 //! positive, so most canaries here are UNSATISFIABLE classes (or an inconsistent
-//! ABox) whose clash runs through the pruned subtree, the re-derived subtree, the
+//! assertion set) whose clash runs through the pruned subtree, the re-derived subtree, the
 //! merge deps, or a branch the prune must be undone for. Each is checked with the
 //! flag on and off. Each query runs on a worker thread under a time limit, so a
 //! regression fails instead of hanging the suite.
@@ -359,7 +359,7 @@ fn subsumption_through_the_rebuilt_subtree_is_decided() {
     }
 }
 
-/// `consistent` on ABoxes whose individual gains a nominal late, on the main
+/// `consistent` on assertion sets whose individual gains a nominal late, on the main
 /// tableau and through the wedge.
 #[test]
 fn consistency_with_a_late_nominal_is_decided() {

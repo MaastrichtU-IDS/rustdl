@@ -254,6 +254,74 @@ All notable changes to rustdl are documented here. Format is based on
     A unit test pins when a node waits. Four sabotages each turn a named test red: "never
     wait", "wait even when the `Or` is closed", "no wait in `apply_min`", and "drop the
     incremental revisit". The last is caught only by the unit test.
+- **Per-query `sat` / `subclass` / `explain` / `is_subclass_of` finish on SHOIQ KBs where a
+  nominal reached a node only after it had generated, and the merge kept moving those
+  successors onto the nominal (#474).** #460 and #473 make a node merge before it generates
+  when the nominal is already on it. With `D ⊑ ∃r.E`, `E ⊑ ∀r⁻.{a}` and `D ⊑ ∃s.D`, a `D`
+  node gets `{a}` only from its own `r`-successor. The merge into `a`'s node then moved its
+  `s`-successor onto `a`. That successor had already generated too, so it did the same,
+  until the node cap: `sat D` gave up with no verdict.
+  - `RUSTDL_NOMINAL_MERGE_PRUNE` (default ON, `=0` reverts): when a node merges into a
+    nominal's canonical node, its blockable subtree is pruned first. This is the SHOIQ
+    o-rule's prune, the one #362 runs on a forced `≤` merge. It never applies to a pair
+    marked distinct (that merge is refused).
+    - The prune only removes facts and writes no deps. The canonical node derives what the
+      subtree had derived again, from the labels that move to it.
+    - It is trailed with the merge.
+    - If the canonical node lies inside the subtree, it is re-rooted, not pruned.
+  - Reproducers: shape A, its two-nominal and `≥2` variants answer `sat` in under 0.01 s.
+    Main gives `unknown` or runs to its cap. The prune also cuts the #460 and #473 loops
+    with their own flags off; their flag-off tests now assert the answer with the prune on,
+    and still pin the hang with both off.
+  - Soundness evidence (an unsound positive is the risk with any prune):
+    - **Oracle differential** on the 556 generated nominal cases (`classify` against the
+      Konclude ∩ HermiT cache): 0 FP pairs and 0 FP unsat on both arms. MISSED is
+      identical (8 pairs, 3 unsat). Both report all 70 inconsistent KBs.
+    - **The per-pair FP gate** (with the #76 synthetic control) and the soundness diff
+      (every fixture present VERIFIED; pizza 499=499).
+    - **Fable's code review** ran 34 probes on both pins with identical answers: inverse
+      chains, chain edges into the pruned node, functional data ranges, transitive `≤1`,
+      two nominals on one node, `≤2` choice points and ABox `consistent`.
+  - **The MISSED net was not run.** Its Konclude / HermiT closures live on
+    `/mnt/um-share-drive`, which is not mounted on the gate host. The substitute is the
+    two-arm content comparison against main below (any entailment the change loses shows
+    as a DIFFER), plus the oracle differential above.
+  - Nominal-bearing ORE files (448, classify): no lost answers or rescues. The prune never
+    fires in `classify` on them. Two DIFFERs and two one-sided timeouts (main at 120 s)
+    match on both arms when rechecked serially at `--pair-timeout-ms 1000`. Median CPU is
+    1.000× main.
+  - Per-pair (1,642 ORE queries; 6,763 on generated nominal cases): no changed answers.
+    - Six one-sided ORE results match on both arms when rechecked serially at 180 s.
+      Five were at the 30 s cap.
+    - One of them, a lost `unsat`, was a host stall: 0.07 CPU-s in 30 s of wall time, and
+      0.11 s `unsat` on both arms on recheck.
+    - The generated arm is identical. The prune fires there on 2 of the 556 cases (939
+      and 181), which #460 and #473 already answer.
+  - CPU: the ten heaviest nominal ORE files in `classify` are 0.993× main (geomean of
+    medians, 5 interleaved reps each, all identical content). `wine`, `ore_ont_2182` and
+    `ore_ont_16481` run at 0.96–1.01× main in `consistent` and `classify`.
+  - Tests: `nominal_merge_prune.rs`:
+    - 3 satisfiable reproducers;
+    - 13 unsat canaries and 2 satisfiable-after-a-branch ones, with the flag on and off,
+      among them:
+      - a pruned child needed after a backtrack, in both disjunct orders;
+      - merge deps reaching the clash;
+      - a clash already in the subtree;
+      - the canonical node one and two levels inside the subtree;
+      - a nominal source;
+      - a refused merge;
+    - a subsumption through the rebuilt subtree;
+    - consistency on both routes;
+    - the flag-off hang.
+
+    A unit test covers prune, no prune and a refused merge. Five sabotages each turn a
+    named test red:
+    - "no prune";
+    - "prune not trailed" (the backtrack canaries);
+    - "merge drops its deps" (#460's `nominal_or_free_chain`);
+    - "prune even when distinct" (only the unit test: end-to-end the branch closes on
+      `⊥` anyway);
+    - "prune with the flag off".
 - **Every command keeps its output format on a tableau `NoVerdict`, and a deadline-free one is
   reported per result (#462).** After #449, a `NoVerdict` reaching `main` printed a bare `unknown`.
   For a `--json` command that is not JSON.

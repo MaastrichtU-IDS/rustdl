@@ -854,8 +854,11 @@ oracle-consistent KBs. R1–R5 were not re-run.
 
 Host load does not plausibly turn a run of about one second into a 30 s timeout. So these 3
 (out of about 76,000 runs) are recorded as unexplained, unreproduced one-sided timeouts, not as
-load artefacts. A hang of the #460 kind is a candidate cause. They do not affect any law: each
-counts as a timeout or a budget cut on one case. The other 9 `full` timeouts (cases 321, 438,
+load artefacts. They do not affect any law: each counts as a timeout or a budget cut on one
+case. A hang of the #460 kind was a candidate cause. On 2026-11-06 none of the three recurred in
+120 reruns (60 serial, 60 with 6 copies per core), on main 3d0fb8b0 or on the arms' own
+pre-#472 pins. Since the old pins do not hang either, the reruns attribute nothing to #472; the
+three stay unexplained and unreproduced. The other 9 `full` timeouts (cases 321, 438,
 812, 939, 1269, 1475, 1646, 1747 and 1998) are the same on every tag, the stored ones included.
 
 **Limits.**
@@ -880,3 +883,135 @@ counts as a timeout or a budget cut on one case. The other 9 `full` timeouts (ca
 - R6.5 is effective on `cons` alone: classify's 5 ms default pair budget makes a natural
   `NoVerdict` a depth cut, which R6.3 covers instead.
 - When #475 (a stall latch) lands, R6.3 becomes "never on a depth cut".
+
+## Per-query laws: `subclass`, `sat` and `explain` on the generated net (#363 R7)
+
+`scripts/gen/perquery.py` asks every ordered pair and every class of the 4000 generated cases
+through the per-query commands. Each answer is checked against the same binary's `classify` and
+the cached Konclude ∩ HermiT oracle. The oracle answers only where both peers agree, so a
+refuted pair is definite. Plan: `notes/plans/2026-11-06-363-r7-per-query-surface.md` (Fable: go
+with changes, all taken).
+
+**Why.** Three defects lived on this surface while the classify nets were green:
+- **#76:** an FP;
+- **#460:** a hang on a consistent KB that classify answers in 0.25 s;
+- **#457:** a hang, and silent answers, on an inconsistent TBox-only KB.
+
+None of them was in a law before. #460 and #457 were found only when other routes stalled.
+
+**How R7 relates to the existing gates.** It extends them; it does not duplicate them.
+- **`per_pair_fp_gate.rs`** audits the per-pair tableau by proxy, `classify` under
+  `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1`, on 4 curated ontologies. That proxy is R7's `vr`
+  route, run on 4000 shapes. #478 added the gate's live control, `per_pair_fp_gate_synthetic.rs`.
+- **`cross-command-laws.py`** runs the same commands on the curated corpus, sampled, against
+  Konclude with HermiT on demand, with R1/R2 as ratchets. R7 reuses its operand readers.
+  Because the generated oracle is definite, R7's FP laws are hard.
+
+**What runs, per case:**
+- `full` classify (`--pair-timeout-ms 1000`) and `vr` (the same plus `VERIFY_REFUTATIONS`);
+- `subclass` on every ordered pair, and `sat` on every class;
+- `explain` on 3 seeded pairs: a classify positive when there is one, a negative, a random
+  pair. On an extra case it runs on every pair.
+
+All calls run single-threaded on one core. Per-query calls are capped at 10 s of CPU, with a
+60 s wall backstop. After a command's first capped call on a case, its remaining calls there
+are skipped as "after-hang".
+
+**The laws.**
+- **R7.0:** R2.3's oracle FP check on `vr`, with `full` as the contrast.
+- **R7.0c:** `vr` = `full` on the EL sets, where the flag is inert.
+- **R7.1, FP:** `subclass`/`explain` = yes where the oracle refutes. Hard.
+- **R7.2, false unsat:** `sat` = unsat where the oracle has the class satisfiable. Hard.
+- **R7.3, agreement with classify.** Classify implies A ⊑ B when the pair is in its closure,
+  A is classify-unsat, or B is classify-Thing-equivalent.
+  - Direction 1: classify implies it and the command says no. A violation; classify's rows
+    are sound under a cut.
+  - Direction 2: the command finds it and classify lacks it. The oracle decides. When confirmed,
+    it is a violation (D10) only if classify had no give-up and `completeness_guaranteed`;
+    otherwise info.
+- **R7.4:** `explain` = `subclass` on the same pair.
+- **R7.5, an oracle-inconsistent KB:**
+  - a wrong answer (`sat` = sat, `subclass` = no) is hard;
+  - a silent answer (correct, exit 0, no undetermined warning) is "known #457" on a TBox-only
+    KB, and a violation otherwise;
+  - an answer with the warning, or the `Inconsistent` error, is ok.
+  - "TBox-only" means no assertions and no nominals. A bare `Declaration(NamedIndividual)` is
+    TBox-only: the guard reports `has_individuals=false` there.
+- **R7.6:** capped calls, rechecked serially at 120 s of CPU.
+- **R7.7:** misses (a measurement): `subclass` no or `sat` sat where the oracle entails.
+
+**Measured 2026-11-06** on main 3d0fb8b0. Arm A ran on cores 92–93, and arm M on 94–95 under
+`RUSTDL_MAX_TRIAL_MERGE=0` and `RUSTDL_MAX_CHOICE_POINT=0` (#76's sabotage). Host load was
+about 11.
+- **Main has moved since.** a019289e (#477) is search-identical by proof. b6ed041d (#479) is
+  not, and it changes R7.6's results; it is covered below.
+- **Volume:** 4001 cases (4000 plus `maxmerge_fp.ofn`): 185,600 `subclass`, 28,145 `sat` and
+  10,977 `explain` calls per arm.
+- **Cost:** A took 1.69 CPU-h. Wall time was about 4.75 h per arm, because the 3 s per-query
+  wedge deadline and the classify cap are wall-clock.
+
+| law | A: held | A: violations | M: violations | not compared, and why (A) |
+|---|---:|---:|---:|---|
+| R7.0 `vr` | 3927 | 0 | 1 (`maxmerge_fp`) | 67 no oracle, 7 classify timeouts |
+| R7.0 `full` | 3927 | 0 | 0 | the same |
+| R7.0c | 1499 | 0 | 0 | 1 classify give-up |
+| R7.1 | 35006 | 0 | 2 (`maxmerge_fp`: `subclass`, `explain`) | 8 capped |
+| R7.2 | 2608 | 0 | 0 | 4 capped |
+| R7.3 | 211539 | 0 | 0 | 99 info (classify misses), 18 with no oracle |
+| R7.4 | 10968 | 0 | 0 | 9 with an unknown side |
+| R7.5 | 9093 | 0 | 0 | 1622 known #457 (39 cases); 1879 `Inconsistent` errors on 33 cases with no oracle |
+| R7.7 | 172335 | 0 misses | 0 misses | – |
+
+**On main, the per-query surface had no FP, no false unsat and no disagreement with classify
+on 4000 shapes.** It also had no miss against the oracle.
+- The 99 R7.3 infos are oracle-confirmed pairs that `subclass` finds and classify lacks. In
+  each, classify did not claim completeness.
+- All 1622 R7.5 silent answers are on TBox-only inconsistent KBs: #457, as pre-declared.
+
+**Positives, declared in advance; each fired.**
+- **P1, the #76 sabotage on the generated cases: 0 cases.** As declared, I report that the
+  generated profiles do not produce #76's shape, and I did not pad the sets.
+- **P2, `maxmerge_fp.ofn` as an extra case.** Konclude and HermiT agree that `A ⊑ I` is not
+  entailed.
+  - In M: R7.1 fires on `subclass A I` and `explain A I`, and R7.0 fires on `vr`. `full`
+    classify stays blind: that is #76's blindness, and the reason for the gate's proxy.
+  - In A: nothing fires.
+- **P3:** case 438 lands as "known #457" (silent `sat` = unsat).
+- **P4, case 1911 (#460):** it reaches the cap once per command on the pre-#472 pin 0df06f64,
+  and the after-hang skip engages. It never reaches the cap on A. This is also the behavioural
+  check that tells the two pins apart: both print `0.4.42`.
+
+**R7.6: per-query hangs, every capped call rechecked serially at 120 s of CPU on core 92.**
+
+| case | KB (oracle) | classify | per-query, 120 s serial | verdict |
+|---|---|---|---|---|
+| data_heavy 306 | consistent; nominals and an assertion | 0.024 s, no give-up | hangs on 0df06f64 and 3d0fb8b0; **0.02 s on b6ed041d** | fixed by #479 (nominal-disjunction wait) |
+| default 1349 | consistent; no nominals or assertions | 0.06 s, no give-up | **hangs on all three**, including b6ed041d | **finding:** shrunk to 2 axioms, draft with the manager |
+| default 939, 1646 | consistent | classify times out too (30 s) | hangs | shared hardness, not a per-query defect |
+| default 213, 1706 | consistent | fast | hangs only in M; under 0.06 s in A | the sabotage's own blowup |
+
+Case 1349's reproducer:
+`C0 ≡ ≤0 r1.¬C5`, `C5 ≡ ∃r0.(=2 r1.C2)`.
+- `sat C5` runs past 125 s on main and on 0df06f64.
+- Classify decides it only by trusting the wedge's Sat: with `TRUST_SAT=0` or the wedge off,
+  it reports `incomplete: true`.
+
+**Noise and its accounting.**
+- **One-arm unknowns between A and M: 125.** All but one are M's capped calls on cases 213
+  and 1706 and the after-hang skips that follow them.
+- **The other one** is a single A call on default case 1807 that died with SIGSEGV after 3 ms.
+  The kernel logged the fault inside `ld-linux-x86-64.so.2`, before `main`. It ran clean 20 of
+  20 times serially, so it is recorded as a process-start artefact.
+- **A test build overlapped M.** An unrelated one-file test build ran at nice 19 on core 95
+  from 03:58 to about 04:05 UTC, overlapping arm M. No M-only cap fell in that window.
+
+**Limits.**
+- R7 covers `subclass`, `sat` and `explain`. `instance`, `realize`, `individuals`, `disjoint`
+  and the `*-expr` commands are not covered (a possible R7b).
+- `explain` is sampled: 3 pairs per case.
+- With a 10 s CPU cap per call, a slow but finite query counts as capped. Each one is rechecked
+  at 120 s.
+- The skip after a hang leaves a command's later calls unexamined on that case: 182 calls in
+  A, all on the 4 capped cases.
+- P1 shows the #76 shape is absent from the generated profiles. R7's engine positive for #76 is
+  the extra case alone.

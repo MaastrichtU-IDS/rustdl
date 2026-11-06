@@ -288,33 +288,47 @@ fn consistency_through_a_waiting_node_is_decided() {
 }
 
 /// With the flag off the old order returns: the reproducers run past a short
-/// deadline instead of answering.
+/// deadline instead of answering, unless #474's prune on a nominal merge
+/// (`RUSTDL_NOMINAL_MERGE_PRUNE`, default ON) cuts the loop instead.
 ///
-/// This test pins the #473 defect on the flag-off path. If a later change makes
-/// the flag-off path answer here, that is a fix, not a regression: flip this test
-/// to assert the answer instead of deleting it.
+/// This test pinned the #473 defect on the flag-off path, and #474 made that path
+/// answer, so it now asserts the answer with the prune on and keeps the defect
+/// pinned with both off. If a later change makes the both-off path answer, that is
+/// a fix too: flip that half instead of deleting it.
 #[test]
 fn flag_off_restores_the_old_rule_order() {
     let _l = lock();
     let _g = EnvGuard::set(FLAG, "0");
-    for (name, axioms) in [
+    let cases = [
         ("min_939", MIN_939),
         ("direct_or", DIRECT_OR),
         ("min_cardinality", MIN_CARD),
-    ] {
-        // Under `within` too, so a deadline that failed to fire fails the test
-        // instead of hanging the suite.
-        let verdict = within(30, name, move || {
+    ];
+    // Under `within` too, so a deadline that failed to fire fails the test
+    // instead of hanging the suite.
+    let ask = |name: &'static str, axioms: &'static str| {
+        within(30, name, move || {
             is_class_satisfiable_with_timeout(
                 &parse(axioms),
                 &format!("{NS}C1"),
                 Duration::from_secs(2),
             )
             .expect("no error")
-        });
+        })
+    };
+    for (name, axioms) in cases {
         assert_eq!(
-            verdict, None,
-            "{name}, flag off: the old order does not finish"
+            ask(name, axioms),
+            Some(true),
+            "{name}, flag off, prune on: the prune cuts the loop and C1 is satisfiable"
+        );
+    }
+    let _p = EnvGuard::set("RUSTDL_NOMINAL_MERGE_PRUNE", "0");
+    for (name, axioms) in cases {
+        assert_eq!(
+            ask(name, axioms),
+            None,
+            "{name}, flag and prune off: the old order does not finish"
         );
     }
 }

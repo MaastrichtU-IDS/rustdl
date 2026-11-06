@@ -88,6 +88,10 @@ pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
 /// ∀-rule: for every `All(R, C)` in `L(x)` and every R-edge
 /// `x —R→ y`, add `C` to `L(y)`.
 ///
+/// #485: with [`crate::max_zero_forall_enabled`], a `≤0 R.C` label is read as
+/// `∀R.¬C` (`¬C` the registered complement of `C`; not for a data range), with the
+/// same deps.
+///
 /// In ALC (Phase 2) every role is a [`owl_dl_core::Role::named`]
 /// wrapper around a [`RoleId`], so matching reduces to equality on
 /// `RoleId`. Inverse-role propagation arrives in Phase 3.
@@ -100,28 +104,39 @@ pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
 /// graph-read and graph-write borrows don't overlap.
 pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_forall);
-    // `(target, body, deps)` triples. Conclusion deps = deps of the
+    // `(target, body, deps, from ≤0)`. Conclusion deps = deps of the
     // `All`-label ∪ deps of the matching edge (outgoing or incoming).
-    let pending: Vec<(NodeId, ConceptId, DepSet)> = {
+    let pending: Vec<(NodeId, ConceptId, DepSet, bool)> = {
         let n = ctx.graph().node(node);
         let pool = ctx.pool();
         let mut out = Vec::new();
+        let max_zero = ctx.max_zero_forall();
         for (pos, &c) in n.labels().iter().enumerate() {
-            if let ConceptExpr::All(role, body) = pool.get(c) {
-                let wanted: Role = *role;
+            let as_all = match pool.get(c) {
+                ConceptExpr::All(role, body) => Some((*role, *body, false)),
+                // #485: `≤0 R.C` is `∀R.¬C`. Without this its conclusion came only
+                // from the search's choose rule, after every open disjunction.
+                ConceptExpr::Max(0, role, body)
+                    if max_zero && ctx.dkey_range_of(*body).is_none() =>
+                {
+                    ctx.complement_of(*body).map(|neg| (*role, neg, true))
+                }
+                _ => None,
+            };
+            if let Some((wanted, body, from_max_zero)) = as_all {
                 let all_deps = &n.label_deps[pos];
                 // Outgoing edges first, in `edges` order — index into
                 // `edge_deps` matches.
                 for (epos, &(edge_role, neighbour)) in n.edges.iter().enumerate() {
                     if ctx.edge_satisfies(Role::Named(edge_role), wanted) {
                         let combined = union(all_deps, &n.edge_deps[epos]);
-                        out.push((neighbour, *body, combined));
+                        out.push((neighbour, body, combined, from_max_zero));
                     }
                 }
                 for (epos, &(edge_role, neighbour)) in n.in_edges.iter().enumerate() {
                     if ctx.edge_satisfies(Role::Inverse(edge_role), wanted) {
                         let combined = union(all_deps, &n.in_edge_deps[epos]);
-                        out.push((neighbour, *body, combined));
+                        out.push((neighbour, body, combined, from_max_zero));
                     }
                 }
             }
@@ -129,9 +144,12 @@ pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         out
     };
     let mut applied = false;
-    for (target, body, deps) in pending {
+    for (target, body, deps, from_max_zero) in pending {
         if ctx.add_label_with_deps(target, body, &deps) {
             applied = true;
+            if from_max_zero {
+                crate::bump_counter!(ctx, max_zero_forall);
+            }
         }
     }
     if applied {
@@ -1068,7 +1086,9 @@ fn has_distinct_witnesses(
 ///    so clash detection fires.
 ///
 /// The choose rule is in [`crate::search`]: this rule assumes the
-/// neighbours' `C`/`¬C` labelling is already decided.
+/// neighbours' `C`/`¬C` labelling is already decided. For `n = 0`,
+/// [`apply_forall`] already puts `¬C` on every neighbour (#485,
+/// [`crate::max_zero_forall_enabled`]), so the choose rule has nothing left there.
 pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_max);
     if ctx.is_blocked(node) {

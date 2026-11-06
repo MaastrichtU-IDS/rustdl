@@ -286,6 +286,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     nominal_disjunction_wait: bool,
     /// `RUSTDL_NOMINAL_MERGE_PRUNE`, cached (#474).
     nominal_merge_prune: bool,
+    /// `RUSTDL_MAX_ZERO_FORALL`, cached (#485).
+    max_zero_forall: bool,
     /// `RUSTDL_MERGE_EXACT_DEPS`, cached (#370).
     merge_exact_deps: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
@@ -426,6 +428,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             nominal_merge_prune: nominal_merge_prune_enabled(),
+            max_zero_forall: max_zero_forall_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -478,6 +481,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             nominal_merge_prune: nominal_merge_prune_enabled(),
+            max_zero_forall: max_zero_forall_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -535,6 +539,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             nominal_merge_prune: nominal_merge_prune_enabled(),
+            max_zero_forall: max_zero_forall_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
@@ -1767,6 +1772,18 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[cfg(test)]
     pub(crate) fn set_nominal_merge_prune(&mut self, on: bool) {
         self.nominal_merge_prune = on;
+    }
+
+    /// #485: whether `apply_forall` also reads a `≤0 R.C` label as `∀R.¬C`
+    /// ([`max_zero_forall_enabled`]).
+    pub(crate) fn max_zero_forall(&self) -> bool {
+        self.max_zero_forall
+    }
+
+    /// Test-only override of the cached `RUSTDL_MAX_ZERO_FORALL`.
+    #[cfg(test)]
+    pub(crate) fn set_max_zero_forall(&mut self, on: bool) {
+        self.max_zero_forall = on;
     }
 
     /// Test-only override of the cached `RUSTDL_NOMINAL_DISJUNCTION_WAIT`, so tests
@@ -4799,6 +4816,86 @@ mod tests {
         );
     }
 
+    /// #485: `apply_forall` reads `≤0 R.C` as `∀R.¬C`. The conclusion carries
+    /// exactly the label's deps and the edge's (the primary guard against a deps
+    /// sabotage: the integration canaries see it only through node order). It
+    /// works through an inverse edge too. Nothing is added with the flag off,
+    /// without a registered complement, or for a data range.
+    #[test]
+    fn max_zero_reads_as_forall_with_the_forall_deps() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let dkey = pool.atomic(ClassId::new(1));
+        let not_dkey = pool.not(dkey);
+        let r = RoleId::new(0);
+        let at_most_zero = pool.max(0, Role::Named(r), c);
+        let at_most_zero_inv = pool.max(0, Role::Inverse(r), c);
+        let at_most_zero_data = pool.max(0, Role::Named(r), dkey);
+
+        // Forward edge: `n —r→ m`, `≤0 r.C` at `n` under decision `d`, edge under `e`.
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(c, not_c).set_complement(dkey, not_dkey);
+        let d = ctx.push_branch();
+        let e = ctx.push_branch();
+        let _unrelated = ctx.push_branch();
+        let n = ctx.new_node();
+        let m = ctx.new_node();
+        ctx.add_edge_with_deps(n, r, m, &[e]);
+        ctx.add_label_with_deps(n, at_most_zero, &[d]);
+        ctx.set_max_zero_forall(false);
+        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::NoChange);
+        assert!(!ctx.graph().node(m).has_label(not_c), "flag off: no conclusion");
+        ctx.set_max_zero_forall(true);
+        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::Applied);
+        assert_eq!(
+            ctx.label_deps_of(m, not_c).map(DepSet::as_slice),
+            Some(&[d, e][..]),
+            "the `≤0` label's deps and the edge's, nothing else"
+        );
+
+        // Inverse edge: `m —r→ n`, `≤0 r⁻.C` at `n`.
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(c, not_c);
+        let d = ctx.push_branch();
+        let e = ctx.push_branch();
+        let n = ctx.new_node();
+        let m = ctx.new_node();
+        ctx.add_edge_with_deps(m, r, n, &[e]);
+        ctx.add_label_with_deps(n, at_most_zero_inv, &[d]);
+        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::Applied);
+        assert_eq!(
+            ctx.label_deps_of(m, not_c).map(DepSet::as_slice),
+            Some(&[d, e][..]),
+            "through the inverse edge, with its deps"
+        );
+
+        // No registered complement: unchanged (the choose rule skips it too).
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        let m = ctx.new_node();
+        ctx.add_edge(n, r, m);
+        ctx.add_label(n, at_most_zero);
+        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::NoChange);
+
+        // A data range (`dkey_range_of` is `Some`): unchanged, as in `apply_max`.
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(dkey, not_dkey);
+        ctx.set_dkey_ranges(HashMap::from([(
+            ClassId::new(1),
+            owl_dl_datatypes::CardRange::Int(owl_dl_datatypes::IntInterval {
+                min: None,
+                max: None,
+            }),
+        )]));
+        let n = ctx.new_node();
+        let m = ctx.new_node();
+        ctx.add_edge(n, r, m);
+        ctx.add_label(n, at_most_zero_data);
+        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::NoChange);
+        assert!(!ctx.graph().node(m).has_label(not_dkey));
+    }
+
     /// #474: a node that merges into a nominal's canonical node has its blockable
     /// subtree pruned first, so the successor it built before the nominal arrived
     /// is not moved onto the nominal. With the flag off the old merge moves it. A
@@ -5578,6 +5675,25 @@ pub fn nominal_disjunction_wait_enabled() -> bool {
 #[must_use]
 pub fn nominal_merge_prune_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_MERGE_PRUNE").is_none_or(|v| v != "0")
+}
+
+/// #485 `RUSTDL_MAX_ZERO_FORALL` (default ON, `=0` reverts), main tableau:
+/// [`crate::rules::apply_forall`] also reads a `≤0 R.C` label as `∀R.¬C`, and adds
+/// `C`'s registered complement to every `R`-neighbour, with the `∀` rule's deps (the
+/// label's deps and the edge's). Without it, that conclusion came only from the
+/// search's choose rule, which runs after every open disjunction. A neighbour could
+/// open `C5 ⊔ ∀r0.¬X` and, with #288's `forall_first`, take `∀r0.¬X` before the choose
+/// rule put `C5` on it, then explore a subtree that could only clash, again under
+/// every combination of the other choices (`C0 ≡ ≤0 r1.¬C5`,
+/// `C5 ≡ ∃r0.(=2 r1.C2)`: `sat C5` never finished).
+///
+/// Sound: `≤0 R.C ≡ ∀R.¬C`, so every added label is entailed by the `≤0` label and
+/// the edge, and its deps are exactly those of the `∀` rule. It removes only the
+/// choose rule's `C` option, which always over-fills the `≤0`. A body with no
+/// registered complement, or a data range, keeps the old path.
+#[must_use]
+pub fn max_zero_forall_enabled() -> bool {
+    std::env::var_os("RUSTDL_MAX_ZERO_FORALL").is_none_or(|v| v != "0")
 }
 
 /// #361 `RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD` (default ON, `=0` reverts): in the wedge's

@@ -73,11 +73,14 @@ scoping doc.
 > this: since **bc6ef93e** (SP-B2c, 2026-06-23) the core pass adds `Fruit ⊑ EdibleThing` as an
 > axiom, so the probe clashes before the search grows the ABox and returns `Some(false)` in
 > milliseconds (found by bisecting `wine_fruit_prepared_vs_fresh_probe`, which started failing
-> there). **The pathology itself is not fixed.** A satisfiable probe still reaches it: on main
-> 3f85ee41, `prepared.decide_with_deadline(5 s)` gives no verdict on `Wine ⊓ ¬RedWine`,
-> `EdibleThing ⊓ ¬Fruit` and `Fruit ⊓ ¬Pasta`. Early abandon cuts each on the depth cap in about
-> 1.5 s; with `RUSTDL_TABLEAU_EARLY_ABANDON=0` each runs to the 5 s deadline, as on b8ef6d9c
-> (just before SP-B2c). The sentinel now pins `Wine ⊓ ¬RedWine`.
+> there). **The pathology itself is not fixed.** A satisfiable probe still reaches it:
+> `prepared.decide_with_deadline(5 s)` gives no verdict on `Wine ⊓ ¬RedWine`, `EdibleThing ⊓ ¬Fruit`
+> and `Fruit ⊓ ¬Pasta` on main c06763b2, and on `Wine ⊓ ¬RedWine` (the sentinel's pair) on 3f85ee41.
+> Early abandon cuts each on the depth cap in about 1.5 s. With `RUSTDL_TABLEAU_EARLY_ABANDON=0`,
+> each runs to the 5 s deadline, as on b8ef6d9c (just before SP-B2c). Without the ABox seed, the same
+> `Wine ⊓ ¬RedWine` probe is satisfiable at once. The sentinel now pins that pair, with that control.
+> Related open records: `docs/known-limitations/bounded-probe-depth-cap.md` (#288, the depth-cap cut)
+> and `docs/known-limitations/classify-nominal-core-rebuilt-per-probe.md` (#404).
 
 ### Cluster B — sugar: `∀hasSugar.{…}` via functional role + nominal set (11)
 ```

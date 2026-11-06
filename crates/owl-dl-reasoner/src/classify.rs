@@ -6994,27 +6994,29 @@ Ontology(<http://rustdl.test/test>\n\
         }
     }
 
-    /// Diagnostic probe (wine residual-31, cluster A): why does classify miss
-    /// `food#Fruit ⊑ food#EdibleThing` when `is_subclass_of` proves it in 0.01s?
-    /// Compares the fresh tableau (`is_subclass_of_internal`) against the
-    /// classify-path `PreparedOntology::decide_raw` (the ABox-seeded snapshot) on the
-    /// exact query `Fruit ⊓ ¬EdibleThing`, unbounded and at the 200ms classify
-    /// budget. Settles timeout-vs-wrong-verdict. See
+    /// Diagnostic probe, first written for wine's residual-31 cluster A (why classify
+    /// missed `food#Fruit ⊑ food#EdibleThing`; closed). It compares the fresh
+    /// `is_subclass_of` and the wedge against the classify-path ABox-seeded
+    /// `PreparedOntology::decide_with_deadline` at 5 s. See
     /// `docs/wine-residual-31-diagnosis-2026-06-07.md`. `#[ignore]`d (needs the
     /// gitignored wine fixture); run with `-- --ignored --nocapture`.
     ///
-    /// It pins two things: the Fruit probe is decided (since bc6ef93e, by an
-    /// SP-B2c axiom, not by a faster search), and a satisfiable probe
-    /// (`Wine ⊓ ¬RedWine`) still gets no verdict from the ABox-seeded search.
+    /// It pins two things:
+    /// - the Fruit probe is decided: since bc6ef93e by an SP-B2c axiom, not by a
+    ///   faster search;
+    /// - a satisfiable probe, `Wine ⊓ ¬RedWine`, still gets no verdict from the
+    ///   ABox-seeded search, while the same probe without the `ABox` answers at once
+    ///   (the control that ties the pin to the seed).
     #[test]
-    #[ignore = "needs ontologies/real/wine.ofn; diagnostic for the Fruit cluster-A classify miss"]
+    #[ignore = "needs ontologies/real/wine.ofn; pins the ABox-seeded prepared.decide pathology on wine"]
     fn wine_fruit_prepared_vs_fresh_probe() {
         use horned_owl::io::ofn::reader::read as read_ofn;
         let path = std::path::Path::new("../../ontologies/real/wine.ofn");
-        if !path.exists() {
-            eprintln!("SKIP: missing {}", path.display());
-            return;
-        }
+        assert!(
+            path.exists(),
+            "missing {} (run ./scripts/fetch-real-ontologies.sh)",
+            path.display()
+        );
         let f = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/food#Fruit";
         let e = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/food#EdibleThing";
         let src = std::fs::read_to_string(path).expect("read wine");
@@ -7081,16 +7083,23 @@ Ontology(<http://rustdl.test/test>\n\
         // SEPARATE finding (NOT cluster A's cause — the WEDGE proves Fruit ⊑
         // EdibleThing in 0 ms above, so the tableau is never reached for this
         // pair in classify). The ABox/nominal-seeded `prepared.decide` is
-        // pathologically slow: every probe re-completes wine's 207-nominal ABox.
-        // Cluster A's actual cause is the defined-sup sweep coverage gap; see
+        // pathologically slow: every probe re-completes wine's ~206-individual
+        // ABox. Cluster A's actual cause is the defined-sup sweep coverage gap; see
         // docs/classify-recovery-scope-2026-06-07.md.
         //
         // Since bc6ef93e (SP-B2c, 2026-06-23) this pair no longer shows it: the
         // core pass adds `Fruit ⊑ EdibleThing` as an axiom (`Fruit ≡ ⊔Dᵢ`, every
-        // `Dᵢ ⊑ EdibleThing`), so `Fruit ⊓ ¬EdibleThing` clashes before the search
-        // grows the ABox, and the probe answers `Some(false)` in milliseconds.
+        // `Dᵢ ⊑ EdibleThing`), and the probe answers `Some(false)` in milliseconds.
         // The pathology itself is NOT fixed: the satisfiable probe below still
         // reaches it, and pins it.
+        //
+        // A deadline-bounded probe can also end `Err(NoVerdict)` (the search
+        // bottomed out with early abandon off); both read as "no verdict" here.
+        let no_verdict = |r: Result<Option<bool>, crate::ReasonError>| match r {
+            Ok(v) => v,
+            Err(crate::ReasonError::NoVerdict) => None,
+            Err(e) => panic!("prepared.decide_with_deadline: {e:?}"),
+        };
         let build = |pool: &mut owl_dl_core::ir::ConceptPool| {
             let fc = pool.atomic(fid);
             let ec = pool.atomic(eid);
@@ -7099,11 +7108,12 @@ Ontology(<http://rustdl.test/test>\n\
         };
         let t0 = std::time::Instant::now();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let bounded = prepared
-            .decide_with_deadline(deadline, build)
-            .expect("prepared.decide_with_deadline");
+        let bounded = no_verdict(prepared.decide_with_deadline(deadline, build));
         let ms = t0.elapsed().as_millis();
-        eprintln!("PREPARED.decide_with_deadline(5s) = {bounded:?} (None=timeout) in {ms} ms");
+        eprintln!(
+            "PREPARED.decide_with_deadline(5s) = {bounded:?} in {ms} ms (depth_capped={})",
+            crate::last_probe_depth_capped()
+        );
 
         eprintln!(
             "VERDICT: {}",
@@ -7129,25 +7139,57 @@ Ontology(<http://rustdl.test/test>\n\
         );
 
         // The pathology pin, on a pair that still reaches it. `Wine ⊓ ¬RedWine` is
-        // satisfiable, so the search must complete the seeded ABox to answer. On
-        // 3f85ee41 it gives no verdict: early abandon cuts it on the depth cap in
-        // ~1.5 s (`RUSTDL_TABLEAU_EARLY_ABANDON=0`: the 5 s deadline). Measured the
-        // same way on b8ef6d9c (pre-SP-B2c): `None` at the 5 s deadline.
+        // satisfiable (the oracle has only RedWine ⊑ Wine), so the search must
+        // complete the seeded ABox to answer. On 3f85ee41 it gives no verdict: early
+        // abandon cuts it on the depth cap in ~1.5 s (`RUSTDL_TABLEAU_EARLY_ABANDON=0`:
+        // the 5 s deadline, as on b8ef6d9c, before SP-B2c). See also
+        // docs/known-limitations/bounded-probe-depth-cap.md (#288).
+        let wine_not_red = |pool: &mut owl_dl_core::ir::ConceptPool| {
+            let w = pool.atomic(wid);
+            let r = pool.atomic(rid);
+            let nr = pool.not(r);
+            pool.and(vec![w, nr])
+        };
+        // The control: the same probe and the same TBox, without the ABox seed. It
+        // must answer `Some(true)` at once; that ties the pin's `None` to the seed,
+        // not to the query.
+        let t2 = std::time::Instant::now();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let unseeded = no_verdict(crate::decide(
+            &prepared.pool,
+            &prepared.tbox,
+            &prepared.hierarchy,
+            &prepared.inverse_pairs,
+            &prepared.chain_axioms,
+            &prepared.asymmetric_roles,
+            &prepared.disjoint_role_pairs,
+            &prepared.complements,
+            &crate::Abox::default(),
+            &[],
+            &[],
+            &prepared.dkey_ranges,
+            &prepared.tableau_id,
+            Some(deadline),
+            wine_not_red,
+        ));
+        eprintln!(
+            "UNSEEDED decide(Wine ⊓ ¬RedWine, no ABox, 5s) = {unseeded:?} in {} ms",
+            t2.elapsed().as_millis()
+        );
+        assert_eq!(
+            unseeded,
+            Some(true),
+            "control: without the ABox seed Wine ⊓ ¬RedWine must be satisfiable within 5 s"
+        );
+
         let t1 = std::time::Instant::now();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let sat_probe = prepared
-            .decide_with_deadline(deadline, |pool| {
-                let w = pool.atomic(wid);
-                let r = pool.atomic(rid);
-                let nr = pool.not(r);
-                pool.and(vec![w, nr])
-            })
-            .expect("prepared.decide_with_deadline");
+        let sat_probe = no_verdict(prepared.decide_with_deadline(deadline, wine_not_red));
+        let depth_capped = crate::last_probe_depth_capped();
         eprintln!(
             "PREPARED.decide_with_deadline(Wine ⊓ ¬RedWine, 5s) = {sat_probe:?} in {} ms \
-             (depth_capped={})",
+             (depth_capped={depth_capped})",
             t1.elapsed().as_millis(),
-            crate::last_probe_depth_capped()
         );
         assert_ne!(
             sat_probe,
@@ -7161,6 +7203,13 @@ Ontology(<http://rustdl.test/test>\n\
              docs/wine-residual-31-diagnosis-2026-06-07.md and \
              docs/classify-recovery-scope-2026-06-07.md §2"
         );
+        if crate::tableau_early_abandon_enabled() {
+            assert!(
+                depth_capped,
+                "the pin's no-verdict is no longer the early-abandon depth-cap cut; \
+                 re-measure before reading it as the same pathology"
+            );
+        }
     }
 
     const HEADER: &str = "\

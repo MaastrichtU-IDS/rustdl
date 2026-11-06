@@ -101,6 +101,22 @@ fn per_pair_path_refutes_the_76_synthetic() {
         FragmentClassification::OutOfFragment,
         "the #76 synthetic must be out of fragment, or VERIFY_REFUTATIONS is inert here"
     );
+    // `is_subclass` reads `false` for an IRI the classification does not know, so a
+    // renamed fixture would pass vacuously.
+    for iri in [A, I] {
+        assert!(
+            c.classes().iter().any(|x| x == iri),
+            "{iri} is not a class of the #76 synthetic: fixture changed?"
+        );
+    }
+    // A per-pair deadline turns the probe into "not subsumed", which would pass for
+    // the wrong reason. The fixture decides in milliseconds, so any cut is a defect
+    // of this control, not a pass.
+    assert_eq!(
+        c.stats().timed_out_pairs,
+        0,
+        "a per-pair deadline cut a probe: `A ⊑ I` absent proves nothing"
+    );
     assert!(
         !c.is_subclass(A, I),
         "the per-pair path reports A ⊑ I on the #76 synthetic, which HermiT refutes: \

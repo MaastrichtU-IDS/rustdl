@@ -260,7 +260,7 @@ fn subsumptions_through_a_waiting_node_are_decided() {
     );
 }
 
-/// `consistent` on an ABox that puts an individual in a class whose only models
+/// `consistent` on a KB that asserts an individual into a class whose only models
 /// need the waiting node's successor, on the main tableau and through the wedge.
 #[test]
 fn consistency_through_a_waiting_node_is_decided() {
@@ -302,12 +302,16 @@ fn flag_off_restores_the_old_rule_order() {
         ("direct_or", DIRECT_OR),
         ("min_cardinality", MIN_CARD),
     ] {
-        let verdict = is_class_satisfiable_with_timeout(
-            &parse(axioms),
-            &format!("{NS}C1"),
-            Duration::from_secs(2),
-        )
-        .expect("no error");
+        // Under `within` too, so a deadline that failed to fire fails the test
+        // instead of hanging the suite.
+        let verdict = within(30, name, move || {
+            is_class_satisfiable_with_timeout(
+                &parse(axioms),
+                &format!("{NS}C1"),
+                Duration::from_secs(2),
+            )
+            .expect("no error")
+        });
         assert_eq!(
             verdict, None,
             "{name}, flag off: the old order does not finish"

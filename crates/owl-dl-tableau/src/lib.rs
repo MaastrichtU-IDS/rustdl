@@ -1351,14 +1351,6 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
     }
 
-    /// True iff `node` carries a pending nominal-covering disjunction: either
-    /// a materialized open `Or`-with-`Nominal` label, OR an `Atomic(class)`
-    /// whose absorbed concept-rule conclusion is such an `Or` not yet
-    /// satisfied. The `TBox` branch is what fires on the #35 bug — the nominal
-    /// `Or` is a deferred concept-rule conclusion, unmaterialized at
-    /// generation time (`rules.rs` defers `Or` conclusions; the stable-state
-    /// sweep in `saturate.rs` materializes them later), so at generation time
-    /// the node has only the atomic trigger label.
     /// True iff `node` carries a materialized open `Or` with a `Nominal` disjunct
     /// (branch (1) of [`Self::has_pending_nominal_disjunction`]).
     #[must_use]
@@ -1367,6 +1359,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         labels.iter().any(|&c| self.is_open_nominal_or(c, labels))
     }
 
+    /// True iff `node` carries a pending nominal-covering disjunction: either
+    /// a materialized open `Or`-with-`Nominal` label, OR an `Atomic(class)`
+    /// whose absorbed concept-rule conclusion is such an `Or` not yet
+    /// satisfied. The `TBox` branch is what fires on the #35 bug — the nominal
+    /// `Or` is a deferred concept-rule conclusion, unmaterialized at
+    /// generation time (`rules.rs` defers `Or` conclusions; the stable-state
+    /// sweep in `saturate.rs` materializes them later), so at generation time
+    /// the node has only the atomic trigger label.
     #[must_use]
     pub fn has_pending_nominal_disjunction(&self, node: NodeId) -> bool {
         // (1) materialized open Or on the node.
@@ -5458,8 +5458,8 @@ pub fn nominal_merge_first_enabled() -> bool {
 
 /// #473 `RUSTDL_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts), main tableau:
 /// a node that carries an open disjunction with a nominal disjunct (`{a} ⊔ {b}`,
-/// `{a} ⊔ D`) does not generate
-/// `∃`/`≥n` successors until the search has picked a disjunct. #460's merge-first
+/// `{a} ⊔ D`) does not generate `∃`/`≥n` successors until a disjunct is on it (the
+/// search picked one, or a `∀` or concept rule added one). #460's merge-first
 /// rule needs the node bound to one nominal; with `C ⊑ {a} ⊔ {b}` and `C ⊑ ∃r.C`
 /// each fresh `C` node built its successor first, the search then merged it into
 /// `a` or `b`, and the moved successor did the same, without end (generated case

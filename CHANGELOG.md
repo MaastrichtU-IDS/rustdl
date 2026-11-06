@@ -170,6 +170,16 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The consistency wedge settles on small consistent KBs whose nodes are bound to a
+  nominal (#465, part B; #473's case 00939).** A fresh node that carries `C` with
+  `C ⊑ {a}` built its `∃` / `≥n` successors before its `{a}` label merged it into `a`'s
+  node. The merge keeps the new node, so each round rebuilt the successors, and the wedge ran
+  until `RUSTDL_CONSISTENCY_FALLBACK_MS`; the main tableau then answered. Now, on a pool with
+  nominals, a Horn clause that generates waits until the wedge's event worklist is empty
+  (`RUSTDL_WEDGE_GENERATE_LAST`, default ON, `=0` reverts). It then re-fires at the node's
+  representative, re-matching its body and re-checking witnesses and blocking. #465's case
+  01976 and #473's case 00939 (minimised) now decide in ~0.01 CPU-s instead of 10 s. The wedge
+  half of #460's merge-first order.
 - **The consistency wedge no longer spends its whole budget on the #376 NN-guard check
   (#465, part A).** On a nominal that the NN rule merges into many times, `nn_counted`
   re-read the nominal's dead merged edges once per edge, through union-find chains

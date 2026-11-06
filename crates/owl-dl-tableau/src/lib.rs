@@ -5608,6 +5608,18 @@ pub fn wedge_nn_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_NN_GUARD").is_none_or(|v| v != "0")
 }
 
+/// #465 B `RUSTDL_WEDGE_GENERATE_LAST` (default ON, `=0` reverts): on a pool with
+/// nominals, the wedge fires a Horn clause that generates (`∃` / `≥n` head) only once
+/// its event worklist is empty, so a node bound to a nominal merges into the
+/// nominal's node before it builds successors. Before, a fresh node built them first,
+/// merged, and the merged node rebuilt them, until the deadline: `consistent` waited
+/// out `RUSTDL_CONSISTENCY_FALLBACK_MS` on small consistent inputs. The wedge half of
+/// #460's `RUSTDL_NOMINAL_MERGE_FIRST`.
+#[must_use]
+pub fn wedge_generate_last_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_GENERATE_LAST").is_none_or(|v| v != "0")
+}
+
 /// #355 `RUSTDL_MRV_REFUTED` (default ON, `=0` reverts): when MRV ordering is on, the
 /// wedge branches first on the open disjunction with the fewest VIABLE disjuncts (live
 /// and not already refuted at the binding), then the fewest live ones. Without it a

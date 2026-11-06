@@ -269,10 +269,10 @@ All notable changes to rustdl are documented here. Format is based on
       subtree had derived again, from the labels that move to it.
     - It is trailed with the merge.
     - If the canonical node lies inside the subtree, it is re-rooted, not pruned.
-  - Reproducers: shape A, its two-nominal and `≥2` variants answer `sat` in under 0.01 s.
-    Main gives `unknown` or runs to its cap. The prune also cuts the #460 and #473 loops
-    with their own flags off; their flag-off tests now assert the answer with the prune on,
-    and still pin the hang with both off.
+  - Reproducers: shape A, its two-nominal and `≥2` variants answer `sat` in 0.06 CPU-s
+    or less, process start included. Main gives `unknown` or runs to its cap. The prune
+    also cuts the #460 and #473 loops with their own flags off; their flag-off tests now
+    assert the answer with the prune on, and still pin the hang with both off.
   - Soundness evidence (an unsound positive is the risk with any prune):
     - **Oracle differential** on the 556 generated nominal cases (`classify` against the
       Konclude ∩ HermiT cache): 0 FP pairs and 0 FP unsat on both arms. MISSED is
@@ -287,9 +287,9 @@ All notable changes to rustdl are documented here. Format is based on
     two-arm content comparison against main below (any entailment the change loses shows
     as a DIFFER), plus the oracle differential above.
   - Nominal-bearing ORE files (448, classify): no lost answers or rescues. The prune never
-    fires in `classify` on them. Two DIFFERs and two one-sided timeouts (main at 120 s)
-    match on both arms when rechecked serially at `--pair-timeout-ms 1000`. Median CPU is
-    1.000× main.
+    fires in `classify` on the 423 whose counters run finishes (the other 25 print none).
+    Two DIFFERs and two one-sided timeouts (main at 120 s) match on both arms when
+    rechecked serially at `--pair-timeout-ms 1000`. Median CPU is 1.000× main.
   - Per-pair (1,642 ORE queries; 6,763 on generated nominal cases): no changed answers.
     - Six one-sided ORE results match on both arms when rechecked serially at 180 s.
       Five were at the 30 s cap.

@@ -170,6 +170,16 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The consistency wedge no longer spends its whole budget on the #376 NN-guard check
+  (#465, part A).** On a nominal that the NN rule merges into many times, `nn_counted`
+  re-read the nominal's dead merged edges once per edge, through union-find chains
+  that every merge lengthened. On a 2-axiom input (`C ≡ ∃r.(=3 r.D)`, `C ≡ {a, b}`)
+  the wedge stalled at the 10 s budget, so `consistent` and `justify … inconsistent`
+  took ~10 s each. Two exact changes: `nn_counted` examines each `(neighbour, role,
+  side)` once per node, and `resolve` halves paths. The search is unchanged (every
+  wedge counter is identical); that input now decides in ~3.7 CPU-s. The other two
+  slow #465 cases are a generate-before-merge loop in the wedge (part B, to follow)
+  and case 1457, which #460 fixes.
 - **Per-query `sat` / `subclass` / `explain` / `is_subclass_of` finish on small consistent
   SHOIQ KBs whose nominal node kept rebuilding its successors (#460).** A fresh node carrying a
   nominal `{a}` generated its `∃` / `≥` successors in the same rule pass, before

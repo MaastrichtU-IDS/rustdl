@@ -1359,13 +1359,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// generation time (`rules.rs` defers `Or` conclusions; the stable-state
     /// sweep in `saturate.rs` materializes them later), so at generation time
     /// the node has only the atomic trigger label.
+    /// True iff `node` carries a materialized open `Or` with a `Nominal` disjunct
+    /// (branch (1) of [`Self::has_pending_nominal_disjunction`]).
+    #[must_use]
+    pub fn has_open_nominal_disjunction(&self, node: NodeId) -> bool {
+        let labels = self.graph.node(node).labels();
+        labels.iter().any(|&c| self.is_open_nominal_or(c, labels))
+    }
+
     #[must_use]
     pub fn has_pending_nominal_disjunction(&self, node: NodeId) -> bool {
-        let labels = self.graph.node(node).labels();
         // (1) materialized open Or on the node.
-        if labels.iter().any(|&c| self.is_open_nominal_or(c, labels)) {
+        if self.has_open_nominal_disjunction(node) {
             return true;
         }
+        let labels = self.graph.node(node).labels();
         // (2) pending via TBox concept-rule keyed by an atomic label's class.
         let Some(tbox) = self.tbox else {
             return false;
@@ -1720,24 +1728,28 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.merge_exact_deps
     }
 
-    /// #473: whether `node` waits to generate because it carries an open disjunction
-    /// with a nominal disjunct ([`Self::has_pending_nominal_disjunction`]: on the
-    /// node, or the not yet materialized `Or` conclusion of a concept rule one of its
-    /// atomic labels triggers). Such a node is not yet bound to a nominal, so
-    /// [`Self::awaits_nominal_merge`] does not hold it back; a successor built now is
-    /// moved onto the nominal once the search picks that disjunct, and builds the
-    /// next one there, without end ([`nominal_disjunction_wait_enabled`]).
+    /// #473: whether `node` waits to generate because it carries an open `Or` with a
+    /// nominal disjunct ([`Self::has_open_nominal_disjunction`]). Such a node is not
+    /// yet bound to a nominal, so [`Self::awaits_nominal_merge`] does not hold it
+    /// back; a successor built now is moved onto the nominal once the search picks
+    /// that disjunct, and builds the next one there, without end
+    /// ([`nominal_disjunction_wait_enabled`]).
     ///
     /// The wait only defers. The search branches on every open `Or` of every
-    /// non-redirected node before it answers `Sat`, and the stable-state sweep
-    /// materializes a pending concept-rule `Or` before saturation is stable, so no
-    /// `Sat` is reached while a node waits. Picking a disjunct closes the `Or` and
-    /// dirties the node: a nominal disjunct then merges first (#460), and any other
-    /// lets the node generate.
+    /// non-redirected node before it answers `Sat`, so no `Sat` is reached while a
+    /// node waits. Picking a disjunct closes the `Or` and dirties the node: a nominal
+    /// disjunct then merges first (#460), and any other lets the node generate.
+    ///
+    /// Only a materialized `Or` counts. An `Or` concept-rule conclusion is added at
+    /// stable state, so a fresh node may generate once before it lands; blocking
+    /// bounds that, and from then on the node waits. Also waiting on the pending
+    /// conclusion (as `RUSTDL_NOMINAL_FIRST`'s [`Self::has_pending_nominal_disjunction`]
+    /// does) changed no test or reproducer and costs a rule lookup per atomic label
+    /// on every visit.
     pub(crate) fn awaits_nominal_disjunction(&self, node: NodeId) -> bool {
         self.nominal_disjunction_wait
             && !self.pool.nominal_ids().is_empty()
-            && self.has_pending_nominal_disjunction(node)
+            && self.has_open_nominal_disjunction(node)
     }
 
     /// Test-only override of the cached `RUSTDL_NOMINAL_DISJUNCTION_WAIT`, so tests
@@ -5446,7 +5458,7 @@ pub fn nominal_merge_first_enabled() -> bool {
 
 /// #473 `RUSTDL_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts), main tableau:
 /// a node that carries an open disjunction with a nominal disjunct (`{a} ⊔ {b}`,
-/// `{a} ⊔ D`, on the node or as a pending concept-rule conclusion) does not generate
+/// `{a} ⊔ D`) does not generate
 /// `∃`/`≥n` successors until the search has picked a disjunct. #460's merge-first
 /// rule needs the node bound to one nominal; with `C ⊑ {a} ⊔ {b}` and `C ⊑ ∃r.C`
 /// each fresh `C` node built its successor first, the search then merged it into

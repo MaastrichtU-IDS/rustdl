@@ -105,11 +105,18 @@ const CASE_939: &str = "TransitiveObjectProperty(:r1) \
      SubClassOf(:C3 ObjectUnionOf(:C4 ObjectExactCardinality(0 :r0 :C2))) \
      InverseFunctionalObjectProperty(:r0)";
 
-/// The `Or` as a concept rule's own conclusion (`C1 ⊑ {a} ⊔ {b}`): it is not on a
-/// fresh node until the stable-state sweep materializes it, so this pins the
-/// pending branch of the wait. `C1` is satisfiable: `a ∈ C1` with `r1(a, a)`.
+/// The `Or` as a concept rule's own conclusion (`C1 ⊑ {a} ⊔ {b}`): it reaches a
+/// fresh node only at stable state, after the node may already have generated
+/// once. `C1` is satisfiable: `a ∈ C1` with `r1(a, a)`.
 const DIRECT_OR: &str = "SubClassOf(:C1 ObjectOneOf(:a :b)) EquivalentClasses(:C4 :C1) \
      EquivalentClasses(:C4 ObjectSomeValuesFrom(:r1 :C4))";
+
+/// As [`MIN_939`] with `≥2 r1.C4` in place of the `∃`, so only `apply_min`
+/// generates. `C1` is satisfiable: `a2, a0 ∈ C1`, each with `r1` to both.
+const MIN_CARD: &str = "EquivalentClasses(:C1 ObjectIntersectionOf(ObjectComplementOf(:C3) \
+       ObjectOneOf(:a2 :a0))) \
+     EquivalentClasses(:C4 :C1) \
+     SubClassOf(:C4 ObjectMinCardinality(2 :r1 :C4))";
 
 /// Runs `f` on a worker thread and waits at most `secs`. A query that does not
 /// return in time fails the test (its thread is left running until exit).
@@ -152,6 +159,7 @@ const SATISFIABLE: &[(&str, &str, &str)] = &[
     ("case_939_c1", CASE_939, "C1"),
     ("case_939_c2", CASE_939, "C2"),
     ("direct_or", DIRECT_OR, "C1"),
+    ("min_cardinality", MIN_CARD, "C1"),
 ];
 
 /// Unsatisfiable classes whose clash needs the successor a waiting node must still
@@ -289,7 +297,11 @@ fn consistency_through_a_waiting_node_is_decided() {
 fn flag_off_restores_the_old_rule_order() {
     let _l = lock();
     let _g = EnvGuard::set(FLAG, "0");
-    for (name, axioms) in [("min_939", MIN_939), ("direct_or", DIRECT_OR)] {
+    for (name, axioms) in [
+        ("min_939", MIN_939),
+        ("direct_or", DIRECT_OR),
+        ("min_cardinality", MIN_CARD),
+    ] {
         let verdict = is_class_satisfiable_with_timeout(
             &parse(axioms),
             &format!("{NS}C1"),

@@ -7188,15 +7188,111 @@ std::thread_local! {
     /// spawned thread is joined before that), so a caller reads it right after
     /// the call with [`last_probe_depth_capped`]. Report-only: it changes no
     /// verdict, it only lets classify say WHY a probe was cut. A larger time
-    /// budget does not recover a depth-capped probe.
+    /// budget does not recover a depth-capped probe. #475: a probe whose saturation
+    /// stalled is never depth-capped (see `PROBE_STALLED` and `map_depth_limit`).
     static PROBE_DEPTH_CAPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// #288: whether this thread's last main-tableau probe was cut by the
 /// decision-depth limit rather than a deadline or the node cap (see
 /// `PROBE_DEPTH_CAPPED`). Read it directly after the probe on the same thread.
+/// Since #475 a probe whose saturation stalled is never depth-capped.
 pub(crate) fn last_probe_depth_capped() -> bool {
     PROBE_DEPTH_CAPPED.with(std::cell::Cell::get)
+}
+
+std::thread_local! {
+    /// #475: whether the CURRENT thread's last main-tableau probe ended without a
+    /// verdict because its deterministic saturation ran out of iterations
+    /// (`RUSTDL_TABLEAU_SATURATE_ITERS`, the #437 livelock kind), on a budgeted
+    /// probe as on a deadline-free one. Reset and set by `decide_capturing` like
+    /// `PROBE_DEPTH_CAPPED`; read with [`last_probe_stalled`].
+    static PROBE_STALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// #475: whether this thread's last main-tableau probe ended without a verdict
+/// because its saturation stalled (see `PROBE_STALLED`). Read it directly after
+/// the probe on the same thread.
+pub(crate) fn last_probe_stalled() -> bool {
+    PROBE_STALLED.with(std::cell::Cell::get)
+}
+
+/// #462/#475: whether a probe's `Err(ReasonError::NoVerdict)` is the bug signal
+/// (`no_verdict`, #449's note, exit 3) rather than a routine cut. It is when the
+/// probe had no deadline (it searched to `DEEP_SEARCH_DEPTH`, so only a stall can
+/// end it without a verdict), or when its saturation stalled. A budgeted probe's
+/// depth-cap `NoVerdict` stays a cut. Call it on the probing thread right after
+/// the probe; where `deadline` is statically `Some` it reduces to
+/// [`last_probe_stalled`].
+pub(crate) fn no_verdict_is_a_bug(deadline: Option<std::time::Instant>) -> bool {
+    deadline.is_none() || last_probe_stalled()
+}
+
+/// #288/#475: how a main-tableau `DepthLimit` verdict maps to the facade's
+/// `Result`, and whether it counts as a depth-cap cut. Pure, so the arm order is
+/// pinned by a table test.
+///
+/// * A **saturation stall** comes first: `Err(NoVerdict)`, never depth-capped,
+///   whatever ended the probe afterwards. The cap exit is reached only after the
+///   full iteration budget ran with no deadline check firing, so a stall is never
+///   an artefact of the time budget; a later deadline or early abandon is what the
+///   search did *after* the stall. Letting either win would hide the stall on
+///   exactly the long probes most likely to stall. The case this order decides is
+///   a mixed probe: real depth-cap hits in some branches, a stall in another.
+/// * An **early abandon** (latched only by real depth-cap hits) is a sound
+///   "don't know", `Ok(None)`, and a depth-cap cut. It is checked before the
+///   deadline so the abandon is attributed even if the deadline elapsed during
+///   the unwind.
+/// * A **deadline** cut is `Ok(None)` and not a depth cap.
+/// * Otherwise the decision-depth limit was reached with time left:
+///   `Err(NoVerdict)` and a depth-cap cut.
+fn map_depth_limit(
+    stalled: bool,
+    early_abandoned: bool,
+    deadline_reached: bool,
+) -> (bool, Result<Option<bool>, ReasonError>) {
+    if stalled {
+        (false, Err(ReasonError::NoVerdict))
+    } else if early_abandoned {
+        (true, Ok(None))
+    } else if deadline_reached {
+        (false, Ok(None))
+    } else {
+        (true, Err(ReasonError::NoVerdict))
+    }
+}
+
+#[cfg(test)]
+mod map_depth_limit_tests {
+    use super::{ReasonError, map_depth_limit};
+
+    /// #475: every combination, and in particular that a stall wins over a later
+    /// early abandon and a later deadline (the mixed probe no CLI test reaches).
+    #[test]
+    fn a_stall_wins_and_a_depth_cap_stays_a_cut() {
+        let nv = |r: &Result<Option<bool>, ReasonError>| matches!(r, Err(ReasonError::NoVerdict));
+        let cut = |r: &Result<Option<bool>, ReasonError>| matches!(r, Ok(None));
+        for abandoned in [false, true] {
+            for deadline in [false, true] {
+                let (capped, r) = map_depth_limit(true, abandoned, deadline);
+                assert!(
+                    !capped && nv(&r),
+                    "stalled, abandoned={abandoned}, deadline={deadline}: {capped} {r:?}"
+                );
+            }
+        }
+        let (capped, r) = map_depth_limit(false, true, false);
+        assert!(capped && cut(&r), "early abandon: {capped} {r:?}");
+        let (capped, r) = map_depth_limit(false, true, true);
+        assert!(
+            capped && cut(&r),
+            "early abandon beats the deadline: {capped} {r:?}"
+        );
+        let (capped, r) = map_depth_limit(false, false, true);
+        assert!(!capped && cut(&r), "deadline cut: {capped} {r:?}");
+        let (capped, r) = map_depth_limit(false, false, false);
+        assert!(capped && nv(&r), "depth cap with time left: {capped} {r:?}");
+    }
 }
 
 std::thread_local! {
@@ -8749,7 +8845,11 @@ fn is_consistent_internal_full(
         // decision-depth cut (#288), a give-up like the deadline's `None`. Letting it
         // escape made every caller read it as a deadline-free `NoVerdict` (the bug
         // signal): `consistent --json` set `no_verdict`, and justify's oracles did too.
+        // #475: a probe whose saturation stalled IS that signal, so it escapes.
         let probe = match prepared.decide_consistency(Some(dl)) {
+            Err(ReasonError::NoVerdict) if last_probe_stalled() => {
+                return Err(ReasonError::NoVerdict);
+            }
             Err(ReasonError::NoVerdict) => None,
             r => r?,
         };
@@ -11030,6 +11130,10 @@ impl PreparedOntology {
         let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
         match self.decide_consistency(Some(dl)) {
             Ok(Some(consistent)) => Ok((consistent, false)),
+            // #475: a stalled saturation is the #462 signal, not a give-up: it
+            // escapes, so `consistent --json` sets `no_verdict` (the deadline here is
+            // always `Some`, so `no_verdict_is_a_bug` reduces to the stall).
+            Err(ReasonError::NoVerdict) if last_probe_stalled() => Err(ReasonError::NoVerdict),
             // A give-up (deadline, node cap, or the search-depth bail-out the tableau
             // reports as `NoVerdict`) keeps the wedge's answer and says so.
             Ok(None) | Err(ReasonError::NoVerdict) => Ok((true, true)),
@@ -11492,7 +11596,14 @@ impl PreparedOntology {
                 Ok(Some(verdict)) => return Ok((Some(verdict), false, 0)),
                 Ok(None) | Err(ReasonError::NoVerdict) => {
                     if std::env::var_os("RUSTDL_TRACE").is_some() {
-                        eprintln!("query (#401): seeded probe unfinished in {budget} ms");
+                        // #475: a stall here is not reported: the ABox-free probe
+                        // below decides the query, and only this trace shows it.
+                        let stalled = if last_probe_stalled() {
+                            " (its saturation stalled, #475; not reported)"
+                        } else {
+                            ""
+                        };
+                        eprintln!("query (#401): seeded probe unfinished in {budget} ms{stalled}");
                     }
                 }
                 Err(e) => return Err(e),
@@ -12504,6 +12615,7 @@ where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
     PROBE_DEPTH_CAPPED.with(|c| c.set(false));
+    PROBE_STALLED.with(|c| c.set(false));
     // Fast-exit if the deadline is already spent — BEFORE the expensive
     // `pool.clone()` + context setup below. On large ontologies that per-call
     // ConceptPool clone dominates: under a global classify deadline,
@@ -12728,11 +12840,9 @@ where
                 }),
         );
     }
-    // #288: an early abandon or a depth limit with time left is a depth-cap cut;
-    // a depth limit after the deadline is a deadline cut. Mirrors the arms below.
-    let depth_capped = matches!(outcome, owl_dl_tableau::SearchVerdict::DepthLimit)
-        && (ctx.early_abandoned() || !ctx.deadline_reached());
-    PROBE_DEPTH_CAPPED.with(|c| c.set(depth_capped));
+    // #288/#475: the DepthLimit arm below sets PROBE_DEPTH_CAPPED and
+    // PROBE_STALLED through `map_depth_limit`; the other verdicts leave the reset
+    // values (false) in place.
     match outcome {
         owl_dl_tableau::SearchVerdict::Sat => Ok(Some(true)),
         owl_dl_tableau::SearchVerdict::Unsat(_) => Ok(Some(false)),
@@ -12740,13 +12850,16 @@ where
         // safety net) — must be checked before the DepthLimit arms below so a
         // cap trip is never mistaken for a hard NoVerdict.
         owl_dl_tableau::SearchVerdict::NodeCap => Ok(None),
-        // Adaptive early-abandon: report the same sound "don't know" a deadline
-        // cut and a `NodeCap` trip report (`Ok(None)`), NOT `Err(NoVerdict)`.
-        // Checked BEFORE the deadline arm so the abandon reason is attributed
-        // even when the deadline happened to elapse during the unwind.
-        owl_dl_tableau::SearchVerdict::DepthLimit if ctx.early_abandoned() => Ok(None),
-        owl_dl_tableau::SearchVerdict::DepthLimit if ctx.deadline_reached() => Ok(None),
-        owl_dl_tableau::SearchVerdict::DepthLimit => Err(ReasonError::NoVerdict),
+        // #288/#475: stall, early abandon, deadline or depth cap, in that order
+        // (see `map_depth_limit`).
+        owl_dl_tableau::SearchVerdict::DepthLimit => {
+            let stalled = ctx.saturation_stalled();
+            let (depth_capped, r) =
+                map_depth_limit(stalled, ctx.early_abandoned(), ctx.deadline_reached());
+            PROBE_DEPTH_CAPPED.with(|c| c.set(depth_capped));
+            PROBE_STALLED.with(|c| c.set(stalled));
+            r
+        }
     }
 }
 

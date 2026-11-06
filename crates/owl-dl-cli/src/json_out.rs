@@ -176,12 +176,13 @@ pub(crate) struct ClassifyJson {
     /// sets nor clears `incomplete` (a cut also prunes the walk below it). 0 when the
     /// closure is off.
     pub(crate) matrix_closure_added_pairs: usize,
-    /// #462: probes with NO deadline (per-class unsat probes and pair probes, e.g. under
-    /// `--pair-timeout-ms 0`) that ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. Each took its sound default and is also a timed-out pair, so
-    /// `incomplete` is set; it is not counted as a decision-depth cut. It does NOT count
-    /// every `NoVerdict`: on a probe with a deadline (the default pair budget) a
+    /// #462/#475: probes (per-class unsat probes and pair probes) that ended in
+    /// `NoVerdict` as an internal limit, likely a reasoner bug (#449): any probe with NO
+    /// deadline (e.g. under `--pair-timeout-ms 0`), and any probe whose deterministic
+    /// saturation stalled, budgeted or not. The command also prints a "likely a reasoner
+    /// bug" note on stderr and exits 3. Each took its sound default and is also a
+    /// timed-out pair, so `incomplete` is set; it is not counted as a decision-depth cut.
+    /// It does NOT count every `NoVerdict`: on a budgeted probe that did not stall, a
     /// `NoVerdict` is the routine decision-depth cut (#288). 0 when there is none.
     pub(crate) no_verdict_pairs: usize,
     pub(crate) unsatisfiable: Vec<String>,

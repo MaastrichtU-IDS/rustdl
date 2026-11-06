@@ -793,14 +793,16 @@ pub struct ClassificationStats {
     ///
     /// MUST be added to BOTH worker-stat merge sites (see `stall_tail_skips`).
     pub depth_capped_pairs: usize,
-    /// #462: main-tableau probes (per-class unsat probes and pair probes) that ended in
-    /// `NoVerdict` on a **deadline-free** probe. Such a probe searches to
-    /// `DEEP_SEARCH_DEPTH`, so a `NoVerdict` there is an internal limit, likely a reasoner
-    /// bug (#449), not a budget cut. Each is also a `timed_out_pairs` entry with an undecided
-    /// marker (whatever `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` says), and the probe takes its sound default, but it is **not** counted in `depth_capped_pairs`. A
-    /// `NoVerdict` on a BUDGETED probe is the routine depth-cap cut (#288) and is not
-    /// counted here. `classify --json` reports it as `no_verdict_pairs`; the CLI prints the
-    /// #449 note and exits 3 when it is non-zero.
+    /// #462/#475: main-tableau probes (per-class unsat probes and pair probes) that ended
+    /// in `NoVerdict` as an internal limit, likely a reasoner bug (#449), not a budget cut:
+    /// a **deadline-free** probe (it searches to `DEEP_SEARCH_DEPTH`), or any probe whose
+    /// deterministic saturation **stalled** (`crate::last_probe_stalled`), budgeted or
+    /// not. Each is also a `timed_out_pairs` entry with an undecided marker (whatever
+    /// `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` says), and the probe takes its sound default,
+    /// but it is **not** counted in `depth_capped_pairs`. A `NoVerdict` on a BUDGETED probe
+    /// that did not stall is the routine depth-cap cut (#288) and is not counted here.
+    /// `classify --json` reports it as `no_verdict_pairs`; the CLI prints the #449 note
+    /// and exits 3 when it is non-zero.
     ///
     /// MUST be added to BOTH worker-stat merge sites (see `stall_tail_skips`). The
     /// label-sweep site (`fold_probe_stats`) always sees 0 today, because the sweeps are
@@ -2066,7 +2068,9 @@ fn classify_internal_with_timeout_impl(
                     r => r?,
                 };
                 if verdict.is_none() {
-                    record_cut_probe(&cut_probes, i, false);
+                    // #475: a stalled probe is the #462 signal; read on this
+                    // thread right after the probe.
+                    record_cut_probe(&cut_probes, i, crate::last_probe_stalled());
                 }
                 Ok((i, verdict.unwrap_or(true), false))
             } else {
@@ -2155,7 +2159,9 @@ fn classify_internal_with_timeout_impl(
                     // worker stays bound to this single decide call.
                     let deadline = Instant::now() + timeout;
                     // #462: `Err(NoVerdict)` on this budgeted probe is the routine
-                    // depth-cap cut (#288); it used to abort this driver.
+                    // depth-cap cut (#288); it used to abort this driver. #475: a
+                    // stalled probe is counted in `no_verdict_pairs` instead (the
+                    // two thread-locals are exclusive and false on `Ok(None)`).
                     match prepared.decide_classify_with_deadline(deadline, build) {
                         Ok(Some(sat)) => Ok((i, j, !sat, false, false, false, false)),
                         Ok(None) | Err(ReasonError::NoVerdict) => Ok((
@@ -2165,7 +2171,7 @@ fn classify_internal_with_timeout_impl(
                             false,
                             true,
                             crate::last_probe_depth_capped(),
-                            false,
+                            crate::last_probe_stalled(),
                         )),
                         Err(other) => Err(other),
                     }
@@ -4183,11 +4189,12 @@ fn wedge_clauses_refused(prepared: &PreparedOntology) -> usize {
 /// Record that class `i`'s per-class unsat probe was cut (deadline, node cap
 /// or depth limit) and defaulted to "satisfiable" (#218). Call it directly after
 /// the probe, on the probe's thread: it reads [`crate::last_probe_depth_capped`]
-/// to keep a depth-limit cut apart from a timeout (#288). `no_verdict` marks a
-/// deadline-free probe's `NoVerdict` (#462): it is counted in `no_verdict_pairs` and marked
-/// whatever `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` says, and never as a depth-cap cut.
+/// to keep a depth-limit cut apart from a timeout (#288). `no_verdict` marks the #462
+/// signal: a deadline-free probe's `NoVerdict`, or (#475) any probe whose saturation
+/// stalled. It is counted in `no_verdict_pairs` and marked whatever
+/// `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE` says, and never as a depth-cap cut.
 fn record_cut_probe(cut: &std::sync::Mutex<Vec<CutProbe>>, i: usize, no_verdict: bool) {
-    // A deadline-free `NoVerdict` is always marked, whatever the flag says: it is
+    // A #462 `NoVerdict` (deadline-free, or a #475 stall) is always marked, whatever the flag says: it is
     // counted in `no_verdict_pairs`, which must stay within `timed_out_pairs` so that
     // `incomplete` is set with it (the JSON docs promise that). There is no older
     // behaviour to keep: before #462 such a probe aborted classify.
@@ -5026,8 +5033,10 @@ fn classify_top_down_internal_impl(
                     Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                         // Possibly unsat: recorded so the result is flagged
                         // incomplete (#218). A budgeted `NoVerdict` is the routine
-                        // depth-cap cut (#288), not a #462 no-verdict.
-                        record_cut_probe(&cut_probes, i, false);
+                        // depth-cap cut (#288), not a #462 no-verdict, unless the
+                        // probe's saturation stalled (#475; `last_probe_stalled` is
+                        // false on every other outcome, `Ok(None)` included).
+                        record_cut_probe(&cut_probes, i, crate::last_probe_stalled());
                         true
                     }
                     Err(other) => return Err(other),
@@ -6502,6 +6511,9 @@ fn subsumes_via_tableau(
                 Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                     stats.timed_out_pairs += 1;
                     stats.depth_capped_pairs += usize::from(crate::last_probe_depth_capped());
+                    // #475: a budgeted probe whose saturation stalled is the #462
+                    // signal, not a depth cut (exclusive with `depth_capped`).
+                    stats.no_verdict_pairs += usize::from(crate::last_probe_stalled());
                     push_undecided_pair(stats, reported, sub, sup);
                     record_fallthrough_outcome(
                         stats,

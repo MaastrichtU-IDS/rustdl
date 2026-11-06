@@ -14,9 +14,11 @@
 //!
 //! #462: every other command keeps its own output format too. A `NoVerdict` on a probe
 //! with NO deadline sets the command's give-up slot plus its own `no_verdict` /
-//! `no_verdict_pairs` field, and the command adds #449's note and exits 3. A
-//! `NoVerdict` on a probe WITH a deadline is the routine decision-depth cut (#288) and
-//! changes nothing, so the deadline-free arms run with `--pair-timeout-ms 0`.
+//! `no_verdict_pairs` field, and the command adds #449's note and exits 3.
+//!
+//! #475: on a probe WITH a deadline the same holds when its saturation stalled (the
+//! forced stall here). A budgeted `NoVerdict` that is the routine decision-depth cut
+//! (#288) still changes nothing: `a_budgeted_depth_cut_is_not_a_no_verdict` guards it.
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
@@ -350,32 +352,55 @@ fn text_commands_give_up_in_their_own_format() {
     }
 }
 
-/// #462 option (i): with a pair budget, a `NoVerdict` is the routine decision-depth cut
-/// (#288). The forced stall there is reported as a cut, as before: `incomplete` only,
-/// exit 0, no note.
+/// #475: with a pair budget, a probe whose saturation STALLED is the #462 signal too:
+/// the command's `no_verdict` / `no_verdict_pairs` field, #449's note and exit 3, as on
+/// a deadline-free probe. (Before #475 a budgeted `NoVerdict` could not tell a stall
+/// from the routine decision-depth cut, so it read as a cut.) The budgets are generous
+/// so that a loaded machine cannot turn the forced stall into a plain deadline cut, and
+/// the absence of the depth-limit line shows the stall, not a cut, was reported. The
+/// control arm, unforced at the same budget, gets a definite answer and no signal.
 #[test]
-fn budgeted_runs_are_unchanged() {
+fn a_budgeted_stall_is_a_no_verdict() {
     let f = Fixture::new("budgeted");
     let a = Fixture::with("budgeted-abox", SRC_ABOX);
-    for (args, flag) in [
-        (vec!["classify", "--json", f.path()], "no_verdict_pairs"),
+    let pt = ["--pair-timeout-ms", "20000"];
+    for (cmd, file, flag) in [
+        (&["classify", "--json"][..], f.path(), "no_verdict_pairs"),
         (
-            vec!["classify", "--n2-classify", "--json", f.path()],
+            &["classify", "--n2-classify", "--json"][..],
+            f.path(),
             "no_verdict_pairs",
         ),
-        (vec!["disjoint", "--json", f.path()], "no_verdict"),
-        (vec!["individuals", "--json", a.path()], "no_verdict"),
-        (vec!["property-values", "--json", a.path()], "no_verdict"),
+        (&["disjoint", "--json"][..], f.path(), "no_verdict"),
+        (&["individuals", "--json"][..], a.path(), "no_verdict"),
+        (&["property-values", "--json"][..], a.path(), "no_verdict"),
     ] {
-        let what = args[..args.len() - 1].join(" ");
+        let mut args: Vec<&str> = cmd.to_vec();
+        args.extend_from_slice(&pt);
+        args.push(file);
+        let what = cmd.join(" ");
         let r = run(true, &args);
-        assert_eq!(r.code, 0, "{what}: {}", r.stderr);
-        assert!(!r.stderr.contains(MARKER), "{what}: {}", r.stderr);
+        assert_gave_up(&r, &what);
+        assert!(
+            !r.stderr.contains("search-depth limit"),
+            "{what}: a stall is not reported as a depth cut: {}",
+            r.stderr
+        );
         let j = json(&r, &what);
         assert_eq!(j["incomplete"], true, "{what}: {j}");
         match flag {
-            "no_verdict_pairs" => assert_eq!(j[flag], 0, "{what}: {j}"),
-            _ => assert_eq!(j[flag], false, "{what}: {j}"),
+            "no_verdict_pairs" => {
+                assert!(j[flag].as_u64().unwrap() > 0, "{what}: {j}");
+            }
+            _ => assert_eq!(j[flag], true, "{what}: {j}"),
+        }
+        let r = run(false, &args);
+        assert_eq!(r.code, 0, "{what} control: {}", r.stderr);
+        assert!(!r.stderr.contains(MARKER), "{what} control: {}", r.stderr);
+        let j = json(&r, &what);
+        match flag {
+            "no_verdict_pairs" => assert_eq!(j[flag], 0, "{what} control: {j}"),
+            _ => assert_eq!(j[flag], false, "{what} control: {j}"),
         }
     }
 }
@@ -426,14 +451,19 @@ fn unions_abox() -> String {
     )
 }
 
-/// #462 option (i), the consistency check (Fable's review of #471): its wedge-route
-/// fall-through probe has a deadline, so a `NoVerdict` there is a give-up like the
-/// deadline's, not the deadline-free bug signal. It used to escape through `?`, and
-/// `consistent --json` then reported `no_verdict: true` with the note.
+/// #475: the consistency check's wedge-route fall-through probe has a deadline, so
+/// #462 left its `NoVerdict` a give-up (Fable's review of #471). A probe whose
+/// saturation STALLED is the #462 signal even there: `consistent --json` reports
+/// `no_verdict: true` with the note and exit 3. The fall-through budget is generous, so
+/// a loaded machine cannot make the forced stall a plain deadline give-up.
 #[test]
-fn a_budgeted_consistency_probe_is_not_a_no_verdict() {
+fn a_budgeted_consistency_stall_is_a_no_verdict() {
     let f = Fixture::with("consistency-fallthrough", &unions_abox());
-    let on = [("RUSTDL_WEDGE_CONSISTENCY", "1"), ("RUSTDL_TRACE", "1")];
+    let on = [
+        ("RUSTDL_WEDGE_CONSISTENCY", "1"),
+        ("RUSTDL_TRACE", "1"),
+        ("RUSTDL_CONSISTENCY_FALLBACK_MS", "60000"),
+    ];
     let r = run_with(true, &on, &["consistent", "--json", f.path()]);
     // The route: the wedge stalled and the bounded fall-through ran.
     assert!(
@@ -441,16 +471,11 @@ fn a_budgeted_consistency_probe_is_not_a_no_verdict() {
         "the bounded fall-through ran: {}",
         r.stderr
     );
-    assert!(!r.stderr.contains(MARKER), "{}", r.stderr);
+    assert_gave_up(&r, "consistent, budgeted fall-through");
     let j = json(&r, "consistent");
-    assert_eq!(j["no_verdict"], false, "{j}");
+    assert_eq!(j["no_verdict"], true, "{j}");
     assert_eq!(j["incomplete"], true, "{j}");
-    assert_eq!(j["consistent"], true, "{j}");
-    // `consistent`'s own give-up convention: exit 3, without the bug note.
-    assert_eq!(r.code, 3, "{}", r.stderr);
-    // Control: the deadline-free path (wedge route off) on the same input still
-    // reports the signal, so the forced stall does reach a `NoVerdict` here. (No
-    // unforced arm: an unbounded search on this input is slow in a debug build.)
+    // The deadline-free path (wedge route off) on the same input reports it as before.
     let r = run(true, &["consistent", "--json", f.path()]);
     assert_gave_up(&r, "consistent, deadline-free");
     assert_eq!(json(&r, "consistent")["no_verdict"], true);

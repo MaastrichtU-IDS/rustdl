@@ -26,19 +26,23 @@ notes/plans/2026-11-03-363-package-e-stateful.md (v2). Laws:
       does not excuse it: consistency has its own give-up field (the #395 contract). Where
       the full route makes the same unflagged claim on an oracle-inconsistent KB, the miss
       is not the cut's: info, "shared pre-check miss".
-  R6  the `no_verdict` contract (#462): `no_verdict` / `no_verdict_pairs` mean "a probe
-      with NO deadline ended in NoVerdict"; then the CLI prints #449's note and exits 3.
+  R6  the `no_verdict` contract (#462, #475): `no_verdict` / `no_verdict_pairs` mean "a
+      probe ended in NoVerdict on an internal limit": a probe with NO deadline, or (#475) one
+      whose saturation stalled, budgeted or not. Then the CLI prints #449's note and exits 3.
       Forced routes run with RUSTDL_TABLEAU_SATURATE_ITERS=1 (a deterministic stall).
       R6.1 every `nv_*` / `cons` route prints its command's JSON (never a bare `unknown`).
       R6.2 field set <=> note on stderr; field set => exit 3 and `incomplete`.
-      R6.3 a budgeted probe never sets the field: `nv_budget` and every classify route
-           with a pair or global budget, and `consistent` wherever its trace shows a
-           budgeted probe (the wedge-route fall-through, the #344 data-counting check) or
-           no main-tableau probe at all. A TBox-only `consistent` runs deadline-free, so
-           there the field is allowed.
+      R6.3 under the forced stall a budgeted probe reports the stall too: `nv_budget` sets
+           the field iff `nv_free` does on the same case (same engine and stall), and
+           `nv_cons` on a budgeted probe (the wedge-route fall-through, the #344
+           data-counting check) sets it iff it gave up; a decided `nv_cons` never sets it.
       R6.4 a stall cut is sound: no FP against the oracle, and never `consistent: false`
            on an oracle-consistent KB.
-      R6.5 a natural stall: the unforced `cons` route sets the field (a finding, #437's kind).
+      R6.5 a natural stall: an unforced route sets the field (`cons`, or any budgeted
+           classify route: a finding, #437's kind).
+      R6.6 a decision-depth cut is never the signal: on the `dcut` route (unforced, 20 s pair
+           budget; run it on fixtures/depthcut), a run whose stderr shows the search-depth
+           limit has the field at 0 and no note. Unresolved when the cut was not reached.
 
 A law compares two answers only when neither run gave up (R4: only the full run).
 
@@ -106,7 +110,11 @@ ROUTES.update({
     "nv_budget": (["classify", "--json", *FULL], {"RAYON_NUM_THREADS": "1", **STALL, **NO_WEDGE}),
     "cons": (["consistent", "--json"], {"RAYON_NUM_THREADS": "1", "RUSTDL_TRACE": "1"}),
     "nv_cons": (["consistent", "--json"], {"RAYON_NUM_THREADS": "1", "RUSTDL_TRACE": "1", **STALL}),
+    # R6.6 (#475): an unforced budgeted classify that can reach the decision-depth cut. Run
+    # it on fixtures/depthcut (the 280-union #288 shape); on generated cases it adds nothing.
+    "dcut": (["classify", "--json", "--pair-timeout-ms", "20000"], {"RAYON_NUM_THREADS": "1"}),
 })
+DEPTH_LINE = "search-depth limit"
 NV_CLASSIFY = ("nv_free", "nv_free_n2", "nv_budget")
 CONS = ("cons", "nv_cons")
 FORCED = ("nv_free", "nv_free_n2", "nv_budget", "nv_cons")
@@ -192,8 +200,10 @@ def run_route(binary, route, path, classes):
         if p.returncode != 0:
             return {"status": "fail", "rc": p.returncode}
         return {"status": "ok", "answer": answer_of_text(p.stdout, classes)}
-    if route in NV_CLASSIFY or route in CONS:
+    if route in NV_CLASSIFY or route in CONS or route == "dcut":
         io = {"rc": p.returncode, "note": NOTE in p.stderr}
+        if route == "dcut":
+            io["depth_line"] = DEPTH_LINE in p.stderr
         try:
             j = json.loads(p.stdout)
             if route in CONS:
@@ -470,12 +480,22 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
             broke = True
         if not broke:
             add(f"R4.{cut}", "ok")
-    # R6 the no_verdict contract (#462)
+    # R6 the no_verdict contract (#462, #475)
     for name in BUDGETED_CLASSIFY:
         rr = R.get(name)
         if rr is not None and rr.get("status") == "ok" and name != "nv_budget":
             if rr["answer"]["flags"].get("no_verdict_pairs"):
-                add("R6.3", "violation", f"{name}: no_verdict_pairs on a budgeted route")
+                add("R6.5", "violation", f"{name}: a natural stall on a budgeted route")
+    dc = R.get("dcut")
+    if dc is not None and dc.get("status") == "ok":
+        nvp = dc["answer"]["flags"].get("no_verdict_pairs")
+        if not dc.get("depth_line"):
+            add("R6.6", "unresolved", "the depth cut was not reached")
+        elif nvp or dc.get("note"):
+            add("R6.6", "violation", f"dcut: a depth cut reported as the signal "
+                f"(no_verdict_pairs {nvp}, note {dc.get('note')})")
+        else:
+            add("R6.6", "ok")
     for name in (*NV_CLASSIFY, *CONS):
         rr = R.get(name)
         if rr is None:
@@ -502,10 +522,20 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
             add("R6.2", "violation", f"{name}: field set, rc {rr['rc']}, incomplete {incomplete}")
         else:
             add("R6.2", "ok")
-        if budgeted:
-            add("R6.3", "violation" if field else "ok",
-                f"{name}: field set on a budgeted probe ({a.get('probe', 'pair budget')})"
-                if field else "")
+        if name == "nv_budget":
+            nf = R.get("nv_free")
+            if nf is not None and nf.get("status") == "ok":
+                want = bool(nf["answer"]["flags"].get("no_verdict_pairs"))
+                add("R6.3", "ok" if field == want else "violation",
+                    "" if field == want else f"nv_budget field {field}, nv_free field {want}")
+        elif name == "nv_cons" and budgeted:
+            if a["probe"] == "budgeted":
+                add("R6.3", "ok" if field == incomplete else "violation",
+                    "" if field == incomplete else
+                    f"nv_cons budgeted probe: field {field}, incomplete {incomplete}")
+            else:
+                add("R6.3", "violation" if field else "ok",
+                    "nv_cons: field set with no main-tableau give-up (decided)" if field else "")
         if name == "cons":
             add("R6.5", "violation" if field else "ok",
                 "a natural NoVerdict on a deadline-free probe" if field else "")
@@ -775,14 +805,39 @@ def self_test():
        {("R6.2", "violation")})
     ok("R6.2 field with exit 0", laws({"full": full, "nv_free": nv(True, True, rc=0)}),
        {("R6.2", "violation")})
-    ok("R6.3 field on the budgeted classify", laws({"full": full, "nv_budget": nv(True, True)}),
+    ok("R6.3 nv_budget reports the stall nv_free reports",
+       {x for x in laws({"full": full, "nv_free": nv(True, True), "nv_budget": nv(True, True)})
+        if x[0] == "R6.3"}, {("R6.3", "ok")})
+    ok("R6.3 nv_budget hides the stall nv_free reports (pre-#475)",
+       {x for x in laws({"full": full, "nv_free": nv(True, True),
+                         "nv_budget": nv(False, False, rc=0)}) if x[0] == "R6.3"},
        {("R6.3", "violation")})
-    ok("R6.3 budgeted classify clear", laws({"full": full, "nv_budget": nv(False, False, rc=0)}),
+    ok("R6.3 nv_budget reports a stall nv_free does not",
+       {x for x in laws({"full": full, "nv_free": nv(False, False, rc=0),
+                         "nv_budget": nv(True, True)}) if x[0] == "R6.3"},
+       {("R6.3", "violation")})
+    ok("R6.5 field on an unforced budgeted route is a natural stall",
+       {x for x in laws({"full": r(base, no_verdict_pairs=1)}) if x[0].startswith("R6")},
+       {("R6.5", "violation")})
+    ok("R6.3 consistent fall-through gave up and reports the stall",
+       {x for x in laws({"full": full, "nv_cons": cs(True, True, "budgeted")}) if x[0] == "R6.3"},
        {("R6.3", "ok")})
-    ok("R6.3 field on an unforced budgeted route",
-       laws({"full": r(base, no_verdict_pairs=1)}), {("R6.3", "violation")})
-    ok("R6.3 consistent fall-through sets the field",
-       laws({"full": full, "nv_cons": cs(True, True, "budgeted")}), {("R6.3", "violation")})
+    ok("R6.3 consistent fall-through gave up silently (pre-#475)",
+       {x for x in laws({"full": full, "nv_cons": cs(False, False, "budgeted")})
+        if x[0] == "R6.3"}, {("R6.3", "violation")})
+    ok("R6.3 a decided consistent never sets the field",
+       {x for x in laws({"full": full, "nv_cons": cs(True, True, "decided")}) if x[0] == "R6.3"},
+       {("R6.3", "violation")})
+    def dcut(nvp, note, line):
+        return {**r(base, incomplete=True, no_verdict_pairs=nvp), "rc": 0, "note": note,
+                "depth_line": line}
+    ok("R6.6 a depth cut stays a cut", {x for x in laws({"full": full, "dcut": dcut(0, False, True)})
+                                        if x[0] == "R6.6"}, {("R6.6", "ok")})
+    ok("R6.6 a depth cut reported as the signal",
+       {x for x in laws({"full": full, "dcut": dcut(2, True, True)}) if x[0] == "R6.6"},
+       {("R6.6", "violation")})
+    ok("R6.6 the cut not reached", {x for x in laws({"full": full, "dcut": dcut(0, False, False)})
+                                    if x[0] == "R6.6"}, {("R6.6", "unresolved")})
     ok("R6.3 deadline-free consistent may set it",
        {x for x in laws({"full": full, "nv_cons": cs(True, True, "free")}) if x[0] == "R6.3"},
        set())

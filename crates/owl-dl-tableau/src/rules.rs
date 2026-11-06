@@ -731,6 +731,13 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }
+    // #473: a node whose nominal disjunction is still open waits for the search to
+    // pick a disjunct (then merges first, as above, or generates).
+    if ctx.awaits_nominal_disjunction(node) {
+        crate::bump_counter!(ctx, nominal_disjunction_waits);
+        ctx.note_blocked_skip(node);
+        return RuleOutcome::NoChange;
+    }
     // `(role, body, deps_of_the_some_label)` triples.
     let pending: Vec<(Role, ConceptId, DepSet)> = {
         let n = ctx.graph().node(node);
@@ -841,6 +848,12 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     }
     // #460: as in `apply_exists`.
     if ctx.awaits_nominal_merge(node) {
+        ctx.note_blocked_skip(node);
+        return RuleOutcome::NoChange;
+    }
+    // #473: as in `apply_exists`.
+    if ctx.awaits_nominal_disjunction(node) {
+        crate::bump_counter!(ctx, nominal_disjunction_waits);
         ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;
     }

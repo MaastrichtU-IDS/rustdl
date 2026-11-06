@@ -52,6 +52,8 @@ pub(crate) struct RuleCounters {
     pub(crate) merge_exact_p4: Cell<u64>,
     pub(crate) merge_exact_p4_narrower: Cell<u64>,
     pub(crate) is_blocked_true: Cell<u64>,
+    /// #473: `apply_exists` / `apply_min` waits on an open nominal disjunction.
+    pub(crate) nominal_disjunction_waits: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
 
@@ -144,6 +146,10 @@ impl RuleCounters {
                 self.merge_exact_p4_narrower.get(),
             ),
             ("is_blocked_true", self.is_blocked_true.get()),
+            (
+                "nominal_disjunction_waits",
+                self.nominal_disjunction_waits.get(),
+            ),
             (
                 "is_blocked_prefilter_rejects",
                 self.is_blocked_prefilter_rejects.get(),

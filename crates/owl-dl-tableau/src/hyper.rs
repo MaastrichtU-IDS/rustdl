@@ -7931,10 +7931,13 @@ mod tests {
         assert!(!eng.merge(n[5], n[4]));
         assert_eq!(eng.resolve(n[0]), n[5]);
         assert_eq!(eng.resolve(n[1]), n[5]);
-        assert_ne!(
-            eng.representative[n[0].index()].get(),
-            n[1],
-            "precondition: halving must have rewritten n0's link inside the branch"
+        // Precondition: halving inside the branch repointed n0 and n1 (both at n2
+        // after the save) to n3, and n3 to n5, all nodes unmerged at the save.
+        let rep = |x: HNode| eng.representative[x.index()].get();
+        assert_eq!(
+            (rep(n[0]), rep(n[1]), rep(n[3])),
+            (n[3], n[3], n[5]),
+            "precondition: halving must have rewritten these links inside the branch"
         );
         eng.restore(saved);
         let after: Vec<HNode> = n.iter().map(|&x| eng.resolve(x)).collect();

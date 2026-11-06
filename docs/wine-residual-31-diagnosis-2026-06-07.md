@@ -69,6 +69,16 @@ wall. >150 s on a tiny ontology smells like a blocking/termination bug with
 seeded nominals, not mere slowness. Worth a separate investigation; see the
 scoping doc.
 
+> **Update 2026-11-06 (#363 assurance).** The `Fruit ⊓ ¬EdibleThing` probe no longer shows
+> this: since **bc6ef93e** (SP-B2c, 2026-06-23) the core pass adds `Fruit ⊑ EdibleThing` as an
+> axiom, so the probe clashes before the search grows the ABox and returns `Some(false)` in
+> milliseconds (found by bisecting `wine_fruit_prepared_vs_fresh_probe`, which started failing
+> there). **The pathology itself is not fixed.** A satisfiable probe still reaches it: on main
+> 3f85ee41, `prepared.decide_with_deadline(5 s)` gives no verdict on `Wine ⊓ ¬RedWine`,
+> `EdibleThing ⊓ ¬Fruit` and `Fruit ⊓ ¬Pasta`. Early abandon cuts each on the depth cap in about
+> 1.5 s; with `RUSTDL_TABLEAU_EARLY_ABANDON=0` each runs to the 5 s deadline, as on b8ef6d9c
+> (just before SP-B2c). The sentinel now pins `Wine ⊓ ¬RedWine`.
+
 ### Cluster B — sugar: `∀hasSugar.{…}` via functional role + nominal set (11)
 ```
 DryRiesling ⊑ WhiteNonSweetWine     DryWhiteWine ⊑ WhiteNonSweetWine

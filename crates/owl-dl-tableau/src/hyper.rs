@@ -153,6 +153,48 @@ thread_local! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HNode(u32);
 
+/// #465 B: the deferred generating clauses, `(clause, node)`, oldest first, each
+/// queued at most once.
+///
+/// A drain re-matches the whole body at the node, so one entry covers every
+/// trigger that arrived while it waited. Without the dedup, a role-body clause at
+/// a node with N such edges was queued N times (one per `Event::Edge`), and each
+/// drain re-enumerated all N bindings with an O(N) witness scan: N³ where the
+/// eager order was N² (Fable review of #483).
+#[derive(Debug, Clone, Default)]
+struct PendingGen {
+    queue: std::collections::VecDeque<(usize, HNode)>,
+    queued: std::collections::HashSet<(usize, HNode)>,
+}
+
+impl PendingGen {
+    /// Queues `(ci, node)` unless it is already waiting; `false` if it was.
+    fn push(&mut self, ci: usize, node: HNode) -> bool {
+        let fresh = self.queued.insert((ci, node));
+        if fresh {
+            self.queue.push_back((ci, node));
+        }
+        fresh
+    }
+
+    /// The oldest entry. It may be queued again from here on: a trigger that
+    /// arrives after this point is not covered by the coming re-match.
+    fn pop_front(&mut self) -> Option<(usize, HNode)> {
+        let e = self.queue.pop_front()?;
+        self.queued.remove(&e);
+        Some(e)
+    }
+
+    fn clear(&mut self) {
+        self.queue.clear();
+        self.queued.clear();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
 impl HNode {
     fn index(self) -> usize {
         self.0 as usize
@@ -625,7 +667,7 @@ struct Snapshot {
     /// `incremental_fixpoint` is on. Empty (and never read) when off.
     worklist: Vec<Event>,
     /// #465 B: the deferred generating clauses, carried like `worklist`.
-    pending_gen: std::collections::VecDeque<(usize, HNode)>,
+    pending_gen: PendingGen,
 }
 
 /// Phase 1b.5 lazy expansion state for snapshot replay. When set
@@ -986,7 +1028,7 @@ pub struct HyperEngine<'c> {
     /// [`Self::fire_deferred_gen`].
     generate_last: bool,
     /// #465 B: deferred generating clauses `(clause, node)`, oldest first.
-    pending_gen: std::collections::VecDeque<(usize, HNode)>,
+    pending_gen: PendingGen,
     /// #465 B: set while a deferred clause fires, so it generates now.
     draining_gen: bool,
     /// [`Self::nn_counted_possible`], cached: `None` until first asked. Only a
@@ -2020,7 +2062,7 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
-            pending_gen: std::collections::VecDeque::new(),
+            pending_gen: PendingGen::default(),
             draining_gen: false,
             nn_possible: None,
             blocked_gen: Vec::new(),
@@ -2111,7 +2153,7 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
-            pending_gen: std::collections::VecDeque::new(),
+            pending_gen: PendingGen::default(),
             draining_gen: false,
             nn_possible: None,
             blocked_gen: Vec::new(),
@@ -4265,7 +4307,7 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
-            pending_gen: std::collections::VecDeque::new(),
+            pending_gen: PendingGen::default(),
             draining_gen: false,
             nn_possible: None,
             blocked_gen: Vec::new(),
@@ -4851,6 +4893,13 @@ impl<'c> HyperEngine<'c> {
     /// double-blocking is on) the parent-role partition index. All
     /// revert on a failed branch.
     fn save(&mut self) -> Snapshot {
+        // Only `horn_fixpoint` fills the deferred-generation queue (through
+        // `process_event`), and it returns `Sat` only once the queue is empty; both
+        // `save` sites run after a `Sat` fixpoint (#465 B).
+        debug_assert!(
+            self.pending_gen.is_empty(),
+            "#465 B: a branch saved with deferred generating clauses"
+        );
         self.stats.node_clones += 1;
         // Settle `nn_possible` before saving it: a snapshot holding `None` would
         // put `None` back on every restore, and each branch would rescan every node.
@@ -4877,17 +4926,11 @@ impl<'c> HyperEngine<'c> {
             } else {
                 Vec::new()
             },
-            // Only `horn_fixpoint` fills the queue (through `process_event`), and it
-            // returns `Sat` only once the queue is empty; both `save` sites run
-            // after a `Sat` fixpoint. Carried anyway, like `worklist`.
+            // Empty here (asserted above); carried anyway, like `worklist`.
             pending_gen: if self.incremental_fixpoint {
-                debug_assert!(
-                    self.pending_gen.is_empty(),
-                    "#465 B: a branch saved with deferred generating clauses"
-                );
                 self.pending_gen.clone()
             } else {
-                std::collections::VecDeque::new()
+                PendingGen::default()
             },
         }
     }
@@ -5926,6 +5969,10 @@ impl<'c> HyperEngine<'c> {
         self.generate_last
             && !self.draining_gen
             && self.nominals.is_some_and(|(_, count)| count > 0)
+            // The drain re-matches at the representative, which is complete only if
+            // a merge carries the absorbed node's preds over; it does under either
+            // flag (both default ON).
+            && (self.inverse_func_merge || self.incremental_fixpoint)
             && matches!(
                 self.clause(ci).head.first(),
                 Some(Atom::Exists(..) | Atom::AtLeast(..))
@@ -5978,8 +6025,9 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         if self.defers_generation(ci) {
-            self.pending_gen.push_back((ci, node));
-            self.stats.gen_deferred += 1;
+            if self.pending_gen.push(ci, node) {
+                self.stats.gen_deferred += 1;
+            }
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
@@ -8292,6 +8340,41 @@ mod tests {
             r_old,
             HyperResult::Sat,
             "the old order does not settle (if it now does, this test no longer pins #465)"
+        );
+    }
+
+    /// #465 B cost pin (Fable review of #483): a role-body generating clause
+    /// (`∃r.⊤ ⊑ ∃s.E`) at a node with N `r`-edges is queued once, not once per edge.
+    /// Each drain re-matches every binding, so N entries cost N³.
+    #[test]
+    fn a_role_body_clause_is_deferred_once_per_node() {
+        const N: u32 = 150;
+        let (r, s) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (c0, e) = (cls(0), cls(1));
+        let mut clauses: Vec<DlClause> = (0..N)
+            .map(|i| DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Exists(r, cls(100 + i), X)],
+            })
+            .collect();
+        clauses.push(DlClause {
+            body: vec![Atom::Role(r, X, 1)],
+            head: vec![Atom::Exists(s, e, X)],
+        });
+        let mut eng = HyperEngine::new(&clauses, c0).with_nominals(10, 1);
+        eng.generate_last = true;
+        assert_eq!(eng.decide(8), HyperResult::Sat);
+        // The N `∃r.Bᵢ` clauses drain once each at the root, and the role-body clause
+        // once or twice per node it fires at. Without the dedup it drained once per
+        // `r`-edge, about 2N in all.
+        let drained = eng.stats.gen_drained;
+        assert!(
+            drained <= u64::from(N) + 10,
+            "{drained} deferred firings for {N} edges: the role-body clause was queued per edge"
+        );
+        assert!(
+            drained >= u64::from(N),
+            "precondition: every `∃r.Bᵢ` was deferred ({drained})"
         );
     }
 

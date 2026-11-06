@@ -43,6 +43,15 @@
 //! `RUSTDL_WEDGE_BODY_DECOMPOSE=0` to keep exercising the refusal itself, and the
 //! test that pinned the default's miss now pins the derivation instead, with the
 //! miss kept on the `=0` arm.
+//!
+//! **Deadlines.** Every run passes `--pair-timeout-ms` [`PAIR_BUDGET_MS`] and fails
+//! loudly if any deadline still cut it. At the CLI's 5 ms default, a debug build under
+//! a loaded parallel `cargo test` once cut the `X ⊓ ¬C` probe. The pair then
+//! defaulted to "not subsumed", and `shipped_default_…` failed with only `C ⊑ D`
+//! (2026-11-06, an 8-thread workspace run). The run reported the cut in its
+//! `# timed-out pairs` header, but these tests drop `#` lines. A cut can also make
+//! the miss-pinning test below pass vacuously. None of these canaries is about
+//! budgets, so they run unbudgeted in effect, and a cut is an error, not an answer.
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
@@ -50,6 +59,10 @@ use std::process::Command;
 
 /// The entailment the wide-body clause is solely responsible for.
 const WIDE_PAIR: &str = "direct\thttp://ex.org/mbv#X\thttp://ex.org/mbv#C";
+
+/// Per-pair budget for every run. These fixtures decide in milliseconds; the
+/// budget only keeps a regression from hanging the suite.
+const PAIR_BUDGET_MS: &str = "60000";
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -63,7 +76,10 @@ fn fixture(name: &str) -> PathBuf {
 /// `RUSTDL_WEDGE_BODY_DECOMPOSE=0`, so the over-cap body reaches the matcher.
 fn classify(ofn: &Path, wide: Option<bool>, trace: bool, decompose: bool) -> (Vec<String>, String) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_rustdl"));
-    c.arg("classify").arg(ofn);
+    c.arg("classify")
+        .arg("--pair-timeout-ms")
+        .arg(PAIR_BUDGET_MS)
+        .arg(ofn);
     if decompose {
         c.env_remove("RUSTDL_WEDGE_BODY_DECOMPOSE");
     } else {
@@ -84,12 +100,28 @@ fn classify(ofn: &Path, wide: Option<bool>, trace: bool, decompose: bool) -> (Ve
         c.env("RUSTDL_TRACE_BODY_VARS", "1");
     }
     let out = c.output().expect("run rustdl");
-    let lines = String::from_utf8_lossy(&out.stdout)
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // A deadline that still fired makes every answer below meaningless: a cut pair
+    // reads as "not subsumed", which can fail a derivation or vacuously pass a miss.
+    let cut: Vec<&str> = stdout
+        .lines()
+        .filter(|l| {
+            l.starts_with("# timed-out pairs") || l.starts_with("# consistency: undetermined")
+        })
+        .collect();
+    assert!(
+        cut.is_empty() && !stderr.contains("INCOMPLETE"),
+        "a deadline cut this run of {} even at --pair-timeout-ms {PAIR_BUDGET_MS}; \
+         its answer cannot be read as the canary's verdict.\nheaders: {cut:?}\nstderr:\n{stderr}",
+        ofn.display()
+    );
+    let lines = stdout
         .lines()
         .filter(|l| !l.starts_with('#'))
         .map(str::to_owned)
         .collect();
-    (lines, String::from_utf8_lossy(&out.stderr).into_owned())
+    (lines, stderr)
 }
 
 /// The cap is REACHED, and reached through the variable-count branch. This is

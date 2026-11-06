@@ -955,7 +955,7 @@ about 11.
 | R7.0 `vr` | 3927 | 0 | 1 (`maxmerge_fp`) | 67 no oracle, 7 classify timeouts |
 | R7.0 `full` | 3927 | 0 | 0 | the same |
 | R7.0c | 1499 | 0 | 0 | 1 classify give-up |
-| R7.1 | 35006 | 0 | 2 (`maxmerge_fp`: `subclass`, `explain`) | 8 capped |
+| R7.1 | 35006 | 0 | 2 (`maxmerge_fp`: `subclass`, `explain`) | 7 capped, 1 SIGSEGV (below) |
 | R7.2 | 2608 | 0 | 0 | 4 capped |
 | R7.3 | 211539 | 0 | 0 | 99 info (classify misses), 18 with no oracle |
 | R7.4 | 10968 | 0 | 0 | 9 with an unknown side |
@@ -966,7 +966,16 @@ about 11.
 on 4000 shapes.** It also had no miss against the oracle.
 - The 99 R7.3 infos are oracle-confirmed pairs that `subclass` finds and classify lacks. In
   each, classify did not claim completeness.
-- All 1622 R7.5 silent answers are on TBox-only inconsistent KBs: #457, as pre-declared.
+- All 1622 R7.5 silent answers are on TBox-only inconsistent KBs: #457. That classification
+  was made after the run, not declared in advance.
+  - The first laws pass scored 850 of these answers as violations ("silent answer on a KB with
+    individuals"), on 21 of the 39 cases.
+  - Those cases' individuals are declared but never used: no assertion and no nominal. The
+    guard sees no individuals there (`has_individuals=false`), which is #457's shape.
+  - They were reclassified in 930fe6f2 (`tbox_only` ignores a bare `Declaration`); the laws
+    recompute it from the case file.
+  - This is the attribution the plan required for silent answers with individuals. It was not a
+    pre-declared carve-out.
 
 **Positives, declared in advance; each fired.**
 - **P1, the #76 sabotage on the generated cases: 0 cases.** As declared, I report that the
@@ -981,14 +990,20 @@ on 4000 shapes.** It also had no miss against the oracle.
   and the after-hang skip engages. It never reaches the cap on A. This is also the behavioural
   check that tells the two pins apart: both print `0.4.42`.
 
-**R7.6: per-query hangs, every capped call rechecked serially at 120 s of CPU on core 92.**
+**R7.6: per-query hangs, rechecked serially at 120 s of CPU on core 92.**
+- All 11 of A's capped calls were rechecked (`recheck-r7-A.txt`).
+- In M, only the 5 capped calls on M-only cases were rechecked, under M's env (`hang3.jsonl`).
+  M's other 11 capped calls are on cases that hang in A too, so the full M recheck was stopped
+  (with the manager's OK).
+- P4's serial recheck of case 1911 on 0df06f64 was not run: the smoke cap and the skip are its
+  evidence.
 
 | case | KB (oracle) | classify | per-query, 120 s serial | verdict |
 |---|---|---|---|---|
 | data_heavy 306 | consistent; nominals and an assertion | 0.024 s, no give-up | hangs on 0df06f64 and 3d0fb8b0; **0.02 s on b6ed041d** | fixed by #479 (nominal-disjunction wait) |
 | default 1349 | consistent; no nominals or assertions | 0.06 s, no give-up | **hangs on all three**, including b6ed041d | **finding:** shrunk to 2 axioms, draft with the manager |
 | default 939, 1646 | consistent | classify times out too (30 s) | hangs | shared hardness, not a per-query defect |
-| default 213, 1706 | consistent | fast | hangs only in M; under 0.06 s in A | the sabotage's own blowup |
+| default 213, 1706 | consistent | 213: 1.85 s, `incomplete` and `consistency_undetermined` in both arms; 1706: 0.06 s in A, 3.4 s and `incomplete` in M | hangs only in M; ≤ 0.11 s CPU in A | the sabotage's own blowup |
 
 Case 1349's reproducer:
 `C0 ≡ ≤0 r1.¬C5`, `C5 ≡ ∃r0.(=2 r1.C2)`.
@@ -1001,7 +1016,8 @@ Case 1349's reproducer:
   and 1706 and the after-hang skips that follow them.
 - **The other one** is a single A call on default case 1807 that died with SIGSEGV after 3 ms.
   The kernel logged the fault inside `ld-linux-x86-64.so.2`, before `main`. It ran clean 20 of
-  20 times serially, so it is recorded as a process-start artefact.
+  20 times serially, so it is recorded as a process-start artefact. The kernel line and the
+  rerun exit codes are in `work-363-gen/r7/segv-1807.txt`.
 - **A test build overlapped M.** An unrelated one-file test build ran at nice 19 on core 95
   from 03:58 to about 04:05 UTC, overlapping arm M. No M-only cap fell in that window.
 

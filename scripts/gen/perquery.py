@@ -46,6 +46,9 @@ Laws (outcomes: ok / violation / info / unresolved / known):
                             "consistency could not be determined" warning. Correct, but a breach
                             of #428: "known #457" on a TBox-only KB, a violation otherwise.
               With the warning it is signalled: ok. `inconsistent` (the error): ok.
+            A wrong answer stays a violation even with the "undetermined" warning: today the
+            CLI prints that warning only after a positive answer (lib.rs: `!sat && …`), so a
+            negative answer with it would itself be a new shape worth a look.
             Stricter than cross-command-laws.py's L5, which accepts `sat` = unsat here.
   R7.6      a call that hit the cap: "capped", a finding candidate to recheck serially. Only
             case 1911's shape on a consistent KB is a #460 regression; other shapes are new.
@@ -336,7 +339,8 @@ def evaluate(rec, oans):
             elif rec.get("tbox_only"):
                 add("R7.5", "known", f"{tag}: silent answer, TBox-only (#457)")
             else:
-                add("R7.5", "violation", f"{tag}: silent answer on a KB with individuals")
+                add("R7.5", "violation", f"{tag}: silent answer on a KB with individuals"
+                    + (" (trusted-consistency note)" if o.get("trust") else ""))
             continue
         if v == "inconsistent":
             if ocons is True:

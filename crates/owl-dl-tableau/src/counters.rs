@@ -54,6 +54,9 @@ pub(crate) struct RuleCounters {
     pub(crate) is_blocked_true: Cell<u64>,
     /// #473: `apply_exists` / `apply_min` waits on an open nominal disjunction.
     pub(crate) nominal_disjunction_waits: Cell<u64>,
+    /// #474: nominal-assignment merges, and how many of them pruned a subtree first.
+    pub(crate) nominal_merges: Cell<u64>,
+    pub(crate) nominal_merge_prunes: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
 
@@ -150,6 +153,8 @@ impl RuleCounters {
                 "nominal_disjunction_waits",
                 self.nominal_disjunction_waits.get(),
             ),
+            ("nominal_merges", self.nominal_merges.get()),
+            ("nominal_merge_prunes", self.nominal_merge_prunes.get()),
             (
                 "is_blocked_prefilter_rejects",
                 self.is_blocked_prefilter_rejects.get(),

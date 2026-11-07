@@ -197,6 +197,19 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **A tableau-answered query on an inconsistent KB with no individual now reports the
+  inconsistency (#457 residual 2, option A″; `RUSTDL_QUERY_NO_SEED_TAIL`, default on).** With no
+  individual the consistency wedge has no seed, so `sat`, `subclass`, `explain`, `prove`,
+  `sat-expr`, `subclass-expr` and their library and Python equivalents gave a positive answer
+  with no signal. When the main tableau answered (the KB is already prepared), they now run
+  `consistent`'s bounded main-tableau check, once per prepared ontology. A proof of
+  inconsistency errors `Inconsistent` (`prove`: `kb_inconsistent`); a check cut at
+  `RUSTDL_CONSISTENCY_FALLBACK_MS` sets `consistency_undetermined`. A told, saturation or
+  query-wedge answer is still not checked: running the check there means preparing the KB just
+  for it, which cost +81% CPU over the ORE pool's TBox-only non-EL ontologies and flagged 30 of
+  183 of them as undetermined. That gap is documented in
+  `docs/known-limitations/tbox-only-inconsistency-light-route.md`. `query_wedge_deadline_cli.rs`
+  pinned the silent `yes` and now expects the error.
 - **The consistency wedge settles on small consistent KBs whose nodes are bound to a
   nominal (#465, part B; #473's case 00939).** A fresh node that carries `C` with
   `C ⊑ {a}` built its `∃` / `≥n` successors before its `{a}` label merged it into `a`'s

@@ -35,13 +35,12 @@ fn is_subclass_of_finishes_on_the_wedge_hang_reproducer() {
     let answer = rx
         .recv_timeout(Duration::from_secs(60))
         .expect("is_subclass_of did not finish within 60 s");
-    // Vacuous on this inconsistent KB, which the #428 guard does not see (#457's
-    // second residual): `true`, or `Err(Inconsistent)` once that is fixed.
+    // The KB is inconsistent and has no individual: since #457's second residual
+    // the tableau-answered query runs the bounded main-tableau consistency check
+    // (`RUSTDL_QUERY_NO_SEED_TAIL`), so it errors instead of answering a vacuous
+    // `true`.
     assert!(
-        matches!(
-            answer,
-            Ok(true) | Err(owl_dl_reasoner::ReasonError::Inconsistent)
-        ),
+        matches!(answer, Err(owl_dl_reasoner::ReasonError::Inconsistent)),
         "{answer:?}"
     );
 }

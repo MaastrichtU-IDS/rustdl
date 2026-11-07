@@ -5,8 +5,9 @@ correct; only the signal is missing. It is not a false positive.
 
 ## What happens
 
-On a KB with no individual (no class or property assertion, and no nominal), the query
-surfaces `sat`, `subclass`, `explain`, `prove`, `sat-expr`, `subclass-expr` and the library and
+On a KB with no individual (no class assertion, no object-property assertion, positive or
+negative, no same-individual or different-individuals assertion, and no nominal; a
+data-property assertion alone does not count), the query surfaces `sat`, `subclass`, `explain`, `prove`, `sat-expr`, `subclass-expr` and the library and
 Python equivalents check consistency only after a positive answer, in one of two ways. Which
 one depends on how the answer was found:
 

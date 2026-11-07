@@ -10310,8 +10310,9 @@ pub(crate) struct PreparedOntology {
     /// [`pool_has_dkey_counting`].
     pub(crate) wedge_sat_skips_data_counting: bool,
     /// `ABox`-seeded wedge consistency state. `Some` iff
-    /// [`wedge_consistency_enabled`] and the ontology has `ABox` axioms;
-    /// `None` otherwise (`ABox`-free inputs pay nothing, classify
+    /// [`wedge_consistency_enabled`] and the ontology names an individual
+    /// ([`internal_has_individuals`]: an `ABox` axiom or a `TBox` nominal);
+    /// `None` otherwise (individual-free inputs pay nothing, classify
     /// byte-identical). Consumed by [`is_consistent_internal_full`].
     consistency: Option<ConsistencyCache>,
     /// Per-classify accumulator for the main tableau's iterative-deepening

@@ -7,7 +7,9 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 
 Added without a `schema_version` bump to `classify` (`no_verdict_pairs`, an int) and to
 `consistent`, `disjoint`, `individuals`, `property-values`, `justify`, `prove`, `sat-expr` and
-`subclass-expr` (`no_verdict`, a bool).
+`subclass-expr` (`no_verdict`, a bool); since #493 also to `realize` and `instances-expr`
+(`no_verdict`, a bool), whose instance probes use `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` (default
+750; `0` = no deadline).
 
 **Meaning: a probe ended in `NoVerdict` on an internal limit**, likely a reasoner bug (#449):
 - a probe with NO deadline. It searches to a far larger decision depth, so a `NoVerdict` there
@@ -157,7 +159,8 @@ and meaning as in `sat-expr`, `subclass-expr` and `prove --json` (#401).
 ```json
 { "schema_version": 1, "incomplete": bool, "witness_prune_active": bool,
   "witness_prune_may_drop": bool, "witness_prune_reasons": [string],
-  "direct_types_unverified": bool,
+  "direct_types_unverified": bool, "relies_on_trusted_consistency": bool,
+  "no_verdict": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
 ```
@@ -195,6 +198,13 @@ another:
   (or `RUSTDL_REALIZE_VERIFY_DIRECT=0`). The saturation-only realize runs no check,
   so there any undecided pair sets it. It does not cover a type dropped through
   `incomplete` or the prune, which can also leave a superclass listed.
+- `relies_on_trusted_consistency` (#429): as in `classify --json`; not a give-up.
+- `no_verdict` (#493): a probe ended in `NoVerdict` on an internal limit, likely a reasoner bug
+  (see the `no_verdict` section): realize's own classification, an instance probe (anonymous
+  individuals' included) or a #388 direct-types check. The probe took its sound default ("not an
+  instance", or an unchecked pair), `incomplete` is set too, and the command exits 3 after
+  printing this JSON. Not covered: the pseudo-model witness build (a stall there only disables
+  the prune) and the #369 lazy consistency check.
 
 `dropped` maps each axiom kind dropped at conversion to its count (empty when
 nothing was dropped).
@@ -457,7 +467,8 @@ no axioms and `incomplete` is `true`. `false` is not a proof of consistency.
   "relies_on_trusted_consistency": bool, "consistency_undetermined": bool,
   "no_verdict": bool, "entailed": bool }                             // subclass-expr
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
-  "consistency_undetermined": bool, "instances": [iri] }             // instances-expr
+  "consistency_undetermined": bool, "no_verdict": bool,
+  "instances": [iri] }                                               // instances-expr
 ```
 
 - `incomplete`: a probe gave up (node cap; for `instances-expr` also the per-probe deadline or
@@ -480,6 +491,9 @@ no axioms and `incomplete` is `true`. `false` is not a proof of consistency.
   not checked and never sets it. On an
   inconsistent KB every such answer holds vacuously, so the answer is then not known to be more
   than that. Not a give-up; does not set `incomplete`.
+- `no_verdict` (#462; `instances-expr` since #493): see the `no_verdict` section above. On
+  `instances-expr` the listed members are kept (sound, possibly short), `incomplete` is set, and the
+  command exits 3 after printing the JSON.
 - All three run under the single-query node cap (`RUSTDL_QUERY_MAX_NODES`, default 500000). On an
   inconsistent KB all three error (`Inconsistent`, exit 1) instead of printing JSON. Since #369
   that includes an inconsistency only the consistency wedge finds, checked after a positive

@@ -293,6 +293,15 @@ pub(crate) struct RealizeJson {
     /// `classify --json` field). Not a give-up. See
     /// `Realization::relies_on_trusted_consistency`.
     pub(crate) relies_on_trusted_consistency: bool,
+    /// #493: a probe ended in `NoVerdict` as an internal limit, likely a reasoner bug
+    /// (#449): a probe with no deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`), or one
+    /// whose deterministic saturation stalled, budgeted or not (#475). The command also
+    /// prints a "likely a reasoner bug" note on stderr and exits 3, after this JSON. It
+    /// covers the realize classification, every instance probe (anonymous individuals'
+    /// too) and #388's direct-types checks. Each took its sound default, so `incomplete`
+    /// is set too. A plain depth cut, deadline or node cap does not set it. Not covered:
+    /// the pseudo-model witness build and the #369 lazy consistency check.
+    pub(crate) no_verdict: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -403,6 +412,8 @@ pub(crate) struct SubclassExprJson {
     pub(crate) entailed: bool,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct InstancesExprJson {
     pub(crate) schema_version: u32,
@@ -420,6 +431,13 @@ pub(crate) struct InstancesExprJson {
     /// vacuous answer of an inconsistent KB. Separate from `incomplete`; not a
     /// give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
+    /// #493: an instance probe ended in `NoVerdict` as an internal limit, likely a
+    /// reasoner bug (#449): a probe with no deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`),
+    /// or one whose deterministic saturation stalled, budgeted or not (#475). The command
+    /// also prints a "likely a reasoner bug" note on stderr and exits 3, after this JSON.
+    /// The probe took its sound default, so `incomplete` is set too. A plain depth cut,
+    /// deadline or node cap does not set it. Not covered: the #369 lazy consistency check.
+    pub(crate) no_verdict: bool,
     pub(crate) instances: Vec<String>,
 }
 
@@ -458,6 +476,7 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
         incomplete: r.incomplete(),
         completeness_guaranteed: r.completeness_guaranteed(),
         consistency_undetermined: r.consistency_undetermined(),
+        no_verdict: r.no_verdict(),
         instances,
     }
 }
@@ -665,6 +684,7 @@ pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>
         },
         direct_types_unverified: r.direct_types_unverified(),
         relies_on_trusted_consistency: r.relies_on_trusted_consistency(),
+        no_verdict: r.no_verdict(),
         individuals,
         dropped,
     }

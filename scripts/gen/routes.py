@@ -32,7 +32,9 @@ notes/plans/2026-11-03-363-package-e-stateful.md (v2). Laws:
       Forced routes run with RUSTDL_TABLEAU_SATURATE_ITERS=1 (a deterministic stall).
       R6.1 every `nv_*` / `cons` route prints its command's JSON (never a bare `unknown`).
       R6.2 field set <=> note on stderr; field set => exit 3 and `incomplete`.
-      R6.3 under the forced stall a budgeted probe reports the stall too: `nv_budget` sets
+      R6.3 under the forced stall a budgeted probe reports the stall too (#493: also
+           `nv_realize` iff `nv_realize_free`, `nv_iexpr` iff `nv_iexpr_free`; R6.1 and
+           R6.2 cover those four routes too): `nv_budget` sets
            the field iff `nv_free` does on the same case (same engine and stall), and
            `nv_cons` on a budgeted probe (the wedge-route fall-through, the #344
            data-counting check) sets it iff it gave up; a decided `nv_cons` never sets it.
@@ -114,6 +116,24 @@ ROUTES.update({
     # it on fixtures/depthcut (the 280-union #288 shape); on generated cases it adds nothing.
     "dcut": (["classify", "--json", "--pair-timeout-ms", "20000"], {"RAYON_NUM_THREADS": "1"}),
 })
+# R6 (#493): the forced stall on realize and instances-expr, deadline-free (`_free`, pair
+# budget 0) and budgeted (1000 ms). RUSTDL_REALIZE_SATURATION=0 keeps them on the tableau
+# path (a pure-EL case would otherwise take realize's saturation path, with no probe), and
+# the wedge is off as for the classify routes. instances-expr asks for the case's first
+# declared class.
+REALIZE_TABLEAU = {"RUSTDL_REALIZE_SATURATION": "0"}
+NV_ENV = {"RAYON_NUM_THREADS": "1", **STALL, **NO_WEDGE, **REALIZE_TABLEAU}
+ROUTES.update({
+    "nv_realize_free": (["realize", "--json"], {**NV_ENV, "RUSTDL_REALIZE_PAIR_TIMEOUT_MS": "0"}),
+    "nv_realize": (["realize", "--json"], {**NV_ENV, "RUSTDL_REALIZE_PAIR_TIMEOUT_MS": "1000"}),
+    "nv_iexpr_free": (["instances-expr", "--json"],
+                      {**NV_ENV, "RUSTDL_REALIZE_PAIR_TIMEOUT_MS": "0"}),
+    "nv_iexpr": (["instances-expr", "--json"],
+                 {**NV_ENV, "RUSTDL_REALIZE_PAIR_TIMEOUT_MS": "1000"}),
+})
+NV_QUERY = ("nv_realize_free", "nv_realize", "nv_iexpr_free", "nv_iexpr")
+# R6.3 (#493): each budgeted query route against its deadline-free twin.
+NV_QUERY_TWIN = {"nv_realize": "nv_realize_free", "nv_iexpr": "nv_iexpr_free"}
 DEPTH_LINE = "search-depth limit"
 NV_CLASSIFY = ("nv_free", "nv_free_n2", "nv_budget")
 CONS = ("cons", "nv_cons")
@@ -191,11 +211,25 @@ def consistency_probe(stderr):
 # ------------------------------------------------------------------ run (CLI routes)
 def run_route(binary, route, path, classes):
     args, env = ROUTES[route]
+    tail = []
+    if route in ("nv_iexpr", "nv_iexpr_free"):
+        if not classes:
+            return {"status": "skip"}
+        tail = [f"<{sorted(classes)[0]}>"]
     try:
-        p = subprocess.run([binary, *args, str(path)], capture_output=True, text=True,
+        p = subprocess.run([binary, *args, str(path), *tail], capture_output=True, text=True,
                            timeout=CAP, env={**os.environ, **env}, preexec_fn=run._limit)
     except subprocess.TimeoutExpired:
         return {"status": "timeout"}
+    if route in NV_QUERY:
+        io = {"rc": p.returncode, "note": NOTE in p.stderr}
+        try:
+            j = json.loads(p.stdout)
+            ans = {"no_verdict": j["no_verdict"], "incomplete": j["incomplete"]}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return {"status": "fail", **io, "stdout_head": p.stdout[:80],
+                    "stderr": p.stderr[-300:]}
+        return {"status": "ok", "answer": ans, **io}
     if route == "text":
         if p.returncode != 0:
             return {"status": "fail", "rc": p.returncode}
@@ -496,9 +530,9 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
                 f"(no_verdict_pairs {nvp}, note {dc.get('note')})")
         else:
             add("R6.6", "ok")
-    for name in (*NV_CLASSIFY, *CONS):
+    for name in (*NV_CLASSIFY, *CONS, *NV_QUERY):
         rr = R.get(name)
-        if rr is None:
+        if rr is None or rr.get("status") == "skip":
             continue
         if rr.get("status") == "timeout":
             add("R6.1", "timeout", name)
@@ -509,7 +543,10 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
             continue
         add("R6.1", "ok")
         a = rr["answer"]
-        if name in CONS:
+        if name in NV_QUERY:
+            field, incomplete = bool(a["no_verdict"]), bool(a["incomplete"])
+            budgeted = name in NV_QUERY_TWIN
+        elif name in CONS:
             field, incomplete = bool(a["no_verdict"]), bool(a["incomplete"])
             budgeted = a["probe"] != "free"
         else:
@@ -522,6 +559,13 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
             add("R6.2", "violation", f"{name}: field set, rc {rr['rc']}, incomplete {incomplete}")
         else:
             add("R6.2", "ok")
+        if name in NV_QUERY_TWIN:
+            tw = R.get(NV_QUERY_TWIN[name])
+            if tw is not None and tw.get("status") == "ok":
+                want = bool(tw["answer"]["no_verdict"])
+                add("R6.3", "ok" if field == want else "violation",
+                    "" if field == want else
+                    f"{name} field {field}, {NV_QUERY_TWIN[name]} field {want}")
         if name == "nv_budget":
             nf = R.get("nv_free")
             if nf is not None and nf.get("status") == "ok":
@@ -825,6 +869,33 @@ def self_test():
     ok("R6.3 consistent fall-through gave up silently (pre-#475)",
        {x for x in laws({"full": full, "nv_cons": cs(False, False, "budgeted")})
         if x[0] == "R6.3"}, {("R6.3", "violation")})
+
+    # R6 on realize / instances-expr (#493)
+    def q(field, note, rc=3, incomplete=None):
+        return {"status": "ok", "rc": rc, "note": note,
+                "answer": {"no_verdict": field,
+                           "incomplete": field if incomplete is None else incomplete}}
+
+    def r6(routes):
+        return {x for x in laws({"full": full, **routes}) if x[0].startswith("R6")}
+    ok("R6 realize: a reported stall, budgeted and free",
+       r6({"nv_realize_free": q(True, True), "nv_realize": q(True, True)}),
+       {("R6.1", "ok"), ("R6.2", "ok"), ("R6.3", "ok")})
+    ok("R6.1 realize: bare unknown (pre-#493 deadline-free)",
+       r6({"nv_realize_free": bare}), {("R6.1", "violation")})
+    ok("R6.2 instances-expr: field without the note",
+       r6({"nv_iexpr": q(True, False)}), {("R6.1", "ok"), ("R6.2", "violation")})
+    ok("R6.2 realize: field without incomplete",
+       r6({"nv_realize": q(True, True, incomplete=False)}),
+       {("R6.1", "ok"), ("R6.2", "violation")})
+    ok("R6.3 realize: the budgeted route hides the stall (pre-#493)",
+       {x for x in r6({"nv_realize_free": q(True, True), "nv_realize": q(False, False, rc=0)})
+        if x[0] == "R6.3"}, {("R6.3", "violation")})
+    ok("R6.3 instances-expr: twins agree on no stall",
+       {x for x in r6({"nv_iexpr_free": q(False, False, rc=0), "nv_iexpr": q(False, False, rc=0)})
+        if x[0] == "R6.3"}, {("R6.3", "ok")})
+    ok("R6 instances-expr skipped on a case with no class",
+       r6({"nv_iexpr": {"status": "skip"}}), set())
     ok("R6.3 a decided consistent never sets the field",
        {x for x in laws({"full": full, "nv_cons": cs(True, True, "decided")}) if x[0] == "R6.3"},
        {("R6.3", "violation")})

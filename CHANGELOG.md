@@ -7,6 +7,34 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **`realize` and the instance queries keep their output on a likely-bug `NoVerdict` and report
+  it (#493).** An instance probe or a #388 direct-types check that ended in `NoVerdict` on an
+  internal limit (#449: a probe with no deadline, or one whose saturation stalled, #475) is now
+  reported like the other commands' (#462/#471/#475), and a plain depth cut stays a cut.
+  - `realize --json` and `instances-expr --json` gain `no_verdict` (no `schema_version` bump).
+    `realize`'s also covers its own classification's `no_verdict_pairs` and the probes on
+    anonymous individuals; `incomplete` is set with it.
+  - `realize`, `instances` and `instances-expr` print their output, then #449's note, and exit 3.
+    With `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (no deadline) they used to fail with no output.
+  - **`instance` output change:** on a likely-bug "no" it prints `unknown` with #449's note
+    (not the probe-cut warning), exit 3. A deadline-free one did this already; a budgeted stall
+    used to print the probe-cut warning.
+  - Rust API:
+    - new: `Realization::no_verdict()`, `CeInstances::no_verdict()`, and the fields
+      `InstanceFlags::no_verdict` and `ExistentialSuccessorFlags::no_verdict`;
+    - `InstanceFlags` is `#[non_exhaustive]`, but `ExistentialSuccessorFlags` is not: a struct
+      literal of it without `..Default::default()` must add the field;
+    - the flagless `is_instance_of`, `instances_of` and `materialize_existential_successors`
+      still return `Err(NoVerdict)`, now for a stall too.
+  - **Python API change:** `realize`, `instances_of`, `class_expression_instances`,
+    `materialize_inferred_class_assertions` and `materialize_existential_successors` now
+    **return their result and emit `IncompleteQueryWarning`** with the "likely a reasoner bug"
+    text, where a deadline-free `NoVerdict` used to **raise** `RustdlError`. `is_instance_of`
+    still raises on a likely-bug "no" (and now on a budgeted stall too, where it returned
+    `False` with a warning).
+  - `justify`'s instance oracle maps the new flag to its existing `no_verdict` answer.
+  - Not covered: the pseudo-model witness build (a stall there only disables the prune) and
+    the #369 lazy consistency check (the rest of #493, after #492).
 - **A budgeted probe whose saturation stalled now reports #462's `no_verdict` signal (#475).**
   Before, a `NoVerdict` on a probe with a deadline could be either a saturation stall (the
   #437 livelock kind, a likely bug) or the routine decision-depth cut (#288), so #462 reported

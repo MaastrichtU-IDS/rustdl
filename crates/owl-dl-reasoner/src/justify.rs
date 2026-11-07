@@ -470,6 +470,9 @@ pub fn entails_reporting<A: ForIRI>(
                 // QuickXplain then returns the inconsistency core (#313).
                 Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),
                 Err(ReasonError::NoVerdict) => Ok(oracle_no_verdict()),
+                // #493: the instance probe now reports a likely-bug `NoVerdict` as a
+                // flag (it used to be the error above); same oracle answer.
+                Ok((false, flags)) if flags.no_verdict => Ok(oracle_no_verdict()),
                 r => r.map(|(holds, flags)| Verdict::from_check(holds, flags.incomplete)),
             }
         }

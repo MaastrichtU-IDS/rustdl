@@ -96,12 +96,16 @@ impl CeVerdict {
 }
 
 /// Result of a complex-class-expression instance query.
+// `struct_excessive_bools`: each bool is an independent signal of the public result
+// (#493 added `no_verdict`); they are not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct CeInstances {
     individuals: Vec<String>,
     incomplete: bool,
     completeness_guaranteed: bool,
     consistency_undetermined: bool,
+    no_verdict: bool,
 }
 
 impl CeInstances {
@@ -133,6 +137,15 @@ impl CeInstances {
     #[must_use]
     pub fn consistency_undetermined(&self) -> bool {
         self.consistency_undetermined
+    }
+
+    /// #493: an instance probe ended in `NoVerdict` as an internal limit, likely a
+    /// reasoner bug (#449): a probe with no deadline, or one whose saturation stalled
+    /// (#475). [`Self::incomplete`] is set too. See
+    /// [`crate::InstanceFlags::no_verdict`].
+    #[must_use]
+    pub fn no_verdict(&self) -> bool {
+        self.no_verdict
     }
 }
 
@@ -348,5 +361,6 @@ pub fn class_expression_instances<A: ForIRI>(
         incomplete: flags.incomplete,
         completeness_guaranteed: fast_path && !flags.incomplete,
         consistency_undetermined: flags.consistency_undetermined,
+        no_verdict: flags.no_verdict,
     })
 }

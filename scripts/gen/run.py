@@ -516,6 +516,14 @@ def self_test():
     ok("a deadline-cut exposed miss is not a detection, an FP is",
        ({k: len(v) for k, v in sp.items()}),
        {"finding": 1, "exposed": 0, "budget_cut": 1, "pre_check": 0})
+    # #502: oracle.declared_classes reads full IRIs and any prefix, not only `:Name`.
+    ok("declared_classes: `:`, `<IRI>` and `ex:` forms",
+       sorted(orc.declared_classes(
+           "Prefix(:=<http://g#>)\nPrefix(ex:=<http://x#>)\nOntology(\n"
+           "Declaration(Class(:A))\nDeclaration(Class(<http://y#B>))\n"
+           "Declaration(Class(ex:C))\nDeclaration(Class(owl:Thing))\n"
+           "Declaration(ObjectProperty(:r))\n)")),
+       ["http://g#A", "http://x#C", "http://y#B"])
     print(f"run self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

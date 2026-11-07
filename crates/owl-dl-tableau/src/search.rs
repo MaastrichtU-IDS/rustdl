@@ -134,7 +134,56 @@ fn trace_enabled() -> bool {
 /// [`Frame`]s, each with the option it is trying and that option's checkpoint,
 /// stands in for recursion. Every side effect happens in the order the
 /// recursive version had.
+/// #494 experiment (report-only, NOT for merge): `RUSTDL_494_PROBE=1` prints one
+/// stderr line per `search()` whose deadline fired. Read once.
+fn probe494_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RUSTDL_494_PROBE").as_deref() == Ok("1"))
+}
+
+#[derive(Default)]
+struct Probe494 {
+    post_trials: u64,
+    post_depth0: u64,
+    post_definite: u64,
+}
+
+impl Probe494 {
+    fn definite(&mut self, ctx: &TableauContext<'_, '_, '_>, v: &SearchVerdict) {
+        if ctx.deadline_reached() && matches!(v, SearchVerdict::Sat | SearchVerdict::Unsat(_)) {
+            self.post_definite += 1;
+        }
+    }
+
+    fn report(&self, ctx: &TableauContext<'_, '_, '_>, v: &SearchVerdict) {
+        let now = std::time::Instant::now();
+        let passed = ctx.deadline.is_some_and(|d| now >= d);
+        if !(ctx.deadline_reached() || passed) {
+            return;
+        }
+        let over_us = ctx
+            .deadline
+            .map_or(0, |d| now.saturating_duration_since(d).as_micros());
+        let fin = match v {
+            SearchVerdict::Sat => "Sat",
+            SearchVerdict::Unsat(_) => "Unsat",
+            SearchVerdict::DepthLimit => "DepthLimit",
+            SearchVerdict::NodeCap => "NodeCap",
+        };
+        eprintln!(
+            "#494 cut: final={fin} flag={} post_trials={} post_depth0={} post_definite={} \
+             over_us={over_us}",
+            ctx.deadline_reached(),
+            self.post_trials,
+            self.post_depth0,
+            self.post_definite
+        );
+    }
+}
+
 pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchVerdict {
+    let probe = probe494_enabled();
+    let mut p494 = Probe494::default();
     // #377: a search starts in node order, also when iterative deepening runs
     // it again on the same context.
     ctx.forget_decision_root();
@@ -146,24 +195,45 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
         let verdict = loop {
             match next {
                 Expanded::Done(v) => break v,
-                Expanded::Open(mut frame) => match frame.start_option(ctx) {
-                    Start::Exhausted => break frame.finish(ctx),
-                    Start::Child(k, cp) => {
-                        let depth = frame.max_depth - 1;
-                        stack.push((frame, k, cp));
-                        next = expand(ctx, depth);
+                Expanded::Open(mut frame) => {
+                    let cut = probe && ctx.deadline_reached();
+                    match frame.start_option(ctx) {
+                        Start::Exhausted => break frame.finish(ctx),
+                        Start::Child(k, cp) => {
+                            let depth = frame.max_depth - 1;
+                            if cut {
+                                p494.post_trials += 1;
+                                if depth == 0 {
+                                    p494.post_depth0 += 1;
+                                }
+                            }
+                            stack.push((frame, k, cp));
+                            next = expand(ctx, depth);
+                        }
+                        Start::Decided(k, cp, v) => {
+                            if cut {
+                                p494.post_trials += 1;
+                            }
+                            if probe {
+                                p494.definite(ctx, &v);
+                            }
+                            frame.on_child(ctx, k, cp, v);
+                            next = Expanded::Open(frame);
+                        }
                     }
-                    Start::Decided(k, cp, v) => {
-                        frame.on_child(ctx, k, cp, v);
-                        next = Expanded::Open(frame);
-                    }
-                },
+                }
             }
         };
         // Hand the verdict to the frame that asked for it.
         let Some((mut frame, k, cp)) = stack.pop() else {
+            if probe {
+                p494.report(ctx, &verdict);
+            }
             return verdict;
         };
+        if probe {
+            p494.definite(ctx, &verdict);
+        }
         frame.on_child(ctx, k, cp, verdict);
         next = Expanded::Open(frame);
     }

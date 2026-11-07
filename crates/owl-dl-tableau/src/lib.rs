@@ -4844,10 +4844,19 @@ mod tests {
         ctx.add_edge_with_deps(n, r, m, &[e]);
         ctx.add_label_with_deps(n, at_most_zero, &[d]);
         ctx.set_max_zero_forall(false);
-        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::NoChange);
-        assert!(!ctx.graph().node(m).has_label(not_c), "flag off: no conclusion");
+        assert_eq!(
+            crate::rules::apply_forall(&mut ctx, n),
+            RuleOutcome::NoChange
+        );
+        assert!(
+            !ctx.graph().node(m).has_label(not_c),
+            "flag off: no conclusion"
+        );
         ctx.set_max_zero_forall(true);
-        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::Applied);
+        assert_eq!(
+            crate::rules::apply_forall(&mut ctx, n),
+            RuleOutcome::Applied
+        );
         assert_eq!(
             ctx.label_deps_of(m, not_c).map(DepSet::as_slice),
             Some(&[d, e][..]),
@@ -4863,7 +4872,10 @@ mod tests {
         let m = ctx.new_node();
         ctx.add_edge_with_deps(m, r, n, &[e]);
         ctx.add_label_with_deps(n, at_most_zero_inv, &[d]);
-        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::Applied);
+        assert_eq!(
+            crate::rules::apply_forall(&mut ctx, n),
+            RuleOutcome::Applied
+        );
         assert_eq!(
             ctx.label_deps_of(m, not_c).map(DepSet::as_slice),
             Some(&[d, e][..]),
@@ -4876,7 +4888,10 @@ mod tests {
         let m = ctx.new_node();
         ctx.add_edge(n, r, m);
         ctx.add_label(n, at_most_zero);
-        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::NoChange);
+        assert_eq!(
+            crate::rules::apply_forall(&mut ctx, n),
+            RuleOutcome::NoChange
+        );
 
         // A data range (`dkey_range_of` is `Some`): unchanged, as in `apply_max`.
         let mut ctx = TableauContext::new(&pool);
@@ -4892,7 +4907,10 @@ mod tests {
         let m = ctx.new_node();
         ctx.add_edge(n, r, m);
         ctx.add_label(n, at_most_zero_data);
-        assert_eq!(crate::rules::apply_forall(&mut ctx, n), RuleOutcome::NoChange);
+        assert_eq!(
+            crate::rules::apply_forall(&mut ctx, n),
+            RuleOutcome::NoChange
+        );
         assert!(!ctx.graph().node(m).has_label(not_dkey));
     }
 

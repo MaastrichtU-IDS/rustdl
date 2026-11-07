@@ -127,7 +127,7 @@ fn each_arm(mut f: impl FnMut(&str)) {
     }
 }
 
-/// The issue's reproducer (case 1349, shrunk). Konclude and HermiT: consistent,
+/// The issue's reproducer (case 1349, shrunk). Konclude and `HermiT`: consistent,
 /// nothing unsat, no subsumptions.
 const MINIMAL: &str = "EquivalentClasses(:C0 ObjectMaxCardinality(0 :r1 ObjectComplementOf(:C5))) \
      EquivalentClasses(:C5 ObjectSomeValuesFrom(:r0 ObjectExactCardinality(2 :r1 :C2)))";

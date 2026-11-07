@@ -9244,6 +9244,23 @@ pub fn lazy_query_consistency_enabled() -> bool {
     lazy_query_consistency_mode() != LazyConsistencyMode::Off
 }
 
+/// EXPERIMENT (#457 residual 2, option A; not for merge): `RUSTDL_EXP_TBOX_TAIL=1`
+/// runs the bounded main-tableau consistency tail when the lazy check has no seed
+/// (no individual) on a non-pure-EL KB.
+/// `=2` is option A″: the tail runs only on the prepared route (the query itself
+/// prepared the KB), never on the light route, which would build a `PreparedOntology`
+/// (an unbounded prepare) just for the check.
+#[must_use]
+pub fn exp_tbox_tail_enabled() -> bool {
+    std::env::var_os("RUSTDL_EXP_TBOX_TAIL").is_some_and(|v| v == "1" || v == "2")
+}
+
+/// Option A (`=1`) also runs the tail on the light route; A″ (`=2`) does not.
+#[must_use]
+pub fn exp_tbox_tail_light() -> bool {
+    std::env::var_os("RUSTDL_EXP_TBOX_TAIL").is_some_and(|v| v == "1")
+}
+
 /// #369: `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL` (default OFF, `=1` on): when the
 /// wedge leaves consistency undetermined, the lazy check also runs
 /// `consistent`'s bounded main-tableau probe (up to `RUSTDL_CONSISTENCY_FALLBACK_MS`
@@ -9349,6 +9366,31 @@ pub(crate) fn lazy_inconsistency_check_light(
     // seeded engine would test the first class instead (its `Unsat` is no
     // inconsistency). Not flagged, as classify's pre-check does not flag it.
     if !internal_has_individuals(internal) {
+        if exp_tbox_tail_light()
+            && !lazy_light_oversized(internal)
+            && !classify::is_pure_el(internal)
+        {
+            let tail_deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(consistency_fallback_ms());
+            let _full = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
+            let tail = PreparedOntology::from_internal(internal.clone())
+                .and_then(|p| p.decide_consistency(Some(tail_deadline)))
+                .unwrap_or(None);
+            eprintln!(
+                "EXP tbox tail (#457A): surface={surface} route=light tail={tail:?} us={}",
+                started.elapsed().as_micros()
+            );
+            if tail == Some(false) && mode == LazyConsistencyMode::On {
+                return Err(ReasonError::Inconsistent);
+            }
+            return Ok(tail != Some(true));
+        }
+        if exp_tbox_tail_enabled() {
+            eprintln!(
+                "EXP tbox tail (#457A): surface={surface} route=light-skipped us={}",
+                started.elapsed().as_micros()
+            );
+        }
         if report {
             eprintln!(
                 "lazy consistency (#369): surface={surface} verdict=NoSeed tail=None \
@@ -11210,9 +11252,12 @@ impl PreparedOntology {
                 }),
             },
         };
+        let exp_no_seed = self.consistency.is_none()
+            && wedge_consistency_enabled()
+            && exp_tbox_tail_enabled();
         let tail = if verdict == QueryConsistency::Undetermined
             && !inherited
-            && lazy_query_consistency_tail_enabled()
+            && (lazy_query_consistency_tail_enabled() || exp_no_seed)
         {
             Some(*self.lazy_consistency_tail.get_or_init(|| {
                 let deadline = std::time::Instant::now()
@@ -11228,8 +11273,16 @@ impl PreparedOntology {
         // [`lazy_inconsistency_check_light`]. The wedge turned off by
         // `RUSTDL_WEDGE_CONSISTENCY=0` is undetermined, as in #419.
         let no_seed = self.consistency.is_none() && wedge_consistency_enabled();
-        let undetermined =
-            verdict == QueryConsistency::Undetermined && !no_seed && tail != Some(Some(true));
+        let undetermined = verdict == QueryConsistency::Undetermined
+            && (!no_seed || exp_no_seed)
+            && tail != Some(Some(true));
+        if exp_no_seed {
+            eprintln!(
+                "EXP tbox tail (#457A): surface={surface} route=prepared verdict={verdict:?} \
+                 tail={tail:?} us={}",
+                started.elapsed().as_micros()
+            );
+        }
         if mode == LazyConsistencyMode::Report || std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!(
                 "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail:?} \

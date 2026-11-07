@@ -40,7 +40,7 @@ type IndivResult = (Vec<String>, Vec<String>);
 /// Same as [`IndivResult`] plus whether any probe for that individual was CUT
 /// (deadline / node-cap / depth bail) rather than refuted — the input to
 /// `Realization::incomplete`.
-type IndivResultReporting = (Vec<String>, Vec<String>, bool);
+type IndivResultReporting = (Vec<String>, Vec<String>, bool, bool);
 
 /// Default per-pair tableau probe deadline (milliseconds) used by the
 /// `{a} ⊓ ¬C` instance-check reduction when `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
@@ -214,6 +214,12 @@ pub struct InstanceFlags {
     /// in the answer was cut. A KB found inconsistent is
     /// `Err(ReasonError::Inconsistent)` instead.
     pub consistency_undetermined: bool,
+    /// #493: a probe ended in `NoVerdict` as an internal limit, likely a reasoner bug
+    /// (#449): a probe with no deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`), or one
+    /// whose saturation stalled (#475). The probe took the sound default ("not an
+    /// instance"), so `incomplete` is set too. A plain depth cut, deadline or node cap
+    /// does not set it. Not covered: the #369 lazy consistency check.
+    pub no_verdict: bool,
 }
 
 /// [`is_instance_of`] plus its [`InstanceFlags`] (#73, #369).
@@ -245,8 +251,13 @@ pub fn is_instance_of_internal(
     class_iri: &str,
     individual_iri: &str,
 ) -> Result<bool, ReasonError> {
-    is_instance_of_reporting_internal(internal, class_iri, individual_iri)
-        .map(|(is_inst, _)| is_inst)
+    // #493: this API has no flag channel, so a likely-bug `NoVerdict` stays the error
+    // it always was for a deadline-free probe (the reporting variant returns it as
+    // `InstanceFlags::no_verdict` instead).
+    match is_instance_of_reporting_internal(internal, class_iri, individual_iri)? {
+        (false, flags) if flags.no_verdict => Err(ReasonError::NoVerdict),
+        (is_inst, _) => Ok(is_inst),
+    }
 }
 
 /// #427: the instance queries' class argument. A named class is its id. For a
@@ -343,7 +354,7 @@ pub fn is_instance_of_reporting_internal(
     // Single-pair path — the witness is a realize-loop optimization (one
     // witness amortized across the whole per-individual, per-class loop);
     // it isn't worth building for a lone instance check.
-    let (holds, cut) = instance_check_reporting(
+    let probe = instance_check_reporting(
         internal,
         &closure,
         &prepared,
@@ -352,13 +363,15 @@ pub fn is_instance_of_reporting_internal(
         pair_deadline,
         None,
     )?;
+    let holds = probe.is_instance;
     // #369: a membership on a KB only the tableau finds inconsistent is vacuous.
     let consistency_undetermined = holds && prepared.lazy_inconsistency_check("instance")?;
     Ok((
         holds,
         InstanceFlags {
-            incomplete: cut,
+            incomplete: probe.cut,
             consistency_undetermined,
+            no_verdict: probe.no_verdict,
         },
     ))
 }
@@ -430,8 +443,9 @@ pub fn is_instance_of_saturation_only_internal(
 ///    — `a` is in `Rng` via the property range axiom, transitively
 ///    via the role hierarchy.
 ///
-/// `(is_instance, truncated)` — the instance check, plus WHETHER a negative answer
-/// came from a real refutation or from a cut probe.
+/// The instance check, plus WHETHER a negative answer came from a real refutation or
+/// from a cut probe, and whether that cut is #462/#475's likely-bug `NoVerdict`
+/// ([`InstanceProbe`]).
 ///
 /// This is now the ONLY instance-check entry point. It previously had a
 /// `instance_check_with_closure` wrapper whose whole body was
@@ -471,16 +485,16 @@ fn instance_check_reporting(
     individual_id: IndividualId,
     pair_deadline: Option<std::time::Instant>,
     base_types: Option<&HashSet<ClassId>>,
-) -> Result<(bool, bool), ReasonError> {
+) -> Result<InstanceProbe, ReasonError> {
     for told in told_classes_of(internal, individual_id) {
         if closure.contains(told, class_id) {
-            return Ok((true, false));
+            return Ok(InstanceProbe::decided(true));
         }
     }
     if let Some(bt) = base_types
         && !bt.contains(&class_id)
     {
-        return Ok((false, false));
+        return Ok(InstanceProbe::decided(false));
     }
     // KB ⊨ C(a) iff `{a} ⊓ ¬C` is unsatisfiable.
     let build = move |pool: &mut ConceptPool| {
@@ -504,18 +518,56 @@ fn instance_check_reporting(
         Some(deadline) => match prepared.decide_with_deadline(deadline, build) {
             // `sat == None` is a deadline expiry or a node-cap trip: no verdict, so the
             // sound answer is "not an instance" AND the result is truncated.
-            Ok(sat) => Ok((!sat.unwrap_or(true), sat.is_none())),
-            // Depth-limit bail — also no verdict, also truncated.
-            Err(ReasonError::NoVerdict) => Ok((false, true)),
+            Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
+            Ok(None) => Ok(InstanceProbe::cut(false)),
+            // A depth-limit bail — also no verdict, also truncated. #493: a stalled
+            // probe's `NoVerdict` is #475's likely-bug signal; a depth cut is not.
+            Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(crate::no_verdict_is_a_bug(
+                Some(deadline),
+            ))),
             Err(e) => Err(e),
         },
-        // No deadline: the only give-up is a node-cap trip (`RUSTDL_MAX_NODES`),
-        // which `decide_raw` reports as `None`. Sound answer "not an instance",
-        // and the result is truncated (#363 A2).
-        None => Ok(match prepared.decide_raw(build)? {
-            Some(sat) => (!sat, false),
-            None => (false, true),
-        }),
+        // No deadline: a node-cap trip (`RUSTDL_MAX_NODES`) is `None`, a plain cut
+        // (#363 A2). #493: a `NoVerdict` here is #462's likely-bug signal. It used to
+        // propagate (`?`) and fail the whole command, losing its output; now the probe
+        // takes the sound default ("not an instance", truncated) and reports the signal.
+        None => match prepared.decide_raw(build) {
+            Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
+            Ok(None) => Ok(InstanceProbe::cut(false)),
+            Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(true)),
+            Err(e) => Err(e),
+        },
+    }
+}
+
+/// One instance check's outcome ([`instance_check_reporting`]).
+///
+/// `is_instance` is the sound answer. `cut` means the probe gave up, so a `false` is
+/// "not proven", not a refutation. `no_verdict` (#493) means the give-up was #462 /
+/// #475's likely-bug `NoVerdict` (a probe with no deadline, or one whose saturation
+/// stalled), never a plain depth cut, deadline or node cap. `no_verdict` implies `cut`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InstanceProbe {
+    is_instance: bool,
+    cut: bool,
+    no_verdict: bool,
+}
+
+impl InstanceProbe {
+    fn decided(is_instance: bool) -> Self {
+        Self {
+            is_instance,
+            cut: false,
+            no_verdict: false,
+        }
+    }
+
+    fn cut(no_verdict: bool) -> Self {
+        Self {
+            is_instance: false,
+            cut: true,
+            no_verdict,
+        }
     }
 }
 
@@ -648,7 +700,11 @@ pub fn instances_of_internal(
     internal: &InternalOntology,
     class_iri: &str,
 ) -> Result<Vec<String>, ReasonError> {
-    instances_of_reporting_internal(internal, class_iri).map(|(v, _)| v)
+    // #493: no flag channel here either, so a likely-bug `NoVerdict` stays an error.
+    match instances_of_reporting_internal(internal, class_iri)? {
+        (_, flags) if flags.no_verdict => Err(ReasonError::NoVerdict),
+        (members, _) => Ok(members),
+    }
 }
 
 /// Truncation-reporting form of [`instances_of`] (#73). Returns
@@ -705,6 +761,9 @@ pub fn instances_of_reporting_internal(
     let mut out = Vec::new();
     // Sticky across the loop: ANY cut probe means the returned SET may be short.
     let mut incomplete = false;
+    // #493: sticky likewise; every probe counts, anonymous individuals' too (the
+    // filter below is on the listed rows only).
+    let mut no_verdict = false;
     let mut any_member = false;
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
@@ -713,7 +772,7 @@ pub fn instances_of_reporting_internal(
             .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
         // Single-pair-per-individual path — same rationale as
         // `is_instance_of_internal`: no shared witness to amortize here.
-        let (is_inst, cut) = instance_check_reporting(
+        let probe = instance_check_reporting(
             internal,
             &closure,
             &prepared,
@@ -722,9 +781,10 @@ pub fn instances_of_reporting_internal(
             pair_deadline,
             None,
         )?;
-        incomplete |= cut;
-        any_member |= is_inst;
-        if is_inst {
+        incomplete |= probe.cut;
+        no_verdict |= probe.no_verdict;
+        any_member |= probe.is_instance;
+        if probe.is_instance {
             let iri = internal.vocabulary.individual_iri(individual_id);
             if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
                 out.push(iri.to_owned());
@@ -739,6 +799,7 @@ pub fn instances_of_reporting_internal(
         InstanceFlags {
             incomplete,
             consistency_undetermined,
+            no_verdict,
         },
     ))
 }
@@ -958,9 +1019,24 @@ pub struct Realization {
     /// decision, not a give-up: separate from [`Self::incomplete`]. Always `false`
     /// on the saturation paths, whose classification runs no wedge.
     relies_on_trusted_consistency: bool,
+    no_verdict: bool,
 }
 
 impl Realization {
+    /// #493: a probe ended in `NoVerdict` as an internal limit, likely a reasoner bug
+    /// (#449): a probe with no deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`), or one
+    /// whose saturation stalled (#475). It covers the realize classification (its
+    /// `no_verdict_pairs`), every instance probe (anonymous individuals' too) and #388's
+    /// direct-types checks. Each such probe took its sound default ("not an instance",
+    /// or an unchecked pair), and [`Self::incomplete`] is set too. A plain depth cut,
+    /// deadline or node cap does not set it. Not covered: the pseudo-model witness
+    /// build (a stall there only disables the prune) and the #369 lazy consistency
+    /// check. Always `false` on the saturation paths, which run no tableau.
+    #[must_use]
+    pub fn no_verdict(&self) -> bool {
+        self.no_verdict
+    }
+
     /// See [`Self::incomplete`] — `true` iff at least one instance probe was cut
     /// rather than refuted, so a type set may be short.
     #[must_use]
@@ -1087,12 +1163,12 @@ fn subsumption_verdict(
     sub_iri: &str,
     sup_iri: &str,
     pair_deadline_ms: Option<u64>,
-) -> Result<PairVerdict, ReasonError> {
+) -> Result<(PairVerdict, bool), ReasonError> {
     let (Some(sub), Some(sup)) = (
         internal.vocabulary.class_id(sub_iri),
         internal.vocabulary.class_id(sup_iri),
     ) else {
-        return Ok(PairVerdict::Cut);
+        return Ok((PairVerdict::Cut, false));
     };
     let build = move |pool: &mut ConceptPool| {
         let a = pool.atomic(sub);
@@ -1100,19 +1176,22 @@ fn subsumption_verdict(
         let not_b = pool.not(b);
         pool.and(vec![a, not_b])
     };
-    let sat = match pair_deadline_ms {
-        Some(ms) => prepared.decide_classify_with_deadline(
-            std::time::Instant::now() + std::time::Duration::from_millis(ms),
-            build,
-        ),
+    let deadline =
+        pair_deadline_ms.map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    let sat = match deadline {
+        Some(d) => prepared.decide_classify_with_deadline(d, build),
         None => prepared.decide_classify_raw(build),
     };
     Ok(match sat {
-        Ok(Some(false)) => PairVerdict::Proven,
-        Ok(Some(true)) => PairVerdict::Refuted,
+        Ok(Some(false)) => (PairVerdict::Proven, false),
+        Ok(Some(true)) => (PairVerdict::Refuted, false),
         // A deadline, node cap or depth bail-out is no verdict; like a cut instance
         // probe it must not fail the whole realization.
-        Ok(None) | Err(ReasonError::NoVerdict) => PairVerdict::Cut,
+        Ok(None) => (PairVerdict::Cut, false),
+        // #493: a `NoVerdict` with no deadline, or from a stalled probe, is #462 /
+        // #475's likely-bug signal. It is still a cut here (the sound default), and
+        // the flag reports it. Read on this thread, right after the probe.
+        Err(ReasonError::NoVerdict) => (PairVerdict::Cut, crate::no_verdict_is_a_bug(deadline)),
         Err(e) => return Err(e),
     })
 }
@@ -1126,7 +1205,7 @@ fn verify_co_leaf_pairs(
     hierarchy: &crate::Classification,
     leaf_sets: &[&[String]],
     pair_deadline_ms: Option<u64>,
-) -> Result<PairVerdicts, ReasonError> {
+) -> Result<(PairVerdicts, bool), ReasonError> {
     let mut pairs: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
     for leaves in leaf_sets {
         for x in *leaves {
@@ -1138,9 +1217,17 @@ fn verify_co_leaf_pairs(
         }
     }
     let pairs: Vec<(&str, &str)> = pairs.into_iter().collect();
-    decide_pairs_until_cut(&pairs, |x, y| {
-        subsumption_verdict(internal, prepared, x, y, pair_deadline_ms)
-    })
+    // #493: whether any check's cut was the likely-bug `NoVerdict`. Each check sets
+    // it on its own rayon thread, right after its probe.
+    let no_verdict = std::sync::atomic::AtomicBool::new(false);
+    let verdicts = decide_pairs_until_cut(&pairs, |x, y| {
+        let (verdict, nv) = subsumption_verdict(internal, prepared, x, y, pair_deadline_ms)?;
+        if nv {
+            no_verdict.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(verdict)
+    })?;
+    Ok((verdicts, no_verdict.into_inner()))
 }
 
 /// Decide `pairs` in parallel, and stop starting new checks once one is cut.
@@ -1332,6 +1419,8 @@ pub fn realize_saturation_only_internal(
         // No tableau on this path by contract, so an undecided pair stays undecided.
         direct_types_unverified,
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
+        // No tableau probe runs on this path, so no likely-bug `NoVerdict` (#493).
+        no_verdict: false,
     })
 }
 
@@ -1534,6 +1623,8 @@ pub(crate) fn realize_via_saturation_internal(
         // it is complete (see the field doc).
         direct_types_unverified: false,
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
+        // No tableau probe runs on this path, so no likely-bug `NoVerdict` (#493).
+        no_verdict: false,
     })
 }
 
@@ -1751,11 +1842,12 @@ pub(crate) fn realize_tableau_internal(
             let mut types: Vec<&str> = Vec::new();
             // Any cut probe for this individual makes its type set possibly short.
             let mut truncated = false;
+            let mut no_verdict = false;
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
                 let pair_deadline = pair_deadline_ms
                     .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
-                let (is_instance, was_cut) = instance_check_reporting(
+                let probe = instance_check_reporting(
                     internal,
                     &closure,
                     &prepared,
@@ -1764,8 +1856,9 @@ pub(crate) fn realize_tableau_internal(
                     pair_deadline,
                     base_types,
                 )?;
-                truncated |= was_cut;
-                if is_instance {
+                truncated |= probe.cut;
+                no_verdict |= probe.no_verdict;
+                if probe.is_instance {
                     types.push(class_iri);
                 }
             }
@@ -1782,7 +1875,7 @@ pub(crate) fn realize_tableau_internal(
                 .map(|s| (*s).to_owned())
                 .collect();
             let types_owned: Vec<String> = types.into_iter().map(str::to_owned).collect();
-            Ok((types_owned, leaves, truncated))
+            Ok((types_owned, leaves, truncated, no_verdict))
         })
         .collect();
     let per_individual = per_individual?;
@@ -1793,7 +1886,7 @@ pub(crate) fn realize_tableau_internal(
             .iter()
             .zip(&per_individual)
             .filter(|(iri, _)| !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX))
-            .map(|(_, (_, leaves, _))| leaves.as_slice())
+            .map(|(_, (_, leaves, _, _))| leaves.as_slice())
             .collect();
         verify_co_leaf_pairs(
             internal,
@@ -1803,15 +1896,23 @@ pub(crate) fn realize_tableau_internal(
             pair_deadline_ms,
         )?
     } else {
-        PairVerdicts::new()
+        (PairVerdicts::new(), false)
     };
+    let (verdicts, pairs_no_verdict) = verdicts;
+    // #493: the likely-bug `NoVerdict` from the realize classification (#471's
+    // convention for surfaces that classify first), the instance probes and #388's
+    // checks. Anonymous individuals' probes count: this is a bug signal, not a row.
+    let mut no_verdict = hierarchy.stats().no_verdict_pairs > 0 || pairs_no_verdict;
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut named_individual_iris: Vec<String> = Vec::new();
     // Any cut probe anywhere makes the whole realization possibly short.
     let mut incomplete = false;
     let mut direct_types_unverified = false;
-    for (iri, (types_owned, leaves, truncated)) in individual_iris.iter().zip(per_individual) {
+    for (iri, (types_owned, leaves, truncated, probe_no_verdict)) in
+        individual_iris.iter().zip(per_individual)
+    {
+        no_verdict |= probe_no_verdict;
         if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
             continue;
         }
@@ -1827,7 +1928,6 @@ pub(crate) fn realize_tableau_internal(
         individuals: named_individual_iris,
         entailed_types,
         most_specific_types,
-        incomplete,
         // `base_model.is_some()` is exactly "the prune was in play": it is `None`
         // whenever the flag is off, the witness build stalled, or there is no
         // wedge-consistency cache, and in each of those cases every pair took the
@@ -1836,6 +1936,10 @@ pub(crate) fn realize_tableau_internal(
         witness_prune_reasons,
         direct_types_unverified,
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
+        // #493: a likely-bug cut is a cut too, whatever row it hit (anonymous rows
+        // are not published, so `incomplete` alone would miss them).
+        incomplete: incomplete || no_verdict,
+        no_verdict,
     })
 }
 
@@ -1900,11 +2004,11 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         for deadline in [Some(750), None] {
             assert_eq!(
                 subsumption_verdict(&internal, &prepared, &x, &y, deadline).expect("x ⊑ y"),
-                PairVerdict::Proven
+                (PairVerdict::Proven, false)
             );
             assert_eq!(
                 subsumption_verdict(&internal, &prepared, &y, &x, deadline).expect("y ⊑ x"),
-                PairVerdict::Refuted
+                (PairVerdict::Refuted, false)
             );
         }
     }
@@ -2184,7 +2288,7 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             instance_check_reporting(&internal, &closure, &prepared, e_id, a_id, None, None)
                 .expect("verdict")
-                .0,
+                .is_instance,
             "a:E must be entailed via case-split tableau reasoning",
         );
 
@@ -2203,7 +2307,7 @@ Ontology(<http://rustdl.test/test>\n\
                 Some(&empty),
             )
             .expect("verdict")
-            .0,
+            .is_instance,
             "base_types excluding E must short-circuit to Ok(false)",
         );
 
@@ -2221,7 +2325,7 @@ Ontology(<http://rustdl.test/test>\n\
                 Some(&with_e),
             )
             .expect("verdict")
-            .0,
+            .is_instance,
             "base_types containing E must not block the correct Ok(true)",
         );
     }
@@ -2266,7 +2370,7 @@ Ontology(<http://rustdl.test/test>\n\
                 Some(&empty),
             )
             .expect("verdict")
-            .0,
+            .is_instance,
             "told/derived membership must win before base_types is consulted",
         );
     }

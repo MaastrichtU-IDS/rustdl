@@ -272,12 +272,15 @@ def is_subclass_of(path: str, sub: str, sup: str) -> bool:
 
 def is_instance_of(path: str, class_iri: str, individual_iri: str) -> bool:
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
-    cut, returns `False` and emits `IncompleteQueryWarning`."""
+    cut, returns `False` and emits `IncompleteQueryWarning`. A probe that ended in NoVerdict on an internal limit (likely a reasoner bug, #449)
+    raises `RustdlError` instead (#493)."""
     ...
 
 def instances_of(path: str, class_iri: str) -> list[str]:
     """Named individuals entailed to be instances of `class_iri`. Emits
-    `IncompleteQueryWarning` when a probe was cut (members may be missing)."""
+    `IncompleteQueryWarning` when a probe was cut (members may be missing); for
+    a probe that ended in NoVerdict on an internal limit (likely a reasoner bug,
+    #449) the warning says so, and the members are still returned (#493)."""
     ...
 
 def realize(path: str) -> dict[str, list[str]]:
@@ -285,7 +288,9 @@ def realize(path: str) -> dict[str, list[str]]:
     `IncompleteQueryWarning` when an instance probe was cut, and
     `DirectTypesUnverifiedWarning` when two most-specific types could not be
     compared, and `WitnessPruneWarning` when the pseudo-model prune may have
-    dropped an entailed type."""
+    dropped an entailed type. A probe that ended in NoVerdict on an internal
+    limit (likely a reasoner bug, #449) is reported by `IncompleteQueryWarning`
+    with that text; the types are still returned (#493)."""
     ...
 
 # ── inferred disjointness ───────────────────────────────────────────────────

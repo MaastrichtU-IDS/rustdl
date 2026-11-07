@@ -61,12 +61,13 @@ pub(crate) fn materialize_inferred_subclass_axioms(
 /// missing) and `direct_types_unverified` (#388: a listed type may be a
 /// superclass of another) and `witness_prune_may_drop` (#387: the pseudo-model
 /// prune may have dropped a type); the Python wrapper warns on them (#391).
-/// The last value is #429's `relies_on_trusted_consistency`.
+/// Then #429's `relies_on_trusted_consistency`; the last value is #493's
+/// `no_verdict` (`Realization::no_verdict`, a likely-bug `NoVerdict`, #449).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_inferred_class_assertions(
     path: &str,
-) -> PyResult<(Vec<(String, String)>, bool, bool, bool, bool)> {
+) -> PyResult<(Vec<(String, String)>, bool, bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     let mut out = Vec::new();
@@ -81,6 +82,7 @@ pub(crate) fn materialize_inferred_class_assertions(
         realization.direct_types_unverified(),
         realization.witness_prune_may_drop(),
         realization.relies_on_trusted_consistency(),
+        realization.no_verdict(),
     ))
 }
 
@@ -169,12 +171,19 @@ pub(crate) fn materialize_inferred_subdataproperty_axioms(
 /// Also returns `incomplete` (a probe was cut) and `witness_prune_may_drop` (the
 /// pseudo-model prune may have dropped a type, #387) from the `realize` run
 /// underneath, either of which means rows may be missing; the Python wrapper
-/// warns on them (#391).
+/// warns on them (#391). The last value is #493's `no_verdict` (a likely-bug
+/// `NoVerdict` in that `realize` run, #449).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_existential_successors(
     path: &str,
-) -> PyResult<(Vec<(String, String, String, String)>, bool, bool, bool)> {
+) -> PyResult<(
+    Vec<(String, String, String, String)>,
+    bool,
+    bool,
+    bool,
+    bool,
+)> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::materialize_existential_successors_reporting(&ontology)
         .map(|(rows, flags)| {
@@ -183,6 +192,7 @@ pub(crate) fn materialize_existential_successors(
                 flags.incomplete,
                 flags.witness_prune_may_drop,
                 flags.relies_on_trusted_consistency,
+                flags.no_verdict,
             )
         })
         .map_err(reason_error_to_py)

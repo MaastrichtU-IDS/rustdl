@@ -19,6 +19,10 @@
 //! #475: on a probe WITH a deadline the same holds when its saturation stalled (the
 //! forced stall here). A budgeted `NoVerdict` that is the routine decision-depth cut
 //! (#288) still changes nothing: `a_budgeted_depth_cut_is_not_a_no_verdict` guards it.
+//!
+//! #493: `realize`, `instances-expr`, `instances` and `instance` follow the same rule for
+//! their instance probes, #388's direct-types checks and (realize) the classification
+//! under them; `a_budgeted_instance_depth_cut_is_not_a_no_verdict` guards the depth cut.
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
@@ -516,4 +520,242 @@ fn a_no_verdict_cut_is_incomplete_whatever_the_cut_flag_says() {
             r.stderr
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// #493: `realize`, `instances-expr`, `instances` and `instance` keep their output on a
+// likely-bug `NoVerdict` and report it: `realize --json` / `instances-expr --json` get
+// `no_verdict: true` (and `incomplete`), every command adds #449's note and exits 3.
+// ---------------------------------------------------------------------------------------
+
+/// A pure-EL `TBox`, so the realize classification answers by saturation and runs no
+/// tableau pair (its control below checks that). `⊤ ⊑ E` gives every probe root a rule,
+/// so the forced stall fires. `RUSTDL_REALIZE_SATURATION=0` sends realize down the
+/// tableau path. `assertions` are the `ABox`.
+fn el_abox(assertions: &str) -> String {
+    format!(
+        "Prefix(:=<http://ex/#>)\n\
+         Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://ex/el-abox>\n\
+         Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))\n\
+         Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+         SubClassOf(owl:Thing :E)\n\
+         {assertions}\n)\n"
+    )
+}
+
+/// The tableau realize path, a generous pair budget (so a forced stall can never be a
+/// plain deadline cut on a loaded machine), and any extra settings.
+const REALIZE_TABLEAU: [(&str, &str); 2] = [
+    ("RUSTDL_REALIZE_SATURATION", "0"),
+    ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "20000"),
+];
+
+/// #493 control for the `el_abox` fixtures: the realize classification itself does not
+/// stall under the forced knob (a pure-EL `TBox` classifies by saturation), so whatever sets
+/// realize's `no_verdict` below comes from realize's own probes.
+fn assert_el_classify_is_clean(f: &Fixture) {
+    let r = run(true, &["classify", "--json", f.path()]);
+    assert_eq!(r.code, 0, "classify on the EL fixture: {}", r.stderr);
+    assert_eq!(json(&r, "classify")["no_verdict_pairs"], 0, "{}", r.stdout);
+}
+
+/// #493 (S1): an instance probe that stalls. `b : C` is told and `D` is not, so realize
+/// runs `{b} ⊓ ¬D` (and `a`'s probes) on the main tableau. Budgeted (20 s) and
+/// deadline-free (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`): either way the JSON is kept, with
+/// `no_verdict` and `incomplete`, the note and exit 3. Unforced: a clean answer.
+#[test]
+fn realize_reports_a_stalled_instance_probe() {
+    let f = Fixture::with("realize-probe", &el_abox("ClassAssertion(:C :b)"));
+    assert_el_classify_is_clean(&f);
+    for ms in ["20000", "0"] {
+        let env = [
+            ("RUSTDL_REALIZE_SATURATION", "0"),
+            ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", ms),
+        ];
+        let what = format!("realize --json, pair budget {ms}");
+        let r = run_with(true, &env, &["realize", "--json", f.path()]);
+        assert_gave_up(&r, &what);
+        let j = json(&r, &what);
+        assert_eq!(j["no_verdict"], true, "{what}: {j}");
+        assert_eq!(j["incomplete"], true, "{what}: {j}");
+        // The JSON is the command's own (#493: a deadline-free `NoVerdict` used to fail
+        // the whole command, so this object was lost).
+        assert!(j["individuals"].is_array(), "{what}: {j}");
+        let r = run_with(false, &env, &["realize", "--json", f.path()]);
+        assert_eq!(r.code, 0, "{what} control: {}", r.stderr);
+        assert!(!r.stderr.contains(MARKER), "{what} control: {}", r.stderr);
+        assert_eq!(json(&r, &what)["no_verdict"], false, "{what} control");
+    }
+    // Text mode: the realization prints, then the note, exit 3; no budget advice.
+    let r = run_with(true, &REALIZE_TABLEAU, &["realize", f.path()]);
+    assert_gave_up(&r, "realize (text)");
+    assert!(
+        r.stdout.contains("http://ex/#b"),
+        "realize (text) kept its output: {}",
+        r.stdout
+    );
+    assert!(
+        !r.stderr.contains("RUSTDL_MAX_NODES"),
+        "realize (text): the note, not the budget advice: {}",
+        r.stderr
+    );
+}
+
+/// #493 (S3): #388's direct-types check. Both individuals are told `C` and `D` (every
+/// instance check is a closure hit, so no instance probe runs), and `C`, `D` are
+/// unrelated co-listed most-specific types, so realize checks `C ⊑ D` / `D ⊑ C` on the
+/// main tableau, and the forced stall hits there.
+#[test]
+fn realize_reports_a_stalled_direct_types_check() {
+    let f = Fixture::with(
+        "realize-pair",
+        &el_abox(
+            "ClassAssertion(:C :a) ClassAssertion(:D :a) \
+             ClassAssertion(:C :b) ClassAssertion(:D :b)",
+        ),
+    );
+    assert_el_classify_is_clean(&f);
+    let r = run_with(true, &REALIZE_TABLEAU, &["realize", "--json", f.path()]);
+    assert_gave_up(&r, "realize --json, #388 check");
+    let j = json(&r, "realize --json");
+    assert_eq!(j["no_verdict"], true, "{j}");
+    assert_eq!(
+        j["direct_types_unverified"], true,
+        "the cut pair stays unchecked: {j}"
+    );
+    let r = run_with(false, &REALIZE_TABLEAU, &["realize", "--json", f.path()]);
+    assert_eq!(r.code, 0, "control: {}", r.stderr);
+    let j = json(&r, "control");
+    assert_eq!(j["no_verdict"], false, "control: {j}");
+    assert_eq!(j["direct_types_unverified"], false, "control: {j}");
+}
+
+/// #493 (S6): realize's own classification. `SRC` has no individuals, so no instance
+/// probe and no #388 pair runs; the classification under realize is budgeted and stalls
+/// (#475), and realize reports it like `classify --json` does.
+#[test]
+fn realize_reports_a_stall_in_its_classification() {
+    let f = Fixture::new("realize-seed");
+    let r = run_with(true, &REALIZE_TABLEAU, &["realize", "--json", f.path()]);
+    assert_gave_up(&r, "realize --json, no individuals");
+    let j = json(&r, "realize --json");
+    assert_eq!(j["no_verdict"], true, "{j}");
+    assert_eq!(j["incomplete"], true, "{j}");
+    assert_eq!(j["individuals"], serde_json::json!([]), "{j}");
+}
+
+/// #493: the instance queries share realize's probe. `instances-expr --json` reports the
+/// field; `instances` keeps its list; `instance` answers `unknown` with #449's note (not
+/// the probe-cut warning). Budgeted and deadline-free, with unforced controls.
+#[test]
+fn instance_queries_report_a_stalled_probe() {
+    let a = Fixture::with("instances-abox", SRC_ABOX);
+    for ms in ["20000", "0"] {
+        let env = [("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", ms)];
+        let what = format!("instances-expr --json, pair budget {ms}");
+        let r = run_with(true, &env, &["instances-expr", "--json", a.path(), ":D"]);
+        assert_gave_up(&r, &what);
+        let j = json(&r, &what);
+        assert_eq!(j["no_verdict"], true, "{what}: {j}");
+        assert_eq!(j["incomplete"], true, "{what}: {j}");
+        let r = run_with(false, &env, &["instances-expr", "--json", a.path(), ":D"]);
+        assert_eq!(r.code, 0, "{what} control: {}", r.stderr);
+        assert_eq!(json(&r, &what)["no_verdict"], false, "{what} control");
+
+        let what = format!("instances, pair budget {ms}");
+        let r = run_with(true, &env, &["instances", a.path(), "http://ex/#D"]);
+        assert_gave_up(&r, &what);
+        assert!(
+            !r.stderr.contains("RUSTDL_QUERY_MAX_NODES"),
+            "{what}: {}",
+            r.stderr
+        );
+        let r = run_with(false, &env, &["instances", a.path(), "http://ex/#D"]);
+        assert_eq!(r.code, 0, "{what} control: {}", r.stderr);
+        assert!(
+            r.stdout.contains("http://ex/#b"),
+            "{what} control: {}",
+            r.stdout
+        );
+
+        let what = format!("instance, pair budget {ms}");
+        let r = run_with(
+            true,
+            &env,
+            &["instance", a.path(), "http://ex/#D", "http://ex/#a"],
+        );
+        assert_gave_up(&r, &what);
+        assert_eq!(r.stdout.trim(), "unknown", "{what}: {}", r.stdout);
+        assert!(
+            !r.stderr.contains("instance probe was cut"),
+            "{what}: {}",
+            r.stderr
+        );
+        let r = run_with(
+            false,
+            &env,
+            &["instance", a.path(), "http://ex/#D", "http://ex/#a"],
+        );
+        assert_eq!(r.code, 0, "{what} control: {}", r.stderr);
+    }
+}
+
+/// #493 (S2): a budgeted instance probe that is the routine decision-depth cut (#288) is
+/// NOT the signal. The fixture is the 280-union with every `Bk` disjoint from `X`, so each
+/// `Bk` branch clashes at once and `{a} ⊓ ¬Y` (`Y` unrelated, so satisfiable) can only go
+/// down the `Ak` choices: the search reaches the depth limit (256) in a line, every
+/// alternative clashes, and it ends `DepthLimit` well before the 20 s deadline. Early
+/// abandon is off, so this is `map_depth_limit`'s pure depth-cap arm (`Err(NoVerdict)` with
+/// time left), the one a wrong flag would hit. (The plain 280-union never exhausts: with
+/// early abandon off it runs into the deadline instead, which S2 cannot reach.) `instance`
+/// reports the cut as before (`unknown`, the probe-cut warning, exit 3), with no note.
+#[test]
+fn a_budgeted_instance_depth_cut_is_not_a_no_verdict() {
+    let body: Vec<String> = (0..280)
+        .map(|k| format!("ObjectUnionOf(:A{k} :B{k})"))
+        .collect();
+    let disjoint: Vec<String> = (0..280)
+        .map(|k| format!("DisjointClasses(:B{k} :X)"))
+        .collect();
+    let src = format!(
+        "Prefix(:=<http://example.org/d#>)\nOntology(<http://example.org/d>\n\
+         Declaration(NamedIndividual(:a)) Declaration(Class(:Y))\n\
+         SubClassOf(:X ObjectIntersectionOf({}))\n{}\nClassAssertion(:X :a)\n)\n",
+        body.join(" "),
+        disjoint.join("\n")
+    );
+    let f = Fixture::with("instance-depthcut", &src);
+    let env = [
+        ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
+        ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "20000"),
+    ];
+    let args = [
+        "instance",
+        f.path(),
+        "http://example.org/d#Y",
+        "http://example.org/d#a",
+    ];
+    let t = std::time::Instant::now();
+    let r = run_with(false, &env, &args);
+    // The search exhausts at the depth limit in about 0.5 s (debug); a run near the 20 s
+    // budget would be a deadline cut (`Ok(None)`), which passes the checks below without
+    // ever reaching the depth-cap arm this guards (Fable's review of #495).
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "the probe must end on the depth limit, well before its deadline: {:?}",
+        t.elapsed()
+    );
+    assert_eq!(
+        r.code, 3,
+        "the cut is a give-up: {}\n{}",
+        r.stdout, r.stderr
+    );
+    assert_eq!(r.stdout.trim(), "unknown", "{}", r.stdout);
+    assert!(r.stderr.contains("instance probe was cut"), "{}", r.stderr);
+    assert!(
+        !r.stderr.contains(MARKER),
+        "a depth cut is not the bug signal: {}",
+        r.stderr
+    );
 }

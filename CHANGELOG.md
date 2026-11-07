@@ -225,6 +225,47 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **Per-query `sat` / `sat-expr` / `subclass` / `explain` no longer give a false `unsat` or a
+  false subsumption from a nominal merge (#498).** On `c5e.ofn` and `q5.ofn` (12 and 11 axioms:
+  nominals, `∀r.{a}`, two unions), `sat E` answered `unsat` and `subclass E Zb` answered `yes`.
+  `consistent` with `RUSTDL_WEDGE_CONSISTENCY=0` answered `inconsistent`. HermiT and Konclude both
+  find the ontologies consistent, with `E` satisfiable and under `owl:Thing` only. `classify` and
+  default `consistent` were right, with and without `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1` and at
+  a 200 ms or 5 s pair budget. So neither the classify net nor the per-pair FP gate (which
+  audits the per-pair path through that classify mode) could see it.
+  - Since #378 (0ac2fa27, #362's nominal block guard), in no release: v0.4.42 and 0ac2fa27's
+    parent answer right, 0ac2fa27 does not, and the guard off on main answers right.
+  - `apply_nominal_assignment` loops over a node's `Nominal` labels and merges the node with
+    each individual's node. With the guard on, the node folds into the other node, and two
+    dep sets came out too narrow:
+    - after a *refused* merge (a distinct pair, a `⊥`), the loop moved to the other
+      individual's node as if it had merged, so the next nominal merged that wrong node under
+      its own label's deps alone (c5e);
+    - the label deps were a snapshot taken before the loop, so after an *accepted* merge had
+      moved a label and added its deps, the next merge still used the old ones (q5).
+    A clash then back-jumped past a decision whose other option is a model. All-active `⊥`
+    deps hid both on most inputs.
+  - Fix: a refused merge leaves the node and the nominal map where they are; each merge reads
+    both `Nominal` labels' deps where the labels are at that moment; a label that is missing
+    gives every active decision instead of none. The rule also resolves its node on entry:
+    `apply_max` earlier in the same visit can merge the node away (a self-loop witness), and
+    reading the dead node's label dropped that merge's deps, the same defect by another route.
+  - Tests: four unit pins in `owl-dl-tableau`, one per change, each red under its own
+    sabotage; and `tests/nominal_assignment_deps.rs` (c5e, q5 and #490's 9-axiom wine
+    reduction, the wedge on and off, the guard on and off). Reverting the snapshot change turns
+    q5 red end to end; reverting the refused-merge change is caught by its unit pin (the
+    fresh read's fallback then masks c5e).
+  - Evidence (main 5e069d48 vs the fix on it, f108a18b):
+    - The R7 per-query laws (`scripts/gen/perquery.py`) on the 994 generated cases with an
+      individual or a nominal: 56,014 calls, 0 violations and 0 capped on both arms. One answer
+      differs: case 1247, which is inconsistent (Konclude, HermiT), where main once said `yes`
+      and the fix said `inconsistent`; both are sound.
+    - Two-arm `classify` on the 448 nominal-bearing ORE pool files:
+      - 412 the same, 33 failing on both arms;
+      - 3 one-sided caps at 120 s, which all answer on both arms serially at 300 s;
+      - 1 DIFFER (12698), identical on all 6 runs at `--pair-timeout-ms 1000`.
+    - CPU is neutral. Serially, on a seeded sample of 20 files with 5 interleaved reps, the
+      median is 1.007× main, with ranges overlapping on 19 of 20.
 - **Per-query `sat` / `subclass` / `explain` finish when a `≤0 R.C` has to put `¬C` on a
   neighbour that also carries an open disjunction (#485).** On
   `C0 ≡ ≤0 r1.¬C5`, `C5 ≡ ∃r0.(=2 r1.C2)` (generated case 1349, shrunk), `sat C5` never

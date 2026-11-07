@@ -8872,8 +8872,8 @@ fn is_consistent_internal_full(
         // path (`RUSTDL_CONSISTENCY_FALLBACK_MS` has no unbounded value), so a caller
         // who turns the wedge off gets a decision, not a 10 s give-up. It does not
         // always finish: wine with the wedge off does not (#490). Its only cuts are
-        // the node cap (`None` → incomplete) and the depth limit (`NoVerdict`, the
-        // #462 signal). Reached by `consistent`, `sat owl:Thing` / `subclass ⊤ ⊑ ⊥`
+        // the node cap (`None` → incomplete) and the tableau's internal limit
+        // (`NoVerdict`: a stalled saturation or the depth cap, the #462 signal). Reached by `consistent`, `sat owl:Thing` / `subclass ⊤ ⊑ ⊥`
         // (#427), Python `is_consistent`, justify and diagnose.
         Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
     }

@@ -165,7 +165,8 @@ and meaning as in `sat-expr`, `subclass-expr` and `prove --json` (#401).
 `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead, with no deadline
 (`RUSTDL_CONSISTENCY_FALLBACK_MS` bounds only the wedge route's fall-through), so on a hard
 ontology it may not finish (wine does not, #490). Its only give-ups are the node cap
-(`incomplete`) and the search-depth limit (`no_verdict`), #497.
+(`incomplete`) and the tableau's internal limit (`no_verdict`: a stalled saturation or the
+depth cap), #497.
 
 ## `realize --json`
 

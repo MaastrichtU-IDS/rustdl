@@ -1160,16 +1160,18 @@ fn exit_unknown_node_cap() -> ! {
 /// ontology with individuals) the main-tableau fall-through has
 /// `RUSTDL_CONSISTENCY_FALLBACK_MS`; with no individual, or with
 /// `RUSTDL_WEDGE_CONSISTENCY=0`, the main tableau runs with no deadline and gives up only
-/// on its node cap (or the depth limit, the #449 note). The stats cannot tell the route
-/// apart, so the advice names both. `node_cap` is the cap that applied: `RUSTDL_MAX_NODES`
-/// for `consistent`, `RUSTDL_QUERY_MAX_NODES` for a single query.
+/// on its node cap (or on the tableau's internal limit, `NoVerdict`: a stalled saturation
+/// or the depth cap, with the #449 note). The node cap applies on either route. The stats
+/// cannot tell the route apart, so the advice names both. `node_cap` is the cap that
+/// applied: `RUSTDL_MAX_NODES` for `consistent`; for a single query
+/// `RUSTDL_QUERY_MAX_NODES`, unless `RUSTDL_MAX_NODES` is set explicitly (it wins).
 fn consistency_budget_advice(node_cap: &str) -> String {
     format!(
         "With the consistency wedge (an ontology with individuals), raise \
          RUSTDL_CONSISTENCY_FALLBACK_MS (default 10000) or, for ontologies that count data \
          values, RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000). With no \
-         individual, or with RUSTDL_WEDGE_CONSISTENCY=0, the main tableau has no deadline and \
-         the give-up is its node cap: raise {node_cap}."
+         individual, or with RUSTDL_WEDGE_CONSISTENCY=0, the main tableau has no deadline. On \
+         either route the main tableau also gives up on its node cap: raise {node_cap}."
     )
 }
 
@@ -1181,7 +1183,7 @@ fn exit_unknown_consistency_gave_up() -> ! {
     eprintln!(
         "warning: this query is the consistency check, and no inconsistency was found \
          within budget; that is not a verdict. {}",
-        consistency_budget_advice("RUSTDL_QUERY_MAX_NODES")
+        consistency_budget_advice("RUSTDL_QUERY_MAX_NODES (or RUSTDL_MAX_NODES, if set)")
     );
     std::process::exit(3);
 }
@@ -2592,7 +2594,9 @@ fn run() -> Result<()> {
                     eprintln!(
                         "warning: no inconsistency was found within budget; that is not a \
                          verdict. {}",
-                        consistency_budget_advice("RUSTDL_QUERY_MAX_NODES")
+                        consistency_budget_advice(
+                            "RUSTDL_QUERY_MAX_NODES (or RUSTDL_MAX_NODES, if set)"
+                        )
                     );
                     std::process::exit(3);
                 }

@@ -181,12 +181,19 @@ fn sat_owl_thing_prints_the_same_note() {
 /// Off EL (the union), so the saturator does not decide it; `⊤ ⊑ ∃r.C` needs a node.
 #[test]
 fn a_node_cap_give_up_without_the_wedge_names_the_node_cap() {
-    let path = std::env::temp_dir().join(format!(
+    /// Removes the fixture even when an assertion fails.
+    struct TempOnto(PathBuf);
+    impl Drop for TempOnto {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let f = TempOnto(std::env::temp_dir().join(format!(
         "rustdl-consistent-trusted-sat-{}-nocap.ofn",
         std::process::id()
-    ));
+    )));
     std::fs::write(
-        &path,
+        &f.0,
         "Prefix(:=<http://ex/#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
          Ontology(<http://ex/nocap>\n\
          Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))\n\
@@ -195,7 +202,7 @@ fn a_node_cap_give_up_without_the_wedge_names_the_node_cap() {
          SubClassOf(:C ObjectUnionOf(:D :E))\n)\n",
     )
     .unwrap();
-    let p = path.to_str().unwrap();
+    let p = f.0.to_str().unwrap();
     for (args, cap_env, cap) in [
         (
             vec!["consistent", p],
@@ -218,5 +225,9 @@ fn a_node_cap_give_up_without_the_wedge_names_the_node_cap() {
             r.stderr
         );
     }
-    let _ = std::fs::remove_file(&path);
+    // Negative control: `consistent` does not hold the single-query cap, so
+    // `RUSTDL_QUERY_MAX_NODES` is not its cap (the advice names `RUSTDL_MAX_NODES`).
+    let r = run(&["consistent", p], &[("RUSTDL_QUERY_MAX_NODES", "1")]);
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    assert_eq!(r.stdout.trim(), "consistent", "{}", r.stdout);
 }

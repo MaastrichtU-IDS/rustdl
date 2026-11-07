@@ -92,9 +92,9 @@ pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
 /// `∀R.¬C` (`¬C` the registered complement of `C`; not for a data range), with the
 /// same deps.
 ///
-/// In ALC (Phase 2) every role is a [`owl_dl_core::Role::named`]
-/// wrapper around a [`RoleId`], so matching reduces to equality on
-/// `RoleId`. Inverse-role propagation arrives in Phase 3.
+/// The neighbours are chosen by [`TableauContext::edge_satisfies`] over the
+/// out-edges and the in-edges (read through the inverse), so sub-roles and
+/// inverses count as they do for [`apply_max`].
 ///
 /// Returns [`RuleOutcome::Applied`] if any successor's label set
 /// gained a new concept.
@@ -1086,9 +1086,10 @@ fn has_distinct_witnesses(
 ///    so clash detection fires.
 ///
 /// The choose rule is in [`crate::search`]: this rule assumes the
-/// neighbours' `C`/`¬C` labelling is already decided. For `n = 0`,
-/// [`apply_forall`] already puts `¬C` on every neighbour (#485,
-/// [`crate::max_zero_forall_enabled`]), so the choose rule has nothing left there.
+/// neighbours' `C`/`¬C` labelling is already decided. For `n = 0`, when
+/// [`crate::max_zero_forall_enabled`] is on, `C` is not a data range and `¬C` is a
+/// registered complement, [`apply_forall`] already puts `¬C` on every neighbour
+/// (#485), so the choose rule has nothing left there.
 pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_max);
     if ctx.is_blocked(node) {

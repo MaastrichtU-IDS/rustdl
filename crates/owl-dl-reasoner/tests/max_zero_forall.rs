@@ -12,10 +12,12 @@
 //! here are UNSATISFIABLE classes, or satisfiable ones whose only model needs
 //! the other branch of a disjunction the `≤0` sits under. Each runs with the
 //! flag on and off, and with the wedge on and off: with it off the main tableau
-//! must decide. `p23` / `p24` put the clash on a nominal's node, created before
-//! the query root, so a conclusion with the wrong deps is the clash the search
-//! reports. The exact-deps unit test in `owl-dl-tableau` is the primary guard.
-//! The flag-off hang is pinned at unit level, not here.
+//! must decide. `label_deps_to_a_nominal` puts the clash on a nominal's node,
+//! created before the query root, so a conclusion that drops the label's deps is
+//! the clash the search reports. `edge_deps_through_an_inverse` does the same for
+//! the edge's deps (`edge_deps_to_a_nominal` cannot: the nominal merge adds the
+//! decision back). The exact-deps unit test in `owl-dl-tableau` is the primary
+//! guard. The flag-off hang is pinned at unit level, not here.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -271,6 +273,20 @@ const SATISFIABLE: &[(&str, &str)] = &[
          ObjectSomeValuesFrom(:r :D)))",
     ),
     (
+        // An `s`-edge is not an `r`-edge when only `r ⊑ s`: the rule must not
+        // treat a super-role's edge as `R`'s.
+        "super_role_edge",
+        "SubObjectPropertyOf(:r :s) SubClassOf(:A ObjectIntersectionOf(\
+         ObjectMaxCardinality(0 :r :B) ObjectSomeValuesFrom(:s :B)))",
+    ),
+    (
+        // `A`'s `r`-successor is not its `r⁻`-neighbour: the rule must keep the
+        // edge's direction.
+        "wrong_polarity",
+        "SubClassOf(:A ObjectIntersectionOf(ObjectMaxCardinality(0 ObjectInverseOf(:r) :B) \
+         ObjectSomeValuesFrom(:r :B)))",
+    ),
+    (
         // A sabotage that adds `C` instead of `¬C` makes this unsat.
         "undecided_neighbour",
         "SubClassOf(:A ObjectIntersectionOf(ObjectMaxCardinality(0 :r :B) \
@@ -373,9 +389,11 @@ const SUBSUMPTIONS: &[(&str, &str, &str, &str, bool)] = &[
 
 #[test]
 fn the_reproducer_is_decided() {
-    // Flag on only: with it off the search runs on (pinned at unit level).
+    // Flag on only, set explicitly: with it off the search runs on (pinned at unit
+    // level), so an ambient `=0` would make this a 60 s hang.
     for wedge in ["1", "0"] {
         let _l = lock();
+        let _f = EnvGuard::set(FLAG, "1");
         let _w = EnvGuard::set(WEDGE, wedge);
         let arm = format!("{WEDGE}={wedge}");
         for class in ["C5", "C0", "C2"] {

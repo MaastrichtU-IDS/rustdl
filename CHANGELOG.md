@@ -245,14 +245,15 @@ All notable changes to rustdl are documented here. Format is based on
     - The median over the files both arms answered (main ≥ 0.5 s, n=249) is 0.992× main.
     - On the 6 files where the rule fires (5 interleaved reps, quiet cores) it is 0.94× to
       1.02×, with overlapping ranges (6333: 70.8 s on both).
-  - Tests (`tests/max_zero_forall.rs`), each with the flag on and off and the wedge on and
-    off:
+  - Tests (`tests/max_zero_forall.rs`). The reproducer runs with the flag on and the wedge
+    on and off; every other case runs with the flag on and off and the wedge on and off:
     - the reproducer;
     - 13 unsat classes (direct, sub-role, inverse, `≤0 r.⊤`, complemented, compound and
       union fillers, nominal filler, self-loop, symmetric role, and a `≤0` that arrives
       after the edge);
-    - 13 satisfiable ones, among them the deps canaries: the label's deps through a nominal
-      target, and the edge's deps through an inverse;
+    - 15 satisfiable ones. Among them are the deps canaries (the label's deps through a
+      nominal target, the edge's deps through an inverse) and two role canaries: a
+      super-role's edge and the wrong edge direction;
     - subsumptions through the refuted disjunct;
     - ABox consistency.
 

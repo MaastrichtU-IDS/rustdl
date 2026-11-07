@@ -759,3 +759,337 @@ fn a_budgeted_instance_depth_cut_is_not_a_no_verdict() {
         r.stderr
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// #493 part 2: the #369 lazy consistency check, run after a POSITIVE answer, reports a
+// stall of its own probe (the #344 verify or the main-tableau tail) as the #462 signal:
+// the answer stands, `consistency_undetermined` and the result's `no_verdict` are set, and
+// the command adds #449's note and exits 3. A depth cut there stays plain undetermined.
+//
+// The lazy check runs only after a positive answer, which a stalled probe cannot give, so
+// these fixtures get their answer before the knob bites (a told fact, or a probe that
+// clashes at iteration 2 while the lazy tail's root is still growing at `ITERS=4`). Each
+// test asserts the lazy trace line first, so an answer from another route cannot pass
+// vacuously.
+// ---------------------------------------------------------------------------------------
+
+fn lazy_fixture(name: &str) -> String {
+    format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The lazy check's trace line (#369), which the tests read as a precondition.
+fn lazy_line(r: &Run) -> String {
+    r.stderr
+        .lines()
+        .find(|l| l.starts_with("lazy consistency (#369):"))
+        .unwrap_or_else(|| panic!("no lazy-check trace line: {}", r.stderr))
+        .to_owned()
+}
+
+/// #493 (b): the prepared route's no-seed tail (#492's default). `chain8`: `⊤ ⊑ E` and an
+/// 8-level `∃r` chain under `⊤`, so the tail's consistency probe is still growing at
+/// iteration 4, while `U`, `X` (`∃s.⊤ ⊓ ∀s.¬E`) clash at iteration 2. The consistency
+/// wedge is on (no seed, so the tail runs by default).
+#[test]
+fn a_stall_in_the_no_seed_lazy_tail_is_reported() {
+    let f = lazy_fixture("lazy_tail_chain8_493.ofn");
+    let env = [
+        ("RUSTDL_TABLEAU_SATURATE_ITERS", "4"),
+        ("RUSTDL_WEDGE_CONSISTENCY", "1"),
+        ("RUSTDL_TRACE", "1"),
+    ];
+    let ce = ":C and (:s some owl:Thing) and (:s only (not :E))";
+    let cases: [(&[&str], &str); 6] = [
+        (&["sat-expr", "--json", &f, ce], "sat-expr"),
+        // Text mode keeps the decided answer too (Fable's review of #500: it used to turn
+        // into `unknown`).
+        (&["sat-expr", &f, ce], "unsatisfiable"),
+        (&["subclass-expr", &f, ce, ":Y"], "yes"),
+        (&["sat", &f, "http://ex/#U"], "unsat"),
+        (&["subclass", &f, "http://ex/#X", "http://ex/#Y"], "yes"),
+        (&["explain", &f, "http://ex/#X", "http://ex/#Y"], "yes"),
+    ];
+    for (args, answer) in cases {
+        let what = args.join(" ");
+        let r = run_with(false, &env, args);
+        let line = lazy_line(&r);
+        assert!(
+            line.contains("route=prepared") && line.contains("tail=Some(None)"),
+            "{what}: precondition, the prepared route's tail ran and gave up: {line}"
+        );
+        assert!(line.contains("tail_stalled=true"), "{what}: {line}");
+        assert_gave_up(&r, &what);
+        if args.contains(&"--json") {
+            let j = json(&r, &what);
+            assert_eq!(j["satisfiable"], false, "{what}: the answer stands: {j}");
+            assert_eq!(j["consistency_undetermined"], true, "{what}: {j}");
+            assert_eq!(j["no_verdict"], true, "{what}: {j}");
+            assert_eq!(
+                j["incomplete"], false,
+                "{what}: the answer was decided: {j}"
+            );
+        } else {
+            assert!(
+                r.stdout.contains(answer),
+                "{what}: the answer stands: {}",
+                r.stdout
+            );
+            assert!(
+                !r.stdout.contains("unknown"),
+                "{what}: not `unknown`: {}",
+                r.stdout
+            );
+        }
+        // Control: no forced stall, the tail decides "consistent".
+        let r = run_with(false, &[("RUSTDL_WEDGE_CONSISTENCY", "1")], args);
+        assert_eq!(r.code, 0, "{what} control: {}\n{}", r.stdout, r.stderr);
+        assert!(!r.stderr.contains(MARKER), "{what} control: {}", r.stderr);
+    }
+}
+
+/// #493 (b): the tail with individuals (opt-in, `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`),
+/// the consistency wedge off so the verdict is undetermined. `a : C` is told, so
+/// `instance C a` is a closure hit (no probe) and `instances C` lists `a`.
+#[test]
+fn a_stall_in_the_opt_in_lazy_tail_is_reported() {
+    let f = Fixture::with(
+        "lazy-tail-abox",
+        "Prefix(:=<http://ex/#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://ex/aboxtold>\n\
+         Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))\n\
+         Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+         Declaration(ObjectProperty(:r))\n\
+         SubClassOf(owl:Thing :E) SubClassOf(:C ObjectAllValuesFrom(:r :E))\n\
+         ClassAssertion(:C :a) ClassAssertion(:D :b) ObjectPropertyAssertion(:r :a :b)\n)\n",
+    );
+    let env = [
+        ("RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL", "1"),
+        ("RUSTDL_TRACE", "1"),
+    ];
+    for (args, answer) in [
+        (
+            vec!["instance", f.path(), "http://ex/#C", "http://ex/#a"],
+            "yes",
+        ),
+        (vec!["instances", f.path(), "http://ex/#C"], "http://ex/#a"),
+    ] {
+        let what = args.join(" ");
+        let r = run_with(true, &env, &args);
+        let line = lazy_line(&r);
+        assert!(
+            line.contains("route=prepared") && line.contains("tail=Some(None)"),
+            "{what}: precondition: {line}"
+        );
+        assert!(line.contains("tail_stalled=true"), "{what}: {line}");
+        assert_gave_up(&r, &what);
+        assert!(
+            r.stdout.contains(answer),
+            "{what}: the answer stands: {}",
+            r.stdout
+        );
+        let r = run_with(false, &env, &args);
+        assert_eq!(r.code, 0, "{what} control: {}\n{}", r.stdout, r.stderr);
+        assert!(!r.stderr.contains(MARKER), "{what} control: {}", r.stderr);
+    }
+}
+
+/// #493 (a): the #344 data-counting verify. The consistency wedge answers `Sat` but skips
+/// data counting, so its model is verified by a main-tableau probe, which stalls. `a : C` is
+/// told (a closure hit). The opt-in tail is on, to show it is skipped after a verify stall
+/// (the same probe would stall again).
+#[test]
+fn a_stall_in_the_lazy_data_counting_verify_is_reported() {
+    let f = Fixture::with(
+        "lazy-verify",
+        "Prefix(:=<http://ex/#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+         Ontology(<http://ex/datacount>\n\
+         Declaration(Class(:C)) Declaration(Class(:P)) Declaration(Class(:E))\n\
+         Declaration(NamedIndividual(:a)) Declaration(DataProperty(:p))\n\
+         SubClassOf(owl:Thing :E) SubClassOf(:P DataMaxCardinality(2 :p xsd:integer))\n\
+         ClassAssertion(:P :a) ClassAssertion(:C :a)\n\
+         DataPropertyAssertion(:p :a \"1\"^^xsd:integer)\n)\n",
+    );
+    let env = [
+        ("RUSTDL_WEDGE_CONSISTENCY", "1"),
+        ("RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL", "1"),
+        ("RUSTDL_TRACE", "1"),
+    ];
+    let args = ["instance", f.path(), "http://ex/#C", "http://ex/#a"];
+    let r = run_with(true, &env, &args);
+    let line = lazy_line(&r);
+    assert!(
+        line.contains("route=prepared") && line.contains("settle_stalled=true"),
+        "precondition: the verify stalled: {line}"
+    );
+    assert!(
+        line.contains("tail=None"),
+        "the tail is skipped after a verify stall: {line}"
+    );
+    assert_gave_up(&r, "instance, verify stall");
+    assert_eq!(r.stdout.trim(), "yes", "the answer stands: {}", r.stdout);
+    let r = run_with(false, &env, &args);
+    assert_eq!(r.code, 0, "control: {}\n{}", r.stdout, r.stderr);
+    assert!(!r.stderr.contains(MARKER), "control: {}", r.stderr);
+}
+
+/// #493: the lazy tail's routine decision-depth cut is NOT the signal. The exhausting
+/// 280-union under `⊤` (every `Bk` disjoint from `X`), no individual: the tail's
+/// consistency probe goes down the `Ak` choices to the depth limit and every alternative
+/// clashes, well before its deadline (early abandon off, so this is `map_depth_limit`'s
+/// pure depth-cap arm). Undetermined, no field, no note, exit 0. The trace's
+/// `tail_depth_capped=true` and the elapsed time are the positive instrument.
+#[test]
+fn a_depth_cut_in_the_lazy_tail_is_not_a_no_verdict() {
+    let body: Vec<String> = (0..280)
+        .map(|k| format!("ObjectUnionOf(:A{k} :B{k})"))
+        .collect();
+    let disjoint: Vec<String> = (0..280)
+        .map(|k| format!("DisjointClasses(:B{k} :X)"))
+        .collect();
+    let src = format!(
+        "Prefix(:=<http://example.org/d#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://example.org/d>\nDeclaration(Class(:C)) Declaration(Class(:Y))\n\
+         Declaration(ObjectProperty(:s))\nSubClassOf(owl:Thing :X)\n\
+         SubClassOf(:X ObjectIntersectionOf({}))\n{}\n)\n",
+        body.join(" "),
+        disjoint.join("\n")
+    );
+    let f = Fixture::with("lazy-depthcut", &src);
+    let env = [
+        ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
+        ("RUSTDL_WEDGE_CONSISTENCY", "1"),
+        ("RUSTDL_TRACE", "1"),
+    ];
+    let t = std::time::Instant::now();
+    let r = run_with(
+        false,
+        &env,
+        &[
+            "sat-expr",
+            "--json",
+            f.path(),
+            ":C and (:s some owl:Thing) and (:s only (not :X))",
+        ],
+    );
+    let line = lazy_line(&r);
+    assert!(
+        line.contains("tail=Some(None)") && line.contains("tail_depth_capped=true"),
+        "precondition: the tail ended on the depth cap: {line}"
+    );
+    assert!(line.contains("tail_stalled=false"), "{line}");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(8),
+        "the tail must end on the depth limit, well before its deadline: {:?}",
+        t.elapsed()
+    );
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    assert!(
+        !r.stderr.contains(MARKER),
+        "a depth cut is not the bug signal: {}",
+        r.stderr
+    );
+    let j = json(&r, "sat-expr");
+    assert_eq!(j["satisfiable"], false, "{j}");
+    assert_eq!(j["consistency_undetermined"], true, "{j}");
+    assert_eq!(j["no_verdict"], false, "{j}");
+    // Text mode prints the consistency-undetermined warning; it must not carry #449's
+    // marker phrase, or every harness that detects the note by it would read a plain
+    // "undetermined" as the bug signal (found by the #493 census).
+    let r = run_with(
+        false,
+        &env,
+        &[
+            "sat-expr",
+            f.path(),
+            ":C and (:s some owl:Thing) and (:s only (not :X))",
+        ],
+    );
+    assert!(
+        r.stderr.contains("consistency could not be determined"),
+        "the warning printed: {}",
+        r.stderr
+    );
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    assert!(
+        !r.stderr.contains(MARKER),
+        "the warning is not the note: {}",
+        r.stderr
+    );
+}
+
+/// #493, a documented gap (`docs/known-limitations/tbox-only-inconsistency-light-route.md`):
+/// the property-disjointness answers keep only `consistency_undetermined` from the light
+/// route's opt-in tail, with no `no_verdict` and no note. One class only (`⊤ ⊑ E`), so
+/// `disjoint` probes no class pair; the told `DisjointObjectProperties` is the positive
+/// answer. When this is fixed, flip it.
+#[test]
+fn a_stall_in_the_light_lazy_tail_is_not_reported() {
+    let f = Fixture::with(
+        "lazy-light-gap",
+        "Prefix(:=<http://ex/#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://ex/lightgap>\n\
+         Declaration(Class(:E)) Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+         Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+         SubClassOf(owl:Thing :E) DisjointObjectProperties(:r :s)\n\
+         ObjectPropertyAssertion(:r :a :b)\n)\n",
+    );
+    let env = [
+        ("RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL", "1"),
+        ("RUSTDL_TRACE", "1"),
+    ];
+    let r = run_with(true, &env, &["disjoint", "--json", f.path()]);
+    let line = lazy_line(&r);
+    assert!(
+        line.contains("route=light") && line.contains("tail_stalled=true"),
+        "precondition: the light route's tail stalled: {line}"
+    );
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    assert!(!r.stderr.contains(MARKER), "the gap: no note: {}", r.stderr);
+    let j = json(&r, "disjoint");
+    assert_eq!(j["consistency_undetermined"], true, "{j}");
+    assert_eq!(j["no_verdict"], false, "the gap: no field: {j}");
+}
+
+/// #493: the light route (an answer without the tableau, here the closure's `C ⊓ ¬C`) with
+/// its opt-in tail: `sat-expr` reports the tail's stall like the prepared route's.
+#[test]
+fn a_stall_in_the_light_lazy_tail_is_reported_by_sat_expr() {
+    let f = Fixture::with(
+        "lazy-light-satexpr",
+        "Prefix(:=<http://ex/#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://ex/lightsat>\n\
+         Declaration(Class(:C)) Declaration(Class(:E)) Declaration(ObjectProperty(:r))\n\
+         Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+         SubClassOf(owl:Thing :E) SubClassOf(:C ObjectAllValuesFrom(:r :E))\n\
+         ClassAssertion(:C :a) ObjectPropertyAssertion(:r :a :b)\n)\n",
+    );
+    let env = [
+        ("RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL", "1"),
+        ("RUSTDL_TRACE", "1"),
+    ];
+    let args = ["sat-expr", "--json", f.path(), ":C and not :C"];
+    let r = run_with(true, &env, &args);
+    let line = lazy_line(&r);
+    assert!(
+        line.contains("route=light") && line.contains("tail_stalled=true"),
+        "precondition: the light route's tail stalled: {line}"
+    );
+    assert_gave_up(&r, "sat-expr, light tail");
+    let j = json(&r, "sat-expr");
+    assert_eq!(j["satisfiable"], false, "the answer stands: {j}");
+    assert_eq!(j["consistency_undetermined"], true, "{j}");
+    assert_eq!(j["no_verdict"], true, "{j}");
+    // Text mode: the decided answer, then the note, exit 3 (Fable's review of #500).
+    let text = ["sat-expr", f.path(), ":C and not :C"];
+    let r = run_with(true, &env, &text);
+    assert_gave_up(&r, "sat-expr (text), light tail");
+    assert_eq!(
+        r.stdout.trim(),
+        "unsatisfiable",
+        "the answer stands: {}",
+        r.stdout
+    );
+    let r = run_with(false, &env, &args);
+    assert_eq!(r.code, 0, "control: {}\n{}", r.stdout, r.stderr);
+}

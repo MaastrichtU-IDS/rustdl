@@ -7,6 +7,44 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **The #369 lazy consistency check reports a stall of its own probe as #462's signal (#493,
+  part 2).** After a positive answer the query surfaces check that the KB is consistent. Two of
+  that check's probes are main-tableau probes, and a stall in either (#475) used to fold silently
+  into `consistency_undetermined`:
+  - the #344 data-counting verify of the consistency wedge's `Sat`;
+  - the bounded main-tableau tail, which since #492 runs by default on a KB with no individual.
+
+  Now:
+  - The answer stands, and `consistency_undetermined` is set **with** the result's `no_verdict`.
+    `incomplete` is not set: the answer was decided.
+  - The command adds #449's "likely a reasoner bug" note, and **exits 3**.
+  - A decision-depth cut there stays plain "undetermined".
+  - A verify stall skips the tail, which is the same probe and would stall again.
+  - Both caches keep the flag, so a second check on the same prepared ontology reports it too.
+  - **CLI:** `sat`, `subclass`, `explain`, `instance` (on a "yes"), `instances`, `sat-expr`,
+    `subclass-expr`, `instances-expr`, `individuals` and `property-values`. **Behaviour change:**
+    such a positive answer now exits 3 with the note, where it exited 0 with only the
+    consistency-undetermined warning.
+  - **Python:** the `is_class_satisfiable`, `is_subclass_of`, `is_instance_of`,
+    `class_expression_satisfiable` and `class_expression_entailed_subclass` natives gain a
+    trailing `no_verdict`. Their wrappers emit `IncompleteQueryWarning` with the #449 text and
+    still return the answer. The last two also gain the `no_verdict` that #462 set on a
+    `NoVerdict`-defaulted answer but never passed to Python.
+  - **Rust API:** `QueryStats::no_verdict`. **`QueryStats` is now `#[non_exhaustive]`.** Only
+    this crate builds it by literal, so outside the crate this is a one-time break: a struct
+    literal of it no longer compiles; use `Default` and set fields. Later fields will not break it
+    again.
+  - The light route's opt-in tail (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`) reports its stall the
+    same way for `sat`, `subclass`, `explain`, `sat-expr` and `subclass-expr`.
+  - **Not covered:**
+    - the property materializers and property-disjointness queries, which keep only
+      `consistency_undetermined` from that tail;
+    - `prove`, whose lazy check only reports a witnessed inconsistency.
+
+    Both are documented in `docs/known-limitations/tbox-only-inconsistency-light-route.md`.
+  - Harness: `cross-command-laws.py` reads "answer + note + exit 3" as that answer with
+    `no_verdict`, not a give-up. `perquery.py` reports it as R7.8, a finding. `routes.py`'s R6.2
+    accepts `consistency_undetermined` as the give-up slot.
 - **`realize` and the instance queries keep their output on a likely-bug `NoVerdict` and report
   it (#493).** An instance probe or a #388 direct-types check that ended in `NoVerdict` on an
   internal limit (#449: a probe with no deadline, or one whose saturation stalled, #475) is now

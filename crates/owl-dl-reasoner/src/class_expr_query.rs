@@ -277,16 +277,18 @@ pub fn class_expression_satisfiable<A: ForIRI>(
             r => r?,
         };
     // #369: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
-    let consistency_undetermined =
-        !holds && left.lazy_inconsistency_check("class_expression_satisfiable")?;
+    let lazy = crate::LazyCheck::run_if(!holds, || {
+        left.lazy_inconsistency_check("class_expression_satisfiable")
+    })?;
     let (incomplete, completeness_guaranteed) = verdict_flags(stats);
     Ok(CeVerdict {
         holds,
         incomplete,
         completeness_guaranteed,
         relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
-        consistency_undetermined,
-        no_verdict: false,
+        consistency_undetermined: lazy.undetermined,
+        // #493: the lazy check's own probe stalled (a likely bug); the answer stands.
+        no_verdict: lazy.no_verdict,
     })
 }
 
@@ -317,16 +319,18 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
             r => r?,
         };
     // #369: as in `class_expression_satisfiable`.
-    let consistency_undetermined =
-        holds && left.lazy_inconsistency_check("class_expression_entailed_subclass")?;
+    let lazy = crate::LazyCheck::run_if(holds, || {
+        left.lazy_inconsistency_check("class_expression_entailed_subclass")
+    })?;
     let (incomplete, completeness_guaranteed) = verdict_flags(stats);
     Ok(CeVerdict {
         holds,
         incomplete,
         completeness_guaranteed,
         relies_on_trusted_consistency: stats.relies_on_trusted_consistency,
-        consistency_undetermined,
-        no_verdict: false,
+        consistency_undetermined: lazy.undetermined,
+        // #493: as in `class_expression_satisfiable`.
+        no_verdict: lazy.no_verdict,
     })
 }
 

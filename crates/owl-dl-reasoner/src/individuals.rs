@@ -204,8 +204,10 @@ pub fn same_individuals<A: ForIRI>(
     }
     // #369: a probe merge on a KB only the tableau finds inconsistent is vacuous.
     // Seed merges (told, `derived_same`) are not probe answers and do not count.
-    let consistency_undetermined =
-        probe_merged && prepared.lazy_inconsistency_check("same_individuals")?;
+    let lazy = crate::LazyCheck::run_if(probe_merged, || {
+        prepared.lazy_inconsistency_check("same_individuals")
+    })?;
+    let consistency_undetermined = lazy.undetermined;
 
     // Emit equivalence groups of size ≥ 2, each sorted, outer list sorted.
     let mut by_root: HashMap<u32, Vec<String>> = HashMap::new();
@@ -227,7 +229,8 @@ pub fn same_individuals<A: ForIRI>(
         groups,
         incomplete,
         consistency_undetermined,
-        no_verdict,
+        // #493: OR the lazy check's own stall.
+        no_verdict: no_verdict || lazy.no_verdict,
     })
 }
 
@@ -311,15 +314,17 @@ pub fn different_individuals<A: ForIRI>(
         }
     }
     // #369: as in `same_individuals`; told pairs do not count.
-    let consistency_undetermined =
-        probe_different && prepared.lazy_inconsistency_check("different_individuals")?;
+    let lazy = crate::LazyCheck::run_if(probe_different, || {
+        prepared.lazy_inconsistency_check("different_individuals")
+    })?;
     pairs.sort();
     pairs.dedup();
 
     Ok(DifferentIndividuals {
         pairs,
         incomplete,
-        consistency_undetermined,
-        no_verdict,
+        consistency_undetermined: lazy.undetermined,
+        // #493: OR the lazy check's own stall.
+        no_verdict: no_verdict || lazy.no_verdict,
     })
 }

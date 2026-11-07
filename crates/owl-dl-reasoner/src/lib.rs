@@ -13232,7 +13232,7 @@ mod tests {
             "http://gen.rustdl/o#C1",
             None,
         )
-        .unwrap();
+        .expect("the subsumption query answers");
         assert!(holds, "vacuous on this inconsistent KB");
         let QueryOntology::Prepared(prepared) = left else {
             panic!("precondition: the tableau answers this pair (the prepared route)");

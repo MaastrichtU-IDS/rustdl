@@ -10,7 +10,7 @@
 //! The `…_light_route_gap…` tests pin that gap; a fix flips them.
 //!
 //! Fixtures: `query_wedge_hang_457.ofn` (shrunk from generated case 438;
-//! inconsistent per Konclude and HermiT), `query_wedge_proves_inconsistent_457.ofn`
+//! inconsistent per Konclude and `HermiT`), `query_wedge_proves_inconsistent_457.ofn`
 //! (inconsistent by construction: `⊤ ⊑ P ⊔ Q` with both empty) and its consistent
 //! original `query_wedge_proves_457.ofn`.
 #![allow(clippy::unwrap_used)]

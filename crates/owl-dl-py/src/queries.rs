@@ -34,7 +34,7 @@ pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool)> {
 pub(crate) fn is_class_satisfiable(
     path: &str,
     class_iri: &str,
-) -> PyResult<(bool, bool, bool, bool)> {
+) -> PyResult<(bool, bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (sat, stats) = owl_dl_reasoner::is_class_satisfiable_with_stats(&ontology, class_iri)
@@ -44,6 +44,8 @@ pub(crate) fn is_class_satisfiable(
         stats.incomplete,
         stats.relies_on_trusted_consistency,
         stats.consistency_undetermined,
+        // #493: a likely-bug NoVerdict (#449); the wrapper warns with that text.
+        stats.no_verdict,
     ))
 }
 
@@ -57,7 +59,7 @@ pub(crate) fn is_subclass_of(
     path: &str,
     sub: &str,
     sup: &str,
-) -> PyResult<(bool, bool, bool, bool)> {
+) -> PyResult<(bool, bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (subsumed, stats) = owl_dl_reasoner::is_subclass_of_with_stats(&ontology, sub, sup)
@@ -67,6 +69,8 @@ pub(crate) fn is_subclass_of(
         stats.incomplete,
         stats.relies_on_trusted_consistency,
         stats.consistency_undetermined,
+        // #493: a likely-bug NoVerdict (#449); the wrapper warns with that text.
+        stats.no_verdict,
     ))
 }
 
@@ -79,7 +83,7 @@ pub(crate) fn is_instance_of(
     path: &str,
     class_iri: &str,
     individual_iri: &str,
-) -> PyResult<(bool, bool, bool)> {
+) -> PyResult<(bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (holds, flags) =
@@ -89,7 +93,13 @@ pub(crate) fn is_instance_of(
     if flags.no_verdict && !holds {
         return Err(reason_error_to_py(owl_dl_reasoner::ReasonError::NoVerdict));
     }
-    Ok((holds, flags.incomplete, flags.consistency_undetermined))
+    // #493: on a "yes", the lazy check's own stall; the wrapper warns.
+    Ok((
+        holds,
+        flags.incomplete,
+        flags.consistency_undetermined,
+        flags.no_verdict,
+    ))
 }
 
 /// `(individuals, incomplete, consistency_undetermined, no_verdict)`: named
@@ -343,7 +353,7 @@ fn parse_ce(
 pub(crate) fn class_expression_satisfiable(
     path: &str,
     ce: &str,
-) -> PyResult<(bool, bool, bool, bool)> {
+) -> PyResult<(bool, bool, bool, bool, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
@@ -354,6 +364,8 @@ pub(crate) fn class_expression_satisfiable(
         v.incomplete(),
         v.relies_on_trusted_consistency(),
         v.consistency_undetermined(),
+        // #462/#493: a likely-bug NoVerdict (#449); the wrapper warns with that text.
+        v.no_verdict(),
     ))
 }
 
@@ -367,7 +379,7 @@ pub(crate) fn class_expression_entailed_subclass(
     path: &str,
     sub_ce: &str,
     sup_ce: &str,
-) -> PyResult<(bool, bool, bool, bool)> {
+) -> PyResult<(bool, bool, bool, bool, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
@@ -380,6 +392,8 @@ pub(crate) fn class_expression_entailed_subclass(
         v.incomplete(),
         v.relies_on_trusted_consistency(),
         v.consistency_undetermined(),
+        // #462/#493: a likely-bug NoVerdict (#449); the wrapper warns with that text.
+        v.no_verdict(),
     ))
 }
 

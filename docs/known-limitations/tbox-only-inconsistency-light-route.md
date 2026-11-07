@@ -16,7 +16,9 @@ answer was found:
   ontology). Since #457, the bounded main-tableau consistency check runs here
   (`RUSTDL_QUERY_NO_SEED_TAIL`, default on), up to `RUSTDL_CONSISTENCY_FALLBACK_MS`, once per
   prepared ontology. A proof of inconsistency makes the query error `Inconsistent` (exit 1). A
-  check that is cut sets `consistency_undetermined` (and prints the stderr warning).
+  check that is cut sets `consistency_undetermined` (and prints the stderr warning). Since #493,
+  a check whose probe **stalled** (a likely reasoner bug, #449) also sets the result's
+  `no_verdict`, adds the "likely a reasoner bug" note and exits 3; the answer stands.
 - **The light route** (the answer is told, comes from the EL saturation closure, or is proved
   by the H4 query wedge under `RUSTDL_QUERY_WEDGE_MS`). No check runs: the consistency wedge
   has no individual to seed it, and the main-tableau check would first have to prepare the
@@ -73,3 +75,16 @@ Run the check on the light route only when it is cheap: for example, with a dead
 prepare, or only for a KB small enough that preparing it is bounded. It must not reintroduce
 option A's flag rate. The tests that pin this gap are named for it (`…_light_route_gap…`), and
 should be flipped, not deleted.
+
+## Not covered by #493's stall signal
+
+The light route's own main-tableau check is opt-in (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`, and
+only on a KB with individuals). `sat`, `subclass`, `explain`, `sat-expr` and `subclass-expr` report
+its stall like the prepared route's. Two kinds of caller keep only `consistency_undetermined`, with
+no `no_verdict` and no note:
+- the property materializers (`materialize_*_property_assertions`, the sub-property axioms);
+- the property-disjointness queries.
+
+`prove` uses the light check only for a witnessed inconsistency and never reports "undetermined",
+so a stall there changes nothing it prints. A test pins the gap
+(`a_stall_in_the_light_lazy_tail_is_not_reported`), so a later fix flips it.

@@ -28,6 +28,16 @@ follows the command's usual give-up convention. So these fields are `false` / `0
 budgeted run whatever the tableau did, and `--pair-timeout-ms 0` is the setting under which they
 can fire.
 
+**After a positive answer (#493).** The query commands that run the #369 lazy consistency
+check (`sat-expr`, `subclass-expr`, `instances-expr`, `individuals`, `property-values`; in text
+mode also these, and `instance`, `instances`, `sat`, `subclass` and `explain`) set `no_verdict` when that
+check's own probe stalls: the #344 data-counting verify, or the bounded main-tableau tail. Then:
+- the answer stands, and `consistency_undetermined` is set with `no_verdict`;
+- `incomplete` is NOT set, because the answer itself was decided;
+- the command prints #449's note and exits 3.
+
+A decision-depth cut in that check is plain `consistency_undetermined`.
+
 ## `classify --json`
 
 ```json
@@ -152,7 +162,11 @@ bump. It is `true` when `consistent: true` rests only on the consistency wedge's
 It is not a give-up: `incomplete` stays `false` and the exit code stays 0. It is
 never `true` with `consistent: false`, which is a witnessed clash. The same name
 and meaning as in `sat-expr`, `subclass-expr` and `prove --json` (#401).
-`RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
+`RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead, with no deadline
+(`RUSTDL_CONSISTENCY_FALLBACK_MS` bounds only the wedge route's fall-through), so on a hard
+ontology it may not finish (wine does not, #490). Its only give-ups are the node cap
+(`incomplete`) and the tableau's internal limit (`no_verdict`: a stalled saturation or the
+depth cap), #497.
 
 ## `realize --json`
 

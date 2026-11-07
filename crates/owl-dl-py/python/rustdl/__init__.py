@@ -261,6 +261,12 @@ def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
 
 
 def _warn_if_list_incomplete(name: str, incomplete: bool, no_verdict: bool) -> None:
+    _warn_if_list_incomplete_at(name, incomplete, no_verdict, stacklevel=4)
+
+
+def _warn_if_list_incomplete_at(
+    name: str, incomplete: bool, no_verdict: bool, stacklevel: int
+) -> None:
     # #493: a cut that was a likely-bug NoVerdict (#449) gets that text, not the budget
     # one; the result is still returned (it used to raise).
     if no_verdict:
@@ -270,10 +276,27 @@ def _warn_if_list_incomplete(name: str, incomplete: bool, no_verdict: bool) -> N
             "a reasoner bug (#449); please report the input. The result is a sound "
             "under-approximation: no false entries, but real ones may be missing.",
             IncompleteQueryWarning,
+            stacklevel=stacklevel,
+        )
+    else:
+        _warn_if_query_incomplete_at(name, incomplete, stacklevel=stacklevel + 1)
+
+
+def _warn_if_answer_no_verdict(name: str, incomplete: bool, no_verdict: bool) -> None:
+    # #493: for a yes/no answer, a `no_verdict` without `incomplete` is the #369 lazy
+    # consistency check's own probe stalling AFTER the answer was decided: the answer
+    # stands, only the KB's consistency is open. With `incomplete` it is the probe's own
+    # give-up, reported as for the lists.
+    if no_verdict and not incomplete:
+        _warnings.warn(
+            f"{name}: the answer stands, but the consistency check's own probe ended "
+            "without a verdict on an internal limit (NoVerdict). This is likely a "
+            "reasoner bug (#449); please report the input.",
+            IncompleteQueryWarning,
             stacklevel=3,
         )
     else:
-        _warn_if_query_incomplete_at(name, incomplete, stacklevel=4)
+        _warn_if_list_incomplete_at(name, incomplete, no_verdict, stacklevel=4)
 
 
 def _warn_if_query_incomplete_at(name: str, incomplete: bool, stacklevel: int) -> None:
@@ -405,7 +428,8 @@ class TrustedConsistencyWarning(UserWarning):
     this is NOT an `IncompleteQueryWarning`.
 
     - `is_consistent` (#392): the `True` IS that verdict.
-      `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
+      `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead, with no
+      deadline: on a hard ontology it may not finish (#497; wine does not, #490).
     - `is_class_satisfiable`, `is_subclass_of`, `class_expression_satisfiable` and
       `class_expression_entailed_subclass` (#401): the answer was computed without
       the ABox, which is exact when the KB is consistent and has no nominals. If
@@ -513,9 +537,12 @@ def is_class_satisfiable(path, class_iri):
     is consistent (this IS the consistency check). For `owl:Thing`, a
     `TrustedConsistencyWarning` means what it means on `is_consistent`: the
     verdict rests on the consistency wedge's model alone (#392); no `ABox` was
-    dropped, whatever the warning's text says."""
-    sat, incomplete, trusted, undetermined = _is_class_satisfiable_native(path, class_iri)
-    _warn_if_query_incomplete("is_class_satisfiable", incomplete)
+    dropped, whatever the warning's text says. A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
+    sat, incomplete, trusted, undetermined, no_verdict = _is_class_satisfiable_native(
+        path, class_iri
+    )
+    _warn_if_answer_no_verdict("is_class_satisfiable", incomplete, no_verdict)
     _warn_if_trusted_consistency("is_class_satisfiable", trusted)
     _warn_if_consistency_undetermined("is_class_satisfiable", undetermined)
     return sat
@@ -529,9 +556,12 @@ def is_subclass_of(path, sub, sup):
 
     `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427): `C ⊑ owl:Thing` and
     `owl:Nothing ⊑ C` are always `True`, `C ⊑ owl:Nothing` is `C`'s
-    unsatisfiability. An unknown IRI still raises, whatever the other argument."""
-    subsumed, incomplete, trusted, undetermined = _is_subclass_of_native(path, sub, sup)
-    _warn_if_query_incomplete("is_subclass_of", incomplete)
+    unsatisfiability. An unknown IRI still raises, whatever the other argument. A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
+    subsumed, incomplete, trusted, undetermined, no_verdict = _is_subclass_of_native(
+        path, sub, sup
+    )
+    _warn_if_answer_no_verdict("is_subclass_of", incomplete, no_verdict)
     _warn_if_trusted_consistency("is_subclass_of", trusted)
     _warn_if_consistency_undetermined("is_subclass_of", undetermined)
     return subsumed
@@ -546,11 +576,12 @@ def is_instance_of(path, class_iri, individual_iri):
 
     `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427). Like every class,
     they raise on an inconsistent ontology: `a : owl:Thing` holds anyway, but the
-    error is how callers learn the ontology is broken, so ⊤ is no exception."""
-    is_inst, incomplete, undetermined = _is_instance_of_native(
+    error is how callers learn the ontology is broken, so ⊤ is no exception. A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
+    is_inst, incomplete, undetermined, no_verdict = _is_instance_of_native(
         path, class_iri, individual_iri
     )
-    _warn_if_query_incomplete("is_instance_of", incomplete)
+    _warn_if_answer_no_verdict("is_instance_of", incomplete, no_verdict)
     _warn_if_consistency_undetermined("is_instance_of", undetermined)
     return is_inst
 
@@ -821,11 +852,12 @@ def class_expression_satisfiable(path, ce):
     own prefix map, e.g. `:A`). If the probe gave up (node cap), returns `True`
     and emits `IncompleteQueryWarning`, as `is_class_satisfiable` does; an
     answer off the pure-EL fragment no longer warns. Emits
-    `ConsistencyUndeterminedWarning` (#369)."""
-    holds, incomplete, trusted, undetermined = _class_expression_satisfiable_native(
+    `ConsistencyUndeterminedWarning` (#369). A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
+    holds, incomplete, trusted, undetermined, no_verdict = _class_expression_satisfiable_native(
         path, ce
     )
-    _warn_if_query_incomplete("class_expression_satisfiable", incomplete)
+    _warn_if_answer_no_verdict("class_expression_satisfiable", incomplete, no_verdict)
     _warn_if_trusted_consistency("class_expression_satisfiable", trusted)
     _warn_if_consistency_undetermined("class_expression_satisfiable", undetermined)
     return holds
@@ -837,11 +869,12 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     ontology's own prefix map). If the probe gave up (node cap), returns `False`
     and emits `IncompleteQueryWarning`, as `is_subclass_of` does; an answer off
     the pure-EL fragment no longer warns. Emits
-    `ConsistencyUndeterminedWarning` (#369)."""
-    holds, incomplete, trusted, undetermined = (
+    `ConsistencyUndeterminedWarning` (#369). A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
+    holds, incomplete, trusted, undetermined, no_verdict = (
         _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)
     )
-    _warn_if_query_incomplete("class_expression_entailed_subclass", incomplete)
+    _warn_if_answer_no_verdict("class_expression_entailed_subclass", incomplete, no_verdict)
     _warn_if_trusted_consistency("class_expression_entailed_subclass", trusted)
     _warn_if_consistency_undetermined(
         "class_expression_entailed_subclass", undetermined

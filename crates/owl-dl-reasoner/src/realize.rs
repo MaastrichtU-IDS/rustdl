@@ -365,13 +365,15 @@ pub fn is_instance_of_reporting_internal(
     )?;
     let holds = probe.is_instance;
     // #369: a membership on a KB only the tableau finds inconsistent is vacuous.
-    let consistency_undetermined = holds && prepared.lazy_inconsistency_check("instance")?;
+    let lazy = crate::LazyCheck::run_if(holds, || prepared.lazy_inconsistency_check("instance"))?;
     Ok((
         holds,
         InstanceFlags {
             incomplete: probe.cut,
-            consistency_undetermined,
-            no_verdict: probe.no_verdict,
+            consistency_undetermined: lazy.undetermined,
+            // #493: the probe's likely-bug cut (a "no"), or the lazy check's own
+            // stall after a "yes".
+            no_verdict: probe.no_verdict || lazy.no_verdict,
         },
     ))
 }
@@ -793,13 +795,15 @@ pub fn instances_of_reporting_internal(
     }
     // #369: once, after the loop, if any probe answered positively (anonymous
     // members included, though they are not listed).
-    let consistency_undetermined = any_member && prepared.lazy_inconsistency_check("instances")?;
+    let lazy = crate::LazyCheck::run_if(any_member, || {
+        prepared.lazy_inconsistency_check("instances")
+    })?;
     Ok((
         out,
         InstanceFlags {
             incomplete,
-            consistency_undetermined,
-            no_verdict,
+            consistency_undetermined: lazy.undetermined,
+            no_verdict: no_verdict || lazy.no_verdict,
         },
     ))
 }

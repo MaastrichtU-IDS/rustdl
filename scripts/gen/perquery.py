@@ -56,6 +56,9 @@ Laws (outcomes: ok / violation / info / unresolved / known):
   R7.6      a call that hit the cap: "capped", a finding candidate to recheck serially. Only
             case 1911's shape on a consistent KB is a #460 regression; other shapes are new.
   R7.7      misses (measurement, not a law): `subclass` no / `sat` sat where the oracle entails.
+  R7.8      (#493) a definite answer reported with #449's note and exit 3 (the #369 lazy check's
+            own probe stalled): a finding, a natural stall to recheck serially. The answer is
+            still checked by R7.1–R7.5.
 
 Usage:
   perquery.py run --bin B --tag T --out DIR --set NAME=DIR ... [--first N] [--cores 92,93]
@@ -154,7 +157,10 @@ def op_of(r, kind):
         a = ccl.ans("unknown", f"capped (cpu {CPU_CAP}s / wall {WALL_CAP}s)", None, None)
     return {"v": a["v"], "why": a["why"], "rc": r["rc"], "cpu": r["cpu"],
             "capped": r["killed"], "undet": UNDET in r["stderr"],
-            "trust": any(t in r["stderr"] for t in TRUST)}
+            "trust": any(t in r["stderr"] for t in TRUST),
+            # #493: a definite answer that came with #449's note and exit 3 (the #369
+            # lazy check's own probe stalled).
+            "no_verdict": ccl.no_verdict(a)}
 
 
 def classify_route(binary, path, env, classes):
@@ -325,6 +331,10 @@ def evaluate(rec, oans):
         if o.get("skipped"):
             add("R7.6", "unresolved", f"{tag}: after-hang")
             continue
+        # R7.8 (#493): a likely-bug NoVerdict reported beside a definite answer. The answer
+        # is still checked below; the signal itself is a finding (a natural stall).
+        if o.get("no_verdict"):
+            add("R7.8", "finding", f"{tag}: answer with no_verdict (the lazy check stalled)")
         if v == "unknown":
             add(f"R7.{'2' if kind == 'sat' else '1'}", "unresolved", f"{tag}: {o['why']}")
             continue
@@ -554,6 +564,13 @@ def self_test():
 
     sub = lambda a, b: f"subclass|{a}|{b}"  # noqa: E731
     o_ab = orc_(pairs=[(A, B)])
+    # R7.8 (#493)
+    nv = dict(op("yes"), no_verdict=True)
+    ok("R7.8 fires", ("R7.8", "finding") in laws(rec({sub(A, B): nv}, cl([(A, B)])), o_ab, "R7.8"),
+       True)
+    ok("R7.8 silent on a clean answer",
+       laws(rec({sub(A, B): op("yes")}, cl([(A, B)])), o_ab, "R7.8"), set())
+
     # R7.1
     ok("R7.1 FP refuted by the oracle", laws(rec({sub(B, A): op("yes")}), o_ab, "R7.1"),
        {("R7.1", "violation")})

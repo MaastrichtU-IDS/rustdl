@@ -24,10 +24,13 @@ Ontology(<http://ex/trustedsat>
 const NOTE: &str = "note: consistent on the consistency wedge's model alone";
 
 /// The whole note, as one line.
+/// #497: with the wedge off the main tableau has NO deadline (it used to claim a
+/// `RUSTDL_CONSISTENCY_FALLBACK_MS` bound, which applies only to the wedge route).
 const FULL_NOTE: &str = "note: consistent on the consistency wedge's model alone; the wedge is \
                          not proven complete and no main-tableau model was built. \
-                         RUSTDL_WEDGE_CONSISTENCY=0 decides on the main tableau (bounded by \
-                         RUSTDL_CONSISTENCY_FALLBACK_MS).\n";
+                         RUSTDL_WEDGE_CONSISTENCY=0 decides on the main tableau instead, with \
+                         no deadline; on a hard ontology it may not finish (wine does not, \
+                         #490).\n";
 
 /// Writes the fixture to a per-test file (tests run in parallel).
 struct Fixture(PathBuf);
@@ -157,4 +160,74 @@ fn the_note_precedes_the_refused_clauses_warning() {
     let note = r.stderr.find(NOTE).expect("note");
     let refused = r.stderr.find("NOT GUARANTEED COMPLETE").expect("warning");
     assert!(note < refused, "{}", r.stderr);
+}
+
+/// #497: `sat owl:Thing` is the consistency check (#427) and prints the same note.
+#[test]
+fn sat_owl_thing_prints_the_same_note() {
+    let f = Fixture::new("sat-thing", "");
+    let r = run(
+        &["sat", f.path(), "http://www.w3.org/2002/07/owl#Thing"],
+        &[],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.stdout.trim(), "sat", "{}", r.stdout);
+    assert!(r.stderr.contains(FULL_NOTE), "{}", r.stderr);
+}
+
+/// #497: on an ontology with no individual the consistency check runs the main tableau
+/// with no deadline, so its only give-up is the node cap. The advice must name it (it
+/// used to say only "raise `RUSTDL_CONSISTENCY_FALLBACK_MS`", which bounds nothing there).
+/// Off EL (the union), so the saturator does not decide it; `⊤ ⊑ ∃r.C` needs a node.
+#[test]
+fn a_node_cap_give_up_without_the_wedge_names_the_node_cap() {
+    /// Removes the fixture even when an assertion fails.
+    struct TempOnto(PathBuf);
+    impl Drop for TempOnto {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let f = TempOnto(std::env::temp_dir().join(format!(
+        "rustdl-consistent-trusted-sat-{}-nocap.ofn",
+        std::process::id()
+    )));
+    std::fs::write(
+        &f.0,
+        "Prefix(:=<http://ex/#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://ex/nocap>\n\
+         Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))\n\
+         Declaration(ObjectProperty(:r))\n\
+         SubClassOf(owl:Thing ObjectSomeValuesFrom(:r :C))\n\
+         SubClassOf(:C ObjectUnionOf(:D :E))\n)\n",
+    )
+    .unwrap();
+    let p = f.0.to_str().unwrap();
+    for (args, cap_env, cap) in [
+        (
+            vec!["consistent", p],
+            "RUSTDL_MAX_NODES",
+            "raise RUSTDL_MAX_NODES",
+        ),
+        (
+            vec!["sat", p, "http://www.w3.org/2002/07/owl#Thing"],
+            "RUSTDL_QUERY_MAX_NODES",
+            "raise RUSTDL_QUERY_MAX_NODES",
+        ),
+    ] {
+        let what = args.join(" ");
+        let r = run(&args, &[(cap_env, "1")]);
+        assert_eq!(r.code, 3, "{what}: a give-up: {}\n{}", r.stdout, r.stderr);
+        assert_eq!(r.stdout.trim(), "unknown", "{what}: {}", r.stdout);
+        assert!(
+            r.stderr.contains("the main tableau has no deadline") && r.stderr.contains(cap),
+            "{what}: the advice names the node cap: {}",
+            r.stderr
+        );
+    }
+    // Negative control: `consistent` does not hold the single-query cap, so
+    // `RUSTDL_QUERY_MAX_NODES` is not its cap (the advice names `RUSTDL_MAX_NODES`).
+    let r = run(&["consistent", p], &[("RUSTDL_QUERY_MAX_NODES", "1")]);
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    assert_eq!(r.stdout.trim(), "consistent", "{}", r.stdout);
 }

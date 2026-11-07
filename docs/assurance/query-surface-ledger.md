@@ -730,6 +730,10 @@ gives up has to say so in the field meant for it.
   signal was later split by budget: under #462 option (i), `no_verdict` (`classify`:
   `no_verdict_pairs`) means only that a probe with no deadline ended in `NoVerdict`. A
   budgeted `NoVerdict` is a depth cut and sets only `incomplete`.
+- **#475** latches a saturation stall (the iteration cap in `saturate_loop`, not its deadline
+  exits). A budgeted probe whose saturation stalled now sets the field too; a real
+  decision-depth cut stays a cut. The laws below are in their #475 form; R6.3's and R6.6's
+  earlier form is recorded with the 9cbf2b55 measurement.
 
 Plan: `notes/plans/2026-11-05-363-giveup-contract-laws.md` (Fable: go with changes, all
 taken).
@@ -748,12 +752,20 @@ taken).
   counted separately as a timeout, not as a violation.
 - **R6.2, one signal.** The field is set ⇔ #449's note ("likely a reasoner bug") is on stderr.
   When the field is set, the run exits 3 and sets `incomplete`.
-- **R6.3, option (i).** A budgeted probe never sets the field. The budgeted routes are:
-  - `nv_budget` and every unforced classify route;
-  - a `consistent` run whose trace shows the wedge stalled into the bounded fall-through.
+- **R6.3, a stall is reported at any budget (#475).** Under the forced stall:
+  - `nv_budget` sets the field ⇔ `nv_free` does on the same case (same engine, same stall);
+  - a budgeted `nv_cons` (the wedge's bounded fall-through) sets it ⇔ it gave up;
+  - a decided `nv_cons` never sets it.
+
+  Before #475 the law was option (i): a budgeted probe never sets the field. That is the form
+  the 9cbf2b55 measurement below checked.
 - **R6.4, a stall cut is sound.** On an oracle-consistent KB, a forced route publishes no FP
   and never says `consistent: false`.
-- **R6.5, a natural stall.** The field set on an unforced route is a finding (the #437 kind).
+- **R6.5, a natural stall.** The field set on an unforced route (`cons`, or any budgeted
+  classify route) is a finding (the #437 kind).
+- **R6.6, a depth cut is never the signal (#475).** On the `dcut` route, a run whose stderr
+  shows the search-depth limit has the field at 0 and no note. It is unresolved when the cut is
+  not reached.
 
 **New routes.** All run with `RAYON_NUM_THREADS=1`. The forced stall is
 `RUSTDL_TABLEAU_SATURATE_ITERS=1`.
@@ -765,6 +777,10 @@ taken).
 | `nv_budget` | `classify --json --pair-timeout-ms 1000` | forced | off |
 | `cons` | `consistent --json`, `RUSTDL_TRACE=1` | – | on |
 | `nv_cons` | `consistent --json`, `RUSTDL_TRACE=1` | forced | on |
+| `dcut` (#475) | `classify --json --pair-timeout-ms 20000` | – | on |
+
+`dcut` is for R6.6. Run it on `scripts/gen/fixtures/depthcut/` as well: the 280-union there
+needs 280 decision levels, past the 256 limit.
 
 - **Why the forced classify routes run with the wedge off.** The stall knob is read only by
   the main tableau's `search.rs`. With the wedge on, plain classify's wedge answers the
@@ -881,8 +897,83 @@ three stay unexplained and unreproduced. The other 9 `full` timeouts (cases 321,
   The arms with engine positives are R6.1, R6.2's "note without the field", R6.3 on `nv_cons`,
   and both of R4.4's violation arms.
 - R6.5 is effective on `cons` alone: classify's 5 ms default pair budget makes a natural
-  `NoVerdict` a depth cut, which R6.3 covers instead.
-- When #475 (a stall latch) lands, R6.3 becomes "never on a depth cut".
+  `NoVerdict` a depth cut, which R6.3 covered instead. Since #475, R6.6 covers depth cuts.
+
+### #475: the stall latch, measured 2026-11-06
+
+Plan: `notes/plans/2026-11-06-475-saturation-stall-latch.md` (Fable: go with changes, all
+taken).
+
+**R6 on the generated net plus `fixtures/depthcut`.**
+- Arms: branch 9e667fa3 (#475 with main c06763b2 merged) on cores 93–94, against main
+  c06763b2 on core 92.
+- Routes: `full`, the five `nv_*` / `cons` routes, and `dcut`.
+- Pin check, a forced stall with the wedge off at a 20 s pair budget: main exits 0 with the
+  depth-limit line; the branch exits 3 with `no_verdict_pairs` 3 and the note.
+
+| law | main c06763b2 | branch |
+|---|---|---|
+| R6.1 | 20004 held, 1 timeout | the same |
+| R6.2 | 20004 held | the same |
+| R6.3 (#475 form) | **2460 violations**, 3987 held | **6447 held, 0 violations** |
+| R6.4 | 14804 held | the same |
+| R6.5 | 4001 held | the same |
+| R6.6 | 4 held, 3992 unresolved | the same |
+
+- R6.3 on main is the declared positive: there, the forced stall reads as a depth cut
+  (`nv_budget` 0 where `nv_free` is set).
+- `detect` (control = branch, mutant = main): 2455 detecting cases, all R6.3, and no other law
+  differs.
+- R6.6 resolves on the same 4 cases on both arms: the fixture and default 337, 745 and 1441.
+  Each shows the depth-limit line with the field at 0 and no note.
+- The timeouts are the same on both arms:
+  - `full` and `dcut` on default 438, 939, 1646 and 1998, and `dcut` on 1269;
+  - `nv_free_n2` on the fixture (deadline-free over 280 levels, expected). This one is R6.1's
+    single timeout.
+
+**The 1,920 ORE files, two arms.**
+- Arms: main 3f85ee41 against the branch with 3f85ee41 merged (f977401d).
+- Run: default `classify --json`, one thread, a 60 s CPU cap, through the harness, on 10 cores.
+  Each core ran both arms on its chunk.
+- Instrument proof, run first: a forced-stall smoke on 24 files through the same harness and
+  extractor. The branch set the field on 9 files; main set it on none.
+
+Results:
+- `no_verdict_pairs` is 0, and the note is absent, on all 1920 files on both arms. There is no
+  natural stall.
+- On the 1783 files both arms finished:
+  - exit code and depth caps are identical;
+  - CPU is 6348 s on main and 6401 s on the branch (+0.8%);
+  - content is identical except ore_ont_12698. That file is budget-truncated: 3 serial reps per
+    arm gave 6 distinct closures, so it varies within each arm.
+- The 3 caps hit by one arm only (16008, 3524, 8194) each need 58–66 CPU-s. At a 180 s cap,
+  serially, both arms finish them with identical content.
+- 134 files hit the cap on both arms. 21 have no JSON on both arms, with identical codes:
+  8 parse errors, and 13 that fail a 10 GB allocation under the 8 GB limit.
+- No file reaches the depth limit at the default 5 ms pair budget. So the sweep cannot show that
+  a depth cut stays a cut; that rests on R6.6 and on the runs below.
+
+**PMD core and the five depth-capped ORE files, at 1000 ms.**
+- Arms: main a29a7bc5 against the branch, 3 interleaved reps per arm on one core, by CPU time.
+- PMD core is also run at the default budget.
+
+| input | depth-capped probes | CPU s, median of 3: main / branch | outcome |
+|---|---:|---|---|
+| PMD core, default | 0 | 22.2 / 21.0 | identical on both arms |
+| PMD core, 1000 ms | 9 | 20.0 / 18.1 | identical |
+| 15514 | 4 | 0.9 / 0.9 | identical |
+| 185 | 5 | 0.9 / 0.9 | identical |
+| 6934 | 0 | 5.4 / 5.5 | identical |
+| 778 | 2174 | 262.6 / 264.2 | identical |
+| 9890 | 267 | 75.2 / 74.9 | identical; one main rep had 266 + 1 deadline cut |
+
+The rep ranges overlap on every input: PMD at the default is 21.6–24.0 on main and 20.5–24.1 on
+the branch; at 1000 ms it is 19.7–24.1 and 17.2–22.0. The CPU differences are noise, not a
+speed-up.
+
+- On every input: `no_verdict_pairs` is 0, there is no note, and the exit code and content
+  match.
+- Depth caps are unchanged: the depth cut stays a cut.
 
 ## Per-query laws: `subclass`, `sat` and `explain` on the generated net (#363 R7)
 
@@ -1001,7 +1092,7 @@ on 4000 shapes.** It also had no miss against the oracle.
 | case | KB (oracle) | classify | per-query, 120 s serial | verdict |
 |---|---|---|---|---|
 | data_heavy 306 | consistent; nominals and an assertion | 0.024 s, no give-up | hangs on 0df06f64 and 3d0fb8b0; **0.02 s on b6ed041d** | fixed by #479 (nominal-disjunction wait) |
-| default 1349 | consistent; no nominals or assertions | 0.06 s, no give-up | **hangs on all three**, including b6ed041d | **finding:** shrunk to 2 axioms, draft with the manager |
+| default 1349 | consistent; no nominals or assertions | 0.06 s, no give-up | **hangs on all three**, including b6ed041d | **finding:** shrunk to 2 axioms, filed as #485 |
 | default 939, 1646 | consistent | classify times out too (30 s) | hangs | shared hardness, not a per-query defect |
 | default 213, 1706 | consistent | 213: 1.85 s, `incomplete` and `consistency_undetermined` in both arms; 1706: 0.06 s in A, 3.4 s and `incomplete` in M | hangs only in M; ≤ 0.11 s CPU in A | the sabotage's own blowup |
 

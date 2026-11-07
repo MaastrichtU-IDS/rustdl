@@ -66,10 +66,11 @@ impl PyClassification {
         self.inner.stats().depth_capped_pairs
     }
 
-    /// #462: of `timed_out_pairs`, probes with NO deadline (e.g. under
-    /// `per_pair_timeout_ms=0`) that ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), not a cut. Not every `NoVerdict`: one on a probe with a
-    /// deadline is the routine search-depth cut (`depth_capped_pairs`). 0 when there is
+    /// #462/#475: of `timed_out_pairs`, probes that ended in `NoVerdict` as an internal
+    /// limit, likely a reasoner bug (#449), not a cut: any probe with NO deadline (e.g.
+    /// under `per_pair_timeout_ms=0`), and any probe whose deterministic saturation
+    /// stalled, budgeted or not. Not every `NoVerdict`: one on a budgeted probe that did
+    /// not stall is the routine search-depth cut (`depth_capped_pairs`). 0 when there is
     /// none.
     #[getter]
     fn no_verdict_pairs(&self) -> usize {

@@ -176,12 +176,13 @@ pub(crate) struct ClassifyJson {
     /// sets nor clears `incomplete` (a cut also prunes the walk below it). 0 when the
     /// closure is off.
     pub(crate) matrix_closure_added_pairs: usize,
-    /// #462: probes with NO deadline (per-class unsat probes and pair probes, e.g. under
-    /// `--pair-timeout-ms 0`) that ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. Each took its sound default and is also a timed-out pair, so
-    /// `incomplete` is set; it is not counted as a decision-depth cut. It does NOT count
-    /// every `NoVerdict`: on a probe with a deadline (the default pair budget) a
+    /// #462/#475: probes (per-class unsat probes and pair probes) that ended in
+    /// `NoVerdict` as an internal limit, likely a reasoner bug (#449): any probe with NO
+    /// deadline (e.g. under `--pair-timeout-ms 0`), and any probe whose deterministic
+    /// saturation stalled, budgeted or not. The command also prints a "likely a reasoner
+    /// bug" note on stderr and exits 3. Each took its sound default and is also a
+    /// timed-out pair, so `incomplete` is set; it is not counted as a decision-depth cut.
+    /// It does NOT count every `NoVerdict`: on a budgeted probe that did not stall, a
     /// `NoVerdict` is the routine decision-depth cut (#288). 0 when there is none.
     pub(crate) no_verdict_pairs: usize,
     pub(crate) unsatisfiable: Vec<String>,
@@ -211,11 +212,14 @@ pub(crate) struct ConsistentJson {
     /// `incomplete` (a give-up), as in `classify --json`. Counted whenever the
     /// consistency wedge was consulted; 0 when it was not.
     pub(crate) wedge_clauses_refused: usize,
-    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
-    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
+    /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
+    /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
+    /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
+    /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
+    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
+    /// is set too.
     pub(crate) no_verdict: bool,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -300,11 +304,14 @@ pub(crate) struct DisjointJson {
     pub(crate) disjoint_classes: Vec<[String; 2]>,
     pub(crate) disjoint_object_properties: Vec<[String; 2]>,
     pub(crate) disjoint_data_properties: Vec<[String; 2]>,
-    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
-    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
+    /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
+    /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
+    /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
+    /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
+    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
+    /// is set too.
     pub(crate) no_verdict: bool,
     /// #369: the property half's answer is non-empty and the KB's consistency
     /// stayed undetermined (see `sat-expr`). The class half reports through
@@ -345,11 +352,14 @@ pub(crate) struct SatExprJson {
     /// so it may be the vacuous answer of an inconsistent KB. Separate from
     /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
-    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
-    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
+    /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
+    /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
+    /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
+    /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
+    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
+    /// is set too.
     pub(crate) no_verdict: bool,
     pub(crate) satisfiable: bool,
 }
@@ -381,11 +391,14 @@ pub(crate) struct SubclassExprJson {
     /// so it may be the vacuous answer of an inconsistent KB. Separate from
     /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
-    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
-    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
+    /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
+    /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
+    /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
+    /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
+    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
+    /// is set too.
     pub(crate) no_verdict: bool,
     pub(crate) entailed: bool,
 }
@@ -747,11 +760,14 @@ pub(crate) struct IndividualsJson {
     /// vacuous answer of an inconsistent KB. Separate from `incomplete`; not a
     /// give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
-    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
-    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
+    /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
+    /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
+    /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
+    /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
+    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
+    /// is set too.
     pub(crate) no_verdict: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
@@ -805,11 +821,14 @@ pub(crate) struct PropertyValuesJson {
     /// so it may be the vacuous answer of an inconsistent KB. Separate from
     /// `incomplete`; not a give-up. A KB found inconsistent is an error instead.
     pub(crate) consistency_undetermined: bool,
-    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
-    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
+    /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
+    /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
+    /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
+    /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
+    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
+    /// is set too.
     pub(crate) no_verdict: bool,
     /// #389/#390: constructs present that the data half of this surface (the object half reports through `incomplete`) ignores and that
     /// can entail a relation it would report (see
@@ -870,11 +889,14 @@ pub(crate) struct JustifyJson {
     /// `status: "not-entailed"` that verdict rests on it; with `"entailed"` only
     /// minimality can. Not a give-up. See `JustifyOutcome::relies_on_trusted_consistency`.
     pub(crate) relies_on_trusted_consistency: bool,
-    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
-    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
+    /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
+    /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
+    /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
+    /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
+    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
+    /// is set too.
     pub(crate) no_verdict: bool,
     pub(crate) justifications: Vec<JustificationJson>,
 }
@@ -972,11 +994,14 @@ pub(crate) struct ProveJson {
     /// as `rustdl justify <file> inconsistent` searches for. `false` does not prove
     /// consistency.
     pub(crate) kb_inconsistent: bool,
-    /// #462: a probe with NO deadline ended in `NoVerdict`: an internal limit, likely a
-    /// reasoner bug (#449), so the command also prints a "likely a reasoner bug" note on
-    /// stderr and exits 3. It does NOT mean "any `NoVerdict`": on a probe with a deadline
-    /// (a pair budget) a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too.
+    /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
+    /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
+    /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
+    /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
+    /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
+    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
+    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
+    /// is set too.
     pub(crate) no_verdict: bool,
     pub(crate) has_proof: bool,
     /// `true` when every proof step cites the axiom its rule applies (or needs none) and

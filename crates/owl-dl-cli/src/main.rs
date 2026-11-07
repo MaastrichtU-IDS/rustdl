@@ -2297,6 +2297,11 @@ fn run() -> Result<()> {
                 let (verdict, flags) = is_instance_of_reporting(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_reporting")?;
                 // `(true, cut)` is a proved membership; only a "no" is in doubt.
+                // #493: a likely-bug `NoVerdict` is `unknown` with #449's note, the shape
+                // a deadline-free one always had (it used to reach the top-level net).
+                if flags.no_verdict && !verdict {
+                    exit_unknown_no_verdict();
+                }
                 if flags.incomplete && !verdict {
                     exit_unknown_probe_cut();
                 }
@@ -2328,10 +2333,12 @@ fn run() -> Result<()> {
             for iri in members {
                 println!("{iri}");
             }
-            if flags.incomplete {
+            // #493: a likely-bug cut gets #449's note and exit 3, after the list.
+            if flags.incomplete && !flags.no_verdict {
                 warn_probes_cut("instances", "RUSTDL_QUERY_MAX_NODES");
             }
             warn_consistency_undetermined("instances", flags.consistency_undetermined);
+            exit_if_no_verdict(flags.no_verdict);
         }
         Command::SatExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
@@ -2423,16 +2430,20 @@ fn run() -> Result<()> {
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_instances_expr_json(&r))?
                 );
+                // #493: last, after the JSON.
+                exit_if_no_verdict(r.no_verdict());
                 return Ok(());
             }
             for iri in r.individuals() {
                 println!("{iri}");
             }
-            // A list answer, as `instances`: sound members, a warning, exit 0.
-            if r.incomplete() {
+            // A list answer, as `instances`: sound members, a warning, exit 0. #493: a
+            // likely-bug cut gets #449's note and exit 3 instead of the budget advice.
+            if r.incomplete() && !r.no_verdict() {
                 warn_probes_cut("instances-expr", "RUSTDL_QUERY_MAX_NODES");
             }
             warn_consistency_undetermined("instances-expr", r.consistency_undetermined());
+            exit_if_no_verdict(r.no_verdict());
         }
         Command::Realize {
             file,
@@ -2462,11 +2473,14 @@ fn run() -> Result<()> {
                     serde_json::to_string_pretty(&json_out::build_realize_json(&r, dropped))?
                 );
                 note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
+                // #493: last, after the JSON.
+                exit_if_no_verdict(r.no_verdict());
                 return Ok(());
             }
             print_realization(&r);
             note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
-            if r.incomplete() {
+            // #493: a likely-bug cut gets #449's note at the end, not the budget advice.
+            if r.incomplete() && !r.no_verdict() {
                 warn_probes_cut("realize", "RUSTDL_MAX_NODES");
             }
             if r.direct_types_unverified() {
@@ -2496,6 +2510,8 @@ fn run() -> Result<()> {
                     || owl_dl_reasoner::materialize_data_property_assertions(&onto),
                 )?;
             }
+            // #493: last, so every section and warning above is printed first.
+            exit_if_no_verdict(r.no_verdict());
         }
         Command::Explain { file, sub, sup } => {
             let onto = parse_ofn(&file)?;

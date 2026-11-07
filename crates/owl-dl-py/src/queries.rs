@@ -85,19 +85,32 @@ pub(crate) fn is_instance_of(
     let (holds, flags) =
         owl_dl_reasoner::is_instance_of_reporting(&ontology, class_iri, individual_iri)
             .map_err(reason_error_to_py)?;
+    // #493: a likely-bug `NoVerdict` raises, as a deadline-free one always did.
+    if flags.no_verdict && !holds {
+        return Err(reason_error_to_py(owl_dl_reasoner::ReasonError::NoVerdict));
+    }
     Ok((holds, flags.incomplete, flags.consistency_undetermined))
 }
 
-/// `(individuals, incomplete, consistency_undetermined)`: named individuals
-/// entailed to be instances of `class_iri`; `incomplete` means at least one probe
-/// was cut; `consistency_undetermined` as in `is_instance_of` (#369).
+/// `(individuals, incomplete, consistency_undetermined, no_verdict)`: named
+/// individuals entailed to be instances of `class_iri`; `incomplete` means at least
+/// one probe was cut; `consistency_undetermined` as in `is_instance_of` (#369);
+/// `no_verdict` (#493) means a cut was a likely-bug `NoVerdict` (#449).
 #[pyfunction]
-pub(crate) fn instances_of(path: &str, class_iri: &str) -> PyResult<(Vec<String>, bool, bool)> {
+pub(crate) fn instances_of(
+    path: &str,
+    class_iri: &str,
+) -> PyResult<(Vec<String>, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (members, flags) = owl_dl_reasoner::instances_of_reporting(&ontology, class_iri)
         .map_err(reason_error_to_py)?;
-    Ok((members, flags.incomplete, flags.consistency_undetermined))
+    Ok((
+        members,
+        flags.incomplete,
+        flags.consistency_undetermined,
+        flags.no_verdict,
+    ))
 }
 
 /// `(types, incomplete, direct_types_unverified, witness_prune_may_drop)`: each
@@ -107,12 +120,13 @@ pub(crate) fn instances_of(path: &str, class_iri: &str) -> PyResult<(Vec<String>
 /// another listed type (`Realization::direct_types_unverified`, #388);
 /// `witness_prune_may_drop` means the pseudo-model prune ran on a witness with a
 /// known reason to lack an entailed type (`Realization::witness_prune_may_drop`,
-/// #387); the last value is #429's `relies_on_trusted_consistency`.
+/// #387); then #429's `relies_on_trusted_consistency`; the last value is #493's
+/// `no_verdict` (`Realization::no_verdict`, a likely-bug `NoVerdict`, #449).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn realize(
     path: &str,
-) -> PyResult<(HashMap<String, Vec<String>>, bool, bool, bool, bool)> {
+) -> PyResult<(HashMap<String, Vec<String>>, bool, bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let rs_realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     Ok((
@@ -121,6 +135,7 @@ pub(crate) fn realize(
         rs_realization.direct_types_unverified(),
         rs_realization.witness_prune_may_drop(),
         rs_realization.relies_on_trusted_consistency(),
+        rs_realization.no_verdict(),
     ))
 }
 
@@ -376,7 +391,7 @@ pub(crate) fn class_expression_entailed_subclass(
 pub(crate) fn class_expression_instances(
     path: &str,
     ce: &str,
-) -> PyResult<(Vec<String>, bool, bool)> {
+) -> PyResult<(Vec<String>, bool, bool, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
@@ -386,6 +401,8 @@ pub(crate) fn class_expression_instances(
         r.individuals().to_vec(),
         r.incomplete(),
         r.consistency_undetermined(),
+        // #493: a likely-bug `NoVerdict` (#449); the wrapper warns with that text.
+        r.no_verdict(),
     ))
 }
 

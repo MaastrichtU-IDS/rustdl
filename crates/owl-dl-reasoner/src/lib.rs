@@ -428,7 +428,12 @@ pub fn materialize_data_property_assertions_reporting<A: horned_owl::model::ForI
 pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String, String, String)>, ReasonError> {
-    materialize_existential_successors_reporting(onto).map(|(rows, _)| rows)
+    // #493: no flag channel here, so a likely-bug `NoVerdict` in the `realize` run
+    // underneath stays an error, as a deadline-free one always was.
+    match materialize_existential_successors_reporting(onto)? {
+        (_, flags) if flags.no_verdict => Err(ReasonError::NoVerdict),
+        (rows, _) => Ok(rows),
+    }
 }
 
 /// What [`materialize_existential_successors_reporting`] reports beside the rows
@@ -455,6 +460,10 @@ pub struct ExistentialSuccessorFlags {
     /// consistency-wedge `Sat` alone ([`Realization::relies_on_trusted_consistency`]).
     /// Not a give-up.
     pub relies_on_trusted_consistency: bool,
+    /// #493: a probe of the `realize` run ended in `NoVerdict` as an internal limit,
+    /// likely a reasoner bug (#449) ([`Realization::no_verdict`]). `incomplete` is set
+    /// too.
+    pub no_verdict: bool,
 }
 
 /// [`materialize_existential_successors`], plus the completeness flags of the
@@ -545,6 +554,7 @@ pub fn materialize_existential_successors_reporting<A: horned_owl::model::ForIRI
         witness_prune_active: realization.witness_prune_active(),
         witness_prune_may_drop: realization.witness_prune_may_drop(),
         relies_on_trusted_consistency: realization.relies_on_trusted_consistency(),
+        no_verdict: realization.no_verdict(),
     };
     // Distinct (a, R, C) with a:X entailed and X ⊑ ∃R.C told.
     let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();

@@ -57,6 +57,8 @@ pub(crate) struct RuleCounters {
     /// #474: nominal-assignment merges, and how many of them pruned a subtree first.
     pub(crate) nominal_merges: Cell<u64>,
     pub(crate) nominal_merge_prunes: Cell<u64>,
+    /// #485: `¬C` labels `apply_forall` added from a `≤0 R.C`.
+    pub(crate) max_zero_forall: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
 
@@ -155,6 +157,7 @@ impl RuleCounters {
             ),
             ("nominal_merges", self.nominal_merges.get()),
             ("nominal_merge_prunes", self.nominal_merge_prunes.get()),
+            ("max_zero_forall", self.max_zero_forall.get()),
             (
                 "is_blocked_prefilter_rejects",
                 self.is_blocked_prefilter_rejects.get(),

@@ -260,6 +260,33 @@ def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
         )
 
 
+def _warn_if_list_incomplete(name: str, incomplete: bool, no_verdict: bool) -> None:
+    # #493: a cut that was a likely-bug NoVerdict (#449) gets that text, not the budget
+    # one; the result is still returned (it used to raise).
+    if no_verdict:
+        _warnings.warn(
+            f"{name}: a probe ended without a verdict on an internal limit (NoVerdict): "
+            "a probe with no deadline, or one whose saturation stalled. This is likely "
+            "a reasoner bug (#449); please report the input. The result is a sound "
+            "under-approximation: no false entries, but real ones may be missing.",
+            IncompleteQueryWarning,
+            stacklevel=3,
+        )
+    else:
+        _warn_if_query_incomplete_at(name, incomplete, stacklevel=4)
+
+
+def _warn_if_query_incomplete_at(name: str, incomplete: bool, stacklevel: int) -> None:
+    if incomplete:
+        _warnings.warn(
+            f"{name} result may be incomplete (budget/fragment exhausted) — "
+            "sound under-approximation: no false entries, but real ones may be "
+            "missing.",
+            IncompleteQueryWarning,
+            stacklevel=stacklevel,
+        )
+
+
 def _warn_if_explanation_incomplete(name: str, incomplete: bool) -> None:
     if incomplete:
         _warnings.warn(
@@ -514,6 +541,8 @@ def is_instance_of(path, class_iri, individual_iri):
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
     cut (deadline, node cap, depth limit), returns `False` and emits
     `IncompleteQueryWarning`. Emits `ConsistencyUndeterminedWarning` (#369).
+    A probe that ended in NoVerdict on an internal limit (likely a reasoner bug, #449)
+    raises `RustdlError` instead: a "no" is then not known (#493).
 
     `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427). Like every class,
     they raise on an inconsistent ontology: `a : owl:Thing` holds anyway, but the
@@ -529,9 +558,11 @@ def is_instance_of(path, class_iri, individual_iri):
 def instances_of(path, class_iri):
     """Named individuals entailed to be instances of `class_iri`. Emits
     `IncompleteQueryWarning` when a probe was cut (members may be missing), and
-    `ConsistencyUndeterminedWarning` (#369)."""
-    members, incomplete, undetermined = _instances_of_native(path, class_iri)
-    _warn_if_query_incomplete("instances_of", incomplete)
+    `ConsistencyUndeterminedWarning` (#369). A probe that ended in NoVerdict on an
+    internal limit (likely a reasoner bug, #449) is reported by the same warning,
+    with that text; the members are still returned (#493; it used to raise)."""
+    members, incomplete, undetermined, no_verdict = _instances_of_native(path, class_iri)
+    _warn_if_list_incomplete("instances_of", incomplete, no_verdict)
     _warn_if_consistency_undetermined("instances_of", undetermined)
     return members
 
@@ -580,9 +611,12 @@ def realize(path):
     specific), and `WitnessPruneWarning` when the pseudo-model prune may have
     dropped an entailed type (#387). Emits `TrustedConsistencyWarning` when the
     classification underneath took the ontology as consistent on the
-    consistency wedge's model alone (#429)."""
-    types, incomplete, unverified, may_drop, trusted = _realize_native(path)
-    _warn_if_query_incomplete("realize", incomplete)
+    consistency wedge's model alone (#429). A probe that ended in NoVerdict on an
+    internal limit (likely a reasoner bug, #449) is reported by
+    `IncompleteQueryWarning` with that text; the types are still returned (#493;
+    it used to raise)."""
+    types, incomplete, unverified, may_drop, trusted, no_verdict = _realize_native(path)
+    _warn_if_list_incomplete("realize", incomplete, no_verdict)
     _warn_if_trusted_wedge_consistency("realize", trusted)
     _warn_if_direct_types_unverified("realize", unverified)
     _warn_if_witness_prune_may_drop("realize", may_drop)
@@ -624,10 +658,10 @@ def materialize_inferred_class_assertions(path):
     missing) and `DirectTypesUnverifiedWarning` when a listed type may be a
     superclass of another (#388, #391), and `WitnessPruneWarning` when the
     pseudo-model prune may have dropped a type (#387)."""
-    pairs, incomplete, unverified, may_drop, trusted = (
+    pairs, incomplete, unverified, may_drop, trusted, no_verdict = (
         _materialize_inferred_class_assertions_native(path)
     )
-    _warn_if_query_incomplete("materialize_inferred_class_assertions", incomplete)
+    _warn_if_list_incomplete("materialize_inferred_class_assertions", incomplete, no_verdict)
     _warn_if_trusted_wedge_consistency("materialize_inferred_class_assertions", trusted)
     _warn_if_direct_types_unverified("materialize_inferred_class_assertions", unverified)
     _warn_if_witness_prune_may_drop("materialize_inferred_class_assertions", may_drop)
@@ -641,8 +675,10 @@ def materialize_existential_successors(path):
     `realize` run underneath was cut, so rows may be missing (#391), and
     `WitnessPruneWarning` when its pseudo-model prune may have dropped a type
     (#387)."""
-    rows, incomplete, may_drop, trusted = _materialize_existential_successors_native(path)
-    _warn_if_query_incomplete("materialize_existential_successors", incomplete)
+    rows, incomplete, may_drop, trusted, no_verdict = (
+        _materialize_existential_successors_native(path)
+    )
+    _warn_if_list_incomplete("materialize_existential_successors", incomplete, no_verdict)
     _warn_if_trusted_wedge_consistency("materialize_existential_successors", trusted)
     _warn_if_witness_prune_may_drop("materialize_existential_successors", may_drop)
     return rows
@@ -819,9 +855,13 @@ def class_expression_instances(path, ce):
     prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
     (members may be missing; those returned are sound), as `instances_of`
     does; an answer off the pure-EL fragment no longer warns.
-    Emits `ConsistencyUndeterminedWarning` (#369)."""
-    individuals, incomplete, undetermined = _class_expression_instances_native(path, ce)
-    _warn_if_query_incomplete("class_expression_instances", incomplete)
+    Emits `ConsistencyUndeterminedWarning` (#369). A probe that ended in NoVerdict on
+    an internal limit (likely a reasoner bug, #449) is reported by
+    `IncompleteQueryWarning` with that text; the members are still returned (#493)."""
+    individuals, incomplete, undetermined, no_verdict = _class_expression_instances_native(
+        path, ce
+    )
+    _warn_if_list_incomplete("class_expression_instances", incomplete, no_verdict)
     _warn_if_consistency_undetermined("class_expression_instances", undetermined)
     return individuals
 

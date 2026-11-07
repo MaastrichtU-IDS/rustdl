@@ -1004,6 +1004,9 @@ fn is_literal(ctx: &TableauContext<'_, '_, '_>, c: ConceptId) -> bool {
 /// Find the first `Max(n, R, C)` label whose R-neighbour at the
 /// owning node is unlabelled for both `C` and `¬C`. Returns
 /// `(neighbour, C, ¬C)` — the two labels the search will branch on.
+///
+/// A `≤0 R.C` normally never gets here: `apply_forall` labels every
+/// neighbour `¬C` during saturation (#485, [`crate::max_zero_forall_enabled`]).
 fn first_open_choose(
     ctx: &TableauContext<'_, '_, '_>,
     bound: u32,

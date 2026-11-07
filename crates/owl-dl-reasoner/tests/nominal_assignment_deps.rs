@@ -25,15 +25,24 @@
 //! `nominal_merge_without_the_label_takes_every_active_decision`) are the primary
 //! guards. Each case runs with the wedge on and off and with the guard on and off (the
 //! guard-off arms were right before the fix and must stay right).
+//!
+//! The same merges fed two more surfaces (found by the assurance census, both
+//! oracles): `individuals` reported `b≠p`, `b≠q`, `m≠p`, `m≠q`, `p≠q` as different
+//! (main also put all five in one same-group), and `sat-expr "{m} and {p}"` (and
+//! `m`/`q`, `p`/`q`) said unsatisfiable. Only `a≠m` and `b≠m` are entailed, and
+//! `a = b` is (`p` holds `∀r.{a}` and `∃r.{b}`).
 
 use std::sync::mpsc;
 use std::time::Duration;
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
-use horned_owl::model::RcStr;
+use horned_owl::model::{Build, ClassExpression, Individual, RcStr};
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::{is_class_satisfiable, is_consistent, is_subclass_of};
+use owl_dl_reasoner::{
+    class_expression_satisfiable, different_individuals, is_class_satisfiable, is_consistent,
+    is_subclass_of, same_individuals,
+};
 
 static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -139,6 +148,78 @@ fn consistent_with_the_consistency_wedge_off() {
                         is_consistent(&parse(src)).expect("decides")
                     }),
                     "{name} is consistent ({arm} {WEDGE_CONSISTENCY}={wc})"
+                );
+            }
+        });
+    }
+}
+
+const PAIRS_THAT_MAY_MEET: &[(&str, &str)] = &[("m", "p"), ("m", "q"), ("p", "q")];
+
+#[test]
+fn nominal_conjunctions_that_have_a_model_are_satisfiable() {
+    for (name, src, ns) in [
+        ("c5e", C5E, "http://example.org/c5e#"),
+        ("q5", Q5, "http://example.org/q5#"),
+    ] {
+        each_arm(|arm| {
+            for &(x, y) in PAIRS_THAT_MAY_MEET {
+                let (x_iri, y_iri) = (format!("{ns}{x}"), format!("{ns}{y}"));
+                assert!(
+                    within(
+                        60,
+                        &format!("{name} {{{x}}} ⊓ {{{y}}} ({arm})"),
+                        move || {
+                            let b = Build::<RcStr>::new();
+                            let one = |i: &str| {
+                                ClassExpression::ObjectOneOf(vec![Individual::Named(
+                                    b.named_individual(i),
+                                )])
+                            };
+                            let ce = ClassExpression::ObjectIntersectionOf(vec![
+                                one(&x_iri),
+                                one(&y_iri),
+                            ]);
+                            class_expression_satisfiable(&parse(src), &ce)
+                                .expect("decides")
+                                .holds()
+                        }
+                    ),
+                    "{name}: {{{x}}} ⊓ {{{y}}} is satisfiable ({arm})"
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn individuals_reports_only_entailed_identities() {
+    for (name, src, ns) in [
+        ("c5e", C5E, "http://example.org/c5e#"),
+        ("q5", Q5, "http://example.org/q5#"),
+    ] {
+        each_arm(|arm| {
+            let short = |iri: &str| iri.trim_start_matches(ns).to_owned();
+            let (same, different) = within(60, &format!("{name} individuals ({arm})"), move || {
+                let o = parse(src);
+                let same = same_individuals(&o, None).expect("decides");
+                let different = different_individuals(&o, None).expect("decides");
+                (same.groups().to_vec(), different.pairs().to_vec())
+            });
+            for (x, y) in &different {
+                let mut pair = [short(x), short(y)];
+                pair.sort();
+                assert!(
+                    matches!((pair[0].as_str(), pair[1].as_str()), ("a" | "b", "m")),
+                    "{name}: {} ≠ {} is not entailed ({arm})",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            for group in &same {
+                assert!(
+                    group.iter().all(|i| matches!(short(i).as_str(), "a" | "b")),
+                    "{name}: same-group {group:?} is not entailed; only a = b is ({arm})"
                 );
             }
         });

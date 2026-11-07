@@ -222,9 +222,35 @@ impl TableauTrail {
             "checkpoint handle does not point at a Checkpoint entry"
         );
         self.generation += 1;
+        // #491: a `LabelAdded` undo leaves the node's `label_sig` stale; it is
+        // recomputed once per touched node after the loop, not once per undone
+        // label. Per entry, a rollback of K labels on a node holding L labels cost
+        // K·L hashes (minutes on `ore_ont_7581`, where one node holds ~330k labels
+        // and a deadline-cut search unwinds hundreds of frames). Nothing reads
+        // `label_sig` between undos (`undo` has no other caller and no arm reads
+        // it), so the result is bit-identical to the per-entry recompute.
+        let mut touched: smallvec::SmallVec<[NodeId; 8]> = smallvec::SmallVec::new();
         while self.entries.len() > cp.position {
             let entry = self.entries.pop().expect("non-empty by loop guard");
+            if let TrailEntry::LabelAdded { node, .. } = entry
+                && touched.last() != Some(&node)
+            {
+                touched.push(node);
+            }
             undo(&entry, graph);
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        for node in touched {
+            // A node created after the checkpoint was truncated by its own
+            // `NodeCreated` undo (popped after its labels'); it is gone, and its
+            // index is past the arena. Truncation only shortens the tail and no
+            // node is allocated during a rollback, so an index below the length
+            // is still the node that was touched.
+            if (node.index() as usize) < graph.len() {
+                let sig = crate::graph::label_sig_of(&graph.node(node).labels);
+                graph.blocking_mut(node).label_sig = sig;
+            }
         }
     }
 }
@@ -248,13 +274,9 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
                 "LabelAdded undo: label_deps shorter than labels"
             );
             n.label_deps.remove(pos);
-            // `label_sig` is the OR of `label_sig_bit` over `labels`.
-            // Removing one concept may or may not clear its bit (if no
-            // other label hashes to the same position). Recompute from
-            // scratch — O(|labels|), same order as the binary_search
-            // above, so no asymptotic cost on rollback.
-            let new_sig = crate::graph::label_sig_of(&n.labels);
-            graph.blocking_mut(node).label_sig = new_sig;
+            // `label_sig` (the OR of `label_sig_bit` over `labels`) is now stale:
+            // removing a concept may or may not clear its bit. `rollback_to`
+            // recomputes it once per touched node when the loop ends (#491).
             // Conservatively clear the residual-saturation memo:
             // any label removal might have removed a residual. The
             // next `apply_residual_gcis` call will re-materialize

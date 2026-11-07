@@ -250,6 +250,9 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
             };
         }
     }
+    // #475: the iteration cap, the only `Stalled` exit that is not a deadline. The
+    // four deadline exits above return `Stalled` too; only this one is latched.
+    ctx.note_saturation_cap();
     SaturationResult::Stalled
 }
 

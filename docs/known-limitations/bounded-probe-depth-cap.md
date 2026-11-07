@@ -16,6 +16,9 @@ after 32 depth-limit hits. No per-pair budget recovers such a probe.
   in ~15 s with identical rows.
 - Since #424 the INCOMPLETE banner and the Python warning report these cuts as depth-limit
   cuts (`depth_capped_pairs`), not as timeouts.
+- Since #475 a depth cut is told apart from a saturation stall on a budgeted probe. A stall
+  is reported as #462's `no_verdict` signal (a likely bug), while these cuts keep
+  `no_verdict_pairs: 0` and no note.
 
 The original #288 stall (`sat` never finishing, unbounded classify never completing) was
 fixed by #382 (`RUSTDL_MAX_FIRST`, `RUSTDL_TOP_FILLER`); a guard test is in

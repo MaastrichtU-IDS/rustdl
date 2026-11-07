@@ -476,8 +476,10 @@ no axioms and `incomplete` is `true`. `false` is not a proof of consistency.
   members included, so `instances` may be empty) when the KB's consistency stayed undetermined:
   the consistency wedge stalled or ran out of budget (`RUSTDL_QUERY_LAZY_CONSISTENCY_MS`, default
   2000, for `sat-expr` / `subclass-expr`), and the main-tableau tail
-  (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`) is off by default. An ontology with no individual is
-  not checked and never sets it. On an
+  (`RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1`) is off by default. On an ontology with no individual
+  (#457), an answer the main tableau found runs that tail by default (`RUSTDL_QUERY_NO_SEED_TAIL`)
+  and sets the field when it is cut; a told, saturation or query-wedge answer is not checked and
+  never sets it (`docs/known-limitations/tbox-only-inconsistency-light-route.md`). On an
   inconsistent KB every such answer holds vacuously, so the answer is then not known to be more
   than that. Not a give-up; does not set `incomplete`.
 - All three run under the single-query node cap (`RUSTDL_QUERY_MAX_NODES`, default 500000). On an

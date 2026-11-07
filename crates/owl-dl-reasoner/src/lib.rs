@@ -9551,11 +9551,28 @@ pub fn lazy_query_consistency_enabled() -> bool {
 /// per call). Off by default: on the ORE pool it ran 82 times, found no
 /// inconsistency the wedge had not, and took about 90% of the check's wall time
 /// (44 of 48 s on `instances`). With it off, an undetermined verdict is reported
-/// as `consistency_undetermined` instead.
+/// as `consistency_undetermined` instead. On a KB with no individual the prepared
+/// route runs the tail anyway ([`query_no_seed_tail_enabled`], #457).
 #[must_use]
 pub fn lazy_query_consistency_tail_enabled() -> bool {
     std::env::var_os("RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL")
         .is_some_and(|v| v == "1" || v == "true" || v == "yes" || v == "on")
+}
+
+/// #457: `RUSTDL_QUERY_NO_SEED_TAIL` (default ON, `=0` off): on a KB with no
+/// individual (and no nominal), where the consistency wedge has no seed, the lazy
+/// check of a positive answer on the PREPARED route runs the bounded main-tableau
+/// tail (`consistent`'s probe, up to `RUSTDL_CONSISTENCY_FALLBACK_MS`, once per
+/// prepared ontology). A proof of inconsistency errors `Inconsistent`; a tail that
+/// does not decide flags `consistency_undetermined`. The LIGHT route (told,
+/// saturation or query-wedge answers) does not run it: it would have to prepare
+/// the KB just for the check, which cost +81% CPU over the ORE pool's `TBox`-only
+/// non-EL ontologies and flagged 30 of 183 of them. Such an answer on an
+/// inconsistent `TBox`-only KB stays silent (correct, since it holds vacuously);
+/// see `docs/known-limitations/tbox-only-inconsistency-light-route.md`.
+#[must_use]
+pub fn query_no_seed_tail_enabled() -> bool {
+    std::env::var_os("RUSTDL_QUERY_NO_SEED_TAIL").is_none_or(|v| v != "0")
 }
 
 /// #369 follow-up: the wedge budget of the lazy consistency check on the surfaces
@@ -9624,8 +9641,10 @@ fn lazy_light_oversized(internal: &InternalOntology) -> bool {
 /// that is a SOUNDNESS gate (the seeded engine would otherwise test the first
 /// class, and its `Unsat` is not an inconsistency), and the result is
 /// `Ok(false)`, not undetermined, as classify's pre-check does not flag a wedge
-/// it could not run. A `TBox` inconsistency only the tableau finds is then missed,
-/// as on main. The wedge turned off by `RUSTDL_WEDGE_CONSISTENCY=0` is
+/// it could not run. A `TBox` inconsistency only the tableau finds is then missed:
+/// unlike the prepared route ([`query_no_seed_tail_enabled`], #457), this route
+/// does not run the main-tableau tail with no seed, since it would have to prepare
+/// the KB just for the check. The wedge turned off by `RUSTDL_WEDGE_CONSISTENCY=0` is
 /// undetermined (the tail can decide it), as on #419's surfaces.
 ///
 /// # Errors
@@ -10311,7 +10330,8 @@ pub(crate) struct PreparedOntology {
     /// most once per prepared ontology ([`Self::query_consistency`]).
     query_consistency: std::sync::OnceLock<QueryConsistency>,
     /// #369: the bounded main-tableau tail of [`Self::lazy_inconsistency_check`],
-    /// run at most once, only when [`Self::query_consistency`] is undetermined.
+    /// run at most once, only when the verdict is undetermined and the tail is on
+    /// (opt-in with an `ABox`; by default with no individual, #457).
     lazy_consistency_tail: std::sync::OnceLock<Option<bool>>,
     /// #369: the lazy check's own verdict, settled under
     /// [`lazy_query_consistency_ms`] when the query left none.
@@ -10397,8 +10417,9 @@ pub(crate) struct PreparedOntology {
     /// [`pool_has_dkey_counting`].
     pub(crate) wedge_sat_skips_data_counting: bool,
     /// `ABox`-seeded wedge consistency state. `Some` iff
-    /// [`wedge_consistency_enabled`] and the ontology has `ABox` axioms;
-    /// `None` otherwise (`ABox`-free inputs pay nothing, classify
+    /// [`wedge_consistency_enabled`] and the ontology names an individual
+    /// ([`internal_has_individuals`]: an `ABox` axiom or a `TBox` nominal);
+    /// `None` otherwise (individual-free inputs pay nothing, classify
     /// byte-identical). Consumed by [`is_consistent_internal_full`].
     consistency: Option<ConsistencyCache>,
     /// Per-classify accumulator for the main tableau's iterative-deepening
@@ -11436,7 +11457,9 @@ impl PreparedOntology {
     /// `Err(Inconsistent)` only on a WITNESSED inconsistency:
     /// [`Self::query_consistency`]'s `Inconsistent`, or, when that is
     /// undetermined, `consistent`'s bounded main-tableau probe finding none
-    /// (`Some(false)`; [`lazy_query_consistency_tail_enabled`]). A consistent,
+    /// (`Some(false)`; [`lazy_query_consistency_tail_enabled`], and by default on a
+    /// KB with no individual, where the wedge has no seed: [`query_no_seed_tail_enabled`],
+    /// #457). A consistent,
     /// undetermined or cut verdict keeps the answer, as before #369. A verdict
     /// lent by a parent ([`assume_query_consistency`]) is final: a lent
     /// "consistent" is correct by monotonicity, and a lent "undetermined" does not
@@ -11447,7 +11470,8 @@ impl PreparedOntology {
     /// probe answer, not for a told or saturation-derived pair.
     ///
     /// Returns `Ok(true)` when consistency stayed UNDETERMINED (the wedge
-    /// stalled or was cut and the tail is off, cut or failed), which the
+    /// stalled or was cut and the tail is off, cut or failed; with no seed, the
+    /// tail ran and was cut or failed), which the
     /// surfaces report as `consistency_undetermined`: the positive answer may be
     /// the vacuous one of an inconsistent KB. `Ok(false)` when the KB is
     /// consistent at the query surfaces' trust level, or the check did not run.
@@ -11515,9 +11539,16 @@ impl PreparedOntology {
                 }),
             },
         };
+        // No individual (and no nominal): the consistency wedge has no seed, as in
+        // [`lazy_inconsistency_check_light`]. The wedge turned off by
+        // `RUSTDL_WEDGE_CONSISTENCY=0` is undetermined, as in #419.
+        let no_seed = self.consistency.is_none() && wedge_consistency_enabled();
+        // #457: on such a KB the query already paid for this prepared ontology, so
+        // the bounded main-tableau tail runs by default ([`query_no_seed_tail_enabled`]);
+        // with an `ABox` it stays opt-in ([`lazy_query_consistency_tail_enabled`]).
         let tail = if verdict == QueryConsistency::Undetermined
             && !inherited
-            && lazy_query_consistency_tail_enabled()
+            && (lazy_query_consistency_tail_enabled() || (no_seed && query_no_seed_tail_enabled()))
         {
             Some(*self.lazy_consistency_tail.get_or_init(|| {
                 let deadline = std::time::Instant::now()
@@ -11529,18 +11560,20 @@ impl PreparedOntology {
             None
         };
         let inconsistent = verdict == QueryConsistency::Inconsistent || tail == Some(Some(false));
-        // No individual: no wedge seed, not flagged, as in
-        // [`lazy_inconsistency_check_light`]. The wedge turned off by
-        // `RUSTDL_WEDGE_CONSISTENCY=0` is undetermined, as in #419.
-        let no_seed = self.consistency.is_none() && wedge_consistency_enabled();
-        let undetermined =
-            verdict == QueryConsistency::Undetermined && !no_seed && tail != Some(Some(true));
+        // With no seed and no tail, not flagged, as on the light route (the KB's
+        // consistency was never checked; #457 documents that gap). A tail that ran
+        // and did not decide is undetermined, seed or not.
+        let undetermined = verdict == QueryConsistency::Undetermined
+            && (!no_seed || tail.is_some())
+            && tail != Some(Some(true));
         if mode == LazyConsistencyMode::Report || std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!(
                 "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail:?} \
-                 inconsistent={inconsistent} us={} route=prepared has_individuals={}",
+                 inconsistent={inconsistent} us={} route=prepared has_individuals={} \
+                 no_seed_tail={}",
                 started.elapsed().as_micros(),
-                self.consistency.is_some()
+                self.consistency.is_some(),
+                no_seed && query_no_seed_tail_enabled()
             );
         }
         if inconsistent && mode == LazyConsistencyMode::On {
@@ -13301,6 +13334,38 @@ mod tests {
 
     fn parse_internal_lib(src: &str) -> InternalOntology {
         owl_dl_core::convert::convert_ontology(&parse(src)).expect("fixture converts")
+    }
+
+    /// #457 residual 2: with no individual, the prepared route runs the bounded
+    /// main-tableau tail once per prepared ontology and caches its proof.
+    #[test]
+    fn the_no_seed_tail_runs_once_per_prepared_ontology() {
+        let internal = parse_internal_lib(include_str!(
+            "../../owl-dl-cli/tests/fixtures/query_wedge_hang_457.ofn"
+        ));
+        assert!(
+            !internal_has_individuals(&internal),
+            "precondition: no seed"
+        );
+        let (holds, _, left) = is_subclass_of_keeping(
+            internal,
+            "http://gen.rustdl/o#C0",
+            "http://gen.rustdl/o#C1",
+            None,
+        )
+        .expect("the subsumption query answers");
+        assert!(holds, "vacuous on this inconsistent KB");
+        let QueryOntology::Prepared(prepared) = left else {
+            panic!("precondition: the tableau answers this pair (the prepared route)");
+        };
+        assert!(prepared.lazy_consistency_tail.get().is_none());
+        for _ in 0..2 {
+            assert!(matches!(
+                prepared.lazy_inconsistency_check_bounded("test"),
+                Err(ReasonError::Inconsistent)
+            ));
+            assert_eq!(prepared.lazy_consistency_tail.get(), Some(&Some(false)));
+        }
     }
 
     fn classify_cache(body: &str) -> (HyperCache, u32, u32) {

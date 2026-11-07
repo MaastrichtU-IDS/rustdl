@@ -1,0 +1,21 @@
+# #457 residual 2: query_wedge_proves_457.ofn made inconsistent by a TBox-only clash the EL
+# closure cannot see (owl:Thing ⊑ P ⊔ Q, both empty). `subclass A D` is still proved by the
+# H4 query wedge (the light route: no consistency signal), while a query the tableau answers
+# (e.g. `sat-expr ':A and (:r only (not :B))'`) finds the inconsistency.
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(:=<http://example.org/w457#>)
+Ontology(<http://example.org/w457>
+Declaration(Class(:A))
+Declaration(Class(:B))
+Declaration(Class(:C))
+Declaration(Class(:D))
+Declaration(Class(:P))
+Declaration(Class(:Q))
+Declaration(ObjectProperty(:r))
+SubClassOf(:A ObjectMinCardinality(2 :r :B))
+SubClassOf(:A ObjectMaxCardinality(1 :r :C))
+EquivalentClasses(:D ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B ObjectComplementOf(:C))))
+SubClassOf(owl:Thing ObjectUnionOf(:P :Q))
+SubClassOf(:P owl:Nothing)
+SubClassOf(:Q owl:Nothing)
+)

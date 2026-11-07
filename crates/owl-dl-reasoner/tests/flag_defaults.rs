@@ -579,6 +579,13 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::lazy_query_consistency_tail_enabled,
             false,
         ),
+        // #457 (A″): with no individual the wedge has no seed, so the prepared
+        // route runs the bounded tail by default; the light route never does.
+        (
+            "RUSTDL_QUERY_NO_SEED_TAIL",
+            owl_dl_reasoner::query_no_seed_tail_enabled,
+            true,
+        ),
         (
             "RUSTDL_COUNTING_PAIR_VERIFY",
             owl_dl_reasoner::counting_pair_verify_enabled,

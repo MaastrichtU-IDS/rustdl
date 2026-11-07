@@ -1132,9 +1132,12 @@ fn warn_consistency_undetermined(command: &str, undetermined: bool) {
     if undetermined {
         eprintln!(
             "warning: {command}: the KB's consistency could not be determined (the \
-             consistency wedge stalled or was cut), so this positive answer may be the \
-             vacuous one of an inconsistent KB. RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1 also \
-             runs a bounded main-tableau check."
+             consistency wedge or the bounded main-tableau check stalled or was cut), so \
+             this positive answer may be the vacuous one of an inconsistent KB. \
+             `rustdl consistent` decides it directly, but can take much longer (on a KB \
+             with no individual it runs the main tableau with no deadline). On a KB with \
+             individuals, RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1 also runs a bounded \
+             main-tableau check."
         );
     }
 }

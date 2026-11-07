@@ -92,7 +92,9 @@ def test_a_stalled_probe_warns_and_keeps_the_result(tmp_path):
         got = _run(str(p), True, pair_ms)
         for name in CALLS:
             if name == "is_instance_of":
-                assert got[name]["raised"], f"{pair_ms}: {name} raises on a bug-signal no: {got[name]}"
+                assert got[name]["raised"] and "NoVerdict" in got[name]["raised"], (
+                    f"{pair_ms}: {name} raises the NoVerdict error on a bug-signal no: {got[name]}"
+                )
                 continue
             assert got[name]["raised"] is None, f"{pair_ms}: {name} keeps its result: {got[name]}"
             assert got[name]["returned"], f"{pair_ms}: {name}: {got[name]}"

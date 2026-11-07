@@ -34,7 +34,10 @@ notes/plans/2026-11-03-363-package-e-stateful.md (v2). Laws:
       R6.2 field set <=> note on stderr; field set => exit 3 and `incomplete`.
       R6.3 under the forced stall a budgeted probe reports the stall too (#493: also
            `nv_realize` iff `nv_realize_free`, `nv_iexpr` iff `nv_iexpr_free`; R6.1 and
-           R6.2 cover those four routes too): `nv_budget` sets
+           R6.2 cover those four routes too; the known exception, here and for
+           `nv_budget`/`nv_free`, is a probe that does not stall but outruns the 1000 ms
+           budget: free, its depth cap is flagged; budgeted, its deadline is not. A
+           violation is a case to triage, not by itself a bug): `nv_budget` sets
            the field iff `nv_free` does on the same case (same engine and stall), and
            `nv_cons` on a budgeted probe (the wedge-route fall-through, the #344
            data-counting check) sets it iff it gave up; a decided `nv_cons` never sets it.

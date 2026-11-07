@@ -736,7 +736,16 @@ fn a_budgeted_instance_depth_cut_is_not_a_no_verdict() {
         "http://example.org/d#Y",
         "http://example.org/d#a",
     ];
+    let t = std::time::Instant::now();
     let r = run_with(false, &env, &args);
+    // The search exhausts at the depth limit in about 0.5 s (debug); a run near the 20 s
+    // budget would be a deadline cut (`Ok(None)`), which passes the checks below without
+    // ever reaching the depth-cap arm this guards (Fable's review of #495).
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "the probe must end on the depth limit, well before its deadline: {:?}",
+        t.elapsed()
+    );
     assert_eq!(
         r.code, 3,
         "the cut is a give-up: {}\n{}",

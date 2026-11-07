@@ -541,6 +541,8 @@ def is_instance_of(path, class_iri, individual_iri):
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
     cut (deadline, node cap, depth limit), returns `False` and emits
     `IncompleteQueryWarning`. Emits `ConsistencyUndeterminedWarning` (#369).
+    A probe that ended in NoVerdict on an internal limit (likely a reasoner bug, #449)
+    raises `RustdlError` instead: a "no" is then not known (#493).
 
     `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427). Like every class,
     they raise on an inconsistent ontology: `a : owl:Thing` holds anyway, but the

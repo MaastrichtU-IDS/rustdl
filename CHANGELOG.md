@@ -263,6 +263,22 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`consistent`'s #392 note and the consistency give-up advice named the wrong bound (#497).**
+  - The note promised that `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau "bounded by
+    `RUSTDL_CONSISTENCY_FALLBACK_MS`". With the wedge off, the main tableau has **no deadline**. On wine
+    it does not finish (#490).
+  - The run stays unbounded, by decision: it is the only deadline-free main-tableau consistency path
+    (`RUSTDL_CONSISTENCY_FALLBACK_MS` has no unbounded value). Several tests use it as their
+    HermiT-matching reference, and a bound would turn the hard ontologies into `unknown`.
+  - The note now says "with no deadline". It also prints on `sat owl:Thing` / `subclass ⊤ ⊑ ⊥`.
+  - The give-up advice of `consistent`, `explain` and the `⊤` queries said only "raise
+    `RUSTDL_CONSISTENCY_FALLBACK_MS`". On an ontology with no individual (the default route there) or
+    with the wedge off, the give-up is the node cap, never that budget. The advice now names both:
+    - the wedge's budgets when the wedge ran;
+    - otherwise the node cap (`RUSTDL_MAX_NODES`, or `RUSTDL_QUERY_MAX_NODES` for a single query).
+  - Also corrected: the refused-clauses warning ("main tableau, no deadline"), the
+    `wedge_consistency_enabled` doc, the fall-through comments (which said that branch "does not
+    hang"), `docs/json-schema.md` and the Python `TrustedConsistencyWarning` docstring.
 - **Per-query `sat` / `subclass` / `explain` finish when a `≤0 R.C` has to put `¬C` on a
   neighbour that also carries an open disjunction (#485).** On
   `C0 ≡ ≤0 r1.¬C5`, `C5 ≡ ∃r0.(=2 r1.C2)` (generated case 1349, shrunk), `sat C5` never

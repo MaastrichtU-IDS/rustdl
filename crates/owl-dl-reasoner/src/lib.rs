@@ -6176,7 +6176,8 @@ impl HyperCache {
 ///   (#392), unless the #344 data-counting verification confirmed it.
 /// - wedge `Stalled` ⟹ undetermined → bounded main-tableau fall-through.
 ///
-/// Set `RUSTDL_WEDGE_CONSISTENCY=0` to revert to pure main-tableau.
+/// Set `RUSTDL_WEDGE_CONSISTENCY=0` to revert to pure main-tableau, with no deadline
+/// (#497: the fall-through's `RUSTDL_CONSISTENCY_FALLBACK_MS` bounds only the wedge route).
 #[must_use]
 pub fn wedge_consistency_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_CONSISTENCY").is_none_or(|v| v != "0" && !v.is_empty())
@@ -8865,15 +8866,22 @@ fn is_consistent_internal_full(
             eprintln!("consistency: wedge Stalled — bounded tableau fall-through");
         }
         // `Some(Stalled)` (no trace): bounded main-tableau fall-through.
-        // `None`: wedge route disabled or no ABox → pure main-tableau
-        // (the historical path; unbounded for the no-ABox case which does
-        // not hang — GALEN/SIO/pizza decide(Top) is sub-second).
+        // `None`: no individual, or the wedge route disabled
+        // (`RUSTDL_WEDGE_CONSISTENCY=0`) → pure main-tableau with NO deadline
+        // (#497). Deliberate: it is the only deadline-free main-tableau consistency
+        // path (`RUSTDL_CONSISTENCY_FALLBACK_MS` has no unbounded value), so a caller
+        // who turns the wedge off gets a decision, not a 10 s give-up. It does not
+        // always finish: wine with the wedge off does not (#490). Its only cuts are
+        // the node cap (`None` → incomplete) and the depth limit (`NoVerdict`, the
+        // #462 signal). Reached by `consistent`, `sat owl:Thing` / `subclass ⊤ ⊑ ⊥`
+        // (#427), Python `is_consistent`, justify and diagnose.
         Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
     }
 
     // Fall through: tableau-based satisfiability of Top. When the wedge
-    // stalled we BOUND it (so a hard out-of-EL ABox can't hang); on the
-    // pure no-ABox path we keep the unbounded call (no hang risk).
+    // stalled we BOUND it (so a hard out-of-EL ABox can't hang); without the
+    // wedge (no individual, or `RUSTDL_WEDGE_CONSISTENCY=0`) the call is
+    // deliberately unbounded and can run long (see the `None` arm above, #497).
     let wedge_route_active = prepared.consistency.is_some();
     let (consistent, incomplete) = if wedge_route_active {
         let dl =

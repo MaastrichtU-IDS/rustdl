@@ -248,6 +248,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::nominal_merge_prune_enabled,
             true,
         ),
+        (
+            "RUSTDL_MAX_ZERO_FORALL",
+            owl_dl_tableau::max_zero_forall_enabled,
+            true,
+        ),
         // OFF until its fuzz differential, sweeps and MISSED net pass (#370).
         (
             "RUSTDL_MERGE_EXACT_DEPS",

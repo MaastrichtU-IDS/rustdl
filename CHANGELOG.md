@@ -225,6 +225,81 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **Per-query `sat` / `subclass` / `explain` finish when a `≤0 R.C` has to put `¬C` on a
+  neighbour that also carries an open disjunction (#485).** On
+  `C0 ≡ ≤0 r1.¬C5`, `C5 ≡ ∃r0.(=2 r1.C2)` (generated case 1349, shrunk), `sat C5` never
+  finished.
+  - The tableau reached `≤0 R.C`'s conclusion `¬C` on each `R`-neighbour only through the
+    search's choose rule, which runs after every open disjunction. A `C0` node's
+    `r1`-successor therefore opened `C5 ⊔ ∀r0.¬(=2 r1.C2)` before `C5` arrived.
+  - #288's `forall_first` made it try the `∀` disjunct first. The choose rule then added
+    `C5` anyway, and the subtree under that node could only clash. The search explored it
+    again under every combination of the other nodes' choices.
+  - With `RUSTDL_FORALL_FIRST=0`, main answers in 0.01 s: the ordering is half the cause.
+  - `RUSTDL_MAX_ZERO_FORALL` (default ON, `=0` reverts): `apply_forall` reads a `≤0 R.C`
+    label (a non-data body with a registered complement) as `∀R.¬C`. It adds the
+    complement to every `R`-neighbour during saturation, with the `∀` rule's deps (the
+    label's and the edge's). The disjunction at the neighbour is then never opened.
+    - Sound: `≤0 R.C ≡ ∀R.¬C`. The change only removes the choose rule's `C` option, which
+      always over-fills the `≤0`.
+    - A counter (`max_zero_forall`) counts the conclusions.
+    - Rewriting `≤0` in core NNF instead is #488, a measurement question.
+  - Reproducer: `sat C5` goes from killed at 20 s to `sat` in 0.00 s of user CPU;
+    `subclass C5 C0` goes from no answer to `no`.
+  - Per-query laws (`scripts/gen/perquery.py`) on the 24 generated cases where the rule
+    fires in `sat` or `classify` (reach: 128 of 2,156 `sat` calls on the 305 cases that can
+    hold a `≤0`):
+    - 0 violations on either arm.
+    - Main capped 2 calls (case 1349) and skipped 48 after them; the fix answers all 50,
+      oracle-checked.
+    - Median CPU on calls answered the same is 0.996× main.
+  - ORE (two-arm `classify` on the 439 pool files that can hold a `≤0`):
+    - No answer lost or gained. 423 are the same, 13 fail on both arms, and 3 differ at
+      the 120 s cap.
+    - The 3 are budget cuts (`incomplete` on main). At `--pair-timeout-ms 1000`, with 3
+      interleaved reps, 10019 and 5707 match on every run.
+    - 6333 gives no answer within 900 s at 1000 ms on either arm. At the default budget
+      its closure varies from run to run on both arms. Over 16 runs per arm (main: both
+      builds), main misses 7 to 11 of Konclude's 351 pairs and the fix 7 to 10 (median
+      10 on both).
+    - Neither arm has a pair outside Konclude's closure in any run on 6333 or 10019.
+    - The rule's own counter fires on 6 files (conclusions: 6333 1,287; 6485 136; 10019
+      125; 8666 13; 10109 7; 1707 2).
+    - Of the other 420 answered files, 64 run the tableau without a conclusion. In the
+      remaining 356, no tableau context does any work. The control: with the wedge off,
+      two of three such files dump 14,156 and 20,705 contexts.
+    - On the 13 files neither arm answers, the count is a lower bound.
+    - The other 1,482 pool files cannot reach the rule: outside tests, only an input `≤0`,
+      `≥1`, `=0` or `=1` makes a `Max(0, …)`.
+  - Ship delta: the sweep's main was 3f85ee41. Against main 815533d4 (after #489 and
+    #492), with 5 interleaved reps per arm on the 6 firing files and 5707, each file but
+    6333 gives one content over all 10 runs. 6333 varies on both arms, as above, with no
+    FP. CPU is 0.88× to 1.03×, with overlapping ranges.
+  - CPU: neutral.
+    - The median over the files both arms answered (main ≥ 0.5 s, n=249) is 0.992× main.
+    - On the 6 files where the rule fires (5 interleaved reps, quiet cores) it is 0.94× to
+      1.02×, with overlapping ranges (6333: 70.8 s on both).
+  - Tests (`tests/max_zero_forall.rs`). The reproducer runs with the flag on and the wedge
+    on and off; every other case runs with the flag on and off and the wedge on and off:
+    - the reproducer;
+    - 13 unsat classes (direct, sub-role, inverse, `≤0 r.⊤`, complemented, compound and
+      union fillers, nominal filler, self-loop, symmetric role, and a `≤0` that arrives
+      after the edge);
+    - 15 satisfiable ones. Among them are the deps canaries (the label's deps through a
+      nominal target, the edge's deps through an inverse) and two role canaries: a
+      super-role's edge and the wrong edge direction;
+    - subsumptions through the refuted disjunct;
+    - ABox consistency.
+
+    A unit test pins the exact deps, the inverse edge, flag off, no complement and data
+    ranges. Five sabotages each turn a named test red:
+    - "label deps dropped": `label_deps_to_a_nominal`, with a false `A ⊑ X`;
+    - "edge deps dropped": `edge_deps_through_an_inverse`, with a false `A ⊑ X`. Fable's
+      nominal-target canary for this is inert, because the nominal merge re-adds the
+      decision, so it was replaced;
+    - "flag ignored": the unit test;
+    - "`C` instead of `¬C`": `compound_filler_half_met`;
+    - "rule off": the reproducer.
 - **A tableau-answered query on an inconsistent KB with no individual now reports the
   inconsistency (#457 residual 2, option A″; `RUSTDL_QUERY_NO_SEED_TAIL`, default on).** With no
   individual the consistency wedge has no seed, so `sat`, `subclass`, `explain`, `prove`,

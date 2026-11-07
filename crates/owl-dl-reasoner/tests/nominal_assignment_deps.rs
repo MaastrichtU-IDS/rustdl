@@ -11,7 +11,7 @@
 //!   deps, so the next merge rested on fewer decisions than it did.
 //!
 //! Either way a clash back-jumped past a decision whose other option is a model. Both
-//! fixtures are consistent, with `E` satisfiable and under `owl:Thing` only (HermiT and
+//! fixtures are consistent, with `E` satisfiable and under `owl:Thing` only (`HermiT` and
 //! Konclude); a model is `q ∈ E`, `p –r→ b`, `b = a`, `a ∈ Z`, `m ∈ Nz`. `classify`
 //! and default `consistent` were right, because the wedge or a per-pair budget decides
 //! first; the per-query commands, and `consistent` with the consistency wedge off,

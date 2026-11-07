@@ -136,10 +136,21 @@ pub(crate) fn label_sig_bit(c: ConceptId) -> u64 {
     1u64 << (h >> 26)
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only: how many times [`label_sig_of`] ran on this thread. The #491
+    /// canary reads it to pin "one recompute per touched node per rollback".
+    /// Thread-local, so parallel tests do not share it.
+    pub(crate) static LABEL_SIG_RECOMPUTES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// Sum-OR of [`label_sig_bit`] over a label slice.
 #[inline]
 #[must_use]
 pub(crate) fn label_sig_of(labels: &[ConceptId]) -> u64 {
+    #[cfg(test)]
+    LABEL_SIG_RECOMPUTES.with(|c| c.set(c.get() + 1));
     let mut s = 0u64;
     for &c in labels {
         s |= label_sig_bit(c);
@@ -432,6 +443,11 @@ impl CompletionGraph {
     /// [`crate::TrailEntry::NodeCreated`] entries. The
     /// [`Self::blocking`] mirror, the residual-saturation memo, and
     /// the worklist dirty bit are truncated in lockstep.
+    ///
+    /// Only the `NodeCreated` undo calls this, and no node is allocated during a
+    /// rollback, so within one `TableauTrail::rollback_to` the arena only shrinks.
+    /// `rollback_to`'s once-per-node `label_sig` recompute (#491) relies on that:
+    /// a touched index still below the length is the node that was touched.
     pub(crate) fn truncate_nodes(&mut self, new_len: usize) {
         self.nodes.truncate(new_len);
         self.blocking.truncate(new_len);

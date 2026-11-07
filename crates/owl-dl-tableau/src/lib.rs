@@ -4012,6 +4012,169 @@ mod tests {
         assert!(ctx.graph().node(from).edges().is_empty());
     }
 
+    /// `n` distinct atomic concepts.
+    fn pool_with_atomics(n: u32) -> (ConceptPool, Vec<ConceptId>) {
+        let mut pool = ConceptPool::new();
+        let cs = (0..n).map(|i| pool.atomic(ClassId::new(i))).collect();
+        (pool, cs)
+    }
+
+    /// #491: every node's `label_sig` equals a fresh recompute from its labels.
+    /// Checks the whole graph, so a node the rollback forgot to recompute fails.
+    fn assert_label_sigs_exact(ctx: &TableauContext<'_, '_, '_>, what: &str) {
+        let g = ctx.graph();
+        for i in 0..g.len() {
+            let id = NodeId::new(u32::try_from(i).expect("node index fits u32"));
+            assert_eq!(
+                g.blocking(id).label_sig,
+                crate::graph::label_sig_of(g.node(id).labels()),
+                "[{what}] label_sig is stale at node {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_keeps_label_sig_exact_across_nested_checkpoints() {
+        let (pool, cs) = pool_with_atomics(20);
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        for &c in &cs[..3] {
+            ctx.add_label(n, c);
+        }
+        let outer = ctx.checkpoint();
+        for &c in &cs[3..10] {
+            ctx.add_label(n, c);
+        }
+        let inner = ctx.checkpoint();
+        for &c in &cs[10..] {
+            ctx.add_label(n, c);
+        }
+        assert_label_sigs_exact(&ctx, "before");
+        ctx.rollback_to(inner);
+        assert_eq!(ctx.graph().node(n).labels().len(), 10);
+        assert_label_sigs_exact(&ctx, "inner");
+        ctx.rollback_to(outer);
+        assert_eq!(ctx.graph().node(n).labels(), &cs[..3]);
+        assert_label_sigs_exact(&ctx, "outer");
+    }
+
+    /// Labels on two nodes in alternation, so the touched list is n0, n1, n0, …
+    /// and only the sort-and-dedup (not the last-pushed skip) collapses it.
+    #[test]
+    fn rollback_keeps_label_sig_exact_on_interleaved_nodes() {
+        let (pool, cs) = pool_with_atomics(40);
+        let mut ctx = TableauContext::new(&pool);
+        let n0 = ctx.new_node();
+        let n1 = ctx.new_node();
+        let outer = ctx.checkpoint();
+        for (i, &c) in cs[..20].iter().enumerate() {
+            ctx.add_label(if i % 2 == 0 { n0 } else { n1 }, c);
+        }
+        let inner = ctx.checkpoint();
+        for (i, &c) in cs[20..].iter().enumerate() {
+            ctx.add_label(if i % 2 == 0 { n1 } else { n0 }, c);
+        }
+        ctx.rollback_to(inner);
+        assert_eq!(ctx.graph().node(n0).labels().len(), 10);
+        assert_eq!(ctx.graph().node(n1).labels().len(), 10);
+        assert_label_sigs_exact(&ctx, "inner");
+        ctx.rollback_to(outer);
+        assert!(ctx.graph().node(n0).labels().is_empty());
+        assert!(ctx.graph().node(n1).labels().is_empty());
+        assert_label_sigs_exact(&ctx, "outer");
+        assert_eq!(ctx.graph().blocking(n0).label_sig, 0);
+        assert_eq!(ctx.graph().blocking(n1).label_sig, 0);
+    }
+
+    /// Two labels that share a signature bit: removing one must keep the bit
+    /// while the other is still there, and clear it once both are gone.
+    #[test]
+    fn rollback_keeps_a_shared_signature_bit() {
+        let (pool, cs) = pool_with_atomics(200);
+        let bit = crate::graph::label_sig_bit;
+        let (a, b) = cs
+            .iter()
+            .enumerate()
+            .find_map(|(i, &x)| {
+                cs[i + 1..]
+                    .iter()
+                    .find(|&&y| bit(y) == bit(x))
+                    .map(|&y| (x, y))
+            })
+            .expect("200 concepts over 64 bits share a bit");
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        ctx.add_label(n, a);
+        let cp = ctx.checkpoint();
+        ctx.add_label(n, b);
+        ctx.rollback_to(cp);
+        assert_eq!(ctx.graph().blocking(n).label_sig, bit(a), "a's bit stays");
+        assert_label_sigs_exact(&ctx, "one left");
+        let m = ctx.new_node();
+        let cp = ctx.checkpoint();
+        ctx.add_label(m, a);
+        ctx.add_label(m, b);
+        ctx.rollback_to(cp);
+        assert_eq!(ctx.graph().blocking(m).label_sig, 0, "both gone");
+        assert_label_sigs_exact(&ctx, "both gone");
+    }
+
+    /// A labelled node created after the checkpoint is truncated by the rollback;
+    /// the recompute must skip it and still fix the surviving node.
+    #[test]
+    fn rollback_recomputes_label_sig_past_a_truncated_node() {
+        let (pool, cs) = pool_with_atomics(10);
+        let mut ctx = TableauContext::new(&pool);
+        let n0 = ctx.new_node();
+        ctx.add_label(n0, cs[0]);
+        let cp = ctx.checkpoint();
+        let n1 = ctx.new_node();
+        ctx.add_label(n1, cs[1]);
+        ctx.add_label(n0, cs[2]);
+        ctx.add_label(n1, cs[3]);
+        ctx.rollback_to(cp);
+        assert_eq!(ctx.graph().len(), 1);
+        assert_eq!(ctx.graph().node(n0).labels(), &[cs[0]]);
+        assert_label_sigs_exact(&ctx, "after truncation");
+    }
+
+    /// The #491 cost canary: a rollback recomputes each touched node's signature
+    /// once, not once per undone label (K·L hashes on a big node).
+    #[test]
+    fn rollback_recomputes_label_sig_once_per_touched_node() {
+        use crate::graph::LABEL_SIG_RECOMPUTES;
+        let (pool, cs) = pool_with_atomics(60);
+        let mut ctx = TableauContext::new(&pool);
+        let n0 = ctx.new_node();
+        let n1 = ctx.new_node();
+        for &c in &cs[..5] {
+            ctx.add_label(n0, c);
+        }
+        let cp = ctx.checkpoint();
+        for &c in &cs[5..40] {
+            ctx.add_label(n0, c);
+        }
+        LABEL_SIG_RECOMPUTES.with(|c| c.set(0));
+        ctx.rollback_to(cp);
+        assert_eq!(
+            LABEL_SIG_RECOMPUTES.with(std::cell::Cell::get),
+            1,
+            "one node"
+        );
+        let cp = ctx.checkpoint();
+        for (i, &c) in cs[40..].iter().enumerate() {
+            ctx.add_label(if i % 2 == 0 { n0 } else { n1 }, c);
+        }
+        LABEL_SIG_RECOMPUTES.with(|c| c.set(0));
+        ctx.rollback_to(cp);
+        assert_eq!(
+            LABEL_SIG_RECOMPUTES.with(std::cell::Cell::get),
+            2,
+            "two nodes"
+        );
+        assert_label_sigs_exact(&ctx, "after");
+    }
+
     fn check_sat(pool: &ConceptPool, c: ConceptId) -> Option<bool> {
         let mut ctx = TableauContext::new(pool);
         ctx.is_satisfiable(c)

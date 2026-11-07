@@ -229,10 +229,12 @@ All notable changes to rustdl are documented here. Format is based on
     - No answer lost or gained. 423 are the same, 13 fail on both arms, and 3 differ at
       the 120 s cap.
     - The 3 are budget cuts (`incomplete` on main). At `--pair-timeout-ms 1000`, with 3
-      interleaved reps, 10019 and 5707 match on every run. 6333 gives no answer within
-      900 s at 1000 ms on either arm, and it matches in 5 interleaved default-budget reps
-      per arm.
-    - Neither arm has a pair outside Konclude's closure on 6333 or 10019.
+      interleaved reps, 10019 and 5707 match on every run.
+    - 6333 gives no answer within 900 s at 1000 ms on either arm. At the default budget
+      its closure varies from run to run on both arms. Over 16 runs per arm (main: both
+      builds), main misses 7 to 11 of Konclude's 351 pairs and the fix 7 to 10 (median
+      10 on both).
+    - Neither arm has a pair outside Konclude's closure in any run on 6333 or 10019.
     - The rule's own counter fires on 6 files (conclusions: 6333 1,287; 6485 136; 10019
       125; 8666 13; 10109 7; 1707 2).
     - Of the other 420 answered files, 64 run the tableau without a conclusion. In the
@@ -241,6 +243,10 @@ All notable changes to rustdl are documented here. Format is based on
     - On the 13 files neither arm answers, the count is a lower bound.
     - The other 1,482 pool files cannot reach the rule: outside tests, only an input `≤0`,
       `≥1`, `=0` or `=1` makes a `Max(0, …)`.
+  - Ship delta: the sweep's main was 3f85ee41. Against main 815533d4 (after #489 and
+    #492), with 5 interleaved reps per arm on the 6 firing files and 5707, each file but
+    6333 gives one content over all 10 runs. 6333 varies on both arms, as above, with no
+    FP. CPU is 0.88× to 1.03×, with overlapping ranges.
   - CPU: neutral.
     - The median over the files both arms answered (main ≥ 0.5 s, n=249) is 0.992× main.
     - On the 6 files where the rule fires (5 interleaved reps, quiet cores) it is 0.94× to

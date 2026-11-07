@@ -471,6 +471,14 @@ fn a_budgeted_consistency_stall_is_a_no_verdict() {
         "the bounded fall-through ran: {}",
         r.stderr
     );
+    // #475 (Fable's review): the stall is reported only after the ABox-components step
+    // had its chance (a witnessed inconsistency would win), so its trace line prints.
+    assert!(
+        r.stderr.contains("gave up (saturation stalled")
+            && r.stderr.contains("trying ABox components"),
+        "the stall reached the components step: {}",
+        r.stderr
+    );
     assert_gave_up(&r, "consistent, budgeted fall-through");
     let j = json(&r, "consistent");
     assert_eq!(j["no_verdict"], true, "{j}");

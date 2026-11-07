@@ -24,7 +24,9 @@ All notable changes to rustdl are documented here. Format is based on
     for `⊤`, now return `Err(NoVerdict)` for a stall that a deadline followed, where they
     used to return `Ok(None)`.
   - In `consistent`'s fall-through, a stall is reported only when the ABox components do
-    not witness an inconsistency: a witnessed inconsistency is a verdict, and wins.
+    not witness an inconsistency: a witnessed inconsistency is a verdict, and wins. On an
+    ABox that splits into several components, the stall therefore surfaces only after the
+    component retry, up to `RUSTDL_CONSISTENCY_COMPONENTS_MS`.
   - Not covered:
     - `realize` / `instances-expr`, which have no `no_verdict` field;
     - the #401 seeded probe, where a stall is traced only;

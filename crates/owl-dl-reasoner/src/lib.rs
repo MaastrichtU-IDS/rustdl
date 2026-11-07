@@ -8849,13 +8849,9 @@ fn is_consistent_internal_full(
         // only after the ABox components below had their chance: a witnessed
         // inconsistency is a verdict, and a verdict beats the signal. Read the flag
         // now; the components' own probes reset it.
-        let mut stalled = false;
-        let probe = match prepared.decide_consistency(Some(dl)) {
-            Err(ReasonError::NoVerdict) => {
-                stalled = last_probe_stalled();
-                None
-            }
-            r => r?,
+        let (probe, stalled) = match prepared.decide_consistency(Some(dl)) {
+            Err(ReasonError::NoVerdict) => (None, last_probe_stalled()),
+            r => (r?, false),
         };
         if let Some(sat) = probe {
             (sat, false)
@@ -8868,8 +8864,13 @@ fn is_consistent_internal_full(
             // the bug class the soundness contract names).
             if trace {
                 eprintln!(
-                    "consistency: bounded tableau fall-through timed out \
-                     ({} ms) — trying ABox components",
+                    "consistency: bounded tableau fall-through gave up ({}, {} ms) — \
+                     trying ABox components",
+                    if stalled {
+                        "saturation stalled"
+                    } else {
+                        "deadline or cut"
+                    },
                     consistency_fallback_ms()
                 );
             }

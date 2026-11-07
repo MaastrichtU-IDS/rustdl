@@ -5,9 +5,10 @@
 //! runs under `RUSTDL_QUERY_WEDGE_MS` (default 3000) and falls through.
 //!
 //! Each query runs under a deadline, so a regression fails rather than hangs.
-//! The answer is the vacuous `yes` of an inconsistent KB: the #428 guard does not
-//! see this inconsistency (no `ABox`), which is #457's second residual, tracked
-//! apart. If that lands, `Inconsistent` (exit 1) is the expected answer instead.
+//! The KB is inconsistent and has no individual. Since #457's second residual
+//! (`RUSTDL_QUERY_NO_SEED_TAIL`), the tableau-answered query runs the bounded
+//! main-tableau consistency check and errors `Inconsistent` (exit 1); before, it
+//! printed the vacuous `yes` with no signal.
 
 #![allow(clippy::unwrap_used)]
 
@@ -26,8 +27,8 @@ fn fixture() -> String {
 }
 
 /// Run `rustdl <args…>` with no inherited `RUSTDL_*` setting plus `env`, and
-/// return (exit code, stdout), or panic past the deadline.
-fn run(env: &[(&str, &str)], args: &[&str]) -> (i32, String) {
+/// return (exit code, stdout, stderr), or panic past the deadline.
+fn run(env: &[(&str, &str)], args: &[&str]) -> (i32, String, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("RUSTDL_") {
@@ -38,7 +39,7 @@ fn run(env: &[(&str, &str)], args: &[&str]) -> (i32, String) {
         .envs(env.iter().copied())
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let start = Instant::now();
@@ -54,32 +55,36 @@ fn run(env: &[(&str, &str)], args: &[&str]) -> (i32, String) {
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
     )
+}
+
+/// The query finished, and found the KB inconsistent (#457 residual 2).
+fn assert_inconsistent((code, stdout, stderr): (i32, String, String)) {
+    assert_eq!(code, 1, "stdout {stdout:?}, stderr {stderr}");
+    assert!(stderr.contains("ontology is inconsistent"), "{stderr}");
 }
 
 #[test]
 fn subclass_finishes_on_the_wedge_hang_reproducer() {
     let f = fixture();
-    let (code, stdout) = run(&[], &["subclass", &f, C0, C1]);
-    assert_eq!(code, 0, "{stdout}");
-    assert_eq!(stdout.trim(), "yes");
+    assert_inconsistent(run(&[], &["subclass", &f, C0, C1]));
 }
 
 #[test]
 fn explain_finishes_on_the_wedge_hang_reproducer() {
     let f = fixture();
-    let (code, stdout) = run(&[], &["explain", &f, C0, C1]);
-    assert_eq!(code, 0, "{stdout}");
-    assert!(stdout.contains("yes"), "{stdout}");
+    assert_inconsistent(run(&[], &["explain", &f, C0, C1]));
 }
 
-/// A short budget answers the same: a stall falls through to the main tableau.
+/// A short budget ends the same way: a stall falls through to the main tableau.
 #[test]
 fn a_tiny_wedge_budget_still_answers() {
     let f = fixture();
-    let (code, stdout) = run(&[("RUSTDL_QUERY_WEDGE_MS", "1")], &["subclass", &f, C0, C1]);
-    assert_eq!(code, 0, "{stdout}");
-    assert_eq!(stdout.trim(), "yes");
+    assert_inconsistent(run(
+        &[("RUSTDL_QUERY_WEDGE_MS", "1")],
+        &["subclass", &f, C0, C1],
+    ));
 }
 
 /// The budget must leave the wedge time to prove what it proves (Fable review of

@@ -44,9 +44,8 @@ def test_is_subclass_of_finishes_on_the_wedge_hang_reproducer():
         timeout=60,
     )
     assert out.returncode == 0, out.stderr
-    # Vacuous on this inconsistent KB, which the #428 guard does not see (#457's
-    # second residual): True, or an inconsistency error once that is fixed.
+    # The KB is inconsistent and has no individual: since #457's second residual
+    # the tableau-answered query runs the bounded main-tableau consistency check
+    # (RUSTDL_QUERY_NO_SEED_TAIL), so it raises instead of answering a vacuous True.
     answer = out.stdout.strip()
-    assert answer == "True" or (
-        answer.startswith("error") and "inconsistent" in answer.lower()
-    ), answer
+    assert answer.startswith("error") and "inconsistent" in answer.lower(), answer

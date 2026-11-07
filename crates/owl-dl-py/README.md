@@ -153,8 +153,11 @@ the `class_expression_*` queries, `object_property_values`,
 `data_property_values`, the property disjointness queries and the
 `materialize_inferred_*` property functions raise `RustdlError` on a KB they find
 inconsistent, and emit `ConsistencyUndeterminedWarning` when a positive answer's
-KB consistency could not be determined (#369). Ontologies with no individual are
-not checked. `is_class_satisfiable(path, owl:Thing)` is the consistency check
+KB consistency could not be determined (#369). On an ontology with no individual,
+only an answer the main tableau found is checked (a bounded main-tableau check,
+#457); a told, saturation or query-wedge answer is not, so on an inconsistent
+TBox-only KB it is returned with no error or warning (see
+`docs/known-limitations/tbox-only-inconsistency-light-route.md`). `is_class_satisfiable(path, owl:Thing)` is the consistency check
 itself (#427): it returns `False` on an inconsistent KB rather than raising.
 
 > For repeated queries over the same ontology, prefer `classify(path)` once and

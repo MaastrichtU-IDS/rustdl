@@ -23,9 +23,15 @@ All notable changes to rustdl are documented here. Format is based on
   - Public bounded APIs: `is_consistent_with_timeout`, and `is_class_satisfiable_with_timeout`
     for `⊤`, now return `Err(NoVerdict)` for a stall that a deadline followed, where they
     used to return `Ok(None)`.
-  - Not covered: `realize` / `instances-expr` (no `no_verdict` field), the #401 seeded
-    probe (a stall there is traced only), the ABox-components batches, and the consistency
-    wedge's own step cap.
+  - In `consistent`'s fall-through, a stall is reported only when the ABox components do
+    not witness an inconsistency: a witnessed inconsistency is a verdict, and wins.
+  - Not covered:
+    - `realize` / `instances-expr`, which have no `no_verdict` field;
+    - the #401 seeded probe, where a stall is traced only;
+    - the ABox-components batches;
+    - the consistency wedge's own step cap;
+    - the #369 lazy query-consistency check, which folds a stall into
+      `consistency_undetermined`.
 - **The EL lowering reports what it drops, and CI asserts it drops nothing on certified
   inputs (layer 2 of the pure-EL guard; #440 is layer 1).** Every D10-class bug so far (the
   `∃r.⊥` filler, `And(..) ⊑ ∃R.B`, the SWEET domain trigger, #110, #119, #435, #436) was a

@@ -957,15 +957,19 @@ Results:
 - Arms: main a29a7bc5 against the branch, 3 interleaved reps per arm on one core, by CPU time.
 - PMD core is also run at the default budget.
 
-| input | depth-capped probes | outcome |
-|---|---:|---|
-| PMD core, default | 0 | identical on both arms |
-| PMD core, 1000 ms | 9 | identical |
-| 15514 | 4 | identical |
-| 185 | 5 | identical |
-| 6934 | 0 | identical |
-| 778 | 2174 | identical |
-| 9890 | 267 | identical; one main rep had 266 + 1 deadline cut |
+| input | depth-capped probes | CPU s, median of 3: main / branch | outcome |
+|---|---:|---|---|
+| PMD core, default | 0 | 22.2 / 21.0 | identical on both arms |
+| PMD core, 1000 ms | 9 | 20.0 / 18.1 | identical |
+| 15514 | 4 | 0.9 / 0.9 | identical |
+| 185 | 5 | 0.9 / 0.9 | identical |
+| 6934 | 0 | 5.4 / 5.5 | identical |
+| 778 | 2174 | 262.6 / 264.2 | identical |
+| 9890 | 267 | 75.2 / 74.9 | identical; one main rep had 266 + 1 deadline cut |
+
+The rep ranges overlap on every input: PMD at the default is 21.6–24.0 on main and 20.5–24.1 on
+the branch; at 1000 ms it is 19.7–24.1 and 17.2–22.0. The CPU differences are noise, not a
+speed-up.
 
 - On every input: `no_verdict_pairs` is 0, there is no note, and the exit code and content
   match.

@@ -8845,12 +8845,16 @@ fn is_consistent_internal_full(
         // decision-depth cut (#288), a give-up like the deadline's `None`. Letting it
         // escape made every caller read it as a deadline-free `NoVerdict` (the bug
         // signal): `consistent --json` set `no_verdict`, and justify's oracles did too.
-        // #475: a probe whose saturation stalled IS that signal, so it escapes.
+        // #475: a probe whose saturation stalled IS that signal, so it escapes, but
+        // only after the ABox components below had their chance: a witnessed
+        // inconsistency is a verdict, and a verdict beats the signal. Read the flag
+        // now; the components' own probes reset it.
+        let mut stalled = false;
         let probe = match prepared.decide_consistency(Some(dl)) {
-            Err(ReasonError::NoVerdict) if last_probe_stalled() => {
-                return Err(ReasonError::NoVerdict);
+            Err(ReasonError::NoVerdict) => {
+                stalled = last_probe_stalled();
+                None
             }
-            Err(ReasonError::NoVerdict) => None,
             r => r?,
         };
         if let Some(sat) = probe {
@@ -8878,6 +8882,8 @@ fn is_consistent_internal_full(
                     .is_some_and(|src| abox_components_inconsistent(src, prep_elapsed, trace))
             {
                 (false, false)
+            } else if stalled {
+                return Err(ReasonError::NoVerdict);
             } else {
                 (true, true)
             }

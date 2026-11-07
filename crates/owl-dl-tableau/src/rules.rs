@@ -1454,26 +1454,36 @@ pub(crate) fn compute_max_merge_deps(
 /// model. The merge semantics drop out naturally — both
 /// individuals end up pointing at the same canonical node.
 ///
-/// Distinctness comes from `DifferentIndividuals` axioms (not yet
-/// processed by the facade) which would `mark_distinct` the
-/// corresponding nominal nodes; a forced merge between distinct
-/// nodes then returns `false` and the caller flags the clash.
+/// Distinctness comes from `DifferentIndividuals` axioms (and from branch
+/// decisions), which `mark_distinct` the corresponding nodes; a forced
+/// merge between distinct nodes then returns `false`, and the clash is
+/// recorded as `⊥`.
+///
+/// #498: the merge-condition deps are those of the two `Nominal(i)` labels
+/// **where they are when the merge happens**. An accepted merge earlier in
+/// the loop moves this node's remaining labels and adds its own deps to
+/// them, so a snapshot taken before the loop understates the next merge's
+/// deps. And a refused merge leaves the node where it is: moving the loop to
+/// the other individual's node made the next nominal merge that node, under
+/// deps that lacked the decision putting the first nominal here. Either way a
+/// clash could back-jump past a decision whose other option has a model (a
+/// false `unsat` / subsumption on the per-query path; with #362's guard on,
+/// since #378).
 pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_nominal_assignment);
-    // Collect (individual, deps of its Nominal label) pairs. The deps
-    // matter for the merge-condition: when this nominal label collides
-    // with the same nominal on a different node, the resulting merge
-    // depends on *both* nominal labels' branch decisions. Passing
-    // those to `merge_into_with_deps` so the moved labels/edges carry
-    // them is the soundness invariant the search relies on.
-    let individuals: Vec<(owl_dl_core::IndividualId, DepSet)> = {
+    // The saturation loops skip merged-away nodes, but a rule earlier in the
+    // same visit (`apply_max` merging witnesses) can merge this one: read the
+    // live representative's labels.
+    let node = ctx.resolve(node);
+    // The individuals named on this node. Their labels' deps are read inside
+    // the loop, at merge time (#498).
+    let individuals: Vec<owl_dl_core::IndividualId> = {
         let n = ctx.graph().node(node);
         let pool = ctx.pool();
         n.labels()
             .iter()
-            .enumerate()
-            .filter_map(|(pos, &c)| match pool.get(c) {
-                ConceptExpr::Nominal(i) => Some((*i, n.label_deps[pos].clone())),
+            .filter_map(|&c| match pool.get(c) {
+                ConceptExpr::Nominal(i) => Some(*i),
                 _ => None,
             })
             .collect()
@@ -1482,8 +1492,8 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
         return RuleOutcome::NoChange;
     }
     let mut applied = false;
-    let mut resolved_node = ctx.resolve(node);
-    for (ind, here_nom_deps) in individuals {
+    let mut resolved_node = node;
+    for ind in individuals {
         match ctx.graph().nominal_node(ind) {
             None => {
                 ctx.assign_nominal(ind, resolved_node);
@@ -1492,24 +1502,12 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
             Some(other) => {
                 let other_res = ctx.resolve(other);
                 if other_res != resolved_node {
-                    // Find the matching nominal label's deps on the
-                    // other node. The merge-condition deps = union of
-                    // both sides' nominal-label deps.
-                    let other_nom_deps: DepSet = {
-                        let other_node = ctx.graph().node(other_res);
-                        let pool = ctx.pool();
-                        other_node
-                            .labels()
-                            .iter()
-                            .enumerate()
-                            .find_map(|(p, &c)| match pool.get(c) {
-                                ConceptExpr::Nominal(i) if *i == ind => {
-                                    Some(other_node.label_deps[p].clone())
-                                }
-                                _ => None,
-                            })
-                            .unwrap_or_default()
-                    };
+                    // The merge-condition deps: both `Nominal(ind)` labels'
+                    // deps, read where the labels are now (#498). A label that
+                    // is not there leaves the merge's cause unknown, so it
+                    // takes every active decision.
+                    let here_nom_deps = nominal_label_deps(ctx, resolved_node, ind);
+                    let other_nom_deps = nominal_label_deps(ctx, other_res, ind);
                     let merge_deps: DepSet = union(&here_nom_deps, &other_nom_deps);
                     // Merge the two, threading the merge-condition deps so
                     // moved labels/edges carry them. #362: with the nominal
@@ -1548,10 +1546,14 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                         let deps: DepSet = DepSet::from_slice(ctx.active_branches());
                         ctx.add_label_with_deps(keep, bot, &deps);
                     }
-                    // After merging, update the nominal map so
-                    // subsequent lookups skip the resolve chain.
-                    resolved_node = ctx.resolve(keep);
-                    ctx.assign_nominal(ind, resolved_node);
+                    // After a merge, follow it and update the nominal map so
+                    // later lookups skip the resolve chain. After a refused
+                    // merge, nothing moved: the node stays where it is, and
+                    // `ind` keeps its own node (#498).
+                    if merged {
+                        resolved_node = ctx.resolve(keep);
+                        ctx.assign_nominal(ind, resolved_node);
+                    }
                     applied = true;
                 }
             }
@@ -1562,6 +1564,26 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
     } else {
         RuleOutcome::NoChange
     }
+}
+
+/// The deps of the `Nominal(ind)` label on `node`, or every active decision
+/// when `node` does not carry it (#498): a merge whose cause is not on the
+/// graph must not read as unconditional.
+fn nominal_label_deps(
+    ctx: &TableauContext<'_, '_, '_>,
+    node: NodeId,
+    ind: owl_dl_core::IndividualId,
+) -> DepSet {
+    let n = ctx.graph().node(node);
+    let pool = ctx.pool();
+    n.labels()
+        .iter()
+        .enumerate()
+        .find_map(|(p, &c)| match pool.get(c) {
+            ConceptExpr::Nominal(i) if *i == ind => Some(n.label_deps[p].clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| DepSet::from_slice(ctx.active_branches()))
 }
 
 /// Length-2 role-chain rule with per-position polarity.

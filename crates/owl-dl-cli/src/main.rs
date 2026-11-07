@@ -1137,8 +1137,8 @@ fn warn_consistency_undetermined(command: &str, undetermined: bool) {
              `rustdl consistent` decides it directly, but can take much longer (on a KB \
              with no individual it runs the main tableau with no deadline). On a KB with \
              individuals, RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1 also runs a bounded \
-             main-tableau check. If that check's own probe stalled, a \"likely a reasoner \
-             bug\" note follows (#493)."
+             main-tableau check. If that check's own probe stalled, the NoVerdict note \
+             follows and the command exits 3 (#493)."
         );
     }
 }

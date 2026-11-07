@@ -984,6 +984,29 @@ fn a_depth_cut_in_the_lazy_tail_is_not_a_no_verdict() {
     assert_eq!(j["satisfiable"], false, "{j}");
     assert_eq!(j["consistency_undetermined"], true, "{j}");
     assert_eq!(j["no_verdict"], false, "{j}");
+    // Text mode prints the consistency-undetermined warning; it must not carry #449's
+    // marker phrase, or every harness that detects the note by it would read a plain
+    // "undetermined" as the bug signal (found by the #493 census).
+    let r = run_with(
+        false,
+        &env,
+        &[
+            "sat-expr",
+            f.path(),
+            ":C and (:s some owl:Thing) and (:s only (not :X))",
+        ],
+    );
+    assert!(
+        r.stderr.contains("consistency could not be determined"),
+        "the warning printed: {}",
+        r.stderr
+    );
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    assert!(
+        !r.stderr.contains(MARKER),
+        "the warning is not the note: {}",
+        r.stderr
+    );
 }
 
 /// #493, a documented gap (`docs/known-limitations/tbox-only-inconsistency-light-route.md`):

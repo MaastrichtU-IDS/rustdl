@@ -45,6 +45,21 @@
 mod counters;
 mod deps;
 mod graph;
+pub mod dbg490 {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    thread_local! { static RULE: Cell<&'static str> = const { Cell::new("?") }; }
+    static LINES: AtomicUsize = AtomicUsize::new(0);
+    pub fn on() -> bool { std::env::var("DBG490").is_ok_and(|v| v == "1") }
+    pub fn min() -> usize { std::env::var("DBG490_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(300) }
+    fn max() -> usize { std::env::var("DBG490_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(400) }
+    pub fn set_rule(r: &'static str) { RULE.with(|c| c.set(r)); }
+    pub fn rule() -> &'static str { RULE.with(Cell::get) }
+    pub fn log(a: std::fmt::Arguments<'_>) {
+        if LINES.fetch_add(1, Ordering::Relaxed) < max() { eprintln!("# dbg490 {a}"); }
+    }
+}
+
 pub mod hyper;
 pub mod replay;
 mod rules;
@@ -1958,6 +1973,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// propagation commit (see `docs/phase4-backjumping-plan.md`).
     pub fn add_label_with_deps(&mut self, node: NodeId, c: ConceptId, deps: &[u32]) -> bool {
         crate::bump_counter!(self, add_label_calls);
+        if crate::dbg490::on() && deps.len() >= crate::dbg490::min()
+            && self.graph.node(node).labels.binary_search(&c).is_err()
+        {
+            crate::dbg490::log(format_args!(
+                "label rule={} node={} concept={} expr={:?} deps={}",
+                crate::dbg490::rule(), node.index(), c.index(), self.pool.get(c), deps.len()
+            ));
+        }
         debug_assert!(
             is_nnf(c, self.pool),
             "TableauContext::add_label received non-NNF concept"
@@ -2008,6 +2031,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
 
     fn add_edge_inner(&mut self, from: NodeId, role: RoleId, target: NodeId, deps: &[u32]) {
         crate::bump_counter!(self, add_edge_calls);
+        if crate::dbg490::on() && deps.len() >= crate::dbg490::min() {
+            crate::dbg490::log(format_args!(
+                "edge rule={} from={} role={:?} to={} deps={}",
+                crate::dbg490::rule(), from.index(), role, target.index(), deps.len()
+            ));
+        }
         let mut owned: crate::graph::DepSet = crate::graph::DepSet::from_slice(deps);
         owned.sort_unstable();
         owned.dedup();
@@ -2184,6 +2213,12 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         debug_assert_ne!(source, target, "merge_into: source and target must differ");
         if self.are_distinct(source, target) {
             return false;
+        }
+        if crate::dbg490::on() && merge_deps.len() >= crate::dbg490::min() {
+            crate::dbg490::log(format_args!(
+                "merge rule={} {} into {} deps={}",
+                crate::dbg490::rule(), source.index(), target.index(), merge_deps.len()
+            ));
         }
         // The target absorbs everything from the source — labels,
         // edges, inequalities, child parent-pointers. All of those

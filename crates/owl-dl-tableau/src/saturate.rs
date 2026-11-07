@@ -165,6 +165,7 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
                     if ctx.check_deadline() {
                         return SaturationResult::Stalled;
                     }
+                    crate::dbg490::set_rule(stringify!($apply));
                     if $apply == RuleOutcome::Applied {
                         changed = true;
                     }
@@ -201,9 +202,11 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
             step!(apply_role_axioms(ctx, node));
             step!(apply_exists(ctx, node));
             step!(apply_min(ctx, node));
+            crate::dbg490::set_rule("apply_max");
             if apply_max(ctx, node) == RuleOutcome::Applied {
                 changed = true;
             }
+            crate::dbg490::set_rule("apply_nominal_assignment");
             if apply_nominal_assignment(ctx, node) == RuleOutcome::Applied {
                 changed = true;
             }
@@ -233,9 +236,11 @@ fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
                 if ctx.graph().node(node).is_redirected() {
                     continue;
                 }
+                crate::dbg490::set_rule("apply_deferred_or_residuals");
                 if apply_deferred_or_residuals(ctx, node) == RuleOutcome::Applied {
                     sweep_changed = true;
                 }
+                crate::dbg490::set_rule("apply_deferred_concept_or_rules");
                 if apply_deferred_concept_or_rules(ctx, node) == RuleOutcome::Applied {
                     sweep_changed = true;
                 }
@@ -265,6 +270,17 @@ fn first_clash(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, DepSet)> {
             continue;
         }
         if let Some(deps) = ctx.clash_deps_at(node) {
+            if crate::dbg490::on() && deps.len() >= crate::dbg490::min() {
+                let n = ctx.graph().node(node);
+                let parts: Vec<String> = n.labels().iter().enumerate()
+                    .filter(|(p, _)| n.label_deps[*p].len() >= crate::dbg490::min())
+                    .map(|(p, c)| format!("{}:{:?}:{}", c.index(), ctx.pool().get(*c), n.label_deps[p].len()))
+                    .take(6).collect();
+                crate::dbg490::log(format_args!(
+                    "clash node={} deps={} big_labels={:?}",
+                    node.index(), deps.len(), parts
+                ));
+            }
             return Some((node, deps));
         }
     }

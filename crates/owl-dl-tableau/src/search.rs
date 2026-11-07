@@ -199,6 +199,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
             }
             return Expanded::Done(SearchVerdict::DepthLimit);
         }
+        crate::dbg490::set_rule("search");
         let verdict = match saturate(ctx, saturate_iters()) {
             SaturationResult::Clash(_, deps) => {
                 if trace_enabled() {

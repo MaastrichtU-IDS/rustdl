@@ -443,6 +443,11 @@ impl CompletionGraph {
     /// [`crate::TrailEntry::NodeCreated`] entries. The
     /// [`Self::blocking`] mirror, the residual-saturation memo, and
     /// the worklist dirty bit are truncated in lockstep.
+    ///
+    /// Only the `NodeCreated` undo calls this, and no node is allocated during a
+    /// rollback, so within one `TableauTrail::rollback_to` the arena only shrinks.
+    /// `rollback_to`'s once-per-node `label_sig` recompute (#491) relies on that:
+    /// a touched index still below the length is the node that was touched.
     pub(crate) fn truncate_nodes(&mut self, new_len: usize) {
         self.nodes.truncate(new_len);
         self.blocking.truncate(new_len);

@@ -31,11 +31,11 @@ impl Disjointness {
         self.incomplete
     }
 
-    /// #462: a deadline-free probe ended in `NoVerdict` (an internal limit, likely a
-    /// reasoner bug, #449): a `C ⊓ D` probe, or a probe of the classification pass
-    /// (its `no_verdict_pairs`). [`Self::incomplete`] is set too. A `NoVerdict` on a
-    /// probe with a pair deadline is the routine depth-cap cut and only sets
-    /// `incomplete`.
+    /// #462: a probe ended in `NoVerdict` on an internal limit (likely a reasoner bug,
+    /// #449): a deadline-free probe, or (#475) one whose saturation stalled; a `C ⊓ D`
+    /// probe, or a probe of the classification pass (its `no_verdict_pairs`).
+    /// [`Self::incomplete`] is set too. Any other `NoVerdict` on a probe with a pair
+    /// deadline is the routine depth-cap cut and only sets `incomplete`.
     #[must_use]
     pub fn no_verdict(&self) -> bool {
         self.no_verdict
@@ -113,9 +113,9 @@ pub fn disjoint_classes<A: ForIRI>(
             let deadline = pair_deadline.map(|d| Instant::now() + d);
             let probe = match prepared.pair_disjoint_with_deadline(ci, cj, deadline) {
                 // #462: no verdict, so not reported disjoint. Only a deadline-free
-                // probe's `NoVerdict` is an internal limit.
+                // probe's `NoVerdict`, or (#475) a stalled one, is an internal limit.
                 Err(ReasonError::NoVerdict) => {
-                    no_verdict |= deadline.is_none();
+                    no_verdict |= crate::no_verdict_is_a_bug(deadline);
                     None
                 }
                 r => r?,

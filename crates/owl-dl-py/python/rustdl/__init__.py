@@ -111,9 +111,10 @@ class IncompleteClassificationWarning(UserWarning):
       (`result.wedge_clauses_refused > 0`): those clauses never fire (#353);
     * candidate individual equalities went undecided
       (`result.derived_same_undecided > 0`): a probe was cut or capped (#354);
-    * a probe with no deadline ended without a verdict
-      (`result.no_verdict_pairs > 0`, #462): an internal limit, likely a
-      reasoner bug (#449); please report the input.
+    * a probe ended without a verdict on an internal limit
+      (`result.no_verdict_pairs > 0`, #462): a probe with no deadline, or
+      one whose saturation stalled (#475); likely a reasoner bug (#449),
+      please report the input.
 
     `result.consistency_undetermined` is reported but not warned about, matching
     the CLI, which notes it only in the banner.

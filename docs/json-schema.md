@@ -9,13 +9,16 @@ Added without a `schema_version` bump to `classify` (`no_verdict_pairs`, an int)
 `consistent`, `disjoint`, `individuals`, `property-values`, `justify`, `prove`, `sat-expr` and
 `subclass-expr` (`no_verdict`, a bool).
 
-**Meaning: a probe with NO deadline ended in `NoVerdict`.** Such a probe searches to a far larger
-decision depth, so a `NoVerdict` there is an internal limit (a saturation stall, as in #437),
-likely a reasoner bug (#449). The command also prints a "likely a reasoner bug" note on stderr and
+**Meaning: a probe ended in `NoVerdict` on an internal limit**, likely a reasoner bug (#449):
+- a probe with NO deadline. It searches to a far larger decision depth, so a `NoVerdict` there
+  is an internal limit (a saturation stall, as in #437);
+- since #475, any probe whose deterministic saturation **stalled** (ran out of iterations),
+  budgeted or not.
+ The command also prints a "likely a reasoner bug" note on stderr and
 **exits 3**. The probe takes its sound default ("satisfiable", "not subsumed", "not entailed",
 "consistent"), and `incomplete` (or `status: "unknown"`) is set too.
 
-It does **not** mean "any `NoVerdict`". On a probe with a deadline (a pair budget, such as
+It does **not** mean "any `NoVerdict`". On a probe with a deadline that did not stall (a pair budget, such as
 `classify`'s default `--pair-timeout-ms` or the 1000 ms default of `disjoint`, `individuals` and
 `property-values`), a `NoVerdict` is the routine decision-depth cut (#288): it sets only
 `incomplete` (and, in `classify`, the depth-limit banner line), not this field, and the exit code
@@ -106,8 +109,9 @@ on, an incomplete run's `direct_subsumptions` and `equivalent_groups` are
 those of the closed relation, so they can differ from the closure-off output
 while the transitive closure of the answer is the same.
 
-`no_verdict_pairs` (#462) = of the timed-out pairs, probes with no deadline (per-class unsat
-probes and pair probes, e.g. under `--pair-timeout-ms 0`) that ended in `NoVerdict`; see the
+`no_verdict_pairs` (#462, #475) = of the timed-out pairs, probes (per-class unsat probes and
+pair probes) that ended in `NoVerdict` with no deadline (e.g. under `--pair-timeout-ms 0`) or
+after their saturation stalled; see the
 `no_verdict` section above. Each also counts toward `incomplete`, but not as a depth-limit cut.
 
 `equivalent_groups` lists only *satisfiable* equivalence classes; unsatisfiable
@@ -132,7 +136,8 @@ data-counting verification giving up, or (#449) the tableau's internal limit,
 `NoVerdict`, on a probe with no deadline, reported on stderr as a likely bug), not a
 verdict; the exit code is then 3. A `NoVerdict` on the bounded fall-through probe (the
 wedge route, `RUSTDL_CONSISTENCY_FALLBACK_MS`) is the decision-depth cut and counts as
-that probe's ordinary give-up (#462). On the deadline-free `NoVerdict` path `wedge_clauses_refused` is not reported (0),
+that probe's ordinary give-up (#462), unless the probe's saturation stalled: that is the
+likely-bug `NoVerdict` too (#475). On the deadline-free `NoVerdict` path `wedge_clauses_refused` is not reported (0),
 `relies_on_trusted_consistency` is `false` and `no_verdict` (#462) is `true`.
 `wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
 match, so a wedge `consistent` may miss a clash; 0 when the wedge was not

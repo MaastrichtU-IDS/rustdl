@@ -7,6 +7,33 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **A budgeted probe whose saturation stalled now reports #462's `no_verdict` signal (#475).**
+  Before, a `NoVerdict` on a probe with a deadline could be either a saturation stall (the
+  #437 livelock kind, a likely bug) or the routine decision-depth cut (#288), so #462 reported
+  neither. The tableau now latches a stall where the deterministic saturation runs out of
+  iterations (`RUSTDL_TABLEAU_SATURATE_ITERS`). Its four deadline exits also return `Stalled`
+  and are not latched.
+  - Default `classify` (and `--n2-classify`), `disjoint`, `individuals`, `property-values`
+    and `consistent` (its bounded wedge-route fall-through and the #344 data-counting check)
+    report a stalled budgeted probe like a deadline-free one: the `no_verdict` /
+    `no_verdict_pairs` field, the "likely a reasoner bug" note, and exit 3.
+  - A real depth cut stays a cut: `depth_capped_pairs`, no note, the same exit code. PMD
+    core's 9 cut unsat probes are unchanged.
+  - A stall wins over a later early abandon or deadline (`map_depth_limit`).
+  - Public bounded APIs: `is_consistent_with_timeout`, and `is_class_satisfiable_with_timeout`
+    for `⊤`, now return `Err(NoVerdict)` for a stall that a deadline followed, where they
+    used to return `Ok(None)`.
+  - In `consistent`'s fall-through, a stall is reported only when the ABox components do
+    not witness an inconsistency: a witnessed inconsistency is a verdict, and wins. On an
+    ABox that splits into several components, the stall therefore surfaces only after the
+    component retry, up to `RUSTDL_CONSISTENCY_COMPONENTS_MS`.
+  - Not covered:
+    - `realize` / `instances-expr`, which have no `no_verdict` field;
+    - the #401 seeded probe, where a stall is traced only;
+    - the ABox-components batches;
+    - the consistency wedge's own step cap;
+    - the #369 lazy query-consistency check, which folds a stall into
+      `consistency_undetermined`.
 - **The EL lowering reports what it drops, and CI asserts it drops nothing on certified
   inputs (layer 2 of the pure-EL guard; #440 is layer 1).** Every D10-class bug so far (the
   `∃r.⊥` filler, `And(..) ⊑ ∃R.B`, the SWEET domain trigger, #110, #119, #435, #436) was a

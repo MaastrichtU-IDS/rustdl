@@ -42,9 +42,12 @@ const SATURATE_ITERS: usize = 4096;
 
 /// The deterministic saturation's iteration cap per search frame:
 /// `RUSTDL_TABLEAU_SATURATE_ITERS`, default [`SATURATE_ITERS`]. Read once. Running out
-/// of iterations is `Stalled`, which a deadline-free probe reports as
-/// `ReasonError::NoVerdict` (#437 hit it through a livelock). The knob gives a deep
-/// deterministic saturation more room, and lets a test force the give-up (#449).
+/// of iterations is `Stalled` (#437 hit it through a livelock), latched on the context
+/// ([`crate::TableauContext::saturation_stalled`]); the reasoner reports it as
+/// `ReasonError::NoVerdict` and the #462 signal on any probe, budgeted or not (#475).
+/// A deadline that fires inside the saturation is `Stalled` too, but not latched. The
+/// knob gives a deep deterministic saturation more room, and lets a test force the
+/// give-up (#449).
 fn saturate_iters() -> usize {
     static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| {

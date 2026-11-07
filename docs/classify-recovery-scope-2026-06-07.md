@@ -63,6 +63,19 @@ wine's 207-nominal ABox into the tableau. Irrelevant to cluster A (the wedge
 short-circuits before the tableau), but it is the **fallback for B/C/D** (whose
 wedge does not prove them) and likely inflates wine's ~311 s classify wall.
 
+> **Update 2026-11-06 (#363 assurance).** The `Fruit ⊓ ¬EdibleThing` probe no longer shows
+> this: since **bc6ef93e** (SP-B2c, 2026-06-23) the core pass adds `Fruit ⊑ EdibleThing` as an
+> axiom, so the probe clashes before the search grows the ABox and returns `Some(false)` in
+> milliseconds (found by bisecting `wine_fruit_prepared_vs_fresh_probe`, which started failing
+> there). **The pathology itself is not fixed.** A satisfiable probe still reaches it:
+> `prepared.decide_with_deadline(5 s)` gives no verdict on `Wine ⊓ ¬RedWine`, `EdibleThing ⊓ ¬Fruit`
+> and `Fruit ⊓ ¬Pasta` on main c06763b2, and on `Wine ⊓ ¬RedWine` (the sentinel's pair) on 3f85ee41.
+> Early abandon cuts each on the depth cap in about 1.5 s. With `RUSTDL_TABLEAU_EARLY_ABANDON=0`,
+> each runs to the 5 s deadline, as on b8ef6d9c (just before SP-B2c). Without the ABox seed, the same
+> `Wine ⊓ ¬RedWine` probe is satisfiable at once. The sentinel now pins that pair, with that control.
+> Related open records: `docs/known-limitations/bounded-probe-depth-cap.md` (#288, the depth-cap cut)
+> and `docs/known-limitations/classify-nominal-core-rebuilt-per-probe.md` (#404).
+
 **DIAGNOSED (2026-06-07, `--features counters` on the 5 s `decide`): NOT
 non-termination — a bounded but massive redundant fixpoint.** Counter histogram:
 `is_blocked_calls = 8,854,932`; each `apply_*` rule = 1,475,822; `add_label_calls

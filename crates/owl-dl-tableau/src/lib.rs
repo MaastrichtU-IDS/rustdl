@@ -218,6 +218,11 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// `deadline` has elapsed. Sticky — callers read this *after*
     /// search returns to distinguish "depth-limited" from "timed out".
     deadline_hit: bool,
+    /// #475: set when the deterministic saturation ran out of iterations
+    /// ([`Self::note_saturation_cap`]), never when it stopped for the deadline.
+    /// Latched for the context's lifetime (one probe): not on the trail, not reset
+    /// by backtracking or by [`Self::clear_deadline_hit`].
+    saturation_stalled: bool,
     /// Stack of `branch_id`s currently in scope (outer-most first).
     /// a search frame (`crate::search`) pushes a fresh id when it enters a
     /// disjunction and pops it on the way out. Rules use the stack
@@ -414,6 +419,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
+            saturation_stalled: false,
             active_branches: Vec::new(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
@@ -466,6 +472,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
+            saturation_stalled: false,
             active_branches: Vec::new(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
@@ -523,6 +530,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
+            saturation_stalled: false,
             active_branches: Vec::new(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
@@ -654,6 +662,25 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     pub fn clear_deadline_hit(&mut self) -> &mut Self {
         self.deadline_hit = false;
         self
+    }
+
+    /// #475: record that [`crate::saturate`] ran out of iterations
+    /// (`RUSTDL_TABLEAU_SATURATE_ITERS`) without reaching a fixpoint or a clash.
+    ///
+    /// Called only at the saturation loop's iteration-cap exit, never at its
+    /// deadline exits: both return [`crate::SaturationResult::Stalled`], and the search
+    /// maps both to `DepthLimit`, but only the cap is the bug signal #449 surfaces (a
+    /// livelock, #437). A deadline that fires mid-saturation is an ordinary cut.
+    pub fn note_saturation_cap(&mut self) {
+        self.saturation_stalled = true;
+    }
+
+    /// #475: whether the deterministic saturation ran out of iterations anywhere in
+    /// this probe (see [`Self::note_saturation_cap`]). Read after [`crate::search`]
+    /// returns. A reporting channel only: it cannot change a verdict.
+    #[must_use]
+    pub fn saturation_stalled(&self) -> bool {
+        self.saturation_stalled
     }
 
     /// Arm the adaptive early-abandon on this probe with the given depth-cap-hit
@@ -4052,6 +4079,63 @@ mod tests {
         let not_a = pool.not(a);
         let conj = pool.and([a, not_a]);
         assert_eq!(check_sat(&pool, conj), Some(false));
+    }
+
+    /// #475: a chain whose propagation runs against the node scan order, so one
+    /// saturation iteration cannot reach the fixpoint: `z`, `y`, `x` are created in
+    /// that order, `x —r→ y —r→ z`, and `L(x) = {∀r.∀r.A}`.
+    fn reverse_chain(pool: &mut ConceptPool) -> ConceptId {
+        let a = pool.atomic(ClassId::new(0));
+        let inner = pool.all(Role::named(RoleId::new(0)), a);
+        pool.all(Role::named(RoleId::new(0)), inner)
+    }
+
+    fn reverse_chain_ctx(pool: &ConceptPool, top: ConceptId) -> TableauContext<'_, '_, '_> {
+        let mut ctx = TableauContext::new(pool);
+        let z = ctx.new_node();
+        let y = ctx.new_node();
+        let x = ctx.new_node();
+        ctx.add_edge(x, RoleId::new(0), y);
+        ctx.add_edge(y, RoleId::new(0), z);
+        ctx.add_label(x, top);
+        ctx
+    }
+
+    #[test]
+    fn the_iteration_cap_latches_a_saturation_stall() {
+        let mut pool = ConceptPool::new();
+        let top = reverse_chain(&mut pool);
+        let mut ctx = reverse_chain_ctx(&pool, top);
+        assert!(!ctx.saturation_stalled());
+        assert_eq!(saturate(&mut ctx, 1), SaturationResult::Stalled);
+        assert!(
+            ctx.saturation_stalled(),
+            "running out of iterations must latch the stall (#475)"
+        );
+    }
+
+    #[test]
+    fn a_deadline_inside_saturation_is_not_a_stall() {
+        // The deadline exits return `Stalled` too; only the cap is the bug signal.
+        let mut pool = ConceptPool::new();
+        let top = reverse_chain(&mut pool);
+        let mut ctx = reverse_chain_ctx(&pool, top);
+        ctx.set_deadline(std::time::Instant::now());
+        assert_eq!(saturate(&mut ctx, 4096), SaturationResult::Stalled);
+        assert!(ctx.deadline_reached() || ctx.check_deadline());
+        assert!(
+            !ctx.saturation_stalled(),
+            "a deadline cut inside saturation must not read as a stall (#475)"
+        );
+    }
+
+    #[test]
+    fn a_saturation_that_reaches_its_fixpoint_latches_nothing() {
+        let mut pool = ConceptPool::new();
+        let top = reverse_chain(&mut pool);
+        let mut ctx = reverse_chain_ctx(&pool, top);
+        assert_eq!(saturate(&mut ctx, 4096), SaturationResult::Stable);
+        assert!(!ctx.saturation_stalled());
     }
 
     #[test]

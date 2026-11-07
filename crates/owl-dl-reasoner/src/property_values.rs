@@ -66,10 +66,10 @@ impl ObjectPropertyValues {
         self.incomplete
     }
 
-    /// #462: a deadline-free extension probe ended in `NoVerdict` (an internal limit,
-    /// likely a reasoner bug, #449). [`Self::incomplete`] is set too. A `NoVerdict` on a
-    /// probe with a pair deadline is the routine depth-cap cut and only sets
-    /// `incomplete`.
+    /// #462: an extension probe ended in `NoVerdict` on an internal limit (likely a
+    /// reasoner bug, #449): a deadline-free probe, or (#475) one whose saturation
+    /// stalled. [`Self::incomplete`] is set too. Any other `NoVerdict` on a probe with
+    /// a pair deadline is the routine depth-cap cut and only sets `incomplete`.
     #[must_use]
     pub fn no_verdict(&self) -> bool {
         self.no_verdict
@@ -501,9 +501,10 @@ pub fn inferred_object_property_values<A: ForIRI>(
             let deadline = pair_deadline.map(|d| Instant::now() + d);
             let entailed = match prepared.consistent_with_extra(&[], &[(a, r, b)], deadline) {
                 // #462: no verdict, so not entailed (`incomplete` is already set). Only
-                // a deadline-free probe's `NoVerdict` is an internal limit.
+                // a deadline-free probe's `NoVerdict`, or (#475) a stalled one, is an
+                // internal limit.
                 Err(ReasonError::NoVerdict) => {
-                    no_verdict |= deadline.is_none();
+                    no_verdict |= crate::no_verdict_is_a_bug(deadline);
                     false
                 }
                 r => r? == Some(false),

@@ -49,6 +49,11 @@ Adjudication: a pair in the committed Konclude closure is a classify MISS; a
 pair absent from it is a CANDIDATE FP, confirmed only by HermiT (`--hermit`).
 Konclude alone never fails a run (it under-reports in documented cases); a U1
 baseline entry therefore needs a recorded HermiT verdict, never Konclude alone.
+HermiT is asked per claim (`--consistency=C`, `--supers=C`), so it also decides on
+an ontology with unsat classes. A HermiT answer that decides nothing (timeout,
+failure, an inconsistent ontology) is listed under `unadjudicated` and fails the
+run, and `--hermit` without a JVM is an error (#502): an oracle that cannot
+answer must never read as zero false positives.
 
 COVERAGE, stated: `--self-test` shows each law CAN fire, on fabricated operands;
 that checks the harness, not the engine. Env sabotages (`--sabotage`) cover R1
@@ -81,7 +86,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from owl_readers import closure, ofn_named_closure, owx_closure  # noqa: E402  (shared with scripts/gen)
+from owl_readers import (  # noqa: E402  (shared with scripts/gen)
+    _PFX as _OFN_PFX, closure, java_bin, ofn_named_closure, owx_closure)
 
 OWL = "http://www.w3.org/2002/07/owl#"
 THING, NOTHING = OWL + "Thing", OWL + "Nothing"
@@ -754,39 +760,88 @@ def adjudicate(outcomes, spec, hermit=None):
     return outcomes
 
 
-def hermit_check(spec, d):
-    """Confirm a candidate FP with HermiT (robot). Returns 'refutes' or 'confirms'
-    the rustdl claim, or 'unavailable'."""
-    robot = next((p for p in (Path(os.environ.get("ROBOT_JAR", "/nonexistent")),
-                              Path.home() / "rustdl" / "peers" / "robot.jar",
-                              Path.home() / "peers" / "robot.jar") if p.exists()),
+ROBOT_JAR = next((p for p in (Path(os.environ.get("ROBOT_JAR", "/nonexistent")),
+                               Path.home() / "rustdl" / "peers" / "robot.jar",
+                               Path.home() / "peers" / "robot.jar") if p.exists()),
                  Path("/nonexistent"))
-    java = Path(os.environ.get("JAVA_HOME", "")) / "bin" / "java"
-    if not robot.exists() or not java.exists():
-        return "unavailable"
-    digest = hashlib.md5(Path(spec["path"]).read_bytes()).hexdigest()[:10]
-    out = Path(os.environ.get("TMPDIR", "/tmp")) / f"hermit-{spec['id']}-{digest}.ofn"
-    if not out.exists():
-        p = subprocess.run([str(java), "-jar", str(robot), "reason", "--reasoner", "hermit",
-                            "--axiom-generators", "SubClass EquivalentClass",
-                            "--include-indirect", "true", "--input", str(spec["path"]),
-                            "--output", str(out)], capture_output=True, text=True, timeout=600)
-        log = p.stdout + p.stderr
-        if not out.exists():
-            # robot writes no output when a class is unsatisfiable; it logs
-            # "unsatisfiable: <IRI>" (on stdout) instead.
-            bad = set(re.findall(r"unsatisfiable: (\S+)", log))
-            if not bad:
-                return f"unavailable (robot rc={p.returncode})"
-            s = d["pair"][0]
-            if d["law"] in ("R2", "U1"):
-                return "confirms" if s in bad else "refutes"
-            return "confirms" if s in bad else "unavailable (HermiT: ontology has unsat classes)"
-    clo, unsat = ofn_named_closure(out.read_text(errors="replace"))
-    s, t = d["pair"]
-    if d["law"] in ("R2", "U1"):
-        return "confirms" if s in unsat else "refutes"
-    return "confirms" if (s, t) in clo or s in unsat else "refutes"
+HERMIT_CAP_S = 600
+_HERMIT_MEMO = {}
+
+
+def hermit_missing():
+    """Why `--hermit` cannot run, or None (#502: never a silent "unavailable")."""
+    java = java_bin()
+    if not java.exists():
+        return f"no JVM at {java} (set JAVA_HOME)"
+    if not ROBOT_JAR.exists():
+        return "no robot.jar (set ROBOT_JAR)"
+    return None
+
+
+def hermit_cli(path, args):
+    """One HermiT CommandLine query (robot.jar's `org.semanticweb.HermiT.cli`). Returns
+    (status, stdout): status is ok, inconsistent, timeout or fail."""
+    key = (hashlib.sha256(Path(path).read_bytes()).hexdigest(), tuple(args))
+    if key in _HERMIT_MEMO:
+        return _HERMIT_MEMO[key]
+    try:
+        p = subprocess.run([str(java_bin()), "-Xmx4g", "-Dfile.encoding=UTF-8", "-cp",
+                            str(ROBOT_JAR), "org.semanticweb.HermiT.cli.CommandLine", *args,
+                            str(path)], capture_output=True, text=True, timeout=HERMIT_CAP_S)
+    except subprocess.TimeoutExpired:
+        return ("timeout", "")  # not memoised: a timeout under load is not an answer
+    log = p.stdout + p.stderr
+    if "InconsistentOntologyException" in log:
+        r = ("inconsistent", "")
+    elif p.returncode != 0 or re.search(r"Exception|Error", log):
+        r = ("fail", log[-300:])
+    else:
+        r = ("ok", p.stdout)
+    _HERMIT_MEMO[key] = r
+    return r
+
+
+def _expand(name, pfx):
+    """HermiT prints names with the ontology's own prefixes (`pizza:Food`)."""
+    name = name.strip()
+    if name.startswith("<") and name.endswith(">"):
+        return name[1:-1]
+    p, sep, local = name.partition(":")
+    if sep and p in pfx and not local.startswith("//"):
+        return pfx[p] + local
+    return name
+
+
+def hermit_check(spec, d, cli=hermit_cli):
+    """Check one rustdl claim with HermiT, per claim (#502). Returns 'refutes' (the claim
+    is false: a false positive), 'confirms' (it holds: a classify miss), or
+    'unavailable (why)', which `summarize` lists as unadjudicated and fails the run on.
+
+    The claim: R2 / U1 `s` is unsat; R1 `s ⊑ t`. Per-claim queries replace the old
+    whole-file `robot reason`, which writes nothing on an ontology with an unsat class
+    and so could never adjudicate an R1 claim there (pizza has two)."""
+    path, (s, t), law = spec["path"], d["pair"], d["law"]
+    st, out = cli(path, [f"--consistency={s}"])
+    if st == "inconsistent":
+        return "unavailable (HermiT: the ontology is inconsistent)"
+    if st != "ok":
+        return f"unavailable (HermiT {st})"
+    if " is not satisfiable." in out:
+        return "confirms"
+    if " is satisfiable." not in out:
+        return f"unavailable (HermiT output {out[-80:]!r})"
+    if law in ("R2", "U1"):
+        return "refutes"
+    st, out = cli(path, [f"--supers={s}"])
+    if st != "ok":
+        return f"unavailable (HermiT {st})"
+    lines = out.splitlines()
+    if not lines or not lines[0].startswith("All super-classes"):
+        return f"unavailable (HermiT output {out[:80]!r})"
+    pfx = dict(_OFN_PFX.findall(Path(path).read_text(errors="replace")))
+    pfx.setdefault("owl", OWL)
+    sup = {_expand(x, pfx) for x in lines[1:] if x.strip()}
+    return "confirms" if t == THING or t in sup else "refutes"
 
 
 # `ofn_named_closure` lives in owl_readers.py.
@@ -992,6 +1047,50 @@ def self_test():
                   a["v"], "unknown"))
     a = read_payload(run(0, '{"no_verdict_pairs": 2}\n'))
     cases.append(("#493 no_verdict() reads classify's no_verdict_pairs", no_verdict(a), True))
+    # #502: per-claim HermiT verdicts, from canned CommandLine output.
+    def fake(**answers):
+        return lambda path, args: answers.get(args[0].split("=")[0], ("fail", ""))
+    sp = dict(id="t", path=Path(__file__))  # any readable file: only its Prefix lines are read
+    sat_ = ("ok", "http://e#A is satisfiable.\n")
+    cases.append(("#502 HermiT: R2 on a satisfiable class refutes",
+                  hermit_check(sp, dict(law="R2", pair=["http://e#A", NOTHING]),
+                               fake(**{"--consistency": sat_})), "refutes"))
+    cases.append(("#502 HermiT: R2 on an unsat class confirms",
+                  hermit_check(sp, dict(law="R2", pair=["http://e#A", NOTHING]),
+                               fake(**{"--consistency": ("ok", "x is not satisfiable.\n")})),
+                  "confirms"))
+    sup = ("ok", "All super-classes of 'http://e#A':\n\towl:Thing\n\t<http://e#B>\n")
+    cases.append(("#502 HermiT: R1 to a listed superclass confirms",
+                  hermit_check(sp, dict(law="R1", pair=["http://e#A", "http://e#B"]),
+                               fake(**{"--consistency": sat_, "--supers": sup})), "confirms"))
+    cases.append(("#502 HermiT: R1 to an unlisted class refutes",
+                  hermit_check(sp, dict(law="R1", pair=["http://e#A", "http://e#C"]),
+                               fake(**{"--consistency": sat_, "--supers": sup})), "refutes"))
+    cases.append(("#502 HermiT: a timeout is unavailable, never a verdict",
+                  hermit_check(sp, dict(law="R1", pair=["http://e#A", "http://e#C"]),
+                               fake(**{"--consistency": ("timeout", "")})).startswith("unavailable"),
+                  True))
+    cases.append(("#502 HermiT prints prefixed names",
+                  [_expand(x, {"pizza": "http://p#", "owl": OWL})
+                   for x in ("pizza:Food", "owl:Thing", "<http://q#A>", "http://r#B")],
+                  ["http://p#Food", THING, "http://q#A", "http://r#B"]))
+    res = [dict(onto="t", outcomes=[
+        dict(law="R1", kind="discrepancy", reason="", operands=[], hermit="unavailable (x)"),
+        dict(law="R2", kind="discrepancy", reason="", operands=[], hermit="confirms"),
+        dict(law="R2", kind="discrepancy", reason="", operands=[])])]
+    cases.append(("#502 an undecided HermiT answer is listed as unadjudicated",
+                  [u["law"] for u in summarize(res, None)[4]], ["R1"]))
+    cases.append(("#502 java_bin: JAVA_HOME first, else the peers JDK",
+                  [str(java_bin({"JAVA_HOME": "/j"})), java_bin({}).parts[-4:]],
+                  ["/j/bin/java", ("peers", "jdk-17.0.20.1+1", "bin", "java")]))
+    saved_env = os.environ.get("JAVA_HOME")
+    os.environ["JAVA_HOME"] = "/nonexistent-jdk"
+    cases.append(("#502 a missing JVM is reported, not answered",
+                  (hermit_missing() or "").startswith("no JVM"), True))
+    if saved_env is None:
+        os.environ.pop("JAVA_HOME")
+    else:
+        os.environ["JAVA_HOME"] = saved_env
     for name, got, want in cases:
         ok = got == want
         bad += not ok
@@ -1055,7 +1154,7 @@ def run_one(job):
 
 def summarize(results, baseline):
     by_law = defaultdict(Counter)
-    fails, ratchet = [], Counter()
+    fails, ratchet, unadj = [], Counter(), []
     for res in results:
         for o in res["outcomes"]:
             by_law[o["law"]][o["kind"]] += 1
@@ -1068,12 +1167,17 @@ def summarize(results, baseline):
             # classify's budget did, so it fails the run even when budget-cut.
             if o["kind"] == "discrepancy" and o.get("hermit") == "refutes":
                 fails.append(dict(o, kind="HermiT-confirmed FP"))
+            # #502: HermiT was asked and did not decide. Listed and failing the run, so a
+            # run where the oracle never answered cannot read as zero false positives.
+            if o["kind"] == "discrepancy" and "hermit" in o \
+                    and o["hermit"] not in ("refutes", "confirms"):
+                unadj.append(o | {"onto": res["onto"]})
     over = []
     for (onto, law), n in sorted(ratchet.items()):
         allowed = baseline.get(onto, {}).get(law, 0) if baseline is not None else None
         if allowed is not None and n > allowed:
             over.append(dict(onto=onto, law=law, count=n, baseline=allowed))
-    return by_law, fails, ratchet, over
+    return by_law, fails, ratchet, over, unadj
 
 
 def main():
@@ -1102,6 +1206,9 @@ def main():
         return self_test()
     if not a.bin or not a.out:
         ap.error("--bin and --out are required (or --self-test)")
+    if a.hermit and hermit_missing():
+        # #502: this used to mark every candidate "unavailable" and pass the run.
+        ap.error(f"--hermit cannot run: {hermit_missing()}")
     a.out.mkdir(parents=True, exist_ok=True)
     binary = str(Path(a.bin).resolve())
     sha = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
@@ -1154,14 +1261,14 @@ def main():
         allspecs = {s["id"]: s for s in specs}
         for res in results:
             adjudicate(res["outcomes"], allspecs[res["onto"]], hermit=hermit_check)
-    by_law, fails, ratchet, over = summarize(results, baseline)
+    by_law, fails, ratchet, over, unadj = summarize(results, baseline)
     report = dict(binary=binary, sha256=sha, version=version, seed=a.seed, quick=a.quick,
                   env=env_extra,
                   wall=round(time.monotonic() - t0, 1), missing_fixtures=missing,
                   per_ontology=[{k: r[k] for k in ("onto", "calls", "kills", "cpu", "wall")}
                                 for r in results],
                   by_law={k: dict(v) for k, v in sorted(by_law.items())},
-                  failures=fails, ratchet_over_baseline=over,
+                  failures=fails, ratchet_over_baseline=over, unadjudicated=unadj,
                   discrepancies=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
                                  if o["kind"] == "discrepancy"],
                   unresolved=[o for r in results for o in r["outcomes"] if o["kind"] == "unresolved"],
@@ -1183,8 +1290,13 @@ def main():
             print(f"     {op['v']:>12}  {op['cmd']}  {op['why']}")
     for ov in over:
         print(f"RATCHET {ov['onto']} {ov['law']}: {ov['count']} > baseline {ov['baseline']}")
+    for u in unadj:
+        print(f"UNADJUDICATED {u['law']} {u['onto']}: {u['reason']} -- {u['hermit']}")
+    n_disc = sum(o["kind"] == "discrepancy" for r in results for o in r["outcomes"])
+    if n_disc and not a.hermit:
+        print(f"note: {n_disc} discrepancies not adjudicated (no --hermit)")
     print(f"report: {a.out / 'report.json'}")
-    return 1 if fails or over else 0
+    return 1 if fails or over or unadj else 0
 
 
 if __name__ == "__main__":

@@ -1107,7 +1107,8 @@ fn note_trusted_wedge_sat(trusted: bool) {
         eprintln!(
             "note: consistent on the consistency wedge's model alone; the wedge is not \
              proven complete and no main-tableau model was built. RUSTDL_WEDGE_CONSISTENCY=0 \
-             decides on the main tableau (bounded by RUSTDL_CONSISTENCY_FALLBACK_MS)."
+             decides on the main tableau instead, with no deadline; on a hard ontology it may \
+             not finish (wine does not, #490)."
         );
     }
 }
@@ -1155,6 +1156,25 @@ fn exit_unknown_node_cap() -> ! {
     std::process::exit(3);
 }
 
+/// #497: what bounds a consistency give-up, by route. With the consistency wedge (an
+/// ontology with individuals) the main-tableau fall-through has
+/// `RUSTDL_CONSISTENCY_FALLBACK_MS`; with no individual, or with
+/// `RUSTDL_WEDGE_CONSISTENCY=0`, the main tableau runs with no deadline and gives up only
+/// on its node cap (or on the tableau's internal limit, `NoVerdict`: a stalled saturation
+/// or the depth cap, with the #449 note). The node cap applies on either route. The stats
+/// cannot tell the route apart, so the advice names both. `node_cap` is the cap that
+/// applied: `RUSTDL_MAX_NODES` for `consistent`; for a single query
+/// `RUSTDL_QUERY_MAX_NODES`, unless `RUSTDL_MAX_NODES` is set explicitly (it wins).
+fn consistency_budget_advice(node_cap: &str) -> String {
+    format!(
+        "With the consistency wedge (an ontology with individuals), raise \
+         RUSTDL_CONSISTENCY_FALLBACK_MS (default 10000) or, for ontologies that count data \
+         values, RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000). With no \
+         individual, or with RUSTDL_WEDGE_CONSISTENCY=0, the main tableau has no deadline. On \
+         either route the main tableau also gives up on its node cap: raise {node_cap}."
+    )
+}
+
 /// #427: a query that IS the consistency check (`sat owl:Thing`,
 /// `subclass owl:Thing owl:Nothing`) gave up: print `unknown` and exit 3, naming
 /// the consistency budgets as `consistent` does.
@@ -1162,9 +1182,8 @@ fn exit_unknown_consistency_gave_up() -> ! {
     println!("unknown");
     eprintln!(
         "warning: this query is the consistency check, and no inconsistency was found \
-         within budget; that is not a verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS \
-         (default 10000) or, for ontologies that count data values, \
-         RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000) for more budget."
+         within budget; that is not a verdict. {}",
+        consistency_budget_advice("RUSTDL_QUERY_MAX_NODES (or RUSTDL_MAX_NODES, if set)")
     );
     std::process::exit(3);
 }
@@ -1987,7 +2006,7 @@ fn run() -> Result<()> {
                 if verdict {
                     warn_if_clauses_refused(
                         stats.wedge_clauses_refused,
-                        "RUSTDL_WEDGE_CONSISTENCY=0",
+                        "RUSTDL_WEDGE_CONSISTENCY=0 (main tableau, no deadline)",
                     );
                 }
                 if incomplete {
@@ -2003,9 +2022,8 @@ fn run() -> Result<()> {
                 println!("unknown");
                 eprintln!(
                     "warning: no inconsistency found within budget — this is a sound \
-                     under-approximation, not a verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS \
-                     (default 10000) or, for ontologies that count data values, \
-                     RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000) for more budget."
+                     under-approximation, not a verdict. {}",
+                    consistency_budget_advice("RUSTDL_MAX_NODES")
                 );
                 warn_if_dropped(&dropped);
                 std::process::exit(3);
@@ -2020,7 +2038,10 @@ fn run() -> Result<()> {
             );
             note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
             if verdict {
-                warn_if_clauses_refused(stats.wedge_clauses_refused, "RUSTDL_WEDGE_CONSISTENCY=0");
+                warn_if_clauses_refused(
+                    stats.wedge_clauses_refused,
+                    "RUSTDL_WEDGE_CONSISTENCY=0 (main tableau, no deadline)",
+                );
             }
             warn_if_dropped(&dropped);
         }
@@ -2572,9 +2593,10 @@ fn run() -> Result<()> {
                     println!("{sub} ⊑ {sup} : unknown — the consistency check gave up");
                     eprintln!(
                         "warning: no inconsistency was found within budget; that is not a \
-                         verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS (default 10000) or, for \
-                         ontologies that count data values, \
-                         RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000)."
+                         verdict. {}",
+                        consistency_budget_advice(
+                            "RUSTDL_QUERY_MAX_NODES (or RUSTDL_MAX_NODES, if set)"
+                        )
                     );
                     std::process::exit(3);
                 }

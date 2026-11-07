@@ -428,7 +428,8 @@ class TrustedConsistencyWarning(UserWarning):
     this is NOT an `IncompleteQueryWarning`.
 
     - `is_consistent` (#392): the `True` IS that verdict.
-      `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
+      `RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead, with no
+      deadline: on a hard ontology it may not finish (#497; wine does not, #490).
     - `is_class_satisfiable`, `is_subclass_of`, `class_expression_satisfiable` and
       `class_expression_entailed_subclass` (#401): the answer was computed without
       the ABox, which is exact when the KB is consistent and has no nominals. If

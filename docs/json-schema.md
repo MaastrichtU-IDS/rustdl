@@ -162,7 +162,11 @@ bump. It is `true` when `consistent: true` rests only on the consistency wedge's
 It is not a give-up: `incomplete` stays `false` and the exit code stays 0. It is
 never `true` with `consistent: false`, which is a witnessed clash. The same name
 and meaning as in `sat-expr`, `subclass-expr` and `prove --json` (#401).
-`RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead.
+`RUSTDL_WEDGE_CONSISTENCY=0` decides on the main tableau instead, with no deadline
+(`RUSTDL_CONSISTENCY_FALLBACK_MS` bounds only the wedge route's fall-through), so on a hard
+ontology it may not finish (wine does not, #490). Its only give-ups are the node cap
+(`incomplete`) and the tableau's internal limit (`no_verdict`: a stalled saturation or the
+depth cap), #497.
 
 ## `realize --json`
 

@@ -2487,6 +2487,7 @@ mod counting_tests {
 
 /// #494: once a search's deadline has fired, its open frames stop trying options.
 #[cfg(test)]
+#[allow(clippy::many_single_char_names)]
 mod deadline_stop_tests {
     use super::*;
     use owl_dl_core::ClassId;

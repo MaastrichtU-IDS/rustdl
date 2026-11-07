@@ -1462,7 +1462,24 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
     }
     let mut applied = false;
     let mut resolved_node = ctx.resolve(node);
-    for (ind, here_nom_deps) in individuals {
+    for (ind, here_nom_deps_snapshot) in individuals {
+        // DBG490 prototype 2: read the label's deps where it is NOW (a merge
+        // earlier in this loop moved it, adding that merge's deps).
+        let fresh = std::env::var("DBG490_FRESH").is_ok_and(|v| v == "1");
+        let here_nom_deps: DepSet = if fresh {
+            let rn = ctx.graph().node(resolved_node);
+            let pool = ctx.pool();
+            rn.labels()
+                .iter()
+                .enumerate()
+                .find_map(|(p, &c)| match pool.get(c) {
+                    ConceptExpr::Nominal(i) if *i == ind => Some(rn.label_deps[p].clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| DepSet::from_slice(ctx.active_branches()))
+        } else {
+            here_nom_deps_snapshot
+        };
         match ctx.graph().nominal_node(ind) {
             None => {
                 ctx.assign_nominal(ind, resolved_node);
@@ -1474,7 +1491,7 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                     // Find the matching nominal label's deps on the
                     // other node. The merge-condition deps = union of
                     // both sides' nominal-label deps.
-                    let other_nom_deps: DepSet = {
+                    let other_nom_found: Option<DepSet> = {
                         let other_node = ctx.graph().node(other_res);
                         let pool = ctx.pool();
                         other_node
@@ -1487,8 +1504,8 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                                 }
                                 _ => None,
                             })
-                            .unwrap_or_default()
                     };
+                    let other_nom_deps: DepSet = other_nom_found.clone().unwrap_or_default();
                     let merge_deps: DepSet = union(&here_nom_deps, &other_nom_deps);
                     // Merge the two, threading the merge-condition deps so
                     // moved labels/edges carry them. #362: with the nominal
@@ -1524,13 +1541,27 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                     if !merged && let Some(bot) = ctx.pool().bot_id() {
                         // Conservative deps for the failed-merge clash:
                         // active branches ⊇ the precise merge-cond deps.
-                        let deps: DepSet = DepSet::from_slice(ctx.active_branches());
+                        // DBG490 prototype: precise deps = both nominal labels' deps
+                        // ∪ the distinctness mark's deps (exact deps only).
+                        let proto = std::env::var("DBG490_NOMBOT").is_ok_and(|v| v == "1");
+                        let deps: DepSet = if proto
+                            && ctx.merge_exact_deps()
+                            && other_nom_found.is_some()
+                        {
+                            union(&merge_deps, &ctx.distinct_deps(source, keep))
+                        } else {
+                            DepSet::from_slice(ctx.active_branches())
+                        };
                         ctx.add_label_with_deps(keep, bot, &deps);
                     }
                     // After merging, update the nominal map so
                     // subsequent lookups skip the resolve chain.
-                    resolved_node = ctx.resolve(keep);
-                    ctx.assign_nominal(ind, resolved_node);
+                    // DBG490 prototype 3: a refused merge leaves the node where it is.
+                    let stay = std::env::var("DBG490_STAY").is_ok_and(|v| v == "1");
+                    if merged || !stay {
+                        resolved_node = ctx.resolve(keep);
+                        ctx.assign_nominal(ind, resolved_node);
+                    }
                     applied = true;
                 }
             }

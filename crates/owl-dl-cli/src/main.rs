@@ -2374,8 +2374,11 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             // A give-up is `unknown`, exit 3, as on `sat` (#363 A2), and a
-            // deadline-free `NoVerdict` exactly as on `sat` (#449, #462).
-            if v.no_verdict() {
+            // deadline-free `NoVerdict` exactly as on `sat` (#449, #462): the probe's own
+            // `NoVerdict` always sets `incomplete` (`CeVerdict::from_no_verdict`). #493: a
+            // stall of the lazy check after a decided answer does not; the answer stands
+            // and the note follows it below.
+            if v.no_verdict() && v.incomplete() {
                 exit_unknown_no_verdict();
             }
             if v.incomplete() {
@@ -2391,6 +2394,8 @@ fn run() -> Result<()> {
             );
             note_trusted_consistency_flag(v.relies_on_trusted_consistency());
             warn_consistency_undetermined("sat-expr", v.consistency_undetermined());
+            // #493: the lazy check's own probe stalled; the answer stands.
+            exit_if_no_verdict(v.no_verdict());
         }
         Command::SubclassExpr {
             file,
@@ -2419,8 +2424,9 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             // A give-up is `unknown`, exit 3, as on `subclass` (#363 A2), and a
-            // deadline-free `NoVerdict` exactly as on `subclass` (#449, #462).
-            if v.no_verdict() {
+            // deadline-free `NoVerdict` exactly as on `subclass` (#449, #462). #493: as in
+            // `sat-expr`, only the probe's own `NoVerdict` (it sets `incomplete`).
+            if v.no_verdict() && v.incomplete() {
                 exit_unknown_no_verdict();
             }
             if v.incomplete() {
@@ -2429,6 +2435,8 @@ fn run() -> Result<()> {
             println!("{}", if v.holds() { "yes" } else { "no" });
             note_trusted_consistency_flag(v.relies_on_trusted_consistency());
             warn_consistency_undetermined("subclass-expr", v.consistency_undetermined());
+            // #493: as in `sat-expr`.
+            exit_if_no_verdict(v.no_verdict());
         }
         Command::InstancesExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;

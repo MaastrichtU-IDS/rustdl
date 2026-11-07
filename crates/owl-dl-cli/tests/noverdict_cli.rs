@@ -799,8 +799,12 @@ fn a_stall_in_the_no_seed_lazy_tail_is_reported() {
         ("RUSTDL_TRACE", "1"),
     ];
     let ce = ":C and (:s some owl:Thing) and (:s only (not :E))";
-    let cases: [(&[&str], &str); 4] = [
+    let cases: [(&[&str], &str); 6] = [
         (&["sat-expr", "--json", &f, ce], "sat-expr"),
+        // Text mode keeps the decided answer too (Fable's review of #500: it used to turn
+        // into `unknown`).
+        (&["sat-expr", &f, ce], "unsatisfiable"),
+        (&["subclass-expr", &f, ce, ":Y"], "yes"),
         (&["sat", &f, "http://ex/#U"], "unsat"),
         (&["subclass", &f, "http://ex/#X", "http://ex/#Y"], "yes"),
         (&["explain", &f, "http://ex/#X", "http://ex/#Y"], "yes"),
@@ -815,7 +819,7 @@ fn a_stall_in_the_no_seed_lazy_tail_is_reported() {
         );
         assert!(line.contains("tail_stalled=true"), "{what}: {line}");
         assert_gave_up(&r, &what);
-        if args[0] == "sat-expr" {
+        if args.contains(&"--json") {
             let j = json(&r, &what);
             assert_eq!(j["satisfiable"], false, "{what}: the answer stands: {j}");
             assert_eq!(j["consistency_undetermined"], true, "{what}: {j}");
@@ -828,6 +832,11 @@ fn a_stall_in_the_no_seed_lazy_tail_is_reported() {
             assert!(
                 r.stdout.contains(answer),
                 "{what}: the answer stands: {}",
+                r.stdout
+            );
+            assert!(
+                !r.stdout.contains("unknown"),
+                "{what}: not `unknown`: {}",
                 r.stdout
             );
         }
@@ -1071,6 +1080,16 @@ fn a_stall_in_the_light_lazy_tail_is_reported_by_sat_expr() {
     assert_eq!(j["satisfiable"], false, "the answer stands: {j}");
     assert_eq!(j["consistency_undetermined"], true, "{j}");
     assert_eq!(j["no_verdict"], true, "{j}");
+    // Text mode: the decided answer, then the note, exit 3 (Fable's review of #500).
+    let text = ["sat-expr", f.path(), ":C and not :C"];
+    let r = run_with(true, &env, &text);
+    assert_gave_up(&r, "sat-expr (text), light tail");
+    assert_eq!(
+        r.stdout.trim(),
+        "unsatisfiable",
+        "the answer stands: {}",
+        r.stdout
+    );
     let r = run_with(false, &env, &args);
     assert_eq!(r.code, 0, "control: {}\n{}", r.stdout, r.stderr);
 }

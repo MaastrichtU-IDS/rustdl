@@ -11719,7 +11719,10 @@ impl PreparedOntology {
         // With no seed and no tail, not flagged, as on the light route (the KB's
         // consistency was never checked; #457 documents that gap). A tail that ran
         // and did not decide is undetermined, seed or not. #493: a likely-bug stall
-        // is a consistency give-up, so it is undetermined too.
+        // is a consistency give-up, so it is undetermined too. The `|| no_verdict` is
+        // defensive in production (a verify stall needs the seeded wedge, so `no_seed`
+        // is false; a tail stall leaves `tail.is_some()`), but load-bearing for the
+        // seeded no-seed arms of `the_lazy_check_caches_keep_the_no_verdict_flag`.
         let undetermined = (verdict == QueryConsistency::Undetermined
             && (!no_seed || tail.is_some())
             && tail_verdict != Some(Some(true)))
@@ -11751,6 +11754,10 @@ impl PreparedOntology {
     /// flag, recorded so a later lazy check on this prepared ontology reports it
     /// without re-running the probe. Any other error is plain undetermined, as before.
     fn query_consistency_for_lazy_check(&self) -> (QueryConsistency, bool) {
+        // A lent verdict is final and never flags, even after a recorded stall.
+        if let Some(v) = INHERITED_QUERY_CONSISTENCY.with(std::cell::Cell::get) {
+            return (v, false);
+        }
         if self.query_consistency_stalled.get().is_some() {
             return (QueryConsistency::Undetermined, true);
         }

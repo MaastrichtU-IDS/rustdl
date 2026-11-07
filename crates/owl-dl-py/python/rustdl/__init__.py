@@ -261,6 +261,12 @@ def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
 
 
 def _warn_if_list_incomplete(name: str, incomplete: bool, no_verdict: bool) -> None:
+    _warn_if_list_incomplete_at(name, incomplete, no_verdict, stacklevel=4)
+
+
+def _warn_if_list_incomplete_at(
+    name: str, incomplete: bool, no_verdict: bool, stacklevel: int
+) -> None:
     # #493: a cut that was a likely-bug NoVerdict (#449) gets that text, not the budget
     # one; the result is still returned (it used to raise).
     if no_verdict:
@@ -270,10 +276,27 @@ def _warn_if_list_incomplete(name: str, incomplete: bool, no_verdict: bool) -> N
             "a reasoner bug (#449); please report the input. The result is a sound "
             "under-approximation: no false entries, but real ones may be missing.",
             IncompleteQueryWarning,
+            stacklevel=stacklevel,
+        )
+    else:
+        _warn_if_query_incomplete_at(name, incomplete, stacklevel=stacklevel + 1)
+
+
+def _warn_if_answer_no_verdict(name: str, incomplete: bool, no_verdict: bool) -> None:
+    # #493: for a yes/no answer, a `no_verdict` without `incomplete` is the #369 lazy
+    # consistency check's own probe stalling AFTER the answer was decided: the answer
+    # stands, only the KB's consistency is open. With `incomplete` it is the probe's own
+    # give-up, reported as for the lists.
+    if no_verdict and not incomplete:
+        _warnings.warn(
+            f"{name}: the answer stands, but the consistency check's own probe ended "
+            "without a verdict on an internal limit (NoVerdict). This is likely a "
+            "reasoner bug (#449); please report the input.",
+            IncompleteQueryWarning,
             stacklevel=3,
         )
     else:
-        _warn_if_query_incomplete_at(name, incomplete, stacklevel=4)
+        _warn_if_list_incomplete_at(name, incomplete, no_verdict, stacklevel=4)
 
 
 def _warn_if_query_incomplete_at(name: str, incomplete: bool, stacklevel: int) -> None:
@@ -518,7 +541,7 @@ def is_class_satisfiable(path, class_iri):
     sat, incomplete, trusted, undetermined, no_verdict = _is_class_satisfiable_native(
         path, class_iri
     )
-    _warn_if_list_incomplete("is_class_satisfiable", incomplete, no_verdict)
+    _warn_if_answer_no_verdict("is_class_satisfiable", incomplete, no_verdict)
     _warn_if_trusted_consistency("is_class_satisfiable", trusted)
     _warn_if_consistency_undetermined("is_class_satisfiable", undetermined)
     return sat
@@ -537,7 +560,7 @@ def is_subclass_of(path, sub, sup):
     subsumed, incomplete, trusted, undetermined, no_verdict = _is_subclass_of_native(
         path, sub, sup
     )
-    _warn_if_list_incomplete("is_subclass_of", incomplete, no_verdict)
+    _warn_if_answer_no_verdict("is_subclass_of", incomplete, no_verdict)
     _warn_if_trusted_consistency("is_subclass_of", trusted)
     _warn_if_consistency_undetermined("is_subclass_of", undetermined)
     return subsumed
@@ -557,7 +580,7 @@ def is_instance_of(path, class_iri, individual_iri):
     is_inst, incomplete, undetermined, no_verdict = _is_instance_of_native(
         path, class_iri, individual_iri
     )
-    _warn_if_list_incomplete("is_instance_of", incomplete, no_verdict)
+    _warn_if_answer_no_verdict("is_instance_of", incomplete, no_verdict)
     _warn_if_consistency_undetermined("is_instance_of", undetermined)
     return is_inst
 
@@ -833,7 +856,7 @@ def class_expression_satisfiable(path, ce):
     holds, incomplete, trusted, undetermined, no_verdict = _class_expression_satisfiable_native(
         path, ce
     )
-    _warn_if_list_incomplete("class_expression_satisfiable", incomplete, no_verdict)
+    _warn_if_answer_no_verdict("class_expression_satisfiable", incomplete, no_verdict)
     _warn_if_trusted_consistency("class_expression_satisfiable", trusted)
     _warn_if_consistency_undetermined("class_expression_satisfiable", undetermined)
     return holds
@@ -850,7 +873,7 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     holds, incomplete, trusted, undetermined, no_verdict = (
         _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)
     )
-    _warn_if_list_incomplete("class_expression_entailed_subclass", incomplete, no_verdict)
+    _warn_if_answer_no_verdict("class_expression_entailed_subclass", incomplete, no_verdict)
     _warn_if_trusted_consistency("class_expression_entailed_subclass", trusted)
     _warn_if_consistency_undetermined(
         "class_expression_entailed_subclass", undetermined

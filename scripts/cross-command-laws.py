@@ -174,8 +174,12 @@ def definite(a):
 
 
 def no_verdict(a):
-    """#493: the answer came with the no_verdict signal (exit 3 + #449's note)."""
-    return a is not None and bool(a.get("extra", {}).get("no_verdict"))
+    """#493: the answer came with the no_verdict signal: a text answer with exit 3 and
+    #449's note, or a JSON payload's `no_verdict` / `no_verdict_pairs` (classify)."""
+    if a is None:
+        return False
+    extra = a.get("extra") or {}
+    return bool(extra.get("no_verdict")) or (extra.get("no_verdict_pairs") or 0) > 0
 
 
 def outcome(law, onto, kind, reason, *operands):
@@ -278,10 +282,13 @@ NOVERDICT_NOTE = "likely a reasoner bug"
 
 
 def _answer_with_no_verdict(r):
-    """#493: exit 3 with #449's note AFTER a definite answer is that answer plus the
-    no_verdict signal (the #369 lazy check's own probe stalled), not a give-up."""
+    """#493: on a TEXT answer (a bare token or `explain`'s line), exit 3 with #449's note
+    AFTER a definite answer is that answer plus the no_verdict signal (the #369 lazy
+    check's own probe stalled), not a give-up. Only `read_token` / `read_explain` use it;
+    a JSON payload with exit 3 stays a give-up in `_base` (Fable's review of #500)."""
     last = r["stdout"].strip().splitlines()[-1].strip() if r["stdout"].strip() else ""
     return (r["rc"] == 3 and NOVERDICT_NOTE in r["stderr"] and last != ""
+            and not last.startswith(("{", "}", "[", "]"))
             and last != "unknown" and not last.endswith(": unknown")
             and " : unknown" not in last)
 
@@ -293,8 +300,6 @@ def _base(r):
         return ans("unknown", f"killed at {CALL_TIMEOUT_S}s", c, None)
     if r["rc"] == 1 and "ontology is inconsistent" in r["stderr"]:
         return ans("inconsistent", "error Inconsistent", c, 1)
-    if _answer_with_no_verdict(r):
-        return None  # the caller reads the answer; `no_verdict(a)` flags it
     if r["rc"] == 3:
         return ans("unknown", "exit 3 (gave up)", c, 3)
     if r["rc"] != 0:
@@ -303,7 +308,7 @@ def _base(r):
 
 
 def read_token(r, yes, no):
-    b = _base(r)
+    b = None if _answer_with_no_verdict(r) else _base(r)
     if b:
         return b
     tok = r["stdout"].strip().splitlines()[-1].strip() if r["stdout"].strip() else ""
@@ -318,8 +323,9 @@ def read_token(r, yes, no):
 
 
 def read_explain(r):
-    """`explain`: `<sub> ⊑ <sup> : yes|no — answered by …`; exit 3 is a give-up."""
-    b = _base(r)
+    """`explain`: `<sub> ⊑ <sup> : yes|no — answered by …`; exit 3 is a give-up (#493:
+    unless after a definite answer with #449's note)."""
+    b = None if _answer_with_no_verdict(r) else _base(r)
     if b:
         return b
     line = r["stdout"].strip().splitlines()[-1] if r["stdout"].strip() else ""
@@ -342,7 +348,7 @@ def read_json(r, field, give_up="incomplete"):
         return ans("unknown", f"{give_up}: true", cmdline(r), r["rc"], j)
     v = j.get(field)
     return ans("yes" if v is True else "no" if v is False else "unknown",
-               "", cmdline(r), 0, j)
+               "", cmdline(r), r["rc"], j)
 
 
 def read_payload(r):
@@ -355,7 +361,7 @@ def read_payload(r):
         j = json.loads(r["stdout"])
     except json.JSONDecodeError:
         return ans("unknown", "unparsed JSON", cmdline(r), r["rc"])
-    return ans("ok", "", cmdline(r), 0, j)
+    return ans("ok", "", cmdline(r), r["rc"], j)
 
 
 # --------------------------------------------------------------------------
@@ -980,6 +986,12 @@ def self_test():
     cases.append(("#493 explain yes + note", (a["v"], no_verdict(a)), ("yes", True)))
     a = read_explain(run(3, "A ⊑ B : unknown — the tableau reached an internal limit\n", note))
     cases.append(("#493 explain unknown + note stays unknown", a["v"], "unknown"))
+    payload = '{\n  "no_verdict_pairs": 1,\n  "consistent": true\n}\n'
+    a = read_payload(run(3, payload, note))
+    cases.append(("#493 a JSON payload with rc 3 + note stays a give-up (Fable, #500)",
+                  a["v"], "unknown"))
+    a = read_payload(run(0, '{"no_verdict_pairs": 2}\n'))
+    cases.append(("#493 no_verdict() reads classify's no_verdict_pairs", no_verdict(a), True))
     for name, got, want in cases:
         ok = got == want
         bad += not ok

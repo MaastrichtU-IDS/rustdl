@@ -29,8 +29,8 @@ budgeted run whatever the tableau did, and `--pair-timeout-ms 0` is the setting 
 can fire.
 
 **After a positive answer (#493).** The query commands that run the #369 lazy consistency
-check (`sat-expr`, `subclass-expr`, `instances-expr`, `individuals`, `property-values`; also
-`instance`, `instances`, `sat`, `subclass` and `explain` in text) set `no_verdict` when that
+check (`sat-expr`, `subclass-expr`, `instances-expr`, `individuals`, `property-values`; in text
+mode also these, and `instance`, `instances`, `sat`, `subclass` and `explain`) set `no_verdict` when that
 check's own probe stalls: the #344 data-counting verify, or the bounded main-tableau tail. Then:
 - the answer stands, and `consistency_undetermined` is set with `no_verdict`;
 - `incomplete` is NOT set, because the answer itself was decided;

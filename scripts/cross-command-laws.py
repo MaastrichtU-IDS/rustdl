@@ -173,6 +173,11 @@ def definite(a):
     return a is not None and a["v"] not in ("unknown",)
 
 
+def no_verdict(a):
+    """#493: the answer came with the no_verdict signal (exit 3 + #449's note)."""
+    return a is not None and bool(a.get("extra", {}).get("no_verdict"))
+
+
 def outcome(law, onto, kind, reason, *operands):
     return dict(law=law, onto=onto, kind=kind, reason=reason,
                 operands=[{k: o.get(k) for k in ("v", "why", "cmd", "rc")} for o in operands if o])
@@ -268,6 +273,19 @@ def cmdline(r):
     return (env + " " if env else "") + "rustdl " + " ".join(r["args"])
 
 
+# #449's note: the tableau reached an internal limit, likely a reasoner bug.
+NOVERDICT_NOTE = "likely a reasoner bug"
+
+
+def _answer_with_no_verdict(r):
+    """#493: exit 3 with #449's note AFTER a definite answer is that answer plus the
+    no_verdict signal (the #369 lazy check's own probe stalled), not a give-up."""
+    last = r["stdout"].strip().splitlines()[-1].strip() if r["stdout"].strip() else ""
+    return (r["rc"] == 3 and NOVERDICT_NOTE in r["stderr"] and last != ""
+            and last != "unknown" and not last.endswith(": unknown")
+            and " : unknown" not in last)
+
+
 def _base(r):
     """Common unknown/inconsistent handling. Returns an answer or None."""
     c = cmdline(r)
@@ -275,6 +293,8 @@ def _base(r):
         return ans("unknown", f"killed at {CALL_TIMEOUT_S}s", c, None)
     if r["rc"] == 1 and "ontology is inconsistent" in r["stderr"]:
         return ans("inconsistent", "error Inconsistent", c, 1)
+    if _answer_with_no_verdict(r):
+        return None  # the caller reads the answer; `no_verdict(a)` flags it
     if r["rc"] == 3:
         return ans("unknown", "exit 3 (gave up)", c, 3)
     if r["rc"] != 0:
@@ -289,10 +309,11 @@ def read_token(r, yes, no):
     tok = r["stdout"].strip().splitlines()[-1].strip() if r["stdout"].strip() else ""
     if tok == "unknown":
         return ans("unknown", "unknown", cmdline(r), r["rc"])
+    nv = {"no_verdict": True} if _answer_with_no_verdict(r) else None
     if tok == yes:
-        return ans("yes", "", cmdline(r), 0)
+        return ans("yes", "no_verdict (#493)" if nv else "", cmdline(r), r["rc"], nv)
     if tok == no:
-        return ans("no", "", cmdline(r), 0)
+        return ans("no", "no_verdict (#493)" if nv else "", cmdline(r), r["rc"], nv)
     return ans("unknown", f"unparsed output {tok[:60]!r}", cmdline(r), r["rc"])
 
 
@@ -304,7 +325,8 @@ def read_explain(r):
     line = r["stdout"].strip().splitlines()[-1] if r["stdout"].strip() else ""
     verdict = line.split(" : ", 1)[1].split()[0] if " : " in line else ""
     if verdict in ("yes", "no"):
-        return ans(verdict, "", cmdline(r), 0)
+        nv = {"no_verdict": True} if _answer_with_no_verdict(r) else None
+        return ans(verdict, "no_verdict (#493)" if nv else "", cmdline(r), r["rc"], nv)
     return ans("unknown", f"unparsed output {line[:60]!r}", cmdline(r), r["rc"])
 
 
@@ -940,6 +962,24 @@ def self_test():
     os.unlink(f.name)
 
     bad = 0
+    # #493: exit 3 + #449's note after a definite answer is that answer with no_verdict;
+    # exit 3 without the note, or `unknown`, stays a give-up.
+    def run(rc, out, err=""):
+        return dict(killed=False, rc=rc, stdout=out, stderr=err, args=["rustdl", "subclass"])
+    note = "warning: ... (NoVerdict). This is likely a reasoner bug; please report the input."
+    a = read_token(run(3, "yes\n", note), "yes", "no")
+    cases.append(("#493 yes + note + rc 3 is yes with no_verdict", (a["v"], no_verdict(a)),
+                  ("yes", True)))
+    a = read_token(run(3, "unknown\n", note), "yes", "no")
+    cases.append(("#493 unknown + note stays unknown", (a["v"], no_verdict(a)), ("unknown", False)))
+    a = read_token(run(3, "no\n", "warning: the instance probe was cut"), "yes", "no")
+    cases.append(("#493 rc 3 without the note stays a give-up", a["v"], "unknown"))
+    a = read_token(run(0, "yes\n"), "yes", "no")
+    cases.append(("#493 a clean yes has no no_verdict", (a["v"], no_verdict(a)), ("yes", False)))
+    a = read_explain(run(3, "A ⊑ B : yes — answered by tableau\n", note))
+    cases.append(("#493 explain yes + note", (a["v"], no_verdict(a)), ("yes", True)))
+    a = read_explain(run(3, "A ⊑ B : unknown — the tableau reached an internal limit\n", note))
+    cases.append(("#493 explain unknown + note stays unknown", a["v"], "unknown"))
     for name, got, want in cases:
         ok = got == want
         bad += not ok

@@ -162,7 +162,10 @@ pub fn materialize_object_property_assertions_reporting<A: horned_owl::model::Fo
     let out = materialize_object_property_assertions_from(&internal)?;
     // #369: a non-empty answer on a KB only the wedge finds inconsistent is vacuous.
     let undetermined = !out.is_empty()
-        && lazy_inconsistency_check_light(&internal, "materialize_object_property_assertions")?;
+        && lazy_inconsistency_check_light(&internal, "materialize_object_property_assertions")?
+            // #493: a likely-bug stall can come only from the light route's opt-in
+            // tail; not reported here (documented in tbox-only-inconsistency-light-route).
+            .undetermined;
     Ok((out, undetermined))
 }
 
@@ -403,7 +406,10 @@ pub fn materialize_data_property_assertions_reporting<A: horned_owl::model::ForI
     out.retain(|(s, ..)| !s.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX));
     // #369: a non-empty answer on a KB only the wedge finds inconsistent is vacuous.
     let undetermined = !out.is_empty()
-        && lazy_inconsistency_check_light(&internal, "materialize_data_property_assertions")?;
+        && lazy_inconsistency_check_light(&internal, "materialize_data_property_assertions")?
+            // #493: a likely-bug stall can come only from the light route's opt-in
+            // tail; not reported here (documented in tbox-only-inconsistency-light-route).
+            .undetermined;
     Ok((out, undetermined))
 }
 
@@ -614,7 +620,10 @@ pub fn materialize_subobjectproperty_axioms_reporting<A: horned_owl::model::ForI
     let pairs = crate::property_closure::object_named_pairs(&edges);
     // #369: a non-empty answer on a KB only the wedge finds inconsistent is vacuous.
     let undetermined = !pairs.is_empty()
-        && lazy_inconsistency_check_light(&internal, "materialize_subobjectproperty_axioms")?;
+        && lazy_inconsistency_check_light(&internal, "materialize_subobjectproperty_axioms")?
+            // #493: a likely-bug stall can come only from the light route's opt-in
+            // tail; not reported here (documented in tbox-only-inconsistency-light-route).
+            .undetermined;
     Ok((pairs, undetermined))
 }
 
@@ -652,7 +661,10 @@ pub fn materialize_subdataproperty_axioms_reporting<A: horned_owl::model::ForIRI
     let pairs = crate::property_closure::data_named_pairs(&edges);
     // #369: as in `materialize_subobjectproperty_axioms`.
     let undetermined = !pairs.is_empty()
-        && lazy_inconsistency_check_light(&internal, "materialize_subdataproperty_axioms")?;
+        && lazy_inconsistency_check_light(&internal, "materialize_subdataproperty_axioms")?
+            // #493: a likely-bug stall can come only from the light route's opt-in
+            // tail; not reported here (documented in tbox-only-inconsistency-light-route).
+            .undetermined;
     Ok((pairs, undetermined))
 }
 
@@ -7772,6 +7784,9 @@ const DEEP_SEARCH_STACK_BYTES: usize = 1024 * 1024 * 1024;
 // `struct_excessive_bools`: each bool is an independent signal of the public
 // query API (#401 added the fourth); they are not states of one machine.
 #[allow(clippy::struct_excessive_bools)]
+// #493: `#[non_exhaustive]`, so a field added later does not break struct literals
+// outside this crate again (only this crate builds it by literal).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QueryStats {
     /// `true` iff the EL saturation closure was sufficient to
@@ -7821,7 +7836,14 @@ pub struct QueryStats {
     /// their plain and `_internal` forms); a KB found inconsistent is
     /// `Err(ReasonError::Inconsistent)` instead. Separate from `incomplete`:
     /// nothing was cut. See [`crate::InstanceFlags::consistency_undetermined`].
+    /// #493: set too when the check's own probe stalled; see `no_verdict`.
     pub consistency_undetermined: bool,
+    /// #493: the #369 lazy check's own probe (the #344 verify or the main-tableau
+    /// tail) ended in `NoVerdict` as an internal limit, likely a reasoner bug
+    /// (#449). The positive answer stands and `consistency_undetermined` is set; the
+    /// CLI adds #449's note and exits 3. Set only where `consistency_undetermined`
+    /// can be (see above).
+    pub no_verdict: bool,
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -8080,9 +8102,12 @@ fn is_class_satisfiable_internal_full(
     // derive a clash, and the lazy check runs after a POSITIVE answer, which is
     // entailed whether or not the KB is consistent. Its wedge `Sat` only rules out
     // that the answer is vacuous; no answer rests on it.
-    stats.consistency_undetermined = !sat
-        && class != QueryClass::Bottom
-        && class_query_lazy_check(&left, "is_class_satisfiable")?;
+    let lazy = LazyCheck::run_if(!sat && class != QueryClass::Bottom, || {
+        class_query_lazy_check(&left, "is_class_satisfiable")
+    })?;
+    stats.consistency_undetermined = lazy.undetermined;
+    // #493: the lazy check's own probe stalled, a likely bug; the answer stands.
+    stats.no_verdict = lazy.no_verdict;
     Ok((sat, stats))
 }
 
@@ -8222,13 +8247,13 @@ pub fn query_guard_abox_budget_rule_ms(predictors: AboxCostPredictors) -> u64 {
 }
 
 /// #428: the #369 lazy check after a positive named class query answer, when
-/// [`class_query_guard_enabled`]. `Ok(true)`: consistency undetermined.
+/// [`class_query_guard_enabled`]. See [`LazyCheck`].
 ///
 /// # Errors
 /// [`ReasonError::Inconsistent`] on a witnessed inconsistency.
-fn class_query_lazy_check(left: &QueryOntology, surface: &str) -> Result<bool, ReasonError> {
+fn class_query_lazy_check(left: &QueryOntology, surface: &str) -> Result<LazyCheck, ReasonError> {
     if !class_query_guard_enabled() {
-        return Ok(false);
+        return Ok(LazyCheck::default());
     }
     let started = std::time::Instant::now();
     let r = left.lazy_inconsistency_check(surface);
@@ -8293,6 +8318,7 @@ pub(crate) fn is_class_satisfiable_keeping(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
+                no_verdict: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8307,6 +8333,7 @@ pub(crate) fn is_class_satisfiable_keeping(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
+                no_verdict: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8322,6 +8349,7 @@ pub(crate) fn is_class_satisfiable_keeping(
             wedge_clauses_refused: refused,
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
+            no_verdict: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -8684,6 +8712,7 @@ fn is_consistent_internal_full(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
+                no_verdict: false,
             },
         ));
     }
@@ -8702,6 +8731,7 @@ fn is_consistent_internal_full(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
+                no_verdict: false,
             },
         ));
     }
@@ -8736,6 +8766,7 @@ fn is_consistent_internal_full(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
+                no_verdict: false,
             },
         ));
     }
@@ -8753,6 +8784,7 @@ fn is_consistent_internal_full(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
+                no_verdict: false,
             },
         ));
     }
@@ -8780,6 +8812,7 @@ fn is_consistent_internal_full(
                     wedge_clauses_refused: refused,
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
+                    no_verdict: false,
                 },
             ));
         }
@@ -8803,6 +8836,7 @@ fn is_consistent_internal_full(
                     wedge_clauses_refused: refused,
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
+                    no_verdict: false,
                 },
             ));
         }
@@ -8822,6 +8856,7 @@ fn is_consistent_internal_full(
                     wedge_clauses_refused: refused,
                     relies_on_trusted_consistency: true,
                     consistency_undetermined: false,
+                    no_verdict: false,
                 },
             ));
         }
@@ -8917,6 +8952,7 @@ fn is_consistent_internal_full(
             wedge_clauses_refused: refused,
             relies_on_trusted_consistency: false,
             consistency_undetermined: false,
+            no_verdict: false,
         },
     ))
 }
@@ -9325,8 +9361,12 @@ fn is_subclass_of_after_guard(
     // #428: as in `is_class_satisfiable_internal_full`. `C ⊑ C`, `C ⊑ ⊤` and
     // `⊥ ⊑ C` hold in every KB, so they are never the vacuous answer.
     let tautology = sub == sup || subsumption_is_tautology(sub, sup);
-    stats.consistency_undetermined =
-        holds && !tautology && class_query_lazy_check(&left, "is_subclass_of")?;
+    let lazy = LazyCheck::run_if(holds && !tautology, || {
+        class_query_lazy_check(&left, "is_subclass_of")
+    })?;
+    stats.consistency_undetermined = lazy.undetermined;
+    // #493: as in `is_class_satisfiable_internal_full`.
+    stats.no_verdict = lazy.no_verdict;
     Ok((holds, stats))
 }
 
@@ -9408,6 +9448,7 @@ pub(crate) fn is_subclass_of_keeping(
         wedge_clauses_refused: 0,
         relies_on_trusted_consistency: false,
         consistency_undetermined: false,
+        no_verdict: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -9463,6 +9504,7 @@ pub(crate) fn is_subclass_of_keeping(
                 wedge_clauses_refused: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
+                no_verdict: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -9485,6 +9527,7 @@ pub(crate) fn is_subclass_of_keeping(
             wedge_clauses_refused: refused,
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
+            no_verdict: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -9633,6 +9676,71 @@ fn lazy_light_oversized(internal: &InternalOntology) -> bool {
     max != 0 && internal.axioms.len() > max
 }
 
+/// #493: what the #369 lazy consistency check leaves open after a positive answer.
+///
+/// `undetermined`: the KB's consistency stayed undetermined, so the answer may be
+/// the vacuous one of an inconsistent KB (each surface's `consistency_undetermined`).
+/// `no_verdict`: one of the check's own probes ended in `NoVerdict` as an internal
+/// limit, likely a reasoner bug (#449): the #344 data-counting verify or the
+/// main-tableau tail stalled (#475). Both probes are budgeted, so a depth cut or a
+/// deadline there is plain `undetermined`. `no_verdict` implies `undetermined`: the
+/// answer itself was decided; only its non-vacuity is open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use]
+pub(crate) struct LazyCheck {
+    pub(crate) undetermined: bool,
+    pub(crate) no_verdict: bool,
+}
+
+impl LazyCheck {
+    /// Run `check` only when `cond` (a positive answer), as every caller does.
+    ///
+    /// # Errors
+    /// As `check`: [`ReasonError::Inconsistent`] only.
+    pub(crate) fn run_if(
+        cond: bool,
+        check: impl FnOnce() -> Result<Self, ReasonError>,
+    ) -> Result<Self, ReasonError> {
+        if cond { check() } else { Ok(Self::default()) }
+    }
+}
+
+/// #493: the lazy check's main-tableau tail, as cached: its verdict (`None`: no
+/// verdict), whether it ended in a likely-bug `NoVerdict`, and whether it hit the
+/// decision-depth cap (the trace's positive instrument for a depth cut).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LazyTail {
+    verdict: Option<bool>,
+    no_verdict: bool,
+    depth_capped: bool,
+}
+
+impl LazyTail {
+    /// Read right after the tail's `decide_consistency`, on its thread (the
+    /// thread-locals describe that probe). A failure other than `NoVerdict` is no
+    /// verdict, as before.
+    fn from_probe(r: &Result<Option<bool>, ReasonError>, deadline: std::time::Instant) -> Self {
+        let depth_capped = last_probe_depth_capped();
+        match r {
+            Ok(verdict) => Self {
+                verdict: *verdict,
+                no_verdict: false,
+                depth_capped,
+            },
+            Err(ReasonError::NoVerdict) => Self {
+                verdict: None,
+                no_verdict: no_verdict_is_a_bug(Some(deadline)),
+                depth_capped,
+            },
+            Err(_) => Self {
+                verdict: None,
+                no_verdict: false,
+                depth_capped: false,
+            },
+        }
+    }
+}
+
 /// #369 follow-up: [`PreparedOntology::lazy_inconsistency_check`] for a query that
 /// holds no prepared ontology (the shortcut answers of `sat-expr` /
 /// `subclass-expr`, `materialize_*`, the property disjointness queries). It runs
@@ -9662,7 +9770,7 @@ fn lazy_light_oversized(internal: &InternalOntology) -> bool {
 pub(crate) fn lazy_inconsistency_check_light(
     internal: &InternalOntology,
     surface: &str,
-) -> Result<bool, ReasonError> {
+) -> Result<LazyCheck, ReasonError> {
     use owl_dl_tableau::hyper::HyperResult;
     let mode = lazy_query_consistency_mode();
     if mode == LazyConsistencyMode::Off
@@ -9671,7 +9779,7 @@ pub(crate) fn lazy_inconsistency_check_light(
             .with(std::cell::Cell::get)
             .is_some()
     {
-        return Ok(false);
+        return Ok(LazyCheck::default());
     }
     let report = mode == LazyConsistencyMode::Report || std::env::var_os("RUSTDL_TRACE").is_some();
     let started = std::time::Instant::now();
@@ -9686,7 +9794,7 @@ pub(crate) fn lazy_inconsistency_check_light(
                 started.elapsed().as_micros()
             );
         }
-        return Ok(false);
+        return Ok(LazyCheck::default());
     }
     // `None`: the wedge turned off (`RUSTDL_WEDGE_CONSISTENCY=0`), or not built
     // because the ontology is over [`lazy_light_max_axioms`]: undetermined.
@@ -9708,28 +9816,42 @@ pub(crate) fn lazy_inconsistency_check_light(
         let tail_deadline =
             std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
         let _full = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
-        Some(
-            PreparedOntology::from_internal(internal.clone())
-                .and_then(|p| p.decide_consistency(Some(tail_deadline)))
-                .unwrap_or(None),
-        )
+        // #493: the flag is read right after the probe; a failed preparation is
+        // plain no verdict.
+        Some(match PreparedOntology::from_internal(internal.clone()) {
+            Ok(p) => {
+                LazyTail::from_probe(&p.decide_consistency(Some(tail_deadline)), tail_deadline)
+            }
+            Err(_) => LazyTail {
+                verdict: None,
+                no_verdict: false,
+                depth_capped: false,
+            },
+        })
     } else {
         None
     };
-    let inconsistent = verdict == Some(HyperResult::Unsat) || tail == Some(Some(false));
-    let undetermined = stalled && tail != Some(Some(true));
+    let tail_verdict = tail.map(|t| t.verdict);
+    let no_verdict = tail.is_some_and(|t| t.no_verdict);
+    let inconsistent = verdict == Some(HyperResult::Unsat) || tail_verdict == Some(Some(false));
+    let undetermined = (stalled && tail_verdict != Some(Some(true))) || no_verdict;
     if report {
         eprintln!(
-            "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail:?} \
+            "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail_verdict:?} \
              inconsistent={inconsistent} us={} route=light has_individuals=true \
-             build_us={build_us} decide_us={decide_us} oversized={oversized}",
-            started.elapsed().as_micros()
+             build_us={build_us} decide_us={decide_us} oversized={oversized} \
+             tail_stalled={no_verdict} tail_depth_capped={} no_verdict={no_verdict}",
+            started.elapsed().as_micros(),
+            tail.is_some_and(|t| t.depth_capped),
         );
     }
     if inconsistent && mode == LazyConsistencyMode::On {
         return Err(ReasonError::Inconsistent);
     }
-    Ok(undetermined)
+    Ok(LazyCheck {
+        undetermined,
+        no_verdict,
+    })
 }
 
 /// #369: while the returned guard lives, the lazy consistency check of the query
@@ -9901,7 +10023,7 @@ impl QueryOntology {
     ///
     /// # Errors
     /// [`ReasonError::Inconsistent`] on a witnessed inconsistency.
-    pub(crate) fn lazy_inconsistency_check(&self, surface: &str) -> Result<bool, ReasonError> {
+    pub(crate) fn lazy_inconsistency_check(&self, surface: &str) -> Result<LazyCheck, ReasonError> {
         match self {
             Self::Unprepared(internal) => lazy_inconsistency_check_light(internal, surface),
             Self::Prepared(prepared) => prepared.lazy_inconsistency_check_bounded(surface),
@@ -10342,10 +10464,17 @@ pub(crate) struct PreparedOntology {
     /// #369: the bounded main-tableau tail of [`Self::lazy_inconsistency_check`],
     /// run at most once, only when the verdict is undetermined and the tail is on
     /// (opt-in with an `ABox`; by default with no individual, #457).
-    lazy_consistency_tail: std::sync::OnceLock<Option<bool>>,
+    /// #493: beside the verdict, whether the probe ended in a likely-bug `NoVerdict`
+    /// (a stalled saturation) and whether it hit the decision-depth cap (trace only).
+    lazy_consistency_tail: std::sync::OnceLock<LazyTail>,
     /// #369: the lazy check's own verdict, settled under
-    /// [`lazy_query_consistency_ms`] when the query left none.
-    lazy_query_consistency: std::sync::OnceLock<QueryConsistency>,
+    /// [`lazy_query_consistency_ms`] when the query left none. #493: with whether
+    /// the settle's #344 verify stalled (its `Err(NoVerdict)`, a stall by construction).
+    lazy_query_consistency: std::sync::OnceLock<(QueryConsistency, bool)>,
+    /// #493: [`Self::query_consistency`] does not cache its `Err`; the lazy check
+    /// records here that it was the #344 verify's stall, so a second lazy check
+    /// reports it without re-running the probe.
+    query_consistency_stalled: std::sync::OnceLock<()>,
     /// EL saturator closure over the un-mutated input ontology.
     /// Used by [`abox_check`] (P1 `is_unsatisfiable`, P2 `subsumers_of`).
     /// Computed once at build time; classify already computes the same
@@ -11126,6 +11255,7 @@ impl PreparedOntology {
             query_consistency: std::sync::OnceLock::new(),
             lazy_consistency_tail: std::sync::OnceLock::new(),
             lazy_query_consistency: std::sync::OnceLock::new(),
+            query_consistency_stalled: std::sync::OnceLock::new(),
             closure,
             told,
             axioms,
@@ -11479,17 +11609,20 @@ impl PreparedOntology {
     /// `same_individuals` / `different_individuals` run the check only for a
     /// probe answer, not for a told or saturation-derived pair.
     ///
-    /// Returns `Ok(true)` when consistency stayed UNDETERMINED (the wedge
-    /// stalled or was cut and the tail is off, cut or failed; with no seed, the
-    /// tail ran and was cut or failed), which the
-    /// surfaces report as `consistency_undetermined`: the positive answer may be
-    /// the vacuous one of an inconsistent KB. `Ok(false)` when the KB is
-    /// consistent at the query surfaces' trust level, or the check did not run.
+    /// Returns [`LazyCheck`]. `undetermined` when consistency stayed UNDETERMINED
+    /// (the wedge stalled or was cut and the tail is off, cut or failed; with no
+    /// seed, the tail ran and was cut or failed), which the surfaces report as
+    /// `consistency_undetermined`: the positive answer may be the vacuous one of an
+    /// inconsistent KB. Neither flag when the KB is consistent at the query
+    /// surfaces' trust level, or the check did not run. #493: `no_verdict` (with
+    /// `undetermined`) when the #344 verify or the tail stalled, a likely bug; the
+    /// surfaces OR it into their `no_verdict`. A verify stall skips the tail (the
+    /// same probe would stall again).
     ///
     /// # Errors
     /// [`ReasonError::Inconsistent`] as above, and nothing else: a route that
     /// fails while settling the verdict counts as no verdict.
-    pub(crate) fn lazy_inconsistency_check(&self, surface: &str) -> Result<bool, ReasonError> {
+    pub(crate) fn lazy_inconsistency_check(&self, surface: &str) -> Result<LazyCheck, ReasonError> {
         self.lazy_inconsistency_check_with(surface, None)
     }
 
@@ -11504,7 +11637,7 @@ impl PreparedOntology {
     pub(crate) fn lazy_inconsistency_check_bounded(
         &self,
         surface: &str,
-    ) -> Result<bool, ReasonError> {
+    ) -> Result<LazyCheck, ReasonError> {
         self.lazy_inconsistency_check_with(surface, Some(lazy_query_consistency_ms()))
     }
 
@@ -11515,12 +11648,12 @@ impl PreparedOntology {
         &self,
         surface: &str,
         wedge_ms: Option<u64>,
-    ) -> Result<bool, ReasonError> {
+    ) -> Result<LazyCheck, ReasonError> {
         let mode = lazy_query_consistency_mode();
         if mode == LazyConsistencyMode::Off
             || SKIP_LAZY_QUERY_CONSISTENCY.with(std::cell::Cell::get)
         {
-            return Ok(false);
+            return Ok(LazyCheck::default());
         }
         let started = std::time::Instant::now();
         let inherited = INHERITED_QUERY_CONSISTENCY
@@ -11531,21 +11664,28 @@ impl PreparedOntology {
         // The verdict the query already settled (or a lent one) is free; otherwise
         // settle it under the lazy check's own, shorter budget, cached apart from
         // #401's so a short-budget "undetermined" never reaches the single queries.
-        let verdict = match wedge_ms {
-            None => self
-                .query_consistency()
-                .unwrap_or(QueryConsistency::Undetermined),
+        // #493: the settle's `Err(NoVerdict)` can only be the #344 verify's stall
+        // (`verify_wedge_sat` passes nothing else on), so it is read from the `Err`,
+        // never from the thread-local (a cached verdict runs no probe).
+        let (verdict, settle_stalled) = match wedge_ms {
+            None => self.query_consistency_for_lazy_check(),
             Some(ms) => match INHERITED_QUERY_CONSISTENCY
                 .with(std::cell::Cell::get)
                 .or_else(|| self.query_consistency.get().copied())
             {
-                Some(v) => v,
+                Some(v) => (v, false),
                 None => *self.lazy_query_consistency.get_or_init(|| {
                     // `RUSTDL_QUERY_LAZY_CONSISTENCY_MS=0` is unbounded.
                     let deadline = (ms > 0)
                         .then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms));
-                    self.settle_query_consistency(deadline)
-                        .unwrap_or(QueryConsistency::Undetermined)
+                    match self.settle_query_consistency(deadline) {
+                        Ok(v) => (v, false),
+                        Err(ReasonError::NoVerdict) => {
+                            debug_assert!(last_probe_stalled(), "#344 verify passes only a stall");
+                            (QueryConsistency::Undetermined, true)
+                        }
+                        Err(_) => (QueryConsistency::Undetermined, false),
+                    }
                 }),
             },
         };
@@ -11556,40 +11696,73 @@ impl PreparedOntology {
         // #457: on such a KB the query already paid for this prepared ontology, so
         // the bounded main-tableau tail runs by default ([`query_no_seed_tail_enabled`]);
         // with an `ABox` it stays opt-in ([`lazy_query_consistency_tail_enabled`]).
+        // #493: not after the #344 verify stalled: the tail is the same
+        // `decide_consistency` probe and would stall again.
         let tail = if verdict == QueryConsistency::Undetermined
             && !inherited
+            && !settle_stalled
             && (lazy_query_consistency_tail_enabled() || (no_seed && query_no_seed_tail_enabled()))
         {
             Some(*self.lazy_consistency_tail.get_or_init(|| {
                 let deadline = std::time::Instant::now()
                     + std::time::Duration::from_millis(consistency_fallback_ms());
                 let _full = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
-                self.decide_consistency(Some(deadline)).unwrap_or(None)
+                LazyTail::from_probe(&self.decide_consistency(Some(deadline)), deadline)
             }))
         } else {
             None
         };
-        let inconsistent = verdict == QueryConsistency::Inconsistent || tail == Some(Some(false));
+        let tail_verdict = tail.map(|t| t.verdict);
+        let inconsistent =
+            verdict == QueryConsistency::Inconsistent || tail_verdict == Some(Some(false));
+        let no_verdict = settle_stalled || tail.is_some_and(|t| t.no_verdict);
         // With no seed and no tail, not flagged, as on the light route (the KB's
         // consistency was never checked; #457 documents that gap). A tail that ran
-        // and did not decide is undetermined, seed or not.
-        let undetermined = verdict == QueryConsistency::Undetermined
+        // and did not decide is undetermined, seed or not. #493: a likely-bug stall
+        // is a consistency give-up, so it is undetermined too.
+        let undetermined = (verdict == QueryConsistency::Undetermined
             && (!no_seed || tail.is_some())
-            && tail != Some(Some(true));
+            && tail_verdict != Some(Some(true)))
+            || no_verdict;
         if mode == LazyConsistencyMode::Report || std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!(
-                "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail:?} \
+                "lazy consistency (#369): surface={surface} verdict={verdict:?} tail={tail_verdict:?} \
                  inconsistent={inconsistent} us={} route=prepared has_individuals={} \
-                 no_seed_tail={}",
+                 no_seed_tail={} settle_stalled={settle_stalled} tail_stalled={} \
+                 tail_depth_capped={} no_verdict={no_verdict}",
                 started.elapsed().as_micros(),
-                self.consistency.is_some(),
-                no_seed && query_no_seed_tail_enabled()
+                !self.abox.individuals.is_empty(),
+                no_seed && query_no_seed_tail_enabled(),
+                tail.is_some_and(|t| t.no_verdict),
+                tail.is_some_and(|t| t.depth_capped),
             );
         }
         if inconsistent && mode == LazyConsistencyMode::On {
             return Err(ReasonError::Inconsistent);
         }
-        Ok(undetermined)
+        Ok(LazyCheck {
+            undetermined,
+            no_verdict,
+        })
+    }
+
+    /// #493: [`Self::query_consistency`] for the lazy check: its `Err(NoVerdict)` (the
+    /// #344 verify's stall, the only `NoVerdict` it passes on) is undetermined plus the
+    /// flag, recorded so a later lazy check on this prepared ontology reports it
+    /// without re-running the probe. Any other error is plain undetermined, as before.
+    fn query_consistency_for_lazy_check(&self) -> (QueryConsistency, bool) {
+        if self.query_consistency_stalled.get().is_some() {
+            return (QueryConsistency::Undetermined, true);
+        }
+        match self.query_consistency() {
+            Ok(v) => (v, false),
+            Err(ReasonError::NoVerdict) => {
+                debug_assert!(last_probe_stalled(), "#344 verify passes only a stall");
+                let _ = self.query_consistency_stalled.set(());
+                (QueryConsistency::Undetermined, true)
+            }
+            Err(_) => (QueryConsistency::Undetermined, false),
+        }
     }
 
     /// #401: [`Self::decide_raw`] for the single queries, dropping the `ABox`
@@ -13374,8 +13547,94 @@ mod tests {
                 prepared.lazy_inconsistency_check_bounded("test"),
                 Err(ReasonError::Inconsistent)
             ));
-            assert_eq!(prepared.lazy_consistency_tail.get(), Some(&Some(false)));
+            let tail = prepared.lazy_consistency_tail.get().expect("the tail ran");
+            assert_eq!(tail.verdict, Some(false));
+            assert!(!tail.no_verdict, "#493: a decided tail is no stall");
         }
+    }
+
+    /// #493: a `TBox`-only prepared ontology (no seed, so the bounded lazy check settles
+    /// undetermined and the no-seed tail is in play).
+    fn lazy_no_seed_prepared() -> PreparedOntology {
+        let internal = parse_internal_lib(
+            "Prefix(:=<http://x.org/l#>)\nOntology(<http://x.org/l>\n\
+             Declaration(Class(:A)) Declaration(Class(:B))\nSubClassOf(:A :B)\n)\n",
+        );
+        assert!(
+            !internal_has_individuals(&internal),
+            "precondition: no seed"
+        );
+        PreparedOntology::from_internal(internal).expect("prepares")
+    }
+
+    /// #493: each lazy-check cache keeps the likely-bug flag, so a second check on the
+    /// same prepared ontology reports it without re-running the probe. The caches are
+    /// seeded directly: the stall knob is read once per process, so a unit test cannot
+    /// force one (the CLI tests in `noverdict_cli.rs` drive the real stalls).
+    #[test]
+    fn the_lazy_check_caches_keep_the_no_verdict_flag() {
+        // The tail's cache (the bounded arm reaches the no-seed tail).
+        let p = lazy_no_seed_prepared();
+        assert!(
+            p.lazy_consistency_tail
+                .set(LazyTail {
+                    verdict: None,
+                    no_verdict: true,
+                    depth_capped: false,
+                })
+                .is_ok()
+        );
+        for call in 0..2 {
+            let c = p
+                .lazy_inconsistency_check_bounded("test")
+                .expect("no inconsistency");
+            assert!(
+                c.no_verdict && c.undetermined,
+                "tail cache, call {call}: {c:?}"
+            );
+        }
+        // The unbounded arm's verify-stall marker: the tail is skipped after it.
+        let p = lazy_no_seed_prepared();
+        assert!(p.query_consistency_stalled.set(()).is_ok());
+        for call in 0..2 {
+            let c = p
+                .lazy_inconsistency_check("test")
+                .expect("no inconsistency");
+            assert!(
+                c.no_verdict && c.undetermined,
+                "settle marker, call {call}: {c:?}"
+            );
+            assert!(
+                p.lazy_consistency_tail.get().is_none(),
+                "no tail after a verify stall"
+            );
+        }
+        // The bounded arm's settle cache.
+        let p = lazy_no_seed_prepared();
+        assert!(
+            p.lazy_query_consistency
+                .set((QueryConsistency::Undetermined, true))
+                .is_ok()
+        );
+        for call in 0..2 {
+            let c = p
+                .lazy_inconsistency_check_bounded("test")
+                .expect("no inconsistency");
+            assert!(
+                c.no_verdict && c.undetermined,
+                "settle cache, call {call}: {c:?}"
+            );
+            assert!(
+                p.lazy_consistency_tail.get().is_none(),
+                "no tail after a verify stall"
+            );
+        }
+        // Control: nothing seeded, a decided tail, no flag.
+        let p = lazy_no_seed_prepared();
+        let c = p
+            .lazy_inconsistency_check_bounded("test")
+            .expect("no inconsistency");
+        assert!(!c.no_verdict, "control: {c:?}");
     }
 
     fn classify_cache(body: &str) -> (HyperCache, u32, u32) {

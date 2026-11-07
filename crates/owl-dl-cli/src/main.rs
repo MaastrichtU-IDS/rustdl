@@ -1137,7 +1137,8 @@ fn warn_consistency_undetermined(command: &str, undetermined: bool) {
              `rustdl consistent` decides it directly, but can take much longer (on a KB \
              with no individual it runs the main tableau with no deadline). On a KB with \
              individuals, RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1 also runs a bounded \
-             main-tableau check."
+             main-tableau check. If that check's own probe stalled, a \"likely a reasoner \
+             bug\" note follows (#493)."
         );
     }
 }
@@ -2219,6 +2220,8 @@ fn run() -> Result<()> {
             }
             println!("{}", if verdict { "sat" } else { "unsat" });
             warn_consistency_undetermined("sat", stats.consistency_undetermined);
+            // #493: the lazy check's own probe stalled (a likely bug); the answer stands.
+            exit_if_no_verdict(stats.no_verdict);
         }
         Command::Subclass {
             file,
@@ -2228,9 +2231,12 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
-            let verdict = if saturation_only {
-                is_subclass_of_saturation_only(&onto, &sub, &sup)
-                    .context("is_subclass_of_saturation_only")?
+            let (verdict, no_verdict) = if saturation_only {
+                (
+                    is_subclass_of_saturation_only(&onto, &sub, &sup)
+                        .context("is_subclass_of_saturation_only")?,
+                    false,
+                )
             } else {
                 let _cap = owl_dl_reasoner::single_query_node_cap();
                 let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
@@ -2250,9 +2256,11 @@ fn run() -> Result<()> {
                     note_trusted_consistency(&stats);
                 }
                 warn_consistency_undetermined("subclass", stats.consistency_undetermined);
-                verdict
+                (verdict, stats.no_verdict)
             };
             println!("{}", if verdict { "yes" } else { "no" });
+            // #493: as `sat`.
+            exit_if_no_verdict(no_verdict);
         }
         Command::Classify {
             file,
@@ -2289,6 +2297,7 @@ fn run() -> Result<()> {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
             let mut undetermined = false;
+            let mut instance_no_verdict = false;
             let verdict = if saturation_only {
                 is_instance_of_saturation_only(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_saturation_only")?
@@ -2306,10 +2315,14 @@ fn run() -> Result<()> {
                     exit_unknown_probe_cut();
                 }
                 undetermined = flags.consistency_undetermined;
+                instance_no_verdict = flags.no_verdict;
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
             warn_consistency_undetermined("instance", undetermined);
+            // #493: a "yes" whose lazy check's own probe stalled (a likely bug): the
+            // answer stands, then #449's note, exit 3. (A likely-bug "no" exited above.)
+            exit_if_no_verdict(instance_no_verdict);
         }
         Command::Instances {
             file,
@@ -2572,6 +2585,8 @@ fn run() -> Result<()> {
                 answer = if verdict { "yes" } else { "no" },
             );
             warn_consistency_undetermined("explain", stats.consistency_undetermined);
+            // #493: as `sat`.
+            exit_if_no_verdict(stats.no_verdict);
         }
         Command::Justify {
             file,

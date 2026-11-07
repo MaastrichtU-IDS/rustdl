@@ -31,7 +31,9 @@ notes/plans/2026-11-03-363-package-e-stateful.md (v2). Laws:
       whose saturation stalled, budgeted or not. Then the CLI prints #449's note and exits 3.
       Forced routes run with RUSTDL_TABLEAU_SATURATE_ITERS=1 (a deterministic stall).
       R6.1 every `nv_*` / `cons` route prints its command's JSON (never a bare `unknown`).
-      R6.2 field set <=> note on stderr; field set => exit 3 and `incomplete`.
+      R6.2 field set <=> note on stderr; field set => exit 3 and `incomplete` (#493: or
+           `consistency_undetermined`, on a query route whose #369 lazy check stalled
+           after a positive answer: the answer was decided, its non-vacuity is open).
       R6.3 under the forced stall a budgeted probe reports the stall too (#493: also
            `nv_realize` iff `nv_realize_free`, `nv_iexpr` iff `nv_iexpr_free`; R6.1 and
            R6.2 cover those four routes too; the known exception, here and for
@@ -228,7 +230,8 @@ def run_route(binary, route, path, classes):
         io = {"rc": p.returncode, "note": NOTE in p.stderr}
         try:
             j = json.loads(p.stdout)
-            ans = {"no_verdict": j["no_verdict"], "incomplete": j["incomplete"]}
+            ans = {"no_verdict": j["no_verdict"], "incomplete": j["incomplete"],
+                   "consistency_undetermined": j.get("consistency_undetermined", False)}
         except (json.JSONDecodeError, KeyError, TypeError):
             return {"status": "fail", **io, "stdout_head": p.stdout[:80],
                     "stderr": p.stderr[-300:]}
@@ -548,6 +551,10 @@ def evaluate(rec, oans, classes, text_of_case, warm=None):
         a = rr["answer"]
         if name in NV_QUERY:
             field, incomplete = bool(a["no_verdict"]), bool(a["incomplete"])
+            # #493: a stall of the #369 lazy check's own probe (after a positive answer)
+            # sets the field with `consistency_undetermined`, not `incomplete`: the
+            # answer was decided. Either give-up slot satisfies R6.2.
+            incomplete = incomplete or bool(a.get("consistency_undetermined"))
             budgeted = name in NV_QUERY_TWIN
         elif name in CONS:
             field, incomplete = bool(a["no_verdict"]), bool(a["incomplete"])
@@ -897,6 +904,16 @@ def self_test():
     ok("R6.3 instances-expr: twins agree on no stall",
        {x for x in r6({"nv_iexpr_free": q(False, False, rc=0), "nv_iexpr": q(False, False, rc=0)})
         if x[0] == "R6.3"}, {("R6.3", "ok")})
+    ok("R6.2 instances-expr: the lazy check's stall sets consistency_undetermined (#493)",
+       r6({"nv_iexpr": {"status": "ok", "rc": 3, "note": True,
+                        "answer": {"no_verdict": True, "incomplete": False,
+                                   "consistency_undetermined": True}}}),
+       {("R6.1", "ok"), ("R6.2", "ok")})
+    ok("R6.2 instances-expr: the field with neither give-up slot",
+       r6({"nv_iexpr": {"status": "ok", "rc": 3, "note": True,
+                        "answer": {"no_verdict": True, "incomplete": False,
+                                   "consistency_undetermined": False}}}),
+       {("R6.1", "ok"), ("R6.2", "violation")})
     ok("R6 instances-expr skipped on a case with no class",
        r6({"nv_iexpr": {"status": "skip"}}), set())
     ok("R6.3 a decided consistent never sets the field",

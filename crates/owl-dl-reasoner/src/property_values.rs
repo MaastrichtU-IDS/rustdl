@@ -521,13 +521,15 @@ pub fn inferred_object_property_values<A: ForIRI>(
     triples.dedup();
     // #369: a non-empty answer (seed or probe) on a KB only the wedge finds
     // inconsistent is vacuous.
-    let consistency_undetermined = !triples.is_empty()
-        && prepared.lazy_inconsistency_check_bounded("object_property_values")?;
+    let lazy = crate::LazyCheck::run_if(!triples.is_empty(), || {
+        prepared.lazy_inconsistency_check_bounded("object_property_values")
+    })?;
     Ok(ObjectPropertyValues {
         triples,
         incomplete,
-        consistency_undetermined,
-        no_verdict,
+        consistency_undetermined: lazy.undetermined,
+        // #493: OR the lazy check's own stall.
+        no_verdict: no_verdict || lazy.no_verdict,
     })
 }
 

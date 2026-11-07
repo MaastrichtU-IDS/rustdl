@@ -228,7 +228,10 @@ All notable changes to rustdl are documented here. Format is based on
 - **Per-query `sat` / `sat-expr` / `subclass` / `explain` no longer give a false `unsat` or a
   false subsumption from a nominal merge (#498).** On `c5e.ofn` and `q5.ofn` (12 and 11 axioms:
   nominals, `∀r.{a}`, two unions), `sat E` answered `unsat` and `subclass E Zb` answered `yes`.
-  `consistent` with `RUSTDL_WEDGE_CONSISTENCY=0` answered `inconsistent`. HermiT and Konclude both
+  `consistent` with `RUSTDL_WEDGE_CONSISTENCY=0` answered `inconsistent`. `individuals` reported
+  five non-entailed different pairs (and all five individuals in one same-group), and
+  `sat-expr "{m} and {p}"` (and `m`/`q`, `p`/`q`) said unsatisfiable (found by the assurance
+  census). HermiT and Konclude both
   find the ontologies consistent, with `E` satisfiable and under `owl:Thing` only. `classify` and
   default `consistent` were right, with and without `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1` and at
   a 200 ms or 5 s pair budget. So neither the classify net nor the per-pair FP gate (which
@@ -252,7 +255,8 @@ All notable changes to rustdl are documented here. Format is based on
     reading the dead node's label dropped that merge's deps, the same defect by another route.
   - Tests: four unit pins in `owl-dl-tableau`, one per change, each red under its own
     sabotage; and `tests/nominal_assignment_deps.rs` (c5e, q5 and #490's 9-axiom wine
-    reduction, the wedge on and off, the guard on and off). Reverting the snapshot change turns
+    reduction; `sat`, `subclass`, `consistent`, `individuals` and nominal `sat-expr`; the
+    wedge on and off, the guard on and off; all red with main's `rules.rs`). Reverting the snapshot change turns
     q5 red end to end; reverting the refused-merge change is caught by its unit pin (the
     fresh read's fallback then masks c5e).
   - Evidence (main 5e069d48 vs the fix on it, f108a18b):

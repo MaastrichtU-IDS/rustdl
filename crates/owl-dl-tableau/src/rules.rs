@@ -885,6 +885,18 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     if crate::nominal_first_enabled() && ctx.has_pending_nominal_disjunction(node) {
         return RuleOutcome::NoChange;
     }
+    #[cfg(feature = "counters")]
+    {
+        // #490 lever B4 (counted only): this check runs before `apply_min` knows
+        // whether the node has an object `≥` to apply.
+        crate::bump_counter!(ctx, apply_min_overfull_check);
+        let has_min = ctx.graph().node(node).labels().iter().any(|&c| {
+            matches!(ctx.pool().get(c), ConceptExpr::Min(_, _, b) if ctx.dkey_range_of(*b).is_none())
+        });
+        if !has_min {
+            crate::bump_counter!(ctx, apply_min_overfull_check_no_min);
+        }
+    }
     if ctx.defer_generation_at_overfull_nominal(node) {
         ctx.note_blocked_skip(node);
         return RuleOutcome::NoChange;

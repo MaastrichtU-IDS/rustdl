@@ -2636,6 +2636,47 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `DepSet`s (a sound superset for backjumping) when the constraints are
     /// unsatisfiable, else `None`. Empty `dkey_ranges` ⇒ instant `None`.
     fn concrete_domain_clash(&self, node: NodeId) -> Option<crate::graph::DepSet> {
+        if self.dkey_ranges.is_empty() {
+            return None;
+        }
+        // #490 lever B1: only a data DEMAND can clash. `card_sat` is `Unsat` only
+        // with a positive demand, and the collection below takes demands only from
+        // an `∃r.F` / `≥k r.F` label with `r` named and `F` a registered data range
+        // (role-rule universals and #349 lifting add filters, or copy demands that
+        // exist). So without such a label the collection returns `None`: skip it.
+        // On wine almost every node has an object `∃` (which passes the collection's
+        // own early return) and no data demand.
+        if !self.has_data_demand(node) {
+            crate::bump_counter!(self, cd_clash_skipped);
+            debug_assert!(
+                self.concrete_domain_clash_collect(node).is_none(),
+                "#490 B1: the data-demand pre-filter skipped a clashing node"
+            );
+            return None;
+        }
+        crate::bump_counter!(self, cd_clash_full);
+        self.concrete_domain_clash_collect(node)
+    }
+
+    /// Whether `node` carries a data demand: an `∃r.F` or `≥k r.F` label (any `k`)
+    /// with `r` named and `F` a registered data range. The pre-filter of
+    /// [`Self::concrete_domain_clash`] (#490 lever B1).
+    fn has_data_demand(&self, node: NodeId) -> bool {
+        self.graph
+            .node(node)
+            .labels()
+            .iter()
+            .any(|&c| match self.pool.get(c) {
+                ConceptExpr::Some(Role::Named(_), f) | ConceptExpr::Min(_, Role::Named(_), f) => {
+                    self.dkey_range_of(*f).is_some()
+                }
+                _ => false,
+            })
+    }
+
+    /// The full concrete-domain collection and check behind
+    /// [`Self::concrete_domain_clash`].
+    fn concrete_domain_clash_collect(&self, node: NodeId) -> Option<crate::graph::DepSet> {
         use owl_dl_datatypes::{
             Card, CardRange, CardSat, DateKey, DateTimeKey, Decimal, DenseInterval, FiniteSet,
             IntInterval, IntUnion, OrdF64, ValueRange, card_sat, integer_sat,
@@ -5526,6 +5567,81 @@ mod tests {
         assert_eq!(result, SaturationResult::Stable);
         assert!(ctx.graph().node(x).has_label(b));
         assert!(ctx.graph().node(y).has_label(b));
+    }
+
+    /// #490 lever B1: the data-demand pre-filter of `concrete_domain_clash` gives
+    /// the full check's answer on every shape: a clash needs an `∃` / `≥` with a
+    /// data-range filler. `K1` is the integer 1, `K2` the integer 2.
+    #[test]
+    fn data_demand_prefilter_matches_the_full_check() {
+        let mut pool = ConceptPool::new();
+        let p = Role::Named(RoleId::new(1));
+        let r = Role::Named(RoleId::new(0));
+        let (k1, k2, c, ks) = (
+            pool.atomic(ClassId::new(1)),
+            pool.atomic(ClassId::new(2)),
+            pool.atomic(ClassId::new(3)),
+            pool.atomic(ClassId::new(4)),
+        );
+        let some_k1 = pool.some(p, k1);
+        let all_k2 = pool.all(p, k2);
+        let all_k1 = pool.all(p, k1);
+        let at_least_two_k1 = pool.min(2, p, k1);
+        let at_most_zero_k1 = pool.max(0, p, k1);
+        let some_r_c = pool.some(r, c);
+        // a string-valued data range: {"a"} (not an integer interval)
+        let at_least_two_ks = pool.min(2, p, ks);
+        let one = |v: i64| {
+            owl_dl_datatypes::CardRange::Int(owl_dl_datatypes::IntInterval {
+                min: Some(v),
+                max: Some(v),
+            })
+        };
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_dkey_ranges(HashMap::from([
+            (ClassId::new(1), one(1)),
+            (ClassId::new(2), one(2)),
+            (
+                ClassId::new(4),
+                owl_dl_datatypes::CardRange::Str(owl_dl_datatypes::FiniteSet::Set(
+                    std::collections::BTreeSet::from(["a".to_string()]),
+                )),
+            ),
+        ]));
+        let node = |ctx: &mut TableauContext<'_, '_, '_>, labels: &[ConceptId]| {
+            let n = ctx.new_node();
+            for &l in labels {
+                ctx.add_label(n, l);
+            }
+            n
+        };
+        // (label set, a clash expected)
+        let cases: [(&[ConceptId], bool); 8] = [
+            (&[some_k1, all_k2], true),          // ∃ demand outside the ∀ filter
+            (&[at_least_two_k1], true),          // a ≥-only demand: 2 values in {1}
+            (&[some_k1, at_most_zero_k1], true), // a demand under a ≤0 limit
+            (&[at_least_two_ks], true),          // 2 strings in {"a"}: not an integer range
+            (&[some_k1, all_k1], false),         // a satisfiable demand
+            (&[all_k2, at_most_zero_k1], false), // data ∀ / ≤ with no demand
+            (&[some_r_c, all_k2], false),        // an object ∃ only
+            (&[], false),                        // no constraint at all
+        ];
+        for (labels, clash) in cases {
+            let n = node(&mut ctx, labels);
+            let full = ctx.concrete_domain_clash_collect(n);
+            assert_eq!(full.is_some(), clash, "the full check on {labels:?}");
+            assert_eq!(
+                ctx.concrete_domain_clash(n),
+                full,
+                "the pre-filter on {labels:?}"
+            );
+            assert_eq!(
+                ctx.has_data_demand(n),
+                labels
+                    .iter()
+                    .any(|&l| l == some_k1 || l == at_least_two_k1 || l == at_least_two_ks)
+            );
+        }
     }
 }
 

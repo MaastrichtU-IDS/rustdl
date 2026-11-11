@@ -13,9 +13,10 @@
 //! Either way a clash back-jumped past a decision whose other option is a model. Both
 //! fixtures are consistent, with `E` satisfiable and under `owl:Thing` only (`HermiT` and
 //! Konclude); a model is `q ∈ E`, `p –r→ b`, `b = a`, `a ∈ Z`, `m ∈ Nz`. `classify`
-//! and default `consistent` were right, because the wedge or a per-pair budget decides
-//! first; the per-query commands, and `consistent` with the consistency wedge off,
-//! were not. `min9.ofn` (wine reduced to 9 axioms, #490) is consistent and pins the
+//! and default `consistent` were right with the wedge on, because the wedge or a
+//! per-pair budget decides first; the per-query commands, `consistent` with the
+//! consistency wedge off, and `classify` with the wedge off (the whole ontology
+//! inconsistent) were not. `min9.ofn` (wine reduced to 9 axioms, #490) is consistent and pins the
 //! same loop for #490's precise refused-merge `⊥`.
 //!
 //! These fixtures depend on label and node order (which `{…}` the loop visits first,
@@ -23,12 +24,13 @@
 //! (`nominal_merge_reads_label_deps_after_an_earlier_merge`,
 //! `refused_nominal_merge_leaves_the_node_in_place`,
 //! `nominal_merge_without_the_label_takes_every_active_decision`) are the primary
-//! guards. Each case runs with the wedge on and off and with the guard on and off (the
+//! guards (four: the three above and
+//! `nominal_assignment_on_a_merged_away_node_reads_the_representative`). Each case runs with the wedge on and off and with the guard on and off (the
 //! guard-off arms were right before the fix and must stay right).
 //!
 //! The same merges fed two more surfaces (found by the assurance census, both
-//! oracles): `individuals` reported `b≠p`, `b≠q`, `m≠p`, `m≠q`, `p≠q` as different
-//! (main also put all five in one same-group), and `sat-expr "{m} and {p}"` (and
+//! oracles): `individuals` reported non-entailed different pairs (five on c5e,
+//! seven on q5; main also put all five in one same-group), and `sat-expr "{m} and {p}"` (and
 //! `m`/`q`, `p`/`q`) said unsatisfiable. Only `a≠m` and `b≠m` are entailed, and
 //! `a = b` is (`p` holds `∀r.{a}` and `∃r.{b}`).
 
@@ -40,8 +42,8 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::{Build, ClassExpression, Individual, RcStr};
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
-    class_expression_satisfiable, different_individuals, is_class_satisfiable, is_consistent,
-    is_subclass_of, same_individuals,
+    class_expression_satisfiable, classify_top_down_with_timeout, different_individuals,
+    is_class_satisfiable, is_consistent, is_subclass_of, same_individuals,
 };
 
 static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -222,6 +224,26 @@ fn individuals_reports_only_entailed_identities() {
                     "{name}: same-group {group:?} is not entailed; only a = b is ({arm})"
                 );
             }
+        });
+    }
+}
+
+#[test]
+fn classify_finds_every_class_satisfiable() {
+    for (name, src) in [("c5e", C5E), ("q5", Q5)] {
+        each_arm(|arm| {
+            let unsat = within(60, &format!("{name} classify ({arm})"), move || {
+                let c = classify_top_down_with_timeout(&parse(src), Duration::from_secs(5))
+                    .expect("classify");
+                c.unsatisfiable_classes()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            });
+            assert!(
+                unsat.is_empty(),
+                "{name}: classify reports {unsat:?} unsatisfiable; every class has a model ({arm})"
+            );
         });
     }
 }

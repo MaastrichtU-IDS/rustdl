@@ -7,6 +7,20 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **The per-query gate has a wine arm (#490).** Before #490, every per-query call on wine ran
+  past the cap. `per_query_answers_on_wine_finish_and_match_both_oracles` (ignored, ~2
+  core-hours) runs `sat` on all 137 classes and `subclass` + `explain` on 50 seeded pairs both
+  oracles refute (237 calls), under a 60 CPU-s cap. Unlike the other arms, a give-up fails it, as
+  do a wrong answer and an error.
+  - On main 0a87ebc3: 237 calls, 0 FP, 0 MISS, 0 give-ups, 0 errors; 7,241 CPU-s in all, about
+    30 s per call.
+  - Sabotage: with `RUSTDL_MERGE_EXACT_DEPS=0`, `sat` on `Zinfandel` hits the cap and the arm
+    goes red.
+  - `RUSTDL_PQ_GATE_ONLY=<substring>` keeps only the wine calls whose description contains it,
+    for a cheap sabotage or a recheck.
+  - Each call now carries its own CPU cap; the wall backstop is four times the cap, at least
+    120 s. The refuted-pair sampler is shared; the pizza / ro / sulo calls are unchanged (2,095
+    / 690 / 221).
 - **A per-query arm for the false-positive gate (#505).** `per_pair_fp_gate.rs` reaches the
   per-pair surface only through `classify` with `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1`. The
   commands take another route (no per-pair deadline, the per-query consistency step, the seeded
@@ -19,8 +33,8 @@ All notable changes to rustdl are documented here. Format is based on
     calls red; `RUSTDL_MAX_CHOICE_POINT=0 RUSTDL_MAX_TRIAL_MERGE=0` turns the #76 pair red.
   - Ignored, on pizza v2, ro and sulo: `sat` on every class, and `subclass` + `explain` on every
     pair both oracles entail and an equal seeded sample of pairs both refute (3,006 calls, a few
-    minutes of wall time on 8 cores). On main b3c0f7f6: 0 FP, 0 MISS, 0 give-ups. Wine is left out until #490:
-    every per-query `sat` on it runs past the cap.
+    minutes of wall time on 8 cores). On main b3c0f7f6: 0 FP, 0 MISS, 0 give-ups. Wine has
+    its own arm since #490 (above).
   - `scripts/hermit-oracle.sh` generates the HermiT oracles (`ontologies/real/hermit/`).
 - **The #369 lazy consistency check reports a stall of its own probe as #462's signal (#493,
   part 2).** After a positive answer the query surfaces check that the KB is consistent. Two of

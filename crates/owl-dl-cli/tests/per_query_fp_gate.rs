@@ -25,9 +25,13 @@
 //!   unsatisfiable, which are trivially `yes`). Pairs the oracles disagree on are
 //!   skipped. Fixtures: pizza v2, ro and sulo, from `ontologies/real/`, with Konclude's
 //!   `konclude-input/<f>-classified.owx` (`scripts/konclude-oracle.sh`) and HermiT's
-//!   `hermit/<f>-classified.ofn` (`scripts/hermit-oracle.sh`). Wine is left out: every
-//!   per-query `sat` on it runs past the cap today (#490), so it would only report
-//!   give-ups.
+//!   `hermit/<f>-classified.ofn` (`scripts/hermit-oracle.sh`).
+//! - `per_query_answers_on_wine_finish_and_match_both_oracles` (ignored, ~2 core-hours)
+//!   pins #490: before it every per-query call on wine ran past the cap. It runs `sat`
+//!   on all 137 classes and `subclass` + `explain` on 50 seeded pairs both oracles
+//!   refute, under a 60 s CPU cap, and fails on any wrong answer, error OR give-up.
+//!   `RUSTDL_PQ_GATE_ONLY=<substring>` keeps only the calls whose description contains
+//!   it (for a cheap sabotage or a recheck).
 //!
 //! Run: `cargo test --release -p owl-dl-cli --test per_query_fp_gate -- --include-ignored
 //! --nocapture` (the counts and every FP / MISS / give-up go to stderr).
@@ -90,6 +94,8 @@ struct Job {
     args: Vec<String>,
     /// `true`: satisfiable / subsumed. `false`: unsatisfiable / not subsumed.
     expect: bool,
+    /// The child's CPU cap, in seconds (`ulimit -t`).
+    cpu_cap_s: u64,
 }
 
 /// Runs `rustdl <cmd> <file> <args…>` under a CPU cap and a wall backstop.
@@ -101,7 +107,7 @@ fn run(job: &Job) -> Answer {
     };
     let mut child = Command::new("/bin/sh")
         .arg("-c")
-        .arg(format!("ulimit -t {CPU_CAP_S} && exec \"$0\" \"$@\""))
+        .arg(format!("ulimit -t {} && exec \"$0\" \"$@\"", job.cpu_cap_s))
         .arg(env!("CARGO_BIN_EXE_rustdl"))
         .arg(name)
         .arg(&job.file)
@@ -123,12 +129,14 @@ fn run(job: &Job) -> Answer {
         let _ = err.read_to_string(&mut s);
         s
     });
+    // The wall backstop allows for a loaded host: four times the CPU cap, at least 120 s.
+    let wall_cap = WALL_CAP.max(Duration::from_secs(4 * job.cpu_cap_s));
     let start = Instant::now();
     let status = loop {
         if let Some(st) = child.try_wait().expect("wait") {
             break Some(st);
         }
-        if start.elapsed() > WALL_CAP {
+        if start.elapsed() > wall_cap {
             let _ = child.kill();
             let _ = child.wait();
             break None;
@@ -138,12 +146,12 @@ fn run(job: &Job) -> Answer {
     let stdout = out_t.join().unwrap_or_default();
     let stderr = err_t.join().unwrap_or_default();
     let Some(status) = status else {
-        return Answer::GaveUp(format!("wall cap {}s", WALL_CAP.as_secs()));
+        return Answer::GaveUp(format!("wall cap {}s", wall_cap.as_secs()));
     };
     if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&status) {
         // `ulimit -t` delivers SIGXCPU (24) at the limit, then SIGKILL (9).
         return if sig == 24 || sig == 9 {
-            Answer::GaveUp(format!("CPU cap {CPU_CAP_S}s (signal {sig})"))
+            Answer::GaveUp(format!("CPU cap {}s (signal {sig})", job.cpu_cap_s))
         } else {
             Answer::Errored(format!(
                 "signal {sig}: {}",
@@ -321,6 +329,7 @@ fn sat_job(file: &Path, class: &str, expect: bool) -> Job {
         file: file.to_owned(),
         args: vec![class.to_owned()],
         expect,
+        cpu_cap_s: CPU_CAP_S,
     }
 }
 
@@ -330,6 +339,7 @@ fn pair_jobs(file: &Path, sub: &str, sup: &str, expect: bool) -> [Job; 2] {
         file: file.to_owned(),
         args: vec![sub.to_owned(), sup.to_owned()],
         expect,
+        cpu_cap_s: CPU_CAP_S,
     })
 }
 
@@ -509,6 +519,43 @@ impl Rng {
     }
 }
 
+/// A seeded sample of up to `want` pairs both oracles refute: the sub-class
+/// satisfiable in both, the super-class not `owl:Thing`-equivalent in either.
+fn refuted_sample(
+    classes: &[String],
+    k: &Oracle,
+    h: &Oracle,
+    want: usize,
+    seed: u64,
+) -> Vec<(String, String)> {
+    let either_unsat = |c: &String| k.unsat.contains(c) || h.unsat.contains(c);
+    let either_thing = |c: &String| k.thing.contains(c) || h.thing.contains(c);
+    let mut negatives: Vec<(String, String)> = Vec::new();
+    for a in classes {
+        if either_unsat(a) {
+            continue;
+        }
+        for b in classes {
+            if a == b || either_thing(b) {
+                continue;
+            }
+            let p = (a.clone(), b.clone());
+            if !k.closure.contains(&p) && !h.closure.contains(&p) {
+                negatives.push(p);
+            }
+        }
+    }
+    // A zero state stays zero; any other seed is used as given.
+    let mut rng = Rng(seed.max(1));
+    let want = want.min(negatives.len());
+    for i in 0..want {
+        let j = i + usize::try_from(rng.next() % (negatives.len() - i) as u64).expect("index");
+        negatives.swap(i, j);
+    }
+    negatives.truncate(want);
+    negatives
+}
+
 /// One fixture's jobs and the counts behind them.
 struct GateJobs {
     jobs: Vec<Job>,
@@ -532,7 +579,6 @@ fn gate_jobs(file: &Path, classes: &[String], k: &Oracle, h: &Oracle, seed: u64)
         }
     }
     let either_unsat = |c: &String| k.unsat.contains(c) || h.unsat.contains(c);
-    let either_thing = |c: &String| k.thing.contains(c) || h.thing.contains(c);
     let positives: Vec<&(String, String)> = k
         .closure
         .intersection(&h.closure)
@@ -542,29 +588,8 @@ fn gate_jobs(file: &Path, classes: &[String], k: &Oracle, h: &Oracle, seed: u64)
     for (a, b) in &positives {
         jobs.extend(pair_jobs(file, a, b, true));
     }
-    let mut negatives: Vec<(String, String)> = Vec::new();
-    for a in classes {
-        if either_unsat(a) {
-            continue;
-        }
-        for b in classes {
-            if a == b || either_thing(b) {
-                continue;
-            }
-            let p = (a.clone(), b.clone());
-            if !k.closure.contains(&p) && !h.closure.contains(&p) {
-                negatives.push(p);
-            }
-        }
-    }
-    // A zero state stays zero; any other seed is used as given.
-    let mut rng = Rng(seed.max(1));
-    let want = positives.len().min(negatives.len());
-    for i in 0..want {
-        let j = i + usize::try_from(rng.next() % (negatives.len() - i) as u64).expect("index");
-        negatives.swap(i, j);
-    }
-    for (a, b) in &negatives[..want] {
+    let negatives = refuted_sample(classes, k, h, positives.len(), seed);
+    for (a, b) in &negatives {
         jobs.extend(pair_jobs(file, a, b, false));
     }
     GateJobs {
@@ -580,10 +605,7 @@ fn gate_jobs(file: &Path, classes: &[String], k: &Oracle, h: &Oracle, seed: u64)
             and hermit/*-classified.ofn; runs a few thousand rustdl subprocesses"]
 fn per_query_answers_match_both_oracles_on_the_gate_fixtures() {
     require_default_settings();
-    let workers = std::env::var("RUSTDL_PQ_GATE_JOBS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get().min(8)));
+    let workers = gate_workers();
     let base = workspace_path("ontologies/real");
     let (mut fps, mut errors) = (Vec::new(), Vec::new());
     for (i, name) in ["pizza", "ro", "sulo"].iter().enumerate() {
@@ -636,6 +658,108 @@ fn per_query_answers_match_both_oracles_on_the_gate_fixtures() {
     assert!(
         fps.is_empty() && errors.is_empty(),
         "per-query false positives / errors on the gate fixtures: {fps:#?} {errors:#?}"
+    );
+}
+
+/// The ignored arms' parallelism: `RUSTDL_PQ_GATE_JOBS`, else the available cores, at
+/// most 8.
+fn gate_workers() -> usize {
+    std::env::var("RUSTDL_PQ_GATE_JOBS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get().min(8)))
+}
+
+/// Wine's declared classes (a drift guard on the fixture).
+const WINE_CLASSES: usize = 137;
+/// Refuted pairs sampled on wine, each asked by `subclass` and `explain`.
+const WINE_REFUTED_PAIRS: usize = 50;
+/// Wine's per-call CPU cap: each call takes about 30 CPU-s since #490.
+const WINE_CPU_CAP_S: u64 = 60;
+
+#[test]
+#[ignore = "needs the gitignored ontologies/real/wine.ofn, konclude-input/wine-classified.owx and \
+            hermit/wine-classified.ofn; ~240 rustdl calls of ~30 CPU-s each (~2 core-hours)"]
+fn per_query_answers_on_wine_finish_and_match_both_oracles() {
+    require_default_settings();
+    let base = workspace_path("ontologies/real");
+    let file = base.join("wine.ofn");
+    let kfile = base.join("konclude-input/wine-classified.owx");
+    let hfile = base.join("hermit/wine-classified.ofn");
+    for p in [&file, &kfile, &hfile] {
+        assert!(
+            p.exists(),
+            "[pq-fp] REQUIRED fixture {} is missing: fetch the ontologies with \
+             scripts/fetch-real-ontologies.sh and generate the oracles with \
+             scripts/konclude-oracle.sh and scripts/hermit-oracle.sh",
+            p.display()
+        );
+    }
+    let (k, h) = (konclude(&kfile), hermit(&hfile));
+    let classes = declared_classes(&file);
+    assert_eq!(
+        classes.len(),
+        WINE_CLASSES,
+        "[pq-fp] {} is not the wine fixture this arm was written for",
+        file.display()
+    );
+    assert!(
+        !k.closure.is_empty() && !h.closure.is_empty(),
+        "[pq-fp] wine: an oracle is empty"
+    );
+    let mut jobs = Vec::new();
+    let mut disputed_classes = 0;
+    for c in &classes {
+        match (k.unsat.contains(c), h.unsat.contains(c)) {
+            (false, false) => jobs.push(sat_job(&file, c, true)),
+            (true, true) => jobs.push(sat_job(&file, c, false)),
+            _ => disputed_classes += 1,
+        }
+    }
+    let refuted = refuted_sample(&classes, &k, &h, WINE_REFUTED_PAIRS, 490);
+    assert_eq!(
+        refuted.len(),
+        WINE_REFUTED_PAIRS,
+        "[pq-fp] wine: too few refuted pairs"
+    );
+    for (a, b) in &refuted {
+        jobs.extend(pair_jobs(&file, a, b, false));
+    }
+    for j in &mut jobs {
+        j.cpu_cap_s = WINE_CPU_CAP_S;
+    }
+    if let Ok(only) = std::env::var("RUSTDL_PQ_GATE_ONLY") {
+        jobs.retain(|j| describe(j).contains(&only));
+        eprintln!(
+            "[pq-fp] wine: RUSTDL_PQ_GATE_ONLY={only:?} keeps {} calls",
+            jobs.len()
+        );
+        assert!(
+            !jobs.is_empty(),
+            "[pq-fp] RUSTDL_PQ_GATE_ONLY={only:?} matches no call"
+        );
+    }
+    eprintln!(
+        "[pq-fp] wine: {} calls ({} classes by sat, {WINE_REFUTED_PAIRS} refuted pairs by \
+         subclass and explain, seed 490), {disputed_classes} disputed classes skipped, CPU cap \
+         {WINE_CPU_CAP_S}s",
+        jobs.len(),
+        classes.len()
+    );
+    let report = run_all(&jobs, gate_workers());
+    print_report("wine", &report);
+    // Unlike the other arms, a give-up fails here: every call ran past the cap
+    // before #490, and that is what this arm pins.
+    assert!(
+        report.fps.is_empty()
+            && report.misses.is_empty()
+            && report.give_ups.is_empty()
+            && report.errors.is_empty(),
+        "per-query calls on wine: FP {:#?} MISS {:#?} give-up {:#?} error {:#?}",
+        report.fps,
+        report.misses,
+        report.give_ups,
+        report.errors
     );
 }
 

@@ -29,23 +29,34 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from owl_readers import ofn_hierarchy, owx_declared_classes, owx_hierarchy  # noqa: E402
+from owl_readers import (  # noqa: E402
+    _PFX, _TERM, NOTHING, THING, java_bin, ofn_hierarchy, owx_declared_classes, owx_hierarchy)
 
 HOME = Path.home()
 KONCLUDE = os.environ.get("GEN_KONCLUDE", str(HOME / ".local/bin/konclude"))
 ROBOT = os.environ.get("ROBOT_JAR", str(HOME / "rustdl/peers/robot.jar"))
-JAVA = str(Path(os.environ["JAVA_HOME"]) / "bin/java") if os.environ.get("JAVA_HOME") \
-    else str(HOME / "rustdl/peers/jdk-17.0.20.1+1/bin/java")
+JAVA = str(java_bin())
 PEER_CAP = int(os.environ.get("GEN_PEER_CAP", "60"))
 ORACLE_VERSION = 1  # bump when the reading of peer output changes: invalidates the cache
 
-_DECL = re.compile(r"Declaration\(Class\(:(\w+)\)\)")
-_NS = re.compile(r"Prefix\(:=<([^>]*)>\)")
+_DECL = re.compile(r"Declaration\(\s*Class\(\s*" + _TERM + r"\s*\)\s*\)")
 
 
 def declared_classes(text):
-    m = _NS.search(text)
-    return {m.group(1) + c for c in _DECL.findall(text)} if m else set()
+    """Every declared named class, as a full IRI: `<IRI>` and any declared prefix (#502).
+    The reader used to match only `:Name` under `Prefix(:=…)`, so on a real ontology
+    (full IRIs) it found no class and `oracle()` marked the file "invalid"."""
+    pfx = dict(_PFX.findall(text))
+    out = set()
+    # A term under an undeclared prefix is skipped: not a legal OFN term.
+    for t in _DECL.findall(text):
+        if t.startswith("<"):
+            out.add(t[1:-1])
+        else:
+            p, _, local = t.partition(":")
+            if p in pfx:
+                out.add(pfx[p] + local)
+    return out - {THING, NOTHING}
 
 
 def _limit():

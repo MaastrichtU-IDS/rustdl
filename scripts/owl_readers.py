@@ -11,6 +11,7 @@ Conventions every reader follows:
   * closures are over named classes, with Thing/Nothing and reflexive pairs dropped.
 Stdlib only.
 """
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -19,6 +20,16 @@ THING = "http://www.w3.org/2002/07/owl#Thing"
 NOTHING = "http://www.w3.org/2002/07/owl#Nothing"
 _THINGS = (THING, "Thing", "owl:Thing")
 _NOTHINGS = (NOTHING, "Nothing", "owl:Nothing")
+
+
+def java_bin(env=None):
+    """The JVM the HermiT oracles run (#502): `$JAVA_HOME/bin/java`, else the peers JDK.
+    Callers check that it exists and fail loudly if not: a missing JVM must never turn
+    into an oracle answer."""
+    env = os.environ if env is None else env
+    if env.get("JAVA_HOME"):
+        return Path(env["JAVA_HOME"]) / "bin" / "java"
+    return Path.home() / "rustdl" / "peers" / "jdk-17.0.20.1+1" / "bin" / "java"
 
 
 def is_thing(iri):

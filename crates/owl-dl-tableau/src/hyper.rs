@@ -4738,8 +4738,10 @@ impl<'c> HyperEngine<'c> {
                     self.stats.semantic_unit_forces += 1;
                     // #509: asserting the forced disjunct can clash on the spot
                     // (see the branch loop below). Then this frame is refuted.
-                    // The clash's cause is the trigger's own deps (the refused
-                    // merge's) plus the forced disjunct's, `forced_deps`.
+                    // Deps: the trigger's own unioned with `forced_deps`, which
+                    // covers the `≤1`'s assertion. The other causes (the `≠`, the
+                    // successors, their edges and labels) are covered only by the
+                    // trigger's own deps, today the refusal's `DepSet::ALL`.
                     if matches!(applied, FireOutcome::Clash) {
                         self.stats.head_clash_refutations += 1;
                         self.clash_deps = self.clash_deps.union(forced_deps);
@@ -4777,9 +4779,13 @@ impl<'c> HyperEngine<'c> {
                 // in a wrong `Sat`. Refute the branch here instead, exactly as
                 // if `solve` had returned `Unsat`. Deps: the trigger's own (the
                 // refused merge's) unioned with this disjunct's
-                // `decision_deps`, under which the `≤1` was asserted. This
-                // keeps `d` in the set, and the set stays a superset of the
-                // cause whatever the refusal reports.
+                // `decision_deps`, under which the `≤1` was asserted, which
+                // keeps `d` and the clause body's deps in the set. The union
+                // covers only the `≤1`'s assertion. The other causes (the `≠`,
+                // which records no provenance, the successors, their edges and
+                // labels) are covered only by the trigger's own deps, today the
+                // refusal's `DepSet::ALL`. Narrowing that refusal needs its own
+                // proof; `le1_disjunct_clash_under_an_outer_decision_*` guards it.
                 let applied = self.apply_head_atom(head_atom, node, &binding, decision_deps);
                 let child = if matches!(applied, FireOutcome::Clash) {
                     self.stats.head_clash_refutations += 1;
@@ -11574,5 +11580,44 @@ mod tests {
         let mut eng = le1_engine(&clauses, a, false);
         assert_eq!(eng.decide(64), HyperResult::Unsat);
         assert_eq!(eng.stats().head_clash_refutations, 0);
+    }
+
+    /// #509, deps under an OUTER decision. The root decides `A → [p, q]`. Under
+    /// `p` it gets `≥2 r` and the disjunction `[≤1 r, y]` with `y` dead, so the
+    /// inner frame is refuted (the `≤1` by its head clash). That refutation
+    /// rests on `p`, so the outer loop must not backjump past it: `q` is
+    /// satisfiable and the answer is `Sat`. An understated clash dep (one that
+    /// omits `p`'s level) would backjump, and the root would read `Unsat`, a
+    /// false positive. Today the refusal's `ALL` covers it. If it were narrowed,
+    /// the `∪ decision_deps` (the inner clause's body, `p`, carries the outer
+    /// level) is what keeps this test green.
+    #[test]
+    fn le1_disjunct_clash_under_an_outer_decision_does_not_backjump_past_it() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y, p, q) = (cls(0), cls(1), cls(2), cls(3));
+        let mut clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(p, X), Atom::Class(q, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(p, X)],
+                head: vec![Atom::AtLeast(role, None, 2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(p, X)],
+                head: vec![Atom::AtMost(role, None, 1, X), Atom::Class(y, X)],
+            },
+        ];
+        clauses.extend(disjoint_with(a, &[y]));
+        for net in [false, true] {
+            let mut eng = le1_engine(&clauses, a, net);
+            assert_eq!(eng.decide(64), HyperResult::Sat, "net={net}");
+            assert!(
+                eng.nodes[0].has(q),
+                "net={net}: the outer sibling q was tried"
+            );
+            assert!(eng.stats().head_clash_refutations >= 1, "net={net}");
+        }
     }
 }

@@ -310,7 +310,9 @@ fn checked_pairs(
     surface: &str,
     pairs: Vec<(String, String)>,
 ) -> Result<(Vec<(String, String)>, bool), ReasonError> {
+    // #493: a likely-bug stall can come only from the light route's opt-in tail;
+    // not reported here (documented in tbox-only-inconsistency-light-route).
     let undetermined =
-        !pairs.is_empty() && crate::lazy_inconsistency_check_light(internal, surface)?;
+        !pairs.is_empty() && crate::lazy_inconsistency_check_light(internal, surface)?.undetermined;
     Ok((pairs, undetermined))
 }

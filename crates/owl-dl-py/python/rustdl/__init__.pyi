@@ -259,7 +259,8 @@ def is_class_satisfiable(path: str, class_iri: str) -> bool:
     cap), returns `True` and emits `IncompleteQueryWarning`. Raises `RustdlError`
     on a KB found inconsistent (#428), except for `owl:Thing`, which is the
     consistency check; emits `ConsistencyUndeterminedWarning` on an
-    "unsatisfiable" whose KB consistency stayed undetermined."""
+    "unsatisfiable" whose KB consistency stayed undetermined. A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
 def is_subclass_of(path: str, sub: str, sup: str) -> bool:
@@ -267,13 +268,16 @@ def is_subclass_of(path: str, sub: str, sup: str) -> bool:
     returns `False` and emits `IncompleteQueryWarning`. Raises `RustdlError` on a
     KB found inconsistent (#428), except for `owl:Thing ⊑ owl:Nothing`, which is
     the consistency check; emits `ConsistencyUndeterminedWarning` on an entailed
-    answer whose KB consistency stayed undetermined."""
+    answer whose KB consistency stayed undetermined. A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
 def is_instance_of(path: str, class_iri: str, individual_iri: str) -> bool:
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
-    cut, returns `False` and emits `IncompleteQueryWarning`. A probe that ended in NoVerdict on an internal limit (likely a reasoner bug, #449)
-    raises `RustdlError` instead (#493)."""
+    cut, returns `False` and emits `IncompleteQueryWarning`. A probe that ended in
+    NoVerdict on an internal limit (likely a reasoner bug, #449) raises
+    `RustdlError` instead (#493). A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
 def instances_of(path: str, class_iri: str) -> list[str]:
@@ -365,14 +369,16 @@ def class_expression_satisfiable(path: str, ce: str) -> bool:
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (resolved against the ontology's own prefix
     map). If the probe gave up (node cap), returns `True` and emits
-    `IncompleteQueryWarning`; an answer off pure EL does not warn."""
+    `IncompleteQueryWarning`; an answer off pure EL does not warn. A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
 def class_expression_entailed_subclass(path: str, sub_ce: str, sup_ce: str) -> bool:
     """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
     (Manchester-syntax class expressions, resolved against the ontology's own
     prefix map). If the probe gave up (node cap), returns `False` and emits
-    `IncompleteQueryWarning`; an answer off pure EL does not warn."""
+    `IncompleteQueryWarning`; an answer off pure EL does not warn. A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
 def class_expression_instances(path: str, ce: str) -> list[str]:

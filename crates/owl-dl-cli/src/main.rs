@@ -1107,7 +1107,8 @@ fn note_trusted_wedge_sat(trusted: bool) {
         eprintln!(
             "note: consistent on the consistency wedge's model alone; the wedge is not \
              proven complete and no main-tableau model was built. RUSTDL_WEDGE_CONSISTENCY=0 \
-             decides on the main tableau (bounded by RUSTDL_CONSISTENCY_FALLBACK_MS)."
+             decides on the main tableau instead, with no deadline; on a hard ontology it may \
+             not finish (wine does not, #490)."
         );
     }
 }
@@ -1137,7 +1138,8 @@ fn warn_consistency_undetermined(command: &str, undetermined: bool) {
              `rustdl consistent` decides it directly, but can take much longer (on a KB \
              with no individual it runs the main tableau with no deadline). On a KB with \
              individuals, RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL=1 also runs a bounded \
-             main-tableau check."
+             main-tableau check. If that check's own probe stalled, the NoVerdict note \
+             follows and the command exits 3 (#493)."
         );
     }
 }
@@ -1154,6 +1156,25 @@ fn exit_unknown_node_cap() -> ! {
     std::process::exit(3);
 }
 
+/// #497: what bounds a consistency give-up, by route. With the consistency wedge (an
+/// ontology with individuals) the main-tableau fall-through has
+/// `RUSTDL_CONSISTENCY_FALLBACK_MS`; with no individual, or with
+/// `RUSTDL_WEDGE_CONSISTENCY=0`, the main tableau runs with no deadline and gives up only
+/// on its node cap (or on the tableau's internal limit, `NoVerdict`: a stalled saturation
+/// or the depth cap, with the #449 note). The node cap applies on either route. The stats
+/// cannot tell the route apart, so the advice names both. `node_cap` is the cap that
+/// applied: `RUSTDL_MAX_NODES` for `consistent`; for a single query
+/// `RUSTDL_QUERY_MAX_NODES`, unless `RUSTDL_MAX_NODES` is set explicitly (it wins).
+fn consistency_budget_advice(node_cap: &str) -> String {
+    format!(
+        "With the consistency wedge (an ontology with individuals), raise \
+         RUSTDL_CONSISTENCY_FALLBACK_MS (default 10000) or, for ontologies that count data \
+         values, RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000). With no \
+         individual, or with RUSTDL_WEDGE_CONSISTENCY=0, the main tableau has no deadline. On \
+         either route the main tableau also gives up on its node cap: raise {node_cap}."
+    )
+}
+
 /// #427: a query that IS the consistency check (`sat owl:Thing`,
 /// `subclass owl:Thing owl:Nothing`) gave up: print `unknown` and exit 3, naming
 /// the consistency budgets as `consistent` does.
@@ -1161,9 +1182,8 @@ fn exit_unknown_consistency_gave_up() -> ! {
     println!("unknown");
     eprintln!(
         "warning: this query is the consistency check, and no inconsistency was found \
-         within budget; that is not a verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS \
-         (default 10000) or, for ontologies that count data values, \
-         RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000) for more budget."
+         within budget; that is not a verdict. {}",
+        consistency_budget_advice("RUSTDL_QUERY_MAX_NODES (or RUSTDL_MAX_NODES, if set)")
     );
     std::process::exit(3);
 }
@@ -1986,7 +2006,7 @@ fn run() -> Result<()> {
                 if verdict {
                     warn_if_clauses_refused(
                         stats.wedge_clauses_refused,
-                        "RUSTDL_WEDGE_CONSISTENCY=0",
+                        "RUSTDL_WEDGE_CONSISTENCY=0 (main tableau, no deadline)",
                     );
                 }
                 if incomplete {
@@ -2002,9 +2022,8 @@ fn run() -> Result<()> {
                 println!("unknown");
                 eprintln!(
                     "warning: no inconsistency found within budget — this is a sound \
-                     under-approximation, not a verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS \
-                     (default 10000) or, for ontologies that count data values, \
-                     RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000) for more budget."
+                     under-approximation, not a verdict. {}",
+                    consistency_budget_advice("RUSTDL_MAX_NODES")
                 );
                 warn_if_dropped(&dropped);
                 std::process::exit(3);
@@ -2019,7 +2038,10 @@ fn run() -> Result<()> {
             );
             note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
             if verdict {
-                warn_if_clauses_refused(stats.wedge_clauses_refused, "RUSTDL_WEDGE_CONSISTENCY=0");
+                warn_if_clauses_refused(
+                    stats.wedge_clauses_refused,
+                    "RUSTDL_WEDGE_CONSISTENCY=0 (main tableau, no deadline)",
+                );
             }
             warn_if_dropped(&dropped);
         }
@@ -2219,6 +2241,8 @@ fn run() -> Result<()> {
             }
             println!("{}", if verdict { "sat" } else { "unsat" });
             warn_consistency_undetermined("sat", stats.consistency_undetermined);
+            // #493: the lazy check's own probe stalled (a likely bug); the answer stands.
+            exit_if_no_verdict(stats.no_verdict);
         }
         Command::Subclass {
             file,
@@ -2228,9 +2252,12 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
-            let verdict = if saturation_only {
-                is_subclass_of_saturation_only(&onto, &sub, &sup)
-                    .context("is_subclass_of_saturation_only")?
+            let (verdict, no_verdict) = if saturation_only {
+                (
+                    is_subclass_of_saturation_only(&onto, &sub, &sup)
+                        .context("is_subclass_of_saturation_only")?,
+                    false,
+                )
             } else {
                 let _cap = owl_dl_reasoner::single_query_node_cap();
                 let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
@@ -2250,9 +2277,11 @@ fn run() -> Result<()> {
                     note_trusted_consistency(&stats);
                 }
                 warn_consistency_undetermined("subclass", stats.consistency_undetermined);
-                verdict
+                (verdict, stats.no_verdict)
             };
             println!("{}", if verdict { "yes" } else { "no" });
+            // #493: as `sat`.
+            exit_if_no_verdict(no_verdict);
         }
         Command::Classify {
             file,
@@ -2289,6 +2318,7 @@ fn run() -> Result<()> {
             let onto = parse_ofn(&file)?;
             warn_if_dropped(&json_out::dropped_block(&onto));
             let mut undetermined = false;
+            let mut instance_no_verdict = false;
             let verdict = if saturation_only {
                 is_instance_of_saturation_only(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_saturation_only")?
@@ -2306,10 +2336,14 @@ fn run() -> Result<()> {
                     exit_unknown_probe_cut();
                 }
                 undetermined = flags.consistency_undetermined;
+                instance_no_verdict = flags.no_verdict;
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
             warn_consistency_undetermined("instance", undetermined);
+            // #493: a "yes" whose lazy check's own probe stalled (a likely bug): the
+            // answer stands, then #449's note, exit 3. (A likely-bug "no" exited above.)
+            exit_if_no_verdict(instance_no_verdict);
         }
         Command::Instances {
             file,
@@ -2361,8 +2395,11 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             // A give-up is `unknown`, exit 3, as on `sat` (#363 A2), and a
-            // deadline-free `NoVerdict` exactly as on `sat` (#449, #462).
-            if v.no_verdict() {
+            // deadline-free `NoVerdict` exactly as on `sat` (#449, #462): the probe's own
+            // `NoVerdict` always sets `incomplete` (`CeVerdict::from_no_verdict`). #493: a
+            // stall of the lazy check after a decided answer does not; the answer stands
+            // and the note follows it below.
+            if v.no_verdict() && v.incomplete() {
                 exit_unknown_no_verdict();
             }
             if v.incomplete() {
@@ -2378,6 +2415,8 @@ fn run() -> Result<()> {
             );
             note_trusted_consistency_flag(v.relies_on_trusted_consistency());
             warn_consistency_undetermined("sat-expr", v.consistency_undetermined());
+            // #493: the lazy check's own probe stalled; the answer stands.
+            exit_if_no_verdict(v.no_verdict());
         }
         Command::SubclassExpr {
             file,
@@ -2406,8 +2445,9 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             // A give-up is `unknown`, exit 3, as on `subclass` (#363 A2), and a
-            // deadline-free `NoVerdict` exactly as on `subclass` (#449, #462).
-            if v.no_verdict() {
+            // deadline-free `NoVerdict` exactly as on `subclass` (#449, #462). #493: as in
+            // `sat-expr`, only the probe's own `NoVerdict` (it sets `incomplete`).
+            if v.no_verdict() && v.incomplete() {
                 exit_unknown_no_verdict();
             }
             if v.incomplete() {
@@ -2416,6 +2456,8 @@ fn run() -> Result<()> {
             println!("{}", if v.holds() { "yes" } else { "no" });
             note_trusted_consistency_flag(v.relies_on_trusted_consistency());
             warn_consistency_undetermined("subclass-expr", v.consistency_undetermined());
+            // #493: as in `sat-expr`.
+            exit_if_no_verdict(v.no_verdict());
         }
         Command::InstancesExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
@@ -2551,9 +2593,10 @@ fn run() -> Result<()> {
                     println!("{sub} ⊑ {sup} : unknown — the consistency check gave up");
                     eprintln!(
                         "warning: no inconsistency was found within budget; that is not a \
-                         verdict. Raise RUSTDL_CONSISTENCY_FALLBACK_MS (default 10000) or, for \
-                         ontologies that count data values, \
-                         RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY_MS (default 1000)."
+                         verdict. {}",
+                        consistency_budget_advice(
+                            "RUSTDL_QUERY_MAX_NODES (or RUSTDL_MAX_NODES, if set)"
+                        )
                     );
                     std::process::exit(3);
                 }
@@ -2572,6 +2615,8 @@ fn run() -> Result<()> {
                 answer = if verdict { "yes" } else { "no" },
             );
             warn_consistency_undetermined("explain", stats.consistency_undetermined);
+            // #493: as `sat`.
+            exit_if_no_verdict(stats.no_verdict);
         }
         Command::Justify {
             file,

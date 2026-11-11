@@ -217,9 +217,11 @@ pub(crate) struct ConsistentJson {
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
     /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
     /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
-    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
-    /// is set too.
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too for
+    /// a probe of the answer. #493: where the command runs the #369 lazy consistency
+    /// check after a positive answer, a stall of that check's own probe sets this field
+    /// with `consistency_undetermined` instead (the answer itself was decided); the
+    /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -300,7 +302,7 @@ pub(crate) struct RealizeJson {
     /// covers the realize classification, every instance probe (anonymous individuals'
     /// too) and #388's direct-types checks. Each took its sound default, so `incomplete`
     /// is set too. A plain depth cut, deadline or node cap does not set it. Not covered:
-    /// the pseudo-model witness build and the #369 lazy consistency check.
+    /// the pseudo-model witness build. (Realize runs no #369 lazy consistency check.)
     pub(crate) no_verdict: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
@@ -318,9 +320,11 @@ pub(crate) struct DisjointJson {
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
     /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
     /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
-    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
-    /// is set too.
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too for
+    /// a probe of the answer. #493: where the command runs the #369 lazy consistency
+    /// check after a positive answer, a stall of that check's own probe sets this field
+    /// with `consistency_undetermined` instead (the answer itself was decided); the
+    /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     /// #369: the property half's answer is non-empty and the KB's consistency
     /// stayed undetermined (see `sat-expr`). The class half reports through
@@ -368,9 +372,11 @@ pub(crate) struct SatExprJson {
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
     /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
     /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
-    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
-    /// is set too.
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too for
+    /// a probe of the answer. #493: where the command runs the #369 lazy consistency
+    /// check after a positive answer, a stall of that check's own probe sets this field
+    /// with `consistency_undetermined` instead (the answer itself was decided); the
+    /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) satisfiable: bool,
 }
@@ -409,9 +415,11 @@ pub(crate) struct SubclassExprJson {
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
     /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
     /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
-    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
-    /// is set too.
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too for
+    /// a probe of the answer. #493: where the command runs the #369 lazy consistency
+    /// check after a positive answer, a stall of that check's own probe sets this field
+    /// with `consistency_undetermined` instead (the answer itself was decided); the
+    /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) entailed: bool,
 }
@@ -440,7 +448,8 @@ pub(crate) struct InstancesExprJson {
     /// or one whose deterministic saturation stalled, budgeted or not (#475). The command
     /// also prints a "likely a reasoner bug" note on stderr and exits 3, after this JSON.
     /// The probe took its sound default, so `incomplete` is set too. A plain depth cut,
-    /// deadline or node cap does not set it. Not covered: the #369 lazy consistency check.
+    /// deadline or node cap does not set it. #493: a stall of the #369 lazy consistency
+    /// check's own probe (after a positive answer) sets it with `consistency_undetermined`.
     pub(crate) no_verdict: bool,
     pub(crate) instances: Vec<String>,
 }
@@ -789,9 +798,11 @@ pub(crate) struct IndividualsJson {
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
     /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
     /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
-    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
-    /// is set too.
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too for
+    /// a probe of the answer. #493: where the command runs the #369 lazy consistency
+    /// check after a positive answer, a stall of that check's own probe sets this field
+    /// with `consistency_undetermined` instead (the answer itself was decided); the
+    /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
@@ -850,9 +861,11 @@ pub(crate) struct PropertyValuesJson {
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
     /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
     /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
-    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
-    /// is set too.
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too for
+    /// a probe of the answer. #493: where the command runs the #369 lazy consistency
+    /// check after a positive answer, a stall of that check's own probe sets this field
+    /// with `consistency_undetermined` instead (the answer itself was decided); the
+    /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     /// #389/#390: constructs present that the data half of this surface (the object half reports through `incomplete`) ignores and that
     /// can entail a relation it would report (see
@@ -918,9 +931,11 @@ pub(crate) struct JustifyJson {
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
     /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
     /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
-    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
-    /// is set too.
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too for
+    /// a probe of the answer. #493: where the command runs the #369 lazy consistency
+    /// check after a positive answer, a stall of that check's own probe sets this field
+    /// with `consistency_undetermined` instead (the answer itself was decided); the
+    /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) justifications: Vec<JustificationJson>,
 }
@@ -1023,9 +1038,11 @@ pub(crate) struct ProveJson {
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
     /// on stderr and exits 3. It does NOT mean "any `NoVerdict`": on a budgeted probe that
     /// did not stall, a `NoVerdict` is the routine decision-depth cut (#288) and sets
-    /// only `incomplete`. Not covered: the #369 lazy query-consistency check folds a stall
-    /// into `consistency_undetermined`. A SEPARATE field from `incomplete` (#395), which
-    /// is set too.
+    /// only `incomplete`. A SEPARATE field from `incomplete` (#395), which is set too for
+    /// a probe of the answer. #493: where the command runs the #369 lazy consistency
+    /// check after a positive answer, a stall of that check's own probe sets this field
+    /// with `consistency_undetermined` instead (the answer itself was decided); the
+    /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) has_proof: bool,
     /// `true` when every proof step cites the axiom its rule applies (or needs none) and

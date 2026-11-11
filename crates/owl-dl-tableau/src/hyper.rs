@@ -814,6 +814,17 @@ pub struct SearchStats {
     /// recovers it) but the missing trigger is a real bug worth locating.
     /// `RUSTDL_RESEED_PROBE=1` prints each occurrence.
     pub reseed_recovered: u64,
+    /// #509: times a net re-seed turned the incremental drain's `Sat` into
+    /// `Unsat` WITHOUT changing the graph, the case `reseed_recovered` cannot
+    /// see. A refused merge (two `≠` nodes under a `≤1`) changes nothing it
+    /// fingerprints, so before #509 a disjunct's dropped `≤1` clash was
+    /// recovered here silently. Reporting only; the verdict is the same either
+    /// way. `RUSTDL_RESEED_PROBE=1` prints each occurrence.
+    pub reseed_clash_only: u64,
+    /// #509: chosen `⊔` disjuncts refuted on application, because asserting
+    /// them clashed at once (a `≤1` disjunct whose inline merge is refused by
+    /// a `≠`). The branch is refuted without searching below it.
+    pub head_clash_refutations: u64,
     /// Of `branches_taken`, those from the ⊔ disjunction rule
     /// (`find_open_disjunction`). Split out from `≤n` merge branches so
     /// search-quality work can tell which branch kind dominates a stall.
@@ -3378,6 +3389,9 @@ impl<'c> HyperEngine<'c> {
         // frame's `Sat` point when `reseed_at_leaf` is on; see there.
         if self.reseed_net_due() && !self.reseed_deferred {
             let (r, changed) = self.run_reseed_net(max_iters);
+            if matches!(r, HyperResult::Unsat) && !changed {
+                self.note_reseed_clash_only();
+            }
             if !matches!(r, HyperResult::Sat) {
                 return r;
             }
@@ -3457,6 +3471,21 @@ impl<'c> HyperEngine<'c> {
                 "RESEED_PROBE: incremental drain left work undone \
                  (recovered by the #137 net); a rule premise arrived \
                  without a trigger"
+            );
+        }
+    }
+
+    /// #509: count a net re-seed that found a clash the incremental drain
+    /// missed while changing nothing in the graph (see
+    /// [`SearchStats::reseed_clash_only`]). Like `note_reseed_recovered`, a
+    /// nonzero count points at a clash that arrived without its trigger's
+    /// verdict being honoured; the answer is already correct.
+    fn note_reseed_clash_only(&mut self) {
+        self.stats.reseed_clash_only += 1;
+        if std::env::var_os("RUSTDL_RESEED_PROBE").is_some() {
+            eprintln!(
+                "RESEED_PROBE: the #137 net found a clash with no graph change \
+                 (a clash the incremental drain did not honour)"
             );
         }
     }
@@ -4705,8 +4734,17 @@ impl<'c> HyperEngine<'c> {
                 if live.len() == 1 {
                     let head_atom = self.clause(ci).head[live[0]];
                     let forced_deps = body_deps.union(prune_deps.remove(d));
-                    let _ = self.apply_head_atom(head_atom, node, &binding, forced_deps);
+                    let applied = self.apply_head_atom(head_atom, node, &binding, forced_deps);
                     self.stats.semantic_unit_forces += 1;
+                    // #509: asserting the forced disjunct can clash on the spot
+                    // (see the branch loop below). Then this frame is refuted.
+                    // The clash's cause is the trigger's own deps (the refused
+                    // merge's) plus the forced disjunct's, `forced_deps`.
+                    if matches!(applied, FireOutcome::Clash) {
+                        self.stats.head_clash_refutations += 1;
+                        self.clash_deps = self.clash_deps.union(forced_deps);
+                        return HyperResult::Unsat;
+                    }
                     return self.solve(depth);
                 }
             }
@@ -4729,8 +4767,28 @@ impl<'c> HyperEngine<'c> {
                 let saved = self.save();
                 self.stats.branches_taken += 1;
                 self.stats.disj_branches += 1;
-                let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
-                match self.solve(depth - 1) {
+                // #509: asserting the disjunct can clash at once. A `≤1`
+                // disjunct (the NNF of `¬(≥2 …)`) runs its merge inline, and a
+                // merge refused by `≠` returns `Clash` while queueing nothing,
+                // so the child's drain would see nothing. Before #509 this
+                // outcome was dropped: the branch searched on with the `≤1`
+                // violated (`find_open_at_most` skips n == 1) until the #137
+                // leaf net re-found the clash, or, with the net off, it ended
+                // in a wrong `Sat`. Refute the branch here instead, exactly as
+                // if `solve` had returned `Unsat`. Deps: the trigger's own (the
+                // refused merge's) unioned with this disjunct's
+                // `decision_deps`, under which the `≤1` was asserted. This
+                // keeps `d` in the set, and the set stays a superset of the
+                // cause whatever the refusal reports.
+                let applied = self.apply_head_atom(head_atom, node, &binding, decision_deps);
+                let child = if matches!(applied, FireOutcome::Clash) {
+                    self.stats.head_clash_refutations += 1;
+                    self.clash_deps = self.clash_deps.union(decision_deps);
+                    HyperResult::Unsat
+                } else {
+                    self.solve(depth - 1)
+                };
+                match child {
                     HyperResult::Sat => return HyperResult::Sat,
                     HyperResult::Unsat => {
                         let child_deps = self.clash_deps;
@@ -4856,6 +4914,8 @@ impl<'c> HyperEngine<'c> {
             let (r, changed) = self.run_reseed_net(FIXPOINT_ITERS);
             if changed {
                 self.note_reseed_recovered();
+            } else if matches!(r, HyperResult::Unsat) {
+                self.note_reseed_clash_only();
             }
             if self.reseed_net_hit {
                 self.reseed_interval = 1;
@@ -11282,5 +11342,237 @@ mod tests {
         assert_eq!(e.compute_visible_nominals(10, 3), vec![true, false, true]);
         // A different nominal range on the same index is scanned afresh.
         assert_eq!(e.compute_visible_nominals(11, 2), vec![false, true]);
+    }
+
+    // ---- #509: a chosen disjunct's inline `≤1` clash is honoured ----
+    //
+    // `A ⊑ ≥2 r` gives the root two `≠` successors. A `≤1 r` disjunct (the NNF of
+    // `¬(≥2 role)`) then runs its merge inline in `apply_head_atom`, the merge is
+    // refused by the `≠`, and the trigger returns `Clash` while queueing nothing.
+    // Before #509 both call sites in `solve_inner` dropped that `Clash`.
+    //
+    // The engines are configured as the default wedge runs (incremental drain,
+    // `inverse_func_merge`) but with the #137 re-seed net OFF, so the tests see
+    // the drain alone: the net would re-find the clash late and hide a revert.
+    // The non-incremental path re-seeds every pass and never had the bug.
+
+    /// `A ⊑ ≥2 r(.q)` plus the disjunction `A → [≤1 r(.q), y]`.
+    fn le1_disjunct_clauses(
+        role_ge: Role,
+        role_le: Role,
+        q: Option<ClassId>,
+        a: ClassId,
+        y: ClassId,
+    ) -> Vec<DlClause> {
+        vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtLeast(role_ge, q, 2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role_le, q, 1, X), Atom::Class(y, X)],
+            },
+        ]
+    }
+
+    /// The incremental wedge, with the #137 net on or off (see the block comment).
+    fn le1_engine(clauses: &[DlClause], root: ClassId, net: bool) -> HyperEngine<'_> {
+        let mut eng = HyperEngine::new(clauses, root)
+            .with_incremental_fixpoint()
+            .with_reseed_verify(net);
+        eng.inverse_func_merge = true;
+        eng
+    }
+
+    /// #509, branch site: both disjuncts are dead (`y` is disjoint with `A`, and
+    /// `≤1 r` clashes with the two `≠` successors), so `A` is unsatisfiable.
+    /// Reverted, the `≤1` branch ends in a wrong `Sat` (release) or trips the
+    /// `find_open_at_most` assertion (debug).
+    #[test]
+    fn le1_disjunct_with_two_distinct_successors_is_refuted() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y) = (cls(0), cls(1));
+        let mut clauses = le1_disjunct_clauses(role, role, None, a, y);
+        clauses.extend(disjoint_with(a, &[y]));
+        let mut eng = le1_engine(&clauses, a, false);
+        assert_eq!(eng.decide(64), HyperResult::Unsat);
+        assert_eq!(eng.stats().head_clash_refutations, 1);
+    }
+
+    /// #509, the same with a qualified `≤1 r.C` against `≥2 r.C` (case-00801's
+    /// shape: the qualifier must be on both successors for them to count).
+    #[test]
+    fn le1_qualified_disjunct_with_two_distinct_successors_is_refuted() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y, c) = (cls(0), cls(1), cls(2));
+        let mut clauses = le1_disjunct_clauses(role, role, Some(c), a, y);
+        clauses.extend(disjoint_with(a, &[y]));
+        let mut eng = le1_engine(&clauses, a, false);
+        assert_eq!(eng.decide(64), HyperResult::Unsat);
+        assert_eq!(eng.stats().head_clash_refutations, 1);
+    }
+
+    /// #509, a sub-role: `≥2 s` with `s ⊑ r` fills `≤1 r`.
+    #[test]
+    fn le1_disjunct_over_a_sub_role_is_refuted() {
+        let (r_id, s_id) = (RoleId::new(0), RoleId::new(1));
+        let mut b = owl_dl_core::role_hierarchy::RoleHierarchyBuilder::with_roles(2);
+        b.add_sub_role(s_id, r_id);
+        let (a, y) = (cls(0), cls(1));
+        let mut clauses = le1_disjunct_clauses(Role::Named(s_id), Role::Named(r_id), None, a, y);
+        clauses.extend(disjoint_with(a, &[y]));
+        let mut eng = le1_engine(&clauses, a, false).with_sub_roles(b.build());
+        assert_eq!(eng.decide(64), HyperResult::Unsat);
+        assert_eq!(eng.stats().head_clash_refutations, 1);
+    }
+
+    /// #509, three successors: an `∃r.B` successor beside the two `≠` ones. The
+    /// merge loop folds one pair before it reaches the refused one, so `restore`
+    /// has a partial merge to undo. Unsat as above, and in the sibling variant
+    /// the root keeps three distinct successors after the refuted branch.
+    #[test]
+    fn le1_disjunct_partial_merge_then_clash_is_refuted_and_restored() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y, b) = (cls(0), cls(1), cls(2));
+        let mut clauses = le1_disjunct_clauses(role, role, None, a, y);
+        clauses.push(DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![Atom::Exists(role, b, X)],
+        });
+        let mut dead = clauses.clone();
+        dead.extend(disjoint_with(a, &[y]));
+        let mut eng = le1_engine(&dead, a, false);
+        assert_eq!(eng.decide(64), HyperResult::Unsat);
+        assert_eq!(eng.stats().head_clash_refutations, 1);
+
+        let mut eng = le1_engine(&clauses, a, false);
+        assert_eq!(eng.decide(64), HyperResult::Sat);
+        assert_eq!(eng.stats().head_clash_refutations, 1);
+        let root = HNode(0);
+        assert!(eng.nodes[0].has(y), "the surviving sibling `y` was taken");
+        assert_eq!(
+            eng.distinct_role_succ(root, role, None).len(),
+            3,
+            "the refuted branch's partial merge was restored"
+        );
+    }
+
+    /// #509, branch site: the refuted `≤1` must not end the decision. The
+    /// sibling `y` is live here, so the answer is `Sat` with `y` on the root and
+    /// no `≤1` kept. Reverted, the `≤1` branch is the one that "succeeds".
+    #[test]
+    fn le1_disjunct_refuted_then_the_sibling_is_tried() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y) = (cls(0), cls(1));
+        let clauses = le1_disjunct_clauses(role, role, None, a, y);
+        let mut eng = le1_engine(&clauses, a, false);
+        assert_eq!(eng.decide(64), HyperResult::Sat);
+        let st = eng.stats();
+        assert_eq!(st.head_clash_refutations, 1);
+        assert_eq!(st.disj_branches, 2, "the ≤1 branch, then y");
+        assert!(st.restores >= 1);
+        assert!(eng.nodes[0].has(y));
+        assert!(
+            !eng.nodes[0].at_most.contains(&(role, None, 1)),
+            "the refuted branch's ≤1 was restored away"
+        );
+    }
+
+    /// #509, unit-force site (Fix#2 Layer A, default OFF): `y` is told-disjoint
+    /// with the root's `A`, so Layer A drops it and unit-forces the `≤1`, which
+    /// clashes on application. No decision is made.
+    #[test]
+    fn le1_unit_forced_disjunct_clash_is_refuted() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y) = (cls(0), cls(1));
+        let mut clauses = le1_disjunct_clauses(role, role, None, a, y);
+        clauses.extend(disjoint_with(a, &[y]));
+        let mut eng = le1_engine(&clauses, a, false).with_semantic_branching();
+        assert_eq!(eng.decide(64), HyperResult::Unsat);
+        let st = eng.stats();
+        assert_eq!(st.semantic_unit_forces, 1);
+        assert_eq!(st.head_clash_refutations, 1);
+        assert_eq!(st.branches_taken, 0);
+    }
+
+    /// #509 with the #137 net ON (the default): the clash is refuted on
+    /// application, before the net, which then has nothing to find.
+    #[test]
+    fn le1_disjunct_clash_is_refuted_before_the_net() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y) = (cls(0), cls(1));
+        let mut clauses = le1_disjunct_clauses(role, role, None, a, y);
+        clauses.extend(disjoint_with(a, &[y]));
+        let mut eng = le1_engine(&clauses, a, true);
+        assert_eq!(eng.decide(64), HyperResult::Unsat);
+        let st = eng.stats();
+        assert_eq!(st.head_clash_refutations, 1);
+        assert_eq!(st.reseed_clash_only, 0);
+        assert_eq!(st.reseed_recovered, 0);
+    }
+
+    /// #509 NEGATIVE CONTROL: the `≤1` merge is ALLOWED. Two `∃r` successors
+    /// with no `≠` between them, and `y` dead, so the `≤1` branch is the one
+    /// taken. It must stay open: `Sat`, the successors merged, the `≤1` kept,
+    /// and no head-clash refutation.
+    #[test]
+    fn le1_disjunct_with_mergeable_successors_stays_open() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y, b, c) = (cls(0), cls(1), cls(2), cls(3));
+        let mut clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X), Atom::Class(y, X)],
+            },
+        ];
+        clauses.extend(disjoint_with(a, &[y]));
+        for net in [false, true] {
+            let mut eng = le1_engine(&clauses, a, net);
+            assert_eq!(eng.decide(64), HyperResult::Sat, "net={net}");
+            assert_eq!(eng.stats().head_clash_refutations, 0, "net={net}");
+            assert_eq!(
+                eng.distinct_role_succ(HNode(0), role, None).len(),
+                1,
+                "net={net}"
+            );
+            assert!(eng.nodes[0].at_most.contains(&(role, None, 1)), "net={net}");
+        }
+    }
+
+    /// #509 control: a merge that is allowed but clashes on LABELS (`b` and `c`
+    /// disjoint) goes through the ordinary event path, not the new one. Still
+    /// Unsat, with no head-clash refutation.
+    #[test]
+    fn le1_disjunct_label_clash_takes_the_event_path() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, y, b, c) = (cls(0), cls(1), cls(2), cls(3));
+        let mut clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X), Atom::Class(y, X)],
+            },
+        ];
+        clauses.extend(disjoint_with(a, &[y]));
+        clauses.extend(disjoint_with(b, &[c]));
+        let mut eng = le1_engine(&clauses, a, false);
+        assert_eq!(eng.decide(64), HyperResult::Unsat);
+        assert_eq!(eng.stats().head_clash_refutations, 0);
     }
 }

@@ -17,7 +17,8 @@ Hard laws (a violation fails the run):
   L4  classify `consistent: false`      => `consistent` = inconsistent   (smoke;
       never exercised on the curated corpus here: family's classify reports
       `consistency_undetermined: true` at `--pair-timeout-ms 1000` on this host)
-  L5  `consistent` = inconsistent       => the guarded surfaces (instance,
+  L5  `consistent` = inconsistent, or classify `consistent: false`
+                                        => the guarded surfaces (instance,
       realize, disjoint, individuals, *-expr, and since #428 `sat` / `subclass` /
       `explain`) answer yes or error `Inconsistent`, never "no" (`sat`: never
       "satisfiable").
@@ -568,8 +569,8 @@ def evaluate(obs):
     unsat = c.get("unsat", set())
     cons = q.get(("consistent",))
     # Classify's `consistent: false` also makes the KB inconsistent for the laws. Without it,
-    # a killed default `consistent` (30 s) left L3 / R2 to read every per-query `sat` that
-    # errors "Inconsistent" as a violation (ore_ont_13052; HermiT and Konclude confirm it
+    # a killed default `consistent` (30 s) left L3 to read every per-query `sat` that errors
+    # "Inconsistent" as a violation (ore_ont_13052; HermiT and Konclude confirm it
     # inconsistent).
     kb_inconsistent = ((cons is not None and cons["v"] == "no")
                        or (cl_ok and c.get("consistent") is False))
@@ -907,6 +908,9 @@ def self_test():
     cases.append(("killed consistent + classify inconsistent: sat inconsistent is no violation",
                   laws_of(ob, "violation"), []))
     cases.append(("killed consistent + classify inconsistent: L5 ok", laws_of(ob, "ok"), ["L5"]))
+    cases.append(("killed consistent + classify inconsistent: L5's operand is classify",
+                  [x["operands"][0]["cmd"] for x in evaluate(ob) if x["law"] == "L5"],
+                  ["classify"]))
     ob = dict(onto="t", q={("consistent",): U, ("sat", "C"): Y},
               classify=base(consistent=False, unsat={"C"})["classify"])
     cases.append(("killed consistent + classify inconsistent: sat yes fires L5",

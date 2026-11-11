@@ -288,7 +288,8 @@ All notable changes to rustdl are documented here. Format is based on
     individual whose node is marked distinct from it) also took every active decision. Wine has
     `DifferentIndividuals` and four functional roles, so both fire constantly.
   - Fix: `RUSTDL_MERGE_EXACT_DEPS` (#370, merged default-off in #380) is now **default ON**.
-    Distinctness marks carry their deps, and the `≤n` merges use them. The refused nominal
+    Distinctness marks carry their deps, and the `≤n` merges use them (P4, an exhausted merge
+    frame; P7, `apply_max`'s forced merge when a witness pair is distinct). The refused nominal
     merge's `⊥` now rests on its causes: both `Nominal` labels' deps (read where they are, #498)
     and the distinctness mark's deps. With the flag off it keeps every active decision.
   - The #498 fix comes first: with this `⊥` and #498's stale bookkeeping, wine read as

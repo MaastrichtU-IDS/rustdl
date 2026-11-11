@@ -81,7 +81,8 @@ const MIN9: &str = include_str!("fixtures/issue498/min9.ofn");
 /// distinct `r`-successors in a one-element domain. On the `M` branch the two
 /// witnesses `apply_min` marks distinct (on that decision) are both forced into
 /// `{a}`, and the refused merge's `⊥` must carry the mark's deps; without them the
-/// branch's clash is unconditional and the ontology reads inconsistent.
+/// branch's clash is unconditional and the ontology reads inconsistent. This pins the
+/// mark's deps only while the search tries `M` before `G` (their interning order).
 const K6: &str = include_str!("fixtures/issue490/k6.ofn");
 
 const WEDGE: &str = "RUSTDL_HYPERTABLEAU";

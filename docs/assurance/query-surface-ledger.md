@@ -481,6 +481,14 @@ HermiT, JFact (checked on the fixture) and rustdl say inconsistent. The oracle r
 "both peers must agree", so **these inconsistencies are never scored**: a rustdl miss of this
 kind would be invisible to the net.
 
+**A third shape (#490, 2026-11-11): a functional role into a nominal cover.** Fixture
+`scripts/gen/fixtures/konclude-functional-nominal-cover.ofn` (9 axioms, from the #490 PR-2 fuzz,
+seed 144). `i3` differs from `i0`, `i1` and `i2`, so `⊤ ⊑ {i2, i0, i1} ⊔ C2` puts it in `C2`;
+`C2 ⊑ ∃r1.∀r0.{i1}` with `r1` functional and `r1(i3, i0)` gives `i0 : ∀r0.{i1}`; `r0(i0, i2)` then
+forces `i2 = i1`, against `DifferentIndividuals(i1 i2)`. HermiT (`InconsistentOntologyException`)
+and rustdl say inconsistent; Konclude says consistent. This is a wrong "consistent", not an
+under-report, so the same "both peers must agree" rule leaves it unscored.
+
 **rustdl-fail, case 1283 (#437, fixed).** `consistent` and `sat` failed with
 `ReasonError::NoVerdict` ("bug indicator") instead of answering or giving up with exit 3.
 #437 removed the cause (a `Self(r⁻)` self-loop livelock); since #449 any `NoVerdict` that

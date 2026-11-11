@@ -1182,8 +1182,9 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         // `Frame::merge`'s distinct option both mark pairs distinct on a
         // branch decision; so when any witness pair is distinct this falls back
         // to every active decision, as the `⊥` arm below does. With exact deps
-        // (#370, the default since #490) the marks' own deps are used (P7). With the choice point on (the default) this merge is
-        // forced only when one pair is mergeable: for two witnesses that pair is
+        // (#370, the default since #490) the marks' own deps are used (P7).
+        // With the choice point on (the default) this merge is forced only
+        // when one pair is mergeable: for two witnesses that pair is
         // all of them, and for more the other pairs are distinct and the
         // fallback applies. Taking every active decision unconditionally cost
         // PMD core its back-jumping on ordinary functional merges (#288).

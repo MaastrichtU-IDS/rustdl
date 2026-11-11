@@ -835,7 +835,19 @@ impl Frame {
                 // node with ~330k labels those dead trials kept a cut search running
                 // ~10 s past its budget (`ore_ont_7581`). Every ancestor stops the
                 // same way when this `DepthLimit` reaches it, since the flag is sticky.
+                //
+                // Precondition: the flag belongs to the deadline in force. `set_deadline`
+                // does not clear it, so a caller that reuses a context under a later
+                // deadline must call `clear_deadline_hit` first; otherwise a stale flag
+                // would stop this search at its first depth-cap `DepthLimit` (an
+                // inconclusive answer where one was available, reported as a cut).
+                // No caller does that today; the assertion keeps it that way.
                 if ctx.deadline_reached() && self.early_return.is_none() {
+                    debug_assert!(
+                        ctx.deadline.is_some_and(|d| std::time::Instant::now() >= d),
+                        "stale deadline_hit: the flag is set but the current deadline has not \
+                         passed (clear_deadline_hit before searching under a new deadline)"
+                    );
                     self.early_return = Some(SearchVerdict::DepthLimit);
                 }
             }
@@ -2572,6 +2584,9 @@ mod deadline_stop_tests {
         let [a, b, c] = [0, 1, 2].map(|i| pool.atomic(ClassId::new(i)));
         let root = pool.or([a, b, c]);
         TRIALS.with(|t| t.set(0));
+        // `run` resets this only when its search returns; never inherit an expiry
+        // left behind by a test that panicked earlier on this thread.
+        EXPIRE_AFTER.with(|e| e.set(None));
         let mut ctx = TableauContext::new(&pool);
         ctx.set_deadline(std::time::Instant::now() + std::time::Duration::from_secs(3600));
         let n = ctx.new_node();
@@ -2579,5 +2594,36 @@ mod deadline_stop_tests {
         let v = search(&mut ctx, 64);
         assert!(matches!(v, SearchVerdict::Sat), "got {v:?}");
         assert!(!ctx.deadline_reached());
+    }
+
+    /// The stop's precondition: a flag left over from an earlier, elapsed deadline
+    /// must not stop a search under a later one. Reusing a context that way without
+    /// `clear_deadline_hit` is a caller bug, and the assertion names it instead of
+    /// letting the stale flag turn a depth-cap `DepthLimit` into a silent cut.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale deadline_hit")]
+    fn a_stale_deadline_flag_is_caught() {
+        let mut pool = ConceptPool::new();
+        let [a, b, c] = [0, 1, 2].map(|i| pool.atomic(ClassId::new(i)));
+        let root = pool.or([a, b, c]);
+        TRIALS.with(|t| t.set(0));
+        EXPIRE_AFTER.with(|e| e.set(None));
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_deadline(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .expect("an instant one second in the past exists"),
+        );
+        assert!(
+            ctx.check_deadline(),
+            "latch the flag on an elapsed deadline"
+        );
+        // A later deadline, flag NOT cleared.
+        ctx.set_deadline(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        let n = ctx.new_node();
+        ctx.add_label(n, root);
+        // Depth 1: the option's child is `expand(_, 0)`, a depth-cap `DepthLimit`.
+        let _ = search(&mut ctx, 1);
     }
 }

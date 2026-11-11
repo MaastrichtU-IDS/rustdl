@@ -216,7 +216,9 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     deadline: Option<std::time::Instant>,
     /// Set to `true` by [`crate::search`] the first time it notices
     /// `deadline` has elapsed. Sticky — callers read this *after*
-    /// search returns to distinguish "depth-limited" from "timed out".
+    /// search returns to distinguish "depth-limited" from "timed out",
+    /// and search itself reads it to stop open frames after a cut (#494;
+    /// see [`Self::clear_deadline_hit`]).
     deadline_hit: bool,
     /// #475: set when the deterministic saturation ran out of iterations
     /// ([`Self::note_saturation_cap`]), never when it stopped for the deadline.
@@ -661,9 +663,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// depth-cap `DepthLimit` becomes `Err(NoVerdict)`, and
     /// `classify_internal_with_timeout` propagates that `Err` with `?`.
     ///
-    /// Cannot affect soundness: the flag is a *reporting* channel, read only to
-    /// disambiguate two inconclusive verdicts. It can never turn an
-    /// inconclusive verdict into `Sat` or `Unsat`.
+    /// Cannot affect soundness: the flag can never turn an inconclusive verdict into
+    /// `Sat` or `Unsat`. Callers read it to disambiguate two inconclusive verdicts,
+    /// and since #494 [`crate::search`] also reads it to stop trying options once a
+    /// cut has landed, which only ever yields `DepthLimit`. That makes it a
+    /// precondition, not just reporting: [`Self::set_deadline`] does not clear the
+    /// flag, so a caller that searches again under a later deadline must clear it
+    /// first, or the stale flag stops the next search at its first depth-cap
+    /// `DepthLimit` (a debug assertion in `search` catches this).
     pub fn clear_deadline_hit(&mut self) -> &mut Self {
         self.deadline_hit = false;
         self

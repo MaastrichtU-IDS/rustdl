@@ -548,9 +548,9 @@ impl Frame {
     /// Branch on an open `≤n` (#293): merge the pivot into each mergeable
     /// earlier witness in turn, then try it distinct from all of them. A merge
     /// carries this frame's id, a clash that does not depend on it back-jumps,
-    /// and if every option fails the `≤n` is unsatisfiable under every active
-    /// decision (the distinctness that rules out other merges is not tracked
-    /// precisely, so this stays conservative, as `apply_max`'s `⊥` arm does).
+    /// and if every option fails the `≤n` is unsatisfiable under the marks that
+    /// ruled out the other merges (P4, with exact deps: the default since #490),
+    /// or under every active decision with exact deps off.
     /// Each merge's deps cover every witness (see [`first_open_max`]).
     fn merge(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize, open: OpenMax) -> Self {
         // Read before this frame's own id is pushed.
@@ -670,11 +670,14 @@ impl Frame {
                     if ctx.merge_into_with_deps(open.pivot, *w, deps.as_slice()) {
                         Start::Child(k, cp)
                     } else {
-                        // Unreachable: the pair was mergeable when listed and
-                        // nothing has run since the last rollback. With exact
-                        // deps (#370) this `{my_id}` would under-report.
-                        debug_assert!(!ctx.merge_exact_deps(), "merge frame: refused merge");
-                        Start::Decided(k, cp, SearchVerdict::Unsat(DepSet::from_slice(&[my_id])))
+                        // Believed unreachable: the pair was mergeable when listed
+                        // and nothing has run since the last rollback. If it is
+                        // reached, the refusal rests on this decision, the pair's
+                        // own deps and the mark that refused it (#370, #490), not
+                        // on `{my_id}` alone, which would under-report.
+                        let mut refused = deps.clone();
+                        refused = crate::deps::union(&refused, &ctx.distinct_deps(open.pivot, *w));
+                        Start::Decided(k, cp, SearchVerdict::Unsat(refused))
                     }
                 } else {
                     // The marks are this decision's; the witnesses' deps keep
@@ -853,8 +856,9 @@ impl Frame {
         } else {
             // Every option clashed and every clash depended on `my_id`.
             // The decision itself is therefore unsat under the union of
-            // the other deps of its refuted options (plus, for a merge,
-            // every active decision).
+            // the other deps of its refuted options (plus, for a merge, the
+            // marks among the witnesses with exact deps, or every active
+            // decision without).
             let mut combined = self.initial;
             for deps in &self.refuted {
                 for &x in deps {

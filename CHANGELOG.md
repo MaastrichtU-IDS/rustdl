@@ -298,9 +298,16 @@ All notable changes to rustdl are documented here. Format is based on
     `consistent` is `consistent` (31 s). Wine's per-decision cost remains (about 30 s per call);
     that is a separate lever.
   - The per-query FP gate arm (#505) on pizza, ro and sulo: 0 FP, 0 MISS, 0 give-ups.
-  - Tests: `refused_nominal_merge_rests_on_its_causes` (red when either the label deps or the mark
-    deps are dropped); the #498 pin `refused_nominal_merge_leaves_the_node_in_place` now checks
-    both settings; `flag_defaults.rs`.
+  - Tests:
+    - `refused_nominal_merge_rests_on_its_causes` is red when either the label deps or the mark
+      deps are dropped.
+    - The #498 pin `refused_nominal_merge_leaves_the_node_in_place` now checks both settings.
+    - `tests/nominal_assignment_deps.rs` gains `k6.ofn` (`⊤ ⊑ {a}`, `M ⊑ ≥2 r`, `p : M ⊔ G`) and an
+      exact-deps on/off axis. Dropping the mark's deps turns k6 (false `inconsistent`) and q5's
+      `individuals` red end to end.
+    - `flag_defaults.rs`.
+  - A refused merge in a `≤n` merge frame (believed unreachable) now reports the pair's and the
+    mark's deps, not its own decision alone.
   - PR2_EVIDENCE_PLACEHOLDER
 - **Per-query `sat` / `sat-expr` / `subclass` / `explain` no longer give a false `unsat` or a false
   subsumption from a nominal merge (#498).** On `c5e.ofn` and `q5.ofn` (12 and 11 axioms: nominals,

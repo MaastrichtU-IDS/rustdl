@@ -2049,8 +2049,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
 
     /// Mark `a` and `b` as denoting distinct individuals, with no deps.
     /// Equivalent to `mark_distinct_with_deps(a, b, &[])`: for marks that
-    /// hold before any decision (asserted `DifferentIndividuals`).
+    /// hold before any decision (asserted `DifferentIndividuals`). With exact
+    /// deps (the default since #490) a clash on this mark rests on nothing, so
+    /// calling it under a decision is unsound; use `mark_distinct_with_deps`.
     pub fn mark_distinct(&mut self, a: NodeId, b: NodeId) {
+        debug_assert!(
+            !self.merge_exact_deps || self.active_branches.is_empty(),
+            "mark_distinct under a decision with exact deps: the mark needs its deps"
+        );
         self.mark_distinct_with_deps(a, b, &[]);
     }
 
@@ -2156,7 +2162,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Convenience wrapper: merge with no extra merge-condition deps.
     /// Equivalent to `merge_into_with_deps(source, target, &[])`. Use
     /// `merge_into_with_deps` when the merge is conditional on branch
-    /// decisions whose ids should follow the moved labels and edges.
+    /// decisions whose ids should follow the moved labels and edges: a merge
+    /// made under a decision with no deps lets a clash on the moved facts
+    /// back-jump past that decision.
     #[allow(clippy::missing_panics_doc)]
     pub fn merge_into(&mut self, source: NodeId, target: NodeId) -> bool {
         self.merge_into_with_deps(source, target, &[])
@@ -2339,7 +2347,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     let deps = crate::deps::union(&mark_deps, &DepSet::from_slice(merge_deps));
                     self.mark_distinct_with_deps(target, other, &deps);
                 } else {
-                    self.mark_distinct(target, other);
+                    self.mark_distinct_with_deps(target, other, &[]);
                 }
             }
         }
@@ -3283,14 +3291,16 @@ pub fn max_choice_point_enabled() -> bool {
 /// #370 `RUSTDL_MERGE_EXACT_DEPS` (**default ON** since #490, `=0` reverts): exact
 /// dependency sets for `≤n` merges. Each distinctness mark records the
 /// decisions it depends on ([`TableauContext::mark_distinct_with_deps`]), and
-/// two sites that took every active decision use them instead:
+/// three sites that took every active decision use them instead:
 ///
 /// * P4, an exhausted merge frame (`search::Frame::merge`): the `≤n` label, the
 ///   witnesses (their edges and qualifier labels) and the marks among the
 ///   witnesses up to the pivot, which are what removed the other options;
 /// * P7, `apply_max`'s forced merge when some witness pair is distinct (only
 ///   with [`max_choice_point_enabled`]: without it the merge is a pick among
-///   pairs, which the marks do not justify).
+///   pairs, which the marks do not justify);
+/// * a refused nominal merge's `⊥` (`rules::apply_nominal_assignment`, #490):
+///   both `Nominal` labels' deps and the mark that refused it.
 ///
 /// Either conservative set made every clash below a `≤n` depend on every open
 /// decision and turned back-jumping off above it: with both exact,
@@ -5231,7 +5241,8 @@ mod tests {
             ctx.add_label_with_deps(fresh, nom_m, &[d0]);
             let d1 = ctx.push_branch();
             ctx.add_label_with_deps(fresh, nom_a, &[d1]);
-            ctx.mark_distinct(fresh, m_node);
+            // A told mark (as `DifferentIndividuals` makes): no deps.
+            ctx.mark_distinct_with_deps(fresh, m_node, &[]);
             crate::rules::apply_nominal_assignment(&mut ctx, fresh);
             let want: &[u32] = if exact { &[d0] } else { &[d0, d1] };
             assert_eq!(

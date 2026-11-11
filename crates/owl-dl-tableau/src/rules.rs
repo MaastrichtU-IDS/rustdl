@@ -1177,11 +1177,12 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         // excluding the other pairs. A later clash must carry these, or it
         // back-jumps past the decision that created a witness and reads a
         // satisfiable class as unsat (#299 review). Witness edges and qualifier
-        // labels carry precise deps. Distinctness does not (`mark_distinct`
-        // records none), yet `apply_min` and `Frame::merge`'s distinct option
-        // both mark pairs distinct on a branch decision; so when any witness
-        // pair is distinct this falls back to every active decision, as the `⊥`
-        // arm below does. With the choice point on (the default) this merge is
+        // labels carry precise deps. With exact deps off, distinctness does
+        // not (`mark_distinct` records none), yet `apply_min` and
+        // `Frame::merge`'s distinct option both mark pairs distinct on a
+        // branch decision; so when any witness pair is distinct this falls back
+        // to every active decision, as the `⊥` arm below does. With exact deps
+        // (#370, the default since #490) the marks' own deps are used (P7). With the choice point on (the default) this merge is
         // forced only when one pair is mergeable: for two witnesses that pair is
         // all of them, and for more the other pairs are distinct and the
         // fallback applies. Taking every active decision unconditionally cost
@@ -1312,9 +1313,9 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         if !merged && let Some(bot) = ctx.pool().bot_id() {
             // #288: every candidate merge was rejected or is excluded. The
             // clash rests on the `≤n` label, the witnesses (`witness_deps`:
-            // their edges and qualifier labels, plus every active decision
-            // when a pair is distinct, since `mark_distinct` records no
-            // deps), and what each rejected trial merge clashed on. Taking
+            // their edges and qualifier labels, plus the marks' deps when a
+            // pair is distinct, or every active decision with exact deps off),
+            // and what each rejected trial merge clashed on. Taking
             // every active decision instead stopped back-jumping here, and on
             // PMD core the search retried every earlier decision in turn.
             // `RUSTDL_MAX_PRECISE_BOT=0` keeps the old conservative set.

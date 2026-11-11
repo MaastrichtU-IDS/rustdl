@@ -1664,6 +1664,81 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// registered complement and is skipped here while #382 counts it: that can
     /// only keep a node unblocked longer, never add a clash.
     fn nominal_max_overfull(&self, v: NodeId) -> Option<bool> {
+        let got = self.nominal_max_overfull_fast(v);
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            got,
+            self.nominal_max_overfull_reference(v),
+            "#490 B2: nominal_max_overfull differs from its reference at {v:?}"
+        );
+        got
+    }
+
+    /// [`Self::nominal_max_overfull`] without the work that cannot change its
+    /// answer (#490 lever B2). A `≤` label matters only if its candidate set holds
+    /// `v`, so that is checked first, from `w`'s own neighbour list, before walking
+    /// `w`'s neighbourhood; and the walk stops once the set holds `n + 1` distinct
+    /// candidates (with `v` among them, it is over-full).
+    fn nominal_max_overfull_fast(&self, v: NodeId) -> Option<bool> {
+        if !self.nominal_block_guard {
+            return None;
+        }
+        crate::bump_counter!(self, nmo_calls);
+        let mut found = None;
+        for (_, w) in self.graph.node(v).neighbours() {
+            if !self.node_is_nominal(w) {
+                continue;
+            }
+            let wn = self.graph.node(w);
+            for &c in &wn.labels {
+                let ConceptExpr::Max(n, role, body) = self.pool.get(c) else {
+                    continue;
+                };
+                if self.dkey_range_of(*body).is_some() {
+                    continue;
+                }
+                let Some(comp) = self.complement_of(*body) else {
+                    continue;
+                };
+                // `v` is a candidate iff some `(seen, v)` in `w`'s list satisfies the
+                // role and `v` lacks `¬C`: exactly `cands.contains(&v)` below.
+                let v_counts = !self.graph.node(v).has_label(comp)
+                    && wn
+                        .neighbours()
+                        .any(|(seen, x)| x == v && self.edge_satisfies(seen, *role));
+                if !v_counts {
+                    crate::bump_counter!(self, nmo_label_skipped_v);
+                    continue;
+                }
+                let limit = *n as usize;
+                let mut cands: Vec<NodeId> = Vec::new();
+                let mut over = false;
+                for (seen, x) in wn.neighbours() {
+                    if self.edge_satisfies(seen, *role)
+                        && !self.graph.node(x).has_label(comp)
+                        && !cands.contains(&x)
+                    {
+                        cands.push(x);
+                        if cands.len() > limit {
+                            over = true;
+                            break;
+                        }
+                    }
+                }
+                if over {
+                    crate::bump_counter!(self, nmo_early_exit);
+                    return Some(true);
+                }
+                found = Some(false);
+            }
+        }
+        found
+    }
+
+    /// The pre-#490-B2 form of [`Self::nominal_max_overfull`], kept as the
+    /// reference for its debug differential.
+    #[cfg(any(test, debug_assertions))]
+    fn nominal_max_overfull_reference(&self, v: NodeId) -> Option<bool> {
         if !self.nominal_block_guard {
             return None;
         }
@@ -5641,6 +5716,48 @@ mod tests {
                     .iter()
                     .any(|&l| l == some_k1 || l == at_least_two_k1 || l == at_least_two_ks)
             );
+        }
+    }
+
+    /// #490 lever B2: `nominal_max_overfull`'s fast form equals its reference.
+    /// `w` is the nominal `{a}` with `≤1 r.C`; its `r`-neighbours vary per case.
+    #[test]
+    fn nominal_max_overfull_fast_matches_the_reference() {
+        let mut pool = ConceptPool::new();
+        let (r, s) = (RoleId::new(0), RoleId::new(1));
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let at_most_one = pool.max(1, Role::Named(r), c);
+        let nom_a = pool.nominal(IndividualId::new(0));
+        // (v's edge role from w, v has ¬C, other r-neighbours of w, a duplicate edge to v)
+        let cases: [(RoleId, bool, usize, bool, Option<bool>); 6] = [
+            (r, false, 1, false, Some(true)),  // v and one other: 2 > 1
+            (r, false, 0, false, Some(false)), // v alone: not over-full
+            (r, false, 0, true, Some(false)),  // v twice is still one candidate
+            (r, true, 2, false, None),         // v has ¬C: not counted
+            (s, false, 2, false, None),        // v hangs off another role
+            (r, false, 3, false, Some(true)),  // the early exit at n + 1
+        ];
+        for (v_role, v_not_c, others, dup, want) in cases {
+            let mut ctx = TableauContext::new(&pool);
+            ctx.set_complement(c, not_c);
+            let w = ctx.new_node();
+            ctx.add_label(w, nom_a);
+            ctx.add_label(w, at_most_one);
+            let v = ctx.new_node();
+            ctx.add_edge(w, v_role, v);
+            if dup {
+                ctx.add_edge(w, v_role, v);
+            }
+            if v_not_c {
+                ctx.add_label(v, not_c);
+            }
+            for _ in 0..others {
+                let x = ctx.new_node();
+                ctx.add_edge(w, r, x);
+            }
+            assert_eq!(ctx.nominal_max_overfull_reference(v), want, "the reference");
+            assert_eq!(ctx.nominal_max_overfull_fast(v), want, "the fast form");
         }
     }
 }

@@ -17,13 +17,19 @@ JAR="${ROBOT_JAR:?set ROBOT_JAR to a jar with org.semanticweb.HermiT.cli.Command
 JAVA="${JAVA:-java}"
 mkdir -p "$OUT"
 [[ $# -eq 0 ]] && set -- pizza ro sulo wine
+fail=0
 for f in "$@"; do
   echo "==> $f"
+  tmp="$OUT/.$f-classified.ofn.tmp"
   if "$JAVA" -Xmx8g -Dfile.encoding=UTF-8 -cp "$JAR" \
-      org.semanticweb.HermiT.cli.CommandLine -c -o "$OUT/$f-classified.ofn" "$IN/$f.ofn" \
-      > "$OUT/$f.log" 2>&1; then
+      org.semanticweb.HermiT.cli.CommandLine -c -o "$tmp" "$IN/$f.ofn" \
+      > "$OUT/$f.log" 2>&1 && [[ -s "$tmp" ]]; then
+    # Replace the oracle only on success, so a failed run never leaves a partial one.
+    mv "$tmp" "$OUT/$f-classified.ofn"
     echo "   ok ($(wc -l < "$OUT/$f-classified.ofn") lines)"
   else
-    echo "   HERMIT FAILED:"; tail -3 "$OUT/$f.log"
+    rm -f "$tmp"; fail=1
+    echo "   HERMIT FAILED (oracle left unchanged):"; tail -3 "$OUT/$f.log"
   fi
 done
+exit "$fail"

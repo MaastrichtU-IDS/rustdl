@@ -12,13 +12,14 @@ All notable changes to rustdl are documented here. Format is based on
   commands take another route (no per-pair deadline, the per-query consistency step, the seeded
   ABox, a query wedge that only proves), and #76 and #498 got past the gate on it.
   `crates/owl-dl-cli/tests/per_query_fp_gate.rs` runs the `rustdl` binary itself, one subprocess
-  per call under a 30 CPU-s cap, and judges each answer against both Konclude and HermiT. Only a
-  false positive fails it: MISSes and give-ups are reported.
+  per call under a 30 CPU-s cap, and judges each answer against both Konclude and HermiT. A
+  false positive, a crash or an error exit fails it; MISSes and give-ups are reported. A stray
+  `RUSTDL_*` variable fails it unless `RUSTDL_PQ_GATE_ALLOW_ENV=1`.
   - In CI: #498's `c5e` / `q5` and #76's five-axiom synthetic (23 calls). Reverting #504 turns 16
     calls red; `RUSTDL_MAX_CHOICE_POINT=0 RUSTDL_MAX_TRIAL_MERGE=0` turns the #76 pair red.
   - Ignored, on pizza v2, ro and sulo: `sat` on every class, and `subclass` + `explain` on every
-    pair both oracles entail and an equal seeded sample of pairs both refute (3,006 calls, about
-    100 s on 8 cores). On main b3c0f7f6: 0 FP, 0 MISS, 0 give-ups. Wine is left out until #490:
+    pair both oracles entail and an equal seeded sample of pairs both refute (3,006 calls, a few
+    minutes of wall time on 8 cores). On main b3c0f7f6: 0 FP, 0 MISS, 0 give-ups. Wine is left out until #490:
     every per-query `sat` on it runs past the cap.
   - `scripts/hermit-oracle.sh` generates the HermiT oracles (`ontologies/real/hermit/`).
 - **The #369 lazy consistency check reports a stall of its own probe as #462's signal (#493,

@@ -29,8 +29,14 @@
 //!   per-query `sat` on it runs past the cap today (#490), so it would only report
 //!   give-ups.
 //!
-//! `RUSTDL_PQ_GATE_JOBS` sets the parallelism of the ignored test (default: the
-//! available cores, at most 8). Unix only: the CPU cap uses `/bin/sh`'s `ulimit`.
+//! Run: `cargo test --release -p owl-dl-cli --test per_query_fp_gate -- --include-ignored
+//! --nocapture` (the counts and every FP / MISS / give-up go to stderr).
+//! `RUSTDL_PQ_GATE_JOBS` sets the ignored test's parallelism (default: the available
+//! cores, at most 8). The children inherit the environment, so a stray `RUSTDL_*`
+//! variable would change "default settings": the tests fail on one unless
+//! `RUSTDL_PQ_GATE_ALLOW_ENV=1` (which the sabotage runs set). A crash, a panic, an
+//! error exit or unparsable output is an error, and fails both tests. Unix only: the
+//! CPU cap uses `/bin/sh`'s `ulimit`.
 
 #![cfg(unix)]
 #![allow(clippy::doc_markdown)]
@@ -63,8 +69,10 @@ enum Answer {
     No,
     /// The command reported the ontology inconsistent.
     Inconsistent,
-    /// No verdict: `unknown`, the CPU or wall cap, or an error.
+    /// No verdict: `unknown` (exit 3), or the CPU or wall cap.
     GaveUp(String),
+    /// A crash, a panic, another error exit, or output the parser does not know.
+    Errored(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,7 +101,7 @@ fn run(job: &Job) -> Answer {
     };
     let mut child = Command::new("/bin/sh")
         .arg("-c")
-        .arg(format!("ulimit -t {CPU_CAP_S}; exec \"$0\" \"$@\""))
+        .arg(format!("ulimit -t {CPU_CAP_S} && exec \"$0\" \"$@\""))
         .arg(env!("CARGO_BIN_EXE_rustdl"))
         .arg(name)
         .arg(&job.file)
@@ -132,10 +140,22 @@ fn run(job: &Job) -> Answer {
     let Some(status) = status else {
         return Answer::GaveUp(format!("wall cap {}s", WALL_CAP.as_secs()));
     };
-    if status.code().is_none() {
-        return Answer::GaveUp(format!("killed (CPU cap {CPU_CAP_S}s)"));
+    if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        // `ulimit -t` delivers SIGXCPU (24) at the limit, then SIGKILL (9).
+        return if sig == 24 || sig == 9 {
+            Answer::GaveUp(format!("CPU cap {CPU_CAP_S}s (signal {sig})"))
+        } else {
+            Answer::Errored(format!(
+                "signal {sig}: {}",
+                stderr.lines().last().unwrap_or("")
+            ))
+        };
     }
-    if stderr.contains("ontology is inconsistent") {
+    if status.code() == Some(1)
+        && stderr
+            .lines()
+            .any(|l| l.trim() == "ontology is inconsistent; every assertion is trivially entailed")
+    {
         return Answer::Inconsistent;
     }
     let first = stdout.lines().next().unwrap_or("").trim();
@@ -160,14 +180,14 @@ fn run(job: &Job) -> Answer {
             }
         }
     };
-    verdict.unwrap_or_else(|| {
-        Answer::GaveUp(format!(
-            "rc {:?}: {} {}",
-            status.code(),
-            first,
+    match (verdict, status.code()) {
+        (Some(v), Some(0)) => v,
+        (None, Some(3)) if first == "unknown" => Answer::GaveUp("unknown (exit 3)".to_owned()),
+        (_, code) => Answer::Errored(format!(
+            "exit {code:?}: {first} {}",
             stderr.lines().last().unwrap_or("")
-        ))
-    })
+        )),
+    }
 }
 
 /// FPs, MISSes and give-ups, each as a line naming the call.
@@ -177,6 +197,7 @@ struct Report {
     fps: Vec<String>,
     misses: Vec<String>,
     give_ups: Vec<String>,
+    errors: Vec<String>,
 }
 
 fn describe(job: &Job) -> String {
@@ -223,6 +244,7 @@ fn judge(job: &Job, got: &Answer, report: &mut Report) {
             "{what}: inconsistent, both oracles find the ontology consistent"
         )),
         (Answer::GaveUp(why), _) => report.give_ups.push(format!("{what}: {why}")),
+        (Answer::Errored(why), _) => report.errors.push(format!("{what}: {why}")),
     }
 }
 
@@ -246,12 +268,16 @@ fn run_all(jobs: &[Job], workers: usize) -> Report {
 
 fn print_report(label: &str, r: &Report) {
     eprintln!(
-        "[pq-fp] {label}: {} calls, {} FP, {} MISS, {} give-up",
+        "[pq-fp] {label}: {} calls, {} FP, {} MISS, {} give-up, {} error",
         r.calls,
         r.fps.len(),
         r.misses.len(),
-        r.give_ups.len()
+        r.give_ups.len(),
+        r.errors.len()
     );
+    for l in &r.errors {
+        eprintln!("[pq-fp]   ERROR {l}");
+    }
     for l in &r.fps {
         eprintln!("[pq-fp]   FP    {l}");
     }
@@ -267,6 +293,23 @@ fn workspace_path(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(rel)
+}
+
+/// Fails on a stray `RUSTDL_*` variable (it would reach every child) unless the run
+/// opts in with `RUSTDL_PQ_GATE_ALLOW_ENV=1`, and prints whatever is set.
+fn require_default_settings() {
+    let set: Vec<String> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("RUSTDL_") && !k.starts_with("RUSTDL_PQ_GATE_"))
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    if !set.is_empty() {
+        eprintln!("[pq-fp] children inherit: {}", set.join(" "));
+        assert!(
+            std::env::var("RUSTDL_PQ_GATE_ALLOW_ENV").is_ok_and(|v| v == "1"),
+            "[pq-fp] {set:?} would change the commands' default settings; unset them, or set \
+             RUSTDL_PQ_GATE_ALLOW_ENV=1 for a deliberate run (a sabotage)"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +339,7 @@ fn pair_jobs(file: &Path, sub: &str, sup: &str, expect: bool) -> [Job; 2] {
 /// synthetic (`A` has only `owl:Thing` above it).
 #[test]
 fn per_query_answers_on_in_repo_fixtures() {
+    require_default_settings();
     let mut jobs = Vec::new();
     for name in ["c5e", "q5"] {
         let file = workspace_path(&format!(
@@ -325,8 +369,10 @@ fn per_query_answers_on_in_repo_fixtures() {
     let report = run_all(&jobs, 4);
     print_report("in-repo", &report);
     assert!(
-        report.give_ups.is_empty(),
-        "an in-repo fixture gave up; these decide in milliseconds, so a cap is a defect here"
+        report.give_ups.is_empty() && report.errors.is_empty(),
+        "an in-repo call gave up or failed; these decide in milliseconds: {:#?} {:#?}",
+        report.give_ups,
+        report.errors
     );
     assert!(
         report.fps.is_empty(),
@@ -380,13 +426,18 @@ fn konclude(path: &Path) -> Oracle {
     }
 }
 
-/// HermiT's `-c` output: one `SubClassOf( <a> <b> )` or `EquivalentClasses( … )`
-/// per line, full IRIs.
 fn hermit(path: &Path) -> Oracle {
     let src =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    parse_hermit(&src).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// HermiT's `-c` output: one `SubClassOf( <a> <b> )` or `EquivalentClasses( … )`
+/// per line, full IRIs. Any other non-blank line is an error, not a skip: a format
+/// drift must not quietly empty the oracle.
+fn parse_hermit(src: &str) -> Result<Oracle, String> {
     let (mut edges, mut unsat, mut thing) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-    for line in src.lines() {
+    for line in src.lines().map(str::trim).filter(|l| !l.is_empty()) {
         let iris: Vec<String> = line
             .split('<')
             .skip(1)
@@ -394,10 +445,12 @@ fn hermit(path: &Path) -> Oracle {
             .map(str::to_owned)
             .collect();
         if line.starts_with("SubClassOf(") && iris.len() == 2 {
-            if iris[0] != OWL_NOTHING && iris[1] != OWL_THING {
+            if iris[1] == OWL_NOTHING {
+                unsat.insert(iris[0].clone());
+            } else if iris[0] != OWL_NOTHING && iris[1] != OWL_THING {
                 edges.insert((iris[0].clone(), iris[1].clone()));
             }
-        } else if line.starts_with("EquivalentClasses(") {
+        } else if line.starts_with("EquivalentClasses(") && iris.len() >= 2 {
             let others = iris.iter().filter(|i| *i != OWL_NOTHING && *i != OWL_THING);
             if iris.iter().any(|i| i == OWL_NOTHING) {
                 unsat.extend(others.cloned());
@@ -412,13 +465,15 @@ fn hermit(path: &Path) -> Oracle {
                     }
                 }
             }
+        } else {
+            return Err(format!("unrecognised HermiT line: {line}"));
         }
     }
-    Oracle {
+    Ok(Oracle {
         closure: closure_of(&edges),
         unsat,
         thing,
-    }
+    })
 }
 
 fn declared_classes(path: &Path) -> Vec<String> {
@@ -454,16 +509,26 @@ impl Rng {
     }
 }
 
-/// The jobs for one fixture, and how many pairs were skipped as disputed.
-fn gate_jobs(file: &Path, k: &Oracle, h: &Oracle, seed: u64) -> (Vec<Job>, usize, usize) {
-    let classes = declared_classes(file);
+/// One fixture's jobs and the counts behind them.
+struct GateJobs {
+    jobs: Vec<Job>,
+    positives: usize,
+    disputed_classes: usize,
+    disputed_pairs: usize,
+}
+
+/// The jobs for one fixture: `sat` on every class both oracles agree on, and
+/// `subclass` + `explain` on every pair both entail (sub-class satisfiable in both)
+/// and on an equal seeded sample of pairs both refute (sub satisfiable in both, sup
+/// not `owl:Thing`-equivalent in either).
+fn gate_jobs(file: &Path, classes: &[String], k: &Oracle, h: &Oracle, seed: u64) -> GateJobs {
     let mut jobs = Vec::new();
-    let mut disputed = 0;
-    for c in &classes {
+    let mut disputed_classes = 0;
+    for c in classes {
         match (k.unsat.contains(c), h.unsat.contains(c)) {
             (false, false) => jobs.push(sat_job(file, c, true)),
             (true, true) => jobs.push(sat_job(file, c, false)),
-            _ => disputed += 1,
+            _ => disputed_classes += 1,
         }
     }
     let either_unsat = |c: &String| k.unsat.contains(c) || h.unsat.contains(c);
@@ -473,16 +538,16 @@ fn gate_jobs(file: &Path, k: &Oracle, h: &Oracle, seed: u64) -> (Vec<Job>, usize
         .intersection(&h.closure)
         .filter(|(a, _)| !either_unsat(a))
         .collect();
-    disputed += k.closure.symmetric_difference(&h.closure).count();
+    let disputed_pairs = k.closure.symmetric_difference(&h.closure).count();
     for (a, b) in &positives {
         jobs.extend(pair_jobs(file, a, b, true));
     }
     let mut negatives: Vec<(String, String)> = Vec::new();
-    for a in &classes {
+    for a in classes {
         if either_unsat(a) {
             continue;
         }
-        for b in &classes {
+        for b in classes {
             if a == b || either_thing(b) {
                 continue;
             }
@@ -492,7 +557,8 @@ fn gate_jobs(file: &Path, k: &Oracle, h: &Oracle, seed: u64) -> (Vec<Job>, usize
             }
         }
     }
-    let mut rng = Rng(seed | 1);
+    // A zero state stays zero; any other seed is used as given.
+    let mut rng = Rng(seed.max(1));
     let want = positives.len().min(negatives.len());
     for i in 0..want {
         let j = i + usize::try_from(rng.next() % (negatives.len() - i) as u64).expect("index");
@@ -501,19 +567,25 @@ fn gate_jobs(file: &Path, k: &Oracle, h: &Oracle, seed: u64) -> (Vec<Job>, usize
     for (a, b) in &negatives[..want] {
         jobs.extend(pair_jobs(file, a, b, false));
     }
-    (jobs, positives.len(), disputed)
+    GateJobs {
+        jobs,
+        positives: positives.len(),
+        disputed_classes,
+        disputed_pairs,
+    }
 }
 
 #[test]
 #[ignore = "needs the gitignored ontologies/real/{pizza,ro,sulo}.ofn, konclude-input/*-classified.owx \
             and hermit/*-classified.ofn; runs a few thousand rustdl subprocesses"]
 fn per_query_answers_match_both_oracles_on_the_gate_fixtures() {
+    require_default_settings();
     let workers = std::env::var("RUSTDL_PQ_GATE_JOBS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get().min(8)));
     let base = workspace_path("ontologies/real");
-    let mut fps = Vec::new();
+    let (mut fps, mut errors) = (Vec::new(), Vec::new());
     for (i, name) in ["pizza", "ro", "sulo"].iter().enumerate() {
         let file = base.join(format!("{name}.ofn"));
         let kfile = base.join(format!("konclude-input/{name}-classified.owx"));
@@ -536,20 +608,122 @@ fn per_query_answers_match_both_oracles_on_the_gate_fixtures() {
             );
         }
         let (k, h) = (konclude(&kfile), hermit(&hfile));
+        let classes = declared_classes(&file);
         let seed = 505 + u64::try_from(i).expect("index");
-        let (jobs, positives, disputed) = gate_jobs(&file, &k, &h, seed);
+        let g = gate_jobs(&file, &classes, &k, &h, seed);
         eprintln!(
-            "[pq-fp] {name}: {} calls ({positives} entailed pairs and as many refuted ones, \
-             each by subclass and explain; sat on every class), {disputed} disputed skipped, \
+            "[pq-fp] {name}: {} calls ({} classes; {} entailed pairs and as many refuted ones, \
+             each by subclass and explain), {} disputed classes and {} disputed pairs skipped, \
              seed {seed}",
-            jobs.len()
+            g.jobs.len(),
+            classes.len(),
+            g.positives,
+            g.disputed_classes,
+            g.disputed_pairs
         );
-        let report = run_all(&jobs, workers);
+        // A drifted or empty oracle would run no pair at all and pass.
+        assert!(
+            !classes.is_empty() && g.positives > 0,
+            "[pq-fp] {name}: {} classes, {} entailed pairs: an oracle or the fixture is empty",
+            classes.len(),
+            g.positives
+        );
+        let report = run_all(&g.jobs, workers);
         print_report(name, &report);
         fps.extend(report.fps.into_iter().map(|l| format!("{name}: {l}")));
+        errors.extend(report.errors.into_iter().map(|l| format!("{name}: {l}")));
     }
     assert!(
-        fps.is_empty(),
-        "per-query false positives on the gate fixtures: {fps:#?}"
+        fps.is_empty() && errors.is_empty(),
+        "per-query false positives / errors on the gate fixtures: {fps:#?} {errors:#?}"
     );
+}
+
+/// The oracle parser and the job builder, on a synthetic pair of oracles (no
+/// fixtures needed): the equivalence star, the `owl:Nothing` / `owl:Thing` groups,
+/// `SubClassOf(X owl:Nothing)`, a rejected line, the skip rules and the disputed
+/// accounting.
+#[test]
+fn oracle_parsing_and_job_selection() {
+    let iri = |c: &str| format!("http://t#{c}");
+    let line = |kind: &str, cs: &[&str]| {
+        let parts: Vec<String> = cs
+            .iter()
+            .map(|c| match *c {
+                "Thing" => format!("<{OWL_THING}>"),
+                "Nothing" => format!("<{OWL_NOTHING}>"),
+                c => format!("<{}>", iri(c)),
+            })
+            .collect();
+        format!("{kind}( {} )", parts.join(" "))
+    };
+    let src = [
+        line("SubClassOf", &["A", "B"]),
+        line("SubClassOf", &["B", "C"]),
+        line("EquivalentClasses", &["C", "C2"]),
+        line("EquivalentClasses", &["Nothing", "U"]),
+        line("SubClassOf", &["U2", "Nothing"]),
+        line("EquivalentClasses", &["Thing", "T"]),
+    ]
+    .join("\n");
+    let h = parse_hermit(&src).expect("parses");
+    for (a, b) in [
+        ("A", "B"),
+        ("A", "C"),
+        ("A", "C2"),
+        ("B", "C2"),
+        ("C2", "C"),
+    ] {
+        assert!(
+            h.closure.contains(&(iri(a), iri(b))),
+            "{a} ⊑ {b} in the closure"
+        );
+    }
+    assert!(!h.closure.contains(&(iri("B"), iri("A"))));
+    assert_eq!(h.unsat, BTreeSet::from([iri("U"), iri("U2")]));
+    assert_eq!(h.thing, BTreeSet::from([iri("T")]));
+    assert!(parse_hermit("Declaration( Class( <http://t#A> ) )").is_err());
+
+    // Konclude agrees except on `A ⊑ C2` (and so on `A ⊑ C`): two disputed pairs.
+    let mut k = parse_hermit(&src).expect("parses");
+    k.closure.remove(&(iri("A"), iri("C2")));
+    k.closure.remove(&(iri("A"), iri("C")));
+    let classes: Vec<String> = ["A", "B", "C", "C2", "U", "U2", "T", "X"]
+        .iter()
+        .map(|c| iri(c))
+        .collect();
+    let g = gate_jobs(Path::new("t.ofn"), &classes, &k, &h, 7);
+    assert_eq!(g.disputed_pairs, 2);
+    assert_eq!(g.disputed_classes, 0);
+    // Entailed in both: A⊑B, B⊑C, B⊑C2, C⊑C2, C2⊑C.
+    assert_eq!(g.positives, 5);
+    let pairs: Vec<(&str, &str, bool)> = g
+        .jobs
+        .iter()
+        .filter(|j| j.cmd == Cmd::Subclass)
+        .map(|j| (j.args[0].as_str(), j.args[1].as_str(), j.expect))
+        .collect();
+    assert_eq!(pairs.iter().filter(|p| p.2).count(), 5);
+    assert_eq!(
+        pairs.iter().filter(|p| !p.2).count(),
+        5,
+        "as many refuted pairs"
+    );
+    for (a, b, expect) in &pairs {
+        if !expect {
+            assert!(
+                !h.unsat.contains(*a) && !h.thing.contains(*b),
+                "a refuted pair never has an unsat sub or a Thing-equivalent sup: {a} {b}"
+            );
+            assert!(!k.closure.contains(&((*a).to_owned(), (*b).to_owned())));
+        }
+    }
+    let sat: Vec<(&str, bool)> = g
+        .jobs
+        .iter()
+        .filter(|j| j.cmd == Cmd::Sat)
+        .map(|j| (j.args[0].as_str(), j.expect))
+        .collect();
+    assert_eq!(sat.len(), classes.len());
+    assert!(sat.contains(&(iri("U").as_str(), false)) && sat.contains(&(iri("X").as_str(), true)));
 }

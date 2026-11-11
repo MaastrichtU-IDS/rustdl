@@ -309,7 +309,20 @@ All notable changes to rustdl are documented here. Format is based on
     - `flag_defaults.rs`.
   - A refused merge in a `≤n` merge frame (believed unreachable) now reports the pair's and the
     mark's deps, not its own decision alone.
-  - PR2_EVIDENCE_PLACEHOLDER
+  - Evidence (main b3c0f7f6 vs the fix, two pins):
+    - **1,920 nominal-bearing ORE files, classify:** 1,778 same content; median CPU fix/main
+      1.000. The 3 differences are budget cuts on both arms; on 6333, both arms have 0 FP against
+      Konclude. The 2 losses and 1 rescue at the 120 s cap answer on both arms, with identical
+      content, in a serial recheck.
+    - **R7 laws + oracle, 1,542 generated nominal / functional cases:** 0 violations on either
+      arm; all 87,513 per-query answers identical.
+    - **MISSED net** (the standing 400, Konclude ∪ HermiT): FP 0, unsat FP 0 on both arms.
+      MISSED: main 15, fix 18, all from budget-cut 12698 and 12191. A serial recheck at
+      `--pair-timeout-ms 1000` finds 0 on both arms.
+    - **#380's 1,800-case fuzz vs HermiT:** 0 disagreements on any arm. The fix decides 3
+      cases that main caps.
+    - **Gates:** the soundness diff (wine 653 = 653), the per-pair and per-query FP gates, and
+      the cross-command laws.
 - **Per-query `sat` / `sat-expr` / `subclass` / `explain` no longer give a false `unsat` or a false
   subsumption from a nominal merge (#498).** On `c5e.ofn` and `q5.ofn` (12 and 11 axioms: nominals,
   `∀r.{a}`, two unions), `sat E` answered `unsat` and `subclass E Zb` answered `yes`. `consistent`

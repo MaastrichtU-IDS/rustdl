@@ -560,9 +560,9 @@ impl Frame {
     /// Branch on an open `≤n` (#293): merge the pivot into each mergeable
     /// earlier witness in turn, then try it distinct from all of them. A merge
     /// carries this frame's id, a clash that does not depend on it back-jumps,
-    /// and if every option fails the `≤n` is unsatisfiable under every active
-    /// decision (the distinctness that rules out other merges is not tracked
-    /// precisely, so this stays conservative, as `apply_max`'s `⊥` arm does).
+    /// and if every option fails the `≤n` is unsatisfiable under the marks that
+    /// ruled out the other merges (P4, with exact deps: the default since #490),
+    /// or under every active decision with exact deps off.
     /// Each merge's deps cover every witness (see [`first_open_max`]).
     fn merge(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize, open: OpenMax) -> Self {
         // Read before this frame's own id is pushed.
@@ -682,11 +682,13 @@ impl Frame {
                     if ctx.merge_into_with_deps(open.pivot, *w, deps.as_slice()) {
                         Start::Child(k, cp)
                     } else {
-                        // Unreachable: the pair was mergeable when listed and
-                        // nothing has run since the last rollback. With exact
-                        // deps (#370) this `{my_id}` would under-report.
-                        debug_assert!(!ctx.merge_exact_deps(), "merge frame: refused merge");
-                        Start::Decided(k, cp, SearchVerdict::Unsat(DepSet::from_slice(&[my_id])))
+                        // Believed unreachable: the pair was mergeable when listed
+                        // and nothing has run since the last rollback. If it is
+                        // reached, the refusal rests on this decision, the pair's
+                        // own deps and the mark that refused it (#370, #490), not
+                        // on `{my_id}` alone, which would under-report.
+                        let refused = crate::deps::union(&deps, &ctx.distinct_deps(open.pivot, *w));
+                        Start::Decided(k, cp, SearchVerdict::Unsat(refused))
                     }
                 } else {
                     // The marks are this decision's; the witnesses' deps keep
@@ -890,8 +892,9 @@ impl Frame {
         } else {
             // Every option clashed and every clash depended on `my_id`.
             // The decision itself is therefore unsat under the union of
-            // the other deps of its refuted options (plus, for a merge,
-            // every active decision).
+            // the other deps of its refuted options (plus, for a merge, the
+            // marks among the witnesses with exact deps, or every active
+            // decision without).
             let mut combined = self.initial;
             for deps in &self.refuted {
                 for &x in deps {
@@ -1720,7 +1723,7 @@ mod dep_tests {
 #[cfg(test)]
 #[allow(clippy::many_single_char_names)]
 mod exact_dep_tests {
-    use super::{Frame, first_open_max};
+    use super::{Frame, SearchVerdict, first_open_max};
     use crate::TableauContext;
     use owl_dl_core::{ClassId, ConceptPool, Role, RoleId};
 
@@ -1855,6 +1858,45 @@ mod exact_dep_tests {
             let deps = ctx.distinct_deps(pivot, w);
             assert!(deps.contains(&frame.my_id), "{deps:?} misses the frame");
             assert!(deps.contains(&w_dec), "{deps:?} misses the witnesses");
+        }
+    }
+
+    /// #490: a merge option refused by a distinctness mark (believed unreachable)
+    /// reports the frame's decision, the pair's deps and the mark's deps, not the
+    /// frame's decision alone.
+    #[test]
+    fn a_refused_frame_merge_reports_the_mark() {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_two = pool.max(2, Role::Named(r), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_merge_exact_deps(true);
+        let n = ctx.new_node();
+        ctx.add_label_with_deps(n, at_most_two, &[]);
+        let w_dec = ctx.push_branch();
+        for _ in 0..3 {
+            let w = ctx.new_successor_with_deps(n, r, &[w_dec]);
+            ctx.add_label_with_deps(w, c, &[w_dec]);
+        }
+        let (_, open) = first_open_max(&ctx, u32::MAX).expect("an open ≤2 over three witnesses");
+        let (pivot, first) = (open.pivot, open.partners[0].0);
+        let mut frame = Frame::merge(&mut ctx, 64, open);
+        // The pair turns distinct after it was listed, under a later decision `x`.
+        let x = ctx.push_branch();
+        ctx.mark_distinct_with_deps(pivot, first, &[x]);
+        frame.next = 0;
+        match frame.start_option(&mut ctx) {
+            super::Start::Decided(_, _, SearchVerdict::Unsat(deps)) => {
+                for (what, d) in [
+                    ("the frame", frame.my_id),
+                    ("the mark", x),
+                    ("the witnesses", w_dec),
+                ] {
+                    assert!(deps.contains(&d), "{deps:?} misses {what}");
+                }
+            }
+            _ => panic!("a merge refused by a mark is an Unsat option"),
         }
     }
 

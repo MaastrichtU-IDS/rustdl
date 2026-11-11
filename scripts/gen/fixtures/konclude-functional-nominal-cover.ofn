@@ -1,0 +1,26 @@
+# Known oracle defect, not a rustdl finding (#490's PR-2 fuzz, seed 144, shrunk to 9 axioms).
+# i3 differs from i0, i1 and i2, so `⊤ ⊑ {i2, i0, i1} ⊔ C2` puts i3 in C2. `C2 ⊑ ∃r1.∀r0.{i1}`
+# with r1 functional and r1(i3, i0) gives i0 : ∀r0.{i1}; r0(i0, i2) then forces i2 = i1, against
+# DifferentIndividuals(i1 i2). So the ontology is inconsistent. HermiT
+# (InconsistentOntologyException) and rustdl say inconsistent; Konclude v0.7.0-1138 says
+# consistent. A wrong "consistent" from Konclude, not an under-report.
+Prefix(:=<http://example.org/fz#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://example.org/z144min>
+Declaration(Class(:C2))
+Declaration(ObjectProperty(:r0))
+Declaration(ObjectProperty(:r1))
+Declaration(NamedIndividual(:i0))
+Declaration(NamedIndividual(:i1))
+Declaration(NamedIndividual(:i2))
+Declaration(NamedIndividual(:i3))
+FunctionalObjectProperty(:r1)
+DifferentIndividuals(:i0 :i3)
+DifferentIndividuals(:i1 :i2)
+DifferentIndividuals(:i1 :i3)
+DifferentIndividuals(:i2 :i3)
+SubClassOf(owl:Thing ObjectUnionOf(ObjectOneOf(:i2 :i0 :i1) :C2))
+SubClassOf(:C2 ObjectSomeValuesFrom(:r1 ObjectAllValuesFrom(:r0 ObjectOneOf(:i1))))
+ObjectPropertyAssertion(:r1 :i3 :i0)
+ObjectPropertyAssertion(:r0 :i0 :i2)
+)

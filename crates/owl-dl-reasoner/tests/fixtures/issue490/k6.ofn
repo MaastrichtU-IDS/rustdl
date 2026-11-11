@@ -1,0 +1,12 @@
+Prefix(:=<http://example.org/k6#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://example.org/k6>
+Declaration(Class(:M))
+Declaration(Class(:G))
+Declaration(ObjectProperty(:r))
+Declaration(NamedIndividual(:a))
+Declaration(NamedIndividual(:p))
+SubClassOf(:M ObjectMinCardinality(2 :r))
+SubClassOf(owl:Thing ObjectOneOf(:a))
+ClassAssertion(ObjectUnionOf(:M :G) :p)
+)

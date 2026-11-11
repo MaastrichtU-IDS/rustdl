@@ -77,9 +77,17 @@ impl Drop for EnvGuard {
 const C5E: &str = include_str!("fixtures/issue498/c5e.ofn");
 const Q5: &str = include_str!("fixtures/issue498/q5.ofn");
 const MIN9: &str = include_str!("fixtures/issue498/min9.ofn");
+/// #490: `⊤ ⊑ {a}`, `M ⊑ ≥2 r`, `p : M ⊔ G`. Consistent (`p ∈ G`): `M` needs two
+/// distinct `r`-successors in a one-element domain. On the `M` branch the two
+/// witnesses `apply_min` marks distinct (on that decision) are both forced into
+/// `{a}`, and the refused merge's `⊥` must carry the mark's deps; without them the
+/// branch's clash is unconditional and the ontology reads inconsistent. This pins the
+/// mark's deps only while the search tries `M` before `G` (their interning order).
+const K6: &str = include_str!("fixtures/issue490/k6.ofn");
 
 const WEDGE: &str = "RUSTDL_HYPERTABLEAU";
 const GUARD: &str = "RUSTDL_NOMINAL_BLOCK_GUARD";
+const EXACT: &str = "RUSTDL_MERGE_EXACT_DEPS";
 const WEDGE_CONSISTENCY: &str = "RUSTDL_WEDGE_CONSISTENCY";
 
 fn parse(src: &str) -> SetOntology<RcStr> {
@@ -102,15 +110,19 @@ fn within<T: Send + 'static>(secs: u64, what: &str, f: impl FnOnce() -> T + Send
         .unwrap_or_else(|_| panic!("{what}: no answer within {secs} s"))
 }
 
-/// Wedge on and off, guard on (the default) and off.
-const ARMS: &[(&str, &str)] = &[("1", "1"), ("0", "1"), ("1", "0"), ("0", "0")];
-
+/// Wedge on and off, guard on (the default) and off, exact merge deps on (the
+/// default since #490) and off (its `=0` revert).
 fn each_arm(mut f: impl FnMut(&str)) {
-    for &(wedge, guard) in ARMS {
-        let _l = lock();
-        let _w = EnvGuard::set(WEDGE, wedge);
-        let _g = EnvGuard::set(GUARD, guard);
-        f(&format!("{WEDGE}={wedge} {GUARD}={guard}"));
+    for wedge in ["1", "0"] {
+        for guard in ["1", "0"] {
+            for exact in ["1", "0"] {
+                let _l = lock();
+                let _w = EnvGuard::set(WEDGE, wedge);
+                let _g = EnvGuard::set(GUARD, guard);
+                let _x = EnvGuard::set(EXACT, exact);
+                f(&format!("{WEDGE}={wedge} {GUARD}={guard} {EXACT}={exact}"));
+            }
+        }
     }
 }
 
@@ -141,7 +153,7 @@ fn e_is_satisfiable_and_not_under_zb() {
 
 #[test]
 fn consistent_with_the_consistency_wedge_off() {
-    for (name, src) in [("c5e", C5E), ("q5", Q5), ("min9", MIN9)] {
+    for (name, src) in [("c5e", C5E), ("q5", Q5), ("min9", MIN9), ("k6", K6)] {
         each_arm(|arm| {
             for wc in ["1", "0"] {
                 let _c = EnvGuard::set(WEDGE_CONSISTENCY, wc);
@@ -246,4 +258,16 @@ fn classify_finds_every_class_satisfiable() {
             );
         });
     }
+}
+
+#[test]
+fn k6_the_other_disjunct_has_a_model() {
+    each_arm(|arm| {
+        assert!(
+            within(60, &format!("k6 sat G ({arm})"), move || {
+                is_class_satisfiable(&parse(K6), "http://example.org/k6#G").expect("decides")
+            }),
+            "k6: G is satisfiable ({arm})"
+        );
+    });
 }

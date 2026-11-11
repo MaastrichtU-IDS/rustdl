@@ -295,7 +295,7 @@ Repository observations are tied to the inspected commit `60eca181037c308f25f732
 
 - The completeness guard and the Python result changed (links above repointed, and a CLI field link added, at `42457595`).
 - The issue cluster closed.
-- #380 (`RUSTDL_MERGE_EXACT_DEPS`) and #384 (`RUSTDL_TREE_STICKY_BRANCHING`) merged as default-off options, not shipped behaviour.
+- #380 (`RUSTDL_MERGE_EXACT_DEPS`) and #384 (`RUSTDL_TREE_STICKY_BRANCHING`) merged as default-off options, not shipped behaviour. (`RUSTDL_MERGE_EXACT_DEPS` became default ON with #490, 2026-11.)
 - Issues #382 and #383 remain open, and #363 stays open as the tracking issue.
 
 Unchanged, so their permalinks remain at the original baseline:

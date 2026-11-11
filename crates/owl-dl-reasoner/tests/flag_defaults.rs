@@ -253,11 +253,11 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::max_zero_forall_enabled,
             true,
         ),
-        // OFF until its fuzz differential, sweeps and MISSED net pass (#370).
+        // ON since #490: the refused nominal merge and the `≤n` merges back-jump on exact deps.
         (
             "RUSTDL_MERGE_EXACT_DEPS",
             owl_dl_tableau::merge_exact_deps_enabled,
-            false,
+            true,
         ),
         (
             "RUSTDL_WEDGE_NOMINAL_BLOCK_GUARD",

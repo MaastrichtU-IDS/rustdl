@@ -280,7 +280,7 @@ recorded HermiT verdict, never Konclude alone.
   the `{}` baseline ratchet, and a budget-cut one, which the ratchet exempts, passed silently.
 
 Since #502:
-- HermiT is asked per claim (`--consistency=C`, `--supers=C`);
+- HermiT is asked per claim (`--consistency=C`, `--supers=C`, `--equivalents=C`);
 - `--hermit` without a JVM is an error;
 - a HermiT answer that decides nothing is listed under `unadjudicated` and fails the run.
 

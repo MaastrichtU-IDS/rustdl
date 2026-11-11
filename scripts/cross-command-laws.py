@@ -1060,7 +1060,10 @@ def self_test():
     # #502: per-claim HermiT verdicts, from canned CommandLine output.
     def fake(**answers):
         return lambda path, args: answers.get(args[0].split("=")[0], ("fail", ""))
-    sp = dict(id="t", path=Path(__file__))  # any readable file: only its Prefix lines are read
+    import tempfile
+    _pfx_file = Path(tempfile.mkdtemp()) / "p.ofn"  # hermit_check reads only its Prefix lines
+    _pfx_file.write_text("Prefix(:=<http://e#>)\nOntology(<http://e>)\n")
+    sp = dict(id="t", path=_pfx_file)
     sat_ = ("ok", "http://e#A is satisfiable.\n")
     cases.append(("#502 HermiT: R2 on a satisfiable class refutes",
                   hermit_check(sp, dict(law="R2", pair=["http://e#A", NOTHING]),
@@ -1070,7 +1073,8 @@ def self_test():
                                fake(**{"--consistency": ("ok", "x is not satisfiable.\n")})),
                   "confirms"))
     sup = ("ok", "All super-classes of 'http://e#A':\n\towl:Thing\n\t<http://e#B>\n")
-    eqv = ("ok", "Classes equivalent to 'http://e#A':\n\t<http://e#Q>\n\t<http://e#A>\n")
+    # HermiT's real format (Fable, #503): the doubled-bracket header and prefixed members.
+    eqv = ("ok", "Classes equivalent to '<<http://e#A>>':\n\t:Q\n\t:A\n")
     cases.append(("#502 HermiT: R1 to a listed superclass confirms",
                   hermit_check(sp, dict(law="R1", pair=["http://e#A", "http://e#B"]),
                                fake(**{"--consistency": sat_, "--supers": sup, "--equivalents": eqv})), "confirms"))

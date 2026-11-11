@@ -273,6 +273,23 @@ candidate false positive, which fails a run only if HermiT confirms it (`--hermi
 stricter: any U1 discrepancy over the baseline fails the run, and a U1 baseline entry needs a
 recorded HermiT verdict, never Konclude alone.
 
+**Before #502 this was weaker than stated.**
+- `--hermit` answered "unavailable" for every candidate when `JAVA_HOME` was unset, and on any
+  ontology with an unsat class it could not adjudicate an R1 claim at all. Pizza has two.
+- Neither failed the run. So an R1 false positive on pizza failed the cargo gate only through
+  the `{}` baseline ratchet, and a budget-cut one, which the ratchet exempts, passed silently.
+
+Since #502:
+- HermiT is asked per claim (`--consistency=C`, `--supers=C`, `--equivalents=C`);
+- `--hermit` without a JVM is an error;
+- a HermiT answer that decides nothing is listed under `unadjudicated` and fails the run.
+
+The cargo gate (`cross_command_laws.rs`) still runs without `--hermit`, so a budget-cut R1 false
+positive is still not caught there; only a `--hermit` run adjudicates it.
+
+No reported "0 violations / 0 discrepancies" result depended on HermiT. It is consulted only
+for a discrepancy, and those runs had none (#502 lists them).
+
 **Coverage.** `--self-test` shows each law can fire on fabricated operands; that checks
 the harness, not the engine. Engine-level evidence comes from two places.
 
@@ -294,8 +311,8 @@ discrepancies for an (ontology, law) than the unmutated control under the same e
 | mutant | layer | re-opens | caught by | on the curated corpus? |
 |---|---|---|---|---|
 | M1 | classify consistency pre-check | all named classes unsat read as inconsistency | L4 (`all_unsat`) | no: fixture only |
-| M2 | per-pair tableau, env only | #76 first-pair `≤n` merge (both flags off) | R1, HermiT-confirmed FP (`maxmerge_fp`) | no: fixture only (pizza unaffected) |
-| M3 | wedge clausifier | #78 naming clause on `var` | R1 over baseline (`neg_disjunct_forall`); HermiT confirms the miss | no: fixture only |
+| M2 | per-pair tableau, env only | #76 first-pair `≤n` merge (both flags off) | R1, HermiT-confirmed FP (`maxmerge_fp`)¹ | no: fixture only (pizza unaffected) |
+| M3 | wedge clausifier | #78 naming clause on `var` | R1 over baseline (`neg_disjunct_forall`); HermiT confirms the miss¹ | no: fixture only |
 | M4 | expression surfaces | probe injects only `Q ⊑ CE` | L6 | yes: pizza, ro, sulo, bibtex and 6 fixtures |
 | M5 | `disjoint` | told disjointness propagated upward | L7 | yes: sulo, and `disjoint_up` |
 | M6 | `realize` | pseudo-model prune inverted | L10 (`realize_disjunction`) | no: fixture only, though ro and pizza have individuals |
@@ -306,6 +323,14 @@ discrepancies for an (ontology, law) than the unmutated control under the same e
 | M10 | `disjoint` | inconsistency guards removed | L5 (`inconsistent_small`) | no: fixture only |
 | M11 | `individuals` | every probed pair published as different | L11 (`individuals_three`) | no: fixture only |
 | M12 | `--saturation-only` JSON | one reversed edge (structural) | L8 | yes: all four |
+
+¹ **The HermiT part of these labels cannot be checked from the record.**
+- The 2026-11-02 run wrote to `mktemp` directories that no longer exist, and before #502 a
+  missing JVM gave "unavailable" silently.
+- **The catches stand without HermiT:** `detect.py` also counts discrepancies over the
+  unmutated control.
+- Re-run on main 5753fbc5 with #502: the #76 sabotage on `maxmerge_fp` is HermiT-refuted (`R1`,
+  `refutes`).
 
 **Not caught by any cross-command law: M8a and M8b, and that is structural.** Both faults sit in code every surface
 shares (the EL saturator; conversion), so `classify`, `subclass`, `sat` and the expression

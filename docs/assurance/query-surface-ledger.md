@@ -284,6 +284,9 @@ Since #502:
 - `--hermit` without a JVM is an error;
 - a HermiT answer that decides nothing is listed under `unadjudicated` and fails the run.
 
+The cargo gate (`cross_command_laws.rs`) still runs without `--hermit`, so a budget-cut R1 false
+positive is still not caught there; only a `--hermit` run adjudicates it.
+
 No reported "0 violations / 0 discrepancies" result depended on HermiT. It is consulted only
 for a discrepancy, and those runs had none (#502 lists them).
 

@@ -48,6 +48,7 @@ def declared_classes(text):
     (full IRIs) it found no class and `oracle()` marked the file "invalid"."""
     pfx = dict(_PFX.findall(text))
     out = set()
+    # A term under an undeclared prefix is skipped: not a legal OFN term.
     for t in _DECL.findall(text):
         if t.startswith("<"):
             out.add(t[1:-1])

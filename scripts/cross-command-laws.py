@@ -793,7 +793,9 @@ def hermit_cli(path, args):
     log = p.stdout + p.stderr
     if "InconsistentOntologyException" in log:
         r = ("inconsistent", "")
-    elif p.returncode != 0 or re.search(r"Exception|Error", log):
+    # stderr only: HermiT echoes the queried IRI and every super on stdout, so a class
+    # named `…#Error` must not read as a failure (Fable, #503).
+    elif p.returncode != 0 or re.search(r"Exception|Error", p.stderr):
         r = ("fail", log[-300:])
     else:
         r = ("ok", p.stdout)
@@ -802,7 +804,9 @@ def hermit_cli(path, args):
 
 
 def _expand(name, pfx):
-    """HermiT prints names with the ontology's own prefixes (`pizza:Food`)."""
+    """HermiT prints names with the ontology's own prefixes (`pizza:Food`). `pfx` comes
+    from the file's OFN `Prefix(` lines: every input here is functional syntax (an
+    RDF/XML input would need its xmlns map)."""
     name = name.strip()
     if name.startswith("<") and name.endswith(">"):
         return name[1:-1]
@@ -821,7 +825,7 @@ def hermit_check(spec, d, cli=hermit_cli):
     whole-file `robot reason`, which writes nothing on an ontology with an unsat class
     and so could never adjudicate an R1 claim there (pizza has two)."""
     path, (s, t), law = spec["path"], d["pair"], d["law"]
-    st, out = cli(path, [f"--consistency={s}"])
+    st, out = cli(path, [f"--consistency=<{s}>"])
     if st == "inconsistent":
         return "unavailable (HermiT: the ontology is inconsistent)"
     if st != "ok":
@@ -832,16 +836,22 @@ def hermit_check(spec, d, cli=hermit_cli):
         return f"unavailable (HermiT output {out[-80:]!r})"
     if law in ("R2", "U1"):
         return "refutes"
-    st, out = cli(path, [f"--supers={s}"])
-    if st != "ok":
-        return f"unavailable (HermiT {st})"
-    lines = out.splitlines()
-    if not lines or not lines[0].startswith("All super-classes"):
-        return f"unavailable (HermiT output {out[:80]!r})"
+    if t == THING:
+        return "confirms"
+    # `--supers` lists strict super-classes only; a class equivalent to `s` is listed by
+    # `--equivalents` (Fable, #503: `s ≡ t` was refuted).
     pfx = dict(_OFN_PFX.findall(Path(path).read_text(errors="replace")))
     pfx.setdefault("owl", OWL)
-    sup = {_expand(x, pfx) for x in lines[1:] if x.strip()}
-    return "confirms" if t == THING or t in sup else "refutes"
+    names = set()
+    for flag, head in (("--supers", "All super-classes"), ("--equivalents", "Classes equivalent")):
+        st, out = cli(path, [f"{flag}=<{s}>"])
+        if st != "ok":
+            return f"unavailable (HermiT {st})"
+        lines = out.splitlines()
+        if not lines or not lines[0].startswith(head):
+            return f"unavailable (HermiT output {out[:80]!r})"
+        names |= {_expand(x, pfx) for x in lines[1:] if x.strip()}
+    return "confirms" if t in names else "refutes"
 
 
 # `ofn_named_closure` lives in owl_readers.py.
@@ -1060,12 +1070,17 @@ def self_test():
                                fake(**{"--consistency": ("ok", "x is not satisfiable.\n")})),
                   "confirms"))
     sup = ("ok", "All super-classes of 'http://e#A':\n\towl:Thing\n\t<http://e#B>\n")
+    eqv = ("ok", "Classes equivalent to 'http://e#A':\n\t<http://e#Q>\n\t<http://e#A>\n")
     cases.append(("#502 HermiT: R1 to a listed superclass confirms",
                   hermit_check(sp, dict(law="R1", pair=["http://e#A", "http://e#B"]),
-                               fake(**{"--consistency": sat_, "--supers": sup})), "confirms"))
+                               fake(**{"--consistency": sat_, "--supers": sup, "--equivalents": eqv})), "confirms"))
     cases.append(("#502 HermiT: R1 to an unlisted class refutes",
                   hermit_check(sp, dict(law="R1", pair=["http://e#A", "http://e#C"]),
-                               fake(**{"--consistency": sat_, "--supers": sup})), "refutes"))
+                               fake(**{"--consistency": sat_, "--supers": sup, "--equivalents": eqv})), "refutes"))
+    cases.append(("#503 HermiT: R1 to an equivalent class confirms (--supers omits it)",
+                  hermit_check(sp, dict(law="R1", pair=["http://e#A", "http://e#Q"]),
+                               fake(**{"--consistency": sat_, "--supers": sup,
+                                       "--equivalents": eqv})), "confirms"))
     cases.append(("#502 HermiT: a timeout is unavailable, never a verdict",
                   hermit_check(sp, dict(law="R1", pair=["http://e#A", "http://e#C"]),
                                fake(**{"--consistency": ("timeout", "")})).startswith("unavailable"),
@@ -1292,9 +1307,11 @@ def main():
         print(f"RATCHET {ov['onto']} {ov['law']}: {ov['count']} > baseline {ov['baseline']}")
     for u in unadj:
         print(f"UNADJUDICATED {u['law']} {u['onto']}: {u['reason']} -- {u['hermit']}")
-    n_disc = sum(o["kind"] == "discrepancy" for r in results for o in r["outcomes"])
-    if n_disc and not a.hermit:
-        print(f"note: {n_disc} discrepancies not adjudicated (no --hermit)")
+    n_disc = sum(o["kind"] == "discrepancy" and "hermit" not in o
+                 for r in results for o in r["outcomes"])
+    if n_disc:
+        print(f"note: {n_disc} discrepancies not sent to HermiT"
+              + ("" if a.hermit else " (no --hermit)"))
     print(f"report: {a.out / 'report.json'}")
     return 1 if fails or over or unadj else 0
 

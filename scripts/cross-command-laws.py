@@ -567,7 +567,13 @@ def evaluate(obs):
     clo = c.get("closure", set())
     unsat = c.get("unsat", set())
     cons = q.get(("consistent",))
-    kb_inconsistent = cons is not None and cons["v"] == "no"
+    # Classify's `consistent: false` also makes the KB inconsistent for the laws. Without it,
+    # a killed default `consistent` (30 s) left L3 / R2 to read every per-query `sat` that
+    # errors "Inconsistent" as a violation (ore_ont_13052; HermiT and Konclude confirm it
+    # inconsistent).
+    kb_inconsistent = ((cons is not None and cons["v"] == "no")
+                       or (cl_ok and c.get("consistent") is False))
+    incons_op = cons if cons is not None and cons["v"] == "no" else cl_op
 
     for key, a in q.items():
         kind = key[0]
@@ -671,7 +677,7 @@ def evaluate(obs):
             if key[0] == "consistent":
                 continue
             if a["v"] in ("inconsistent", "unknown"):
-                out.append(check("L5", o, True, "", cons, a) if a["v"] == "inconsistent"
+                out.append(check("L5", o, True, "", incons_op, a) if a["v"] == "inconsistent"
                            else unresolved("L5", o, a))
                 continue
             bad = None
@@ -689,7 +695,7 @@ def evaluate(obs):
                 bad = "subclass-expr says not entailed"
             elif key[0] in ("instances-expr", "realize", "disjoint", "individuals"):
                 bad = f"{key[0]} answered instead of erroring"
-            out.append(check("L5", o, bad is None, f"inconsistent KB: {bad}", cons, a))
+            out.append(check("L5", o, bad is None, f"inconsistent KB: {bad}", incons_op, a))
     # U1: classify unsat vs an oracle. Skipped when either side says the KB is
     # inconsistent (every class is then unsat).
     if cl_ok and c.get("consistent") and not kb_inconsistent:
@@ -895,6 +901,16 @@ def self_test():
     ob = dict(onto="t", q={("consistent",): N, ("subclass", "C", "D"): N},
               classify=base(consistent=False)["classify"])
     cases.append(("L5 fires on subclass", laws_of(ob, "violation"), ["L5"]))
+    # Default `consistent` killed, classify consistent:false (ore_ont_13052).
+    ob = dict(onto="t", q={("consistent",): U, ("sat", "C"): I},
+              classify=base(consistent=False, unsat={"C"})["classify"])
+    cases.append(("killed consistent + classify inconsistent: sat inconsistent is no violation",
+                  laws_of(ob, "violation"), []))
+    cases.append(("killed consistent + classify inconsistent: L5 ok", laws_of(ob, "ok"), ["L5"]))
+    ob = dict(onto="t", q={("consistent",): U, ("sat", "C"): Y},
+              classify=base(consistent=False, unsat={"C"})["classify"])
+    cases.append(("killed consistent + classify inconsistent: sat yes fires L5",
+                  laws_of(ob, "violation"), ["L5"]))
     ob = dict(onto="t", q={("consistent",): N, ("sat", "C"): I, ("subclass", "C", "D"): Y},
               classify=base(consistent=False)["classify"])
     cases.append(("L5 sat error / subclass yes -> no violation", laws_of(ob, "violation"), []))

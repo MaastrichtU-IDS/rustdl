@@ -5161,6 +5161,149 @@ mod tests {
         assert!(!ctx.graph().node(m).has_label(not_dkey));
     }
 
+    /// #498 (A2): a merge reads the `Nominal` label's deps where the label is when
+    /// it merges. `fresh` names `m` (decision d0) and `a` (decision d1); the first
+    /// merge moves `{a}` onto `m`'s node and adds d0 to it, so the second merge, of
+    /// `m`'s node into `a`'s, depends on d0 and d1. A snapshot taken before the
+    /// loop gave it {d1} alone: a clash between `m`'s and `a`'s labels then
+    /// back-jumped past d0 (the false `unsat` of #498's `q5`).
+    #[test]
+    fn nominal_merge_reads_label_deps_after_an_earlier_merge() {
+        let mut pool = ConceptPool::new();
+        let (m, a) = (IndividualId::new(0), IndividualId::new(1));
+        // `{m}` is interned first, so the rule visits it before `{a}`.
+        let nom_m = pool.nominal(m);
+        let nom_a = pool.nominal(a);
+        let marker = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
+        let m_node = ctx.new_node();
+        ctx.add_label(m_node, nom_m);
+        ctx.add_label(m_node, marker);
+        ctx.assign_nominal(m, m_node);
+        let a_node = ctx.new_node();
+        ctx.add_label(a_node, nom_a);
+        ctx.assign_nominal(a, a_node);
+        let fresh = ctx.new_node();
+        let d0 = ctx.push_branch();
+        ctx.add_label_with_deps(fresh, nom_m, &[d0]);
+        let d1 = ctx.push_branch();
+        ctx.add_label_with_deps(fresh, nom_a, &[d1]);
+        assert_eq!(
+            crate::rules::apply_nominal_assignment(&mut ctx, fresh),
+            RuleOutcome::Applied
+        );
+        assert_eq!(ctx.resolve(fresh), a_node);
+        assert_eq!(ctx.resolve(m_node), a_node, "`m`'s node merged into `a`'s");
+        assert_eq!(
+            ctx.label_deps_of(a_node, marker).map(DepSet::as_slice),
+            Some(&[d0, d1][..]),
+            "the second merge rests on both decisions"
+        );
+    }
+
+    /// #498 (A1): a refused merge leaves the node where it is. `fresh` names `m`
+    /// (d0) and `a` (d1) but is distinct from `m`'s node, so `{m}` is refused (a
+    /// `⊥`); `{a}` then merges `fresh` into `a`'s node. Moving the loop to `m`'s
+    /// node instead merged `m` into `a` under {d1} alone (#498's `c5e`).
+    #[test]
+    fn refused_nominal_merge_leaves_the_node_in_place() {
+        let mut pool = ConceptPool::new();
+        let (m, a) = (IndividualId::new(0), IndividualId::new(1));
+        let nom_m = pool.nominal(m);
+        let nom_a = pool.nominal(a);
+        let bot = pool.bot();
+        let mut ctx = TableauContext::new(&pool);
+        assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
+        let m_node = ctx.new_node();
+        ctx.add_label(m_node, nom_m);
+        ctx.assign_nominal(m, m_node);
+        let a_node = ctx.new_node();
+        ctx.add_label(a_node, nom_a);
+        ctx.assign_nominal(a, a_node);
+        let fresh = ctx.new_node();
+        let d0 = ctx.push_branch();
+        ctx.add_label_with_deps(fresh, nom_m, &[d0]);
+        let d1 = ctx.push_branch();
+        ctx.add_label_with_deps(fresh, nom_a, &[d1]);
+        ctx.mark_distinct(fresh, m_node);
+        crate::rules::apply_nominal_assignment(&mut ctx, fresh);
+        assert_eq!(
+            ctx.label_deps_of(m_node, bot).map(DepSet::as_slice),
+            Some(&[d0, d1][..]),
+            "the refused merge is a `⊥` on every active decision"
+        );
+        assert_eq!(ctx.resolve(m_node), m_node, "`m` is not merged into `a`");
+        assert_eq!(
+            ctx.graph().nominal_node(m).map(|n| ctx.resolve(n)),
+            Some(m_node),
+            "`m` keeps its own node"
+        );
+        assert_eq!(ctx.resolve(fresh), a_node, "`fresh` merges into `a`'s node");
+    }
+
+    /// #498: the rule reads the live representative's labels. `apply_max` earlier in
+    /// the same saturation visit can merge the node away (a self-loop witness, with
+    /// keep-older), so its `{x}` (d0) is now on the older node with the merge's d1
+    /// too. Reading the dead node gave the nominal merge {d0} alone.
+    #[test]
+    fn nominal_assignment_on_a_merged_away_node_reads_the_representative() {
+        let mut pool = ConceptPool::new();
+        let x = IndividualId::new(0);
+        let nom_x = pool.nominal(x);
+        let marker = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
+        let x_node = ctx.new_node();
+        ctx.add_label(x_node, nom_x);
+        ctx.assign_nominal(x, x_node);
+        let older = ctx.new_node();
+        ctx.add_label(older, marker);
+        let node = ctx.new_node();
+        let d0 = ctx.push_branch();
+        ctx.add_label_with_deps(node, nom_x, &[d0]);
+        let d1 = ctx.push_branch();
+        assert!(ctx.merge_into_with_deps(node, older, &[d1]));
+        crate::rules::apply_nominal_assignment(&mut ctx, node);
+        assert_eq!(
+            ctx.resolve(older),
+            x_node,
+            "the representative merges into `x`'s node"
+        );
+        assert_eq!(
+            ctx.label_deps_of(x_node, marker).map(DepSet::as_slice),
+            Some(&[d0, d1][..]),
+            "the merge rests on the label's decision and on the earlier merge's"
+        );
+    }
+
+    /// #498: when the individual's node does not carry its `Nominal` label, the
+    /// merge's cause is not on the graph, so it rests on every active decision,
+    /// not on none.
+    #[test]
+    fn nominal_merge_without_the_label_takes_every_active_decision() {
+        let mut pool = ConceptPool::new();
+        let x = IndividualId::new(0);
+        let nom_x = pool.nominal(x);
+        let marker = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
+        let x_node = ctx.new_node();
+        ctx.assign_nominal(x, x_node);
+        let fresh = ctx.new_node();
+        ctx.add_label(fresh, marker);
+        let d0 = ctx.push_branch();
+        let d1 = ctx.push_branch();
+        ctx.add_label_with_deps(fresh, nom_x, &[d1]);
+        crate::rules::apply_nominal_assignment(&mut ctx, fresh);
+        assert_eq!(ctx.resolve(fresh), x_node);
+        assert_eq!(
+            ctx.label_deps_of(x_node, marker).map(DepSet::as_slice),
+            Some(&[d0, d1][..]),
+            "no label on `x`'s node: every active decision"
+        );
+    }
+
     /// #474: a node that merges into a nominal's canonical node has its blockable
     /// subtree pruned first, so the successor it built before the nominal arrived
     /// is not moved onto the nominal. With the flag off the old merge moves it. A

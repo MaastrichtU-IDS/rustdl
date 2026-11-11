@@ -278,6 +278,30 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **Per-query `sat` / `subclass` / `explain` / `sat-expr` finish on wine (#490).** Every per-query
+  call on `ontologies/real/wine.ofn` ran past 60 CPU-s, even `sat` on a leaf class, while
+  `classify` took 1.5 s. The main tableau never finished completing wine's seeded ABox. The
+  search went about 1,388 decisions deep, and hundreds of clashes depended on the whole stack, so
+  it could not back-jump and enumerated the bottom choices instead.
+  - Two rules made those clashes. An over-full `≤n` with a distinct witness pair took every
+    active decision (`mark_distinct` recorded no deps). A refused nominal merge (a node naming an
+    individual whose node is marked distinct from it) also took every active decision. Wine has
+    `DifferentIndividuals` and four functional roles, so both fire constantly.
+  - Fix: `RUSTDL_MERGE_EXACT_DEPS` (#370, merged default-off in #380) is now **default ON**.
+    Distinctness marks carry their deps, and the `≤n` merges use them. The refused nominal
+    merge's `⊥` now rests on its causes: both `Nominal` labels' deps (read where they are, #498)
+    and the distinctness mark's deps. With the flag off it keeps every active decision.
+  - The #498 fix comes first: with this `⊥` and #498's stale bookkeeping, wine read as
+    inconsistent (`min9.ofn`, 9 axioms, in `tests/nominal_assignment_deps.rs`).
+  - On the fix: `subclass Wine RedWine` is `no` (29 CPU-s), `sat-expr Wine ⊓ ¬RedWine` is
+    `satisfiable` (34 s), `explain` is `no` (30 s), `sat` on a leaf is `sat` (31 s), and wedge-off
+    `consistent` is `consistent` (31 s). Wine's per-decision cost remains (about 30 s per call);
+    that is a separate lever.
+  - The per-query FP gate arm (#505) on pizza, ro and sulo: 0 FP, 0 MISS, 0 give-ups.
+  - Tests: `refused_nominal_merge_rests_on_its_causes` (red when either the label deps or the mark
+    deps are dropped); the #498 pin `refused_nominal_merge_leaves_the_node_in_place` now checks
+    both settings; `flag_defaults.rs`.
+  - PR2_EVIDENCE_PLACEHOLDER
 - **Per-query `sat` / `sat-expr` / `subclass` / `explain` no longer give a false `unsat` or a false
   subsumption from a nominal merge (#498).** On `c5e.ofn` and `q5.ofn` (12 and 11 axioms: nominals,
   `∀r.{a}`, two unions), `sat E` answered `unsat` and `subclass E Zb` answered `yes`. `consistent`

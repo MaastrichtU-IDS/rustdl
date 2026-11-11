@@ -3280,7 +3280,7 @@ pub fn max_choice_point_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_CHOICE_POINT").is_none_or(|v| v != "0")
 }
 
-/// #370 `RUSTDL_MERGE_EXACT_DEPS` (**default OFF**, `=1` enables): exact
+/// #370 `RUSTDL_MERGE_EXACT_DEPS` (**default ON** since #490, `=0` reverts): exact
 /// dependency sets for `≤n` merges. Each distinctness mark records the
 /// decisions it depends on ([`TableauContext::mark_distinct_with_deps`]), and
 /// two sites that took every active decision use them instead:
@@ -3303,7 +3303,7 @@ pub fn max_choice_point_enabled() -> bool {
 /// every active decision.
 #[must_use]
 pub fn merge_exact_deps_enabled() -> bool {
-    std::env::var_os("RUSTDL_MERGE_EXACT_DEPS").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_MERGE_EXACT_DEPS").is_none_or(|v| v != "0")
 }
 
 /// Whether the `≥n R.C` rule counts existing witnesses only when `n` of them
@@ -5213,33 +5213,40 @@ mod tests {
         let nom_m = pool.nominal(m);
         let nom_a = pool.nominal(a);
         let bot = pool.bot();
-        let mut ctx = TableauContext::new(&pool);
-        assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
-        let m_node = ctx.new_node();
-        ctx.add_label(m_node, nom_m);
-        ctx.assign_nominal(m, m_node);
-        let a_node = ctx.new_node();
-        ctx.add_label(a_node, nom_a);
-        ctx.assign_nominal(a, a_node);
-        let fresh = ctx.new_node();
-        let d0 = ctx.push_branch();
-        ctx.add_label_with_deps(fresh, nom_m, &[d0]);
-        let d1 = ctx.push_branch();
-        ctx.add_label_with_deps(fresh, nom_a, &[d1]);
-        ctx.mark_distinct(fresh, m_node);
-        crate::rules::apply_nominal_assignment(&mut ctx, fresh);
-        assert_eq!(
-            ctx.label_deps_of(m_node, bot).map(DepSet::as_slice),
-            Some(&[d0, d1][..]),
-            "the refused merge is a `⊥` on every active decision"
-        );
-        assert_eq!(ctx.resolve(m_node), m_node, "`m` is not merged into `a`");
-        assert_eq!(
-            ctx.graph().nominal_node(m).map(|n| ctx.resolve(n)),
-            Some(m_node),
-            "`m` keeps its own node"
-        );
-        assert_eq!(ctx.resolve(fresh), a_node, "`fresh` merges into `a`'s node");
+        // The node stays put with exact deps on (the default since #490) and off.
+        // The `⊥`'s deps differ: {d0} (its own causes, #490) or every active
+        // decision.
+        for exact in [true, false] {
+            let mut ctx = TableauContext::new(&pool);
+            ctx.set_merge_exact_deps(exact);
+            assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
+            let m_node = ctx.new_node();
+            ctx.add_label(m_node, nom_m);
+            ctx.assign_nominal(m, m_node);
+            let a_node = ctx.new_node();
+            ctx.add_label(a_node, nom_a);
+            ctx.assign_nominal(a, a_node);
+            let fresh = ctx.new_node();
+            let d0 = ctx.push_branch();
+            ctx.add_label_with_deps(fresh, nom_m, &[d0]);
+            let d1 = ctx.push_branch();
+            ctx.add_label_with_deps(fresh, nom_a, &[d1]);
+            ctx.mark_distinct(fresh, m_node);
+            crate::rules::apply_nominal_assignment(&mut ctx, fresh);
+            let want: &[u32] = if exact { &[d0] } else { &[d0, d1] };
+            assert_eq!(
+                ctx.label_deps_of(m_node, bot).map(DepSet::as_slice),
+                Some(want),
+                "exact deps {exact}: the refused merge is a `⊥`"
+            );
+            assert_eq!(ctx.resolve(m_node), m_node, "`m` is not merged into `a`");
+            assert_eq!(
+                ctx.graph().nominal_node(m).map(|n| ctx.resolve(n)),
+                Some(m_node),
+                "`m` keeps its own node"
+            );
+            assert_eq!(ctx.resolve(fresh), a_node, "`fresh` merges into `a`'s node");
+        }
     }
 
     /// #498: the rule reads the live representative's labels. `apply_max` earlier in
@@ -5275,6 +5282,40 @@ mod tests {
             Some(&[d0, d1][..]),
             "the merge rests on the label's decision and on the earlier merge's"
         );
+    }
+
+    /// #490: with exact deps, a refused nominal merge's `⊥` rests on exactly its
+    /// causes: the node's `{m}` (d0) and the distinctness mark (d1), not the
+    /// unrelated decision d2. Every active decision made each such clash depend on
+    /// the whole stack and stopped back-jumping on wine. Without exact deps the
+    /// marks carry none, so the `⊥` keeps every active decision.
+    #[test]
+    fn refused_nominal_merge_rests_on_its_causes() {
+        let mut pool = ConceptPool::new();
+        let m = IndividualId::new(0);
+        let nom_m = pool.nominal(m);
+        let bot = pool.bot();
+        for exact in [true, false] {
+            let mut ctx = TableauContext::new(&pool);
+            ctx.set_merge_exact_deps(exact);
+            assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
+            let m_node = ctx.new_node();
+            ctx.add_label(m_node, nom_m);
+            ctx.assign_nominal(m, m_node);
+            let fresh = ctx.new_node();
+            let d0 = ctx.push_branch();
+            ctx.add_label_with_deps(fresh, nom_m, &[d0]);
+            let d1 = ctx.push_branch();
+            ctx.mark_distinct_with_deps(fresh, m_node, &[d1]);
+            let d2 = ctx.push_branch();
+            crate::rules::apply_nominal_assignment(&mut ctx, fresh);
+            let want: &[u32] = if exact { &[d0, d1] } else { &[d0, d1, d2] };
+            assert_eq!(
+                ctx.label_deps_of(m_node, bot).map(DepSet::as_slice),
+                Some(want),
+                "exact deps {exact}: the refused merge's `⊥`"
+            );
+        }
     }
 
     /// #498: when the individual's node does not carry its `Nominal` label, the

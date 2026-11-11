@@ -1541,9 +1541,22 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                         "refused nominal merge with no ⊥ interned: the clash is lost"
                     );
                     if !merged && let Some(bot) = ctx.pool().bot_id() {
-                        // Conservative deps for the failed-merge clash:
-                        // active branches ⊇ the precise merge-cond deps.
-                        let deps: DepSet = DepSet::from_slice(ctx.active_branches());
+                        // The refused merge is the clash "this node is `ind`, the
+                        // other node is `ind`, and the two are distinct". With
+                        // exact deps (#370) it rests on exactly those three: both
+                        // `Nominal(ind)` labels (`merge_deps`, read where they
+                        // are now, every active decision if one is missing;
+                        // #498) and the distinctness mark, whose deps a merge
+                        // carries along. Every active decision instead made each
+                        // such clash depend on the whole stack, so the search
+                        // could not back-jump (wine's per-query hang, #490).
+                        // Without exact deps the marks carry none, so that
+                        // conservative set stays.
+                        let deps: DepSet = if ctx.merge_exact_deps() {
+                            union(&merge_deps, &ctx.distinct_deps(source, keep))
+                        } else {
+                            DepSet::from_slice(ctx.active_branches())
+                        };
                         ctx.add_label_with_deps(keep, bot, &deps);
                     }
                     // After a merge, follow it and update the nominal map so

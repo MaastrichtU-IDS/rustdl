@@ -149,11 +149,15 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
                 Expanded::Open(mut frame) => match frame.start_option(ctx) {
                     Start::Exhausted => break frame.finish(ctx),
                     Start::Child(k, cp) => {
+                        #[cfg(test)]
+                        deadline_stop_tests::after_trial(ctx);
                         let depth = frame.max_depth - 1;
                         stack.push((frame, k, cp));
                         next = expand(ctx, depth);
                     }
                     Start::Decided(k, cp, v) => {
+                        #[cfg(test)]
+                        deadline_stop_tests::after_trial(ctx);
                         frame.on_child(ctx, k, cp, v);
                         next = Expanded::Open(frame);
                     }
@@ -162,6 +166,14 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
         };
         // Hand the verdict to the frame that asked for it.
         let Some((mut frame, k, cp)) = stack.pop() else {
+            // #494: the argument above, pinned. After the deadline fired no path
+            // decides (`expand` checks it before `saturate`), so a cut search
+            // returns `DepthLimit`. A new path that decides without `saturate`
+            // must keep this true, or the stop in `on_child` could drop a verdict.
+            debug_assert!(
+                !ctx.deadline_reached() || matches!(verdict, SearchVerdict::DepthLimit),
+                "a search whose deadline fired returned {verdict:?}"
+            );
             return verdict;
         };
         frame.on_child(ctx, k, cp, verdict);
@@ -815,6 +827,31 @@ impl Frame {
             SearchVerdict::DepthLimit => {
                 ctx.rollback_to(cp);
                 self.depth_limited = true;
+                // #494: once the deadline has fired, stop trying this frame's other
+                // options. Each one would only assert its disjunct, reach `expand`,
+                // return `DepthLimit` at the deadline check and roll back: no option
+                // tried after the flag can decide anything, because `expand` checks
+                // the deadline before `saturate`, and an `Or` option never returns
+                // `Start::Decided` (the only `Decided` is the merge arm's refusal,
+                // whose deps hold `my_id`, so it is refuted, not back-jumped). On a
+                // node with ~330k labels those dead trials kept a cut search running
+                // ~10 s past its budget (`ore_ont_7581`). Every ancestor stops the
+                // same way when this `DepthLimit` reaches it, since the flag is sticky.
+                //
+                // Precondition: the flag belongs to the deadline in force. `set_deadline`
+                // does not clear it, so a caller that reuses a context under a later
+                // deadline must call `clear_deadline_hit` first; otherwise a stale flag
+                // would stop this search at its first depth-cap `DepthLimit` (an
+                // inconclusive answer where one was available, reported as a cut).
+                // No caller does that today; the assertion keeps it that way.
+                if ctx.deadline_reached() && self.early_return.is_none() {
+                    debug_assert!(
+                        ctx.deadline.is_some_and(|d| std::time::Instant::now() >= d),
+                        "stale deadline_hit: the flag is set but the current deadline has not \
+                         passed (clear_deadline_hit before searching under a new deadline)"
+                    );
+                    self.early_return = Some(SearchVerdict::DepthLimit);
+                }
             }
             SearchVerdict::NodeCap => {
                 // Hard early-return: a global node-cap trip means the
@@ -2499,5 +2536,136 @@ mod counting_tests {
             "flag on: ≤0, the refuted second ⊔, then A's second ⊔: {:?}",
             logs[1]
         );
+    }
+}
+
+/// #494: once a search's deadline has fired, its open frames stop trying options.
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod deadline_stop_tests {
+    use super::*;
+    use owl_dl_core::ClassId;
+    use std::cell::Cell;
+
+    std::thread_local! {
+        /// Option trials (`start_option` returning `Child` or `Decided`) so far.
+        static TRIALS: Cell<u32> = const { Cell::new(0) };
+        /// Expire the deadline right after this many trials (`None`: never).
+        static EXPIRE_AFTER: Cell<Option<u32>> = const { Cell::new(None) };
+    }
+
+    /// Called by `search` after every option trial: counts it, and once the
+    /// configured number is reached, moves the deadline into the past, so the
+    /// cut lands *after* that option started, which an already-passed deadline
+    /// cannot do (the root `expand` would return before any option).
+    pub(super) fn after_trial(ctx: &mut TableauContext<'_, '_, '_>) {
+        let n = TRIALS.with(|t| {
+            t.set(t.get() + 1);
+            t.get()
+        });
+        if EXPIRE_AFTER.with(Cell::get) == Some(n) {
+            ctx.set_deadline(
+                std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .expect("an instant one second in the past exists"),
+            );
+        }
+    }
+
+    /// Search `root` with a far deadline that expires after `expire_after`
+    /// trials; returns the verdict and the number of option trials.
+    fn run(pool: &ConceptPool, root: ConceptId, expire_after: u32) -> (SearchVerdict, u32) {
+        TRIALS.with(|t| t.set(0));
+        EXPIRE_AFTER.with(|e| e.set(Some(expire_after)));
+        let mut ctx = TableauContext::new(pool);
+        ctx.set_deadline(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        let n = ctx.new_node();
+        ctx.add_label(n, root);
+        let v = search(&mut ctx, 64);
+        EXPIRE_AFTER.with(|e| e.set(None));
+        assert!(ctx.deadline_reached(), "the deadline must be what cut this");
+        (v, TRIALS.with(Cell::get))
+    }
+
+    /// One three-option disjunction, cut after its first option starts: the
+    /// frame stops there. Before #494 it tried all three, each returning
+    /// `DepthLimit` at once.
+    #[test]
+    fn a_cut_frame_tries_no_further_option() {
+        let mut pool = ConceptPool::new();
+        let [a, b, c] = [0, 1, 2].map(|i| pool.atomic(ClassId::new(i)));
+        let root = pool.or([a, b, c]);
+        let (v, trials) = run(&pool, root, 1);
+        assert!(matches!(v, SearchVerdict::DepthLimit), "got {v:?}");
+        assert_eq!(trials, 1, "options tried after the cut");
+    }
+
+    /// Nested: the cut lands in the inner frame of the outer frame's first
+    /// option. The inner frame stops, and the outer one stops when that
+    /// `DepthLimit` reaches it. Before #494: the inner frame's second option,
+    /// then the outer frame's second option, for 4 trials.
+    #[test]
+    fn the_stop_propagates_to_every_open_frame() {
+        let mut pool = ConceptPool::new();
+        let [a, b, c, d, x, y] = [0, 1, 2, 3, 4, 5].map(|i| pool.atomic(ClassId::new(i)));
+        // `x ⊓ (a ⊔ b)`, not a bare `a ⊔ b`: the pool flattens a nested `⊔`.
+        let inner_left = pool.or([a, b]);
+        let left = pool.and([x, inner_left]);
+        let inner_right = pool.or([c, d]);
+        let right = pool.and([y, inner_right]);
+        let root = pool.or([left, right]);
+        let (v, trials) = run(&pool, root, 2);
+        assert!(matches!(v, SearchVerdict::DepthLimit), "got {v:?}");
+        assert_eq!(trials, 2, "options tried, the cut landing in the second");
+    }
+
+    /// Without a cut the hook is inert and the same disjunction is decided.
+    #[test]
+    fn without_a_cut_the_search_still_decides() {
+        let mut pool = ConceptPool::new();
+        let [a, b, c] = [0, 1, 2].map(|i| pool.atomic(ClassId::new(i)));
+        let root = pool.or([a, b, c]);
+        TRIALS.with(|t| t.set(0));
+        // `run` resets this only when its search returns; never inherit an expiry
+        // left behind by a test that panicked earlier on this thread.
+        EXPIRE_AFTER.with(|e| e.set(None));
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_deadline(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        let n = ctx.new_node();
+        ctx.add_label(n, root);
+        let v = search(&mut ctx, 64);
+        assert!(matches!(v, SearchVerdict::Sat), "got {v:?}");
+        assert!(!ctx.deadline_reached());
+    }
+
+    /// The stop's precondition: a flag left over from an earlier, elapsed deadline
+    /// must not stop a search under a later one. Reusing a context that way without
+    /// `clear_deadline_hit` is a caller bug, and the assertion names it instead of
+    /// letting the stale flag turn a depth-cap `DepthLimit` into a silent cut.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale deadline_hit")]
+    fn a_stale_deadline_flag_is_caught() {
+        let mut pool = ConceptPool::new();
+        let [a, b, c] = [0, 1, 2].map(|i| pool.atomic(ClassId::new(i)));
+        let root = pool.or([a, b, c]);
+        TRIALS.with(|t| t.set(0));
+        EXPIRE_AFTER.with(|e| e.set(None));
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_deadline(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .expect("an instant one second in the past exists"),
+        );
+        assert!(
+            ctx.check_deadline(),
+            "latch the flag on an elapsed deadline"
+        );
+        // A later deadline, flag NOT cleared.
+        ctx.set_deadline(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        let n = ctx.new_node();
+        ctx.add_label(n, root);
+        // Depth 1: the option's child is `expand(_, 0)`, a depth-cap `DepthLimit`.
+        let _ = search(&mut ctx, 1);
     }
 }

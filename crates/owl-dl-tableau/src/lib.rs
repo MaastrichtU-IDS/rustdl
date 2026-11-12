@@ -297,10 +297,6 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     max_zero_forall: bool,
     /// `RUSTDL_MERGE_EXACT_DEPS`, cached (#370).
     merge_exact_deps: bool,
-    /// `RUSTDL_DATA_COUNTING_ROLE_HIERARCHY` (default ON), read once at
-    /// construction: `concrete_domain_clash` read the environment on every call,
-    /// about 4% of a wine query before the B1 pre-filter (#490 lever B3).
-    data_counting_role_hierarchy: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
     /// `trigger ClassId → sorted atomic-super ConceptIds` reachable through
     /// chains of `ConceptRule`s whose conclusion is itself `Atomic(_)`. Built
@@ -442,7 +438,6 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             nominal_merge_prune: nominal_merge_prune_enabled(),
             max_zero_forall: max_zero_forall_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
-            data_counting_role_hierarchy: data_counting_role_hierarchy_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -497,7 +492,6 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             nominal_merge_prune: nominal_merge_prune_enabled(),
             max_zero_forall: max_zero_forall_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
-            data_counting_role_hierarchy: data_counting_role_hierarchy_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -557,7 +551,6 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             nominal_merge_prune: nominal_merge_prune_enabled(),
             max_zero_forall: max_zero_forall_enabled(),
             merge_exact_deps: merge_exact_deps_enabled(),
-            data_counting_role_hierarchy: data_counting_role_hierarchy_enabled(),
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
@@ -2902,7 +2895,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 acc.deps = crate::deps::union(&acc.deps, &d);
             }
         }
-        let hierarchy = self.hierarchy.filter(|_| self.data_counting_role_hierarchy);
+        let hierarchy = self
+            .hierarchy
+            .filter(|_| crate::data_counting_role_hierarchy_enabled());
         let n = self.graph.node(node);
         let labels = n.labels();
         let mut bool_by_role: HashMap<RoleId, SetAcc<FiniteSet<bool>>> = HashMap::new();

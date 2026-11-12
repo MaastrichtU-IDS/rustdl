@@ -37,10 +37,43 @@ use crate::classify::{
 /// the maps together.
 type IndivResult = (Vec<String>, Vec<String>);
 
-/// Same as [`IndivResult`] plus whether any probe for that individual was CUT
-/// (deadline / node-cap / depth bail) rather than refuted — the input to
-/// `Realization::incomplete`.
-type IndivResultReporting = (Vec<String>, Vec<String>, bool, bool);
+/// Same as [`IndivResult`] plus that individual's probe cuts ([`RowCuts`]): the input
+/// to `Realization::incomplete`, `no_verdict` and `depth_capped`.
+type IndivResultReporting = (Vec<String>, Vec<String>, RowCuts);
+
+/// The cut signals of one individual's instance probes, and (folded with
+/// [`RowCuts::merge`]) of a whole realization.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+struct RowCuts {
+    /// Some probe was cut (deadline, node cap or depth limit) rather than refuted.
+    cut: bool,
+    /// #493: some cut was the likely-bug `NoVerdict`.
+    no_verdict: bool,
+    /// #510: some cut was the decision-depth limit ([`InstanceProbe::depth_capped`]).
+    depth_capped: bool,
+}
+
+impl RowCuts {
+    /// Record one probe of this row.
+    fn record(&mut self, probe: InstanceProbe) {
+        self.cut |= probe.cut;
+        self.no_verdict |= probe.no_verdict;
+        self.depth_capped |= probe.depth_capped;
+    }
+
+    /// Fold one individual's row into the realization's signals. `no_verdict` counts
+    /// every row, anonymous individuals' too: it is a bug signal, not a row (#493).
+    /// `cut` and `depth_capped` count only the named rows, the ones published, so a
+    /// realization's `depth_capped` implies its `incomplete` (#510), as a probe's does.
+    fn merge(&mut self, row: Self, anonymous: bool) {
+        self.no_verdict |= row.no_verdict;
+        if !anonymous {
+            self.cut |= row.cut;
+            self.depth_capped |= row.depth_capped;
+        }
+    }
+}
 
 /// Default per-pair tableau probe deadline (milliseconds) used by the
 /// `{a} ⊓ ¬C` instance-check reduction when `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
@@ -234,7 +267,9 @@ pub struct InstanceFlags {
     /// The deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) searches much deeper.
     /// Never set together with `no_verdict` on the same probe (as in classify's
     /// `record_cut_probe`): the deadline-free probe's own depth limit is #462's signal.
-    /// Report-only: implies `incomplete`, changes no answer.
+    /// Report-only: implies `incomplete`, changes no answer. On `instances` it is OR-ed
+    /// over every individual's probe, anonymous individuals' too (as `incomplete` is
+    /// there); [`Realization::depth_capped`] counts named individuals only.
     pub depth_capped: bool,
 }
 
@@ -1059,6 +1094,8 @@ pub struct Realization {
     /// on the saturation paths, whose classification runs no wedge.
     relies_on_trusted_consistency: bool,
     no_verdict: bool,
+    /// #510: see [`Self::depth_capped`].
+    depth_capped: bool,
 }
 
 impl Realization {
@@ -1081,6 +1118,27 @@ impl Realization {
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// #510: at least one cut instance probe of a named individual hit the tableau's
+    /// decision-depth limit, directly or through early abandon
+    /// ([`crate::InstanceFlags::depth_capped`]), rather than a deadline or the node
+    /// cap. A larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not recover
+    /// such a cut; the deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`)
+    /// searches much deeper, but that setting also takes the deadline off realize's
+    /// classification step. Report-only: implies [`Self::incomplete`] and changes no
+    /// answer. Never set by a probe that reports [`Self::no_verdict`], though a
+    /// realization can carry both from different probes.
+    ///
+    /// It counts only the instance probes of named individuals, the rows that set
+    /// [`Self::incomplete`]. `instances` and `instances-expr`
+    /// ([`crate::InstanceFlags::depth_capped`]) count anonymous individuals' probes
+    /// too. Not covered: the classification under `realize` and #388's direct-type
+    /// checks, which don't feed `incomplete` either. Always `false` on the saturation
+    /// paths, which run no tableau probe.
+    #[must_use]
+    pub fn depth_capped(&self) -> bool {
+        self.depth_capped
     }
 
     /// See [`Self::witness_prune_active`] — `true` iff the pseudo-model witness prune
@@ -1460,6 +1518,8 @@ pub fn realize_saturation_only_internal(
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // No tableau probe runs on this path, so no likely-bug `NoVerdict` (#493).
         no_verdict: false,
+        // Nor a depth cut (#510).
+        depth_capped: false,
     })
 }
 
@@ -1664,6 +1724,8 @@ pub(crate) fn realize_via_saturation_internal(
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // No tableau probe runs on this path, so no likely-bug `NoVerdict` (#493).
         no_verdict: false,
+        // Nor a depth cut (#510).
+        depth_capped: false,
     })
 }
 
@@ -1952,8 +2014,7 @@ pub(crate) fn realize_tableau_internal(
             let base_types = base_model.as_ref().and_then(|m| m.get(idx));
             let mut types: Vec<&str> = Vec::new();
             // Any cut probe for this individual makes its type set possibly short.
-            let mut truncated = false;
-            let mut no_verdict = false;
+            let mut cuts = RowCuts::default();
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
                 let pair_deadline = pair_deadline_ms
@@ -1967,8 +2028,9 @@ pub(crate) fn realize_tableau_internal(
                     pair_deadline,
                     base_types,
                 )?;
-                truncated |= probe.cut;
-                no_verdict |= probe.no_verdict;
+                // #510: `probe.depth_capped` was read on this rayon worker right after
+                // its own probe (`instance_check_reporting`), so it is this probe's.
+                cuts.record(probe);
                 if probe.is_instance {
                     types.push(class_iri);
                 }
@@ -1986,7 +2048,7 @@ pub(crate) fn realize_tableau_internal(
                 .map(|s| (*s).to_owned())
                 .collect();
             let types_owned: Vec<String> = types.into_iter().map(str::to_owned).collect();
-            Ok((types_owned, leaves, truncated, no_verdict))
+            Ok((types_owned, leaves, cuts))
         })
         .collect();
     let per_individual = per_individual?;
@@ -1997,7 +2059,7 @@ pub(crate) fn realize_tableau_internal(
             .iter()
             .zip(&per_individual)
             .filter(|(iri, _)| !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX))
-            .map(|(_, (_, leaves, _, _))| leaves.as_slice())
+            .map(|(_, (_, leaves, _))| leaves.as_slice())
             .collect();
         verify_co_leaf_pairs(
             internal,
@@ -2013,21 +2075,19 @@ pub(crate) fn realize_tableau_internal(
     // #493: the likely-bug `NoVerdict` from the realize classification (#471's
     // convention for surfaces that classify first), the instance probes and #388's
     // checks. Anonymous individuals' probes count: this is a bug signal, not a row.
-    let mut no_verdict = hierarchy.stats().no_verdict_pairs > 0 || pairs_no_verdict;
+    let no_verdict = hierarchy.stats().no_verdict_pairs > 0 || pairs_no_verdict;
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut named_individual_iris: Vec<String> = Vec::new();
-    // Any cut probe anywhere makes the whole realization possibly short.
-    let mut incomplete = false;
+    // Any cut probe on a named row makes the whole realization possibly short.
+    let mut cuts = RowCuts::default();
     let mut direct_types_unverified = false;
-    for (iri, (types_owned, leaves, truncated, probe_no_verdict)) in
-        individual_iris.iter().zip(per_individual)
-    {
-        no_verdict |= probe_no_verdict;
-        if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
+    for (iri, (types_owned, leaves, row)) in individual_iris.iter().zip(per_individual) {
+        let anonymous = iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX);
+        cuts.merge(row, anonymous);
+        if anonymous {
             continue;
         }
-        incomplete |= truncated;
         let (leaves, unverified) = verified_leaves(&leaves, &hierarchy, &verdicts);
         direct_types_unverified |= unverified;
         named_individual_iris.push(iri.clone());
@@ -2049,8 +2109,9 @@ pub(crate) fn realize_tableau_internal(
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // #493: a likely-bug cut is a cut too, whatever row it hit (anonymous rows
         // are not published, so `incomplete` alone would miss them).
-        incomplete: incomplete || no_verdict,
-        no_verdict,
+        incomplete: cuts.cut || cuts.no_verdict || no_verdict,
+        no_verdict: cuts.no_verdict || no_verdict,
+        depth_capped: cuts.depth_capped,
     })
 }
 
@@ -2079,6 +2140,66 @@ mod tests {
         assert!(p.cut && !p.no_verdict && p.depth_capped, "{p:?}");
         let p = InstanceProbe::cut(false, false);
         assert!(p.cut && !p.no_verdict && !p.depth_capped, "{p:?}");
+    }
+
+    /// #510: realize folds each individual's probe cuts so that `depth_capped` counts
+    /// only named rows, as `incomplete` does, and so implies it; `no_verdict` counts
+    /// anonymous rows too (#493). Every shape of row, named and anonymous.
+    #[test]
+    fn realize_s_row_fold_keeps_depth_capped_within_incomplete() {
+        let row = |probes: &[InstanceProbe]| {
+            let mut r = RowCuts::default();
+            for p in probes {
+                r.record(*p);
+            }
+            r
+        };
+        let decided = InstanceProbe::decided(false);
+        let depth = InstanceProbe::cut(false, true);
+        let deadline = InstanceProbe::cut(false, false);
+        let bug = InstanceProbe::cut(true, true);
+        let rows = [
+            row(&[]),
+            row(&[decided]),
+            row(&[decided, depth]),
+            row(&[deadline]),
+            row(&[bug]),
+            row(&[deadline, depth]),
+            row(&[bug, depth]),
+        ];
+        let flags = |c: RowCuts| (c.cut, c.no_verdict, c.depth_capped);
+        // One row folded in, named and anonymous: (cut, no_verdict, depth_capped).
+        let named = [
+            (false, false, false),
+            (false, false, false),
+            (true, false, true),
+            (true, false, false),
+            (true, true, false),
+            (true, false, true),
+            (true, true, true),
+        ];
+        for (r, want) in rows.iter().zip(named) {
+            let mut acc = RowCuts::default();
+            acc.merge(*r, false);
+            assert_eq!(flags(acc), want, "named {r:?}");
+            let mut acc = RowCuts::default();
+            acc.merge(*r, true);
+            assert_eq!(flags(acc), (false, want.1, false), "anonymous {r:?}");
+        }
+        // Every pair of rows, in every named/anonymous mix: depth implies a cut.
+        for a in rows {
+            for b in rows {
+                for (an, bn) in [(false, false), (false, true), (true, false), (true, true)] {
+                    let mut acc = RowCuts::default();
+                    acc.merge(a, an);
+                    acc.merge(b, bn);
+                    assert!(
+                        !acc.depth_capped || acc.cut,
+                        "{a:?} {an} / {b:?} {bn}: {acc:?}"
+                    );
+                }
+            }
+        }
     }
 
     const HEADER: &str = "\

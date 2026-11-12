@@ -133,7 +133,14 @@ class IncompleteQueryWarning(UserWarning):
     """Emitted by the budgeted inferred queries (`disjoint_classes`,
     `same_individuals`, `different_individuals`, `object_property_values`)
     when the per-pair budget/probe was exhausted (sound but possibly
-    incomplete)."""
+    incomplete).
+
+    #510: when an instance probe was cut by the tableau's decision-depth limit
+    (`is_instance_of`, `instances_of`, `class_expression_instances`, `realize`, the
+    two realize-backed `materialize_*` calls, and the explanation calls' instance
+    checks), the message says so: a longer `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or a
+    larger node cap does not help there, and `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (the
+    deadline-free probe, with no time limit) may."""
 
 class DirectTypesUnverifiedWarning(UserWarning):
     """Emitted by `realize` when two most-specific types of an individual could

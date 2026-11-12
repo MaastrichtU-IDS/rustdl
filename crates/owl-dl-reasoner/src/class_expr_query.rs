@@ -106,6 +106,7 @@ pub struct CeInstances {
     completeness_guaranteed: bool,
     consistency_undetermined: bool,
     no_verdict: bool,
+    depth_capped: bool,
 }
 
 impl CeInstances {
@@ -146,6 +147,14 @@ impl CeInstances {
     #[must_use]
     pub fn no_verdict(&self) -> bool {
         self.no_verdict
+    }
+
+    /// #510: a cut instance probe hit the tableau's decision-depth limit rather than a
+    /// deadline or the node cap, so a larger budget does not recover it. Report-only:
+    /// implies [`Self::incomplete`]. See [`crate::InstanceFlags::depth_capped`].
+    #[must_use]
+    pub fn depth_capped(&self) -> bool {
+        self.depth_capped
     }
 }
 
@@ -366,5 +375,6 @@ pub fn class_expression_instances<A: ForIRI>(
         completeness_guaranteed: fast_path && !flags.incomplete,
         consistency_undetermined: flags.consistency_undetermined,
         no_verdict: flags.no_verdict,
+        depth_capped: flags.depth_capped,
     })
 }

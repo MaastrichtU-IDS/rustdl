@@ -2685,6 +2685,10 @@ mod stale_witness_486 {
     /// pairs, an open choice point. Resolved, it is two, so the `≤2` is met.
     #[test]
     fn first_open_max_does_not_open_on_a_stale_witness() {
+        assert!(
+            crate::max_choice_point_enabled(),
+            "the choice point is off: this test would pass vacuously"
+        );
         let mut pool = ConceptPool::new();
         let c = pool.atomic(ClassId::new(0));
         let at_most_two = pool.max(2, Role::Inverse(R), c);

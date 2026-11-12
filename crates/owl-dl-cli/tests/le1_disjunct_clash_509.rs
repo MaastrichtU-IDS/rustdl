@@ -50,9 +50,14 @@ fn run(args: &[&str]) -> (i32, String, String) {
 
 /// `classify --json`: exit 0 (no panic), consistent, no deadline, and exactly
 /// `expected` as the direct subsumptions with nothing unsatisfiable.
+///
+/// The per-pair deadline is a long finite one, not the CLI's 5 ms default: a debug
+/// build under a loaded parallel `cargo test` cut a pair at 5 ms and failed the
+/// `incomplete` assertion (2026-11-12), the flake #482 fixed in
+/// `max_body_vars_canary`. Finite, so a future hang fails instead of hanging CI.
 fn assert_classify(file: &str, expected: &[(&str, &str)]) {
     let f = fixture(file);
-    let (code, stdout, stderr) = run(&["classify", "--json", &f]);
+    let (code, stdout, stderr) = run(&["classify", "--json", "--pair-timeout-ms", "60000", &f]);
     assert_eq!(code, 0, "[{file}] stderr {stderr}");
     let j: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(j["consistent"], true, "[{file}]");

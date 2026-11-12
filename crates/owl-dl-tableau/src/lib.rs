@@ -318,6 +318,12 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// one `Option` discriminant test and the search behaves exactly as before,
     /// so the flag-OFF path is byte-identical by construction.
     early_abandon: Option<EarlyAbandon>,
+    /// #510 (C): how many times [`crate::search`] bottomed out at its depth cap
+    /// (`max_depth == 0`) on this probe, counted whether or not early abandon is
+    /// armed. Report-only: nothing in the search reads it, so it changes no path.
+    /// The reasoner reads it after a cut to say whether the decision-depth limit
+    /// was hit before a deadline or the node cap ended the probe.
+    depth_cap_hits: u64,
 }
 
 /// Per-probe accounting behind the main tableau's adaptive early-abandon.
@@ -442,6 +448,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
             early_abandon: None,
+            depth_cap_hits: 0,
         }
     }
 }
@@ -496,6 +503,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
             early_abandon: None,
+            depth_cap_hits: 0,
         }
     }
 }
@@ -555,6 +563,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
             early_abandon: None,
+            depth_cap_hits: 0,
         }
     }
 
@@ -714,6 +723,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self
     }
 
+    /// #510 (C): how many times the search bottomed out at its depth cap on this
+    /// probe (see the `depth_cap_hits` field). Diagnostic and report-only.
+    #[must_use]
+    pub fn depth_cap_hits(&self) -> u64 {
+        self.depth_cap_hits
+    }
+
+    /// #510 (C): forget the depth-cap hits counted so far. Iterative deepening
+    /// calls it before its final level, whose cap is the only one that is
+    /// `MAX_SEARCH_DEPTH`; the shallow levels' bottom-outs are not hits of that limit.
+    pub fn reset_depth_cap_hits(&mut self) -> &mut Self {
+        self.depth_cap_hits = 0;
+        self
+    }
+
     /// True once the early-abandon criterion has fired on this probe. Latched,
     /// so the whole DFS unwinds. Always `false` when unarmed.
     #[must_use]
@@ -732,6 +756,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// the `cap_hit_limit`-th bottom-out abandons immediately, and every
     /// `crate::search` entry from then on returns `DepthLimit` so the DFS unwinds.
     pub fn note_depth_cap_hit(&mut self) {
+        // #510 (C): counted unconditionally, before the early-abandon accounting,
+        // so an unarmed probe (`RUSTDL_TABLEAU_EARLY_ABANDON=0`) counts too.
+        self.depth_cap_hits += 1;
         if let Some(e) = self.early_abandon.as_mut() {
             e.depth0 += 1;
             e.stall_run += 1;

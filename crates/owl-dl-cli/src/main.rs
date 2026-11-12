@@ -1195,10 +1195,18 @@ const DEPTH_CUT_ADVICE: &str = "A longer RUSTDL_REALIZE_PAIR_TIMEOUT_MS or a lar
      cap does not help with that; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the deadline-free \
      probe, which searches much deeper (with no time limit).";
 
+/// #510 (C): what to add to a deadline or node-cap cut whose probe had hit the
+/// decision-depth limit before the budget ran out (`InstanceFlags::depth_cap_hit`).
+/// Both remedies may help there, so neither is ruled out.
+const DEPTH_HIT_ADVICE: &str = "It had hit the tableau's decision-depth limit before that, \
+     so RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (the deadline-free probe, which searches much \
+     deeper, with no time limit) may help as well as a larger budget.";
+
 /// An `instance` probe was cut: print `unknown` and exit 3, as for
 /// [`exit_unknown_node_cap`] (#363 A2). #510: the message names the limit that fired,
-/// since only a deadline or node-cap cut is recovered by a larger budget.
-fn exit_unknown_probe_cut(depth_capped: bool) -> ! {
+/// since only a deadline or node-cap cut is recovered by a larger budget. #510 (C):
+/// `depth_cap_hit` adds that the probe had hit the depth limit before its budget cut it.
+fn exit_unknown_probe_cut(depth_capped: bool, depth_cap_hit: bool) -> ! {
     println!("unknown");
     if depth_capped {
         eprintln!(
@@ -1206,10 +1214,15 @@ fn exit_unknown_probe_cut(depth_capped: bool) -> ! {
              reached no verdict. {DEPTH_CUT_ADVICE}"
         );
     } else {
+        let hit = if depth_cap_hit {
+            format!(" {DEPTH_HIT_ADVICE}")
+        } else {
+            String::new()
+        };
         eprintln!(
             "warning: the instance probe was cut (deadline or node cap) and reached no \
              verdict. Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded), \
-             RUSTDL_MAX_NODES, or with no probe deadline RUSTDL_QUERY_MAX_NODES."
+             RUSTDL_MAX_NODES, or with no probe deadline RUSTDL_QUERY_MAX_NODES.{hit}"
         );
     }
     std::process::exit(3);
@@ -1223,7 +1236,10 @@ fn exit_unknown_probe_cut(depth_capped: bool) -> ! {
 /// #510: `depth_capped` is `true` when at least one cut probe hit the decision-depth
 /// limit (`InstanceFlags::depth_capped`, `CeInstances::depth_capped`,
 /// `Realization::depth_capped`).
-fn warn_probes_cut(what: &str, node_cap_var: &str, depth_capped: bool) {
+/// #510 (C): `depth_cap_hit` is `true` when at least one probe hit that limit before a
+/// deadline or the node cap cut it (`InstanceFlags::depth_cap_hit`; `instances` only so
+/// far, the other callers pass `false`).
+fn warn_probes_cut(what: &str, node_cap_var: &str, depth_capped: bool, depth_cap_hit: bool) {
     let budget = format!(
         "Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded) or {node_cap_var}."
     );
@@ -1241,9 +1257,16 @@ fn warn_probes_cut(what: &str, node_cap_var: &str, depth_capped: bool) {
              {realize_note} For a deadline or node-cap cut: {budget}"
         );
     } else {
+        let hit = if depth_cap_hit {
+            " At least one of those probes had hit the tableau's decision-depth limit \
+             before it was cut, so RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (the deadline-free \
+             probe, which searches much deeper, with no time limit) may help as well."
+        } else {
+            ""
+        };
         eprintln!(
             "warning: {what}: at least one instance probe was cut (deadline or node cap), \
-             so entries may be missing; those printed are sound. {budget}"
+             so entries may be missing; those printed are sound. {budget}{hit}"
         );
     }
 }
@@ -2398,7 +2421,7 @@ fn run() -> Result<()> {
                     exit_unknown_no_verdict();
                 }
                 if flags.incomplete && !verdict {
-                    exit_unknown_probe_cut(flags.depth_capped);
+                    exit_unknown_probe_cut(flags.depth_capped, flags.depth_cap_hit);
                 }
                 undetermined = flags.consistency_undetermined;
                 instance_no_verdict = flags.no_verdict;
@@ -2434,7 +2457,12 @@ fn run() -> Result<()> {
             }
             // #493: a likely-bug cut gets #449's note and exit 3, after the list.
             if flags.incomplete && !flags.no_verdict {
-                warn_probes_cut("instances", "RUSTDL_QUERY_MAX_NODES", flags.depth_capped);
+                warn_probes_cut(
+                    "instances",
+                    "RUSTDL_QUERY_MAX_NODES",
+                    flags.depth_capped,
+                    flags.depth_cap_hit,
+                );
             }
             warn_consistency_undetermined("instances", flags.consistency_undetermined);
             exit_if_no_verdict(flags.no_verdict);
@@ -2547,7 +2575,13 @@ fn run() -> Result<()> {
             // A list answer, as `instances`: sound members, a warning, exit 0. #493: a
             // likely-bug cut gets #449's note and exit 3 instead of the budget advice.
             if r.incomplete() && !r.no_verdict() {
-                warn_probes_cut("instances-expr", "RUSTDL_QUERY_MAX_NODES", r.depth_capped());
+                // #510 C2: `CeInstances` has no `depth_cap_hit` yet.
+                warn_probes_cut(
+                    "instances-expr",
+                    "RUSTDL_QUERY_MAX_NODES",
+                    r.depth_capped(),
+                    false,
+                );
             }
             warn_consistency_undetermined("instances-expr", r.consistency_undetermined());
             exit_if_no_verdict(r.no_verdict());
@@ -2588,7 +2622,8 @@ fn run() -> Result<()> {
             note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
             // #493: a likely-bug cut gets #449's note at the end, not the budget advice.
             if r.incomplete() && !r.no_verdict() {
-                warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped());
+                // #510 C2: `Realization` has no `depth_cap_hit` yet.
+                warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped(), false);
             }
             if r.direct_types_unverified() {
                 eprintln!(

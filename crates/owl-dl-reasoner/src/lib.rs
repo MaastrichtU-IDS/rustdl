@@ -7316,6 +7316,34 @@ pub(crate) fn last_probe_depth_capped() -> bool {
 }
 
 std::thread_local! {
+    /// #510 (C): whether the CURRENT thread's last main-tableau probe was cut by a
+    /// deadline or the node cap AFTER its search had bottomed out at the
+    /// decision-depth limit (`MAX_SEARCH_DEPTH`) at least once. It is the case
+    /// `PROBE_DEPTH_CAPPED` does not cover: early abandon was off, or the deadline came
+    /// before its 32nd hit (a loaded or slow host). Unlike `depth_capped`, a larger
+    /// budget may also help here, so it is a separate signal. Exclusive with
+    /// `PROBE_DEPTH_CAPPED` and with a stall (see [`depth_cap_hit_cause`]). Reset and set
+    /// by `decide_capturing` like `PROBE_DEPTH_CAPPED`; report-only.
+    static PROBE_DEPTH_CAP_HIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// #510 (C): whether this thread's last main-tableau probe was cut by a deadline or
+/// the node cap after hitting the decision-depth limit at least once (see
+/// `PROBE_DEPTH_CAP_HIT`). Read it directly after the probe on the same thread.
+pub(crate) fn last_probe_depth_cap_hit() -> bool {
+    PROBE_DEPTH_CAP_HIT.with(std::cell::Cell::get)
+}
+
+/// #510 (C): the `depth_cap_hit` cause of a cut probe (a `DepthLimit` or `NodeCap`
+/// verdict). Pure, so the precedence is pinned by a table test: a stall wins (#475),
+/// then `depth_capped` (early abandon, or the cap with time left), then at least one
+/// depth-cap hit; with no hit the cut is a plain budget cut.
+#[must_use]
+fn depth_cap_hit_cause(hits: u64, depth_capped: bool, stalled: bool) -> bool {
+    hits > 0 && !depth_capped && !stalled
+}
+
+std::thread_local! {
     /// #475: whether the CURRENT thread's last main-tableau probe ended without a
     /// verdict because its deterministic saturation ran out of iterations
     /// (`RUSTDL_TABLEAU_SATURATE_ITERS`, the #437 livelock kind), on a budgeted
@@ -7373,6 +7401,29 @@ fn map_depth_limit(
         (false, Ok(None))
     } else {
         (true, Err(ReasonError::NoVerdict))
+    }
+}
+
+#[cfg(test)]
+mod depth_cap_hit_cause_tests {
+    use super::depth_cap_hit_cause;
+
+    /// #510 (C): every combination. Only a probe with a hit, not depth-capped and not
+    /// stalled, is a `depth_cap_hit`; the three causes stay exclusive.
+    #[test]
+    fn a_hit_counts_only_when_neither_a_stall_nor_a_depth_cap_explains_the_cut() {
+        for hits in [0_u64, 1, 31, 32, 40_000] {
+            for depth_capped in [false, true] {
+                for stalled in [false, true] {
+                    let want = hits > 0 && !depth_capped && !stalled;
+                    assert_eq!(
+                        depth_cap_hit_cause(hits, depth_capped, stalled),
+                        want,
+                        "hits={hits} depth_capped={depth_capped} stalled={stalled}"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -7793,6 +7844,8 @@ fn search_iterative_deepening(
             // read as a deadline cut.
             ctx.set_deadline(deadline);
             ctx.clear_deadline_hit();
+            // #510 (C): only the final level's cap is `MAX_SEARCH_DEPTH`.
+            ctx.reset_depth_cap_hits();
         } else {
             ctx.set_deadline(shallow);
         }
@@ -12945,6 +12998,7 @@ where
 {
     PROBE_DEPTH_CAPPED.with(|c| c.set(false));
     PROBE_STALLED.with(|c| c.set(false));
+    PROBE_DEPTH_CAP_HIT.with(|c| c.set(false));
     // Fast-exit if the deadline is already spent — BEFORE the expensive
     // `pool.clone()` + context setup below. On large ontologies that per-call
     // ConceptPool clone dominates: under a global classify deadline,
@@ -13178,15 +13232,24 @@ where
         // Live-node cap hit: sound under-approximation, never an error (#35 v4
         // safety net) — must be checked before the DepthLimit arms below so a
         // cap trip is never mistaken for a hard NoVerdict.
-        owl_dl_tableau::SearchVerdict::NodeCap => Ok(None),
+        // #510 (C): a node-cap stop after a depth-cap hit is a `depth_cap_hit`. The
+        // stall is read here for that flag only; `PROBE_STALLED` keeps its #475 scope.
+        owl_dl_tableau::SearchVerdict::NodeCap => {
+            let hit = depth_cap_hit_cause(ctx.depth_cap_hits(), false, ctx.saturation_stalled());
+            PROBE_DEPTH_CAP_HIT.with(|c| c.set(hit));
+            Ok(None)
+        }
         // #288/#475: stall, early abandon, deadline or depth cap, in that order
-        // (see `map_depth_limit`).
+        // (see `map_depth_limit`). #510 (C): a deadline cut after a hit is a
+        // `depth_cap_hit`.
         owl_dl_tableau::SearchVerdict::DepthLimit => {
             let stalled = ctx.saturation_stalled();
             let (depth_capped, r) =
                 map_depth_limit(stalled, ctx.early_abandoned(), ctx.deadline_reached());
             PROBE_DEPTH_CAPPED.with(|c| c.set(depth_capped));
             PROBE_STALLED.with(|c| c.set(stalled));
+            let hit = depth_cap_hit_cause(ctx.depth_cap_hits(), depth_capped, stalled);
+            PROBE_DEPTH_CAP_HIT.with(|c| c.set(hit));
             r
         }
     }

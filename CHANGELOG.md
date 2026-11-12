@@ -1307,6 +1307,23 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`instance` and `instances` say when a probe cut by a budget had hit the decision-depth
+  limit first (#510 C).** `depth_capped` (#510) covers only a probe that the depth limit itself
+  ended, through early abandon's 32nd hit. A depth-bound probe whose deadline came first (early
+  abandon off, or a loaded host) was reported as a plain deadline cut, with only the budget
+  advice.
+  - The tableau now counts depth-cap hits on every bounded probe. The count is report-only and
+    changes no search path: early abandon is untouched, and with it off nothing is armed.
+  - New `InstanceFlags::depth_cap_hit`: a deadline or the node cap cut the probe after at least
+    one hit. It is report-only, implies `incomplete`, and is never set together with
+    `depth_capped` or `no_verdict` on one probe. On `instances` it is OR-ed over the individuals.
+  - **`instance` / `instances`:** the deadline or node-cap wording adds that
+    `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` may help as well as a larger budget.
+  - **Python:** `is_instance_of` says the same in its `IncompleteQueryWarning`. The native
+    tuple gains a last element.
+  - **Not yet covered:** `instances-expr`, `realize`, `justify`, `repair` and the other Python
+    calls. `classify` is unchanged: its `depth_capped_pairs` and banner do not count a hit.
+    No answer changes.
 - **`instance` names a decision-depth cut, and stops advising a budget that cannot recover it
   (#510).** A bounded instance probe stops at `MAX_SEARCH_DEPTH` (256) decision levels,
   directly or through early abandon (#288). The CLI said "cut (deadline, node cap or depth

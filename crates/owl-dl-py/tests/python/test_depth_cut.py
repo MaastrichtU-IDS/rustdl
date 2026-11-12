@@ -40,6 +40,32 @@ def _fixture(tmp_path, name, *, told_exists=False, a_is_y=False):
     return str(p)
 
 
+def _pigeonhole(tmp_path, name, holes=8):
+    """#510 (C): a pigeonhole forced only under ¬Y (holes+1 pigeons). Its decision
+    depth is at most holes+1, so a deadline cuts `{a} ⊓ ¬Y` with no depth-limit hit,
+    whatever the host's speed. Never run it deadline-free: it does not finish."""
+    P = lambda i, j: f":P{i}_{j}"
+    row = lambda i: " ".join(P(i, j) for j in range(holes))
+    lines = [
+        "Prefix(owl:=<http://www.w3.org/2002/07/owl#>)",
+        "Prefix(:=<http://example.org/d#>)",
+        "Ontology(<http://example.org/d>",
+        "Declaration(NamedIndividual(:a)) Declaration(Class(:Y)) Declaration(Class(:X))",
+    ]
+    lines += [f"SubClassOf(:X ObjectUnionOf({row(i)}))" for i in range(holes)]
+    lines.append(f"SubClassOf(owl:Thing ObjectUnionOf(:Y {row(holes)}))")
+    lines += [
+        f"DisjointClasses({P(i, j)} {P(k, j)})"
+        for j in range(holes)
+        for i in range(holes + 1)
+        for k in range(i + 1, holes + 1)
+    ]
+    lines += ["ClassAssertion(:X :a)", ")"]
+    p = tmp_path / f"{name}.ofn"
+    p.write_text("\n".join(lines) + "\n")
+    return str(p)
+
+
 # label -> (call(paths) , kind). `kind`: "answer" (one probe, yes/no), "list" (OR-ed
 # probes), "realize" (a list that runs realize), "explain" (justify / repair).
 CALLS = {
@@ -79,6 +105,7 @@ def paths(tmp_path):
         "plain": _fixture(tmp_path, "plain"),
         "exists": _fixture(tmp_path, "exists", told_exists=True),
         "a_is_y": _fixture(tmp_path, "a_is_y", a_is_y=True),
+        "php": _pigeonhole(tmp_path, "php"),
     }
 
 
@@ -122,8 +149,38 @@ def test_the_deadline_free_probe_answers_without_a_warning(label, paths, monkeyp
 def test_a_deadline_cut_keeps_the_budget_text(label, paths, monkeypatch):
     # Early abandon off and a 1 ms deadline: every cut is a deadline cut.
     call, _ = CALLS[label]
-    monkeypatch.setenv("RUSTDL_TABLEAU_EARLY_ABANDON", "0")
-    monkeypatch.setenv("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "1")
+    if label == "is_instance_of":
+        # #510 (C): `is_instance_of` reports a depth-limit hit before a budget cut,
+        # which the 280-union can make even within 1 ms on a fast host; the pigeonhole
+        # never hits the limit, so its default-deadline cut is a plain budget cut.
+        call = lambda p: rustdl.is_instance_of(p["php"], Y, A)
+    else:
+        monkeypatch.setenv("RUSTDL_TABLEAU_EARLY_ABANDON", "0")
+        monkeypatch.setenv("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "1")
     _, msgs = _incomplete_warnings(call, paths)
     assert len(msgs) == 1, msgs
     assert DEPTH not in msgs[0], msgs
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"RUSTDL_TABLEAU_EARLY_ABANDON_HITS": "1000000"},
+        {"RUSTDL_TABLEAU_EARLY_ABANDON": "0"},
+    ],
+    ids=["armed-not-latched", "early-abandon-off"],
+)
+def test_a_budget_cut_after_a_depth_limit_hit_says_both_remedies_may_help(
+    env, paths, monkeypatch
+):
+    # #510 (C): the deadline cuts the 280-union after many depth-limit hits; the first
+    # comes well under a second into the probe, far inside the 3 s deadline.
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "3000")
+    value, msgs = _incomplete_warnings(lambda p: rustdl.is_instance_of(p["plain"], Y, A), paths)
+    assert value is False
+    assert len(msgs) == 1, msgs
+    msg = msgs[0]
+    assert "cut by a budget" in msg and DEPTH in msg and "may help as well" in msg, msg
+    assert ADVICE in msg and "does not help" not in msg, msg

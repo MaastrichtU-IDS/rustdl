@@ -74,17 +74,19 @@ pub(crate) fn is_subclass_of(
     ))
 }
 
-/// `(is_instance, incomplete, consistency_undetermined, no_verdict, depth_capped)`:
-/// `incomplete` means the probe was cut (deadline, node cap or depth limit) and "no"
-/// is the sound direction; `consistency_undetermined` (#369) means a "yes" may be the
-/// vacuous answer of an inconsistent KB; `depth_capped` (#510) means the cut was the
-/// decision-depth limit, which a larger budget does not recover (`InstanceFlags`).
+/// `(is_instance, incomplete, consistency_undetermined, no_verdict, depth_capped,
+/// depth_cap_hit)`: `incomplete` means the probe was cut (deadline, node cap or depth
+/// limit) and "no" is the sound direction; `consistency_undetermined` (#369) means a
+/// "yes" may be the vacuous answer of an inconsistent KB; `depth_capped` (#510) means
+/// the cut was the decision-depth limit, which a larger budget does not recover;
+/// `depth_cap_hit` (#510 C) means a budget cut the probe after it had hit that limit
+/// (`InstanceFlags`).
 #[pyfunction]
 pub(crate) fn is_instance_of(
     path: &str,
     class_iri: &str,
     individual_iri: &str,
-) -> PyResult<(bool, bool, bool, bool, bool)> {
+) -> PyResult<(bool, bool, bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (holds, flags) =
@@ -101,6 +103,7 @@ pub(crate) fn is_instance_of(
         flags.consistency_undetermined,
         flags.no_verdict,
         flags.depth_capped,
+        flags.depth_cap_hit,
     ))
 }
 

@@ -504,7 +504,12 @@ pub fn entails_reporting<A: ForIRI>(
         Entailment::Unsatisfiable { class } => unsat(onto, class),
         // is_instance_of is (class, individual) — class first.
         Entailment::InstanceOf { individual, class } => {
-            match crate::is_instance_of_reporting(onto, class, individual) {
+            // #510: never the single query's deep retry: this oracle runs once per
+            // QuickXplain step, so a retry budget here would multiply. A depth cut stays
+            // `Unknown` plus `depth_capped`, as below.
+            match crate::realize::is_instance_of_reporting_no_depth_fallback(
+                onto, class, individual,
+            ) {
                 // Inconsistent ⇒ everything is entailed, as for property assertions above;
                 // QuickXplain then returns the inconsistency core (#313).
                 Err(ReasonError::Inconsistent) => Ok(Verdict::Entailed),

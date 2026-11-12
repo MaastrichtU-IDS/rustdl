@@ -727,9 +727,12 @@ fn a_budgeted_instance_depth_cut_is_not_a_no_verdict() {
         disjoint.join("\n")
     );
     let f = Fixture::with("instance-depthcut", &src);
+    // #510 (2b): the single query would now retry this depth cut on the deep path and
+    // answer "no"; the retry is off here so the depth-cut arm stays the one guarded.
     let env = [
         ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
         ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "20000"),
+        ("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "0"),
     ];
     let args = [
         "instance",

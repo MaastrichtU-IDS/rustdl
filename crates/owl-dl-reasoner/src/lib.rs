@@ -98,12 +98,12 @@ pub use property_values::{
     inferred_object_property_values,
 };
 pub use realize::{
-    InstanceFlags, Realization, WitnessPruneReasons, instances_of, instances_of_internal,
-    instances_of_reporting, instances_of_reporting_internal, instances_of_saturation_only,
-    instances_of_saturation_only_internal, is_instance_of, is_instance_of_internal,
-    is_instance_of_reporting, is_instance_of_reporting_internal, is_instance_of_saturation_only,
-    is_instance_of_saturation_only_internal, realize, realize_internal, realize_saturation_only,
-    realize_saturation_only_internal,
+    InstanceDepthFallback, InstanceFlags, Realization, WitnessPruneReasons, instances_of,
+    instances_of_internal, instances_of_reporting, instances_of_reporting_internal,
+    instances_of_saturation_only, instances_of_saturation_only_internal, is_instance_of,
+    is_instance_of_internal, is_instance_of_reporting, is_instance_of_reporting_internal,
+    is_instance_of_saturation_only, is_instance_of_saturation_only_internal, realize,
+    realize_internal, realize_saturation_only, realize_saturation_only_internal,
 };
 pub use repair::{Repair, Repairs, find_repairs, find_repairs_prepared};
 #[doc(hidden)]
@@ -6305,6 +6305,31 @@ pub fn query_seeded_first_ms() -> u64 {
         .unwrap_or(QUERY_SEEDED_FIRST_DEFAULT_MS)
 }
 
+/// #510: the default of [`instance_depth_fallback_ms`]. A prior, set before M1
+/// measures it: #510's slowest traced pair needed 4.9 s on the deep probe.
+pub const INSTANCE_DEPTH_FALLBACK_DEFAULT_MS: u64 = 10_000;
+
+/// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (#510): when a single instance query's bounded
+/// probe is cut by the tableau's decision-depth limit (`depth_capped`), the query runs
+/// the same `{a} ⊓ ¬C` probe once more on the deep path
+/// ([`PreparedOntology::decide_deep_with_deadline`], the search of
+/// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) under this budget, in milliseconds, counted from
+/// the retry's start. A verdict it reaches in time is the deadline-free probe's own.
+///
+/// Default [`INSTANCE_DEPTH_FALLBACK_DEFAULT_MS`]; unparsable values fall back to it.
+/// **`0` turns the retry off** (the pre-#510 behaviour). That differs from
+/// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (unbounded) and `RUSTDL_CONSISTENCY_FALLBACK_MS=0`
+/// (no budget at all). Only the single query takes it (`instance`, the public
+/// `is_instance_of*` API, Python `is_instance_of`); `instances`, `instances-expr`,
+/// `realize` and justify's instance oracle never do.
+#[must_use]
+pub fn instance_depth_fallback_ms() -> u64 {
+    std::env::var("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(INSTANCE_DEPTH_FALLBACK_DEFAULT_MS)
+}
+
 /// #457: the default of [`query_wedge_ms`].
 pub const QUERY_WEDGE_DEFAULT_MS: u64 = 3_000;
 
@@ -11817,25 +11842,7 @@ impl PreparedOntology {
         let budget = query_seeded_first_ms();
         if inherited.is_none() && budget > 0 {
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(budget);
-            match decide_capturing(
-                &self.pool,
-                &self.tbox,
-                &self.hierarchy,
-                &self.inverse_pairs,
-                &self.chain_axioms,
-                &self.asymmetric_roles,
-                &self.disjoint_role_pairs,
-                &self.complements,
-                &self.query_abox(),
-                &[],
-                &[],
-                &self.dkey_ranges,
-                &self.tableau_id,
-                Some(deadline),
-                &build_test_concept,
-                None,
-                true,
-            ) {
+            match self.decide_deep_with_deadline(deadline, &build_test_concept) {
                 Ok(Some(verdict)) => return Ok((Some(verdict), false, 0)),
                 Ok(None) | Err(ReasonError::NoVerdict) => {
                     if std::env::var_os("RUSTDL_TRACE").is_some() {
@@ -12012,6 +12019,43 @@ impl PreparedOntology {
             &self.tableau_id,
             Some(deadline),
             build_test_concept,
+        )
+    }
+
+    /// [`Self::decide_raw`]'s deep search, stopped by `deadline`: the search, blocking,
+    /// depth cap and (absent) early abandon of the deadline-free path, with the deadline
+    /// only ending it (`keep_unbounded_search`). A verdict reached in time is the one
+    /// [`Self::decide_raw`] gives; `Ok(None)` is the deadline or the node cap.
+    ///
+    /// The one deep-with-deadline probe: #401's seeded-first attempt
+    /// ([`Self::decide_query_raw`]) and #510's `instance` depth fallback both take it,
+    /// so the two cannot drift apart.
+    pub(crate) fn decide_deep_with_deadline<F>(
+        &self,
+        deadline: std::time::Instant,
+        build_test_concept: F,
+    ) -> Result<Option<bool>, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        decide_capturing(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            &self.query_abox(),
+            &[],
+            &[],
+            &self.dkey_ranges,
+            &self.tableau_id,
+            Some(deadline),
+            build_test_concept,
+            None,
+            true,
         )
     }
 

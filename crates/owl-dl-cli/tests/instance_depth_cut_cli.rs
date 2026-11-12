@@ -117,7 +117,12 @@ const LONG_DEADLINE_MS: &str = "60000";
 fn a_depth_cut_instance_probe_names_the_limit_and_the_advice_that_helps() {
     let f = Fixture::new("depth");
     let p = f.path();
-    let env = [("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", LONG_DEADLINE_MS)];
+    // #510 (2b): with its deep retry on (the default) the single query answers "no"
+    // (`instance_depth_fallback_cli.rs`); off, the depth cut and its wording show.
+    let env = [
+        ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", LONG_DEADLINE_MS),
+        ("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "0"),
+    ];
     let t = Instant::now();
     let r = run(&env, &["instance", p, Y, A]);
     // Early abandon ends the probe quickly; a run near the 60 s deadline would be a

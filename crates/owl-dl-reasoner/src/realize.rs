@@ -265,7 +265,44 @@ pub struct InstanceFlags {
     /// Report-only: implies `incomplete`, changes no answer. On `instances` it is OR-ed
     /// over every individual's probe, anonymous individuals' too (as `incomplete` is
     /// there); [`Realization::depth_capped`] counts named individuals only.
+    ///
+    /// On the single query, a depth cut is retried on the deep path when
+    /// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` allows ([`Self::depth_fallback`]). This flag
+    /// then reports the retry: it stays set only if the retry did not run.
     pub depth_capped: bool,
+    /// #510: what the single query's deep retry after a depth cut did
+    /// ([`crate::instance_depth_fallback_ms`]). `NotRun` on every other path, and
+    /// always on `instances`, which never retries.
+    pub depth_fallback: InstanceDepthFallback,
+}
+
+/// #510: the single instance query's deep retry after a decision-depth cut
+/// ([`crate::instance_depth_fallback_ms`], [`InstanceFlags::depth_fallback`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InstanceDepthFallback {
+    /// No retry: the bounded probe was not depth-capped, the retry is off
+    /// (`RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`), or the caller never retries.
+    #[default]
+    NotRun,
+    /// The retry reached a verdict, which is the answer (`incomplete` is clear).
+    Decided,
+    /// The retry was cut too, by its budget or the node cap (or, with
+    /// [`InstanceFlags::no_verdict`] set, by #462's likely-bug limit). The answer is
+    /// the sound "not an instance" with `incomplete` set; a larger
+    /// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` or node cap may recover it.
+    Cut,
+}
+
+/// #510: whether an instance query may retry a depth-capped probe on the deep path.
+/// Only the single query does; justify's oracle calls it once per `QuickXplain` step,
+/// so a retry there would multiply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DepthFallback {
+    /// The single query (`instance`, the public `is_instance_of*` API, Python).
+    On,
+    /// justify's instance oracle.
+    Off,
 }
 
 /// [`is_instance_of`] plus its [`InstanceFlags`] (#73, #369).
@@ -362,10 +399,31 @@ pub fn is_instance_of_reporting_internal(
     class_iri: &str,
     individual_iri: &str,
 ) -> Result<(bool, InstanceFlags), ReasonError> {
+    instance_reporting(internal, class_iri, individual_iri, DepthFallback::On)
+}
+
+/// #510: [`is_instance_of_reporting`] without the deep retry after a depth cut, for
+/// justify's instance oracle, which calls it once per `QuickXplain` step.
+pub(crate) fn is_instance_of_reporting_no_depth_fallback<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    class_iri: &str,
+    individual_iri: &str,
+) -> Result<(bool, InstanceFlags), ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    instance_reporting(&internal, class_iri, individual_iri, DepthFallback::Off)
+}
+
+/// The single instance query, with or without #510's deep retry ([`DepthFallback`]).
+fn instance_reporting(
+    internal: &InternalOntology,
+    class_iri: &str,
+    individual_iri: &str,
+    fallback: DepthFallback,
+) -> Result<(bool, InstanceFlags), ReasonError> {
     let class_id = match resolve_instance_class(internal, class_iri)? {
         InstanceClass::Named(id) => id,
         InstanceClass::Probed(probed, probe) => {
-            return is_instance_of_reporting_internal(&probed, probe, individual_iri);
+            return instance_reporting(&probed, probe, individual_iri, fallback);
         }
     };
     let individual_id = internal
@@ -400,7 +458,7 @@ pub fn is_instance_of_reporting_internal(
     // Single-pair path — the witness is a realize-loop optimization (one
     // witness amortized across the whole per-individual, per-class loop);
     // it isn't worth building for a lone instance check.
-    let probe = instance_check_reporting(
+    let first = instance_check_reporting(
         internal,
         &closure,
         &prepared,
@@ -409,6 +467,26 @@ pub fn is_instance_of_reporting_internal(
         pair_deadline,
         None,
     )?;
+    // #510: a depth cut is not recovered by a larger budget, so the single query retries
+    // it once on the deep path. `first.depth_capped` was captured right after the first
+    // probe (the retry resets the thread-local flags), and it excludes `no_verdict`.
+    let retry_ms = crate::instance_depth_fallback_ms();
+    let (probe, depth_fallback) = if fallback == DepthFallback::On
+        && first.depth_capped
+        && pair_deadline.is_some()
+        && retry_ms > 0
+    {
+        let retry = instance_depth_retry(&prepared, class_id, individual_id, retry_ms)?;
+        let outcome = if retry.cut {
+            InstanceDepthFallback::Cut
+        } else {
+            InstanceDepthFallback::Decided
+        };
+        (retry, outcome)
+    } else {
+        (first, InstanceDepthFallback::NotRun)
+    };
+    // The retry's answer, when it ran, is the one the lazy check keys on.
     let holds = probe.is_instance;
     // #369: a membership on a KB only the tableau finds inconsistent is vacuous.
     let lazy = crate::LazyCheck::run_if(holds, || prepared.lazy_inconsistency_check("instance"))?;
@@ -420,9 +498,48 @@ pub fn is_instance_of_reporting_internal(
             // #493: the probe's likely-bug cut (a "no"), or the lazy check's own
             // stall after a "yes".
             no_verdict: probe.no_verdict || lazy.no_verdict,
+            // After a retry, the retry's cut is a budget cut, never a depth cut.
             depth_capped: probe.depth_capped,
+            depth_fallback,
         },
     ))
+}
+
+/// #510: the single instance query's deep retry of `{a} ⊓ ¬C` after a depth cut, under
+/// `retry_ms` ([`crate::instance_depth_fallback_ms`]). The search is the deadline-free
+/// probe's ([`PreparedOntology::decide_deep_with_deadline`]), so a verdict reached in
+/// time is that probe's. A deadline or node-cap stop is a plain cut; a `NoVerdict` is
+/// #462's likely-bug signal, as on the deadline-free probe (`instance_check_reporting`'s
+/// `None` arm), whether or not the saturation stalled.
+fn instance_depth_retry(
+    prepared: &PreparedOntology,
+    class_id: ClassId,
+    individual_id: IndividualId,
+    retry_ms: u64,
+) -> Result<InstanceProbe, ReasonError> {
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(retry_ms);
+    let build = move |pool: &mut ConceptPool| {
+        let cls = pool.atomic(class_id);
+        let not_cls = pool.not(cls);
+        let nom = pool.nominal(individual_id);
+        pool.and(vec![nom, not_cls])
+    };
+    let probe = depth_retry_probe(prepared.decide_deep_with_deadline(deadline, build))?;
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        let what = match (probe.cut, probe.no_verdict, probe.is_instance) {
+            (false, _, true) => "decided: an instance",
+            (false, _, false) => "decided: not an instance",
+            (true, true, _) => "cut: NoVerdict (#462)",
+            (true, false, _) => "cut: budget or node cap",
+        };
+        eprintln!(
+            "instance (#510): bounded probe depth-capped; deep retry ({retry_ms} ms budget) \
+             {what} in {} ms",
+            started.elapsed().as_millis()
+        );
+    }
+    Ok(probe)
 }
 
 /// Saturation-only counterpart of [`is_instance_of`]. Reports
@@ -590,6 +707,20 @@ fn instance_check_reporting(
             }
             Err(e) => Err(e),
         },
+    }
+}
+
+/// #510: the deep retry's probe outcome from its `{a} ⊓ ¬C` satisfiability result. A
+/// deadline or node-cap stop (`Ok(None)`) is a plain cut, never a depth cut. A
+/// `NoVerdict` is #462's likely-bug signal **unconditionally**, as on the deadline-free
+/// probe: the deep path has no routine depth cut, so this must not go through
+/// `no_verdict_is_a_bug`, which would keep only a saturation stall.
+fn depth_retry_probe(sat: Result<Option<bool>, ReasonError>) -> Result<InstanceProbe, ReasonError> {
+    match sat {
+        Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
+        Ok(None) => Ok(InstanceProbe::cut(false, false)),
+        Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(true, false)),
+        Err(e) => Err(e),
     }
 }
 
@@ -869,6 +1000,9 @@ pub fn instances_of_reporting_internal(
             consistency_undetermined: lazy.undetermined,
             no_verdict: no_verdict || lazy.no_verdict,
             depth_capped,
+            // #510: `instances` never retries a depth cut (one retry per individual
+            // would multiply; a shared budget is a follow-up).
+            depth_fallback: InstanceDepthFallback::NotRun,
         },
     ))
 }
@@ -2063,6 +2197,39 @@ mod tests {
         assert!(p.cut && !p.no_verdict && p.depth_capped, "{p:?}");
         let p = InstanceProbe::cut(false, false);
         assert!(p.cut && !p.no_verdict && !p.depth_capped, "{p:?}");
+    }
+
+    /// #510 (2b): the deep retry's outcomes. Its `NoVerdict` is #462's signal whatever
+    /// the stall flag says (this test never sets it, so a mapping through
+    /// `no_verdict_is_a_bug` fails here), and its stop is never a depth cut.
+    #[test]
+    fn the_deep_retry_maps_every_outcome() {
+        let p = depth_retry_probe(Ok(Some(false))).expect("a retry outcome");
+        assert_eq!(
+            p,
+            InstanceProbe::decided(true),
+            "unsat {{a}} ⊓ ¬C: an instance"
+        );
+        let p = depth_retry_probe(Ok(Some(true))).expect("a retry outcome");
+        assert_eq!(p, InstanceProbe::decided(false), "sat: not an instance");
+        let p = depth_retry_probe(Ok(None)).expect("a retry outcome");
+        assert!(
+            p.cut && !p.no_verdict && !p.depth_capped && !p.is_instance,
+            "{p:?}"
+        );
+        assert!(
+            !crate::last_probe_stalled(),
+            "precondition: no stall recorded"
+        );
+        let p = depth_retry_probe(Err(ReasonError::NoVerdict)).expect("a retry outcome");
+        assert!(
+            p.cut && p.no_verdict && !p.depth_capped && !p.is_instance,
+            "{p:?}"
+        );
+        assert!(matches!(
+            depth_retry_probe(Err(ReasonError::Inconsistent)),
+            Err(ReasonError::Inconsistent)
+        ));
     }
 
     /// #510: realize folds each individual's probe cuts so that `depth_capped` counts

@@ -2673,6 +2673,7 @@ mod deadline_stop_tests {
 /// #486 at the search level: the `≤` choice point and a full search over a
 /// stale witness entry, planted by hand as in `rules::stale_witness_486`.
 #[cfg(test)]
+#[allow(clippy::many_single_char_names)]
 mod stale_witness_486 {
     use super::*;
     use owl_dl_core::{ClassId, Role, RoleId};

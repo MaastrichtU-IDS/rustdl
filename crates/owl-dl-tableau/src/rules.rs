@@ -2360,6 +2360,7 @@ mod phase3_canaries {
 /// stands for. The stale entries here are planted by hand: no production path
 /// is known to leave one on a live node since #284, so these pin the guard.
 #[cfg(test)]
+#[allow(clippy::many_single_char_names)]
 mod stale_witness_486 {
     use super::*;
     use owl_dl_core::{ClassId, ConceptPool};
@@ -2516,7 +2517,11 @@ mod stale_witness_486 {
         ctx.add_edge(y, R, v);
         assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
         let n = ctx.graph_mut().node_mut(v);
-        let pos = n.in_edges.iter().position(|&e| e == (R, y_eff)).unwrap();
+        let pos = n
+            .in_edges
+            .iter()
+            .position(|&e| e == (R, y_eff))
+            .expect("the planted live in-edge");
         n.in_edges[pos] = (R, y);
         assert_eq!(max_witnesses(&ctx, v, Role::Inverse(R), c), vec![y_eff]);
     }
@@ -2544,7 +2549,11 @@ mod stale_witness_486 {
         assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
         // Leave only the stale entry for `y_eff`'s individual.
         let n = ctx.graph_mut().node_mut(v);
-        let pos = n.in_edges.iter().position(|&e| e == (R, y_eff)).unwrap();
+        let pos = n
+            .in_edges
+            .iter()
+            .position(|&e| e == (R, y_eff))
+            .expect("the planted live in-edge");
         n.in_edges[pos] = (R, y);
         let d0 = ctx.push_branch();
         let none = DepSet::new();

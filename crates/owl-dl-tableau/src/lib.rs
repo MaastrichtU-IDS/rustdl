@@ -6395,6 +6395,7 @@ pub fn reseed_at_leaf_enabled() -> bool {
 /// #486: `nominal_max_overfull` counts the live individual a neighbour entry
 /// stands for. The stale entries are planted by hand (see `live_neighbour`).
 #[cfg(test)]
+#[allow(clippy::many_single_char_names)]
 mod stale_witness_486 {
     use super::*;
 
@@ -6462,7 +6463,11 @@ mod stale_witness_486 {
         assert!(ctx.merge_into_with_deps(w_old, w, &[]));
         // Replace `v`'s live entry with the stale one.
         let n = ctx.graph_mut().node_mut(v);
-        let pos = n.edges.iter().position(|&e| e == (R, w)).unwrap();
+        let pos = n
+            .edges
+            .iter()
+            .position(|&e| e == (R, w))
+            .expect("the planted live out-edge");
         n.edges[pos] = (R, w_old);
         assert_eq!(
             ctx.nominal_max_overfull(v),

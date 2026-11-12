@@ -39,6 +39,15 @@ Since #510, `instance` and `instances` say when the cut was the depth limit and 
 for a single query (no early abandon, a deeper cap, or a deadline-free retry) is open and
 needs the bar below.
 
+What the flag does not see:
+- **Early abandon off** (`RUSTDL_TABLEAU_EARLY_ABANDON=0`). A probe that keeps hitting the cap
+  then runs into its deadline instead, and is reported as a deadline cut, with the advice to
+  raise the timeout, which cannot recover it. Depth-cap hits before a deadline are not tracked.
+- **`instances-expr` and `realize`** don't track the cause. Their warning names all three limits
+  and gives both pieces of advice.
+- A deadline-free probe that ends at its own depth limit is #462's `no_verdict` signal, never
+  `depth_capped`.
+
 ## Why the cap stays at 256
 
 Measured on main 8144a9d1 at `--pair-timeout-ms 1000`, 1 thread, 90 s cap. A cap of 2048

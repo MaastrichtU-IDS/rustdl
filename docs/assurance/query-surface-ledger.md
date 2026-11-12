@@ -1185,7 +1185,8 @@ for 8 days.
 
 **Instrument proof (F0, declared in advance):**
 - c5e and q5 (#498) give 80 HermiT- and Konclude-refuted FPs on the pre-fix pin 5753fbc5;
-- min9 and `RUSTDL_NOMINAL_BLOCK_GUARD=0` give 0.
+- the negative control min9 gives 0;
+- the same pin with `RUSTDL_NOMINAL_BLOCK_GUARD=0` gives 0 on all three files.
 
 **Frame:** 433 files, cores 92–95.
 
@@ -1208,8 +1209,10 @@ for 8 days.
   - F2b, with one `instances-expr` per file: 28 R10 claims;
   - all of them entailed, none refuted.
 - **Completeness finding, #510:** 351 `instance` calls on 36 files were cut, and on those files
-  `instance` never answered "no". The cut is the timed probe's 256-level depth cap with early
-  abandon. A deadline-free probe answers "no" on all 15 pairs probed, as both oracles do.
+  `instance` never answered "no". The cause was traced on 3 of the files (13132, 394, 2488; 15
+  pairs): the timed probe's 256-level depth cap with early abandon. A deadline-free probe answers
+  "no" on all 15 pairs, as both oracles do. The other 33 files were not traced and only look
+  alike.
 
 **Run 2, on 0a87ebc3 (#504, #508, #511):** the same frame and the same sample. The pairs are drawn
 from run 1's classify (`--draws-from`), so only the binary changes. It also asks the ABox arm's
@@ -1219,27 +1222,39 @@ single `instance` calls.
     the same sample on 433 of 433 files;
   - c5e and q5 come out corrected (6 `sat` and 30 `subclass` per file);
   - wine's `sat` answers in 27 s, where it ran past 150 s before (#511).
-- **0 new false positives.** Classify's content is unchanged on all 433 files.
+- **0 new false positives.** Classify's content is unchanged on the 432 files where both binaries
+  finished it. On ore_ont_778 the new binary's classify was killed (a loss, below).
 - **New positive answers, all entailed per the oracles:**
   - 2 new `realize` types on both pizza-ontostart copies;
   - SauvignonBlanc ≡ Semillon on ore_ont_7668;
   - 1 `disjoint` pair on ore_ont_5033.
-- **Rescues** (the old binary was killed, the new one answers):
+- **Rescues** (the old binary gave no answer, the new one answers):
   - wedge-off `consistent` on 8 files, among them pizza ×2 and 5 wine-family files;
-  - `sat` 17, `subclass` 16, `instance` 2;
+  - `sat` 17, `subclass` 16, `sat-expr` 1: killed before;
+  - `instance` 2: cut before;
   - the per-query sample of 6 wine-family files runs for the first time.
 - **Losses:** 17 calls, all at a cap, including ore_ont_778's classify (267 CPU-s against the 300 s cap
   before; killed now). They are rechecked one call at a time on a quiet host before any is
   called a regression.
-- **Cost:** on the 34,437 calls both binaries were asked, CPU went from 10.19 h to 9.93 h, and kills
-  from 267 to 244.
+- **Cost:** on the 34,437 calls both binaries were asked, CPU went from 10.19 h to 9.93 h.
+  - Those calls are 31,010 of run 1's 31,200 plus 3,427 `instance` calls from the ABox arm. The
+    other 190 run-1 calls (0.71 CPU-h) were not asked again; they are all on 6 files where an
+    earlier answer changed (5688, 1509, 12253, 778 and the two pizza copies).
+  - Kills went from 268 to 244: 42 calls are no longer killed (the 42 non-`instance` rescues),
+    and 18 newly are. Those 18 are 16 of the losses plus two calls that gave up on both binaries
+    (ore_ont_8148's default `consistent` and one `instance` call on ore_ont_10949) and were
+    killed only on the new one. The 17th loss, `instance` on 16191, is a cut, not a kill.
 
 **Limitations.**
 - **The 30 s main-tableau cap.** On 76 of 433 files (17%, run 1) the main tableau was killed at 30 s,
-  and so was the one-`sat` probe. Neither R8 nor any per-query law says anything there.
-- **R8 reach:** R8 decided 338 of the 426 files it was evaluated on.
-- **The ABox arm's reach on F2b is thin.** `realize` and `instances-expr` answer on 7 and 8 of 170
-  files, and `individuals` (R9) runs only up to 150 individuals, so on 1 file.
+  and so was the one-`sat` probe, so those files have no per-query sample. On another 8 the main
+  tableau was killed but the probe answered, so they were sampled.
+- **R8 reach:** R8 has an outcome on 426 files and decided 338. The other 88 are the 84 files where
+  the main tableau was killed and the 4 rustdl can't parse. On the remaining 7 files the main
+  tableau answered but default `consistent` was killed, so there was nothing to compare.
+- **The ABox arm's reach on F2b is thin.** 170 of F2b's 220 files are eligible (the per-query
+  sample ran there). `realize` and `instances-expr` answer on 7 and 8 of them, and `individuals`
+  (R9) runs only up to 150 individuals, so on 1 file.
 - **F3 is a sample of 30 out of 487.** Its zero says nothing about the rest.
 - **Agreement is not correctness.** Where classify and a per-query command share a wrong answer,
   only an oracle sees it. The oracles are asked only about discrepancies, claims and new
@@ -1248,6 +1263,8 @@ single `instance` calls.
   the per-query commands, while `consistent` is killed, reads as agreement. A U1 arm (classify
   `consistent: false` against an oracle) is proposed.
 - **Oracle reach:** HermiT fails on pizza-ontostart, so claims there are Konclude-only.
+- **Not reproducible from the repo.** The instrument (a modified copy of `cross-command-laws.py`)
+  and the raw data are on the shared measurement host only (below).
 
 **No new fixtures.** The per-query arm of `per_pair_fp_gate` (#505) keeps c5e and q5 as
 positives.

@@ -227,6 +227,8 @@ pub struct InstanceFlags {
     /// node cap. A larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not recover
     /// such a cut: the bounded probe searches to `MAX_SEARCH_DEPTH` whatever its budget.
     /// The deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) searches much deeper.
+    /// Never set together with `no_verdict` on the same probe (as in classify's
+    /// `record_cut_probe`): the deadline-free probe's own depth limit is #462's signal.
     /// Report-only: implies `incomplete`, changes no answer.
     pub depth_capped: bool,
 }
@@ -564,7 +566,7 @@ fn instance_check_reporting(
 /// stalled), never a plain depth cut, deadline or node cap. `no_verdict` implies `cut`.
 /// `depth_capped` (#510) means the cut was the decision-depth limit, directly or through
 /// early abandon (#288), read from `last_probe_depth_capped` right after the probe on
-/// the same thread. It implies `cut`.
+/// the same thread. It implies `cut` and excludes `no_verdict`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 struct InstanceProbe {
@@ -589,7 +591,10 @@ impl InstanceProbe {
             is_instance: false,
             cut: true,
             no_verdict,
-            depth_capped,
+            // A `NoVerdict` signal is reported as such, never as a depth cut: on the
+            // deadline-free probe the depth cap is the signal, and advising that probe
+            // again would be wrong.
+            depth_capped: depth_capped && !no_verdict,
         }
     }
 }
@@ -1985,6 +1990,18 @@ mod tests {
         let (ontology, _prefixes) =
             read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
         ontology
+    }
+
+    /// #510: a `NoVerdict` signal is never also reported as a depth cut (classify's
+    /// `record_cut_probe` keeps the two apart the same way), and a plain cut keeps the cause.
+    #[test]
+    fn a_cut_probe_s_depth_flag_excludes_no_verdict() {
+        let p = InstanceProbe::cut(true, true);
+        assert!(p.cut && p.no_verdict && !p.depth_capped, "{p:?}");
+        let p = InstanceProbe::cut(false, true);
+        assert!(p.cut && !p.no_verdict && p.depth_capped, "{p:?}");
+        let p = InstanceProbe::cut(false, false);
+        assert!(p.cut && !p.no_verdict && !p.depth_capped, "{p:?}");
     }
 
     const HEADER: &str = "\

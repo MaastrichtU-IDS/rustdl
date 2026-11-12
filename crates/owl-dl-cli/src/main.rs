@@ -1241,7 +1241,8 @@ fn warn_probes_cut(what: &str, node_cap_var: &str, depth_capped: Option<bool>) {
             "warning: {what}: at least one instance probe was cut (deadline, node cap or \
              decision-depth limit), so entries may be missing; those printed are sound. \
              For a deadline or node-cap cut: {budget} For a depth cut, a larger budget does \
-             not help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (the deadline-free probe) may."
+             not help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (the deadline-free probe, with no time \
+             limit) may."
         ),
     }
 }

@@ -688,8 +688,9 @@ fn instance_queries_report_a_stalled_probe() {
         assert_gave_up(&r, &what);
         assert_eq!(r.stdout.trim(), "unknown", "{what}: {}", r.stdout);
         assert!(
-            !r.stderr.contains("instance probe was cut"),
-            "{what}: {}",
+            !r.stderr.contains("instance probe was cut")
+                && !r.stderr.contains("decision-depth limit"),
+            "{what}: the signal is not reported as a plain cut: {}",
             r.stderr
         );
         let r = run_with(

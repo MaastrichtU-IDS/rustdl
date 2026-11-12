@@ -55,8 +55,8 @@ What the flag does not see:
   `Realization::incomplete`, so they don't feed `depth_capped` either. `Realization::depth_capped`
   counts named individuals' probes only, while `InstanceFlags` / `CeInstances` count anonymous
   individuals' too.
-- **`--json`.** No JSON output carries the cut cause, and under `--json` these commands print no
-  cut warning.
+- **`--json`.** No JSON output carries the cut cause, and under `--json` `instances-expr` and
+  `realize` print no cut warning (`justify --json` does).
 - **`justify`'s other checks** (subclass, unsatisfiability, consistency) run without a deadline,
   so their depth limit is #462's `no_verdict`.
 - A deadline-free probe that ends at its own depth limit is #462's `no_verdict` signal, never

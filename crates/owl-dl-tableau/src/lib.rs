@@ -299,7 +299,7 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     merge_exact_deps: bool,
     /// `RUSTDL_DATA_COUNTING_ROLE_HIERARCHY` (default ON), read once at
     /// construction: `concrete_domain_clash` read the environment on every call,
-    /// about 4% of a wine query (#490 lever B3).
+    /// about 4% of a wine query before the B1 pre-filter (#490 lever B3).
     data_counting_role_hierarchy: bool,
     /// Memoised transitive told-subsumer closure over **atomic** classes:
     /// `trigger ClassId → sorted atomic-super ConceptIds` reachable through
@@ -5663,10 +5663,13 @@ mod tests {
             pool.atomic(ClassId::new(3)),
             pool.atomic(ClassId::new(4)),
         );
+        // an object `∃` interned before the data concepts, and one after (`some_r_c`)
+        let some_q_c = pool.some(Role::Named(RoleId::new(2)), c);
         let some_k1 = pool.some(p, k1);
         let all_k2 = pool.all(p, k2);
         let all_k1 = pool.all(p, k1);
         let at_least_two_k1 = pool.min(2, p, k1);
+        let at_least_one_k1 = pool.min(1, p, k1);
         let at_most_zero_k1 = pool.max(0, p, k1);
         let some_r_c = pool.some(r, c);
         // a string-valued data range: {"a"} (not an integer interval)
@@ -5696,15 +5699,21 @@ mod tests {
             n
         };
         // (label set, a clash expected)
-        let cases: [(&[ConceptId], bool); 8] = [
-            (&[some_k1, all_k2], true),          // ∃ demand outside the ∀ filter
-            (&[at_least_two_k1], true),          // a ≥-only demand: 2 values in {1}
+        let cases: [(&[ConceptId], bool); 12] = [
+            (&[some_k1, all_k2], true),         // ∃ demand outside the ∀ filter
+            (&[at_least_one_k1, all_k2], true), // a ≥1 demand outside the filter
+            // wine's shape: object `∃` labels beside a clashing data demand, in
+            // both interning orders and both insertion orders
+            (&[some_q_c, some_k1, all_k2], true),
+            (&[some_r_c, some_k1, all_k2], true),
+            (&[some_k1, some_r_c, all_k2], true),
+            (&[at_least_two_k1], true), // a ≥-only demand: 2 values in {1}
             (&[some_k1, at_most_zero_k1], true), // a demand under a ≤0 limit
-            (&[at_least_two_ks], true),          // 2 strings in {"a"}: not an integer range
-            (&[some_k1, all_k1], false),         // a satisfiable demand
+            (&[at_least_two_ks], true), // 2 strings in {"a"}: not an integer range
+            (&[some_k1, all_k1], false), // a satisfiable demand
             (&[all_k2, at_most_zero_k1], false), // data ∀ / ≤ with no demand
-            (&[some_r_c, all_k2], false),        // an object ∃ only
-            (&[], false),                        // no constraint at all
+            (&[some_r_c, all_k2], false), // an object ∃ only
+            (&[], false),               // no constraint at all
         ];
         for (labels, clash) in cases {
             let n = node(&mut ctx, labels);
@@ -5717,9 +5726,13 @@ mod tests {
             );
             assert_eq!(
                 ctx.has_data_demand(n),
-                labels
-                    .iter()
-                    .any(|&l| l == some_k1 || l == at_least_two_k1 || l == at_least_two_ks)
+                labels.iter().any(|&l| [
+                    some_k1,
+                    at_least_one_k1,
+                    at_least_two_k1,
+                    at_least_two_ks
+                ]
+                .contains(&l))
             );
         }
     }
@@ -5763,6 +5776,197 @@ mod tests {
             }
             assert_eq!(ctx.nominal_max_overfull_reference(v), want, "the reference");
             assert_eq!(ctx.nominal_max_overfull_fast(v), want, "the fast form");
+        }
+    }
+
+    /// #490 lever B2, the general shapes: two `≤` labels on one nominal (a skipped
+    /// or not-over-full label before an over-full one, in both label orders), two
+    /// nominal neighbours, an inverse-role `≤`, `≤0`, and `v` as the nominal itself.
+    /// Each case gives the fast form, the reference and the expected answer.
+    #[test]
+    fn nominal_max_overfull_fast_matches_the_reference_on_general_shapes() {
+        let mut pool = ConceptPool::new();
+        let (r, s) = (RoleId::new(0), RoleId::new(1));
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let le = |pool: &mut ConceptPool, n: u32, role: Role| pool.max(n, role, c);
+        let (le1_r, le1_s, le2_r, le2_s) = (
+            le(&mut pool, 1, Role::Named(r)),
+            le(&mut pool, 1, Role::Named(s)),
+            le(&mut pool, 2, Role::Named(r)),
+            le(&mut pool, 2, Role::Named(s)),
+        );
+        let le1_r_inv = le(&mut pool, 1, Role::Inverse(r));
+        let le0_r = le(&mut pool, 0, Role::Named(r));
+        let le5_r = le(&mut pool, 5, Role::Named(r));
+        let nom = |pool: &mut ConceptPool, i: u32| pool.nominal(IndividualId::new(i));
+        let (nom_a, nom_b) = (nom(&mut pool, 0), nom(&mut pool, 1));
+        type Build = fn(&mut TableauContext<'_, '_, '_>, [ConceptId; 9]) -> NodeId;
+        // [le1_r, le1_s, le2_r, le2_s, le1_r_inv, le0_r, le5_r, nom_a, nom_b]
+        let cases: [(&str, Build, Option<bool>); 9] = [
+            // a label that does not reach v (role s), then an over-full one (role r);
+            // and the same with the roles swapped, so either label comes first
+            (
+                "skipped, then over-full (r)",
+                |ctx, k| {
+                    let w = ctx.new_node();
+                    for l in [k[7], k[0], k[1]] {
+                        ctx.add_label(w, l);
+                    }
+                    let v = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(0), v);
+                    let x = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(0), x);
+                    v
+                },
+                Some(true),
+            ),
+            (
+                "skipped, then over-full (s)",
+                |ctx, k| {
+                    let w = ctx.new_node();
+                    for l in [k[7], k[0], k[1]] {
+                        ctx.add_label(w, l);
+                    }
+                    let v = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(1), v);
+                    let x = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(1), x);
+                    v
+                },
+                Some(true),
+            ),
+            // v counted by a not-over-full label and by an over-full one, both orders
+            (
+                "not over-full (≤2 r), over-full (≤1 s)",
+                |ctx, k| {
+                    let w = ctx.new_node();
+                    for l in [k[7], k[2], k[1]] {
+                        ctx.add_label(w, l);
+                    }
+                    let v = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(0), v);
+                    ctx.add_edge(w, RoleId::new(1), v);
+                    let x = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(1), x);
+                    v
+                },
+                Some(true),
+            ),
+            (
+                "over-full (≤1 r), not over-full (≤2 s)",
+                |ctx, k| {
+                    let w = ctx.new_node();
+                    for l in [k[7], k[0], k[3]] {
+                        ctx.add_label(w, l);
+                    }
+                    let v = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(0), v);
+                    ctx.add_edge(w, RoleId::new(1), v);
+                    let x = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(0), x);
+                    v
+                },
+                Some(true),
+            ),
+            // two nominal neighbours: one not over-full (≤5 r), one over-full (≤1 r)
+            (
+                "two nominals",
+                |ctx, k| {
+                    let v = ctx.new_node();
+                    let w1 = ctx.new_node();
+                    for l in [k[7], k[6]] {
+                        ctx.add_label(w1, l);
+                    }
+                    ctx.add_edge(w1, RoleId::new(0), v);
+                    let w2 = ctx.new_node();
+                    for l in [k[8], k[0]] {
+                        ctx.add_label(w2, l);
+                    }
+                    ctx.add_edge(w2, RoleId::new(0), v);
+                    let x = ctx.new_node();
+                    ctx.add_edge(w2, RoleId::new(0), x);
+                    v
+                },
+                Some(true),
+            ),
+            // `≤1 r⁻.C` on w counts the nodes with an r-edge INTO w
+            (
+                "inverse role, over-full",
+                |ctx, k| {
+                    let w = ctx.new_node();
+                    for l in [k[7], k[4]] {
+                        ctx.add_label(w, l);
+                    }
+                    let v = ctx.new_node();
+                    ctx.add_edge(v, RoleId::new(0), w);
+                    let x = ctx.new_node();
+                    ctx.add_edge(x, RoleId::new(0), w);
+                    v
+                },
+                Some(true),
+            ),
+            (
+                "inverse role, an outgoing r-edge does not count",
+                |ctx, k| {
+                    let w = ctx.new_node();
+                    for l in [k[7], k[4]] {
+                        ctx.add_label(w, l);
+                    }
+                    let v = ctx.new_node();
+                    ctx.add_edge(v, RoleId::new(0), w);
+                    let x = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(0), x);
+                    v
+                },
+                Some(false),
+            ),
+            (
+                "≤0: v alone is over-full",
+                |ctx, k| {
+                    let w = ctx.new_node();
+                    for l in [k[7], k[5]] {
+                        ctx.add_label(w, l);
+                    }
+                    let v = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(0), v);
+                    v
+                },
+                Some(true),
+            ),
+            // v is the nominal itself, with an r-self-loop and one other r-neighbour
+            (
+                "v == w, a self-loop",
+                |ctx, k| {
+                    let w = ctx.new_node();
+                    for l in [k[7], k[0]] {
+                        ctx.add_label(w, l);
+                    }
+                    ctx.add_edge(w, RoleId::new(0), w);
+                    let x = ctx.new_node();
+                    ctx.add_edge(w, RoleId::new(0), x);
+                    w
+                },
+                Some(true),
+            ),
+        ];
+        let k = [
+            le1_r, le1_s, le2_r, le2_s, le1_r_inv, le0_r, le5_r, nom_a, nom_b,
+        ];
+        for (name, build, want) in cases {
+            let mut ctx = TableauContext::new(&pool);
+            ctx.set_complement(c, not_c);
+            let v = build(&mut ctx, k);
+            assert_eq!(
+                ctx.nominal_max_overfull_reference(v),
+                want,
+                "the reference: {name}"
+            );
+            assert_eq!(
+                ctx.nominal_max_overfull_fast(v),
+                want,
+                "the fast form: {name}"
+            );
         }
     }
 }

@@ -140,7 +140,9 @@ class IncompleteQueryWarning(UserWarning):
     two realize-backed `materialize_*` calls, and the explanation calls' instance
     checks), the message says so: a longer `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or a
     larger node cap does not help there, and `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (the
-    deadline-free probe, with no time limit) may."""
+    deadline-free probe, with no time limit) may. When a deadline or the node cap cut
+    an `is_instance_of` probe after it had hit that limit (#510 C: early abandon off,
+    or a loaded host), the message says both remedies may help."""
 
 class DirectTypesUnverifiedWarning(UserWarning):
     """Emitted by `realize` when two most-specific types of an individual could

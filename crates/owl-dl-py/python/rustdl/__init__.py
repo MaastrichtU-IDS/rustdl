@@ -251,7 +251,9 @@ class IncompleteQueryWarning(UserWarning):
     two realize-backed `materialize_*` calls, and the explanation calls' instance
     checks), the message says so: a longer `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or a
     larger node cap does not help there, and `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (the
-    deadline-free probe, with no time limit) may.
+    deadline-free probe, with no time limit) may. When a deadline or the node cap cut
+    an `is_instance_of` probe after it had hit that limit (#510 C: early abandon off,
+    or a loaded host), the message says both remedies may help.
 
     Silence with the standard `warnings` module."""
 
@@ -327,7 +329,11 @@ def _warn_if_list_incomplete_at(
 
 
 def _warn_if_answer_no_verdict(
-    name: str, incomplete: bool, no_verdict: bool, depth_capped: bool = False
+    name: str,
+    incomplete: bool,
+    no_verdict: bool,
+    depth_capped: bool = False,
+    depth_cap_hit: bool = False,
 ) -> None:
     # #493: for a yes/no answer, a `no_verdict` without `incomplete` is the #369 lazy
     # consistency check's own probe stalling AFTER the answer was decided: the answer
@@ -346,6 +352,18 @@ def _warn_if_answer_no_verdict(
         _warnings.warn(
             f"{name}: the probe hit the tableau's decision-depth limit, so the False is "
             f"not a refutation. {_DEPTH_CUT_ADVICE}",
+            IncompleteQueryWarning,
+            stacklevel=3,
+        )
+    elif incomplete and depth_cap_hit and not no_verdict:
+        # #510 (C): a budget cut the probe after it had hit the depth limit, so both
+        # remedies may help.
+        _warnings.warn(
+            f"{name}: the probe was cut by a budget (deadline or node cap) after it had "
+            "hit the tableau's decision-depth limit, so the False is not a refutation. "
+            "RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (the deadline-free probe, which searches "
+            "much deeper, with no time limit) may help as well as a larger "
+            "RUSTDL_REALIZE_PAIR_TIMEOUT_MS or node cap.",
             IncompleteQueryWarning,
             stacklevel=3,
         )
@@ -646,10 +664,17 @@ def is_instance_of(path, class_iri, individual_iri):
     they raise on an inconsistent ontology: `a : owl:Thing` holds anyway, but the
     error is how callers learn the ontology is broken, so ⊤ is no exception. A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
-    is_inst, incomplete, undetermined, no_verdict, depth_capped = _is_instance_of_native(
-        path, class_iri, individual_iri
+    (
+        is_inst,
+        incomplete,
+        undetermined,
+        no_verdict,
+        depth_capped,
+        depth_cap_hit,
+    ) = _is_instance_of_native(path, class_iri, individual_iri)
+    _warn_if_answer_no_verdict(
+        "is_instance_of", incomplete, no_verdict, depth_capped, depth_cap_hit
     )
-    _warn_if_answer_no_verdict("is_instance_of", incomplete, no_verdict, depth_capped)
     _warn_if_consistency_undetermined("is_instance_of", undetermined)
     return is_inst
 

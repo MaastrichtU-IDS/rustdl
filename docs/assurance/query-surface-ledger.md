@@ -1163,3 +1163,96 @@ Case 1349's reproducer:
   A, all on the 4 capped cases.
 - P1 shows the #76 shape is absent from the generated profiles. R7's engine positive for #76 is
   the extra case alone.
+
+## Per-query census on real ontologies (2026-11-11)
+
+A one-off measurement, not a gate: the per-query commands on real ontologies against classify,
+HermiT and Konclude. Plan: `notes/plans/2026-11-07-perquery-census-real.md` (Fable: go with
+changes, all taken). It was run to find #498-kind false positives before users do. #498 was a
+main-tableau defect over the ABox that the classify nets could not see, and it lived on main
+for 8 days.
+
+**Instrument.** A local copy of `cross-command-laws.py` with these additions:
+- **R8:** wedge-off `consistent` (the main tableau over the ABox, the per-query route) against
+  default `consistent` and classify.
+- **R1e:** `explain` positives against the classify closure.
+- **R3q:** a per-query "inconsistent" on a consistent KB.
+- **R9 / R10:** `individuals` different pairs and derived memberships, checked by the oracles.
+- **Sampling:** every pair on files with ≤ 12 classes, and a nominal-biased sample elsewhere.
+- **Adjudication:** HermiT per claim (`-k`, `-S`, or the file plus the claim's negation) and
+  Konclude, whatever classify's flags.
+- **Caps:** classify 300 s; 30 s per call.
+
+**Instrument proof (F0, declared in advance):**
+- c5e and q5 (#498) give 80 HermiT- and Konclude-refuted FPs on the pre-fix pin 5753fbc5;
+- min9 and `RUSTDL_NOMINAL_BLOCK_GUARD=0` give 0.
+
+**Frame:** 433 files, cores 92–95.
+
+| part | source | files |
+|---|---|---|
+| F1 | curated files with an ABox or nominals: wine, family, pizza, pizza-noimport, pizza-ontostart, ro | 6 |
+| F2a | ORE files with an ABox and object nominals (`ObjectOneOf` / `ObjectHasValue`), ≤ 1 MB | 177 (all) |
+| F2b | the same, 1–5 MB | 220 (all) |
+| F3 | ORE files with an ABox and no object nominal, ≤ 5 MB | 30 (a seeded sample of 487) |
+
+**Run 1, on 5753fbc5 (#498 unfixed), 31,200 calls, 10.25 CPU-h:**
+- **0 false positives, 0 discrepancies.** Classify missed nothing the oracles saw.
+- **Laws:** R8 decided 338 files; R1 6,777 ok; R1e 975; R2 5,966. Every hard law held after one
+  harness fix (#507: the L3 gate missed classify's `consistent: false` when `consistent` was
+  killed).
+- **No file in the frame showed #498** on the unfixed binary, beyond the F0 controls.
+- **ABox arm:** ORE pool files declare no individuals, so the main run asked no individual
+  query there. A supplement then read the individuals from the assertions:
+  - F2a and F3: 483 claims (R9 95, R10 388);
+  - F2b, with one `instances-expr` per file: 28 R10 claims;
+  - all of them entailed, none refuted.
+- **Completeness finding, #510:** 351 `instance` calls on 36 files were cut, and on those files
+  `instance` never answered "no". The cut is the timed probe's 256-level depth cap with early
+  abandon. A deadline-free probe answers "no" on all 15 pairs probed, as both oracles do.
+
+**Run 2, on 0a87ebc3 (#504, #508, #511):** the same frame and the same sample. The pairs are drawn
+from run 1's classify (`--draws-from`), so only the binary changes. It also asks the ABox arm's
+single `instance` calls.
+- **Checks before the run:**
+  - the old binary through the patched harness replays every base call from the cache and draws
+    the same sample on 433 of 433 files;
+  - c5e and q5 come out corrected (6 `sat` and 30 `subclass` per file);
+  - wine's `sat` answers in 27 s, where it ran past 150 s before (#511).
+- **0 new false positives.** Classify's content is unchanged on all 433 files.
+- **New positive answers, all entailed per the oracles:**
+  - 2 new `realize` types on both pizza-ontostart copies;
+  - SauvignonBlanc ≡ Semillon on ore_ont_7668;
+  - 1 `disjoint` pair on ore_ont_5033.
+- **Rescues** (the old binary was killed, the new one answers):
+  - wedge-off `consistent` on 8 files, among them pizza ×2 and 5 wine-family files;
+  - `sat` 17, `subclass` 16, `instance` 2;
+  - the per-query sample of 6 wine-family files runs for the first time.
+- **Losses:** 17 calls, all at a cap, including ore_ont_778's classify (267 CPU-s against the 300 s cap
+  before; killed now). They are rechecked one call at a time on a quiet host before any is
+  called a regression.
+- **Cost:** on the 34,437 calls both binaries were asked, CPU went from 10.19 h to 9.93 h, and kills
+  from 267 to 244.
+
+**Limitations.**
+- **The 30 s main-tableau cap.** On 76 of 433 files (17%, run 1) the main tableau was killed at 30 s,
+  and so was the one-`sat` probe. Neither R8 nor any per-query law says anything there.
+- **R8 reach:** R8 decided 338 of the 426 files it was evaluated on.
+- **The ABox arm's reach on F2b is thin.** `realize` and `instances-expr` answer on 7 and 8 of 170
+  files, and `individuals` (R9) runs only up to 150 individuals, so on 1 file.
+- **F3 is a sample of 30 out of 487.** Its zero says nothing about the rest.
+- **Agreement is not correctness.** Where classify and a per-query command share a wrong answer,
+  only an oracle sees it. The oracles are asked only about discrepancies, claims and new
+  positives.
+- **A gap in the laws** (Fable's review of #507): a false "inconsistent" shared by classify and
+  the per-query commands, while `consistent` is killed, reads as agreement. A U1 arm (classify
+  `consistent: false` against an oracle) is proposed.
+- **Oracle reach:** HermiT fails on pizza-ontostart, so claims there are Konclude-only.
+
+**No new fixtures.** The per-query arm of `per_pair_fp_gate` (#505) keeps c5e and q5 as
+positives.
+
+**Data:** on the shared measurement host, under `~/rustdl/work-363-gen/pqc/`:
+- run 1: `REPORT-full.md`, `full/`, `abox-*`;
+- run 2: `rerun/REPORT-rerun.md`, `rerun/diff.json`;
+- the harness copy: `harness/`.

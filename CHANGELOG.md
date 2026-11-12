@@ -1240,6 +1240,21 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`instance` names a decision-depth cut, and stops advising a budget that cannot recover it
+  (#510).** A bounded instance probe stops at `MAX_SEARCH_DEPTH` (256) decision levels,
+  directly or through early abandon (#288). The CLI said "cut (deadline, node cap or depth
+  limit)" and advised a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap, neither of which
+  helps there. It now says which limit fired:
+  - a depth cut: "hit the tableau's decision-depth limit", and that
+    `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (the deadline-free probe, which searches much deeper) is
+    what helps;
+  - a deadline or node-cap cut: the budget advice as before.
+
+  `instances` reports the same way. `instances-expr` and `realize` don't track the cause yet,
+  so their warning gives both pieces of advice. New `InstanceFlags::depth_capped`
+  (report-only, implies `incomplete`). No answer changes. Found by the per-query census: on 36
+  ORE files `instance` never answered "no"; on 3 of them, all 15 cut pairs answer "no" with
+  `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`, as HermiT and Konclude do.
 - **`classify` closes its subsumption matrix transitively, so `is_subclass` agrees with the
   hierarchy `direct_subsumers` reports (#448).** When a pair `(a, c)` was recorded "not subsumed"
   (a per-pair deadline cut, or a trusted wedge `Sat`) while `(a, b)` and `(b, c)` were recorded

@@ -200,6 +200,8 @@ pub fn is_instance_of<A: ForIRI>(
 
 /// What a positive or negative instance answer leaves open, returned beside it by
 /// [`is_instance_of_reporting`] and [`instances_of_reporting`].
+// `struct_excessive_bools`: each bool is an independent signal a caller reads.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct InstanceFlags {
@@ -220,6 +222,13 @@ pub struct InstanceFlags {
     /// instance"), so `incomplete` is set too. A plain depth cut, deadline or node cap
     /// does not set it. Not covered: the #369 lazy consistency check.
     pub no_verdict: bool,
+    /// #510: a cut probe hit the tableau's decision-depth limit, directly or through
+    /// early abandon (#288's `last_probe_depth_capped`), rather than a deadline or the
+    /// node cap. A larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not recover
+    /// such a cut: the bounded probe searches to `MAX_SEARCH_DEPTH` whatever its budget.
+    /// The deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) searches much deeper.
+    /// Report-only: implies `incomplete`, changes no answer.
+    pub depth_capped: bool,
 }
 
 /// [`is_instance_of`] plus its [`InstanceFlags`] (#73, #369).
@@ -374,6 +383,7 @@ pub fn is_instance_of_reporting_internal(
             // #493: the probe's likely-bug cut (a "no"), or the lazy check's own
             // stall after a "yes".
             no_verdict: probe.no_verdict || lazy.no_verdict,
+            depth_capped: probe.depth_capped,
         },
     ))
 }
@@ -521,12 +531,14 @@ fn instance_check_reporting(
             // `sat == None` is a deadline expiry or a node-cap trip: no verdict, so the
             // sound answer is "not an instance" AND the result is truncated.
             Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
-            Ok(None) => Ok(InstanceProbe::cut(false)),
+            // #510: an early abandon is `Ok(None)` too; #288's flag tells it apart.
+            Ok(None) => Ok(InstanceProbe::cut(false, crate::last_probe_depth_capped())),
             // A depth-limit bail — also no verdict, also truncated. #493: a stalled
             // probe's `NoVerdict` is #475's likely-bug signal; a depth cut is not.
-            Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(crate::no_verdict_is_a_bug(
-                Some(deadline),
-            ))),
+            Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(
+                crate::no_verdict_is_a_bug(Some(deadline)),
+                crate::last_probe_depth_capped(),
+            )),
             Err(e) => Err(e),
         },
         // No deadline: a node-cap trip (`RUSTDL_MAX_NODES`) is `None`, a plain cut
@@ -535,8 +547,10 @@ fn instance_check_reporting(
         // takes the sound default ("not an instance", truncated) and reports the signal.
         None => match prepared.decide_raw(build) {
             Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
-            Ok(None) => Ok(InstanceProbe::cut(false)),
-            Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(true)),
+            Ok(None) => Ok(InstanceProbe::cut(false, crate::last_probe_depth_capped())),
+            Err(ReasonError::NoVerdict) => {
+                Ok(InstanceProbe::cut(true, crate::last_probe_depth_capped()))
+            }
             Err(e) => Err(e),
         },
     }
@@ -548,11 +562,16 @@ fn instance_check_reporting(
 /// "not proven", not a refutation. `no_verdict` (#493) means the give-up was #462 /
 /// #475's likely-bug `NoVerdict` (a probe with no deadline, or one whose saturation
 /// stalled), never a plain depth cut, deadline or node cap. `no_verdict` implies `cut`.
+/// `depth_capped` (#510) means the cut was the decision-depth limit, directly or through
+/// early abandon (#288), read from `last_probe_depth_capped` right after the probe on
+/// the same thread. It implies `cut`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 struct InstanceProbe {
     is_instance: bool,
     cut: bool,
     no_verdict: bool,
+    depth_capped: bool,
 }
 
 impl InstanceProbe {
@@ -561,14 +580,16 @@ impl InstanceProbe {
             is_instance,
             cut: false,
             no_verdict: false,
+            depth_capped: false,
         }
     }
 
-    fn cut(no_verdict: bool) -> Self {
+    fn cut(no_verdict: bool, depth_capped: bool) -> Self {
         Self {
             is_instance: false,
             cut: true,
             no_verdict,
+            depth_capped,
         }
     }
 }
@@ -766,6 +787,8 @@ pub fn instances_of_reporting_internal(
     // #493: sticky likewise; every probe counts, anonymous individuals' too (the
     // filter below is on the listed rows only).
     let mut no_verdict = false;
+    // #510: sticky likewise: some cut probe hit the decision-depth limit.
+    let mut depth_capped = false;
     let mut any_member = false;
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
@@ -785,6 +808,7 @@ pub fn instances_of_reporting_internal(
         )?;
         incomplete |= probe.cut;
         no_verdict |= probe.no_verdict;
+        depth_capped |= probe.depth_capped;
         any_member |= probe.is_instance;
         if probe.is_instance {
             let iri = internal.vocabulary.individual_iri(individual_id);
@@ -804,6 +828,7 @@ pub fn instances_of_reporting_internal(
             incomplete,
             consistency_undetermined: lazy.undetermined,
             no_verdict: no_verdict || lazy.no_verdict,
+            depth_capped,
         },
     ))
 }

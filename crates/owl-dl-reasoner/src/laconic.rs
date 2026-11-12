@@ -227,33 +227,36 @@ fn laconic_outcome<A: ForIRI>(
     let mut seen: HashSet<BTreeSet<Component<A>>> = HashSet::new();
     // #429: a weakening check that trusted a wrong wedge `Sat` keeps a stronger
     // axiom; record it beside the regular search's own trust.
-    let ((weakened, weakening_trusted), weakening_no_verdict) =
-        crate::justify::with_oracle_no_verdict(|| {
-            crate::justify::with_oracle_trust(|| {
-                for j in regular.justifications {
-                    let lac = laconic_from(
-                        prepared.background(),
-                        q,
-                        &j.axioms,
-                        j.fragment,
-                        j.minimal_guaranteed,
-                        &mut give_ups,
-                    )?;
-                    let key: BTreeSet<Component<A>> = lac.axioms.iter().cloned().collect();
-                    if seen.insert(key) {
-                        out.push(lac);
-                    }
+    let ((weakened, weakening_trusted), weakening_cuts) = crate::justify::with_oracle_cuts(|| {
+        crate::justify::with_oracle_trust(|| {
+            for j in regular.justifications {
+                let lac = laconic_from(
+                    prepared.background(),
+                    q,
+                    &j.axioms,
+                    j.fragment,
+                    j.minimal_guaranteed,
+                    &mut give_ups,
+                )?;
+                let key: BTreeSet<Component<A>> = lac.axioms.iter().cloned().collect();
+                if seen.insert(key) {
+                    out.push(lac);
                 }
-                Ok::<(), ReasonError>(())
-            })
-        });
+            }
+            Ok::<(), ReasonError>(())
+        })
+    });
     weakened?;
     Ok(JustifyOutcome {
         status: regular.status,
         justifications: out,
-        incomplete: regular.incomplete || give_ups.gave_up || weakening_no_verdict,
+        incomplete: regular.incomplete
+            || give_ups.gave_up
+            || weakening_cuts.no_verdict
+            || weakening_cuts.depth_capped,
         relies_on_trusted_consistency: regular.relies_on_trusted_consistency || weakening_trusted,
-        no_verdict: regular.no_verdict || weakening_no_verdict,
+        no_verdict: regular.no_verdict || weakening_cuts.no_verdict,
+        depth_capped: regular.depth_capped || weakening_cuts.depth_capped,
     })
 }
 

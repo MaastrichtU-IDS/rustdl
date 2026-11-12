@@ -1220,30 +1220,31 @@ fn exit_unknown_probe_cut(depth_capped: bool) -> ! {
 /// `node_cap_var`: the variable that governs the node cap on this command —
 /// `RUSTDL_QUERY_MAX_NODES` under [`owl_dl_reasoner::single_query_node_cap`],
 /// else `RUSTDL_MAX_NODES`.
-/// #510: `depth_capped` is `Some(true)` when a cut probe is known to have hit the
-/// decision-depth limit, `Some(false)` when none did, and `None` on a surface that does
-/// not track the cause (`instances-expr`, `realize`).
-fn warn_probes_cut(what: &str, node_cap_var: &str, depth_capped: Option<bool>) {
+/// #510: `depth_capped` is `true` when at least one cut probe hit the decision-depth
+/// limit (`InstanceFlags::depth_capped`, `CeInstances::depth_capped`,
+/// `Realization::depth_capped`).
+fn warn_probes_cut(what: &str, node_cap_var: &str, depth_capped: bool) {
     let budget = format!(
         "Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded) or {node_cap_var}."
     );
-    match depth_capped {
-        Some(true) => eprintln!(
+    if depth_capped {
+        // `realize` classifies under the same deadline, so `=0` unbounds that too.
+        let realize_note = if what == "realize" {
+            " On realize it also takes the deadline off the classification step, which \
+             can then run much longer."
+        } else {
+            ""
+        };
+        eprintln!(
             "warning: {what}: at least one instance probe hit the tableau's decision-depth \
-             limit, so entries may be missing; those printed are sound. {DEPTH_CUT_ADVICE} \
-             For a deadline or node-cap cut: {budget}"
-        ),
-        Some(false) => eprintln!(
+             limit, so entries may be missing; those printed are sound. {DEPTH_CUT_ADVICE}\
+             {realize_note} For a deadline or node-cap cut: {budget}"
+        );
+    } else {
+        eprintln!(
             "warning: {what}: at least one instance probe was cut (deadline or node cap), \
              so entries may be missing; those printed are sound. {budget}"
-        ),
-        None => eprintln!(
-            "warning: {what}: at least one instance probe was cut (deadline, node cap or \
-             decision-depth limit), so entries may be missing; those printed are sound. \
-             For a deadline or node-cap cut: {budget} For a depth cut, a larger budget does \
-             not help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (the deadline-free probe, with no time \
-             limit) may."
-        ),
+        );
     }
 }
 
@@ -1339,17 +1340,37 @@ fn warn_if_justify_gave_up(outcome: &JustifyOutcome<RcStr>) -> bool {
         return true;
     }
     if outcome.status == Verdict::Unknown {
-        eprintln!(
-            "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before deciding \
-             whether the query is entailed — this is not a non-entailment."
-        );
+        warn_top_level_gave_up(outcome.depth_capped);
         return true;
     }
     if outcome.incomplete {
-        warn_search_gave_up();
+        warn_search_gave_up(outcome.depth_capped);
     }
     false
 }
+
+/// #396: the top-level check of a justification or repair search gave up. #510:
+/// `depth_capped` when an instance check hit the decision-depth limit
+/// (`JustifyOutcome::depth_capped`), where a larger budget does not help.
+fn warn_top_level_gave_up(depth_capped: bool) {
+    if depth_capped {
+        eprintln!(
+            "warning: a reasoner check (an instance check) hit the tableau's decision-depth \
+             limit before deciding whether the query is entailed — this is not a \
+             non-entailment. {DEPTH_CUT_ADVICE}"
+        );
+    } else {
+        eprintln!(
+            "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before deciding \
+             whether the query is entailed — this is not a non-entailment. {CHECK_DEADLINE_NOTE}"
+        );
+    }
+}
+
+/// #510: the instance check is the one oracle check with a deadline, so its give-up
+/// may be that deadline rather than the node cap.
+const CHECK_DEADLINE_NOTE: &str = "An instance check can also give up on its \
+     RUSTDL_REALIZE_PAIR_TIMEOUT_MS deadline (default 750; 0 = unbounded).";
 
 /// #429: a justify / repair oracle call answered "not entailed" on the
 /// consistency wedge's model alone. Not a give-up: stdout and the exit code are
@@ -1370,13 +1391,23 @@ fn note_oracle_trusted_wedge(status: Verdict, trusted: bool) {
     );
 }
 
-/// #396: the warning for a give-up inside a justification or repair search.
-fn warn_search_gave_up() {
-    eprintln!(
-        "warning: a reasoner check gave up during the search (node cap, RUSTDL_MAX_NODES): \
-         every justification shown still entails the query, but may not be minimal, and \
-         some justifications or repairs may be missing."
-    );
+/// #396: the warning for a give-up inside a justification or repair search. #510:
+/// `depth_capped` when an instance check hit the decision-depth limit.
+fn warn_search_gave_up(depth_capped: bool) {
+    const SHOWN: &str = "every justification shown still entails the query, but may not be \
+         minimal, and some justifications or repairs may be missing.";
+    if depth_capped {
+        eprintln!(
+            "warning: a reasoner check gave up during the search; at least one instance \
+             check hit the tableau's decision-depth limit: {SHOWN} {DEPTH_CUT_ADVICE} \
+             Other give-ups: the node cap (RUSTDL_MAX_NODES)."
+        );
+    } else {
+        eprintln!(
+            "warning: a reasoner check gave up during the search (node cap, RUSTDL_MAX_NODES): \
+             {SHOWN} {CHECK_DEADLINE_NOTE}"
+        );
+    }
 }
 
 /// Renders every `owl_dl_verify::UnresolvedReason` (or `Violation`) in `it`
@@ -2403,11 +2434,7 @@ fn run() -> Result<()> {
             }
             // #493: a likely-bug cut gets #449's note and exit 3, after the list.
             if flags.incomplete && !flags.no_verdict {
-                warn_probes_cut(
-                    "instances",
-                    "RUSTDL_QUERY_MAX_NODES",
-                    Some(flags.depth_capped),
-                );
+                warn_probes_cut("instances", "RUSTDL_QUERY_MAX_NODES", flags.depth_capped);
             }
             warn_consistency_undetermined("instances", flags.consistency_undetermined);
             exit_if_no_verdict(flags.no_verdict);
@@ -2520,7 +2547,7 @@ fn run() -> Result<()> {
             // A list answer, as `instances`: sound members, a warning, exit 0. #493: a
             // likely-bug cut gets #449's note and exit 3 instead of the budget advice.
             if r.incomplete() && !r.no_verdict() {
-                warn_probes_cut("instances-expr", "RUSTDL_QUERY_MAX_NODES", None);
+                warn_probes_cut("instances-expr", "RUSTDL_QUERY_MAX_NODES", r.depth_capped());
             }
             warn_consistency_undetermined("instances-expr", r.consistency_undetermined());
             exit_if_no_verdict(r.no_verdict());
@@ -2561,7 +2588,7 @@ fn run() -> Result<()> {
             note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
             // #493: a likely-bug cut gets #449's note at the end, not the budget advice.
             if r.incomplete() && !r.no_verdict() {
-                warn_probes_cut("realize", "RUSTDL_MAX_NODES", None);
+                warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped());
             }
             if r.direct_types_unverified() {
                 eprintln!(
@@ -2810,10 +2837,7 @@ fn run() -> Result<()> {
                     // #462: an internal limit, not the node cap.
                     eprintln!("{NO_VERDICT_NOTE}");
                 } else {
-                    eprintln!(
-                        "warning: a reasoner check gave up (node cap, RUSTDL_MAX_NODES) before \
-                         deciding whether the query is entailed — this is not a non-entailment."
-                    );
+                    warn_top_level_gave_up(r.depth_capped);
                 }
                 std::process::exit(3);
             }
@@ -2822,7 +2846,7 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             if r.incomplete {
-                warn_search_gave_up();
+                warn_search_gave_up(r.depth_capped);
             }
             // #396: candidates whose verification gave up are not repairs.
             let note_gave_up = || {
@@ -3188,7 +3212,9 @@ fn run() -> Result<()> {
             let report = report::build_report(&onto, file.display().to_string(), max_roots)?;
             // #462: a `NoVerdict` gets #449's note at exit instead of the node-cap warning.
             if report.incomplete && !report.no_verdict {
-                warn_search_gave_up();
+                // The report justifies unsatisfiable classes only: no instance check, so
+                // no depth cut (#510).
+                warn_search_gave_up(false);
             }
             let html = report::render_html(&report, &pm, label_map.as_ref());
             match output {

@@ -54,10 +54,11 @@ fn is_logical_axiom(c: &Component<RcStr>) -> bool {
 }
 
 /// The first justification's axioms as Manchester strings (empty if none),
-/// with the outcome's give-up flag (#396) and its #429 trust flag.
+/// with the outcome's give-up flag (#396), its #429 trust flag and its #510
+/// depth-cut flag.
 fn first_rendered(
     outcome: &owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
-) -> (Vec<String>, bool, bool) {
+) -> (Vec<String>, bool, bool, bool) {
     let axioms = outcome
         .justifications
         .first()
@@ -67,14 +68,16 @@ fn first_rendered(
         axioms,
         outcome.incomplete,
         outcome.relies_on_trusted_consistency,
+        // #510: an instance check's give-up was the decision-depth limit.
+        outcome.depth_capped,
     )
 }
 
 /// Every justification's axioms as Manchester strings, with the outcome's
-/// give-up flag (#396) and its #429 trust flag.
+/// give-up flag (#396), its #429 trust flag and its #510 depth-cut flag.
 fn all_rendered(
     outcome: &owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
-) -> (Vec<Vec<String>>, bool, bool) {
+) -> (Vec<Vec<String>>, bool, bool, bool) {
     let js = outcome
         .justifications
         .iter()
@@ -84,6 +87,8 @@ fn all_rendered(
         js,
         outcome.incomplete,
         outcome.relies_on_trusted_consistency,
+        // #510: an instance check's give-up was the decision-depth limit.
+        outcome.depth_capped,
     )
 }
 
@@ -95,7 +100,7 @@ fn all_rendered(
 /// `IncompleteQueryWarning`.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool)> {
+pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool, bool)> {
     let onto = load::load_path(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_one_justification_reporting(&onto, &q)
@@ -112,7 +117,7 @@ pub(crate) fn justify_all(
     path: &str,
     query: Vec<String>,
     max: usize,
-) -> PyResult<(Vec<Vec<String>>, bool, bool)> {
+) -> PyResult<(Vec<Vec<String>>, bool, bool, bool)> {
     let onto = load::load_path(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_all_justifications_reporting(&onto, &q, max)
@@ -155,7 +160,7 @@ pub(crate) fn repair(
     path: &str,
     query: Vec<String>,
     max: usize,
-) -> PyResult<(Vec<Vec<String>>, bool, bool)> {
+) -> PyResult<(Vec<Vec<String>>, bool, bool, bool)> {
     let onto = load::load_path(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let r = owl_dl_reasoner::find_repairs(&onto, &q, max).map_err(reason_error_to_py)?;
@@ -164,7 +169,12 @@ pub(crate) fn repair(
         .into_iter()
         .map(|rep| rep.remove.iter().map(render).collect())
         .collect();
-    Ok((repairs, r.incomplete, r.relies_on_trusted_consistency))
+    Ok((
+        repairs,
+        r.incomplete,
+        r.relies_on_trusted_consistency,
+        r.depth_capped,
+    ))
 }
 
 /// A loaded ontology with the per-ontology justification state precomputed once
@@ -183,7 +193,7 @@ impl PyPreparedOntology {
     /// `PreparedOntology.justify` wrapper over this that warns instead.
     #[pyo3(name = "_justify_reporting")]
     #[allow(clippy::needless_pass_by_value)]
-    fn justify_reporting(&self, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool)> {
+    fn justify_reporting(&self, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool, bool)> {
         let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
         let outcome = self
             .inner
@@ -200,7 +210,7 @@ impl PyPreparedOntology {
         &self,
         query: Vec<String>,
         max: usize,
-    ) -> PyResult<(Vec<Vec<String>>, bool, bool)> {
+    ) -> PyResult<(Vec<Vec<String>>, bool, bool, bool)> {
         let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
         let outcome = self
             .inner

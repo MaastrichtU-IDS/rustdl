@@ -246,6 +246,13 @@ class IncompleteQueryWarning(UserWarning):
     may not be minimal; justifications or repairs may be missing. Every repair
     returned is still verified.
 
+    #510: when an instance probe was cut by the tableau's decision-depth limit
+    (`is_instance_of`, `instances_of`, `class_expression_instances`, `realize`, the
+    two realize-backed `materialize_*` calls, and the explanation calls' instance
+    checks), the message says so: a longer `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or a
+    larger node cap does not help there, and `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (the
+    deadline-free probe, with no time limit) may.
+
     Silence with the standard `warnings` module."""
 
 
@@ -260,12 +267,38 @@ def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
         )
 
 
-def _warn_if_list_incomplete(name: str, incomplete: bool, no_verdict: bool) -> None:
-    _warn_if_list_incomplete_at(name, incomplete, no_verdict, stacklevel=4)
+# #510: the advice for a probe cut by the tableau's decision-depth limit, as the CLI
+# gives it. A larger budget does not help: the bounded probe searches to the same depth
+# whatever its deadline or node cap.
+_DEPTH_CUT_ADVICE = (
+    "A longer RUSTDL_REALIZE_PAIR_TIMEOUT_MS or a larger node cap does not help with "
+    "that; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the deadline-free probe, which "
+    "searches much deeper (with no time limit)."
+)
+
+# #510: the calls that run `realize`, whose classification step the same setting unbounds.
+_RUNS_REALIZE = frozenset(
+    {"realize", "materialize_inferred_class_assertions", "materialize_existential_successors"}
+)
+
+
+def _depth_cut_advice(name: str) -> str:
+    if name in _RUNS_REALIZE:
+        return (
+            _DEPTH_CUT_ADVICE + " Here it also takes the deadline off realize's "
+            "classification step, which can then run much longer."
+        )
+    return _DEPTH_CUT_ADVICE
+
+
+def _warn_if_list_incomplete(
+    name: str, incomplete: bool, no_verdict: bool, depth_capped: bool = False
+) -> None:
+    _warn_if_list_incomplete_at(name, incomplete, no_verdict, stacklevel=4, depth_capped=depth_capped)
 
 
 def _warn_if_list_incomplete_at(
-    name: str, incomplete: bool, no_verdict: bool, stacklevel: int
+    name: str, incomplete: bool, no_verdict: bool, stacklevel: int, depth_capped: bool = False
 ) -> None:
     # #493: a cut that was a likely-bug NoVerdict (#449) gets that text, not the budget
     # one; the result is still returned (it used to raise).
@@ -278,11 +311,24 @@ def _warn_if_list_incomplete_at(
             IncompleteQueryWarning,
             stacklevel=stacklevel,
         )
+    elif incomplete and depth_capped:
+        # #510: at least one probe (OR-ed over the list) hit the depth limit; others
+        # may have been cut by a budget, so the budget sentence stays.
+        _warnings.warn(
+            f"{name}: at least one probe hit the tableau's decision-depth limit, so the "
+            "result may be incomplete — sound under-approximation: no false entries, but "
+            f"real ones may be missing. {_depth_cut_advice(name)} Other probes may have "
+            "been cut by a budget (deadline or node cap).",
+            IncompleteQueryWarning,
+            stacklevel=stacklevel,
+        )
     else:
         _warn_if_query_incomplete_at(name, incomplete, stacklevel=stacklevel + 1)
 
 
-def _warn_if_answer_no_verdict(name: str, incomplete: bool, no_verdict: bool) -> None:
+def _warn_if_answer_no_verdict(
+    name: str, incomplete: bool, no_verdict: bool, depth_capped: bool = False
+) -> None:
     # #493: for a yes/no answer, a `no_verdict` without `incomplete` is the #369 lazy
     # consistency check's own probe stalling AFTER the answer was decided: the answer
     # stands, only the KB's consistency is open. With `incomplete` it is the probe's own
@@ -292,6 +338,14 @@ def _warn_if_answer_no_verdict(name: str, incomplete: bool, no_verdict: bool) ->
             f"{name}: the answer stands, but the consistency check's own probe ended "
             "without a verdict on an internal limit (NoVerdict). This is likely a "
             "reasoner bug (#449); please report the input.",
+            IncompleteQueryWarning,
+            stacklevel=3,
+        )
+    elif incomplete and depth_capped and not no_verdict:
+        # #510: the one probe of a yes/no answer hit the depth limit.
+        _warnings.warn(
+            f"{name}: the probe hit the tableau's decision-depth limit, so the False is "
+            f"not a refutation. {_DEPTH_CUT_ADVICE}",
             IncompleteQueryWarning,
             stacklevel=3,
         )
@@ -310,13 +364,25 @@ def _warn_if_query_incomplete_at(name: str, incomplete: bool, stacklevel: int) -
         )
 
 
-def _warn_if_explanation_incomplete(name: str, incomplete: bool) -> None:
-    if incomplete:
+def _warn_if_explanation_incomplete(name: str, incomplete: bool, depth_capped: bool = False) -> None:
+    if incomplete and depth_capped:
+        # #510: an instance check (the one oracle check with a deadline) hit the
+        # decision-depth limit.
+        _warnings.warn(
+            f"{name}: a reasoner check gave up; at least one instance check hit the "
+            "tableau's decision-depth limit. An empty result means unknown, not 'not "
+            "entailed'; justifications returned still entail but may not be minimal, and "
+            f"justifications or repairs may be missing. {_DEPTH_CUT_ADVICE}",
+            IncompleteQueryWarning,
+            stacklevel=3,
+        )
+    elif incomplete:
         _warnings.warn(
             f"{name}: a reasoner check gave up (node cap, RUSTDL_MAX_NODES), so an "
             "empty result means unknown, not 'not entailed'; justifications "
             "returned still entail but may not be minimal, and justifications or "
-            "repairs may be missing.",
+            "repairs may be missing. An instance check can also give up on its "
+            "RUSTDL_REALIZE_PAIR_TIMEOUT_MS deadline (default 750; 0 = unbounded).",
             IncompleteQueryWarning,
             stacklevel=3,
         )
@@ -330,8 +396,8 @@ def justify(path, query):
     Emits `TrustedConsistencyWarning` (#429) when a check answered "not entailed"
     on the consistency wedge's model alone: an empty list may then be wrong, and
     a justification may not be minimal."""
-    axioms, incomplete, trusted = _justify_native(path, query)
-    _warn_if_explanation_incomplete("justify", incomplete)
+    axioms, incomplete, trusted, depth_capped = _justify_native(path, query)
+    _warn_if_explanation_incomplete("justify", incomplete, depth_capped)
     _warn_if_oracle_trusted("justify", trusted)
     return axioms
 
@@ -340,8 +406,8 @@ def justify_all(path, query, max=10):
     """Up to `max` minimal justifications for `query`. Emits
     `IncompleteQueryWarning` when a reasoner check gave up (see `justify`; some
     justifications may also be missing)."""
-    js, incomplete, trusted = _justify_all_native(path, query, max)
-    _warn_if_explanation_incomplete("justify_all", incomplete)
+    js, incomplete, trusted, depth_capped = _justify_all_native(path, query, max)
+    _warn_if_explanation_incomplete("justify_all", incomplete, depth_capped)
     _warn_if_oracle_trusted("justify_all", trusted)
     return js
 
@@ -374,8 +440,8 @@ def repair(path, query, max=10):
     `TrustedConsistencyWarning` (#429) when a check answered "not entailed" on
     the consistency wedge's model alone: a repair may then break the query only
     if that model is right."""
-    repairs, incomplete, trusted = _repair_native(path, query, max)
-    _warn_if_explanation_incomplete("repair", incomplete)
+    repairs, incomplete, trusted, depth_capped = _repair_native(path, query, max)
+    _warn_if_explanation_incomplete("repair", incomplete, depth_capped)
     _warn_if_oracle_trusted("repair", trusted)
     return repairs
 
@@ -384,8 +450,8 @@ def _prepared_justify(self: "PreparedOntology", query):
     """One minimal justification (Manchester axioms) for `query`. Emits
     `IncompleteQueryWarning` when a reasoner check gave up (see
     `rustdl.justify`)."""
-    axioms, incomplete, trusted = self._justify_reporting(query)
-    _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete)
+    axioms, incomplete, trusted, depth_capped = self._justify_reporting(query)
+    _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete, depth_capped)
     _warn_if_oracle_trusted("PreparedOntology.justify", trusted)
     return axioms
 
@@ -394,8 +460,10 @@ def _prepared_justify_all(self: "PreparedOntology", query, max=10):
     """Up to `max` minimal justifications for `query`. Emits
     `IncompleteQueryWarning` when a reasoner check gave up (see
     `rustdl.justify_all`)."""
-    js, incomplete, trusted = self._justify_all_reporting(query, max)
-    _warn_if_explanation_incomplete("PreparedOntology.justify_all", incomplete)
+    js, incomplete, trusted, depth_capped = self._justify_all_reporting(query, max)
+    _warn_if_explanation_incomplete(
+        "PreparedOntology.justify_all", incomplete, depth_capped
+    )
     _warn_if_oracle_trusted("PreparedOntology.justify_all", trusted)
     return js
 
@@ -578,10 +646,10 @@ def is_instance_of(path, class_iri, individual_iri):
     they raise on an inconsistent ontology: `a : owl:Thing` holds anyway, but the
     error is how callers learn the ontology is broken, so ⊤ is no exception. A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
-    is_inst, incomplete, undetermined, no_verdict = _is_instance_of_native(
+    is_inst, incomplete, undetermined, no_verdict, depth_capped = _is_instance_of_native(
         path, class_iri, individual_iri
     )
-    _warn_if_answer_no_verdict("is_instance_of", incomplete, no_verdict)
+    _warn_if_answer_no_verdict("is_instance_of", incomplete, no_verdict, depth_capped)
     _warn_if_consistency_undetermined("is_instance_of", undetermined)
     return is_inst
 
@@ -592,8 +660,10 @@ def instances_of(path, class_iri):
     `ConsistencyUndeterminedWarning` (#369). A probe that ended in NoVerdict on an
     internal limit (likely a reasoner bug, #449) is reported by the same warning,
     with that text; the members are still returned (#493; it used to raise)."""
-    members, incomplete, undetermined, no_verdict = _instances_of_native(path, class_iri)
-    _warn_if_list_incomplete("instances_of", incomplete, no_verdict)
+    members, incomplete, undetermined, no_verdict, depth_capped = _instances_of_native(
+        path, class_iri
+    )
+    _warn_if_list_incomplete("instances_of", incomplete, no_verdict, depth_capped)
     _warn_if_consistency_undetermined("instances_of", undetermined)
     return members
 
@@ -646,8 +716,10 @@ def realize(path):
     internal limit (likely a reasoner bug, #449) is reported by
     `IncompleteQueryWarning` with that text; the types are still returned (#493;
     it used to raise)."""
-    types, incomplete, unverified, may_drop, trusted, no_verdict = _realize_native(path)
-    _warn_if_list_incomplete("realize", incomplete, no_verdict)
+    types, incomplete, unverified, may_drop, trusted, no_verdict, depth_capped = (
+        _realize_native(path)
+    )
+    _warn_if_list_incomplete("realize", incomplete, no_verdict, depth_capped)
     _warn_if_trusted_wedge_consistency("realize", trusted)
     _warn_if_direct_types_unverified("realize", unverified)
     _warn_if_witness_prune_may_drop("realize", may_drop)
@@ -689,10 +761,12 @@ def materialize_inferred_class_assertions(path):
     missing) and `DirectTypesUnverifiedWarning` when a listed type may be a
     superclass of another (#388, #391), and `WitnessPruneWarning` when the
     pseudo-model prune may have dropped a type (#387)."""
-    pairs, incomplete, unverified, may_drop, trusted, no_verdict = (
+    pairs, incomplete, unverified, may_drop, trusted, no_verdict, depth_capped = (
         _materialize_inferred_class_assertions_native(path)
     )
-    _warn_if_list_incomplete("materialize_inferred_class_assertions", incomplete, no_verdict)
+    _warn_if_list_incomplete(
+        "materialize_inferred_class_assertions", incomplete, no_verdict, depth_capped
+    )
     _warn_if_trusted_wedge_consistency("materialize_inferred_class_assertions", trusted)
     _warn_if_direct_types_unverified("materialize_inferred_class_assertions", unverified)
     _warn_if_witness_prune_may_drop("materialize_inferred_class_assertions", may_drop)
@@ -706,10 +780,12 @@ def materialize_existential_successors(path):
     `realize` run underneath was cut, so rows may be missing (#391), and
     `WitnessPruneWarning` when its pseudo-model prune may have dropped a type
     (#387)."""
-    rows, incomplete, may_drop, trusted, no_verdict = (
+    rows, incomplete, may_drop, trusted, no_verdict, depth_capped = (
         _materialize_existential_successors_native(path)
     )
-    _warn_if_list_incomplete("materialize_existential_successors", incomplete, no_verdict)
+    _warn_if_list_incomplete(
+        "materialize_existential_successors", incomplete, no_verdict, depth_capped
+    )
     _warn_if_trusted_wedge_consistency("materialize_existential_successors", trusted)
     _warn_if_witness_prune_may_drop("materialize_existential_successors", may_drop)
     return rows
@@ -891,10 +967,10 @@ def class_expression_instances(path, ce):
     Emits `ConsistencyUndeterminedWarning` (#369). A probe that ended in NoVerdict on
     an internal limit (likely a reasoner bug, #449) is reported by
     `IncompleteQueryWarning` with that text; the members are still returned (#493)."""
-    individuals, incomplete, undetermined, no_verdict = _class_expression_instances_native(
-        path, ce
+    individuals, incomplete, undetermined, no_verdict, depth_capped = (
+        _class_expression_instances_native(path, ce)
     )
-    _warn_if_list_incomplete("class_expression_instances", incomplete, no_verdict)
+    _warn_if_list_incomplete("class_expression_instances", incomplete, no_verdict, depth_capped)
     _warn_if_consistency_undetermined("class_expression_instances", undetermined)
     return individuals
 

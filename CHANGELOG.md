@@ -1250,11 +1250,32 @@ All notable changes to rustdl are documented here. Format is based on
     what helps;
   - a deadline or node-cap cut: the budget advice as before.
 
-  `instances` reports the same way. `instances-expr` and `realize` don't track the cause yet,
-  so their warning gives both pieces of advice. New `InstanceFlags::depth_capped`
+  `instances` reports the same way (for `instances-expr`, `realize`, `justify`, `repair` and
+  Python, see the follow-up entry above). New `InstanceFlags::depth_capped`
   (report-only, implies `incomplete`). No answer changes. Found by the per-query census: on 36
   ORE files `instance` never answered "no"; on 3 of them, all 15 cut pairs answer "no" with
   `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`, as HermiT and Konclude do.
+- **`instances-expr`, `realize`, `justify`, `repair` and the Python calls name a depth cut too
+  (#510 follow-up).** The surfaces that #510 left reporting a generic cut now say when an
+  instance probe hit the decision-depth limit, and give the advice that helps:
+  - **`instances-expr` and `realize`:** the `instances` wording. On `realize` the message adds
+    that `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` also takes the deadline off its classification step.
+  - **`justify`, `justify --all` and `repair`:** before, they said "gave up (node cap,
+    RUSTDL_MAX_NODES)" on a depth cut of their instance check. A depth cut now gets the depth
+    wording. Other give-ups keep the node-cap wording, which now adds that an instance check can
+    also give up on its `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` deadline.
+  - **Python:** `is_instance_of`, `instances_of`, `class_expression_instances`, `realize`,
+    `materialize_inferred_class_assertions`, `materialize_existential_successors`, `justify`,
+    `justify_all`, `repair` and `PreparedOntology.justify` / `justify_all` put the same
+    distinction in their `IncompleteQueryWarning` text. The warning class is unchanged.
+  - **New report-only accessors and fields:** `Realization::depth_capped`,
+    `CeInstances::depth_capped`, `ExistentialSuccessorFlags::depth_capped`,
+    `JustifyOutcome::depth_capped` and `Repairs::depth_capped`. Each implies `incomplete`.
+    - `ExistentialSuccessorFlags`, `JustifyOutcome` and `Repairs` have public fields, so a struct
+      literal outside the crate must add the field (`..Default::default()` where the type has it).
+    - `Realization::depth_capped` counts named individuals only, as its `incomplete` does.
+      `InstanceFlags::depth_capped` counts anonymous individuals' probes too.
+  - **Under `--json`, these commands carry no cut cause yet.** No answer changes.
 - **`classify` closes its subsumption matrix transitively, so `is_subclass` agrees with the
   hierarchy `direct_subsumers` reports (#448).** When a pair `(a, c)` was recorded "not subsumed"
   (a per-pair deadline cut, or a trusted wedge `Sat`) while `(a, b)` and `(b, c)` were recorded

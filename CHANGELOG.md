@@ -295,6 +295,21 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The wedge refutes a disjunct whose `≤1` clashes as it is asserted (#509).** `≤1 r(.C)`
+  arises as the NNF of `¬(≥2 r(.C))` when an equivalence's `≥2 … → C` side is clausified. When the
+  search chose that disjunct on a node that already had two `≠` `r`-successors (from a `≥2`), the
+  inline #137 merge was refused and returned a clash, and `solve_inner` dropped it, in both the
+  branch loop and the Layer A unit-force.
+  - The branch searched on with the `≤1` violated. Debug builds panicked at `find_open_at_most`
+    ("≤1 violation reached find_open_at_most under inverse_func_merge"; 2 of the 1,350 R7 cases,
+    10 calls). In release the #137 leaf net re-found the clash, so no wrong answer is known.
+  - With the net off (`RUSTDL_RESEED_VERIFY=0`), the engine returned `Sat` for an unsatisfiable
+    root. The white-box `le1_*` tests pin that.
+  - Now the branch is refuted on application, with the refusal's deps unioned with the
+    disjunct's own (`decision_deps` / `forced_deps`), and the next sibling is tried.
+  - New counters `SearchStats::head_clash_refutations` and `reseed_clash_only` (reporting only).
+    `reseed_clash_only` counts a #137 net run that found a clash without changing the graph,
+    which `reseed_recovered` cannot see; that blindness is why #509 read "the net doesn't fire".
 - **Per-query `sat` / `subclass` / `explain` / `sat-expr` finish on wine (#490).** Every per-query
   call on `ontologies/real/wine.ofn` ran past 60 CPU-s, even `sat` on a leaf class, while
   `classify` took 1.5 s. The main tableau never finished completing wine's seeded ABox. The

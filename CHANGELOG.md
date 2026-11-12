@@ -1344,6 +1344,28 @@ All notable changes to rustdl are documented here. Format is based on
   and the issue #35 v4 reproducer still terminates.
 
 ### Performance
+- **The main tableau's per-node clash scan and nominal guard do less work (#490, lever B).**
+  Result-identical optimisations; no flag and no default changes. On wine, every per-query call
+  took about 31 CPU-s after #490. A frame-pointer profile of `subclass Wine RedWine` put 31% of
+  it in `concrete_domain_clash` (run on every node after every saturation pass) and 20% in
+  `nominal_max_overfull` (16% via `apply_min`).
+  - **B1.** `concrete_domain_clash` returns early on a node with no `∃r.F` / `≥n r.F` label whose
+    filler is a data range. Every clash path of the check needs such a demand. On wine,
+    17.81M of 17.86M calls are skipped.
+  - **B2.** `nominal_max_overfull` first checks, from the nominal's own neighbour list, whether
+    `v` is a candidate of a `≤` label, and stops counting at `n + 1`. On wine, 31.7M label walks
+    are skipped.
+  - Guards: in debug builds, each lever is compared with the old computation on every call.
+    There are unit pins over 12 B1 and 15 B2 shapes. Sabotages S0–S8 each turn named tests red.
+  - CPU on wine (median of 5 interleaved reps, pinned binaries): the five probes went from
+    28.1–31.1 to 17.8–20.9 CPU-s, a cut of 33–42%. B1 alone cuts 24–34%. A third lever
+    (reading `RUSTDL_DATA_COUNTING_ROLE_HIERARCHY` once per context) measured as noise once B1 was
+    in place, so it was dropped.
+  - The wine arm of `per_query_fp_gate` (237 calls) stays at 0 FP, 0 MISS, 0 give-up. Its total
+    CPU drops from 7,301 to about 4,400–4,700 s, and the slowest call from 39.6 to under 25 s.
+  - Rule and node counters equal main's on 22 deterministic inputs (wine, datatype positives,
+    ORE files that reach the changed code). The one exception is a lookup counter in the edge-role
+    check, which B2 lowers by design.
 - **Classify's derived-equality check probes fewer pairs (#368).** #354 confirms each candidate
   individual equality with a per-pair probe (at most 64 of them). Almost all probes came back
   `Sat`, which finds no equality, and on seven SWEET ontologies the cap left 251–268 candidates

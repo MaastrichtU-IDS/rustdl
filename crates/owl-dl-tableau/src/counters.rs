@@ -59,6 +59,19 @@ pub(crate) struct RuleCounters {
     pub(crate) nominal_merge_prunes: Cell<u64>,
     /// #485: `¬C` labels `apply_forall` added from a `≤0 R.C`.
     pub(crate) max_zero_forall: Cell<u64>,
+    /// #490 lever B1: `concrete_domain_clash` calls skipped by the data-demand
+    /// pre-filter, and calls that ran the full check.
+    pub(crate) cd_clash_skipped: Cell<u64>,
+    pub(crate) cd_clash_full: Cell<u64>,
+    /// #490 lever B2: `nominal_max_overfull` calls; `≤` labels skipped because
+    /// `v` is not a candidate; over-full answers found before the full count.
+    pub(crate) nmo_calls: Cell<u64>,
+    pub(crate) nmo_label_skipped_v: Cell<u64>,
+    pub(crate) nmo_early_exit: Cell<u64>,
+    /// #490 lever B4 (counted only): `apply_min`'s over-full check, and how many
+    /// of those ran on a node with no object `≥` label to apply.
+    pub(crate) apply_min_overfull_check: Cell<u64>,
+    pub(crate) apply_min_overfull_check_no_min: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
 
@@ -158,6 +171,19 @@ impl RuleCounters {
             ("nominal_merges", self.nominal_merges.get()),
             ("nominal_merge_prunes", self.nominal_merge_prunes.get()),
             ("max_zero_forall", self.max_zero_forall.get()),
+            ("cd_clash_skipped", self.cd_clash_skipped.get()),
+            ("cd_clash_full", self.cd_clash_full.get()),
+            ("nmo_calls", self.nmo_calls.get()),
+            ("nmo_label_skipped_v", self.nmo_label_skipped_v.get()),
+            ("nmo_early_exit", self.nmo_early_exit.get()),
+            (
+                "apply_min_overfull_check",
+                self.apply_min_overfull_check.get(),
+            ),
+            (
+                "apply_min_overfull_check_no_min",
+                self.apply_min_overfull_check_no_min.get(),
+            ),
             (
                 "is_blocked_prefilter_rejects",
                 self.is_blocked_prefilter_rejects.get(),

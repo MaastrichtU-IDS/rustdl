@@ -65,6 +65,10 @@ pub(crate) struct RuleCounters {
     pub(crate) stale_witness_max_overfires: Cell<u64>,
     pub(crate) stale_witness_overfull: Cell<u64>,
     pub(crate) stale_witness_overfull_flips: Cell<u64>,
+    /// #486 probe (sharper): a live node's scan met a redirected (merged or
+    /// pruned) neighbour entry at all, before any label test: the stale entry exists.
+    pub(crate) stale_neighbour_max: Cell<u64>,
+    pub(crate) stale_neighbour_overfull: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
 
@@ -173,6 +177,11 @@ impl RuleCounters {
             (
                 "stale_witness_overfull_flips",
                 self.stale_witness_overfull_flips.get(),
+            ),
+            ("stale_neighbour_max", self.stale_neighbour_max.get()),
+            (
+                "stale_neighbour_overfull",
+                self.stale_neighbour_overfull.get(),
             ),
             (
                 "is_blocked_prefilter_rejects",

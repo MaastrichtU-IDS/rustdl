@@ -1358,6 +1358,16 @@ pub(crate) fn max_witnesses(
     let mut out: Vec<NodeId> = Vec::new();
     // #382: with `⊤` the filler, every `role`-neighbour counts.
     let any = ctx.top_filler_body(body);
+    #[cfg(feature = "counters")]
+    if !ctx.graph().node(node).is_redirected()
+        && ctx
+            .graph()
+            .node(node)
+            .neighbours()
+            .any(|(_, w)| ctx.graph().node(w).is_redirected())
+    {
+        crate::bump_counter!(ctx, stale_neighbour_max);
+    }
     for (seen, w) in ctx.graph().node(node).neighbours() {
         if ctx.edge_satisfies(seen, role)
             && (any || ctx.graph().node(w).has_label(body))
@@ -2129,6 +2139,7 @@ mod probe_486 {
         assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
         assert_eq!(max_witnesses(&ctx, v, Role::Inverse(r), c), vec![y_eff]);
         assert_eq!(ctx.counters.stale_witness_max.get(), 0);
+        assert_eq!(ctx.counters.stale_neighbour_max.get(), 0);
         // Plant the stale mirror the #38 comment describes.
         let n = ctx.graph_mut().node_mut(v);
         n.in_edges.push((r, y));
@@ -2137,6 +2148,7 @@ mod probe_486 {
         assert_eq!(ws.len(), 2, "one individual counted twice: {ws:?}");
         assert_eq!(resolved_witness_count(&ctx, &ws), 1);
         assert_eq!(ctx.counters.stale_witness_max.get(), 1);
+        assert!(ctx.counters.stale_neighbour_max.get() >= 1);
         ctx.add_label(v, at_most_one);
         let out = apply_max(&mut ctx, v);
         // Read the redirects directly: `resolve` would not return on a cycle.

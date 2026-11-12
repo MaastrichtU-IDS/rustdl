@@ -1684,6 +1684,16 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 let Some(comp) = self.complement_of(*body) else {
                     continue;
                 };
+                #[cfg(feature = "counters")]
+                if !self.graph.node(w).is_redirected()
+                    && self
+                        .graph
+                        .node(w)
+                        .neighbours()
+                        .any(|(_, x)| self.graph.node(x).is_redirected())
+                {
+                    crate::bump_counter!(self, stale_neighbour_overfull);
+                }
                 let mut cands: Vec<NodeId> = Vec::new();
                 for (seen, x) in self.graph.node(w).neighbours() {
                     if self.edge_satisfies(seen, *role)
@@ -6355,4 +6365,65 @@ pub fn reseed_verify_enabled() -> bool {
 #[must_use]
 pub fn reseed_at_leaf_enabled() -> bool {
     std::env::var_os("RUSTDL_RESEED_AT_LEAF").is_none_or(|v| v != "0")
+}
+
+#[cfg(all(test, feature = "counters"))]
+mod probe_486_nominal {
+    use super::*;
+    use owl_dl_core::{ClassId, ConceptPool, IndividualId};
+
+    /// #486 positive control for `nominal_max_overfull`: a nominal `w` holds
+    /// `≤2 r.C`; its `r`-neighbours are `v` and `y_eff` (after `y` merged into
+    /// `y_eff`). Planting a stale `(r, y)` out-edge on `w` makes the count 3, so
+    /// the `≤` turns over-full (`Some(false)` → `Some(true)`) though only two
+    /// individuals are there.
+    #[test]
+    fn stale_out_edge_flips_nominal_max_overfull() {
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let o = IndividualId::new(0);
+        let nom_o = pool.nominal(o);
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let at_most_two = pool.max(2, Role::Named(r), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(c, not_c);
+        assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
+        let w = ctx.new_node();
+        ctx.add_label(w, nom_o);
+        ctx.add_label(w, at_most_two);
+        ctx.assign_nominal(o, w);
+        let v = ctx.new_node();
+        let y = ctx.new_node();
+        let y_eff = ctx.new_node();
+        ctx.add_edge(w, r, v);
+        ctx.add_edge(w, r, y);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        assert_eq!(
+            ctx.nominal_max_overfull(v),
+            Some(false),
+            "two individuals, ≤2"
+        );
+        assert_eq!(ctx.counters.stale_witness_overfull.get(), 0);
+        assert_eq!(ctx.counters.stale_witness_overfull_flips.get(), 0);
+        assert_eq!(ctx.counters.stale_neighbour_overfull.get(), 0);
+        // Plant a stale out-edge `(r, y)` beside the live `(r, y_eff)`.
+        let n = ctx.graph_mut().node_mut(w);
+        n.edges.push((r, y));
+        n.edge_deps.push(DepSet::new());
+        assert_eq!(
+            ctx.nominal_max_overfull(v),
+            Some(true),
+            "the stale entry over-fills it"
+        );
+        assert!(ctx.counters.stale_witness_overfull.get() >= 1);
+        assert!(ctx.counters.stale_witness_overfull_flips.get() >= 1);
+        assert!(ctx.counters.stale_neighbour_overfull.get() >= 1);
+        eprintln!(
+            "probe_486_nominal: overfull={} flips={} neighbour={}",
+            ctx.counters.stale_witness_overfull.get(),
+            ctx.counters.stale_witness_overfull_flips.get(),
+            ctx.counters.stale_neighbour_overfull.get()
+        );
+    }
 }

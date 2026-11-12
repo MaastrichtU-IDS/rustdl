@@ -1233,9 +1233,18 @@ single `instance` calls.
   - `sat` 17, `subclass` 16, `sat-expr` 1: killed before;
   - `instance` 2: cut before;
   - the per-query sample of 6 wine-family files runs for the first time.
-- **Losses:** 17 calls, all at a cap, including ore_ont_778's classify (267 CPU-s against the 300 s cap
-  before; killed now). They are rechecked one call at a time on a quiet host before any is
-  called a regression.
+- **Losses:** 17 calls in the census, all killed or cut at a wall-clock cap, including ore_ont_778's
+  classify (267 CPU-s against the 300 s cap before; killed in the re-run). **None is a regression.**
+  - **Recheck** (2026-11-12): one call at a time on a quiet host, both pins, 3 reps each in alternating
+    order, caps raised to 120 s / 900 s.
+  - **Result:** all 17 answer on the new pin in 3 of 3 reps, with 0 kills. Each call gave the same answer
+    in all 6 runs, and it is the old binary's census answer. That covers the `disjoint` pair sets and 778's
+    classify content (rows, unsat, equivalence groups, consistent).
+  - **Cost:** median CPU per call is 0.1–28.4 s on the new pin and 0.1–27.8 s on the old. On 778 it is
+    253–268 CPU-s on the new pin and 264–282 on the old.
+  - **So the census kills were contention:** they came at 30 s wall after 22–29 CPU-s. Two calls show it
+    plainly: 6483's `subclass` was killed after 0.3 CPU-s, and 16191's `instance` was cut by the 750 ms
+    wall-clock pair deadline after 0.09 CPU-s. Serially, both answer in under 0.5 s.
 - **Cost:** on the 34,437 calls both binaries were asked, CPU went from 10.19 h to 9.93 h.
   - Those calls are 31,010 of run 1's 31,200 plus 3,427 `instance` calls from the ABox arm. The
     other 190 run-1 calls (0.71 CPU-h) were not asked again; they are all on 6 files where an

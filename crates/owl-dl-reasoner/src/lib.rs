@@ -6704,8 +6704,23 @@ impl ConsistencyCache {
         realize::WitnessPruneReasons,
     )> {
         use owl_dl_tableau::hyper::HyperResult;
+        let t430 = std::time::Instant::now();
         let mut engine = self.build_seeded_engine();
-        match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
+        let built430 = t430.elapsed().as_millis();
+        let res430 = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        if std::env::var_os("RUSTDL_430_WITNESS").is_some() {
+            // #430 PROBE (test-only, never shipped).
+            eprintln!(
+                "[430] base_model_types engine_build_ms={built430} decide={} total_ms={}",
+                match res430 {
+                    HyperResult::Sat => "Sat",
+                    HyperResult::Unsat => "Unsat",
+                    HyperResult::Stalled => "Stalled",
+                },
+                t430.elapsed().as_millis()
+            );
+        }
+        match res430 {
             HyperResult::Sat => {
                 let types = (0..self.num_individuals)
                     .map(|i| {

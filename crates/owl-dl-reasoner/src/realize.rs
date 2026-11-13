@@ -1817,7 +1817,20 @@ pub(crate) fn realize_tableau_internal(
     let (base_model, witness_prune_reasons): (Option<Vec<HashSet<ClassId>>>, WitnessPruneReasons) =
         if pseudo_model_enabled() {
             let witness_deadline = pseudo_model_witness_deadline_from_env();
-            match prepared.realize_base_model_types(Some(witness_deadline)) {
+            // #430 PROBE (test-only, never shipped): log the witness build's outcome.
+            let probe430 = std::env::var_os("RUSTDL_430_WITNESS").is_some();
+            let t430 = std::time::Instant::now();
+            let has_cache = prepared.consistency.is_some();
+            let r = prepared.realize_base_model_types(Some(witness_deadline));
+            if probe430 {
+                eprintln!(
+                    "[430] witness {} cache={} build_ms={}",
+                    if r.is_some() { "BUILT" } else { "NONE" },
+                    has_cache,
+                    t430.elapsed().as_millis()
+                );
+            }
+            match r {
                 Some((types, reasons)) => (Some(types), reasons),
                 None => (None, WitnessPruneReasons::default()),
             }

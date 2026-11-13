@@ -1824,10 +1824,12 @@ pub(crate) fn realize_tableau_internal(
             let r = prepared.realize_base_model_types(Some(witness_deadline));
             if probe430 {
                 eprintln!(
-                    "[430] witness {} cache={} build_ms={}",
+                    "[430] witness {} cache={} build_ms={} skips_data_counting={} individuals={}",
                     if r.is_some() { "BUILT" } else { "NONE" },
                     has_cache,
-                    t430.elapsed().as_millis()
+                    t430.elapsed().as_millis(),
+                    prepared.wedge_sat_skips_data_counting,
+                    individual_iris.len()
                 );
             }
             match r {

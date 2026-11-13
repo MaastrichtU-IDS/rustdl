@@ -3586,7 +3586,25 @@ pub(crate) fn classify_inconsistency_precheck(
     }
 
     // Route 2: the ABox-seeded wedge (#89).
-    match classify_wedge_consistency(internal, route_deadline(), wedge_cache) {
+    let t430 = std::time::Instant::now();
+    let r430 = classify_wedge_consistency(internal, route_deadline(), wedge_cache);
+    if std::env::var_os("RUSTDL_430_WITNESS").is_some() {
+        // #430 PROBE (test-only, never shipped).
+        eprintln!(
+            "[430] precheck route2={} ms={} budget_ms={} work_proxy={} route1_cut={}",
+            match r430 {
+                Some(HyperResult::Sat) => "Sat",
+                Some(HyperResult::Unsat) => "Unsat",
+                Some(HyperResult::Stalled) => "Stalled",
+                None => "None",
+            },
+            t430.elapsed().as_millis(),
+            own_ms,
+            abox_cost_predictors(internal).work_proxy(),
+            cut
+        );
+    }
+    match r430 {
         Some(HyperResult::Unsat) => return true,
         // A wedge model decides consistency, whatever route 1 did. Nothing verifies
         // it here, so classify's "consistent" now rests on it (#429).

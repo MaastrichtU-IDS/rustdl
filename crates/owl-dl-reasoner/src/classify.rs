@@ -2620,6 +2620,9 @@ fn probe_says_inconsistent(
         // #429: an unverified wedge model; classify's "consistent" rests on it. A
         // counting `Sat` is not relied on (layer 3 decides), so it marks nothing.
         Some(owl_dl_tableau::hyper::HyperResult::Sat) if !counting => {
+            if std::env::var_os("RUSTDL_430_WITNESS").is_some() {
+                eprintln!("[430] probe-layer2 Sat marks trusted"); // #430 PROBE
+            }
             crate::mark_consistency_trusted_wedge();
             stats.consistency_probe_gave_up = false;
             return false;

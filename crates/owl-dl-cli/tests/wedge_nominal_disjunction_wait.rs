@@ -106,6 +106,11 @@ const BUDGET_MS: &str = "2000";
 
 /// `rustdl <args>` with no inherited `RUSTDL_*` settings, the wait on or off.
 fn rustdl(args: &[&str], wait: bool) -> Output {
+    rustdl_with(args, Some(wait))
+}
+
+/// As [`rustdl`]; `None` leaves the wait at its default.
+fn rustdl_with(args: &[&str], wait: Option<bool>) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("RUSTDL_") {
@@ -113,13 +118,14 @@ fn rustdl(args: &[&str], wait: bool) -> Output {
         }
     }
     cmd.args(args)
-        .env("RUSTDL_CONSISTENCY_FALLBACK_MS", BUDGET_MS)
-        .env(
+        .env("RUSTDL_CONSISTENCY_FALLBACK_MS", BUDGET_MS);
+    if let Some(wait) = wait {
+        cmd.env(
             "RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT",
             if wait { "1" } else { "0" },
-        )
-        .output()
-        .unwrap()
+        );
+    }
+    cmd.output().unwrap()
 }
 
 fn json(out: &Output, what: &str) -> serde_json::Value {
@@ -183,6 +189,21 @@ fn the_wedge_decides_case_939() {
 #[test]
 fn the_wedge_decides_case_939_minimised() {
     wedge_decides("min939", MIN_939);
+}
+
+/// The wait is on by default: with no setting, the wedge decides case 939.
+#[test]
+fn the_wait_is_on_by_default() {
+    let f = Fixture::new("default", MIN_939);
+    let r = json(
+        &rustdl_with(&["consistent", "--json", f.path()], None),
+        "default",
+    );
+    assert_eq!(r["consistent"], true);
+    assert_eq!(
+        r["relies_on_trusted_consistency"], true,
+        "the default must decide case 939 on the wedge (#480)"
+    );
 }
 
 /// The parked `∃` clauses must fire before the wedge reports a model.

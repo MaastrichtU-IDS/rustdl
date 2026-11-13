@@ -9055,6 +9055,41 @@ mod tests {
         );
     }
 
+    /// #480 T8: a nominal disjunction that only a per-pair extra clause carries
+    /// (the classify oracle's amortized path) parks too. T1's clauses, with
+    /// `C1 ⊑ {a} ⊔ {b}` moved into the extras.
+    #[test]
+    fn a_per_pair_nominal_disjunction_parks() {
+        let mut base = min_939_two_nominal_clauses();
+        let extras = vec![base.pop().expect("the nominal disjunction is last")];
+        assert!(!extras[0].is_horn());
+        let delta = build_clause_index_delta(base.len(), &extras, None);
+        let mut eng = HyperEngine::new_with_prebuilt_extras(
+            &base,
+            &extras,
+            cls(0),
+            std::sync::Arc::new(build_clause_indexes(&base, None)),
+            std::sync::Arc::new(build_disjoint_pairs(&base)),
+            delta,
+        )
+        .with_nominals(10, 2)
+        .with_incremental_fixpoint()
+        .with_reseed_verify(true);
+        eng.generate_last = true;
+        eng.nominal_disj_wait = true;
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        assert_eq!(
+            eng.decide_with_deadline(64, Some(deadline)),
+            HyperResult::Sat
+        );
+        assert!(
+            eng.stats.gen_parked > 0,
+            "the extra clause's disjunction parked"
+        );
+        assert_eq!(eng.stats.park_leaf_fallback, 0);
+        assert!(eng.node_count() <= 8, "{} nodes", eng.node_count());
+    }
+
     /// #480 T7: a bare `run` (the Horn-only entry point) never parks, so its `Sat`
     /// keeps its meaning. The seam would park the root's `∃r.D` inside a search.
     #[test]

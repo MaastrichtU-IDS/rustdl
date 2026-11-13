@@ -1375,15 +1375,17 @@ pub(crate) fn max_witnesses(
     // #382: with `⊤` the filler, every `role`-neighbour counts.
     let any = ctx.top_filler_body(body);
     for (seen, w) in ctx.graph().node(node).neighbours() {
+        // The role first: it reads only `seen`, so an entry over another role
+        // costs no node load (as before #486).
+        if !ctx.edge_satisfies(seen, role) {
+            continue;
+        }
         // #486: a stale entry to a merged node counts its representative, once;
         // one to a pruned node counts nothing (see `live_neighbour`).
         let Some(w) = ctx.live_neighbour(w) else {
             continue;
         };
-        if ctx.edge_satisfies(seen, role)
-            && (any || ctx.graph().node(w).has_label(body))
-            && !out.contains(&w)
-        {
+        if (any || ctx.graph().node(w).has_label(body)) && !out.contains(&w) {
             out.push(w);
         }
     }

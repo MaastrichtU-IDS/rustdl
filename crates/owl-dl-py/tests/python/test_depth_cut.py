@@ -144,11 +144,14 @@ def test_is_instance_of_retries_a_depth_cut_on_the_deep_path(paths, monkeypatch)
     assert value is False and msgs == [], (value, msgs)
 
 
-def test_is_instance_of_a_cut_retry_is_not_reported_as_a_depth_cut(paths, monkeypatch):
+def test_is_instance_of_a_cut_retry_names_the_retry_budget(paths, monkeypatch):
     # #510 (2b): a retry cut by its own 1 ms budget leaves the answer open. Its limit was
-    # the budget, so the warning must not give the depth-cut advice.
+    # the budget, so the warning names the retry's budget, not #514's "a larger budget
+    # does not help" advice.
     monkeypatch.setenv("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "60000")
     monkeypatch.setenv("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "1")
     value, msgs = _incomplete_warnings(CALLS["is_instance_of"][0], paths)
     assert value is False and len(msgs) == 1, (value, msgs)
-    assert DEPTH not in msgs[0] and ADVICE not in msgs[0], msgs
+    msg = msgs[0]
+    assert "deeper retry was cut" in msg and "RUSTDL_INSTANCE_DEPTH_FALLBACK_MS" in msg, msg
+    assert "does not help" not in msg, msg

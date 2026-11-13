@@ -6315,11 +6315,15 @@ pub const INSTANCE_DEPTH_FALLBACK_DEFAULT_MS: u64 = 10_000;
 /// ([`PreparedOntology::decide_deep_with_deadline`], the search of
 /// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) under this budget, in milliseconds, counted from
 /// the retry's start. A verdict it reaches in time is the deadline-free probe's own.
+/// The retry also stops at the node cap in force: the CLI and Python hold
+/// [`single_query_node_cap`] (`RUSTDL_QUERY_MAX_NODES`) around the query, while a library
+/// caller of `is_instance_of*` that does not runs it under the default cap
+/// (`RUSTDL_MAX_NODES`), where the same retry can be cut that the CLI decides.
 ///
 /// Default [`INSTANCE_DEPTH_FALLBACK_DEFAULT_MS`]; unparsable values fall back to it.
 /// **`0` turns the retry off** (the pre-#510 behaviour). That differs from
 /// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (unbounded) and `RUSTDL_CONSISTENCY_FALLBACK_MS=0`
-/// (no budget at all). Only the single query takes it (`instance`, the public
+/// (a deadline that has already passed). Only the single query takes it (`instance`, the public
 /// `is_instance_of*` API, Python `is_instance_of`); `instances`, `instances-expr`,
 /// `realize` and justify's instance oracle never do.
 #[must_use]

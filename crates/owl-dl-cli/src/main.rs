@@ -2409,6 +2409,15 @@ fn run() -> Result<()> {
                 // #493: a likely-bug `NoVerdict` is `unknown` with #449's note, the shape
                 // a deadline-free one always had (it used to reach the top-level net).
                 if flags.no_verdict && !verdict {
+                    // #510 (2b): the probe that ended without a verdict was the deep
+                    // retry of a depth cut; say so, or the retry would not show at all.
+                    if flags.depth_fallback == owl_dl_reasoner::InstanceDepthFallback::Cut {
+                        eprintln!(
+                            "note: the instance probe hit the tableau's decision-depth limit; \
+                             its deeper retry (RUSTDL_INSTANCE_DEPTH_FALLBACK_MS) ended \
+                             without a verdict."
+                        );
+                    }
                     exit_unknown_no_verdict();
                 }
                 if flags.incomplete && !verdict {

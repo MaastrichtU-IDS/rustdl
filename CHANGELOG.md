@@ -295,6 +295,30 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`realize` no longer flips between a one-minute and a 20-minute-plus run on the same input
+  (#430).** Realize's pseudo-model witness (the model whose types let it skip most per-pair
+  `{a} ⊓ ¬C` probes) was built in a second wedge run under a 1000 ms wall-clock budget. On
+  `ore_ont_5695` that run took 565–1,069 ms, so whether a run had a witness was a race: with it,
+  about 55 CPU-s; without it, every pair was probed with the whole ABox (4,102-node graphs),
+  past 20 minutes. Realize now takes the model classify's inconsistency pre-check already built
+  (route 2, the ABox-seeded wedge, under its 3–12 s budget), and builds its own as before only
+  when the pre-check left none.
+  - Same clause set, same engine, same input; the pre-check's run lifts the `horn_fixpoint` step
+    cap under its deadline (#257), which changes when a drain stops, not what it derives. Only a
+    `Sat` model is taken; `witness_prune_active` / `witness_prune_may_drop` and the reasons come
+    from the run whose labels are used.
+  - Not taken where the ontology counts data values (#344): the wedge's `Sat` skips that count.
+    Realize then builds its own witness as before.
+  - A witness whose length differs from the individual count is now dropped in release builds
+    too (no prune), rather than only asserted in debug builds.
+  - `RUSTDL_REALIZE_WITNESS_FROM_PRECHECK` (default on, `=0` reverts) is pinned in
+    `flag_defaults.rs`. `RUSTDL_PSEUDO_MODEL_WITNESS_MS` now governs only the fallback build.
+    Plain `classify` is unchanged: only realize asks for the model.
+  - M0 census over 1,144 ORE ABox files (probe pin, witness budget 30 s): the pre-check gives a
+    model where the 1 s witness does not on 41 files, 7 on the timing cliff (witness 1.2–3.5 s)
+    and 34 where the witness stops at the step cap. 24 more files had a witness at 0.3–3 s, so
+    they were exposed to the race. [M2/M3 figures to be filled in]
+
 - **The wedge refutes a disjunct whose `≤1` clashes as it is asserted (#509).** `≤1 r(.C)`
   arises as the NNF of `¬(≥2 r(.C))` when an equivalence's `≥2 … → C` side is clausified. When the
   search chose that disjunct on a node that already had two `≠` `r`-successors (from a `≥2`), the

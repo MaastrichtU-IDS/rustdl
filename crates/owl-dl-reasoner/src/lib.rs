@@ -218,6 +218,23 @@ pub fn realize_verify_direct_enabled() -> bool {
     std::env::var_os("RUSTDL_REALIZE_VERIFY_DIRECT").is_none_or(|v| v != "0")
 }
 
+/// `realize` takes its pseudo-model witness from the model classify's inconsistency
+/// pre-check already built (route 2, the `ABox`-seeded wedge), instead of building
+/// a second one under `RUSTDL_PSEUDO_MODEL_WITNESS_MS` (#430). Default **ON**;
+/// `RUSTDL_REALIZE_WITNESS_FROM_PRECHECK=0` reverts.
+///
+/// The second build ran under a 1000 ms wall-clock budget, so whether a run had a
+/// witness was a race: on `ore_ont_5695` it took 565-1,069 ms, and a run without it
+/// probed every pair with the whole `ABox` and took over 20 minutes instead of about
+/// one. It also keeps the `horn_fixpoint` step cap that the pre-check lifts (#257),
+/// which stops it on large `ABox`es. The pre-check's model comes from the same
+/// clause set and engine on the same input, under the pre-check's 3-12 s budget.
+/// Where the pre-check leaves no model, realize builds one as before.
+#[must_use]
+pub fn realize_witness_from_precheck_enabled() -> bool {
+    std::env::var_os("RUSTDL_REALIZE_WITNESS_FROM_PRECHECK").is_none_or(|v| v != "0")
+}
+
 /// Anonymous individuals take part in the `SameIndividual` folding of
 /// [`materialize_data_property_assertions`] (#390): `d(_:x, v)` and
 /// `SameIndividual(_:x, a)` give `d(a, v)`. They were skipped, so that value was
@@ -3554,6 +3571,27 @@ pub(crate) fn classify_inconsistency_precheck(
     global_deadline: Option<std::time::Instant>,
     wedge_cache: &mut Option<ConsistencyCache>,
 ) -> bool {
+    classify_inconsistency_precheck_capturing(internal, closure, global_deadline, wedge_cache, None)
+}
+
+/// A model of the KB read off the `ABox`-seeded wedge: one type set per individual
+/// (indexed by `IndividualId`), and the reasons the prune built on it may drop an
+/// entailed type. See [`ConsistencyCache::base_model_types`].
+pub(crate) type WedgeWitness = (
+    Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>,
+    realize::WitnessPruneReasons,
+);
+
+/// [`classify_inconsistency_precheck`], also storing route 2's wedge model in
+/// `capture` when that wedge answers `Sat` (#430). See
+/// [`classify_wedge_consistency`] for when no model is stored.
+pub(crate) fn classify_inconsistency_precheck_capturing(
+    internal: &InternalOntology,
+    closure: &owl_dl_saturation::Subsumers,
+    global_deadline: Option<std::time::Instant>,
+    wedge_cache: &mut Option<ConsistencyCache>,
+    capture: Option<&mut Option<WedgeWitness>>,
+) -> bool {
     use owl_dl_tableau::hyper::HyperResult;
     if closure.globally_inconsistent() || closure.top_is_unsat() {
         return true;
@@ -3586,7 +3624,7 @@ pub(crate) fn classify_inconsistency_precheck(
     }
 
     // Route 2: the ABox-seeded wedge (#89).
-    match classify_wedge_consistency(internal, route_deadline(), wedge_cache) {
+    match classify_wedge_consistency(internal, route_deadline(), wedge_cache, capture) {
         Some(HyperResult::Unsat) => return true,
         // A wedge model decides consistency, whatever route 1 did. Nothing verifies
         // it here, so classify's "consistent" now rests on it (#429).
@@ -3720,10 +3758,17 @@ pub(crate) fn take_consistency_trusted_wedge() -> bool {
 /// when the route does not run. Only a witnessed `Unsat` means inconsistent;
 /// `Sat` and `Stalled` both mean "no clash seen here", which is the same sound
 /// under-approximation classify already made.
+///
+/// With `capture`, a `Sat` also stores the wedge's model there (#430), for realize to
+/// use as its pseudo-model witness. Only a `Sat` engine's labels are a model: a
+/// `Stalled` one carries a partial closure, which would prune entailed types. No
+/// model is stored when the ontology counts data values (#344,
+/// `wedge_sat_skips_data_counting`), since the wedge does not count them.
 fn classify_wedge_consistency(
     internal: &InternalOntology,
     deadline: Option<std::time::Instant>,
     cache_out: &mut Option<ConsistencyCache>,
+    capture: Option<&mut Option<WedgeWitness>>,
 ) -> Option<owl_dl_tableau::hyper::HyperResult> {
     use owl_dl_tableau::hyper::HyperResult;
     if !classify_wedge_inconsistency_enabled()
@@ -3738,13 +3783,31 @@ fn classify_wedge_consistency(
         return Some(HyperResult::Stalled);
     }
     let cache = ConsistencyCache::build(internal);
-    let verdict = cache.decide(deadline);
+    let verdict = match capture {
+        Some(slot) => {
+            let (verdict, witness) = cache.decide_capturing(deadline);
+            if verdict == HyperResult::Sat && !wedge_model_skips_data_counting(internal) {
+                *slot = witness;
+            }
+            verdict
+        }
+        None => cache.decide(deadline),
+    };
     if verdict == HyperResult::Unsat && std::env::var_os("RUSTDL_TRACE").is_some() {
         eprintln!("classify: KB inconsistent (wedge Unsat)");
     }
     // Kept for `derive_nominal_same`, which probes the same KB (#354).
     *cache_out = Some(cache);
     Some(verdict)
+}
+
+/// Whether a wedge model of `internal` may break a data-value count the wedge does not
+/// check: the condition behind `PreparedOntology::wedge_sat_skips_data_counting`
+/// (#344), less its "the wedge route is built" conjunct, which holds wherever this
+/// is asked.
+fn wedge_model_skips_data_counting(internal: &InternalOntology) -> bool {
+    consistency_data_counting_verify_enabled()
+        && pool_has_dkey_counting(&internal.concepts, &build_dkey_range_map(internal))
 }
 
 /// Whether classify derives individual equalities for the classify wedge (#354,
@@ -6651,6 +6714,50 @@ impl ConsistencyCache {
         engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
     }
 
+    /// [`Self::decide`], also returning the model on `Sat` (#430): the same engine,
+    /// the same configuration (the step cap lifted under a deadline), and the same
+    /// extraction as [`Self::base_model_types`]. `None` on `Unsat` and `Stalled`.
+    pub(crate) fn decide_capturing(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> (owl_dl_tableau::hyper::HyperResult, Option<WedgeWitness>) {
+        use owl_dl_tableau::hyper::HyperResult;
+        let mut engine = self.build_seeded_engine();
+        if owl_dl_tableau::seeded_fixpoint_uncapped_enabled() {
+            engine = engine.with_deadline_bounded_fixpoint();
+        }
+        let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        let witness = (verdict == HyperResult::Sat).then(|| self.witness_of_sat(&engine));
+        (verdict, witness)
+    }
+
+    /// The model a `Sat` engine built: each individual's labels, plus the reasons a
+    /// prune built on them may drop an entailed type. Call it only after `Sat`, and
+    /// only after the engine's one `decide` (`stats` is reset per decide).
+    fn witness_of_sat(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) -> WedgeWitness {
+        let types = (0..self.num_individuals)
+            .map(|i| {
+                engine
+                    .seeded_individual_labels(i)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect()
+            })
+            .collect();
+        let reasons = realize::WitnessPruneReasons {
+            branched: engine.stats().branches_taken > 0,
+            deferred_clauses: self.deferred_clauses > 0,
+            refused_clauses: engine.refused_clauses() > 0,
+            // The #137 net runs only on the incremental drain
+            // (`HyperEngine::reseed_net_due`), so either flag at `=0`
+            // leaves a skipped `∃` unrecovered.
+            reseed_net_off: !(crate::incremental_fixpoint_enabled()
+                && crate::reseed_verify_enabled()),
+            inverse_functional_max_off: !owl_dl_core::convert::inverse_functional_max_enabled(),
+        };
+        (types, reasons)
+    }
+
     /// #354: whether `KB ∪ {a ≠ b}` is inconsistent, i.e. whether `a = b` is
     /// entailed. Adds `{a}(X) ∧ {b}(X) → ⊥`, the encoding
     /// [`push_different_individuals_disjoint`] uses for `DifferentIndividuals`, to the
@@ -6684,7 +6791,10 @@ impl ConsistencyCache {
     /// (`Unsat`/`Stalled`/deadline). Builds the SAME engine configuration as
     /// [`Self::decide`] (via [`Self::build_seeded_engine`]) so the returned
     /// labels come from a genuine model of the `ABox`, not a divergent
-    /// completion. Indexed by individual id (`0..self.num_individuals`);
+    /// completion, except that it keeps the `horn_fixpoint` step cap that `decide`
+    /// lifts under a deadline (#257). The cap only stops a drain early, as a
+    /// `Stalled`; a `Sat` from either is a completed model. Realize uses this only
+    /// when classify's pre-check left no model ([`Self::decide_capturing`], #430). Indexed by individual id (`0..self.num_individuals`);
     /// `seeded_individual_labels` resolves through the union-find so a
     /// `SameIndividual`/functional merge never silently under-reports a
     /// merged-away individual's types.
@@ -6699,38 +6809,11 @@ impl ConsistencyCache {
     pub(crate) fn base_model_types(
         &self,
         deadline: Option<std::time::Instant>,
-    ) -> Option<(
-        Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>,
-        realize::WitnessPruneReasons,
-    )> {
+    ) -> Option<WedgeWitness> {
         use owl_dl_tableau::hyper::HyperResult;
         let mut engine = self.build_seeded_engine();
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
-            HyperResult::Sat => {
-                let types = (0..self.num_individuals)
-                    .map(|i| {
-                        engine
-                            .seeded_individual_labels(i)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .collect()
-                    })
-                    .collect();
-                // `stats` is reset per decide and this is the only decide here.
-                let reasons = realize::WitnessPruneReasons {
-                    branched: engine.stats().branches_taken > 0,
-                    deferred_clauses: self.deferred_clauses > 0,
-                    refused_clauses: engine.refused_clauses() > 0,
-                    // The #137 net runs only on the incremental drain
-                    // (`HyperEngine::reseed_net_due`), so either flag at `=0`
-                    // leaves a skipped `∃` unrecovered.
-                    reseed_net_off: !(crate::incremental_fixpoint_enabled()
-                        && crate::reseed_verify_enabled()),
-                    inverse_functional_max_off:
-                        !owl_dl_core::convert::inverse_functional_max_enabled(),
-                };
-                Some((types, reasons))
-            }
+            HyperResult::Sat => Some(self.witness_of_sat(&engine)),
             HyperResult::Unsat | HyperResult::Stalled => None,
         }
     }
@@ -14302,6 +14385,82 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             !a_types.contains(&f),
             "a is provably NOT F (DisjointClasses(D,F) + a:D)"
         );
+    }
+
+    /// #430: on a non-branching `ABox`, the pre-check's capture and realize's own
+    /// witness build are the same model: the same type sets and the same reasons.
+    /// They may differ only where the engine branches (lifting the step cap can
+    /// change which completion is reached), so this pins the non-branching case.
+    #[test]
+    fn decide_capturing_matches_base_model_types_without_branching() {
+        let internal = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:D)) Declaration(Class(:E)) Declaration(Class(:F))
+            Declaration(Class(:G)) Declaration(Class(:H))
+            Declaration(ObjectProperty(:r))
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c))
+            SubClassOf(:D :E)
+            SubClassOf(ObjectSomeValuesFrom(:r :G) :H)
+            DisjointClasses(:D :F)
+            ClassAssertion(:D :a)
+            ClassAssertion(:G :c)
+            ObjectPropertyAssertion(:r :b :c))",
+        );
+        let cache = ConsistencyCache::build(&internal);
+        let (verdict, captured) = cache.decide_capturing(None);
+        assert_eq!(verdict, owl_dl_tableau::hyper::HyperResult::Sat);
+        let (cap_types, cap_reasons) = captured.expect("a Sat decide carries its model");
+        let (own_types, own_reasons) = cache
+            .base_model_types(None)
+            .expect("a consistent ABox yields a witness model");
+        assert!(
+            !cap_reasons.branched,
+            "fixture must not branch: {cap_reasons:?}"
+        );
+        assert_eq!(cap_types, own_types, "same model, same type sets");
+        assert_eq!(cap_reasons, own_reasons, "same model, same reasons");
+        let h = internal.vocabulary.class_id("http://ex/#H").expect("H");
+        let b = internal
+            .vocabulary
+            .individual_id("http://ex/#b")
+            .expect("b");
+        assert!(
+            cap_types[b.index() as usize].contains(&h),
+            "b : H via r(b,c), c : G, and r.G below H"
+        );
+    }
+
+    /// #430: a `Stalled` decide hands back no model (its labels are a partial
+    /// closure), and neither does `Unsat`.
+    #[test]
+    fn decide_capturing_keeps_no_model_without_sat() {
+        let consistent = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:D)) Declaration(NamedIndividual(:a))
+            ClassAssertion(:D :a))",
+        );
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("clock is past 1 s");
+        let (verdict, captured) = ConsistencyCache::build(&consistent).decide_capturing(Some(past));
+        assert_eq!(verdict, owl_dl_tableau::hyper::HyperResult::Stalled);
+        assert!(
+            captured.is_none(),
+            "a Stalled engine's labels are not a model"
+        );
+        let inconsistent = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:D)) Declaration(Class(:F)) Declaration(NamedIndividual(:a))
+            DisjointClasses(:D :F)
+            ClassAssertion(:D :a) ClassAssertion(:F :a))",
+        );
+        let (verdict, captured) = ConsistencyCache::build(&inconsistent).decide_capturing(None);
+        assert_eq!(verdict, owl_dl_tableau::hyper::HyperResult::Unsat);
+        assert!(captured.is_none());
     }
 
     /// P2 plumbing: `PreparedOntology` builds the `ClassId → CardRange` side-map

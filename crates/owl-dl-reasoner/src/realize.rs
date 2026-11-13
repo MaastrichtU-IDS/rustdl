@@ -28,7 +28,7 @@ use owl_dl_saturation::{Subsumers, saturate, saturate_for_realize};
 use crate::PreparedOntology;
 use crate::ReasonError;
 use crate::classify::{
-    classify_saturation_only_internal, classify_top_down_internal, is_pure_el,
+    classify_saturation_only_internal, classify_top_down_internal_capturing, is_pure_el,
     saturator_complete_fragment, tbox_only_saturator_eligible,
 };
 
@@ -63,6 +63,11 @@ const DEFAULT_REALIZE_PAIR_TIMEOUT_MS: u64 = 750;
 /// single extra wedge run per `realize` call, not per pair, but an unbounded
 /// deadline on an off-fragment `ABox` reintroduces exactly the long-run risk
 /// the #35-v4 per-pair timeout was built to bound.
+///
+/// Since #430 this budget governs only the fallback build: realize first takes the
+/// model classify's inconsistency pre-check built
+/// ([`crate::realize_witness_from_precheck_enabled`]) and builds its own only when
+/// there is none. `=0` therefore means "no fallback witness", not "no witness".
 const DEFAULT_PSEUDO_MODEL_WITNESS_MS: u64 = 1000;
 
 /// Is the pseudo-model realize shortcut enabled?
@@ -1749,10 +1754,16 @@ pub(crate) fn realize_tableau_internal(
     // subsumption); at worst it makes `most_specific_types` less minimal, but
     // every reported type is still a genuine type. `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`
     // ⟹ `pair_deadline_ms = None` ⟹ unbounded (opt-out preserved).
-    let hierarchy = classify_top_down_internal(
+    //
+    // #430: classify's inconsistency pre-check hands back its wedge model, when it
+    // has one, as the pseudo-model witness below.
+    let mut precheck_witness = None;
+    let hierarchy = classify_top_down_internal_capturing(
         internal,
         pair_deadline_ms.map(std::time::Duration::from_millis),
         None,
+        (pseudo_model_enabled() && crate::realize_witness_from_precheck_enabled())
+            .then_some(&mut precheck_witness),
     )?;
     // #310: classify's inconsistency pre-check (saturator signal, `ABox` saturation,
     // the `ABox`-seeded wedge) proved the KB inconsistent; it then marks every class
@@ -1807,30 +1818,41 @@ pub(crate) fn realize_tableau_internal(
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
 
-    // Pseudo-model shortcut (Task 3): compute ONE `ABox` witness model,
-    // ONCE, under a bounded deadline (never unbounded — see
-    // `pseudo_model_witness_deadline_from_env`'s doc). `None` (flag off,
-    // `Stalled`/deadline hit, or no wedge-consistency cache — see
+    // Pseudo-model shortcut (Task 3): ONE `ABox` witness model per call. #430: it
+    // is the model classify's pre-check already built when there is one;
+    // otherwise it is built here, once, under a bounded deadline (never
+    // unbounded — see `pseudo_model_witness_deadline_from_env`'s doc). `None`
+    // (flag off, `Stalled`/deadline hit, or no wedge-consistency cache — see
     // `pseudo_model_enabled`'s coupling note) ⇒ every pair below takes the
     // unchanged normal path, so this can only ever skip probes, never
     // change a verdict.
-    let (base_model, witness_prune_reasons): (Option<Vec<HashSet<ClassId>>>, WitnessPruneReasons) =
-        if pseudo_model_enabled() {
-            let witness_deadline = pseudo_model_witness_deadline_from_env();
-            match prepared.realize_base_model_types(Some(witness_deadline)) {
-                Some((types, reasons)) => (Some(types), reasons),
-                None => (None, WitnessPruneReasons::default()),
+    let from_precheck = precheck_witness.is_some();
+    let witness = if pseudo_model_enabled() {
+        precheck_witness.or_else(|| {
+            prepared.realize_base_model_types(Some(pseudo_model_witness_deadline_from_env()))
+        })
+    } else {
+        None
+    };
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        eprintln!(
+            "realize: pseudo-model witness {}",
+            match (&witness, from_precheck) {
+                (Some(_), true) => "from the classify pre-check",
+                (Some(_), false) => "built here",
+                (None, _) => "none",
             }
-        } else {
-            (None, WitnessPruneReasons::default())
-        };
-    if let Some(ref m) = base_model {
-        debug_assert_eq!(
-            m.len(),
-            individual_iris.len(),
-            "witness model must carry one type set per individual",
         );
     }
+    // A witness indexed against another individual numbering would prune the wrong
+    // individual's types: drop it (no prune) rather than trust it.
+    let (base_model, witness_prune_reasons): (Option<Vec<HashSet<ClassId>>>, WitnessPruneReasons) =
+        match witness {
+            Some((types, reasons)) if types.len() == individual_iris.len() => {
+                (Some(types), reasons)
+            }
+            _ => (None, WitnessPruneReasons::default()),
+        };
 
     // Per-individual realization is independent across individuals
     // (each builds a fresh tableau context per class probe via

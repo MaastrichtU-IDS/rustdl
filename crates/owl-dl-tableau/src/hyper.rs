@@ -668,6 +668,8 @@ struct Snapshot {
     worklist: Vec<Event>,
     /// #465 B: the deferred generating clauses, carried like `worklist`.
     pending_gen: PendingGen,
+    /// #480: the parked generating clauses, carried like `pending_gen`.
+    parked: PendingGen,
 }
 
 /// Phase 1b.5 lazy expansion state for snapshot replay. When set
@@ -846,6 +848,18 @@ pub struct SearchStats {
     pub gen_deferred: u64,
     /// #465 B: deferred generating clauses fired from `pending_gen`.
     pub gen_drained: u64,
+    /// #480: deferred generating clauses parked because their node awaited an
+    /// open nominal disjunction.
+    pub gen_parked: u64,
+    /// #480: parked clauses moved back to `pending_gen` by the fixpoint's re-test
+    /// (the disjunction closed, the node merged or became blocked).
+    pub gen_unparked: u64,
+    /// #480: predicate evaluations in the fixpoint's re-test of parked clauses.
+    pub park_retests: u64,
+    /// #480: times the leaf found a parked clause and fell back to #465 B's order
+    /// for the rest of the decide. With the predicate a sub-case of
+    /// `find_open_disjunction`, this stays 0; anything else is a finding.
+    pub park_leaf_fallback: u64,
     /// `horn_fixpoint` worklist drains (one per call) across the search.
     pub fixpoint_passes: u64,
     /// `is_blocked` invocations. HF2 double-blocking profiling: if this
@@ -1042,6 +1056,26 @@ pub struct HyperEngine<'c> {
     pending_gen: PendingGen,
     /// #465 B: set while a deferred clause fires, so it generates now.
     draining_gen: bool,
+    /// `RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT` (#480), cached: a deferred
+    /// generating clause whose node awaits an open nominal disjunction is parked
+    /// instead of fired. See [`Self::next_deferred_gen`].
+    nominal_disj_wait: bool,
+    /// #480: deferred generating clauses held back while their node carries an open
+    /// disjunction with a nominal disjunct. Carried by `save`/`restore` under
+    /// `incremental_fixpoint`, like `pending_gen`.
+    parked: PendingGen,
+    /// #480: set for the rest of a `decide` once the leaf found a parked clause
+    /// (`park_leaf_fallback`). From then on nothing parks, and the search is
+    /// #465 B's. Not in `Snapshot`; cleared by `decide_with_deadline`.
+    park_disabled: bool,
+    /// #480: true only while `decide_with_deadline` runs the search, so a bare
+    /// [`Self::run`] never parks and keeps its `Sat` meaning.
+    in_search: bool,
+    /// #480 test seam: the predicate holds for this node regardless of the graph,
+    /// so a test can park a clause the search's scan cannot see (the only way to
+    /// reach the leaf rule).
+    #[cfg(test)]
+    park_force: Option<HNode>,
     /// [`Self::nn_counted_possible`], cached: `None` until first asked. Only a
     /// node gaining a `≤` while carrying a nominal, or a nominal while holding a
     /// `≤`, can turn it true, and those two sites set it; a restore puts back the
@@ -1385,10 +1419,23 @@ pub struct ClauseIndexes {
     /// Classify builds an engine per class and per pair, so scanning every
     /// clause per engine was quadratic on large ontologies.
     nominal_scan: std::sync::OnceLock<NominalScan>,
+    /// #480: the `nonhorn` entries below `built_len` whose head has a nominal
+    /// disjunct on `X`, for the nominal range in the key. Computed once and shared
+    /// like `nominal_scan`; see [`HyperEngine::awaits_nominal_disjunction`].
+    nominal_disj: std::sync::OnceLock<NominalDisj>,
     /// How many clauses [`build_clause_indexes`] indexed. Entries added later
     /// with [`index_extra_clause`] (the per-probe Q-clause) are not counted: an
     /// engine on this index may or may not carry that clause in its base slice.
     built_len: usize,
+}
+
+/// #480: the disjunctive clauses with a nominal disjunct on `X`, for the nominal
+/// range `(start, count)` (see [`ClauseIndexes::nominal_disj`]).
+#[derive(Debug, Clone)]
+struct NominalDisj {
+    range: (u32, u32),
+    /// `(clause id, anchor)`, as in `nonhorn`.
+    list: Vec<(usize, Option<ClassId>)>,
 }
 
 /// The clause half of [`HyperEngine::compute_visible_nominals`] for one nominal
@@ -2075,6 +2122,12 @@ impl<'c> HyperEngine<'c> {
             generate_last: crate::wedge_generate_last_enabled(),
             pending_gen: PendingGen::default(),
             draining_gen: false,
+            nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
+            parked: PendingGen::default(),
+            park_disabled: false,
+            in_search: false,
+            #[cfg(test)]
+            park_force: None,
             nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
@@ -2166,6 +2219,12 @@ impl<'c> HyperEngine<'c> {
             generate_last: crate::wedge_generate_last_enabled(),
             pending_gen: PendingGen::default(),
             draining_gen: false,
+            nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
+            parked: PendingGen::default(),
+            park_disabled: false,
+            in_search: false,
+            #[cfg(test)]
+            park_force: None,
             nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
@@ -3310,7 +3369,7 @@ impl<'c> HyperEngine<'c> {
         loop {
             let (ev, deferred) = match self.worklist.pop() {
                 Some(ev) => (Some(ev), None),
-                None => match self.pending_gen.pop_front() {
+                None => match self.next_deferred_gen() {
                     Some(g) => (None, Some(g)),
                     None => break,
                 },
@@ -3941,6 +4000,9 @@ impl<'c> HyperEngine<'c> {
         // #376: skips recorded by an earlier decide on this engine belong to it.
         self.blocked_gen.clear();
         self.blocked_gen_mark.clear();
+        // #480: so do parked clauses and the leaf fallback.
+        self.parked.clear();
+        self.park_disabled = false;
         self.at_most_exhaust_probe = std::env::var_os("RUSTDL_AT_MOST_EXHAUST_PROBE")
             .is_some_and(|v| v != "0" && !v.is_empty());
         // Incremental mode: the root query graph is built by direct field
@@ -3952,7 +4014,9 @@ impl<'c> HyperEngine<'c> {
         if self.incremental_fixpoint {
             self.seed_worklist_from_graph();
         }
+        self.in_search = true;
         let verdict = self.solve(max_depth);
+        self.in_search = false;
         if self.at_most_exhaust_probe && self.stats.at_most_exhaust_total > 0 {
             eprintln!(
                 "AT_MOST_EXHAUST_PROBE total={} local_bounded={} bounded={} popcount_sum={} \
@@ -4171,6 +4235,7 @@ impl<'c> HyperEngine<'c> {
         engine.neq.clear();
         engine.worklist.clear();
         engine.pending_gen.clear();
+        engine.parked.clear();
         engine.clash_deps = DepSet::EMPTY;
         engine.snapshot_origin.clear();
         engine.snapshot_backprop_aborted = false;
@@ -4338,6 +4403,12 @@ impl<'c> HyperEngine<'c> {
             generate_last: crate::wedge_generate_last_enabled(),
             pending_gen: PendingGen::default(),
             draining_gen: false,
+            nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
+            parked: PendingGen::default(),
+            park_disabled: false,
+            in_search: false,
+            #[cfg(test)]
+            park_force: None,
             nn_possible: None,
             blocked_gen: Vec::new(),
             blocked_gen_mark: Vec::new(),
@@ -4941,6 +5012,29 @@ impl<'c> HyperEngine<'c> {
             self.leaf_net_fresh = true;
             return self.solve(depth);
         }
+        // #480 leaf rule: no `Sat` while a generating clause is parked. A parked
+        // clause's node awaits an open nominal disjunction, which the scan above
+        // would have branched on; reaching here with one means the predicate and the
+        // scan disagree. Fall back to #465 B's order for the rest of this decide
+        // (sticky, so a re-seed cannot park it again), let every parked clause fire,
+        // and examine the frame again with both nets running as usual. This happens
+        // at most once per decide.
+        if !self.parked.is_empty() {
+            debug_assert_eq!(
+                self.stats.park_leaf_fallback, 0,
+                "#480: the leaf fell back twice in one decide (`park_disabled` must stop parking)"
+            );
+            self.park_disabled = true;
+            self.stats.park_leaf_fallback += 1;
+            while let Some((ci, n)) = self.parked.pop_front() {
+                self.pending_gen.push(ci, n);
+            }
+            return self.solve(depth);
+        }
+        debug_assert!(
+            self.parked.is_empty() && self.pending_gen.is_empty(),
+            "#480: `Sat` with a deferred or parked generating clause left"
+        );
         HyperResult::Sat
     }
 
@@ -4998,6 +5092,13 @@ impl<'c> HyperEngine<'c> {
             } else {
                 PendingGen::default()
             },
+            // #480: may be non-empty: a parked clause waits for the branch this
+            // save precedes.
+            parked: if self.incremental_fixpoint {
+                self.parked.clone()
+            } else {
+                PendingGen::default()
+            },
         }
     }
 
@@ -5026,11 +5127,22 @@ impl<'c> HyperEngine<'c> {
         if self.incremental_fixpoint {
             self.worklist = saved.worklist;
             self.pending_gen = saved.pending_gen;
+            self.parked = saved.parked;
         } else {
             // The next pass re-seeds; an entry of the abandoned branch may
             // name a node that no longer exists.
             self.pending_gen.clear();
+            self.parked.clear();
         }
+        // #480: an entry kept from the abandoned branch would name a node past
+        // the restored graph.
+        debug_assert!(
+            self.parked
+                .queue
+                .iter()
+                .all(|&(_, n)| n.index() < self.nodes.len()),
+            "#480: a parked clause names a node the restored graph does not have"
+        );
         self.stats.restores += 1;
     }
 
@@ -6059,6 +6171,155 @@ impl<'c> HyperEngine<'c> {
         let outcome = self.fire_clause(ci, n);
         self.draining_gen = false;
         outcome
+    }
+
+    /// #480: whether this fixpoint parks deferred generating clauses at all: the
+    /// flag is on, the pool has nominals, the search is running (a bare
+    /// [`Self::run`] never parks), and the leaf has not fallen back.
+    ///
+    /// Also only where a blocked skip is re-fired (Fable F5). The re-test releases
+    /// a parked clause whose node became blocked, and that firing is a blocked
+    /// no-op. If the node is unblocked later, only #376's `blocked_gen` (recorded
+    /// under `nn_guard`, re-fired by the #137 net) or a full re-seed (the
+    /// non-incremental drain) fires the clause again. Both defaults are ON.
+    fn parking_allowed(&self) -> bool {
+        self.nominal_disj_wait
+            && self.in_search
+            && !self.park_disabled
+            && self.nominals.is_some_and(|(_, count)| count > 0)
+            && self.nn_guard
+            && (self.reseed_verify || !self.incremental_fixpoint)
+    }
+
+    /// #480: the next deferred generating clause to fire, or `None` once the
+    /// fixpoint may end.
+    ///
+    /// A clause whose node awaits an open nominal disjunction
+    /// ([`Self::awaits_nominal_disjunction`]) is parked instead of fired. At
+    /// quiescence (`pending_gen` empty) every parked clause is re-tested: those whose
+    /// node no longer awaits (a Horn rule closed the disjunction, the node merged into
+    /// a nominal's node, or it became blocked) go back to `pending_gen` and the drain
+    /// goes on. The fixpoint ends with only awaiting clauses parked. Each of those
+    /// is an open disjunction on an unblocked node, so `find_open_disjunction`
+    /// returns a candidate and the frame branches; the child's fixpoint re-tests
+    /// them. The leaf rule in [`Self::solve_inner`] makes sure no `Sat` is reached
+    /// with a clause still parked.
+    ///
+    /// When parking is not allowed, every parked clause goes back to `pending_gen`,
+    /// so it fires as any deferred clause does.
+    fn next_deferred_gen(&mut self) -> Option<(usize, HNode)> {
+        if !self.parking_allowed() {
+            while let Some((ci, n)) = self.parked.pop_front() {
+                self.pending_gen.push(ci, n);
+            }
+            return self.pending_gen.pop_front();
+        }
+        loop {
+            while let Some((ci, node)) = self.pending_gen.pop_front() {
+                if self.awaits_nominal_disjunction(node) {
+                    if self.parked.push(ci, node) {
+                        self.stats.gen_parked += 1;
+                    }
+                    continue;
+                }
+                return Some((ci, node));
+            }
+            if self.parked.is_empty() {
+                return None;
+            }
+            let mut still = PendingGen::default();
+            let mut moved = false;
+            while let Some((ci, node)) = self.parked.pop_front() {
+                self.stats.park_retests += 1;
+                if self.awaits_nominal_disjunction(node) {
+                    still.push(ci, node);
+                } else {
+                    self.stats.gen_unparked += 1;
+                    self.pending_gen.push(ci, node);
+                    moved = true;
+                }
+            }
+            self.parked = still;
+            if !moved {
+                return None;
+            }
+        }
+    }
+
+    /// #480: whether `node`'s representative carries an open disjunction with a
+    /// nominal disjunct on it (`{a} ∨ {b}`, `{a} ∨ D`), so that a generating clause
+    /// there should wait for the search to pick a disjunct. The wedge counterpart of
+    /// the main tableau's `awaits_nominal_disjunction` (#473).
+    ///
+    /// Every test here is one `find_open_disjunction` makes before it returns a
+    /// candidate: an unblocked node, a non-tautological disjunctive clause from the
+    /// same `nonhorn` lists, its anchor in the label, and a body binding with no
+    /// head satisfied. So a node that awaits always gives that scan a candidate
+    /// (with MRV, `best` is `None` only when no candidate was seen). Liveness does
+    /// not rest on that match, though: the leaf rule catches any drift.
+    fn awaits_nominal_disjunction(&mut self, node: HNode) -> bool {
+        let n = self.resolve(node);
+        #[cfg(test)]
+        if self.park_force == Some(n) {
+            return true;
+        }
+        let Some((start, count)) = self.nominals else {
+            return false;
+        };
+        if n.index() >= self.nodes.len() || self.is_blocked(n) {
+            return false;
+        }
+        let ix = std::sync::Arc::clone(&self.indexes);
+        let built = ix.built_len;
+        // The base clauses below `built` are shared by every engine on this index
+        // (as for `nominal_scan`); entries at or past it, and the per-pair extras,
+        // are checked per call.
+        let shared = (built <= self.clauses.len())
+            .then(|| {
+                ix.nominal_disj.get_or_init(|| NominalDisj {
+                    range: (start, count),
+                    list: ix
+                        .nonhorn
+                        .iter()
+                        .filter(|&&(ci, _)| ci < built && self.has_nominal_disjunct(ci))
+                        .copied()
+                        .collect(),
+                })
+            })
+            .filter(|d| d.range == (start, count));
+        let (base, rest): (&[(usize, Option<ClassId>)], &[(usize, Option<ClassId>)]) = match shared
+        {
+            Some(d) => {
+                let cut = ix.nonhorn.partition_point(|&(ci, _)| ci < built);
+                (&d.list, &ix.nonhorn[cut..])
+            }
+            None => (&[], &ix.nonhorn),
+        };
+        let this = &*self;
+        let open_here = |&(ci, anchor): &(usize, Option<ClassId>)| {
+            if anchor.is_some_and(|a| !this.nodes[n.index()].has(a)) || this.is_tautology_clause(ci)
+            {
+                return false;
+            }
+            this.match_body(ci, n)
+                .is_some_and(|bindings| bindings.iter().any(|b| !this.any_head_satisfied(ci, n, b)))
+        };
+        base.iter().any(open_here)
+            || rest
+                .iter()
+                .chain(this.extra_indexes.nonhorn.iter())
+                .filter(|&&(ci, _)| this.has_nominal_disjunct(ci))
+                .any(open_here)
+    }
+
+    /// #480: whether disjunctive clause `ci` has a nominal disjunct on `X`.
+    fn has_nominal_disjunct(&self, ci: usize) -> bool {
+        let cl = self.clause(ci);
+        !cl.is_horn()
+            && cl
+                .head
+                .iter()
+                .any(|a| matches!(*a, Atom::Class(c, v) if v == X && self.is_nominal(c)))
     }
 
     /// Fire clause `ci` at `node` for the edge event `src —role→ tgt`. Under
@@ -8407,6 +8668,410 @@ mod tests {
             HyperResult::Sat,
             "the old order does not settle (if it now does, this test no longer pins #465)"
         );
+    }
+
+    /// #480's case 00939, minimised (5 axioms), as wedge clauses: `⊤ ⊑ C0 ⊔ C1`,
+    /// `C0 ⊑ ∃r1.Q`, `Q ⊑ ∃r0.C0`, `C0 ⊑ C1`, `C1 ⊑ {a} ⊔ {b}`, seeded with `C0`.
+    /// Every node must become `a` or `b`, by a disjunction the search decides.
+    fn min_939_two_nominal_clauses() -> Vec<DlClause> {
+        let (r0, r1) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (c0, c1, q, a, b) = (cls(0), cls(1), cls(2), cls(10), cls(11));
+        vec![
+            DlClause {
+                body: vec![],
+                head: vec![Atom::Class(c0, X), Atom::Class(c1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Exists(r1, q, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Exists(r0, c0, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Class(c1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c1, X)],
+                head: vec![Atom::Class(a, X), Atom::Class(b, X)],
+            },
+        ]
+    }
+
+    /// #480: one decide with the wait on or off, in either fixpoint mode, with the
+    /// #137 net on or off. Nominals are classes 10 and 11.
+    fn decide_480<'a>(
+        clauses: &'a [DlClause],
+        wait: bool,
+        incremental: bool,
+        net: bool,
+        budget_ms: u64,
+        force: Option<HNode>,
+    ) -> (HyperResult, HyperEngine<'a>) {
+        let mut eng = HyperEngine::new(clauses, cls(0)).with_nominals(10, 2);
+        if incremental {
+            eng = eng.with_incremental_fixpoint();
+        }
+        eng = eng.with_reseed_verify(net);
+        eng.generate_last = true;
+        eng.nominal_disj_wait = wait;
+        eng.park_force = force;
+        let deadline = Instant::now() + std::time::Duration::from_millis(budget_ms);
+        let r = eng.decide_with_deadline(64, Some(deadline));
+        (r, eng)
+    }
+
+    /// #480 T1: a node that must become `{a}` or `{b}` waits to generate until the
+    /// search picks one, so the wedge settles on a tiny model. Without the wait it
+    /// built successors before every pick, the pick moved them, and it ran to the
+    /// deadline (case 939's `Stalled` consistency wedge).
+    #[test]
+    fn generation_waits_for_an_open_nominal_disjunction() {
+        let clauses = min_939_two_nominal_clauses();
+        for incremental in [true, false] {
+            let (r, eng) = decide_480(&clauses, true, incremental, true, 10_000, None);
+            assert_eq!(
+                r,
+                HyperResult::Sat,
+                "incremental={incremental}: the wait settles"
+            );
+            assert!(
+                eng.stats.gen_parked > 0 && eng.stats.gen_unparked > 0,
+                "incremental={incremental}: precondition: a clause was parked and released ({} / {})",
+                eng.stats.gen_parked,
+                eng.stats.gen_unparked
+            );
+            assert_eq!(
+                eng.stats.park_leaf_fallback, 0,
+                "incremental={incremental}: the leaf found a parked clause (predicate and scan disagree)"
+            );
+            assert!(eng.parked.is_empty() && eng.pending_gen.is_empty());
+            assert!(
+                eng.node_count() <= 8,
+                "incremental={incremental}: the model is the two nominals and a successor, not {} nodes",
+                eng.node_count()
+            );
+            let (r_off, _) = decide_480(&clauses, false, incremental, true, 300, None);
+            assert_ne!(
+                r_off,
+                HyperResult::Sat,
+                "incremental={incremental}: without the wait it does not settle (if it now does, \
+                 this test no longer pins #480)"
+            );
+        }
+    }
+
+    /// #480 T2: a parked clause is released by the fixpoint's re-test when a later
+    /// Horn rule closes the disjunction, with no branching. The root builds `s`
+    /// (`C ⊑ {a} ⊔ {b}`, `C ⊑ ∃p.D`), so `s` parks `∃p.D`. Then `s`'s back-
+    /// propagation gives the root `M`, `M ⊑ ∃t.K` builds `k`, `k` gives the root `L`
+    /// over `t⁻`, and `L ⊓ ∃r.⊤` puts `{a}` on `s`. That closes the disjunction, and
+    /// the re-test fires `∃p.D` at `s`.
+    #[test]
+    fn a_horn_closed_nominal_disjunction_releases_the_parked_clause() {
+        let (r, p, t) = (
+            Role::Named(RoleId::new(0)),
+            Role::Named(RoleId::new(1)),
+            Role::Named(RoleId::new(2)),
+        );
+        let (c0, c, d, m, k, l, a, b) = (
+            cls(0),
+            cls(1),
+            cls(2),
+            cls(3),
+            cls(4),
+            cls(5),
+            cls(10),
+            cls(11),
+        );
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Exists(r, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c, X)],
+                head: vec![Atom::Class(a, X), Atom::Class(b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c, X)],
+                head: vec![Atom::Exists(p, d, X)],
+            },
+            DlClause {
+                body: vec![
+                    Atom::Class(c, X),
+                    Atom::Role(Role::Inverse(RoleId::new(0)), X, 1),
+                ],
+                head: vec![Atom::Class(m, 1)],
+            },
+            DlClause {
+                body: vec![Atom::Class(m, X)],
+                head: vec![Atom::Exists(t, k, X)],
+            },
+            DlClause {
+                body: vec![
+                    Atom::Class(k, X),
+                    Atom::Role(Role::Inverse(RoleId::new(2)), X, 1),
+                ],
+                head: vec![Atom::Class(l, 1)],
+            },
+            DlClause {
+                body: vec![Atom::Class(l, X), Atom::Role(r, X, 1)],
+                head: vec![Atom::Class(a, 1)],
+            },
+        ];
+        for incremental in [true, false] {
+            let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None);
+            let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None);
+            assert_eq!(r_on, HyperResult::Sat, "incremental={incremental}");
+            assert_eq!(r_off, HyperResult::Sat, "incremental={incremental}");
+            assert!(
+                on.stats.gen_parked > 0 && on.stats.gen_unparked > 0,
+                "incremental={incremental}: precondition: `s` parked and was released ({} / {})",
+                on.stats.gen_parked,
+                on.stats.gen_unparked
+            );
+            assert_eq!(
+                on.stats.branches_taken, 0,
+                "incremental={incremental}: released by the Horn rule, not by branching"
+            );
+            assert_eq!(on.stats.park_leaf_fallback, 0, "incremental={incremental}");
+            assert_eq!(
+                on.node_count(),
+                off.node_count(),
+                "incremental={incremental}: the parked `∃p.D` fired: `s` has its `p`-successor"
+            );
+        }
+    }
+
+    /// #480 T3, the leaf rule: no `Sat` while a clause is parked. The test seam
+    /// parks the root's `∃r.D` although the search sees no open disjunction, and
+    /// `D ⊑ ⊥` makes the KB unsatisfiable only through that successor. The leaf
+    /// must find the parked clause, fall back to #465 B's order and fire it.
+    /// Without the leaf rule this frame would answer `Sat` (the `debug_assert`
+    /// on `Sat` names it).
+    #[test]
+    fn the_leaf_fires_a_parked_clause_before_sat() {
+        let r = Role::Named(RoleId::new(0));
+        let (c0, d) = (cls(0), cls(1));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Exists(r, d, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(d, X)],
+                head: vec![],
+            },
+        ];
+        for incremental in [true, false] {
+            let (res, eng) = decide_480(&clauses, true, incremental, true, 10_000, Some(HNode(0)));
+            assert_eq!(res, HyperResult::Unsat, "incremental={incremental}");
+            assert_eq!(
+                eng.stats.park_leaf_fallback, 1,
+                "incremental={incremental}: the leaf rule fired once"
+            );
+            assert!(
+                eng.stats.gen_parked > 0,
+                "incremental={incremental}: precondition"
+            );
+        }
+    }
+
+    /// #480 T4: a disjunction with one nominal and one ordinary disjunct
+    /// (`C1 ⊑ {a} ⊔ D`) also parks, and the verdict is unchanged, satisfiable and
+    /// unsatisfiable. In the unsatisfiable variant `{a}` may not have an
+    /// `r1`-successor and `D ⊑ ⊥`.
+    #[test]
+    fn a_mixed_nominal_disjunction_parks_with_the_same_verdict() {
+        let (r0, r1) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (c0, c1, q, d, a) = (cls(0), cls(1), cls(2), cls(3), cls(10));
+        let base = vec![
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Exists(r1, q, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Exists(r0, c0, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Class(c1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c1, X)],
+                head: vec![Atom::Class(a, X), Atom::Class(d, X)],
+            },
+        ];
+        let mut unsat = base.clone();
+        unsat.push(DlClause {
+            body: vec![Atom::Class(d, X)],
+            head: vec![],
+        });
+        unsat.push(DlClause {
+            body: vec![Atom::Class(a, X), Atom::Role(r1, X, 1)],
+            head: vec![],
+        });
+        for (clauses, want) in [(base, HyperResult::Sat), (unsat, HyperResult::Unsat)] {
+            for incremental in [true, false] {
+                let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None);
+                let (r_off, _) = decide_480(&clauses, false, incremental, true, 10_000, None);
+                assert_eq!(r_on, want, "incremental={incremental}");
+                assert_eq!(r_off, want, "incremental={incremental}");
+                assert!(
+                    on.stats.gen_parked > 0,
+                    "incremental={incremental}: precondition"
+                );
+                assert_eq!(on.stats.park_leaf_fallback, 0, "incremental={incremental}");
+            }
+        }
+    }
+
+    /// #480 T6: a parked clause survives a failed branch. The root must be `{a}` or
+    /// `{b}` and has `∃r.E`; an `r`-successor in `E` clashes with either. Each branch
+    /// releases the parked clause and finds the clash, so the KB is unsatisfiable.
+    /// If `restore` lost the parked clause, the second branch would have no
+    /// `r`-successor until the #137 leaf net re-seeded and re-fired it, which would
+    /// hide the loss in the verdict; so the test asserts the net recovered nothing
+    /// (Fable F3). Parking needs the net in incremental mode, so it cannot be off.
+    #[test]
+    fn a_parked_clause_is_restored_with_its_branch() {
+        let r = Role::Named(RoleId::new(0));
+        let (c0, e, a, b) = (cls(0), cls(1), cls(10), cls(11));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Class(a, X), Atom::Class(b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Exists(r, e, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Role(r, X, 1), Atom::Class(e, 1)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X), Atom::Role(r, X, 1), Atom::Class(e, 1)],
+                head: vec![],
+            },
+        ];
+        let (res, eng) = decide_480(&clauses, true, true, true, 10_000, None);
+        assert_eq!(res, HyperResult::Unsat);
+        assert!(
+            eng.stats.gen_parked > 0 && eng.stats.branches_taken >= 2,
+            "precondition: parked before branching on both disjuncts ({} / {})",
+            eng.stats.gen_parked,
+            eng.stats.branches_taken
+        );
+        assert_eq!(
+            eng.stats.reseed_recovered, 0,
+            "the #137 net recovered work: a parked clause was lost on restore"
+        );
+    }
+
+    /// #480 T5: a node that is blocked does not park, even with its nominal
+    /// disjunction open: the search's scan skips blocked nodes, so a parked clause
+    /// there would only be found at the leaf. A chain `C ⊑ ∃r.C`, `C ⊑ E ⊔ {a} ⊔ {b}`
+    /// with `{a}`, `{b}` unsatisfiable: the search picks `E`, and the chain is cut
+    /// by blocking.
+    #[test]
+    fn a_blocked_node_does_not_park() {
+        let r = Role::Named(RoleId::new(0));
+        let (c0, c, e, a, b) = (cls(0), cls(1), cls(2), cls(10), cls(11));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Exists(r, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c, X)],
+                head: vec![Atom::Exists(r, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c, X)],
+                head: vec![Atom::Class(e, X), Atom::Class(a, X), Atom::Class(b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![],
+            },
+        ];
+        for incremental in [true, false] {
+            let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None);
+            let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None);
+            assert_eq!(r_on, HyperResult::Sat, "incremental={incremental}");
+            assert_eq!(r_off, HyperResult::Sat, "incremental={incremental}");
+            assert!(
+                on.stats.gen_parked > 0 && on.stats.blocks_fired > 0,
+                "incremental={incremental}: precondition: a park and a block ({} / {})",
+                on.stats.gen_parked,
+                on.stats.blocks_fired
+            );
+            assert_eq!(
+                on.stats.park_leaf_fallback, 0,
+                "incremental={incremental}: a blocked node's clause was parked and found at the leaf"
+            );
+            assert_eq!(
+                on.node_count(),
+                off.node_count(),
+                "incremental={incremental}"
+            );
+        }
+    }
+
+    /// #480 T5b (Fable F5): parking happens only where a blocked node's skipped
+    /// generation is re-fired later (#376's `blocked_gen` under `nn_guard`, and the
+    /// #137 net in incremental mode). Without them nothing parks, and the search is
+    /// #465 B's.
+    #[test]
+    fn parking_needs_the_blocked_skip_refire() {
+        let clauses = min_939_two_nominal_clauses();
+        let run = |nn_guard: bool, net: bool| {
+            let mut eng = HyperEngine::new(&clauses, cls(0))
+                .with_nominals(10, 2)
+                .with_incremental_fixpoint()
+                .with_reseed_verify(net);
+            eng.generate_last = true;
+            eng.nominal_disj_wait = true;
+            eng.nn_guard = nn_guard;
+            let deadline = Instant::now() + std::time::Duration::from_millis(300);
+            let _ = eng.decide_with_deadline(64, Some(deadline));
+            eng.stats.gen_parked
+        };
+        assert!(run(true, true) > 0, "precondition: the default parks");
+        assert_eq!(run(false, true), 0, "parked without `nn_guard`");
+        assert_eq!(
+            run(true, false),
+            0,
+            "parked without the #137 net (incremental)"
+        );
+    }
+
+    /// #480 T7: a bare `run` (the Horn-only entry point) never parks, so its `Sat`
+    /// keeps its meaning. The seam would park the root's `∃r.D` inside a search.
+    #[test]
+    fn a_bare_run_never_parks() {
+        let r = Role::Named(RoleId::new(0));
+        let (c0, d) = (cls(0), cls(1));
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(c0, X)],
+            head: vec![Atom::Exists(r, d, X)],
+        }];
+        let mut eng = HyperEngine::new(&clauses, c0).with_nominals(10, 2);
+        eng.generate_last = true;
+        eng.nominal_disj_wait = true;
+        eng.park_force = Some(HNode(0));
+        assert_eq!(eng.run(1024), HyperResult::Sat);
+        assert_eq!(eng.stats.gen_parked, 0);
+        assert_eq!(eng.node_count(), 2, "the `∃r.D` successor was built");
     }
 
     /// #465 B cost pin (Fable review of #483): a role-body generating clause

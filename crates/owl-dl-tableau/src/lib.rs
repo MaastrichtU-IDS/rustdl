@@ -6640,6 +6640,20 @@ pub fn wedge_generate_last_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_GENERATE_LAST").is_none_or(|v| v != "0")
 }
 
+/// #480 `RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts): the wedge
+/// half of #473's `RUSTDL_NOMINAL_DISJUNCTION_WAIT`. A generating clause that
+/// #465 B deferred does not fire while its node carries an open disjunction with a
+/// nominal disjunct (`{a} ∨ {b}`, `{a} ∨ D`). It is parked until the search picks a
+/// disjunct or a Horn rule closes the disjunction. Without this, a node that is about
+/// to become `a` or `b` built its successors first; the search then merged it and
+/// moved them, and the moved successor did the same, until the deadline (generated
+/// case 939: `consistent` waited out `RUSTDL_CONSISTENCY_FALLBACK_MS`). Needs
+/// `RUSTDL_WEDGE_GENERATE_LAST`, since only a deferred clause can be parked.
+#[must_use]
+pub fn wedge_nominal_disjunction_wait_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT").is_none_or(|v| v != "0")
+}
+
 /// #355 `RUSTDL_MRV_REFUTED` (default ON, `=0` reverts): when MRV ordering is on, the
 /// wedge branches first on the open disjunction with the fewest VIABLE disjuncts (live
 /// and not already refuted at the binding), then the fewest live ones. Without it a

@@ -1714,15 +1714,18 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 // to `v` (#486) satisfies the role and `v` lacks `¬C`: exactly
                 // `cands.contains(&v)` below. `v` is live, so an entry resolves to
                 // `v` iff it is `v` itself or a redirected node: the raw pass costs
-                // what #515's did, and only a miss looks at redirected entries.
+                // what #515's did, and only a miss looks at redirected entries. The
+                // role is tested last there: `edge_satisfies` is a hierarchy lookup,
+                // dearer than the node load, and testing it first on every entry of
+                // a nominal cost ~23% more instructions on wine than this order did.
                 let v_counts = !self.graph.node(v).has_label(comp)
                     && (wn
                         .neighbours()
                         .any(|(seen, x)| x == v && self.edge_satisfies(seen, *role))
                         || wn.neighbours().any(|(seen, x)| {
-                            self.edge_satisfies(seen, *role)
-                                && self.graph.node(x).is_redirected()
+                            self.graph.node(x).is_redirected()
                                 && self.live_neighbour(x) == Some(v)
+                                && self.edge_satisfies(seen, *role)
                         }));
                 if !v_counts {
                     crate::bump_counter!(self, nmo_label_skipped_v);

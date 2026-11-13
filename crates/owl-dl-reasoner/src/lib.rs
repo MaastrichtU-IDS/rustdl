@@ -6305,9 +6305,12 @@ pub fn query_seeded_first_ms() -> u64 {
         .unwrap_or(QUERY_SEEDED_FIRST_DEFAULT_MS)
 }
 
-/// #510: the default of [`instance_depth_fallback_ms`]. A prior, set before M1
-/// measures it: #510's slowest traced pair needed 4.9 s on the deep probe.
-pub const INSTANCE_DEPTH_FALLBACK_DEFAULT_MS: u64 = 10_000;
+/// #510: the default of [`instance_depth_fallback_ms`]. Set by #510 (2b)'s M1 with a rule
+/// declared before the data: the smallest round budget that decides every census pair the
+/// deep retry decides within 30 s, with at least 2x slack. The slowest, `ore_ont_13113`,
+/// took about 25 s on a quiet core; every other decided retry took under 5 s. Only a retry
+/// that never decides waits the whole budget.
+pub const INSTANCE_DEPTH_FALLBACK_DEFAULT_MS: u64 = 60_000;
 
 /// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (#510): when a single instance query's bounded
 /// probe is cut by the tableau's decision-depth limit (`depth_capped`), the query runs

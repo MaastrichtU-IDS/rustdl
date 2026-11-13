@@ -828,10 +828,10 @@ fn instance_depth_fallback_ms_default_is_pinned() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = "RUSTDL_INSTANCE_DEPTH_FALLBACK_MS";
     let _restore = EnvGuard::unset(key);
-    assert_eq!(owl_dl_reasoner::INSTANCE_DEPTH_FALLBACK_DEFAULT_MS, 10_000);
+    assert_eq!(owl_dl_reasoner::INSTANCE_DEPTH_FALLBACK_DEFAULT_MS, 60_000);
     assert_eq!(
         owl_dl_reasoner::instance_depth_fallback_ms(),
-        10_000,
+        60_000,
         "unset: on"
     );
     #[allow(unsafe_code)]
@@ -844,7 +844,7 @@ fn instance_depth_fallback_ms_default_is_pinned() {
     assert_eq!(with("2500"), 2_500);
     assert_eq!(
         with("later"),
-        10_000,
+        60_000,
         "unparsable falls back to the default"
     );
 }

@@ -100,9 +100,12 @@ impl Drop for Fixture {
     }
 }
 
-/// The wedge budget. The wait decides these inputs in milliseconds; without it the
-/// wedge never settles, so a short budget keeps the OFF arm quick.
-const BUDGET_MS: &str = "2000";
+/// The wedge budgets. The wait decides these inputs in milliseconds, so the ON arm
+/// (and the default) gets a budget a loaded debug build cannot exhaust (Fable C6).
+/// Without the wait the wedge never settles at any budget, so a short one keeps the
+/// OFF arm quick.
+const BUDGET_ON_MS: &str = "20000";
+const BUDGET_OFF_MS: &str = "2000";
 
 /// `rustdl <args>` with no inherited `RUSTDL_*` settings, the wait on or off.
 fn rustdl(args: &[&str], wait: bool) -> Output {
@@ -117,8 +120,12 @@ fn rustdl_with(args: &[&str], wait: Option<bool>) -> Output {
             cmd.env_remove(key);
         }
     }
-    cmd.args(args)
-        .env("RUSTDL_CONSISTENCY_FALLBACK_MS", BUDGET_MS);
+    let budget = if wait == Some(false) {
+        BUDGET_OFF_MS
+    } else {
+        BUDGET_ON_MS
+    };
+    cmd.args(args).env("RUSTDL_CONSISTENCY_FALLBACK_MS", budget);
     if let Some(wait) = wait {
         cmd.env(
             "RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT",

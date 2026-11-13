@@ -6261,6 +6261,9 @@ impl<'c> HyperEngine<'c> {
     /// (with MRV, `best` is `None` only when no candidate was seen). Liveness does
     /// not rest on that match, though: the leaf rule catches any drift.
     fn awaits_nominal_disjunction(&mut self, node: HNode) -> bool {
+        if node.index() >= self.representative.len() {
+            return false;
+        }
         let n = self.resolve(node);
         #[cfg(test)]
         if self.park_force == Some(n) {
@@ -6269,7 +6272,7 @@ impl<'c> HyperEngine<'c> {
         let Some((start, count)) = self.nominals else {
             return false;
         };
-        if n.index() >= self.nodes.len() || self.is_blocked(n) {
+        if n.index() >= self.nodes.len() {
             return false;
         }
         let ix = std::sync::Arc::clone(&self.indexes);
@@ -6306,12 +6309,16 @@ impl<'c> HyperEngine<'c> {
             this.match_body(ci, n)
                 .is_some_and(|bindings| bindings.iter().any(|b| !this.any_head_satisfied(ci, n, b)))
         };
-        base.iter().any(open_here)
+        let open = base.iter().any(open_here)
             || rest
                 .iter()
                 .chain(this.extra_indexes.nonhorn.iter())
                 .filter(|&&(ci, _)| this.has_nominal_disjunct(ci))
-                .any(open_here)
+                .any(open_here);
+        // Blocking last (Fable C1): the answer is the same, and a node with no open
+        // nominal disjunction, which is every node on most nominal pools, pays no
+        // extra `is_blocked` call.
+        open && !self.is_blocked(n)
     }
 
     /// #480: whether disjunctive clause `ci` has a nominal disjunct on `X`.
@@ -8703,7 +8710,9 @@ mod tests {
     }
 
     /// #480: one decide with the wait on or off, in either fixpoint mode, with the
-    /// #137 net on or off. Nominals are classes 10 and 11.
+    /// #137 net on or off, with or without MRV branch ordering (whose candidate scan
+    /// the predicate must match too, Fable C4). Nominals are classes 10 and 11.
+    #[allow(clippy::fn_params_excessive_bools)]
     fn decide_480(
         clauses: &[DlClause],
         wait: bool,
@@ -8711,10 +8720,14 @@ mod tests {
         net: bool,
         budget_ms: u64,
         force: Option<HNode>,
+        mrv: bool,
     ) -> (HyperResult, HyperEngine<'_>) {
         let mut eng = HyperEngine::new(clauses, cls(0)).with_nominals(10, 2);
         if incremental {
             eng = eng.with_incremental_fixpoint();
+        }
+        if mrv {
+            eng = eng.with_mrv_ordering();
         }
         eng = eng.with_reseed_verify(net);
         eng.generate_last = true;
@@ -8732,34 +8745,34 @@ mod tests {
     #[test]
     fn generation_waits_for_an_open_nominal_disjunction() {
         let clauses = min_939_two_nominal_clauses();
-        for incremental in [true, false] {
-            let (r, eng) = decide_480(&clauses, true, incremental, true, 10_000, None);
+        for (incremental, mrv) in [(true, false), (false, false), (true, true), (false, true)] {
+            let (r, eng) = decide_480(&clauses, true, incremental, true, 10_000, None, mrv);
             assert_eq!(
                 r,
                 HyperResult::Sat,
-                "incremental={incremental}: the wait settles"
+                "incremental={incremental} mrv={mrv}: the wait settles"
             );
             assert!(
                 eng.stats.gen_parked > 0 && eng.stats.gen_unparked > 0,
-                "incremental={incremental}: precondition: a clause was parked and released ({} / {})",
+                "incremental={incremental} mrv={mrv}: precondition: a clause was parked and released ({} / {})",
                 eng.stats.gen_parked,
                 eng.stats.gen_unparked
             );
             assert_eq!(
                 eng.stats.park_leaf_fallback, 0,
-                "incremental={incremental}: the leaf found a parked clause (predicate and scan disagree)"
+                "incremental={incremental} mrv={mrv}: the leaf found a parked clause (predicate and scan disagree)"
             );
             assert!(eng.parked.is_empty() && eng.pending_gen.is_empty());
             assert!(
                 eng.node_count() <= 8,
-                "incremental={incremental}: the model is the two nominals and a successor, not {} nodes",
+                "incremental={incremental} mrv={mrv}: the model is the two nominals and a successor, not {} nodes",
                 eng.node_count()
             );
-            let (r_off, _) = decide_480(&clauses, false, incremental, true, 300, None);
+            let (r_off, _) = decide_480(&clauses, false, incremental, true, 300, None, mrv);
             assert_ne!(
                 r_off,
                 HyperResult::Sat,
-                "incremental={incremental}: without the wait it does not settle (if it now does, \
+                "incremental={incremental} mrv={mrv}: without the wait it does not settle (if it now does, \
                  this test no longer pins #480)"
             );
         }
@@ -8826,8 +8839,8 @@ mod tests {
             },
         ];
         for incremental in [true, false] {
-            let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None);
-            let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None);
+            let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None, false);
+            let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None, false);
             assert_eq!(r_on, HyperResult::Sat, "incremental={incremental}");
             assert_eq!(r_off, HyperResult::Sat, "incremental={incremental}");
             assert!(
@@ -8870,7 +8883,15 @@ mod tests {
             },
         ];
         for incremental in [true, false] {
-            let (res, eng) = decide_480(&clauses, true, incremental, true, 10_000, Some(HNode(0)));
+            let (res, eng) = decide_480(
+                &clauses,
+                true,
+                incremental,
+                true,
+                10_000,
+                Some(HNode(0)),
+                false,
+            );
             assert_eq!(res, HyperResult::Unsat, "incremental={incremental}");
             assert_eq!(
                 eng.stats.park_leaf_fallback, 1,
@@ -8919,16 +8940,19 @@ mod tests {
             head: vec![],
         });
         for (clauses, want) in [(base, HyperResult::Sat), (unsat, HyperResult::Unsat)] {
-            for incremental in [true, false] {
-                let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None);
-                let (r_off, _) = decide_480(&clauses, false, incremental, true, 10_000, None);
-                assert_eq!(r_on, want, "incremental={incremental}");
-                assert_eq!(r_off, want, "incremental={incremental}");
+            for (incremental, mrv) in [(true, false), (false, false), (true, true), (false, true)] {
+                let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None, mrv);
+                let (r_off, _) = decide_480(&clauses, false, incremental, true, 10_000, None, mrv);
+                assert_eq!(r_on, want, "incremental={incremental} mrv={mrv}");
+                assert_eq!(r_off, want, "incremental={incremental} mrv={mrv}");
                 assert!(
                     on.stats.gen_parked > 0,
-                    "incremental={incremental}: precondition"
+                    "incremental={incremental} mrv={mrv}: precondition"
                 );
-                assert_eq!(on.stats.park_leaf_fallback, 0, "incremental={incremental}");
+                assert_eq!(
+                    on.stats.park_leaf_fallback, 0,
+                    "incremental={incremental} mrv={mrv}"
+                );
             }
         }
     }
@@ -8962,13 +8986,21 @@ mod tests {
                 head: vec![],
             },
         ];
-        let (res, eng) = decide_480(&clauses, true, true, true, 10_000, None);
+        let (res, eng) = decide_480(&clauses, true, true, true, 10_000, None, false);
         assert_eq!(res, HyperResult::Unsat);
         assert!(
             eng.stats.gen_parked > 0 && eng.stats.branches_taken >= 2,
             "precondition: parked before branching on both disjuncts ({} / {})",
             eng.stats.gen_parked,
             eng.stats.branches_taken
+        );
+        // Released once in each branch, the second time from the restored queue
+        // (Fable C3: the `reseed_recovered` pin alone depends on which net recovers
+        // a loss).
+        assert!(
+            eng.stats.gen_unparked >= 2,
+            "the parked clause was released in only {} branch(es)",
+            eng.stats.gen_unparked
         );
         assert_eq!(
             eng.stats.reseed_recovered, 0,
@@ -9008,25 +9040,33 @@ mod tests {
                 head: vec![],
             },
         ];
-        for incremental in [true, false] {
-            let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None);
-            let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None);
-            assert_eq!(r_on, HyperResult::Sat, "incremental={incremental}");
-            assert_eq!(r_off, HyperResult::Sat, "incremental={incremental}");
+        for (incremental, mrv) in [(true, false), (false, false), (true, true), (false, true)] {
+            let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None, mrv);
+            let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None, mrv);
+            assert_eq!(
+                r_on,
+                HyperResult::Sat,
+                "incremental={incremental} mrv={mrv}"
+            );
+            assert_eq!(
+                r_off,
+                HyperResult::Sat,
+                "incremental={incremental} mrv={mrv}"
+            );
             assert!(
                 on.stats.gen_parked > 0 && on.stats.blocks_fired > 0,
-                "incremental={incremental}: precondition: a park and a block ({} / {})",
+                "incremental={incremental} mrv={mrv}: precondition: a park and a block ({} / {})",
                 on.stats.gen_parked,
                 on.stats.blocks_fired
             );
             assert_eq!(
                 on.stats.park_leaf_fallback, 0,
-                "incremental={incremental}: a blocked node's clause was parked and found at the leaf"
+                "incremental={incremental} mrv={mrv}: a blocked node's clause was parked and found at the leaf"
             );
             assert_eq!(
                 on.node_count(),
                 off.node_count(),
-                "incremental={incremental}"
+                "incremental={incremental} mrv={mrv}"
             );
         }
     }

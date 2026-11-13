@@ -1429,13 +1429,16 @@ pub struct ClauseIndexes {
     built_len: usize,
 }
 
+/// A `nonhorn` index entry: `(clause id, anchor)`.
+type NonHornEntry = (usize, Option<ClassId>);
+
 /// #480: the disjunctive clauses with a nominal disjunct on `X`, for the nominal
 /// range `(start, count)` (see [`ClauseIndexes::nominal_disj`]).
 #[derive(Debug, Clone)]
 struct NominalDisj {
     range: (u32, u32),
-    /// `(clause id, anchor)`, as in `nonhorn`.
-    list: Vec<(usize, Option<ClassId>)>,
+    /// As in `nonhorn`.
+    list: Vec<NonHornEntry>,
 }
 
 /// The clause half of [`HyperEngine::compute_visible_nominals`] for one nominal
@@ -6287,8 +6290,7 @@ impl<'c> HyperEngine<'c> {
                 })
             })
             .filter(|d| d.range == (start, count));
-        let (base, rest): (&[(usize, Option<ClassId>)], &[(usize, Option<ClassId>)]) = match shared
-        {
+        let (base, rest): (&[NonHornEntry], &[NonHornEntry]) = match shared {
             Some(d) => {
                 let cut = ix.nonhorn.partition_point(|&(ci, _)| ci < built);
                 (&d.list, &ix.nonhorn[cut..])
@@ -8702,14 +8704,14 @@ mod tests {
 
     /// #480: one decide with the wait on or off, in either fixpoint mode, with the
     /// #137 net on or off. Nominals are classes 10 and 11.
-    fn decide_480<'a>(
-        clauses: &'a [DlClause],
+    fn decide_480(
+        clauses: &[DlClause],
         wait: bool,
         incremental: bool,
         net: bool,
         budget_ms: u64,
         force: Option<HNode>,
-    ) -> (HyperResult, HyperEngine<'a>) {
+    ) -> (HyperResult, HyperEngine<'_>) {
         let mut eng = HyperEngine::new(clauses, cls(0)).with_nominals(10, 2);
         if incremental {
             eng = eng.with_incremental_fixpoint();
@@ -8770,6 +8772,7 @@ mod tests {
     /// over `t⁻`, and `L ⊓ ∃r.⊤` puts `{a}` on `s`. That closes the disjunction, and
     /// the re-test fires `∃p.D` at `s`.
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn a_horn_closed_nominal_disjunction_releases_the_parked_clause() {
         let (r, p, t) = (
             Role::Named(RoleId::new(0)),
@@ -8979,6 +8982,7 @@ mod tests {
     /// with `{a}`, `{b}` unsatisfiable: the search picks `E`, and the chain is cut
     /// by blocking.
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn a_blocked_node_does_not_park() {
         let r = Role::Named(RoleId::new(0));
         let (c0, c, e, a, b) = (cls(0), cls(1), cls(2), cls(10), cls(11));

@@ -317,7 +317,19 @@ All notable changes to rustdl are documented here. Format is based on
   - M0 census over 1,144 ORE ABox files (probe pin, witness budget 30 s): the pre-check gives a
     model where the 1 s witness does not on 41 files, 7 on the timing cliff (witness 1.2–3.5 s)
     and 34 where the witness stops at the step cap. 24 more files had a witness at 0.3–3 s, so
-    they were exposed to the race. [M2/M3 figures to be filled in]
+    they were exposed to the race.
+  - `ore_ont_5695`, 12 runs in 4 parallel lanes: 0 stalls (main stalled in 6 of 12 under the
+    same layout), and the output equals main's finished-mode output in every run. Interleaved
+    with main given a 30 s witness budget (so main always finishes), the cost is the same
+    (median 63.78 vs 63.70 CPU-s).
+  - Two-arm sweep over the same 1,144 files (120 s CPU cap): 0 changed type sets on the 820
+    files both arms finish; aggregate CPU 0.998× main, no file over 1.5× and +1 s; 4 files
+    finish only with the change (253, 6020, 7188, 13078), none only without it.
+  - Ground truth on the files where the prune now fires for the first time: the witness contains
+    every HermiT-entailed type on 30 files (453,758 pairs, 0 gaps); 210 sampled pruned pairs on
+    7 more were all refuted by `instance` with the prune off; full realizations equal HermiT on
+    6 of the 7 files `realize` finishes, and the seventh's one miss is a per-pair deadline cut
+    (`incomplete: true`; found with a 60 s pair budget).
 
 - **The wedge refutes a disjunct whose `≤1` clashes as it is asserted (#509).** `≤1 r(.C)`
   arises as the NNF of `¬(≥2 r(.C))` when an equivalence's `≥2 … → C` side is clausified. When the

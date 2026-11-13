@@ -97,10 +97,13 @@ Not retried:
   one budget per step; it calls an entry without the retry. `instance` can therefore answer
   "no" where `instances` reports the same pair as `incomplete`, which is sound.
 
-The retry runs at most once per `instance` call; no batch or loop inside rustdl reaches it. One
-call can take up to the retry budget (60 s) longer than it did, plus the #369 lazy check after
-a "yes". A library caller that loops over `is_instance_of*` pays the budget once per call, and
-can turn the retry off with `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`.
+The retry runs at most once per `instance` call; no batch or loop inside rustdl reaches it. A
+call whose retry never decides takes up to the budget (60 s) longer than it did. One whose retry
+answers "yes" just inside the budget also runs the #369 lazy check
+(`RUSTDL_CONSISTENCY_FALLBACK_MS`, 10 s), so the bound is about 70 s over prep. A caller that
+loops over `is_instance_of*` or the CLI pays the budget once per call, and can lower it or turn
+the retry off with `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`. `scripts/cross-command-laws.py` sets
+20 s, below its own 30 s call cap.
 
 **The trigger depends on timing.** The bounded probe is `depth_capped` only when it reaches 32
 cap hits (early abandon) before its 750 ms deadline. Under load, or with `RUSTDL_TRACE=1`, the
@@ -115,8 +118,9 @@ budget:
 - **Under load** (8 lanes), 252 calls changed from `unknown` to "no".
 - **On a quiet core** (3 interleaved reps of each of the 263 depth-cut calls), 253 changed. The
   other 10, all on `ore_ont_13113`, were cut at 10 s; at 30 s they answer "no" in 19.8–26.0
-  CPU-s. The 60 s default is the smallest round budget with at least 2x slack over them, a rule
-  set before the data.
+  CPU-s for the whole call (one run each, quiet core). The 60 s default is the smallest round
+  budget with at least 2x slack over them, a rule set before the data. The budget is
+  wall-clock, so under load these can still be cut (`unknown`, never a wrong answer).
 - HermiT and Konclude both refute every one of these "no" answers, through the
   `ClassAssertion(ObjectComplementOf(C) a)` consistency control. There is no new "yes", no
   changed answer and no lost answer.

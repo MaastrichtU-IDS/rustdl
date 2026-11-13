@@ -97,6 +97,12 @@ REAL = REPO / "ontologies" / "real"
 LAWS_FIX = REPO / "crates" / "owl-dl-cli" / "tests" / "fixtures" / "laws"
 KONCLUDE = REAL / "konclude-input"
 CALL_TIMEOUT_S = 30
+# #510 (2b): `instance` retries a depth-capped probe on the deep path for up to
+# RUSTDL_INSTANCE_DEPTH_FALLBACK_MS (default 60 s), longer than CALL_TIMEOUT_S. Bound the
+# retry below the call cap, so a pair it cannot decide ends as rustdl's own cut (`unknown`)
+# rather than a kill at CALL_TIMEOUT_S, and each depth-capped pair costs at most ~20 s.
+# A value set in the caller's environment wins.
+INSTANCE_RETRY_MS = "20000"
 CLASSIFY_TIMEOUT_S = 60
 PAIR_MS = "1000"
 
@@ -255,6 +261,7 @@ class Runner:
         env = dict(os.environ)
         env.pop("RUSTDL_MAX_NODES", None)
         env.pop("RUSTDL_QUERY_MAX_NODES", None)
+        env.setdefault("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", INSTANCE_RETRY_MS)
         env.update(self.env_extra)
         cmd = ["taskset", "-c", str(self.core), self.binary] + args if self.core is not None \
             else [self.binary] + args

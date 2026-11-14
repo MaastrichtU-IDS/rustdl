@@ -724,7 +724,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     /// #510 (C): how many times the search bottomed out at its depth cap on this
-    /// probe (see the `depth_cap_hits` field). Diagnostic and report-only.
+    /// probe (see the `depth_cap_hits` field). Nothing in the search reads it; the
+    /// reasoner reads it after the probe (and #510 (2b)'s instance retry keys on it).
     #[must_use]
     pub fn depth_cap_hits(&self) -> u64 {
         self.depth_cap_hits
@@ -735,7 +736,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `MAX_SEARCH_DEPTH`; the shallow levels' bottom-outs are not hits of that limit.
     /// It is NOT called when the loop ends before the final level (a non-final
     /// `NodeCap`, or the caller's deadline after a shallow level), so there the count
-    /// still holds shallow hits (documented in `bounded-probe-depth-cap.md`).
+    /// still holds shallow hits (documented in `bounded-probe-depth-cap.md`); on the
+    /// single `instance` query that can trigger #510 (2b)'s deep retry, which is sound.
     pub fn reset_depth_cap_hits(&mut self) -> &mut Self {
         self.depth_cap_hits = 0;
         self

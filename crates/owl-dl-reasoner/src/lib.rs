@@ -7355,7 +7355,8 @@ std::thread_local! {
     /// before its 32nd hit (a loaded or slow host). Unlike `depth_capped`, a larger
     /// budget may also help here, so it is a separate signal. Exclusive with
     /// `PROBE_DEPTH_CAPPED` and with a stall (see [`depth_cap_hit_cause`]). Reset and set
-    /// by `decide_capturing` like `PROBE_DEPTH_CAPPED`; report-only.
+    /// by `decide_capturing` like `PROBE_DEPTH_CAPPED`. Report-only, except that the single
+    /// `instance` query's #510 (2b) deep retry keys on it (`InstanceFlags::depth_cap_hit`).
     static PROBE_DEPTH_CAP_HIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 

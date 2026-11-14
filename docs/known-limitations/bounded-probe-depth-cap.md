@@ -47,10 +47,27 @@ Since #510, the instance-probe surfaces say when the cut was the depth limit and
 Changing the search itself for a single query (no early abandon, a deeper cap, or a
 deadline-free retry) is open and needs the bar below.
 
-What the flag does not see:
-- **Early abandon off** (`RUSTDL_TABLEAU_EARLY_ABANDON=0`). A probe that keeps hitting the cap
-  then runs into its deadline instead, and is reported as a deadline cut, with the advice to
-  raise the timeout, which cannot recover it. Depth-cap hits before a deadline are not tracked.
+**A budget cut after a depth-cap hit (#510 C).** A depth-bound probe can still end on its
+deadline or the node cap before early abandon's 32nd hit: with early abandon off
+(`RUSTDL_TABLEAU_EARLY_ABANDON=0`), or on a loaded or slow host. The same pair can be
+`depth_capped` on a quiet run and a plain deadline cut on a busy one.
+- The tableau counts depth-cap hits on every probe (the deadline-free probe's deeper cap
+  included). The count is report-only.
+- `InstanceFlags::depth_cap_hit` marks a deadline or node-cap cut that had at least one hit.
+- `instance`, `instances` and Python `is_instance_of` then add that
+  `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` may help as well as a larger budget. Both may help here,
+  unlike a `depth_capped` cut.
+- Under iterative deepening (`RUSTDL_TABLEAU_ITERATIVE_DEEPENING=1`, default off) the count is
+  reset when the final level starts, whose cap is at least `MAX_SEARCH_DEPTH`. Two exits
+  leave a shallow level's hits in the count, so the flag can over-attribute there:
+  - a non-final level stops on the node cap (`NodeCap` ends the loop before the final level);
+  - the caller's deadline passes after a shallow level, so the final level never starts.
+  In both, `depth_cap_hit` can be set although `MAX_SEARCH_DEPTH` was never reached.
+
+What the flags do not see:
+- **`depth_cap_hit` on the other surfaces.** `instances-expr`, `realize`, `justify`, `repair` and
+  the other Python calls report a hit-then-budget cut as a plain budget cut (#510 C2).
+  `classify`'s `depth_capped_pairs` does not count it either.
 - **`realize`'s classification step and #388's direct-type checks.** They don't feed
   `Realization::incomplete`, so they don't feed `depth_capped` either. `Realization::depth_capped`
   counts named individuals' probes only, while `InstanceFlags` / `CeInstances` count anonymous

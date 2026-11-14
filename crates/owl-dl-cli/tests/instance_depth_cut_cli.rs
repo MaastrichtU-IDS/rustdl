@@ -69,6 +69,72 @@ impl Fixture {
         Self::write(tag, &src)
     }
 
+    /// #510 (C), F3: like [`Fixture::forall`] but each union's second disjunct is
+    /// `∃s_k.W0`, the head of a 50-class ∃-chain. The first descent takes the
+    /// ∀-disjuncts and hits the depth cap; backtracking into an ∃-disjunct then builds
+    /// the chain, so a small node cap stops the probe right after its first hits
+    /// (measured: `depth0=2`, then the node cap, 0.2 s release / 0.8 s debug).
+    fn node_chain(tag: &str) -> Self {
+        let mut src = String::from(
+            "Prefix(:=<http://example.org/d#>)\nOntology(<http://example.org/d>\n\
+             Declaration(NamedIndividual(:a)) Declaration(Class(:Y)) Declaration(Class(:A))\n\
+             SubClassOf(:X ObjectIntersectionOf(",
+        );
+        for k in 0..280 {
+            write!(
+                src,
+                " ObjectUnionOf(ObjectAllValuesFrom(:r{k} :A) ObjectSomeValuesFrom(:s{k} :W0))"
+            )
+            .unwrap();
+        }
+        src.push_str("))\n");
+        for i in 0..50 {
+            writeln!(
+                src,
+                "SubClassOf(:W{i} ObjectSomeValuesFrom(:p :W{}))",
+                i + 1
+            )
+            .unwrap();
+        }
+        src.push_str("ClassAssertion(:X :a)\n)\n");
+        Self::write(tag, &src)
+    }
+
+    /// #510 (C), F4: a pigeonhole forced only under `¬Y`: 9 pigeons, 8 holes. `a : Y`
+    /// keeps the KB consistent, and the probe `{a} ⊓ ¬Y` must refute all 8⁹ placements.
+    /// Its decision depth is at most 9 by construction, so it never hits the depth cap
+    /// (measured `depth0=0`) and the default 750 ms deadline cuts it: a budget cut with
+    /// no depth-limit hit, whatever the host's speed. Never run it deadline-free: it
+    /// does not finish.
+    fn pigeonhole(tag: &str) -> Self {
+        const HOLES: usize = 8;
+        let p = |i: usize, j: usize| format!(":P{i}_{j}");
+        let mut src = String::from(
+            "Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\nPrefix(:=<http://example.org/d#>)\n\
+             Ontology(<http://example.org/d>\n\
+             Declaration(NamedIndividual(:a)) Declaration(Class(:Y)) Declaration(Class(:X))\n",
+        );
+        let holes = |i: usize| (0..HOLES).map(|j| p(i, j)).collect::<Vec<_>>().join(" ");
+        for i in 0..HOLES {
+            writeln!(src, "SubClassOf(:X ObjectUnionOf({}))", holes(i)).unwrap();
+        }
+        writeln!(
+            src,
+            "SubClassOf(owl:Thing ObjectUnionOf(:Y {}))",
+            holes(HOLES)
+        )
+        .unwrap();
+        for j in 0..HOLES {
+            for i in 0..=HOLES {
+                for k in i + 1..=HOLES {
+                    writeln!(src, "DisjointClasses({} {})", p(i, j), p(k, j)).unwrap();
+                }
+            }
+        }
+        src.push_str("ClassAssertion(:X :a)\n)\n");
+        Self::write(tag, &src)
+    }
+
     fn write(tag: &str, src: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "rustdl-instance-depth-cut-{}-{tag}.ofn",
@@ -144,6 +210,8 @@ fn a_depth_cut_instance_probe_names_the_limit_and_the_advice_that_helps() {
         "no advice to raise a budget that cannot recover a depth cut: {}",
         r.stderr
     );
+    // #510 (C): a depth cut is not also reported as a hit before a budget cut.
+    assert!(!r.stderr.contains("may help as well"), "{}", r.stderr);
 
     // The advice is right: the deadline-free probe answers the same query.
     let r = run(
@@ -164,18 +232,14 @@ fn a_depth_cut_instance_probe_names_the_limit_and_the_advice_that_helps() {
 
 #[test]
 fn a_deadline_cut_instance_probe_is_not_reported_as_a_depth_cut() {
-    // Early abandon off and a 1 ms per-pair deadline: the plain 280-union never exhausts
-    // (every branch hits the cap and backtracks), so the probe always ends on the
-    // deadline. The cut is NOT depth-capped and is reported as a deadline or node-cap
-    // cut. The budget advice that comes with it cannot recover this fixture, which keeps
-    // hitting the depth cap whatever the deadline: with early abandon off, depth-cap hits
-    // before a deadline are not tracked (docs/known-limitations/bounded-probe-depth-cap.md).
-    let f = Fixture::new("deadline");
+    // The pigeonhole (F4) at the default deadline: an exponential search whose decision
+    // depth stays far below the cap, so the deadline cuts it with no depth-limit hit at
+    // all, on any host. It is reported as a plain deadline or node-cap cut, with neither
+    // #510's depth wording nor #510 (C)'s hit clause. (Before #510 C this used the
+    // 280-union at 1 ms with early abandon off, which now reports the hits it makes.)
+    let f = Fixture::pigeonhole("deadline");
     let p = f.path();
-    let env = [
-        ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
-        ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "1"),
-    ];
+    let env: [(&str, &str); 0] = [];
     let r = run(&env, &["instance", p, Y, A]);
     assert_eq!(r.code, 3, "{}\n{}", r.stdout, r.stderr);
     assert!(
@@ -200,6 +264,108 @@ fn a_deadline_cut_instance_probe_is_not_reported_as_a_depth_cut() {
         r.stderr
     );
     assert!(!r.stderr.contains("decision-depth limit"), "{}", r.stderr);
+}
+
+/// A labelled case: its name, the fixture path and the `RUSTDL_*` settings.
+type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>);
+
+/// #510 (C): a deadline or the node cap cut the probe after it had hit the depth cap
+/// (F1: early abandon armed but never latching; F2: early abandon off; F3: a node-cap
+/// stop). The budget wording stays, and the hit clause adds that `=0` may help too.
+/// The first hit comes within ~0.4 CPU-s of a debug process's start (parse included),
+/// far inside the 10 s deadline, with margin for slow, loaded CI runners.
+#[test]
+fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
+    let f = Fixture::forall("hit", false);
+    let n = Fixture::node_chain("hit-nodes");
+    let cases: [Case<'_>; 3] = [
+        (
+            "F1 armed, not latched",
+            f.path(),
+            vec![
+                ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000"),
+                ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
+            ],
+        ),
+        (
+            "F2 early abandon off",
+            f.path(),
+            vec![
+                ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
+                ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
+            ],
+        ),
+        (
+            "F3 node cap after a hit",
+            n.path(),
+            vec![
+                ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000"),
+                ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", LONG_DEADLINE_MS),
+                ("RUSTDL_QUERY_MAX_NODES", "20"),
+            ],
+        ),
+    ];
+    for (case, p, env) in &cases {
+        let t = Instant::now();
+        let r = run(env, &["instance", p, Y, A]);
+        if case.starts_with("F3") {
+            // Far inside the 60 s deadline: the node cap ended it.
+            assert!(
+                t.elapsed() < Duration::from_secs(30),
+                "[{case}] {:?}",
+                t.elapsed()
+            );
+        }
+        assert_eq!(r.code, 3, "[{case}] {}\n{}", r.stdout, r.stderr);
+        assert_eq!(r.stdout.trim(), "unknown", "[{case}]");
+        assert!(
+            r.stderr
+                .contains("instance probe was cut (deadline or node cap)"),
+            "[{case}] {}",
+            r.stderr
+        );
+        assert!(
+            r.stderr
+                .contains("It had hit the tableau's decision-depth limit")
+                && r.stderr.contains("may help as well as a larger budget"),
+            "[{case}] {}",
+            r.stderr
+        );
+        assert!(
+            !r.stderr.contains("does not help"),
+            "[{case}] not the depth_capped wording: {}",
+            r.stderr
+        );
+
+        let r = run(env, &["instances", p, Y]);
+        assert_eq!(r.code, 0, "[{case}] {}\n{}", r.stdout, r.stderr);
+        assert!(
+            r.stderr
+                .contains("at least one instance probe was cut (deadline or node cap)")
+                && r.stderr
+                    .contains("had hit the tableau's decision-depth limit")
+                && r.stderr.contains("may help as well"),
+            "[{case}] {}",
+            r.stderr
+        );
+        assert!(!r.stderr.contains("does not help"), "[{case}] {}", r.stderr);
+    }
+}
+
+/// #510 (C) is report-only and leaves classify alone: a classify pair probe cut by its
+/// deadline after depth-cap hits (F1's setting) is a plain timed-out pair, not one of
+/// #424's `depth_capped_pairs`, whose banner says a larger budget does not help.
+#[test]
+fn classify_does_not_count_a_depth_cap_hit_as_a_depth_cut() {
+    let f = Fixture::forall("classify-hit", false);
+    let env = [("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000")];
+    let r = run(&env, &["classify", "--pair-timeout-ms", "10000", f.path()]);
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    assert!(r.stderr.contains("INCOMPLETE"), "a cut pair: {}", r.stderr);
+    assert!(!r.stderr.contains("search-depth limit"), "{}", r.stderr);
+    // Control: at the default early abandon the same pair IS depth-capped.
+    let r = run(&[], &["classify", "--pair-timeout-ms", "10000", f.path()]);
+    assert!(r.stderr.contains("search-depth limit"), "{}", r.stderr);
 }
 
 /// The depth wording of the list surfaces (`warn_probes_cut`).

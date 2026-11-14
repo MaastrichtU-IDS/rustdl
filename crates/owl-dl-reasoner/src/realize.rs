@@ -271,6 +271,17 @@ pub struct InstanceFlags {
     /// over every individual's probe, anonymous individuals' too (as `incomplete` is
     /// there); [`Realization::depth_capped`] counts named individuals only.
     pub depth_capped: bool,
+    /// #510 (C): a cut probe hit the decision-depth limit at least once, and then a
+    /// deadline or the node cap ended it (`depth_capped` is the case where the limit
+    /// itself ended it). This is what a depth-bound probe reports when early abandon
+    /// is off (`RUSTDL_TABLEAU_EARLY_ABANDON=0`) or when the deadline comes before
+    /// early abandon's 32nd hit, as on a loaded host. Both a larger budget and the
+    /// deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) may recover the cut.
+    /// Never set together with `depth_capped` or `no_verdict` on the same probe.
+    /// Report-only: implies `incomplete`, changes no answer. On `instances` it is
+    /// OR-ed over every individual's probe, as `depth_capped` is, so a list can carry
+    /// both. Not yet on `realize`, `instances-expr`, `justify` or `repair` (#510 C2).
+    pub depth_cap_hit: bool,
 }
 
 /// [`is_instance_of`] plus its [`InstanceFlags`] (#73, #369).
@@ -426,6 +437,7 @@ pub fn is_instance_of_reporting_internal(
             // stall after a "yes".
             no_verdict: probe.no_verdict || lazy.no_verdict,
             depth_capped: probe.depth_capped,
+            depth_cap_hit: probe.depth_cap_hit,
         },
     ))
 }
@@ -574,12 +586,17 @@ fn instance_check_reporting(
             // sound answer is "not an instance" AND the result is truncated.
             Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
             // #510: an early abandon is `Ok(None)` too; #288's flag tells it apart.
-            Ok(None) => Ok(InstanceProbe::cut(false, crate::last_probe_depth_capped())),
+            Ok(None) => Ok(InstanceProbe::cut(
+                false,
+                crate::last_probe_depth_capped(),
+                crate::last_probe_depth_cap_hit(),
+            )),
             // A depth-limit bail — also no verdict, also truncated. #493: a stalled
             // probe's `NoVerdict` is #475's likely-bug signal; a depth cut is not.
             Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(
                 crate::no_verdict_is_a_bug(Some(deadline)),
                 crate::last_probe_depth_capped(),
+                crate::last_probe_depth_cap_hit(),
             )),
             Err(e) => Err(e),
         },
@@ -589,10 +606,16 @@ fn instance_check_reporting(
         // takes the sound default ("not an instance", truncated) and reports the signal.
         None => match prepared.decide_raw(build) {
             Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
-            Ok(None) => Ok(InstanceProbe::cut(false, crate::last_probe_depth_capped())),
-            Err(ReasonError::NoVerdict) => {
-                Ok(InstanceProbe::cut(true, crate::last_probe_depth_capped()))
-            }
+            Ok(None) => Ok(InstanceProbe::cut(
+                false,
+                crate::last_probe_depth_capped(),
+                crate::last_probe_depth_cap_hit(),
+            )),
+            Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(
+                true,
+                crate::last_probe_depth_capped(),
+                crate::last_probe_depth_cap_hit(),
+            )),
             Err(e) => Err(e),
         },
     }
@@ -606,7 +629,10 @@ fn instance_check_reporting(
 /// stalled), never a plain depth cut, deadline or node cap. `no_verdict` implies `cut`.
 /// `depth_capped` (#510) means the cut was the decision-depth limit, directly or through
 /// early abandon (#288), read from `last_probe_depth_capped` right after the probe on
-/// the same thread. It implies `cut` and excludes `no_verdict`.
+/// the same thread. It implies `cut` and excludes `no_verdict`. `depth_cap_hit`
+/// (#510 C) means the probe hit that limit at least once before a deadline or the
+/// node cap cut it (`last_probe_depth_cap_hit`); it implies `cut` and excludes both
+/// `no_verdict` and `depth_capped`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 struct InstanceProbe {
@@ -614,6 +640,7 @@ struct InstanceProbe {
     cut: bool,
     no_verdict: bool,
     depth_capped: bool,
+    depth_cap_hit: bool,
 }
 
 impl InstanceProbe {
@@ -623,10 +650,11 @@ impl InstanceProbe {
             cut: false,
             no_verdict: false,
             depth_capped: false,
+            depth_cap_hit: false,
         }
     }
 
-    fn cut(no_verdict: bool, depth_capped: bool) -> Self {
+    fn cut(no_verdict: bool, depth_capped: bool, depth_cap_hit: bool) -> Self {
         Self {
             is_instance: false,
             cut: true,
@@ -635,6 +663,10 @@ impl InstanceProbe {
             // deadline-free probe the depth cap is the signal, and advising that probe
             // again would be wrong.
             depth_capped: depth_capped && !no_verdict,
+            // #510 (C): one cause per cut. `decide_capturing` already keeps the hit
+            // apart from a depth cap and a stall; this keeps it apart from the
+            // deadline-free probe's `NoVerdict` too.
+            depth_cap_hit: depth_cap_hit && !no_verdict && !depth_capped,
         }
     }
 }
@@ -834,6 +866,8 @@ pub fn instances_of_reporting_internal(
     let mut no_verdict = false;
     // #510: sticky likewise: some cut probe hit the decision-depth limit.
     let mut depth_capped = false;
+    // #510 (C): sticky likewise: some probe hit it, then a budget cut it.
+    let mut depth_cap_hit = false;
     let mut any_member = false;
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
@@ -854,6 +888,7 @@ pub fn instances_of_reporting_internal(
         incomplete |= probe.cut;
         no_verdict |= probe.no_verdict;
         depth_capped |= probe.depth_capped;
+        depth_cap_hit |= probe.depth_cap_hit;
         any_member |= probe.is_instance;
         if probe.is_instance {
             let iri = internal.vocabulary.individual_iri(individual_id);
@@ -874,6 +909,7 @@ pub fn instances_of_reporting_internal(
             consistency_undetermined: lazy.undetermined,
             no_verdict: no_verdict || lazy.no_verdict,
             depth_capped,
+            depth_cap_hit,
         },
     ))
 }
@@ -2134,12 +2170,33 @@ mod tests {
     /// `record_cut_probe` keeps the two apart the same way), and a plain cut keeps the cause.
     #[test]
     fn a_cut_probe_s_depth_flag_excludes_no_verdict() {
-        let p = InstanceProbe::cut(true, true);
+        let p = InstanceProbe::cut(true, true, false);
         assert!(p.cut && p.no_verdict && !p.depth_capped, "{p:?}");
-        let p = InstanceProbe::cut(false, true);
+        let p = InstanceProbe::cut(false, true, false);
         assert!(p.cut && !p.no_verdict && p.depth_capped, "{p:?}");
-        let p = InstanceProbe::cut(false, false);
+        let p = InstanceProbe::cut(false, false, false);
         assert!(p.cut && !p.no_verdict && !p.depth_capped, "{p:?}");
+    }
+
+    /// #510 (C): a cut has at most one cause among `no_verdict`, `depth_capped` and
+    /// `depth_cap_hit`, and a hit alone is reported as one.
+    #[test]
+    fn a_cut_probe_s_depth_cap_hit_is_its_only_cause() {
+        for no_verdict in [false, true] {
+            for depth_capped in [false, true] {
+                for hit in [false, true] {
+                    let p = InstanceProbe::cut(no_verdict, depth_capped, hit);
+                    let causes = [p.no_verdict, p.depth_capped, p.depth_cap_hit];
+                    assert!(p.cut && causes.iter().filter(|&&c| c).count() <= 1, "{p:?}");
+                    assert_eq!(
+                        p.depth_cap_hit,
+                        hit && !no_verdict && !depth_capped,
+                        "{p:?}"
+                    );
+                }
+            }
+        }
+        assert!(!InstanceProbe::decided(false).depth_cap_hit);
     }
 
     /// #510: realize folds each individual's probe cuts so that `depth_capped` counts
@@ -2155,9 +2212,9 @@ mod tests {
             r
         };
         let decided = InstanceProbe::decided(false);
-        let depth = InstanceProbe::cut(false, true);
-        let deadline = InstanceProbe::cut(false, false);
-        let bug = InstanceProbe::cut(true, true);
+        let depth = InstanceProbe::cut(false, true, false);
+        let deadline = InstanceProbe::cut(false, false, false);
+        let bug = InstanceProbe::cut(true, true, false);
         let rows = [
             row(&[]),
             row(&[decided]),
@@ -2255,6 +2312,32 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 (PairVerdict::Refuted, false)
             );
         }
+    }
+
+    /// #510 (C), Σ7: `decide_capturing` clears this thread's `depth_cap_hit` before its
+    /// fast exit, so a probe whose deadline was already spent never reports the previous
+    /// probe's hit. The stale value is planted directly: no fixture can order a hit probe
+    /// and an expired-deadline probe on one rayon worker deterministically.
+    #[test]
+    fn an_expired_deadline_probe_does_not_report_the_previous_probe_s_hit() {
+        let internal = convert_ontology(&parse(&format!(
+            "{HEADER}Ontology(<http://rustdl.test/t>\n\
+             Declaration(Class(:C)) Declaration(Class(:D))\n)\n"
+        )))
+        .expect("convert");
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepare");
+        let c = internal.vocabulary.class_id(&iri("C")).expect("C");
+        crate::PROBE_DEPTH_CAP_HIT.with(|h| h.set(true));
+        let now = std::time::Instant::now();
+        let spent = now
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or(now);
+        let r = prepared.decide_with_deadline(spent, move |pool| pool.atomic(c));
+        assert!(matches!(r, Ok(None)), "the fast exit: {r:?}");
+        assert!(
+            !crate::last_probe_depth_cap_hit(),
+            "a stale hit survived the probe"
+        );
     }
 
     #[test]

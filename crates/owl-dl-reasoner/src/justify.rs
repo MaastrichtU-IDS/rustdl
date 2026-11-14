@@ -2,13 +2,15 @@
 //! found by re-checking subsets of the ontology's axioms via the public
 //! reasoner API. No engine internals.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 
 use horned_owl::model::{
-    Build, Class, ClassExpression, Component, DataProperty, DataPropertyAssertion,
-    DifferentIndividuals, EquivalentClasses, ForIRI, Individual, Literal, MutableOntology,
-    NegativeDataPropertyAssertion, NegativeObjectPropertyAssertion, ObjectProperty,
-    ObjectPropertyAssertion, ObjectPropertyExpression, SameIndividual, SubObjectPropertyExpression,
+    Build, Class, ClassExpression, Component, DataProperty, DataPropertyAssertion, DeclareClass,
+    DeclareNamedIndividual, DifferentIndividuals, EquivalentClasses, ForIRI, Individual, Literal,
+    MutableOntology, NegativeDataPropertyAssertion, NegativeObjectPropertyAssertion,
+    ObjectProperty, ObjectPropertyAssertion, ObjectPropertyExpression, SameIndividual,
+    SubObjectPropertyExpression,
 };
 use horned_owl::ontology::set::SetOntology;
 
@@ -926,6 +928,125 @@ pub fn ontology_from<A: ForIRI>(fixed: &[Component<A>], subset: &[Component<A>])
     o
 }
 
+/// #520: the kind of entity a query looks up by IRI in each probed ontology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LookedUp {
+    Class,
+    Individual,
+}
+
+/// #520: the query's entities that the oracle looks up by IRI, in the order main
+/// reports a missing one (an instance query resolves its class first; a subclass
+/// query its sub first, #409). Only these positions can fail a lookup: the other
+/// kinds probe through axioms that mention their entities.
+fn looked_up_entities(q: &Entailment) -> Vec<(LookedUp, &str)> {
+    use LookedUp::{Class, Individual};
+    match q {
+        Entailment::InstanceOf { individual, class } => {
+            vec![(Class, class.as_str()), (Individual, individual.as_str())]
+        }
+        Entailment::SubClassOf { sub, sup } => vec![(Class, sub.as_str()), (Class, sup.as_str())],
+        Entailment::EquivalentClasses { a, b } => vec![(Class, a.as_str()), (Class, b.as_str())],
+        Entailment::Unsatisfiable { class } => vec![(Class, class.as_str())],
+        _ => Vec::new(),
+    }
+}
+
+/// #520: the looked-up entities that `fixed` does not declare (built-in classes
+/// never need one: they resolve to `⊤`/`⊥`, #427).
+fn undeclared_lookups<'q, A: ForIRI>(
+    fixed: &[Component<A>],
+    q: &'q Entailment,
+) -> Vec<(LookedUp, &'q str)> {
+    looked_up_entities(q)
+        .into_iter()
+        .filter(|&(kind, iri)| {
+            !(kind == LookedUp::Class && owl_dl_core::convert::is_builtin_class_iri(iri))
+        })
+        .filter(|&(kind, iri)| {
+            !fixed.iter().any(|c| match (kind, c) {
+                (LookedUp::Class, Component::DeclareClass(d)) => d.0.0.as_ref() == iri,
+                (LookedUp::Individual, Component::DeclareNamedIndividual(d)) => {
+                    d.0.0.as_ref() == iri
+                }
+                _ => false,
+            })
+        })
+        .collect()
+}
+
+/// #520: declarations for the undeclared looked-up entities, so that every subset
+/// the search builds still has them. Declarations are non-logical: a subset then
+/// treats a missing entity as the fresh symbol it is, by the reasoner's own
+/// semantics, instead of failing the lookup. An entity the full ontology does not
+/// have, by kind, is main's error (`UnknownClass` / `UnknownIndividual`), in main's
+/// order. With no vocabulary (the full ontology did not convert) nothing is added,
+/// as on main.
+fn declarations_for<A: ForIRI>(
+    missing: &[(LookedUp, &str)],
+    vocabulary: Option<&owl_dl_core::Vocabulary>,
+) -> Result<Vec<Component<A>>, ReasonError> {
+    let Some(vocabulary) = vocabulary else {
+        return Ok(Vec::new());
+    };
+    let build: Build<A> = Build::new();
+    let mut out = Vec::with_capacity(missing.len());
+    for &(kind, iri) in missing {
+        match kind {
+            LookedUp::Class => {
+                if vocabulary.class_id(iri).is_none() {
+                    return Err(ReasonError::UnknownClass(iri.to_owned()));
+                }
+                out.push(Component::DeclareClass(DeclareClass(build.class(iri))));
+            }
+            LookedUp::Individual => {
+                if vocabulary.individual_id(iri).is_none() {
+                    return Err(ReasonError::UnknownIndividual(iri.to_owned()));
+                }
+                out.push(Component::DeclareNamedIndividual(DeclareNamedIndividual(
+                    build.named_individual(iri),
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `fixed` plus `declarations`, borrowed when there are none.
+fn with_declarations<A: ForIRI>(
+    fixed: &[Component<A>],
+    declarations: Vec<Component<A>>,
+) -> Cow<'_, [Component<A>]> {
+    if declarations.is_empty() {
+        Cow::Borrowed(fixed)
+    } else {
+        let mut v = fixed.to_vec();
+        v.extend(declarations);
+        Cow::Owned(v)
+    }
+}
+
+/// #520: the background a one-shot query searches with. The full ontology is
+/// converted only when a looked-up entity is undeclared, so a fully declared
+/// ontology takes exactly main's path.
+fn query_background<'f, A: ForIRI>(
+    fixed: &'f [Component<A>],
+    all_candidates: &[Component<A>],
+    q: &Entailment,
+) -> Result<Cow<'f, [Component<A>]>, ReasonError> {
+    let missing = undeclared_lookups(fixed, q);
+    if missing.is_empty() {
+        return Ok(Cow::Borrowed(fixed));
+    }
+    let vocabulary = owl_dl_core::convert::convert_ontology(&ontology_from(fixed, all_candidates))
+        .ok()
+        .map(|internal| internal.vocabulary);
+    Ok(with_declarations(
+        fixed,
+        declarations_for(&missing, vocabulary.as_ref())?,
+    ))
+}
+
 const OWL_THING: &str = "http://www.w3.org/2002/07/owl#Thing";
 const OWL_NOTHING: &str = "http://www.w3.org/2002/07/owl#Nothing";
 
@@ -1583,6 +1704,9 @@ pub struct PreparedJustifier<A: ForIRI> {
     fixed: Vec<Component<A>>,
     all_candidates: Vec<Component<A>>,
     fragment: FragmentClassification,
+    /// #520: the full ontology's vocabulary (`None` if it did not convert), for the
+    /// typed check of a query's undeclared entities ([`Self::background_for`]).
+    vocabulary: Option<owl_dl_core::Vocabulary>,
 }
 
 impl<A: ForIRI> PreparedJustifier<A> {
@@ -1590,18 +1714,40 @@ impl<A: ForIRI> PreparedJustifier<A> {
     #[must_use]
     pub fn prepare(onto: &SetOntology<A>) -> Self {
         let (fixed, all_candidates) = logical_axioms(onto);
-        let fragment = fragment_of(onto);
+        // One conversion for both the fragment and #520's vocabulary.
+        let internal = owl_dl_core::convert::convert_ontology(onto).ok();
+        let fragment = internal
+            .as_ref()
+            .map_or(FragmentClassification::OutOfFragment, analyze_fragment);
+        let vocabulary = internal.map(|internal| internal.vocabulary);
         Self {
             fixed,
             all_candidates,
             fragment,
+            vocabulary,
         }
     }
 
-    /// The non-logical background (declarations, imports, ontology metadata) —
-    /// never part of a justification, always part of the reasoned-over ontology.
-    pub(crate) fn background(&self) -> &[Component<A>] {
-        &self.fixed
+    /// The non-logical background (declarations, imports, ontology metadata) for
+    /// `q`: never part of a justification, always part of the reasoned-over
+    /// ontology. #520: plus a declaration for each of `q`'s looked-up entities the
+    /// ontology uses but does not declare, so that no subset loses one. Every subset
+    /// builder (the searches, repair verification, laconic weakening) takes this.
+    ///
+    /// # Errors
+    /// `UnknownClass` / `UnknownIndividual` for an entity the ontology does not have.
+    pub(crate) fn background_for(
+        &self,
+        q: &Entailment,
+    ) -> Result<Cow<'_, [Component<A>]>, ReasonError> {
+        let missing = undeclared_lookups(&self.fixed, q);
+        if missing.is_empty() {
+            return Ok(Cow::Borrowed(&self.fixed));
+        }
+        Ok(with_declarations(
+            &self.fixed,
+            declarations_for(&missing, self.vocabulary.as_ref())?,
+        ))
     }
 
     /// Every logical axiom: the candidate pool a justification is drawn from.
@@ -1624,7 +1770,8 @@ impl<A: ForIRI> PreparedJustifier<A> {
     /// # Errors
     /// Propagates [`ReasonError`].
     pub fn find_one_reporting(&self, q: &Entailment) -> Result<JustifyOutcome<A>, ReasonError> {
-        Ok(search_one(&self.fixed, &self.all_candidates, q)?.into_outcome(|| self.fragment))
+        let fixed = self.background_for(q)?;
+        Ok(search_one(&fixed, &self.all_candidates, q)?.into_outcome(|| self.fragment))
     }
 
     /// Up to `max` minimal justifications for `q`, reusing the prepared state.
@@ -1650,7 +1797,8 @@ impl<A: ForIRI> PreparedJustifier<A> {
         q: &Entailment,
         max: usize,
     ) -> Result<JustifyOutcome<A>, ReasonError> {
-        Ok(search_all(&self.fixed, &self.all_candidates, q, max)?.into_outcome(|| self.fragment))
+        let fixed = self.background_for(q)?;
+        Ok(search_all(&fixed, &self.all_candidates, q, max)?.into_outcome(|| self.fragment))
     }
 }
 
@@ -1868,6 +2016,7 @@ pub fn find_one_justification_reporting<A: ForIRI>(
     q: &Entailment,
 ) -> Result<JustifyOutcome<A>, ReasonError> {
     let (fixed, all_candidates) = logical_axioms(onto);
+    let fixed = query_background(&fixed, &all_candidates, q)?;
     // The fragment is classified only if there is a justification to label. (A
     // [`PreparedJustifier`] amortizes it instead — a single query cannot.)
     Ok(search_one(&fixed, &all_candidates, q)?.into_outcome(|| fragment_of(onto)))
@@ -1932,6 +2081,7 @@ pub fn find_all_justifications_reporting<A: ForIRI>(
     max: usize,
 ) -> Result<JustifyOutcome<A>, ReasonError> {
     let (fixed, all_candidates) = logical_axioms(onto);
+    let fixed = query_background(&fixed, &all_candidates, q)?;
     Ok(search_all(&fixed, &all_candidates, q, max)?.into_outcome(|| fragment_of(onto)))
 }
 

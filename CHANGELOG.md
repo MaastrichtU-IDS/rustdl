@@ -295,6 +295,26 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`justify`, `repair` and `report` answer queries whose class or individual has no
+  `Declaration` (#520).** Before, the search aborted with "class IRI not in ontology" or
+  "individual IRI not in ontology" whenever it tested a subset of the axioms that left the
+  entity out. No ORE file declares its individuals, so this was every entailed `instance`
+  query there.
+  - **The fix:** the search declares the query's looked-up entities for the duration of the
+    query: the classes of `instance`, `subclass`, `equivalent` and `unsat`, and `instance`'s
+    individual. Declarations are non-logical, so a subset treats a missing entity as the fresh
+    symbol it is. For example, `⊤ ⊑ Y` alone now justifies `a : Y`.
+  - **Covered:** `justify`, `justify --all`, `repair` and `report`, the API
+    (`find_*_justification*`, `find_repairs*`, laconic, `PreparedJustifier`) and Python.
+  - **Unchanged:** the other query kinds (property assertions, sub/equivalent/disjoint
+    properties, `disjoint`, `same`, `different` and the data-property kinds) never failed
+    this way. A fully declared ontology takes the same path as before.
+  - **User-visible change:** an entity that is in the ontology but outside the query's
+    ⊥-module (no axiom connects it to the query) used to fail with "… IRI not in ontology"
+    even on a non-entailed query. It now answers "not entailed". An IRI the ontology does not
+    have as that kind (a typo, a property used as a class, a class used as an individual) is
+    still that error, in the same order: an `instance` query reports its class first, a
+    `subclass` query its sub.
 - **`realize` no longer races a 1 s wall-clock budget for its pseudo-model witness, which made
   `ore_ont_5695` flip between a one-minute and a 20-minute-plus run (#430).** Realize's pseudo-model witness (the model whose types let it skip most per-pair
   `{a} ⊓ ¬C` probes) was built in a second wedge run under a 1000 ms wall-clock budget. On

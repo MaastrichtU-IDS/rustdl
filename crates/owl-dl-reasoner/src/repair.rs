@@ -132,7 +132,9 @@ pub fn find_repairs_prepared<A: ForIRI>(
     candidates.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
 
     // Verify each candidate by removing it and re-checking the entailment.
-    let (fixed, logical) = (prepared.background(), prepared.logical());
+    // #520: the same per-query background the search used (declarations included).
+    let fixed = prepared.background_for(q)?;
+    let (fixed, logical) = (&*fixed, prepared.logical());
     // Each check runs on a subset of the prepared ontology, so it can inherit
     // the parent's single-query consistency verdict (#401).
     let _consistency = crate::justify::inherited_query_consistency(fixed, logical, q);

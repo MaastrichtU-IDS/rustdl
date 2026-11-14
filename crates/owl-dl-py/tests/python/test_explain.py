@@ -1,4 +1,6 @@
 """Tests for the Python explanation/debugging surface + materialize re-exports."""
+import pytest
+
 import rustdl
 
 BROKEN = """Prefix(:=<http://ex/#>)
@@ -113,3 +115,31 @@ Ontology(
 """)
     triples = rustdl.materialize_inferred_property_assertions(p)
     assert ("http://ex/#a", "http://ex/#hasAncestor", "http://ex/#b") in triples
+
+
+# #520: justify / repair on a query whose class or individual has no Declaration used to
+# raise "IRI not in ontology" when the search tested a subset without the entity's axioms.
+UNDECLARED = """Prefix(:=<http://ex/#>)
+Ontology(<http://ex/o>
+SubClassOf(:A :B)
+SubClassOf(:B :C)
+ClassAssertion(:A :a)
+)
+"""
+
+
+def test_justify_and_repair_an_undeclared_instance_query(tmp_path):
+    p = _write(tmp_path, UNDECLARED)
+    q = ["instance", "http://ex/#a", "http://ex/#C"]
+    ax = rustdl.justify(p, q)
+    assert len(ax) == 3, ax
+    assert len(rustdl.repair(p, q)) == 3
+    # The prepared justifier (one vocabulary for every query) agrees.
+    assert sorted(rustdl.prepare(p).justify(q)) == sorted(ax)
+
+
+def test_an_undeclared_typo_is_still_an_error(tmp_path):
+    p = _write(tmp_path, UNDECLARED)
+    # The binding raises RustdlError with the missing IRI as its message.
+    with pytest.raises(rustdl.RustdlError, match="Typo"):
+        rustdl.justify(p, ["instance", "http://ex/#a", "http://ex/#Typo"])

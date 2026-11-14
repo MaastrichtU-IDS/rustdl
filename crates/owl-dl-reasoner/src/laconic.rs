@@ -225,13 +225,15 @@ fn laconic_outcome<A: ForIRI>(
     let mut give_ups = GiveUps::default();
     let mut out = Vec::new();
     let mut seen: HashSet<BTreeSet<Component<A>>> = HashSet::new();
+    // #520: the same per-query background the search used (declarations included).
+    let background = prepared.background_for(q)?;
     // #429: a weakening check that trusted a wrong wedge `Sat` keeps a stronger
     // axiom; record it beside the regular search's own trust.
     let ((weakened, weakening_trusted), weakening_cuts) = crate::justify::with_oracle_cuts(|| {
         crate::justify::with_oracle_trust(|| {
             for j in regular.justifications {
                 let lac = laconic_from(
-                    prepared.background(),
+                    &background,
                     q,
                     &j.axioms,
                     j.fragment,

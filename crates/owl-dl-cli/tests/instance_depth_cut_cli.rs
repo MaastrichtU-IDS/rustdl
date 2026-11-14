@@ -278,7 +278,9 @@ type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>);
 /// (F1: early abandon armed but never latching; F2: early abandon off; F3: a node-cap
 /// stop). The budget wording stays, and the hit clause adds that `=0` may help too.
 /// The first hit comes within ~0.4 CPU-s of a debug process's start (parse included),
-/// far inside the 10 s deadline, with margin for slow, loaded CI runners.
+/// far inside the 10 s deadline, with margin for slow, loaded CI runners. #510 (2b)'s
+/// deep retry is off here: with it on, the retry decides F1 and F2 (pinned in
+/// `instance_depth_fallback_cli.rs`).
 #[test]
 fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
     let f = Fixture::forall("hit", false);
@@ -290,6 +292,7 @@ fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
             vec![
                 ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000"),
                 ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
+                ("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "0"),
             ],
         ),
         (
@@ -298,6 +301,7 @@ fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
             vec![
                 ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
                 ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
+                ("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "0"),
             ],
         ),
         (
@@ -307,6 +311,7 @@ fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
                 ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000"),
                 ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", LONG_DEADLINE_MS),
                 ("RUSTDL_QUERY_MAX_NODES", "20"),
+                ("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "0"),
             ],
         ),
     ];

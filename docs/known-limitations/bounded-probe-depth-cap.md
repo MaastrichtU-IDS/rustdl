@@ -51,11 +51,16 @@ deadline or the node cap before early abandon's 32nd hit: with early abandon off
 (`RUSTDL_TABLEAU_EARLY_ABANDON=0`), or on a loaded or slow host. The same pair can be
 `depth_capped` on a quiet run and a plain deadline cut on a busy one.
 - The tableau counts depth-cap hits on every probe (the deadline-free probe's deeper cap
-  included). The count is report-only.
+  included). Nothing in the search reads the count.
 - `InstanceFlags::depth_cap_hit` marks a deadline or node-cap cut that had at least one hit.
 - `instance`, `instances` and Python `is_instance_of` then add that
   `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` may help as well as a larger budget. Both may help here,
   unlike a `depth_capped` cut.
+- On the single `instance` query, `depth_cap_hit` also triggers the deep retry described below,
+  as `depth_capped` does; the clause above then shows only with the retry off
+  (`RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`). Iterative deepening's over-attribution (next point)
+  can therefore cost a retry, up to its budget; that is sound, since the retry only answers
+  what the deep probe decides.
 - Under iterative deepening (`RUSTDL_TABLEAU_ITERATIVE_DEEPENING=1`, default off) the count is
   reset when the final level starts, whose cap is at least `MAX_SEARCH_DEPTH`. Two exits
   leave a shallow level's hits in the count, so the flag can over-attribute there:
@@ -87,8 +92,9 @@ What the flags do not see:
 ## `instance` retries a depth cut on the deep path (#510, 2b)
 
 When the bounded probe of a single `instance` query (CLI `instance`, Rust
-`is_instance_of_reporting` / `is_instance_of`, Python `is_instance_of`) ends `depth_capped`, it
-is retried once on the deep path: depth 1,000,000, anywhere-blocking, no early abandon. That is
+`is_instance_of_reporting` / `is_instance_of`, Python `is_instance_of`) ends `depth_capped`, or
+is cut by its deadline or the node cap after a depth-cap hit (`depth_cap_hit`, #510 C), it is
+retried once on the deep path: depth 1,000,000, anywhere-blocking, no early abandon. That is
 the probe `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` runs, and the one #401's seeded-first attempt runs
 (the two share `PreparedOntology::decide_deep_with_deadline`). It runs under its own deadline,
 `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (default 60,000 ms), and the node cap in force: the
@@ -128,13 +134,16 @@ loops over `is_instance_of*` or the CLI pays the budget once per call, and can l
 the retry off with `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`. `scripts/cross-command-laws.py` sets
 20 s, below its own 30 s call cap.
 
-**The trigger depends on timing.** The bounded probe is `depth_capped` only when it reaches 32
-cap hits (early abandon) before its 750 ms deadline. Under load, or with `RUSTDL_TRACE=1`, the
-same probe can reach the deadline first. It is then a deadline cut, it is not retried, and the
-pair stays `unknown`. The same pair can be "no" on a quiet host and `unknown` on a loaded one.
-On #510's census calls the base reported 258 depth cuts under load (8 lanes) and 263 on a
-quiet core. One of those calls, on `ore_ont_12698`, answered "no" in 2 of 3 quiet reps; in the
-third, its probe hit the deadline first.
+**The trigger depends on timing only before the first hit.** Before #510 (C), the bounded
+probe was retried only when it reached 32 cap hits (early abandon) before its 750 ms deadline;
+under load, or with `RUSTDL_TRACE=1`, the same probe could reach the deadline first, stay a
+deadline cut and the pair stay `unknown`. On #510's census calls the base reported 258 depth
+cuts under load (8 lanes) and 263 on a quiet core; one call, on `ore_ont_12698`, answered "no"
+in 2 of 3 quiet reps. Since #510 (C) a deadline that comes after at least one hit makes the
+probe `depth_cap_hit`, which is retried too. Only a probe whose deadline comes before its first
+hit stays a plain budget cut, so a pair can still stay `unknown` under heavy load, and early
+abandon off (`RUSTDL_TABLEAU_EARLY_ABANDON=0`) no longer hides a depth-bound probe from the
+retry.
 
 Measured on the per-query census's 3,566 `instance` calls (ORE F2a/F3 files), at a 10 s retry
 budget:

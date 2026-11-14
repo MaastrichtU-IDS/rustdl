@@ -62,6 +62,7 @@ fn a_decided_retry_clears_every_cut_flag() {
     assert!(!holds);
     assert_eq!(f.depth_fallback, InstanceDepthFallback::Decided, "{f:?}");
     assert!(!f.incomplete && !f.depth_capped && !f.no_verdict, "{f:?}");
+    assert!(!f.depth_cap_hit, "{f:?}");
 }
 
 /// A cut retry is a budget cut: `incomplete`, and NOT `depth_capped` (whose advice is
@@ -72,6 +73,7 @@ fn a_cut_retry_is_incomplete_but_not_depth_capped() {
     assert!(!holds);
     assert_eq!(f.depth_fallback, InstanceDepthFallback::Cut, "{f:?}");
     assert!(f.incomplete && !f.depth_capped && !f.no_verdict, "{f:?}");
+    assert!(!f.depth_cap_hit, "a cut retry is a budget cut: {f:?}");
 }
 
 /// Off, the first probe's depth cut is reported as before (#514).
@@ -81,4 +83,48 @@ fn with_the_retry_off_the_depth_cut_is_reported() {
     assert!(!holds);
     assert_eq!(f.depth_fallback, InstanceDepthFallback::NotRun, "{f:?}");
     assert!(f.incomplete && f.depth_capped && !f.no_verdict, "{f:?}");
+    assert!(!f.depth_cap_hit, "exclusive with depth_capped: {f:?}");
+}
+
+/// #510 (C) wiring: a budget cut after a depth-cap hit (early abandon armed but never
+/// latching, or off) also triggers the retry, which decides it. The first hit comes
+/// within ~0.4 CPU-s in debug, far inside the 10 s deadline.
+#[test]
+fn a_budget_cut_after_a_depth_cap_hit_is_retried_and_decided() {
+    for (case, ea) in [
+        (
+            "armed, not latched",
+            ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000"),
+        ),
+        ("early abandon off", ("RUSTDL_TABLEAU_EARLY_ABANDON", "0")),
+    ] {
+        let deadline = ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000");
+        let (holds, f) = query(&[ea, deadline]);
+        assert!(!holds, "[{case}]");
+        assert_eq!(
+            f.depth_fallback,
+            InstanceDepthFallback::Decided,
+            "[{case}] {f:?}"
+        );
+        assert!(
+            !f.incomplete && !f.depth_capped && !f.no_verdict,
+            "[{case}] {f:?}"
+        );
+        assert!(
+            !f.depth_cap_hit,
+            "a decided retry clears the hit: [{case}] {f:?}"
+        );
+
+        // Control: with the retry off, the first probe is the hit-then-budget cut.
+        let (_, f) = query(&[ea, deadline, ("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "0")]);
+        assert_eq!(
+            f.depth_fallback,
+            InstanceDepthFallback::NotRun,
+            "[{case}] {f:?}"
+        );
+        assert!(
+            f.incomplete && f.depth_cap_hit && !f.depth_capped,
+            "[{case}] {f:?}"
+        );
+    }
 }

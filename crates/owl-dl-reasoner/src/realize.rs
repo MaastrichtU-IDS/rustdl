@@ -300,7 +300,8 @@ pub struct InstanceFlags {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum InstanceDepthFallback {
-    /// No retry: the bounded probe was not depth-capped, the retry is off
+    /// No retry: the bounded probe was neither depth-capped nor cut after a depth-cap
+    /// hit (`depth_cap_hit`), the retry is off
     /// (`RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`), or the caller never retries.
     #[default]
     NotRun,
@@ -487,15 +488,23 @@ fn instance_reporting(
         None,
     )?;
     // #510: a depth cut is not recovered by a larger budget, so the single query retries
-    // it once on the deep path. `first.depth_capped` was captured right after the first
-    // probe (the retry resets the thread-local flags), and it excludes `no_verdict`.
+    // it once on the deep path. #510 (C) wiring: so is a budget cut that came after a
+    // depth-cap hit (`depth_cap_hit`: early abandon off, or the deadline before its 32nd
+    // hit), which the deep probe may decide where a larger budget may not. Both flags
+    // were captured right after the first probe (the retry resets the thread-locals), and
+    // both exclude `no_verdict`; they are exclusive with each other.
     let retry_ms = crate::instance_depth_fallback_ms();
     let (probe, depth_fallback) = if fallback == DepthFallback::On
-        && first.depth_capped
+        && (first.depth_capped || first.depth_cap_hit)
         && pair_deadline.is_some()
         && retry_ms > 0
     {
-        let retry = instance_depth_retry(&prepared, class_id, individual_id, retry_ms)?;
+        let trigger = if first.depth_capped {
+            "depth-capped"
+        } else {
+            "cut after a depth-cap hit (#510 C)"
+        };
+        let retry = instance_depth_retry(&prepared, class_id, individual_id, retry_ms, trigger)?;
         let outcome = if retry.cut {
             InstanceDepthFallback::Cut
         } else {
@@ -536,6 +545,7 @@ fn instance_depth_retry(
     class_id: ClassId,
     individual_id: IndividualId,
     retry_ms: u64,
+    trigger: &str,
 ) -> Result<InstanceProbe, ReasonError> {
     let started = std::time::Instant::now();
     let deadline = started + std::time::Duration::from_millis(retry_ms);
@@ -554,7 +564,7 @@ fn instance_depth_retry(
             (true, false, _) => "cut: budget or node cap",
         };
         eprintln!(
-            "instance (#510): bounded probe depth-capped; deep retry ({retry_ms} ms budget) \
+            "instance (#510): bounded probe {trigger}; deep retry ({retry_ms} ms budget) \
              {what} in {} ms",
             started.elapsed().as_millis()
         );

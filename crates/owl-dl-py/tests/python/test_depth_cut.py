@@ -184,6 +184,9 @@ def test_a_budget_cut_after_a_depth_limit_hit_says_both_remedies_may_help(
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setenv("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000")
+    # #510 (2b)'s deep retry would decide this cut; the hit-then-budget text is the
+    # retry-off case (the retry-on case is the test below).
+    monkeypatch.setenv("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "0")
     value, msgs = _incomplete_warnings(lambda p: rustdl.is_instance_of(p["plain"], Y, A), paths)
     assert value is False
     assert len(msgs) == 1, msgs
@@ -212,3 +215,22 @@ def test_is_instance_of_a_cut_retry_names_the_retry_budget(paths, monkeypatch):
     msg = msgs[0]
     assert "deeper retry was cut" in msg and "RUSTDL_INSTANCE_DEPTH_FALLBACK_MS" in msg, msg
     assert "does not help" not in msg, msg
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"RUSTDL_TABLEAU_EARLY_ABANDON_HITS": "1000000"},
+        {"RUSTDL_TABLEAU_EARLY_ABANDON": "0"},
+    ],
+    ids=["armed-not-latched", "early-abandon-off"],
+)
+def test_is_instance_of_retries_a_budget_cut_after_a_depth_limit_hit(env, paths, monkeypatch):
+    # #510 (C) wiring: a budget cut after a depth-limit hit is retried on the deep path
+    # too, which decides it: a refuted "no" with no warning.
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000")
+    monkeypatch.delenv("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", raising=False)
+    value, msgs = _incomplete_warnings(lambda p: rustdl.is_instance_of(p["plain"], Y, A), paths)
+    assert value is False and msgs == [], (value, msgs)

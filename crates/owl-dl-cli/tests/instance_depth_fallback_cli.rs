@@ -98,6 +98,69 @@ fn succ(tag: &str, lazy: bool) -> Fixture {
     Fixture::write(tag, &src)
 }
 
+/// #510 (C)'s F3: each union's second disjunct heads a 50-class ∃-chain, so a small node
+/// cap stops the bounded probe right after its first depth-cap hits (as in
+/// `instance_depth_cut_cli.rs`). The deep retry's first descent takes the ∀-disjuncts all
+/// the way down and finds a model, so it decides "no" under the same cap.
+fn node_chain(tag: &str) -> Fixture {
+    let mut src = String::from(
+        "Prefix(:=<http://example.org/d#>)\nOntology(<http://example.org/d>\n\
+         Declaration(NamedIndividual(:a)) Declaration(Class(:Y)) Declaration(Class(:A))\n\
+         SubClassOf(:X ObjectIntersectionOf(",
+    );
+    for k in 0..280 {
+        write!(
+            src,
+            " ObjectUnionOf(ObjectAllValuesFrom(:r{k} :A) ObjectSomeValuesFrom(:s{k} :W0))"
+        )
+        .unwrap();
+    }
+    src.push_str("))\n");
+    for i in 0..50 {
+        writeln!(
+            src,
+            "SubClassOf(:W{i} ObjectSomeValuesFrom(:p :W{}))",
+            i + 1
+        )
+        .unwrap();
+    }
+    src.push_str("ClassAssertion(:X :a)\n)\n");
+    Fixture::write(tag, &src)
+}
+
+/// #510 (C)'s F4: a pigeonhole forced only under `¬Y` (9 pigeons, 8 holes). Its decision
+/// depth is at most 9, so it never hits the depth cap, and the default 750 ms deadline
+/// cuts it: a budget cut with no hit, whatever the host's speed. Never run it
+/// deadline-free: it does not finish.
+fn pigeonhole(tag: &str) -> Fixture {
+    const HOLES: usize = 8;
+    let p = |i: usize, j: usize| format!(":P{i}_{j}");
+    let mut src = String::from(
+        "Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\nPrefix(:=<http://example.org/d#>)\n\
+         Ontology(<http://example.org/d>\n\
+         Declaration(NamedIndividual(:a)) Declaration(Class(:Y)) Declaration(Class(:X))\n",
+    );
+    let holes = |i: usize| (0..HOLES).map(|j| p(i, j)).collect::<Vec<_>>().join(" ");
+    for i in 0..HOLES {
+        writeln!(src, "SubClassOf(:X ObjectUnionOf({}))", holes(i)).unwrap();
+    }
+    writeln!(
+        src,
+        "SubClassOf(owl:Thing ObjectUnionOf(:Y {}))",
+        holes(HOLES)
+    )
+    .unwrap();
+    for j in 0..HOLES {
+        for i in 0..=HOLES {
+            for k in i + 1..=HOLES {
+                writeln!(src, "DisjointClasses({} {})", p(i, j), p(k, j)).unwrap();
+            }
+        }
+    }
+    src.push_str("ClassAssertion(:X :a)\n)\n");
+    Fixture::write(tag, &src)
+}
+
 /// Runs `rustdl` with every `RUSTDL_*` variable cleared, so only `env` sets one.
 fn run(env: &[(&str, &str)], args: &[&str]) -> Out {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
@@ -184,18 +247,14 @@ fn a_cut_deep_retry_is_unknown_with_budget_advice() {
     assert!(!r.stderr.contains(RETRY_NOTE), "{}", r.stderr);
 }
 
-/// T4: a cut that is not a depth cut is not retried. Early abandon off and a 1 ms
-/// deadline end the bounded probe on its deadline (as in `instance_depth_cut_cli.rs`).
+/// T4: a budget cut with no depth-cap hit is not retried. The pigeonhole (F4) never
+/// reaches the depth cap, and the default deadline cuts it. (The 280-union at 1 ms with
+/// early abandon off is no control since #510 (C): a hit inside 1 ms makes it a
+/// `depth_cap_hit`, which is retried.)
 #[test]
 fn a_deadline_cut_is_not_retried() {
-    let f = union("deadline");
-    let r = run(
-        &[
-            ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
-            ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "1"),
-        ],
-        &["instance", f.path(), Y, A],
-    );
+    let f = pigeonhole("deadline");
+    let r = run(&[], &["instance", f.path(), Y, A]);
     assert_answer(&r, 3, "unknown");
     assert!(
         r.stderr
@@ -204,6 +263,68 @@ fn a_deadline_cut_is_not_retried() {
         r.stderr
     );
     assert!(!r.stderr.contains("deeper retry"), "{}", r.stderr);
+    assert!(!r.stderr.contains("decision-depth"), "no hit: {}", r.stderr);
+}
+
+/// T5, #510 (C) wiring: a budget cut after a depth-cap hit (F1: early abandon armed but
+/// never latching; F2: off) is retried, and the retry answers "no" with its note. The
+/// first hit comes within ~0.4 CPU-s in debug, far inside the 10 s deadline.
+#[test]
+fn a_budget_cut_after_a_depth_cap_hit_is_answered_by_the_deep_retry() {
+    let f = union("hit");
+    for (case, ea) in [
+        ("F1", ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000")),
+        ("F2", ("RUSTDL_TABLEAU_EARLY_ABANDON", "0")),
+    ] {
+        let deadline = ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000");
+        let r = run(&[ea, deadline], &["instance", f.path(), Y, A]);
+        assert_answer(&r, 0, "no");
+        assert!(r.stderr.contains(RETRY_NOTE), "[{case}] {}", r.stderr);
+        assert!(!r.stderr.contains("warning"), "[{case}] {}", r.stderr);
+
+        // Control: off, it is #510 (C)'s hit-then-budget cut.
+        let r = run(&[ea, deadline, OFF], &["instance", f.path(), Y, A]);
+        assert_answer(&r, 3, "unknown");
+        assert!(
+            r.stderr.contains("may help as well as a larger budget"),
+            "[{case}] {}",
+            r.stderr
+        );
+    }
+}
+
+/// T6, #510 (C) wiring: F3's node-cap stop after a hit is retried under the same node
+/// cap, and the retry decides "no" (its first descent finds a model without the chain).
+#[test]
+fn a_node_cap_cut_after_a_depth_cap_hit_is_retried() {
+    let f = node_chain("hit-nodes");
+    let env = [
+        ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000"),
+        LONG,
+        ("RUSTDL_QUERY_MAX_NODES", "20"),
+    ];
+    let r = run(&env, &["instance", f.path(), Y, A]);
+    assert_answer(&r, 0, "no");
+    assert!(r.stderr.contains(RETRY_NOTE), "{}", r.stderr);
+}
+
+/// T7, #510 (C) wiring: the hit-triggered retry can answer "yes" too, and the #369 lazy
+/// check follows it (early abandon off; the first hit comes well inside 10 s).
+#[test]
+fn a_hit_triggered_retry_can_answer_yes_and_the_lazy_check_follows() {
+    let f = succ("hit-lazy", true);
+    let env = [
+        ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
+        ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
+    ];
+    let r = run(&env, &["instance", f.path(), Y, A]);
+    assert_answer(&r, 0, "yes");
+    assert!(r.stderr.contains(RETRY_NOTE), "{}", r.stderr);
+    assert!(
+        r.stderr.contains("consistency could not be determined"),
+        "the lazy check ran after the retry's yes: {}",
+        r.stderr
+    );
 }
 
 /// The #369 lazy consistency check keys on the retry's "yes": consistency is not

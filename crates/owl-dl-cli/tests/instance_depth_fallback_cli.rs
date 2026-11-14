@@ -242,3 +242,41 @@ fn instances_does_not_retry() {
     );
     assert!(!r.stderr.contains("deeper retry"), "{}", r.stderr);
 }
+
+/// Plan R1: `justify` / `repair` ask one instance check per `QuickXplain` step, so they
+/// use the entry without the retry. Pinned on observables of this PR alone: the retry's
+/// `RUSTDL_TRACE` line never shows, and the check stays a give-up (a retry would decide
+/// "not entailed", as the deadline-free probe does). The trace line is proved to fire on
+/// `instance` first.
+#[test]
+fn justify_and_repair_never_retry() {
+    const TRACE: (&str, &str) = ("RUSTDL_TRACE", "1");
+    const RETRY_TRACE: &str = "bounded probe depth-capped; deep retry";
+    let f = union("justify");
+    let r = run(&[LONG, TRACE], &["instance", f.path(), Y, A]);
+    assert_answer(&r, 0, "no");
+    assert!(
+        r.stderr.contains(RETRY_TRACE),
+        "the instrument fires: {}",
+        r.stderr
+    );
+
+    for cmd in ["justify", "repair"] {
+        let r = run(&[LONG, TRACE], &[cmd, f.path(), "instance", A, Y]);
+        assert_eq!(r.code, 3, "{cmd}: a give-up: {}\n{}", r.stdout, r.stderr);
+        assert!(r.stdout.starts_with("unknown"), "{cmd}: {}", r.stdout);
+        assert!(
+            !r.stderr.contains(RETRY_TRACE),
+            "{cmd} retried: {}",
+            r.stderr
+        );
+
+        // Control: the deep probe does decide this check, so a retry would have shown.
+        let r = run(
+            &[("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "0")],
+            &[cmd, f.path(), "instance", A, Y],
+        );
+        assert_eq!(r.code, 0, "{cmd}: {}\n{}", r.stdout, r.stderr);
+        assert!(r.stdout.starts_with("not entailed"), "{cmd}: {}", r.stdout);
+    }
+}

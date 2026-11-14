@@ -673,10 +673,24 @@ def is_instance_of(path, class_iri, individual_iri):
         no_verdict,
         depth_capped,
         depth_cap_hit,
+        retry_cut,
     ) = _is_instance_of_native(path, class_iri, individual_iri)
-    _warn_if_answer_no_verdict(
-        "is_instance_of", incomplete, no_verdict, depth_capped, depth_cap_hit
-    )
+    if retry_cut and incomplete and not no_verdict:
+        # #510 (2b): the probe hit the depth limit and its deep retry was cut by its own
+        # budget or the node cap; name the knobs that can recover it.
+        _warnings.warn(
+            "is_instance_of: the probe hit the tableau's decision-depth limit, and its "
+            "deeper retry was cut by its budget or the node cap, so the False is not a "
+            "refutation. Raise RUSTDL_INSTANCE_DEPTH_FALLBACK_MS (default 10000 ms; 0 "
+            "turns the retry off) or RUSTDL_QUERY_MAX_NODES (RUSTDL_MAX_NODES, if set, "
+            "wins); RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the deep probe with no time limit.",
+            IncompleteQueryWarning,
+            stacklevel=2,
+        )
+    else:
+        _warn_if_answer_no_verdict(
+            "is_instance_of", incomplete, no_verdict, depth_capped, depth_cap_hit
+        )
     _warn_if_consistency_undetermined("is_instance_of", undetermined)
     return is_inst
 

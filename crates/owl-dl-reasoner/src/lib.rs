@@ -3783,15 +3783,17 @@ fn classify_wedge_consistency(
         return Some(HyperResult::Stalled);
     }
     let cache = ConsistencyCache::build(internal);
+    // #344: a model whose `Sat` skipped a data-value count is not taken, so where that
+    // applies the labels are not extracted at all and the plain `decide` runs.
     let verdict = match capture {
-        Some(slot) => {
+        Some(slot) if !wedge_model_skips_data_counting(internal) => {
             let (verdict, witness) = cache.decide_capturing(deadline);
-            if verdict == HyperResult::Sat && !wedge_model_skips_data_counting(internal) {
+            if verdict == HyperResult::Sat {
                 *slot = witness;
             }
             verdict
         }
-        None => cache.decide(deadline),
+        _ => cache.decide(deadline),
     };
     if verdict == HyperResult::Unsat && std::env::var_os("RUSTDL_TRACE").is_some() {
         eprintln!("classify: KB inconsistent (wedge Unsat)");
@@ -6794,7 +6796,8 @@ impl ConsistencyCache {
     /// completion, except that it keeps the `horn_fixpoint` step cap that `decide`
     /// lifts under a deadline (#257). The cap only stops a drain early, as a
     /// `Stalled`; a `Sat` from either is a completed model. Realize uses this only
-    /// when classify's pre-check left no model ([`Self::decide_capturing`], #430). Indexed by individual id (`0..self.num_individuals`);
+    /// when classify's pre-check left no model ([`Self::decide_capturing`], #430).
+    /// Indexed by individual id (`0..self.num_individuals`);
     /// `seeded_individual_labels` resolves through the union-find so a
     /// `SameIndividual`/functional merge never silently under-reports a
     /// merged-away individual's types.

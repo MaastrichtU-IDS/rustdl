@@ -7844,7 +7844,7 @@ fn search_iterative_deepening(
             // read as a deadline cut.
             ctx.set_deadline(deadline);
             ctx.clear_deadline_hit();
-            // #510 (C): only the final level's cap is `MAX_SEARCH_DEPTH`.
+            // #510 (C): only the final level's cap is at least `MAX_SEARCH_DEPTH`.
             ctx.reset_depth_cap_hits();
         } else {
             ctx.set_deadline(shallow);

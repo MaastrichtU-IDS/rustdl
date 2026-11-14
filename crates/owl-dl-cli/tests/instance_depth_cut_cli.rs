@@ -273,7 +273,7 @@ type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>);
 /// (F1: early abandon armed but never latching; F2: early abandon off; F3: a node-cap
 /// stop). The budget wording stays, and the hit clause adds that `=0` may help too.
 /// The first hit comes within ~0.4 CPU-s of a debug process's start (parse included),
-/// far inside the 10 s deadline (raised from 3 s for slow, loaded CI runners).
+/// far inside the 10 s deadline, with margin for slow, loaded CI runners.
 #[test]
 fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
     let f = Fixture::forall("hit", false);

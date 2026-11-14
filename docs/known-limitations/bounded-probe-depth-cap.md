@@ -58,7 +58,7 @@ deadline or the node cap before early abandon's 32nd hit: with early abandon off
   `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` may help as well as a larger budget. Both may help here,
   unlike a `depth_capped` cut.
 - Under iterative deepening (`RUSTDL_TABLEAU_ITERATIVE_DEEPENING=1`, default off) the count is
-  reset when the final level starts, the one level whose cap is `MAX_SEARCH_DEPTH`. Two exits
+  reset when the final level starts, whose cap is at least `MAX_SEARCH_DEPTH`. Two exits
   leave a shallow level's hits in the count, so the flag can over-attribute there:
   - a non-final level stops on the node cap (`NodeCap` ends the loop before the final level);
   - the caller's deadline passes after a shallow level, so the final level never starts.

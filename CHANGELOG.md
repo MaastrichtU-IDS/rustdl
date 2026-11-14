@@ -1318,10 +1318,12 @@ All notable changes to rustdl are documented here. Format is based on
   - **Who gets it:** CLI `instance`, `is_instance_of` / `is_instance_of_reporting` and Python
     `is_instance_of`. Not `instances`, `instances-expr`, `realize`, `justify` or `repair`, which
     report the cut as before (`justify` would pay one budget per QuickXplain step). No batch
-    or loop inside rustdl reaches the retry: it runs at most once per `instance` call, which can
-    take up to the retry budget (60 s) longer than before, plus the #369 lazy check after a
-    "yes". A library caller that loops over `is_instance_of*` pays it once per call, and can set
-    `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`.
+    or loop inside rustdl reaches the retry: it runs at most once per `instance` call. A call
+    whose retry never decides takes up to the budget (60 s) longer than before; one whose retry
+    answers "yes" just inside it also runs the #369 lazy check (`RUSTDL_CONSISTENCY_FALLBACK_MS`,
+    10 s), so the bound is about 70 s over prep. A caller that loops over `is_instance_of*` or
+    the CLI pays it once per call and can lower or turn off `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS`
+    (`scripts/cross-command-laws.py` sets 20 s, below its 30 s call cap).
   - **Outcomes:** a decided retry is the answer, with no cut flag and a CLI note. A retry cut by
     its budget or the node cap stays `unknown` (exit 3, `incomplete`, `depth_capped` false), and
     the CLI says to raise `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` or `RUSTDL_QUERY_MAX_NODES`. A
@@ -1342,11 +1344,15 @@ All notable changes to rustdl are documented here. Format is based on
     `unknown`. See `docs/known-limitations/bounded-probe-depth-cap.md`.
   - **Measured** on the per-query census's 3,566 `instance` calls (ORE files), at a 10 s
     budget. Under load (8 lanes), 252 calls changed from `unknown` to "no". On a quiet core
-    (3 interleaved reps of every call the base depth-capped, 263), 253 did. The other 10, all
-    on `ore_ont_13113`, were cut at 10 s and answer "no" at 30 s, in 19.8–26.0 CPU-s; the 60 s
-    default is the smallest round budget with at least 2x slack over them. HermiT and Konclude
-    both refute every one of these "no" answers. There is no new "yes", no changed answer and
-    no answer lost. Extra CPU per retried call: median +0.69 s, p90 +3.03 s, max +4.99 s.
+    (3 interleaved reps of every call the base depth-capped, 263), 253 did, by majority (one,
+    on `ore_ont_12698`, in 2 of 3 reps). The other 10, all on `ore_ont_13113`, were cut at 10 s
+    and answer "no" at 30 s, in 19.8–26.0 CPU-s for the whole call (one run each, quiet core);
+    the 60 s default is the smallest round budget with at least 2x slack over them. The budget
+    is wall-clock, so under load these can still be cut (`unknown`, never a wrong answer).
+    HermiT and Konclude both refute every one of these "no" answers. There is no new "yes", no
+    changed answer and no answer lost. Extra CPU per retried call: median +0.69 s, p90
+    +3.03 s; a retry decided within 10 s took at most +4.99 s, and 13113's ten take about
+    20–26 s at the default.
 - **`instance` and `instances` say when a probe cut by a budget had hit the decision-depth
   limit first (#510 C).** `depth_capped` (#510) covers only a probe that the depth limit itself
   ended, through early abandon's 32nd hit. A depth-bound probe whose deadline came first (early

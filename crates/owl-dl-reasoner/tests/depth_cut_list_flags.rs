@@ -10,6 +10,10 @@
 //! cap hits, well before a 60 s deadline. #514's fixture (280 unions of fresh named
 //! classes) has 562 classes, and `realize` runs on it for minutes in debug.
 //!
+//! The same fixture pins justify's and repair's `depth_capped` (#510 review): an
+//! `instance a Y` query whose top-level check is the cut probe, and with `a : Y` asserted
+//! a repair whose verification (removing `a : Y`) is the cut probe.
+//!
 //! The per-pair deadline is read per call, so the tests share one process under an env
 //! mutex.
 
@@ -19,7 +23,13 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::{Build, ClassExpression, RcStr};
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::{class_expression_instances, materialize_existential_successors_reporting};
+use owl_dl_reasoner::justify::{
+    Entailment, Verdict, find_all_justifications_reporting, find_one_justification_reporting,
+};
+use owl_dl_reasoner::{
+    class_expression_instances, find_all_laconic_justifications_reporting, find_repairs,
+    materialize_existential_successors_reporting,
+};
 use std::fmt::Write as _;
 use std::io::Cursor;
 
@@ -32,6 +42,10 @@ const Y: &str = "http://example.org/d#Y";
 const A: &str = "http://example.org/d#a";
 
 fn fixture(told_exists: bool) -> SetOntology<RcStr> {
+    fixture_with(told_exists, false)
+}
+
+fn fixture_with(told_exists: bool, assert_y: bool) -> SetOntology<RcStr> {
     let mut src = String::from(
         "Prefix(:=<http://example.org/d#>)\nOntology(<http://example.org/d>\n\
          Declaration(NamedIndividual(:a)) Declaration(Class(:Y)) Declaration(Class(:A))\n\
@@ -47,6 +61,9 @@ fn fixture(told_exists: bool) -> SetOntology<RcStr> {
     src.push_str("))\n");
     if told_exists {
         src.push_str("Declaration(Class(:Z)) SubClassOf(:Z ObjectSomeValuesFrom(:p :A))\n");
+    }
+    if assert_y {
+        src.push_str("ClassAssertion(:Y :a)\n");
     }
     src.push_str("ClassAssertion(:X :a)\n)\n");
     read_ofn(&mut Cursor::new(src), ParserConfiguration::default())
@@ -157,4 +174,79 @@ fn existential_successors_carry_realize_s_depth_cut() {
         rows.is_empty() && !flags.depth_capped && !flags.incomplete,
         "{flags:?}"
     );
+}
+
+fn instance_a_y() -> Entailment {
+    Entailment::InstanceOf {
+        individual: A.into(),
+        class: Y.into(),
+    }
+}
+
+#[test]
+fn justify_laconic_and_repair_report_a_depth_cut_of_their_instance_check() {
+    let _l = lock();
+    let o = fixture(false);
+    let q = instance_a_y();
+    for (deadline, cut) in [(LONG_DEADLINE_MS, true), ("0", false)] {
+        let _d = SetEnv::new("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", deadline);
+        let outcomes = [
+            (
+                "find_one",
+                find_one_justification_reporting(&o, &q).unwrap(),
+            ),
+            (
+                "find_all",
+                find_all_justifications_reporting(&o, &q, 10).unwrap(),
+            ),
+            (
+                "laconic",
+                find_all_laconic_justifications_reporting(&o, &q, 10).unwrap(),
+            ),
+        ];
+        for (api, out) in outcomes {
+            let want = if cut {
+                Verdict::Unknown
+            } else {
+                Verdict::NotEntailed
+            };
+            assert_eq!(out.status, want, "{api} at {deadline}");
+            assert_eq!(out.depth_capped, cut, "{api} at {deadline}");
+            assert_eq!(out.incomplete, cut, "{api} at {deadline}");
+            assert!(!out.no_verdict, "{api} at {deadline}");
+        }
+        let r = find_repairs(&o, &q, 10).unwrap();
+        assert!(!r.entailed && r.repairs.is_empty(), "repair at {deadline}");
+        assert_eq!(r.depth_capped, cut, "repair at {deadline}");
+        assert_eq!(r.incomplete, cut, "repair at {deadline}");
+        assert!(!r.no_verdict, "repair at {deadline}");
+    }
+}
+
+/// With `a : Y` asserted the ⊥-module of {a, Y} is {a : Y, a : X} (each union is
+/// ⊥-local), so the justification search never sees the unions and is not cut. The
+/// cut is repair's verification that removing `a : Y` breaks the entailment: only
+/// repair's own scope sees it.
+#[test]
+fn repair_reports_a_depth_cut_of_its_verification() {
+    let _l = lock();
+    let o = fixture_with(false, true);
+    let q = instance_a_y();
+    {
+        let _d = SetEnv::new("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", LONG_DEADLINE_MS);
+        let j = find_all_justifications_reporting(&o, &q, 10).unwrap();
+        assert_eq!(j.status, Verdict::Entailed);
+        assert!(
+            !j.incomplete && !j.depth_capped,
+            "the search is not cut: {j:?}"
+        );
+        let r = find_repairs(&o, &q, 10).unwrap();
+        assert!(r.entailed && r.repairs.is_empty(), "{r:?}");
+        assert!(r.unverified_gave_up >= 1, "{r:?}");
+        assert!(r.depth_capped && r.incomplete && !r.no_verdict, "{r:?}");
+    }
+    let _d = SetEnv::new("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "0");
+    let r = find_repairs(&o, &q, 10).unwrap();
+    assert_eq!(r.repairs.len(), 1, "{r:?}");
+    assert!(!r.incomplete && !r.depth_capped, "{r:?}");
 }

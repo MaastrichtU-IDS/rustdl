@@ -247,16 +247,16 @@ fn laconic_outcome<A: ForIRI>(
         })
     });
     weakened?;
+    // #510 review: as in `Search::into_outcome`, a depth cut is reported only on an
+    // outcome that is incomplete anyway, and never makes it incomplete.
+    let incomplete = regular.incomplete || give_ups.gave_up || weakening_cuts.no_verdict;
     Ok(JustifyOutcome {
         status: regular.status,
         justifications: out,
-        incomplete: regular.incomplete
-            || give_ups.gave_up
-            || weakening_cuts.no_verdict
-            || weakening_cuts.depth_capped,
+        incomplete,
         relies_on_trusted_consistency: regular.relies_on_trusted_consistency || weakening_trusted,
         no_verdict: regular.no_verdict || weakening_cuts.no_verdict,
-        depth_capped: regular.depth_capped || weakening_cuts.depth_capped,
+        depth_capped: (regular.depth_capped || weakening_cuts.depth_capped) && incomplete,
     })
 }
 

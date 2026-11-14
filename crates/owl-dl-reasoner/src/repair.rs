@@ -65,7 +65,8 @@ pub struct Repairs<A: ForIRI> {
     /// #510: an oracle call's instance check was cut by the tableau's decision-depth
     /// limit ([`crate::justify::JustifyOutcome::depth_capped`]): the top-level check, a
     /// justification probe or a verification. A larger budget does not recover it.
-    /// `incomplete` is set too.
+    /// `incomplete` is set too; as in justify, it is set only where `incomplete` already
+    /// is, never a cause of it.
     pub depth_capped: bool,
 }
 
@@ -181,7 +182,8 @@ pub fn find_repairs_prepared<A: ForIRI>(
         incomplete,
         relies_on_trusted_consistency: trusted,
         no_verdict,
-        depth_capped,
+        // #510 review: reported only where `incomplete` is set anyway, as in justify.
+        depth_capped: depth_capped && incomplete,
     })
 }
 

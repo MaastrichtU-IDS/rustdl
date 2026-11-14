@@ -1318,7 +1318,7 @@ All notable changes to rustdl are documented here. Format is based on
   - a deadline or node-cap cut: the budget advice as before.
 
   `instances` reports the same way (for `instances-expr`, `realize`, `justify`, `repair` and
-  Python, see the follow-up entry above). New `InstanceFlags::depth_capped`
+  Python, see the follow-up entry below). New `InstanceFlags::depth_capped`
   (report-only, implies `incomplete`). No answer changes. Found by the per-query census: on 36
   ORE files `instance` never answered "no"; on 3 of them, all 15 cut pairs answer "no" with
   `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`, as HermiT and Konclude do.
@@ -1338,6 +1338,9 @@ All notable changes to rustdl are documented here. Format is based on
   - **New report-only accessors and fields:** `Realization::depth_capped`,
     `CeInstances::depth_capped`, `ExistentialSuccessorFlags::depth_capped`,
     `JustifyOutcome::depth_capped` and `Repairs::depth_capped`. Each implies `incomplete`.
+    - `JustifyOutcome::depth_capped` and `Repairs::depth_capped` are set only on an outcome that
+      is incomplete anyway; a depth cut never makes one incomplete. A cut ⊥-module check that
+      the full set then decides leaves the answer definite, as before.
     - `ExistentialSuccessorFlags`, `JustifyOutcome` and `Repairs` have public fields, so a struct
       literal outside the crate must add the field (`..Default::default()` where the type has it).
     - `Realization::depth_capped` counts named individuals only, as its `incomplete` does.

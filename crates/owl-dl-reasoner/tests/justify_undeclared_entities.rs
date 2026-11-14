@@ -266,3 +266,53 @@ fn kinds_that_never_failed_are_unchanged() {
     let got: BTreeSet<_> = one.justifications[0].axioms.iter().cloned().collect();
     assert_eq!(got, axioms("SubClassOf(:U owl:Nothing)"));
 }
+
+/// C16: `prove`'s justification fallback (a non-saturator entailment) goes through the
+/// same search. `⊤ ⊑ T` has no step proof; with nothing declared, main aborted at the
+/// search's first subset probe.
+#[test]
+fn prove_s_justification_fallback_answers_an_undeclared_query() {
+    let o = onto("SubClassOf(owl:Thing :T) SubClassOf(:A :B)");
+    let (result, _) = owl_dl_reasoner::prove_entailment_rcstr_reporting(
+        &o,
+        "http://www.w3.org/2002/07/owl#Thing",
+        &iri("T"),
+    )
+    .unwrap();
+    assert!(
+        matches!(&result, owl_dl_reasoner::ProveEntailmentResult::JustificationFallback(j) if j.axioms.len() == 1),
+        "{result:?}"
+    );
+}
+
+/// C8, continued: a sub-property and a data-value query on undeclared entities.
+#[test]
+fn more_kinds_that_never_failed_are_unchanged() {
+    let body = "SubObjectPropertyOf(:p :q) SubObjectPropertyOf(:q :r) \
+                SubDataPropertyOf(:d :e) DataPropertyAssertion(:d :a \"5\"^^<http://www.w3.org/2001/XMLSchema#integer>)";
+    let o = onto(body);
+    let q = Entailment::SubObjectProperty {
+        sub: iri("p"),
+        sup: iri("r"),
+    };
+    let one = find_one_justification_reporting(&o, &q).unwrap();
+    let got: BTreeSet<_> = one.justifications[0].axioms.iter().cloned().collect();
+    assert_eq!(
+        got,
+        axioms("SubObjectPropertyOf(:p :q) SubObjectPropertyOf(:q :r)")
+    );
+    let q = Entailment::DataPropertyValue {
+        source: iri("a"),
+        prop: iri("e"),
+        value_lexical: "5".into(),
+        value_datatype: "http://www.w3.org/2001/XMLSchema#integer".into(),
+    };
+    let one = find_one_justification_reporting(&o, &q).unwrap();
+    let got: BTreeSet<_> = one.justifications[0].axioms.iter().cloned().collect();
+    assert_eq!(
+        got,
+        axioms(
+            "SubDataPropertyOf(:d :e) DataPropertyAssertion(:d :a \"5\"^^<http://www.w3.org/2001/XMLSchema#integer>)"
+        )
+    );
+}

@@ -314,7 +314,9 @@ All notable changes to rustdl are documented here. Format is based on
     even on a non-entailed query. It now answers "not entailed". An IRI the ontology does not
     have as that kind (a typo, a property used as a class, a class used as an individual) is
     still that error, in the same order: an `instance` query reports its class first, a
-    `subclass` query its sub.
+    `subclass` query its sub. The order is now judged against the full ontology. If the class is
+    outside the ⊥-module but in the ontology and the individual is a typo, the error now names
+    the individual; main named the class.
 - **`realize` no longer races a 1 s wall-clock budget for its pseudo-model witness, which made
   `ore_ont_5695` flip between a one-minute and a 20-minute-plus run (#430).** Realize's pseudo-model witness (the model whose types let it skip most per-pair
   `{a} ⊓ ¬C` probes) was built in a second wedge run under a 1000 ms wall-clock budget. On

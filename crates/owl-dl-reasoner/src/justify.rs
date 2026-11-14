@@ -335,7 +335,7 @@ impl Verdict {
 /// #401 consistency inheritance): `C ⊑ owl:Nothing` is `Unsatisfiable(C)`, and
 /// `owl:Thing ⊑ owl:Nothing` / `Unsatisfiable(owl:Thing)` are `Inconsistent`.
 /// `None` when `q` is already canonical. A named argument is kept as given, so an
-/// unknown IRI still errors in the oracle.
+/// unknown IRI still errors (in the search's #520 pre-check, or in the oracle).
 fn canonical_builtin_query(q: &Entailment) -> Option<Entailment> {
     match q {
         Entailment::SubClassOf { sub, sup } if sup == OWL_NOTHING => Some(if sub == OWL_THING {
@@ -948,7 +948,20 @@ fn looked_up_entities(q: &Entailment) -> Vec<(LookedUp, &str)> {
         Entailment::SubClassOf { sub, sup } => vec![(Class, sub.as_str()), (Class, sup.as_str())],
         Entailment::EquivalentClasses { a, b } => vec![(Class, a.as_str()), (Class, b.as_str())],
         Entailment::Unsatisfiable { class } => vec![(Class, class.as_str())],
-        _ => Vec::new(),
+        // These probe through axioms that mention their entities, so no lookup fails
+        // (measured on main, #520). Exhaustive on purpose: a new kind must decide.
+        Entailment::DisjointClasses { .. }
+        | Entailment::Inconsistent
+        | Entailment::SubObjectProperty { .. }
+        | Entailment::EquivalentObjectProperties { .. }
+        | Entailment::DisjointObjectProperties { .. }
+        | Entailment::ObjectPropertyAssertion { .. }
+        | Entailment::SameIndividual { .. }
+        | Entailment::DifferentIndividuals { .. }
+        | Entailment::SubDataProperty { .. }
+        | Entailment::EquivalentDataProperties { .. }
+        | Entailment::DisjointDataProperties { .. }
+        | Entailment::DataPropertyValue { .. } => Vec::new(),
     }
 }
 
@@ -1696,7 +1709,8 @@ impl<A: ForIRI> Search<A> {
 /// Per-ontology state precomputed once and reused across justification queries.
 ///
 /// [`find_one_justification`]/[`find_all_justifications`] redo the full-ontology
-/// work — the logical-axiom split and the fragment `convert`+classification — on
+/// work — the logical-axiom split, the fragment `convert`+classification and (#520,
+/// only for an undeclared query entity) the vocabulary — on
 /// every call. Preparing once with [`PreparedJustifier::prepare`] and then
 /// calling [`PreparedJustifier::find_one`]/[`PreparedJustifier::find_all`] per
 /// query amortizes that across many justifications of the same ontology.

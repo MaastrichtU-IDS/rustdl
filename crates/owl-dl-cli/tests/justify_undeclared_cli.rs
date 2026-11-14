@@ -119,9 +119,12 @@ fn report_justifies_an_undeclared_unsatisfiable_class() {
     let r = run(&["report", f.path()]);
     assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
     assert!(!r.stderr.contains("not in ontology"), "{}", r.stderr);
-    assert!(
-        r.stdout.contains('V') && r.stdout.contains('U'),
-        "{}",
-        r.stdout
-    );
+    for class in ["V", "U"] {
+        assert!(
+            r.stdout.contains(&format!("http://ex/#{class}"))
+                || r.stdout.contains(&format!(":{class}")),
+            "{class}: {}",
+            r.stdout
+        );
+    }
 }

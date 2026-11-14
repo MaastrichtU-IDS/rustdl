@@ -1,6 +1,10 @@
-# `justify … instance` fails on some ontologies where `instance` succeeds — UNRESOLVED
+# `justify … instance` fails on some ontologies where `instance` succeeds — RESOLVED (#520)
 
-**Status: diagnosed to a point, cause NOT found. Recorded so the next attempt starts here.**
+**Status: resolved by #520.** The cause is the undeclared individual noted below. Justify's
+search tests subsets of the logical axioms; declarations are non-logical and stay in every
+subset, so an undeclared entity existed only through its axioms, and a subset without them
+failed the lookup ("… IRI not in ontology"). The search now declares the query's looked-up
+entities for the duration of the query. The diagnosis below is kept as recorded.
 
 ## Reproducer
 

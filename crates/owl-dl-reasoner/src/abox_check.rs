@@ -18,7 +18,7 @@
 //! Spec: `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`
 
 use crate::union_find::UnionFind;
-use owl_dl_core::ir::{ClassId, IndividualId, RoleId};
+use owl_dl_core::ir::{ClassId, IndividualId, Role, RoleId};
 
 /// Verdict from the `ABox` consistency check.
 ///
@@ -89,7 +89,8 @@ pub(crate) enum ClashReason {
     /// `R`-successor must be both → ⊥.
     FunctionalCollapse {
         individual: IndividualId,
-        role: RoleId,
+        /// The signed role: `r⁻` when the collapse is on `r`-predecessors.
+        role: Role,
         q1: ClassId,
         q2: ClassId,
     },
@@ -110,13 +111,16 @@ pub(crate) enum ClashReason {
 fn existential_funcs_in(
     sup: owl_dl_core::ir::ConceptId,
     pool: &owl_dl_core::ir::ConceptPool,
-    out: &mut Vec<(RoleId, ClassId)>,
+    out: &mut Vec<(Role, ClassId)>,
 ) {
     use owl_dl_core::ir::ConceptExpr;
+    // #528: keep the SIGNED role. `∃r⁻.Q` is an `r`-predecessor in `Q`, which
+    // `Functional(r)` does not bound; reading it as `∃r.Q` collapsed two
+    // predecessors into one successor (a false inconsistency).
     match pool.get(sup) {
         ConceptExpr::Some(r, q) => {
             if let ConceptExpr::Atomic(qid) = pool.get(*q) {
-                out.push((r.role_id(), *qid));
+                out.push((*r, *qid));
             }
         }
         ConceptExpr::And(ops) => {
@@ -124,7 +128,7 @@ fn existential_funcs_in(
                 if let ConceptExpr::Some(r, q) = pool.get(op)
                     && let ConceptExpr::Atomic(qid) = pool.get(*q)
                 {
-                    out.push((r.role_id(), *qid));
+                    out.push((*r, *qid));
                 }
             }
         }
@@ -285,11 +289,25 @@ pub(crate) fn check(inputs: &AboxCheckInputs<'_>) -> AboxVerdict {
         std::collections::HashSet::new();
     for ax in inputs.axioms {
         match ax {
+            // #528: the characteristics swap across polarity. `Functional(r⁻)` is
+            // `InverseFunctional(r)` (the converter keeps it as `FunctionalRole(r⁻)`,
+            // see `convert.rs`'s `InverseFunctionalObjectProperty` arm); reading it as
+            // `Functional(r)` merged two `r`-successors of one individual.
             owl_dl_core::ontology::Axiom::FunctionalRole(r) => {
-                functional_roles.insert(r.role_id());
+                if r.is_inverse() {
+                    inverse_functional_roles.insert(r.role_id());
+                } else {
+                    functional_roles.insert(r.role_id());
+                }
             }
+            // `InverseFunctional(r⁻)` is `Functional(r)`; the converter normalises it
+            // already (#149), so this arm only keeps a hand-built IR correct.
             owl_dl_core::ontology::Axiom::InverseFunctionalRole(r) => {
-                inverse_functional_roles.insert(r.role_id());
+                if r.is_inverse() {
+                    functional_roles.insert(r.role_id());
+                } else {
+                    inverse_functional_roles.insert(r.role_id());
+                }
             }
             _ => {}
         }
@@ -441,11 +459,23 @@ pub(crate) fn check(inputs: &AboxCheckInputs<'_>) -> AboxVerdict {
     let mut ranges: Vec<(owl_dl_core::ir::RoleId, owl_dl_core::ir::ConceptId)> = Vec::new();
     for ax in inputs.axioms {
         match ax {
+            // #527: the tables are keyed by the NAMED role of the normalised edges, so an
+            // inverse-role axiom goes to the other table: `Domain(r⁻) = D` is
+            // `Range(r) = D`, and `Range(r⁻) = D` is `Domain(r) = D`. Read as the named
+            // role's, it typed the wrong end of every `r`-edge (a false inconsistency).
             owl_dl_core::ontology::Axiom::ObjectPropertyDomain { role, domain } => {
-                domains.push((role.role_id(), *domain));
+                if role.is_inverse() {
+                    ranges.push((role.role_id(), *domain));
+                } else {
+                    domains.push((role.role_id(), *domain));
+                }
             }
             owl_dl_core::ontology::Axiom::ObjectPropertyRange { role, range } => {
-                ranges.push((role.role_id(), *range));
+                if role.is_inverse() {
+                    domains.push((role.role_id(), *range));
+                } else {
+                    ranges.push((role.role_id(), *range));
+                }
             }
             _ => {}
         }
@@ -540,8 +570,8 @@ pub(crate) fn check(inputs: &AboxCheckInputs<'_>) -> AboxVerdict {
     // lets the family `isFatherOf`/`isMotherOf` individuals carry both
     // `Man` and `Woman`). Sound + monotonic: only ever *adds* an
     // inconsistency the tableau would also find.
-    if !functional_roles.is_empty() {
-        let mut existentials: std::collections::HashMap<ClassId, Vec<(RoleId, ClassId)>> =
+    if !functional_roles.is_empty() || !inverse_functional_roles.is_empty() {
+        let mut existentials: std::collections::HashMap<ClassId, Vec<(Role, ClassId)>> =
             std::collections::HashMap::new();
         for ax in inputs.axioms {
             match ax {
@@ -570,12 +600,19 @@ pub(crate) fn check(inputs: &AboxCheckInputs<'_>) -> AboxVerdict {
         }
         for (i, type_set) in types.iter().enumerate() {
             let (individual, _) = inputs.abox.individuals[i];
-            let mut by_role: std::collections::HashMap<RoleId, Vec<ClassId>> =
+            // #528: group by the SIGNED role, and ask whether THAT role is functional:
+            // `r` is functional iff `Functional(r)`, `r⁻` iff `InverseFunctional(r)`.
+            let mut by_role: std::collections::HashMap<Role, Vec<ClassId>> =
                 std::collections::HashMap::new();
             for &t in type_set {
                 if let Some(exs) = existentials.get(&t) {
                     for &(r, q) in exs {
-                        if functional_roles.contains(&r) {
+                        let functional = if r.is_inverse() {
+                            inverse_functional_roles.contains(&r.role_id())
+                        } else {
+                            functional_roles.contains(&r.role_id())
+                        };
+                        if functional {
                             by_role.entry(r).or_default().push(q);
                         }
                     }
@@ -837,6 +874,156 @@ mod tests {
             "P9 must NOT fire for inverse-disjoint + same-direction assertions \
              (this was the FP the fix closes): {:?}",
             verdict_of(src)
+        );
+    }
+
+    // ── #527 / #528: the arms the polarity fix added fire on the right edges ─────
+    //
+    // The end-to-end canaries in `tests/abox_check_role_polarity.rs` cannot pin these:
+    // with `abox_check` silent, their inconsistent controls are still decided by the
+    // tableau. These assert the verdict of the pass itself.
+
+    /// [`verdict_of`], with `edit` applied to the converted IR first.
+    fn verdict_with(src: &str, edit: impl FnOnce(&mut InternalOntology)) -> AboxVerdict {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use std::io::Cursor;
+        let mut r = Cursor::new(src.to_string());
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("parse ofn");
+        let mut internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        edit(&mut internal);
+        let prepared = crate::PreparedOntology::from_internal(internal).expect("prepare");
+        check_prepared(&prepared)
+    }
+
+    fn pol(body: &str) -> String {
+        format!(
+            "Prefix(:=<http://t/>)\nOntology(<http://t/pol>\n\
+             Declaration(ObjectProperty(:r)) Declaration(Class(:C))\n\
+             Declaration(Class(:Q1)) Declaration(Class(:Q2))\n\
+             Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+             Declaration(NamedIndividual(:c))\n{body}\n)\n"
+        )
+    }
+
+    fn is_functional_diff(v: &AboxVerdict) -> bool {
+        matches!(
+            v,
+            AboxVerdict::Inconsistent {
+                reason: ClashReason::FunctionalDiff { .. }
+            }
+        )
+    }
+
+    fn collapse_role(v: &AboxVerdict) -> Option<Role> {
+        match v {
+            AboxVerdict::Inconsistent {
+                reason: ClashReason::FunctionalCollapse { role, .. },
+            } => Some(*role),
+            _ => None,
+        }
+    }
+
+    const PREDS: &str = "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :c :b) \
+                         DifferentIndividuals(:a :c)";
+    const SUCCS: &str = "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+                         DifferentIndividuals(:b :c)";
+
+    /// #528, P5: `Functional(r⁻)` merges the `r`-predecessors of one individual, never
+    /// its `r`-successors.
+    #[test]
+    fn p5_functional_inverse_merges_predecessors_only() {
+        let func_inv = "FunctionalObjectProperty(ObjectInverseOf(:r))";
+        let v = verdict_of(&pol(&format!("{func_inv} {SUCCS}")));
+        assert!(matches!(v, AboxVerdict::Unknown), "two successors: {v:?}");
+        let v = verdict_of(&pol(&format!("{func_inv} {PREDS}")));
+        assert!(is_functional_diff(&v), "two predecessors: {v:?}");
+    }
+
+    /// P5's `InverseFunctionalRole(r⁻)` arm (= `Functional(r)`). The converter
+    /// normalises that axiom (#149), so the IR is edited by hand: `Functional(r)` is
+    /// replaced by `InverseFunctional(r⁻)`.
+    #[test]
+    fn p5_hand_built_inverse_functional_inverse_merges_successors_only() {
+        let swap = |o: &mut InternalOntology| {
+            let mut n = 0;
+            for ax in &mut o.axioms {
+                if let owl_dl_core::ontology::Axiom::FunctionalRole(r) = ax {
+                    *ax = owl_dl_core::ontology::Axiom::InverseFunctionalRole(r.flip());
+                    n += 1;
+                }
+            }
+            assert_eq!(n, 1, "the fixture must carry exactly one FunctionalRole");
+        };
+        let func = "FunctionalObjectProperty(:r)";
+        let v = verdict_with(&pol(&format!("{func} {PREDS}")), swap);
+        assert!(matches!(v, AboxVerdict::Unknown), "two predecessors: {v:?}");
+        let v = verdict_with(&pol(&format!("{func} {SUCCS}")), swap);
+        assert!(is_functional_diff(&v), "two successors: {v:?}");
+    }
+
+    /// #528, P8: `∃r⁻.Q1`, `∃r⁻.Q2` collapse only when `r⁻` is functional
+    /// (`InverseFunctional(r)` or `Functional(r⁻)`), and `∃r` only when `r` is. The
+    /// `InverseFunctional(r)`-only fixture also pins the pass's gate, which used to
+    /// open on functional roles alone.
+    #[test]
+    fn p8_collapse_keys_on_the_signed_role() {
+        let ex = |r: &str| {
+            format!(
+                "DisjointClasses(:Q1 :Q2) ClassAssertion(:C :a) \
+                 SubClassOf(:C ObjectSomeValuesFrom({r} :Q1)) \
+                 SubClassOf(:C ObjectSomeValuesFrom({r} :Q2))"
+            )
+        };
+        let (named, inv) = (":r", "ObjectInverseOf(:r)");
+        for (case, axioms) in [
+            (
+                "∃r⁻ under Functional(r)",
+                format!("FunctionalObjectProperty(:r) {}", ex(inv)),
+            ),
+            (
+                "∃r under Functional(r⁻)",
+                format!("FunctionalObjectProperty({inv}) {}", ex(named)),
+            ),
+            (
+                "∃r.Q1 and ∃r⁻.Q2 under Functional(r) and InverseFunctional(r)",
+                "FunctionalObjectProperty(:r) InverseFunctionalObjectProperty(:r) \
+                 DisjointClasses(:Q1 :Q2) ClassAssertion(:C :a) \
+                 SubClassOf(:C ObjectSomeValuesFrom(:r :Q1)) \
+                 SubClassOf(:C ObjectSomeValuesFrom(ObjectInverseOf(:r) :Q2))"
+                    .to_string(),
+            ),
+        ] {
+            let v = verdict_of(&pol(&axioms));
+            assert!(matches!(v, AboxVerdict::Unknown), "{case}: {v:?}");
+        }
+        for (case, axioms) in [
+            (
+                "∃r⁻ under InverseFunctional(r)",
+                format!("InverseFunctionalObjectProperty(:r) {}", ex(inv)),
+            ),
+            (
+                "∃r⁻ under Functional(r⁻)",
+                format!("FunctionalObjectProperty({inv}) {}", ex(inv)),
+            ),
+        ] {
+            let v = verdict_of(&pol(&axioms));
+            assert_eq!(
+                collapse_role(&v).map(Role::is_inverse),
+                Some(true),
+                "{case}: {v:?}"
+            );
+        }
+        // `∃r` under `Functional(r)` is inconsistent too, but the EL saturator derives
+        // `C ⊑ ⊥` first, so P1 reports it (`AssertedBot`). P8's named arm is pinned by
+        // `p8_functional_collapse_via_inverse_is_inconsistent`.
+        let v = verdict_of(&pol(&format!("FunctionalObjectProperty(:r) {}", ex(named))));
+        assert!(
+            matches!(v, AboxVerdict::Inconsistent { .. }),
+            "∃r under Functional(r): {v:?}"
         );
     }
 }

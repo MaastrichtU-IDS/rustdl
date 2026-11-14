@@ -1307,6 +1307,68 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`instance` retries a decision-depth cut once on the deep path, so it can now answer "no"
+  where it said `unknown` (#510, 2b).** When the bounded probe of a single instance query ends
+  at the 256-level depth limit (`depth_capped`), or a budget cuts it after it had hit that
+  limit (#510 C's `depth_cap_hit`), it is retried with the deep, anywhere-blocking
+  probe that `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` runs, under a new budget
+  `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (default 60,000 ms; `0` turns the retry off) and the
+  node cap in force: the single-query cap (`RUSTDL_QUERY_MAX_NODES`) for the CLI and Python,
+  the default cap (`RUSTDL_MAX_NODES`) for a library caller that does not take
+  `single_query_node_cap()`.
+  - **Who gets it:** CLI `instance`, `is_instance_of` / `is_instance_of_reporting` and Python
+    `is_instance_of`. Not `instances`, `instances-expr`, `realize`, `justify` or `repair`, which
+    report the cut as before (`justify` would pay one budget per QuickXplain step). No batch
+    or loop inside rustdl reaches the retry: it runs at most once per `instance` call. A call
+    whose retry never decides takes up to the budget (60 s) longer than before; one whose retry
+    answers "yes" just inside it also runs the #369 lazy check (`RUSTDL_CONSISTENCY_FALLBACK_MS`,
+    10 s), so the bound is about 70 s over prep. A caller that loops over `is_instance_of*` or
+    the CLI pays it once per call and can lower or turn off `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS`
+    (`scripts/cross-command-laws.py` sets 20 s, below its 30 s call cap).
+  - **Outcomes:** a decided retry is the answer, with no cut flag and a CLI note. A retry cut by
+    its budget or the node cap stays `unknown` (exit 3, `incomplete`, `depth_capped` false), and
+    the CLI says to raise `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` or `RUSTDL_QUERY_MAX_NODES`. A
+    budget cut with no depth-cap hit is not retried.
+  - **New:** `InstanceFlags::depth_fallback` (`InstanceDepthFallback::NotRun` / `Decided` /
+    `Cut`). Both types are `#[non_exhaustive]`, so this adds a field without breaking callers.
+  - **Behaviour change when the retry ends in `NoVerdict`** (its saturation stalls, or the
+    deep search bails at its own 1,000,000-level limit): #462's likely-bug signal, reported
+    as `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` reports it. Where the depth cut used to be a plain
+    cut (`Ok(false)` with `incomplete`; Python `False` with a warning), `is_instance_of` /
+    `is_instance_of_internal` now return `Err(NoVerdict)`, Python
+    `is_instance_of` raises `RustdlError`, and CLI `instance` prints `unknown` with #449's
+    "likely a reasoner bug" note (exit 3), after a note that the retry ran.
+  - **Python:** a retry cut by its budget gets its own `IncompleteQueryWarning` text naming
+    `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS`.
+  - **The trigger depends on timing only for a probe with no hit:** a probe that reaches early
+    abandon (32 cap hits) is `depth_capped`, and one whose deadline comes first after at least
+    one hit is `depth_cap_hit`; both are retried. Only a probe whose deadline comes before its
+    first hit stays a plain budget cut, so under heavy load a pair can still stay `unknown`. See
+    `docs/known-limitations/bounded-probe-depth-cap.md`.
+  - **Measured** on the per-query census's 3,566 `instance` calls (ORE files), at a 10 s
+    budget. Under load (8 lanes), 252 calls changed from `unknown` to "no". On a quiet core
+    (3 interleaved reps of every call the base depth-capped, 263), 253 did, by majority (one,
+    on `ore_ont_12698`, in 2 of 3 reps). The other 10, all on `ore_ont_13113`, were cut at 10 s
+    and answer "no" at 30 s, in 19.8–26.0 CPU-s for the whole call (one run each, quiet core);
+    the 60 s default is the smallest round budget with at least 2x slack over them. The budget
+    is wall-clock, so under load these can still be cut (`unknown`, never a wrong answer).
+    HermiT and Konclude both refute every one of these "no" answers. There is no new "yes", no
+    changed answer and no answer lost. Extra CPU per retried call: median +0.69 s, p90
+    +3.03 s; a retry decided within 10 s took at most +4.99 s, and 13113's ten take about
+    20–26 s at the default.
+  - **Re-measured on this base, with #510 C's hit trigger** (M0′: 3,576 census calls, 8 lanes,
+    against main):
+    - 293 calls change from `unknown` to "no" at the default, and 296 with early abandon off.
+      Both oracles refute every one; there are 0 new "yes" and no other change.
+    - Extra CPU per retried call: median +0.5 s, p90 +4.1 s, max +30.5 s.
+    - **The 2x rule held on #510's census pairs but not on this tree.** The slowest retried
+      calls (whole call, under load) are:
+      - `ore_ont_5688` (10 calls, outside #510's census): 28.9–31.0 CPU-s, up to 34 s wall, so
+        1.8–1.9x slack at 60 s;
+      - `ore_ont_13113`: 21.8–23.2 CPU-s, 2.4–2.6x;
+      - `f1-wine`: 18.5–19.0 CPU-s, 2.6–3.2x.
+    - The default stays 60 s. A retry its wall-clock budget cuts (more likely under load)
+      stays `unknown`, which is never a wrong answer.
 - **`instance` and `instances` say when a probe cut by a budget had hit the decision-depth
   limit first (#510 C).** `depth_capped` (#510) covers only a probe that the depth limit itself
   ended, through early abandon's 32nd hit. A depth-bound probe whose deadline came first (early
@@ -1318,8 +1380,9 @@ All notable changes to rustdl are documented here. Format is based on
     non-final node-cap stop, or the caller's deadline after a shallow level) keeps the shallow
     levels' hits, so the flag can over-attribute there.
   - New `InstanceFlags::depth_cap_hit`: a deadline or the node cap cut the probe after at least
-    one hit. It is report-only, implies `incomplete`, and is never set together with
-    `depth_capped` or `no_verdict` on one probe. On `instances` it is OR-ed over the individuals.
+    one hit. It implies `incomplete` and is never set together with `depth_capped` or
+    `no_verdict` on one probe. On `instances` it is OR-ed over the individuals. On the single
+    `instance` query it also triggers #510 (2b)'s deep retry (above); elsewhere it is report-only.
   - **`instance` / `instances`:** the deadline or node-cap wording adds that
     `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` may help as well as a larger budget.
   - **Python:** `is_instance_of` says the same in its `IncompleteQueryWarning`. The native

@@ -823,6 +823,37 @@ fn query_seeded_first_ms_default_is_pinned() {
     assert_eq!(with("soon"), 3_000, "unparsable falls back to the default");
 }
 
+/// #510 (2b): `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS`, numeric, pinned like #401's budget:
+/// unset is the default (on), `0` turns the single instance query's deep retry off, a
+/// number is honoured, and garbage falls back to the default.
+#[test]
+fn instance_depth_fallback_ms_default_is_pinned() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = "RUSTDL_INSTANCE_DEPTH_FALLBACK_MS";
+    let _restore = EnvGuard::unset(key);
+    assert_eq!(owl_dl_reasoner::INSTANCE_DEPTH_FALLBACK_DEFAULT_MS, 60_000);
+    assert_eq!(
+        owl_dl_reasoner::instance_depth_fallback_ms(),
+        60_000,
+        "unset: on"
+    );
+    #[allow(unsafe_code)]
+    let with = |v: &str| {
+        // SAFETY: ENV_MUTEX is held; `_restore` puts the prior value back.
+        unsafe { std::env::set_var(key, v) };
+        owl_dl_reasoner::instance_depth_fallback_ms()
+    };
+    assert_eq!(with("0"), 0, "`0` turns the retry off");
+    assert_eq!(with("2500"), 2_500);
+    assert_eq!(
+        with("later"),
+        60_000,
+        "unparsable falls back to the default"
+    );
+}
+
 /// #369: the lazy consistency check's two wedge budgets, numeric, pinned at
 /// rustdl-manager's request. #419's surfaces (`instance`, `instances`,
 /// `instances-expr`, `individuals`) use #401's `RUSTDL_CONSISTENCY_FALLBACK_MS`

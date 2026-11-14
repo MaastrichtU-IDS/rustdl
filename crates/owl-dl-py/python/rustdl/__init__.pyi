@@ -283,8 +283,9 @@ def is_subclass_of(path: str, sub: str, sup: str) -> bool:
 
 def is_instance_of(path: str, class_iri: str, individual_iri: str) -> bool:
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
-    cut, returns `False` and emits `IncompleteQueryWarning`. A probe that ended in
-    NoVerdict on an internal limit (likely a reasoner bug, #449) raises
+    cut, returns `False` and emits `IncompleteQueryWarning`. A decision-depth cut (or a
+    budget cut after a depth-limit hit, #510 C) is first retried on the deep path (`RUSTDL_INSTANCE_DEPTH_FALLBACK_MS`, #510). A
+    probe that ended in NoVerdict on an internal limit (likely a reasoner bug, #449) raises
     `RustdlError` instead (#493). A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...

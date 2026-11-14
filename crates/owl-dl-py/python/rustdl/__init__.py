@@ -656,9 +656,11 @@ def is_subclass_of(path, sub, sup):
 def is_instance_of(path, class_iri, individual_iri):
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
     cut (deadline, node cap, depth limit), returns `False` and emits
-    `IncompleteQueryWarning`. Emits `ConsistencyUndeterminedWarning` (#369).
-    A probe that ended in NoVerdict on an internal limit (likely a reasoner bug, #449)
-    raises `RustdlError` instead: a "no" is then not known (#493).
+    `IncompleteQueryWarning`. A probe cut by the decision-depth limit, or by a budget after
+    it had hit that limit (#510 C), is first retried once on the deep path under `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (default 60 s; `0`
+    turns the retry off), and the retry's answer is returned (#510). Emits
+    `ConsistencyUndeterminedWarning` (#369). A probe that ended in NoVerdict on an
+    internal limit (likely a reasoner bug, #449) raises `RustdlError` instead: a "no" is then not known (#493).
 
     `owl:Thing` / `owl:Nothing` are the built-in ⊤ / ⊥ (#427). Like every class,
     they raise on an inconsistent ontology: `a : owl:Thing` holds anyway, but the
@@ -671,10 +673,24 @@ def is_instance_of(path, class_iri, individual_iri):
         no_verdict,
         depth_capped,
         depth_cap_hit,
+        retry_cut,
     ) = _is_instance_of_native(path, class_iri, individual_iri)
-    _warn_if_answer_no_verdict(
-        "is_instance_of", incomplete, no_verdict, depth_capped, depth_cap_hit
-    )
+    if retry_cut and incomplete and not no_verdict:
+        # #510 (2b): the probe hit the depth limit and its deep retry was cut by its own
+        # budget or the node cap; name the knobs that can recover it.
+        _warnings.warn(
+            "is_instance_of: the probe hit the tableau's decision-depth limit, and its "
+            "deeper retry was cut by its budget or the node cap, so the False is not a "
+            "refutation. Raise RUSTDL_INSTANCE_DEPTH_FALLBACK_MS (default 60000 ms; 0 "
+            "turns the retry off) or RUSTDL_QUERY_MAX_NODES (RUSTDL_MAX_NODES, if set, "
+            "wins); RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the deep probe with no time limit.",
+            IncompleteQueryWarning,
+            stacklevel=2,
+        )
+    else:
+        _warn_if_answer_no_verdict(
+            "is_instance_of", incomplete, no_verdict, depth_capped, depth_cap_hit
+        )
     _warn_if_consistency_undetermined("is_instance_of", undetermined)
     return is_inst
 

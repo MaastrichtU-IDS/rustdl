@@ -1206,9 +1206,25 @@ const DEPTH_HIT_ADVICE: &str = "It had hit the tableau's decision-depth limit be
 /// [`exit_unknown_node_cap`] (#363 A2). #510: the message names the limit that fired,
 /// since only a deadline or node-cap cut is recovered by a larger budget. #510 (C):
 /// `depth_cap_hit` adds that the probe had hit the depth limit before its budget cut it.
-fn exit_unknown_probe_cut(depth_capped: bool, depth_cap_hit: bool) -> ! {
+/// #510 (2b): after a depth cut or a hit, the query retried on the deep path
+/// (`depth_fallback`); a cut retry is a budget cut, which its own budget or the node cap
+/// can recover. The three are exclusive in this order: a cut retry, a depth cut, a hit.
+fn exit_unknown_probe_cut(
+    depth_capped: bool,
+    depth_cap_hit: bool,
+    depth_fallback: owl_dl_reasoner::InstanceDepthFallback,
+) -> ! {
     println!("unknown");
-    if depth_capped {
+    if depth_fallback == owl_dl_reasoner::InstanceDepthFallback::Cut {
+        eprintln!(
+            "warning: the instance probe hit the tableau's decision-depth limit, and its \
+             deeper retry was cut by its budget or the node cap, reaching no verdict. Raise \
+             RUSTDL_INSTANCE_DEPTH_FALLBACK_MS (default {} ms; 0 turns the retry off) or \
+             RUSTDL_QUERY_MAX_NODES (RUSTDL_MAX_NODES, if set, wins); \
+             RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the deep probe with no time limit.",
+            owl_dl_reasoner::INSTANCE_DEPTH_FALLBACK_DEFAULT_MS
+        );
+    } else if depth_capped {
         eprintln!(
             "warning: the instance probe hit the tableau's decision-depth limit and \
              reached no verdict. {DEPTH_CUT_ADVICE}"
@@ -2418,10 +2434,32 @@ fn run() -> Result<()> {
                 // #493: a likely-bug `NoVerdict` is `unknown` with #449's note, the shape
                 // a deadline-free one always had (it used to reach the top-level net).
                 if flags.no_verdict && !verdict {
+                    // #510 (2b): the probe that ended without a verdict was the deep
+                    // retry of a depth cut; say so, or the retry would not show at all.
+                    if flags.depth_fallback == owl_dl_reasoner::InstanceDepthFallback::Cut {
+                        eprintln!(
+                            "note: the instance probe hit the tableau's decision-depth limit; \
+                             its deeper retry (RUSTDL_INSTANCE_DEPTH_FALLBACK_MS) ended \
+                             without a verdict."
+                        );
+                    }
                     exit_unknown_no_verdict();
                 }
                 if flags.incomplete && !verdict {
-                    exit_unknown_probe_cut(flags.depth_capped, flags.depth_cap_hit);
+                    exit_unknown_probe_cut(
+                        flags.depth_capped,
+                        flags.depth_cap_hit,
+                        flags.depth_fallback,
+                    );
+                }
+                // #510: say why a depth-bound query took longer than the probe budget.
+                if flags.depth_fallback == owl_dl_reasoner::InstanceDepthFallback::Decided {
+                    eprintln!(
+                        "note: the instance probe hit the tableau's decision-depth limit; \
+                         a deeper retry (RUSTDL_INSTANCE_DEPTH_FALLBACK_MS, default {} ms; \
+                         0 turns it off) decided it.",
+                        owl_dl_reasoner::INSTANCE_DEPTH_FALLBACK_DEFAULT_MS
+                    );
                 }
                 undetermined = flags.consistency_undetermined;
                 instance_no_verdict = flags.no_verdict;

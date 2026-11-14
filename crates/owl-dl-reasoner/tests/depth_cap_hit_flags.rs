@@ -119,7 +119,10 @@ impl Drop for SetEnv {
     }
 }
 
+/// The bounded probe's own flags: #510 (2b)'s deep retry is off here, since it would
+/// decide these cuts (its flags are pinned in `instance_depth_fallback_api.rs`).
 fn instance(o: &SetOntology<RcStr>, env: &[(&'static str, &str)]) -> (bool, InstanceFlags) {
+    let _off = SetEnv::new(&[("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS", "0")]);
     let _e = SetEnv::new(env);
     is_instance_of_reporting(o, Y, A).unwrap()
 }

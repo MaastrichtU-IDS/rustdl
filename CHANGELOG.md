@@ -1356,6 +1356,19 @@ All notable changes to rustdl are documented here. Format is based on
     changed answer and no answer lost. Extra CPU per retried call: median +0.69 s, p90
     +3.03 s; a retry decided within 10 s took at most +4.99 s, and 13113's ten take about
     20–26 s at the default.
+  - **Re-measured on this base, with #510 C's hit trigger** (M0′: 3,576 census calls, 8 lanes,
+    against main):
+    - 293 calls change from `unknown` to "no" at the default, and 296 with early abandon off.
+      Both oracles refute every one; there are 0 new "yes" and no other change.
+    - Extra CPU per retried call: median +0.5 s, p90 +4.1 s, max +30.5 s.
+    - **The 2x rule held on #510's census pairs but not on this tree.** The slowest retried
+      calls (whole call, under load) are:
+      - `ore_ont_5688` (10 calls, outside #510's census): 28.9–31.0 CPU-s, up to 34 s wall, so
+        1.8–1.9x slack at 60 s;
+      - `ore_ont_13113`: 21.8–23.2 CPU-s, 2.4–2.6x;
+      - `f1-wine`: 18.5–19.0 CPU-s, 2.6–3.2x.
+    - The default stays 60 s. A retry its wall-clock budget cuts (more likely under load)
+      stays `unknown`, which is never a wrong answer.
 - **`instance` and `instances` say when a probe cut by a budget had hit the decision-depth
   limit first (#510 C).** `depth_capped` (#510) covers only a probe that the depth limit itself
   ended, through early abandon's 32nd hit. A depth-bound probe whose deadline came first (early

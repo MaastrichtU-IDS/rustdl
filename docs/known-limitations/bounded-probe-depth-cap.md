@@ -120,7 +120,8 @@ from `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (no deadline at all) and
 `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` there is no bounded probe and so no retry.
 
 Not retried:
-- **A deadline cut.** Only a `depth_capped` cut is retried.
+- **A budget cut with no depth-cap hit.** Only a `depth_capped` cut, or a budget cut after at least one
+  hit (`depth_cap_hit`, #510 C), is retried.
 - **`instances`, `instances-expr`, `realize`, `justify` / `repair`.** They report the cut as
   before. `justify` asks one instance check per QuickXplain step, so a retry there could cost
   one budget per step; it calls an entry without the retry. `instance` can therefore answer
@@ -159,6 +160,21 @@ budget:
 - **Cost per retried call** (extra CPU): median +0.69 s, p90 +3.03 s. A retry decided at 10 s
   took at most +4.99 s. `ore_ont_778` changes at 4.1–5.1 CPU-s per call, `ore_ont_9890` at
   0.43 s.
+
+**Re-measured on main 73c35e8d with #510 C's hit trigger** (M0′, against main: 3,576 census
+calls, 8 lanes, declared before the data):
+- **Answers:** at the default, 293 calls change from `unknown` to "no" (279 depth-capped, 14
+  hit-triggered); with early abandon off, 296 do. HermiT and Konclude both refute every one.
+  There are 0 new "yes" and no other change after serial rechecks.
+- **Cost per retried call:** median +0.5 CPU-s, p90 +4.1 s, max +30.5 s.
+- **The 60 s default's 2x rule held on #510's census pairs, not on this tree.** The slowest
+  retried calls (whole call, under 8-lane load) are:
+  - `ore_ont_5688` (10 calls, outside #510's census): 28.9–31.0 CPU-s, up to 34 s wall, so
+    1.8–1.9x slack;
+  - `ore_ont_13113`: 21.8–23.2 CPU-s, 2.4–2.6x;
+  - `f1-wine`: 18.5–19.0 CPU-s, 2.6–3.2x.
+- The default stays 60 s (manager's decision). The budget is wall-clock, so under load a retry
+  can be cut. A cut retry stays `unknown`, never a wrong answer.
 
 ## Why the cap stays at 256
 

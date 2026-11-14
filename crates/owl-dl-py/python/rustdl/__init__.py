@@ -656,8 +656,8 @@ def is_subclass_of(path, sub, sup):
 def is_instance_of(path, class_iri, individual_iri):
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
     cut (deadline, node cap, depth limit), returns `False` and emits
-    `IncompleteQueryWarning`. A probe cut by the decision-depth limit is first retried
-    once on the deep path under `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (default 60 s; `0`
+    `IncompleteQueryWarning`. A probe cut by the decision-depth limit, or by a budget after
+    it had hit that limit (#510 C), is first retried once on the deep path under `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (default 60 s; `0`
     turns the retry off), and the retry's answer is returned (#510). Emits
     `ConsistencyUndeterminedWarning` (#369). A probe that ended in NoVerdict on an
     internal limit (likely a reasoner bug, #449) raises `RustdlError` instead: a "no" is then not known (#493).

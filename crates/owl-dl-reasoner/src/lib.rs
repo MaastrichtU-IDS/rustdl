@@ -6372,13 +6372,17 @@ pub fn query_seeded_first_ms() -> u64 {
 
 /// #510: the default of [`instance_depth_fallback_ms`]. Set by #510 (2b)'s M1 with a rule
 /// declared before the data: the smallest round budget that decides every census pair the
-/// deep retry decides within 30 s, with at least 2x slack. The slowest, `ore_ont_13113`,
-/// took about 25 s on a quiet core; every other decided retry took under 5 s. Only a retry
-/// that never decides waits the whole budget.
+/// deep retry decides within 30 s, with at least 2x slack. On #510's census the slowest,
+/// `ore_ont_13113`, took about 25 s. With #510 C's hit trigger (M0′) the slowest retried
+/// calls are `ore_ont_5688` (28.9–31.0 CPU-s, up to 34 s wall under load: 1.8–1.9x slack,
+/// below the rule), `ore_ont_13113` (2.4–2.6x) and `f1-wine` (2.6–3.2x); 60 s is kept, and a
+/// retry the wall-clock budget cuts stays `unknown` (sound). Only a retry that never
+/// decides waits the whole budget.
 pub const INSTANCE_DEPTH_FALLBACK_DEFAULT_MS: u64 = 60_000;
 
 /// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (#510): when a single instance query's bounded
-/// probe is cut by the tableau's decision-depth limit (`depth_capped`), the query runs
+/// probe is cut by the tableau's decision-depth limit (`depth_capped`), or a budget cut
+/// it after it had hit that limit (`depth_cap_hit`, #510 C), the query runs
 /// the same `{a} ⊓ ¬C` probe once more on the deep path
 /// ([`PreparedOntology::decide_deep_with_deadline`], the search of
 /// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) under this budget, in milliseconds, counted from

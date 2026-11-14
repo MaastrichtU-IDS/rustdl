@@ -80,7 +80,8 @@ pub(crate) fn is_subclass_of(
 /// means a "yes" may be the vacuous answer of an inconsistent KB; `depth_capped` (#510)
 /// means the cut was the decision-depth limit, which a larger budget does not recover;
 /// `depth_cap_hit` (#510 C) means a budget cut the probe after it had hit that limit
-/// (`InstanceFlags`); `retry_cut` (#510, 2b) means the deep retry after a depth cut was
+/// (`InstanceFlags`); `retry_cut` (#510, 2b) means the deep retry after a depth cut (or a
+/// hit, #510 C) was
 /// cut by its own budget or the node cap (`InstanceDepthFallback::Cut`).
 #[pyfunction]
 pub(crate) fn is_instance_of(

@@ -74,16 +74,17 @@ pub(crate) fn is_subclass_of(
     ))
 }
 
-/// `(is_instance, incomplete, consistency_undetermined)`: `incomplete` means the
-/// probe was cut (deadline, node cap or depth limit) and "no" is the sound
-/// direction; `consistency_undetermined` (#369) means a "yes" may be the vacuous
-/// answer of an inconsistent KB (`InstanceFlags`).
+/// `(is_instance, incomplete, consistency_undetermined, no_verdict, depth_capped)`:
+/// `incomplete` means the probe was cut (deadline, node cap or depth limit) and "no"
+/// is the sound direction; `consistency_undetermined` (#369) means a "yes" may be the
+/// vacuous answer of an inconsistent KB; `depth_capped` (#510) means the cut was the
+/// decision-depth limit, which a larger budget does not recover (`InstanceFlags`).
 #[pyfunction]
 pub(crate) fn is_instance_of(
     path: &str,
     class_iri: &str,
     individual_iri: &str,
-) -> PyResult<(bool, bool, bool, bool)> {
+) -> PyResult<(bool, bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (holds, flags) =
@@ -99,18 +100,20 @@ pub(crate) fn is_instance_of(
         flags.incomplete,
         flags.consistency_undetermined,
         flags.no_verdict,
+        flags.depth_capped,
     ))
 }
 
-/// `(individuals, incomplete, consistency_undetermined, no_verdict)`: named
-/// individuals entailed to be instances of `class_iri`; `incomplete` means at least
-/// one probe was cut; `consistency_undetermined` as in `is_instance_of` (#369);
-/// `no_verdict` (#493) means a cut was a likely-bug `NoVerdict` (#449).
+/// `(individuals, incomplete, consistency_undetermined, no_verdict, depth_capped)`:
+/// named individuals entailed to be instances of `class_iri`; `incomplete` means at
+/// least one probe was cut; `consistency_undetermined` as in `is_instance_of` (#369);
+/// `no_verdict` (#493) means a cut was a likely-bug `NoVerdict` (#449); `depth_capped`
+/// (#510) means a cut was the decision-depth limit.
 #[pyfunction]
 pub(crate) fn instances_of(
     path: &str,
     class_iri: &str,
-) -> PyResult<(Vec<String>, bool, bool, bool)> {
+) -> PyResult<(Vec<String>, bool, bool, bool, bool)> {
     let ontology = load::load_path(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (members, flags) = owl_dl_reasoner::instances_of_reporting(&ontology, class_iri)
@@ -120,6 +123,7 @@ pub(crate) fn instances_of(
         flags.incomplete,
         flags.consistency_undetermined,
         flags.no_verdict,
+        flags.depth_capped,
     ))
 }
 
@@ -130,13 +134,22 @@ pub(crate) fn instances_of(
 /// another listed type (`Realization::direct_types_unverified`, #388);
 /// `witness_prune_may_drop` means the pseudo-model prune ran on a witness with a
 /// known reason to lack an entailed type (`Realization::witness_prune_may_drop`,
-/// #387); then #429's `relies_on_trusted_consistency`; the last value is #493's
-/// `no_verdict` (`Realization::no_verdict`, a likely-bug `NoVerdict`, #449).
+/// #387); then #429's `relies_on_trusted_consistency`; then #493's `no_verdict`
+/// (`Realization::no_verdict`, a likely-bug `NoVerdict`, #449); the last value is
+/// #510's `depth_capped` (`Realization::depth_capped`).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn realize(
     path: &str,
-) -> PyResult<(HashMap<String, Vec<String>>, bool, bool, bool, bool, bool)> {
+) -> PyResult<(
+    HashMap<String, Vec<String>>,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+)> {
     let ontology = load::load_path(path)?;
     let rs_realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     Ok((
@@ -146,6 +159,7 @@ pub(crate) fn realize(
         rs_realization.witness_prune_may_drop(),
         rs_realization.relies_on_trusted_consistency(),
         rs_realization.no_verdict(),
+        rs_realization.depth_capped(),
     ))
 }
 
@@ -397,15 +411,15 @@ pub(crate) fn class_expression_entailed_subclass(
     ))
 }
 
-/// `(individuals, incomplete)`: named individuals provably in `ce`;
-/// `incomplete` means at least one instance probe was cut, so members may be
-/// missing (those returned are sound). Runs under the single-query node cap,
-/// like `instances_of`.
+/// `(individuals, incomplete, consistency_undetermined, no_verdict, depth_capped)`:
+/// named individuals provably in `ce`; `incomplete` means at least one instance probe
+/// was cut, so members may be missing (those returned are sound); the rest as in
+/// `instances_of`. Runs under the single-query node cap, like `instances_of`.
 #[pyfunction]
 pub(crate) fn class_expression_instances(
     path: &str,
     ce: &str,
-) -> PyResult<(Vec<String>, bool, bool, bool)> {
+) -> PyResult<(Vec<String>, bool, bool, bool, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
@@ -417,6 +431,8 @@ pub(crate) fn class_expression_instances(
         r.consistency_undetermined(),
         // #493: a likely-bug `NoVerdict` (#449); the wrapper warns with that text.
         r.no_verdict(),
+        // #510: a depth cut; the wrapper names the limit.
+        r.depth_capped(),
     ))
 }
 

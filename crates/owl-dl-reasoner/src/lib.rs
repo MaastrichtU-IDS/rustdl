@@ -487,6 +487,10 @@ pub struct ExistentialSuccessorFlags {
     /// likely a reasoner bug (#449) ([`Realization::no_verdict`]). `incomplete` is set
     /// too.
     pub no_verdict: bool,
+    /// #510: a cut instance probe of the `realize` run hit the tableau's decision-depth
+    /// limit ([`Realization::depth_capped`]), which a larger budget does not recover.
+    /// Report-only: implies `incomplete`.
+    pub depth_capped: bool,
 }
 
 /// [`materialize_existential_successors`], plus the completeness flags of the
@@ -578,6 +582,7 @@ pub fn materialize_existential_successors_reporting<A: horned_owl::model::ForIRI
         witness_prune_may_drop: realization.witness_prune_may_drop(),
         relies_on_trusted_consistency: realization.relies_on_trusted_consistency(),
         no_verdict: realization.no_verdict(),
+        depth_capped: realization.depth_capped(),
     };
     // Distinct (a, R, C) with a:X entailed and X ⊑ ∃R.C told.
     let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
@@ -13765,6 +13770,7 @@ mod tests {
             incomplete,
             relies_on_trusted_consistency: false,
             no_verdict: false,
+            depth_capped: false,
         };
         for (status, incomplete) in [(Verdict::NotEntailed, false), (Verdict::Unknown, true)] {
             let (r, inc) = fallback_after_inconsistency(outcome(status, incomplete));
@@ -16171,6 +16177,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             incomplete: true,
             relies_on_trusted_consistency: false,
             no_verdict: false,
+            depth_capped: false,
         };
         let (result, incomplete) = fallback_after_held(gave_up);
         assert!(
@@ -16189,6 +16196,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             incomplete: true,
             relies_on_trusted_consistency: false,
             no_verdict: false,
+            depth_capped: false,
         };
         let (result, incomplete) = fallback_after_held(not_minimal);
         assert!(matches!(

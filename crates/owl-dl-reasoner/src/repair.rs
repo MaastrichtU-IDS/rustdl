@@ -62,6 +62,12 @@ pub struct Repairs<A: ForIRI> {
     /// limit, likely a reasoner bug, #449): the top-level check, a justification probe
     /// or a verification. `incomplete` is set too.
     pub no_verdict: bool,
+    /// #510: an oracle call's instance check was cut by the tableau's decision-depth
+    /// limit ([`crate::justify::JustifyOutcome::depth_capped`]): the top-level check, a
+    /// justification probe or a verification. A larger budget does not recover it.
+    /// `incomplete` is set too; as in justify, it is set only where `incomplete` already
+    /// is, never a cause of it.
+    pub depth_capped: bool,
 }
 
 /// Compute verified minimal repairs for `q` in `onto`.
@@ -96,6 +102,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
     let justifications = outcome.justifications;
     let mut trusted = outcome.relies_on_trusted_consistency;
     let mut no_verdict = outcome.no_verdict;
+    let mut depth_capped = outcome.depth_capped;
     if justifications.is_empty() {
         return Ok(Repairs {
             entailed: false,
@@ -107,6 +114,7 @@ pub fn find_repairs_prepared<A: ForIRI>(
             incomplete: outcome.incomplete,
             relies_on_trusted_consistency: trusted,
             no_verdict,
+            depth_capped,
         });
     }
     // A give-up in the search can hide a justification (a pruned branch), and so
@@ -139,12 +147,12 @@ pub fn find_repairs_prepared<A: ForIRI>(
         }
         let kept: Vec<Component<A>> = logical.iter().filter(|a| !h.contains(a)).cloned().collect();
         let reduced = ontology_from(fixed, &kept);
-        let ((verdict, verdict_trusted), verdict_no_verdict) =
-            crate::justify::with_oracle_no_verdict(|| {
-                crate::justify::with_oracle_trust(|| entails_reporting(&reduced, q))
-            });
+        let ((verdict, verdict_trusted), verdict_cuts) = crate::justify::with_oracle_cuts(|| {
+            crate::justify::with_oracle_trust(|| entails_reporting(&reduced, q))
+        });
         trusted |= verdict_trusted;
-        no_verdict |= verdict_no_verdict;
+        no_verdict |= verdict_cuts.no_verdict;
+        depth_capped |= verdict_cuts.depth_capped;
         match verdict? {
             Verdict::Entailed => {
                 // An unfound justification survives — not a real repair.
@@ -174,6 +182,8 @@ pub fn find_repairs_prepared<A: ForIRI>(
         incomplete,
         relies_on_trusted_consistency: trusted,
         no_verdict,
+        // #510 review: reported only where `incomplete` is set anyway, as in justify.
+        depth_capped: depth_capped && incomplete,
     })
 }
 

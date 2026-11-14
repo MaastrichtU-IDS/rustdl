@@ -34,19 +34,39 @@ never answered "no"; on 13132, 394 and 2488 every trace shows exactly 32 cap hit
 abandon), and `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` answers "no" on all 15 cut pairs, as HermiT
 and Konclude do.
 
-Since #510, `instance` and `instances` say when the cut was the depth limit and point to
-`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (`InstanceFlags::depth_capped`). Changing the search itself
-for a single query (no early abandon, a deeper cap, or a deadline-free retry) is open and
-needs the bar below.
+Since #510, the instance-probe surfaces say when the cut was the depth limit and point to
+`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`:
+- `instance` and `instances` (`InstanceFlags::depth_capped`);
+- `instances-expr` (`CeInstances::depth_capped`);
+- `realize` (`Realization::depth_capped`), where `=0` also takes the deadline off the
+  classification step;
+- `justify` / `repair`'s instance checks (`JustifyOutcome::depth_capped`,
+  `Repairs::depth_capped`);
+- the matching Python calls' `IncompleteQueryWarning` text.
+
+Changing the search itself for a single query (no early abandon, a deeper cap, or a
+deadline-free retry) is open and needs the bar below.
 
 What the flag does not see:
 - **Early abandon off** (`RUSTDL_TABLEAU_EARLY_ABANDON=0`). A probe that keeps hitting the cap
   then runs into its deadline instead, and is reported as a deadline cut, with the advice to
   raise the timeout, which cannot recover it. Depth-cap hits before a deadline are not tracked.
-- **`instances-expr` and `realize`** don't track the cause. Their warning names all three limits
-  and gives both pieces of advice.
+- **`realize`'s classification step and #388's direct-type checks.** They don't feed
+  `Realization::incomplete`, so they don't feed `depth_capped` either. `Realization::depth_capped`
+  counts named individuals' probes only, while `InstanceFlags` / `CeInstances` count anonymous
+  individuals' too.
+- **`--json`.** No JSON output carries the cut cause, and under `--json` `instances-expr` and
+  `realize` print no cut warning (`justify --json` does).
+- **`justify`'s other checks** (subclass, unsatisfiability, consistency) run without a deadline,
+  so their depth limit is #462's `no_verdict`.
 - A deadline-free probe that ends at its own depth limit is #462's `no_verdict` signal, never
   `depth_capped`.
+- **`justify` / `repair` report a depth cut only on an outcome that is incomplete anyway**; a depth
+  cut never makes one incomplete. A depth cut on the ⊥-module check is discarded (the full set
+  re-decides), so a definite answer stays complete and unflagged. The flip side: such a discarded
+  depth cut followed by an unrelated give-up (the node cap, or a deadline on the full set) still
+  reports `depth_capped`, and the depth advice is shown although the cut that mattered was not a
+  depth cut. The warning text ("at least one instance check hit …") stays literally true.
 
 ## Why the cap stays at 256
 

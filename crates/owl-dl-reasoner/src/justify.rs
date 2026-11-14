@@ -379,30 +379,76 @@ pub(crate) fn with_oracle_trust<T>(f: impl FnOnce() -> T) -> (T, bool) {
     (r, inner)
 }
 
+/// Why oracle calls inside a [`with_oracle_cuts`] scope gave up, beyond the plain
+/// `Unknown` verdict every give-up answers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OracleCuts {
+    /// #462: a deadline-free probe ended in `NoVerdict` (an internal limit, likely a
+    /// reasoner bug, #449).
+    pub(crate) no_verdict: bool,
+    /// #510: an instance check's probe hit the tableau's decision-depth limit
+    /// ([`crate::InstanceFlags::depth_capped`]), which a larger budget does not recover.
+    /// Only the instance check runs under a deadline here; the other oracle checks are
+    /// deadline-free, so their depth limit is `no_verdict`.
+    pub(crate) depth_capped: bool,
+}
+
+impl OracleCuts {
+    fn or(self, other: Self) -> Self {
+        Self {
+            no_verdict: self.no_verdict || other.no_verdict,
+            depth_capped: self.depth_capped || other.depth_capped,
+        }
+    }
+}
+
 thread_local! {
-    /// #462: set when an oracle's deadline-free probe ended in `NoVerdict` inside the
-    /// current [`with_oracle_no_verdict`] scope. Read only through that scope, which
-    /// clears it on entry, so one query's mark never reaches another.
-    static ORACLE_NO_VERDICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The [`OracleCuts`] of the oracle calls inside the current [`with_oracle_cuts`]
+    /// scope. Read only through that scope, which clears it on entry, so one query's
+    /// mark never reaches another. Justify is single-threaded, so a thread-local is
+    /// exact here.
+    static ORACLE_CUTS: std::cell::Cell<OracleCuts> =
+        const { std::cell::Cell::new(OracleCuts { no_verdict: false, depth_capped: false }) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test seam for [`localized_candidates`]: its ⊥-module check behaves as a
+    /// depth-cut instance probe. See `module_depth_cut_tests`.
+    static TEST_MODULE_DEPTH_CUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// #462: an oracle's deadline-free probe ended in `NoVerdict` (an internal limit, likely
 /// a reasoner bug, #449). Mark the current scope and answer `Unknown`, the oracle's
 /// existing give-up.
 fn oracle_no_verdict() -> Verdict {
-    ORACLE_NO_VERDICT.with(|c| c.set(true));
+    ORACLE_CUTS.with(|c| {
+        c.set(c.get().or(OracleCuts {
+            no_verdict: true,
+            depth_capped: false,
+        }));
+    });
     Verdict::Unknown
 }
 
-/// Run `f` and report whether any oracle call inside it ended in `NoVerdict` (#462).
-/// Scopes nest like [`with_oracle_trust`].
-pub(crate) fn with_oracle_no_verdict<T>(f: impl FnOnce() -> T) -> (T, bool) {
-    let prior = ORACLE_NO_VERDICT.with(|c| c.replace(false));
+/// #510: an oracle's instance check was cut by the decision-depth limit. Mark the
+/// current scope; the check's verdict is `Unknown` as before.
+fn mark_oracle_depth_cut() {
+    ORACLE_CUTS.with(|c| {
+        c.set(c.get().or(OracleCuts {
+            no_verdict: false,
+            depth_capped: true,
+        }));
+    });
+}
+
+/// Run `f` and report why oracle calls inside it gave up ([`OracleCuts`]: #462's
+/// `NoVerdict`, #510's depth cut). Scopes nest like [`with_oracle_trust`].
+pub(crate) fn with_oracle_cuts<T>(f: impl FnOnce() -> T) -> (T, OracleCuts) {
+    let prior = ORACLE_CUTS.with(|c| c.replace(OracleCuts::default()));
     let r = f();
-    let inner = ORACLE_NO_VERDICT.with(|c| c.replace(prior));
-    if inner {
-        ORACLE_NO_VERDICT.with(|c| c.set(true));
-    }
+    let inner = ORACLE_CUTS.with(|c| c.replace(prior));
+    ORACLE_CUTS.with(|c| c.set(c.get().or(inner)));
     (r, inner)
 }
 
@@ -473,7 +519,13 @@ pub fn entails_reporting<A: ForIRI>(
                 // #493: the instance probe now reports a likely-bug `NoVerdict` as a
                 // flag (it used to be the error above); same oracle answer.
                 Ok((false, flags)) if flags.no_verdict => Ok(oracle_no_verdict()),
-                r => r.map(|(holds, flags)| Verdict::from_check(holds, flags.incomplete)),
+                r => r.map(|(holds, flags)| {
+                    // #510: the give-up below (`Unknown`) was the decision-depth limit.
+                    if !holds && flags.depth_capped {
+                        mark_oracle_depth_cut();
+                    }
+                    Verdict::from_check(holds, flags.incomplete)
+                }),
             }
         }
         Entailment::Inconsistent => {
@@ -1339,7 +1391,18 @@ fn localized_candidates<A: ForIRI>(
             all_candidates.len()
         );
     }
-    if entails_reporting(&ontology_from(fixed, &module), q)? == Verdict::Entailed {
+    let module_verdict = entails_reporting(&ontology_from(fixed, &module), q)?;
+    // Test seam (#510 review): the module check acts as a depth-cut instance probe
+    // does (marks the scope, answers `Unknown`), so a test reaches the full-set
+    // fallback with a definite answer and a discarded cut.
+    #[cfg(test)]
+    let module_verdict = if TEST_MODULE_DEPTH_CUT.with(std::cell::Cell::get) {
+        mark_oracle_depth_cut();
+        Verdict::Unknown
+    } else {
+        module_verdict
+    };
+    if module_verdict == Verdict::Entailed {
         Ok(Ok(canonical_order(module)))
     } else {
         // Entailed here is a locality bug — safe fallback; otherwise genuinely not
@@ -1375,6 +1438,9 @@ pub struct Justification<A: ForIRI> {
 }
 
 /// The outcome of a justification query with its give-up signal (#396).
+// `struct_excessive_bools`: each bool is an independent signal of the public result
+// (#510 added the depth cut); they are not states of one machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct JustifyOutcome<A: ForIRI> {
     /// Whether the query is entailed. `Unknown`: the top-level check gave up, so
@@ -1400,6 +1466,17 @@ pub struct JustifyOutcome<A: ForIRI> {
     /// limit, likely a reasoner bug, #449) and answered `Unknown`. `incomplete` is set
     /// too; this is its own signal so a caller can tell it from a node-cap give-up.
     pub no_verdict: bool,
+    /// #510: some oracle call's instance check was cut by the tableau's decision-depth
+    /// limit ([`crate::InstanceFlags::depth_capped`]) and answered `Unknown`. A larger
+    /// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not recover such a cut; the
+    /// deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) searches much deeper.
+    /// `incomplete` is set too. Only `InstanceOf` checks run under a deadline, so only
+    /// an instance query (or a search whose checks are instance checks) sets it.
+    ///
+    /// Report-only: set only when the outcome is `incomplete` for its own reasons (an
+    /// `Unknown` verdict, a give-up, `no_verdict`). A cut ⊥-module check is discarded
+    /// (the full set decides), so it leaves a definite answer complete and unflagged.
+    pub depth_capped: bool,
 }
 
 impl<A: ForIRI> JustifyOutcome<A> {
@@ -1437,6 +1514,7 @@ impl GiveUps {
 
 /// A search's raw result: the top-level verdict, the justifications (each with
 /// whether its own `QuickXplain` gave up), and whether any probe gave up.
+#[allow(clippy::struct_excessive_bools)] // as `JustifyOutcome`
 struct Search<A: ForIRI> {
     status: Verdict,
     found: Vec<(Vec<Component<A>>, bool)>,
@@ -1445,6 +1523,8 @@ struct Search<A: ForIRI> {
     trusted: bool,
     /// #462: see [`JustifyOutcome::no_verdict`].
     no_verdict: bool,
+    /// #510: see [`JustifyOutcome::depth_capped`].
+    depth_capped: bool,
 }
 
 impl<A: ForIRI> Search<A> {
@@ -1455,6 +1535,7 @@ impl<A: ForIRI> Search<A> {
             gave_up: false,
             trusted: false,
             no_verdict: false,
+            depth_capped: false,
         }
     }
 
@@ -1470,12 +1551,18 @@ impl<A: ForIRI> Search<A> {
                 .map(|(axioms, gave_up)| justification(axioms, fragment, gave_up))
                 .collect()
         };
+        // #510 review: a depth cut is only reported, never a cause of `incomplete`. A
+        // cut ⊥-module check is discarded (`localized_candidates` re-decides on the full
+        // set), so a scope can carry a depth mark under a definite, complete answer;
+        // OR-ing it in would turn repair's "not entailed" into "unknown" (exit 3).
+        let incomplete = self.status == Verdict::Unknown || self.gave_up || self.no_verdict;
         JustifyOutcome {
             status: self.status,
             justifications,
-            incomplete: self.status == Verdict::Unknown || self.gave_up || self.no_verdict,
+            incomplete,
             relies_on_trusted_consistency: self.trusted,
             no_verdict: self.no_verdict,
+            depth_capped: self.depth_capped && incomplete,
         }
     }
 }
@@ -1625,11 +1712,12 @@ fn search_one<A: ForIRI>(
     all_candidates: &[Component<A>],
     q: &Entailment,
 ) -> Result<Search<A>, ReasonError> {
-    let ((search, trusted), no_verdict) =
-        with_oracle_no_verdict(|| with_oracle_trust(|| search_one_inner(fixed, all_candidates, q)));
+    let ((search, trusted), cuts) =
+        with_oracle_cuts(|| with_oracle_trust(|| search_one_inner(fixed, all_candidates, q)));
     search.map(|s| Search {
         trusted,
-        no_verdict,
+        no_verdict: cuts.no_verdict,
+        depth_capped: cuts.depth_capped,
         ..s
     })
 }
@@ -1656,8 +1744,9 @@ fn search_one_inner<A: ForIRI>(
         status: Verdict::Entailed,
         found: vec![(j, give_ups.gave_up)],
         gave_up: give_ups.gave_up,
-        trusted: false,    // set by `search_one`
-        no_verdict: false, // set by `search_one`
+        trusted: false,      // set by `search_one`
+        no_verdict: false,   // set by `search_one`
+        depth_capped: false, // set by `search_one`
     })
 }
 
@@ -1668,12 +1757,12 @@ fn search_all<A: ForIRI>(
     q: &Entailment,
     max: usize,
 ) -> Result<Search<A>, ReasonError> {
-    let ((search, trusted), no_verdict) = with_oracle_no_verdict(|| {
-        with_oracle_trust(|| search_all_inner(fixed, all_candidates, q, max))
-    });
+    let ((search, trusted), cuts) =
+        with_oracle_cuts(|| with_oracle_trust(|| search_all_inner(fixed, all_candidates, q, max)));
     search.map(|s| Search {
         trusted,
-        no_verdict,
+        no_verdict: cuts.no_verdict,
+        depth_capped: cuts.depth_capped,
         ..s
     })
 }
@@ -1743,8 +1832,9 @@ fn search_all_inner<A: ForIRI>(
         status: Verdict::Entailed,
         found,
         gave_up: branch_give_ups.gave_up,
-        trusted: false,    // set by `search_all`
-        no_verdict: false, // set by `search_all`
+        trusted: false,      // set by `search_all`
+        no_verdict: false,   // set by `search_all`
+        depth_capped: false, // set by `search_all`
     })
 }
 
@@ -1996,5 +2086,118 @@ mod oracle_trust_tests {
             assert!(!inner);
         });
         assert!(outer, "the inner scope must restore the outer mark");
+    }
+}
+
+/// #510 review: a depth cut on the ⊥-module check is discarded (the full set decides),
+/// so it must not make a definite answer incomplete. With the depth mark OR-ed into
+/// `incomplete`, `repair` printed "unknown" and exited 3 on a non-entailment the full
+/// set decides, and `justify --all` truncated an entailed search. No natural fixture
+/// pins this: the module is a subset of the full set, so a module that depth-cuts
+/// while the full set decides depends on search order. The seam makes the module
+/// check act as a depth-cut instance probe does (mark, `Unknown`).
+#[cfg(test)]
+mod module_depth_cut_tests {
+    use super::{
+        Entailment, TEST_MODULE_DEPTH_CUT, Verdict, find_all_justifications_reporting,
+        find_one_justification_reporting, localized_candidates, logical_axioms, with_oracle_cuts,
+    };
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    fn fixture() -> SetOntology<RcStr> {
+        let src = "Prefix(:=<http://ex/#>) Ontology(<http://ex/o> \
+             Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:Z)) \
+             Declaration(NamedIndividual(:a)) \
+             SubClassOf(:X :Y) ClassAssertion(:X :a))";
+        read(&mut Cursor::new(src), ParserConfiguration::default())
+            .expect("fixture parses")
+            .0
+    }
+
+    fn instance(class: &str) -> Entailment {
+        Entailment::InstanceOf {
+            individual: "http://ex/#a".into(),
+            class: format!("http://ex/#{class}"),
+        }
+    }
+
+    /// Sets the seam on this test's thread for the guard's lifetime.
+    struct Seam;
+    impl Seam {
+        fn on() -> Self {
+            TEST_MODULE_DEPTH_CUT.with(|c| c.set(true));
+            Seam
+        }
+    }
+    impl Drop for Seam {
+        fn drop(&mut self) {
+            TEST_MODULE_DEPTH_CUT.with(|c| c.set(false));
+        }
+    }
+
+    /// The instrument fires: under the seam the module check marks a depth cut and
+    /// the full set still decides.
+    #[test]
+    fn the_seam_marks_a_depth_cut_on_the_module_check() {
+        let o = fixture();
+        let (fixed, all) = logical_axioms(&o);
+        let _s = Seam::on();
+        for (class, want) in [("Y", Ok(())), ("Z", Err(Verdict::NotEntailed))] {
+            let (got, cuts) =
+                with_oracle_cuts(|| localized_candidates(&fixed, &all, &instance(class)));
+            assert!(cuts.depth_capped, "{class}: the seam did not mark");
+            assert_eq!(got.expect("no error").map(|_| ()), want, "{class}");
+        }
+    }
+
+    #[test]
+    fn a_discarded_module_depth_cut_leaves_a_definite_answer_complete() {
+        let o = fixture();
+        let _s = Seam::on();
+        for (class, status) in [("Y", Verdict::Entailed), ("Z", Verdict::NotEntailed)] {
+            let q = instance(class);
+            let outcomes = [
+                (
+                    "find_one",
+                    find_one_justification_reporting(&o, &q).expect("ok"),
+                ),
+                (
+                    "find_all",
+                    find_all_justifications_reporting(&o, &q, 10).expect("ok"),
+                ),
+                (
+                    "laconic",
+                    crate::find_all_laconic_justifications_reporting(&o, &q, 10).expect("ok"),
+                ),
+            ];
+            for (api, out) in outcomes {
+                assert_eq!(out.status, status, "{api} {class}");
+                assert!(
+                    !out.incomplete,
+                    "{api} {class}: a discarded cut made it incomplete"
+                );
+                assert!(!out.depth_capped && !out.no_verdict, "{api} {class}");
+                assert_eq!(
+                    out.justifications.len(),
+                    usize::from(class == "Y"),
+                    "{api} {class}"
+                );
+            }
+            // `repair`'s exit code and "not entailed" line read these fields.
+            let r = crate::find_repairs(&o, &q, 10).expect("ok");
+            assert_eq!(r.entailed, class == "Y", "repair {class}");
+            assert!(
+                !r.incomplete && !r.depth_capped,
+                "repair {class}: {}",
+                r.incomplete
+            );
+            if class == "Y" {
+                assert!(r.complete && !r.repairs.is_empty(), "repair {class}");
+            }
+        }
     }
 }

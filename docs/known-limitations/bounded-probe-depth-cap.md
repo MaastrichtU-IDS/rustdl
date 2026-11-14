@@ -61,6 +61,12 @@ What the flag does not see:
   so their depth limit is #462's `no_verdict`.
 - A deadline-free probe that ends at its own depth limit is #462's `no_verdict` signal, never
   `depth_capped`.
+- **`justify` / `repair` report a depth cut only on an outcome that is incomplete anyway**; a depth
+  cut never makes one incomplete. A depth cut on the ⊥-module check is discarded (the full set
+  re-decides), so a definite answer stays complete and unflagged. The flip side: such a discarded
+  depth cut followed by an unrelated give-up (the node cap, or a deadline on the full set) still
+  reports `depth_capped`, and the depth advice is shown although the cut that mattered was not a
+  depth cut. The warning text ("at least one instance check hit …") stays literally true.
 
 ## Why the cap stays at 256
 

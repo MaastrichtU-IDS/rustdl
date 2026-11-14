@@ -295,6 +295,22 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The `≤`-witness scans count a stale neighbour entry as the live individual it stands for
+  (#486).** Defence in depth: no input is known to reach it. `max_witnesses` and
+  `nominal_max_overfull` counted every neighbour entry raw.
+  - A stale entry to a merged node, left beside its live twin (the #38 shape), made one
+    individual two witnesses. With the stale node older, keep-older merged the live twin into the
+    dead node and left a redirect cycle that `resolve` never leaves (a hang). The nominal guard
+    could also read an over-full `≤` and defer generation.
+  - The #38 premise, a stale entry on a live node, has been closed at the source since #284
+    (rules no longer fire on merged-away nodes). This change guards against it coming back.
+  - Both scans now resolve each entry (`TableauContext::live_neighbour`), drop pruned nodes, and
+    dedupe.
+  - A witness reached only through a stale entry has no live edge to read deps from, so its
+    merge or `⊥` rests on every active decision, as #498 does. Too few deps would be a wrong
+    back-jump, i.e. a false `unsat`.
+  - `apply_max` stops when a merge takes away `node` itself.
+  - A debug assertion stops any merge of a redirected node.
 - **The wedge refutes a disjunct whose `≤1` clashes as it is asserted (#509).** `≤1 r(.C)`
   arises as the NNF of `¬(≥2 r(.C))` when an equivalence's `≥2 … → C` side is clausified. When the
   search chose that disjunct on a node that already had two `≠` `r`-successors (from a `≥2`), the

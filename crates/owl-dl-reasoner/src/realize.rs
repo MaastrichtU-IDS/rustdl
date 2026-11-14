@@ -1854,6 +1854,29 @@ pub(crate) fn realize_tableau_internal(
             _ => (None, WitnessPruneReasons::default()),
         };
 
+    // PROBE (#430 M2 ground truth, never committed): dump the witness the prune will use, then exit.
+    if let Some(path) = std::env::var_os("RUSTDL_430_WITNESS_DUMP") {
+        use std::io::Write as _;
+        let mut f = std::io::BufWriter::new(std::fs::File::create(path).expect("dump file"));
+        writeln!(f, "{{\"meta\": true, \"source\": \"{}\", \"has_witness\": {}, \"reasons\": \"{:?}\", \"n_satisfiable\": {}, \"n_ind\": {}}}",
+            if base_model.is_none() { "none" } else if from_precheck { "precheck" } else { "built" },
+            base_model.is_some(), witness_prune_reasons, satisfiable.len(), individual_iris.len()).unwrap();
+        {
+            let esc = |x: &str| x.replace('\\', "\\\\").replace('"', "\\\"");
+            let cs: Vec<String> = satisfiable.iter().map(|(_, c)| format!("\"{}\"", esc(c))).collect();
+            writeln!(f, "{{\"satisfiable\": [{}]}}", cs.join(", ")).unwrap();
+        }
+        if let Some(m) = &base_model {
+            for (idx, iri) in individual_iris.iter().enumerate() {
+                let types: Vec<&str> = satisfiable.iter().filter(|(ci, _)| m[idx].contains(&ClassId::new(u32::try_from(*ci).unwrap()))).map(|(_, c)| *c).collect();
+                let esc = |x: &str| x.replace('\\', "\\\\").replace('"', "\\\"");
+                let ts: Vec<String> = types.iter().map(|t| format!("\"{}\"", esc(t))).collect();
+                writeln!(f, "{{\"iri\": \"{}\", \"types\": [{}]}}", esc(iri), ts.join(", ")).unwrap();
+            }
+        }
+        f.flush().unwrap();
+        std::process::exit(0);
+    }
     // Per-individual realization is independent across individuals
     // (each builds a fresh tableau context per class probe via
     // `prepared.decide_with_deadline` / `decide_raw`). Parallelise the outer loop with rayon; the

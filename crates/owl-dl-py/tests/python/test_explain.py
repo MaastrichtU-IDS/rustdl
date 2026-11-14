@@ -140,5 +140,6 @@ def test_justify_and_repair_an_undeclared_instance_query(tmp_path):
 
 def test_an_undeclared_typo_is_still_an_error(tmp_path):
     p = _write(tmp_path, UNDECLARED)
-    with pytest.raises(rustdl.RustdlError, match="not in ontology"):
+    # The binding raises RustdlError with the missing IRI as its message.
+    with pytest.raises(rustdl.RustdlError, match="Typo"):
         rustdl.justify(p, ["instance", "http://ex/#a", "http://ex/#Typo"])

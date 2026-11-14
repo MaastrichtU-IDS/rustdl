@@ -28,7 +28,7 @@ use owl_dl_saturation::{Subsumers, saturate, saturate_for_realize};
 use crate::PreparedOntology;
 use crate::ReasonError;
 use crate::classify::{
-    classify_saturation_only_internal, classify_top_down_internal, is_pure_el,
+    classify_saturation_only_internal, classify_top_down_internal_capturing, is_pure_el,
     saturator_complete_fragment, tbox_only_saturator_eligible,
 };
 
@@ -63,6 +63,11 @@ const DEFAULT_REALIZE_PAIR_TIMEOUT_MS: u64 = 750;
 /// single extra wedge run per `realize` call, not per pair, but an unbounded
 /// deadline on an off-fragment `ABox` reintroduces exactly the long-run risk
 /// the #35-v4 per-pair timeout was built to bound.
+///
+/// Since #430 this budget governs only the fallback build: realize first takes the
+/// model classify's inconsistency pre-check built
+/// ([`crate::realize_witness_from_precheck_enabled`]) and builds its own only when
+/// there is none. `=0` therefore means "no fallback witness", not "no witness".
 const DEFAULT_PSEUDO_MODEL_WITNESS_MS: u64 = 1000;
 
 /// Is the pseudo-model realize shortcut enabled?
@@ -1749,6 +1754,57 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
     realize_tableau_internal(internal)
 }
 
+/// #430: where realize's pseudo-model witness came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WitnessSource {
+    /// Classify's inconsistency pre-check (route 2) handed over its `Sat` model.
+    Precheck,
+    /// Realize built its own under `RUSTDL_PSEUDO_MODEL_WITNESS_MS`.
+    Built,
+    /// No witness: every pair takes the normal probe path.
+    None,
+}
+
+/// #430: the witness realize prunes with, and where it came from.
+struct WitnessChoice {
+    witness: Option<crate::WedgeWitness>,
+    source: WitnessSource,
+    /// The pre-check's model was dropped for its length (see [`choose_witness`]).
+    dropped_capture: bool,
+}
+
+/// #430: takes the pre-check's model when it has one type set per individual, else the
+/// one `build` returns. A witness of any other length is indexed against another
+/// individual numbering and would prune the wrong individual's types, so it is dropped:
+/// a dropped capture falls back to `build`, and a wrong-length build leaves no witness.
+fn choose_witness(
+    precheck: Option<crate::WedgeWitness>,
+    individuals: usize,
+    build: impl FnOnce() -> Option<crate::WedgeWitness>,
+) -> WitnessChoice {
+    let fits = |w: &crate::WedgeWitness| w.0.len() == individuals;
+    let dropped_capture = precheck.as_ref().is_some_and(|w| !fits(w));
+    if let Some(w) = precheck.filter(|w| fits(w)) {
+        return WitnessChoice {
+            witness: Some(w),
+            source: WitnessSource::Precheck,
+            dropped_capture,
+        };
+    }
+    match build().filter(|w| fits(w)) {
+        Some(w) => WitnessChoice {
+            witness: Some(w),
+            source: WitnessSource::Built,
+            dropped_capture,
+        },
+        None => WitnessChoice {
+            witness: None,
+            source: WitnessSource::None,
+            dropped_capture,
+        },
+    }
+}
+
 /// The sound+complete tableau realization path — one `{a} ⊓ ¬C` satisfiability
 /// probe per (individual, satisfiable-class) pair. Used off the saturation
 /// fast-path fragment (and directly in the fast-path-vs-tableau identity test).
@@ -1779,10 +1835,16 @@ pub(crate) fn realize_tableau_internal(
     // subsumption); at worst it makes `most_specific_types` less minimal, but
     // every reported type is still a genuine type. `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`
     // ⟹ `pair_deadline_ms = None` ⟹ unbounded (opt-out preserved).
-    let hierarchy = classify_top_down_internal(
+    //
+    // #430: classify's inconsistency pre-check hands back its wedge model, when it
+    // has one, as the pseudo-model witness below.
+    let mut precheck_witness = None;
+    let hierarchy = classify_top_down_internal_capturing(
         internal,
         pair_deadline_ms.map(std::time::Duration::from_millis),
         None,
+        (pseudo_model_enabled() && crate::realize_witness_from_precheck_enabled())
+            .then_some(&mut precheck_witness),
     )?;
     // #310: classify's inconsistency pre-check (saturator signal, `ABox` saturation,
     // the `ABox`-seeded wedge) proved the KB inconsistent; it then marks every class
@@ -1837,30 +1899,45 @@ pub(crate) fn realize_tableau_internal(
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
 
-    // Pseudo-model shortcut (Task 3): compute ONE `ABox` witness model,
-    // ONCE, under a bounded deadline (never unbounded — see
-    // `pseudo_model_witness_deadline_from_env`'s doc). `None` (flag off,
-    // `Stalled`/deadline hit, or no wedge-consistency cache — see
+    // Pseudo-model shortcut (Task 3): ONE `ABox` witness model per call. #430: it
+    // is the model classify's pre-check already built when there is one;
+    // otherwise it is built here, once, under a bounded deadline (never
+    // unbounded — see `pseudo_model_witness_deadline_from_env`'s doc). `None`
+    // (flag off, `Stalled`/deadline hit, or no wedge-consistency cache — see
     // `pseudo_model_enabled`'s coupling note) ⇒ every pair below takes the
     // unchanged normal path, so this can only ever skip probes, never
     // change a verdict.
-    let (base_model, witness_prune_reasons): (Option<Vec<HashSet<ClassId>>>, WitnessPruneReasons) =
-        if pseudo_model_enabled() {
-            let witness_deadline = pseudo_model_witness_deadline_from_env();
-            match prepared.realize_base_model_types(Some(witness_deadline)) {
-                Some((types, reasons)) => (Some(types), reasons),
-                None => (None, WitnessPruneReasons::default()),
+    let choice = if pseudo_model_enabled() {
+        choose_witness(precheck_witness, individual_iris.len(), || {
+            prepared.realize_base_model_types(Some(pseudo_model_witness_deadline_from_env()))
+        })
+    } else {
+        WitnessChoice {
+            witness: None,
+            source: WitnessSource::None,
+            dropped_capture: false,
+        }
+    };
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        eprintln!(
+            "realize: pseudo-model witness {}{}",
+            match choice.source {
+                WitnessSource::Precheck => "from the classify pre-check",
+                WitnessSource::Built => "built here",
+                WitnessSource::None => "none",
+            },
+            if choice.dropped_capture {
+                " (the pre-check's model had the wrong length and was dropped)"
+            } else {
+                ""
             }
-        } else {
-            (None, WitnessPruneReasons::default())
-        };
-    if let Some(ref m) = base_model {
-        debug_assert_eq!(
-            m.len(),
-            individual_iris.len(),
-            "witness model must carry one type set per individual",
         );
     }
+    let (base_model, witness_prune_reasons): (Option<Vec<HashSet<ClassId>>>, WitnessPruneReasons) =
+        match choice.witness {
+            Some((types, reasons)) => (Some(types), reasons),
+            None => (None, WitnessPruneReasons::default()),
+        };
 
     // Per-individual realization is independent across individuals
     // (each builds a fresh tableau context per class probe via
@@ -2779,5 +2856,61 @@ Ontology(<http://rustdl.test/test>\n\
             vec!["http://rustdl.test/A".to_owned()],
             "A must be alice's sole most-specific type; got {bounded_leaves:?}",
         );
+    }
+
+    /// #430: one witness of `n` type sets, each holding class 0, with `branched` set so
+    /// the reasons can be told apart from the default.
+    fn witness_of_len(n: usize) -> crate::WedgeWitness {
+        let types = vec![HashSet::from([ClassId::new(0)]); n];
+        let reasons = WitnessPruneReasons {
+            branched: true,
+            ..WitnessPruneReasons::default()
+        };
+        (types, reasons)
+    }
+
+    /// The pre-check's model is used when its length fits, and the fallback build is
+    /// then never run.
+    #[test]
+    fn choose_witness_takes_a_fitting_precheck_model_without_building() {
+        let built = std::cell::Cell::new(false);
+        let c = choose_witness(Some(witness_of_len(3)), 3, || {
+            built.set(true);
+            Some(witness_of_len(3))
+        });
+        assert_eq!(c.source, WitnessSource::Precheck);
+        assert!(!c.dropped_capture);
+        assert!(
+            !built.get(),
+            "the fallback must not run when the capture fits"
+        );
+        let (types, reasons) = c.witness.expect("witness");
+        assert_eq!(types.len(), 3);
+        assert!(reasons.branched, "the capture's own reasons travel with it");
+    }
+
+    /// A wrong-length capture is dropped and realize falls back to its own build,
+    /// rather than ending up with no witness at all.
+    #[test]
+    fn choose_witness_falls_back_when_the_capture_has_the_wrong_length() {
+        let c = choose_witness(Some(witness_of_len(2)), 3, || Some(witness_of_len(3)));
+        assert_eq!(c.source, WitnessSource::Built);
+        assert!(c.dropped_capture);
+        assert_eq!(c.witness.expect("fallback witness").0.len(), 3);
+    }
+
+    /// A wrong-length build is dropped too; no capture means the build is used.
+    #[test]
+    fn choose_witness_drops_any_wrong_length_witness() {
+        let c = choose_witness(Some(witness_of_len(4)), 3, || Some(witness_of_len(2)));
+        assert_eq!(c.source, WitnessSource::None);
+        assert!(c.witness.is_none());
+        assert!(c.dropped_capture);
+        let c = choose_witness(None, 3, || Some(witness_of_len(3)));
+        assert_eq!(c.source, WitnessSource::Built);
+        assert!(!c.dropped_capture);
+        let c = choose_witness(None, 3, || None);
+        assert_eq!(c.source, WitnessSource::None);
+        assert!(c.witness.is_none());
     }
 }

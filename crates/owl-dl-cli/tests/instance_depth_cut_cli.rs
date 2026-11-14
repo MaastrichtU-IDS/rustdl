@@ -273,7 +273,7 @@ type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>);
 /// (F1: early abandon armed but never latching; F2: early abandon off; F3: a node-cap
 /// stop). The budget wording stays, and the hit clause adds that `=0` may help too.
 /// The first hit comes within ~0.4 CPU-s of a debug process's start (parse included),
-/// far inside the 3 s deadline.
+/// far inside the 10 s deadline (raised from 3 s for slow, loaded CI runners).
 #[test]
 fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
     let f = Fixture::forall("hit", false);
@@ -284,7 +284,7 @@ fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
             f.path(),
             vec![
                 ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000"),
-                ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "3000"),
+                ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
             ],
         ),
         (
@@ -292,7 +292,7 @@ fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
             f.path(),
             vec![
                 ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
-                ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "3000"),
+                ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
             ],
         ),
         (
@@ -359,12 +359,12 @@ fn a_budget_cut_after_a_depth_cap_hit_says_both_remedies_may_help() {
 fn classify_does_not_count_a_depth_cap_hit_as_a_depth_cut() {
     let f = Fixture::forall("classify-hit", false);
     let env = [("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000")];
-    let r = run(&env, &["classify", "--pair-timeout-ms", "3000", f.path()]);
+    let r = run(&env, &["classify", "--pair-timeout-ms", "10000", f.path()]);
     assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
     assert!(r.stderr.contains("INCOMPLETE"), "a cut pair: {}", r.stderr);
     assert!(!r.stderr.contains("search-depth limit"), "{}", r.stderr);
     // Control: at the default early abandon the same pair IS depth-capped.
-    let r = run(&[], &["classify", "--pair-timeout-ms", "3000", f.path()]);
+    let r = run(&[], &["classify", "--pair-timeout-ms", "10000", f.path()]);
     assert!(r.stderr.contains("search-depth limit"), "{}", r.stderr);
 }
 

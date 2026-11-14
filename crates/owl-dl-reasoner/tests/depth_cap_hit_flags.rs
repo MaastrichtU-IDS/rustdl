@@ -6,7 +6,7 @@
 //! Fixtures:
 //! - `X ⊑ ⊓_{k<280} (∀r_k.A ⊔ ∀s_k.A)`, `a : X` (the #510 follow-up's): every branch of
 //!   `{a} ⊓ ¬Y` hits the cap at 256 levels. With early abandon armed but never latching
-//!   (`RUSTDL_TABLEAU_EARLY_ABANDON_HITS=1000000`) or off, a 3 s deadline cuts it after
+//!   (`RUSTDL_TABLEAU_EARLY_ABANDON_HITS=1000000`) or off, a 10 s deadline cuts it after
 //!   tens of thousands of hits; the first comes within well under a second.
 //! - A pigeonhole forced under `¬Y` (9 pigeons, 8 holes): its decision depth is at most
 //!   9, so a deadline cuts it with no hit at all, whatever the host's speed.
@@ -131,11 +131,11 @@ fn instances(o: &SetOntology<RcStr>, env: &[(&'static str, &str)]) -> InstanceFl
 
 const ARMED_NOT_LATCHED: [(&str, &str); 2] = [
     ("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000"),
-    ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "3000"),
+    ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
 ];
 const EARLY_ABANDON_OFF: [(&str, &str); 2] = [
     ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
-    ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "3000"),
+    ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000"),
 ];
 
 #[test]

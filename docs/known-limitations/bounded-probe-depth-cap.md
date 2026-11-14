@@ -51,13 +51,18 @@ deadline-free retry) is open and needs the bar below.
 deadline or the node cap before early abandon's 32nd hit: with early abandon off
 (`RUSTDL_TABLEAU_EARLY_ABANDON=0`), or on a loaded or slow host. The same pair can be
 `depth_capped` on a quiet run and a plain deadline cut on a busy one.
-- The tableau counts depth-cap hits on every bounded probe. The count is report-only.
+- The tableau counts depth-cap hits on every probe (the deadline-free probe's deeper cap
+  included). The count is report-only.
 - `InstanceFlags::depth_cap_hit` marks a deadline or node-cap cut that had at least one hit.
 - `instance`, `instances` and Python `is_instance_of` then add that
   `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` may help as well as a larger budget. Both may help here,
   unlike a `depth_capped` cut.
-- Iterative deepening counts only its final level's hits, the one level whose cap is
-  `MAX_SEARCH_DEPTH`.
+- Under iterative deepening (`RUSTDL_TABLEAU_ITERATIVE_DEEPENING=1`, default off) the count is
+  reset when the final level starts, the one level whose cap is `MAX_SEARCH_DEPTH`. Two exits
+  leave a shallow level's hits in the count, so the flag can over-attribute there:
+  - a non-final level stops on the node cap (`NodeCap` ends the loop before the final level);
+  - the caller's deadline passes after a shallow level, so the final level never starts.
+  In both, `depth_cap_hit` can be set although `MAX_SEARCH_DEPTH` was never reached.
 
 What the flags do not see:
 - **`depth_cap_hit` on the other surfaces.** `instances-expr`, `realize`, `justify`, `repair` and

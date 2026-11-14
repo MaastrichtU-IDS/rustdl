@@ -1312,8 +1312,11 @@ All notable changes to rustdl are documented here. Format is based on
   ended, through early abandon's 32nd hit. A depth-bound probe whose deadline came first (early
   abandon off, or a loaded host) was reported as a plain deadline cut, with only the budget
   advice.
-  - The tableau now counts depth-cap hits on every bounded probe. The count is report-only and
+  - The tableau now counts depth-cap hits on every probe. The count is report-only and
     changes no search path: early abandon is untouched, and with it off nothing is armed.
+    Under iterative deepening (default off), a loop that ends before its final level (a
+    non-final node-cap stop, or the caller's deadline after a shallow level) keeps the shallow
+    levels' hits, so the flag can over-attribute there.
   - New `InstanceFlags::depth_cap_hit`: a deadline or the node cap cut the probe after at least
     one hit. It is report-only, implies `incomplete`, and is never set together with
     `depth_capped` or `no_verdict` on one probe. On `instances` it is OR-ed over the individuals.

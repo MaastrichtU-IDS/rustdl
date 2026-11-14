@@ -733,6 +733,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// #510 (C): forget the depth-cap hits counted so far. Iterative deepening
     /// calls it before its final level, whose cap is the only one that is
     /// `MAX_SEARCH_DEPTH`; the shallow levels' bottom-outs are not hits of that limit.
+    /// It is NOT called when the loop ends before the final level (a non-final
+    /// `NodeCap`, or the caller's deadline after a shallow level), so there the count
+    /// still holds shallow hits (documented in `bounded-probe-depth-cap.md`).
     pub fn reset_depth_cap_hits(&mut self) -> &mut Self {
         self.depth_cap_hits = 0;
         self

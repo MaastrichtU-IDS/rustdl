@@ -174,10 +174,10 @@ def test_a_budget_cut_after_a_depth_limit_hit_says_both_remedies_may_help(
     env, paths, monkeypatch
 ):
     # #510 (C): the deadline cuts the 280-union after many depth-limit hits; the first
-    # comes well under a second into the probe, far inside the 3 s deadline.
+    # comes well under a second into the probe, far inside the 10 s deadline.
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.setenv("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "3000")
+    monkeypatch.setenv("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "10000")
     value, msgs = _incomplete_warnings(lambda p: rustdl.is_instance_of(p["plain"], Y, A), paths)
     assert value is False
     assert len(msgs) == 1, msgs

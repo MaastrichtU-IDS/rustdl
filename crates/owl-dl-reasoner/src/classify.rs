@@ -4359,11 +4359,27 @@ fn effective_deadline(
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn classify_top_down_internal(
     internal: &InternalOntology,
     per_pair_timeout: Option<std::time::Duration>,
     global_deadline: Option<Instant>,
+) -> Result<Classification, ReasonError> {
+    classify_top_down_internal_capturing(internal, per_pair_timeout, global_deadline, None)
+}
+
+/// [`classify_top_down_internal`], also handing back the model of the inconsistency
+/// pre-check's `ABox`-seeded wedge (route 2) when that wedge answered `Sat` (#430).
+///
+/// Realize reuses it as its pseudo-model witness instead of building a second one.
+/// `capture` is left untouched on every other outcome, so `None` there means "no
+/// model": the pre-check did not run, its wedge stalled or found a clash, or
+/// classify returned before it. Plain `classify` passes `None` and is unchanged.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn classify_top_down_internal_capturing(
+    internal: &InternalOntology,
+    per_pair_timeout: Option<std::time::Duration>,
+    global_deadline: Option<Instant>,
+    capture: Option<&mut Option<crate::WedgeWitness>>,
 ) -> Result<Classification, ReasonError> {
     // Opt-in census diagnostic for the CB Horn-ELHI gate (milestone 1 —
     // deliberately the gate's ONLY caller; nothing dispatches on it). stderr,
@@ -4384,7 +4400,8 @@ pub(crate) fn classify_top_down_internal(
     }
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
-    let mut c = classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline)?;
+    let mut c =
+        classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline, capture)?;
     c.stats.dropped = internal.dropped.clone();
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
@@ -4402,6 +4419,7 @@ fn classify_top_down_internal_impl(
     internal: &InternalOntology,
     per_pair_timeout: Option<std::time::Duration>,
     global_deadline: Option<Instant>,
+    capture: Option<&mut Option<crate::WedgeWitness>>,
 ) -> Result<Classification, ReasonError> {
     // Phase 2a recon: top-level classify wall, used to derive
     // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
@@ -4518,11 +4536,12 @@ fn classify_top_down_internal_impl(
     // `inconsistent`.
     let mut wedge_cache = None;
     if crate::classify_inconsistency_enabled()
-        && crate::classify_inconsistency_precheck(
+        && crate::classify_inconsistency_precheck_capturing(
             internal,
             &closure,
             global_deadline,
             &mut wedge_cache,
+            capture,
         )
     {
         if std::env::var_os("RUSTDL_TRACE").is_some() {

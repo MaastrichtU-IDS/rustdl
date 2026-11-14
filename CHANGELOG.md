@@ -295,6 +295,73 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`realize` no longer races a 1 s wall-clock budget for its pseudo-model witness, which made
+  `ore_ont_5695` flip between a one-minute and a 20-minute-plus run (#430).** Realize's pseudo-model witness (the model whose types let it skip most per-pair
+  `{a} ⊓ ¬C` probes) was built in a second wedge run under a 1000 ms wall-clock budget. On
+  `ore_ont_5695` that run took 565–1,069 ms, so whether a run had a witness was a race: with it,
+  about 55 CPU-s; without it, every pair was probed with the whole ABox (4,102-node graphs),
+  past 20 minutes. Realize now takes the model classify's inconsistency pre-check already built
+  (route 2, the ABox-seeded wedge, under its 3–12 s budget), and builds its own as before only
+  when the pre-check left none.
+  - The race moves rather than disappears: it now sits at the pre-check's 3–12 s budget, with
+    3–12× the headroom on 5695. A file whose pre-check finishes near that budget can still get a
+    witness in one run and not the next; in the census four do (`Sat` at 9.0–11.8 s of 12 s), and
+    one of them (15536) took no model in a later run. Files with no pre-check model keep the
+    1 s race.
+  - Same clause set, same engine, same input; the pre-check's run lifts the `horn_fixpoint` step
+    cap under its deadline (#257). That changes when a drain stops, not what a step derives, but
+    on a branching input it can reach a different completion than the capped build would, which
+    `witness_prune_reasons` reports as `branched` (and `witness_prune_may_drop` as `true`). Only a
+    `Sat` model is taken; `witness_prune_active` / `witness_prune_may_drop` and the reasons come
+    from the run whose labels are used.
+  - Not taken where the ontology counts data values (#344): the wedge's `Sat` skips that count.
+    Realize then builds its own witness as before (whose `Sat` skips it too, as today).
+  - A witness whose length differs from the individual count is now dropped in release builds
+    too, rather than only asserted in debug builds; a dropped pre-check model falls back to
+    realize's own build, and `RUSTDL_TRACE` says so.
+  - `RUSTDL_REALIZE_WITNESS_FROM_PRECHECK` (default on, `=0` reverts) is pinned in
+    `flag_defaults.rs`. `RUSTDL_PSEUDO_MODEL_WITNESS_MS` now governs only the fallback build.
+    Plain `classify` is unchanged: only realize asks for the model.
+  - M0 census over 1,144 ORE ABox files (probe pin, witness budget 30 s): the pre-check gives a
+    model where the 1 s witness does not on 41 files, 7 on the timing cliff (witness 1.2–3.5 s)
+    and 34 where the witness stops at the step cap. Realize takes it on 39 of them; on the other
+    2 (6132, 9899) the data-count rule keeps today's build, so they keep the race. 18 more files
+    had a witness at 0.3–1 s, so they were exposed to the race too.
+  - `ore_ont_5695`, 12 runs in 4 parallel lanes: 0 stalls (main stalled in 6 of 12 under the
+    same layout), and the output equals main's finished-mode output in every run. Interleaved
+    with main given a 30 s witness budget (so main always finishes), the cost is the same
+    (median 63.78 vs 63.70 CPU-s).
+  - Two-arm sweep over the same 1,144 files (120 s CPU cap): 0 changed type sets on the 820
+    files both arms finish; aggregate CPU 0.998× main, no file over 1.5× and +1 s; 4 files
+    finish only with the change (253, 6020, 7188, 13078), none only without it. Rechecked
+    serially (one core, 240 s, 3 reps, alternating order), those 4 still finish only with the
+    change, the 9 cliff-prone files both arms finish give the same output in every rep, and
+    `ore_ont_6272`, whose two outputs differed in the sweep with `incomplete: true` on both
+    sides, gives main's output from both arms in all 3 reps: that difference was a per-pair
+    deadline cut under load.
+  - Ground truth on the files where the prune now fires for the first time: the witness contains
+    every HermiT-entailed type on 30 files (453,758 pairs, 0 gaps); 210 sampled pruned pairs on
+    7 more were all refuted by `instance` with the prune off; full realizations equal HermiT on
+    6 of the 7 files `realize` finishes, and the seventh's one miss is a per-pair deadline cut
+    (`incomplete: true`; found with a 60 s pair budget). On 12 of the 30 the ABox has only 7–20
+    named individuals, so that check is thin there; 2 files (4412, 15536) are unchecked.
+
+- **The `≤`-witness scans count a stale neighbour entry as the live individual it stands for
+  (#486).** Defence in depth: no input is known to reach it. `max_witnesses` and
+  `nominal_max_overfull` counted every neighbour entry raw.
+  - A stale entry to a merged node, left beside its live twin (the #38 shape), made one
+    individual two witnesses. With the stale node older, keep-older merged the live twin into the
+    dead node and left a redirect cycle that `resolve` never leaves (a hang). The nominal guard
+    could also read an over-full `≤` and defer generation.
+  - The #38 premise, a stale entry on a live node, has been closed at the source since #284
+    (rules no longer fire on merged-away nodes). This change guards against it coming back.
+  - Both scans now resolve each entry (`TableauContext::live_neighbour`), drop pruned nodes, and
+    dedupe.
+  - A witness reached only through a stale entry has no live edge to read deps from, so its
+    merge or `⊥` rests on every active decision, as #498 does. Too few deps would be a wrong
+    back-jump, i.e. a false `unsat`.
+  - `apply_max` stops when a merge takes away `node` itself.
+  - A debug assertion stops any merge of a redirected node.
 - **The wedge refutes a disjunct whose `≤1` clashes as it is asserted (#509).** `≤1 r(.C)`
   arises as the NNF of `¬(≥2 r(.C))` when an equivalence's `≥2 … → C` side is clausified. When the
   search chose that disjunct on a node that already had two `≠` `r`-successors (from a `≥2`), the
@@ -1240,6 +1307,21 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`instance` names a decision-depth cut, and stops advising a budget that cannot recover it
+  (#510).** A bounded instance probe stops at `MAX_SEARCH_DEPTH` (256) decision levels,
+  directly or through early abandon (#288). The CLI said "cut (deadline, node cap or depth
+  limit)" and advised a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap, neither of which
+  helps there. It now says which limit fired:
+  - a depth cut: "hit the tableau's decision-depth limit", and that
+    `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (the deadline-free probe, which searches much deeper) is
+    what helps;
+  - a deadline or node-cap cut: the budget advice as before.
+
+  `instances` reports the same way. `instances-expr` and `realize` don't track the cause yet,
+  so their warning gives both pieces of advice. New `InstanceFlags::depth_capped`
+  (report-only, implies `incomplete`). No answer changes. Found by the per-query census: on 36
+  ORE files `instance` never answered "no"; on 3 of them, all 15 cut pairs answer "no" with
+  `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`, as HermiT and Konclude do.
 - **`classify` closes its subsumption matrix transitively, so `is_subclass` agrees with the
   hierarchy `direct_subsumers` reports (#448).** When a pair `(a, c)` was recorded "not subsumed"
   (a per-pair deadline cut, or a trusted wedge `Sat`) while `(a, b)` and `(b, c)` were recorded

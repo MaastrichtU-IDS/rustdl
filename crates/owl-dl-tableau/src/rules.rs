@@ -1135,6 +1135,14 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     }
     let mut applied = false;
     for (n, role, body, max_deps) in maxes {
+        // #486: a merge for an earlier `≤` can take `node` itself away: merged
+        // (it was its own witness through a self-loop) or pruned (it sat in the
+        // merge source's subtree). Merged, its labels live on at the
+        // representative; pruned, its facts are gone. Either way the dead node
+        // has nothing left to count.
+        if ctx.graph().node(node).is_redirected() {
+            break;
+        }
         // Distinct R-neighbours carrying body (deduped: edges to
         // the same NodeId count once).
         let c_neighbours = max_witnesses(ctx, node, role, body);
@@ -1367,10 +1375,17 @@ pub(crate) fn max_witnesses(
     // #382: with `⊤` the filler, every `role`-neighbour counts.
     let any = ctx.top_filler_body(body);
     for (seen, w) in ctx.graph().node(node).neighbours() {
-        if ctx.edge_satisfies(seen, role)
-            && (any || ctx.graph().node(w).has_label(body))
-            && !out.contains(&w)
-        {
+        // The role first: it reads only `seen`, so an entry over another role
+        // costs no node load (as before #486).
+        if !ctx.edge_satisfies(seen, role) {
+            continue;
+        }
+        // #486: a stale entry to a merged node counts its representative, once;
+        // one to a pruned node counts nothing (see `live_neighbour`).
+        let Some(w) = ctx.live_neighbour(w) else {
+            continue;
+        };
+        if (any || ctx.graph().node(w).has_label(body)) && !out.contains(&w) {
             out.push(w);
         }
     }
@@ -1436,17 +1451,29 @@ pub(crate) fn compute_max_merge_deps(
     let pool_role = role;
     for w in [a, b] {
         // First matching edge in either direction satisfying `role`.
+        let mut edge_found = false;
         for (pos, &(er, t)) in n.edges.iter().enumerate() {
             if t == w && ctx.edge_satisfies(Role::Named(er), pool_role) {
                 deps = union(&deps, &n.edge_deps[pos]);
+                edge_found = true;
                 break;
             }
         }
         for (pos, &(er, src)) in n.in_edges.iter().enumerate() {
             if src == w && ctx.edge_satisfies(Role::Inverse(er), pool_role) {
                 deps = union(&deps, &n.in_edge_deps[pos]);
+                edge_found = true;
                 break;
             }
+        }
+        // #486: a witness reached only through a stale entry (`max_witnesses`
+        // resolved it) has no live edge here. Its edge's deps, and those of the
+        // merge that redirected it, are not recorded anywhere this can read, so
+        // the merge or `⊥` rests on every active decision (as #498's
+        // `nominal_label_deps` does). Too few deps would let a clash back-jump
+        // past a decision it needs: a false `unsat`.
+        if !edge_found {
+            deps = union(&deps, &DepSet::from_slice(ctx.active_branches()));
         }
         // Body label deps on the witness.
         let wn = ctx.graph().node(w);
@@ -2341,5 +2368,368 @@ mod phase3_canaries {
             "indexed branch never skipped a missing trigger; Phase 3d \
              restructuring is not wired in. skips = {skips}"
         );
+    }
+}
+
+/// #486: the `≤`-witness scans count the live individual a neighbour entry
+/// stands for. The stale entries here are planted by hand: no production path
+/// is known to leave one on a live node since #284, so these pin the guard.
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod stale_witness_486 {
+    use super::*;
+    use owl_dl_core::{ClassId, ConceptPool};
+
+    const R: RoleId = RoleId::new(0);
+
+    fn plant_in(ctx: &mut TableauContext<'_, '_, '_>, v: NodeId, y: NodeId) {
+        let n = ctx.graph_mut().node_mut(v);
+        n.in_edges.push((R, y));
+        n.in_edge_deps.push(DepSet::new());
+    }
+
+    fn plant_out(ctx: &mut TableauContext<'_, '_, '_>, v: NodeId, y: NodeId) {
+        let n = ctx.graph_mut().node_mut(v);
+        n.edges.push((R, y));
+        n.edge_deps.push(DepSet::new());
+    }
+
+    /// `y —r→ v`, `y` merged into `y_eff`, and a stale `(r, y)` planted on `v`
+    /// beside the live `(r, y_eff)` (the #38 shape). With `stale_older`, `y` has
+    /// the lower index, so keep-older picked the dead node as the survivor.
+    fn stale_twin(
+        ctx: &mut TableauContext<'_, '_, '_>,
+        c: ConceptId,
+        stale_older: bool,
+    ) -> (NodeId, NodeId, NodeId) {
+        let v = ctx.new_node();
+        let (y, y_eff) = if stale_older {
+            let y = ctx.new_node();
+            (y, ctx.new_node())
+        } else {
+            let y_eff = ctx.new_node();
+            (ctx.new_node(), y_eff)
+        };
+        ctx.add_label(y, c);
+        ctx.add_label(y_eff, c);
+        ctx.add_edge(y, R, v);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        plant_in(ctx, v, y);
+        (v, y, y_eff)
+    }
+
+    /// The live twin counts once, the `≤1` is met, and nothing merges: the
+    /// raw count was 2, and keep-older then folded the live `y_eff` into the
+    /// dead `y`, leaving `y` and `y_eff` redirected to each other.
+    #[test]
+    fn a_stale_in_edge_beside_its_live_twin_counts_once() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_one = pool.max(1, Role::Inverse(R), c);
+        for stale_older in [true, false] {
+            let mut ctx = TableauContext::new(&pool);
+            let (v, y, y_eff) = stale_twin(&mut ctx, c, stale_older);
+            assert_eq!(
+                max_witnesses(&ctx, v, Role::Inverse(R), c),
+                vec![y_eff],
+                "stale_older {stale_older}"
+            );
+            ctx.add_label(v, at_most_one);
+            assert_eq!(apply_max(&mut ctx, v), RuleOutcome::NoChange);
+            assert_eq!(ctx.graph().node(y).merged_into(), Some(y_eff));
+            assert_eq!(
+                ctx.graph().node(y_eff).merged_into(),
+                None,
+                "no redirect cycle"
+            );
+        }
+    }
+
+    /// A stale out-edge (`Named` role) on `v`, after `v —r→ y` was re-anchored to
+    /// `y_eff` by the merge.
+    #[test]
+    fn a_stale_out_edge_beside_its_live_twin_counts_once() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_one = pool.max(1, Role::Named(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let y = ctx.new_node();
+        let y_eff = ctx.new_node();
+        ctx.add_label(y, c);
+        ctx.add_label(y_eff, c);
+        ctx.add_edge(v, R, y);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        plant_out(&mut ctx, v, y);
+        assert_eq!(max_witnesses(&ctx, v, Role::Named(R), c), vec![y_eff]);
+        ctx.add_label(v, at_most_one);
+        assert_eq!(apply_max(&mut ctx, v), RuleOutcome::NoChange);
+        assert_eq!(ctx.graph().node(y_eff).merged_into(), None);
+    }
+
+    /// A stale entry to `y` after `y` → `y1` → `y2` resolves to the end of the chain.
+    #[test]
+    fn a_stale_entry_resolves_through_a_merge_chain() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let (y, y1, y2) = (ctx.new_node(), ctx.new_node(), ctx.new_node());
+        for n in [y, y1, y2] {
+            ctx.add_label(n, c);
+        }
+        ctx.add_edge(y, R, v);
+        assert!(ctx.merge_into_with_deps(y, y1, &[]));
+        assert!(ctx.merge_into_with_deps(y1, y2, &[]));
+        plant_in(&mut ctx, v, y);
+        assert_eq!(max_witnesses(&ctx, v, Role::Inverse(R), c), vec![y2]);
+    }
+
+    /// With `⊤` as the filler there is no label test (#382), so the resolve alone
+    /// keeps the count at one.
+    #[test]
+    fn a_stale_entry_counts_once_with_a_top_filler() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let top = pool.top();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_counting_flags(true, true);
+        let (v, _, y_eff) = stale_twin(&mut ctx, c, true);
+        assert!(ctx.top_filler_body(top));
+        assert_eq!(max_witnesses(&ctx, v, Role::Inverse(R), top), vec![y_eff]);
+    }
+
+    /// A pruned node's facts went with its subtree: an entry to it counts nothing,
+    /// with a named filler or with `⊤`.
+    #[test]
+    fn a_stale_entry_to_a_pruned_node_is_dropped() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let top = pool.top();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_counting_flags(true, true);
+        let v = ctx.new_node();
+        let p = ctx.new_node();
+        ctx.add_label(p, c);
+        ctx.add_edge(p, R, v);
+        ctx.graph_mut().node_mut(p).pruned = true;
+        assert!(max_witnesses(&ctx, v, Role::Inverse(R), c).is_empty());
+        assert!(max_witnesses(&ctx, v, Role::Inverse(R), top).is_empty());
+        // A merged node whose representative was pruned: the entry resolves to
+        // the pruned node, so it too counts nothing.
+        let (y, y_eff) = (ctx.new_node(), ctx.new_node());
+        ctx.add_label(y, c);
+        ctx.add_label(y_eff, c);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        ctx.graph_mut().node_mut(y_eff).pruned = true;
+        plant_in(&mut ctx, v, y);
+        assert!(max_witnesses(&ctx, v, Role::Inverse(R), c).is_empty());
+        assert!(max_witnesses(&ctx, v, Role::Inverse(R), top).is_empty());
+    }
+
+    /// The live twin's entry is gone and only the stale one is left: the
+    /// individual is still counted, once (resolve, not skip). The body label is
+    /// on `y_eff` because it was planted on both nodes before the merge.
+    #[test]
+    fn a_stale_entry_without_its_twin_still_counts_the_individual() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let (y, y_eff) = (ctx.new_node(), ctx.new_node());
+        ctx.add_label(y, c);
+        ctx.add_label(y_eff, c);
+        ctx.add_edge(y, R, v);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        let n = ctx.graph_mut().node_mut(v);
+        let pos = n
+            .in_edges
+            .iter()
+            .position(|&e| e == (R, y_eff))
+            .expect("the planted live in-edge");
+        n.in_edges[pos] = (R, y);
+        assert_eq!(max_witnesses(&ctx, v, Role::Inverse(R), c), vec![y_eff]);
+    }
+
+    /// Fable 1 on #486: a witness reached only through a stale entry has no live
+    /// edge to read deps from, so its merge rests on every active decision. A
+    /// decision `d0` that no edge or label carries must reach the merge deps and
+    /// the labels the merge moves; with fewer deps a clash on them back-jumps
+    /// past `d0`.
+    #[test]
+    fn a_witness_reached_through_a_stale_entry_rests_on_every_active_decision() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let marker = pool.atomic(ClassId::new(1));
+        let at_most_one = pool.max(1, Role::Inverse(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let (y, y_eff, z) = (ctx.new_node(), ctx.new_node(), ctx.new_node());
+        ctx.add_label(y, c);
+        ctx.add_label(y_eff, c);
+        ctx.add_label(z, c);
+        ctx.add_label(z, marker);
+        ctx.add_edge(y, R, v);
+        ctx.add_edge(z, R, v);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        // Leave only the stale entry for `y_eff`'s individual.
+        let n = ctx.graph_mut().node_mut(v);
+        let pos = n
+            .in_edges
+            .iter()
+            .position(|&e| e == (R, y_eff))
+            .expect("the planted live in-edge");
+        n.in_edges[pos] = (R, y);
+        let d0 = ctx.push_branch();
+        let none = DepSet::new();
+        let live = compute_max_merge_deps(&ctx, v, Role::Inverse(R), c, z, z, &none);
+        assert!(
+            !live.contains(&d0),
+            "a live witness keeps its precise deps: {live:?}"
+        );
+        let stale = compute_max_merge_deps(&ctx, v, Role::Inverse(R), c, y_eff, z, &none);
+        assert!(stale.contains(&d0), "the stale-reached witness: {stale:?}");
+        ctx.add_label(v, at_most_one);
+        assert_eq!(apply_max(&mut ctx, v), RuleOutcome::Applied);
+        let survivor = ctx.resolve(z);
+        assert_eq!(survivor, ctx.resolve(y_eff), "the two witnesses merged");
+        let moved = ctx
+            .label_deps_of(survivor, marker)
+            .expect("marker on the survivor");
+        assert!(
+            moved.contains(&d0),
+            "the moved label rests on d0: {moved:?}"
+        );
+    }
+
+    /// A stale entry whose individual is `v` itself (`y` merged into `v`) counts
+    /// `v` once, beside the real self-loop the merge made.
+    #[test]
+    fn a_stale_self_loop_entry_counts_the_node_once() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_one = pool.max(1, Role::Inverse(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_label(y, c);
+        ctx.add_edge(y, R, v);
+        assert!(ctx.merge_into_with_deps(y, v, &[]));
+        plant_in(&mut ctx, v, y);
+        assert_eq!(max_witnesses(&ctx, v, Role::Inverse(R), c), vec![v]);
+        ctx.add_label(v, at_most_one);
+        assert_eq!(apply_max(&mut ctx, v), RuleOutcome::NoChange);
+    }
+
+    /// A stale entry planted after a merge counts as the live node; once the
+    /// entry is gone and the merge is rolled back, its source is live again and
+    /// is its own witness. The planted entry is not on the trail, so it is
+    /// removed by hand before the rollback.
+    #[test]
+    fn a_rolled_back_merge_restores_the_original_witness() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let (y, y_eff) = (ctx.new_node(), ctx.new_node());
+        ctx.add_label(y, c);
+        ctx.add_label(y_eff, c);
+        ctx.add_edge(y, R, v);
+        let cp = ctx.checkpoint();
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        plant_in(&mut ctx, v, y);
+        assert_eq!(max_witnesses(&ctx, v, Role::Inverse(R), c), vec![y_eff]);
+        let n = ctx.graph_mut().node_mut(v);
+        assert_eq!(n.in_edges.pop(), Some((R, y)));
+        n.in_edge_deps.pop();
+        ctx.rollback_to(cp);
+        assert!(!ctx.graph().node(y).is_redirected());
+        assert_eq!(max_witnesses(&ctx, v, Role::Inverse(R), c), vec![y]);
+    }
+
+    /// Negative control: two distinct witnesses still over-fill a `≤1`, which
+    /// closes on `⊥`. A fix that dropped live witnesses would lose this clash.
+    #[test]
+    fn two_distinct_live_witnesses_still_clash_under_at_most_one() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let bot = pool.bot();
+        let at_most_one = pool.max(1, Role::Named(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let (a, b) = (ctx.new_node(), ctx.new_node());
+        ctx.add_label(a, c);
+        ctx.add_label(b, c);
+        ctx.add_edge(v, R, a);
+        ctx.add_edge(v, R, b);
+        ctx.mark_distinct(a, b);
+        assert_eq!(max_witnesses(&ctx, v, Role::Named(R), c), vec![a, b]);
+        ctx.add_label(v, at_most_one);
+        assert_eq!(apply_max(&mut ctx, v), RuleOutcome::Applied);
+        assert!(ctx.graph().node(v).has_label(bot));
+    }
+
+    /// B: a merge of a redirected node is a bug (it made the #486 redirect
+    /// cycle); debug builds stop on it.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "#486: merge of a redirected node")]
+    fn merging_a_redirected_node_is_caught_in_debug_builds() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        let (y, y_eff, z) = (ctx.new_node(), ctx.new_node(), ctx.new_node());
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        ctx.merge_into_with_deps(y, z, &[]);
+    }
+
+    /// B, the other side: merging a live node into a redirected one is the
+    /// exact move that made the #486 cycle (keep-older picked the dead node).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "#486: merge of a redirected node")]
+    fn merging_into_a_redirected_node_is_caught_in_debug_builds() {
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        let (y, y_eff, z) = (ctx.new_node(), ctx.new_node(), ctx.new_node());
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        ctx.merge_into_with_deps(z, y, &[]);
+    }
+
+    /// A3: the first `≤` merges `v` itself away (`v` is its own `r`-witness
+    /// through a self-loop, and keep-older keeps the older `z`). Two in-entries
+    /// with no forward edge, planted by hand, stay on the dead `v` (merge step 3
+    /// skips them), so a second `≤` read on the dead node would count them and
+    /// put `⊥` on it. `apply_max` stops instead.
+    #[test]
+    fn apply_max_stops_once_its_node_is_merged_away() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let d = pool.atomic(ClassId::new(1));
+        let bot = pool.bot();
+        let at_most_one_c = pool.max(1, Role::Named(R), c);
+        let at_most_one_inv_d = pool.max(1, Role::Inverse(R), d);
+        let mut ctx = TableauContext::new(&pool);
+        let z = ctx.new_node();
+        let v = ctx.new_node();
+        let (q1, q2) = (ctx.new_node(), ctx.new_node());
+        ctx.add_label(z, c);
+        ctx.add_label(v, c);
+        ctx.add_edge(v, R, v);
+        ctx.add_edge(v, R, z);
+        ctx.add_label(q1, d);
+        ctx.add_label(q2, d);
+        ctx.mark_distinct(q1, q2);
+        plant_in(&mut ctx, v, q1);
+        plant_in(&mut ctx, v, q2);
+        ctx.add_label(v, at_most_one_c);
+        ctx.add_label(v, at_most_one_inv_d);
+        assert_eq!(max_witnesses(&ctx, v, Role::Named(R), c), vec![v, z]);
+        assert_eq!(apply_max(&mut ctx, v), RuleOutcome::Applied);
+        assert_eq!(ctx.graph().node(v).merged_into(), Some(z));
+        assert!(
+            !ctx.graph().node(v).has_label(bot),
+            "a `≤` read the dead node"
+        );
+        assert!(!ctx.graph().node(z).has_label(bot));
     }
 }

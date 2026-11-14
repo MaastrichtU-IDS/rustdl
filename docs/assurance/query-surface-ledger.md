@@ -1163,3 +1163,122 @@ Case 1349's reproducer:
   A, all on the 4 capped cases.
 - P1 shows the #76 shape is absent from the generated profiles. R7's engine positive for #76 is
   the extra case alone.
+
+## Per-query census on real ontologies (2026-11-11)
+
+A one-off measurement, not a gate: the per-query commands on real ontologies against classify,
+HermiT and Konclude. Plan: `notes/plans/2026-11-07-perquery-census-real.md` (Fable: go with
+changes, all taken). It was run to find #498-kind false positives before users do. #498 was a
+main-tableau defect over the ABox that the classify nets could not see, and it lived on main
+for 8 days.
+
+**Instrument.** A local copy of `cross-command-laws.py` with these additions:
+- **R8:** wedge-off `consistent` (the main tableau over the ABox, the per-query route) against
+  default `consistent` and classify.
+- **R1e:** `explain` positives against the classify closure.
+- **R3q:** a per-query "inconsistent" on a consistent KB.
+- **R9 / R10:** `individuals` different pairs and derived memberships, checked by the oracles.
+- **Sampling:** every pair on files with ≤ 12 classes, and a nominal-biased sample elsewhere.
+- **Adjudication:** HermiT per claim (`-k`, `-S`, or the file plus the claim's negation) and
+  Konclude, whatever classify's flags.
+- **Caps:** classify 300 s; 30 s per call.
+
+**Instrument proof (F0, declared in advance):**
+- c5e and q5 (#498) give 80 HermiT- and Konclude-refuted FPs on the pre-fix pin 5753fbc5;
+- the negative control min9 gives 0;
+- the same pin with `RUSTDL_NOMINAL_BLOCK_GUARD=0` gives 0 on all three files.
+
+**Frame:** 433 files, cores 92–95.
+
+| part | source | files |
+|---|---|---|
+| F1 | curated files with an ABox or nominals: wine, family, pizza, pizza-noimport, pizza-ontostart, ro | 6 |
+| F2a | ORE files with an ABox and object nominals (`ObjectOneOf` / `ObjectHasValue`), ≤ 1 MB | 177 (all) |
+| F2b | the same, 1–5 MB | 220 (all) |
+| F3 | ORE files with an ABox and no object nominal, ≤ 5 MB | 30 (a seeded sample of 487) |
+
+**Run 1, on 5753fbc5 (#498 unfixed), 31,200 calls, 10.25 CPU-h:**
+- **0 false positives, 0 discrepancies.** Classify missed nothing the oracles saw.
+- **Laws:** R8 decided 338 files; R1 6,777 ok; R1e 975; R2 5,966. Every hard law held after one
+  harness fix (#507: the L3 gate missed classify's `consistent: false` when `consistent` was
+  killed).
+- **No file in the frame showed #498** on the unfixed binary, beyond the F0 controls.
+- **ABox arm:** ORE pool files declare no individuals, so the main run asked no individual
+  query there. A supplement then read the individuals from the assertions:
+  - F2a and F3: 483 claims (R9 95, R10 388);
+  - F2b, with one `instances-expr` per file: 28 R10 claims;
+  - all of them entailed, none refuted.
+- **Completeness finding, #510:** 351 `instance` calls on 36 files were cut, and on those files
+  `instance` never answered "no". The cause was traced on 3 of the files (13132, 394, 2488; 15
+  pairs): the timed probe's 256-level depth cap with early abandon. A deadline-free probe answers
+  "no" on all 15 pairs, as both oracles do. The other 33 files were not traced and only look
+  alike.
+
+**Run 2, on 0a87ebc3 (#504, #508, #511):** the same frame and the same sample. The pairs are drawn
+from run 1's classify (`--draws-from`), so only the binary changes. It also asks the ABox arm's
+single `instance` calls.
+- **Checks before the run:**
+  - the old binary through the patched harness replays every base call from the cache and draws
+    the same sample on 433 of 433 files;
+  - c5e and q5 come out corrected (6 `sat` and 30 `subclass` per file);
+  - wine's `sat` answers in 27 s, where it ran past 150 s before (#511).
+- **0 new false positives.** Classify's content is unchanged on the 432 files where both binaries
+  finished it. On ore_ont_778 the new binary's classify was killed (a loss, below).
+- **New positive answers, all entailed per the oracles:**
+  - 2 new `realize` types on both pizza-ontostart copies;
+  - SauvignonBlanc ≡ Semillon on ore_ont_7668;
+  - 1 `disjoint` pair on ore_ont_5033.
+- **Rescues** (the old binary gave no answer, the new one answers):
+  - wedge-off `consistent` on 8 files, among them pizza ×2 and 5 wine-family files;
+  - `sat` 17, `subclass` 16, `sat-expr` 1: killed before;
+  - `instance` 2: cut before;
+  - the per-query sample of 6 wine-family files runs for the first time.
+- **Losses:** 17 calls in the census, all killed or cut at a wall-clock cap, including ore_ont_778's
+  classify (267 CPU-s against the 300 s cap before; killed in the re-run). **None is a regression.**
+  - **Recheck** (2026-11-12): one call at a time on a quiet host, both pins, 3 reps each in alternating
+    order, caps raised to 120 s / 900 s.
+  - **Result:** all 17 answer on the new pin in 3 of 3 reps, with 0 kills. Each call gave the same answer
+    in all 6 runs, and it is the old binary's census answer. That covers the `disjoint` pair sets and 778's
+    classify content (rows, unsat, equivalence groups, consistent).
+  - **Cost:** median CPU per call is 0.1–28.4 s on the new pin and 0.1–27.8 s on the old. On 778 it is
+    253–268 CPU-s on the new pin and 264–282 on the old.
+  - **So the census kills were contention:** they came at 30 s wall after 22–29 CPU-s. Two calls show it
+    plainly: 6483's `subclass` was killed after 0.3 CPU-s, and 16191's `instance` was cut by the 750 ms
+    wall-clock pair deadline after 0.09 CPU-s. Serially, both answer in under 0.5 s.
+- **Cost:** on the 34,437 calls both binaries were asked, CPU went from 10.19 h to 9.93 h.
+  - Those calls are 31,010 of run 1's 31,200 plus 3,427 `instance` calls from the ABox arm. The
+    other 190 run-1 calls (0.71 CPU-h) were not asked again; they are all on 6 files where an
+    earlier answer changed (5688, 1509, 12253, 778 and the two pizza copies).
+  - Kills went from 268 to 244: 42 calls are no longer killed (the 42 non-`instance` rescues),
+    and 18 newly are. Those 18 are 16 of the losses plus two calls that gave up on both binaries
+    (ore_ont_8148's default `consistent` and one `instance` call on ore_ont_10949) and were
+    killed only on the new one. The 17th loss, `instance` on 16191, is a cut, not a kill.
+
+**Limitations.**
+- **The 30 s main-tableau cap.** On 76 of 433 files (17%, run 1) the main tableau was killed at 30 s,
+  and so was the one-`sat` probe, so those files have no per-query sample. On another 8 the main
+  tableau was killed but the probe answered, so they were sampled.
+- **R8 reach:** R8 has an outcome on 426 files and decided 338. The other 88 are the 84 files where
+  the main tableau was killed and the 4 rustdl can't parse. On the remaining 7 files the main
+  tableau answered but default `consistent` was killed, so there was nothing to compare.
+- **The ABox arm's reach on F2b is thin.** 170 of F2b's 220 files are eligible (the per-query
+  sample ran there). `realize` and `instances-expr` answer on 7 and 8 of them, and `individuals`
+  (R9) runs only up to 150 individuals, so on 1 file.
+- **F3 is a sample of 30 out of 487.** Its zero says nothing about the rest.
+- **Agreement is not correctness.** Where classify and a per-query command share a wrong answer,
+  only an oracle sees it. The oracles are asked only about discrepancies, claims and new
+  positives.
+- **A gap in the laws** (Fable's review of #507): a false "inconsistent" shared by classify and
+  the per-query commands, while `consistent` is killed, reads as agreement. A U1 arm (classify
+  `consistent: false` against an oracle) is proposed.
+- **Oracle reach:** HermiT fails on pizza-ontostart, so claims there are Konclude-only.
+- **Not reproducible from the repo.** The instrument (a modified copy of `cross-command-laws.py`)
+  and the raw data are on the shared measurement host only (below).
+
+**No new fixtures.** The per-query arm of `per_pair_fp_gate` (#505) keeps c5e and q5 as
+positives.
+
+**Data:** on the shared measurement host, under `~/rustdl/work-363-gen/pqc/`:
+- run 1: `REPORT-full.md`, `full/`, `abox-*`;
+- run 2: `rerun/REPORT-rerun.md`, `rerun/diff.json`;
+- the harness copy: `harness/`.

@@ -1188,15 +1188,30 @@ fn exit_unknown_consistency_gave_up() -> ! {
     std::process::exit(3);
 }
 
-/// An `instance` probe was cut (deadline, node cap or depth bail-out): print
-/// `unknown` and exit 3, as for [`exit_unknown_node_cap`] (#363 A2).
-fn exit_unknown_probe_cut() -> ! {
+/// #510: the advice for a probe cut by the tableau's decision-depth limit (directly or
+/// through early abandon). A larger budget does not help there: the bounded probe
+/// searches to the same depth whatever its deadline or node cap.
+const DEPTH_CUT_ADVICE: &str = "A longer RUSTDL_REALIZE_PAIR_TIMEOUT_MS or a larger node \
+     cap does not help with that; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the deadline-free \
+     probe, which searches much deeper (with no time limit).";
+
+/// An `instance` probe was cut: print `unknown` and exit 3, as for
+/// [`exit_unknown_node_cap`] (#363 A2). #510: the message names the limit that fired,
+/// since only a deadline or node-cap cut is recovered by a larger budget.
+fn exit_unknown_probe_cut(depth_capped: bool) -> ! {
     println!("unknown");
-    eprintln!(
-        "warning: the instance probe was cut (deadline, node cap or depth limit) and \
-         reached no verdict. Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = \
-         unbounded), RUSTDL_MAX_NODES, or with no probe deadline RUSTDL_QUERY_MAX_NODES."
-    );
+    if depth_capped {
+        eprintln!(
+            "warning: the instance probe hit the tableau's decision-depth limit and \
+             reached no verdict. {DEPTH_CUT_ADVICE}"
+        );
+    } else {
+        eprintln!(
+            "warning: the instance probe was cut (deadline or node cap) and reached no \
+             verdict. Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded), \
+             RUSTDL_MAX_NODES, or with no probe deadline RUSTDL_QUERY_MAX_NODES."
+        );
+    }
     std::process::exit(3);
 }
 
@@ -1205,12 +1220,31 @@ fn exit_unknown_probe_cut() -> ! {
 /// `node_cap_var`: the variable that governs the node cap on this command —
 /// `RUSTDL_QUERY_MAX_NODES` under [`owl_dl_reasoner::single_query_node_cap`],
 /// else `RUSTDL_MAX_NODES`.
-fn warn_probes_cut(what: &str, node_cap_var: &str) {
-    eprintln!(
-        "warning: {what}: at least one instance probe was cut (deadline, node cap or \
-         depth limit), so entries may be missing; those printed are sound. Raise \
-         RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded) or {node_cap_var}."
+/// #510: `depth_capped` is `Some(true)` when a cut probe is known to have hit the
+/// decision-depth limit, `Some(false)` when none did, and `None` on a surface that does
+/// not track the cause (`instances-expr`, `realize`).
+fn warn_probes_cut(what: &str, node_cap_var: &str, depth_capped: Option<bool>) {
+    let budget = format!(
+        "Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default 750; 0 = unbounded) or {node_cap_var}."
     );
+    match depth_capped {
+        Some(true) => eprintln!(
+            "warning: {what}: at least one instance probe hit the tableau's decision-depth \
+             limit, so entries may be missing; those printed are sound. {DEPTH_CUT_ADVICE} \
+             For a deadline or node-cap cut: {budget}"
+        ),
+        Some(false) => eprintln!(
+            "warning: {what}: at least one instance probe was cut (deadline or node cap), \
+             so entries may be missing; those printed are sound. {budget}"
+        ),
+        None => eprintln!(
+            "warning: {what}: at least one instance probe was cut (deadline, node cap or \
+             decision-depth limit), so entries may be missing; those printed are sound. \
+             For a deadline or node-cap cut: {budget} For a depth cut, a larger budget does \
+             not help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (the deadline-free probe, with no time \
+             limit) may."
+        ),
+    }
 }
 
 /// #389/#390: one stderr line naming the constructs a structural surface ignored.
@@ -2333,7 +2367,7 @@ fn run() -> Result<()> {
                     exit_unknown_no_verdict();
                 }
                 if flags.incomplete && !verdict {
-                    exit_unknown_probe_cut();
+                    exit_unknown_probe_cut(flags.depth_capped);
                 }
                 undetermined = flags.consistency_undetermined;
                 instance_no_verdict = flags.no_verdict;
@@ -2369,7 +2403,11 @@ fn run() -> Result<()> {
             }
             // #493: a likely-bug cut gets #449's note and exit 3, after the list.
             if flags.incomplete && !flags.no_verdict {
-                warn_probes_cut("instances", "RUSTDL_QUERY_MAX_NODES");
+                warn_probes_cut(
+                    "instances",
+                    "RUSTDL_QUERY_MAX_NODES",
+                    Some(flags.depth_capped),
+                );
             }
             warn_consistency_undetermined("instances", flags.consistency_undetermined);
             exit_if_no_verdict(flags.no_verdict);
@@ -2482,7 +2520,7 @@ fn run() -> Result<()> {
             // A list answer, as `instances`: sound members, a warning, exit 0. #493: a
             // likely-bug cut gets #449's note and exit 3 instead of the budget advice.
             if r.incomplete() && !r.no_verdict() {
-                warn_probes_cut("instances-expr", "RUSTDL_QUERY_MAX_NODES");
+                warn_probes_cut("instances-expr", "RUSTDL_QUERY_MAX_NODES", None);
             }
             warn_consistency_undetermined("instances-expr", r.consistency_undetermined());
             exit_if_no_verdict(r.no_verdict());
@@ -2523,7 +2561,7 @@ fn run() -> Result<()> {
             note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
             // #493: a likely-bug cut gets #449's note at the end, not the budget advice.
             if r.incomplete() && !r.no_verdict() {
-                warn_probes_cut("realize", "RUSTDL_MAX_NODES");
+                warn_probes_cut("realize", "RUSTDL_MAX_NODES", None);
             }
             if r.direct_types_unverified() {
                 eprintln!(

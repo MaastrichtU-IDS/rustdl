@@ -305,6 +305,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_REALIZE_WITNESS_FROM_PRECHECK",
+            owl_dl_reasoner::realize_witness_from_precheck_enabled,
+            true,
+        ),
+        (
             "RUSTDL_DATA_VALUES_ANONYMOUS",
             owl_dl_reasoner::data_values_anonymous_enabled,
             true,

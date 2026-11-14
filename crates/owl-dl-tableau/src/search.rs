@@ -2669,3 +2669,91 @@ mod deadline_stop_tests {
         let _ = search(&mut ctx, 1);
     }
 }
+
+/// #486 at the search level: the `≤` choice point and a full search over a
+/// stale witness entry, planted by hand as in `rules::stale_witness_486`.
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod stale_witness_486 {
+    use super::*;
+    use owl_dl_core::{ClassId, Role, RoleId};
+
+    const R: RoleId = RoleId::new(0);
+
+    /// `v` holds `≤2 r⁻.C` over `a` and `y_eff`, plus a stale `(r, y)` with `y`
+    /// merged into `y_eff`. Raw, that is three witnesses and three mergeable
+    /// pairs, an open choice point. Resolved, it is two, so the `≤2` is met.
+    #[test]
+    fn first_open_max_does_not_open_on_a_stale_witness() {
+        assert!(
+            crate::max_choice_point_enabled(),
+            "the choice point is off: this test would pass vacuously"
+        );
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_two = pool.max(2, Role::Inverse(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        let (a, y, y_eff) = (ctx.new_node(), ctx.new_node(), ctx.new_node());
+        for n in [a, y, y_eff] {
+            ctx.add_label(n, c);
+        }
+        ctx.add_edge(a, R, v);
+        ctx.add_edge(y, R, v);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        let n = ctx.graph_mut().node_mut(v);
+        n.in_edges.push((R, y));
+        n.in_edge_deps.push(DepSet::new());
+        ctx.add_label(v, at_most_two);
+        assert!(first_open_max(&ctx, u32::MAX).is_none());
+    }
+
+    /// The shape that made the redirect cycle: the stale `y` is older than its
+    /// live twin, so keep-older picked the dead node. The search must end `Sat`;
+    /// before #486 the `≤1` merged `y_eff` into `y` and the next `resolve` never
+    /// returned. Run on a thread so a regression fails here instead of hanging.
+    #[test]
+    fn search_over_an_older_stale_witness_ends_sat() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut pool = ConceptPool::new();
+            let c = pool.atomic(ClassId::new(0));
+            let at_most_one = pool.max(1, Role::Inverse(R), c);
+            let mut ctx = TableauContext::new(&pool);
+            let v = ctx.new_node();
+            let (y, y_eff) = (ctx.new_node(), ctx.new_node());
+            ctx.add_label(y, c);
+            ctx.add_label(y_eff, c);
+            ctx.add_edge(y, R, v);
+            assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+            let n = ctx.graph_mut().node_mut(v);
+            n.in_edges.push((R, y));
+            n.in_edge_deps.push(DepSet::new());
+            ctx.add_label(v, at_most_one);
+            let sat = matches!(search(&mut ctx, 64), SearchVerdict::Sat);
+            let _ = tx.send(sat);
+        });
+        let sat = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the search finishes (a redirect cycle hangs `resolve`)");
+        assert!(sat, "one individual under `≤1` is satisfiable");
+    }
+
+    /// Negative control: three live witnesses under `≤2`, none distinct, can merge
+    /// down to two, so the search ends `Sat`.
+    #[test]
+    fn three_live_witnesses_under_at_most_two_are_sat() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let at_most_two = pool.max(2, Role::Named(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        let v = ctx.new_node();
+        for _ in 0..3 {
+            let w = ctx.new_node();
+            ctx.add_label(w, c);
+            ctx.add_edge(v, R, w);
+        }
+        ctx.add_label(v, at_most_two);
+        assert!(matches!(search(&mut ctx, 64), SearchVerdict::Sat));
+    }
+}

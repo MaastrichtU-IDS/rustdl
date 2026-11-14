@@ -24,6 +24,30 @@ The original #288 stall (`sat` never finishing, unbounded classify never complet
 fixed by #382 (`RUSTDL_MAX_FIRST`, `RUSTDL_TOP_FILLER`); a guard test is in
 `crates/owl-dl-reasoner/tests/pmd_core3_max_first.rs`.
 
+## Single-query surfaces (#510)
+
+`instance`, `instances`, `instances-expr` and `realize` run their probes under the per-pair
+realize deadline (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, default 750), so they take the same bounded
+branch and the same 256-level cap. On `instance` a cut costs the whole answer (`unknown`, exit
+3), not one pair of a classify run. The per-query census found 36 ORE files where `instance`
+never answered "no"; on 13132, 394 and 2488 every trace shows exactly 32 cap hits (early
+abandon), and `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` answers "no" on all 15 cut pairs, as HermiT
+and Konclude do.
+
+Since #510, `instance` and `instances` say when the cut was the depth limit and point to
+`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (`InstanceFlags::depth_capped`). Changing the search itself
+for a single query (no early abandon, a deeper cap, or a deadline-free retry) is open and
+needs the bar below.
+
+What the flag does not see:
+- **Early abandon off** (`RUSTDL_TABLEAU_EARLY_ABANDON=0`). A probe that keeps hitting the cap
+  then runs into its deadline instead, and is reported as a deadline cut, with the advice to
+  raise the timeout, which cannot recover it. Depth-cap hits before a deadline are not tracked.
+- **`instances-expr` and `realize`** don't track the cause. Their warning names all three limits
+  and gives both pieces of advice.
+- A deadline-free probe that ends at its own depth limit is #462's `no_verdict` signal, never
+  `depth_capped`.
+
 ## Why the cap stays at 256
 
 Measured on main 8144a9d1 at `--pair-timeout-ms 1000`, 1 thread, 90 s cap. A cap of 2048

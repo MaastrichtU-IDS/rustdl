@@ -688,8 +688,9 @@ fn instance_queries_report_a_stalled_probe() {
         assert_gave_up(&r, &what);
         assert_eq!(r.stdout.trim(), "unknown", "{what}: {}", r.stdout);
         assert!(
-            !r.stderr.contains("instance probe was cut"),
-            "{what}: {}",
+            !r.stderr.contains("instance probe was cut")
+                && !r.stderr.contains("decision-depth limit"),
+            "{what}: the signal is not reported as a plain cut: {}",
             r.stderr
         );
         let r = run_with(
@@ -752,7 +753,14 @@ fn a_budgeted_instance_depth_cut_is_not_a_no_verdict() {
         r.stdout, r.stderr
     );
     assert_eq!(r.stdout.trim(), "unknown", "{}", r.stdout);
-    assert!(r.stderr.contains("instance probe was cut"), "{}", r.stderr);
+    // #510: the cut is named as the depth limit (it used to say "cut (deadline, node cap
+    // or depth limit)" and advise a larger budget, which cannot recover it).
+    assert!(
+        r.stderr
+            .contains("instance probe hit the tableau's decision-depth limit"),
+        "{}",
+        r.stderr
+    );
     assert!(
         !r.stderr.contains(MARKER),
         "a depth cut is not the bug signal: {}",

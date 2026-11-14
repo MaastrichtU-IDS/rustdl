@@ -346,6 +346,22 @@ All notable changes to rustdl are documented here. Format is based on
     (`incomplete: true`; found with a 60 s pair budget). On 12 of the 30 the ABox has only 7–20
     named individuals, so that check is thin there; 2 files (4412, 15536) are unchecked.
 
+- **The `≤`-witness scans count a stale neighbour entry as the live individual it stands for
+  (#486).** Defence in depth: no input is known to reach it. `max_witnesses` and
+  `nominal_max_overfull` counted every neighbour entry raw.
+  - A stale entry to a merged node, left beside its live twin (the #38 shape), made one
+    individual two witnesses. With the stale node older, keep-older merged the live twin into the
+    dead node and left a redirect cycle that `resolve` never leaves (a hang). The nominal guard
+    could also read an over-full `≤` and defer generation.
+  - The #38 premise, a stale entry on a live node, has been closed at the source since #284
+    (rules no longer fire on merged-away nodes). This change guards against it coming back.
+  - Both scans now resolve each entry (`TableauContext::live_neighbour`), drop pruned nodes, and
+    dedupe.
+  - A witness reached only through a stale entry has no live edge to read deps from, so its
+    merge or `⊥` rests on every active decision, as #498 does. Too few deps would be a wrong
+    back-jump, i.e. a false `unsat`.
+  - `apply_max` stops when a merge takes away `node` itself.
+  - A debug assertion stops any merge of a redirected node.
 - **The wedge refutes a disjunct whose `≤1` clashes as it is asserted (#509).** `≤1 r(.C)`
   arises as the NNF of `¬(≥2 r(.C))` when an equivalence's `≥2 … → C` side is clausified. When the
   search chose that disjunct on a node that already had two `≠` `r`-successors (from a `≥2`), the
@@ -1291,6 +1307,21 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`instance` names a decision-depth cut, and stops advising a budget that cannot recover it
+  (#510).** A bounded instance probe stops at `MAX_SEARCH_DEPTH` (256) decision levels,
+  directly or through early abandon (#288). The CLI said "cut (deadline, node cap or depth
+  limit)" and advised a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap, neither of which
+  helps there. It now says which limit fired:
+  - a depth cut: "hit the tableau's decision-depth limit", and that
+    `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (the deadline-free probe, which searches much deeper) is
+    what helps;
+  - a deadline or node-cap cut: the budget advice as before.
+
+  `instances` reports the same way. `instances-expr` and `realize` don't track the cause yet,
+  so their warning gives both pieces of advice. New `InstanceFlags::depth_capped`
+  (report-only, implies `incomplete`). No answer changes. Found by the per-query census: on 36
+  ORE files `instance` never answered "no"; on 3 of them, all 15 cut pairs answer "no" with
+  `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`, as HermiT and Konclude do.
 - **`classify` closes its subsumption matrix transitively, so `is_subclass` agrees with the
   hierarchy `direct_subsumers` reports (#448).** When a pair `(a, c)` was recorded "not subsumed"
   (a per-pair deadline cut, or a trusted wedge `Sat`) while `(a, b)` and `(b, c)` were recorded

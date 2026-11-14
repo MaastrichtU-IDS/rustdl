@@ -1684,8 +1684,18 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             return None;
         }
         crate::bump_counter!(self, nmo_calls);
+        // #486: `live_neighbour` never yields a redirected node, so a redirected
+        // `v` is never a candidate and the reference returns `None` for it. Saying
+        // so here lets the precheck below compare raw ids first.
+        if self.graph.node(v).is_redirected() {
+            return None;
+        }
         let mut found = None;
         for (_, w) in self.graph.node(v).neighbours() {
+            // #486: resolve the entry, as the inner count does.
+            let Some(w) = self.live_neighbour(w) else {
+                continue;
+            };
             if !self.node_is_nominal(w) {
                 continue;
             }
@@ -1700,12 +1710,23 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 let Some(comp) = self.complement_of(*body) else {
                     continue;
                 };
-                // `v` is a candidate iff some `(seen, v)` in `w`'s list satisfies the
-                // role and `v` lacks `¬C`: exactly `cands.contains(&v)` below.
+                // `v` is a candidate iff some `(seen, x)` in `w`'s list that resolves
+                // to `v` (#486) satisfies the role and `v` lacks `¬C`: exactly
+                // `cands.contains(&v)` below. `v` is live, so an entry resolves to
+                // `v` iff it is `v` itself or a redirected node: the raw pass costs
+                // what #515's did, and only a miss looks at redirected entries. The
+                // role is tested last there: `edge_satisfies` is a hierarchy lookup,
+                // dearer than the node load, and testing it first on every entry of
+                // a nominal cost ~23% more instructions on wine than this order did.
                 let v_counts = !self.graph.node(v).has_label(comp)
-                    && wn
+                    && (wn
                         .neighbours()
-                        .any(|(seen, x)| x == v && self.edge_satisfies(seen, *role));
+                        .any(|(seen, x)| x == v && self.edge_satisfies(seen, *role))
+                        || wn.neighbours().any(|(seen, x)| {
+                            self.graph.node(x).is_redirected()
+                                && self.live_neighbour(x) == Some(v)
+                                && self.edge_satisfies(seen, *role)
+                        }));
                 if !v_counts {
                     crate::bump_counter!(self, nmo_label_skipped_v);
                     continue;
@@ -1714,10 +1735,15 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 let mut cands: Vec<NodeId> = Vec::new();
                 let mut over = false;
                 for (seen, x) in wn.neighbours() {
-                    if self.edge_satisfies(seen, *role)
-                        && !self.graph.node(x).has_label(comp)
-                        && !cands.contains(&x)
-                    {
+                    // The role first, as #515 had it: it reads only `seen`.
+                    if !self.edge_satisfies(seen, *role) {
+                        continue;
+                    }
+                    // #486: count the live individual, once (see `live_neighbour`).
+                    let Some(x) = self.live_neighbour(x) else {
+                        continue;
+                    };
+                    if !self.graph.node(x).has_label(comp) && !cands.contains(&x) {
                         cands.push(x);
                         if cands.len() > limit {
                             over = true;
@@ -1744,6 +1770,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
         let mut found = None;
         for (_, w) in self.graph.node(v).neighbours() {
+            // #486: resolve the entry, as the inner count does.
+            let Some(w) = self.live_neighbour(w) else {
+                continue;
+            };
             if !self.node_is_nominal(w) {
                 continue;
             }
@@ -1761,6 +1791,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 };
                 let mut cands: Vec<NodeId> = Vec::new();
                 for (seen, x) in self.graph.node(w).neighbours() {
+                    // #486: count the live individual, once (see `live_neighbour`).
+                    let Some(x) = self.live_neighbour(x) else {
+                        continue;
+                    };
                     if self.edge_satisfies(seen, *role)
                         && !self.graph.node(x).has_label(comp)
                         && !cands.contains(&x)
@@ -2223,6 +2257,35 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         cur
     }
 
+    /// #486: the live individual a neighbour entry `w` stands for, for the
+    /// `≤`-witness scans ([`crate::rules::max_witnesses`],
+    /// `nominal_max_overfull`). A live entry (the hot path) is returned as is. A
+    /// pruned node stands for nothing, since its facts went with its subtree, so
+    /// it gives `None`. A merged one gives its representative, unless that is
+    /// pruned. A merge identifies the two individuals, so an edge recorded to
+    /// `w` is an edge to its representative.
+    ///
+    /// A neighbour entry to a redirected node is a stale leftover: merge and
+    /// prune remove both mirrors of every edge they touch. It was observed once
+    /// (#38) and looks closed at the source since #284 (rules no longer fire on
+    /// merged-away nodes). Counted raw, such an entry made one individual two
+    /// witnesses, and a `≤` merge could then fold a live node into a dead one
+    /// and leave a redirect cycle (#486). A stale self-loop entry is seen in its
+    /// own direction only, which can under-count a `≤` on the opposite role: a
+    /// miss, never a false positive.
+    #[must_use]
+    pub(crate) fn live_neighbour(&self, w: NodeId) -> Option<NodeId> {
+        let n = self.graph.node(w);
+        if !n.is_redirected() {
+            return Some(w);
+        }
+        if n.pruned {
+            return None;
+        }
+        let r = self.resolve(w);
+        (!self.graph.node(r).pruned).then_some(r)
+    }
+
     /// Merge `source` into `target`. After this call:
     /// - every label of `source` is also a label of `target` (or
     ///   was already);
@@ -2289,6 +2352,15 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         merge_deps: &[u32],
     ) -> bool {
         debug_assert_ne!(source, target, "merge_into: source and target must differ");
+        // #486: every caller merges live nodes (the `≤` scans hand out only
+        // live witnesses; nominal assignment and ABox `sameAs` resolve both
+        // sides). A redirected source or target corrupts the graph: folding a
+        // live node into a dead one left a redirect cycle that `resolve` never
+        // leaves.
+        debug_assert!(
+            !self.graph.node(source).is_redirected() && !self.graph.node(target).is_redirected(),
+            "#486: merge of a redirected node ({source:?} into {target:?})"
+        );
         if self.are_distinct(source, target) {
             return false;
         }
@@ -6781,4 +6853,244 @@ pub fn reseed_verify_enabled() -> bool {
 #[must_use]
 pub fn reseed_at_leaf_enabled() -> bool {
     std::env::var_os("RUSTDL_RESEED_AT_LEAF").is_none_or(|v| v != "0")
+}
+
+/// #486: `nominal_max_overfull` counts the live individual a neighbour entry
+/// stands for. The stale entries are planted by hand (see `live_neighbour`).
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod stale_witness_486 {
+    use super::*;
+
+    const R: RoleId = RoleId::new(0);
+
+    /// Each form on its own, since a release build runs only `_fast` (#490 B2),
+    /// then the debug wrapper.
+    fn assert_each_form(
+        ctx: &TableauContext<'_, '_, '_>,
+        v: NodeId,
+        want: Option<bool>,
+        what: &str,
+    ) {
+        assert_eq!(
+            ctx.nominal_max_overfull_fast(v),
+            want,
+            "{what}: the fast form"
+        );
+        assert_eq!(
+            ctx.nominal_max_overfull_reference(v),
+            want,
+            "{what}: the reference"
+        );
+        assert_eq!(ctx.nominal_max_overfull(v), want, "{what}: the wrapper");
+    }
+
+    /// A nominal `w` holds `≤2 r.C`. Its `r`-neighbours are `v` and `y_eff` (after
+    /// `y` merged into `y_eff`). A stale `(r, y)` out-edge on `w` made the count
+    /// 3, an over-full `≤` with two individuals present. That lifted the guard on
+    /// `v` and deferred its generation.
+    #[test]
+    fn a_stale_entry_does_not_over_fill_a_nominal_at_most() {
+        let mut pool = ConceptPool::new();
+        let o = IndividualId::new(0);
+        let nom_o = pool.nominal(o);
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let at_most_two = pool.max(2, Role::Named(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(c, not_c);
+        assert!(ctx.nominal_block_guard(), "default: the #362 guard is on");
+        let w = ctx.new_node();
+        ctx.add_label(w, nom_o);
+        ctx.add_label(w, at_most_two);
+        ctx.assign_nominal(o, w);
+        let v = ctx.new_node();
+        let (y, y_eff) = (ctx.new_node(), ctx.new_node());
+        ctx.add_edge(w, R, v);
+        ctx.add_edge(w, R, y);
+        assert!(ctx.merge_into_with_deps(y, y_eff, &[]));
+        assert_each_form(&ctx, v, Some(false), "two individuals, ≤2");
+        let n = ctx.graph_mut().node_mut(w);
+        n.edges.push((R, y));
+        n.edge_deps.push(DepSet::new());
+        assert_each_form(&ctx, v, Some(false), "still two individuals");
+        assert!(!ctx.defer_generation_at_overfull_nominal(v));
+    }
+
+    /// The outer loop resolves too: `v`'s only entry to the nominal is a stale one
+    /// to a node that merged into it, and the nominal's `≤` still counts `v`.
+    #[test]
+    fn a_stale_entry_to_a_merged_nominal_finds_its_live_node() {
+        let mut pool = ConceptPool::new();
+        let o = IndividualId::new(0);
+        let nom_o = pool.nominal(o);
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let at_most_one = pool.max(1, Role::Inverse(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(c, not_c);
+        let w = ctx.new_node();
+        ctx.add_label(w, nom_o);
+        ctx.add_label(w, at_most_one);
+        ctx.assign_nominal(o, w);
+        let w_old = ctx.new_node();
+        let v = ctx.new_node();
+        ctx.add_edge(v, R, w_old);
+        assert!(ctx.merge_into_with_deps(w_old, w, &[]));
+        // Replace `v`'s live entry with the stale one.
+        let n = ctx.graph_mut().node_mut(v);
+        let pos = n
+            .edges
+            .iter()
+            .position(|&e| e == (R, w))
+            .expect("the planted live out-edge");
+        n.edges[pos] = (R, w_old);
+        assert_each_form(&ctx, v, Some(false), "`v` counted, ≤1 met");
+    }
+
+    /// The `v` precheck resolves too: the nominal's only entry for `v` is a stale
+    /// one to a node that merged into `v`. With a second live `r`-neighbour `u`,
+    /// `≤1 r.C` is over-full; a raw precheck skipped the label and lost that.
+    #[test]
+    fn a_stale_entry_for_v_on_the_nominal_still_counts_v() {
+        let mut pool = ConceptPool::new();
+        let o = IndividualId::new(0);
+        let nom_o = pool.nominal(o);
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let at_most_one = pool.max(1, Role::Named(R), c);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(c, not_c);
+        let w = ctx.new_node();
+        ctx.add_label(w, nom_o);
+        ctx.add_label(w, at_most_one);
+        ctx.assign_nominal(o, w);
+        let v_old = ctx.new_node();
+        let v = ctx.new_node();
+        let u = ctx.new_node();
+        ctx.add_edge(w, R, v_old);
+        ctx.add_edge(w, R, u);
+        assert!(ctx.merge_into_with_deps(v_old, v, &[]));
+        // Replace the nominal's live entry for `v` with the stale one.
+        let n = ctx.graph_mut().node_mut(w);
+        let pos = n
+            .edges
+            .iter()
+            .position(|&e| e == (R, v))
+            .expect("the re-anchored live out-edge");
+        n.edges[pos] = (R, v_old);
+        assert!(
+            ctx.graph().node(v).neighbours().any(|(_, x)| x == w),
+            "`v` still reaches the nominal"
+        );
+        assert_each_form(&ctx, v, Some(true), "`v` and `u` under ≤1");
+    }
+    /// A nominal `w` with `≤1 r.C` and the live `r`-neighbour `v`, ready for one
+    /// more entry on `w`.
+    fn nominal_at_most_one(pool: &mut ConceptPool) -> [ConceptId; 4] {
+        let nom_o = pool.nominal(IndividualId::new(0));
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let at_most_one = pool.max(1, Role::Named(R), c);
+        [c, not_c, nom_o, at_most_one]
+    }
+
+    /// Pruned entries count nothing in the nominal guard (Fable review 3, finding
+    /// 1): an entry on `w` to a pruned node, and one to a node merged into a
+    /// pruned one. Each is planted in its own graph, so each branch of
+    /// `live_neighbour` is pinned on its own.
+    #[test]
+    fn a_pruned_entry_does_not_over_fill_a_nominal_at_most() {
+        let mut pool = ConceptPool::new();
+        let [c, not_c, nom_o, at_most_one] = nominal_at_most_one(&mut pool);
+        let o = IndividualId::new(0);
+        for merged in [false, true] {
+            let mut ctx = TableauContext::new(&pool);
+            ctx.set_complement(c, not_c);
+            let w = ctx.new_node();
+            ctx.add_label(w, nom_o);
+            ctx.add_label(w, at_most_one);
+            ctx.assign_nominal(o, w);
+            let v = ctx.new_node();
+            ctx.add_edge(w, R, v);
+            if merged {
+                let (q, q_eff) = (ctx.new_node(), ctx.new_node());
+                ctx.add_edge(w, R, q);
+                assert!(ctx.merge_into_with_deps(q, q_eff, &[]));
+                ctx.graph_mut().node_mut(q_eff).pruned = true;
+                // Leave only the stale entry, to `q`, which resolves to the
+                // pruned `q_eff`.
+                let n = ctx.graph_mut().node_mut(w);
+                let pos = n
+                    .edges
+                    .iter()
+                    .position(|&e| e == (R, q_eff))
+                    .expect("the re-anchored out-edge");
+                n.edges[pos] = (R, q);
+            } else {
+                let p = ctx.new_node();
+                ctx.add_edge(w, R, p);
+                ctx.graph_mut().node_mut(p).pruned = true;
+            }
+            let what = if merged {
+                "merged into a pruned node"
+            } else {
+                "a pruned node"
+            };
+            assert_each_form(&ctx, v, Some(false), what);
+        }
+    }
+
+    /// The outer loop drops a pruned nominal: `v`'s only nominal neighbour was
+    /// pruned, and its `≤1` over `v` and `u` no longer counts.
+    #[test]
+    fn a_pruned_nominal_neighbour_is_not_consulted() {
+        let mut pool = ConceptPool::new();
+        let [c, not_c, nom_o, at_most_one] = nominal_at_most_one(&mut pool);
+        let o = IndividualId::new(0);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(c, not_c);
+        let w = ctx.new_node();
+        ctx.add_label(w, nom_o);
+        ctx.add_label(w, at_most_one);
+        ctx.assign_nominal(o, w);
+        let (v, u) = (ctx.new_node(), ctx.new_node());
+        ctx.add_edge(w, R, v);
+        ctx.add_edge(w, R, u);
+        assert_each_form(&ctx, v, Some(true), "live: `v` and `u` under ≤1");
+        ctx.graph_mut().node_mut(w).pruned = true;
+        assert_each_form(&ctx, v, None, "the nominal is pruned");
+    }
+    /// A redirected `v` is never a candidate: `_fast`'s raw precheck would
+    /// match the stale entry `(r, v)` itself, so `_fast` returns `None` up
+    /// front, as `_reference` does by resolving.
+    #[test]
+    fn a_redirected_v_is_never_a_candidate() {
+        let mut pool = ConceptPool::new();
+        let [c, not_c, nom_o, at_most_one] = nominal_at_most_one(&mut pool);
+        let o = IndividualId::new(0);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_complement(c, not_c);
+        let w = ctx.new_node();
+        ctx.add_label(w, nom_o);
+        ctx.add_label(w, at_most_one);
+        ctx.assign_nominal(o, w);
+        let (v, v_eff, u) = (ctx.new_node(), ctx.new_node(), ctx.new_node());
+        ctx.add_edge(w, R, v);
+        ctx.add_edge(w, R, u);
+        assert_each_form(&ctx, v, Some(true), "live: `v` and `u` under ≤1");
+        assert!(ctx.merge_into_with_deps(v, v_eff, &[]));
+        // Leave the stale `(r, v)` on `w` and on `v` the stale in-entry from `w`.
+        let n = ctx.graph_mut().node_mut(w);
+        let pos = n
+            .edges
+            .iter()
+            .position(|&e| e == (R, v_eff))
+            .expect("the re-anchored out-edge");
+        n.edges[pos] = (R, v);
+        let n = ctx.graph_mut().node_mut(v);
+        n.in_edges.push((R, w));
+        n.in_edge_deps.push(DepSet::new());
+        assert_each_form(&ctx, v, None, "`v` merged away");
+    }
 }

@@ -46,6 +46,29 @@ Peer verdicts are read from output content, never from exit codes:
 - Konclude exits 0 on junk. Its run counts only if the hierarchy mentions every declared class, and inconsistency is read from the hierarchy, not from the log.
 - HermiT writes nothing on an inconsistent KB and logs `InconsistentOntologyException`. A clean run logs nothing.
 
+## Role-polarity fuzz (profile `polarity`, `run.py run --realize`)
+
+Built after #526–#528, three role-polarity bugs (an inverse role `r⁻` read as `r`) that this net could not see. The default profile draws role characteristics, disjoint roles and role assertions on named roles only, has no negative role assertion, draws `r⁻` in 15% of class expressions, makes the ABox optional, and has no instance or realize arm.
+
+**The profile** (`gen.py`, `PolarityCase`, its own RNG stream):
+- **Signed roles everywhere:** characteristics, disjoint roles, Domain/Range, positive and negative assertions, ≤n/≥n/∀/∃, with `r⁻` at 0.5. Every case has 3–5 individuals.
+- **Planted motifs:** half the cases carry one motif (`# motif: <name>/<variant>`), shaped after #526, #527, #528, P3/P6/P9, `≤1 r⁻` against two predecessors, `∀r⁻` and `≥2 r⁻.{a, c}`. Each is a consistent variant (`ok`) or a control that changes the answer (`ctl`).
+- **A floor:** every case has an `r⁻` in some role-consuming axiom.
+- **A census:** `# polarity:` lists the kinds present.
+
+**The realize arms** (`--realize`): `realize --json` and `realize --saturation-only --json`, besides the usual three.
+- **The peers** classify an augmented copy with `N_x ≡ {x}` per individual (fresh names, a conservative extension), so `x : C` iff `N_x ⊑ C`.
+- **rustdl** always runs on the original, because the nominals would switch its nominal gates on.
+- **Agreement** is computed per projection: the original classes (the classify and consistent arms) and the `N_x` rows (the types). A disagreement on one projection does not unscore the other.
+- **Scoring:** a type rustdl reports that both peers refute is a `type-FP` (or `satonly-type-FP`) finding. A missed type is exposed only. `realize` refusing a consistent KB is a `consistency-FP`.
+- **Shrinking:** `shrink.py --realize` re-augments every subset.
+
+**Mutants** (`mutants/M13.patch`, `mutants/M14.patch`): data, never applied in the tree, never built by CI. They are polarity faults planted where no audit read the code line by line:
+- M13: `apply_max` counts `≤n r⁻` over `r`-successors;
+- M14: the wedge's predecessor count drops `flip()`.
+
+Each header gives its base. Build one with `git apply`, then `cargo build --release -p owl-dl-cli`, then revert; run it as a `detect` arm against a control built from the same base.
+
 ## Stop rule
 
 A finding on unmutated main stops at a minimised reproducer that both peers adjudicate. It then goes to the manager as an issue draft. Nothing is fixed inside this package.

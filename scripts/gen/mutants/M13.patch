@@ -1,0 +1,21 @@
+# rustdl role-polarity fuzz mutant. DATA: never applied in the tree, never built by CI or
+# cargo test. Built by hand for scripts/gen/run.py's detect (see scripts/gen/README.md).
+# id: M13
+# base: 5b12e5580a17cf7b48b81bb027da48222d0bb1cd
+# layer: tableau, apply_max (max_witnesses): the main-tableau ≤n count
+# reopens: a polarity drop in ≤n counting: `≤n r⁻` counts r-successors, not r-predecessors
+# env: -
+# expect: gen-polarity detect, cases 0-499 (criterion in the fuzz plan)
+diff --git a/crates/owl-dl-tableau/src/rules.rs b/crates/owl-dl-tableau/src/rules.rs
+index 22141b51..f8ccf5ba 100644
+--- a/crates/owl-dl-tableau/src/rules.rs
++++ b/crates/owl-dl-tableau/src/rules.rs
+@@ -1377,7 +1377,7 @@ pub(crate) fn max_witnesses(
+     for (seen, w) in ctx.graph().node(node).neighbours() {
+         // The role first: it reads only `seen`, so an entry over another role
+         // costs no node load (as before #486).
+-        if !ctx.edge_satisfies(seen, role) {
++        if !ctx.edge_satisfies(seen, Role::named(role.role_id())) { // F-LITE MUTANT M13: polarity dropped.
+             continue;
+         }
+         // #486: a stale entry to a merged node counts its representative, once;

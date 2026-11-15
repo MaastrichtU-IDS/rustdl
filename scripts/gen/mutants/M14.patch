@@ -1,0 +1,21 @@
+# rustdl role-polarity fuzz mutant. DATA: never applied in the tree, never built by CI or
+# cargo test. Built by hand for scripts/gen/run.py's detect (see scripts/gen/README.md).
+# id: M14
+# base: 5b12e5580a17cf7b48b81bb027da48222d0bb1cd
+# layer: hypertableau wedge, distinct_role_succ: the ≤n count over predecessor edges
+# reopens: a predecessor read without flip(): `≤n r⁻` ignores r-predecessors, `≤n r` counts them
+# env: -
+# expect: gen-polarity detect, cases 0-499 (criterion in the fuzz plan)
+diff --git a/crates/owl-dl-tableau/src/hyper.rs b/crates/owl-dl-tableau/src/hyper.rs
+index 730ffd5a..3af9bf1c 100644
+--- a/crates/owl-dl-tableau/src/hyper.rs
++++ b/crates/owl-dl-tableau/src/hyper.rs
+@@ -5402,7 +5402,7 @@ impl<'c> HyperEngine<'c> {
+         }
+         if self.inverse_func_merge {
+             for (er, s) in &self.nodes[node.index()].preds {
+-                if !role_matches(er.flip(), role, hier) {
++                if !role_matches(*er, role, hier) { // F-LITE MUTANT M14: flip dropped.
+                     continue;
+                 }
+                 let rs = self.resolve(*s);

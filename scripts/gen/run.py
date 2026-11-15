@@ -10,7 +10,16 @@ it against the Konclude ∩ HermiT agreement oracle.
   run.py --self-test
 
 Arms (30 s cap each, one call per arm per case):
-  classify --json, classify --saturation-only --json, consistent --json.
+  classify --json, classify --saturation-only --json, consistent --json; with --realize
+  also realize --json and realize --saturation-only --json (role-polarity fuzz).
+
+With --realize the PEERS classify an augmented copy that adds `N_x ≡ {x}` for each named
+individual x (fresh names: a conservative extension), so `x : C` iff `N_x ⊑ C`; rustdl
+always runs on the original file (nominals would switch rustdl's nominal gates on).
+Agreement is computed separately on the original classes (the classify / consistent
+arms) and on the `N_x` rows (the realize arms), so a disagreement on one projection
+does not unscore the other. `realize` exits 1 on an inconsistent KB: that is read as a
+verdict, not an arm failure.
 
 Scoring (plan v2 §3). FP kinds are findings whatever `incomplete` says:
   pair-FP, unsat-FP, consistency-FP, satonly-FP.
@@ -28,6 +37,7 @@ rustdl-fail, finding, exposed, clean.
 import argparse
 import json
 import os
+import re
 import resource
 import subprocess
 import sys
@@ -48,7 +58,18 @@ ARMS = {
     "satonly": ["classify", "--saturation-only", "--json"],
     "consistent": ["consistent", "--json"],
 }
-FP_KINDS = ("pair-FP", "unsat-FP", "consistency-FP", "satonly-FP")
+REALIZE_ARMS = {
+    "realize": ["realize", "--json"],
+    "realize_satonly": ["realize", "--saturation-only", "--json"],
+}
+ALL_ARMS = {**ARMS, **REALIZE_ARMS}
+FP_KINDS = ("pair-FP", "unsat-FP", "consistency-FP", "satonly-FP", "type-FP",
+            "satonly-type-FP")
+INCONSISTENT_ERR = "ontology is inconsistent"
+
+
+def arms_for(realize):
+    return dict(ALL_ARMS) if realize else dict(ARMS)
 
 
 # ------------------------------------------------------------------ rustdl
@@ -59,13 +80,16 @@ def _limit():
 def run_arm(binary, arm, path, env):
     e = {**os.environ, **env}
     try:
-        p = subprocess.run([binary, *ARMS[arm], str(path)], capture_output=True, text=True,
-                           timeout=RUSTDL_CAP, env=e, preexec_fn=_limit)
+        p = subprocess.run([binary, *ALL_ARMS[arm], str(path)], capture_output=True,
+                           text=True, timeout=RUSTDL_CAP, env=e, preexec_fn=_limit)
     except subprocess.TimeoutExpired:
         return {"status": "timeout"}
     try:
         return {"status": "ok", "rc": p.returncode, "json": json.loads(p.stdout)}
     except json.JSONDecodeError:
+        if arm in REALIZE_ARMS and p.returncode == 1 and INCONSISTENT_ERR in p.stderr:
+            # realize refuses an inconsistent KB: a verdict, scored as such.
+            return {"status": "ok", "rc": 1, "json": {"consistent": False}}
         return {"status": "fail", "rc": p.returncode, "stderr": p.stderr[-400:]}
 
 
@@ -85,6 +109,120 @@ def hierarchy_of(j, classes):
             thing_equiv.add(t)
     clo = {(s, t) for s, t in closure(edges, groups) if s in classes and t in classes}
     return unsat, thing_equiv & classes, clo
+
+
+# ------------------------------------------------------------------ realize oracle
+_IND = re.compile(r"Declaration\(\s*NamedIndividual\(\s*:(\w+)\s*\)\s*\)")
+_BASE = re.compile(r"Prefix\(\s*:\s*=\s*<([^>]*)>\s*\)")
+
+
+def augment(text):
+    """(augmented text, {N_x IRI: x IRI}): `N__x ≡ {x}` for each declared individual."""
+    base = _BASE.search(text).group(1)
+    inds = _IND.findall(text)
+    lines = text.rstrip("\n").splitlines()
+    assert lines[-1].strip() == ")", "expects a closing ')'"
+    add = []
+    for x in inds:
+        add += [f"Declaration(Class(:N__{x}))", f"EquivalentClasses(:N__{x} ObjectOneOf(:{x}))"]
+    return ("\n".join(lines[:-1] + add + [")"]) + "\n",
+            {f"{base}N__{x}": f"{base}{x}" for x in inds})
+
+
+def restrict(peer, keep):
+    """A peer answer restricted to the classes in `keep`."""
+    if peer.get("status") != "ok" or not peer.get("consistent"):
+        return peer
+    return {**peer, "unsat": sorted(set(peer["unsat"]) & keep),
+            "thing_equiv": sorted(set(peer["thing_equiv"]) & keep),
+            "pairs": sorted([a, b] for a, b in peer["pairs"] if a in keep and b in keep)}
+
+
+def peer_types(peer, classes, nmap):
+    """{x: sorted named types} from a consistent peer answer on the augmented file.
+
+    x : C iff N_x ⊑ C. The peers' pair sets carry equivalences both ways and omit
+    nothing for N_x (a consistent KB never makes N_x unsat). A Thing-equivalent C is a
+    type of every x. If N_x is itself Thing-equivalent (the domain is {x}), x : C iff
+    ⊤ ⊑ C, so its types are exactly the Thing-equivalent classes."""
+    te = set(peer["thing_equiv"])
+    pairs = {tuple(q) for q in peer["pairs"]}
+    out = {}
+    for n, x in nmap.items():
+        if n in te:
+            out[x] = sorted(te & classes)
+        else:
+            out[x] = sorted(c for c in classes if c in te or (n, c) in pairs)
+    return out
+
+
+def project(ora, classes, nmap):
+    """Split an augmented-file oracle record into the classify projection (original
+    classes) and the types projection (the N_x rows), each with its own agreement."""
+    k, h = ora["konclude"], ora["hermit"]
+    rec = {"sha256": ora["sha256"], "verdict": ora["verdict"], "kinds": ora["kinds"],
+           "answer": None, "konclude": k, "hermit": h, "types": {"verdict": "n/a"}}
+    if ora["verdict"] in ("invalid", "peer-fail"):
+        return rec
+    kr, hr = restrict(k, classes), restrict(h, classes)
+    verdict, kinds, ans = orc.agree(kr, hr)
+    rec.update(verdict=verdict, kinds=kinds, answer=ans, konclude=kr, hermit=hr)
+    if verdict == "agree" and ans["consistent"]:
+        kt, ht = peer_types(k, classes, nmap), peer_types(h, classes, nmap)
+        if kt == ht:
+            rec["types"] = {"verdict": "agree", "types": kt}
+        else:
+            rec["types"] = {"verdict": "peer-disagree",
+                            "individuals": sorted(x for x in kt if kt[x] != ht.get(x))}
+    return rec
+
+
+def oracle_for(path, text, cache, realize, aug_dir):
+    """The oracle record for one case: plain, or projected from the augmented file."""
+    if not realize:
+        return orc.oracle(path, cache)
+    aug, nmap = augment(text)
+    ap = Path(aug_dir) / f"{orc.sha(aug)[:20]}.ofn"
+    if not ap.exists():
+        ap.parent.mkdir(parents=True, exist_ok=True)
+        ap.write_text(aug)
+    return project(orc.oracle(ap, cache), orc.declared_classes(text), nmap)
+
+
+def score_types(types_rec, consistent, classes, arms):
+    """Findings of the realize arms. FPs are findings; a missed type is exposed only
+    (realize claims no completeness)."""
+    out = []
+
+    def add(kind, tier, witness, arm):
+        out.append({"kind": kind, "tier": tier, "witness": witness, "arm": arm})
+
+    for arm, fp_kind in (("realize", "type-FP"), ("realize_satonly", "satonly-type-FP")):
+        a = arms.get(arm, {})
+        j = a.get("json") if a.get("status") == "ok" else None
+        if j is None:
+            continue
+        if not consistent:
+            if j.get("consistent", True) and arm == "realize":
+                add("consistency-MISSED", "exposed", "KB", arm)
+            continue
+        if j.get("consistent") is False:
+            add("consistency-FP", "finding", "KB", arm)
+            continue
+        if types_rec.get("verdict") != "agree":
+            continue
+        o = types_rec["types"]
+        for ind in j.get("individuals", []):
+            x = ind["iri"]
+            if x not in o:
+                continue
+            got = set(ind.get("types", [])) & classes
+            for c in sorted(got - set(o[x])):
+                add(fp_kind, "finding", f"{x}|{c}", arm)
+            if arm == "realize":
+                for c in sorted(set(o[x]) - got):
+                    add("type-MISSED", "exposed", f"{x}|{c}", arm)
+    return out
 
 
 # ------------------------------------------------------------------ scoring
@@ -170,24 +308,43 @@ def _pin(q):
     os.sched_setaffinity(0, {_CORE})
 
 
-def one_case(path, binary, env, cache, out_dir):
+def _cpu():
+    """CPU seconds of this worker and its reaped children (the peers and rustdl). Read
+    per case because the pool's forkserver workers are never reaped into the parent's
+    rusage, so a `time` around run.py misses nearly all of it."""
+    s, c = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+    return s.ru_utime + s.ru_stime + c.ru_utime + c.ru_stime
+
+
+def one_case(path, binary, env, cache, out_dir, realize=False):
     dest = Path(out_dir) / "cases" / (Path(path).stem + ".json")
     if dest.exists():
         return json.loads(dest.read_text())
+    cpu0 = _cpu()
     text = Path(path).read_text()
     classes = orc.declared_classes(text)
-    ora = orc.oracle(path, cache)
-    motif = next((l.split(":", 1)[1].strip() for l in text.splitlines()[:3]
-                  if l.startswith("# motif:")), None)
+    ora = oracle_for(path, text, cache, realize, Path(out_dir).parent / "augmented")
+    head = text.splitlines()[:3]
+    motif = next((l.split(":", 1)[1].strip() for l in head if l.startswith("# motif:")), None)
+    polarity = next((l.split(":", 1)[1].strip() for l in head if l.startswith("# polarity:")),
+                    None)
     rec = {"case": Path(path).stem, "header": text.splitlines()[0], "motif": motif,
-           "sha256": ora["sha256"],
+           "polarity": polarity, "sha256": ora["sha256"],
            "oracle": {"verdict": ora["verdict"], "kinds": ora["kinds"]}, "arms": {},
            "findings": []}
+    if realize:
+        rec["oracle_types"] = ora["types"]
     if ora["verdict"] in ("agree", "peer-disagree"):
-        for arm in ARMS:
+        for arm in arms_for(realize):
             rec["arms"][arm] = run_arm(binary, arm, path, env)
     if ora["verdict"] == "agree":
+        rec["oracle_consistent"] = ora["answer"]["consistent"]
         rec["findings"] = score(ora["answer"], classes, rec["arms"])
+        if realize:
+            rec["findings"] += score_types(ora["types"], ora["answer"]["consistent"], classes,
+                                           rec["arms"])
+            rec["types_scored"] = (len(ora["types"]["types"])
+                                   if ora["types"].get("verdict") == "agree" else 0)
     elif ora["verdict"] == "peer-disagree":
         rec["sides"] = sides(ora, classes, rec["arms"])
     rec["bucket"] = bucket(rec)
@@ -200,6 +357,7 @@ def one_case(path, binary, env, cache, out_dir):
                 "relies_on_trusted_consistency", "wedge_clauses_refused",
                 "trusted_sat_refutations", "wedge_hierarchy_blind", "dropped",
                 "consistency_undetermined")}
+    rec["cpu_s"] = round(_cpu() - cpu0, 3)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
     tmp.write_text(json.dumps(rec))
@@ -266,7 +424,8 @@ def cmd_run(a):
     (out / "manifest.json").write_text(json.dumps({
         "tag": a.tag, "binary": a.bin, "env": env, "cases": str(a.cases), "n": len(files),
         "rustdl_cap_s": RUSTDL_CAP, "peer_cap_s": orc.PEER_CAP, "cores": a.cores,
-        "gen_hash": gen.gen_hash(), "oracle_version": orc.ORACLE_VERSION}, indent=1))
+        "realize": a.realize, "gen_hash": gen.gen_hash(), "oracle_version": orc.ORACLE_VERSION},
+        indent=1))
     cores = [int(c) for c in a.cores.split(",")]
     import multiprocessing as mp
     q = mp.Manager().Queue()
@@ -275,7 +434,7 @@ def cmd_run(a):
     done = 0
     with futures.ProcessPoolExecutor(max_workers=len(cores), initializer=_pin,
                                      initargs=(q,)) as ex:
-        futs = {ex.submit(one_case, str(f), a.bin, env, a.oracle_cache, str(out)): f
+        futs = {ex.submit(one_case, str(f), a.bin, env, a.oracle_cache, str(out), a.realize): f
                 for f in files}
         for f in futures.as_completed(futs):
             done += 1
@@ -324,16 +483,32 @@ def cmd_report(a):
     for r in recs.values():
         if r.get("motif"):
             by_motif.setdefault(r["motif"], []).append(r)
+
+    def denominators(rs):
+        """What a motif's cases actually scored: agreed cases, consistent or not, and
+        individuals whose types both peers agree on. A zero here is not a clean result."""
+        rs = list(rs)
+        agreed = [r for r in rs if r["oracle"]["verdict"] == "agree"]
+        return {"cases": len(rs), "agreed": len(agreed),
+                "agreed_consistent": sum(r.get("oracle_consistent") is True for r in agreed),
+                "peer_disagree": sum(r["bucket"] == "peer-disagree" for r in rs),
+                "types_peer_disagree": sum((r.get("oracle_types") or {}).get("verdict")
+                                           == "peer-disagree" for r in rs),
+                "individuals_scored": sum(r.get("types_scored", 0) for r in rs),
+                "finding_cases": sum(r["bucket"] == "finding" for r in rs)}
     rep = {
         "tag": a.tag, "n": len(recs), "buckets": dict(buckets),
         "guaranteed": guaranteed(recs.values()),
         "guaranteed_by_motif": {m: guaranteed(rs) for m, rs in sorted(by_motif.items())},
+        "denominators_by_motif": {m: denominators(rs) for m, rs in sorted(by_motif.items())},
         "findings_by_kind_tier": {f"{k}/{t}": n for (k, t), n in sorted(kinds.items())},
         "cases_by_kind_tier": {f"{k}/{t}": n for (k, t), n in sorted(case_kinds.items())},
         "finding_cases": sorted(c for c, r in recs.items() if r["bucket"] == "finding"),
         "peer_disagree": {f"{'+'.join(k)} rustdl-sides:{s}": n for (k, s), n in disagree.items()},
         "peer_fail_or_invalid": {"+".join(k): n for k, n in peer_fail.items()},
         "rustdl_arm_failures": dict(fails),
+        "cpu_s_measured": round(sum(r.get("cpu_s", 0) for r in recs.values()), 1),
+        "cases_without_cpu": sum("cpu_s" not in r for r in recs.values()),
     }
     Path(a.out, a.tag, "report.json").write_text(json.dumps(rep, indent=1))
     print(json.dumps(rep, indent=1))
@@ -524,6 +699,65 @@ def self_test():
            "Declaration(Class(ex:C))\nDeclaration(Class(owl:Thing))\n"
            "Declaration(ObjectProperty(:r))\n)")),
        ["http://g#A", "http://x#C", "http://y#B"])
+    # ---- the realize arm (role-polarity fuzz)
+    aug, nmap = augment("# gen x\nPrefix(:=<http://g#>)\nOntology(<http://g/o>\n"
+                        "Declaration(Class(:A))\nDeclaration(NamedIndividual(:a))\n"
+                        "Declaration(NamedIndividual(:b))\nClassAssertion(:A :a)\n)\n")
+    ok("augment adds N_x ≡ {x} per individual",
+       ("EquivalentClasses(:N__a ObjectOneOf(:a))" in aug,
+        "Declaration(Class(:N__b))" in aug, nmap),
+       (True, True, {"http://g#N__a": "http://g#a", "http://g#N__b": "http://g#b"}))
+    Na, Nb, xa, xb = "http://g#N__a", "http://g#N__b", "http://g#a", "http://g#b"
+
+    def peer(pairs, te=(), unsat=()):
+        return {"status": "ok", "consistent": True, "unsat": sorted(unsat),
+                "thing_equiv": sorted(te), "pairs": sorted(list(q) for q in pairs)}
+    nm = {Na: xa, Nb: xb}
+    ok("types: N_x ⊑ C rows, Thing-equivalent classes added",
+       peer_types(peer([(Na, A), (Na, B)], te=[C]), classes, nm),
+       {xa: [A, B, C], xb: [C]})
+    ok("types: C ≡ {x} (pairs both ways) gives x : C; N_y rows never leak",
+       peer_types(peer([(Na, A), (A, Na), (Na, Nb), (Nb, Na)]), classes, nm),
+       {xa: [A], xb: []})
+    ok("types: N_x Thing-equivalent means exactly the Thing-equivalent classes",
+       peer_types(peer([(Na, A)], te=[Na, B]), classes, nm), {xa: [B], xb: [B]})
+    ora = {"sha256": "s", "verdict": "peer-disagree", "kinds": ["pairs"],
+           "konclude": peer([(A, B), (Na, A)]), "hermit": peer([(A, B), (Na, A), (Na, B)])}
+    pr = project(ora, classes, nm)
+    ok("a types-only disagreement keeps the classify projection scored",
+       (pr["verdict"], pr["answer"]["pairs"], pr["types"]["verdict"], pr["types"]["individuals"]),
+       ("agree", [[A, B]], "peer-disagree", [xa]))
+    ora["hermit"] = peer([(A, B), (Na, A)])
+    pr = project(ora, classes, nm)
+    ok("agreeing peers give the types", pr["types"], {"verdict": "agree",
+                                                      "types": {xa: [A], xb: []}})
+    trec = {"verdict": "agree", "types": {xa: [A], xb: []}}
+
+    def rz(types_a, cons=None):
+        j = {"individuals": [{"iri": xa, "types": types_a}, {"iri": xb, "types": []}]}
+        if cons is not None:
+            j = {"consistent": cons}
+        return {"status": "ok", "json": j}
+
+    def tk(cons, **arms):
+        return sorted((f["kind"], f["tier"], f["witness"], f["arm"])
+                      for f in score_types(trec, cons, classes, arms))
+    ok("types agree: clean", tk(True, realize=rz([A]), realize_satonly=rz([A])), [])
+    ok("type-FP and satonly-type-FP are findings",
+       tk(True, realize=rz([A, B]), realize_satonly=rz([C])),
+       [("satonly-type-FP", "finding", f"{xa}|{C}", "realize_satonly"),
+        ("type-FP", "finding", f"{xa}|{B}", "realize")])
+    ok("a missed type is exposed, and only on the full arm",
+       tk(True, realize=rz([]), realize_satonly=rz([])),
+       [("type-MISSED", "exposed", f"{xa}|{A}", "realize")])
+    ok("realize refusing a consistent KB is a consistency-FP",
+       tk(True, realize=rz([], cons=False)), [("consistency-FP", "finding", "KB", "realize")])
+    ok("realize refusing an inconsistent KB is clean", tk(False, realize=rz([], cons=False)), [])
+    ok("realize answering on an inconsistent KB is an exposed miss",
+       tk(False, realize=rz([A])), [("consistency-MISSED", "exposed", "KB", "realize")])
+    ok("types not agreed: no type scoring",
+       sorted(f["kind"] for f in score_types({"verdict": "peer-disagree"}, True, classes,
+                                             {"realize": rz([A, B])})), [])
     print(f"run self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 
@@ -548,6 +782,8 @@ def main():
     p.add_argument("--first", type=int)
     p.add_argument("--cores", default="92,93,94")
     p.add_argument("--oracle-cache", required=True)
+    p.add_argument("--realize", action="store_true",
+                   help="add the realize arms; the peers classify the N_x-augmented file")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
     p.add_argument("--tag", required=True)

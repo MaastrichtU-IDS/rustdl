@@ -314,6 +314,10 @@ All notable changes to rustdl are documented here. Format is based on
     splitter) goes through `set_operands::components`.
   - An axiom left with one operand says nothing; its entities stay in the signature. A
     one-member `DisjointUnion(D, C)` is lowered to `D ≡ C`.
+  - **The property gaps** read `ObjectOneOf(:a :a)` as the singleton `{a}` (its
+    `data-derived-equality` gap was missing), and a one-operand disjointness is no longer a gap
+    source (`Disjoint(r r)` with a sub-role raised `object-disjoint-inheritance` on the told
+    arm).
   - **`collapsed_operands {axioms, vacuous}`** in `classify --json` and `consistent --json`,
     on `ClassificationStats` and on the Python `Classification`, plus a stderr note, so a caller
     reading the operands as a list can see what changed. It is not `dropped` and never affects

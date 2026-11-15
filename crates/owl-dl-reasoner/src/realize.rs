@@ -478,12 +478,13 @@ fn instance_reporting(
     // Single-pair path — the witness is a realize-loop optimization (one
     // witness amortized across the whole per-individual, per-class loop);
     // it isn't worth building for a lone instance check.
+    let told_index = ToldIndex::build(internal);
     let first = instance_check_reporting(
-        internal,
         &closure,
         &prepared,
         class_id,
         individual_id,
+        told_index.of(individual_id),
         pair_deadline,
         None,
     )?;
@@ -617,10 +618,9 @@ pub fn is_instance_of_saturation_only_internal(
         return Err(ReasonError::Inconsistent);
     }
     Ok(instance_check_closure_only(
-        internal,
         &closure,
         class_id,
-        individual_id,
+        ToldIndex::build(internal).of(individual_id),
     ))
 }
 
@@ -639,7 +639,7 @@ pub fn is_instance_of_saturation_only_internal(
 ///
 /// The edge is the named role's: `ObjectPropertyAssertion(ObjectInverseOf(r) b a)`
 /// makes `a` the source (#526). Only the exact role matches, with no role-hierarchy
-/// matching; see [`told_classes_of`].
+/// matching; see `told_classes_of`.
 ///
 /// The instance check, plus WHETHER a negative answer came from a real refutation or
 /// from a cut probe, and whether that cut is #462/#475's likely-bug `NoVerdict`
@@ -676,18 +676,17 @@ pub fn is_instance_of_saturation_only_internal(
 /// no verdict. `truncated` is advisory only — every `false` it accompanies is still a
 /// sound "not proven to be an instance".
 fn instance_check_reporting(
-    internal: &InternalOntology,
     closure: &Subsumers,
     prepared: &PreparedOntology,
     class_id: ClassId,
     individual_id: IndividualId,
+    told: &[ClassId],
     pair_deadline: Option<std::time::Instant>,
     base_types: Option<&HashSet<ClassId>>,
 ) -> Result<InstanceProbe, ReasonError> {
-    for told in told_classes_of(internal, individual_id) {
-        if closure.contains(told, class_id) {
-            return Ok(InstanceProbe::decided(true));
-        }
+    // `told` is `individual_id`'s told classes, from the caller's [`ToldIndex`] (#525).
+    if told.iter().any(|&t| closure.contains(t, class_id)) {
+        return Ok(InstanceProbe::decided(true));
     }
     if let Some(bt) = base_types
         && !bt.contains(&class_id)
@@ -822,15 +821,87 @@ impl InstanceProbe {
 /// `class_id` in its EL-closure subsumer set. Skips the
 /// `{a} ⊓ ¬C` tableau probe entirely — sound under-approximation
 /// matching [`crate::classify_saturation_only`].
-fn instance_check_closure_only(
-    internal: &InternalOntology,
-    closure: &Subsumers,
-    class_id: ClassId,
-    individual_id: IndividualId,
-) -> bool {
-    told_classes_of(internal, individual_id)
-        .into_iter()
-        .any(|told| closure.contains(told, class_id))
+fn instance_check_closure_only(closure: &Subsumers, class_id: ClassId, told: &[ClassId]) -> bool {
+    told.iter().any(|&t| closure.contains(t, class_id))
+}
+
+/// Every individual's told classes, built once per call (#525). `told_classes_of` used to
+/// rescan every axiom per (individual, class) pair, plus one more full scan per matching
+/// property assertion: O(I × C × A) for `realize`.
+///
+/// Two passes over the axioms: the per-role domain and range lists first, so a domain axiom
+/// that follows its assertion still applies; then each individual's sequence, appending
+/// exactly what `told_classes_of` appends, in axiom order and with duplicates. So
+/// [`ToldIndex::of`] equals `told_classes_of` for every individual (pinned by a unit test
+/// against the old function, kept under `#[cfg(test)]`).
+struct ToldIndex {
+    told: Vec<Vec<ClassId>>,
+}
+
+impl ToldIndex {
+    fn build(internal: &InternalOntology) -> Self {
+        fn slot<T: Clone + Default>(v: &mut Vec<T>, i: usize) -> &mut T {
+            if i >= v.len() {
+                v.resize(i + 1, T::default());
+            }
+            &mut v[i]
+        }
+        let mut domains: Vec<Vec<ClassId>> = Vec::new();
+        let mut ranges: Vec<Vec<ClassId>> = Vec::new();
+        for axiom in &internal.axioms {
+            match axiom {
+                Axiom::ObjectPropertyDomain { role, domain } if !role.is_inverse() => {
+                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*domain) {
+                        slot(&mut domains, role.role_id().index() as usize).push(*id);
+                    }
+                }
+                Axiom::ObjectPropertyRange { role, range } if !role.is_inverse() => {
+                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
+                        slot(&mut ranges, role.role_id().index() as usize).push(*id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut told: Vec<Vec<ClassId>> = vec![Vec::new(); internal.vocabulary.num_individuals()];
+        for axiom in &internal.axioms {
+            match axiom {
+                Axiom::ClassAssertion { class, individual } => {
+                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*class) {
+                        slot(&mut told, individual.index() as usize).push(*id);
+                    }
+                }
+                Axiom::ObjectPropertyAssertion {
+                    role,
+                    subject,
+                    object,
+                } => {
+                    // #526: the edge of the named role.
+                    let (source, target) = if role.is_inverse() {
+                        (*object, *subject)
+                    } else {
+                        (*subject, *object)
+                    };
+                    let r = role.role_id().index() as usize;
+                    if let Some(d) = domains.get(r) {
+                        slot(&mut told, source.index() as usize).extend_from_slice(d);
+                    }
+                    if let Some(g) = ranges.get(r) {
+                        slot(&mut told, target.index() as usize).extend_from_slice(g);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self { told }
+    }
+
+    /// `individual`'s told classes; empty for an id the index never saw.
+    fn of(&self, individual: IndividualId) -> &[ClassId] {
+        self.told
+            .get(individual.index() as usize)
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 /// Collect every atomic class that `individual_id` is *told* to
@@ -849,6 +920,7 @@ fn instance_check_closure_only(
 /// ranges, and no inverse-role domain or range axioms. Both are sound
 /// misses: [`instance_check_reporting`] falls back to its `{a} ⊓ ¬C`
 /// tableau probe, and the saturation-only path just misses them.
+#[cfg(test)]
 fn told_classes_of(internal: &InternalOntology, individual_id: IndividualId) -> Vec<ClassId> {
     let mut out = Vec::new();
     for axiom in &internal.axioms {
@@ -882,6 +954,7 @@ fn told_classes_of(internal: &InternalOntology, individual_id: IndividualId) -> 
     out
 }
 
+#[cfg(test)]
 fn domains_for_role(internal: &InternalOntology, role_id: owl_dl_core::RoleId) -> Vec<ClassId> {
     let mut out = Vec::new();
     for axiom in &internal.axioms {
@@ -896,6 +969,7 @@ fn domains_for_role(internal: &InternalOntology, role_id: owl_dl_core::RoleId) -
     out
 }
 
+#[cfg(test)]
 fn ranges_for_role(internal: &InternalOntology, role_id: owl_dl_core::RoleId) -> Vec<ClassId> {
     let mut out = Vec::new();
     for axiom in &internal.axioms {
@@ -1017,6 +1091,7 @@ pub fn instances_of_reporting_internal(
     // #510 (C): sticky likewise: some probe hit it, then a budget cut it.
     let mut depth_cap_hit = false;
     let mut any_member = false;
+    let told_index = ToldIndex::build(internal);
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
@@ -1025,11 +1100,11 @@ pub fn instances_of_reporting_internal(
         // Single-pair-per-individual path — same rationale as
         // `is_instance_of_internal`: no shared witness to amortize here.
         let probe = instance_check_reporting(
-            internal,
             &closure,
             &prepared,
             class_id,
             individual_id,
+            told_index.of(individual_id),
             pair_deadline,
             None,
         )?;
@@ -1103,10 +1178,11 @@ pub fn instances_of_saturation_only_internal(
         return Err(ReasonError::Inconsistent);
     }
     let mut out = Vec::new();
+    let told_index = ToldIndex::build(internal);
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
-        if instance_check_closure_only(internal, &closure, class_id, individual_id) {
+        if instance_check_closure_only(&closure, class_id, told_index.of(individual_id)) {
             let iri = internal.vocabulary.individual_iri(individual_id);
             if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
                 out.push(iri.to_owned());
@@ -1648,6 +1724,7 @@ pub fn realize_saturation_only_internal(
         .collect();
 
     let closure = saturate(internal);
+    let told_index = ToldIndex::build(internal);
 
     let per_individual: Vec<IndivResult> = individual_iris
         .par_iter()
@@ -1658,7 +1735,7 @@ pub fn realize_saturation_only_internal(
             let mut types: Vec<&str> = Vec::new();
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
-                if instance_check_closure_only(internal, &closure, class_id, individual_id) {
+                if instance_check_closure_only(&closure, class_id, told_index.of(individual_id)) {
                     types.push(class_iri);
                 }
             }
@@ -2193,6 +2270,7 @@ pub(crate) fn realize_tableau_internal(
     // (each builds a fresh tableau context per class probe via
     // `prepared.decide_with_deadline` / `decide_raw`). Parallelise the outer loop with rayon; the
     // hierarchy / closure / prepared snapshot is shared read-only.
+    let told_index = ToldIndex::build(internal);
     let per_individual: Result<Vec<IndivResultReporting>, ReasonError> = individual_iris
         .par_iter()
         .enumerate()
@@ -2208,11 +2286,11 @@ pub(crate) fn realize_tableau_internal(
                 let pair_deadline = pair_deadline_ms
                     .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
                 let probe = instance_check_reporting(
-                    internal,
                     &closure,
                     &prepared,
                     class_id,
                     individual_id,
+                    told_index.of(individual_id),
                     pair_deadline,
                     base_types,
                 )?;
@@ -2316,6 +2394,66 @@ mod tests {
         let (ontology, _prefixes) =
             read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
         ontology
+    }
+
+    /// #525: `ToldIndex::of` equals the old per-pair scan (`told_classes_of`) for every
+    /// individual, order and duplicates included, on the converted axiom order, the
+    /// reversed order (every assertion before its domain/range: the build must be two
+    /// passes) and a doubled axiom list. The fixtures cover direct assertions, domain and
+    /// range, an inverse assertion, a self-loop, an inverse-role domain/range (the
+    /// `is_inverse` filters), a sub-role (exact role id only) and an individual with none.
+    #[test]
+    fn told_index_equals_the_per_pair_scan() {
+        let fixtures = [
+            "ClassAssertion(:A :a) ClassAssertion(:B :a) ClassAssertion(:A :b)",
+            "ObjectPropertyAssertion(:r :a :b) ObjectPropertyDomain(:r :D) \
+             ObjectPropertyRange(:r :R) ObjectPropertyDomain(:r :A)",
+            "ObjectPropertyDomain(:r :D) ObjectPropertyRange(:r :R) \
+             ObjectPropertyAssertion(ObjectInverseOf(:r) :a :b) ObjectPropertyAssertion(:r :c :c)",
+            "ObjectPropertyDomain(:r :D) ObjectPropertyAssertion(:r :a :b) \
+             ObjectPropertyAssertion(:r :a :c) ClassAssertion(:D :a) ObjectPropertyAssertion(:r :a :b)",
+            "ObjectPropertyDomain(ObjectInverseOf(:r) :D) ObjectPropertyRange(ObjectInverseOf(:r) :R) \
+             ObjectPropertyAssertion(:r :a :b) ObjectPropertyDomain(:s :A) \
+             SubObjectPropertyOf(:r :s) ObjectPropertyRange(:r :B)",
+        ];
+        for (k, body) in fixtures.iter().enumerate() {
+            let src = format!(
+                "Prefix(:=<http://ex/#>)\nOntology(<http://ex/o>\n\
+                 Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:D))\n\
+                 Declaration(Class(:R)) Declaration(ObjectProperty(:r)) \
+                 Declaration(ObjectProperty(:s))\n\
+                 Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+                 Declaration(NamedIndividual(:c)) Declaration(NamedIndividual(:d))\n{body}\n)\n"
+            );
+            let converted = owl_dl_core::convert::convert_ontology(&parse(&src)).expect("convert");
+            // `convert_ontology` sorts the axioms (domain/range before assertions) and the
+            // parser dedups, so the converted order alone cannot exercise "a domain after
+            // its assertion" or true duplicates. Also check the reversed order (every
+            // assertion before its domain: a single-pass build fails here) and a doubled
+            // axiom list (genuine duplicates).
+            let mut reversed = converted.clone();
+            reversed.axioms.reverse();
+            let mut doubled = converted.clone();
+            doubled.axioms.extend(converted.axioms.clone());
+            for (variant, internal) in [
+                ("converted", &converted),
+                ("reversed", &reversed),
+                ("doubled", &doubled),
+            ] {
+                let index = ToldIndex::build(internal);
+                let n = internal.vocabulary.num_individuals();
+                assert!(n >= 4, "fixture {k}: individuals declared");
+                for idx in 0..n {
+                    let ind = IndividualId::new(u32::try_from(idx).expect("fits"));
+                    assert_eq!(
+                        index.of(ind),
+                        told_classes_of(internal, ind).as_slice(),
+                        "fixture {k} ({variant}), individual {}",
+                        internal.vocabulary.individual_iri(ind)
+                    );
+                }
+            }
+        }
     }
 
     /// #510: a `NoVerdict` signal is never also reported as a depth cut (classify's
@@ -2798,9 +2936,17 @@ Ontology(<http://rustdl.test/test>\n\
         // Baseline: no witness ⇒ the tableau probe alone correctly derives
         // a:E via the disjunctive case split.
         assert!(
-            instance_check_reporting(&internal, &closure, &prepared, e_id, a_id, None, None)
-                .expect("verdict")
-                .is_instance,
+            instance_check_reporting(
+                &closure,
+                &prepared,
+                e_id,
+                a_id,
+                ToldIndex::build(&internal).of(a_id),
+                None,
+                None
+            )
+            .expect("verdict")
+            .is_instance,
             "a:E must be entailed via case-split tableau reasoning",
         );
 
@@ -2810,11 +2956,11 @@ Ontology(<http://rustdl.test/test>\n\
         let empty: HashSet<ClassId> = HashSet::new();
         assert!(
             !instance_check_reporting(
-                &internal,
                 &closure,
                 &prepared,
                 e_id,
                 a_id,
+                ToldIndex::build(&internal).of(a_id),
                 None,
                 Some(&empty),
             )
@@ -2828,11 +2974,11 @@ Ontology(<http://rustdl.test/test>\n\
         let with_e: HashSet<ClassId> = HashSet::from([e_id]);
         assert!(
             instance_check_reporting(
-                &internal,
                 &closure,
                 &prepared,
                 e_id,
                 a_id,
+                ToldIndex::build(&internal).of(a_id),
                 None,
                 Some(&with_e),
             )
@@ -2873,11 +3019,11 @@ Ontology(<http://rustdl.test/test>\n\
         let empty: HashSet<ClassId> = HashSet::new();
         assert!(
             instance_check_reporting(
-                &internal,
                 &closure,
                 &prepared,
                 c_id,
                 alice_id,
+                ToldIndex::build(&internal).of(alice_id),
                 None,
                 Some(&empty),
             )

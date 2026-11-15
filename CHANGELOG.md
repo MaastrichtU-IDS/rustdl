@@ -1568,6 +1568,13 @@ All notable changes to rustdl are documented here. Format is based on
   and the issue #35 v4 reproducer still terminates.
 
 ### Performance
+- **`realize`, `instance` and `instances` build each individual's told classes once per call
+  (#525).** `told_classes_of` used to rescan every axiom per (individual, class) pair, plus one
+  more scan per matching property assertion. On `ore_ont_5695`, `realize` drops from 56.4 to
+  1.38 CPU-s (median of 5, quiet host); a file where the told path is not hot (`ore_ont_14308`)
+  is unchanged. No answer changes: 74 sampled ORE files realize identically, and 8 of 10 files
+  that main cannot finish within 120 CPU-s now finish, with types confirmed by main at a higher
+  cap or by Konclude.
 - **The main tableau's per-node clash scan and nominal guard do less work (#490, lever B).**
   Result-identical optimisations; no flag and no default changes. On wine, every per-query call
   took about 31 CPU-s after #490. A frame-pointer profile of `subclass Wine RedWine` put 31% of

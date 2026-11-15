@@ -216,6 +216,7 @@ fn dedup<'a, T: Clone + Eq + Hash>(
 /// Structural equality of class expressions: nested set-valued operands compare as sets.
 /// Allocates nothing.
 #[must_use]
+#[allow(clippy::many_single_char_names)] // paired pattern bindings: p/q, x/y, n/m
 pub fn ce_eq<A: ForIRI>(a: &CE<A>, b: &CE<A>) -> bool {
     match (a, b) {
         (CE::ObjectIntersectionOf(xs), CE::ObjectIntersectionOf(ys))
@@ -330,7 +331,7 @@ fn dr_has_set<A: ForIRI>(d: &DR<A>) -> bool {
         | DR::DataOneOf(_)
         | DR::DatatypeRestriction(..) => true,
         DR::DataComplementOf(x) => dr_has_set(x),
-        _ => false,
+        DR::Datatype(_) => false,
     }
 }
 
@@ -414,12 +415,13 @@ pub fn dr_canon<A: ForIRI>(d: &DR<A>) -> DR<A> {
         DR::DatatypeRestriction(dt, fs) => {
             DR::DatatypeRestriction(dt.clone(), sorted_set(fs.clone()))
         }
-        other => other.clone(),
+        DR::Datatype(dt) => DR::Datatype(dt.clone()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::many_single_char_names)]
     use super::*;
     use crate::convert::convert_ontology;
     use horned_owl::io::ParserConfiguration;

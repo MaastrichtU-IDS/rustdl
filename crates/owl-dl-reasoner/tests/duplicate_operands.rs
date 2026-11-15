@@ -7,8 +7,10 @@
 //! Every case here pins the duplicate case at the set reading's answer next to a control
 //! without the repeat that DOES give the positive, through the same call.
 //!
-//! The peers keep the repeats (Konclude and HermiT say `C` unsat for `DisjointClasses(:C
+//! The peers keep the repeats (Konclude and `HermiT` say `C` unsat for `DisjointClasses(:C
 //! :C)`), so an oracle comparison shows these as rustdl-only misses by design.
+#![allow(clippy::unwrap_used)]
+
 use std::io::Cursor;
 
 use horned_owl::io::ParserConfiguration;

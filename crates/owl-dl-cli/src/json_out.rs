@@ -197,7 +197,7 @@ pub(crate) struct ClassifyJson {
     /// at all (a one-member `DisjointUnion(D C)` still says `D ≡ C` and is not counted).
     /// Not an under-approximation under the set reading, so a SEPARATE field from
     /// `dropped`, and it never affects `completeness_guaranteed`. Under a list reading
-    /// these axioms could add answers (both Konclude and HermiT keep the repeats); this
+    /// these axioms could add answers (both Konclude and `HermiT` keep the repeats); this
     /// field is how a caller sees that. `{"axioms": 0, "vacuous": 0}` when none.
     pub(crate) collapsed_operands: CollapsedOperandsJson,
 }

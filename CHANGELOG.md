@@ -295,6 +295,19 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **Consistent ontologies with inverse-role domains, ranges or functional roles are no longer
+  reported inconsistent (#527, #528).** The told-ABox consistency pre-check (`abox_check`), which
+  `consistent`, `classify` and `realize` rely on, read an inverse role as its named role in three
+  passes. A false inconsistency then made `classify` mark every class unsatisfiable:
+  - `ObjectPropertyDomain(ObjectInverseOf(r) D)` typed the source of each `r`-edge instead of its
+    target, and `ObjectPropertyRange(ObjectInverseOf(r) D)` the target instead of the source;
+  - `FunctionalObjectProperty(ObjectInverseOf(r))` (= `InverseFunctional(r)`) merged two
+    `r`-successors of one individual. The false merge also reached the asymmetric/irreflexive
+    pass;
+  - the functional-role existential collapse read `∃r⁻.Q` as `∃r.Q`.
+
+  Each now keeps the role's polarity. The other role-consuming passes were checked with the same
+  `r⁻` canaries and were already correct. Every fixture is adjudicated by HermiT and Konclude.
 - **`justify`, `repair` and `report` answer queries whose class or individual has no
   `Declaration` (#520).** Before, the search aborted with "class IRI not in ontology" or
   "individual IRI not in ontology" whenever it tested a subset of the axioms that left the

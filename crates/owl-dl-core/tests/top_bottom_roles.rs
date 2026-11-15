@@ -240,3 +240,25 @@ fn top_data_property_told_empty_adds_no_contradiction() {
         (true, true)
     );
 }
+
+/// #538 meets #539 (the merge conflict sat where `builtin` and `collapsed_operands` meet):
+/// a built-in axiom is never counted as a collapsed n-ary axiom. Only the source's
+/// repeated-operand axiom is counted, with or without the bottom role.
+#[test]
+fn a_builtin_axiom_is_never_a_collapsed_operand_axiom() {
+    let o = convert(&format!(
+        "{BASE} SubClassOf(:C ObjectSomeValuesFrom(owl:bottomObjectProperty :D))"
+    ));
+    assert_eq!(o.builtin.len(), 1);
+    assert!(
+        o.collapsed_operands.is_empty(),
+        "{:?}",
+        o.collapsed_operands
+    );
+    let o = convert(&format!(
+        "{BASE} SubClassOf(:C ObjectSomeValuesFrom(owl:bottomObjectProperty :D)) \
+         EquivalentClasses(:C :C :D)"
+    ));
+    assert_eq!(o.builtin.len(), 1);
+    assert_eq!(o.collapsed_operands.axioms, 1, "{:?}", o.collapsed_operands);
+}

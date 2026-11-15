@@ -27,6 +27,7 @@ Usage:
 import argparse
 import hashlib
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -57,6 +58,8 @@ PROFILES = {
     "el_guaranteed": {},
     # el_guaranteed plus ⊤-LHS GCIs (#444/#445): ElTopCase below, its own RNG stream.
     "el_top": {},
+    # Role polarity (#526–#528 follow-up): PolarityCase below, its own RNG stream.
+    "polarity": {},
 }
 
 
@@ -598,11 +601,285 @@ class ElTopCase(ElCase):
         return f"EquivalentClasses(owl:Thing {x})"
 
 
+POLARITY_WEIGHTS = {"el": 3, "neg_or": 2, "forall": 2, "card": 3, "roles": 4,
+                    "domrange": 3, "nominal": 2, "bot": 1, "abox": 4}
+POLARITY_MOTIFS = ("told_edge", "p7", "p5", "p8", "p3", "p6", "p9", "card_inv", "forall_inv",
+                   "min_inv_nominal")
+# Role-consuming axiom kinds whose `r⁻` form the census and the floor count.
+POLARITY_KINDS = {
+    "functional": "FunctionalObjectProperty(ObjectInverseOf(",
+    "inverse_functional": "InverseFunctionalObjectProperty(ObjectInverseOf(",
+    "irreflexive": "IrreflexiveObjectProperty(ObjectInverseOf(",
+    "asymmetric": "AsymmetricObjectProperty(ObjectInverseOf(",
+    "domain": "ObjectPropertyDomain(ObjectInverseOf(",
+    "range": "ObjectPropertyRange(ObjectInverseOf(",
+    "assertion": "ObjectPropertyAssertion(ObjectInverseOf(",
+    "negative_assertion": "NegativeObjectPropertyAssertion(ObjectInverseOf(",
+}
+
+
+def polarity_kinds(axioms):
+    """The role-consuming kinds that occur with an inverse role, for the census line."""
+    out = set()
+    for a in axioms:
+        for k, pre in POLARITY_KINDS.items():
+            if a.startswith(pre):
+                out.add(k)
+        if a.startswith("DisjointObjectProperties(") and "ObjectInverseOf(" in a:
+            out.add("disjoint_roles")
+        if re.search(r"Cardinality\(\d+ ObjectInverseOf\(", a):
+            out.add("cardinality")
+        if "AllValuesFrom(ObjectInverseOf(" in a:
+            out.add("forall")
+        if "SomeValuesFrom(ObjectInverseOf(" in a:
+            out.add("exists")
+    return out
+
+
+class PolarityCase(Case):
+    """`polarity` (the #526–#528 follow-up): signed roles in every role-consuming axiom
+    kind, an ABox in every case, and planted motifs.
+
+    The default profile draws role characteristics, disjoint roles and role assertions on
+    named roles only, has no negative role assertion, and draws `r⁻` in 15% of class
+    expressions; so `Functional(r⁻)`, `Disjoint(r⁻, s)` and inverse assertions never
+    occurred. Here `R()` draws `r⁻` half the time, and characteristics, disjoint roles,
+    positive and negative assertions all take signed roles. Simplicity is invariant under
+    inversion (`simple_roles` requires both polarities), so the restrictions still hold.
+
+    With probability 0.5 one motif is planted (`# motif: <name>/<variant>`), drawn on
+    simple roles after the hierarchy, each as a consistent variant (`ok`) or a control
+    that changes the answer (`ctl`), so a bug that drops polarity flips a scored answer:
+      told_edge        (#526) r⁻(a,b) with Domain(r)/Range(r): b gets the domain, a the range
+      p7               (#527) Domain(r⁻)/Range(r⁻) clashing with a disjoint told type
+      p5               (#528) Functional(r⁻) with two successors (ok) or predecessors (ctl)
+      p8               (#528) ∃X.Q1, ∃X.Q2, disjoint Q's, under a functional r or r⁻
+      p3, p6, p9       negative assertions, Asymmetric/Irreflexive(r⁻), Disjoint(r⁻, s)
+      card_inv         ≤1 r⁻ against two predecessors (tableau apply_max, the wedge's ≤n)
+      forall_inv       ∀r⁻ over a predecessor edge; and the TBox pair A ⊑ ∃r.∀r⁻.D ⊑ D
+      min_inv_nominal  ≥2 r⁻.{a, c} with SameIndividual (ctl) or DifferentIndividuals (ok)
+    The floor: a case with no `r⁻` in any role-consuming axiom gets one appended. The
+    `# polarity:` line lists the kinds present. Own RNG stream; other profiles untouched.
+    """
+
+    profile = "polarity"
+    motif_p = 0.5
+    inv_p = 0.5
+
+    def __init__(self, seed, index, profile=None):
+        self.seed, self.index = seed, index
+        self.rng = random.Random(f"{seed}:{index}:{self.profile}")
+        r = self.rng
+        self.classes = [f"C{i}" for i in range(r.randint(5, 10))]
+        self.roles = [f"r{i}" for i in range(r.randint(2, 4))]
+        self.dprops = []
+        self.inds = [f"a{i}" for i in range(r.randint(3, 5))]
+        self.weights = dict(POLARITY_WEIGHTS)
+        self.role_axioms, self.axioms = [], []
+        self.n_target = r.randint(3, 15)
+        self._draw_roles()
+        self.simple = simple_roles(self.roles, self.role_axioms)
+        self.motif = "none"
+        if self.simple and r.random() < self.motif_p:
+            self._plant_motif()
+        self._draw_rest()
+        self._floor()
+
+    def R(self, simple=False):
+        pool = sorted(self.simple) if simple else self.roles
+        if not pool:
+            return None
+        x = ":" + self.rng.choice(pool)
+        return f"ObjectInverseOf({x})" if self.rng.random() < self.inv_p else x
+
+    def ax_roles(self):
+        r = self.rng
+        if not self.simple:
+            return None
+        k = r.choice(["FunctionalObjectProperty", "InverseFunctionalObjectProperty",
+                      "IrreflexiveObjectProperty", "AsymmetricObjectProperty",
+                      "ReflexiveObjectProperty", "disjoint"])
+        if k == "disjoint":
+            if len(self.simple) < 2:
+                return None
+            a, b = r.sample(sorted(self.simple), 2)
+            sa = f"ObjectInverseOf(:{a})" if r.random() < self.inv_p else f":{a}"
+            sb = f"ObjectInverseOf(:{b})" if r.random() < self.inv_p else f":{b}"
+            return f"DisjointObjectProperties({sa} {sb})"
+        return f"{k}({self.R(simple=True)})"
+
+    def ax_abox(self):
+        r = self.rng
+        k = r.choice(["class", "class", "role", "role", "neg", "same", "diff"])
+        if k == "class":
+            return f"ClassAssertion({self.ce(1)} {self.I()})"
+        if k == "role":
+            return f"ObjectPropertyAssertion({self.R()} {self.I()} {self.I()})"
+        if k == "neg":
+            return f"NegativeObjectPropertyAssertion({self.R()} {self.I()} {self.I()})"
+        a, b = r.sample(self.inds, 2)
+        return f"{'SameIndividual' if k == 'same' else 'DifferentIndividuals'}(:{a} :{b})"
+
+    def _floor(self):
+        """Append one `r⁻` role-consuming axiom if the case has none."""
+        if polarity_kinds(self.axioms) - {"forall", "exists"}:
+            return
+        r = self.rng
+        x = ":" + r.choice(self.roles)
+        a, b = r.sample(self.inds, 2)
+        opts = [f"ObjectPropertyAssertion(ObjectInverseOf({x}) :{a} :{b})",
+                f"NegativeObjectPropertyAssertion(ObjectInverseOf({x}) :{a} :{b})",
+                f"ObjectPropertyDomain(ObjectInverseOf({x}) {self.C()})",
+                f"ObjectPropertyRange(ObjectInverseOf({x}) {self.C()})"]
+        if self.simple:
+            s_ = ":" + r.choice(sorted(self.simple))
+            opts += [f"{k}(ObjectInverseOf({s_}))" for k in (
+                "FunctionalObjectProperty", "InverseFunctionalObjectProperty",
+                "IrreflexiveObjectProperty", "AsymmetricObjectProperty")]
+        self.axioms.append(r.choice(opts))
+
+    def _plant_motif(self):
+        r = self.rng
+        kind = r.choice(POLARITY_MOTIFS)
+        planted = self._motif_axioms(kind)
+        if planted is None:
+            return
+        ax, name = planted
+        for a in ax:
+            if a not in self.axioms:
+                self.axioms.append(a)
+        self.n_target = max(self.n_target, len(self.axioms) + 2)
+        self.motif = name
+
+    def _motif_axioms(self, kind):
+        """The motif's axioms and `name/variant`, or None when the case lacks the roles."""
+        r = self.rng
+        x = r.choice(sorted(self.simple))
+        inv = f"ObjectInverseOf(:{x})"
+        a, b, c = r.sample(self.inds, 3)
+        cs = r.sample(self.classes, 5)
+        ok = r.random() < 0.5
+        var = "ok" if ok else "ctl"
+        if kind == "told_edge":
+            d, rng_ = cs[:2]
+            ax = [f"ObjectPropertyDomain(:{x} :{d})", f"ObjectPropertyRange(:{x} :{rng_})",
+                  f"ObjectPropertyAssertion({inv} :{a} :{b})"]
+            if not ok:
+                ax.append(f"ObjectPropertyAssertion(:{x} :{b} :{c})")
+            return ax, f"told_edge/{'inv' if ok else 'mixed'}"
+        if kind == "p7":
+            d, e = cs[:2]
+            dom = r.random() < 0.5
+            head = "ObjectPropertyDomain" if dom else "ObjectPropertyRange"
+            # Domain(r⁻) types the edge's target b; Range(r⁻) its source a.
+            typed = b if dom else a
+            other = a if dom else b
+            return ([f"{head}({inv} :{d})", f"DisjointClasses(:{d} :{e})",
+                     f"ObjectPropertyAssertion(:{x} :{a} :{b})",
+                     f"ClassAssertion(:{e} :{other if ok else typed})"],
+                    f"p7_{'domain' if dom else 'range'}/{var}")
+        if kind == "p5":
+            edges = ([(a, b), (a, c)], (b, c)) if ok else ([(a, b), (c, b)], (a, c))
+            return ([f"FunctionalObjectProperty({inv})"]
+                    + [f"ObjectPropertyAssertion(:{x} :{s_} :{t})" for s_, t in edges[0]]
+                    + [f"DifferentIndividuals(:{edges[1][0]} :{edges[1][1]})"], f"p5/{var}")
+        if kind == "p8":
+            cl, q1, q2 = cs[:3]
+            forms = {  # name: (functional axioms, the two existential roles), consistent?
+                "inv_under_func": ([f"FunctionalObjectProperty(:{x})"], (inv, inv), True),
+                "named_under_func_inv": ([f"FunctionalObjectProperty({inv})"], (f":{x}", f":{x}"),
+                                         True),
+                "mixed": ([f"FunctionalObjectProperty(:{x})",
+                           f"InverseFunctionalObjectProperty(:{x})"], (f":{x}", inv), True),
+                "inv_under_ifunc": ([f"InverseFunctionalObjectProperty(:{x})"], (inv, inv), False),
+                "inv_under_func_inv": ([f"FunctionalObjectProperty({inv})"], (inv, inv), False),
+                "named_under_func": ([f"FunctionalObjectProperty(:{x})"], (f":{x}", f":{x}"),
+                                     False),
+            }
+            form = r.choice(sorted(forms))
+            funcs, (e1, e2), cons = forms[form]
+            if r.random() < 0.3:
+                body = [f"EquivalentClasses(:{cl} ObjectIntersectionOf("
+                        f"ObjectSomeValuesFrom({e1} :{q1}) ObjectSomeValuesFrom({e2} :{q2})))"]
+            else:
+                body = [f"SubClassOf(:{cl} ObjectSomeValuesFrom({e1} :{q1}))",
+                        f"SubClassOf(:{cl} ObjectSomeValuesFrom({e2} :{q2}))"]
+            return (funcs + body + [f"DisjointClasses(:{q1} :{q2})", f"ClassAssertion(:{cl} :{a})"],
+                    f"p8_{form}/{'ok' if cons else 'ctl'}")
+        if kind == "p3":
+            edge = (a, b) if ok else (b, a)
+            return ([f"NegativeObjectPropertyAssertion({inv} :{a} :{b})",
+                     f"ObjectPropertyAssertion(:{x} :{edge[0]} :{edge[1]})"], f"p3/{var}")
+        if kind == "p6":
+            if r.random() < 0.5:
+                ax = [f"AsymmetricObjectProperty({inv})", f"ObjectPropertyAssertion(:{x} :{a} :{b})"]
+                if not ok:
+                    ax.append(f"ObjectPropertyAssertion(:{x} :{b} :{a})")
+                return ax, f"p6_asymmetric/{var}"
+            edge = (a, b) if ok else (a, a)
+            return ([f"IrreflexiveObjectProperty({inv})",
+                     f"ObjectPropertyAssertion(:{x} :{edge[0]} :{edge[1]})"], f"p6_irreflexive/{var}")
+        if kind == "p9":
+            others = sorted(self.simple - {x})
+            if not others:
+                return None
+            y = r.choice(others)
+            edge = (a, b) if ok else (b, a)
+            return ([f"DisjointObjectProperties({inv} :{y})",
+                     f"ObjectPropertyAssertion(:{x} :{edge[0]} :{edge[1]})",
+                     f"ObjectPropertyAssertion(:{y} :{a} :{b})"], f"p9/{var}")
+        if kind == "card_inv":
+            cl, q, q2 = cs[:3]
+            if r.random() < 0.5:
+                # ABox: b may have at most one r-predecessor in Q.
+                edges = [(a, b), (c, b)] if not ok else [(b, a), (b, c)]
+                return ([f"SubClassOf(:{cl} ObjectMaxCardinality(1 {inv} :{q}))",
+                         f"ClassAssertion(:{cl} :{b})", f"ClassAssertion(:{q} :{a})",
+                         f"ClassAssertion(:{q} :{c})", f"DifferentIndividuals(:{a} :{c})"]
+                        + [f"ObjectPropertyAssertion(:{x} :{s_} :{t})" for s_, t in edges],
+                        f"card_inv_abox/{var}")
+            # TBox: two disjoint r-predecessors against ≤1 r⁻ (ctl: Cl unsat) or ≤1 r (ok).
+            bound = inv if not ok else f":{x}"
+            return ([f"SubClassOf(:{cl} ObjectSomeValuesFrom({inv} :{q}))",
+                     f"SubClassOf(:{cl} ObjectSomeValuesFrom({inv} :{q2}))",
+                     f"DisjointClasses(:{q} :{q2})",
+                     f"SubClassOf(:{cl} ObjectMaxCardinality(1 {bound} owl:Thing))"],
+                    f"card_inv_tbox/{var}")
+        if kind == "forall_inv":
+            cl, d, bcl = cs[:3]
+            if r.random() < 0.5:
+                edge = (a, b) if not ok else (b, a)
+                return ([f"SubClassOf(:{cl} ObjectAllValuesFrom({inv} :{d}))",
+                         f"ClassAssertion(:{cl} :{b})",
+                         f"ClassAssertion(ObjectComplementOf(:{d}) :{a})",
+                         f"ObjectPropertyAssertion(:{x} :{edge[0]} :{edge[1]})"],
+                        f"forall_inv_abox/{var}")
+            # TBox: Cl ⊑ ∃r.B and B ⊑ ∀r⁻.D entail Cl ⊑ D (`pos`); with ∀r it does not (`neg`).
+            q = inv if ok else f":{x}"
+            return ([f"SubClassOf(:{cl} ObjectSomeValuesFrom(:{x} :{bcl}))",
+                     f"SubClassOf(:{bcl} ObjectAllValuesFrom({q} :{d}))"],
+                    f"forall_inv_tbox/{'pos' if ok else 'neg'}")
+        if kind == "min_inv_nominal":
+            cl = cs[0]
+            rel = "DifferentIndividuals" if ok else "SameIndividual"
+            return ([f"SubClassOf(:{cl} ObjectMinCardinality(2 {inv} ObjectOneOf(:{a} :{c})))",
+                     f"{rel}(:{a} :{c})", f"ClassAssertion(:{cl} :{b})"],
+                    f"min_inv_nominal/{var}")
+        raise AssertionError(kind)
+
+    def header(self):
+        kinds = ",".join(sorted(polarity_kinds(self.axioms))) or "none"
+        return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile {self.profile}\n"
+                f"# motif: {self.motif}\n# polarity: {kinds}")
+
+
 def make_case(seed, index, profile="default"):
     if profile == "el_guaranteed":
         return ElCase(seed, index)
     if profile == "el_top":
         return ElTopCase(seed, index)
+    if profile == "polarity":
+        return PolarityCase(seed, index)
     return Case(seed, index, profile)
 
 
@@ -799,10 +1076,12 @@ def check(case):
                   "InverseFunctionalObjectProperty", "IrreflexiveObjectProperty",
                   "AsymmetricObjectProperty", "DisjointObjectProperties")
     import re
+    role = r"(?:ObjectInverseOf\(:r\d+\)|:r\d+)"
     for line in case.axioms:
         for op in restricted:
-            for m in re.finditer(op + r"\((?:\d+ )?((?:ObjectInverseOf\()?:r\d+\)?(?: :r\d+)?)",
-                                 line):
+            # Every role operand, either polarity, in every position: the old pattern read
+            # an inverse only in the first DisjointObjectProperties position.
+            for m in re.finditer(op + r"\((?:\d+ )?(" + role + r"(?: " + role + r")*)", line):
                 for name in re.findall(r":(r\d+)", m.group(1)):
                     if name not in simple:
                         errs.append(f"non-simple {name} in {op}: {line}")
@@ -888,6 +1167,44 @@ def self_test():
     ok("el_top is deterministic", ElTopCase(5, 7).ofn() == ElTopCase(5, 7).ofn(), True)
     ok("el_top and el_guaranteed streams differ",
        ElTopCase(5, 7).axioms == ElCase(5, 7).axioms, False)
+    # The checker reads every role operand: an inverse in the second DisjointObjectProperties
+    # position used to go unchecked.
+    class _Fake:
+        roles = ["r0", "r1"]
+        role_axioms = [("transitive", "r1")]
+        axioms = ["DisjointObjectProperties(:r0 ObjectInverseOf(:r1))"]
+    ok("checker reads an inverse in the second disjoint-role position",
+       any("non-simple r1" in e for e in check(_Fake())), True)
+    _Fake.axioms = ["DisjointObjectProperties(ObjectInverseOf(:r0) ObjectInverseOf(:r1))"]
+    ok("checker reads two inverse operands", any("non-simple r1" in e for e in check(_Fake())),
+       True)
+    pol = [PolarityCase(13, i) for i in range(1000)]
+    ok("1000 polarity cases pass the checker", sum(bool(check(c)) for c in pol), 0)
+    ok("polarity is deterministic", PolarityCase(5, 7).ofn() == PolarityCase(5, 7).ofn(), True)
+    ok("polarity and default streams differ", PolarityCase(5, 7).axioms == Case(5, 7).axioms,
+       False)
+    ok("every polarity case has an r⁻ role-consuming axiom (the floor)",
+       [c.index for c in pol if not polarity_kinds(c.axioms) - {"forall", "exists"}], [])
+    census = {}
+    for c in pol:
+        for k in polarity_kinds(c.axioms):
+            census[k] = census.get(k, 0) + 1
+    want = set(POLARITY_KINDS) | {"disjoint_roles", "cardinality"}
+    ok("every signed kind occurs in >= 50 of 1000 cases",
+       sorted(k for k in want if census.get(k, 0) < 50), [])
+    names = {c.motif.split("/")[0] for c in pol}
+    stems = {n.split("_")[0] if n.startswith(("p7", "p8", "p6")) else n for n in names}
+    ok("every polarity motif is planted",
+       sorted({"told_edge", "p7", "p5", "p8", "p3", "p6", "p9"} - stems), [])
+    ok("the tableau/wedge motifs are planted",
+       {"card_inv_abox", "card_inv_tbox", "forall_inv_abox", "forall_inv_tbox",
+        "min_inv_nominal"} <= names, True)
+    ok("both variants of p5 occur", {"p5/ok", "p5/ctl"} <= {c.motif for c in pol}, True)
+    planted = sum(c.motif != "none" for c in pol)
+    ok("about half the cases carry a motif", 380 <= planted <= 620, True)
+    ok("the header carries the motif and the census",
+       PolarityCase(13, 1).ofn().splitlines()[1:3][0].startswith("# motif: ")
+       and PolarityCase(13, 1).ofn().splitlines()[2].startswith("# polarity: "), True)
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

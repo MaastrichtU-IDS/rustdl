@@ -295,6 +295,56 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **realize, instance, instances and instances-expr no longer take an ABox made inconsistent by a
+  `NegativeObjectPropertyAssertion` as consistent (#536).** Their saturation fast route admitted
+  negative object property assertions and then ignored them. So `r(a, b)` with `¬r(a, b)` (or the
+  same edge derived through a sub-role, role equivalence, transitivity or a chain) got a definite
+  `no` from `instance` and empty types from `realize`, with exit 0 and no signal. The fast route
+  now seeds `¬r(a, b)` as `{a} ⊓ ∃r.{b} ⊑ ⊥` over its individuals' stand-ins, and every such
+  ontology is refused as inconsistent; a negative assertion on `owl:topObjectProperty` is
+  contradicted outright. Every fixture is adjudicated by HermiT and Konclude.
+- **An inverse-role property assertion no longer types the wrong individuals (#526).**
+  `ObjectPropertyAssertion(ObjectInverseOf(r) a b)` is the edge `r(b, a)`, but the told-class
+  fast path shared by every instance check gave `a` the domain of `r` and `b` its range. That
+  covers `instance`, `instances`, `realize`, the class-expression instance queries and the
+  instance check inside `justify`. The answers were false positives: on the full path, a `yes`
+  that skipped the tableau probe; on the saturation-only path, the only answer. The edge is now normalised to the named role first.
+  Every fixture is adjudicated by HermiT and Konclude.
+- **Consistent ontologies with inverse-role domains, ranges or functional roles are no longer
+  reported inconsistent (#527, #528).** The told-ABox consistency pre-check (`abox_check`), which
+  `consistent`, `classify` and `realize` rely on, read an inverse role as its named role in three
+  passes. A false inconsistency then made `classify` mark every class unsatisfiable:
+  - `ObjectPropertyDomain(ObjectInverseOf(r) D)` typed the source of each `r`-edge instead of its
+    target, and `ObjectPropertyRange(ObjectInverseOf(r) D)` the target instead of the source;
+  - `FunctionalObjectProperty(ObjectInverseOf(r))` (= `InverseFunctional(r)`) merged two
+    `r`-successors of one individual. The false merge also reached the asymmetric/irreflexive
+    pass;
+  - the functional-role existential collapse read `∃r⁻.Q` as `∃r.Q`.
+
+  Each now keeps the role's polarity. The other role-consuming passes were checked with the same
+  `r⁻` canaries and were already correct. Every fixture is adjudicated by HermiT and Konclude.
+- **`justify`, `repair` and `report` answer queries whose class or individual has no
+  `Declaration` (#520).** Before, the search aborted with "class IRI not in ontology" or
+  "individual IRI not in ontology" whenever it tested a subset of the axioms that left the
+  entity out. No ORE file declares its individuals, so this was every entailed `instance`
+  query there.
+  - **The fix:** the search declares the query's looked-up entities for the duration of the
+    query: the classes of `instance`, `subclass`, `equivalent` and `unsat`, and `instance`'s
+    individual. Declarations are non-logical, so a subset treats a missing entity as the fresh
+    symbol it is. For example, `⊤ ⊑ Y` alone now justifies `a : Y`.
+  - **Covered:** `justify`, `justify --all`, `repair` and `report`, the API
+    (`find_*_justification*`, `find_repairs*`, laconic, `PreparedJustifier`) and Python.
+  - **Unchanged:** the other query kinds (property assertions, sub/equivalent/disjoint
+    properties, `disjoint`, `same`, `different` and the data-property kinds) never failed
+    this way. A fully declared ontology takes the same path as before.
+  - **User-visible change:** an entity that is in the ontology but outside the query's
+    ⊥-module (no axiom connects it to the query) used to fail with "… IRI not in ontology"
+    even on a non-entailed query. It now answers "not entailed". An IRI the ontology does not
+    have as that kind (a typo, a property used as a class, a class used as an individual) is
+    still that error, in the same order: an `instance` query reports its class first, a
+    `subclass` query its sub. The order is now judged against the full ontology. If the class is
+    outside the ⊥-module but in the ontology and the individual is a typo, the error now names
+    the individual; main named the class.
 - **`realize` no longer races a 1 s wall-clock budget for its pseudo-model witness, which made
   `ore_ont_5695` flip between a one-minute and a 20-minute-plus run (#430).** Realize's pseudo-model witness (the model whose types let it skip most per-pair
   `{a} ⊓ ¬C` probes) was built in a second wedge run under a 1000 ms wall-clock budget. On
@@ -1307,6 +1357,89 @@ All notable changes to rustdl are documented here. Format is based on
   (`RUSTDL_HYPERTABLEAU=0`) still stalls on the pair.
 
 ### Changed
+- **`instance` retries a decision-depth cut once on the deep path, so it can now answer "no"
+  where it said `unknown` (#510, 2b).** When the bounded probe of a single instance query ends
+  at the 256-level depth limit (`depth_capped`), or a budget cuts it after it had hit that
+  limit (#510 C's `depth_cap_hit`), it is retried with the deep, anywhere-blocking
+  probe that `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` runs, under a new budget
+  `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (default 60,000 ms; `0` turns the retry off) and the
+  node cap in force: the single-query cap (`RUSTDL_QUERY_MAX_NODES`) for the CLI and Python,
+  the default cap (`RUSTDL_MAX_NODES`) for a library caller that does not take
+  `single_query_node_cap()`.
+  - **Who gets it:** CLI `instance`, `is_instance_of` / `is_instance_of_reporting` and Python
+    `is_instance_of`. Not `instances`, `instances-expr`, `realize`, `justify` or `repair`, which
+    report the cut as before (`justify` would pay one budget per QuickXplain step). No batch
+    or loop inside rustdl reaches the retry: it runs at most once per `instance` call. A call
+    whose retry never decides takes up to the budget (60 s) longer than before; one whose retry
+    answers "yes" just inside it also runs the #369 lazy check (`RUSTDL_CONSISTENCY_FALLBACK_MS`,
+    10 s), so the bound is about 70 s over prep. A caller that loops over `is_instance_of*` or
+    the CLI pays it once per call and can lower or turn off `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS`
+    (`scripts/cross-command-laws.py` sets 20 s, below its 30 s call cap).
+  - **Outcomes:** a decided retry is the answer, with no cut flag and a CLI note. A retry cut by
+    its budget or the node cap stays `unknown` (exit 3, `incomplete`, `depth_capped` false), and
+    the CLI says to raise `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` or `RUSTDL_QUERY_MAX_NODES`. A
+    budget cut with no depth-cap hit is not retried.
+  - **New:** `InstanceFlags::depth_fallback` (`InstanceDepthFallback::NotRun` / `Decided` /
+    `Cut`). Both types are `#[non_exhaustive]`, so this adds a field without breaking callers.
+  - **Behaviour change when the retry ends in `NoVerdict`** (its saturation stalls, or the
+    deep search bails at its own 1,000,000-level limit): #462's likely-bug signal, reported
+    as `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` reports it. Where the depth cut used to be a plain
+    cut (`Ok(false)` with `incomplete`; Python `False` with a warning), `is_instance_of` /
+    `is_instance_of_internal` now return `Err(NoVerdict)`, Python
+    `is_instance_of` raises `RustdlError`, and CLI `instance` prints `unknown` with #449's
+    "likely a reasoner bug" note (exit 3), after a note that the retry ran.
+  - **Python:** a retry cut by its budget gets its own `IncompleteQueryWarning` text naming
+    `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS`.
+  - **The trigger depends on timing only for a probe with no hit:** a probe that reaches early
+    abandon (32 cap hits) is `depth_capped`, and one whose deadline comes first after at least
+    one hit is `depth_cap_hit`; both are retried. Only a probe whose deadline comes before its
+    first hit stays a plain budget cut, so under heavy load a pair can still stay `unknown`. See
+    `docs/known-limitations/bounded-probe-depth-cap.md`.
+  - **Measured** on the per-query census's 3,566 `instance` calls (ORE files), at a 10 s
+    budget. Under load (8 lanes), 252 calls changed from `unknown` to "no". On a quiet core
+    (3 interleaved reps of every call the base depth-capped, 263), 253 did, by majority (one,
+    on `ore_ont_12698`, in 2 of 3 reps). The other 10, all on `ore_ont_13113`, were cut at 10 s
+    and answer "no" at 30 s, in 19.8–26.0 CPU-s for the whole call (one run each, quiet core);
+    the 60 s default is the smallest round budget with at least 2x slack over them. The budget
+    is wall-clock, so under load these can still be cut (`unknown`, never a wrong answer).
+    HermiT and Konclude both refute every one of these "no" answers. There is no new "yes", no
+    changed answer and no answer lost. Extra CPU per retried call: median +0.69 s, p90
+    +3.03 s; a retry decided within 10 s took at most +4.99 s, and 13113's ten take about
+    20–26 s at the default.
+  - **Re-measured on this base, with #510 C's hit trigger** (M0′: 3,576 census calls, 8 lanes,
+    against main):
+    - 293 calls change from `unknown` to "no" at the default, and 296 with early abandon off.
+      Both oracles refute every one; there are 0 new "yes" and no other change.
+    - Extra CPU per retried call: median +0.5 s, p90 +4.1 s, max +30.5 s.
+    - **The 2x rule held on #510's census pairs but not on this tree.** The slowest retried
+      calls (whole call, under load) are:
+      - `ore_ont_5688` (10 calls, outside #510's census): 28.9–31.0 CPU-s, up to 34 s wall, so
+        1.8–1.9x slack at 60 s;
+      - `ore_ont_13113`: 21.8–23.2 CPU-s, 2.4–2.6x;
+      - `f1-wine`: 18.5–19.0 CPU-s, 2.6–3.2x.
+    - The default stays 60 s. A retry its wall-clock budget cuts (more likely under load)
+      stays `unknown`, which is never a wrong answer.
+- **`instance` and `instances` say when a probe cut by a budget had hit the decision-depth
+  limit first (#510 C).** `depth_capped` (#510) covers only a probe that the depth limit itself
+  ended, through early abandon's 32nd hit. A depth-bound probe whose deadline came first (early
+  abandon off, or a loaded host) was reported as a plain deadline cut, with only the budget
+  advice.
+  - The tableau now counts depth-cap hits on every probe. The count is report-only and
+    changes no search path: early abandon is untouched, and with it off nothing is armed.
+    Under iterative deepening (default off), a loop that ends before its final level (a
+    non-final node-cap stop, or the caller's deadline after a shallow level) keeps the shallow
+    levels' hits, so the flag can over-attribute there.
+  - New `InstanceFlags::depth_cap_hit`: a deadline or the node cap cut the probe after at least
+    one hit. It implies `incomplete` and is never set together with `depth_capped` or
+    `no_verdict` on one probe. On `instances` it is OR-ed over the individuals. On the single
+    `instance` query it also triggers #510 (2b)'s deep retry (above); elsewhere it is report-only.
+  - **`instance` / `instances`:** the deadline or node-cap wording adds that
+    `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` may help as well as a larger budget.
+  - **Python:** `is_instance_of` says the same in its `IncompleteQueryWarning`. The native
+    tuple gains a last element.
+  - **Not yet covered:** `instances-expr`, `realize`, `justify`, `repair` and the other Python
+    calls. `classify` is unchanged: its `depth_capped_pairs` and banner do not count a hit.
+    No answer changes.
 - **`instance` names a decision-depth cut, and stops advising a budget that cannot recover it
   (#510).** A bounded instance probe stops at `MAX_SEARCH_DEPTH` (256) decision levels,
   directly or through early abandon (#288). The CLI said "cut (deadline, node cap or depth
@@ -1317,11 +1450,35 @@ All notable changes to rustdl are documented here. Format is based on
     what helps;
   - a deadline or node-cap cut: the budget advice as before.
 
-  `instances` reports the same way. `instances-expr` and `realize` don't track the cause yet,
-  so their warning gives both pieces of advice. New `InstanceFlags::depth_capped`
+  `instances` reports the same way (for `instances-expr`, `realize`, `justify`, `repair` and
+  Python, see the follow-up entry below). New `InstanceFlags::depth_capped`
   (report-only, implies `incomplete`). No answer changes. Found by the per-query census: on 36
   ORE files `instance` never answered "no"; on 3 of them, all 15 cut pairs answer "no" with
   `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`, as HermiT and Konclude do.
+- **`instances-expr`, `realize`, `justify`, `repair` and the Python calls name a depth cut too
+  (#510 follow-up).** The surfaces that #510 left reporting a generic cut now say when an
+  instance probe hit the decision-depth limit, and give the advice that helps:
+  - **`instances-expr` and `realize`:** the `instances` wording. On `realize` the message adds
+    that `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` also takes the deadline off its classification step.
+  - **`justify`, `justify --all` and `repair`:** before, they said "gave up (node cap,
+    RUSTDL_MAX_NODES)" on a depth cut of their instance check. A depth cut now gets the depth
+    wording. Other give-ups keep the node-cap wording, which now adds that an instance check can
+    also give up on its `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` deadline.
+  - **Python:** `is_instance_of`, `instances_of`, `class_expression_instances`, `realize`,
+    `materialize_inferred_class_assertions`, `materialize_existential_successors`, `justify`,
+    `justify_all`, `repair` and `PreparedOntology.justify` / `justify_all` put the same
+    distinction in their `IncompleteQueryWarning` text. The warning class is unchanged.
+  - **New report-only accessors and fields:** `Realization::depth_capped`,
+    `CeInstances::depth_capped`, `ExistentialSuccessorFlags::depth_capped`,
+    `JustifyOutcome::depth_capped` and `Repairs::depth_capped`. Each implies `incomplete`.
+    - `JustifyOutcome::depth_capped` and `Repairs::depth_capped` are set only on an outcome that
+      is incomplete anyway; a depth cut never makes one incomplete. A cut ⊥-module check that
+      the full set then decides leaves the answer definite, as before.
+    - `ExistentialSuccessorFlags`, `JustifyOutcome` and `Repairs` have public fields, so a struct
+      literal outside the crate must add the field (`..Default::default()` where the type has it).
+    - `Realization::depth_capped` counts named individuals only, as its `incomplete` does.
+      `InstanceFlags::depth_capped` counts anonymous individuals' probes too.
+  - **Under `--json`, these commands carry no cut cause yet.** No answer changes.
 - **`classify` closes its subsumption matrix transitively, so `is_subclass` agrees with the
   hierarchy `direct_subsumers` reports (#448).** When a pair `(a, c)` was recorded "not subsumed"
   (a per-pair deadline cut, or a trusted wedge `Sat`) while `(a, b)` and `(b, c)` were recorded
@@ -1411,6 +1568,13 @@ All notable changes to rustdl are documented here. Format is based on
   and the issue #35 v4 reproducer still terminates.
 
 ### Performance
+- **`realize`, `instance` and `instances` build each individual's told classes once per call
+  (#525).** `told_classes_of` used to rescan every axiom per (individual, class) pair, plus one
+  more scan per matching property assertion. On `ore_ont_5695`, `realize` drops from 56.4 to
+  1.38 CPU-s (median of 5, quiet host); a file where the told path is not hot (`ore_ont_14308`)
+  is unchanged. No answer changes: 74 sampled ORE files realize identically, and 8 of 10 files
+  that main cannot finish within 120 CPU-s now finish, with types confirmed by main at a higher
+  cap or by Konclude.
 - **The main tableau's per-node clash scan and nominal guard do less work (#490, lever B).**
   Result-identical optimisations; no flag and no default changes. On wine, every per-query call
   took about 31 CPU-s after #490. A frame-pointer profile of `subclass Wine RedWine` put 31% of

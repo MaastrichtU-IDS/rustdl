@@ -133,7 +133,16 @@ class IncompleteQueryWarning(UserWarning):
     """Emitted by the budgeted inferred queries (`disjoint_classes`,
     `same_individuals`, `different_individuals`, `object_property_values`)
     when the per-pair budget/probe was exhausted (sound but possibly
-    incomplete)."""
+    incomplete).
+
+    #510: when an instance probe was cut by the tableau's decision-depth limit
+    (`is_instance_of`, `instances_of`, `class_expression_instances`, `realize`, the
+    two realize-backed `materialize_*` calls, and the explanation calls' instance
+    checks), the message says so: a longer `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or a
+    larger node cap does not help there, and `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (the
+    deadline-free probe, with no time limit) may. When a deadline or the node cap cut
+    an `is_instance_of` probe after it had hit that limit (#510 C: early abandon off,
+    or a loaded host), the message says both remedies may help."""
 
 class DirectTypesUnverifiedWarning(UserWarning):
     """Emitted by `realize` when two most-specific types of an individual could
@@ -274,8 +283,9 @@ def is_subclass_of(path: str, sub: str, sup: str) -> bool:
 
 def is_instance_of(path: str, class_iri: str, individual_iri: str) -> bool:
     """True iff `individual_iri` is an instance of `class_iri`. If the probe was
-    cut, returns `False` and emits `IncompleteQueryWarning`. A probe that ended in
-    NoVerdict on an internal limit (likely a reasoner bug, #449) raises
+    cut, returns `False` and emits `IncompleteQueryWarning`. A decision-depth cut (or a
+    budget cut after a depth-limit hit, #510 C) is first retried on the deep path (`RUSTDL_INSTANCE_DEPTH_FALLBACK_MS`, #510). A
+    probe that ended in NoVerdict on an internal limit (likely a reasoner bug, #449) raises
     `RustdlError` instead (#493). A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...

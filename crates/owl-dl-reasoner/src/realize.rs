@@ -37,10 +37,43 @@ use crate::classify::{
 /// the maps together.
 type IndivResult = (Vec<String>, Vec<String>);
 
-/// Same as [`IndivResult`] plus whether any probe for that individual was CUT
-/// (deadline / node-cap / depth bail) rather than refuted — the input to
-/// `Realization::incomplete`.
-type IndivResultReporting = (Vec<String>, Vec<String>, bool, bool);
+/// Same as [`IndivResult`] plus that individual's probe cuts ([`RowCuts`]): the input
+/// to `Realization::incomplete`, `no_verdict` and `depth_capped`.
+type IndivResultReporting = (Vec<String>, Vec<String>, RowCuts);
+
+/// The cut signals of one individual's instance probes, and (folded with
+/// [`RowCuts::merge`]) of a whole realization.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+struct RowCuts {
+    /// Some probe was cut (deadline, node cap or depth limit) rather than refuted.
+    cut: bool,
+    /// #493: some cut was the likely-bug `NoVerdict`.
+    no_verdict: bool,
+    /// #510: some cut was the decision-depth limit ([`InstanceProbe::depth_capped`]).
+    depth_capped: bool,
+}
+
+impl RowCuts {
+    /// Record one probe of this row.
+    fn record(&mut self, probe: InstanceProbe) {
+        self.cut |= probe.cut;
+        self.no_verdict |= probe.no_verdict;
+        self.depth_capped |= probe.depth_capped;
+    }
+
+    /// Fold one individual's row into the realization's signals. `no_verdict` counts
+    /// every row, anonymous individuals' too: it is a bug signal, not a row (#493).
+    /// `cut` and `depth_capped` count only the named rows, the ones published, so a
+    /// realization's `depth_capped` implies its `incomplete` (#510), as a probe's does.
+    fn merge(&mut self, row: Self, anonymous: bool) {
+        self.no_verdict |= row.no_verdict;
+        if !anonymous {
+            self.cut |= row.cut;
+            self.depth_capped |= row.depth_capped;
+        }
+    }
+}
 
 /// Default per-pair tableau probe deadline (milliseconds) used by the
 /// `{a} ⊓ ¬C` instance-check reduction when `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
@@ -234,8 +267,62 @@ pub struct InstanceFlags {
     /// The deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) searches much deeper.
     /// Never set together with `no_verdict` on the same probe (as in classify's
     /// `record_cut_probe`): the deadline-free probe's own depth limit is #462's signal.
-    /// Report-only: implies `incomplete`, changes no answer.
+    /// Report-only: implies `incomplete`, changes no answer. On `instances` it is OR-ed
+    /// over every individual's probe, anonymous individuals' too (as `incomplete` is
+    /// there); [`Realization::depth_capped`] counts named individuals only.
+    ///
+    /// On the single query, a depth cut is retried on the deep path when
+    /// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` allows ([`Self::depth_fallback`]). This flag
+    /// then reports the retry: it stays set only if the retry did not run.
     pub depth_capped: bool,
+    /// #510 (C): a cut probe hit the decision-depth limit at least once, and then a
+    /// deadline or the node cap ended it (`depth_capped` is the case where the limit
+    /// itself ended it). This is what a depth-bound probe reports when early abandon
+    /// is off (`RUSTDL_TABLEAU_EARLY_ABANDON=0`) or when the deadline comes before
+    /// early abandon's 32nd hit, as on a loaded host. Both a larger budget and the
+    /// deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) may recover the cut.
+    /// Never set together with `depth_capped` or `no_verdict` on the same probe.
+    /// It implies `incomplete`. On the single query (`instance`, `is_instance_of*`) it
+    /// also triggers #510 (2b)'s deep retry, as `depth_capped` does (unless
+    /// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`); elsewhere it is report-only. On
+    /// `instances` it is OR-ed over every individual's probe, as `depth_capped` is, so a
+    /// list can carry both. Not yet on `realize`, `instances-expr`, `justify` or `repair`
+    /// (#510 C2).
+    pub depth_cap_hit: bool,
+    /// #510: what the single query's deep retry after a depth cut did
+    /// ([`crate::instance_depth_fallback_ms`]). `NotRun` on every other path, and
+    /// always on `instances`, which never retries.
+    pub depth_fallback: InstanceDepthFallback,
+}
+
+/// #510: the single instance query's deep retry after a decision-depth cut
+/// ([`crate::instance_depth_fallback_ms`], [`InstanceFlags::depth_fallback`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InstanceDepthFallback {
+    /// No retry: the bounded probe was neither depth-capped nor cut after a depth-cap
+    /// hit (`depth_cap_hit`), the retry is off
+    /// (`RUSTDL_INSTANCE_DEPTH_FALLBACK_MS=0`), or the caller never retries.
+    #[default]
+    NotRun,
+    /// The retry reached a verdict, which is the answer (`incomplete` is clear).
+    Decided,
+    /// The retry was cut too, by its budget or the node cap (or, with
+    /// [`InstanceFlags::no_verdict`] set, by #462's likely-bug limit). The answer is
+    /// the sound "not an instance" with `incomplete` set; a larger
+    /// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` or node cap may recover it.
+    Cut,
+}
+
+/// #510: whether an instance query may retry a depth-capped probe on the deep path.
+/// Only the single query does; justify's oracle calls it once per `QuickXplain` step,
+/// so a retry there would multiply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DepthFallback {
+    /// The single query (`instance`, the public `is_instance_of*` API, Python).
+    On,
+    /// justify's instance oracle.
+    Off,
 }
 
 /// [`is_instance_of`] plus its [`InstanceFlags`] (#73, #369).
@@ -332,10 +419,31 @@ pub fn is_instance_of_reporting_internal(
     class_iri: &str,
     individual_iri: &str,
 ) -> Result<(bool, InstanceFlags), ReasonError> {
+    instance_reporting(internal, class_iri, individual_iri, DepthFallback::On)
+}
+
+/// #510: [`is_instance_of_reporting`] without the deep retry after a depth cut, for
+/// justify's instance oracle, which calls it once per `QuickXplain` step.
+pub(crate) fn is_instance_of_reporting_no_depth_fallback<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    class_iri: &str,
+    individual_iri: &str,
+) -> Result<(bool, InstanceFlags), ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    instance_reporting(&internal, class_iri, individual_iri, DepthFallback::Off)
+}
+
+/// The single instance query, with or without #510's deep retry ([`DepthFallback`]).
+fn instance_reporting(
+    internal: &InternalOntology,
+    class_iri: &str,
+    individual_iri: &str,
+    fallback: DepthFallback,
+) -> Result<(bool, InstanceFlags), ReasonError> {
     let class_id = match resolve_instance_class(internal, class_iri)? {
         InstanceClass::Named(id) => id,
         InstanceClass::Probed(probed, probe) => {
-            return is_instance_of_reporting_internal(&probed, probe, individual_iri);
+            return instance_reporting(&probed, probe, individual_iri, fallback);
         }
     };
     let individual_id = internal
@@ -370,15 +478,44 @@ pub fn is_instance_of_reporting_internal(
     // Single-pair path — the witness is a realize-loop optimization (one
     // witness amortized across the whole per-individual, per-class loop);
     // it isn't worth building for a lone instance check.
-    let probe = instance_check_reporting(
-        internal,
+    let told_index = ToldIndex::build(internal);
+    let first = instance_check_reporting(
         &closure,
         &prepared,
         class_id,
         individual_id,
+        told_index.of(individual_id),
         pair_deadline,
         None,
     )?;
+    // #510: a depth cut is not recovered by a larger budget, so the single query retries
+    // it once on the deep path. #510 (C) wiring: so is a budget cut that came after a
+    // depth-cap hit (`depth_cap_hit`: early abandon off, or the deadline before its 32nd
+    // hit), which the deep probe may decide where a larger budget may not. Both flags
+    // were captured right after the first probe (the retry resets the thread-locals), and
+    // both exclude `no_verdict`; they are exclusive with each other.
+    let retry_ms = crate::instance_depth_fallback_ms();
+    let (probe, depth_fallback) = if fallback == DepthFallback::On
+        && (first.depth_capped || first.depth_cap_hit)
+        && pair_deadline.is_some()
+        && retry_ms > 0
+    {
+        let trigger = if first.depth_capped {
+            "depth-capped"
+        } else {
+            "cut after a depth-cap hit (#510 C)"
+        };
+        let retry = instance_depth_retry(&prepared, class_id, individual_id, retry_ms, trigger)?;
+        let outcome = if retry.cut {
+            InstanceDepthFallback::Cut
+        } else {
+            InstanceDepthFallback::Decided
+        };
+        (retry, outcome)
+    } else {
+        (first, InstanceDepthFallback::NotRun)
+    };
+    // The retry's answer, when it ran, is the one the lazy check keys on.
     let holds = probe.is_instance;
     // #369: a membership on a KB only the tableau finds inconsistent is vacuous.
     let lazy = crate::LazyCheck::run_if(holds, || prepared.lazy_inconsistency_check("instance"))?;
@@ -390,9 +527,50 @@ pub fn is_instance_of_reporting_internal(
             // #493: the probe's likely-bug cut (a "no"), or the lazy check's own
             // stall after a "yes".
             no_verdict: probe.no_verdict || lazy.no_verdict,
+            // After a retry, the retry's cut is a budget cut, never a depth cut.
             depth_capped: probe.depth_capped,
+            depth_cap_hit: probe.depth_cap_hit,
+            depth_fallback,
         },
     ))
+}
+
+/// #510: the single instance query's deep retry of `{a} ⊓ ¬C` after a depth cut, under
+/// `retry_ms` ([`crate::instance_depth_fallback_ms`]). The search is the deadline-free
+/// probe's ([`PreparedOntology::decide_deep_with_deadline`]), so a verdict reached in
+/// time is that probe's. A deadline or node-cap stop is a plain cut; a `NoVerdict` is
+/// #462's likely-bug signal, as on the deadline-free probe (`instance_check_reporting`'s
+/// `None` arm), whether or not the saturation stalled.
+fn instance_depth_retry(
+    prepared: &PreparedOntology,
+    class_id: ClassId,
+    individual_id: IndividualId,
+    retry_ms: u64,
+    trigger: &str,
+) -> Result<InstanceProbe, ReasonError> {
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(retry_ms);
+    let build = move |pool: &mut ConceptPool| {
+        let cls = pool.atomic(class_id);
+        let not_cls = pool.not(cls);
+        let nom = pool.nominal(individual_id);
+        pool.and(vec![nom, not_cls])
+    };
+    let probe = depth_retry_probe(prepared.decide_deep_with_deadline(deadline, build))?;
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        let what = match (probe.cut, probe.no_verdict, probe.is_instance) {
+            (false, _, true) => "decided: an instance",
+            (false, _, false) => "decided: not an instance",
+            (true, true, _) => "cut: NoVerdict (#462)",
+            (true, false, _) => "cut: budget or node cap",
+        };
+        eprintln!(
+            "instance (#510): bounded probe {trigger}; deep retry ({retry_ms} ms budget) \
+             {what} in {} ms",
+            started.elapsed().as_millis()
+        );
+    }
+    Ok(probe)
 }
 
 /// Saturation-only counterpart of [`is_instance_of`]. Reports
@@ -440,10 +618,9 @@ pub fn is_instance_of_saturation_only_internal(
         return Err(ReasonError::Inconsistent);
     }
     Ok(instance_check_closure_only(
-        internal,
         &closure,
         class_id,
-        individual_id,
+        ToldIndex::build(internal).of(individual_id),
     ))
 }
 
@@ -455,12 +632,14 @@ pub fn is_instance_of_saturation_only_internal(
 /// `class_id` in the EL closure, the answer is `yes`:
 ///
 /// 1. **`ClassAssertion(D, a)`** — direct told membership.
-/// 2. **`ObjectPropertyAssertion(r, a, _)` with `r`'s domain `Dom`**
-///    — `a` is in `Dom` via the property domain axiom, transitively
-///    via the role hierarchy.
-/// 3. **`ObjectPropertyAssertion(r, _, a)` with `r`'s range `Rng`**
-///    — `a` is in `Rng` via the property range axiom, transitively
-///    via the role hierarchy.
+/// 2. **`a` is the source of an `r`-edge, with `r`'s domain `Dom`**
+///    — `a` is in `Dom` via the property domain axiom.
+/// 3. **`a` is the target of an `r`-edge, with `r`'s range `Rng`**
+///    — `a` is in `Rng` via the property range axiom.
+///
+/// The edge is the named role's: `ObjectPropertyAssertion(ObjectInverseOf(r) b a)`
+/// makes `a` the source (#526). Only the exact role matches, with no role-hierarchy
+/// matching; see `told_classes_of`.
 ///
 /// The instance check, plus WHETHER a negative answer came from a real refutation or
 /// from a cut probe, and whether that cut is #462/#475's likely-bug `NoVerdict`
@@ -497,18 +676,17 @@ pub fn is_instance_of_saturation_only_internal(
 /// no verdict. `truncated` is advisory only — every `false` it accompanies is still a
 /// sound "not proven to be an instance".
 fn instance_check_reporting(
-    internal: &InternalOntology,
     closure: &Subsumers,
     prepared: &PreparedOntology,
     class_id: ClassId,
     individual_id: IndividualId,
+    told: &[ClassId],
     pair_deadline: Option<std::time::Instant>,
     base_types: Option<&HashSet<ClassId>>,
 ) -> Result<InstanceProbe, ReasonError> {
-    for told in told_classes_of(internal, individual_id) {
-        if closure.contains(told, class_id) {
-            return Ok(InstanceProbe::decided(true));
-        }
+    // `told` is `individual_id`'s told classes, from the caller's [`ToldIndex`] (#525).
+    if told.iter().any(|&t| closure.contains(t, class_id)) {
+        return Ok(InstanceProbe::decided(true));
     }
     if let Some(bt) = base_types
         && !bt.contains(&class_id)
@@ -539,12 +717,17 @@ fn instance_check_reporting(
             // sound answer is "not an instance" AND the result is truncated.
             Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
             // #510: an early abandon is `Ok(None)` too; #288's flag tells it apart.
-            Ok(None) => Ok(InstanceProbe::cut(false, crate::last_probe_depth_capped())),
+            Ok(None) => Ok(InstanceProbe::cut(
+                false,
+                crate::last_probe_depth_capped(),
+                crate::last_probe_depth_cap_hit(),
+            )),
             // A depth-limit bail — also no verdict, also truncated. #493: a stalled
             // probe's `NoVerdict` is #475's likely-bug signal; a depth cut is not.
             Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(
                 crate::no_verdict_is_a_bug(Some(deadline)),
                 crate::last_probe_depth_capped(),
+                crate::last_probe_depth_cap_hit(),
             )),
             Err(e) => Err(e),
         },
@@ -554,12 +737,32 @@ fn instance_check_reporting(
         // takes the sound default ("not an instance", truncated) and reports the signal.
         None => match prepared.decide_raw(build) {
             Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
-            Ok(None) => Ok(InstanceProbe::cut(false, crate::last_probe_depth_capped())),
-            Err(ReasonError::NoVerdict) => {
-                Ok(InstanceProbe::cut(true, crate::last_probe_depth_capped()))
-            }
+            Ok(None) => Ok(InstanceProbe::cut(
+                false,
+                crate::last_probe_depth_capped(),
+                crate::last_probe_depth_cap_hit(),
+            )),
+            Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(
+                true,
+                crate::last_probe_depth_capped(),
+                crate::last_probe_depth_cap_hit(),
+            )),
             Err(e) => Err(e),
         },
+    }
+}
+
+/// #510: the deep retry's probe outcome from its `{a} ⊓ ¬C` satisfiability result. A
+/// deadline or node-cap stop (`Ok(None)`) is a plain cut, never a depth cut. A
+/// `NoVerdict` is #462's likely-bug signal **unconditionally**, as on the deadline-free
+/// probe: the deep path has no routine depth cut, so this must not go through
+/// `no_verdict_is_a_bug`, which would keep only a saturation stall.
+fn depth_retry_probe(sat: Result<Option<bool>, ReasonError>) -> Result<InstanceProbe, ReasonError> {
+    match sat {
+        Ok(Some(sat)) => Ok(InstanceProbe::decided(!sat)),
+        Ok(None) => Ok(InstanceProbe::cut(false, false, false)),
+        Err(ReasonError::NoVerdict) => Ok(InstanceProbe::cut(true, false, false)),
+        Err(e) => Err(e),
     }
 }
 
@@ -571,7 +774,10 @@ fn instance_check_reporting(
 /// stalled), never a plain depth cut, deadline or node cap. `no_verdict` implies `cut`.
 /// `depth_capped` (#510) means the cut was the decision-depth limit, directly or through
 /// early abandon (#288), read from `last_probe_depth_capped` right after the probe on
-/// the same thread. It implies `cut` and excludes `no_verdict`.
+/// the same thread. It implies `cut` and excludes `no_verdict`. `depth_cap_hit`
+/// (#510 C) means the probe hit that limit at least once before a deadline or the
+/// node cap cut it (`last_probe_depth_cap_hit`); it implies `cut` and excludes both
+/// `no_verdict` and `depth_capped`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 struct InstanceProbe {
@@ -579,6 +785,7 @@ struct InstanceProbe {
     cut: bool,
     no_verdict: bool,
     depth_capped: bool,
+    depth_cap_hit: bool,
 }
 
 impl InstanceProbe {
@@ -588,10 +795,11 @@ impl InstanceProbe {
             cut: false,
             no_verdict: false,
             depth_capped: false,
+            depth_cap_hit: false,
         }
     }
 
-    fn cut(no_verdict: bool, depth_capped: bool) -> Self {
+    fn cut(no_verdict: bool, depth_capped: bool, depth_cap_hit: bool) -> Self {
         Self {
             is_instance: false,
             cut: true,
@@ -600,6 +808,10 @@ impl InstanceProbe {
             // deadline-free probe the depth cap is the signal, and advising that probe
             // again would be wrong.
             depth_capped: depth_capped && !no_verdict,
+            // #510 (C): one cause per cut. `decide_capturing` already keeps the hit
+            // apart from a depth cap and a stall; this keeps it apart from the
+            // deadline-free probe's `NoVerdict` too.
+            depth_cap_hit: depth_cap_hit && !no_verdict && !depth_capped,
         }
     }
 }
@@ -609,28 +821,106 @@ impl InstanceProbe {
 /// `class_id` in its EL-closure subsumer set. Skips the
 /// `{a} ⊓ ¬C` tableau probe entirely — sound under-approximation
 /// matching [`crate::classify_saturation_only`].
-fn instance_check_closure_only(
-    internal: &InternalOntology,
-    closure: &Subsumers,
-    class_id: ClassId,
-    individual_id: IndividualId,
-) -> bool {
-    told_classes_of(internal, individual_id)
-        .into_iter()
-        .any(|told| closure.contains(told, class_id))
+fn instance_check_closure_only(closure: &Subsumers, class_id: ClassId, told: &[ClassId]) -> bool {
+    told.iter().any(|&t| closure.contains(t, class_id))
+}
+
+/// Every individual's told classes, built once per call (#525). `told_classes_of` used to
+/// rescan every axiom per (individual, class) pair, plus one more full scan per matching
+/// property assertion: O(I × C × A) for `realize`.
+///
+/// Two passes over the axioms: the per-role domain and range lists first, so a domain axiom
+/// that follows its assertion still applies; then each individual's sequence, appending
+/// exactly what `told_classes_of` appends, in axiom order and with duplicates. So
+/// [`ToldIndex::of`] equals `told_classes_of` for every individual (pinned by a unit test
+/// against the old function, kept under `#[cfg(test)]`).
+struct ToldIndex {
+    told: Vec<Vec<ClassId>>,
+}
+
+impl ToldIndex {
+    fn build(internal: &InternalOntology) -> Self {
+        fn slot<T: Clone + Default>(v: &mut Vec<T>, i: usize) -> &mut T {
+            if i >= v.len() {
+                v.resize(i + 1, T::default());
+            }
+            &mut v[i]
+        }
+        let mut domains: Vec<Vec<ClassId>> = Vec::new();
+        let mut ranges: Vec<Vec<ClassId>> = Vec::new();
+        for axiom in &internal.axioms {
+            match axiom {
+                Axiom::ObjectPropertyDomain { role, domain } if !role.is_inverse() => {
+                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*domain) {
+                        slot(&mut domains, role.role_id().index() as usize).push(*id);
+                    }
+                }
+                Axiom::ObjectPropertyRange { role, range } if !role.is_inverse() => {
+                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
+                        slot(&mut ranges, role.role_id().index() as usize).push(*id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut told: Vec<Vec<ClassId>> = vec![Vec::new(); internal.vocabulary.num_individuals()];
+        for axiom in &internal.axioms {
+            match axiom {
+                Axiom::ClassAssertion { class, individual } => {
+                    if let ConceptExpr::Atomic(id) = internal.concepts.get(*class) {
+                        slot(&mut told, individual.index() as usize).push(*id);
+                    }
+                }
+                Axiom::ObjectPropertyAssertion {
+                    role,
+                    subject,
+                    object,
+                } => {
+                    // #526: the edge of the named role.
+                    let (source, target) = if role.is_inverse() {
+                        (*object, *subject)
+                    } else {
+                        (*subject, *object)
+                    };
+                    let r = role.role_id().index() as usize;
+                    if let Some(d) = domains.get(r) {
+                        slot(&mut told, source.index() as usize).extend_from_slice(d);
+                    }
+                    if let Some(g) = ranges.get(r) {
+                        slot(&mut told, target.index() as usize).extend_from_slice(g);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self { told }
+    }
+
+    /// `individual`'s told classes; empty for an id the index never saw.
+    fn of(&self, individual: IndividualId) -> &[ClassId] {
+        self.told
+            .get(individual.index() as usize)
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 /// Collect every atomic class that `individual_id` is *told* to
 /// belong to:
 ///
 /// - Direct: every `ClassAssertion(D, individual)` with `D` atomic.
-/// - Via domain: every `ObjectPropertyAssertion(r, individual, _)`
-///   where some `ObjectPropertyDomain(r', Dom)` axiom applies for
-///   `r ⊑ r'` (named-role-only; `r'` matches when `r` and `r'`
-///   share an underlying `RoleId`).
-/// - Via range: every `ObjectPropertyAssertion(r, _, individual)`
-///   where some `ObjectPropertyRange(r', Rng)` axiom applies under
-///   the same conditions.
+/// - Via domain: the source of every `r`-edge, for each named-role
+///   `ObjectPropertyDomain(r, Dom)` with `Dom` atomic.
+/// - Via range: the target of every `r`-edge, for each named-role
+///   `ObjectPropertyRange(r, Rng)` with `Rng` atomic.
+///
+/// The edge is normalised to the named role first (#526): the converter
+/// keeps `ObjectPropertyAssertion(ObjectInverseOf(r) a b)` as
+/// `Role::inverse(r)` with subject `a`, which is the edge `r(b, a)`.
+/// Only the exact role id matches: no sub-role (`r ⊑ r'`) domains or
+/// ranges, and no inverse-role domain or range axioms. Both are sound
+/// misses: [`instance_check_reporting`] falls back to its `{a} ⊓ ¬C`
+/// tableau probe, and the saturation-only path just misses them.
+#[cfg(test)]
 fn told_classes_of(internal: &InternalOntology, individual_id: IndividualId) -> Vec<ClassId> {
     let mut out = Vec::new();
     for axiom in &internal.axioms {
@@ -645,20 +935,17 @@ fn told_classes_of(internal: &InternalOntology, individual_id: IndividualId) -> 
                 subject,
                 object,
             } => {
-                // Inverse-role property assertions: the converter
-                // swaps subject/object so the stored role is always
-                // named; we don't try to second-guess that here and
-                // simply use `role.role_id()`.
-                let used_role_id = role.role_id();
-                if *subject == individual_id {
-                    for dom in domains_for_role(internal, used_role_id) {
-                        out.push(dom);
-                    }
+                let (source, target) = if role.is_inverse() {
+                    (*object, *subject)
+                } else {
+                    (*subject, *object)
+                };
+                let role_id = role.role_id();
+                if source == individual_id {
+                    out.extend(domains_for_role(internal, role_id));
                 }
-                if *object == individual_id {
-                    for rng in ranges_for_role(internal, used_role_id) {
-                        out.push(rng);
-                    }
+                if target == individual_id {
+                    out.extend(ranges_for_role(internal, role_id));
                 }
             }
             _ => {}
@@ -667,6 +954,7 @@ fn told_classes_of(internal: &InternalOntology, individual_id: IndividualId) -> 
     out
 }
 
+#[cfg(test)]
 fn domains_for_role(internal: &InternalOntology, role_id: owl_dl_core::RoleId) -> Vec<ClassId> {
     let mut out = Vec::new();
     for axiom in &internal.axioms {
@@ -681,6 +969,7 @@ fn domains_for_role(internal: &InternalOntology, role_id: owl_dl_core::RoleId) -
     out
 }
 
+#[cfg(test)]
 fn ranges_for_role(internal: &InternalOntology, role_id: owl_dl_core::RoleId) -> Vec<ClassId> {
     let mut out = Vec::new();
     for axiom in &internal.axioms {
@@ -799,7 +1088,10 @@ pub fn instances_of_reporting_internal(
     let mut no_verdict = false;
     // #510: sticky likewise: some cut probe hit the decision-depth limit.
     let mut depth_capped = false;
+    // #510 (C): sticky likewise: some probe hit it, then a budget cut it.
+    let mut depth_cap_hit = false;
     let mut any_member = false;
+    let told_index = ToldIndex::build(internal);
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
@@ -808,17 +1100,18 @@ pub fn instances_of_reporting_internal(
         // Single-pair-per-individual path — same rationale as
         // `is_instance_of_internal`: no shared witness to amortize here.
         let probe = instance_check_reporting(
-            internal,
             &closure,
             &prepared,
             class_id,
             individual_id,
+            told_index.of(individual_id),
             pair_deadline,
             None,
         )?;
         incomplete |= probe.cut;
         no_verdict |= probe.no_verdict;
         depth_capped |= probe.depth_capped;
+        depth_cap_hit |= probe.depth_cap_hit;
         any_member |= probe.is_instance;
         if probe.is_instance {
             let iri = internal.vocabulary.individual_iri(individual_id);
@@ -839,6 +1132,10 @@ pub fn instances_of_reporting_internal(
             consistency_undetermined: lazy.undetermined,
             no_verdict: no_verdict || lazy.no_verdict,
             depth_capped,
+            depth_cap_hit,
+            // #510: `instances` never retries a depth cut (one retry per individual
+            // would multiply; a shared budget is a follow-up).
+            depth_fallback: InstanceDepthFallback::NotRun,
         },
     ))
 }
@@ -881,10 +1178,11 @@ pub fn instances_of_saturation_only_internal(
         return Err(ReasonError::Inconsistent);
     }
     let mut out = Vec::new();
+    let told_index = ToldIndex::build(internal);
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
-        if instance_check_closure_only(internal, &closure, class_id, individual_id) {
+        if instance_check_closure_only(&closure, class_id, told_index.of(individual_id)) {
             let iri = internal.vocabulary.individual_iri(individual_id);
             if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
                 out.push(iri.to_owned());
@@ -1059,6 +1357,8 @@ pub struct Realization {
     /// on the saturation paths, whose classification runs no wedge.
     relies_on_trusted_consistency: bool,
     no_verdict: bool,
+    /// #510: see [`Self::depth_capped`].
+    depth_capped: bool,
 }
 
 impl Realization {
@@ -1081,6 +1381,27 @@ impl Realization {
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// #510: at least one cut instance probe of a named individual hit the tableau's
+    /// decision-depth limit, directly or through early abandon
+    /// ([`crate::InstanceFlags::depth_capped`]), rather than a deadline or the node
+    /// cap. A larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not recover
+    /// such a cut; the deadline-free probe (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`)
+    /// searches much deeper, but that setting also takes the deadline off realize's
+    /// classification step. Report-only: implies [`Self::incomplete`] and changes no
+    /// answer. Never set by a probe that reports [`Self::no_verdict`], though a
+    /// realization can carry both from different probes.
+    ///
+    /// It counts only the instance probes of named individuals, the rows that set
+    /// [`Self::incomplete`]. `instances` and `instances-expr`
+    /// ([`crate::InstanceFlags::depth_capped`]) count anonymous individuals' probes
+    /// too. Not covered: the classification under `realize` and #388's direct-type
+    /// checks, which don't feed `incomplete` either. Always `false` on the saturation
+    /// paths, which run no tableau probe.
+    #[must_use]
+    pub fn depth_capped(&self) -> bool {
+        self.depth_capped
     }
 
     /// See [`Self::witness_prune_active`] — `true` iff the pseudo-model witness prune
@@ -1403,6 +1724,7 @@ pub fn realize_saturation_only_internal(
         .collect();
 
     let closure = saturate(internal);
+    let told_index = ToldIndex::build(internal);
 
     let per_individual: Vec<IndivResult> = individual_iris
         .par_iter()
@@ -1413,7 +1735,7 @@ pub fn realize_saturation_only_internal(
             let mut types: Vec<&str> = Vec::new();
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
-                if instance_check_closure_only(internal, &closure, class_id, individual_id) {
+                if instance_check_closure_only(&closure, class_id, told_index.of(individual_id)) {
                     types.push(class_iri);
                 }
             }
@@ -1460,6 +1782,8 @@ pub fn realize_saturation_only_internal(
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // No tableau probe runs on this path, so no likely-bug `NoVerdict` (#493).
         no_verdict: false,
+        // Nor a depth cut (#510).
+        depth_capped: false,
     })
 }
 
@@ -1485,9 +1809,10 @@ fn class_body_realize_safe(class: ConceptId, pool: &ConceptPool) -> bool {
 ///    also excludes nominals).
 /// 2. Every `ABox` axiom is a shape [`saturate_for_realize`] captures exactly:
 ///    atomic/⊓ `ClassAssertion` and non-inverse `ObjectPropertyAssertion`.
-///    `NegativeObjectPropertyAssertion` / `DifferentIndividuals` add no types
-///    (an inconsistency they cause is caught by the classify/abox pre-checks),
-///    so they are permitted. `SameIndividual` (needs type-merge across
+///    `NegativeObjectPropertyAssertion` is seeded by [`saturate_for_realize`] as
+///    `{a} ⊓ ∃r.{b} ⊑ ⊥` (#536), so an inconsistency it causes makes a stand-in unsat.
+///    `DifferentIndividuals` adds no type and cannot clash here: no equality between
+///    named individuals is derivable on this fragment. `SameIndividual` (needs type-merge across
 ///    individuals) and inverse-role assertions are NOT captured ⟹ fall back.
 ///
 /// Unlike `classify`, realize CANNOT admit arbitrary `ABox` shapes: the `ABox` is
@@ -1549,9 +1874,9 @@ pub(crate) fn realize_saturation_eligible(internal: &InternalOntology) -> bool {
         Axiom::ClassAssertion { class, .. } => class_body_realize_safe(*class, &internal.concepts),
         Axiom::ObjectPropertyAssertion { role, .. } => !role.is_inverse(),
         Axiom::SameIndividual(_) => false,
-        // Everything else is either a type-irrelevant ABox form
-        // (NegativeObjectPropertyAssertion / DifferentIndividuals) or a TBox
-        // axiom already vetted by `tbox_ok`.
+        // Everything else is a TBox axiom already vetted by `tbox_ok`, a
+        // NegativeObjectPropertyAssertion (seeded by `saturate_for_realize`, #536), or
+        // a DifferentIndividuals (no named equality is derivable on this fragment).
         _ => true,
     })
 }
@@ -1664,6 +1989,8 @@ pub(crate) fn realize_via_saturation_internal(
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // No tableau probe runs on this path, so no likely-bug `NoVerdict` (#493).
         no_verdict: false,
+        // Nor a depth cut (#510).
+        depth_capped: false,
     })
 }
 
@@ -1943,6 +2270,7 @@ pub(crate) fn realize_tableau_internal(
     // (each builds a fresh tableau context per class probe via
     // `prepared.decide_with_deadline` / `decide_raw`). Parallelise the outer loop with rayon; the
     // hierarchy / closure / prepared snapshot is shared read-only.
+    let told_index = ToldIndex::build(internal);
     let per_individual: Result<Vec<IndivResultReporting>, ReasonError> = individual_iris
         .par_iter()
         .enumerate()
@@ -1952,23 +2280,23 @@ pub(crate) fn realize_tableau_internal(
             let base_types = base_model.as_ref().and_then(|m| m.get(idx));
             let mut types: Vec<&str> = Vec::new();
             // Any cut probe for this individual makes its type set possibly short.
-            let mut truncated = false;
-            let mut no_verdict = false;
+            let mut cuts = RowCuts::default();
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
                 let pair_deadline = pair_deadline_ms
                     .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
                 let probe = instance_check_reporting(
-                    internal,
                     &closure,
                     &prepared,
                     class_id,
                     individual_id,
+                    told_index.of(individual_id),
                     pair_deadline,
                     base_types,
                 )?;
-                truncated |= probe.cut;
-                no_verdict |= probe.no_verdict;
+                // #510: `probe.depth_capped` was read on this rayon worker right after
+                // its own probe (`instance_check_reporting`), so it is this probe's.
+                cuts.record(probe);
                 if probe.is_instance {
                     types.push(class_iri);
                 }
@@ -1986,7 +2314,7 @@ pub(crate) fn realize_tableau_internal(
                 .map(|s| (*s).to_owned())
                 .collect();
             let types_owned: Vec<String> = types.into_iter().map(str::to_owned).collect();
-            Ok((types_owned, leaves, truncated, no_verdict))
+            Ok((types_owned, leaves, cuts))
         })
         .collect();
     let per_individual = per_individual?;
@@ -1997,7 +2325,7 @@ pub(crate) fn realize_tableau_internal(
             .iter()
             .zip(&per_individual)
             .filter(|(iri, _)| !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX))
-            .map(|(_, (_, leaves, _, _))| leaves.as_slice())
+            .map(|(_, (_, leaves, _))| leaves.as_slice())
             .collect();
         verify_co_leaf_pairs(
             internal,
@@ -2013,21 +2341,19 @@ pub(crate) fn realize_tableau_internal(
     // #493: the likely-bug `NoVerdict` from the realize classification (#471's
     // convention for surfaces that classify first), the instance probes and #388's
     // checks. Anonymous individuals' probes count: this is a bug signal, not a row.
-    let mut no_verdict = hierarchy.stats().no_verdict_pairs > 0 || pairs_no_verdict;
+    let no_verdict = hierarchy.stats().no_verdict_pairs > 0 || pairs_no_verdict;
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut named_individual_iris: Vec<String> = Vec::new();
-    // Any cut probe anywhere makes the whole realization possibly short.
-    let mut incomplete = false;
+    // Any cut probe on a named row makes the whole realization possibly short.
+    let mut cuts = RowCuts::default();
     let mut direct_types_unverified = false;
-    for (iri, (types_owned, leaves, truncated, probe_no_verdict)) in
-        individual_iris.iter().zip(per_individual)
-    {
-        no_verdict |= probe_no_verdict;
-        if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
+    for (iri, (types_owned, leaves, row)) in individual_iris.iter().zip(per_individual) {
+        let anonymous = iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX);
+        cuts.merge(row, anonymous);
+        if anonymous {
             continue;
         }
-        incomplete |= truncated;
         let (leaves, unverified) = verified_leaves(&leaves, &hierarchy, &verdicts);
         direct_types_unverified |= unverified;
         named_individual_iris.push(iri.clone());
@@ -2049,8 +2375,9 @@ pub(crate) fn realize_tableau_internal(
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // #493: a likely-bug cut is a cut too, whatever row it hit (anonymous rows
         // are not published, so `incomplete` alone would miss them).
-        incomplete: incomplete || no_verdict,
-        no_verdict,
+        incomplete: cuts.cut || cuts.no_verdict || no_verdict,
+        no_verdict: cuts.no_verdict || no_verdict,
+        depth_capped: cuts.depth_capped,
     })
 }
 
@@ -2069,16 +2396,190 @@ mod tests {
         ontology
     }
 
+    /// #525: `ToldIndex::of` equals the old per-pair scan (`told_classes_of`) for every
+    /// individual, order and duplicates included, on the converted axiom order, the
+    /// reversed order (every assertion before its domain/range: the build must be two
+    /// passes) and a doubled axiom list. The fixtures cover direct assertions, domain and
+    /// range, an inverse assertion, a self-loop, an inverse-role domain/range (the
+    /// `is_inverse` filters), a sub-role (exact role id only) and an individual with none.
+    #[test]
+    fn told_index_equals_the_per_pair_scan() {
+        let fixtures = [
+            "ClassAssertion(:A :a) ClassAssertion(:B :a) ClassAssertion(:A :b)",
+            "ObjectPropertyAssertion(:r :a :b) ObjectPropertyDomain(:r :D) \
+             ObjectPropertyRange(:r :R) ObjectPropertyDomain(:r :A)",
+            "ObjectPropertyDomain(:r :D) ObjectPropertyRange(:r :R) \
+             ObjectPropertyAssertion(ObjectInverseOf(:r) :a :b) ObjectPropertyAssertion(:r :c :c)",
+            "ObjectPropertyDomain(:r :D) ObjectPropertyAssertion(:r :a :b) \
+             ObjectPropertyAssertion(:r :a :c) ClassAssertion(:D :a) ObjectPropertyAssertion(:r :a :b)",
+            "ObjectPropertyDomain(ObjectInverseOf(:r) :D) ObjectPropertyRange(ObjectInverseOf(:r) :R) \
+             ObjectPropertyAssertion(:r :a :b) ObjectPropertyDomain(:s :A) \
+             SubObjectPropertyOf(:r :s) ObjectPropertyRange(:r :B)",
+        ];
+        for (k, body) in fixtures.iter().enumerate() {
+            let src = format!(
+                "Prefix(:=<http://ex/#>)\nOntology(<http://ex/o>\n\
+                 Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:D))\n\
+                 Declaration(Class(:R)) Declaration(ObjectProperty(:r)) \
+                 Declaration(ObjectProperty(:s))\n\
+                 Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+                 Declaration(NamedIndividual(:c)) Declaration(NamedIndividual(:d))\n{body}\n)\n"
+            );
+            let converted = owl_dl_core::convert::convert_ontology(&parse(&src)).expect("convert");
+            // `convert_ontology` sorts the axioms (domain/range before assertions) and the
+            // parser dedups, so the converted order alone cannot exercise "a domain after
+            // its assertion" or true duplicates. Also check the reversed order (every
+            // assertion before its domain: a single-pass build fails here) and a doubled
+            // axiom list (genuine duplicates).
+            let mut reversed = converted.clone();
+            reversed.axioms.reverse();
+            let mut doubled = converted.clone();
+            doubled.axioms.extend(converted.axioms.clone());
+            for (variant, internal) in [
+                ("converted", &converted),
+                ("reversed", &reversed),
+                ("doubled", &doubled),
+            ] {
+                let index = ToldIndex::build(internal);
+                let n = internal.vocabulary.num_individuals();
+                assert!(n >= 4, "fixture {k}: individuals declared");
+                for idx in 0..n {
+                    let ind = IndividualId::new(u32::try_from(idx).expect("fits"));
+                    assert_eq!(
+                        index.of(ind),
+                        told_classes_of(internal, ind).as_slice(),
+                        "fixture {k} ({variant}), individual {}",
+                        internal.vocabulary.individual_iri(ind)
+                    );
+                }
+            }
+        }
+    }
+
     /// #510: a `NoVerdict` signal is never also reported as a depth cut (classify's
     /// `record_cut_probe` keeps the two apart the same way), and a plain cut keeps the cause.
     #[test]
     fn a_cut_probe_s_depth_flag_excludes_no_verdict() {
-        let p = InstanceProbe::cut(true, true);
+        let p = InstanceProbe::cut(true, true, false);
         assert!(p.cut && p.no_verdict && !p.depth_capped, "{p:?}");
-        let p = InstanceProbe::cut(false, true);
+        let p = InstanceProbe::cut(false, true, false);
         assert!(p.cut && !p.no_verdict && p.depth_capped, "{p:?}");
-        let p = InstanceProbe::cut(false, false);
+        let p = InstanceProbe::cut(false, false, false);
         assert!(p.cut && !p.no_verdict && !p.depth_capped, "{p:?}");
+    }
+
+    /// #510 (C): a cut has at most one cause among `no_verdict`, `depth_capped` and
+    /// `depth_cap_hit`, and a hit alone is reported as one.
+    #[test]
+    fn a_cut_probe_s_depth_cap_hit_is_its_only_cause() {
+        for no_verdict in [false, true] {
+            for depth_capped in [false, true] {
+                for hit in [false, true] {
+                    let p = InstanceProbe::cut(no_verdict, depth_capped, hit);
+                    let causes = [p.no_verdict, p.depth_capped, p.depth_cap_hit];
+                    assert!(p.cut && causes.iter().filter(|&&c| c).count() <= 1, "{p:?}");
+                    assert_eq!(
+                        p.depth_cap_hit,
+                        hit && !no_verdict && !depth_capped,
+                        "{p:?}"
+                    );
+                }
+            }
+        }
+        assert!(!InstanceProbe::decided(false).depth_cap_hit);
+    }
+
+    /// #510 (2b): the deep retry's outcomes. Its `NoVerdict` is #462's signal whatever
+    /// the stall flag says (this test never sets it, so a mapping through
+    /// `no_verdict_is_a_bug` fails here), and its stop is never a depth cut.
+    #[test]
+    fn the_deep_retry_maps_every_outcome() {
+        let p = depth_retry_probe(Ok(Some(false))).expect("a retry outcome");
+        assert_eq!(
+            p,
+            InstanceProbe::decided(true),
+            "unsat {{a}} ⊓ ¬C: an instance"
+        );
+        let p = depth_retry_probe(Ok(Some(true))).expect("a retry outcome");
+        assert_eq!(p, InstanceProbe::decided(false), "sat: not an instance");
+        let p = depth_retry_probe(Ok(None)).expect("a retry outcome");
+        assert!(
+            p.cut && !p.no_verdict && !p.depth_capped && !p.is_instance,
+            "{p:?}"
+        );
+        assert!(
+            !crate::last_probe_stalled(),
+            "precondition: no stall recorded"
+        );
+        let p = depth_retry_probe(Err(ReasonError::NoVerdict)).expect("a retry outcome");
+        assert!(
+            p.cut && p.no_verdict && !p.depth_capped && !p.is_instance,
+            "{p:?}"
+        );
+        assert!(matches!(
+            depth_retry_probe(Err(ReasonError::Inconsistent)),
+            Err(ReasonError::Inconsistent)
+        ));
+    }
+
+    /// #510: realize folds each individual's probe cuts so that `depth_capped` counts
+    /// only named rows, as `incomplete` does, and so implies it; `no_verdict` counts
+    /// anonymous rows too (#493). Every shape of row, named and anonymous.
+    #[test]
+    fn realize_s_row_fold_keeps_depth_capped_within_incomplete() {
+        let row = |probes: &[InstanceProbe]| {
+            let mut r = RowCuts::default();
+            for p in probes {
+                r.record(*p);
+            }
+            r
+        };
+        let decided = InstanceProbe::decided(false);
+        let depth = InstanceProbe::cut(false, true, false);
+        let deadline = InstanceProbe::cut(false, false, false);
+        let bug = InstanceProbe::cut(true, true, false);
+        let rows = [
+            row(&[]),
+            row(&[decided]),
+            row(&[decided, depth]),
+            row(&[deadline]),
+            row(&[bug]),
+            row(&[deadline, depth]),
+            row(&[bug, depth]),
+        ];
+        let flags = |c: RowCuts| (c.cut, c.no_verdict, c.depth_capped);
+        // One row folded in, named and anonymous: (cut, no_verdict, depth_capped).
+        let named = [
+            (false, false, false),
+            (false, false, false),
+            (true, false, true),
+            (true, false, false),
+            (true, true, false),
+            (true, false, true),
+            (true, true, true),
+        ];
+        for (r, want) in rows.iter().zip(named) {
+            let mut acc = RowCuts::default();
+            acc.merge(*r, false);
+            assert_eq!(flags(acc), want, "named {r:?}");
+            let mut acc = RowCuts::default();
+            acc.merge(*r, true);
+            assert_eq!(flags(acc), (false, want.1, false), "anonymous {r:?}");
+        }
+        // Every pair of rows, in every named/anonymous mix: depth implies a cut.
+        for a in rows {
+            for b in rows {
+                for (an, bn) in [(false, false), (false, true), (true, false), (true, true)] {
+                    let mut acc = RowCuts::default();
+                    acc.merge(a, an);
+                    acc.merge(b, bn);
+                    assert!(
+                        !acc.depth_capped || acc.cut,
+                        "{a:?} {an} / {b:?} {bn}: {acc:?}"
+                    );
+                }
+            }
+        }
     }
 
     const HEADER: &str = "\
@@ -2134,6 +2635,32 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 (PairVerdict::Refuted, false)
             );
         }
+    }
+
+    /// #510 (C), Σ7: `decide_capturing` clears this thread's `depth_cap_hit` before its
+    /// fast exit, so a probe whose deadline was already spent never reports the previous
+    /// probe's hit. The stale value is planted directly: no fixture can order a hit probe
+    /// and an expired-deadline probe on one rayon worker deterministically.
+    #[test]
+    fn an_expired_deadline_probe_does_not_report_the_previous_probe_s_hit() {
+        let internal = convert_ontology(&parse(&format!(
+            "{HEADER}Ontology(<http://rustdl.test/t>\n\
+             Declaration(Class(:C)) Declaration(Class(:D))\n)\n"
+        )))
+        .expect("convert");
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepare");
+        let c = internal.vocabulary.class_id(&iri("C")).expect("C");
+        crate::PROBE_DEPTH_CAP_HIT.with(|h| h.set(true));
+        let now = std::time::Instant::now();
+        let spent = now
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or(now);
+        let r = prepared.decide_with_deadline(spent, move |pool| pool.atomic(c));
+        assert!(matches!(r, Ok(None)), "the fast exit: {r:?}");
+        assert!(
+            !crate::last_probe_depth_cap_hit(),
+            "a stale hit survived the probe"
+        );
     }
 
     #[test]
@@ -2409,9 +2936,17 @@ Ontology(<http://rustdl.test/test>\n\
         // Baseline: no witness ⇒ the tableau probe alone correctly derives
         // a:E via the disjunctive case split.
         assert!(
-            instance_check_reporting(&internal, &closure, &prepared, e_id, a_id, None, None)
-                .expect("verdict")
-                .is_instance,
+            instance_check_reporting(
+                &closure,
+                &prepared,
+                e_id,
+                a_id,
+                ToldIndex::build(&internal).of(a_id),
+                None,
+                None
+            )
+            .expect("verdict")
+            .is_instance,
             "a:E must be entailed via case-split tableau reasoning",
         );
 
@@ -2421,11 +2956,11 @@ Ontology(<http://rustdl.test/test>\n\
         let empty: HashSet<ClassId> = HashSet::new();
         assert!(
             !instance_check_reporting(
-                &internal,
                 &closure,
                 &prepared,
                 e_id,
                 a_id,
+                ToldIndex::build(&internal).of(a_id),
                 None,
                 Some(&empty),
             )
@@ -2439,11 +2974,11 @@ Ontology(<http://rustdl.test/test>\n\
         let with_e: HashSet<ClassId> = HashSet::from([e_id]);
         assert!(
             instance_check_reporting(
-                &internal,
                 &closure,
                 &prepared,
                 e_id,
                 a_id,
+                ToldIndex::build(&internal).of(a_id),
                 None,
                 Some(&with_e),
             )
@@ -2484,11 +3019,11 @@ Ontology(<http://rustdl.test/test>\n\
         let empty: HashSet<ClassId> = HashSet::new();
         assert!(
             instance_check_reporting(
-                &internal,
                 &closure,
                 &prepared,
                 c_id,
                 alice_id,
+                ToldIndex::build(&internal).of(alice_id),
                 None,
                 Some(&empty),
             )

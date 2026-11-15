@@ -98,12 +98,12 @@ pub use property_values::{
     inferred_object_property_values,
 };
 pub use realize::{
-    InstanceFlags, Realization, WitnessPruneReasons, instances_of, instances_of_internal,
-    instances_of_reporting, instances_of_reporting_internal, instances_of_saturation_only,
-    instances_of_saturation_only_internal, is_instance_of, is_instance_of_internal,
-    is_instance_of_reporting, is_instance_of_reporting_internal, is_instance_of_saturation_only,
-    is_instance_of_saturation_only_internal, realize, realize_internal, realize_saturation_only,
-    realize_saturation_only_internal,
+    InstanceDepthFallback, InstanceFlags, Realization, WitnessPruneReasons, instances_of,
+    instances_of_internal, instances_of_reporting, instances_of_reporting_internal,
+    instances_of_saturation_only, instances_of_saturation_only_internal, is_instance_of,
+    is_instance_of_internal, is_instance_of_reporting, is_instance_of_reporting_internal,
+    is_instance_of_saturation_only, is_instance_of_saturation_only_internal, realize,
+    realize_internal, realize_saturation_only, realize_saturation_only_internal,
 };
 pub use repair::{Repair, Repairs, find_repairs, find_repairs_prepared};
 #[doc(hidden)]
@@ -487,6 +487,10 @@ pub struct ExistentialSuccessorFlags {
     /// likely a reasoner bug (#449) ([`Realization::no_verdict`]). `incomplete` is set
     /// too.
     pub no_verdict: bool,
+    /// #510: a cut instance probe of the `realize` run hit the tableau's decision-depth
+    /// limit ([`Realization::depth_capped`]), which a larger budget does not recover.
+    /// Report-only: implies `incomplete`.
+    pub depth_capped: bool,
 }
 
 /// [`materialize_existential_successors`], plus the completeness flags of the
@@ -578,6 +582,7 @@ pub fn materialize_existential_successors_reporting<A: horned_owl::model::ForIRI
         witness_prune_may_drop: realization.witness_prune_may_drop(),
         relies_on_trusted_consistency: realization.relies_on_trusted_consistency(),
         no_verdict: realization.no_verdict(),
+        depth_capped: realization.depth_capped(),
     };
     // Distinct (a, R, C) with a:X entailed and X ⊑ ∃R.C told.
     let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
@@ -6365,6 +6370,42 @@ pub fn query_seeded_first_ms() -> u64 {
         .unwrap_or(QUERY_SEEDED_FIRST_DEFAULT_MS)
 }
 
+/// #510: the default of [`instance_depth_fallback_ms`]. Set by #510 (2b)'s M1 with a rule
+/// declared before the data: the smallest round budget that decides every census pair the
+/// deep retry decides within 30 s, with at least 2x slack. On #510's census the slowest,
+/// `ore_ont_13113`, took about 25 s. With #510 C's hit trigger (M0′) the slowest retried
+/// calls are `ore_ont_5688` (28.9–31.0 CPU-s, up to 34 s wall under load: 1.8–1.9x slack,
+/// below the rule), `ore_ont_13113` (2.4–2.6x) and `f1-wine` (2.6–3.2x); 60 s is kept, and a
+/// retry the wall-clock budget cuts stays `unknown` (sound). Only a retry that never
+/// decides waits the whole budget.
+pub const INSTANCE_DEPTH_FALLBACK_DEFAULT_MS: u64 = 60_000;
+
+/// `RUSTDL_INSTANCE_DEPTH_FALLBACK_MS` (#510): when a single instance query's bounded
+/// probe is cut by the tableau's decision-depth limit (`depth_capped`), or a budget cut
+/// it after it had hit that limit (`depth_cap_hit`, #510 C), the query runs
+/// the same `{a} ⊓ ¬C` probe once more on the deep path
+/// ([`PreparedOntology::decide_deep_with_deadline`], the search of
+/// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) under this budget, in milliseconds, counted from
+/// the retry's start. A verdict it reaches in time is the deadline-free probe's own.
+/// The retry also stops at the node cap in force: the CLI and Python hold
+/// [`single_query_node_cap`] (`RUSTDL_QUERY_MAX_NODES`) around the query, while a library
+/// caller of `is_instance_of*` that does not runs it under the default cap
+/// (`RUSTDL_MAX_NODES`), where the same retry can be cut that the CLI decides.
+///
+/// Default [`INSTANCE_DEPTH_FALLBACK_DEFAULT_MS`]; unparsable values fall back to it.
+/// **`0` turns the retry off** (the pre-#510 behaviour). That differs from
+/// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` (unbounded) and `RUSTDL_CONSISTENCY_FALLBACK_MS=0`
+/// (a deadline that has already passed). Only the single query takes it (`instance`, the public
+/// `is_instance_of*` API, Python `is_instance_of`); `instances`, `instances-expr`,
+/// `realize` and justify's instance oracle never do.
+#[must_use]
+pub fn instance_depth_fallback_ms() -> u64 {
+    std::env::var("RUSTDL_INSTANCE_DEPTH_FALLBACK_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(INSTANCE_DEPTH_FALLBACK_DEFAULT_MS)
+}
+
 /// #457: the default of [`query_wedge_ms`].
 pub const QUERY_WEDGE_DEFAULT_MS: u64 = 3_000;
 
@@ -7311,6 +7352,35 @@ pub(crate) fn last_probe_depth_capped() -> bool {
 }
 
 std::thread_local! {
+    /// #510 (C): whether the CURRENT thread's last main-tableau probe was cut by a
+    /// deadline or the node cap AFTER its search had bottomed out at the
+    /// decision-depth limit (`MAX_SEARCH_DEPTH`) at least once. It is the case
+    /// `PROBE_DEPTH_CAPPED` does not cover: early abandon was off, or the deadline came
+    /// before its 32nd hit (a loaded or slow host). Unlike `depth_capped`, a larger
+    /// budget may also help here, so it is a separate signal. Exclusive with
+    /// `PROBE_DEPTH_CAPPED` and with a stall (see [`depth_cap_hit_cause`]). Reset and set
+    /// by `decide_capturing` like `PROBE_DEPTH_CAPPED`. Report-only, except that the single
+    /// `instance` query's #510 (2b) deep retry keys on it (`InstanceFlags::depth_cap_hit`).
+    static PROBE_DEPTH_CAP_HIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// #510 (C): whether this thread's last main-tableau probe was cut by a deadline or
+/// the node cap after hitting the decision-depth limit at least once (see
+/// `PROBE_DEPTH_CAP_HIT`). Read it directly after the probe on the same thread.
+pub(crate) fn last_probe_depth_cap_hit() -> bool {
+    PROBE_DEPTH_CAP_HIT.with(std::cell::Cell::get)
+}
+
+/// #510 (C): the `depth_cap_hit` cause of a cut probe (a `DepthLimit` or `NodeCap`
+/// verdict). Pure, so the precedence is pinned by a table test: a stall wins (#475),
+/// then `depth_capped` (early abandon, or the cap with time left), then at least one
+/// depth-cap hit; with no hit the cut is a plain budget cut.
+#[must_use]
+fn depth_cap_hit_cause(hits: u64, depth_capped: bool, stalled: bool) -> bool {
+    hits > 0 && !depth_capped && !stalled
+}
+
+std::thread_local! {
     /// #475: whether the CURRENT thread's last main-tableau probe ended without a
     /// verdict because its deterministic saturation ran out of iterations
     /// (`RUSTDL_TABLEAU_SATURATE_ITERS`, the #437 livelock kind), on a budgeted
@@ -7368,6 +7438,29 @@ fn map_depth_limit(
         (false, Ok(None))
     } else {
         (true, Err(ReasonError::NoVerdict))
+    }
+}
+
+#[cfg(test)]
+mod depth_cap_hit_cause_tests {
+    use super::depth_cap_hit_cause;
+
+    /// #510 (C): every combination. Only a probe with a hit, not depth-capped and not
+    /// stalled, is a `depth_cap_hit`; the three causes stay exclusive.
+    #[test]
+    fn a_hit_counts_only_when_neither_a_stall_nor_a_depth_cap_explains_the_cut() {
+        for hits in [0_u64, 1, 31, 32, 40_000] {
+            for depth_capped in [false, true] {
+                for stalled in [false, true] {
+                    let want = hits > 0 && !depth_capped && !stalled;
+                    assert_eq!(
+                        depth_cap_hit_cause(hits, depth_capped, stalled),
+                        want,
+                        "hits={hits} depth_capped={depth_capped} stalled={stalled}"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -7788,6 +7881,8 @@ fn search_iterative_deepening(
             // read as a deadline cut.
             ctx.set_deadline(deadline);
             ctx.clear_deadline_hit();
+            // #510 (C): only the final level's cap is at least `MAX_SEARCH_DEPTH`.
+            ctx.reset_depth_cap_hits();
         } else {
             ctx.set_deadline(shallow);
         }
@@ -11898,25 +11993,7 @@ impl PreparedOntology {
         let budget = query_seeded_first_ms();
         if inherited.is_none() && budget > 0 {
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(budget);
-            match decide_capturing(
-                &self.pool,
-                &self.tbox,
-                &self.hierarchy,
-                &self.inverse_pairs,
-                &self.chain_axioms,
-                &self.asymmetric_roles,
-                &self.disjoint_role_pairs,
-                &self.complements,
-                &self.query_abox(),
-                &[],
-                &[],
-                &self.dkey_ranges,
-                &self.tableau_id,
-                Some(deadline),
-                &build_test_concept,
-                None,
-                true,
-            ) {
+            match self.decide_deep_with_deadline(deadline, &build_test_concept) {
                 Ok(Some(verdict)) => return Ok((Some(verdict), false, 0)),
                 Ok(None) | Err(ReasonError::NoVerdict) => {
                     if std::env::var_os("RUSTDL_TRACE").is_some() {
@@ -12093,6 +12170,43 @@ impl PreparedOntology {
             &self.tableau_id,
             Some(deadline),
             build_test_concept,
+        )
+    }
+
+    /// [`Self::decide_raw`]'s deep search, stopped by `deadline`: the search, blocking,
+    /// depth cap and (absent) early abandon of the deadline-free path, with the deadline
+    /// only ending it (`keep_unbounded_search`). A verdict reached in time is the one
+    /// [`Self::decide_raw`] gives; `Ok(None)` is the deadline or the node cap.
+    ///
+    /// The one deep-with-deadline probe: #401's seeded-first attempt
+    /// ([`Self::decide_query_raw`]) and #510's `instance` depth fallback both take it,
+    /// so the two cannot drift apart.
+    pub(crate) fn decide_deep_with_deadline<F>(
+        &self,
+        deadline: std::time::Instant,
+        build_test_concept: F,
+    ) -> Result<Option<bool>, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        decide_capturing(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            &self.query_abox(),
+            &[],
+            &[],
+            &self.dkey_ranges,
+            &self.tableau_id,
+            Some(deadline),
+            build_test_concept,
+            None,
+            true,
         )
     }
 
@@ -12940,6 +13054,7 @@ where
 {
     PROBE_DEPTH_CAPPED.with(|c| c.set(false));
     PROBE_STALLED.with(|c| c.set(false));
+    PROBE_DEPTH_CAP_HIT.with(|c| c.set(false));
     // Fast-exit if the deadline is already spent — BEFORE the expensive
     // `pool.clone()` + context setup below. On large ontologies that per-call
     // ConceptPool clone dominates: under a global classify deadline,
@@ -13173,15 +13288,24 @@ where
         // Live-node cap hit: sound under-approximation, never an error (#35 v4
         // safety net) — must be checked before the DepthLimit arms below so a
         // cap trip is never mistaken for a hard NoVerdict.
-        owl_dl_tableau::SearchVerdict::NodeCap => Ok(None),
+        // #510 (C): a node-cap stop after a depth-cap hit is a `depth_cap_hit`. The
+        // stall is read here for that flag only; `PROBE_STALLED` keeps its #475 scope.
+        owl_dl_tableau::SearchVerdict::NodeCap => {
+            let hit = depth_cap_hit_cause(ctx.depth_cap_hits(), false, ctx.saturation_stalled());
+            PROBE_DEPTH_CAP_HIT.with(|c| c.set(hit));
+            Ok(None)
+        }
         // #288/#475: stall, early abandon, deadline or depth cap, in that order
-        // (see `map_depth_limit`).
+        // (see `map_depth_limit`). #510 (C): a deadline cut after a hit is a
+        // `depth_cap_hit`.
         owl_dl_tableau::SearchVerdict::DepthLimit => {
             let stalled = ctx.saturation_stalled();
             let (depth_capped, r) =
                 map_depth_limit(stalled, ctx.early_abandoned(), ctx.deadline_reached());
             PROBE_DEPTH_CAPPED.with(|c| c.set(depth_capped));
             PROBE_STALLED.with(|c| c.set(stalled));
+            let hit = depth_cap_hit_cause(ctx.depth_cap_hits(), depth_capped, stalled);
+            PROBE_DEPTH_CAP_HIT.with(|c| c.set(hit));
             r
         }
     }
@@ -13765,6 +13889,7 @@ mod tests {
             incomplete,
             relies_on_trusted_consistency: false,
             no_verdict: false,
+            depth_capped: false,
         };
         for (status, incomplete) in [(Verdict::NotEntailed, false), (Verdict::Unknown, true)] {
             let (r, inc) = fallback_after_inconsistency(outcome(status, incomplete));
@@ -16171,6 +16296,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             incomplete: true,
             relies_on_trusted_consistency: false,
             no_verdict: false,
+            depth_capped: false,
         };
         let (result, incomplete) = fallback_after_held(gave_up);
         assert!(
@@ -16189,6 +16315,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             incomplete: true,
             relies_on_trusted_consistency: false,
             no_verdict: false,
+            depth_capped: false,
         };
         let (result, incomplete) = fallback_after_held(not_minimal);
         assert!(matches!(

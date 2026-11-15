@@ -221,7 +221,8 @@ fn walk<A: ForIRI>(ce: &CE<A>, f: &mut CeFacts) {
 /// equates whatever it classifies with that individual.
 fn has_singleton_nominal<A: ForIRI>(ce: &CE<A>) -> bool {
     match ce {
-        CE::ObjectOneOf(v) => v.len() == 1,
+        // #538: `ObjectOneOf(:a :a)` is the singleton `{a}`; its members are a set.
+        CE::ObjectOneOf(v) => owl_dl_core::set_operands::distinct_len(v) == 1,
         CE::ObjectIntersectionOf(v) => v.iter().any(has_singleton_nominal),
         _ => false,
     }
@@ -341,16 +342,18 @@ pub(crate) fn gaps_with<A: ForIRI>(
                     singleton_nominal_axiom = true;
                 }
             }
+            // #538: these components are canonical (`set_operands::components`), so one
+            // operand left means the axiom says nothing and is no disjointness source.
             C::DisjointClasses(ax) => {
-                disjoint_source = true;
+                disjoint_source |= ax.0.len() >= 2;
                 ax.0.iter().for_each(|c| walk(c, &mut f));
             }
             C::DisjointUnion(ax) => {
-                disjoint_source = true;
+                disjoint_source |= ax.1.len() >= 2;
                 ax.1.iter().for_each(|c| walk(c, &mut f));
             }
-            C::DifferentIndividuals(_) => {
-                disjoint_source = true;
+            C::DifferentIndividuals(ax) => {
+                disjoint_source |= ax.0.len() >= 2;
                 abox = true;
             }
             C::SubObjectPropertyOf(ax) => {
@@ -400,10 +403,10 @@ pub(crate) fn gaps_with<A: ForIRI>(
             {
                 data_top_bottom = true;
             }
-            C::DisjointObjectProperties(ax) => {
+            C::DisjointObjectProperties(ax) if ax.0.len() >= 2 => {
                 obj_disjoint_sets.push(ax.0.iter().map(signed).collect());
             }
-            C::DisjointDataProperties(ax) => {
+            C::DisjointDataProperties(ax) if ax.0.len() >= 2 => {
                 data_disjoint_sets.push(ax.0.iter().map(|d| d.0.as_ref().to_string()).collect());
             }
             C::SymmetricObjectProperty(ax) => {

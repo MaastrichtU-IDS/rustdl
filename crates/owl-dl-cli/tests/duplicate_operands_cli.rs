@@ -114,6 +114,23 @@ fn both_disjoint_property_arms_read_repeats_as_a_set() {
         "dop-ctl",
         "DisjointObjectProperties(:r :s) DisjointDataProperties(:p :q)",
     );
+    // The told arm's inheritance gap does fire on a real disjointness with a sub-property.
+    let inherit = Fixture::new(
+        "dop-inherit",
+        "Declaration(ObjectProperty(:t)) DisjointObjectProperties(:r :s) SubObjectPropertyOf(:t :r)",
+    );
+    let (_, out, _) = run(
+        &[("RUSTDL_PROPERTY_DISJOINT_DOWN", "0")],
+        &["disjoint", "--json", inherit.path()],
+    );
+    let gaps = json(&out)["structural_gaps"].clone();
+    assert!(
+        gaps.as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g == "object-disjoint-inheritance"),
+        "{gaps}"
+    );
     for down in ["1", "0"] {
         let env = [("RUSTDL_PROPERTY_DISJOINT_DOWN", down)];
         let (code, out, err) = run(&env, &["disjoint", "--json", f.path()]);
@@ -129,6 +146,8 @@ fn both_disjoint_property_arms_read_repeats_as_a_set() {
             serde_json::json!([]),
             "down={down}"
         );
+        // A one-operand axiom is no disjointness source: no inheritance or emptiness gap.
+        assert_eq!(v["structural_gaps"], serde_json::json!([]), "down={down}");
         let (_, out, _) = run(&env, &["disjoint", "--json", ctl.path()]);
         let v = json(&out);
         assert_eq!(

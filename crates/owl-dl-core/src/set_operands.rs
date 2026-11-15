@@ -157,6 +157,16 @@ pub fn components<A: ForIRI>(
     onto.iter().map(canonical_annotated)
 }
 
+/// The number of distinct elements of a set-valued operand list: `ObjectOneOf(:a :a)`
+/// has one member. Plain equality, which is structural for individuals and literals.
+#[must_use]
+pub fn distinct_len<T: PartialEq>(xs: &[T]) -> usize {
+    xs.iter()
+        .enumerate()
+        .filter(|&(j, x)| !xs[..j].contains(x))
+        .count()
+}
+
 /// What [`convert_ontology`](crate::convert::convert_ontology) records in
 /// `collapsed_operands` for `onto`, without converting it.
 #[must_use]

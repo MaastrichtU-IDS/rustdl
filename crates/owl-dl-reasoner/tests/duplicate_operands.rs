@@ -344,3 +344,25 @@ fn classify_reports_collapsed_operands() {
     let h = owl_dl_reasoner::classify(&onto("DisjointClasses(:C :D)")).unwrap();
     assert!(h.stats().collapsed_operands.is_empty());
 }
+
+/// `ObjectOneOf(:a :a)` is the singleton `{a}`, so it equates what it classifies with `a`
+/// and the property-values surface flags that a value can travel along the equality, as
+/// for `ObjectOneOf(:a)`.
+#[test]
+fn one_of_repeat_is_a_singleton_nominal() {
+    let gap = |body: &str| {
+        let g = owl_dl_reasoner::property_structural_gaps(&onto(body)).unwrap();
+        g.data_values().iter().any(|k| k == "data-derived-equality")
+    };
+    let value = "ClassAssertion(:C :b) DataPropertyAssertion(:p :a \"1\"^^xsd:integer)";
+    assert!(
+        gap(&format!("{value} SubClassOf(:C ObjectOneOf(:a))")),
+        "control"
+    );
+    assert!(gap(&format!("{value} SubClassOf(:C ObjectOneOf(:a :a))")));
+    assert!(
+        !gap(&format!("{value} SubClassOf(:C ObjectOneOf(:a :b))")),
+        "two members"
+    );
+    assert!(!gap(value), "no nominal");
+}

@@ -6,6 +6,7 @@
 20261104    el_only      0-499     0199786c97ac   targeted secondary result for M8a
 20261105    data_heavy   0-499     0199786c97ac   targeted secondary result for M8b
 20261106    el_guaranteed 0-999    97f692139103   #363 step 3a: strict pure EL + motifs, control and M8a
+20261115    polarity     0-999    57c988e466c5   role polarity (#526-#528 follow-up): control, K1/K2/M13/M14 on 0-499 (--realize [--sat])
 #
 # 0199786c97ac differs from bd63a61a6921 only in ax_domrange: a non-atomic domain/range head
 # now draws only from the profile's enabled families, so el_only stays EL. On the default
@@ -16,3 +17,8 @@
 # stream) and an equivrole role-axiom kind to the legality checker. The default, el_only and
 # data_heavy paths are untouched: all 3000 cases above regenerate byte-identically (bodies)
 # under both 0199786c97ac and 97f692139103, checked in full on 2026-11-03.
+#
+# 57c988e466c5 adds the polarity profile (PolarityCase, its own RNG stream) and makes the
+# legality checker read every role operand. The default, el_only, data_heavy, el_guaranteed and
+# el_top bodies regenerate byte-identically under it: 4300 cases (all of 20261103-20261106 and
+# el_top seed 20261107 cases 0-299) checked on 2026-11-15.

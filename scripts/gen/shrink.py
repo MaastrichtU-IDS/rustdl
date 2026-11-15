@@ -80,7 +80,7 @@ class Pred:
                 ora["answer"]["consistent"] != (self.a.oracle_consistent == "true"):
             return False, None
         arms = {arm: run.run_arm(self.a.bin, arm, path, self.env)
-                for arm in run.arms_for(self.a.realize)}
+                for arm in run.arms_for(self.a.realize, self.a.sat)}
         if self.a.kind.startswith("arm-fail:"):
             # Not a scored kind: an arm that errors out (e.g. `NoVerdict`, documented as
             # a bug indicator) on input both peers decide. `--witness` is a substring
@@ -94,6 +94,8 @@ class Pred:
         scored = run.score(ora["answer"], classes, arms)
         if self.a.realize:
             scored += run.score_types(ora["types"], ora["answer"]["consistent"], classes, arms)
+        if self.a.sat:
+            scored += run.score_sat(ora["answer"], arms[run.SAT_ARM])
         found = [f for f in scored
                  if f["kind"] == self.a.kind and f["witness"] == self.a.witness
                  and (self.a.tier is None or f["tier"] == self.a.tier)]
@@ -159,6 +161,8 @@ def main():
                          "a budget-cutting env, e.g. M7's); recorded in record.json")
     ap.add_argument("--oracle-consistent", choices=["true", "false"],
                     help="also require the peers' agreed consistency verdict")
+    ap.add_argument("--sat", action="store_true",
+                    help="the finding came from a --sat run (the per-class sat arm)")
     ap.add_argument("--realize", action="store_true",
                     help="the finding came from a --realize run: augment every subset for the "
                          "peers and run the realize arms too")
@@ -194,7 +198,8 @@ def main():
         "axioms_before": len(body), "axioms_after": len(core), "predicate_calls": test.calls,
         "peers": {"verdict": ora["verdict"], "answer": ora["answer"],
                   "konclude": ora["konclude"], "hermit": ora["hermit"]},
-        "rustdl": {arm: {"cmd": " ".join([a.bin, *run.ALL_ARMS[arm], "minimal.ofn"]),
+        "rustdl": {arm: {"cmd": (f"{a.bin} sat minimal.ofn <each class>" if arm == run.SAT_ARM
+                                 else " ".join([a.bin, *run.ALL_ARMS[arm], "minimal.ofn"])),
                          "status": r.get("status"), "json": r.get("json")}
                    for arm, r in info["arms"].items()},
         "finding": info["finding"],

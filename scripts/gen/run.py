@@ -64,12 +64,52 @@ REALIZE_ARMS = {
 }
 ALL_ARMS = {**ARMS, **REALIZE_ARMS}
 FP_KINDS = ("pair-FP", "unsat-FP", "consistency-FP", "satonly-FP", "type-FP",
-            "satonly-type-FP")
+            "satonly-type-FP", "sat-FP")
+# `--sat`: the per-query surface (`rustdl sat FILE C` for every declared class), which the
+# classify arms do not exercise: it reaches the main tableau's rules (e.g. apply_max) on
+# paths classify answers elsewhere. One call per class, each under RUSTDL_CAP.
+SAT_ARM = "sat"
 INCONSISTENT_ERR = "ontology is inconsistent"
 
 
-def arms_for(realize):
-    return dict(ALL_ARMS) if realize else dict(ARMS)
+def arms_for(realize, sat=False):
+    arms = dict(ALL_ARMS) if realize else dict(ARMS)
+    if sat:
+        arms[SAT_ARM] = None
+    return arms
+
+
+def run_sat_arm(binary, path, env):
+    """{"status": "ok", "json": {"answers": {C: sat|unsat|unknown|timeout|fail}}}."""
+    e = {**os.environ, **env}
+    answers = {}
+    for c in sorted(orc.declared_classes(Path(path).read_text())):
+        try:
+            p = subprocess.run([binary, "sat", str(path), c], capture_output=True, text=True,
+                               timeout=RUSTDL_CAP, env=e, preexec_fn=_limit)
+        except subprocess.TimeoutExpired:
+            answers[c] = "timeout"
+            continue
+        first = (p.stdout.strip().splitlines() or [""])[0]
+        answers[c] = first if first in ("sat", "unsat", "unknown") else "fail"
+    return {"status": "ok", "json": {"answers": answers}}
+
+
+def score_sat(oracle_ans, arm):
+    """`sat` per class. An `unsat` the oracle refutes is a finding (`sat-FP`); a `sat` on a
+    class the oracle calls unsat (or on any class of an inconsistent KB) is exposed only
+    (the per-query surface claims no completeness). Give-ups are never scored."""
+    out = []
+    j = arm.get("json") if arm and arm.get("status") == "ok" else None
+    if j is None:
+        return out
+    o_unsat = None if not oracle_ans["consistent"] else set(oracle_ans["unsat"])
+    for c, a in sorted(j["answers"].items()):
+        if a == "unsat" and o_unsat is not None and c not in o_unsat:
+            out.append({"kind": "sat-FP", "tier": "finding", "witness": c, "arm": SAT_ARM})
+        elif a == "sat" and (o_unsat is None or c in o_unsat):
+            out.append({"kind": "sat-MISSED", "tier": "exposed", "witness": c, "arm": SAT_ARM})
+    return out
 
 
 # ------------------------------------------------------------------ rustdl
@@ -78,6 +118,8 @@ def _limit():
 
 
 def run_arm(binary, arm, path, env):
+    if arm == SAT_ARM:
+        return run_sat_arm(binary, path, env)
     e = {**os.environ, **env}
     try:
         p = subprocess.run([binary, *ALL_ARMS[arm], str(path)], capture_output=True,
@@ -316,7 +358,7 @@ def _cpu():
     return s.ru_utime + s.ru_stime + c.ru_utime + c.ru_stime
 
 
-def one_case(path, binary, env, cache, out_dir, realize=False):
+def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
     dest = Path(out_dir) / "cases" / (Path(path).stem + ".json")
     if dest.exists():
         return json.loads(dest.read_text())
@@ -335,7 +377,7 @@ def one_case(path, binary, env, cache, out_dir, realize=False):
     if realize:
         rec["oracle_types"] = ora["types"]
     if ora["verdict"] in ("agree", "peer-disagree"):
-        for arm in arms_for(realize):
+        for arm in arms_for(realize, sat):
             rec["arms"][arm] = run_arm(binary, arm, path, env)
     if ora["verdict"] == "agree":
         rec["oracle_consistent"] = ora["answer"]["consistent"]
@@ -345,12 +387,18 @@ def one_case(path, binary, env, cache, out_dir, realize=False):
                                            rec["arms"])
             rec["types_scored"] = (len(ora["types"]["types"])
                                    if ora["types"].get("verdict") == "agree" else 0)
+        if sat:
+            rec["findings"] += score_sat(ora["answer"], rec["arms"][SAT_ARM])
     elif ora["verdict"] == "peer-disagree":
         rec["sides"] = sides(ora, classes, rec["arms"])
     rec["bucket"] = bucket(rec)
     # keep the per-case record small: drop the raw JSON of clean arms
-    for a in rec["arms"].values():
+    for name, a in rec["arms"].items():
         j = a.pop("json", None)
+        if name == SAT_ARM and j is not None:
+            vals = list(j["answers"].values())
+            a["summary"] = {k: vals.count(k) for k in ("sat", "unsat", "unknown", "timeout", "fail")}
+            continue
         if j is not None:
             a["summary"] = {k: j.get(k) for k in (
                 "consistent", "incomplete", "completeness_guaranteed",
@@ -424,7 +472,8 @@ def cmd_run(a):
     (out / "manifest.json").write_text(json.dumps({
         "tag": a.tag, "binary": a.bin, "env": env, "cases": str(a.cases), "n": len(files),
         "rustdl_cap_s": RUSTDL_CAP, "peer_cap_s": orc.PEER_CAP, "cores": a.cores,
-        "realize": a.realize, "gen_hash": gen.gen_hash(), "oracle_version": orc.ORACLE_VERSION},
+        "realize": a.realize, "sat": a.sat, "gen_hash": gen.gen_hash(),
+        "oracle_version": orc.ORACLE_VERSION},
         indent=1))
     cores = [int(c) for c in a.cores.split(",")]
     import multiprocessing as mp
@@ -434,7 +483,8 @@ def cmd_run(a):
     done = 0
     with futures.ProcessPoolExecutor(max_workers=len(cores), initializer=_pin,
                                      initargs=(q,)) as ex:
-        futs = {ex.submit(one_case, str(f), a.bin, env, a.oracle_cache, str(out), a.realize): f
+        futs = {ex.submit(one_case, str(f), a.bin, env, a.oracle_cache, str(out), a.realize,
+                          a.sat): f
                 for f in files}
         for f in futures.as_completed(futs):
             done += 1
@@ -758,6 +808,15 @@ def self_test():
     ok("types not agreed: no type scoring",
        sorted(f["kind"] for f in score_types({"verdict": "peer-disagree"}, True, classes,
                                              {"realize": rz([A, B])})), [])
+    def sk(o, answers):
+        return sorted((f["kind"], f["tier"], f["witness"])
+                      for f in score_sat(o, {"status": "ok", "json": {"answers": answers}}))
+    ok("sat agrees: clean", sk(dict(cons, unsat=[C]), {A: "sat", B: "sat", C: "unsat"}), [])
+    ok("sat-FP is a finding, sat-MISSED exposed, unknown unscored",
+       sk(dict(cons, unsat=[C]), {A: "unsat", B: "unknown", C: "sat"}),
+       [("sat-FP", "finding", A), ("sat-MISSED", "exposed", C)])
+    ok("an inconsistent KB: every sat answer is an exposed miss",
+       sk(inc, {A: "sat", B: "unsat"}), [("sat-MISSED", "exposed", A)])
     print(f"run self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 
@@ -784,6 +843,8 @@ def main():
     p.add_argument("--oracle-cache", required=True)
     p.add_argument("--realize", action="store_true",
                    help="add the realize arms; the peers classify the N_x-augmented file")
+    p.add_argument("--sat", action="store_true",
+                   help="add the per-class `sat` arm (the per-query surface)")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
     p.add_argument("--tag", required=True)

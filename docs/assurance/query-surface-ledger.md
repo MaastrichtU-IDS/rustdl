@@ -602,6 +602,56 @@ curated corpus does not carry either; the FP=0 net reports MISSED=0 on every fix
 drafts went to the manager; no fix is in this change.
 
 
+### A role-polarity profile: `polarity`, with realize and per-class `sat` arms (after #526–#528)
+
+#526, #527 and #528 were role-polarity bugs: an inverse role `r⁻` read as `r`. The default profile could not see them:
+- role characteristics, disjoint roles and role assertions were drawn on named roles only;
+- there was no negative role assertion;
+- `r⁻` appeared in 15% of class expressions only;
+- the ABox was optional;
+- there was no instance or realize arm.
+
+The `polarity` profile (`PolarityCase`, its own RNG stream; see `scripts/gen/README.md`) draws signed roles in every role-consuming axiom kind and gives every case an ABox. Half the cases carry a planted motif shaped after one of the bugs or an unread spot, as an `ok` variant or a `ctl` control. `run.py run --realize --sat` adds three arms:
+- `realize` and `realize --saturation-only`. The peers classify an `N_x ≡ {x}`-augmented copy, so `x : C` iff `N_x ⊑ C`, with agreement computed per projection.
+- `sat` for every declared class.
+
+Measured 2026-11-15: seed 20261115, N = 1000, generator `57c988e466c5`. The cases ran on cores 84–91, with peers capped at 60 s and rustdl at 30 s.
+
+**Calibration, with the criteria declared before any run** (detections confirmed by a serial recheck; `budget_cut` and `pre_check` never count):
+
+| arm (pin) | criterion | result |
+|---|---|---|
+| K1: `818df9b9`, which has #526, #527 and #528 | ≥1 detection each on `told_edge`, `p7_*`, `p5`, `p8_*` | **held**: 39 cases, 39/39 confirmed. `told_edge` 21 + 1 unplanted (`type-FP`); `p7` 9, `p5` 4, `p8` 4 (`consistency-FP`) |
+| K2: `abd26078`, which has #526 only | ≥1 on `told_edge`, 0 on `p7`/`p5`/`p8` | **held**: 22 cases, all #526 (21 + 1 unplanted); 22/22 confirmed |
+| M13: `apply_max` counts `≤n r⁻` over `r`-successors (`scripts/gen/mutants/M13.patch`) | ≥1 detection in cases 0–499 | without the `sat` arm, thin: 2 exposed (`type-MISSED`). **With the `sat` arm, held**: 24 cases (7 `sat-FP`, 17 exposed, 19 of them on `card_inv`), 24/24 confirmed |
+| M14: the wedge's predecessor count drops `flip()` (`M14.patch`) | ≥1 detection in cases 0–499 | **held**: 14 cases (3 FP: a `pair-FP` on `forall_inv_tbox`, a `pair-FP` and a `consistency-FP` unplanted; 11 exposed, 7 on `card_inv_abox`), 14/14 confirmed |
+
+So `apply_max` on `r⁻` is reached on the per-query `sat` surface, and hardly at all on the classify, consistent and realize arms. The wedge's `≤n` predecessor count is reached on the consistent and classify arms.
+
+**Control on main `5b12e558` (pin `rustdl-526-0945b5b6`, same tree), all five arms plus `sat`:** 932 clean, 20 exposed, 45 peer-disagree, 3 peer-fail, and **0 findings**. All 20 exposed cases are misses that both oracles confirm. Each was shrunk and attributed, and each became an issue:
+
+| family | cases | issue |
+|---|---|---|
+| the consistency wedge never sees `NegativeObjectPropertyAssertion` (trusted Sat) | 00111, 00219, 00250, 00271, 00287 | #532 |
+| the wedge under-enforces `Reflexive` with `≤0`, and `InverseFunctional(s)` with `s ≡ r⁻` (trusted Sat) | 00656, 00847 | #535 (with #532, under one umbrella: the trusted wedge accepts inconsistent ABoxes) |
+| classify omits a nominal + ABox pair that `subclass` proves, with no signal | 00474, 00631, 00863 | #533 |
+| per-query `sat` misses unsat or inconsistency with an inverse `DisjointObjectProperties` operand (classify is right) | 00105, 00108, 00143, 00418, 00642, 00794, 00880, 00972 | #534 |
+| realize / instance on an ABox made inconsistent by a negative assertion: a definite wrong `no`, unflagged (the gate certifies what the saturation route drops) | 00730 | #536 |
+| not reproduced on the serial shrink check | 00456 | none |
+
+**Peer disagreements (45, not scored), settled on semantics.** Every one is Konclude-consistent and HermiT-inconsistent, with rustdl agreeing with HermiT. All 45 contain an `Asymmetric`, `Irreflexive` or `DisjointObjectProperties` axiom. Six of them, two per kind, were shrunk by hand (cases 3, 87, 106, 195, 200, 377). Every core uses the axiom's `r⁻` form and is inconsistent by the semantics, so Konclude under-reports on inverse forms of these characteristics (as on #530's three controls). The other 39 are attributed by grouping only and were not individually shrunk.
+
+**Denominators** (scored = both peers agree; the type count is individuals whose types the peers agree on):
+- 952 agreed cases, 676 agreed-consistent, 2,685 individuals scored, 6 cases with a types-only peer disagreement.
+- Thin spots:
+  - the consistent `p8` forms (`p8_inv_under_func`: 1 consistent case; `p8_named_under_func_inv`: 3; `p8_mixed`: 10);
+  - Konclude's under-report removes 16 of 27 `p6_asymmetric` cases, 10 of 22 `p6_irreflexive` and 11 of 33 `p9`.
+- A zero there is weaker than elsewhere.
+
+**Not covered:** data properties (weight 0), `subclass` / `explain` per pair (the `sat` arm only), and ontologies above 10 classes and 16 axioms.
+
+**Cost:** about 1.9 core-h in all. That covers the oracle on 1,000 augmented cases (2.3 CPU-s per case, mostly HermiT's JVM start), the rustdl arms, two mutant builds, rechecks and 26 shrinks. The first 100 control cases are counted at their wall × cores bound. A `time` around `run.py` undercounts: the pool's forkserver workers are never reaped into it. `run.py` therefore records each case's CPU from inside the worker.
+
 ## In-repo pure-EL guard (#440, and layer 2)
 
 The `el_guaranteed` net needs Konclude and HermiT, so it never ran in CI, and #435/#436 reached

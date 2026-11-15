@@ -91,7 +91,12 @@ def run_sat_arm(binary, path, env):
             answers[c] = "timeout"
             continue
         first = (p.stdout.strip().splitlines() or [""])[0]
-        answers[c] = first if first in ("sat", "unsat", "unknown") else "fail"
+        if first in ("sat", "unsat", "unknown"):
+            answers[c] = first
+        elif p.returncode == 1 and INCONSISTENT_ERR in p.stderr:
+            answers[c] = "inconsistent"  # `sat` refuses an inconsistent KB: a verdict
+        else:
+            answers[c] = "fail"
     return {"status": "ok", "json": {"answers": answers}}
 
 
@@ -104,6 +109,8 @@ def score_sat(oracle_ans, arm):
     if j is None:
         return out
     o_unsat = None if not oracle_ans["consistent"] else set(oracle_ans["unsat"])
+    if o_unsat is not None and "inconsistent" in j["answers"].values():
+        out.append({"kind": "consistency-FP", "tier": "finding", "witness": "KB", "arm": SAT_ARM})
     for c, a in sorted(j["answers"].items()):
         if a == "unsat" and o_unsat is not None and c not in o_unsat:
             out.append({"kind": "sat-FP", "tier": "finding", "witness": c, "arm": SAT_ARM})
@@ -160,8 +167,12 @@ _BASE = re.compile(r"Prefix\(\s*:\s*=\s*<([^>]*)>\s*\)")
 
 def augment(text):
     """(augmented text, {N_x IRI: x IRI}): `N__x ≡ {x}` for each declared individual."""
-    base = _BASE.search(text).group(1)
+    m = _BASE.search(text)
+    assert m, "augment expects a `Prefix(:=<...>)` file (the generator's form)"
+    base = m.group(1)
     inds = _IND.findall(text)
+    assert len(inds) == text.count("Declaration(NamedIndividual("), \
+        "augment reads `:name` individual declarations only"
     lines = text.rstrip("\n").splitlines()
     assert lines[-1].strip() == ")", "expects a closing ')'"
     add = []
@@ -387,8 +398,18 @@ def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
                                            rec["arms"])
             rec["types_scored"] = (len(ora["types"]["types"])
                                    if ora["types"].get("verdict") == "agree" else 0)
+            rz = rec["arms"].get("realize", {}).get("json") or {}
+            rec["types_compared"] = (sum(1 for i in rz.get("individuals", [])
+                                         if i["iri"] in ora["types"]["types"])
+                                     if ora["types"].get("verdict") == "agree" else 0)
         if sat:
             rec["findings"] += score_sat(ora["answer"], rec["arms"][SAT_ARM])
+            sa = rec["arms"][SAT_ARM]
+            bad = sorted(c for c, x in sa["json"]["answers"].items() if x in ("fail", "timeout"))
+            if bad and ora["answer"]["consistent"]:
+                # A crash or a cap on a KB the peers call consistent is a failure, not clean.
+                sa["status"] = "fail"
+                sa["failed_classes"] = bad[:5]
     elif ora["verdict"] == "peer-disagree":
         rec["sides"] = sides(ora, classes, rec["arms"])
     rec["bucket"] = bucket(rec)
@@ -397,7 +418,8 @@ def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
         j = a.pop("json", None)
         if name == SAT_ARM and j is not None:
             vals = list(j["answers"].values())
-            a["summary"] = {k: vals.count(k) for k in ("sat", "unsat", "unknown", "timeout", "fail")}
+            a["summary"] = {k: vals.count(k) for k in ("sat", "unsat", "unknown", "inconsistent",
+                                                         "timeout", "fail")}
             continue
         if j is not None:
             a["summary"] = {k: j.get(k) for k in (
@@ -545,6 +567,8 @@ def cmd_report(a):
                 "types_peer_disagree": sum((r.get("oracle_types") or {}).get("verdict")
                                            == "peer-disagree" for r in rs),
                 "individuals_scored": sum(r.get("types_scored", 0) for r in rs),
+                # individuals the realize arm actually reported and that were compared
+                "individuals_compared": sum(r.get("types_compared", 0) for r in rs),
                 "finding_cases": sum(r["bucket"] == "finding" for r in rs)}
     rep = {
         "tag": a.tag, "n": len(recs), "buckets": dict(buckets),
@@ -557,6 +581,10 @@ def cmd_report(a):
         "peer_disagree": {f"{'+'.join(k)} rustdl-sides:{s}": n for (k, s), n in disagree.items()},
         "peer_fail_or_invalid": {"+".join(k): n for k, n in peer_fail.items()},
         "rustdl_arm_failures": dict(fails),
+        "sat_answers": dict(sum((Counter((r["arms"].get(SAT_ARM) or {}).get("summary") or {})
+                                 for r in recs.values()), Counter())),
+        "sat_fail_on_agreed_consistent": sorted(
+            c for c, r in recs.items() if (r["arms"].get(SAT_ARM) or {}).get("status") == "fail"),
         "cpu_s_measured": round(sum(r.get("cpu_s", 0) for r in recs.values()), 1),
         "cases_without_cpu": sum("cpu_s" not in r for r in recs.values()),
     }
@@ -817,6 +845,10 @@ def self_test():
        [("sat-FP", "finding", A), ("sat-MISSED", "exposed", C)])
     ok("an inconsistent KB: every sat answer is an exposed miss",
        sk(inc, {A: "sat", B: "unsat"}), [("sat-MISSED", "exposed", A)])
+    ok("sat refusing a consistent KB is a consistency-FP",
+       sk(cons, {A: "inconsistent", B: "inconsistent", C: "inconsistent"}),
+       [("consistency-FP", "finding", "KB")])
+    ok("sat refusing an inconsistent KB is clean", sk(inc, {A: "inconsistent"}), [])
     print(f"run self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

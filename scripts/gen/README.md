@@ -63,6 +63,8 @@ Built after #526–#528, three role-polarity bugs (an inverse role `r⁻` read a
 - **Scoring:** a type rustdl reports that both peers refute is a `type-FP` (or `satonly-type-FP`) finding. A missed type is exposed only. `realize` refusing a consistent KB is a `consistency-FP`.
 - **Shrinking:** `shrink.py --realize` re-augments every subset.
 
+**Note:** `Asymmetric(r⁻)` ≡ `Asymmetric(r)` (likewise Irreflexive), so the `p6` motifs check the `r⁻` spelling, not a polarity drop. `--sat` adds `sat` for every declared class (the per-query surface). A `sat` refusal of an inconsistent KB is a verdict; any other failure on an agreed-consistent case is a `rustdl-fail`.
+
 **Mutants** (`mutants/M13.patch`, `mutants/M14.patch`): data, never applied in the tree, never built by CI. They are polarity faults planted where no audit read the code line by line:
 - M13: `apply_max` counts `≤n r⁻` over `r`-successors;
 - M14: the wedge's predecessor count drops `flip()`.

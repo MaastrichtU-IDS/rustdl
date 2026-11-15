@@ -628,7 +628,7 @@ Measured 2026-11-15: seed 20261115, N = 1000, generator `57c988e466c5`. The case
 
 So `apply_max` on `r⁻` is reached on the per-query `sat` surface, and hardly at all on the classify, consistent and realize arms. The wedge's `≤n` predecessor count is reached on the consistent and classify arms.
 
-**Control on main `5b12e558` (pin `rustdl-526-0945b5b6`, same tree), all five arms plus `sat`:** 932 clean, 20 exposed, 45 peer-disagree, 3 peer-fail, and **0 findings**. All 20 exposed cases are misses that both oracles confirm. Each was shrunk and attributed, and each became an issue:
+**Control on main `5b12e558` (pin `rustdl-526-0945b5b6`, same tree), all five arms plus `sat`:** 932 clean, 20 exposed, 45 peer-disagree, 3 peer-fail, and **0 findings**. Each exposed case was shrunk. 19 are misses that both oracles confirm, attributed and filed; one (00456) did not reproduce on the shrink's serial check:
 
 | family | cases | issue |
 |---|---|---|
@@ -647,6 +647,10 @@ So `apply_max` on `r⁻` is reached on the per-query `sat` surface, and hardly a
   - the consistent `p8` forms (`p8_inv_under_func`: 1 consistent case; `p8_named_under_func_inv`: 3; `p8_mixed`: 10);
   - Konclude's under-report removes 16 of 27 `p6_asymmetric` cases, 10 of 22 `p6_irreflexive` and 11 of 33 `p9`.
 - A zero there is weaker than elsewhere.
+
+**What a motif does not discriminate.** `Asymmetric(r⁻)` ≡ `Asymmetric(r)` and `Irreflexive(r⁻)` ≡ `Irreflexive(r)`, so the `p6` motifs only check that the `r⁻` spelling is not mishandled; they cannot tell a polarity drop from a correct reading.
+
+**The `sat` arm's failures.** The `sat` arm originally scored a per-class `fail` or `timeout` as nothing; Fable's review caught it. `sat` refusing an inconsistent KB is now a verdict (a consistency-FP when the peers say consistent), and any other failure on an agreed-consistent case makes the arm a `rustdl-fail`. The stored runs were checked against the fix: in both the control and M13, 0 failures fall on agreed-consistent cases. All 2,136 control failures (933 in M13) are `sat` refusing an inconsistent KB or a peer-disagree case, so the reported results stand.
 
 **Not covered:** data properties (weight 0), `subclass` / `explain` per pair (the `sat` arm only), and ontologies above 10 classes and 16 axioms.
 

@@ -6183,15 +6183,23 @@ impl<'c> HyperEngine<'c> {
     /// Also only where a blocked skip is re-fired (Fable F5). The re-test releases
     /// a parked clause whose node became blocked, and that firing is a blocked
     /// no-op. If the node is unblocked later, only #376's `blocked_gen` (recorded
-    /// under `nn_guard`, re-fired by the #137 net) or a full re-seed (the
-    /// non-incremental drain) fires the clause again. Both defaults are ON.
+    /// under `nn_guard`) re-fires it, and only the #137 net consumes `blocked_gen`,
+    /// which runs in incremental mode alone. The non-incremental drain was admitted
+    /// earlier on the argument that "a full re-seed fires the clause again", but
+    /// that holds only if another pass follows, and a non-incremental leaf runs no
+    /// net (Fable's final review, finding 1). So parking needs the incremental
+    /// fixpoint AND the #137 net. Every production engine is incremental by
+    /// default (`RUSTDL_HYPER_INCREMENTAL_FIXPOINT`, `RUSTDL_RESEED_VERIFY`, both
+    /// ON), so the default behaviour is unchanged; the default-OFF snapshot path
+    /// and `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0` simply never park.
     fn parking_allowed(&self) -> bool {
         self.nominal_disj_wait
             && self.in_search
             && !self.park_disabled
             && self.nominals.is_some_and(|(_, count)| count > 0)
             && self.nn_guard
-            && (self.reseed_verify || !self.incremental_fixpoint)
+            && self.incremental_fixpoint
+            && self.reseed_verify
     }
 
     /// #480: the next deferred generating clause to fire, or `None` once the
@@ -8745,7 +8753,9 @@ mod tests {
     #[test]
     fn generation_waits_for_an_open_nominal_disjunction() {
         let clauses = min_939_two_nominal_clauses();
-        for (incremental, mrv) in [(true, false), (false, false), (true, true), (false, true)] {
+        // Parking is incremental-only (finding 1); `parking_needs_the_blocked_skip_refire`
+        // pins that the non-incremental drain never parks.
+        for (incremental, mrv) in [(true, false), (true, true)] {
             let (r, eng) = decide_480(&clauses, true, incremental, true, 10_000, None, mrv);
             assert_eq!(
                 r,
@@ -8838,7 +8848,7 @@ mod tests {
                 head: vec![Atom::Class(a, 1)],
             },
         ];
-        for incremental in [true, false] {
+        for incremental in [true] {
             let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None, false);
             let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None, false);
             assert_eq!(r_on, HyperResult::Sat, "incremental={incremental}");
@@ -8882,7 +8892,7 @@ mod tests {
                 head: vec![],
             },
         ];
-        for incremental in [true, false] {
+        for incremental in [true] {
             let (res, eng) = decide_480(
                 &clauses,
                 true,
@@ -8940,7 +8950,7 @@ mod tests {
             head: vec![],
         });
         for (clauses, want) in [(base, HyperResult::Sat), (unsat, HyperResult::Unsat)] {
-            for (incremental, mrv) in [(true, false), (false, false), (true, true), (false, true)] {
+            for (incremental, mrv) in [(true, false), (true, true)] {
                 let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None, mrv);
                 let (r_off, _) = decide_480(&clauses, false, incremental, true, 10_000, None, mrv);
                 assert_eq!(r_on, want, "incremental={incremental} mrv={mrv}");
@@ -9008,6 +9018,69 @@ mod tests {
         );
     }
 
+    /// #480 T1≥ (Fable's final review, finding 2): `defers_generation` defers an
+    /// at-least head too, so a `≥n` clause parks like `∃`. T1's clauses with the
+    /// root's `∃r1.Q` written as `≥2 r1.Q`: the wait still settles, a clause parked
+    /// and was released, and the leaf found nothing parked.
+    #[test]
+    fn an_at_least_clause_parks_like_an_existential() {
+        let mut clauses = min_939_two_nominal_clauses();
+        let (r1, q) = (Role::Named(RoleId::new(1)), cls(2));
+        clauses[1].head = vec![Atom::AtLeast(r1, Some(q), 2, X)];
+        let (r, eng) = decide_480(&clauses, true, true, true, 10_000, None, false);
+        assert_eq!(r, HyperResult::Sat);
+        assert!(
+            eng.stats.gen_parked > 0 && eng.stats.gen_unparked > 0,
+            "precondition: the `≥2` clause parked and was released ({} / {})",
+            eng.stats.gen_parked,
+            eng.stats.gen_unparked
+        );
+        assert_eq!(eng.stats.park_leaf_fallback, 0);
+        assert!(eng.parked.is_empty() && eng.pending_gen.is_empty());
+    }
+
+    /// #480 T6≥ (Fable's final review, finding 2): T6 with the root's `∃r.E` written
+    /// as `≥3 r.E`. The KB is unsatisfiable only through the parked at-least
+    /// clause's successors: an `r`-successor in `E` clashes with `{a}` and with
+    /// `{b}`. Each branch must release the parked `≥3` and find the clash, with
+    /// nothing recovered by the #137 net.
+    #[test]
+    fn a_parked_at_least_clause_is_restored_with_its_branch() {
+        let r = Role::Named(RoleId::new(0));
+        let (c0, e, a, b) = (cls(0), cls(1), cls(10), cls(11));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::Class(a, X), Atom::Class(b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c0, X)],
+                head: vec![Atom::AtLeast(r, Some(e), 3, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Role(r, X, 1), Atom::Class(e, 1)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X), Atom::Role(r, X, 1), Atom::Class(e, 1)],
+                head: vec![],
+            },
+        ];
+        let (res, eng) = decide_480(&clauses, true, true, true, 10_000, None, false);
+        assert_eq!(res, HyperResult::Unsat);
+        assert!(
+            eng.stats.gen_parked > 0 && eng.stats.gen_unparked >= 2,
+            "precondition: the `≥3` parked and was released in both branches ({} / {})",
+            eng.stats.gen_parked,
+            eng.stats.gen_unparked
+        );
+        assert_eq!(
+            eng.stats.reseed_recovered, 0,
+            "the #137 net recovered work: a parked `≥3` was lost on restore"
+        );
+        assert_eq!(eng.stats.park_leaf_fallback, 0);
+    }
+
     /// #480 T5: a node that is blocked does not park, even with its nominal
     /// disjunction open: the search's scan skips blocked nodes, so a parked clause
     /// there would only be found at the leaf. A chain `C ⊑ ∃r.C`, `C ⊑ E ⊔ {a} ⊔ {b}`
@@ -9040,7 +9113,7 @@ mod tests {
                 head: vec![],
             },
         ];
-        for (incremental, mrv) in [(true, false), (false, false), (true, true), (false, true)] {
+        for (incremental, mrv) in [(true, false), (true, true)] {
             let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None, mrv);
             let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None, mrv);
             assert_eq!(
@@ -9078,11 +9151,12 @@ mod tests {
     #[test]
     fn parking_needs_the_blocked_skip_refire() {
         let clauses = min_939_two_nominal_clauses();
-        let run = |nn_guard: bool, net: bool| {
-            let mut eng = HyperEngine::new(&clauses, cls(0))
-                .with_nominals(10, 2)
-                .with_incremental_fixpoint()
-                .with_reseed_verify(net);
+        let run_mode = |nn_guard: bool, net: bool, incremental: bool| {
+            let mut eng = HyperEngine::new(&clauses, cls(0)).with_nominals(10, 2);
+            if incremental {
+                eng = eng.with_incremental_fixpoint();
+            }
+            eng = eng.with_reseed_verify(net);
             eng.generate_last = true;
             eng.nominal_disj_wait = true;
             eng.nn_guard = nn_guard;
@@ -9090,6 +9164,7 @@ mod tests {
             let _ = eng.decide_with_deadline(64, Some(deadline));
             eng.stats.gen_parked
         };
+        let run = |nn_guard: bool, net: bool| run_mode(nn_guard, net, true);
         assert!(run(true, true) > 0, "precondition: the default parks");
         assert_eq!(run(false, true), 0, "parked without `nn_guard`");
         assert_eq!(
@@ -9097,6 +9172,15 @@ mod tests {
             0,
             "parked without the #137 net (incremental)"
         );
+        // Fable's final review, finding 1: the non-incremental drain has no net to
+        // re-fire a blocked-then-unblocked node's clause, so it never parks.
+        for net in [true, false] {
+            assert_eq!(
+                run_mode(true, net, false),
+                0,
+                "parked in the non-incremental drain (net={net})"
+            );
+        }
     }
 
     /// #480 T8: a nominal disjunction that only a per-pair extra clause carries

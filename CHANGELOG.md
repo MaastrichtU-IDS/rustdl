@@ -295,6 +295,13 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **An inverse-role property assertion no longer types the wrong individuals (#526).**
+  `ObjectPropertyAssertion(ObjectInverseOf(r) a b)` is the edge `r(b, a)`, but the told-class
+  fast path shared by every instance check gave `a` the domain of `r` and `b` its range. That
+  covers `instance`, `instances`, `realize`, the class-expression instance queries and the
+  instance check inside `justify`. The answers were false positives: on the full path, a `yes`
+  that skipped the tableau probe; on the saturation-only path, the only answer. The edge is now normalised to the named role first.
+  Every fixture is adjudicated by HermiT and Konclude.
 - **Consistent ontologies with inverse-role domains, ranges or functional roles are no longer
   reported inconsistent (#527, #528).** The told-ABox consistency pre-check (`abox_check`), which
   `consistent`, `classify` and `realize` rely on, read an inverse role as its named role in three

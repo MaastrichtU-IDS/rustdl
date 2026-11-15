@@ -313,7 +313,7 @@ pub(crate) fn gaps_with<A: ForIRI>(
     let mut bounded_obj: BTreeSet<Signed> = BTreeSet::new();
     let mut bounded_data: BTreeSet<String> = BTreeSet::new();
 
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         match &ac.component {
             C::SubClassOf(ax) => {
                 walk(&ax.sub, &mut f);

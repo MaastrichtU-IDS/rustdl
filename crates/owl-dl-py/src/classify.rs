@@ -101,6 +101,18 @@ impl PyClassification {
         self.inner.completeness_guaranteed()
     }
 
+    /// #538: `(axioms, vacuous)`: n-ary axioms that repeated an operand, and those of
+    /// them left with one operand. The operands are a set (OWL 2 Structural
+    /// Specification §2.1), so `DisjointClasses(:C :C)` says nothing and
+    /// `DifferentIndividuals(:a :a :b)` says only `a ≠ b`. Not a give-up and never
+    /// counted against `completeness_guaranteed`; the same counts as the
+    /// `classify --json` field `collapsed_operands`.
+    #[getter]
+    fn collapsed_operands(&self) -> (u64, u64) {
+        let c = self.inner.stats().collapsed_operands;
+        (c.axioms, c.vacuous)
+    }
+
     /// True iff the global deadline ran out during preparation (EL saturation
     /// or building the prepared ontology), so only a partial saturation closure
     /// is reported and consistency was not fully checked (#162). Implies

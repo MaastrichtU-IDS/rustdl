@@ -342,7 +342,7 @@ fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Fa
     // SubClassOf(C, Intersection(...)) (the SubClass-only direction also
     // propagates bounds soundly: C ⊑ ⊓Mi → C inherits Mi's bounds).
     let mut inherited_from: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for ac in src {
+    for ac in crate::set_operands::components(src) {
         match &ac.component {
             Component::EquivalentClasses(ax) => {
                 let atomic_members: Vec<String> = ax.0.iter().filter_map(class_iri).collect();
@@ -1911,7 +1911,7 @@ struct Facts {
 
 fn extract_facts<A: ForIRI>(src: &SetOntology<A>) -> Facts {
     let mut f = Facts::default();
-    for ac in src {
+    for ac in crate::set_operands::components(src) {
         scan_component(&ac.component, &mut f);
     }
     f
@@ -3282,7 +3282,7 @@ fn emit_data_range_value_violations<A: ForIRI>(
     let mut sub_dp: Vec<(String, String)> = Vec::new();
     // DataPropertyAssertions: (p_iri, Literal).
     let mut dp_assertions: Vec<(String, Literal<A>)> = Vec::new();
-    for ac in src {
+    for ac in crate::set_operands::components(src) {
         match &ac.component {
             C::DataPropertyRange(ax) => {
                 dp_ranges
@@ -3629,7 +3629,7 @@ fn emit_functional_dp_cardinality_violations<A: ForIRI>(
     // Keys: (ind_iri, prop_iri); values: BTreeSet<DistinctVal>.
     let mut ind_dp_vals: BTreeMap<(String, String), BTreeSet<DistinctVal>> = BTreeMap::new();
 
-    for ac in src {
+    for ac in crate::set_operands::components(src) {
         match &ac.component {
             C::FunctionalDataProperty(ax) => {
                 functional_dps.insert(dp_iri(&ax.0));
@@ -3758,7 +3758,7 @@ fn emit_data_cardinality_violations_typed<A: ForIRI>(
     // (class_iri, dp_iri, max_n, data_range)
     let mut constraints: Vec<(String, String, u32, DataRange<A>)> = Vec::new();
 
-    for ac in src {
+    for ac in crate::set_operands::components(src) {
         match &ac.component {
             C::SubDataPropertyOf(ax) => {
                 let (sub, sup) = (dpe_iri(&ax.sub), dpe_iri(&ax.sup));

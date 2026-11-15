@@ -2340,12 +2340,22 @@ pub fn convert_component<A: ForIRI>(
             for ce in &ax.0 {
                 ids.push(ce_or_skip!(convert_class_expression(ce, vocab, pool)));
             }
+            // #538: one operand left after `set_operands::canonical` says nothing; the
+            // operand is interned above, so the signature is kept.
+            if ids.len() < 2 {
+                return Ok(None);
+            }
             Ok(Some(Axiom::EquivalentClasses(ids)))
         }
         C::DisjointClasses(ax) => {
             let mut ids = Vec::with_capacity(ax.0.len());
             for ce in &ax.0 {
                 ids.push(ce_or_skip!(convert_class_expression(ce, vocab, pool)));
+            }
+            // #538: as for `EquivalentClasses`. Two operands that only DENOTE the same
+            // concept (`A`, `A ⊓ owl:Thing`) are distinct here and keep `A` unsat.
+            if ids.len() < 2 {
+                return Ok(None);
             }
             Ok(Some(Axiom::DisjointClasses(ids)))
         }
@@ -2358,6 +2368,15 @@ pub fn convert_component<A: ForIRI>(
             for ce in &ax.1 {
                 members.push(ce_or_skip!(convert_class_expression(ce, vocab, pool)));
             }
+            // #538: a one-member union (`DisjointUnion(D C C)` after `canonical`) still
+            // says `D ≡ C`, so it is NOT dropped; it is lowered to that equivalence, over
+            // the same class `D` as above (so a built-in `D` keeps #427's ordinary twin).
+            if let [member] = members[..] {
+                return Ok(Some(Axiom::EquivalentClasses(vec![
+                    pool.atomic(class),
+                    member,
+                ])));
+            }
             Ok(Some(Axiom::DisjointUnion { class, members }))
         }
 
@@ -2369,10 +2388,18 @@ pub fn convert_component<A: ForIRI>(
         }
         C::EquivalentObjectProperties(ax) => {
             let roles = convert_roles(&ax.0, vocab)?;
+            // #538: one role left after `set_operands::canonical` says nothing.
+            if roles.len() < 2 {
+                return Ok(None);
+            }
             Ok(Some(Axiom::EquivalentObjectProperties(roles)))
         }
         C::DisjointObjectProperties(ax) => {
             let roles = convert_roles(&ax.0, vocab)?;
+            // #538: as for `EquivalentObjectProperties`.
+            if roles.len() < 2 {
+                return Ok(None);
+            }
             Ok(Some(Axiom::DisjointObjectProperties(roles)))
         }
         C::InverseObjectProperties(ax) => {
@@ -2459,12 +2486,17 @@ pub fn convert_component<A: ForIRI>(
                 object,
             }))
         }
-        C::SameIndividual(ax) => Ok(Some(Axiom::SameIndividual(convert_individuals(
-            &ax.0, vocab,
-        )?))),
-        C::DifferentIndividuals(ax) => Ok(Some(Axiom::DifferentIndividuals(convert_individuals(
-            &ax.0, vocab,
-        )?))),
+        // #538: one individual left after `set_operands::canonical` (`SameIndividual(a a)`,
+        // `DifferentIndividuals(a a)`) says nothing; it is interned, so it stays an
+        // individual of the ontology.
+        C::SameIndividual(ax) => {
+            let inds = convert_individuals(&ax.0, vocab)?;
+            Ok((inds.len() >= 2).then_some(Axiom::SameIndividual(inds)))
+        }
+        C::DifferentIndividuals(ax) => {
+            let inds = convert_individuals(&ax.0, vocab)?;
+            Ok((inds.len() >= 2).then_some(Axiom::DifferentIndividuals(inds)))
+        }
 
         // ── DataPropertyAssertion: gated lowering (RUSTDL_DATA_PROPERTIES) ──
         // When the gate is ON, lower `dp(from, to)` to a `ClassAssertion` via
@@ -2526,7 +2558,8 @@ pub fn convert_component<A: ForIRI>(
                 ax.0.iter()
                     .map(|dp| Role::named(vocab.intern_role(dp.0.as_ref())))
                     .collect();
-            Ok(Some(Axiom::EquivalentObjectProperties(roles)))
+            // #538: one property left after `set_operands::canonical` says nothing.
+            Ok((roles.len() >= 2).then_some(Axiom::EquivalentObjectProperties(roles)))
         }
 
         // ── DisjointDataProperties: gated lowering (RUSTDL_DATA_PROPERTIES) ──
@@ -2537,7 +2570,8 @@ pub fn convert_component<A: ForIRI>(
                 ax.0.iter()
                     .map(|dp| Role::named(vocab.intern_role(dp.0.as_ref())))
                     .collect();
-            Ok(Some(Axiom::DisjointObjectProperties(roles)))
+            // #538: as for `EquivalentDataProperties`.
+            Ok((roles.len() >= 2).then_some(Axiom::DisjointObjectProperties(roles)))
         }
         // ── FunctionalDataProperty: gated lowering (RUSTDL_DATA_PROPERTIES) ──
         // Functional(dp) → FunctionalRole(dp-role): ≤1 value via functional-merge (gate-ON).
@@ -2950,10 +2984,29 @@ pub fn convert_ontology<A: ForIRI>(
     if conversion_cut() {
         return Ok(InternalOntology::new());
     }
-    let mut components: Vec<&AnnotatedComponent<A>> = src.iter().collect();
-    // `sort_unstable`, not `sort`: the elements come from a `HashSet` so they are
-    // pairwise distinct, which makes stability unobservable — the resulting order is
-    // IDENTICAL. `sort` is a stable driftsort that allocates a scratch buffer; the
+    // #538: the operands of n-ary axioms are a set. Each component is canonicalised
+    // (repeated operands removed, see `set_operands`) BEFORE the sort, so an ontology
+    // that repeats an operand converts to exactly the IR of the one that does not.
+    // Changed components live in `canonical`; the rest stay borrowed from `src`.
+    let mut collapsed = crate::CollapsedOperands::default();
+    let mut canonical: Vec<AnnotatedComponent<A>> = Vec::new();
+    let mut components: Vec<&AnnotatedComponent<A>> = Vec::new();
+    for ac in src {
+        match crate::set_operands::canonical(&ac.component) {
+            None => components.push(ac),
+            Some(component) => {
+                collapsed.record(&component);
+                canonical.push(AnnotatedComponent {
+                    component,
+                    ann: ac.ann.clone(),
+                });
+            }
+        }
+    }
+    components.extend(canonical.iter());
+    // `sort_unstable`, not `sort`: after the `dedup` below the elements are pairwise
+    // distinct (a `HashSet` plus the canonicalised ones), which makes stability
+    // unobservable — the resulting order is IDENTICAL. `sort` is a stable driftsort that allocates a scratch buffer; the
     // unstable pattern-defeating quicksort does not.
     //
     // MEASURED NEUTRAL, and kept for the allocation and the note below rather than for
@@ -3003,7 +3056,11 @@ pub fn convert_ontology<A: ForIRI>(
     } else {
         components.sort_unstable();
     }
+    // A canonicalised component can equal another one of the set (`DisjointClasses(C D)`
+    // next to `DisjointClasses(C C D)`); equal elements are adjacent under either order.
+    components.dedup();
     let mut out = InternalOntology::new();
+    out.collapsed_operands = collapsed;
     let salvage = salvage_dropped_conjuncts_enabled();
     for (i, ac) in components.into_iter().enumerate() {
         // At `i == 0` this repeats the check before the sort; harmless, and it

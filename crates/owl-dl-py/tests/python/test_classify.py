@@ -332,3 +332,27 @@ def test_depth_limit_cut_is_warned_as_such():
     ]
     assert any("search-depth limit" in m for m in msgs), msgs
     assert not any("exceeded the timeout" in m for m in msgs), msgs
+
+
+_DUP = b"""Prefix(:=<http://ex/#>)
+Ontology(<http://ex/o>
+Declaration(Class(:C)) Declaration(Class(:D))
+Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+DisjointClasses(:C :C) SubClassOf(:D :C)
+DifferentIndividuals(:a :a :b)
+)
+"""
+
+
+def test_collapsed_operands_reads_repeats_as_a_set():
+    # #538: `DisjointClasses(:C :C)` says nothing (C and D stay satisfiable) and
+    # `DifferentIndividuals(:a :a :b)` says only a != b (still consistent).
+    r = _classify_unbounded(_DUP)
+    assert r.collapsed_operands == (2, 1)
+    assert not r.inconsistent
+    assert r.unsatisfiable == []
+
+
+def test_collapsed_operands_is_zero_without_repeats():
+    r = _classify_unbounded(_EL)
+    assert r.collapsed_operands == (0, 0)

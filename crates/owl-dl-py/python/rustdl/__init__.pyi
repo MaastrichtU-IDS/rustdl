@@ -56,6 +56,14 @@ class Classification:
         `complete`, which only says no pair timed out."""
         ...
     @property
+    def collapsed_operands(self) -> tuple[int, int]:
+        """`(axioms, vacuous)`: n-ary axioms that repeated an operand, and those
+        of them left with one operand (#538). The operands are a set (OWL 2
+        Structural Specification §2.1): `DisjointClasses(:C :C)` says nothing.
+        Never counted against `completeness_guaranteed`; the same counts as
+        `classify --json`'s `collapsed_operands`."""
+        ...
+    @property
     def prep_timed_out(self) -> bool:
         """True iff the global deadline ran out during preparation, so only a
         partial saturation closure is reported and consistency was not fully

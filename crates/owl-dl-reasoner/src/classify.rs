@@ -757,6 +757,12 @@ pub struct ClassificationStats {
     /// Stamped by the two internal classify entry points, so no result path
     /// can forget it.
     pub dropped: owl_dl_core::DroppedAxioms,
+    /// #538: n-ary axioms whose repeated operands conversion collapsed (their operands
+    /// are a set; `owl_dl_core::set_operands`). Not a give-up and not in `dropped`: under
+    /// the set reading nothing is lost. Under a list reading each could add positives
+    /// (`DisjointClasses(C C)` would make `C` unsat), which is why it is reported.
+    /// Stamped next to `dropped`.
+    pub collapsed_operands: owl_dl_core::CollapsedOperands,
     /// Pairwise subsumption queries answered `yes` by saturation's
     /// EL closure (no tableau call issued).
     pub saturation_subsumption_hits: usize,
@@ -1855,6 +1861,7 @@ pub(crate) fn classify_internal_with_timeout(
     crate::take_consistency_trusted_wedge();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
+    c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
     c.stats.consistency_undetermined = crate::take_consistency_undetermined()
@@ -4403,6 +4410,7 @@ pub(crate) fn classify_top_down_internal_capturing(
     let mut c =
         classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline, capture)?;
     c.stats.dropped = internal.dropped.clone();
+    c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
     c.stats.consistency_undetermined = crate::take_consistency_undetermined()

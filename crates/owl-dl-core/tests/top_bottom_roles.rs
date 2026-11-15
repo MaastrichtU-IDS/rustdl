@@ -104,6 +104,25 @@ fn a_negative_assertion_on_an_ordinary_role_adds_nothing() {
     assert_eq!(has_top_bot(&o), (false, false));
 }
 
+/// The empty-role closure goes DOWN only, and never through a chain's legs (Fable's code
+/// review, finding 1). With top interned these would turn a wrong B into `⊤ ⊑ ⊥`:
+/// - `top ⊑ r`, `bottom ⊑ r`: bottom below a universal role empties nothing above it;
+/// - `top ⊑ r`, `r ∘ s ⊑ bottom`: only the composition is empty, not `r` (it empties `s`);
+/// - `top ⊑ r`, `s ⊑ r`, `s ⊑ bottom`: `s` is empty, its super-role `r` is not.
+#[test]
+fn the_empty_role_closure_goes_down_only_and_skips_chain_legs() {
+    for rbox in [
+        "SubObjectPropertyOf(owl:topObjectProperty :r) SubObjectPropertyOf(owl:bottomObjectProperty :r)",
+        "SubObjectPropertyOf(owl:topObjectProperty :r) \
+         SubObjectPropertyOf(ObjectPropertyChain(:r :s) owl:bottomObjectProperty)",
+        "SubObjectPropertyOf(owl:topObjectProperty :r) SubObjectPropertyOf(:s :r) \
+         SubObjectPropertyOf(:s owl:bottomObjectProperty)",
+    ] {
+        let o = convert(&format!("{BASE} {rbox}"));
+        assert_eq!(has_top_bot(&o), (false, false), "{rbox}");
+    }
+}
+
 /// `bottom ⊑ r` makes nothing universal or empty except bottom itself; only A1 fires.
 #[test]
 fn bottom_below_an_ordinary_role_adds_only_its_own_emptiness() {

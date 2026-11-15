@@ -114,10 +114,15 @@ pub struct InternalOntology {
     /// `top_bottom_roles`): `∃owl:bottomObjectProperty.⊤ ⊑ ⊥`, the same for
     /// `owl:bottomDataProperty`, and `⊤ ⊑ ⊥` when a universal role is told empty or
     /// negatively asserted. Each one is also in `axioms`. A surface that reports or
-    /// cites the SOURCE's axioms (a proof's provenance, `verify-el`'s axiom count) must
-    /// not present these as the user's; it reports them as built-in facts. Empty unless
-    /// the source mentions `owl:bottomObjectProperty` / `owl:bottomDataProperty`, or
-    /// tells a universal role empty, or negates an assertion on one.
+    /// cites the SOURCE's axioms must not present these as the user's: `prove` leaves
+    /// them out of its axiom count and labels them, `prove --json` lists them under
+    /// `builtin_axioms`, and `verify-el` labels a violation on one. (`verify-el`'s
+    /// `axioms_checked` is a count of IR axioms checked against the model, built-ins
+    /// included, like every other derived axiom conversion adds.) `convert_back` writes
+    /// them as ordinary axioms; re-converting its output would fold them into the
+    /// source's (it has no non-test caller today). Empty unless the source mentions
+    /// `owl:bottomObjectProperty` / `owl:bottomDataProperty`, or tells a universal role
+    /// empty, or negates an assertion on one.
     pub builtin: Vec<Axiom>,
 }
 

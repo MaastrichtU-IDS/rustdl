@@ -129,6 +129,23 @@ const NEGATIVE: &[(&str, &str)] = &[
         "SubObjectPropertyOf(ObjectPropertyChain(owl:topObjectProperty :s) :r) \
          SubObjectPropertyOf(:r owl:bottomObjectProperty) ClassAssertion(:C :a)",
     ),
+    // The empty-role closure goes down only and skips chain legs, with top interned
+    // (Fable's code review, finding 1): none of these is a contradiction.
+    (
+        "n8",
+        "SubObjectPropertyOf(owl:topObjectProperty :r) SubObjectPropertyOf(owl:bottomObjectProperty :r) \
+         ClassAssertion(:C :a)",
+    ),
+    (
+        "n9",
+        "SubObjectPropertyOf(owl:topObjectProperty :r) \
+         SubObjectPropertyOf(ObjectPropertyChain(:r :s) owl:bottomObjectProperty) ClassAssertion(:C :a)",
+    ),
+    (
+        "n10",
+        "SubObjectPropertyOf(owl:topObjectProperty :r) SubObjectPropertyOf(:s :r) \
+         SubObjectPropertyOf(:s owl:bottomObjectProperty) ClassAssertion(:C :a)",
+    ),
     // owl:topDataProperty is allowed only as a super-property in OWL 2 DL; both oracles
     // call this consistent, so no contradiction is stated.
     (

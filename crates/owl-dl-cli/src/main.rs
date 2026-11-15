@@ -3079,7 +3079,7 @@ fn run() -> Result<()> {
                         // left out of the count and cited as built-in facts.
                         println!(
                             "# axiom provenance ({} axioms in ontology):",
-                            internal.axioms.len() - internal.builtin.len()
+                            internal.axioms.len().saturating_sub(internal.builtin.len())
                         );
                         for idx in all_refs {
                             if let Some(ax) = internal.axioms.get(idx) {

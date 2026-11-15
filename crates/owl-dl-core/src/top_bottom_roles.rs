@@ -29,6 +29,12 @@
 //! - **A4.** `⊤ ⊑ ⊥` when an object property assertion on a universal role is negated:
 //!   `¬u(a, b)` contradicts `u = Δ × Δ`.
 //!
+//! Object and data properties share one role table, and conversion has no punning check.
+//! So an IRI used as both an object and a data property (outside OWL 2 DL) is one role
+//! here: `SubObjectPropertyOf(owl:topObjectProperty :p)` with
+//! `SubDataPropertyOf(:p owl:bottomDataProperty)` yields `⊤ ⊑ ⊥`. That conflation predates
+//! this module.
+//!
 //! Nothing else about the universal role is implemented: it is otherwise an ordinary role
 //! (a sound under-approximation; its signal is #539's PR2, its semantics #543). The added
 //! axioms are recorded in [`InternalOntology::builtin`] so that surfaces citing the

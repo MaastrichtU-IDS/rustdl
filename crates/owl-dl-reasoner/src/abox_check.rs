@@ -679,6 +679,7 @@ mod tests {
             concepts: ConceptPool::default(),
             axioms: Vec::new(),
             dropped: owl_dl_core::DroppedAxioms::default(),
+            collapsed_operands: owl_dl_core::CollapsedOperands::default(),
         };
         let prepared =
             crate::PreparedOntology::from_internal(internal).expect("empty ontology prepares");

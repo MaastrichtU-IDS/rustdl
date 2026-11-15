@@ -189,6 +189,33 @@ pub(crate) struct ClassifyJson {
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
     pub(crate) dropped: BTreeMap<String, u64>,
+    /// #538: n-ary axioms (`DisjointClasses`, `DifferentIndividuals`, `DisjointUnion`,
+    /// `Disjoint`/`EquivalentObjectProperties`, …) that repeated an operand. Their operands
+    /// are a SET (OWL 2 Structural Specification §2.1), so a repeat says nothing:
+    /// `DisjointClasses(:C :C)` does not make `C` unsat, `DifferentIndividuals(:a :a :b)`
+    /// says only `a ≠ b`. `vacuous` counts those left with one operand, which say nothing
+    /// at all (a one-member `DisjointUnion(D C)` still says `D ≡ C` and is not counted).
+    /// Not an under-approximation under the set reading, so a SEPARATE field from
+    /// `dropped`, and it never affects `completeness_guaranteed`. Under a list reading
+    /// these axioms could add answers (both Konclude and `HermiT` keep the repeats); this
+    /// field is how a caller sees that. `{"axioms": 0, "vacuous": 0}` when none.
+    pub(crate) collapsed_operands: CollapsedOperandsJson,
+}
+
+/// `collapsed_operands` in `classify --json` and `consistent --json` (#538).
+#[derive(Serialize, Clone, Copy, Default)]
+pub(crate) struct CollapsedOperandsJson {
+    pub(crate) axioms: u64,
+    pub(crate) vacuous: u64,
+}
+
+impl From<owl_dl_core::CollapsedOperands> for CollapsedOperandsJson {
+    fn from(c: owl_dl_core::CollapsedOperands) -> Self {
+        Self {
+            axioms: c.axioms,
+            vacuous: c.vacuous,
+        }
+    }
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -224,6 +251,9 @@ pub(crate) struct ConsistentJson {
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) dropped: BTreeMap<String, u64>,
+    /// #538: as in `classify --json`. A repeated operand of `DifferentIndividuals` or
+    /// `DisjointClasses` no longer makes the ontology inconsistent.
+    pub(crate) collapsed_operands: CollapsedOperandsJson,
 }
 
 /// One entry of `VerifyElJson::violations`.
@@ -575,6 +605,7 @@ pub(crate) fn build_classify_json(
         equivalent_groups: groups,
         direct_subsumptions,
         dropped,
+        collapsed_operands: stats.collapsed_operands.into(),
     }
 }
 
@@ -604,6 +635,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         equivalent_groups: Vec::new(),
         direct_subsumptions: Vec::new(),
         dropped: BTreeMap::new(),
+        collapsed_operands: CollapsedOperandsJson::default(),
     }
 }
 
@@ -629,6 +661,7 @@ pub(crate) fn build_consistent_json(
     wedge_clauses_refused: usize,
     no_verdict: bool,
     dropped: BTreeMap<String, u64>,
+    collapsed_operands: CollapsedOperandsJson,
 ) -> ConsistentJson {
     ConsistentJson {
         schema_version: SCHEMA_VERSION,
@@ -638,6 +671,7 @@ pub(crate) fn build_consistent_json(
         wedge_clauses_refused,
         no_verdict,
         dropped,
+        collapsed_operands,
     }
 }
 

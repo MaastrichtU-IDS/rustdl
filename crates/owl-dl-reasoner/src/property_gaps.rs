@@ -131,7 +131,8 @@ fn is_data_oneofish<A: ForIRI>(dr: &DataRange<A>) -> bool {
 }
 
 fn is_single_value<A: ForIRI>(dr: &DataRange<A>) -> bool {
-    matches!(dr, DataRange::DataOneOf(v) if v.len() == 1)
+    // #538: `DataOneOf("1" "1")` is the single value `{"1"}`; its members are a set.
+    matches!(dr, DataRange::DataOneOf(v) if owl_dl_core::set_operands::distinct_len(v) == 1)
 }
 
 fn walk<A: ForIRI>(ce: &CE<A>, f: &mut CeFacts) {
@@ -221,7 +222,8 @@ fn walk<A: ForIRI>(ce: &CE<A>, f: &mut CeFacts) {
 /// equates whatever it classifies with that individual.
 fn has_singleton_nominal<A: ForIRI>(ce: &CE<A>) -> bool {
     match ce {
-        CE::ObjectOneOf(v) => v.len() == 1,
+        // #538: `ObjectOneOf(:a :a)` is the singleton `{a}`; its members are a set.
+        CE::ObjectOneOf(v) => owl_dl_core::set_operands::distinct_len(v) == 1,
         CE::ObjectIntersectionOf(v) => v.iter().any(has_singleton_nominal),
         _ => false,
     }
@@ -313,7 +315,7 @@ pub(crate) fn gaps_with<A: ForIRI>(
     let mut bounded_obj: BTreeSet<Signed> = BTreeSet::new();
     let mut bounded_data: BTreeSet<String> = BTreeSet::new();
 
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         match &ac.component {
             C::SubClassOf(ax) => {
                 walk(&ax.sub, &mut f);
@@ -337,21 +339,24 @@ pub(crate) fn gaps_with<A: ForIRI>(
                 if thing && ax.0.iter().any(is_oneofish) {
                     top_is_nominal = true;
                 }
-                if ax.0.iter().any(has_singleton_nominal) {
+                // #538: a one-operand `EquivalentClasses({a})` equates nothing.
+                if ax.0.len() >= 2 && ax.0.iter().any(has_singleton_nominal) {
                     singleton_nominal_axiom = true;
                 }
             }
+            // #538: these components are canonical (`set_operands::components`), so one
+            // operand left means the axiom says nothing and is no disjointness source.
             C::DisjointClasses(ax) => {
-                disjoint_source = true;
+                disjoint_source |= ax.0.len() >= 2;
                 ax.0.iter().for_each(|c| walk(c, &mut f));
             }
             C::DisjointUnion(ax) => {
-                disjoint_source = true;
+                disjoint_source |= ax.1.len() >= 2;
                 ax.1.iter().for_each(|c| walk(c, &mut f));
             }
-            C::DifferentIndividuals(_) => {
-                disjoint_source = true;
-                abox = true;
+            C::DifferentIndividuals(ax) => {
+                disjoint_source |= ax.0.len() >= 2;
+                abox |= ax.0.len() >= 2;
             }
             C::SubObjectPropertyOf(ax) => {
                 let sup = signed(&ax.sup);
@@ -400,10 +405,10 @@ pub(crate) fn gaps_with<A: ForIRI>(
             {
                 data_top_bottom = true;
             }
-            C::DisjointObjectProperties(ax) => {
+            C::DisjointObjectProperties(ax) if ax.0.len() >= 2 => {
                 obj_disjoint_sets.push(ax.0.iter().map(signed).collect());
             }
-            C::DisjointDataProperties(ax) => {
+            C::DisjointDataProperties(ax) if ax.0.len() >= 2 => {
                 data_disjoint_sets.push(ax.0.iter().map(|d| d.0.as_ref().to_string()).collect());
             }
             C::SymmetricObjectProperty(ax) => {
@@ -521,7 +526,8 @@ pub(crate) fn gaps_with<A: ForIRI>(
                     .insert(ind_key(&ax.from));
             }
             C::SameIndividual(ax) => {
-                abox = true;
+                // #538: one operand left (`SameIndividual(a a)`) asserts nothing.
+                abox |= ax.0.len() >= 2;
                 if ax.0.iter().any(|i| matches!(i, Individual::Anonymous(_))) {
                     anon_individual = true;
                 }

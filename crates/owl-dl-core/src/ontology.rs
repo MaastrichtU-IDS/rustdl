@@ -109,6 +109,11 @@ pub struct InternalOntology {
     /// introduced this field is inert (produces the identical `axioms` set)
     /// when nothing is dropped.
     pub dropped: DroppedAxioms,
+    /// #538: n-ary axioms whose repeated operands were collapsed while reading (their
+    /// operands are a set). Kept apart from `dropped`: no content is lost under the set
+    /// reading, so completeness is unaffected; a caller reading the operands as a list
+    /// can see which answers that reading would add.
+    pub collapsed_operands: crate::CollapsedOperands,
 }
 
 impl InternalOntology {

@@ -306,6 +306,49 @@ All notable changes to rustdl are documented here. Format is based on
     - the one realize rescue (ore_ont_9540): 0 FP against HermiT, with its misses signalled;
     - wine per-query FP gate: 0 FP.
   - **#404.** `ore_ont_9540` classifies in 2.4 CPU-s instead of 33.6 at the default budget, and 3.3 instead of 2,603.5 at `--pair-timeout-ms 1000`, with identical rows. The wedge now decides its consistency, so `relies_on_trusted_consistency: true` and `trusted_sat_refutations: 2` (both were off before) carry the usual `trust_sat` caveat.
+- **The operands of n-ary axioms are read as a set (#538).** horned-owl keeps them as a list,
+  and rustdl read a repeat as a second operand. `DifferentIndividuals(:a :a)` became `a ≠ a`:
+  the ontology was reported inconsistent (both Konclude and HermiT say consistent).
+  `DisjointDataProperties(:p :p)` plus one `p` value also became inconsistent. The property
+  surfaces reported a sub-role of `r` disjoint from `r` for `DisjointObjectProperties(:r :r)`
+  (and `(r, r)` with `RUSTDL_PROPERTY_DISJOINT_DOWN=0`), with a false empty-property gap.
+  `DisjointClasses(:C :C)` made `C` unsat, and `DisjointUnion(:D :C :C)` made `C` and `D`
+  unsat. The OWL 2 Structural Specification (§2.1) makes these operands a set, so a repeat
+  says nothing.
+  - **One definition for every reader:** `owl_dl_core::set_operands` removes an operand
+    structurally equal to an earlier one. "Structurally equal" compares the operands of nested
+    `ObjectIntersectionOf` / `ObjectUnionOf` / `*OneOf` / data ranges as sets; operands that
+    only denote the same thing (`A` and `A ⊓ owl:Thing`, `"1"` and `"01"`) stay apart.
+    `convert_ontology` canonicalises every component before it converts them, and every module
+    whose answer depends on how many operands a raw horned-owl axiom has (the data-axiom pass,
+    property disjointness, the property gaps and closure, the individual and told-∃ scans, the
+    laconic splitter) goes through `set_operands::components`. The raw readers left as they
+    are (`class_expr_query`, `diagnose`, `oracle_diff`, `justify`'s locality scan) are blind to
+    multiplicity.
+  - An axiom left with one operand says nothing; its entities stay in the signature. A
+    one-member `DisjointUnion(D, C)` is lowered to `D ≡ C`.
+  - **The property gaps** read `ObjectOneOf(:a :a)` as the singleton `{a}` (its
+    `data-derived-equality` gap was missing) and `DataOneOf("1" "1")` as a single value. A
+    one-operand axiom is no longer a gap source: `Disjoint(r r)` with a sub-role raised
+    `object-disjoint-inheritance` on the told arm, and a one-operand `DisjointClasses`,
+    `DisjointUnion`, `DifferentIndividuals`, `SameIndividual` or `EquivalentClasses({a})` could
+    raise `object-class-constraint` or the data-value gaps.
+  - **`collapsed_operands {axioms, vacuous}`** in `classify --json` and `consistent --json`,
+    on `ClassificationStats` and on the Python `Classification`, plus a stderr note, so a caller
+    reading the operands as a list can see what changed. It is not `dropped` and never affects
+    `completeness_guaranteed`.
+  - `justify same a a` keeps its answer (entailed, no axioms) through a guard; queries keep their
+    pairwise reading (`different a a` asks `a ≠ a`, `disjoint C C` asks whether `C` is unsat).
+  - **Collapsing is the safe direction under either reading:** under the set reading the old
+    answers were false positives; under a list reading collapsing only loses positives, and
+    `collapsed_operands` shows it.
+  - With `RUSTDL_DATA_PROPERTIES=0`, `DisjointDataProperties` is still dropped (and counted in
+    `dropped`) whatever its operands, as before.
+  - **For oracle comparisons:** both Konclude and HermiT keep the repeats on `DisjointClasses` and
+    `DisjointUnion` (they say `C` unsat for `DisjointClasses(:C :C)`), so a MISSED net shows these
+    as rustdl-only misses BY DESIGN. Do not "fix" them back. No ORE file has a repeated operand
+    (0 of the 906 readable files that contain one of these kinds), so the corpus nets are not
+    affected.
 - **realize, instance, instances and instances-expr no longer take an ABox made inconsistent by a
   `NegativeObjectPropertyAssertion` as consistent (#536).** Their saturation fast route admitted
   negative object property assertions and then ignored them. So `r(a, b)` with `¬r(a, b)` (or the

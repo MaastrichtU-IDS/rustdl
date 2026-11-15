@@ -378,9 +378,10 @@ fn one_operand_axioms_are_no_gap_source() {
         format!("{g:?}")
     };
     let has = |body: &str, kind: &str| gaps(body).contains(kind);
-    // Told class disjointness with two object-constrained classes: object-class-constraint.
+    // Told class disjointness with two object-constrained (∀) properties:
+    // object-class-constraint.
     let base =
-        "SubClassOf(:C ObjectSomeValuesFrom(:r :Q)) SubClassOf(:D ObjectSomeValuesFrom(:s :Q))";
+        "SubClassOf(:C ObjectAllValuesFrom(:r :Q)) SubClassOf(:D ObjectAllValuesFrom(:s :Q))";
     assert!(
         has(
             &format!("{base} DisjointClasses(:C :D)"),

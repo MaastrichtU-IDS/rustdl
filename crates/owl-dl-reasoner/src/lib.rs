@@ -9318,6 +9318,7 @@ fn abox_components_inconsistent(
             concepts: internal.concepts.clone(),
             axioms: idx.iter().map(|&i| internal.axioms[i].clone()).collect(),
             dropped: internal.dropped.clone(),
+            builtin: internal.builtin.clone(),
         };
         let started = std::time::Instant::now();
         let verdict = {

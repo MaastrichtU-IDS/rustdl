@@ -480,11 +480,18 @@ pub fn verify(
             AxiomVerdict::Holds => {}
             AxiomVerdict::Fails { witness, note } => {
                 let rendered = render_witness(&model, internal, &witness);
+                // #539: an axiom conversion added from the OWL semantics is not the
+                // source's; say so instead of presenting it as a user axiom.
+                let builtin = if internal.builtin.contains(ax) {
+                    "built-in (OWL semantics, not in the source): "
+                } else {
+                    ""
+                };
                 violations.push(Violation {
                     axiom_index: index,
                     axiom: ax.clone(),
                     witness,
-                    note: format!("{note} [{rendered}]"),
+                    note: format!("{builtin}{note} [{rendered}]"),
                 });
             }
             AxiomVerdict::Unresolved(reason) => unresolved.push(reason),

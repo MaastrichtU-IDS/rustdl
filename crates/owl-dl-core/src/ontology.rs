@@ -109,6 +109,16 @@ pub struct InternalOntology {
     /// introduced this field is inert (produces the identical `axioms` set)
     /// when nothing is dropped.
     pub dropped: DroppedAxioms,
+    /// Axioms that conversion added because the OWL 2 Direct Semantics makes them
+    /// hold in every interpretation, not because the source states them (#539,
+    /// `top_bottom_roles`): `∃owl:bottomObjectProperty.⊤ ⊑ ⊥`, the same for
+    /// `owl:bottomDataProperty`, and `⊤ ⊑ ⊥` when a universal role is told empty or
+    /// negatively asserted. Each one is also in `axioms`. A surface that reports or
+    /// cites the SOURCE's axioms (a proof's provenance, `verify-el`'s axiom count) must
+    /// not present these as the user's; it reports them as built-in facts. Empty unless
+    /// the source mentions `owl:bottomObjectProperty` / `owl:bottomDataProperty`, or
+    /// tells a universal role empty, or negates an assertion on one.
+    pub builtin: Vec<Axiom>,
 }
 
 impl InternalOntology {

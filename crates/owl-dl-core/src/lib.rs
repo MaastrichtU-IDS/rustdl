@@ -28,6 +28,7 @@ pub mod residual_trigger;
 pub mod role_hierarchy;
 pub mod told;
 pub mod told_definition_match;
+pub mod top_bottom_roles;
 pub mod transform;
 pub mod vocab;
 

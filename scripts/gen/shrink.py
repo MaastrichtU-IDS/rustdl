@@ -17,6 +17,9 @@ A subset still fails iff ALL of these hold:
     "two stable runs", which is not stability evidence.
 `--kind arm-fail:<arm>` instead shrinks an arm that errors out (stderr contains
 `--witness`) on input both peers agree on; it is not a scored kind.
+`--realize` shrinks a finding of a run made with `run.py run --realize` (the realize arms;
+a type-FP witness is `<individual>|<class>`): every subset is re-augmented with
+`N_x ≡ {x}` for the peers, and rustdl runs on the subset itself, as in the run.
 A subset where a peer fails or the peers disagree counts as NOT failing, so the axiom
 is kept: the conservative direction.
 """
@@ -58,7 +61,8 @@ class Pred:
         text = render(head or self.head, axioms)
         path = self.work / f"s-{hashlib.sha256(text.encode()).hexdigest()[:16]}.ofn"
         path.write_text(text)
-        ora = orc.oracle(path, self.a.oracle_cache)
+        ora = run.oracle_for(path, text, self.a.oracle_cache, self.a.realize,
+                             self.work / "augmented")
         if self.a.kind.startswith("peer:"):
             assert self.a.kind == "peer:konclude-consistent", "the only peer predicate"
             # Not a rustdl finding: a peer disagreement to record as an oracle defect.
@@ -75,7 +79,8 @@ class Pred:
         if self.a.oracle_consistent is not None and \
                 ora["answer"]["consistent"] != (self.a.oracle_consistent == "true"):
             return False, None
-        arms = {arm: run.run_arm(self.a.bin, arm, path, self.env) for arm in run.ARMS}
+        arms = {arm: run.run_arm(self.a.bin, arm, path, self.env)
+                for arm in run.arms_for(self.a.realize, self.a.sat)}
         if self.a.kind.startswith("arm-fail:"):
             # Not a scored kind: an arm that errors out (e.g. `NoVerdict`, documented as
             # a bug indicator) on input both peers decide. `--witness` is a substring
@@ -85,7 +90,13 @@ class Pred:
             return (hit, {"oracle": ora, "arms": arms, "path": str(path),
                           "finding": {"kind": self.a.kind, "witness": self.a.witness}}
                     if hit else None)
-        found = [f for f in run.score(ora["answer"], orc.declared_classes(text), arms)
+        classes = orc.declared_classes(text)
+        scored = run.score(ora["answer"], classes, arms)
+        if self.a.realize:
+            scored += run.score_types(ora["types"], ora["answer"]["consistent"], classes, arms)
+        if self.a.sat:
+            scored += run.score_sat(ora["answer"], arms[run.SAT_ARM])
+        found = [f for f in scored
                  if f["kind"] == self.a.kind and f["witness"] == self.a.witness
                  and (self.a.tier is None or f["tier"] == self.a.tier)]
         if not found:
@@ -150,6 +161,11 @@ def main():
                          "a budget-cutting env, e.g. M7's); recorded in record.json")
     ap.add_argument("--oracle-consistent", choices=["true", "false"],
                     help="also require the peers' agreed consistency verdict")
+    ap.add_argument("--sat", action="store_true",
+                    help="the finding came from a --sat run (the per-class sat arm)")
+    ap.add_argument("--realize", action="store_true",
+                    help="the finding came from a --realize run: augment every subset for the "
+                         "peers and run the realize arms too")
     a = ap.parse_args()
     env = run.parse_env(a.env)
     text = Path(a.case).read_text()
@@ -182,7 +198,8 @@ def main():
         "axioms_before": len(body), "axioms_after": len(core), "predicate_calls": test.calls,
         "peers": {"verdict": ora["verdict"], "answer": ora["answer"],
                   "konclude": ora["konclude"], "hermit": ora["hermit"]},
-        "rustdl": {arm: {"cmd": " ".join([a.bin, *run.ARMS[arm], "minimal.ofn"]),
+        "rustdl": {arm: {"cmd": (f"{a.bin} sat minimal.ofn <each class>" if arm == run.SAT_ARM
+                                 else " ".join([a.bin, *run.ALL_ARMS[arm], "minimal.ofn"])),
                          "status": r.get("status"), "json": r.get("json")}
                    for arm, r in info["arms"].items()},
         "finding": info["finding"],

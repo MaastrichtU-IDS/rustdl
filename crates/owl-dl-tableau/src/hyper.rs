@@ -8848,7 +8848,8 @@ mod tests {
                 head: vec![Atom::Class(a, 1)],
             },
         ];
-        for incremental in [true] {
+        {
+            let incremental = true;
             let (r_on, on) = decide_480(&clauses, true, incremental, true, 10_000, None, false);
             let (r_off, off) = decide_480(&clauses, false, incremental, true, 10_000, None, false);
             assert_eq!(r_on, HyperResult::Sat, "incremental={incremental}");
@@ -8892,7 +8893,8 @@ mod tests {
                 head: vec![],
             },
         ];
-        for incremental in [true] {
+        {
+            let incremental = true;
             let (res, eng) = decide_480(
                 &clauses,
                 true,

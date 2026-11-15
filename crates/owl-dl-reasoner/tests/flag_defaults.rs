@@ -275,6 +275,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT",
+            owl_dl_tableau::wedge_nominal_disjunction_wait_enabled,
+            true,
+        ),
+        (
             "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
             owl_dl_reasoner::property_asymmetric_disjoint_enabled,
             true,

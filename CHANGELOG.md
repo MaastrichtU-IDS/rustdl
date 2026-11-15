@@ -295,6 +295,17 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **The wedge no longer spends its deadline on an open nominal disjunction (#480).** A node that carries `C` with `C ⊑ {a} ⊔ {b}` used to build its successors before the search picked a disjunct. The pick then moved the node into a nominal, the successors had to be re-matched, and the loop could run to the deadline: generated case 939's consistency wedge returned `Stalled`, and the inconsistency pre-check fell back to the main tableau. With `RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts), generation at such a node is **parked**, and the clause is re-tested whenever the fixpoint goes quiet.
+  - **Soundness.** A leaf rule makes sure no `Sat` is reached while a clause is parked: it falls back to #465 B's order and fires the clause. Its `park_leaf_fallback` counter is 0 on every census file.
+  - **Where it parks.** Only in the incremental fixpoint with the #137 net, which is every production engine by default. The non-incremental drain never parks, since it has no net to re-fire a blocked-then-unblocked node's clause (Fable).
+  - **Evidence:**
+    - census: 0 search-statistics differences on the 2,800 non-parking files;
+    - the 1,920-ontology sweep: 0 content changes, CPU −0.69%;
+    - the MISSED net: FP 0;
+    - the #430 M2 realize identity: 0 DIFFER on 206 files;
+    - the one realize rescue (ore_ont_9540): 0 FP against HermiT, with its misses signalled;
+    - wine per-query FP gate: 0 FP.
+  - **#404.** `ore_ont_9540` classifies in 2.4 CPU-s instead of 33.6 at the default budget, and 3.3 instead of 2,603.5 at `--pair-timeout-ms 1000`, with identical rows. The wedge now decides its consistency, so `relies_on_trusted_consistency: true` and `trusted_sat_refutations: 2` (both were off before) carry the usual `trust_sat` caveat.
 - **realize, instance, instances and instances-expr no longer take an ABox made inconsistent by a
   `NegativeObjectPropertyAssertion` as consistent (#536).** Their saturation fast route admitted
   negative object property assertions and then ignored them. So `r(a, b)` with `¬r(a, b)` (or the

@@ -320,15 +320,19 @@ All notable changes to rustdl are documented here. Format is based on
     `ObjectIntersectionOf` / `ObjectUnionOf` / `*OneOf` / data ranges as sets; operands that
     only denote the same thing (`A` and `A ⊓ owl:Thing`, `"1"` and `"01"`) stay apart.
     `convert_ontology` canonicalises every component before it converts them, and every module
-    that reads these axioms from the raw horned-owl ontology (the data-axiom pass, property
-    disjointness, the property gaps and closure, the individual and told-∃ scans, the laconic
-    splitter) goes through `set_operands::components`.
+    whose answer depends on how many operands a raw horned-owl axiom has (the data-axiom pass,
+    property disjointness, the property gaps and closure, the individual and told-∃ scans, the
+    laconic splitter) goes through `set_operands::components`. The raw readers left as they
+    are (`class_expr_query`, `diagnose`, `oracle_diff`, `justify`'s locality scan) are blind to
+    multiplicity.
   - An axiom left with one operand says nothing; its entities stay in the signature. A
     one-member `DisjointUnion(D, C)` is lowered to `D ≡ C`.
   - **The property gaps** read `ObjectOneOf(:a :a)` as the singleton `{a}` (its
-    `data-derived-equality` gap was missing), and a one-operand disjointness is no longer a gap
-    source (`Disjoint(r r)` with a sub-role raised `object-disjoint-inheritance` on the told
-    arm).
+    `data-derived-equality` gap was missing) and `DataOneOf("1" "1")` as a single value. A
+    one-operand axiom is no longer a gap source: `Disjoint(r r)` with a sub-role raised
+    `object-disjoint-inheritance` on the told arm, and a one-operand `DisjointClasses`,
+    `DisjointUnion`, `DifferentIndividuals`, `SameIndividual` or `EquivalentClasses({a})` could
+    raise `object-class-constraint` or the data-value gaps.
   - **`collapsed_operands {axioms, vacuous}`** in `classify --json` and `consistent --json`,
     on `ClassificationStats` and on the Python `Classification`, plus a stderr note, so a caller
     reading the operands as a list can see what changed. It is not `dropped` and never affects
@@ -338,6 +342,8 @@ All notable changes to rustdl are documented here. Format is based on
   - **Collapsing is the safe direction under either reading:** under the set reading the old
     answers were false positives; under a list reading collapsing only loses positives, and
     `collapsed_operands` shows it.
+  - With `RUSTDL_DATA_PROPERTIES=0`, `DisjointDataProperties` is still dropped (and counted in
+    `dropped`) whatever its operands, as before.
   - **For oracle comparisons:** both Konclude and HermiT keep the repeats on `DisjointClasses` and
     `DisjointUnion` (they say `C` unsat for `DisjointClasses(:C :C)`), so a MISSED net shows these
     as rustdl-only misses BY DESIGN. Do not "fix" them back. No ORE file has a repeated operand

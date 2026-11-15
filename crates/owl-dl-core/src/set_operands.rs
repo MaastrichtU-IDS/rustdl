@@ -8,9 +8,13 @@
 //! operand structurally equal to an earlier one, so every reader sees the set.
 //!
 //! **One definition for every reader.** [`convert_ontology`](crate::convert::convert_ontology)
-//! canonicalises each component before it sorts and converts them, and every module that
-//! reads these axiom kinds from the raw horned-owl ontology iterates [`components`]
-//! instead of the ontology itself. A reader that bypasses both reads the list again.
+//! canonicalises each component before it sorts and converts them, and every module whose
+//! answer depends on how many operands a raw horned-owl axiom has iterates [`components`]
+//! instead of the ontology itself (the data-axiom pass, property disjointness, gaps and
+//! closure, the reasoner's individual and told-∃ scans, laconic's splitter). A reader that
+//! bypasses both reads the list again. Readers that still read the raw list are
+//! multiplicity-blind: `class_expr_query`, `diagnose`, `oracle_diff`, and `justify`'s
+//! locality and entity scans (a repeat only makes `is_bot_local` keep more).
 //!
 //! **Structural equality** is the specification's: two operands are equal when they are
 //! the same expression, where the operands of a nested set-valued constructor
@@ -51,8 +55,9 @@ const PAIRWISE_MAX: usize = 16;
 pub struct CollapsedOperands {
     /// Axioms that had a repeated operand.
     pub axioms: u64,
-    /// Of those, the axioms left with ONE operand, which therefore say nothing (a
-    /// one-member `DisjointUnion`, which still says `D ≡ C`, is not counted here).
+    /// Of those, the axioms left with ONE operand, which therefore say nothing. Not
+    /// counted here: a one-member `DisjointUnion`, which still says `D ≡ C`, and a
+    /// one-property `HasKey`, which is still a key.
     pub vacuous: u64,
 }
 
@@ -61,7 +66,7 @@ impl CollapsedOperands {
     pub fn record<A: ForIRI>(&mut self, canonical: &C<A>) {
         self.axioms += 1;
         if operand_count(canonical).is_some_and(|n| n < 2)
-            && !matches!(canonical, C::DisjointUnion(_))
+            && !matches!(canonical, C::DisjointUnion(_) | C::HasKey(_))
         {
             self.vacuous += 1;
         }
@@ -94,7 +99,8 @@ pub fn operand_count<A: ForIRI>(c: &C<A>) -> Option<usize> {
 
 /// `c` with every operand structurally equal to an earlier one removed, keeping the
 /// first occurrence of each and the axiom kind; `None` when no operand repeats (the
-/// common case, which allocates nothing).
+/// common case; up to `PAIRWISE_MAX` operands it allocates nothing, above that it builds
+/// a hash set of borrowed or canonical keys).
 #[must_use]
 pub fn canonical<A: ForIRI>(c: &C<A>) -> Option<C<A>> {
     Some(match c {
@@ -670,12 +676,13 @@ mod tests {
     fn count_separates_vacuous_axioms() {
         let o = onto(
             "DisjointClasses(:A :A) DifferentIndividuals(:a :a :b) DisjointUnion(:D :C :C) \
-             DisjointClasses(:A :B)",
+             DisjointClasses(:A :B) HasKey(:A (:r :r) ())",
         );
+        // The one-member union (`D ≡ C`) and the one-property key are not vacuous.
         assert_eq!(
             count(&o),
             CollapsedOperands {
-                axioms: 3,
+                axioms: 4,
                 vacuous: 1
             }
         );

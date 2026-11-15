@@ -47,7 +47,9 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
-  "direct_subsumptions": [[sub_iri, sup_iri], ...] }
+  "direct_subsumptions": [[sub_iri, sup_iri], ...],
+  "dropped": { "<axiom kind>": int },
+  "collapsed_operands": { "axioms": int, "vacuous": int } }
 ```
 
 `incomplete` = some class pair hit the time budget (defaulted to not-subsumed);
@@ -70,6 +72,18 @@ Axioms past the cut were neither reasoned over nor counted in `dropped`, and
 classes they declare may be missing from the output. Implies `prep_timed_out`,
 and so `incomplete`. Never set in the default mode, where conversion always
 finishes.
+
+`collapsed_operands` (#538) = n-ary axioms (`DisjointClasses`, `DifferentIndividuals`,
+`DisjointUnion`, `Disjoint`/`EquivalentObjectProperties`, …) that repeated an operand.
+Their operands are a set (OWL 2 Structural Specification §2.1), so a repeat says
+nothing: `DisjointClasses(:C :C)` does not make `C` unsat. `vacuous` counts those left
+with one operand, which say nothing at all (a one-member `DisjointUnion`, still `D ≡ C`,
+and a one-property `HasKey` are not counted). Not an under-approximation under the set
+reading, so it is separate from `dropped` and never affects `completeness_guaranteed`;
+Konclude and `HermiT` keep the repeats, which is how a list reading would differ. The count
+is taken over every component before conversion, so under a conversion cut it includes
+axioms past the cut; `parse_timed_out` reports 0. `consistent --json` carries the same
+field.
 
 `parse_timed_out` = with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the budget ran out
 while the file was still being parsed, so nothing was classified: every list is
@@ -139,7 +153,8 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
   "relies_on_trusted_consistency": bool,
   "wedge_clauses_refused": int,
   "no_verdict": bool,
-  "dropped": { "<axiom kind>": int } }
+  "dropped": { "<axiom kind>": int },
+  "collapsed_operands": { "axioms": int, "vacuous": int } }
 ```
 
 `incomplete` (#182) means `consistent: true` is a give-up in its sound

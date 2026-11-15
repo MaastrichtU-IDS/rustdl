@@ -368,3 +368,79 @@ fn one_of_repeat_is_a_singleton_nominal() {
     );
     assert!(!gap(value), "no nominal");
 }
+
+/// A one-operand axiom is no source for the property gaps: the gaps are those of the
+/// ontology without it, while the two-operand control does raise the gap.
+#[test]
+fn one_operand_axioms_are_no_gap_source() {
+    let gaps = |body: &str| {
+        let g = owl_dl_reasoner::property_structural_gaps(&onto(body)).unwrap();
+        format!("{g:?}")
+    };
+    let has = |body: &str, kind: &str| gaps(body).contains(kind);
+    // Told class disjointness with two object-constrained classes: object-class-constraint.
+    let base =
+        "SubClassOf(:C ObjectSomeValuesFrom(:r :Q)) SubClassOf(:D ObjectSomeValuesFrom(:s :Q))";
+    assert!(
+        has(
+            &format!("{base} DisjointClasses(:C :D)"),
+            "object-class-constraint"
+        ),
+        "control"
+    );
+    assert!(has(
+        &format!("{base} DifferentIndividuals(:a :b)"),
+        "object-class-constraint"
+    ));
+    for vacuous in [
+        "DisjointClasses(:C :C)",
+        "DisjointUnion(:E :C :C)",
+        "DifferentIndividuals(:a :a)",
+    ] {
+        assert_eq!(gaps(&format!("{base} {vacuous}")), gaps(base), "{vacuous}");
+    }
+    // A single data value with an ABox: data-value-class-axiom.
+    let value = "SubClassOf(:C DataSomeValuesFrom(:p DataOneOf(\"1\"^^xsd:integer)))";
+    assert!(
+        has(
+            &format!("{value} SameIndividual(:a :b)"),
+            "data-value-class-axiom"
+        ),
+        "control"
+    );
+    assert!(has(
+        &format!("{value} DifferentIndividuals(:a :b)"),
+        "data-value-class-axiom"
+    ));
+    for vacuous in ["SameIndividual(:a :a)", "DifferentIndividuals(:a :a)"] {
+        assert_eq!(
+            gaps(&format!("{value} {vacuous}")),
+            gaps(value),
+            "{vacuous}"
+        );
+    }
+    // `DataOneOf("1" "1")` is the single value `{"1"}`.
+    let one = |members: &str| {
+        has(
+            &format!(
+                "ClassAssertion(:C :a) SubClassOf(:C DataSomeValuesFrom(:p DataOneOf({members})))"
+            ),
+            "data-value-class-axiom",
+        )
+    };
+    assert!(one("\"1\"^^xsd:integer"), "control");
+    assert!(one("\"1\"^^xsd:integer \"1\"^^xsd:integer"));
+    assert!(!one("\"1\"^^xsd:integer \"2\"^^xsd:integer"), "two values");
+    // `EquivalentClasses({a} {a})` equates nothing.
+    let eq = "ClassAssertion(:C :b) DataPropertyAssertion(:p :a \"1\"^^xsd:integer)";
+    assert!(has(
+        &format!("{eq} EquivalentClasses(:C ObjectOneOf(:a))"),
+        "data-derived-equality"
+    ));
+    assert_eq!(
+        gaps(&format!(
+            "{eq} EquivalentClasses(ObjectOneOf(:a) ObjectOneOf(:a))"
+        )),
+        gaps(eq)
+    );
+}

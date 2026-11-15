@@ -3006,8 +3006,8 @@ pub fn convert_ontology<A: ForIRI>(
     components.extend(canonical.iter());
     // `sort_unstable`, not `sort`: after the `dedup` below the elements are pairwise
     // distinct (a `HashSet` plus the canonicalised ones), which makes stability
-    // unobservable — the resulting order is IDENTICAL. `sort` is a stable driftsort that allocates a scratch buffer; the
-    // unstable pattern-defeating quicksort does not.
+    // unobservable — the resulting order is IDENTICAL. `sort` is a stable driftsort that
+    // allocates a scratch buffer; the unstable pattern-defeating quicksort does not.
     //
     // MEASURED NEUTRAL, and kept for the allocation and the note below rather than for
     // speed: `convert_ms` on `ore_ont_10926` 11,763 → 11,202, `ore_ont_9768` 502 → 506,

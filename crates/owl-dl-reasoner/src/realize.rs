@@ -1732,9 +1732,10 @@ fn class_body_realize_safe(class: ConceptId, pool: &ConceptPool) -> bool {
 ///    also excludes nominals).
 /// 2. Every `ABox` axiom is a shape [`saturate_for_realize`] captures exactly:
 ///    atomic/⊓ `ClassAssertion` and non-inverse `ObjectPropertyAssertion`.
-///    `NegativeObjectPropertyAssertion` / `DifferentIndividuals` add no types
-///    (an inconsistency they cause is caught by the classify/abox pre-checks),
-///    so they are permitted. `SameIndividual` (needs type-merge across
+///    `NegativeObjectPropertyAssertion` is seeded by [`saturate_for_realize`] as
+///    `{a} ⊓ ∃r.{b} ⊑ ⊥` (#536), so an inconsistency it causes makes a stand-in unsat.
+///    `DifferentIndividuals` adds no type and cannot clash here: no equality between
+///    named individuals is derivable on this fragment. `SameIndividual` (needs type-merge across
 ///    individuals) and inverse-role assertions are NOT captured ⟹ fall back.
 ///
 /// Unlike `classify`, realize CANNOT admit arbitrary `ABox` shapes: the `ABox` is
@@ -1796,9 +1797,9 @@ pub(crate) fn realize_saturation_eligible(internal: &InternalOntology) -> bool {
         Axiom::ClassAssertion { class, .. } => class_body_realize_safe(*class, &internal.concepts),
         Axiom::ObjectPropertyAssertion { role, .. } => !role.is_inverse(),
         Axiom::SameIndividual(_) => false,
-        // Everything else is either a type-irrelevant ABox form
-        // (NegativeObjectPropertyAssertion / DifferentIndividuals) or a TBox
-        // axiom already vetted by `tbox_ok`.
+        // Everything else is a TBox axiom already vetted by `tbox_ok`, a
+        // NegativeObjectPropertyAssertion (seeded by `saturate_for_realize`, #536), or
+        // a DifferentIndividuals (no named equality is derivable on this fragment).
         _ => true,
     })
 }

@@ -185,20 +185,20 @@ pub fn disjoint_object_properties_reporting<A: ForIRI>(
     }
     if crate::property_disjoint_down_enabled() {
         let asymmetric = crate::property_asymmetric_disjoint_enabled();
-        let sets: Vec<Vec<crate::property_closure::Signed>> = onto
-            .iter()
-            .filter_map(|ac| match &ac.component {
-                C::DisjointObjectProperties(ax) => {
-                    Some(ax.0.iter().map(crate::property_closure::signed).collect())
-                }
-                // `Asymmetric(p)` is `Disjoint(p, p⁻)` (F3).
-                C::AsymmetricObjectProperty(ax) if asymmetric => {
-                    let p = crate::property_closure::signed(&ax.0).0;
-                    Some(vec![(p.clone(), false), (p, true)])
-                }
-                _ => None,
-            })
-            .collect();
+        let sets: Vec<Vec<crate::property_closure::Signed>> =
+            owl_dl_core::set_operands::components(onto)
+                .filter_map(|ac| match &ac.component {
+                    C::DisjointObjectProperties(ax) => {
+                        Some(ax.0.iter().map(crate::property_closure::signed).collect())
+                    }
+                    // `Asymmetric(p)` is `Disjoint(p, p⁻)` (F3).
+                    C::AsymmetricObjectProperty(ax) if asymmetric => {
+                        let p = crate::property_closure::signed(&ax.0).0;
+                        Some(vec![(p.clone(), false), (p, true)])
+                    }
+                    _ => None,
+                })
+                .collect();
         let edges = crate::property_closure::object_edges(onto);
         return checked_pairs(
             &internal,
@@ -214,7 +214,7 @@ pub fn disjoint_object_properties_reporting<A: ForIRI>(
         );
     }
     let mut out: Vec<(String, String)> = Vec::new();
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         if let C::DisjointObjectProperties(ax) = &ac.component {
             let names: Vec<String> =
                 ax.0.iter()
@@ -261,8 +261,7 @@ pub fn disjoint_data_properties_reporting<A: ForIRI>(
         return Err(ReasonError::Inconsistent);
     }
     if crate::property_disjoint_down_enabled() {
-        let sets: Vec<Vec<(String, bool)>> = onto
-            .iter()
+        let sets: Vec<Vec<(String, bool)>> = owl_dl_core::set_operands::components(onto)
             .filter_map(|ac| match &ac.component {
                 C::DisjointDataProperties(ax) => Some(
                     ax.0.iter()
@@ -290,7 +289,7 @@ pub fn disjoint_data_properties_reporting<A: ForIRI>(
         );
     }
     let mut out: Vec<(String, String)> = Vec::new();
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         if let C::DisjointDataProperties(ax) = &ac.component {
             let names: Vec<String> = ax.0.iter().map(|dp| dp.0.as_ref().to_string()).collect();
             out.extend(pairwise_sorted(&names));

@@ -670,6 +670,11 @@ pub fn entails_reporting<A: ForIRI>(
                 )],
             )
         }
+        // #538: `a = a` always holds. The probe below cannot show it: its
+        // `DifferentIndividuals(a a)` is read as the set `{a}`, which says nothing.
+        // Queries keep their pairwise reading (`different a a` asks `a ≠ a`;
+        // `disjoint C C` asks whether `C` is unsat); only this probe repeats an operand.
+        Entailment::SameIndividual { a, b } if a == b => Ok(Verdict::Entailed),
         Entailment::SameIndividual { a, b } => {
             let bld: Build<A> = Build::new();
             inconsistent_with(

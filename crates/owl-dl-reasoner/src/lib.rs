@@ -328,7 +328,7 @@ pub fn materialize_data_property_assertions_reporting<A: horned_owl::model::ForI
     // SameIndividual axioms (transitive), then replicate values across each class.
     let mut parent: HashMap<String, String> = HashMap::new();
     let mut all_inds: HashSet<String> = HashSet::new();
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         match &ac.component {
             C::DataPropertyAssertion(ax) => {
                 let Some(subj) = key(&ax.from) else {
@@ -538,7 +538,7 @@ pub fn materialize_existential_successors_reporting<A: horned_owl::model::ForIRI
 
     // told-∃ index: X_iri → {(R_iri, C_iri)}.
     let mut told: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         match &ac.component {
             C::SubClassOf(ax) => {
                 if let CE::Class(x) = &ax.sub {
@@ -9319,6 +9319,7 @@ fn abox_components_inconsistent(
             axioms: idx.iter().map(|&i| internal.axioms[i].clone()).collect(),
             dropped: internal.dropped.clone(),
             builtin: internal.builtin.clone(),
+            collapsed_operands: internal.collapsed_operands,
         };
         let started = std::time::Instant::now();
         let verdict = {

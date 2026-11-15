@@ -36,6 +36,10 @@ fn split_sup<A: ForIRI>(sup: &ClassExpression<A>) -> Vec<ClassExpression<A>> {
 /// An axiom with no applicable operator returns `vec![axiom.clone()]` (passes
 /// through unchanged).
 fn weaken<A: ForIRI>(axiom: &Component<A>) -> Vec<Component<A>> {
+    // #538: split the SET of operands, so `DisjointClasses(C C D)` yields only
+    // `DisjointClasses(C D)`, never the vacuous `DisjointClasses(C C)`.
+    let canonical = owl_dl_core::set_operands::canonical(axiom);
+    let axiom = canonical.as_ref().unwrap_or(axiom);
     match axiom {
         // C ⊑ sup  →  one fragment per split of sup (LHS kept whole — splitting it
         // would strengthen the axiom, which is not entailed).

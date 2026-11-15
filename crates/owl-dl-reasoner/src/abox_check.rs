@@ -680,6 +680,7 @@ mod tests {
             axioms: Vec::new(),
             dropped: owl_dl_core::DroppedAxioms::default(),
             builtin: Vec::new(),
+            collapsed_operands: owl_dl_core::CollapsedOperands::default(),
         };
         let prepared =
             crate::PreparedOntology::from_internal(internal).expect("empty ontology prepares");

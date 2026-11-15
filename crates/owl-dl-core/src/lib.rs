@@ -26,6 +26,7 @@ pub mod ontology;
 pub mod residual_absorbability;
 pub mod residual_trigger;
 pub mod role_hierarchy;
+pub mod set_operands;
 pub mod told;
 pub mod told_definition_match;
 pub mod top_bottom_roles;
@@ -52,6 +53,7 @@ pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, R
 pub use normalize::{is_nnf, nnf_axioms, nnf_complement, to_nnf};
 pub use ontology::{Axiom, InternalOntology, SubRolePath};
 pub use role_hierarchy::{RoleHierarchy, RoleHierarchyBuilder};
+pub use set_operands::CollapsedOperands;
 pub use told::{ToldTables, build_told_tables};
 pub use transform::transform;
 pub use vocab::Vocabulary;

@@ -124,6 +124,11 @@ pub struct InternalOntology {
     /// `owl:bottomObjectProperty` / `owl:bottomDataProperty`, or tells a universal role
     /// empty, or negates an assertion on one.
     pub builtin: Vec<Axiom>,
+    /// #538: n-ary axioms whose repeated operands were collapsed while reading (their
+    /// operands are a set). Kept apart from `dropped`: no content is lost under the set
+    /// reading, so completeness is unaffected; a caller reading the operands as a list
+    /// can see which answers that reading would add.
+    pub collapsed_operands: crate::CollapsedOperands,
 }
 
 impl InternalOntology {

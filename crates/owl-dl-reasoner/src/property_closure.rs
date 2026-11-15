@@ -81,7 +81,7 @@ pub(crate) fn object_edges<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<(Signed
     let symmetric = property_symmetric_enabled();
     let unit_chain = property_unit_chain_enabled();
     let mut edges: BTreeSet<(Signed, Signed)> = BTreeSet::new();
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         match &ac.component {
             C::SubObjectPropertyOf(ax) => {
                 match &ax.sub {
@@ -150,7 +150,7 @@ fn object_signature<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<String> {
     let mut add = |o: &OPE<A>| {
         out.insert(signed(o).0);
     };
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         match &ac.component {
             C::DeclareObjectProperty(d) => add(&OPE::ObjectProperty(d.0.clone())),
             C::ObjectPropertyDomain(ax) => add(&ax.ope),
@@ -204,7 +204,7 @@ fn close_signed(edges: &mut BTreeSet<(Signed, Signed)>) {
 /// transitively closed. `(a, b)` means `a ⊑ b`.
 pub(crate) fn data_edges<A: ForIRI>(onto: &SetOntology<A>) -> BTreeSet<(String, String)> {
     let mut edges: BTreeSet<(String, String)> = BTreeSet::new();
-    for ac in onto {
+    for ac in owl_dl_core::set_operands::components(onto) {
         match &ac.component {
             C::SubDataPropertyOf(ax) => {
                 edges.insert((ax.sub.0.as_ref().to_string(), ax.sup.0.as_ref().to_string()));

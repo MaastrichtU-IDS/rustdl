@@ -662,7 +662,23 @@ fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
             .map(|(o, _)| o)
             .map_err(|e| anyhow::anyhow!("parsing Manchester ontology {}: {e}", path.display()))?,
     };
+    note_collapsed_operands(&ontology);
     Ok(ontology)
+}
+
+/// #538: say on stderr when an n-ary axiom repeated an operand. The operands are a set
+/// (OWL 2 Structural Specification §2.1), so `DisjointClasses(:C :C)` says nothing and
+/// `DifferentIndividuals(:a :a :b)` says only `a ≠ b`; a reader expecting the list
+/// reading can see here why an answer it expected is absent.
+fn note_collapsed_operands(onto: &SetOntology<RcStr>) {
+    let c = owl_dl_core::set_operands::count(onto);
+    if !c.is_empty() {
+        eprintln!(
+            "note: {} axiom(s) repeated an operand, read as a set (OWL 2 §2.1); {} of them \
+             have one operand left and say nothing",
+            c.axioms, c.vacuous
+        );
+    }
 }
 
 /// Like [`parse_ofn`] but also returns the [`PrefixMapping`] collected by the
@@ -679,7 +695,7 @@ fn parse_ofn_with_pm(path: &Path) -> Result<(SetOntology<RcStr>, PrefixMapping)>
     let format = detect_format(&src, ext.as_deref());
     let mut reader = std::io::Cursor::new(src);
     let cfg = ParserConfiguration::default();
-    match format {
+    let parsed = match format {
         OntFormat::Owx => read_owx(&mut reader, cfg)
             .map_err(|e| anyhow::anyhow!("parsing OWX ontology {}: {e}", path.display())),
         OntFormat::RdfXml => read_rdf(&mut reader, cfg.into())
@@ -691,7 +707,11 @@ fn parse_ofn_with_pm(path: &Path) -> Result<(SetOntology<RcStr>, PrefixMapping)>
             .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display())),
         OntFormat::Omn => read_omn(&mut reader, cfg)
             .map_err(|e| anyhow::anyhow!("parsing Manchester ontology {}: {e}", path.display())),
+    };
+    if let Ok((onto, _)) = &parsed {
+        note_collapsed_operands(onto);
     }
+    parsed
 }
 
 /// Parse a Manchester-syntax class expression (`ce`) against the prefix map
@@ -2081,7 +2101,13 @@ fn run() -> Result<()> {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&json_out::build_consistent_json(
-                            true, true, false, 0, true, dropped
+                            true,
+                            true,
+                            false,
+                            0,
+                            true,
+                            dropped,
+                            owl_dl_core::set_operands::count(&onto).into()
                         ))?
                     );
                     eprintln!("{NO_VERDICT_NOTE}");
@@ -2103,7 +2129,8 @@ fn run() -> Result<()> {
                         stats.relies_on_trusted_consistency,
                         stats.wedge_clauses_refused,
                         false,
-                        dropped
+                        dropped,
+                        owl_dl_core::set_operands::count(&onto).into()
                     ))?
                 );
                 note_trusted_wedge_sat(stats.relies_on_trusted_consistency);

@@ -295,6 +295,14 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **realize, instance, instances and instances-expr no longer take an ABox made inconsistent by a
+  `NegativeObjectPropertyAssertion` as consistent (#536).** Their saturation fast route admitted
+  negative object property assertions and then ignored them. So `r(a, b)` with `¬r(a, b)` (or the
+  same edge derived through a sub-role, role equivalence, transitivity or a chain) got a definite
+  `no` from `instance` and empty types from `realize`, with exit 0 and no signal. The fast route
+  now seeds `¬r(a, b)` as `{a} ⊓ ∃r.{b} ⊑ ⊥` over its individuals' stand-ins, and every such
+  ontology is refused as inconsistent; a negative assertion on `owl:topObjectProperty` is
+  contradicted outright. Every fixture is adjudicated by HermiT and Konclude.
 - **An inverse-role property assertion no longer types the wrong individuals (#526).**
   `ObjectPropertyAssertion(ObjectInverseOf(r) a b)` is the edge `r(b, a)`, but the told-class
   fast path shared by every instance check gave `a` the domain of `r` and `b` its range. That

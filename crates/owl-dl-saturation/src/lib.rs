@@ -405,6 +405,9 @@ pub fn saturate_with_exists_facts(
 ///   edge. This gives `Domain(r)` on `a` for free (fact-time domain propagation
 ///   walks the super-role closure) and lets existential-LHS GCIs fire (e.g.
 ///   `Person ⊓ ∃hasSex.Male ⊑ Man` with `Male(b)` ⟹ `a:Man`),
+/// - `∃r.N_b ⊑ X`, `N_a ⊓ X ⊑ ⊥` for each `NegativeObjectPropertyAssertion(r, a, b)`
+///   (#536; polarity normalised, and `N_a` directly unsat when `r` is the top role or a
+///   super-role of it), so an `ABox` made inconsistent by one makes a stand-in unsat,
 /// - `N_b ⊑ Rng` for each such edge and each effective `Range(r)`. The saturator
 ///   deliberately omits range propagation through `∃`-facts (unsound for
 ///   *anonymous* witnesses — a `B` that is nobody's successor escapes the range
@@ -472,8 +475,11 @@ pub fn unlowered_realize_abox(internal: &InternalOntology) -> Vec<Unlowered> {
     .1
 }
 
+const OWL_TOP_OBJECT_PROPERTY_IRI: &str = "http://www.w3.org/2002/07/owl#topObjectProperty";
+
 /// [`saturate_for_realize`]'s `ABox` seeding: a nominal class per named individual, its
-/// atomic types, and its role edges with their effective ranges.
+/// atomic types, its role edges with their effective ranges, and its negative object
+/// property assertions (#536).
 fn seed_realize_abox(
     internal: &InternalOntology,
     role_super_map: &HashMap<RoleId, HashSet<RoleId>>,
@@ -502,6 +508,7 @@ fn seed_realize_abox(
     for i in 0..num_individuals {
         tseitin.introduce_nominal(IndividualId::new(u32::try_from(i).expect("fits u32")));
     }
+    let top_role = internal.vocabulary.role_id(OWL_TOP_OBJECT_PROPERTY_IRI);
 
     for (i, ax) in internal.axioms.iter().enumerate() {
         unlowered::set_axiom(i);
@@ -549,6 +556,54 @@ fn seed_realize_abox(
                     }
                 }
             }
+            // #536: `¬r(a, b)` is `{a} ⊓ ∃r.{b} ⊑ ⊥`. Over the stand-ins: `∃r.N_b ⊑ X`,
+            // `N_a ⊓ X ⊑ ⊥`. Sound with `N_x` read as `{x}` (exactly the assertion). On the
+            // realize-certified fragment an entailed `r(a, b)` comes only from asserted
+            // edges composed through sub-roles, role equivalence, transitivity and chains,
+            // and the engine derives `N_a ⊑ ∃r.N_b` for each (the top role is handled only below, as
+            // the NPA's own role or a sub-role of it; inside a chain it is not, #539), so `N_a` turns unsat and the
+            // callers' "a stand-in is unsat ⟹ inconsistent" check fires. Polarity
+            // normalised: `¬r⁻(a, b)` is `¬r(b, a)`. These triggers are pushed after
+            // `collect_el_rules`, past `inverse_forall_triggers_from`; that index is read
+            // only by proof provenance, which this entry point never records.
+            Axiom::NegativeObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => {
+                let (from, to) = if role.is_inverse() {
+                    (*object, *subject)
+                } else {
+                    (*subject, *object)
+                };
+                let r = role.role_id();
+                let n_a = tseitin.introduce_nominal(from);
+                // `owl:topObjectProperty` is an ordinary role in the IR. If `r` is the top
+                // role or a super-role of it, every pair is `r`-related and the assertion
+                // is contradicted outright (no ground edge would ever fire the trigger).
+                if top_role.is_some_and(|top| {
+                    top == r || role_super_map.get(&top).is_some_and(|sup| sup.contains(&r))
+                }) {
+                    rules.directly_unsat.push(n_a);
+                    continue;
+                }
+                let n_b = tseitin.introduce_nominal(to);
+                let x = tseitin.introduce_negative_edge_key();
+                rules.existential_triggers.push(ExistentialTrigger {
+                    role: r,
+                    body: n_b,
+                    head: x,
+                });
+                rules.conjunctive_unsat.push(ConjunctiveUnsat {
+                    bodies: vec![n_a, x],
+                });
+            }
+            // TBox axioms (lowered by `collect_el_rules`) and `DifferentIndividuals`, which
+            // is deliberately unseeded (#536 audit): on the realize-certified fragment no
+            // equality between named individuals is derivable (no nominals, `≤1`,
+            // `SameIndividual`, or functional role with edges), so `a ≠ b` changes no type
+            // and cannot clash. Duplicate operands are vacuous under the OWL 2 set reading
+            // (#538).
             _ => {}
         }
     }
@@ -3551,6 +3606,15 @@ impl TseitinAllocator {
         let synthetic = ClassId::new(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
         self.forall_atomic_key_by_role.insert((role, k), synthetic);
+        synthetic
+    }
+
+    /// #536: a fresh synthetic `X ≡ ∃r.N_b` for one negative object property
+    /// assertion `¬r(a, b)` (see `seed_realize_abox`). Never shared: it is a head
+    /// only, read by one conjunctive-unsat rule.
+    fn introduce_negative_edge_key(&mut self) -> ClassId {
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
         synthetic
     }
 

@@ -383,3 +383,25 @@ def test_direct_types_unverified_warning(tmp_path, monkeypatch):
         issubclass(w.category, rustdl.DirectTypesUnverifiedWarning) for w in caught
     )
     assert not any(issubclass(w.category, rustdl.IncompleteQueryWarning) for w in caught)
+
+
+def test_inverse_role_assertion_types_the_named_edge_s_ends(tmp_path):
+    # #526: ObjectPropertyAssertion(ObjectInverseOf(:r) :a :b) is the edge r(b, a), so
+    # Domain(r) = D types b and Range(r) = R types a. Negatives first; HermiT and
+    # Konclude agree on all four.
+    p = tmp_path / "inv.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/o>\n"
+        "  Declaration(ObjectProperty(:r)) Declaration(Class(:D)) Declaration(Class(:R))\n"
+        "  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n"
+        "  ObjectPropertyDomain(:r :D) ObjectPropertyRange(:r :R)\n"
+        "  ObjectPropertyAssertion(ObjectInverseOf(:r) :a :b))\n"
+    )
+    f = str(p)
+    assert rustdl.is_instance_of(f, "http://ex/#D", "http://ex/#a") is False
+    assert rustdl.is_instance_of(f, "http://ex/#R", "http://ex/#b") is False
+    assert rustdl.is_instance_of(f, "http://ex/#D", "http://ex/#b") is True
+    assert rustdl.is_instance_of(f, "http://ex/#R", "http://ex/#a") is True
+    assert sorted(rustdl.instances_of(f, "http://ex/#D")) == ["http://ex/#b"]
+    assert sorted(rustdl.instances_of(f, "http://ex/#R")) == ["http://ex/#a"]

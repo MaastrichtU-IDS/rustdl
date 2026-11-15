@@ -632,12 +632,14 @@ pub fn is_instance_of_saturation_only_internal(
 /// `class_id` in the EL closure, the answer is `yes`:
 ///
 /// 1. **`ClassAssertion(D, a)`** — direct told membership.
-/// 2. **`ObjectPropertyAssertion(r, a, _)` with `r`'s domain `Dom`**
-///    — `a` is in `Dom` via the property domain axiom, transitively
-///    via the role hierarchy.
-/// 3. **`ObjectPropertyAssertion(r, _, a)` with `r`'s range `Rng`**
-///    — `a` is in `Rng` via the property range axiom, transitively
-///    via the role hierarchy.
+/// 2. **`a` is the source of an `r`-edge, with `r`'s domain `Dom`**
+///    — `a` is in `Dom` via the property domain axiom.
+/// 3. **`a` is the target of an `r`-edge, with `r`'s range `Rng`**
+///    — `a` is in `Rng` via the property range axiom.
+///
+/// The edge is the named role's: `ObjectPropertyAssertion(ObjectInverseOf(r) b a)`
+/// makes `a` the source (#526). Only the exact role matches, with no role-hierarchy
+/// matching; see [`told_classes_of`].
 ///
 /// The instance check, plus WHETHER a negative answer came from a real refutation or
 /// from a cut probe, and whether that cut is #462/#475's likely-bug `NoVerdict`
@@ -835,13 +837,18 @@ fn instance_check_closure_only(
 /// belong to:
 ///
 /// - Direct: every `ClassAssertion(D, individual)` with `D` atomic.
-/// - Via domain: every `ObjectPropertyAssertion(r, individual, _)`
-///   where some `ObjectPropertyDomain(r', Dom)` axiom applies for
-///   `r ⊑ r'` (named-role-only; `r'` matches when `r` and `r'`
-///   share an underlying `RoleId`).
-/// - Via range: every `ObjectPropertyAssertion(r, _, individual)`
-///   where some `ObjectPropertyRange(r', Rng)` axiom applies under
-///   the same conditions.
+/// - Via domain: the source of every `r`-edge, for each named-role
+///   `ObjectPropertyDomain(r, Dom)` with `Dom` atomic.
+/// - Via range: the target of every `r`-edge, for each named-role
+///   `ObjectPropertyRange(r, Rng)` with `Rng` atomic.
+///
+/// The edge is normalised to the named role first (#526): the converter
+/// keeps `ObjectPropertyAssertion(ObjectInverseOf(r) a b)` as
+/// `Role::inverse(r)` with subject `a`, which is the edge `r(b, a)`.
+/// Only the exact role id matches: no sub-role (`r ⊑ r'`) domains or
+/// ranges, and no inverse-role domain or range axioms. Both are sound
+/// misses: [`instance_check_reporting`] falls back to its `{a} ⊓ ¬C`
+/// tableau probe, and the saturation-only path just misses them.
 fn told_classes_of(internal: &InternalOntology, individual_id: IndividualId) -> Vec<ClassId> {
     let mut out = Vec::new();
     for axiom in &internal.axioms {
@@ -856,20 +863,17 @@ fn told_classes_of(internal: &InternalOntology, individual_id: IndividualId) -> 
                 subject,
                 object,
             } => {
-                // Inverse-role property assertions: the converter
-                // swaps subject/object so the stored role is always
-                // named; we don't try to second-guess that here and
-                // simply use `role.role_id()`.
-                let used_role_id = role.role_id();
-                if *subject == individual_id {
-                    for dom in domains_for_role(internal, used_role_id) {
-                        out.push(dom);
-                    }
+                let (source, target) = if role.is_inverse() {
+                    (*object, *subject)
+                } else {
+                    (*subject, *object)
+                };
+                let role_id = role.role_id();
+                if source == individual_id {
+                    out.extend(domains_for_role(internal, role_id));
                 }
-                if *object == individual_id {
-                    for rng in ranges_for_role(internal, used_role_id) {
-                        out.push(rng);
-                    }
+                if target == individual_id {
+                    out.extend(ranges_for_role(internal, role_id));
                 }
             }
             _ => {}

@@ -6,6 +6,8 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.43] — 2026-11-16
+
 ### Added
 - **The per-query gate has a wine arm (#490).** Before #490, every per-query call on wine ran
   past the cap. `per_query_answers_on_wine_finish_and_match_both_oracles` (ignored, ~2
@@ -295,6 +297,16 @@ All notable changes to rustdl are documented here. Format is based on
   and Python callers. Gaps that are not give-ups are filed as #387–#392.
 
 ### Fixed
+- **`owl:bottomObjectProperty` / `owl:bottomDataProperty` are empty, and a universal role told empty or negatively asserted is a contradiction (#539, #545).** The IR read the four built-in property IRIs as ordinary roles. So `C ⊑ ∃owl:bottomObjectProperty.D` classified `C` satisfiable with `completeness_guaranteed: true`. `r ⊑ owl:bottomObjectProperty` with `r(a, b)` read consistent, and `realize` / `instance` gave a definite wrong answer. Conversion now adds axioms that hold in every interpretation, and every engine applies them through its existing role-hierarchy machinery:
+  - `∃b.⊤ ⊑ ⊥` for each bottom role mentioned;
+  - `⊤ ⊑ ⊥` when `owl:topObjectProperty` (or a role above it) is told empty, or an assertion on such a role is negated.
+
+  The pure-EL certification is unchanged and now true.
+  - `owl:topDataProperty` is not treated as universal: OWL 2 DL allows it only as a super-property, and both oracles call `topData ⊑ bottomData` consistent.
+  - The added axioms are recorded in `InternalOntology::builtin` and are never cited as the user's. `prove` labels them, `prove --json` lists them under a new `builtin_axioms` field, and `verify-el` labels a violation on one.
+  - Konclude 0.7 calls the bottom-role ABox cases and the told-empty universal roles consistent; HermiT and the Direct Semantics say inconsistent.
+  - ORE reach: 0. No ORE file mentions a bottom role, and every top-property use in the pool is the inert `r ⊑ top`.
+  - Still open: `owl:topObjectProperty`'s universal semantics otherwise (#539, #543).
 - **The wedge no longer spends its deadline on an open nominal disjunction (#480).** A node that carries `C` with `C ⊑ {a} ⊔ {b}` used to build its successors before the search picked a disjunct. The pick then moved the node into a nominal, the successors had to be re-matched, and the loop could run to the deadline: generated case 939's consistency wedge returned `Stalled`, and the inconsistency pre-check fell back to the main tableau. With `RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts), generation at such a node is **parked**, and the clause is re-tested whenever the fixpoint goes quiet.
   - **Soundness.** A leaf rule makes sure no `Sat` is reached while a clause is parked: it falls back to #465 B's order and fires the clause. Its `park_leaf_fallback` counter is 0 on every census file.
   - **Where it parks.** Only in the incremental fixpoint with the #137 net, which is every production engine by default. The non-incremental drain never parks, since it has no net to re-fire a blocked-then-unblocked node's clause (Fable).

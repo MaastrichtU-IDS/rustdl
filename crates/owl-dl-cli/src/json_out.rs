@@ -1104,6 +1104,12 @@ pub(crate) struct ProofNodeJson {
     pub(crate) rule: String,
     /// Source axioms used at this step, each its own OFN ontology document.
     pub(crate) axioms: Vec<String>,
+    /// #539: axioms used at this step that conversion added from the OWL semantics
+    /// (e.g. `∃owl:bottomObjectProperty.⊤ ⊑ ⊥`), not taken from the source; each its
+    /// own OFN ontology document. Kept apart from `axioms` so a consumer never reads
+    /// them as the user's. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) builtin_axioms: Vec<String>,
     /// The rule applies an axiom but none was recorded for this step.
     pub(crate) axiom_missing: bool,
     pub(crate) premises: Vec<ProofNodeJson>,
@@ -1299,15 +1305,17 @@ fn build_proof_node_json(
     // (mirrors the text renderer's `if let Some(ax) = ...` at the CLI's
     // axiom-provenance printout); it should not occur for a proof the
     // saturator itself produced.
-    let axioms: Vec<String> = node
+    let render = |ax: &owl_dl_core::ontology::Axiom| {
+        let component = owl_dl_core::axiom_to_component(ax, internal, build);
+        axioms_to_ofn_doc(std::slice::from_ref(&component), pm)
+    };
+    let (builtin_refs, source_refs): (Vec<_>, Vec<_>) = node
         .axiom_refs
         .iter()
         .filter_map(|r| internal.axioms.get(r.0))
-        .map(|ax| {
-            let component = owl_dl_core::axiom_to_component(ax, internal, build);
-            axioms_to_ofn_doc(std::slice::from_ref(&component), pm)
-        })
-        .collect();
+        .partition(|ax| internal.builtin.contains(ax));
+    let axioms: Vec<String> = source_refs.into_iter().map(render).collect();
+    let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(render).collect();
 
     let premises = node
         .premises
@@ -1326,8 +1334,9 @@ fn build_proof_node_json(
     Ok(ProofNodeJson {
         conclusion,
         rule: node.rule.to_string(),
-        axiom_missing: node.rule.needs_axiom() && axioms.is_empty(),
+        axiom_missing: node.rule.needs_axiom() && axioms.is_empty() && builtin_axioms.is_empty(),
         axioms,
+        builtin_axioms,
         premises,
         unproved_premises,
     })
@@ -1475,5 +1484,72 @@ mod tests {
         let mut sorted = j.direct_subsumptions.clone();
         sorted.sort();
         assert_eq!(j.direct_subsumptions, sorted);
+    }
+
+    /// #539: a proof step that cites an axiom conversion added from the OWL semantics
+    /// (`InternalOntology::builtin`) lists it under `builtin_axioms`, never under
+    /// `axioms` (the source's), and the step does not read as `axiom_missing`. No
+    /// saturator proof cites one today (it records no derivation for `∃r.X ⊑ ⊥` through
+    /// the role hierarchy, with or without a user-written axiom), so the step is built
+    /// by hand.
+    #[test]
+    fn a_proof_step_citing_a_builtin_axiom_keeps_it_out_of_the_source_axioms() {
+        let src = "Prefix(:=<http://ex/#>)
+            Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+            Ontology(<http://ex/>
+              Declaration(Class(:C)) Declaration(Class(:D))
+              SubClassOf(:C ObjectSomeValuesFrom(owl:bottomObjectProperty :D)))";
+        let (onto, pm): (SetOntology<RcStr>, _) = read_ofn(
+            &mut Cursor::new(src.to_owned()),
+            ParserConfiguration::default(),
+        )
+        .unwrap();
+        let internal = owl_dl_core::convert::convert_ontology(&onto).unwrap();
+        assert_eq!(internal.builtin.len(), 1, "{:?}", internal.builtin);
+        let builtin_idx = internal
+            .axioms
+            .iter()
+            .position(|ax| internal.builtin.contains(ax))
+            .unwrap();
+        let user_idx = (0..internal.axioms.len())
+            .find(|&i| {
+                i != builtin_idx
+                    && matches!(
+                        internal.axioms[i],
+                        owl_dl_core::ontology::Axiom::SubClassOf { .. }
+                    )
+            })
+            .unwrap();
+        let c = internal.vocabulary.class_id("http://ex/#C").unwrap();
+        let node = owl_dl_reasoner::ProofNode {
+            conclusion: owl_dl_reasoner::DerivedFact::Unsat(c),
+            rule: owl_dl_reasoner::ElRule::ToldUnsat,
+            axiom_refs: vec![
+                owl_dl_reasoner::AxiomRef(builtin_idx),
+                owl_dl_reasoner::AxiomRef(user_idx),
+            ],
+            premises: Vec::new(),
+            unproved_premises: Vec::new(),
+        };
+        let build = Build::new();
+        let j = build_proof_node_json(&node, &internal, &HashMap::new(), &pm, &build).unwrap();
+        assert_eq!(j.axioms.len(), 1, "source axioms: {:?}", j.axioms);
+        assert!(j.axioms[0].contains(":D"), "{}", j.axioms[0]);
+        assert_eq!(j.builtin_axioms.len(), 1, "{:?}", j.builtin_axioms);
+        // `axiom_to_component` writes ⊤ / ⊥ as `ObjectIntersectionOf()` /
+        // `ObjectUnionOf()`; only the role is checked here.
+        assert!(
+            j.builtin_axioms[0].contains("ObjectSomeValuesFrom(owl:bottomObjectProperty"),
+            "{}",
+            j.builtin_axioms[0]
+        );
+        assert!(!j.axiom_missing);
+        // Sabotage check of the partition itself: with the builtin record emptied, the
+        // same step would list both axioms as the source's.
+        let mut stripped = internal.clone();
+        stripped.builtin.clear();
+        let j2 = build_proof_node_json(&node, &stripped, &HashMap::new(), &pm, &build).unwrap();
+        assert_eq!(j2.axioms.len(), 2);
+        assert!(j2.builtin_axioms.is_empty());
     }
 }

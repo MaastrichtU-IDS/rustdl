@@ -29,6 +29,7 @@ pub mod role_hierarchy;
 pub mod set_operands;
 pub mod told;
 pub mod told_definition_match;
+pub mod top_bottom_roles;
 pub mod transform;
 pub mod vocab;
 

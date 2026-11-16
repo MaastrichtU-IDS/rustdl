@@ -3101,13 +3101,23 @@ fn run() -> Result<()> {
                     collect_axiom_refs(root, &mut all_refs);
                     all_refs.sort_unstable();
                     if !all_refs.is_empty() {
+                        // #539: the axioms conversion added from the OWL semantics
+                        // (`InternalOntology::builtin`) are not the source's: they are
+                        // left out of the count and cited as built-in facts.
                         println!(
                             "# axiom provenance ({} axioms in ontology):",
-                            internal.axioms.len()
+                            internal.axioms.len().saturating_sub(internal.builtin.len())
                         );
                         for idx in all_refs {
                             if let Some(ax) = internal.axioms.get(idx) {
-                                println!("  axiom[{idx}]: {ax:?}");
+                                if internal.builtin.contains(ax) {
+                                    println!(
+                                        "  axiom[{idx}] (built-in: OWL semantics, not in the \
+                                         source): {ax:?}"
+                                    );
+                                } else {
+                                    println!("  axiom[{idx}]: {ax:?}");
+                                }
                             }
                         }
                     }

@@ -3248,6 +3248,14 @@ pub fn convert_ontology<A: ForIRI>(
         derive_functional_max_cardinality(&mut out);
         derive_inverse_pair_functionality(&mut out);
     }
+    // #539: the bottom roles are empty, and a universal role told empty or negatively
+    // asserted is a contradiction. No engine knew either, so conversion states them as
+    // axioms every engine already applies (see `top_bottom_roles`). Runs last, on the
+    // final role axioms (chain decomposition included), and adds nothing to an ontology
+    // that does not mention the built-in property IRIs.
+    if !conversion_cut() {
+        crate::top_bottom_roles::state_top_bottom_role_semantics(&mut out);
+    }
     out.axioms.sort();
     Ok(out)
 }

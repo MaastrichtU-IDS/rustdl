@@ -26,7 +26,7 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             apt: musl-tools
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             apt: ''
           - os: windows-latest

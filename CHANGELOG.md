@@ -6,6 +6,20 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.44] — 2026-11-17
+
+Release engineering only: the reasoner code is identical to 0.4.43.
+
+### Changed
+- **The macOS arm64 release builds run on `macos-15`** (`release-cli.yml`, `release-python.yml`). GitHub rejected the `macos-14` runner configuration at once ("The configuration 'macos-14-arm64-us-default' is not supported"). That cancelled 0.4.43's CLI and Python release workflows after their other builds had passed, so **0.4.43 shipped to crates.io only**: no GitHub Release (binaries, Protégé plugin) and no PyPI wheels. 0.4.44 is the same code on every channel. The targets are unchanged (`aarch64-apple-darwin`, wheel arch `arm64`).
+- **`release-python.yml`'s PyPI publish and GitHub Release jobs now run only on a tag**, as `release-cli.yml`'s publish steps already did. A `workflow_dispatch` on a branch is now a build-only dry run, where before it would have gone on to publish the branch's version to PyPI.
+
+### Known issues (carried forward from 0.4.43; the code is the same)
+- **`ore_ont_12698`-shaped inputs: at the default per-pair budget, `classify` can return a few fewer subsumptions than 0.4.42.** The losses are typically 1–8 pairs, and 55 in one run of 12. The answer is signalled `incomplete: true` and was complete at `--pair-timeout-ms 1000` (one run per binary). There is no false positive and no verdict change.
+  - On `ore_ont_12698` (126,743 entailed pairs), 0.4.42 reaches the complete closure in 14 of 18 runs (it loses 1–7 pairs in the other 4). 0.4.43 reaches it in 0 of 12.
+  - Bisected over the main pins to the range #481–#484. On the release binary, `RUSTDL_WEDGE_GENERATE_LAST=0` (#483, #465 part B) restores the complete closure in 4 of 9 runs, while `RUSTDL_NOMINAL_MERGE_PRUNE=0` (#484) does not (0 of 6). So #465 B's generate-last order under the default per-pair deadline is the identified contributor. The restoration is partial (4 of 9, against 14 of 18 for 0.4.42), the samples are small, and a second contributor is not excluded.
+  - Tracked as a follow-up.
+
 ## [0.4.43] — 2026-11-16
 
 ### Known issues

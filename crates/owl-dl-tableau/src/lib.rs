@@ -46,6 +46,7 @@ mod counters;
 mod deps;
 mod graph;
 pub mod hyper;
+pub mod p12698;
 pub mod replay;
 mod rules;
 mod saturate;

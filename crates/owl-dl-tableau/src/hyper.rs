@@ -165,6 +165,8 @@ pub struct HNode(u32);
 struct PendingGen {
     queue: std::collections::VecDeque<(usize, HNode)>,
     queued: std::collections::HashSet<(usize, HNode)>,
+    /// TEMPORARY p12698: entries drained so far (only filled under the counters).
+    popped: std::collections::HashSet<(usize, HNode)>,
 }
 
 impl PendingGen {
@@ -188,6 +190,7 @@ impl PendingGen {
     fn clear(&mut self) {
         self.queue.clear();
         self.queued.clear();
+        self.popped.clear();
     }
 
     fn is_empty(&self) -> bool {
@@ -3065,6 +3068,7 @@ impl<'c> HyperEngine<'c> {
     }
 
     fn new_node(&mut self) -> HNode {
+        crate::p12698::inc(crate::p12698::C::nodes);
         let id = u32::try_from(self.nodes.len()).expect("node count fits u32");
         self.nodes.push(HyperNode {
             order: id,
@@ -3299,7 +3303,13 @@ impl<'c> HyperEngine<'c> {
         loop {
             let (ev, deferred) = match self.worklist.pop() {
                 Some(ev) => (Some(ev), None),
-                None => match self.pending_gen.pop_front() {
+                None => match {
+                    let _t = crate::p12698::Timer::start(
+                        crate::p12698::C::t_queue_ns,
+                        crate::p12698::C::t_queue_n,
+                    );
+                    self.pending_gen.pop_front()
+                } {
                     Some(g) => (None, Some(g)),
                     None => break,
                 },
@@ -3572,6 +3582,7 @@ impl<'c> HyperEngine<'c> {
     /// (which re-verifies the full body), so over-firing on a not-yet-
     /// complete clause is a cheap no-op.
     fn process_event(&mut self, ev: Event) -> FireOutcome {
+        crate::p12698::inc(crate::p12698::C::ev);
         match ev {
             Event::Label(n, c) => {
                 // Fix#2 Layer B: adding an EXCLUDED class here is a clash (an
@@ -4728,6 +4739,7 @@ impl<'c> HyperEngine<'c> {
                 let head_atom = self.clause(ci).head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
+                crate::p12698::inc(crate::p12698::C::decisions);
                 self.stats.disj_branches += 1;
                 let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
                 match self.solve(depth - 1) {
@@ -5635,6 +5647,7 @@ impl<'c> HyperEngine<'c> {
             // representative, then continue the search one level down.
             let saved = self.save();
             self.stats.branches_taken += 1;
+            crate::p12698::inc(crate::p12698::C::decisions);
             self.stats.merge_branches += 1;
             let mut clashed = false;
             'blocks: for block in groups.iter() {
@@ -5990,7 +6003,24 @@ impl<'c> HyperEngine<'c> {
         self.stats.gen_drained += 1;
         let n = self.resolve(node);
         self.draining_gen = true;
-        let outcome = self.fire_clause(ci, n);
+        let outcome = if crate::p12698::on() {
+            crate::p12698::inc(crate::p12698::C::drained);
+            self.pending_gen.popped.insert((ci, node));
+            crate::p12698::LAST_BINDINGS.with(|c| c.set(u64::MAX));
+            let o = {
+                let _t = crate::p12698::Timer::start(
+                    crate::p12698::C::t_drain_ns,
+                    crate::p12698::C::t_drain_n,
+                );
+                self.fire_clause(ci, n)
+            };
+            if crate::p12698::LAST_BINDINGS.with(std::cell::Cell::get) == 0 {
+                crate::p12698::inc(crate::p12698::C::drain_rejected);
+            }
+            o
+        } else {
+            self.fire_clause(ci, n)
+        };
         self.draining_gen = false;
         outcome
     }
@@ -6020,16 +6050,68 @@ impl<'c> HyperEngine<'c> {
         node: HNode,
         edge: Option<(HNode, Role, HNode)>,
     ) -> FireOutcome {
+        crate::p12698::inc(crate::p12698::C::fcw);
         // Disjunctive clauses are branch points, not Horn-fired here.
         if !self.clause(ci).is_horn() {
+            crate::p12698::inc(crate::p12698::C::fcw_nonhorn);
             return FireOutcome::NoChange;
         }
-        if self.defers_generation(ci) {
+        let defers = if crate::p12698::on() && !self.draining_gen {
+            let _t =
+                crate::p12698::Timer::start(crate::p12698::C::t_defer_ns, crate::p12698::C::t_defer_n);
+            self.defers_generation(ci)
+        } else {
+            self.defers_generation(ci)
+        };
+        if defers {
+            // TEMPORARY p12698 Fix C prototype: a firing whose home node lacks an
+            // X-class atom cannot match; that class's own `Event::Label` re-fires it.
+            if crate::p12698::prefilter()
+                && let Some(plan) = self.match_plan(ci)
+            {
+                let n = if self.inverse_func_merge {
+                    self.resolve(node)
+                } else {
+                    node
+                };
+                if plan.x_classes.iter().any(|&c| !self.nodes[n.index()].has(c)) {
+                    crate::p12698::inc(crate::p12698::C::prefilter_rej);
+                    return FireOutcome::NoChange;
+                }
+            }
+            let _t =
+                crate::p12698::Timer::start(crate::p12698::C::t_queue_ns, crate::p12698::C::t_queue_n);
             if self.pending_gen.push(ci, node) {
                 self.stats.gen_deferred += 1;
+                crate::p12698::inc(crate::p12698::C::deferred);
+                if crate::p12698::on() && self.pending_gen.popped.contains(&(ci, node)) {
+                    crate::p12698::inc(crate::p12698::C::requeued);
+                }
+            } else {
+                crate::p12698::inc(crate::p12698::C::defer_dup);
             }
             return FireOutcome::NoChange;
         }
+        let p_gen = crate::p12698::on()
+            && matches!(
+                self.clause(ci).head.first(),
+                Some(Atom::Exists(..) | Atom::AtLeast(..))
+            );
+        let _t_gen = if p_gen && !self.draining_gen {
+            if edge.is_some() {
+                crate::p12698::Timer::start(
+                    crate::p12698::C::t_pin_gen_ns,
+                    crate::p12698::C::t_pin_gen_n,
+                )
+            } else {
+                crate::p12698::Timer::start(
+                    crate::p12698::C::t_imm_gen_ns,
+                    crate::p12698::C::t_imm_gen_n,
+                )
+            }
+        } else {
+            crate::p12698::Timer(None)
+        };
         self.stats.match_attempts += 1;
         // #128: the head is already there, so every binding this body match could
         // produce would call `add_label` on a label the node already carries.
@@ -6059,13 +6141,39 @@ impl<'c> HyperEngine<'c> {
             };
             if self.nodes[n.index()].has(c) {
                 self.stats.head_present_skips += 1;
+                crate::p12698::inc(crate::p12698::C::head_skip);
                 return FireOutcome::NoChange;
             }
         }
-        let matched = match edge {
-            None => self.match_body(ci, node),
-            Some(e) => self.match_body_pinned(ci, node, e),
+        let matched = {
+            let _tm = if self.draining_gen {
+                crate::p12698::Timer::start(
+                    crate::p12698::C::t_drain_match_ns,
+                    crate::p12698::C::t_drain_match_n,
+                )
+            } else {
+                crate::p12698::Timer(None)
+            };
+            match edge {
+                None => self.match_body(ci, node),
+                Some(e) => self.match_body_pinned(ci, node, e),
+            }
         };
+        if crate::p12698::on() {
+            use crate::p12698::C;
+            let nb = matched.as_ref().map_or(0, |b| b.len() as u64);
+            crate::p12698::LAST_BINDINGS.with(|c| c.set(nb));
+            let (m, b) = match (edge.is_some(), self.draining_gen, p_gen) {
+                (true, _, true) => (C::m_pin_gen, C::b_pin_gen),
+                (true, _, false) => (C::m_pin_non, C::b_pin_non),
+                (false, true, true) => (C::m_drain_gen, C::b_drain_gen),
+                (false, true, false) => (C::m_drain_non, C::b_drain_non),
+                (false, false, true) => (C::m_imm_gen, C::b_imm_gen),
+                (false, false, false) => (C::m_imm_non, C::b_imm_non),
+            };
+            crate::p12698::inc(m);
+            crate::p12698::add(b, nb);
+        }
         let Some(bindings) = matched else {
             return FireOutcome::NoChange;
         };
@@ -6565,6 +6673,7 @@ impl<'c> HyperEngine<'c> {
                 self.nodes[to.index()].shadow_birth_deps.union(deps);
         }
         self.worklist.push(Event::Edge(from, rstore, to));
+        crate::p12698::inc(crate::p12698::C::edges);
         FireOutcome::Changed
     }
 
@@ -6606,6 +6715,7 @@ impl<'c> HyperEngine<'c> {
         // label fires the successor's clauses (and, via Event::Label,
         // back-prop at `src`).
         self.worklist.push(Event::Edge(src, role, succ));
+        crate::p12698::inc(crate::p12698::C::edges);
         // The seed label inherits the ∃'s body dep-set.
         self.add_label(succ, cls, deps);
         FireOutcome::Changed
@@ -6709,6 +6819,7 @@ impl<'c> HyperEngine<'c> {
             self.nodes[x.index()].edges.push((role, succ));
             self.nodes[succ.index()].preds.push((role, x));
             self.worklist.push(Event::Edge(x, role, succ));
+            crate::p12698::inc(crate::p12698::C::edges);
             if let Some(q) = qual {
                 self.add_label(succ, q, deps);
             }

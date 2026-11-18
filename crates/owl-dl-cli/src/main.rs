@@ -1863,7 +1863,12 @@ fn write_materialized_properties(
 /// cap's, not a crash. Every command that lets it reach `main` prints `unknown` and exits
 /// 3; `consistent --json` and `explain` handle it at their own sites to keep their formats.
 fn main() -> Result<()> {
-    match run() {
+    let r = run();
+    // TEMPORARY p12698 instrumentation summary.
+    if let Some(line) = owl_dl_tableau::p12698::summary() {
+        eprintln!("{line}");
+    }
+    match r {
         Err(e) if is_no_verdict(&e) => exit_unknown_no_verdict(),
         r => r,
     }

@@ -35,8 +35,9 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
   hit this from inside a PEP 517 build.
 - **Confirm `target/release/rustdl` is freshly built before any benchmark.** A failed build
   silently reuses a stale binary, and stale binaries have produced false DNFs and false
-  "the fix doesn't work" readings more than once. `wine` at the default runs in **~12–13 CPU-s**
-  on a current binary; a very different figure means a different binary or host.
+  "the fix doesn't work" readings more than once. `wine` at the default runs in **~1–1.5 CPU-s**
+  on a current binary (v0.4.43+; v0.4.42 took ~12 CPU-s, the drop is #367 `RUSTDL_MRV_REFUTED`);
+  a very different figure means a different binary or host.
 - CI (`.github/workflows/ci.yml`): fmt, clippy, build+test on linux/macos/windows, cargo-deny,
   pytest. `RUSTFLAGS=-D warnings`, clippy `pedantic` workspace-wide. **Green CI says nothing
   about soundness**: the closure-diff job is a `workflow_dispatch`-only stub with no fixtures.

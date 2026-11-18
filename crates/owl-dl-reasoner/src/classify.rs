@@ -6348,8 +6348,27 @@ fn subsumes_via_tableau(
     // per-pair timeout and any global wall-clock deadline.
     let hyper_deadline = effective_deadline(global_deadline, per_pair_timeout);
     let wedge_start = Instant::now();
+    let p_cpu0 = owl_dl_tableau::p12698::pair_trace().then(owl_dl_tableau::p12698::thread_cpu_ns);
     let verdict = prepared.hyper_decide(sub, sup, hyper_deadline);
     let wedge_elapsed_ms = u64::try_from(wedge_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // TEMPORARY p12698: per-probe wedge CPU.
+    if let Some(c0) = p_cpu0 {
+        let cpu = owl_dl_tableau::p12698::thread_cpu_ns().saturating_sub(c0);
+        let name = |id: owl_dl_core::ClassId| {
+            reported
+                .report_pos(id)
+                .map_or_else(|| format!("#{}", id.index()), |p| reported.iris()[p].clone())
+        };
+        eprintln!(
+            "P12698PAIR\t{}\t{}\t{}\t{}\t{:?}\t{}",
+            name(sub),
+            name(sup),
+            cpu,
+            wedge_start.elapsed().as_nanos(),
+            verdict,
+            trust_sat
+        );
+    }
     // ─── BEGIN report-position ↔ ClassId conversion boundary ─────────────
     // Genuinely id space, and it never leaves it: `pairs_per_sub` is a
     // diagnostic histogram keyed by raw `ClassId` index whose keys are only

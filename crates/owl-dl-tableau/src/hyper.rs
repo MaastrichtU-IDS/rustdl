@@ -3288,33 +3288,71 @@ impl<'c> HyperEngine<'c> {
             // Anywhere blocking (legacy; sound for SHIQ-no-inverse).
             // Snapshot the node count and iterate by index to keep
             // mutating `stats` clean of borrow conflicts.
+            //
+            // Candidates are filtered on their contiguous headers, as in the
+            // pair-blocking branch above: a subset cannot be longer, and its Bloom
+            // signature must be covered. Both are exact consequences of
+            // `L(n) ⊆ L(m)`, so the first blocker found (in index order) is the same
+            // one; they only skip label walks that would return false. On
+            // `ore_ont_15108` this loop is ~86% of classify's CPU.
             let guard = self.nominal_guard && self.resolve(n) == n;
             let nn_possible = self.nn_guard && self.nn_possible_now();
+            let hn = *self.nodes.hdr(n.index());
             let n_nodes = self.nodes.len();
-            for i in 0..n_nodes {
-                let m_order = self.nodes.hdr(i).order;
-                if m_order >= ln_order {
+            debug_assert!(self.nodes.dirty.is_empty(), "headers read before sync");
+            let mut compares: u64 = 0;
+            let mut blocker = None;
+            let mut start = 0;
+            while start < n_nodes {
+                // The header scan runs as one slice walk (no per-index bounds
+                // checks); only a survivor leaves it for the label walk below.
+                let nodes = &self.nodes;
+                let found = nodes.hdr[start..n_nodes]
+                    .iter()
+                    .enumerate()
+                    .position(|(k, hm)| {
+                        if hm.order >= ln_order {
+                            return false;
+                        }
+                        compares += 1;
+                        let pass =
+                            hn.labels_len <= hm.labels_len && hn.label_sig & !hm.label_sig == 0;
+                        // See the pair-blocking branch: debug builds re-run the walk
+                        // the prefilter skipped.
+                        debug_assert!(
+                            pass || !subset_sorted(
+                                &nodes[n.index()].labels,
+                                &nodes[start + k].labels
+                            ),
+                            "label_sig rejected a real blocker"
+                        );
+                        pass
+                    });
+                let Some(rel) = found else { break };
+                let i = start + rel;
+                start = i + 1;
+                if !subset_sorted(&self.nodes[n.index()].labels, &self.nodes[i].labels) {
                     continue;
                 }
                 let m = HNode(u32::try_from(i).expect("fits u32"));
-                self.stats.block_compares += 1;
-                let ln_labels = &self.nodes[n.index()].labels;
-                let m_labels = &self.nodes[i].labels;
-                if subset_sorted(ln_labels, m_labels)
-                    && !(guard && self.node_has_visible_nominal(m))
-                {
-                    if nn_possible {
-                        self.stats.nn_guard_checks += 1;
-                        if self.nn_counted(m, NN_CASCADE_DEPTH, &mut SmallVec::new()) {
-                            self.stats.nn_guard_refusals += 1;
-                            continue;
-                        }
-                    }
-                    self.stats.blocks_fired += 1;
-                    return true;
+                if guard && self.node_has_visible_nominal(m) {
+                    continue;
                 }
+                if nn_possible {
+                    self.stats.nn_guard_checks += 1;
+                    if self.nn_counted(m, NN_CASCADE_DEPTH, &mut SmallVec::new()) {
+                        self.stats.nn_guard_refusals += 1;
+                        continue;
+                    }
+                }
+                blocker = Some(m);
+                break;
             }
-            false
+            self.stats.block_compares += compares;
+            if blocker.is_some() {
+                self.stats.blocks_fired += 1;
+            }
+            blocker.is_some()
         }
     }
 

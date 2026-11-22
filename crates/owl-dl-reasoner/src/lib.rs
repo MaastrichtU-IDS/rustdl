@@ -7975,8 +7975,10 @@ pub struct QueryStats {
     /// produce the verdict — no tableau call was made.
     pub answered_by_saturation: bool,
     /// `true` iff this run took the pure-EL fast path (the closure
-    /// is also complete for the input, so a closure miss is itself
-    /// the verdict).
+    /// is also complete for the CONVERTED input, so a closure miss is itself
+    /// the verdict). #540: not a completeness guarantee for the input when
+    /// conversion dropped an axiom ([`dropped_axioms`]); a caller presenting
+    /// it as one must check that too, as `explain` and the expression queries do.
     pub pure_el_mode: bool,
     /// `true` iff the verdict is a GIVE-UP reported in its sound direction
     /// rather than a witnessed answer. For consistency (#182): the fall-through

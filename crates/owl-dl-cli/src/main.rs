@@ -1354,6 +1354,17 @@ fn warn_if_dropped(dropped: &std::collections::BTreeMap<String, u64>) {
     );
 }
 
+/// #540: run an expression query whose result names the probed conversion's drops
+/// (the input's and the query expression's), which the caller warns from. When the
+/// query errors there is no result, so warn from the input's own drops instead (the
+/// warning the command printed before #540), then propagate the error.
+fn expr_query<T>(
+    onto: &SetOntology<RcStr>,
+    query: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    query().inspect_err(|_| warn_if_dropped(&json_out::dropped_block(onto)))
+}
+
 /// One justification for `q` (laconic or regular), with the give-up signal (#396).
 fn find_one_justification_outcome(
     onto: &SetOntology<RcStr>,
@@ -2534,16 +2545,19 @@ fn run() -> Result<()> {
         }
         Command::SatExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            warn_if_dropped(&json_out::dropped_block(&onto));
             let ce = parse_ce(&pm, &ce)?;
             // One query, like `sat`: the single-query node cap (package 2).
             let _cap = owl_dl_reasoner::single_query_node_cap();
-            let v = owl_dl_reasoner::class_expression_satisfiable(&onto, &ce)
-                .context("class_expression_satisfiable")?;
+            let v = expr_query(&onto, || {
+                owl_dl_reasoner::class_expression_satisfiable(&onto, &ce)
+                    .context("class_expression_satisfiable")
+            })?;
+            // #540: the probed conversion's drops, the query expression's included.
+            warn_if_dropped(v.dropped().by_kind());
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&json_out::build_sat_expr_json(v))?
+                    serde_json::to_string_pretty(&json_out::build_sat_expr_json(&v))?
                 );
                 note_trusted_consistency_flag(v.relies_on_trusted_consistency());
                 exit_if_no_verdict(v.no_verdict());
@@ -2583,17 +2597,20 @@ fn run() -> Result<()> {
             json,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            warn_if_dropped(&json_out::dropped_block(&onto));
             let sub_ce = parse_ce(&pm, &sub_ce)?;
             let sup_ce = parse_ce(&pm, &sup_ce)?;
             // One query, like `subclass`: the single-query node cap (package 2).
             let _cap = owl_dl_reasoner::single_query_node_cap();
-            let v = owl_dl_reasoner::class_expression_entailed_subclass(&onto, &sub_ce, &sup_ce)
-                .context("class_expression_entailed_subclass")?;
+            let v = expr_query(&onto, || {
+                owl_dl_reasoner::class_expression_entailed_subclass(&onto, &sub_ce, &sup_ce)
+                    .context("class_expression_entailed_subclass")
+            })?;
+            // #540: as in `sat-expr`.
+            warn_if_dropped(v.dropped().by_kind());
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&json_out::build_subclass_expr_json(v))?
+                    serde_json::to_string_pretty(&json_out::build_subclass_expr_json(&v))?
                 );
                 note_trusted_consistency_flag(v.relies_on_trusted_consistency());
                 exit_if_no_verdict(v.no_verdict());
@@ -2619,12 +2636,15 @@ fn run() -> Result<()> {
         }
         Command::InstancesExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            warn_if_dropped(&json_out::dropped_block(&onto));
             let ce = parse_ce(&pm, &ce)?;
             // One query, like `instances`: the single-query node cap (package 2).
             let _cap = owl_dl_reasoner::single_query_node_cap();
-            let r = owl_dl_reasoner::class_expression_instances(&onto, &ce)
-                .context("class_expression_instances")?;
+            let r = expr_query(&onto, || {
+                owl_dl_reasoner::class_expression_instances(&onto, &ce)
+                    .context("class_expression_instances")
+            })?;
+            // #540: as in `sat-expr`.
+            warn_if_dropped(r.dropped().by_kind());
             if json {
                 println!(
                     "{}",
@@ -2722,6 +2742,10 @@ fn run() -> Result<()> {
         }
         Command::Explain { file, sub, sup } => {
             let onto = parse_ofn(&file)?;
+            // #540: the pure-EL closure is complete only for the converted
+            // ontology; a dropped axiom voids the "closure is complete" claim.
+            let dropped = json_out::dropped_block(&onto);
+            warn_if_dropped(&dropped);
             let _cap = owl_dl_reasoner::single_query_node_cap();
             let (verdict, stats) = match is_subclass_of_with_stats(&onto, &sub, &sup) {
                 // #449: `explain`'s own give-up format.
@@ -2743,8 +2767,13 @@ fn run() -> Result<()> {
             };
             let completeness = if structural {
                 " (owl:Thing / owl:Nothing: holds in every ontology)"
-            } else if stats.pure_el_mode {
+            } else if stats.pure_el_mode && dropped.is_empty() {
                 " (input is pure EL; closure is complete)"
+            } else if stats.pure_el_mode && !verdict {
+                // #540: the closure is complete for what conversion kept, not
+                // for the input; a "no" may miss an entailment of a dropped axiom.
+                " (pure EL after dropping axioms it could not convert; closure is NOT \
+                 complete for the input)"
             } else if stats.answered_by_saturation {
                 " (closure produced a positive witness)"
             } else {

@@ -67,14 +67,38 @@ guard's sabotage check.
   `ClassAssertion` is not PureEl (measured: the banner reads `Horn`) and reports `false`, even though it runs
   saturation-only. That is conservative (a missing guarantee, never a false one),
   and widening it needs its own completeness argument.
-- **The guarantee covers `classify` only.** `realize`, `consistent`, `sat` and the
-  inferred-query surface have their own partial signals (`incomplete`,
+- **The guarantee predicate covers `classify` only.** The expression queries and
+  `explain` make their own narrower claim (next section). `realize`, `consistent`,
+  `sat` and the inferred-query surface have their own partial signals (`incomplete`,
   `witness_prune_active`, `witness_prune_may_drop`, `direct_types_unverified`
   on `realize`,
   `consistency_undetermined`, and `structural_gaps` on the
   structural property surfaces, see below) and no guarantee predicate.
   How each reports a give-up is in the
   [query-surface ledger](query-surface-ledger.md).
+
+## Per-query completeness claims (#540)
+
+Three per-query surfaces claim completeness without going through
+`ClassificationStats::completeness_guaranteed`. Each reads its own conjunction,
+and since #540 each includes condition 7 (`dropped` is empty). Before #540 none
+did: on an ontology whose only non-EL content was an unsupported data range,
+conversion dropped it, the rest took the pure-EL fast path, and the surface
+claimed completeness while missing an entailment of the dropped axiom.
+
+| Surface | Rust | CLI | Python | Conditions | Pinned by |
+|---|---|---|---|---|---|
+| `sat-expr`, `subclass-expr` | `CeVerdict::completeness_guaranteed` | `--json` `completeness_guaranteed` | not exposed (the bindings return `incomplete` only) | pure-EL fast path (`QueryStats::pure_el_mode`), no give-up, nothing dropped by the probed ontology's conversion (the input's drops and the query expression's own; `CeVerdict::dropped` returns that list, and the CLI's stderr warning names it in text and `--json` mode) | `class_expr_query.rs` `each_condition_alone_voids_the_expression_guarantee` (the table test; deleting a conjunct fails its row); `completeness_contract.rs` `a_dropped_axiom_voids_the_expression_query_guarantee` with its `xsd:string` control; `expr_dropped_axiom_cli.rs`: input-side drops and query-side drops (`*_with_a_query_side_drop_warns_and_is_not_guaranteed`, which pin both the flag and the warning) |
+| `instances-expr` | `CeInstances::completeness_guaranteed` | `--json` `completeness_guaranteed` | not exposed | realize saturation fast path (`realize_saturation_eligible`), no probe cut, nothing dropped by the probed conversion (`CeInstances::dropped`, warned as above) | same |
+| `explain` | — (text only) | the suffix "(input is pure EL; closure is complete)" | no binding | `QueryStats::pure_el_mode` and nothing dropped (the CLI reads `dropped_block`). With a drop, a pure-EL "no" reads "pure EL after dropping axioms it could not convert; closure is NOT complete for the input"; `explain` also prints the stderr drop warning since #540 | `expr_dropped_axiom_cli.rs` `explain_with_a_dropped_axiom_does_not_claim_a_complete_closure` |
+
+Not added to these claims, though `classify` has them: `consistency_undetermined`
+and `relies_on_trusted_consistency`. Both are reported in their own fields on the
+expression queries (`instances-expr --json` has no `relies_on_trusted_consistency`),
+so a caller can see them; whether they belong in the conjunction is an open
+follow-up, not settled by #540. `QueryStats::pure_el_mode` itself
+stays a path flag: it says the closure is complete for the CONVERTED ontology, and
+a caller presenting it as a guarantee must check `dropped_axioms` too.
 
 ## Structural property surfaces (#389, #390)
 

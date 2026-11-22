@@ -12,12 +12,14 @@ use horned_owl::model::{
     Build, ClassExpression, Component, EquivalentClasses, ForIRI, MutableOntology,
 };
 use horned_owl::ontology::set::SetOntology;
+use owl_dl_core::dropped::DroppedAxioms;
 
 const PROBE_IRI: &str = "urn:rustdl-ce-probe:q";
 const PROBE_IRI_2: &str = "urn:rustdl-ce-probe:q2";
 
 /// Verdict for a complex-class-expression satisfiability/subsumption query.
-#[derive(Debug, Clone, Copy)]
+// #540: not `Copy` any more; it carries the probed conversion's `dropped`.
+#[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CeVerdict {
     holds: bool,
@@ -26,13 +28,14 @@ pub struct CeVerdict {
     relies_on_trusted_consistency: bool,
     consistency_undetermined: bool,
     no_verdict: bool,
+    dropped: DroppedAxioms,
 }
 
 impl CeVerdict {
     /// #462: the deadline-free probe ended in `NoVerdict`, an internal limit (likely a
     /// reasoner bug, #449). [`Self::holds`] is then the sound direction ("satisfiable" /
     /// "not entailed") and [`Self::incomplete`] is set too.
-    fn from_no_verdict(holds: bool) -> Self {
+    fn from_no_verdict(holds: bool, dropped: DroppedAxioms) -> Self {
         Self {
             holds,
             incomplete: true,
@@ -40,6 +43,7 @@ impl CeVerdict {
             relies_on_trusted_consistency: false,
             consistency_undetermined: false,
             no_verdict: true,
+            dropped,
         }
     }
 
@@ -60,7 +64,7 @@ impl CeVerdict {
     }
 
     /// The verdict is guaranteed complete: answered on the pure-EL fast path,
-    /// and nothing gave up. `false` does not mean the verdict is wrong, only
+    /// nothing gave up, and conversion dropped no axiom (#540). `false` does not mean the verdict is wrong, only
     /// that a "satisfiable" / "not entailed" is not proven complete (the same
     /// meaning as `classify --json`'s `completeness_guaranteed`).
     #[must_use]
@@ -93,6 +97,15 @@ impl CeVerdict {
     pub fn no_verdict(&self) -> bool {
         self.no_verdict
     }
+
+    /// #540: the axioms the probed ontology's conversion dropped: the input's
+    /// and the query expression's own (the probe axiom `Q ≡ ce` is converted with
+    /// the input). Non-empty voids [`Self::completeness_guaranteed`]; a caller
+    /// should name these, not the input's drops alone.
+    #[must_use]
+    pub fn dropped(&self) -> &DroppedAxioms {
+        &self.dropped
+    }
 }
 
 /// Result of a complex-class-expression instance query.
@@ -107,6 +120,7 @@ pub struct CeInstances {
     consistency_undetermined: bool,
     no_verdict: bool,
     depth_capped: bool,
+    dropped: DroppedAxioms,
 }
 
 impl CeInstances {
@@ -126,8 +140,9 @@ impl CeInstances {
 
     /// The member list is guaranteed complete: the instance query ran on the
     /// realize saturation fast path (complete on its fragment), so nothing could
-    /// be cut. Off that fragment the tableau path's pseudo-model prune is not
-    /// proven complete, so this is `false` even when no probe was cut.
+    /// be cut, and conversion dropped no axiom (#540). Off that fragment the
+    /// tableau path's pseudo-model prune is not proven complete, so this is
+    /// `false` even when no probe was cut.
     #[must_use]
     pub fn completeness_guaranteed(&self) -> bool {
         self.completeness_guaranteed
@@ -156,13 +171,34 @@ impl CeInstances {
     pub fn depth_capped(&self) -> bool {
         self.depth_capped
     }
+
+    /// #540: as [`CeVerdict::dropped`].
+    #[must_use]
+    pub fn dropped(&self) -> &DroppedAxioms {
+        &self.dropped
+    }
+}
+
+/// The completeness guarantee of an expression query: the answer came off a
+/// path that is complete on its fragment (`complete_path`), nothing gave up, and
+/// conversion dropped nothing. #540: the fast path is complete only for the
+/// CONVERTED ontology; when conversion dropped an axiom (an unsupported data
+/// range, say) the engine reasoned over a strictly weaker KB, and a "not
+/// entailed" / "satisfiable" / missing member can be wrong in the sound
+/// direction. `dropped_nothing` reads the probed ontology's own conversion, which
+/// also converts the probe axiom. The same condition as `classify`'s (#246).
+fn guarantee(complete_path: bool, incomplete: bool, dropped_nothing: bool) -> bool {
+    complete_path && !incomplete && dropped_nothing
 }
 
 /// `(incomplete, completeness_guaranteed)` of a satisfiability/subsumption
 /// probe: `incomplete` is a give-up only (#395), and only the pure-EL fast
-/// path guarantees completeness.
-fn verdict_flags(stats: QueryStats) -> (bool, bool) {
-    (stats.incomplete, stats.pure_el_mode && !stats.incomplete)
+/// path over a conversion that dropped nothing (#540) guarantees completeness.
+fn verdict_flags(stats: QueryStats, dropped_nothing: bool) -> (bool, bool) {
+    (
+        stats.incomplete,
+        guarantee(stats.pure_el_mode, stats.incomplete, dropped_nothing),
+    )
 }
 
 /// Add every class IRI referenced (nested) inside `ce` to `out`. Mirrors
@@ -279,17 +315,18 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     // #313: the inconsistent-KB guard, its `ABox` saturation bounded (#428); the
     // query reuses the EL closure it builds.
     let closure = crate::bounded_query_guard(&internal, "sat-expr")?;
+    let dropped = internal.dropped.clone();
     let (holds, stats, left) =
         match crate::is_class_satisfiable_keeping(internal, PROBE_IRI, closure) {
             // #462: the sound direction of no verdict is "satisfiable".
-            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(true)),
+            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(true, dropped)),
             r => r?,
         };
     // #369: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
     let lazy = crate::LazyCheck::run_if(!holds, || {
         left.lazy_inconsistency_check("class_expression_satisfiable")
     })?;
-    let (incomplete, completeness_guaranteed) = verdict_flags(stats);
+    let (incomplete, completeness_guaranteed) = verdict_flags(stats, dropped.is_empty());
     Ok(CeVerdict {
         holds,
         incomplete,
@@ -298,6 +335,7 @@ pub fn class_expression_satisfiable<A: ForIRI>(
         consistency_undetermined: lazy.undetermined,
         // #493: the lazy check's own probe stalled (a likely bug); the answer stands.
         no_verdict: lazy.no_verdict,
+        dropped,
     })
 }
 
@@ -321,17 +359,18 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     let internal = owl_dl_core::convert::convert_ontology(&probed)?;
     // #313: the inconsistent-KB guard, as in `class_expression_satisfiable`.
     let closure = crate::bounded_query_guard(&internal, "subclass-expr")?;
+    let dropped = internal.dropped.clone();
     let (holds, stats, left) =
         match crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2, closure) {
             // #462: the sound direction of no verdict is "not entailed".
-            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(false)),
+            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(false, dropped)),
             r => r?,
         };
     // #369: as in `class_expression_satisfiable`.
     let lazy = crate::LazyCheck::run_if(holds, || {
         left.lazy_inconsistency_check("class_expression_entailed_subclass")
     })?;
-    let (incomplete, completeness_guaranteed) = verdict_flags(stats);
+    let (incomplete, completeness_guaranteed) = verdict_flags(stats, dropped.is_empty());
     Ok(CeVerdict {
         holds,
         incomplete,
@@ -340,6 +379,7 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
         consistency_undetermined: lazy.undetermined,
         // #493: as in `class_expression_satisfiable`.
         no_verdict: lazy.no_verdict,
+        dropped,
     })
 }
 
@@ -372,9 +412,37 @@ pub fn class_expression_instances<A: ForIRI>(
     Ok(CeInstances {
         individuals,
         incomplete: flags.incomplete,
-        completeness_guaranteed: fast_path && !flags.incomplete,
+        completeness_guaranteed: guarantee(
+            fast_path,
+            flags.incomplete,
+            internal.dropped.is_empty(),
+        ),
         consistency_undetermined: flags.consistency_undetermined,
         no_verdict: flags.no_verdict,
         depth_capped: flags.depth_capped,
+        dropped: internal.dropped.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guarantee;
+
+    /// #540: each condition of the expression-query guarantee alone voids it. The
+    /// base is the one state that guarantees completeness; every row flips one
+    /// argument away from it. Deleting a conjunct from `guarantee` fails its row.
+    #[test]
+    fn each_condition_alone_voids_the_expression_guarantee() {
+        assert!(guarantee(true, false, true), "base state must guarantee");
+        for (name, args) in [
+            ("off the complete fast path", (false, false, true)),
+            ("a probe gave up", (true, true, true)),
+            ("conversion dropped an axiom (#540)", (true, false, false)),
+        ] {
+            assert!(
+                !guarantee(args.0, args.1, args.2),
+                "{name}: this condition alone must void the guarantee"
+            );
+        }
+    }
 }

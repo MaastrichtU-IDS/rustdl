@@ -215,3 +215,73 @@ fn the_classification_delegates_to_its_stats() {
         );
     }
 }
+
+/// #540: the expression queries read the same condition 7 as `classify`. Each
+/// ontology is pure EL once the axioms on the unsupported `xsd:dateTimeStamp` are
+/// dropped, so the answer comes off a complete fast path over a weaker KB. Before
+/// the fix all three reported `completeness_guaranteed() == true` with the
+/// entailment missed. The `xsd:string` control drops nothing, derives the
+/// entailment and keeps the guarantee, so the drop is the only variable.
+#[test]
+fn a_dropped_axiom_voids_the_expression_query_guarantee() {
+    use horned_owl::model::{Build, ClassExpression};
+    let parse = |body: &str, range: &str| -> SetOntology<RcStr> {
+        let src = format!(
+            "Prefix(:=<http://e#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+             Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\nOntology(\n\
+             Declaration(Class(:C)) Declaration(Class(:E)) Declaration(DataProperty(:p))\n\
+             Declaration(NamedIndividual(:a))\n{})",
+            body.replace("RANGE", range)
+        );
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default())
+            .expect("parse")
+            .0
+    };
+    let build: Build<RcStr> = Build::new();
+    let class = |iri: &str| ClassExpression::Class(build.class(iri));
+    let (ce_c, ce_e) = (class("http://e#C"), class("http://e#E"));
+    let sub = "SubClassOf(:C DataSomeValuesFrom(:p RANGE))\n\
+               SubClassOf(DataSomeValuesFrom(:p RANGE) :E)\n";
+    let inst = format!("{sub}ClassAssertion(:C :a)\n");
+    let unsat = "SubClassOf(:C DataSomeValuesFrom(:p RANGE))\n\
+                 SubClassOf(DataSomeValuesFrom(:p RANGE) owl:Nothing)\n";
+
+    for (range, dropped) in [("xsd:dateTimeStamp", true), ("xsd:string", false)] {
+        let onto = parse(sub, range);
+        assert_eq!(
+            owl_dl_reasoner::dropped_axioms(&onto).unwrap().is_empty(),
+            !dropped,
+            "{range}: precondition"
+        );
+        let verdict =
+            owl_dl_reasoner::class_expression_entailed_subclass(&onto, &ce_c, &ce_e).unwrap();
+        assert_eq!(verdict.holds(), !dropped, "{range}: subclass-expr answer");
+        assert_eq!(
+            verdict.completeness_guaranteed(),
+            !dropped,
+            "{range}: subclass-expr"
+        );
+
+        let onto = parse(&inst, range);
+        let found = owl_dl_reasoner::class_expression_instances(&onto, &ce_e).unwrap();
+        assert_eq!(
+            found.individuals().is_empty(),
+            dropped,
+            "{range}: instances answer"
+        );
+        assert_eq!(
+            found.completeness_guaranteed(),
+            !dropped,
+            "{range}: instances-expr"
+        );
+
+        let onto = parse(unsat, range);
+        let verdict = owl_dl_reasoner::class_expression_satisfiable(&onto, &ce_c).unwrap();
+        assert_eq!(verdict.holds(), dropped, "{range}: sat-expr answer");
+        assert_eq!(
+            verdict.completeness_guaranteed(),
+            !dropped,
+            "{range}: sat-expr"
+        );
+    }
+}

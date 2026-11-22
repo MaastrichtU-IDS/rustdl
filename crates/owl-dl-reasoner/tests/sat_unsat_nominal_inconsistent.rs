@@ -93,6 +93,21 @@ fn classify_consistent(axioms: &str, flag: &str) -> bool {
         .inconsistent
 }
 
+/// [`classify_consistent`] with the #535 consistency-wedge coverage reverted
+/// (`RUSTDL_WEDGE_ABOX_COVERAGE=0`), so this file's flag is the only route to the
+/// clash in `default_classify_reports_an_inconsistency_only_the_saturator_finds`.
+fn classify_consistent_without_wedge_coverage(axioms: &str, flag: &str) -> bool {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = SetEnvGuard::set("RUSTDL_SAT_UNSAT_NOMINAL_INCONSISTENT", flag);
+    let _w = SetEnvGuard::set("RUSTDL_WEDGE_ABOX_COVERAGE", "0");
+    !owl_dl_reasoner::classify(&parse(axioms))
+        .expect("classify")
+        .stats()
+        .inconsistent
+}
+
 /// Inconsistent with the flag on, every class unsat; consistent with it off.
 fn inconsistent_only_by_the_rule(axioms: &str) {
     assert_eq!(
@@ -154,11 +169,19 @@ fn default_classify_reports_an_inconsistency_only_the_saturator_finds() {
     SubClassOf(ObjectOneOf(:a) ObjectSomeValuesFrom(:r :Y)) SubClassOf(:Y ObjectSomeValuesFrom(:s :Z))
     SubClassOf(ObjectOneOf(:a) :W) DisjointClasses(:W :Z)";
     assert!(!classify_consistent(axioms, "1"));
-    // Flipped by #535: without the rule the wedge used to miss it (no `≤1 r⁻`; see
-    // `sat_inconsistency_all_surfaces.rs`). The consistency wedge now carries the bound.
+    // Since #535 the consistency wedge carries the `≤1 r⁻` this needs (see
+    // `sat_inconsistency_all_surfaces.rs`), so at the default the rule is not the only
+    // route.
     assert!(
         !classify_consistent(axioms, "0"),
         "#535: the consistency wedge carries the inverse-functional bound"
+    );
+    // The discriminating pair: with that wedge coverage reverted, only the rule finds
+    // it. If the rule stops working, the first assert fails.
+    assert!(!classify_consistent_without_wedge_coverage(axioms, "1"));
+    assert!(
+        classify_consistent_without_wedge_coverage(axioms, "0"),
+        "control: without the rule (and the #535 wedge coverage) it is missed"
     );
 }
 

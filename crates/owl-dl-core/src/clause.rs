@@ -1455,15 +1455,21 @@ pub fn reflexive_max_zero_loop_enabled() -> bool {
 
 /// Materialise the self-loop `R(v,v)` where a node can count it: wherever a
 /// clause asserts `≤n R` (functional included) on a reflexive `R` at `v` and
-/// `v` already has an `R`-edge. [`apply_reflexive_roles`] never builds the
+/// `v` already has an `R`-edge, and, for `n = 0`, wherever the clause's body
+/// holds, with no edge needed (#535, `RUSTDL_REFLEXIVE_MAX_ZERO_LOOP`). [`apply_reflexive_roles`] never builds the
 /// self-loop, so without this a node is not its own `R`-successor under the
 /// bound, and `Reflexive(r)` + `Functional(r)` + `A ⊑ ∃r.B` misses `A ⊑ B`
 /// (#192 gap 1): the `B`-witness must be `A` itself.
 ///
-/// Each emitted clause `body ∧ R(v,z) → R(v,v)` is entailed, since `R(v,v)`
-/// holds of every element. The `R(v,z)` guard keeps the loop off nodes with no
-/// `R`-edge, where it cannot change a count; the unguarded `→ R(X,X)` is what
-/// cost 3–5× (see [`apply_reflexive_roles`]). An `R`-predecessor, which
+/// Each emitted clause, `body ∧ R(v,z) → R(v,v)` or (for `≤0`) `body → R(v,v)`,
+/// is entailed, since `R(v,v)` holds of every element. For `n ≥ 1` the `R(v,z)`
+/// guard keeps the loop off nodes with no `R`-edge, where it cannot change a
+/// count; the every-node `→ R(X,X)` is what cost 3–5× (see
+/// [`apply_reflexive_roles`]). A `≤0` node needs no other edge to be violated, so
+/// its loop is unguarded; it fires only where the `≤0` clause's body does.
+/// Only the loop is added: a `≤0 R.C` with a complex `C` is still not checked
+/// against it, nor against an ordinary `R`-successor (an open gap, pinned by
+/// `#[ignore]`d sentinels in `wedge_abox_coverage.rs`). An `R`-predecessor, which
 /// `distinct_role_succ` also counts, does not trigger the guard; that case
 /// stays a miss.
 fn add_counted_self_loops(cz: &mut Clausifier, reflexive: &std::collections::HashSet<RoleId>) {

@@ -60,7 +60,7 @@ const DECLS: &str = "Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(
      Declaration(ObjectProperty(:r0)) Declaration(ObjectProperty(:r1)) \
      Declaration(Class(:Q)) Declaration(Class(:Q1)) Declaration(Class(:Q2)) \
      Declaration(Class(:C2)) Declaration(Class(:C3)) Declaration(Class(:C4)) \
-     Declaration(Class(:C7)) Declaration(DataProperty(:d)) Declaration(DataProperty(:e)) \
+     Declaration(Class(:C7)) Declaration(Class(:P)) Declaration(DataProperty(:d)) Declaration(DataProperty(:e)) \
      Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b)) \
      Declaration(NamedIndividual(:c))";
 
@@ -422,6 +422,88 @@ fn negative_data_assertion_against_sub_property_value() {
         "SubDataPropertyOf(:e :d) DataPropertyAssertion(:e :a \"1\"^^xsd:integer) \
          NegativeDataPropertyAssertion(:d :a \"1\"^^xsd:integer)",
     );
+}
+
+// ---- OPEN: `≤0 r.C` with a complex qualifier `C` (found in review of #532/#535) ---
+// Not fixed here. The wedge does not check a successor (or a reflexive self-loop)
+// against a union or intersection qualifier under `≤0`, so each case below reads
+// `consistent`, trusted, on main and with this fix. Konclude, `HermiT` and the main
+// tableau (`RUSTDL_WEDGE_CONSISTENCY=0`) all say inconsistent. The `#[ignore]`d
+// sentinels assert the CORRECT answer: one that starts passing is a finding.
+
+const U1_EDGE_TAUTOLOGY: &str = "ObjectPropertyAssertion(:r :a :b) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q ObjectComplementOf(:Q))) :a)";
+const U2_REFL_UNION_TYPED: &str = "ReflexiveObjectProperty(:r) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q :P)) :a) ClassAssertion(:P :a)";
+const U3_REFL_TAUTOLOGY: &str = "ReflexiveObjectProperty(:r) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q ObjectComplementOf(:Q))) :a)";
+const U4_REFL_INTERSECTION_TYPED: &str = "ReflexiveObjectProperty(:r) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectIntersectionOf(:Q :P)) :a) \
+     ClassAssertion(:P :a) ClassAssertion(:Q :a)";
+const U5_EDGE_UNION_TYPED: &str = "ObjectPropertyAssertion(:r :a :b) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q :P)) :a) ClassAssertion(:P :b)";
+
+#[test]
+fn control_complex_qualifier_max_zero_no_edge() {
+    let _g = lock();
+    assert_consistent(
+        "ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q ObjectComplementOf(:Q))) :a)",
+    );
+}
+#[test]
+fn control_complex_qualifier_reflexive_union_untyped() {
+    let _g = lock();
+    assert_consistent(
+        "ReflexiveObjectProperty(:r) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q :P)) :a)",
+    );
+}
+#[test]
+fn control_complex_qualifier_reflexive_intersection_half_typed() {
+    let _g = lock();
+    assert_consistent(
+        "ReflexiveObjectProperty(:r) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectIntersectionOf(:Q :P)) :a) \
+         ClassAssertion(:Q :a)",
+    );
+}
+#[test]
+fn control_complex_qualifier_edge_untyped() {
+    let _g = lock();
+    assert_consistent(
+        "ObjectPropertyAssertion(:r :a :b) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q :P)) :a)",
+    );
+}
+#[test]
+#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
+fn sentinel_complex_qualifier_edge_tautology() {
+    let _g = lock();
+    assert_inconsistent(U1_EDGE_TAUTOLOGY);
+}
+#[test]
+#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
+fn sentinel_complex_qualifier_reflexive_union_typed() {
+    let _g = lock();
+    assert_inconsistent(U2_REFL_UNION_TYPED);
+}
+#[test]
+#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
+fn sentinel_complex_qualifier_reflexive_tautology() {
+    let _g = lock();
+    assert_inconsistent(U3_REFL_TAUTOLOGY);
+}
+#[test]
+#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
+fn sentinel_complex_qualifier_reflexive_intersection_typed() {
+    let _g = lock();
+    assert_inconsistent(U4_REFL_INTERSECTION_TYPED);
+}
+#[test]
+#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
+fn sentinel_complex_qualifier_edge_union_typed() {
+    let _g = lock();
+    assert_inconsistent(U5_EDGE_UNION_TYPED);
 }
 
 // ---- the decision is the wedge's, and each flag reverts its fix ----------------

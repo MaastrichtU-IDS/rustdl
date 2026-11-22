@@ -83,9 +83,11 @@ fast-path gate behind it (`is_pure_el`, or for `instances-expr`
 chain-induced poison residual, surfaces as a guaranteed answer, the same exposure
 `classify --json` carries; no corpus net covers these surfaces.
 Since #540 the guarantee also requires that conversion dropped no axiom (the
-probed ontology's own `dropped`, as `classify --json`'s condition 7), and
+probed ontology's own `dropped`, so a drop in the query expression counts too, as
+`classify --json`'s condition 7; the stderr warning names that same list), and
 `explain` says "closure is complete" only under the same condition; with a drop
-its pure-EL "no" reads "closure is NOT complete for the input". Pinned by
+its pure-EL "no" reads "closure is NOT complete for the input" (after "pure EL
+after dropping axioms it could not convert"). Pinned by
 `expr_dropped_axiom_cli.rs` and `completeness_contract.rs`
 `a_dropped_axiom_voids_the_expression_query_guarantee`.
 

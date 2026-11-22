@@ -12,12 +12,14 @@ use horned_owl::model::{
     Build, ClassExpression, Component, EquivalentClasses, ForIRI, MutableOntology,
 };
 use horned_owl::ontology::set::SetOntology;
+use owl_dl_core::dropped::DroppedAxioms;
 
 const PROBE_IRI: &str = "urn:rustdl-ce-probe:q";
 const PROBE_IRI_2: &str = "urn:rustdl-ce-probe:q2";
 
 /// Verdict for a complex-class-expression satisfiability/subsumption query.
-#[derive(Debug, Clone, Copy)]
+// #540: not `Copy` any more; it carries the probed conversion's `dropped`.
+#[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CeVerdict {
     holds: bool,
@@ -26,13 +28,14 @@ pub struct CeVerdict {
     relies_on_trusted_consistency: bool,
     consistency_undetermined: bool,
     no_verdict: bool,
+    dropped: DroppedAxioms,
 }
 
 impl CeVerdict {
     /// #462: the deadline-free probe ended in `NoVerdict`, an internal limit (likely a
     /// reasoner bug, #449). [`Self::holds`] is then the sound direction ("satisfiable" /
     /// "not entailed") and [`Self::incomplete`] is set too.
-    fn from_no_verdict(holds: bool) -> Self {
+    fn from_no_verdict(holds: bool, dropped: DroppedAxioms) -> Self {
         Self {
             holds,
             incomplete: true,
@@ -40,6 +43,7 @@ impl CeVerdict {
             relies_on_trusted_consistency: false,
             consistency_undetermined: false,
             no_verdict: true,
+            dropped,
         }
     }
 
@@ -93,6 +97,15 @@ impl CeVerdict {
     pub fn no_verdict(&self) -> bool {
         self.no_verdict
     }
+
+    /// #540: the axioms the probed ontology's conversion dropped: the input's
+    /// and the query expression's own (the probe axiom `Q ≡ ce` is converted with
+    /// the input). Non-empty voids [`Self::completeness_guaranteed`]; a caller
+    /// should name these, not the input's drops alone.
+    #[must_use]
+    pub fn dropped(&self) -> &DroppedAxioms {
+        &self.dropped
+    }
 }
 
 /// Result of a complex-class-expression instance query.
@@ -107,6 +120,7 @@ pub struct CeInstances {
     consistency_undetermined: bool,
     no_verdict: bool,
     depth_capped: bool,
+    dropped: DroppedAxioms,
 }
 
 impl CeInstances {
@@ -156,6 +170,12 @@ impl CeInstances {
     #[must_use]
     pub fn depth_capped(&self) -> bool {
         self.depth_capped
+    }
+
+    /// #540: as [`CeVerdict::dropped`].
+    #[must_use]
+    pub fn dropped(&self) -> &DroppedAxioms {
+        &self.dropped
     }
 }
 
@@ -295,18 +315,18 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     // #313: the inconsistent-KB guard, its `ABox` saturation bounded (#428); the
     // query reuses the EL closure it builds.
     let closure = crate::bounded_query_guard(&internal, "sat-expr")?;
-    let dropped_nothing = internal.dropped.is_empty();
+    let dropped = internal.dropped.clone();
     let (holds, stats, left) =
         match crate::is_class_satisfiable_keeping(internal, PROBE_IRI, closure) {
             // #462: the sound direction of no verdict is "satisfiable".
-            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(true)),
+            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(true, dropped)),
             r => r?,
         };
     // #369: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
     let lazy = crate::LazyCheck::run_if(!holds, || {
         left.lazy_inconsistency_check("class_expression_satisfiable")
     })?;
-    let (incomplete, completeness_guaranteed) = verdict_flags(stats, dropped_nothing);
+    let (incomplete, completeness_guaranteed) = verdict_flags(stats, dropped.is_empty());
     Ok(CeVerdict {
         holds,
         incomplete,
@@ -315,6 +335,7 @@ pub fn class_expression_satisfiable<A: ForIRI>(
         consistency_undetermined: lazy.undetermined,
         // #493: the lazy check's own probe stalled (a likely bug); the answer stands.
         no_verdict: lazy.no_verdict,
+        dropped,
     })
 }
 
@@ -338,18 +359,18 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     let internal = owl_dl_core::convert::convert_ontology(&probed)?;
     // #313: the inconsistent-KB guard, as in `class_expression_satisfiable`.
     let closure = crate::bounded_query_guard(&internal, "subclass-expr")?;
-    let dropped_nothing = internal.dropped.is_empty();
+    let dropped = internal.dropped.clone();
     let (holds, stats, left) =
         match crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2, closure) {
             // #462: the sound direction of no verdict is "not entailed".
-            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(false)),
+            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(false, dropped)),
             r => r?,
         };
     // #369: as in `class_expression_satisfiable`.
     let lazy = crate::LazyCheck::run_if(holds, || {
         left.lazy_inconsistency_check("class_expression_entailed_subclass")
     })?;
-    let (incomplete, completeness_guaranteed) = verdict_flags(stats, dropped_nothing);
+    let (incomplete, completeness_guaranteed) = verdict_flags(stats, dropped.is_empty());
     Ok(CeVerdict {
         holds,
         incomplete,
@@ -358,6 +379,7 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
         consistency_undetermined: lazy.undetermined,
         // #493: as in `class_expression_satisfiable`.
         no_verdict: lazy.no_verdict,
+        dropped,
     })
 }
 
@@ -398,6 +420,7 @@ pub fn class_expression_instances<A: ForIRI>(
         consistency_undetermined: flags.consistency_undetermined,
         no_verdict: flags.no_verdict,
         depth_capped: flags.depth_capped,
+        dropped: internal.dropped.clone(),
     })
 }
 

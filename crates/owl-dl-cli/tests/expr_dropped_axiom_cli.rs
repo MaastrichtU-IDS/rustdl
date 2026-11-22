@@ -172,3 +172,104 @@ fn explain_with_a_dropped_axiom_does_not_claim_a_complete_closure() {
     );
     assert!(!r.stderr.contains("dropped"), "control: {}", r.stderr);
 }
+
+// --- Query-side drops (#540 review) ---------------------------------------
+//
+// The ontology itself drops nothing; the QUERY EXPRESSION holds the unsupported
+// range, so only the probe axiom `Q ≡ ce` is dropped. The flag must read false
+// and the stderr warning must name the drop in both text and JSON modes; before
+// the review fix the warning came from the unprobed ontology and said nothing.
+// Each control swaps the range for `xsd:string`.
+
+/// Pure EL and ABox-free (so `sat-expr` / `subclass-expr` take the pure-EL fast
+/// path): `C ⊑ ∃p.string`, `D ⊑ ⊥`.
+const CLEAN_TBOX: &str = "Declaration(Class(:D))
+SubClassOf(:C DataSomeValuesFrom(:p xsd:string))
+SubClassOf(:D owl:Nothing)
+)";
+
+/// As `CLEAN_TBOX` plus `C(a)`, for the instance query.
+const CLEAN: &str = "Declaration(Class(:D)) Declaration(NamedIndividual(:a))
+SubClassOf(:C DataSomeValuesFrom(:p xsd:string))
+SubClassOf(:D owl:Nothing)
+ClassAssertion(:C :a)
+)";
+
+/// Runs `args` in JSON mode then in text mode; returns the JSON and each stderr.
+fn both_modes(cmd: &str, file: &str, ces: &[&str]) -> (serde_json::Value, String, String) {
+    let mut args = vec![cmd, "--json", file];
+    args.extend_from_slice(ces);
+    let (v, json_err) = json(&args);
+    args.remove(1);
+    let text = run(&args);
+    (v, json_err, text.stderr)
+}
+
+fn assert_query_drop(json_err: &str, text_err: &str, what: &str) {
+    for (mode, err) in [("json", json_err), ("text", text_err)] {
+        assert!(
+            err.contains("not understood and dropped"),
+            "{what} ({mode}): a query-side drop must be warned: {err:?}"
+        );
+    }
+}
+
+fn assert_no_drop(json_err: &str, text_err: &str, what: &str) {
+    for (mode, err) in [("json", json_err), ("text", text_err)] {
+        assert!(!err.contains("dropped"), "{what} control ({mode}): {err:?}");
+    }
+}
+
+#[test]
+fn subclass_expr_with_a_query_side_drop_warns_and_is_not_guaranteed() {
+    let f = Fixture::new(CLEAN_TBOX, KEPT, "q-sub");
+    // X ⊑ X, entailed for any X; the dropped probe axioms leave it underived.
+    let x = format!(":p some {DROPPED}");
+    let (v, je, te) = both_modes("subclass-expr", f.path(), &[&x, &x]);
+    assert_query_drop(&je, &te, "subclass-expr");
+    assert_eq!(v["entailed"], false, "precondition: X ⊑ X is missed: {v}");
+    assert_eq!(v["completeness_guaranteed"], false, "{v}");
+
+    let x = format!(":p some {KEPT}");
+    let (v, je, te) = both_modes("subclass-expr", f.path(), &[&x, &x]);
+    assert_no_drop(&je, &te, "subclass-expr");
+    assert_eq!(v["entailed"], true, "control: {v}");
+    assert_eq!(v["completeness_guaranteed"], true, "control: {v}");
+}
+
+#[test]
+fn sat_expr_with_a_query_side_drop_warns_and_is_not_guaranteed() {
+    let f = Fixture::new(CLEAN_TBOX, KEPT, "q-sat");
+    // D ⊑ ⊥, so D ⊓ X is unsatisfiable for any X. Conversion keeps the `D`
+    // conjunct and still finds it; the flag must read false all the same, since
+    // the dropped part could matter (the guarantee is conservative).
+    let q = format!(":D and (:p some {DROPPED})");
+    let (v, je, te) = both_modes("sat-expr", f.path(), &[&q]);
+    assert_query_drop(&je, &te, "sat-expr");
+    assert_eq!(v["completeness_guaranteed"], false, "{v}");
+
+    let q = format!(":D and (:p some {KEPT})");
+    let (v, je, te) = both_modes("sat-expr", f.path(), &[&q]);
+    assert_no_drop(&je, &te, "sat-expr");
+    assert_eq!(v["satisfiable"], false, "control: {v}");
+    assert_eq!(v["completeness_guaranteed"], true, "control: {v}");
+}
+
+#[test]
+fn instances_expr_with_a_query_side_drop_warns_and_is_not_guaranteed() {
+    let f = Fixture::new(CLEAN, KEPT, "q-inst");
+    let q = format!(":C and (:p some {DROPPED})");
+    let (v, je, te) = both_modes("instances-expr", f.path(), &[&q]);
+    assert_query_drop(&je, &te, "instances-expr");
+    assert_eq!(v["completeness_guaranteed"], false, "{v}");
+
+    let q = format!(":C and (:p some {KEPT})");
+    let (v, je, te) = both_modes("instances-expr", f.path(), &[&q]);
+    assert_no_drop(&je, &te, "instances-expr");
+    assert_eq!(
+        v["instances"],
+        serde_json::json!(["http://e#a"]),
+        "control: {v}"
+    );
+    assert_eq!(v["completeness_guaranteed"], true, "control: {v}");
+}

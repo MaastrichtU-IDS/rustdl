@@ -2722,6 +2722,10 @@ fn run() -> Result<()> {
         }
         Command::Explain { file, sub, sup } => {
             let onto = parse_ofn(&file)?;
+            // #540: the pure-EL closure is complete only for the converted
+            // ontology; a dropped axiom voids the "closure is complete" claim.
+            let dropped = json_out::dropped_block(&onto);
+            warn_if_dropped(&dropped);
             let _cap = owl_dl_reasoner::single_query_node_cap();
             let (verdict, stats) = match is_subclass_of_with_stats(&onto, &sub, &sup) {
                 // #449: `explain`'s own give-up format.
@@ -2743,8 +2747,13 @@ fn run() -> Result<()> {
             };
             let completeness = if structural {
                 " (owl:Thing / owl:Nothing: holds in every ontology)"
-            } else if stats.pure_el_mode {
+            } else if stats.pure_el_mode && dropped.is_empty() {
                 " (input is pure EL; closure is complete)"
+            } else if stats.pure_el_mode && !verdict {
+                // #540: the closure is complete for what conversion kept, not
+                // for the input; a "no" may miss an entailment of a dropped axiom.
+                " (pure EL after dropping unsupported axioms; closure is NOT complete \
+                 for the input)"
             } else if stats.answered_by_saturation {
                 " (closure produced a positive witness)"
             } else {

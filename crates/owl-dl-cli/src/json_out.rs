@@ -379,8 +379,9 @@ pub(crate) struct SatExprJson {
     /// `completeness_guaranteed`. (Before package 2 this was also `true` whenever
     /// the ontology was not pure EL.)
     pub(crate) incomplete: bool,
-    /// The verdict is guaranteed complete: answered on the pure-EL fast path and
-    /// nothing gave up. `false` means a "satisfiable" / "not entailed" is not
+    /// The verdict is guaranteed complete: answered on the pure-EL fast path,
+    /// nothing gave up, and conversion dropped no axiom (#540; the stderr
+    /// `warning:` names the drops). `false` means a "satisfiable" / "not entailed" is not
     /// proven complete, not that it is wrong (as `classify --json`).
     pub(crate) completeness_guaranteed: bool,
     /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
@@ -422,8 +423,9 @@ pub(crate) struct SubclassExprJson {
     /// `completeness_guaranteed`. (Before package 2 this was also `true` whenever
     /// the ontology was not pure EL.)
     pub(crate) incomplete: bool,
-    /// The verdict is guaranteed complete: answered on the pure-EL fast path and
-    /// nothing gave up. `false` means a "satisfiable" / "not entailed" is not
+    /// The verdict is guaranteed complete: answered on the pure-EL fast path,
+    /// nothing gave up, and conversion dropped no axiom (#540; the stderr
+    /// `warning:` names the drops). `false` means a "satisfiable" / "not entailed" is not
     /// proven complete, not that it is wrong (as `classify --json`).
     pub(crate) completeness_guaranteed: bool,
     /// #401: the verdict was reached with the `ABox` seed dropped (it cannot
@@ -465,7 +467,7 @@ pub(crate) struct InstancesExprJson {
     /// EL.)
     pub(crate) incomplete: bool,
     /// The list is guaranteed complete: the instance query ran on the realize
-    /// saturation fast path. Off it the tableau path's pseudo-model prune is not
+    /// saturation fast path and conversion dropped no axiom (#540). Off it the tableau path's pseudo-model prune is not
     /// proven complete, so this is `false` even when nothing was cut.
     pub(crate) completeness_guaranteed: bool,
     /// #369: the answer was positive and the KB's consistency stayed

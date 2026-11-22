@@ -64,7 +64,7 @@ cannot carry the signal. Their docs say so and point to the reporting form.
 | `materialize_existential_successors` (#391) | as `realize`; the rows join on ENTAILED types, so `direct_types_unverified` does not apply | `materialize_existential_successors_reporting` → `ExistentialSuccessorFlags::{incomplete, witness_prune_active, witness_prune_may_drop}` | no CLI surface | — | warns `IncompleteQueryWarning` and `WitnessPruneWarning` | `materialize_realize_flags.rs`, `materialize_realize_flags_cap.rs`; `test_materialize_flags.py` |
 | Python `materialize_inferred_class_assertions` (#391) | as `realize` (most-specific types) | — (Python only, over `realize`) | no CLI surface | — | warns `IncompleteQueryWarning`, `DirectTypesUnverifiedWarning` and `WitnessPruneWarning` | `test_materialize_flags.py` |
 | Python `materialize_inferred_subclass_axioms` (#391) | as `classify` | — (Python only, over `classify`) | no CLI surface | — | the same `IncompleteClassificationWarning`s as `classify` | `test_materialize_flags.py` |
-| `sat-expr`, `subclass-expr`, `instances-expr` | as `sat` / `subclass` / `instances` (same single-query node cap; `subclass-expr` also takes `subclass`'s wedge budget, #457) | `CeVerdict` / `CeInstances` `incomplete`; separately `completeness_guaranteed` (pure-EL fast path, or for `instances-expr` the realize saturation fast path, and nothing cut) | `sat-expr`/`subclass-expr`: `unknown`, exit 3; `instances-expr`: stderr warning | `incomplete` (`sat-expr`/`subclass-expr` exit 3), `completeness_guaranteed` | warns | `expr_give_up_cli.rs`; `test_expr_give_up.py` |
+| `sat-expr`, `subclass-expr`, `instances-expr` | as `sat` / `subclass` / `instances` (same single-query node cap; `subclass-expr` also takes `subclass`'s wedge budget, #457) | `CeVerdict` / `CeInstances` `incomplete`; separately `completeness_guaranteed` (pure-EL fast path, or for `instances-expr` the realize saturation fast path, nothing cut, and conversion dropped nothing, #540) | `sat-expr`/`subclass-expr`: `unknown`, exit 3; `instances-expr`: stderr warning | `incomplete` (`sat-expr`/`subclass-expr` exit 3), `completeness_guaranteed` | warns | `expr_give_up_cli.rs`; `test_expr_give_up.py` |
 | `disjoint` (classes) | per-pair deadline, node cap | `DisjointClasses::incomplete` | yes | `incomplete` | warns | `disjoint_nodecap.rs` |
 | `individuals` | per-pair deadline, node cap | `incomplete` | yes | `incomplete` | warns | individuals tests |
 | `instance`, `instances`, `instances-expr`, `individuals`: consistency (#369) | not a give-up: a POSITIVE answer (an instance, a merge, a difference) on a KB whose consistency the lazy check left undetermined (the consistency wedge stalled or was cut; the main-tableau tail `RUSTDL_QUERY_LAZY_CONSISTENCY_TAIL` is off by default). An inconsistency the check witnesses is `Err(Inconsistent)`, exit 1, "ontology is inconsistent". A negative answer never runs the check | `InstanceFlags::consistency_undetermined`; `SameIndividuals` / `DifferentIndividuals` / `CeInstances` `consistency_undetermined()` | answer unchanged, exit 0, one stderr warning | `consistency_undetermined` (`individuals`, `instances-expr`); `instance` / `instances` have no `--json` | `ConsistencyUndeterminedWarning` | `lazy_query_consistency.rs`, `lazy_query_consistency_cli.rs`, `test_lazy_query_consistency.py` |
@@ -82,6 +82,12 @@ fast-path gate behind it (`is_pure_el`, or for `instances-expr`
 `realize_saturation_eligible`). Any recorded gate/engine gap there, such as the
 chain-induced poison residual, surfaces as a guaranteed answer, the same exposure
 `classify --json` carries; no corpus net covers these surfaces.
+Since #540 the guarantee also requires that conversion dropped no axiom (the
+probed ontology's own `dropped`, as `classify --json`'s condition 7), and
+`explain` says "closure is complete" only under the same condition; with a drop
+its pure-EL "no" reads "closure is NOT complete for the input". Pinned by
+`expr_dropped_axiom_cli.rs` and `completeness_contract.rs`
+`a_dropped_axiom_voids_the_expression_query_guarantee`.
 
 An unknown class IRI is not a give-up and gets no verdict on any of these
 surfaces: `sat`, `subclass`, `explain`, `instance`, `instances`, `justify` and

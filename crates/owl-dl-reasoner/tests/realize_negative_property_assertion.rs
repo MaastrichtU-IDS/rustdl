@@ -293,18 +293,18 @@ fn saturation_only_realize_is_an_unflagged_under_approximation() {
     );
 }
 
-/// SENTINEL, not a desired answer. After this fix `realize` refuses the transitive shape
-/// as inconsistent, while `is_consistent` still says consistent: the consistency wedge
-/// never sees negative assertions (#532). Flip this when #532 is fixed.
+/// Flipped by #532: this was a sentinel recording that `is_consistent` said consistent
+/// while `realize` refused the shape, because the consistency wedge never saw negative
+/// assertions. Both surfaces now agree with Konclude and `HermiT`: inconsistent.
 #[test]
-fn sentinel_consistent_still_misses_the_transitive_shape_532() {
+fn consistent_refuses_the_transitive_shape_532() {
     let o = onto(
         "TransitiveObjectProperty(:r) ObjectPropertyAssertion(:r :a :b) \
          ObjectPropertyAssertion(:r :b :c) NegativeObjectPropertyAssertion(:r :a :c)",
     );
     assert!(matches!(realize(&o), Err(ReasonError::Inconsistent)));
     assert!(
-        is_consistent(&o).unwrap(),
-        "#532 fixed? is_consistent now refuses the transitive NPA shape: flip this sentinel"
+        !is_consistent(&o).unwrap(),
+        "#532: the wedge must see the negative assertion"
     );
 }

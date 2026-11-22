@@ -56,7 +56,7 @@ const DECLS: &str = "    Declaration(Class(:X)) Declaration(Class(:Y)) Declarati
     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
 ";
 
-/// Only the saturator sees this clash: an inverse-functional merge puts `a` in `Z`,
+/// Before #535 only the saturator saw this clash: an inverse-functional merge puts `a` in `Z`,
 /// disjoint from `W`.
 const ONLY_SATURATION: &str = "    InverseFunctionalObjectProperty(:r) SubObjectPropertyOf(:s ObjectInverseOf(:r))
     SubClassOf(ObjectOneOf(:a) ObjectSomeValuesFrom(:r :Y)) SubClassOf(:Y ObjectSomeValuesFrom(:s :Z))
@@ -112,11 +112,13 @@ fn realize_says_inconsistent(axioms: &str, flag: &str) -> bool {
 #[test]
 fn is_consistent_reads_the_saturator() {
     assert!(!consistent(ONLY_SATURATION, "1"));
-    // This control pins a wedge gap (a trusted `Sat` on this inconsistent KB). If the
-    // wedge is fixed for the shape it will fail: FLIP it, do not delete the test.
+    // Flipped by #535: this control pinned a wedge gap (a trusted `Sat` on this
+    // inconsistent KB: conversion's census does not count the `∃s` generator on
+    // `s ⊑ r⁻`, so the wedge had no `≤1 r⁻`). The consistency wedge now always gets
+    // that bound, so the flag is no longer the only route.
     assert!(
-        consistent(ONLY_SATURATION, "0"),
-        "control: without it the clash is missed"
+        !consistent(ONLY_SATURATION, "0"),
+        "#535: the consistency wedge carries the inverse-functional bound"
     );
 }
 

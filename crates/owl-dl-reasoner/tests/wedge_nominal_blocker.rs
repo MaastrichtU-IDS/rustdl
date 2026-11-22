@@ -246,17 +246,18 @@ fn issue_376_controls_stay_consistent() {
     }
 }
 
-/// KNOWN LIMITATION: the cascade shape with `InverseFunctional(t)` instead of an
-/// explicit `≤1 t⁻` on `B`. The wedge needs the `≤1 t⁻` that conversion emits for
-/// an inverse-functional role, and `inv_func_merge_consumable` (owl-dl-core
-/// convert.rs) declines it for a single non-nominal `∃t` generator; that gate is a
-/// recorded cost decision (19–47× on SIO). HermiT: inconsistent. FLIP if the gate
-/// admits this shape.
+/// The cascade shape with `InverseFunctional(t)` instead of an explicit `≤1 t⁻` on
+/// `B`. Conversion's `inv_func_merge_consumable` still declines the `≤1 t⁻` for a single
+/// non-nominal `∃t` generator (a recorded classify-cost decision, 19–47× on SIO), but
+/// since #535 the consistency wedge gets it regardless. HermiT: inconsistent (Konclude
+/// says consistent; by hand: Functional(s) makes both `B`s one node, whose two
+/// `t`-predecessors `IF(t)` merges, against `≥2 r.A`). Flipped from a
+/// known-limitation pin.
 #[test]
-fn known_inverse_functional_bound_not_emitted() {
+fn inverse_functional_bound_reaches_the_cascade_535() {
     let _l = lock();
     assert!(
-        consistent(
+        !consistent(
             "SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
              SubClassOf(:A ObjectSomeValuesFrom(:t :B))\n\
              SubClassOf(:B ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
@@ -264,7 +265,7 @@ fn known_inverse_functional_bound_not_emitted() {
              InverseFunctionalObjectProperty(:t)\n\
              ClassAssertion(:Q :d)"
         ),
-        "FLIP: the inverse-functional bound reaches this shape now"
+        "#535: the consistency wedge must carry the inverse-functional bound"
     );
 }
 

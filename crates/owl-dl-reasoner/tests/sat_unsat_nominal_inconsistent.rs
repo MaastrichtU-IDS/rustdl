@@ -146,7 +146,7 @@ fn an_unsat_class_beside_a_typed_individual_is_consistent() {
     );
 }
 
-/// Default `classify` too: here only the saturator sees the clash (an inverse-functional
+/// Default `classify` too: before #535 only the saturator saw the clash (an inverse-functional
 /// merge puts `a` in `Z`, disjoint from `W`). Main reported this consistent.
 #[test]
 fn default_classify_reports_an_inconsistency_only_the_saturator_finds() {
@@ -154,9 +154,11 @@ fn default_classify_reports_an_inconsistency_only_the_saturator_finds() {
     SubClassOf(ObjectOneOf(:a) ObjectSomeValuesFrom(:r :Y)) SubClassOf(:Y ObjectSomeValuesFrom(:s :Z))
     SubClassOf(ObjectOneOf(:a) :W) DisjointClasses(:W :Z)";
     assert!(!classify_consistent(axioms, "1"));
+    // Flipped by #535: without the rule the wedge used to miss it (no `≤1 r⁻`; see
+    // `sat_inconsistency_all_surfaces.rs`). The consistency wedge now carries the bound.
     assert!(
-        classify_consistent(axioms, "0"),
-        "control: without the rule it is missed"
+        !classify_consistent(axioms, "0"),
+        "#535: the consistency wedge carries the inverse-functional bound"
     );
 }
 

@@ -1445,6 +1445,14 @@ fn apply_reflexive_roles(cz: &mut Clausifier, reflexive: &std::collections::Hash
     }
 }
 
+/// `RUSTDL_REFLEXIVE_MAX_ZERO_LOOP` (**default ON**, `=0` reverts, #535): whether
+/// [`add_counted_self_loops`] puts the self-loop under a `≤0` bound on a reflexive
+/// role without waiting for an `R`-edge.
+#[must_use]
+pub fn reflexive_max_zero_loop_enabled() -> bool {
+    std::env::var_os("RUSTDL_REFLEXIVE_MAX_ZERO_LOOP").is_none_or(|v| v != "0")
+}
+
 /// Materialise the self-loop `R(v,v)` where a node can count it: wherever a
 /// clause asserts `≤n R` (functional included) on a reflexive `R` at `v` and
 /// `v` already has an `R`-edge. [`apply_reflexive_roles`] never builds the
@@ -1462,10 +1470,26 @@ fn add_counted_self_loops(cz: &mut Clausifier, reflexive: &std::collections::Has
     let mut new: Vec<DlClause> = Vec::new();
     for clause in &cz.clauses {
         for atom in &clause.head {
-            let Atom::AtMost(role, _, _, v) = *atom else {
+            let Atom::AtMost(role, _, n, v) = *atom else {
                 continue;
             };
             if !reflexive.contains(&role.role_id()) {
+                continue;
+            }
+            // #535: a `≤0 R` bound needs no other edge to be violated: `v` is its
+            // own `R`-successor. The guard below waits for an `R`-edge that a `≤0`
+            // node never gets, so `Reflexive(r)` + `a : ≤0 r` read consistent.
+            // Emit the self-loop on the clause's own body instead (still entailed;
+            // `≤0` heads are rare, so this is not the every-node loop that cost
+            // 3–5×).
+            if n == 0 && reflexive_max_zero_loop_enabled() {
+                let derived = DlClause {
+                    body: clause.body.clone(),
+                    head: vec![Atom::Role(role, v, v)],
+                };
+                if !new.contains(&derived) {
+                    new.push(derived);
+                }
                 continue;
             }
             let fresh = clause

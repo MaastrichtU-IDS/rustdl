@@ -56,7 +56,7 @@ const DECLS: &str = "    Declaration(Class(:X)) Declaration(Class(:Y)) Declarati
     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectOneOf(:a)))
 ";
 
-/// Only the saturator sees this clash: an inverse-functional merge puts `a` in `Z`,
+/// Before #535 only the saturator saw this clash: an inverse-functional merge puts `a` in `Z`,
 /// disjoint from `W`.
 const ONLY_SATURATION: &str = "    InverseFunctionalObjectProperty(:r) SubObjectPropertyOf(:s ObjectInverseOf(:r))
     SubClassOf(ObjectOneOf(:a) ObjectSomeValuesFrom(:r :Y)) SubClassOf(:Y ObjectSomeValuesFrom(:s :Z))
@@ -97,6 +97,18 @@ fn consistent(axioms: &str, flag: &str) -> bool {
     owl_dl_reasoner::is_consistent(&parse(axioms)).expect("is_consistent")
 }
 
+/// [`consistent`] with the #535 consistency-wedge coverage reverted
+/// (`RUSTDL_WEDGE_ABOX_COVERAGE=0`), so the wedge misses [`ONLY_SATURATION`] again and
+/// this file's flag is the only route to the clash: the two arms discriminate.
+fn consistent_without_wedge_coverage(axioms: &str, flag: &str) -> bool {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = SetEnvGuard::set("RUSTDL_SAT_INCONSISTENCY_ALL_SURFACES", flag);
+    let _w = SetEnvGuard::set("RUSTDL_WEDGE_ABOX_COVERAGE", "0");
+    owl_dl_reasoner::is_consistent(&parse(axioms)).expect("is_consistent")
+}
+
 /// `true` iff `realize` reports the KB inconsistent.
 fn realize_says_inconsistent(axioms: &str, flag: &str) -> bool {
     let _lock = ENV_MUTEX
@@ -112,11 +124,19 @@ fn realize_says_inconsistent(axioms: &str, flag: &str) -> bool {
 #[test]
 fn is_consistent_reads_the_saturator() {
     assert!(!consistent(ONLY_SATURATION, "1"));
-    // This control pins a wedge gap (a trusted `Sat` on this inconsistent KB). If the
-    // wedge is fixed for the shape it will fail: FLIP it, do not delete the test.
+    // Since #535 the consistency wedge carries the inverse-functional bound this
+    // shape needs (conversion's census does not count the `∃s` generator on `s ⊑ r⁻`),
+    // so at the default the flag is no longer the only route.
     assert!(
-        consistent(ONLY_SATURATION, "0"),
-        "control: without it the clash is missed"
+        !consistent(ONLY_SATURATION, "0"),
+        "#535: the consistency wedge carries the inverse-functional bound"
+    );
+    // The discriminating pair: with that wedge coverage reverted, only this flag
+    // finds the clash. If the flag stops working, the first assert fails.
+    assert!(!consistent_without_wedge_coverage(ONLY_SATURATION, "1"));
+    assert!(
+        consistent_without_wedge_coverage(ONLY_SATURATION, "0"),
+        "control: without the flag (and the #535 wedge coverage) the clash is missed"
     );
 }
 

@@ -6550,6 +6550,89 @@ pub fn consistency_fallback_ms() -> u64 {
         .unwrap_or(DEFAULT_MS)
 }
 
+/// Whether the consistency wedge's input ([`ConsistencyCache::build`]) also carries
+/// the `ABox` and role axioms it used to drop (#532, #535;
+/// `RUSTDL_WEDGE_ABOX_COVERAGE`, **default ON**, `=0` reverts). See
+/// [`inject_wedge_abox_coverage`].
+///
+/// Without them the wedge's `Sat` was a model of a WEAKER `KB`, and `trust_sat`
+/// accepted it, so an inconsistent ontology read `consistent` with
+/// `wedge_clauses_refused: 0` and `dropped` empty.
+#[must_use]
+pub fn wedge_abox_coverage_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_ABOX_COVERAGE").is_none_or(|v| v != "0")
+}
+
+/// Add to the consistency wedge's (cloned) input the axioms that conversion and the
+/// clausifier leave the wedge without (#532, #535). Each one is the exact meaning of an
+/// axiom the ontology states, so it adds no constraint the `KB` lacks:
+///
+/// - `NegativeObjectPropertyAssertion(r a b)` → `{a} ⊑ ∀r.¬{b}`, the encoding the main
+///   tableau's `collect_abox` uses. It reaches every `r`-edge the engine builds,
+///   asserted or derived (symmetry, transitivity, inverses, `∃r.{b}`, a nominal or
+///   `SameIndividual` merge, reflexivity). `abox_check` P3 compares only with asserted
+///   edges and their sub-roles.
+/// - `InverseFunctionalObjectProperty(r)` → `∃r⁻.⊤ ⊑ ≤1 r⁻` wherever conversion did
+///   not emit it. Conversion emits it only where `inv_func_merge_consumable` admits
+///   it, a gate kept for CLASSIFY cost (19–47× on three SIO ontologies, none with an
+///   individual). Its census compares raw role ids, so a generator spelled through an
+///   `InverseObjectProperties` alias (`InverseFunctional(s)`, `s ≡ r⁻`, `∃r._`), or an
+///   `∃r._` on a `Symmetric` `r`, is not seen and the wedge had no `≤1` to enforce. This cache is built only for
+///   ontologies naming an individual and runs one `decide`, not a probe per pair.
+///   Like conversion's, it is off under `RUSTDL_INVERSE_FUNC_MAX=0`.
+///
+/// `NegativeDataPropertyAssertion` needs nothing here: conversion lowers it to the
+/// `ClassAssertion` `¬∃d.DKey(v)`, which the class-assertion injection carries.
+fn inject_wedge_abox_coverage(internal: &mut InternalOntology) {
+    use owl_dl_core::ontology::Axiom;
+    let mut added: Vec<Axiom> = Vec::new();
+    let mut inverse_functional: Vec<owl_dl_core::ir::Role> = Vec::new();
+    let negatives: Vec<(
+        owl_dl_core::ir::Role,
+        owl_dl_core::ir::IndividualId,
+        owl_dl_core::ir::IndividualId,
+    )> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::NegativeObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => Some((*role, *subject, *object)),
+            _ => None,
+        })
+        .collect();
+    // `RUSTDL_INVERSE_FUNC_MAX=0` reverts the inverse-functional GCI everywhere, here
+    // included (`functional_enforcement.rs` isolates it with that flag).
+    if owl_dl_core::convert::inverse_functional_max_enabled() {
+        for ax in &internal.axioms {
+            if let Axiom::InverseFunctionalRole(r) = ax {
+                inverse_functional.push(r.flip());
+            }
+        }
+    }
+    for (role, subject, object) in negatives {
+        let sub = internal.concepts.nominal(subject);
+        let target = internal.concepts.nominal(object);
+        let not_target = internal.concepts.not(target);
+        let sup = internal.concepts.all(role, not_target);
+        added.push(Axiom::SubClassOf { sub, sup });
+    }
+    if !inverse_functional.is_empty() {
+        let top = internal.concepts.top();
+        for f in inverse_functional {
+            let sub = internal.concepts.some(f, top);
+            let sup = internal.concepts.max(1, f, top);
+            let gci = Axiom::SubClassOf { sub, sup };
+            if !internal.axioms.contains(&gci) && !added.contains(&gci) {
+                added.push(gci);
+            }
+        }
+    }
+    internal.axioms.extend(added);
+}
+
 /// `ABox`-seeded wedge state for consistency checking. Built once at
 /// [`PreparedOntology::from_internal`] time from the **un-mutated**
 /// input ontology (the same snapshot `HyperCache::build` clausifies),
@@ -6621,6 +6704,9 @@ impl ConsistencyCache {
                 sub: nom,
                 sup: class,
             });
+        }
+        if wedge_abox_coverage_enabled() {
+            inject_wedge_abox_coverage(&mut internal);
         }
 
         let (mut clauses, clause_stats) = owl_dl_core::clause::clausify_with_stats(&internal);

@@ -705,6 +705,22 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::wedge_consistency_enabled,
             true,
         ),
+        // #532/#535: the consistency wedge's input carries negative object property
+        // assertions (`{a} ⊑ ∀r.¬{b}`) and every inverse-functional `≤1` GCI that
+        // conversion's classify-cost gate left out. Each is the meaning of a stated
+        // axiom; `=0` reverts.
+        (
+            "RUSTDL_WEDGE_ABOX_COVERAGE",
+            owl_dl_reasoner::wedge_abox_coverage_enabled,
+            true,
+        ),
+        // #535: a `≤0` bound on a reflexive role gets its (entailed) self-loop
+        // without waiting for an `R`-edge. `=0` reverts.
+        (
+            "RUSTDL_REFLEXIVE_MAX_ZERO_LOOP",
+            owl_dl_core::clause::reflexive_max_zero_loop_enabled,
+            true,
+        ),
         (
             "RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY",
             owl_dl_reasoner::consistency_data_counting_verify_enabled,

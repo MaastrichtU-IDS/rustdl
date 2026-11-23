@@ -207,6 +207,15 @@ struct Clausifier {
     card_disjunct_atoms: bool,
     /// [`max_qualifier_fix_enabled`], read once per clausification (#554).
     max_qualifier_cover: bool,
+    /// #561: compound concept `C` → the name `Q` whose global Horn cover
+    /// `alt(X) → Q(X)` (`C ⊑ Q`) [`Self::horn_cover`] already emitted. A repeat
+    /// occurrence (another `≤n` over `C`, or another DNF alternative of the
+    /// enclosing body) reuses `Q` instead of a fresh name and a copy of the cover.
+    horn_cover_memo: HashMap<ConceptId, ClassId>,
+    /// #561: non-Horn `≤n` qualifier `C` → its shared name `Q`. The choose rule
+    /// is still emitted once per anchoring body; only the name is shared, and
+    /// every clause stays a tautology under `Q := C`.
+    choose_name_memo: HashMap<ConceptId, ClassId>,
 }
 
 impl Clausifier {
@@ -230,6 +239,8 @@ impl Clausifier {
             card_disjunct_atoms: std::env::var_os("RUSTDL_CARD_DISJUNCT_ATOMS")
                 .is_none_or(|v| v != "0" && !v.is_empty()),
             max_qualifier_cover: max_qualifier_fix_enabled(),
+            horn_cover_memo: HashMap::new(),
+            choose_name_memo: HashMap::new(),
         }
     }
 
@@ -823,8 +834,17 @@ impl Clausifier {
                         // where the bound is: every `R`-neighbour `y` of a node
                         // satisfying `body` gets `nnf(¬C)(y) ∨ Q(y)` (the
                         // hypertableau choose rule). `≤n R.Q ⊓ ∀R.(¬C ⊔ Q)` entails
-                        // `≤n R.C`, and with `Q := C` it is entailed by it.
-                        let q = self.fresh_class();
+                        // `≤n R.C`, and with `Q := C` it is entailed by it. `Q` is
+                        // shared by every occurrence of `C` (#561): each clause is
+                        // still a tautology under `Q := C`.
+                        let q = match self.choose_name_memo.get(&inner) {
+                            Some(&q) => q,
+                            None => {
+                                let q = self.fresh_class();
+                                self.choose_name_memo.insert(inner, q);
+                                q
+                            }
+                        };
                         let y = self.fresh_var();
                         let mut b = body.clone();
                         b.push(Atom::Role(role, var, y));
@@ -891,36 +911,80 @@ impl Clausifier {
         if matches!(self.pool.get(filler), ConceptExpr::Bot) {
             return MaxQualifier::Vacuous;
         }
-        if let Some(cls) = self.class_id_of(filler) {
-            return MaxQualifier::Named(Some(cls));
+        match self.horn_cover(filler) {
+            Some(q) => MaxQualifier::Named(Some(q)),
+            None => MaxQualifier::NotHorn(filler),
         }
-        let saved_var = self.next_var;
-        if let Some(alts) = self.encode_antecedent(filler, X) {
-            let q = self.fresh_class();
-            for body in alts {
-                self.clauses.push(DlClause {
-                    body,
-                    head: vec![Atom::Class(q, X)],
-                });
-            }
-            return MaxQualifier::Named(Some(q));
-        }
-        self.next_var = saved_var;
-        MaxQualifier::NotHorn(filler)
     }
 
-    /// Emit `body → nnf(¬C)(y) ∨ Q(y)`, the choose-rule half of a non-Horn `≤n`
-    /// qualifier (see the `Max` arm of [`Self::emit_head`]). `false` (and a
-    /// deferral) if a disjunct of `nnf(¬C)` has no head atom.
-    fn emit_choose(&mut self, body: Vec<Atom>, filler: ConceptId, q: ClassId, y: Var) -> bool {
-        let neg = crate::normalize::nnf_complement(filler, &mut self.pool);
+    /// A class `Q` with `C ⊑ Q` for a `C` that has a Horn antecedent encoding:
+    /// `C` itself if atomic/nominal, else a name whose global Horn cover
+    /// `alt(X) → Q(X)` is emitted once per interned `C` (#561). `None` (and no
+    /// clause) when `C` has no such encoding.
+    fn horn_cover(&mut self, c: ConceptId) -> Option<ClassId> {
+        if let Some(cls) = self.class_id_of(c) {
+            return Some(cls);
+        }
+        if let Some(&q) = self.horn_cover_memo.get(&c) {
+            return Some(q);
+        }
+        let saved_var = self.next_var;
+        let Some(alts) = self.encode_antecedent(c, X) else {
+            self.next_var = saved_var;
+            return None;
+        };
+        let q = self.fresh_class();
+        for body in alts {
+            self.clauses.push(DlClause {
+                body,
+                head: vec![Atom::Class(q, X)],
+            });
+        }
+        self.horn_cover_memo.insert(c, q);
+        Some(q)
+    }
+
+    /// Emit the choose-rule half of a non-Horn `≤n` qualifier `C` (see the `Max`
+    /// arm of [`Self::emit_head`]): `body ∧ G₁(y) ∧ … ∧ Gₖ(y) → nnf(¬N)(y) ∨
+    /// Q(y)`, where `C = H₁ ⊓ … ⊓ Hₖ ⊓ N` and each `Gᵢ` is the [`Self::horn_cover`]
+    /// of a Horn conjunct `Hᵢ` (the conjunct itself when atomic). `false` (and a
+    /// deferral) if a disjunct of `nnf(¬N)` has no head atom.
+    ///
+    /// #561: the Horn conjuncts go into the body instead of the head, so only a
+    /// neighbour already in every `Gᵢ` branches, and an atomic `A` no longer
+    /// costs a negative-literal head atom `N¬A`. This is exact: from `Hᵢ ⊑ Gᵢ`
+    /// the clause still gives `C ⊑ Q` on every `R`-neighbour, and under `Q := C`
+    /// it is a tautology (`¬H ⊔ ¬N ⊔ C`).
+    fn emit_choose(&mut self, mut body: Vec<Atom>, filler: ConceptId, q: ClassId, y: Var) -> bool {
+        let conjuncts: Vec<ConceptId> = match self.pool.get(filler) {
+            ConceptExpr::And(parts) => parts.to_vec(),
+            _ => vec![filler],
+        };
+        let mut rest = Vec::with_capacity(conjuncts.len());
+        for c in conjuncts {
+            match self.horn_cover(c) {
+                Some(g) => body.push(Atom::Class(g, y)),
+                None => rest.push(c),
+            }
+        }
+        let mut head = vec![Atom::Class(q, y)];
+        let non_horn = match rest.len() {
+            // Only reachable when the whole `C` overflowed the DNF cap while each
+            // conjunct did not: the gates alone imply `C`, so `→ Q(y)` is exact.
+            0 => {
+                self.clauses.push(DlClause { body, head });
+                return true;
+            }
+            1 => rest[0],
+            _ => self.pool.and(rest),
+        };
+        let neg = crate::normalize::nnf_complement(non_horn, &mut self.pool);
         let parts: Vec<ConceptId> = match self.pool.get(neg) {
             ConceptExpr::Or(parts) => parts.to_vec(),
-            // `C = ⊤` is `Named(None)` and `C = ⊥` is `Vacuous`, so `¬C` is
-            // never `⊤`/`⊥` at the top; a `⊥` disjunct is dropped below.
+            // `N` is never `⊤` (Horn, so a gate). A `⊥` disjunct is dropped
+            // below, and a `⊤` one (`N = ⊥`, so `C = ⊥`) leaves nothing to state.
             _ => vec![neg],
         };
-        let mut head = vec![Atom::Class(q, y)];
         for p in parts {
             match self.pool.get(p) {
                 ConceptExpr::Bot => continue,
@@ -2251,6 +2315,173 @@ TransitiveObjectProperty(:r0)\n)\n"
         assert!(
             !clauses.iter().any(is_two_leg_chain_clause),
             "3-leg chain must not be mis-encoded as a 2-leg clause; clauses={clauses:?}"
+        );
+    }
+
+    // ---- #561: a cheaper non-Horn `≤n` qualifier cover ----------------------
+
+    /// Clausify `axioms` and return the clauses with a class-id lookup by local name.
+    fn clausify_named(axioms: &str) -> (Vec<DlClause>, impl Fn(&str) -> ClassId + use<>) {
+        let src = format!("{HEADER}Ontology(<http://x/o>\n{axioms}\n)\n");
+        let mut reader = Cursor::new(src);
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parse");
+        let internal = convert_ontology(&onto).expect("convert");
+        let (clauses, _) = clausify_with_stats(&internal);
+        let vocab = internal.vocabulary.clone();
+        let class = move |name: &str| {
+            vocab
+                .class_id(&format!("http://x/{name}"))
+                .unwrap_or_else(|| panic!("no class {name}"))
+        };
+        (clauses, class)
+    }
+
+    /// The `≤n` clause `anchor(X) → ≤n R.Q(X)` and its qualifier `Q`, one per anchor.
+    fn max_heads(clauses: &[DlClause], anchor: ClassId) -> Vec<Option<ClassId>> {
+        clauses
+            .iter()
+            .filter(|c| c.body == [Atom::Class(anchor, X)])
+            .filter_map(|c| match c.head.as_slice() {
+                [Atom::AtMost(_, q, _, X)] => Some(*q),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The choose rules for `Q`: clauses with a head atom `Q(y)` on a successor `y`.
+    fn choose_rules(clauses: &[DlClause], q: ClassId) -> Vec<&DlClause> {
+        clauses
+            .iter()
+            .filter(|c| {
+                c.head
+                    .iter()
+                    .any(|a| matches!(a, Atom::Class(h, v) if *h == q && *v != X))
+            })
+            .collect()
+    }
+
+    /// #561 lever 2: an atomic conjunct `P` of a non-Horn qualifier goes into the
+    /// choose rule's body (`A(X) ∧ r(X,y) ∧ P(y) → Q(y) ∨ ∃t.¬D(y)`), not into its
+    /// head as a negative-literal name `N¬P` (the #560 encoding had three head atoms
+    /// and an aux clause `N¬P ∧ P → ⊥`).
+    #[test]
+    fn max_qualifier_atomic_conjunct_gates_the_choose_rule() {
+        let (clauses, class) = clausify_named(
+            "SubClassOf(:A ObjectMaxCardinality(1 :r ObjectIntersectionOf(:P \
+             ObjectAllValuesFrom(:t :D))))",
+        );
+        let (a, p) = (class("A"), class("P"));
+        let [Some(q)] = max_heads(&clauses, a)[..] else {
+            panic!("one qualified ≤1 on A: {clauses:?}")
+        };
+        let rules = choose_rules(&clauses, q);
+        assert_eq!(rules.len(), 1, "{clauses:?}");
+        let rule = rules[0];
+        let Some(&Atom::Role(_, X, y)) = rule.body.iter().find(|a| matches!(a, Atom::Role(..)))
+        else {
+            panic!("no r-edge in {rule:?}")
+        };
+        assert!(rule.body.contains(&Atom::Class(a, X)), "{rule:?}");
+        assert!(rule.body.contains(&Atom::Class(p, y)), "P gates: {rule:?}");
+        assert_eq!(rule.body.len(), 3, "{rule:?}");
+        assert_eq!(rule.head.len(), 2, "Q ∨ ∃t.¬D only: {rule:?}");
+        assert!(
+            !clauses
+                .iter()
+                .any(|c| c.head.is_empty() && c.body.contains(&Atom::Class(p, X))),
+            "no `N¬P ∧ P → ⊥` name: {clauses:?}"
+        );
+    }
+
+    /// #561 lever 1: a compound Horn conjunct `∃s.B` of a non-Horn qualifier gets
+    /// a global Horn cover `s(X,z) ∧ B(z) → G(X)`, and `G(y)` gates the choose
+    /// rule; only the non-Horn conjunct `∀t.D` is left in the head.
+    #[test]
+    fn max_qualifier_horn_conjunct_is_split_out_of_the_choose_rule() {
+        let (clauses, class) = clausify_named(
+            "SubClassOf(:A ObjectMaxCardinality(1 :r ObjectIntersectionOf(\
+             ObjectSomeValuesFrom(:s :B) ObjectAllValuesFrom(:t :D))))",
+        );
+        let (a, b) = (class("A"), class("B"));
+        let [Some(q)] = max_heads(&clauses, a)[..] else {
+            panic!("one qualified ≤1 on A: {clauses:?}")
+        };
+        let rules = choose_rules(&clauses, q);
+        assert_eq!(rules.len(), 1, "{clauses:?}");
+        let rule = rules[0];
+        assert_eq!(rule.head.len(), 2, "Q ∨ ∃t.¬D only: {rule:?}");
+        let Some(&Atom::Role(_, X, y)) = rule.body.iter().find(|a| matches!(a, Atom::Role(..)))
+        else {
+            panic!("no r-edge in {rule:?}")
+        };
+        let gates: Vec<ClassId> = rule
+            .body
+            .iter()
+            .filter_map(|at| match at {
+                Atom::Class(g, v) if *v == y => Some(*g),
+                _ => None,
+            })
+            .collect();
+        let [g] = gates[..] else {
+            panic!("one gate on y: {rule:?}")
+        };
+        assert!(
+            clauses.iter().any(|c| c.head == [Atom::Class(g, X)]
+                && c.body.len() == 2
+                && matches!(c.body[0], Atom::Role(_, X, _))
+                && matches!(c.body[1], Atom::Class(cb, _) if cb == b)),
+            "G ⊒ ∃s.B: {clauses:?}"
+        );
+    }
+
+    /// #561 lever 3: two `≤n` over one interned compound filler share one name.
+    /// A Horn filler's cover is emitted once; a non-Horn filler keeps one choose
+    /// rule per anchoring body (`A`, `E`), but under one `Q`.
+    #[test]
+    fn max_qualifier_name_is_memoised_per_filler() {
+        let horn = "ObjectUnionOf(:P ObjectSomeValuesFrom(:s :B))";
+        let non_horn = "ObjectAllValuesFrom(:t :D)";
+        let (clauses, class) = clausify_named(&format!(
+            "SubClassOf(:A ObjectMaxCardinality(1 :r {horn})) \
+             SubClassOf(:E ObjectMaxCardinality(2 :r {horn})) \
+             SubClassOf(:A ObjectMaxCardinality(1 :r {non_horn})) \
+             SubClassOf(:E ObjectMaxCardinality(2 :r {non_horn}))"
+        ));
+        let (a, e, p) = (class("A"), class("E"), class("P"));
+        let (qa, qe) = (max_heads(&clauses, a), max_heads(&clauses, e));
+        assert_eq!((qa.len(), qe.len()), (2, 2), "{clauses:?}");
+        assert_eq!(qa, qe, "shared names: {clauses:?}");
+        let horn_q = qa
+            .iter()
+            .flatten()
+            .copied()
+            .find(|q| {
+                clauses.contains(&DlClause {
+                    body: vec![Atom::Class(p, X)],
+                    head: vec![Atom::Class(*q, X)],
+                })
+            })
+            .expect("Horn cover P → Q");
+        let cover_clauses = clauses
+            .iter()
+            .filter(|c| c.head == [Atom::Class(horn_q, X)])
+            .count();
+        assert_eq!(cover_clauses, 2, "one cover (P, ∃s.B): {clauses:?}");
+        let choose_q = qa
+            .iter()
+            .flatten()
+            .copied()
+            .find(|q| *q != horn_q)
+            .expect("choose Q");
+        let anchors: Vec<bool> = choose_rules(&clauses, choose_q)
+            .iter()
+            .map(|c| c.body.contains(&Atom::Class(a, X)))
+            .collect();
+        assert_eq!(anchors.len(), 2, "one choose rule per body: {clauses:?}");
+        assert!(
+            anchors.contains(&true) && anchors.contains(&false),
+            "{clauses:?}"
         );
     }
 }

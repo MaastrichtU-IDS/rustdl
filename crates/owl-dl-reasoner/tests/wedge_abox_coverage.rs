@@ -679,6 +679,52 @@ fn complex_qualifier_max1_negated() {
     assert_inconsistent(L8_MAX1_NEGATED);
 }
 
+/// #561: a mixed qualifier `M = P ⊓ ∃s.Q ⊓ ∀r0.Q1`. Its Horn conjuncts (`P`,
+/// `∃s.Q`) gate the choose rule from the body, so these pin that a gate is still
+/// derived (inconsistent) and that it still blocks a neighbour outside `M`
+/// (consistent). Pairs are consistent first; each consistent twin drops one fact.
+const MIXED: &str =
+    "ObjectIntersectionOf(:P ObjectSomeValuesFrom(:s :Q) ObjectAllValuesFrom(:r0 :Q1))";
+fn mixed_pairs() -> [(String, String); 3] {
+    let bound = format!("ClassAssertion(ObjectMaxCardinality(0 :r {MIXED}) :a)");
+    let edge = "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :c) \
+                ClassAssertion(ObjectAllValuesFrom(:r0 :Q1) :b)";
+    let refl = "ReflexiveObjectProperty(:r) ObjectPropertyAssertion(:s :a :c) \
+                ClassAssertion(ObjectAllValuesFrom(:r0 :Q1) :a) ClassAssertion(:P :a)";
+    [
+        // `b` is not known `P` (the atomic gate).
+        (
+            format!("{bound} {edge} ClassAssertion(:Q :c)"),
+            format!("{bound} {edge} ClassAssertion(:Q :c) ClassAssertion(:P :b)"),
+        ),
+        // `c` is not known `Q`, so `b` need not be `∃s.Q` (the compound gate).
+        (
+            format!("{bound} {edge} ClassAssertion(:P :b)"),
+            format!("{bound} {edge} ClassAssertion(:P :b) ClassAssertion(:Q :c)"),
+        ),
+        // A reflexive `r`: `a` is its own `r`-successor once it is in `M`.
+        (
+            format!("{bound} {refl}"),
+            format!("{bound} {refl} ClassAssertion(:Q :c)"),
+        ),
+    ]
+}
+
+#[test]
+fn control_complex_qualifier_mixed_consistent() {
+    let _g = lock();
+    for (consistent_body, _) in mixed_pairs() {
+        assert_consistent(&consistent_body);
+    }
+}
+#[test]
+fn complex_qualifier_mixed_inconsistent() {
+    let _g = lock();
+    for (_, inconsistent_body) in mixed_pairs() {
+        assert_inconsistent(&inconsistent_body);
+    }
+}
+
 // ---- the decision is the wedge's, and each flag reverts its fix ----------------
 
 /// The repaired cases are decided by the wedge's own `Unsat`, not by a fall-through:

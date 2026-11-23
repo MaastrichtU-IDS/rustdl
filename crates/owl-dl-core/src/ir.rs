@@ -205,6 +205,9 @@ pub struct ConceptPool {
     /// Built on the first `nominal_ids()` call and cleared whenever a new
     /// nominal is interned, so it always equals a fresh scan.
     nominal_ids_cache: std::sync::OnceLock<Vec<ConceptId>>,
+    /// #563: the filler of every interned `ConceptExpr::Max`, ascending and
+    /// deduplicated. Kept like `nominal_ids_cache`.
+    max_filler_ids_cache: std::sync::OnceLock<Vec<ConceptId>>,
 }
 
 impl Clone for ConceptPool {
@@ -218,6 +221,7 @@ impl Clone for ConceptPool {
                     .load(std::sync::atomic::Ordering::Relaxed),
             ),
             nominal_ids_cache: self.nominal_ids_cache.clone(),
+            max_filler_ids_cache: self.max_filler_ids_cache.clone(),
         }
     }
 }
@@ -314,6 +318,9 @@ impl ConceptPool {
         if matches!(expr, ConceptExpr::Nominal(_)) {
             self.nominal_ids_cache = std::sync::OnceLock::new();
         }
+        if matches!(expr, ConceptExpr::Max(..)) {
+            self.max_filler_ids_cache = std::sync::OnceLock::new();
+        }
         self.by_expr.insert(expr.clone(), id);
         self.by_id.push(expr);
         id
@@ -330,6 +337,26 @@ impl ConceptPool {
                 .filter(|(_, e)| matches!(e, ConceptExpr::Nominal(_)))
                 .map(|(id, _)| id)
                 .collect()
+        })
+    }
+
+    /// The filler `C` of every interned `ConceptExpr::Max(_, _, C)`, ascending and
+    /// deduplicated (#563).
+    ///
+    /// Cached like [`Self::nominal_ids`]: interning a new `Max` clears it.
+    #[must_use]
+    pub fn max_filler_ids(&self) -> &[ConceptId] {
+        self.max_filler_ids_cache.get_or_init(|| {
+            let mut ids: Vec<ConceptId> = self
+                .iter_with_ids()
+                .filter_map(|(_, e)| match e {
+                    ConceptExpr::Max(_, _, c) => Some(*c),
+                    _ => None,
+                })
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
         })
     }
 

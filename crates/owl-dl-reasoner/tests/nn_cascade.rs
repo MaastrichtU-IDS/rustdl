@@ -467,17 +467,58 @@ fn if_chain(n: usize, nominal: bool) -> String {
     s
 }
 
+/// #563 / #562: [`if_chain`] with `E` back-propagating up it (`Cₙ₊₁ ⊑ E`,
+/// `E ⊑ ∀r⁻.E`) and an unrelated nominal (`Z ⊑ {a}`). The nominal puts a nominal
+/// node in the completion, so the guard cannot skip the walk, and every `E` that
+/// climbs a level is a new label.
+fn back_chain(n: usize) -> String {
+    use std::fmt::Write as _;
+    let mut s = if_chain(n, false);
+    writeln!(
+        s,
+        "SubClassOf(:C{} :E)\n\
+         SubClassOf(:E ObjectAllValuesFrom(ObjectInverseOf(:r) :E))\n\
+         SubClassOf(:Z ObjectOneOf(:a))",
+        n + 1
+    )
+    .unwrap();
+    s
+}
+
+/// #562: `E` climbs the chain against the saturation's node order, one pass per
+/// level, so about 2,000 levels used up the 4,096 passes the deterministic
+/// saturation allowed and `sat C₁` answered `NoVerdict`. A pass that only adds
+/// labels and edges no longer counts.
+#[test]
+fn a_deep_chain_with_back_propagation_is_satisfiable_562() {
+    let _l = lock();
+    let o = onto(&back_chain(2200));
+    assert!(owl_dl_reasoner::is_class_satisfiable(&o, &format!("{NS}C1")).unwrap());
+}
+
 /// CPU-independent cost pin (Fable's review of #559): `sat C₁` on a deep
 /// inverse-functional chain costs about the same with the cascade as without. The
 /// unmemoised cascade walked the chain below a node on every guard call, about
 /// `n^2.7` (`n = 4000`: 22 CPU-s against 0.6 s, release); memoised per trail
 /// generation it is linear. A wide margin against the flag-off arm of the same
 /// process keeps this independent of the host's speed.
+///
+/// #563: [`back_chain`] adds a label per level after the chain is built, and the
+/// memo keyed on the trail generation was rebuilt below each one (`n = 2000`: 1.0
+/// CPU-s against 0.3 s, release). The tableau unit tests
+/// `a_label_climbing_the_chain_reuses_the_walk_563` and
+/// `no_walk_until_a_node_is_nominal_563` pin that cost by count.
 #[test]
 fn a_deep_inverse_functional_chain_costs_no_more_with_the_cascade() {
     let _l = lock();
-    for nominal in [false, true] {
-        let body = if_chain(1200, nominal);
+    for (what, body) in [
+        ("plain", if_chain(1200, false)),
+        ("nominal", if_chain(1200, true)),
+        (
+            "back-propagation, unrelated nominal (#563)",
+            back_chain(1200),
+        ),
+    ] {
         let o = onto(&body);
         let iri = format!("{NS}C1");
         let time = |o: &SetOntology<RcStr>| {
@@ -492,7 +533,7 @@ fn a_deep_inverse_functional_chain_costs_no_more_with_the_cascade() {
         let on = time(&o);
         assert!(
             on <= off * 4 + std::time::Duration::from_secs(2),
-            "nominal={nominal}: cascade {on:?} against {off:?} without it"
+            "{what}: cascade {on:?} against {off:?} without it"
         );
     }
 }

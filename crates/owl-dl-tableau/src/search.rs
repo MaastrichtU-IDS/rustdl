@@ -48,15 +48,31 @@ const SATURATE_ITERS: usize = 4096;
 /// A deadline that fires inside the saturation is `Stalled` too, but not latched. The
 /// knob gives a deep deterministic saturation more room, and lets a test force the
 /// give-up (#449).
-fn saturate_iters() -> usize {
-    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+///
+/// #562: at the default, only passes that create, merge, prune or re-parent nodes
+/// count ([`crate::saturate::saturate_counting_structural_passes`]); a pass that just
+/// adds labels and edges is free, so propagation up a deep chain no longer runs out.
+/// A value set in the environment caps every pass, as before (setting it to 4096
+/// restores the old default exactly), so a test can still force the give-up.
+fn saturate_iters() -> (usize, bool) {
+    static CAP: std::sync::OnceLock<(usize, bool)> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| {
-        parse_saturate_iters(
-            std::env::var("RUSTDL_TABLEAU_SATURATE_ITERS")
-                .ok()
-                .as_deref(),
-        )
+        let v = std::env::var("RUSTDL_TABLEAU_SATURATE_ITERS").ok();
+        let cap = parse_saturate_iters(v.as_deref());
+        let set = v
+            .as_deref()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .is_some_and(|n| n > 0);
+        (cap, !set)
     })
+}
+
+/// One deterministic saturation of a search frame, under [`saturate_iters`].
+fn saturate_frame(ctx: &mut TableauContext<'_, '_, '_>) -> SaturationResult {
+    match saturate_iters() {
+        (cap, true) => crate::saturate::saturate_counting_structural_passes(ctx, cap),
+        (cap, false) => saturate(ctx, cap),
+    }
 }
 
 /// A positive integer; anything else (unset, `0`, garbage) is the default.
@@ -211,7 +227,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
             }
             return Expanded::Done(SearchVerdict::DepthLimit);
         }
-        let verdict = match saturate(ctx, saturate_iters()) {
+        let verdict = match saturate_frame(ctx) {
             SaturationResult::Clash(_, deps) => {
                 if trace_enabled() {
                     eprintln!(
@@ -309,7 +325,7 @@ fn expand(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Expanded {
                 // so run one: if it changes anything, search the new state.
                 if crate::sat_leaf_resaturate_enabled() {
                     let before = ctx.trail().len();
-                    match saturate(ctx, saturate_iters()) {
+                    match saturate_frame(ctx) {
                         SaturationResult::Stable if !ctx.trail().mutated_since(before) => {}
                         // Search the new state at the same depth.
                         SaturationResult::Stable => continue,

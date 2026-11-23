@@ -13,7 +13,8 @@
 //! wedge's side (#361) is #375's.
 //!
 //! This is a guard plus prune, not the SHOIQ NN-rule (no `≤m` guess, no new nominal
-//! nodes). The `known_*` tests pin what it still misses; a fix should FLIP them.
+//! nodes). Since #555 the guard follows the NN-rule's cascade up the tree
+//! (`RUSTDL_NN_CASCADE`, `nn_cascade.rs`).
 //!
 //! Run: `cargo test -p owl-dl-reasoner --test nominal_block_guard`
 
@@ -299,18 +300,19 @@ fn flag_off_restores_the_old_answers() {
     assert!(sat(I362, "Q"), "flag off: the #362 miss");
 }
 
-// ---- known limitations: a future NN-rule should FLIP these ----
+// ---- #555: the NN-rule cascade ----
 
 /// The nominal is two edges below the blocker. `t` inverse-functional makes the
 /// two `B`s' merge at `a` force the two `A`s together, against their `≠`. HermiT:
-/// `Q` unsatisfiable. The SHOIQ NN-rule propagates nominal-ness up to the `A`s;
-/// this guard looks one edge away, so anywhere blocking (`sat`) still misses it.
-/// Ancestor blocking does not block siblings and gets it right.
+/// `Q` unsatisfiable. The SHOIQ NN-rule propagates nominal-ness up to the `A`s; the
+/// guard looked one edge away, so anywhere blocking (`sat`) missed it. Flipped from
+/// a known-limitation pin by #555's cascade (`RUSTDL_NN_CASCADE`); its variants are
+/// in `nn_cascade.rs`.
 #[test]
-fn known_nominal_two_edges_away_is_missed() {
+fn nominal_two_edges_away_is_unsatisfiable_555() {
     let _l = lock();
     assert!(
-        sat(
+        !sat(
             "SubClassOf(:Q ObjectMinCardinality(2 :r :A))\n\
              SubClassOf(:A ObjectSomeValuesFrom(:t :B))\n\
              SubClassOf(:B ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n\
@@ -318,7 +320,7 @@ fn known_nominal_two_edges_away_is_missed() {
              InverseFunctionalObjectProperty(:t)",
             "Q"
         ),
-        "FLIP: the nominal-two-edges-away miss is fixed"
+        "#555: the nominal two edges away"
     );
 }
 

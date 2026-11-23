@@ -234,6 +234,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_NN_CASCADE",
+            owl_dl_tableau::nn_cascade_enabled,
+            true,
+        ),
+        (
             "RUSTDL_NOMINAL_MERGE_FIRST",
             owl_dl_tableau::nominal_merge_first_enabled,
             true,

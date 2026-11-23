@@ -156,6 +156,11 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// Keyed on the trail generation, which changes on every graph mutation and
     /// rollback, so a hit is exactly the value a fresh call would return.
     blocked_memo: std::cell::Cell<(NodeId, u64, bool)>,
+    /// #555: [`Self::nominal_max_overfull`] per node, for one trail generation
+    /// (`(generation, node → answer)`; an entry absent is not yet computed). The
+    /// NN cascade makes a node's answer depend on its children's, so without it
+    /// every call walked the whole counted chain below the node.
+    nn_memo: std::cell::RefCell<(u64, HashMap<NodeId, NnState>)>,
     /// Cached [`incremental_saturate_enabled`] (#288).
     incremental_saturate: bool,
     /// Nodes a full pass would visit again on the next `saturate` call and an
@@ -287,6 +292,8 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     anywhere_blocking: bool,
     /// `RUSTDL_NOMINAL_BLOCK_GUARD`, cached (#361/#362).
     nominal_block_guard: bool,
+    /// `RUSTDL_NN_CASCADE`, cached (#555).
+    nn_cascade: bool,
     /// `RUSTDL_NOMINAL_MERGE_FIRST`, cached (#460).
     nominal_merge_first: bool,
     /// `RUSTDL_NOMINAL_DISJUNCTION_WAIT`, cached (#473).
@@ -415,6 +422,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             top_filler: top_filler_enabled(),
             last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            nn_memo: std::cell::RefCell::new((u64::MAX, HashMap::new())),
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
             deferred_seen: Vec::new(),
@@ -439,6 +447,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            nn_cascade: nn_cascade_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             nominal_merge_prune: nominal_merge_prune_enabled(),
@@ -470,6 +479,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             top_filler: top_filler_enabled(),
             last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            nn_memo: std::cell::RefCell::new((u64::MAX, HashMap::new())),
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
             deferred_seen: Vec::new(),
@@ -494,6 +504,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            nn_cascade: nn_cascade_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             nominal_merge_prune: nominal_merge_prune_enabled(),
@@ -530,6 +541,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             top_filler: top_filler_enabled(),
             last_decision_root: u32::MAX,
             blocked_memo: std::cell::Cell::new((NodeId::new(0), u64::MAX, false)),
+            nn_memo: std::cell::RefCell::new((u64::MAX, HashMap::new())),
             incremental_saturate: incremental_saturate_enabled(),
             deferred: Vec::new(),
             deferred_seen: Vec::new(),
@@ -554,6 +566,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             dkey_guarded_rules: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
             nominal_block_guard: nominal_block_guard_enabled(),
+            nn_cascade: nn_cascade_enabled(),
             nominal_merge_first: nominal_merge_first_enabled(),
             nominal_disjunction_wait: nominal_disjunction_wait_enabled(),
             nominal_merge_prune: nominal_merge_prune_enabled(),
@@ -637,6 +650,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         // The blocking mode is not on the trail, so drop any memoised answer
         // computed under the other mode (#288).
         self.blocked_memo.set((NodeId::new(0), u64::MAX, false));
+        self.nn_memo.borrow_mut().0 = u64::MAX;
         // Keep the graph's index-maintenance flag in lockstep and (re)build the
         // index from the current arena so a flip after node creation is still
         // correct — used by tests that toggle the mode on a populated context.
@@ -1690,6 +1704,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `v` (`v` an `R`-neighbour of `w` without `¬C`), whether `w` has more than `n`
     /// such neighbours. `None` when the guard is off or nothing counts `v`.
     ///
+    /// #555 ([`nn_cascade_enabled`]): `w` may also be a tree child of `v` that is
+    /// itself guarded ([`Self::nn_guarded`]), the SHOIQ NN-rule's cascade. The
+    /// walk goes from `v` to its children only, and a node already on the walk is
+    /// not entered again, so it ends even on a parent-pointer cycle.
+    ///
     /// For `C = ⊤` with `¬⊤ = ⊥` registered (every `≤n R.⊤` the reasoner
     /// prepares), this already counts every `R`-neighbour, which agrees with
     /// [`top_filler_enabled`] (#382). A `≤n R.⊤` first interned by a query has no
@@ -1712,9 +1731,107 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `w`'s neighbourhood; and the walk stops once the set holds `n + 1` distinct
     /// candidates (with `v` among them, it is over-full).
     fn nominal_max_overfull_fast(&self, v: NodeId) -> Option<bool> {
-        if !self.nominal_block_guard {
+        if !self.nominal_block_guard || self.pool.nominal_ids().is_empty() {
+            // Without a nominal in the pool no node is one, so nothing counts `v`.
             return None;
         }
+        if !self.nn_cascade {
+            return self.nominal_max_overfull_level_fast(v);
+        }
+        self.nn_fill(v);
+        match self.nn_memo.borrow().1.get(&v) {
+            Some(NnState::Done(got)) => *got,
+            _ => unreachable!("nn_fill computes its root"),
+        }
+    }
+
+    /// #555: whether the cascade may treat `w` as a holder for `v`: a live,
+    /// non-nominal tree child of `v` with a `≤` that counts `v`. Its guardedness
+    /// decides the rest ([`Self::nn_child_guarded`]).
+    fn nn_cascade_candidate(&self, w: NodeId, v: NodeId) -> bool {
+        w != v
+            && self.graph.node(w).parent() == Some(v)
+            && !self.node_is_nominal(w)
+            && self.max_label_counts(w, v)
+    }
+
+    /// Whether a `≤n R.C` label of `w` counts `v`: `v` is an `R`-neighbour of `w`
+    /// without `¬C` (the test the count below makes for its candidates).
+    fn max_label_counts(&self, w: NodeId, v: NodeId) -> bool {
+        let wn = self.graph.node(w);
+        let vn = self.graph.node(v);
+        wn.labels.iter().any(|&c| {
+            let ConceptExpr::Max(_, role, body) = self.pool.get(c) else {
+                return false;
+            };
+            if self.dkey_range_of(*body).is_some() {
+                return false;
+            }
+            let Some(comp) = self.complement_of(*body) else {
+                return false;
+            };
+            !vn.has_label(comp)
+                && wn.neighbours().any(|(seen, x)| {
+                    self.live_neighbour(x) == Some(v) && self.edge_satisfies(seen, *role)
+                })
+        })
+    }
+
+    /// #555: the memoised guardedness of a cascade holder `w`, as
+    /// [`Self::nn_fill`] left it. A node still on the fill's stack (a parent-pointer
+    /// cycle) is not a holder.
+    fn nn_child_guarded(&self, w: NodeId) -> bool {
+        matches!(
+            self.nn_memo.borrow().1.get(&w),
+            Some(NnState::Done(Some(false)))
+        )
+    }
+
+    /// #555: compute [`Self::nominal_max_overfull`] for `v` and, first, for every
+    /// cascade holder below it, into `nn_memo` for this trail generation.
+    /// Iterative post-order, so a deep counted chain cannot overflow the stack, and
+    /// each node is computed once per generation.
+    fn nn_fill(&self, v: NodeId) {
+        let generation = self.trail.generation();
+        {
+            let mut memo = self.nn_memo.borrow_mut();
+            if memo.0 != generation {
+                memo.0 = generation;
+                memo.1.clear();
+            }
+            if memo.1.contains_key(&v) {
+                return;
+            }
+            memo.1.insert(v, NnState::Pending);
+        }
+        let mut stack: Vec<(NodeId, bool)> = vec![(v, false)];
+        while let Some((x, expanded)) = stack.pop() {
+            if expanded {
+                let got = self.nominal_max_overfull_level_fast(x);
+                self.nn_memo.borrow_mut().1.insert(x, NnState::Done(got));
+                continue;
+            }
+            stack.push((x, true));
+            if self.graph.node(x).is_redirected() {
+                continue;
+            }
+            for (_, w) in self.graph.node(x).neighbours() {
+                let Some(w) = self.live_neighbour(w) else {
+                    continue;
+                };
+                if self.nn_memo.borrow().1.contains_key(&w) || !self.nn_cascade_candidate(w, x) {
+                    continue;
+                }
+                self.nn_memo.borrow_mut().1.insert(w, NnState::Pending);
+                stack.push((w, false));
+            }
+        }
+    }
+
+    /// One level of [`Self::nominal_max_overfull_fast`]: the `≤` labels at `v`'s
+    /// nominal neighbours and, under the cascade, at its guarded holders (read
+    /// from `nn_memo`, which [`Self::nn_fill`] filled first).
+    fn nominal_max_overfull_level_fast(&self, v: NodeId) -> Option<bool> {
         crate::bump_counter!(self, nmo_calls);
         // #486: `live_neighbour` never yields a redirected node, so a redirected
         // `v` is never a candidate and the reference returns `None` for it. Saying
@@ -1728,9 +1845,15 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             let Some(w) = self.live_neighbour(w) else {
                 continue;
             };
-            if !self.node_is_nominal(w) {
+            // #555: a non-nominal `w` counts only as a cascade holder, decided at
+            // its first `≤` that counts `v` (most nodes have none).
+            let mut holder = if self.node_is_nominal(w) {
+                Some(true)
+            } else if self.nn_cascade && self.graph.node(w).parent() == Some(v) {
+                None
+            } else {
                 continue;
-            }
+            };
             let wn = self.graph.node(w);
             for &c in &wn.labels {
                 let ConceptExpr::Max(n, role, body) = self.pool.get(c) else {
@@ -1762,6 +1885,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 if !v_counts {
                     crate::bump_counter!(self, nmo_label_skipped_v);
                     continue;
+                }
+                if !*holder.get_or_insert_with(|| self.nn_child_guarded(w)) {
+                    break;
                 }
                 let limit = *n as usize;
                 let mut cands: Vec<NodeId> = Vec::new();
@@ -1800,15 +1926,29 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         if !self.nominal_block_guard {
             return None;
         }
+        // #555: the cascade holders' guardedness comes from the memo, so this
+        // checks the one-level count against the fast form's, not the walk.
+        if self.nn_cascade && !self.pool.nominal_ids().is_empty() {
+            self.nn_fill(v);
+        }
+        self.nominal_max_overfull_level_reference(v)
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    fn nominal_max_overfull_level_reference(&self, v: NodeId) -> Option<bool> {
         let mut found = None;
         for (_, w) in self.graph.node(v).neighbours() {
             // #486: resolve the entry, as the inner count does.
             let Some(w) = self.live_neighbour(w) else {
                 continue;
             };
-            if !self.node_is_nominal(w) {
+            let mut holder = if self.node_is_nominal(w) {
+                Some(true)
+            } else if self.nn_cascade && self.graph.node(w).parent() == Some(v) {
+                None
+            } else {
                 continue;
-            }
+            };
             for &c in &self.graph.node(w).labels {
                 let ConceptExpr::Max(n, role, body) = self.pool.get(c) else {
                     continue;
@@ -1835,6 +1975,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     }
                 }
                 if cands.contains(&v) {
+                    if !*holder.get_or_insert_with(|| self.nn_child_guarded(w)) {
+                        break;
+                    }
                     let over = cands.len() > *n as usize;
                     if over {
                         return Some(true);
@@ -6618,12 +6761,44 @@ pub fn seeded_fixpoint_uncapped_enabled() -> bool {
 /// ([`TableauContext::prune_subtree`]). Without the prune each merge left a child
 /// nothing could block, which generated again without end.
 ///
-/// A guard plus prune, not the NN-rule (no `≤m` guess, no new nominal nodes): a
-/// nominal two edges away is still missed, and so is the wedge's half (a wedge
-/// blocker merely next to an individual, #376), which default `consistent` trusts.
+/// A guard plus prune, not the NN-rule (no `≤m` guess, no new nominal nodes). It
+/// looked one edge away; a nominal two or more edges away is #555's
+/// [`nn_cascade_enabled`]. The wedge's half (a wedge blocker merely next to an
+/// individual) is #376.
 #[must_use]
 pub fn nominal_block_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_NOMINAL_BLOCK_GUARD").is_none_or(|v| v != "0")
+}
+
+/// #555: an `nn_memo` entry.
+#[derive(Clone, Copy, Debug)]
+enum NnState {
+    /// On [`TableauContext::nn_fill`]'s stack.
+    Pending,
+    /// [`TableauContext::nominal_max_overfull`]'s answer.
+    Done(Option<bool>),
+}
+
+/// #555 `RUSTDL_NN_CASCADE` (default ON, `=0` reverts), main tableau: the
+/// [`nominal_block_guard_enabled`] guard also follows the SHOIQ NN-rule's
+/// cascade. A node `w` that the guard treats as a nominal's `≤`-witness acts as
+/// a nominal itself for its tree parent `v`: a `≤n R.C` at `w` that counts `v`
+/// and is not over-full guards `v` too, and over-full it defers `v`'s generation,
+/// as a `≤` at a real nominal does. The guard looked one edge away only, so with
+/// `Q ⊑ ≥2 r.A`, `A ⊑ ∃t.B`, `B ⊑ ∃s⁻.{a}`, `s` functional and `t`
+/// inverse-functional, the second `A` was blocked by the first, `a` saw one `B`,
+/// and `consistent` (with `Q(d)`) or `sat Q` reported a model: the two `B`s
+/// merge at `a`, and then `≤1 t⁻` merges the two `A`s against their `≠`.
+///
+/// Only upward, as in SHOIQ (the nominal node is a successor of the node it
+/// makes a nominal). On a pool without nominals nothing runs. With nominals, a
+/// node's answer is memoised per trail generation and the walk down its counted
+/// chain is iterative, so a deep inverse-functional chain costs each node once
+/// per generation rather than once per call. Like the guard, it only refuses
+/// blocking and orders rules; it adds no label, edge or clash.
+#[must_use]
+pub fn nn_cascade_enabled() -> bool {
+    std::env::var_os("RUSTDL_NN_CASCADE").is_none_or(|v| v != "0")
 }
 
 /// #460 `RUSTDL_NOMINAL_MERGE_FIRST` (default ON, `=0` reverts), main tableau: a
@@ -6904,6 +7079,120 @@ pub fn reseed_at_leaf_enabled() -> bool {
 /// #486: `nominal_max_overfull` counts the live individual a neighbour entry
 /// stands for. The stale entries are planted by hand (see `live_neighbour`).
 #[cfg(test)]
+mod nn_cascade_555 {
+    use super::*;
+
+    const S: RoleId = RoleId::new(0);
+    const T: RoleId = RoleId::new(1);
+
+    /// `a : {o} ⊓ ≤1 s.⊤'`; a chain `x0 -t-> x1 -t-> … -t-> xk`, each `xᵢ₊₁`
+    /// carrying `≤1 t⁻.⊤'` and created as `xᵢ`'s child; `a -s-> xk`. (`⊤'` is an
+    /// atomic class with a registered complement no node carries.)
+    fn chain(pool: &mut ConceptPool, k: usize) -> (TableauContext<'_, '_, '_>, Vec<NodeId>) {
+        let nom_o = pool.nominal(IndividualId::new(0));
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let max_s = pool.max(1, Role::Named(S), c);
+        let max_t_inv = pool.max(1, Role::Inverse(T), c);
+        let mut ctx = TableauContext::new(pool);
+        ctx.set_complement(c, not_c);
+        let a = ctx.new_node();
+        ctx.add_label(a, nom_o);
+        ctx.add_label(a, max_s);
+        ctx.assign_nominal(IndividualId::new(0), a);
+        let mut xs = vec![ctx.new_node()];
+        for _ in 0..k {
+            let x = ctx.new_successor(xs[xs.len() - 1], T);
+            ctx.add_label(x, max_t_inv);
+            xs.push(x);
+        }
+        ctx.add_edge(a, S, xs[xs.len() - 1]);
+        (ctx, xs)
+    }
+
+    fn each_form(ctx: &TableauContext<'_, '_, '_>, v: NodeId) -> Option<bool> {
+        let got = ctx.nominal_max_overfull_fast(v);
+        assert_eq!(
+            got,
+            ctx.nominal_max_overfull_reference(v),
+            "fast = reference"
+        );
+        assert_eq!(got, ctx.nominal_max_overfull(v), "fast = wrapper");
+        got
+    }
+
+    /// The guard reaches every level above the nominal's witness, and only with
+    /// the cascade on.
+    #[test]
+    fn the_guard_climbs_the_counted_chain() {
+        let mut pool = ConceptPool::new();
+        let (mut ctx, xs) = chain(&mut pool, 5);
+        for &x in &xs {
+            assert_eq!(each_form(&ctx, x), Some(false), "{x:?} is guarded");
+            assert!(ctx.nn_guarded(x));
+        }
+        ctx.nn_cascade = false;
+        ctx.nn_memo.borrow_mut().0 = u64::MAX;
+        assert_eq!(
+            each_form(&ctx, xs[5]),
+            Some(false),
+            "level 1 needs no cascade"
+        );
+        assert_eq!(each_form(&ctx, xs[4]), None, "off: one edge away only");
+        assert_eq!(each_form(&ctx, xs[0]), None);
+    }
+
+    /// Over-full at a holder (a second `t`-predecessor of `x2`): its parent's
+    /// generation defers instead, and nothing above the holder is guarded through it.
+    #[test]
+    fn an_over_full_holder_defers_its_parent() {
+        let mut pool = ConceptPool::new();
+        let (mut ctx, xs) = chain(&mut pool, 3);
+        let y = ctx.new_node();
+        ctx.add_edge(y, T, xs[2]);
+        assert_eq!(
+            each_form(&ctx, xs[1]),
+            Some(true),
+            "x2's ≤1 t⁻ is over-full"
+        );
+        assert!(ctx.defer_generation_at_overfull_nominal(xs[1]));
+        assert_eq!(
+            each_form(&ctx, xs[0]),
+            None,
+            "x1 is not guarded, so not a holder"
+        );
+        assert_eq!(
+            each_form(&ctx, xs[3]),
+            Some(false),
+            "below the holder: unchanged"
+        );
+    }
+
+    /// A counted neighbour that is not the holder's tree parent is not guarded
+    /// through it (the cascade only climbs), and a pool without nominals answers
+    /// `None` without walking.
+    #[test]
+    fn the_cascade_only_climbs() {
+        let mut pool = ConceptPool::new();
+        let (mut ctx, xs) = chain(&mut pool, 2);
+        // `z -t-> x1` with `z` not `x1`'s parent: `x1`'s `≤1 t⁻` counts `z`, too.
+        let z = ctx.new_node();
+        ctx.add_edge(z, T, xs[1]);
+        assert_eq!(each_form(&ctx, z), None, "z is not x1's parent");
+        let mut plain = ConceptPool::new();
+        let c = plain.atomic(ClassId::new(0));
+        let not_c = plain.not(c);
+        let max_t_inv = plain.max(1, Role::Inverse(T), c);
+        let mut ctx = TableauContext::new(&plain);
+        ctx.set_complement(c, not_c);
+        let x0 = ctx.new_node();
+        let x1 = ctx.new_successor(x0, T);
+        ctx.add_label(x1, max_t_inv);
+        assert_eq!(each_form(&ctx, x0), None, "no nominal in the pool");
+    }
+}
+
+#[cfg(test)]
 #[allow(clippy::many_single_char_names)]
 mod stale_witness_486 {
     use super::*;
@@ -7105,6 +7394,8 @@ mod stale_witness_486 {
         ctx.add_edge(w, R, u);
         assert_each_form(&ctx, v, Some(true), "live: `v` and `u` under ≤1");
         ctx.graph_mut().node_mut(w).pruned = true;
+        // The direct write bypasses the trail, so drop #555's per-generation memo.
+        ctx.nn_memo.borrow_mut().0 = u64::MAX;
         assert_each_form(&ctx, v, None, "the nominal is pruned");
     }
     /// A redirected `v` is never a candidate: `_fast`'s raw precheck would

@@ -10,6 +10,15 @@ name without relating it to the members and cannot see that the `≤` and `≥` 
 over the SAME set. Fixed by `complex_qualifier_counting_classes` +
 `RUSTDL_COMPLEX_QUALIFIER_VERIFY` (**default ON**, `=0` reverts).
 
+**Update 2026-11-23 (#554):** the underlying wedge gap is now closed too. The
+clausifier gave a complex `≤` qualifier `Q` only `Q ⊑ C`, which no node ever
+satisfied, so the wedge's `≤` counted nothing. With `RUSTDL_MAX_QUALIFIER_COVER`
+(default ON) a `≤` qualifier gets `C ⊑ Q` (Horn clauses, or a choose rule anchored
+on the bound), and the wedge finds this file's `A` unsatisfiable by itself
+(`cover_alone_finds_issue_91_unsat` in `max_qualifier_cover_classify.rs`). The
+verify probe above stays as an independent second check. The "wedge cannot relate
+the name to the members" wording below describes the pre-#554 encoding.
+
 **"No flag recovers it" was true and was the diagnostic clue, not a dead end** — the
 three flags tried (`TRUST_SAT=0`, `CLASSIFY_VERIFY_REFUTATIONS=1`, `SPIKE_CARD_ATOM=1`)
 all target the SUBSUMPTION path, and this lives on the SATISFIABILITY probe, which had

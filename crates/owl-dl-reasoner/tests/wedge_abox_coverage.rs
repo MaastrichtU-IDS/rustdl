@@ -7,7 +7,8 @@
 //! so a false `inconsistent` is the failure that matters most.
 //!
 //! Sabotage: `RUSTDL_WEDGE_ABOX_COVERAGE=0` (negative assertions, inverse-functional
-//! alias) and `RUSTDL_REFLEXIVE_MAX_ZERO_LOOP=0` (reflexive `≤0`) make the matching
+//! alias), `RUSTDL_REFLEXIVE_MAX_ZERO_LOOP=0` (reflexive `≤0`) and
+//! `RUSTDL_MAX_QUALIFIER_COVER=0` (#554, `≤n` over a compound qualifier) make the matching
 //! inconsistent cases below read `consistent` again (see `flags_revert_each_fix`).
 //!
 //! Every test locks the env mutex, since some set flags.
@@ -424,12 +425,16 @@ fn negative_data_assertion_against_sub_property_value() {
     );
 }
 
-// ---- OPEN: `≤0 r.C` with a complex qualifier `C` (found in review of #532/#535) ---
-// Not fixed here. The wedge does not check a successor (or a reflexive self-loop)
-// against a union or intersection qualifier under `≤0`, so each case below reads
-// `consistent`, trusted, on main and with this fix. Konclude, `HermiT` and the main
-// tableau (`RUSTDL_WEDGE_CONSISTENCY=0`) all say inconsistent. The `#[ignore]`d
-// sentinels assert the CORRECT answer: one that starts passing is a finding.
+// ---- #554: `≤n r.C` with a complex qualifier `C` (found in review of #532/#535) ---
+// The clausifier named a compound qualifier `Q` with `Q ⊑ C` only, so a successor
+// (or a reflexive self-loop) satisfying `C` without carrying `Q` was not counted
+// and each `U*`/`L*` case below read `consistent`, trusted. Konclude, `HermiT` and
+// the main tableau (`RUSTDL_WEDGE_CONSISTENCY=0`) all say inconsistent. The fix
+// gives `Q` the direction a `≤` bound needs, `C ⊑ Q` (`RUSTDL_MAX_QUALIFIER_COVER`,
+// `=0` reverts): Horn clauses when `C` has a Horn body encoding, else the choose
+// rule `body ∧ r(x,y) → nnf(¬C)(y) ∨ Q(y)` anchored on the bound. The `L*` and
+// `K*` shapes below (`≤1`, `∃`/`∀`/`¬` qualifiers, sub-role and inverse) were
+// decided by `HermiT` alone.
 
 const U1_EDGE_TAUTOLOGY: &str = "ObjectPropertyAssertion(:r :a :b) \
      ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q ObjectComplementOf(:Q))) :a)";
@@ -476,34 +481,202 @@ fn control_complex_qualifier_edge_untyped() {
     );
 }
 #[test]
-#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
-fn sentinel_complex_qualifier_edge_tautology() {
+fn complex_qualifier_edge_tautology() {
     let _g = lock();
     assert_inconsistent(U1_EDGE_TAUTOLOGY);
 }
 #[test]
-#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
-fn sentinel_complex_qualifier_reflexive_union_typed() {
+fn complex_qualifier_reflexive_union_typed() {
     let _g = lock();
     assert_inconsistent(U2_REFL_UNION_TYPED);
 }
 #[test]
-#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
-fn sentinel_complex_qualifier_reflexive_tautology() {
+fn complex_qualifier_reflexive_tautology() {
     let _g = lock();
     assert_inconsistent(U3_REFL_TAUTOLOGY);
 }
 #[test]
-#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
-fn sentinel_complex_qualifier_reflexive_intersection_typed() {
+fn complex_qualifier_reflexive_intersection_typed() {
     let _g = lock();
     assert_inconsistent(U4_REFL_INTERSECTION_TYPED);
 }
 #[test]
-#[ignore = "open gap: `≤0 r.C` with a complex qualifier (see the section comment)"]
-fn sentinel_complex_qualifier_edge_union_typed() {
+fn complex_qualifier_edge_union_typed() {
     let _g = lock();
     assert_inconsistent(U5_EDGE_UNION_TYPED);
+}
+
+/// `≤1` over a tautology with two distinct successors.
+const L1_MAX1_TAUTOLOGY: &str = "ObjectPropertyAssertion(:r :a :b) \
+     ObjectPropertyAssertion(:r :a :c) DifferentIndividuals(:b :c) \
+     ClassAssertion(ObjectMaxCardinality(1 :r ObjectUnionOf(:Q ObjectComplementOf(:Q))) :a)";
+/// `≤1` over a union, each distinct successor in a different disjunct.
+const L2_MAX1_UNION_TYPED: &str = "ObjectPropertyAssertion(:r :a :b) \
+     ObjectPropertyAssertion(:r :a :c) DifferentIndividuals(:b :c) ClassAssertion(:Q :b) \
+     ClassAssertion(:P :c) ClassAssertion(ObjectMaxCardinality(1 :r ObjectUnionOf(:Q :P)) :a)";
+/// An `∃` qualifier (Horn route with a role in the body).
+const L3_MAX0_EXISTS: &str = "ObjectPropertyAssertion(:r :a :b) \
+     ObjectPropertyAssertion(:s :b :c) ClassAssertion(:Q :c) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectSomeValuesFrom(:s :Q)) :a)";
+/// A `∀` qualifier (choose-rule route).
+const L4_MAX0_FORALL: &str = "ObjectPropertyAssertion(:r :a :b) \
+     ClassAssertion(ObjectAllValuesFrom(:s :P) :b) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectAllValuesFrom(:s :P)) :a)";
+/// The successor is reached through a sub-role.
+const L5_MAX0_UNION_SUBROLE: &str = "SubObjectPropertyOf(:s :r) \
+     ObjectPropertyAssertion(:s :a :b) ClassAssertion(:P :b) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q :P)) :a)";
+/// An inverse role: `r(b, a)` makes `b` an `r⁻`-successor of `a`.
+const L6_MAX0_UNION_INVERSE: &str = "ObjectPropertyAssertion(:r :b :a) ClassAssertion(:P :b) \
+     ClassAssertion(ObjectMaxCardinality(0 ObjectInverseOf(:r) ObjectUnionOf(:Q :P)) :a)";
+/// A negated qualifier (choose-rule route).
+const L7_MAX0_NEGATED: &str = "ObjectPropertyAssertion(:r :a :b) \
+     ClassAssertion(ObjectComplementOf(:Q) :b) \
+     ClassAssertion(ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) :a)";
+const L8_MAX1_NEGATED: &str = "ObjectPropertyAssertion(:r :a :b) \
+     ObjectPropertyAssertion(:r :a :c) DifferentIndividuals(:b :c) \
+     ClassAssertion(ObjectComplementOf(:Q) :b) ClassAssertion(ObjectComplementOf(:Q) :c) \
+     ClassAssertion(ObjectMaxCardinality(1 :r ObjectComplementOf(:Q)) :a)";
+
+/// The consistent twin of each `L*` (`HermiT`): one fact fewer, or the edge on
+/// the wrong role or direction. The fix adds `C ⊑ Q`; an over-strong version
+/// (`Q` on every successor, or a `≤` counting the wrong neighbours) fails here.
+#[test]
+fn control_complex_qualifier_consistent_twins() {
+    let _g = lock();
+    for body in [
+        // `≤1` over a tautology: two successors not known distinct merge.
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ClassAssertion(ObjectMaxCardinality(1 :r ObjectUnionOf(:Q ObjectComplementOf(:Q))) :a)",
+        // Only one of two distinct successors is in the union.
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         DifferentIndividuals(:b :c) ClassAssertion(:Q :b) \
+         ClassAssertion(ObjectMaxCardinality(1 :r ObjectUnionOf(:Q :P)) :a)",
+        // `c` need not be `Q`.
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :c) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectSomeValuesFrom(:s :Q)) :a)",
+        // `b` may have an `s`-successor outside `P`.
+        "ObjectPropertyAssertion(:r :a :b) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectAllValuesFrom(:s :P)) :a)",
+        // `b` may be `Q`.
+        "ObjectPropertyAssertion(:r :a :b) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) :a)",
+        // `s` is not a sub-role of `r`.
+        "ObjectPropertyAssertion(:s :a :b) ClassAssertion(:P :b) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectUnionOf(:Q :P)) :a)",
+        // `b` is an `r`-successor of `a`, not an `r⁻`-successor.
+        "ObjectPropertyAssertion(:r :a :b) ClassAssertion(:P :b) \
+         ClassAssertion(ObjectMaxCardinality(0 ObjectInverseOf(:r) ObjectUnionOf(:Q :P)) :a)",
+        // Only one of two distinct successors is known `¬Q`.
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         DifferentIndividuals(:b :c) ClassAssertion(ObjectComplementOf(:Q) :b) \
+         ClassAssertion(ObjectMaxCardinality(1 :r ObjectComplementOf(:Q)) :a)",
+    ] {
+        assert_consistent(body);
+    }
+}
+
+/// Review pins for #554 (`HermiT`-adjudicated pairs, consistent first): a `≤`
+/// under `∀` (clause variable `≠ X`), `n = 2`, the `ore_ont_9012` shape (a
+/// cardinality inside the qualifier) and a non-Horn qualifier on a reflexive role.
+const R_PAIRS: [(&str, &str); 5] = [
+    (
+        "ObjectPropertyAssertion(:s :a :b) ObjectPropertyAssertion(:r :b :c) \
+         ClassAssertion(ObjectAllValuesFrom(:s ObjectMaxCardinality(0 :r ObjectComplementOf(:Q))) :a)",
+        "ObjectPropertyAssertion(:s :a :b) ObjectPropertyAssertion(:r :b :c) \
+         ClassAssertion(ObjectComplementOf(:Q) :c) \
+         ClassAssertion(ObjectAllValuesFrom(:s ObjectMaxCardinality(0 :r ObjectComplementOf(:Q))) :a)",
+    ),
+    (
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ObjectPropertyAssertion(:r :a :d) DifferentIndividuals(:b :c :d) \
+         ClassAssertion(ObjectComplementOf(:Q) :b) ClassAssertion(ObjectComplementOf(:Q) :c) \
+         ClassAssertion(ObjectMaxCardinality(2 :r ObjectComplementOf(:Q)) :a)",
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ObjectPropertyAssertion(:r :a :d) DifferentIndividuals(:b :c :d) \
+         ClassAssertion(ObjectComplementOf(:Q) :b) ClassAssertion(ObjectComplementOf(:Q) :c) \
+         ClassAssertion(ObjectComplementOf(:Q) :d) \
+         ClassAssertion(ObjectMaxCardinality(2 :r ObjectComplementOf(:Q)) :a)",
+    ),
+    (
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ObjectPropertyAssertion(:r :a :d) DifferentIndividuals(:b :c :d) ClassAssertion(:Q :b) \
+         ClassAssertion(:P :c) ClassAssertion(ObjectMaxCardinality(2 :r ObjectUnionOf(:Q :P)) :a)",
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ObjectPropertyAssertion(:r :a :d) DifferentIndividuals(:b :c :d) ClassAssertion(:Q :b) \
+         ClassAssertion(:P :c) ClassAssertion(:Q :d) \
+         ClassAssertion(ObjectMaxCardinality(2 :r ObjectUnionOf(:Q :P)) :a)",
+    ),
+    (
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :c) \
+         ObjectPropertyAssertion(:s :b :d) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectMinCardinality(2 :s owl:Thing)) :a)",
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :c) \
+         ObjectPropertyAssertion(:s :b :d) DifferentIndividuals(:c :d) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectMinCardinality(2 :s owl:Thing)) :a)",
+    ),
+    (
+        "ReflexiveObjectProperty(:r) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) :a)",
+        "ReflexiveObjectProperty(:r) ClassAssertion(ObjectComplementOf(:Q) :a) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) :a)",
+    ),
+];
+
+#[test]
+fn control_complex_qualifier_review_pairs_consistent() {
+    let _g = lock();
+    for (consistent_body, _) in R_PAIRS {
+        assert_consistent(consistent_body);
+    }
+}
+#[test]
+fn complex_qualifier_review_pairs_inconsistent() {
+    let _g = lock();
+    for (_, inconsistent_body) in R_PAIRS {
+        assert_inconsistent(inconsistent_body);
+    }
+}
+
+#[test]
+fn complex_qualifier_max1_tautology() {
+    let _g = lock();
+    assert_inconsistent(L1_MAX1_TAUTOLOGY);
+}
+#[test]
+fn complex_qualifier_max1_union_typed() {
+    let _g = lock();
+    assert_inconsistent(L2_MAX1_UNION_TYPED);
+}
+#[test]
+fn complex_qualifier_max0_exists() {
+    let _g = lock();
+    assert_inconsistent(L3_MAX0_EXISTS);
+}
+#[test]
+fn complex_qualifier_max0_forall() {
+    let _g = lock();
+    assert_inconsistent(L4_MAX0_FORALL);
+}
+#[test]
+fn complex_qualifier_max0_union_sub_role() {
+    let _g = lock();
+    assert_inconsistent(L5_MAX0_UNION_SUBROLE);
+}
+#[test]
+fn complex_qualifier_max0_union_inverse() {
+    let _g = lock();
+    assert_inconsistent(L6_MAX0_UNION_INVERSE);
+}
+#[test]
+fn complex_qualifier_max0_negated() {
+    let _g = lock();
+    assert_inconsistent(L7_MAX0_NEGATED);
+}
+#[test]
+fn complex_qualifier_max1_negated() {
+    let _g = lock();
+    assert_inconsistent(L8_MAX1_NEGATED);
 }
 
 // ---- the decision is the wedge's, and each flag reverts its fix ----------------
@@ -533,6 +706,28 @@ fn flags_revert_each_fix() {
     }
     for body in [M_REFLEXIVE_MAX0, M_REFLEXIVE_INVERSE_MAX0, M_FUZZ_REFLEXIVE] {
         let _off = SetEnvGuard::set("RUSTDL_REFLEXIVE_MAX_ZERO_LOOP", "0");
+        let (verdict, stats) = consistent(body);
+        assert!(
+            verdict && stats.relies_on_trusted_consistency,
+            "{body}: {stats:?}"
+        );
+    }
+    for body in [
+        U1_EDGE_TAUTOLOGY,
+        U2_REFL_UNION_TYPED,
+        U3_REFL_TAUTOLOGY,
+        U4_REFL_INTERSECTION_TYPED,
+        U5_EDGE_UNION_TYPED,
+        L1_MAX1_TAUTOLOGY,
+        L2_MAX1_UNION_TYPED,
+        L3_MAX0_EXISTS,
+        L4_MAX0_FORALL,
+        L5_MAX0_UNION_SUBROLE,
+        L6_MAX0_UNION_INVERSE,
+        L7_MAX0_NEGATED,
+        L8_MAX1_NEGATED,
+    ] {
+        let _off = SetEnvGuard::set("RUSTDL_MAX_QUALIFIER_COVER", "0");
         let (verdict, stats) = consistent(body);
         assert!(
             verdict && stats.relies_on_trusted_consistency,

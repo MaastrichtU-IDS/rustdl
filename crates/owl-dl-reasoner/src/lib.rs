@@ -11135,11 +11135,11 @@ fn concept_has_nominal_counting(
 /// Does `c` carry a `Min`/`Max` whose QUALIFIER is a complex concept rather than a
 /// named class or `⊤`? Mirrors [`concept_has_nominal_counting`]'s walk.
 ///
-/// `≤1 r.(B ⊓ C)` is the shape. `cardinality_qualifier` Tseitin-names a complex
-/// filler, and the wedge counts occurrences of that synthetic name rather than
-/// relating it to the members, so it cannot see that the `≤` and `≥` constraints
-/// are over the SAME set. With a named filler it can, which is exactly why the
-/// atomic control decides correctly.
+/// `≤1 r.(B ⊓ C)` is the shape (#91). Before #554 the clausifier named a complex
+/// `≤` qualifier with only `Q ⊑ C`, so the wedge counted a synthetic name no node
+/// ever carried and could not see that the `≤` and `≥` range over the SAME set.
+/// With `RUSTDL_MAX_QUALIFIER_COVER` (default ON) a `≤` qualifier gets `C ⊑ Q` and
+/// the wedge sees it; this verify route is kept as a second, independent check.
 fn concept_has_complex_qualifier_counting(pool: &ConceptPool, c: ConceptId) -> bool {
     match pool.get(c) {
         ConceptExpr::Min(_, _, inner) | ConceptExpr::Max(_, _, inner) => {

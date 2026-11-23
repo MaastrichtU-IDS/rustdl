@@ -719,6 +719,21 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::wedge_abox_coverage_enabled,
             true,
         ),
+        // #564: the classify wedge gets every inverse-functional `≤1` GCI that
+        // conversion's classify-cost gate left out (its `Sat` was trusted over a
+        // weaker KB). Reach: 78 of the 109 IF-bearing ORE ontologies. `=0` reverts.
+        (
+            "RUSTDL_CLASSIFY_WEDGE_IF_BOUND",
+            owl_dl_reasoner::classify_wedge_if_bound_enabled,
+            true,
+        ),
+        // #564: with the consistency wedge off, classify's pre-check runs the main
+        // tableau's consistency check, as `rustdl consistent` does. `=0` reverts.
+        (
+            "RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK",
+            owl_dl_reasoner::classify_main_consistency_fallback_enabled,
+            true,
+        ),
         // #535: a `≤0` bound on a reflexive role gets its (entailed) self-loop
         // without waiting for an `R`-edge. `=0` reverts.
         (

@@ -3509,7 +3509,7 @@ fn is_saturator_axiom(
             true
         }
         // Same, for the INVERSE-functional derivation `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤`
-        // (`RUSTDL_INVERSE_FUNC_MAX`, default OFF). Without this arm, enabling that
+        // (`RUSTDL_INVERSE_FUNC_MAX`, default ON since 2026-08-22). Without this arm, that
         // flag would push every inverse-functional-bearing ontology off the fast
         // path — a large silent perf regression for a flag whose purpose is a
         // narrow realize fix. Sound for the reason given on

@@ -3638,12 +3638,43 @@ pub(crate) fn classify_inconsistency_precheck_capturing(
             mark_consistency_trusted_wedge();
         }
         Some(HyperResult::Stalled) => cut = true,
+        // #564: with the consistency wedge off (`RUSTDL_WEDGE_CONSISTENCY=0`) on a KB
+        // that names an individual, route 1 is all that ran, and it finds only the
+        // clashes saturation over named individuals derives. "Consistent" then rested
+        // on nothing decisive and carried no signal, while `rustdl consistent` runs
+        // the main tableau. Run that same decisive path here.
+        None if classify_main_consistency_fallback_enabled()
+            && classify_wedge_inconsistency_enabled()
+            && !wedge_consistency_enabled()
+            && internal_has_individuals(internal) =>
+        {
+            match is_consistent_internal_opt_deadline(internal.clone(), route_deadline()) {
+                Ok(Some(false)) => return true,
+                Ok(Some(true)) => cut = false,
+                Ok(None) | Err(_) => cut = true,
+            }
+        }
         None => {}
     }
     if cut {
         CONSISTENCY_UNDETERMINED.with(|f| f.set(true));
     }
     reflexive_empty_clause_inconsistent(internal)
+}
+
+/// `RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK` — **default ON**, `=0` reverts (#564).
+///
+/// With the consistency wedge off (`RUSTDL_WEDGE_CONSISTENCY=0`) on a KB naming an
+/// individual, classify's inconsistency pre-check runs the main-tableau consistency
+/// check that `rustdl consistent` runs ([`is_consistent_internal_bounded`]'s body),
+/// bounded by the pre-check's own budget. A clash makes the KB inconsistent; a model
+/// makes it consistent; a give-up sets `consistency_undetermined`. Before, only the
+/// `ABox` saturation ran there, and `classify` read `Q ⊑ ≥2 r.A`, `A ⊑ ∃t.B`,
+/// `B ⊑ ∃s⁻.{a}`, `Functional(s)`, `InverseFunctional(t)`, `Q(d)` consistent with every
+/// signal clean. Inert at the default, where the wedge route decides.
+#[must_use]
+pub fn classify_main_consistency_fallback_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK").is_none_or(|v| v != "0")
 }
 
 /// A syntactic inconsistency certificate from the wedge clausifier (#194).
@@ -5202,6 +5233,14 @@ impl HyperCache {
         } else {
             internal.axioms.len()
         };
+        // #564: the inverse-functional bounds conversion declined, clausified with the
+        // rest and then dropped like the nominal facts above.
+        if classify_wedge_if_bound_enabled() {
+            let added = inject_declined_inverse_functional_bounds(&mut internal);
+            if added > 0 && std::env::var_os("RUSTDL_TRACE").is_some() {
+                eprintln!("classify wedge: {added} declined inverse-functional bound(s) added");
+            }
+        }
         let (base, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
         internal.axioms.truncate(n_axioms);
         let defs = owl_dl_core::definitions::extract_definitions(&internal);
@@ -6586,7 +6625,6 @@ pub fn wedge_abox_coverage_enabled() -> bool {
 fn inject_wedge_abox_coverage(internal: &mut InternalOntology) {
     use owl_dl_core::ontology::Axiom;
     let mut added: Vec<Axiom> = Vec::new();
-    let mut inverse_functional: Vec<owl_dl_core::ir::Role> = Vec::new();
     let negatives: Vec<(
         owl_dl_core::ir::Role,
         owl_dl_core::ir::IndividualId,
@@ -6603,15 +6641,6 @@ fn inject_wedge_abox_coverage(internal: &mut InternalOntology) {
             _ => None,
         })
         .collect();
-    // `RUSTDL_INVERSE_FUNC_MAX=0` reverts the inverse-functional GCI everywhere, here
-    // included (`functional_enforcement.rs` isolates it with that flag).
-    if owl_dl_core::convert::inverse_functional_max_enabled() {
-        for ax in &internal.axioms {
-            if let Axiom::InverseFunctionalRole(r) = ax {
-                inverse_functional.push(r.flip());
-            }
-        }
-    }
     for (role, subject, object) in negatives {
         let sub = internal.concepts.nominal(subject);
         let target = internal.concepts.nominal(object);
@@ -6619,18 +6648,71 @@ fn inject_wedge_abox_coverage(internal: &mut InternalOntology) {
         let sup = internal.concepts.all(role, not_target);
         added.push(Axiom::SubClassOf { sub, sup });
     }
-    if !inverse_functional.is_empty() {
-        let top = internal.concepts.top();
-        for f in inverse_functional {
-            let sub = internal.concepts.some(f, top);
-            let sup = internal.concepts.max(1, f, top);
-            let gci = Axiom::SubClassOf { sub, sup };
-            if !internal.axioms.contains(&gci) && !added.contains(&gci) {
-                added.push(gci);
-            }
+    internal.axioms.extend(added);
+    inject_declined_inverse_functional_bounds(internal);
+}
+
+/// Whether the classify wedge ([`HyperCache::build`]) gets the inverse-functional
+/// `≤1` GCI for every inverse-functional role that conversion declined (#564;
+/// `RUSTDL_CLASSIFY_WEDGE_IF_BOUND`, **default ON**, `=0` reverts). See
+/// [`inject_declined_inverse_functional_bounds`].
+///
+/// Without it the wedge reasoned over a WEAKER `KB` (no bound at all on such a
+/// role), and its `Sat` was trusted twice: by the per-class label cache, which
+/// decides `classify`'s unsat probe, and by `trust_sat` on pairs. So `Q ⊑ ≥2 r.A`,
+/// `A ⊑ ∃t.B`, `B ⊑ ∃s⁻.{a}`, `Functional(s)`, `InverseFunctional(t)` read `Q`
+/// satisfiable in `classify` while `rustdl sat Q` (the main tableau, since #559) said
+/// unsatisfiable, with `trusted_sat_refutations: 0` and `incomplete: false`: the
+/// D10 shape. The same holds without nominals (a merge through a functional
+/// super-role does it), so the cure is the bound, not a nominal test.
+#[must_use]
+pub fn classify_wedge_if_bound_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_WEDGE_IF_BOUND").is_none_or(|v| v != "0")
+}
+
+/// `InverseFunctionalObjectProperty(r)` → `∃r⁻.⊤ ⊑ ≤1 r⁻` wherever conversion did not
+/// emit it, appended to `internal.axioms`. Returns how many it added.
+///
+/// Conversion emits that GCI only where `inv_func_merge_consumable` admits it, a gate
+/// kept for classify cost. Its census compares raw role ids and counts only the
+/// generators that put two `r⁻`-successors on one node directly, so it misses a
+/// second `r`-predecessor that arrives through a merge: two `B`s merged by
+/// `Functional(s)` at a nominal (#555, #564), or by a functional super-role. Both the
+/// main tableau and the consistency wedge enforce `IF(r)` there; a wedge without the
+/// bound had nothing to enforce. Each GCI is the exact meaning of an axiom the
+/// ontology states, so it adds no constraint the `KB` lacks. Like conversion's, it is
+/// off under `RUSTDL_INVERSE_FUNC_MAX=0`.
+fn inject_declined_inverse_functional_bounds(internal: &mut InternalOntology) -> usize {
+    use owl_dl_core::ontology::Axiom;
+    // `RUSTDL_INVERSE_FUNC_MAX=0` reverts the inverse-functional GCI everywhere, here
+    // included (`functional_enforcement.rs` isolates it with that flag).
+    if !owl_dl_core::convert::inverse_functional_max_enabled() {
+        return 0;
+    }
+    let inverse_functional: Vec<owl_dl_core::ir::Role> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::InverseFunctionalRole(r) => Some(r.flip()),
+            _ => None,
+        })
+        .collect();
+    if inverse_functional.is_empty() {
+        return 0;
+    }
+    let mut added: Vec<Axiom> = Vec::new();
+    let top = internal.concepts.top();
+    for f in inverse_functional {
+        let sub = internal.concepts.some(f, top);
+        let sup = internal.concepts.max(1, f, top);
+        let gci = Axiom::SubClassOf { sub, sup };
+        if !internal.axioms.contains(&gci) && !added.contains(&gci) {
+            added.push(gci);
         }
     }
+    let n = added.len();
     internal.axioms.extend(added);
+    n
 }
 
 /// `ABox`-seeded wedge state for consistency checking. Built once at
@@ -8741,6 +8823,17 @@ pub fn is_consistent_internal_bounded(
     internal: InternalOntology,
     deadline: std::time::Instant,
 ) -> Result<Option<bool>, ReasonError> {
+    is_consistent_internal_opt_deadline(internal, Some(deadline))
+}
+
+/// [`is_consistent_internal_bounded`] with an optional deadline: `None` runs
+/// unbounded, and a give-up of the main tableau's own caps is still `Ok(None)`, never
+/// a guessed `true`. Classify's pre-check calls it with its route budget (#564).
+pub(crate) fn is_consistent_internal_opt_deadline(
+    internal: InternalOntology,
+    deadline: Option<std::time::Instant>,
+) -> Result<Option<bool>, ReasonError> {
+    let past = |d: Option<std::time::Instant>| d.is_some_and(|d| std::time::Instant::now() >= d);
     // The ABox-saturation pre-check runs FIRST — it is the step whose omission
     // makes satisfiability an unsafe substitute (#74), so skipping it would
     // rebuild the hazard this function exists to avoid.
@@ -8753,18 +8846,18 @@ pub fn is_consistent_internal_bounded(
     // `false` ("no clash found in budget"), a sound under-approximation, and the
     // deadline check immediately after converts that into `None` rather than a
     // guess.
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    if abox_saturation_inconsistent_bounded(&internal, Some(remaining))
+    let remaining = deadline.map(|d| d.saturating_duration_since(std::time::Instant::now()));
+    if abox_saturation_inconsistent_bounded(&internal, remaining)
         || reflexive_empty_clause_inconsistent(&internal)
     {
         return Ok(Some(false));
     }
-    if std::time::Instant::now() >= deadline {
+    if past(deadline) {
         return Ok(None);
     }
     // #459: as in `is_consistent_internal_full`. A saturation the deadline cut is
     // no verdict here, so it answers `None`, never `true`.
-    match consistent_from_el_saturator(&internal, Some(deadline)) {
+    match consistent_from_el_saturator(&internal, deadline) {
         ElSaturatorConsistency::NotApplicable => {}
         ElSaturatorConsistency::Cut => return Ok(None),
         ElSaturatorConsistency::Decided(consistent) => return Ok(Some(consistent)),
@@ -8781,7 +8874,7 @@ pub fn is_consistent_internal_bounded(
     if let abox_check::AboxVerdict::Inconsistent { .. } = prepared.abox_verdict() {
         return Ok(Some(false));
     }
-    if std::time::Instant::now() >= deadline {
+    if past(deadline) {
         return Ok(None);
     }
     // Wedge route, capped by whichever comes first: the caller's deadline or the
@@ -8789,24 +8882,24 @@ pub fn is_consistent_internal_bounded(
     // as the unbounded path trusts it.
     let wedge_cap =
         std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
-    let wedge_deadline = wedge_cap.min(deadline);
+    let wedge_deadline = deadline.map_or(wedge_cap, |d| wedge_cap.min(d));
     match prepared.consistency_wedge(Some(wedge_deadline)) {
         Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return Ok(Some(false)),
         // #344: verify a `Sat` the wedge reached without counting data values. A
         // give-up is no verdict, which this bounded API reports as `None`.
         Some(owl_dl_tableau::hyper::HyperResult::Sat) => {
-            let (consistent, gave_up) = prepared.verify_wedge_sat(Some(deadline))?;
+            let (consistent, gave_up) = prepared.verify_wedge_sat(deadline)?;
             return Ok((!gave_up).then_some(consistent));
         }
         Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
     }
-    if std::time::Instant::now() >= deadline {
+    if past(deadline) {
         return Ok(None);
     }
     // Main tableau, bounded by the caller's deadline. THE DIVERGENCE FROM THE
     // UNBOUNDED PATH IS HERE: that one reports `true` when its internal budget
     // elapses; this one reports `None`, because the caller asked to be told.
-    prepared.decide_consistency(Some(deadline))
+    prepared.decide_consistency(deadline)
 }
 
 /// `RUSTDL_CONSISTENT_EL_FASTPATH` (#459) — **default ON**, `=0` reverts.

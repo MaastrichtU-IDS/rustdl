@@ -496,3 +496,208 @@ fn a_deep_inverse_functional_chain_costs_no_more_with_the_cascade() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #564: `classify` on the same family.
+//
+// The per-class label wedge decides `classify`'s unsat probe and `trust_sat` pair
+// refutations. It had no `≤1 t⁻` for `InverseFunctional(t)` whenever conversion's
+// `inv_func_merge_consumable` declined the GCI, so its `Sat` was a model of a weaker
+// KB: `Q` read satisfiable (`RUSTDL_CLASSIFY_WEDGE_IF_BOUND`). And with the
+// consistency wedge off, classify's pre-check ran only the `ABox` saturation, so the
+// `ABox` form read consistent with every signal clean
+// (`RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK`). Verdicts are HermiT's.
+// ---------------------------------------------------------------------------
+
+/// `Q` (or `class`) among `classify`'s unsatisfiable classes, on the unbounded
+/// top-down driver, the CLI's 5 ms per-pair budget, and the `n²` driver.
+fn classify_unsat(body: &str, class: &str) -> [bool; 3] {
+    let o = onto(body);
+    let iri = format!("{NS}{class}");
+    let has =
+        |c: &owl_dl_reasoner::Classification| c.unsatisfiable_classes().contains(&iri.as_str());
+    [
+        has(&owl_dl_reasoner::classify(&o).unwrap()),
+        has(
+            &owl_dl_reasoner::classify_with_timeout(&o, std::time::Duration::from_millis(5))
+                .unwrap(),
+        ),
+        has(&owl_dl_reasoner::classify_n2(&o).unwrap()),
+    ]
+}
+
+/// `classify`'s `consistent` on the `ABox` form (`Q(d)` added).
+fn classify_consistent(body: &str) -> bool {
+    let c = owl_dl_reasoner::classify(&onto(&format!("{body}\nClassAssertion(:Q :d)"))).unwrap();
+    let s = c.stats();
+    assert!(!s.consistency_undetermined, "a decided verdict expected");
+    !s.inconsistent
+}
+
+/// The r-cycle shape is left out of the classify loops: with the bound, the wedge
+/// enters a generate/merge cycle on it (nodes are created and merged away without
+/// end, every blocker refused by the NN guard). Bounded runs give up and are flagged
+/// `incomplete`; the unbounded `classify` does not return. The consistency wedge
+/// already stalls the same way on its `ABox` form on `main`. See
+/// `issue_564_r_cycle_terminates_in_classify`.
+const R_CYCLE: &str = "an r-cycle back from B to A";
+
+#[test]
+fn issue_564_classify_finds_q_unsat_on_every_cascade_shape() {
+    let _l = lock();
+    for (what, body) in inconsistent_shapes() {
+        if what == R_CYCLE {
+            continue;
+        }
+        assert_eq!(
+            classify_unsat(&body, "Q"),
+            [true; 3],
+            "classify: Q unsat: {what}"
+        );
+    }
+}
+
+/// Sentinel for the wedge's generate/merge cycle on the r-cycle shape (#564
+/// follow-up). Ignored: the unbounded `classify` does not return on it today.
+#[test]
+#[ignore = "#564 follow-up: wedge generate/merge cycle on the r-cycle shape"]
+fn issue_564_r_cycle_terminates_in_classify() {
+    let _l = lock();
+    let (_, body) = inconsistent_shapes()
+        .into_iter()
+        .find(|(w, _)| *w == R_CYCLE)
+        .unwrap();
+    let b = body.clone();
+    assert_eq!(
+        Some(true),
+        bounded(move || {
+            let c = owl_dl_reasoner::classify(&onto(&b)).ok()?;
+            Some(
+                c.unsatisfiable_classes()
+                    .contains(&format!("{NS}Q").as_str()),
+            )
+        }),
+        "Q unsat within the bound"
+    );
+}
+
+#[test]
+fn issue_564_classify_controls_keep_q_satisfiable() {
+    let _l = lock();
+    for (what, body) in consistent_controls() {
+        assert_eq!(
+            classify_unsat(&body, "Q"),
+            [false; 3],
+            "classify control: {what}"
+        );
+        assert!(
+            classify_consistent(&body),
+            "classify control, ABox form: {what}"
+        );
+    }
+}
+
+#[test]
+fn issue_564_classify_abox_form_is_inconsistent_with_and_without_the_wedge() {
+    let _l = lock();
+    for (what, body) in inconsistent_shapes() {
+        if what == R_CYCLE {
+            continue;
+        }
+        assert!(!classify_consistent(&body), "default: {what}");
+        let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
+        assert!(!classify_consistent(&body), "consistency wedge off: {what}");
+    }
+    let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
+    for (what, body) in consistent_controls() {
+        assert!(
+            classify_consistent(&body),
+            "consistency wedge off, control: {what}"
+        );
+    }
+}
+
+/// Each #564 flag is load-bearing on its own. With the bound off, the label wedge's
+/// `Sat` is back and `classify` misses `Q`. With the bound off and the consistency
+/// wedge off, only the main-tableau fallback finds the `ABox` form's clash (its
+/// `Q` is no longer unsat to the label wedge, so no other route can), and turning
+/// that off too brings back the issue's `consistent: true`.
+#[test]
+fn issue_564_flags_off_restore_the_old_answers() {
+    let _l = lock();
+    let _b = SetEnvGuard::set("RUSTDL_CLASSIFY_WEDGE_IF_BOUND", "0");
+    assert_eq!(
+        classify_unsat(&repro(), "Q"),
+        [false; 3],
+        "bound off: the #564 miss"
+    );
+    let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
+    assert!(
+        !classify_consistent(&repro()),
+        "fallback on: decided by the main tableau"
+    );
+    let _f = SetEnvGuard::set("RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK", "0");
+    let c =
+        owl_dl_reasoner::classify(&onto(&format!("{}\nClassAssertion(:Q :d)", repro()))).unwrap();
+    assert!(
+        !c.stats().inconsistent,
+        "both off: the #564 consistent: true"
+    );
+}
+
+/// The same miss with no nominal at all: `t ⊑ u`, `Functional(u)` merges `C`'s
+/// `t`-successor into `B`, which then has two `t`-predecessors, `X` and `C`, so
+/// `IF(t)` makes them one (HermiT: `X` unsatisfiable with `X ⊓ C ⊑ ⊥`, and
+/// `X ⊑ C`, so `X ⊑ Y` with `C ⊑ Y`). Conversion's census declines `IF(t)` here
+/// too.
+const X_T_B: &str = "SubClassOf(:X ObjectSomeValuesFrom(:t :B))";
+const B_U_C: &str = "SubClassOf(:B ObjectSomeValuesFrom(ObjectInverseOf(:u) :C))";
+const C_T_D: &str = "SubClassOf(:C ObjectSomeValuesFrom(:t :D))";
+const T_U: &str = "SubObjectPropertyOf(:t :u)";
+const F_U: &str = "FunctionalObjectProperty(:u)";
+
+fn x_merge(extra: &[&str]) -> String {
+    let mut parts = vec![
+        "Declaration(Class(:X)) Declaration(Class(:D)) Declaration(Class(:Y))",
+        X_T_B,
+        B_U_C,
+        C_T_D,
+        T_U,
+        F_U,
+        IF_T,
+    ];
+    parts.extend_from_slice(extra);
+    join(&parts)
+}
+
+#[test]
+fn issue_564_classify_merge_through_a_functional_super_role() {
+    let _l = lock();
+    let body = x_merge(&["DisjointClasses(:X :C)"]);
+    assert_eq!(classify_unsat(&body, "X"), [true; 3], "X unsat");
+    let body = x_merge(&["SubClassOf(:C :Y)"]);
+    let o = onto(&body);
+    let (x, y, c_) = (format!("{NS}X"), format!("{NS}Y"), format!("{NS}C"));
+    for c in [
+        owl_dl_reasoner::classify(&o).unwrap(),
+        owl_dl_reasoner::classify_with_timeout(&o, std::time::Duration::from_millis(5)).unwrap(),
+        owl_dl_reasoner::classify_n2(&o).unwrap(),
+    ] {
+        assert!(c.is_subclass(&x, &c_), "X ⊑ C");
+        assert!(c.is_subclass(&x, &y), "X ⊑ Y");
+    }
+}
+
+/// HermiT: `X` satisfiable once any link is gone.
+#[test]
+fn issue_564_classify_merge_controls() {
+    let _l = lock();
+    for drop in [X_T_B, B_U_C, C_T_D, T_U, F_U, IF_T] {
+        let body = x_merge(&["DisjointClasses(:X :C)"]).replace(drop, "");
+        assert_eq!(
+            classify_unsat(&body, "X"),
+            [false; 3],
+            "X satisfiable without {drop}"
+        );
+    }
+}

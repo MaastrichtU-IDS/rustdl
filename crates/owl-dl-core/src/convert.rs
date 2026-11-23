@@ -3418,20 +3418,6 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
     out.axioms.extend(edges);
 }
 
-/// Whether `InverseFunctionalRole(r)` also derives `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤`
-/// (`RUSTDL_INVERSE_FUNC_MAX`, **default ON since 2026-08-22**, `=0` reverts).
-///
-/// **Logically equivalent, so FP-safe:** `InverseFunctional(r)` ⟺ `Functional(r⁻)` ⟺
-/// `⊤ ⊑ ≤1 r⁻`, and the `∃r⁻.⊤` guard only makes it vacuous where there are no
-/// `r⁻`-successors. The GCI is entailed, so it can add entailments but never
-/// manufacture one.
-///
-/// **Default OFF pending measurement, not because of doubt about the semantics.** It
-/// emits axioms into every ontology carrying an inverse-functional role, which (a) can
-/// change classify output — soundly, by finding more — and (b) interacts with the
-/// fragment gates, since a `Max` is normally disqualifying and only the exact derived
-/// shape is whitelisted (`classify::is_derived_functional_max`). Both need a corpus
-/// sweep before this becomes a default.
 /// Whether a sub-role of a `≤1`-bounded role that carries a `≥2` gets its own
 /// derived `∃s.⊤ ⊑ ≤1 s` (#211, `RUSTDL_SUB_ROLE_FUNCTIONAL_MAX`, **default ON**,
 /// `=0` reverts). Entailed (`s ⊑ f` and `Functional(f)` ⟹ `Functional(s)`),
@@ -3442,6 +3428,23 @@ pub fn sub_role_functional_max_enabled() -> bool {
     std::env::var_os("RUSTDL_SUB_ROLE_FUNCTIONAL_MAX").is_none_or(|v| v != "0")
 }
 
+/// Whether `InverseFunctionalRole(r)` also derives `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤`
+/// (`RUSTDL_INVERSE_FUNC_MAX`, **default ON since 2026-08-22**, `=0` reverts; pinned in
+/// `crates/owl-dl-reasoner/tests/flag_defaults.rs`).
+///
+/// **Logically equivalent, so FP-safe:** `InverseFunctional(r)` ⟺ `Functional(r⁻)` ⟺
+/// `⊤ ⊑ ≤1 r⁻`, and the `∃r⁻.⊤` guard only makes it vacuous where there are no
+/// `r⁻`-successors. The GCI is entailed, so it can add entailments but never
+/// manufacture one.
+///
+/// It emits axioms into ontologies carrying an inverse-functional role, but only where
+/// `inv_func_merge_consumable` admits it, which (a) can change classify output —
+/// soundly, by finding more — and (b) interacts with the fragment gates, since a `Max`
+/// is normally disqualifying and only the exact derived shape is whitelisted
+/// (`classify::is_derived_inverse_functional_max`). It shipped default ON after a
+/// corpus sweep (`c6714381`; the measurement is recorded beside its row in
+/// `flag_defaults.rs`). An earlier paragraph here said "default OFF pending
+/// measurement"; that was stale (#564).
 #[must_use]
 pub fn inverse_functional_max_enabled() -> bool {
     std::env::var_os("RUSTDL_INVERSE_FUNC_MAX").is_none_or(|v| v != "0")

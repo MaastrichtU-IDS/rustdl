@@ -450,19 +450,19 @@ fn cyclic_tboxes_terminate_with_the_cascade() {
 /// chain. With `nominal`, the last class points at a nominal under a functional
 /// role, so every level is guarded.
 fn if_chain(n: usize, nominal: bool) -> String {
+    use std::fmt::Write as _;
     let mut s = String::from("InverseFunctionalObjectProperty(:r)\n");
     for i in 1..=n {
-        s.push_str(&format!(
-            "SubClassOf(:C{i} ObjectSomeValuesFrom(:r :C{}))\n",
-            i + 1
-        ));
+        writeln!(s, "SubClassOf(:C{i} ObjectSomeValuesFrom(:r :C{}))", i + 1).unwrap();
     }
     if nominal {
-        s.push_str(&format!(
+        writeln!(
+            s,
             "FunctionalObjectProperty(:s)\n\
-             SubClassOf(:C{} ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n",
+             SubClassOf(:C{} ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))",
             n + 1
-        ));
+        )
+        .unwrap();
     }
     s
 }

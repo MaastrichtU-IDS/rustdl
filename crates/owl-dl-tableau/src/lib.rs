@@ -7102,11 +7102,11 @@ mod nn_cascade_555 {
         ctx.assign_nominal(IndividualId::new(0), a);
         let mut xs = vec![ctx.new_node()];
         for _ in 0..k {
-            let x = ctx.new_successor(*xs.last().unwrap(), T);
+            let x = ctx.new_successor(xs[xs.len() - 1], T);
             ctx.add_label(x, max_t_inv);
             xs.push(x);
         }
-        ctx.add_edge(a, S, *xs.last().unwrap());
+        ctx.add_edge(a, S, xs[xs.len() - 1]);
         (ctx, xs)
     }
 

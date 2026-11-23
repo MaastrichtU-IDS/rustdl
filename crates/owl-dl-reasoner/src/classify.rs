@@ -5003,17 +5003,15 @@ fn classify_top_down_internal_impl(
                                         .subsumers_of(class_id)
                                         .iter()
                                         .any(|s| prepared.nominal_counting_classes.contains(s))))
-                            // THE SAME DEFECT ONE CONSTRUCT FURTHER (issue #91). The
-                            // wedge does no OBJECT cardinality counting over a COMPLEX
-                            // qualifier: `A ⊑ ≤1 r.(B ⊓ C)` with `A ⊑ ≥2 r.(B ⊓ C)`
-                            // makes `A` unsatisfiable, Konclude and HermiT agree, and
-                            // `rustdl sat A` agrees — but `classify` reported
-                            // `unsatisfiable: []`. `cardinality_qualifier` Tseitin-names
-                            // the complex filler, so the wedge counts a synthetic name
-                            // without relating it to the members and cannot see that the
-                            // `≤` and `≥` are over the SAME set. The ATOMIC-filler
-                            // control decides correctly, which is what isolates this to
-                            // the qualifier shape rather than to cardinality.
+                            // THE SAME DEFECT ONE CONSTRUCT FURTHER (issue #91):
+                            // `A ⊑ ≤1 r.(B ⊓ C)` with `A ⊑ ≥2 r.(B ⊓ C)` makes `A`
+                            // unsatisfiable (Konclude, HermiT, `rustdl sat A`), but
+                            // `classify` reported `unsatisfiable: []`. The clausifier
+                            // named the complex `≤` qualifier with only `Q ⊑ C`, so the
+                            // wedge counted a name no node carried. Since #554
+                            // (`RUSTDL_MAX_QUALIFIER_COVER`, default ON) a `≤` qualifier
+                            // gets `C ⊑ Q` and the wedge finds `A` itself; this probe
+                            // stays as an independent second check.
                             || (crate::complex_qualifier_verify_enabled()
                                 && !prepared.complex_qualifier_counting_classes.is_empty()
                                 && (prepared

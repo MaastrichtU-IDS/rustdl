@@ -721,6 +721,13 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_core::clause::reflexive_max_zero_loop_enabled,
             true,
         ),
+        // #554: a compound `≤n R.C` qualifier `Q` gets `C ⊑ Q` (Horn clauses, or a
+        // choose rule anchored on the bound), not `Q ⊑ C`. `=0` reverts.
+        (
+            "RUSTDL_MAX_QUALIFIER_COVER",
+            owl_dl_core::clause::max_qualifier_fix_enabled,
+            true,
+        ),
         (
             "RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY",
             owl_dl_reasoner::consistency_data_counting_verify_enabled,

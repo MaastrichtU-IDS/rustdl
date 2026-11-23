@@ -314,8 +314,8 @@ fn previously_divergent_shapes_now_agree() {
 /// **#90's fix emptied the roster, and an empty roster passes VACUOUSLY** — the
 /// `undetected` list would be empty because there was nothing to look for. So this
 /// no longer depends on a live defect at all: it MANUFACTURES one by reverting a
-/// shipped fix through its own flag (`RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` restores
-/// #91), which proves the detection leg fires and keeps proving it after every
+/// shipped fix through its own flag (`RUSTDL_COMPLEX_QUALIFIER_VERIFY=0` plus
+/// #554's `RUSTDL_MAX_QUALIFIER_COVER=0` restores #91), which proves the detection leg fires and keeps proving it after every
 /// future fix. `assert!(!cases.is_empty())` guards the roster itself.
 ///
 /// The flag is process-global and `previously_divergent_shapes_now_agree` runs
@@ -329,11 +329,15 @@ fn the_gate_detects_the_known_divergences() {
     // SAFETY: single-threaded within this lock; every other test in this binary
     // that could observe the flag takes the same lock, and the guard restores it.
     let _flag = SetEnvGuard::set("RUSTDL_COMPLEX_QUALIFIER_VERIFY", "0");
+    // #554's `C ⊑ Q` qualifier cover lets the wedge itself see that `≤1` and `≥2`
+    // count the same set, which cures #91 a second way; revert it too, or there is
+    // no divergence left to manufacture.
+    let _cover = SetEnvGuard::set("RUSTDL_MAX_QUALIFIER_COVER", "0");
     // (issue, leg exercised, ontology body). MANUFACTURED, not live: the flag set
     // above reverts #91, so classify misses the unsatisfiable class while the
     // per-pair surface still finds it — the divergence this gate must see.
     let cases: [(&str, &str, &str); 1] = [(
-        "#91 (manufactured via RUSTDL_COMPLEX_QUALIFIER_VERIFY=0)",
+        "#91 (manufactured via RUSTDL_COMPLEX_QUALIFIER_VERIFY=0 + RUSTDL_MAX_QUALIFIER_COVER=0)",
         "unsatisfiability",
         r"Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
               Declaration(ObjectProperty(:r))

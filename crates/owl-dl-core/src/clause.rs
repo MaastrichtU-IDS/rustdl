@@ -812,7 +812,25 @@ impl Clausifier {
             }
             ConceptExpr::Max(n, role, inner) => {
                 let (n, role, inner) = (*n, self.canon_role(*role), *inner);
-                let qual = self.cardinality_qualifier(inner);
+                let qual = match self.max_qualifier(inner) {
+                    MaxQualifier::Named(qual) => qual,
+                    MaxQualifier::Vacuous => return, // `≤n R.⊥` = ⊤.
+                    MaxQualifier::NotHorn(inner) => {
+                        // #554: `C ⊑ Q` has no Horn body here, so state it only
+                        // where the bound is: every `R`-neighbour `y` of a node
+                        // satisfying `body` gets `nnf(¬C)(y) ∨ Q(y)` (the
+                        // hypertableau choose rule). `≤n R.Q ⊓ ∀R.(¬C ⊔ Q)` entails
+                        // `≤n R.C`, and with `Q := C` it is entailed by it.
+                        let q = self.fresh_class();
+                        let y = self.fresh_var();
+                        let mut b = body.clone();
+                        b.push(Atom::Role(role, var, y));
+                        if !self.emit_choose(b, inner, q, y) {
+                            return; // deferred: the whole `≤n` stays out.
+                        }
+                        Some(q)
+                    }
+                };
                 if matches!(qual, Some(c) if self.dkey_classes.contains(&c)) {
                     return; // DKey filler — see the `Min` arm.
                 }
@@ -843,6 +861,75 @@ impl Clausifier {
             ConceptExpr::Top => None,
             _ => self.atomic_name_of(filler),
         }
+    }
+
+    /// The qualifier class for a `≤n R.C` (#554). A `≤`-bound must count every
+    /// `R`-neighbour satisfying `C`, so a compound `C` needs a name `Q` with
+    /// `C ⊑ Q`: the reverse of the `Q ⊑ C` that [`Self::cardinality_qualifier`]
+    /// gives `≥n`. With only `Q ⊑ C`, a neighbour that satisfies `C` without
+    /// carrying `Q` went uncounted, and an `ABox` (or class) violating the bound
+    /// read `Sat`.
+    ///
+    /// When `C` has a Horn antecedent encoding (atomic/nominal parts under
+    /// `⊓`/`⊔`/`∃`), `C ⊑ Q` is emitted globally as Horn clauses `alt(X) → Q(X)`,
+    /// so no branching is added. Otherwise the caller gets
+    /// [`MaxQualifier::NotHorn`] and anchors the choose rule itself.
+    fn max_qualifier(&mut self, filler: ConceptId) -> MaxQualifier {
+        if !max_qualifier_fix_enabled() {
+            // Pre-#554 behaviour (`Q ⊑ C` only), unchanged: the sabotage switch.
+            return MaxQualifier::Named(self.cardinality_qualifier(filler));
+        }
+        if matches!(self.pool.get(filler), ConceptExpr::Top) {
+            return MaxQualifier::Named(None);
+        }
+        if matches!(self.pool.get(filler), ConceptExpr::Bot) {
+            return MaxQualifier::Vacuous;
+        }
+        if let Some(cls) = self.class_id_of(filler) {
+            return MaxQualifier::Named(Some(cls));
+        }
+        let saved_var = self.next_var;
+        if let Some(alts) = self.encode_antecedent(filler, X) {
+            let q = self.fresh_class();
+            for body in alts {
+                self.clauses.push(DlClause {
+                    body,
+                    head: vec![Atom::Class(q, X)],
+                });
+            }
+            return MaxQualifier::Named(Some(q));
+        }
+        self.next_var = saved_var;
+        MaxQualifier::NotHorn(filler)
+    }
+
+    /// Emit `body → nnf(¬C)(y) ∨ Q(y)`, the choose-rule half of a non-Horn `≤n`
+    /// qualifier (see the `Max` arm of [`Self::emit_head`]). `false` (and a
+    /// deferral) if a disjunct of `nnf(¬C)` has no head atom.
+    fn emit_choose(&mut self, body: Vec<Atom>, filler: ConceptId, q: ClassId, y: Var) -> bool {
+        let neg = crate::normalize::nnf_complement(filler, &mut self.pool);
+        let parts: Vec<ConceptId> = match self.pool.get(neg) {
+            ConceptExpr::Or(parts) => parts.to_vec(),
+            // `C = ⊤` is `Named(None)` and `C = ⊥` is `Vacuous`, so `¬C` is
+            // never `⊤`/`⊥` at the top; a `⊥` disjunct is dropped below.
+            _ => vec![neg],
+        };
+        let mut head = vec![Atom::Class(q, y)];
+        for p in parts {
+            match self.pool.get(p) {
+                ConceptExpr::Bot => continue,
+                ConceptExpr::Top => return true, // `¬C ⊒ ⊤`: nothing to state.
+                _ => {}
+            }
+            if let Some(atom) = self.head_atom_for(p, y) {
+                head.push(atom);
+            } else {
+                self.defer("max-qualifier-choose");
+                return false;
+            }
+        }
+        self.clauses.push(DlClause { body, head });
+        true
     }
 
     /// Map a head disjunct to a single head atom, naming compounds.
@@ -951,8 +1038,16 @@ impl Clausifier {
                     return self.atomic_name_of(c).map(|q| Atom::Class(q, var));
                 }
                 let role = self.canon_role(role);
-                let qual = self.cardinality_qualifier(inner);
-                Some(Atom::AtMost(role, qual, n, var))
+                match self.max_qualifier(inner) {
+                    MaxQualifier::Named(qual) => Some(Atom::AtMost(role, qual, n, var)),
+                    // A non-Horn qualifier needs a body to anchor its choose rule
+                    // (#554), which a disjunct lacks: name the disjunct `P` and let
+                    // `P ⊑ ≤n R.C` go through `emit_head` (anchored on `P`).
+                    // `Vacuous` (`≤n R.⊥` = ⊤) takes the same opaque path.
+                    MaxQualifier::Vacuous | MaxQualifier::NotHorn(_) => {
+                        self.atomic_name_of(c).map(|q| Atom::Class(q, var))
+                    }
+                }
             }
             ConceptExpr::Min(n, role, inner) if self.card_disjunct_atoms => {
                 // `≥0` = ⊤ (`Q ⊑ ≥0` vacuous → trivially assertable disjunct) or
@@ -987,6 +1082,27 @@ impl Clausifier {
         self.emit_head(vec![Atom::Class(q, X)], c, X);
         Some(q)
     }
+}
+
+/// What [`Clausifier::max_qualifier`] found for a `≤n R.C` filler.
+enum MaxQualifier {
+    /// Count neighbours in this class (`None`: unqualified), with `C ⊑ Q` already
+    /// emitted when `Q` is a fresh name.
+    Named(Option<ClassId>),
+    /// `C = ⊥`: the bound holds trivially.
+    Vacuous,
+    /// `C` has no Horn antecedent encoding; the caller must emit the choose rule.
+    NotHorn(ConceptId),
+}
+
+/// `RUSTDL_MAX_QUALIFIER_COVER` (**default ON**, `=0` reverts, #554): name a
+/// compound `≤n R.C` qualifier `Q` with `C ⊑ Q` (see
+/// [`Clausifier::max_qualifier`]). Off restores the old `Q ⊑ C`, under which the
+/// wedge did not count a neighbour satisfying `C` and could report a trusted `Sat`
+/// for an inconsistent `ABox` or an unsatisfiable class.
+#[must_use]
+pub fn max_qualifier_fix_enabled() -> bool {
+    std::env::var_os("RUSTDL_MAX_QUALIFIER_COVER").is_none_or(|v| v != "0")
 }
 
 /// Clausify an ontology into DL-clauses. Runs NNF then a
@@ -1467,9 +1583,10 @@ pub fn reflexive_max_zero_loop_enabled() -> bool {
 /// count; the every-node `→ R(X,X)` is what cost 3–5× (see
 /// [`apply_reflexive_roles`]). A `≤0` node needs no other edge to be violated, so
 /// its loop is unguarded; it fires only where the `≤0` clause's body does.
-/// Only the loop is added: a `≤0 R.C` with a complex `C` is still not checked
-/// against it, nor against an ordinary `R`-successor (an open gap, pinned by
-/// `#[ignore]`d sentinels in `wedge_abox_coverage.rs`). An `R`-predecessor, which
+/// Only the loop is added; a compound `C` in `≤n R.C` is checked against it (and
+/// against any `R`-successor) through the `C ⊑ Q` cover of
+/// [`Clausifier::max_qualifier`] (#554), whose choose-rule clause `body ∧ R(x,y) →
+/// …` [`apply_reflexive_roles`] contracts onto `x`. An `R`-predecessor, which
 /// `distinct_role_succ` also counts, does not trigger the guard; that case
 /// stays a miss.
 fn add_counted_self_loops(cz: &mut Clausifier, reflexive: &std::collections::HashSet<RoleId>) {

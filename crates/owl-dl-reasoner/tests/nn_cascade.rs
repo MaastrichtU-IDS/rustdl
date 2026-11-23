@@ -182,6 +182,76 @@ fn inconsistent_shapes() -> Vec<(&'static str, String)> {
                 "InverseFunctionalObjectProperty(:u)",
             ]),
         ),
+        // Fable's review of #559 (each HermiT-checked).
+        (
+            "an r-cycle back from B to A",
+            join(&[
+                Q2,
+                A_T_B,
+                B_S_A,
+                "SubClassOf(:B ObjectSomeValuesFrom(:r :A))",
+                F_S,
+                IF_T,
+            ]),
+        ),
+        (
+            "IF(t) as the qualified ≤1 t⁻.A on B",
+            join(&[
+                Q2,
+                A_T_B,
+                B_S_A,
+                F_S,
+                "SubClassOf(:B ObjectMaxCardinality(1 ObjectInverseOf(:t) :A))",
+            ]),
+        ),
+        (
+            "one more inverse-functional level above A",
+            join(&[
+                "SubClassOf(:Q ObjectMinCardinality(2 :r :C))",
+                "SubClassOf(:C ObjectSomeValuesFrom(:u :A))",
+                "InverseFunctionalObjectProperty(:u)",
+                A_T_B,
+                B_S_A,
+                F_S,
+                IF_T,
+            ]),
+        ),
+        (
+            "four edges: A -t-> B -u-> C -t1-> D -s⁻-> a",
+            join(&[
+                Q2,
+                A_T_B,
+                "SubClassOf(:B ObjectSomeValuesFrom(:u :C))",
+                "SubClassOf(:C ObjectSomeValuesFrom(:t1 :D))",
+                "SubClassOf(:D ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))",
+                F_S,
+                IF_T,
+                "InverseFunctionalObjectProperty(:u)",
+                "InverseFunctionalObjectProperty(:t1)",
+            ]),
+        ),
+        (
+            "a disjunctive nominal with ≥3",
+            join(&[
+                "SubClassOf(:Q ObjectMinCardinality(3 :r :A))",
+                A_T_B,
+                "SubClassOf(:B ObjectUnionOf(\
+                 ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)) \
+                 ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:b))))",
+                F_S,
+                IF_T,
+            ]),
+        ),
+        (
+            "{a} ⊑ ≤2 s with ≥3",
+            join(&[
+                "SubClassOf(:Q ObjectMinCardinality(3 :r :A))",
+                A_T_B,
+                B_S_A,
+                "SubClassOf(ObjectOneOf(:a) ObjectMaxCardinality(2 :s))",
+                IF_T,
+            ]),
+        ),
     ]
 }
 
@@ -278,6 +348,10 @@ fn flag_off_restores_the_old_answers() {
     let _off = SetEnvGuard::set("RUSTDL_NN_CASCADE", "0");
     assert!(consistent_main(&repro()), "flag off: the #555 miss");
     assert!(sat_q(&repro()), "flag off: the #555 miss (sat)");
+    assert!(
+        !q_is_nothing(&repro()),
+        "flag off: the #555 miss (subclass)"
+    );
     for (what, body) in consistent_controls() {
         assert!(consistent_main(&body), "flag off, control: {what}");
     }
@@ -321,4 +395,104 @@ fn cascade_does_not_climb_down_a_chain() {
         }),
         "A satisfiable, within the bound"
     );
+}
+
+/// Termination with the cascade active: cyclic TBoxes whose nodes a `≤` at a
+/// nominal, or at a node it guards, keeps counting (Fable's review of #559). HermiT:
+/// `Q` satisfiable, the ontology with `Q(d)` consistent.
+#[test]
+fn cyclic_tboxes_terminate_with_the_cascade() {
+    let _l = lock();
+    for body in [
+        "SubClassOf(:Q ObjectSomeValuesFrom(:r :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:t :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:s ObjectOneOf(:a :b)))\n\
+         InverseFunctionalObjectProperty(:s)\n\
+         InverseFunctionalObjectProperty(:t)",
+        "SubClassOf(:Q ObjectSomeValuesFrom(:r :A))\n\
+         SubClassOf(:A ObjectUnionOf(ObjectSomeValuesFrom(:t :A) \
+         ObjectSomeValuesFrom(:s ObjectOneOf(:a))))\n\
+         InverseFunctionalObjectProperty(:s)\n\
+         InverseFunctionalObjectProperty(:t)",
+        "SubClassOf(:Q ObjectSomeValuesFrom(:r :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:t :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:s ObjectOneOf(:a)))\n\
+         SubClassOf(ObjectOneOf(:a) ObjectMaxCardinality(3 ObjectInverseOf(:s)))\n\
+         InverseFunctionalObjectProperty(:t)",
+        "SubClassOf(:Q ObjectSomeValuesFrom(:r :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:t :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:u :A))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:s ObjectOneOf(:a)))\n\
+         SubClassOf(ObjectOneOf(:a) ObjectMaxCardinality(3 ObjectInverseOf(:s)))\n\
+         InverseFunctionalObjectProperty(:t)\n\
+         InverseFunctionalObjectProperty(:u)",
+    ] {
+        let b = body.to_owned();
+        assert_eq!(
+            Some(true),
+            bounded(
+                move || owl_dl_reasoner::is_class_satisfiable(&onto(&b), &format!("{NS}Q")).ok()
+            ),
+            "Q satisfiable, within the bound: {body}"
+        );
+        let b = format!("{body}\nClassAssertion(:Q :d)");
+        let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
+        assert_eq!(
+            Some(true),
+            bounded(move || owl_dl_reasoner::is_consistent(&onto(&b)).ok()),
+            "consistent on the main tableau, within the bound: {body}"
+        );
+    }
+}
+
+/// `Cᵢ ⊑ ∃r.Cᵢ₊₁` for `i = 1..n`, `r` inverse-functional: every `Cᵢ₊₁` holds a
+/// `≤1 r⁻` that counts its parent, so the cascade's walk from `C₁` runs the whole
+/// chain. With `nominal`, the last class points at a nominal under a functional
+/// role, so every level is guarded.
+fn if_chain(n: usize, nominal: bool) -> String {
+    let mut s = String::from("InverseFunctionalObjectProperty(:r)\n");
+    for i in 1..=n {
+        s.push_str(&format!(
+            "SubClassOf(:C{i} ObjectSomeValuesFrom(:r :C{}))\n",
+            i + 1
+        ));
+    }
+    if nominal {
+        s.push_str(&format!(
+            "FunctionalObjectProperty(:s)\n\
+             SubClassOf(:C{} ObjectSomeValuesFrom(ObjectInverseOf(:s) ObjectOneOf(:a)))\n",
+            n + 1
+        ));
+    }
+    s
+}
+
+/// CPU-independent cost pin (Fable's review of #559): `sat C₁` on a deep
+/// inverse-functional chain costs about the same with the cascade as without. The
+/// unmemoised cascade walked the chain below a node on every guard call, about
+/// `n^2.7` (`n = 4000`: 22 CPU-s against 0.6 s, release); memoised per trail
+/// generation it is linear. A wide margin against the flag-off arm of the same
+/// process keeps this independent of the host's speed.
+#[test]
+fn a_deep_inverse_functional_chain_costs_no_more_with_the_cascade() {
+    let _l = lock();
+    for nominal in [false, true] {
+        let body = if_chain(1200, nominal);
+        let o = onto(&body);
+        let iri = format!("{NS}C1");
+        let time = |o: &SetOntology<RcStr>| {
+            let t = std::time::Instant::now();
+            assert!(owl_dl_reasoner::is_class_satisfiable(o, &iri).unwrap());
+            t.elapsed()
+        };
+        let off = {
+            let _off = SetEnvGuard::set("RUSTDL_NN_CASCADE", "0");
+            time(&o)
+        };
+        let on = time(&o);
+        assert!(
+            on <= off * 4 + std::time::Duration::from_secs(2),
+            "nominal={nominal}: cascade {on:?} against {off:?} without it"
+        );
+    }
 }

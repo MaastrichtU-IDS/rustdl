@@ -205,6 +205,8 @@ struct Clausifier {
     /// derived (completeness preserved). Representation-faithful ⟹ sound. See
     /// `docs/superpowers/specs/2026-07-16-cardinality-disjunct-atoms-design.md`.
     card_disjunct_atoms: bool,
+    /// [`max_qualifier_fix_enabled`], read once per clausification (#554).
+    max_qualifier_cover: bool,
 }
 
 impl Clausifier {
@@ -227,6 +229,7 @@ impl Clausifier {
             dkey_classes,
             card_disjunct_atoms: std::env::var_os("RUSTDL_CARD_DISJUNCT_ATOMS")
                 .is_none_or(|v| v != "0" && !v.is_empty()),
+            max_qualifier_cover: max_qualifier_fix_enabled(),
         }
     }
 
@@ -831,8 +834,11 @@ impl Clausifier {
                         Some(q)
                     }
                 };
+                // DKey filler — see the `Min` arm. Only an atomic qualifier can be a
+                // DKey class: conversion lowers every data filler to one atomic DKey
+                // class (or `⊤`), never a compound, so a fresh `Q` is never DKey.
                 if matches!(qual, Some(c) if self.dkey_classes.contains(&c)) {
-                    return; // DKey filler — see the `Min` arm.
+                    return;
                 }
                 self.clauses.push(DlClause {
                     body,
@@ -875,7 +881,7 @@ impl Clausifier {
     /// so no branching is added. Otherwise the caller gets
     /// [`MaxQualifier::NotHorn`] and anchors the choose rule itself.
     fn max_qualifier(&mut self, filler: ConceptId) -> MaxQualifier {
-        if !max_qualifier_fix_enabled() {
+        if !self.max_qualifier_cover {
             // Pre-#554 behaviour (`Q ⊑ C` only), unchanged: the sabotage switch.
             return MaxQualifier::Named(self.cardinality_qualifier(filler));
         }

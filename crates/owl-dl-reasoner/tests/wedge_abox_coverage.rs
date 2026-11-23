@@ -576,6 +576,68 @@ fn control_complex_qualifier_consistent_twins() {
     }
 }
 
+/// Review pins for #554 (`HermiT`-adjudicated pairs, consistent first): a `≤`
+/// under `∀` (clause variable `≠ X`), `n = 2`, the `ore_ont_9012` shape (a
+/// cardinality inside the qualifier) and a non-Horn qualifier on a reflexive role.
+const R_PAIRS: [(&str, &str); 5] = [
+    (
+        "ObjectPropertyAssertion(:s :a :b) ObjectPropertyAssertion(:r :b :c) \
+         ClassAssertion(ObjectAllValuesFrom(:s ObjectMaxCardinality(0 :r ObjectComplementOf(:Q))) :a)",
+        "ObjectPropertyAssertion(:s :a :b) ObjectPropertyAssertion(:r :b :c) \
+         ClassAssertion(ObjectComplementOf(:Q) :c) \
+         ClassAssertion(ObjectAllValuesFrom(:s ObjectMaxCardinality(0 :r ObjectComplementOf(:Q))) :a)",
+    ),
+    (
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ObjectPropertyAssertion(:r :a :d) DifferentIndividuals(:b :c :d) \
+         ClassAssertion(ObjectComplementOf(:Q) :b) ClassAssertion(ObjectComplementOf(:Q) :c) \
+         ClassAssertion(ObjectMaxCardinality(2 :r ObjectComplementOf(:Q)) :a)",
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ObjectPropertyAssertion(:r :a :d) DifferentIndividuals(:b :c :d) \
+         ClassAssertion(ObjectComplementOf(:Q) :b) ClassAssertion(ObjectComplementOf(:Q) :c) \
+         ClassAssertion(ObjectComplementOf(:Q) :d) \
+         ClassAssertion(ObjectMaxCardinality(2 :r ObjectComplementOf(:Q)) :a)",
+    ),
+    (
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ObjectPropertyAssertion(:r :a :d) DifferentIndividuals(:b :c :d) ClassAssertion(:Q :b) \
+         ClassAssertion(:P :c) ClassAssertion(ObjectMaxCardinality(2 :r ObjectUnionOf(:Q :P)) :a)",
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c) \
+         ObjectPropertyAssertion(:r :a :d) DifferentIndividuals(:b :c :d) ClassAssertion(:Q :b) \
+         ClassAssertion(:P :c) ClassAssertion(:Q :d) \
+         ClassAssertion(ObjectMaxCardinality(2 :r ObjectUnionOf(:Q :P)) :a)",
+    ),
+    (
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :c) \
+         ObjectPropertyAssertion(:s :b :d) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectMinCardinality(2 :s owl:Thing)) :a)",
+        "ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :c) \
+         ObjectPropertyAssertion(:s :b :d) DifferentIndividuals(:c :d) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectMinCardinality(2 :s owl:Thing)) :a)",
+    ),
+    (
+        "ReflexiveObjectProperty(:r) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) :a)",
+        "ReflexiveObjectProperty(:r) ClassAssertion(ObjectComplementOf(:Q) :a) \
+         ClassAssertion(ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) :a)",
+    ),
+];
+
+#[test]
+fn control_complex_qualifier_review_pairs_consistent() {
+    let _g = lock();
+    for (consistent_body, _) in R_PAIRS {
+        assert_consistent(consistent_body);
+    }
+}
+#[test]
+fn complex_qualifier_review_pairs_inconsistent() {
+    let _g = lock();
+    for (_, inconsistent_body) in R_PAIRS {
+        assert_inconsistent(inconsistent_body);
+    }
+}
+
 #[test]
 fn complex_qualifier_max1_tautology() {
     let _g = lock();

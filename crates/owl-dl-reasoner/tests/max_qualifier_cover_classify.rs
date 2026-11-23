@@ -82,7 +82,11 @@ fn classify(body: &str) -> owl_dl_reasoner::Classification {
          Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) \
          Declaration(Class(:D)) Declaration(Class(:E)) Declaration(Class(:F)) \
          Declaration(Class(:P)) Declaration(Class(:Q)) Declaration(Class(:R)) \
-         Declaration(ObjectProperty(:r))\n{body}\n)\n"
+         Declaration(Class(:B1)) Declaration(Class(:B2)) Declaration(Class(:B3)) \
+         Declaration(Class(:B4)) Declaration(Class(:C2)) Declaration(Class(:C3)) \
+         Declaration(Class(:H)) Declaration(Class(:H2)) Declaration(Class(:K2)) \
+         Declaration(Class(:K3)) \
+         Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n{body}\n)\n"
     );
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut Cursor::new(ofn), ParserConfiguration::default()).expect("parse ofn");
@@ -153,4 +157,63 @@ fn cover_alone_finds_issue_91_unsat() {
         unsat(&classify(body)).is_empty(),
         "both off should reproduce #91"
     );
+}
+
+/// A `≤n` HEAD DISJUNCT with a non-Horn qualifier (the `NotHorn` arm of
+/// `head_atom_for`, which names the disjunct and routes it through `emit_head`),
+/// and a `≤` nested under `∃` (clause variable `≠ X`). `HermiT`: `K2 ⊑ D`,
+/// `C3 ⊑ D`, `H` unsat; `K3 ⋢ D`, `C2 ⋢ D`, `H2` satisfiable.
+///
+/// - `K2 ⊑ (≤1 r.∀s.P) ⊔ D` with two disjoint `r`-successors both in `∀s.P`.
+///   `K3`: one of the two successors is not in `∀s.P`.
+/// - `C3 ⊑ (≤0 r.¬Q) ⊔ D` with an `r`-successor in `¬Q`; `C2`: in `P` instead.
+/// - `H ⊑ ∃s.(≤0 r.¬Q ⊓ ∃r.¬Q)`; `H2`: `∃r.P` instead.
+const HD: &str = "\
+     DisjointClasses(:B1 :B2) SubClassOf(:B1 ObjectAllValuesFrom(:s :P)) \
+     DisjointClasses(:B3 :B4) SubClassOf(:B3 ObjectAllValuesFrom(:s :P)) \
+     SubClassOf(:B4 ObjectAllValuesFrom(:s :P)) \
+     SubClassOf(:K2 ObjectUnionOf(ObjectMaxCardinality(1 :r ObjectAllValuesFrom(:s :P)) :D)) \
+     SubClassOf(:K2 ObjectSomeValuesFrom(:r :B3)) SubClassOf(:K2 ObjectSomeValuesFrom(:r :B4)) \
+     SubClassOf(:K3 ObjectUnionOf(ObjectMaxCardinality(1 :r ObjectAllValuesFrom(:s :P)) :D)) \
+     SubClassOf(:K3 ObjectSomeValuesFrom(:r :B1)) SubClassOf(:K3 ObjectSomeValuesFrom(:r :B2)) \
+     SubClassOf(:C2 ObjectUnionOf(ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) :D)) \
+     SubClassOf(:C2 ObjectSomeValuesFrom(:r :P)) \
+     SubClassOf(:C3 ObjectUnionOf(ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) :D)) \
+     SubClassOf(:C3 ObjectSomeValuesFrom(:r ObjectComplementOf(:Q))) \
+     SubClassOf(:H ObjectSomeValuesFrom(:s ObjectIntersectionOf( \
+     ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) \
+     ObjectSomeValuesFrom(:r ObjectComplementOf(:Q))))) \
+     SubClassOf(:H2 ObjectSomeValuesFrom(:s ObjectIntersectionOf( \
+     ObjectMaxCardinality(0 :r ObjectComplementOf(:Q)) ObjectSomeValuesFrom(:r :P))))";
+
+#[test]
+fn head_disjunct_non_horn_max1_forall() {
+    let _g = lock();
+    assert!(sub(&classify(HD), "K2", "D"), "HermiT: K2 ⊑ D");
+}
+
+#[test]
+fn head_disjunct_non_horn_max0_negated() {
+    let _g = lock();
+    assert!(sub(&classify(HD), "C3", "D"), "HermiT: C3 ⊑ D");
+}
+
+#[test]
+fn max_under_exists_unsat() {
+    let _g = lock();
+    assert_eq!(unsat(&classify(HD)), ["H"], "HermiT: only H unsat");
+}
+
+#[test]
+fn head_disjunct_non_horn_qualifier_controls() {
+    let _g = lock();
+    let c = classify(HD);
+    assert!(!sub(&c, "K3", "D"), "HermiT: K3 ⋢ D");
+    assert!(!sub(&c, "C2", "D"), "HermiT: C2 ⋢ D");
+    for name in ["H2", "K2", "K3", "C2", "C3"] {
+        assert!(
+            !unsat(&c).contains(&name.to_string()),
+            "{name} is satisfiable (HermiT)"
+        );
+    }
 }

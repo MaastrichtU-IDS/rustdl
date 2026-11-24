@@ -176,6 +176,13 @@ pub(crate) struct ClassifyJson {
     /// sets nor clears `incomplete` (a cut also prunes the walk below it). 0 when the
     /// closure is off.
     pub(crate) matrix_closure_added_pairs: usize,
+    /// #564: classify-wedge fixpoints the merge-churn guard stopped
+    /// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`): a fixpoint that built nodes only to merge
+    /// them away, with every blocker refused by the NN guard, returned no verdict, and
+    /// its probe went to the main tableau. NOT `incomplete`: no deadline fired and no
+    /// answer was guessed. A fall-through the tableau could not finish is reported by
+    /// the fields that cover that. Diagnostic; 0 when the guard never fired.
+    pub(crate) wedge_merge_churn_stops: u64,
     /// #462/#475: probes (per-class unsat probes and pair probes) that ended in
     /// `NoVerdict` as an internal limit, likely a reasoner bug (#449): any probe with NO
     /// deadline (e.g. under `--pair-timeout-ms 0`), and any probe whose deterministic
@@ -604,6 +611,7 @@ pub(crate) fn build_classify_json(
         wedge_clauses_refused: stats.wedge_clauses_refused,
         derived_same_undecided: stats.derived_same_undecided,
         matrix_closure_added_pairs: stats.matrix_closure_added_pairs,
+        wedge_merge_churn_stops: stats.wedge_merge_churn_stops,
         no_verdict_pairs: stats.no_verdict_pairs,
         unsatisfiable,
         equivalent_groups: groups,
@@ -634,6 +642,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         wedge_clauses_refused: 0,
         derived_same_undecided: 0,
         matrix_closure_added_pairs: 0,
+        wedge_merge_churn_stops: 0,
         no_verdict_pairs: 0,
         unsatisfiable: Vec::new(),
         equivalent_groups: Vec::new(),

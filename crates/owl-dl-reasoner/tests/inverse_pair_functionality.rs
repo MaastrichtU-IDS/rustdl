@@ -92,10 +92,32 @@ fn fixture(name: &str) -> PathBuf {
 
 /// `true` == `:C` is reported unsatisfiable by `classify`.
 fn c_is_unsat(name: &str, flag_on: bool) -> bool {
+    c_is_unsat_with_wedge_bound(name, flag_on, true)
+}
+
+/// [`c_is_unsat`], with `RUSTDL_CLASSIFY_WEDGE_IF_BOUND` (#564) set explicitly.
+#[allow(unsafe_code)]
+fn c_is_unsat_with_wedge_bound(name: &str, flag_on: bool, bound_on: bool) -> bool {
+    const BOUND: &str = "RUSTDL_CLASSIFY_WEDGE_IF_BOUND";
     let _lock = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set(flag_on);
+    let prior = std::env::var_os(BOUND);
+    // SAFETY: under ENV_MUTEX; restored below before the lock is released.
+    unsafe { std::env::set_var(BOUND, if bound_on { "1" } else { "0" }) };
+    let r = c_is_unsat_locked(name);
+    // SAFETY: as above.
+    unsafe {
+        match prior {
+            Some(v) => std::env::set_var(BOUND, v),
+            None => std::env::remove_var(BOUND),
+        }
+    }
+    r
+}
+
+fn c_is_unsat_locked(name: &str) -> bool {
     let text = std::fs::read_to_string(fixture(name)).expect("read fixture");
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut Cursor::new(text), ParserConfiguration::default()).expect("parse ofn");
@@ -147,11 +169,18 @@ fn derived_functional_abox_is_decided_natively_since_290() {
 }
 
 #[test]
-fn derived_functional_tbox_needs_the_flag() {
+fn derived_functional_tbox_needs_the_flag_only_without_the_wedge_bound() {
     // The flag's only non-vacuous route since #290: the same derivation with no ABox.
-    // If the first assertion starts failing, the flag has gone redundant: retire it
-    // rather than flipping this test.
-    assert!(!c_is_unsat("h-derived-functional-tbox.ofn", false));
+    // #564: the classify wedge now carries the inverse-functional bound that
+    // conversion declined (`RUSTDL_CLASSIFY_WEDGE_IF_BOUND`), which finds `C`
+    // unsatisfiable with this (default-OFF) flag off too. The flag is still needed
+    // with the wedge bound off, which this pins.
+    assert!(c_is_unsat("h-derived-functional-tbox.ofn", false));
+    assert!(!c_is_unsat_with_wedge_bound(
+        "h-derived-functional-tbox.ofn",
+        false,
+        false
+    ));
     assert!(
         c_is_unsat("h-derived-functional-tbox.ofn", true),
         "Functional(S) derived from InverseFunctional(G) must make C unsatisfiable"

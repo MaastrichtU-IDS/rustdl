@@ -67,6 +67,33 @@ pub enum SaturationResult {
 /// The loop exits when a full scan finds nothing dirty (stable) or
 /// a clash surfaces, with `max_iters` as a defensive cap.
 pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
+    saturate_capped(ctx, max_iters, false)
+}
+
+/// [`saturate`], except that a pass whose only effect is new labels and edges on
+/// existing nodes ([`crate::TableauTrail::grew_labels_only_since`]) does not count
+/// against `max_iters` (#562).
+///
+/// Such a pass is always finite work: labels only grow (a node's labels are a
+/// subset of the immutable pool) and the pass must add one, so between two counted
+/// passes (the only ones that create, merge or prune nodes) there are at most as
+/// many of them as there are missing labels. Propagation against the scan order,
+/// `∀r⁻.E` climbing a chain built downwards, needs one pass per level, so under
+/// [`saturate`]'s count a satisfiable chain about 2,000 deep ran out of the default
+/// 4,096 iterations and the reasoner answered `NoVerdict`. A livelock (#437) makes
+/// or merges nodes, so it still meets the cap.
+pub(crate) fn saturate_counting_structural_passes(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    max_iters: usize,
+) -> SaturationResult {
+    saturate_capped(ctx, max_iters, true)
+}
+
+fn saturate_capped(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    max_iters: usize,
+    label_passes_free: bool,
+) -> SaturationResult {
     // #288: when the graph is a fixpoint plus label additions only, dirty just
     // the nodes a full pass would find work on (see
     // `incremental_saturate_enabled`).
@@ -84,9 +111,9 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
                     ctx.graph_mut().set_dirty(node, true);
                 }
             }
-            saturate_loop(ctx, max_iters)
+            saturate_loop(ctx, max_iters, label_passes_free)
         }
-        None => saturate_full(ctx, max_iters),
+        None => saturate_full(ctx, max_iters, label_passes_free),
     };
     ctx.end_saturate();
     if result == SaturationResult::Stable {
@@ -95,7 +122,11 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
     result
 }
 
-fn saturate_full(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
+fn saturate_full(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    max_iters: usize,
+    label_passes_free: bool,
+) -> SaturationResult {
     // Conservatively mark everything dirty: between saturate() calls
     // the search has added or rolled back labels, and some state
     // (e.g. `residuals_saturated` memo, nominal-map shape, edge
@@ -108,11 +139,28 @@ fn saturate_full(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satu
     // saturate() call still saves the bulk of the work; the entry
     // reset is a single boolean write per node.
     ctx.graph_mut().mark_all_dirty();
-    saturate_loop(ctx, max_iters)
+    saturate_loop(ctx, max_iters, label_passes_free)
 }
 
-fn saturate_loop(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
-    for iter in 0..max_iters {
+fn saturate_loop(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    max_iters: usize,
+    label_passes_free: bool,
+) -> SaturationResult {
+    // Passes counted against `max_iters`: all of them, or (#562) only those that
+    // did more than add labels and edges.
+    let mut counted = 0usize;
+    let mut pass_start = ctx.trail().len();
+    for iter in 0.. {
+        if iter > 0 {
+            if !(label_passes_free && ctx.trail().grew_labels_only_since(pass_start)) {
+                counted += 1;
+            }
+            pass_start = ctx.trail().len();
+        }
+        if counted >= max_iters {
+            break;
+        }
         // Cooperative deadline check. A single saturate() call can
         // generate many nodes (e.g. via chain rule expansion under
         // inverse roles) and would otherwise run far past a

@@ -131,6 +131,11 @@ pub struct TableauTrail {
     /// the graph may have. Unlike `len`, it never repeats after a rollback, which
     /// makes it a sound cache key for derived state (#288).
     generation: u64,
+    /// #563: like `generation`, but not bumped by a checkpoint, a
+    /// [`TrailEntry::StableMark`], or a label the caller records with
+    /// [`Self::record_quiet_label`]: the key of the NN-cascade memo, whose answers
+    /// read only edges, parents, redirects and a few kinds of label.
+    nn_generation: u64,
 }
 
 impl TableauTrail {
@@ -160,7 +165,17 @@ impl TableauTrail {
 
     pub(crate) fn record(&mut self, entry: TrailEntry) {
         self.generation += 1;
+        if !matches!(entry, TrailEntry::StableMark { .. }) {
+            self.nn_generation += 1;
+        }
         self.entries.push(entry);
+    }
+
+    /// [`Self::record`] for a [`TrailEntry::LabelAdded`] whose concept the caller
+    /// knows no NN-cascade answer reads (#563): bumps `generation` only.
+    pub(crate) fn record_quiet_label(&mut self, node: NodeId, concept: ConceptId) {
+        self.generation += 1;
+        self.entries.push(TrailEntry::LabelAdded { node, concept });
     }
 
     /// If the graph is a saturation fixpoint plus local label additions only,
@@ -198,10 +213,40 @@ impl TableauTrail {
             .any(|e| !matches!(e, TrailEntry::StableMark { .. }))
     }
 
+    /// Whether the entries past `len` add at least one label and otherwise only
+    /// edges, inequalities, checkpoints and stable marks: no node was created,
+    /// merged, pruned or re-parented (#562). `false` if the trail is shorter than
+    /// `len`.
+    #[must_use]
+    pub fn grew_labels_only_since(&self, len: usize) -> bool {
+        let Some(tail) = self.entries.get(len..) else {
+            return false;
+        };
+        let mut label = false;
+        for e in tail {
+            match e {
+                TrailEntry::LabelAdded { .. } => label = true,
+                TrailEntry::EdgeAdded { .. }
+                | TrailEntry::DistinctMarked { .. }
+                | TrailEntry::Checkpoint
+                | TrailEntry::StableMark { .. } => {}
+                _ => return false,
+            }
+        }
+        label
+    }
+
     /// A counter that changes whenever the trail does; see `generation`.
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// A counter that changes whenever the trail records anything but a
+    /// checkpoint, a stable mark or a quiet label, and on every rollback (#563).
+    #[must_use]
+    pub fn nn_generation(&self) -> u64 {
+        self.nn_generation
     }
 
     /// Undo every entry after `cp` in reverse order and drop the
@@ -222,6 +267,7 @@ impl TableauTrail {
             "checkpoint handle does not point at a Checkpoint entry"
         );
         self.generation += 1;
+        self.nn_generation += 1;
         // #491: a `LabelAdded` undo leaves the node's `label_sig` stale; it is
         // recomputed once per touched node after the loop, not once per undone
         // label. Per entry, a rollback of K labels on a node holding L labels cost

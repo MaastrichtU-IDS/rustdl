@@ -868,6 +868,13 @@ taken).
 **New routes.** All run with `RAYON_NUM_THREADS=1`. The forced stall is
 `RUSTDL_TABLEAU_SATURATE_ITERS=1`.
 
+Since #562, the cap's default (the variable unset, `0` or not a number) counts only the passes
+that create, merge, prune or re-parent nodes. A pass that only adds labels and edges is free,
+so propagation against the scan order (`E ⊑ ∀r⁻.E` climbing a chain about 2,000 deep) no longer
+stalls. A positive value set in the environment counts every pass, as before. The forced
+stall therefore still fires, and `=4096` restores the old default exactly. An R6.5 natural
+stall at the default is now a node-making livelock (the #437 kind), not deep label propagation.
+
 | route | command | stall | wedge |
 |---|---|---|---|
 | `nv_free` | `classify --json --pair-timeout-ms 0` | forced | off |

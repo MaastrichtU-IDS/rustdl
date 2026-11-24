@@ -57,29 +57,29 @@ const SATURATE_ITERS: usize = 4096;
 fn saturate_iters() -> (usize, bool) {
     static CAP: std::sync::OnceLock<(usize, bool)> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| {
-        let v = std::env::var("RUSTDL_TABLEAU_SATURATE_ITERS").ok();
-        let cap = parse_saturate_iters(v.as_deref());
-        let set = v
-            .as_deref()
-            .and_then(|s| s.trim().parse::<usize>().ok())
-            .is_some_and(|n| n > 0);
-        (cap, !set)
+        parse_saturate_iters(
+            std::env::var("RUSTDL_TABLEAU_SATURATE_ITERS")
+                .ok()
+                .as_deref(),
+        )
     })
 }
 
 /// One deterministic saturation of a search frame, under [`saturate_iters`].
 fn saturate_frame(ctx: &mut TableauContext<'_, '_, '_>) -> SaturationResult {
     match saturate_iters() {
-        (cap, true) => crate::saturate::saturate_counting_structural_passes(ctx, cap),
-        (cap, false) => saturate(ctx, cap),
+        (cap, true) => saturate(ctx, cap),
+        (cap, false) => crate::saturate::saturate_counting_structural_passes(ctx, cap),
     }
 }
 
-/// A positive integer; anything else (unset, `0`, garbage) is the default.
-fn parse_saturate_iters(v: Option<&str>) -> usize {
+/// `(cap, strict)`. A positive integer is the cap and makes it strict (every pass
+/// counts); anything else (unset, `0`, garbage) is the default, [`SATURATE_ITERS`],
+/// counting only structural passes (#562).
+fn parse_saturate_iters(v: Option<&str>) -> (usize, bool) {
     v.and_then(|s| s.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(SATURATE_ITERS)
+        .map_or((SATURATE_ITERS, false), |n| (n, true))
 }
 
 /// Outcome of a search, or of one decision frame within it.
@@ -1233,17 +1233,15 @@ mod tests {
 
     #[test]
     fn saturate_iters_parses_a_positive_integer_and_defaults_otherwise() {
-        assert_eq!(super::parse_saturate_iters(None), super::SATURATE_ITERS);
-        assert_eq!(super::parse_saturate_iters(Some("1")), 1);
-        assert_eq!(super::parse_saturate_iters(Some(" 12 ")), 12);
-        assert_eq!(
-            super::parse_saturate_iters(Some("0")),
-            super::SATURATE_ITERS
-        );
-        assert_eq!(
-            super::parse_saturate_iters(Some("x")),
-            super::SATURATE_ITERS
-        );
+        // #562: a value set in the environment is strict; the default is not.
+        let default = (super::SATURATE_ITERS, false);
+        assert_eq!(super::parse_saturate_iters(None), default, "unset");
+        assert_eq!(super::parse_saturate_iters(Some("1")), (1, true));
+        assert_eq!(super::parse_saturate_iters(Some(" 12 ")), (12, true));
+        assert_eq!(super::parse_saturate_iters(Some("4096")), (4096, true));
+        assert_eq!(super::parse_saturate_iters(Some("0")), default, "0");
+        assert_eq!(super::parse_saturate_iters(Some("x")), default, "garbage");
+        assert_eq!(super::parse_saturate_iters(Some("")), default, "empty");
         assert_eq!(super::SATURATE_ITERS, 4096);
     }
 

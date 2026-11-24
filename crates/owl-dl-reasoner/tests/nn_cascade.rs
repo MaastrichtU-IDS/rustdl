@@ -492,7 +492,7 @@ fn back_chain(n: usize) -> String {
 #[test]
 fn a_deep_chain_with_back_propagation_is_satisfiable_562() {
     let _l = lock();
-    let o = onto(&back_chain(2200));
+    let o = onto(&back_chain(3000));
     assert!(owl_dl_reasoner::is_class_satisfiable(&o, &format!("{NS}C1")).unwrap());
 }
 

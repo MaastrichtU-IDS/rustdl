@@ -2450,6 +2450,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 // #563: the first nominal on the trail turns the NN guard on; see
                 // `nominal_label_at`.
                 if self.nominal_label_at.is_none()
+                    && !self.pool.nominal_ids().is_empty()
                     && matches!(self.pool.get(c), ConceptExpr::Nominal(_))
                 {
                     self.nominal_label_at = Some(self.trail.len());
@@ -7397,6 +7398,34 @@ mod nn_cascade_555 {
         // `¬C` on x1 stops x2's `≤1 t⁻.C` counting x1, so x1 is no longer guarded
         // through it; a stale memo would still say it is.
         assert_eq!(each_form(&ctx, xs[1]), None);
+    }
+
+    /// #563 (Fable's review of #567): a rollback changes the memo's key. Without
+    /// that, the answer computed while `¬C` stood at `x1` (nothing counts `x1`
+    /// through `x2`'s `≤1 t⁻.C`) would survive the rollback as a stale hit, and `x0`
+    /// would lose its guard: a premature block, a MISS.
+    #[test]
+    fn a_rollback_drops_the_memo_563() {
+        let mut pool = ConceptPool::new();
+        let c = pool.atomic(ClassId::new(0));
+        let not_c = pool.not(c);
+        let (mut ctx, xs) = chain(&mut pool, 4);
+        let before: Vec<_> = xs.iter().map(|&x| each_form(&ctx, x)).collect();
+        assert_eq!(before[0], Some(false));
+        let cp = ctx.checkpoint();
+        ctx.add_label(xs[1], not_c);
+        assert_eq!(each_form(&ctx, xs[0]), None, "¬C at x1: x0 is not guarded");
+        ctx.rollback_to(cp);
+        // The fast form alone: the debug differential would catch a stale hit
+        // too, and this pins the memo itself.
+        let after: Vec<_> = xs
+            .iter()
+            .map(|&x| ctx.nominal_max_overfull_fast(x))
+            .collect();
+        assert_eq!(
+            after, before,
+            "after the rollback, the pre-checkpoint answers"
+        );
     }
 
     /// #563 note 3: the reconfiguring setters drop the memo.

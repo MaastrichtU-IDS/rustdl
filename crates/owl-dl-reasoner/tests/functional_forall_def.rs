@@ -109,7 +109,7 @@ fn the_existential_conjunct_is_kept() {
 /// `InverseFunctional(q)` (`RUSTDL_CLASSIFY_WEDGE_IF_BOUND`), and that derives the
 /// pair with the pass off. With both off it is missed.
 #[test]
-fn without_the_pass_the_pair_is_missed() {
+fn without_the_pass_the_wedge_bound_derives_the_pair() {
     let c = classify(Some("0"));
     assert!(
         c.is_subclass("http://t/Y", "http://t/D"),

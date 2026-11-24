@@ -868,6 +868,15 @@ pub struct ClassificationStats {
     /// subsumed" (a cut, or a trusted wedge `Sat`) while a chain through it was
     /// recorded; every added pair follows from recorded, sound ones. Diagnostic.
     pub matrix_closure_added_pairs: usize,
+    /// #564: classify-wedge fixpoints the merge-churn guard stopped
+    /// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`): each built nodes only to merge them away
+    /// while the NN guard refused their blockers, and returned `Stalled`, so its probe
+    /// or pair went to the main tableau instead. Diagnostic: no answer was guessed
+    /// and no deadline fired, so it does NOT set `incomplete`; a fall-through the
+    /// tableau could not finish shows up in the usual fields. Counts the classify
+    /// wedge only, not the consistency wedge (whose `Stalled` sets
+    /// `consistency_undetermined`).
+    pub wedge_merge_churn_stops: u64,
     /// #448: wall time of the closure passes, in microseconds (a no-op pass on a
     /// transitive matrix is far below a millisecond). Diagnostic.
     pub matrix_closure_us: u64,
@@ -1864,8 +1873,11 @@ pub(crate) fn classify_internal_with_timeout(
     c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
-    c.stats.consistency_undetermined = crate::take_consistency_undetermined()
-        || (c.stats.consistency_probe_gave_up && !c.stats.inconsistent);
+    // A proven inconsistency is decided, whatever route gave up on the way (#564),
+    // as `relies_on_trusted_consistency` is masked below.
+    c.stats.consistency_undetermined = (crate::take_consistency_undetermined()
+        || c.stats.consistency_probe_gave_up)
+        && !c.stats.inconsistent;
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
     Ok(c)
@@ -2222,6 +2234,7 @@ fn classify_internal_with_timeout_impl(
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     apply_test_cuts(&mut entailed, &mut stats, &classes, &unsatisfiable_idxs);
+    stats.wedge_merge_churn_stops = prepared.wedge_merge_churn_stops();
     let mut c = Classification {
         classes,
         index,
@@ -4413,8 +4426,11 @@ pub(crate) fn classify_top_down_internal_capturing(
     c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
-    c.stats.consistency_undetermined = crate::take_consistency_undetermined()
-        || (c.stats.consistency_probe_gave_up && !c.stats.inconsistent);
+    // A proven inconsistency is decided, whatever route gave up on the way (#564),
+    // as `relies_on_trusted_consistency` is masked below.
+    c.stats.consistency_undetermined = (crate::take_consistency_undetermined()
+        || c.stats.consistency_probe_gave_up)
+        && !c.stats.inconsistent;
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
     Ok(c)
@@ -5899,6 +5915,7 @@ fn classify_top_down_internal_impl(
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     apply_test_cuts(&mut entailed, &mut stats, &classes, &unsatisfiable_idxs);
+    stats.wedge_merge_churn_stops = prepared.wedge_merge_churn_stops();
     let mut c = Classification {
         classes,
         index,

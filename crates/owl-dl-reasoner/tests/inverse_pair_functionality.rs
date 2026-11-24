@@ -169,13 +169,12 @@ fn derived_functional_abox_is_decided_natively_since_290() {
 }
 
 #[test]
-fn derived_functional_tbox_needs_the_flag() {
+fn derived_functional_tbox_needs_the_flag_only_without_the_wedge_bound() {
     // The flag's only non-vacuous route since #290: the same derivation with no ABox.
     // #564: the classify wedge now carries the inverse-functional bound that
     // conversion declined (`RUSTDL_CLASSIFY_WEDGE_IF_BOUND`), which finds `C`
-    // unsatisfiable with this flag off too. So the flag is redundant at the default;
-    // it is still needed with the wedge bound off, which this pins. Retiring the flag
-    // is a separate decision (it needs its own measurement).
+    // unsatisfiable with this (default-OFF) flag off too. The flag is still needed
+    // with the wedge bound off, which this pins.
     assert!(c_is_unsat("h-derived-functional-tbox.ofn", false));
     assert!(!c_is_unsat_with_wedge_bound(
         "h-derived-functional-tbox.ofn",

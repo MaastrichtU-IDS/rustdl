@@ -14,7 +14,12 @@ OFF) remains the fix for that route and is pinned non-vacuous by
 `derived_functional_needs_the_flag`. **#290 (2026-10-19) closes `f` at the default** (the
 inverse-functional gate now admits assertions on a signed sub-role, and `S ≡ R⁻` is one), so
 the flag's remaining route is the assertion-free TBox shape `h-derived-functional-tbox.ofn`,
-pinned by `derived_functional_tbox_needs_the_flag`. The same TBox shape written
+pinned by `derived_functional_tbox_needs_the_flag_only_without_the_wedge_bound`. **#564
+closes `h` in `classify` at the default:** the classify wedge now carries the
+inverse-functional `≤1` that conversion declines (`RUSTDL_CLASSIFY_WEDGE_IF_BOUND`), so
+`C` is unsatisfiable with the flag off; with that bound off the flag is still needed.
+Only `classify`'s wedge is checked there; other surfaces were not re-measured. The same
+TBox shape written
 `S ⊑ G⁻` instead of an inverse pair is missed at both flag settings. The full-ontology
 **performance** DNF also stands.
 The description below is the pre-#177 state · **Severity:** wrong `consistent` verdict

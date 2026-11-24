@@ -3136,6 +3136,13 @@ impl<'c> HyperEngine<'c> {
         self.snapshot_backprop_aborted
     }
 
+    /// #564: fixpoints the merge-churn guard stopped (`SearchStats::merge_churn_stops`),
+    /// without cloning the stats.
+    #[must_use]
+    pub fn merge_churn_stops(&self) -> u64 {
+        self.stats.merge_churn_stops
+    }
+
     /// Clauses this engine's matcher refuses ([`ClauseIndexes::refused_clauses`]):
     /// they never fire, so their constraint is not enforced. Read off the engine's
     /// own indexes, which can differ from [`refused_clause_count`] under
@@ -3517,7 +3524,10 @@ impl<'c> HyperEngine<'c> {
         // #376: one pass re-fires each blocked skip once, but a pass can itself
         // unblock another (a blocker that became an individual's witness is
         // refused), so re-fire the recorded skips until nothing changes.
-        while self.nn_guard && !matches!(r, HyperResult::Unsat) && !self.blocked_gen.is_empty() {
+        // #564: only a `Sat` pass re-fires. A `Stalled` one (the merge-churn guard,
+        // the step cap or the deadline) ends the loop: each `horn_fixpoint` takes a
+        // fresh churn baseline, so re-draining a churn would restart it every pass.
+        while self.nn_guard && matches!(r, HyperResult::Sat) && !self.blocked_gen.is_empty() {
             let mark = self.graph_fingerprint();
             for n in std::mem::take(&mut self.blocked_gen) {
                 if let Some(b) = self.blocked_gen_mark.get_mut(n.index()) {
@@ -8820,6 +8830,78 @@ mod tests {
             eng.nodes.len() > MERGE_CHURN_FLOOR,
             "precondition: past the floor"
         );
+    }
+
+    /// Guard control, merges without refusals: 200 `∃r.Bᵢ` under `≤1 r` build 200
+    /// successors and merge 199 of them away (past the floor and the 15/16 ratio),
+    /// with no nominal, so the NN guard refuses nothing. That is a converging
+    /// fixpoint (`hasValue` over a seeded `ABox` folds the same way), and the guard
+    /// leaves it alone: without the refusal conjunct it would stop it.
+    #[test]
+    fn merge_churn_guard_needs_refusals() {
+        let role = Role::Named(RoleId::new(0));
+        let root = cls(0);
+        let mut clauses: Vec<DlClause> = (1..=200)
+            .map(|i| DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cls(i), X)],
+            })
+            .collect();
+        clauses.push(DlClause {
+            body: vec![Atom::Class(root, X)],
+            head: vec![Atom::AtMost(role, None, 1, X)],
+        });
+        let mut eng = HyperEngine::new(&clauses, root)
+            .with_incremental_fixpoint()
+            .with_double_blocking();
+        eng.merge_churn_guard = true;
+        let far = Instant::now() + std::time::Duration::from_secs(60);
+        assert_eq!(eng.decide_with_deadline(64, Some(far)), HyperResult::Sat);
+        assert_eq!(eng.stats.merge_churn_stops, 0, "the guard stayed out");
+        assert_eq!(eng.stats.nn_guard_refusals, 0, "precondition: no refusals");
+        assert!(
+            eng.nodes.len() > MERGE_CHURN_FLOOR && eng.merges_done * 16 >= 15 * 200,
+            "precondition: past the floor and the merge ratio ({} built, {} merged)",
+            eng.nodes.len(),
+            eng.merges_done
+        );
+    }
+
+    /// The guard's predicate, one conjunct at a time, on counters set by hand: each of
+    /// the three conditions alone keeps it off. (`merge_churn_guard_needs_refusals` is
+    /// the behavioural control for the refusal-free case. A graph with refusals that
+    /// keeps its nodes, `X ⊑ ∃t.X ⊓ ∃s.{a}`, `{a} ⊑ ≤100 s⁻`, ran past its 10 s
+    /// deadline in a debug build, so it is not used here.)
+    #[test]
+    fn merge_churn_predicate_needs_every_conjunct() {
+        let clauses: Vec<DlClause> = Vec::new();
+        let mut eng = HyperEngine::new(&clauses, cls(0));
+        eng.merge_churn_guard = true;
+        let base = (
+            eng.nodes.len(),
+            eng.merges_done,
+            eng.stats.nn_guard_refusals,
+        );
+        for _ in 0..200 {
+            eng.new_node();
+        }
+        // All three hold: 200 built, 200 merged, 13 refusals (13 * 16 >= 200).
+        eng.merges_done = 200;
+        eng.stats.nn_guard_refusals = 13;
+        assert!(eng.merge_churn(base), "all three conditions: churn");
+        // Ratio fails: half merged.
+        eng.merges_done = 100;
+        assert!(!eng.merge_churn(base), "most nodes kept: no churn");
+        eng.merges_done = 200;
+        // Refusals fail: 12 * 16 < 200.
+        eng.stats.nn_guard_refusals = 12;
+        assert!(!eng.merge_churn(base), "too few refusals: no churn");
+        // Floor fails: 100 built since a later base.
+        eng.stats.nn_guard_refusals = 100;
+        let late = (base.0 + 100, base.1, base.2);
+        assert!(!eng.merge_churn(late), "under the floor: no churn");
+        eng.merge_churn_guard = false;
+        assert!(!eng.merge_churn(base), "flag off");
     }
 
     /// #465 B: with generation deferred, every node merges into `{a}` before it

@@ -5022,6 +5022,10 @@ pub(crate) struct HyperCache {
     /// *what* any pair answers (see the soundness note on
     /// [`ID_SHALLOW_WASTE_BUDGET_MS`]).
     id_shallow_waste_us: std::sync::atomic::AtomicU64,
+    /// #564: wedge fixpoints the merge-churn guard stopped
+    /// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`), summed over every engine this cache ran.
+    /// Read into `ClassificationStats::wedge_merge_churn_stops`.
+    merge_churn_stops: std::sync::atomic::AtomicU64,
     /// Telemetry only (`RUSTDL_ID_STATS=1` dumps it): pairs the shallow phase
     /// decided, and pairs it did not. Never read by the shutoff.
     id_shallow_decided: std::sync::atomic::AtomicU64,
@@ -5216,6 +5220,21 @@ impl HyperCache {
     /// #353: clauses the wedge's matcher refuses, which therefore never fire.
     pub(crate) fn clauses_refused(&self) -> usize {
         self.base_indexes.refused_clauses()
+    }
+
+    /// #564: add an engine's merge-churn stops to this cache's total.
+    fn note_churn(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) {
+        let n = engine.merge_churn_stops();
+        if n > 0 {
+            self.merge_churn_stops
+                .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// #564: wedge fixpoints the merge-churn guard stopped so far.
+    pub(crate) fn merge_churn_stops(&self) -> u64 {
+        self.merge_churn_stops
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Clausify `internal` and pre-compute the `¬sup` expansions once.
@@ -5561,6 +5580,7 @@ impl HyperCache {
             nominal_range,
             layer_a,
             id_shallow_waste_us: std::sync::atomic::AtomicU64::new(0),
+            merge_churn_stops: std::sync::atomic::AtomicU64::new(0),
             id_shallow_decided: std::sync::atomic::AtomicU64::new(0),
             id_shallow_missed: std::sync::atomic::AtomicU64::new(0),
             clauses,
@@ -5983,6 +6003,7 @@ impl HyperCache {
             engine = engine.with_shadow_dep_probe(true);
         }
         let result = engine.decide_with_deadline(depth, deadline);
+        self.note_churn(&engine);
         (result, engine.stats())
     }
 
@@ -6052,6 +6073,7 @@ impl HyperCache {
             engine = engine.with_shadow_dep_probe(true);
         }
         let result = engine.decide_with_deadline(depth, deadline);
+        self.note_churn(&engine);
         (result, engine.stats())
     }
 
@@ -6238,7 +6260,9 @@ impl HyperCache {
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
-        match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
+        let result = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        self.note_churn(&engine);
+        match result {
             HyperResult::Unsat => LabelOracle::Unsat,
             HyperResult::Sat => {
                 engine
@@ -6652,10 +6676,19 @@ fn inject_wedge_abox_coverage(internal: &mut InternalOntology) {
     inject_declined_inverse_functional_bounds(internal);
 }
 
-/// Whether the classify wedge ([`HyperCache::build`]) gets the inverse-functional
+/// Whether the wedge that [`HyperCache::build`] clausifies gets the inverse-functional
 /// `≤1` GCI for every inverse-functional role that conversion declined (#564;
 /// `RUSTDL_CLASSIFY_WEDGE_IF_BOUND`, **default ON**, `=0` reverts). See
 /// [`inject_declined_inverse_functional_bounds`].
+///
+/// **Reach: every `HyperCache`, not only classify's.** That is classify's label
+/// cache and pair oracle (through `PreparedOntology`), and the per-pair named
+/// query's H4 wedge (`query_wedge_subsumes`, behind `is_subclass_of`, `subclass` and
+/// `explain`), which trusts only the wedge's `Unsat`, i.e. its positive answers. The
+/// added GCI is entailed by an axiom the ontology states, so a wedge `Unsat` stays
+/// sound on every surface; the polarity canaries in `tests/nn_cascade.rs`
+/// (`issue_564_if_bound_polarity_*`) pin it on `classify` and on the per-pair
+/// surface. The flag name says "classify" because that is where the miss was.
 ///
 /// Without it the wedge reasoned over a WEAKER `KB` (no bound at all on such a
 /// role), and its `Sat` was trusted twice: by the per-class label cache, which
@@ -6670,8 +6703,8 @@ fn inject_wedge_abox_coverage(internal: &mut InternalOntology) {
 /// 5 interleaved reps, CPU-s median): `ore_ont_9662` 2.93 → 2.74, `7532` 4.95 → 4.55,
 /// `9786` 4.36 → 3.74, `13859` 0.73 → 0.71, wine 1.37 → 1.39, content identical.
 /// Those are the ontologies whose 19–47× slowdown is why conversion gates the bound;
-/// that slowdown came from the main tableau carrying it, and only the wedge sees
-/// these. On the r-cycle variant of the cascade the bound sent the wedge into a
+/// that slowdown came from the main tableau carrying it, and only the wedges built by
+/// `HyperCache::build` see these. On the r-cycle variant of the cascade the bound sent the wedge into a
 /// generate/merge cycle that `RUSTDL_WEDGE_MERGE_CHURN_GUARD` stops.
 #[must_use]
 pub fn classify_wedge_if_bound_enabled() -> bool {
@@ -11853,6 +11886,11 @@ impl PreparedOntology {
     /// #353: how many clauses the wedge refuses (0 when there is no wedge).
     pub(crate) fn wedge_clauses_refused(&self) -> usize {
         self.hyper.as_ref().map_or(0, HyperCache::clauses_refused)
+    }
+
+    /// #564: classify-wedge fixpoints the merge-churn guard stopped (0 without a wedge).
+    pub(crate) fn wedge_merge_churn_stops(&self) -> u64 {
+        self.hyper.as_ref().map_or(0, HyperCache::merge_churn_stops)
     }
 
     pub(crate) fn hyper_decide(

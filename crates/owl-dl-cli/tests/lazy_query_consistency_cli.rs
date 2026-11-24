@@ -191,7 +191,8 @@ fn justify_never_runs_the_check() {
 
 /// The #369 follow-up's surfaces, on `T2` plus property assertions and property
 /// disjointness: exit 1 when the wedge finds the inconsistency; with the wedge
-/// off, the answer is kept and `consistency_undetermined` is in `--json`.
+/// off, the answer is kept and `consistency_undetermined` is in `--json` (except
+/// `disjoint`, whose classify pre-check decides it on the main tableau since #564).
 #[test]
 fn followup_surfaces_error_or_flag() {
     let path = std::env::temp_dir().join(format!(
@@ -212,9 +213,32 @@ fn followup_surfaces_error_or_flag() {
         assert!(r.stderr.contains(INCONSISTENT), "{args:?}: {}", r.stderr);
     }
     let wedge_off = [("RUSTDL_WEDGE_CONSISTENCY", "0")];
+    // #564: `disjoint` runs classify, whose pre-check now falls back to the main
+    // tableau with the wedge off (`RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK`), so it
+    // finds this inconsistency instead of flagging it undetermined.
+    let r = run(&["disjoint", f, "--json"], &wedge_off);
+    assert_eq!(r.code, 1, "disjoint, wedge off: {}", r.stderr);
+    assert!(
+        r.stderr.contains(INCONSISTENT),
+        "disjoint, wedge off: {}",
+        r.stderr
+    );
+    let r = run(
+        &["disjoint", f, "--json"],
+        &[
+            ("RUSTDL_WEDGE_CONSISTENCY", "0"),
+            ("RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK", "0"),
+        ],
+    );
+    let v: serde_json::Value = serde_json::from_str(&r.stdout)
+        .unwrap_or_else(|e| panic!("disjoint, fallback off: {e}: {} / {}", r.stdout, r.stderr));
+    assert_eq!(
+        v["consistency_undetermined"], true,
+        "fallback off: {}",
+        r.stdout
+    );
     for args in [
         vec!["property-values", f, "--json"],
-        vec!["disjoint", f, "--json"],
         vec!["sat-expr", f, "--json", "<http://ex/#Y>"],
         vec!["subclass-expr", f, "--json", "<http://ex/#Y>", "owl:Thing"],
     ] {

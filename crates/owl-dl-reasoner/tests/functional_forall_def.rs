@@ -104,10 +104,30 @@ fn the_existential_conjunct_is_kept() {
     assert!(!c.is_subclass("http://t/A", "http://t/D"));
 }
 
-/// `=0` pins the default and shows the pass is what derives the pair. If another
-/// engine starts deriving it with the pass off, flip this test, don't delete it.
+/// `=0` pins the default and shows the pass is what derives the pair. FLIPPED by
+/// #564: the classify wedge now carries the `≤1 r` that conversion declines for
+/// `InverseFunctional(q)` (`RUSTDL_CLASSIFY_WEDGE_IF_BOUND`), and that derives the
+/// pair with the pass off. With both off it is missed.
 #[test]
 fn without_the_pass_the_pair_is_missed() {
     let c = classify(Some("0"));
-    assert!(!c.is_subclass("http://t/Y", "http://t/D"));
+    assert!(
+        c.is_subclass("http://t/Y", "http://t/D"),
+        "the wedge bound finds it"
+    );
+    let _g = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _b = SetEnvGuard::set("RUSTDL_CLASSIFY_WEDGE_IF_BOUND", Some("0"));
+    let _f = SetEnvGuard::set("RUSTDL_FUNCTIONAL_FORALL_DEF", Some("0"));
+    let (onto, _): (SetOntology<RcStr>, _) = read_ofn(
+        &mut Cursor::new(SHAPE.to_owned()),
+        ParserConfiguration::default(),
+    )
+    .unwrap();
+    let c = owl_dl_reasoner::classify(&onto).unwrap();
+    assert!(
+        !c.is_subclass("http://t/Y", "http://t/D"),
+        "both off: missed"
+    );
 }

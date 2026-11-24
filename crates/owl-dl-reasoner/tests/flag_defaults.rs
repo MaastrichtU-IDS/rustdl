@@ -284,6 +284,13 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::wedge_nominal_disjunction_wait_enabled,
             true,
         ),
+        // #564: a wedge Horn fixpoint that builds nodes only to merge them away, with
+        // the NN guard refusing their blockers, stops with `Stalled`. `=0` reverts.
+        (
+            "RUSTDL_WEDGE_MERGE_CHURN_GUARD",
+            owl_dl_tableau::wedge_merge_churn_guard_enabled,
+            true,
+        ),
         (
             "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
             owl_dl_reasoner::property_asymmetric_disjoint_enabled,
@@ -721,7 +728,8 @@ fn expected() -> Vec<FlagRow> {
         ),
         // #564: the classify wedge gets every inverse-functional `≤1` GCI that
         // conversion's classify-cost gate left out (its `Sat` was trusted over a
-        // weaker KB). Reach: 78 of the 109 IF-bearing ORE ontologies. `=0` reverts.
+        // weaker KB). Reach: 78 of the 109 IF-bearing ORE ontologies; no cost on the
+        // three SIO ontologies the conversion gate exists for. `=0` reverts.
         (
             "RUSTDL_CLASSIFY_WEDGE_IF_BOUND",
             owl_dl_reasoner::classify_wedge_if_bound_enabled,

@@ -526,29 +526,30 @@ fn classify_unsat(body: &str, class: &str) -> [bool; 3] {
     ]
 }
 
-/// `classify`'s `consistent` on the `ABox` form (`Q(d)` added).
-fn classify_consistent(body: &str) -> bool {
+/// `classify`'s `consistent` on the `ABox` form (`Q(d)` added). A proven
+/// inconsistency is decided even when a pre-check route gave up on the way (the CLI
+/// masks `consistency_undetermined` the same way); a `consistent` must be decided.
+fn classify_consistent(body: &str, what: &str) -> bool {
     let c = owl_dl_reasoner::classify(&onto(&format!("{body}\nClassAssertion(:Q :d)"))).unwrap();
     let s = c.stats();
-    assert!(!s.consistency_undetermined, "a decided verdict expected");
+    assert!(
+        s.inconsistent || !s.consistency_undetermined,
+        "a decided verdict expected: {what}"
+    );
     !s.inconsistent
 }
 
-/// The r-cycle shape is left out of the classify loops: with the bound, the wedge
-/// enters a generate/merge cycle on it (nodes are created and merged away without
-/// end, every blocker refused by the NN guard). Bounded runs give up and are flagged
-/// `incomplete`; the unbounded `classify` does not return. The consistency wedge
-/// already stalls the same way on its `ABox` form on `main`. See
-/// `issue_564_r_cycle_terminates_in_classify`.
+/// The r-cycle shape. With the bound, the wedge's Horn fixpoint on it builds nodes
+/// that its nominal merges fold straight back, and the NN guard refuses every
+/// blocker, so it never settles; the merge-churn guard
+/// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`) stops it with `Stalled` and the main tableau
+/// decides. Before the guard the unbounded `classify` did not return on it.
 const R_CYCLE: &str = "an r-cycle back from B to A";
 
 #[test]
 fn issue_564_classify_finds_q_unsat_on_every_cascade_shape() {
     let _l = lock();
     for (what, body) in inconsistent_shapes() {
-        if what == R_CYCLE {
-            continue;
-        }
         assert_eq!(
             classify_unsat(&body, "Q"),
             [true; 3],
@@ -557,10 +558,9 @@ fn issue_564_classify_finds_q_unsat_on_every_cascade_shape() {
     }
 }
 
-/// Sentinel for the wedge's generate/merge cycle on the r-cycle shape (#564
-/// follow-up). Ignored: the unbounded `classify` does not return on it today.
+/// The unbounded `classify` returns on the r-cycle shape, with `Q` unsatisfiable
+/// (the merge-churn guard; `=0` brings the non-termination back).
 #[test]
-#[ignore = "#564 follow-up: wedge generate/merge cycle on the r-cycle shape"]
 fn issue_564_r_cycle_terminates_in_classify() {
     let _l = lock();
     let (_, body) = inconsistent_shapes()
@@ -591,7 +591,7 @@ fn issue_564_classify_controls_keep_q_satisfiable() {
             "classify control: {what}"
         );
         assert!(
-            classify_consistent(&body),
+            classify_consistent(&body, what),
             "classify control, ABox form: {what}"
         );
     }
@@ -601,17 +601,17 @@ fn issue_564_classify_controls_keep_q_satisfiable() {
 fn issue_564_classify_abox_form_is_inconsistent_with_and_without_the_wedge() {
     let _l = lock();
     for (what, body) in inconsistent_shapes() {
-        if what == R_CYCLE {
-            continue;
-        }
-        assert!(!classify_consistent(&body), "default: {what}");
+        assert!(!classify_consistent(&body, what), "default: {what}");
         let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
-        assert!(!classify_consistent(&body), "consistency wedge off: {what}");
+        assert!(
+            !classify_consistent(&body, what),
+            "consistency wedge off: {what}"
+        );
     }
     let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
     for (what, body) in consistent_controls() {
         assert!(
-            classify_consistent(&body),
+            classify_consistent(&body, what),
             "consistency wedge off, control: {what}"
         );
     }
@@ -626,14 +626,16 @@ fn issue_564_classify_abox_form_is_inconsistent_with_and_without_the_wedge() {
 fn issue_564_flags_off_restore_the_old_answers() {
     let _l = lock();
     let _b = SetEnvGuard::set("RUSTDL_CLASSIFY_WEDGE_IF_BOUND", "0");
+    // The `n²` driver finds `Q` without the bound (it does not prune on the label
+    // wedge), so the miss shows on the other two.
     assert_eq!(
-        classify_unsat(&repro(), "Q"),
-        [false; 3],
+        classify_unsat(&repro(), "Q")[..2],
+        [false; 2],
         "bound off: the #564 miss"
     );
     let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
     assert!(
-        !classify_consistent(&repro()),
+        !classify_consistent(&repro(), "repro"),
         "fallback on: decided by the main tableau"
     );
     let _f = SetEnvGuard::set("RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK", "0");

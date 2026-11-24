@@ -130,6 +130,13 @@ const FIXPOINT_DEADLINE_STRIDE: usize = 256;
 const FIXPOINT_CHECK_TARGET: std::time::Duration = std::time::Duration::from_millis(1);
 const FIXPOINT_ITERS: usize = 100_000;
 
+/// #564 merge-churn guard (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`): the fewest nodes one
+/// Horn fixpoint must have built before the guard may call it churn. A real fixpoint
+/// that builds this many nodes keeps most of them; the churn it catches keeps none.
+const MERGE_CHURN_FLOOR: usize = 128;
+/// Steps between two [`HyperEngine::merge_churn`] checks.
+const MERGE_CHURN_STRIDE: usize = 256;
+
 /// Upper bound on the back-off interval for intermediate-frame #137 re-seeds
 /// under `RUSTDL_RESEED_AT_LEAF` (see `HyperEngine::solve_inner`).
 const RESEED_MAX_INTERVAL: u32 = 1024;
@@ -919,6 +926,11 @@ pub struct SearchStats {
     /// can distinguish a *divergence*-`Stalled` from a plain deadline-`Stalled`
     /// and skip a main-tableau fallthrough that would re-thrash the same pair.
     pub diverged: bool,
+    /// #564: a Horn fixpoint stopped on the merge-churn guard
+    /// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`): it had built `MERGE_CHURN_FLOOR` nodes,
+    /// merged nearly all of them away and had their blockers refused by the NN guard
+    /// (see `HyperEngine::merge_churn`). The verdict was `Stalled`.
+    pub merge_churn_stops: u64,
     /// `solve_at_most` partition-exhaustion probe (`RUSTDL_AT_MOST_EXHAUST_PROBE`,
     /// read-only / verdict-preserving): count of exhaustion clashes where the real
     /// narrowing candidate `card_clash_deps(node,succs) ∪ ⋃child_clash_deps` was
@@ -1052,6 +1064,11 @@ pub struct HyperEngine<'c> {
     /// nominal label is merged before the node builds successors. See
     /// [`Self::fire_deferred_gen`].
     generate_last: bool,
+    /// #564 `RUSTDL_WEDGE_MERGE_CHURN_GUARD`: see [`Self::merge_churn`].
+    merge_churn_guard: bool,
+    /// #564: successful node merges over the engine's life (never restored; only
+    /// differences within one `horn_fixpoint` are read).
+    merges_done: u64,
     /// #465 B: deferred generating clauses `(clause, node)`, oldest first.
     pending_gen: PendingGen,
     /// #465 B: set while a deferred clause fires, so it generates now.
@@ -2123,6 +2140,8 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
+            merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
+            merges_done: 0,
             pending_gen: PendingGen::default(),
             draining_gen: false,
             nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
@@ -2220,6 +2239,8 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
+            merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
+            merges_done: 0,
             pending_gen: PendingGen::default(),
             draining_gen: false,
             nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
@@ -3361,6 +3382,11 @@ impl<'c> HyperEngine<'c> {
             self.seed_worklist_from_graph();
         }
         let mut steps = 0usize;
+        let churn_base = (
+            self.nodes.len(),
+            self.merges_done,
+            self.stats.nn_guard_refusals,
+        );
         let mut next_check = if self.fixpoint_adaptive_stride {
             self.fixpoint_stride
         } else {
@@ -3379,6 +3405,17 @@ impl<'c> HyperEngine<'c> {
             };
             steps += 1;
             if steps > max_iters && !self.deadline_bounds_fixpoint() {
+                return HyperResult::Stalled;
+            }
+            if steps.is_multiple_of(MERGE_CHURN_STRIDE) && self.merge_churn(churn_base) {
+                self.stats.merge_churn_stops += 1;
+                if std::env::var_os("RUSTDL_TRACE").is_some() {
+                    eprintln!(
+                        "wedge: merge-churn guard stopped a fixpoint ({} nodes built, {} merged)",
+                        self.nodes.len() - churn_base.0,
+                        self.merges_done - churn_base.1
+                    );
+                }
                 return HyperResult::Stalled;
             }
             // WALL-CLOCK bound (2026-08-08, `RUSTDL_FIXPOINT_DEADLINE`). This loop
@@ -4404,6 +4441,8 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
+            merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
+            merges_done: 0,
             pending_gen: PendingGen::default(),
             draining_gen: false,
             nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
@@ -5967,6 +6006,7 @@ impl<'c> HyperEngine<'c> {
             return true;
         }
         self.representative[s_j.index()].set(s_i);
+        self.merges_done += 1;
         if cause_deps != DepSet::EMPTY {
             // Fold the merge-causation dep into the survivor's `birth_deps`.
             // `clause_body_deps` unions `birth_deps` of the firing node AND
@@ -7150,6 +7190,29 @@ impl<'c> HyperEngine<'c> {
     /// Whether a deadline, not `max_iters`, bounds `horn_fixpoint` right now.
     fn deadline_bounds_fixpoint(&self) -> bool {
         self.deadline_bounded_fixpoint && self.fixpoint_deadline && self.deadline.is_some()
+    }
+
+    /// #564 merge-churn guard: since `base` (the node, merge and NN-guard-refusal
+    /// counts when this `horn_fixpoint` began), the fixpoint built at least
+    /// [`MERGE_CHURN_FLOOR`] nodes, merged at least 15/16 as many away, and the NN
+    /// guard refused a blocker at least once per 16 nodes built. That is a cycle
+    /// blocking cannot stop (the NN guard refuses the blocker, rightly) and that a
+    /// deadline-free run would never leave: each ghost makes every later step slower.
+    /// A fixpoint that converges keeps most of what it builds; one that folds what it
+    /// builds into nominals (`hasValue` over a seeded `ABox`) is not refused blockers,
+    /// since its nodes merge before anything tries to block them. The caller gets
+    /// `Stalled`, so this can only turn a verdict into a fall-through, never into
+    /// `Sat` or `Unsat`.
+    fn merge_churn(&self, base: (usize, u64, u64)) -> bool {
+        if !self.merge_churn_guard {
+            return false;
+        }
+        let built = self.nodes.len().saturating_sub(base.0) as u64;
+        let merged = self.merges_done.saturating_sub(base.1);
+        let refused = self.stats.nn_guard_refusals.saturating_sub(base.2);
+        built >= MERGE_CHURN_FLOOR as u64
+            && merged.saturating_mul(16) >= built.saturating_mul(15)
+            && refused.saturating_mul(16) >= built
     }
 
     /// The lowest-index representative other than `rn` carrying nominal `c`,
@@ -8647,6 +8710,116 @@ mod tests {
                 head: vec![Atom::Class(a, X)],
             },
         ]
+    }
+
+    /// #564: the F+IF nominal cascade with an `r`-cycle, satisfiability of `A`:
+    /// `A ⊑ ∃t.B`, `B ⊑ ∃s⁻.{a}`, `B ⊑ ∃r.A`, `≤1 s` at `{a}` (`Functional(s)`),
+    /// `≤1 t⁻` at `B` (`InverseFunctional(t)`). Every new `B` builds its `r`- and
+    /// `s⁻`-successors before the nominal merge folds it into the first `B`, so each
+    /// round leaves one fresh node, and the NN guard refuses the blocker.
+    fn r_cycle_clauses() -> Vec<DlClause> {
+        let (role_t, role_r, role_s) = (
+            Role::Named(RoleId::new(0)),
+            Role::Named(RoleId::new(1)),
+            Role::Named(RoleId::new(2)),
+        );
+        let (class_a, class_b, nom) = (cls(0), cls(1), cls(10));
+        vec![
+            DlClause {
+                body: vec![Atom::Class(class_a, X)],
+                head: vec![Atom::Exists(role_t, class_b, X)],
+            },
+            // `∃r.A` before `∃s⁻.{a}`: deferred generation fires them in this order.
+            DlClause {
+                body: vec![Atom::Class(class_b, X)],
+                head: vec![Atom::Exists(role_r, class_a, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(class_b, X)],
+                head: vec![Atom::Exists(role_s.flip(), nom, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(nom, X)],
+                head: vec![Atom::AtMost(role_s, None, 1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(class_b, X)],
+                head: vec![Atom::AtMost(role_t.flip(), None, 1, X)],
+            },
+        ]
+    }
+
+    /// #564 merge-churn guard: the fixpoint stops with `Stalled`
+    /// once it has built `MERGE_CHURN_FLOOR` nodes and merged them all away. Without
+    /// the guard the same fixpoint is still churning (nearly every node it built is
+    /// a ghost) when a deadline cuts it, so the guard, not blocking, is what ends it;
+    /// an unbounded run did not return.
+    #[test]
+    fn merge_churn_guard_ends_the_r_cycle_fixpoint() {
+        let clauses = r_cycle_clauses();
+        // As the classify wedge builds it.
+        let engine = || {
+            HyperEngine::new(&clauses, cls(0))
+                .with_incremental_fixpoint()
+                .with_double_blocking()
+                .with_nominals(10, 1)
+        };
+        let mut on = engine();
+        on.merge_churn_guard = true;
+        // A long deadline only so that a broken guard fails here instead of hanging.
+        let far = Instant::now() + std::time::Duration::from_secs(60);
+        assert_eq!(
+            on.decide_with_deadline(64, Some(far)),
+            HyperResult::Stalled,
+            "the guard stops it"
+        );
+        assert!(
+            on.stats.merge_churn_stops > 0,
+            "the guard fired, not the deadline"
+        );
+
+        let mut off = engine();
+        off.merge_churn_guard = false;
+        let deadline = Instant::now() + std::time::Duration::from_millis(300);
+        assert_eq!(
+            off.decide_with_deadline(64, Some(deadline)),
+            HyperResult::Stalled,
+            "without the guard only the deadline stops it"
+        );
+        assert_eq!(off.stats.merge_churn_stops, 0);
+        let live = (0..off.nodes.len())
+            .filter(|&i| {
+                let n = HNode(u32::try_from(i).expect("fits u32"));
+                off.resolve(n) == n
+            })
+            .count();
+        assert!(
+            off.nodes.len() > 64 && live * 16 < off.nodes.len(),
+            "precondition: it churned ({} built, {live} live)",
+            off.nodes.len()
+        );
+    }
+
+    /// The guard leaves a fixpoint that keeps what it builds alone: a long told
+    /// `∃`-chain with no merges builds past the floor and still ends `Sat`.
+    #[test]
+    fn merge_churn_guard_ignores_a_chain_that_keeps_its_nodes() {
+        let role = Role::Named(RoleId::new(0));
+        let n = u32::try_from(MERGE_CHURN_FLOOR).expect("fits u32") + 200;
+        let clauses: Vec<DlClause> = (0..n)
+            .map(|i| DlClause {
+                body: vec![Atom::Class(cls(i), X)],
+                head: vec![Atom::Exists(role, cls(i + 1), X)],
+            })
+            .collect();
+        let mut eng = HyperEngine::new(&clauses, cls(0));
+        eng.merge_churn_guard = true;
+        assert_eq!(eng.decide(64), HyperResult::Sat);
+        assert_eq!(eng.stats.merge_churn_stops, 0);
+        assert!(
+            eng.nodes.len() > MERGE_CHURN_FLOOR,
+            "precondition: past the floor"
+        );
     }
 
     /// #465 B: with generation deferred, every node merges into `{a}` before it

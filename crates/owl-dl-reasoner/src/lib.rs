@@ -6665,6 +6665,14 @@ fn inject_wedge_abox_coverage(internal: &mut InternalOntology) {
 /// unsatisfiable, with `trusted_sat_refutations: 0` and `incomplete: false`: the
 /// D10 shape. The same holds without nominals (a merge through a functional
 /// super-role does it), so the cure is the bound, not a nominal test.
+///
+/// **Cost, measured** (2026-11-23, release binaries `main@91a6f3e8` vs this flag,
+/// 5 interleaved reps, CPU-s median): `ore_ont_9662` 2.93 → 2.74, `7532` 4.95 → 4.55,
+/// `9786` 4.36 → 3.74, `13859` 0.73 → 0.71, wine 1.37 → 1.39, content identical.
+/// Those are the ontologies whose 19–47× slowdown is why conversion gates the bound;
+/// that slowdown came from the main tableau carrying it, and only the wedge sees
+/// these. On the r-cycle variant of the cascade the bound sent the wedge into a
+/// generate/merge cycle that `RUSTDL_WEDGE_MERGE_CHURN_GUARD` stops.
 #[must_use]
 pub fn classify_wedge_if_bound_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_WEDGE_IF_BOUND").is_none_or(|v| v != "0")
@@ -6700,16 +6708,31 @@ fn inject_declined_inverse_functional_bounds(internal: &mut InternalOntology) ->
     if inverse_functional.is_empty() {
         return 0;
     }
-    let mut added: Vec<Axiom> = Vec::new();
     let top = internal.concepts.top();
+    // Candidate `(sub, sup)` pairs in declaration order, deduplicated; then one pass
+    // over the axioms drops those conversion already emitted. (A `contains` per role
+    // was a full axiom scan each: 337 of them on `ore_ont_14572`.)
+    let mut wanted: Vec<(owl_dl_core::ir::ConceptId, owl_dl_core::ir::ConceptId)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for f in inverse_functional {
-        let sub = internal.concepts.some(f, top);
-        let sup = internal.concepts.max(1, f, top);
-        let gci = Axiom::SubClassOf { sub, sup };
-        if !internal.axioms.contains(&gci) && !added.contains(&gci) {
-            added.push(gci);
+        let pair = (
+            internal.concepts.some(f, top),
+            internal.concepts.max(1, f, top),
+        );
+        if seen.insert(pair) {
+            wanted.push(pair);
         }
     }
+    for ax in &internal.axioms {
+        if let Axiom::SubClassOf { sub, sup } = ax {
+            seen.remove(&(*sub, *sup));
+        }
+    }
+    let added: Vec<Axiom> = wanted
+        .into_iter()
+        .filter(|p| seen.contains(p))
+        .map(|(sub, sup)| Axiom::SubClassOf { sub, sup })
+        .collect();
     let n = added.len();
     internal.axioms.extend(added);
     n

@@ -3509,6 +3509,12 @@ pub fn dkey_group_skip_enabled() -> bool {
 /// cost 19–47× larger on more ontologies. Recovering it needs a separate, TBox-aware
 /// argument — not this flag.
 ///
+/// **#564:** this gate is about cost, and its census misses a second predecessor that
+/// arrives through a merge, so a declined bound can be needed. The classify wedge now
+/// carries every declined bound (`RUSTDL_CLASSIFY_WEDGE_IF_BOUND` in
+/// `owl-dl-reasoner`), measured free on the three ontologies above, since only the
+/// wedge sees them. This gate still decides what every other consumer gets.
+///
 /// Same shape as `RUSTDL_DKEY_MERGING_GATE`: seed only where the axiom is consumable.
 fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
     let target = r.role_id();

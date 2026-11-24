@@ -6919,6 +6919,22 @@ pub fn wedge_generate_last_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_GENERATE_LAST").is_none_or(|v| v != "0")
 }
 
+/// #564 `RUSTDL_WEDGE_MERGE_CHURN_GUARD` (default ON, `=0` reverts): a wedge Horn
+/// fixpoint that has built at least `MERGE_CHURN_FLOOR` (128) nodes, merged nearly all
+/// of them away again, and had the NN guard refuse their blockers, stops with
+/// `Stalled` instead of running on (`HyperEngine::merge_churn`). On the F+IF nominal
+/// cascade with an `r`-cycle (`Q ⊑ ≥2 r.A`, `A ⊑ ∃t.B`, `B ⊑ ∃s⁻.{a}`, `B ⊑ ∃r.A`,
+/// `Functional(s)`, `InverseFunctional(t)`), every new `B` builds its `r`-successor
+/// before its nominal merge folds it into the first `B`, so each round leaves one
+/// fresh node behind, and the NN guard rightly refuses the blocker that would stop
+/// it. The graph stayed at about six live nodes while the ghosts grew without end and
+/// every step got slower, so an unbounded `classify` never returned. `Stalled` is
+/// never `Sat`: the caller falls back to the main tableau, which decides the probe.
+#[must_use]
+pub fn wedge_merge_churn_guard_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_MERGE_CHURN_GUARD").is_none_or(|v| v != "0")
+}
+
 /// #480 `RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts): the wedge
 /// half of #473's `RUSTDL_NOMINAL_DISJUNCTION_WAIT`. A generating clause that
 /// #465 B deferred does not fire while its node carries an open disjunction with a

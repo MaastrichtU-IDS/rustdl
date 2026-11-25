@@ -2080,13 +2080,15 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         .asymmetric_roles()
         .iter()
         .any(|&r| pair_at(ctx, Role::Named(r), Role::Inverse(r)));
-    // Disjoint `(r, s)` (forward pairs only, see `collect_disjoint_role_pairs`):
-    // `r(node, y)` and `s(node, y)`.
+    // Disjoint `(r, s)` on SIGNED roles (#534): a view of `r` and a view of `s` to one
+    // `y`. `Disjoint(r, s⁻)` is `r(node, y)` with `s(y, node)`. The same constraint read
+    // from `y`'s end is the flipped pair, so test both: otherwise detection depended on
+    // which endpoint was swept (and not blocked).
     if !violated {
         violated = ctx
             .disjoint_role_pairs()
             .iter()
-            .any(|&(r, s)| pair_at(ctx, Role::Named(r), Role::Named(s)));
+            .any(|&(r, s)| pair_at(ctx, r, s) || pair_at(ctx, r.flip(), s.flip()));
     }
     if violated {
         // Conservative deps: the violation depends on whichever

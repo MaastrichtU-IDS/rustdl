@@ -10,6 +10,17 @@ All notable changes to rustdl are documented here. Format is based on
 - **`--json` names a decision-depth cut (#574).** `instances-expr`, `realize` and `justify` carry `depth_capped`, and `classify` carries `depth_capped_pairs`. Each says that a cut hit the tableau's decision-depth limit, where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` / `--pair-timeout-ms` or node cap does not help and the deadline-free probe (`=0`) may. Each implies `incomplete`. Additive in schema v1. `instances-expr --json` and `realize --json` now also print the cut warning on stderr, as `justify --json` already did; stdout is still one JSON object.
 
 ### Fixed
+- **`sat`, `subclass` and `explain` see `DisjointObjectProperties` with an inverse operand
+  (#534).** `Disjoint(r, s⁻)` forbids `r(a,b) ∧ s(b,a)`. The disjoint-role pairs the main
+  tableau and `abox_check` P9 check carried no polarity, so every pair with an inverse operand
+  was skipped. `classify` found those clashes through the wedge, whose clauses were already
+  signed, while the per-query surface (decided on the main tableau) answered `sat` / `no`, and
+  on an inconsistent `ABox` the #428 guard said nothing. The pairs are now signed, with the first
+  operand forward (`Disjoint(r⁻, s)` is `(r, s⁻)`, and `Disjoint(r, r⁻)` is asymmetry). The
+  tableau checks each pair from both endpoints, and P9 matches `r(a,b)` with `s(b,a)` for a mixed
+  pair. On the eight role-polarity fuzz cases recorded for #534, `sat` now agrees with
+  `classify` on all 57 class queries (41 disagreed). No ORE ontology has an inverse operand in
+  `DisjointObjectProperties`, so forward-only ontologies are unchanged.
 - **SWRL rules are counted in `dropped` (#557).** Conversion skipped each `DLSafeRule` as if it were an annotation, so a ruled ontology reported an empty `dropped` and no stderr warning, and the completeness claims stayed on: `completeness_guaranteed: true` on `classify --json` and the expression queries, while missing what the rules entail (with `A(?x) -> B(?x)` and `A(a)`, `instances-expr B` returned nothing and claimed completeness). Each rule is now counted as `"Rule: unsupported axiom (SWRL)"`, as the README already said. Answers are unchanged: rules are still not reasoned with. What changes on an ontology with a rule (RO has 25):
   - The `--json` outputs that carry a `dropped` block (`classify`, `realize`, `consistent`) report the rules there, without a stderr warning. The text modes, and the commands whose JSON has no `dropped` block (the expression queries, `disjoint`, `verify-el`), print the stderr warning.
   - Every completeness claim that reads `dropped` turns false: `completeness_guaranteed` on `classify --json` and the expression queries. `classify --saturation-only` (and Python's `classify(saturation_only=True)`) now reads `dropped` at all; before, it reported `dropped: {}` and `completeness_guaranteed: true` even for a `HasKey`.

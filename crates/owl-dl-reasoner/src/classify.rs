@@ -716,7 +716,9 @@ pub struct ClassificationStats {
     /// hierarchy may be missing entailments; `completeness_guaranteed()` is then
     /// false, and `classify --json` reports it as `consistency_undetermined`
     /// (#204 review: a pigeonhole over `TBox`-only individuals read
-    /// `consistent: true, incomplete: false`).
+    /// `consistent: true, incomplete: false`). #539: `classify_saturation_only`
+    /// sets it whenever the input is not `PureEl` and the closure found no clash,
+    /// since nothing but the closure looked for one.
     pub consistency_undetermined: bool,
     /// #429: "consistent" rests on a consistency-wedge `Sat` that no main-tableau
     /// run verified: the pre-check's wedge route, or the consistency probe's
@@ -1834,7 +1836,9 @@ pub fn classify_n2_with_timeout<A: ForIRI>(
 ///   (cardinality, disjunction-with-clash, nominal merges, …)
 ///   are missed;
 /// - classes that are unsatisfiable only via tableau reasoning
-///   are reported as satisfiable.
+///   are reported as satisfiable;
+/// - an inconsistency only the tableau can find goes undetected, so
+///   off the pure-EL fragment `consistency_undetermined` is set (#539).
 ///
 /// On hybrid SROIQ workloads where saturation handles ≥ 95% of
 /// real subsumptions (e.g. SIO: 10 440 saturation hits vs 5
@@ -1869,17 +1873,24 @@ pub(crate) fn classify_saturation_only_internal(
         .map(|(i, iri)| (iri.clone(), i))
         .collect();
     let closure = saturate(internal);
-    let mut c = classify_pure_el(
-        internal,
-        &reported,
-        &index,
-        &closure,
-        analyze_fragment(internal),
-    );
+    let fragment = analyze_fragment(internal);
+    let pure_el = matches!(fragment, FragmentClassification::PureEl);
+    let mut h = classify_pure_el(internal, &reported, &index, &closure, fragment);
     // #557: as the other classify entry points do; without it a dropped axiom (a
     // SWRL rule, `HasKey`) left `completeness_guaranteed` true on this path.
-    c.stats.dropped = internal.dropped.clone();
-    Ok(c)
+    h.stats.dropped = internal.dropped.clone();
+    // #539: off the pure-EL fragment the saturator is not complete for
+    // consistency, and nothing else checks it here, so "no clash found" is all
+    // `consistent: true` can mean. `r(a,b)` with `¬r(a,b)` read `consistent: true`
+    // with every flag clean. On PureEl the saturator decides consistency, as on
+    // the default classify's pure-EL path, modulo #543: `owl:topObjectProperty` is
+    // an ordinary role there (`⊤ ⊑ ∃r.D`, `∃owl:topObjectProperty.D ⊑ ⊥` reads
+    // consistent). A proved inconsistency is not "undetermined", so the raw stats
+    // never carry both (as #564 masks them on every surface).
+    if !pure_el && !h.stats.inconsistent {
+        h.stats.consistency_undetermined = true;
+    }
+    Ok(h)
 }
 
 /// Internal entry point. Useful for tests that hand-build an
@@ -7303,6 +7314,35 @@ Ontology(<http://rustdl.test/test>\n\
     const HEADER: &str = "\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// #539: `classify_saturation_only` marks consistency undetermined off `PureEl`,
+    /// but never next to a proved inconsistency, and never on `PureEl`.
+    #[test]
+    fn saturation_only_consistency_undetermined_raw_stat() {
+        let run = |body: &str| {
+            let onto = parse(&format!(
+                "{HEADER}Ontology(<http://rustdl.test/test>\n{body}\n)\n"
+            ));
+            let h = classify_saturation_only(&onto).expect("saturation-only");
+            (h.stats.inconsistent, h.stats.consistency_undetermined)
+        };
+        // PureEl: the saturator decides.
+        assert_eq!(
+            run("Declaration(Class(:C)) SubClassOf(:C :D)"),
+            (false, false)
+        );
+        // Not PureEl, no clash found: undetermined.
+        assert_eq!(
+            run("Declaration(Class(:C)) SubClassOf(:C ObjectUnionOf(:D :E))"),
+            (false, true)
+        );
+        // Not PureEl, the closure proves the clash (`⊤ ⊑ D ⊑ ⊥`): inconsistent only.
+        assert_eq!(
+            run("SubClassOf(owl:Thing :D) SubClassOf(:D owl:Nothing) \
+                 SubClassOf(:C ObjectUnionOf(:D :E))"),
+            (true, false)
+        );
+    }
 
     /// Test-only RAII env-var guard. Sets each `(key, val)` on
     /// construction and restores the prior values (or removes them) on

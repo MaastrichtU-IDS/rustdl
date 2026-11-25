@@ -861,11 +861,14 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
         warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
         note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
+        note_saturation_only("classify", *saturation_only && !h.completeness_guaranteed());
         exit_if_no_verdict(h.stats().no_verdict_pairs > 0);
         return Ok(());
     }
     print_classification(&h);
     note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
+    // On the pure-EL fragment the closure is the full answer (`completeness_guaranteed`).
+    note_saturation_only("classify", *saturation_only && !h.completeness_guaranteed());
     warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
     warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
     warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
@@ -1143,6 +1146,22 @@ fn note_trusted_wedge_consistency(surface: &str, trusted: bool) {
              model alone; the wedge is not proven complete and no main-tableau model was \
              built. If that model is wrong the ontology is inconsistent and every class is \
              unsatisfiable (`rustdl consistent` reports the same trust)."
+        );
+    }
+}
+
+/// #539: `--saturation-only` is a sound under-approximation, so its answer must
+/// say so: a JSON consumer reads `saturation_only` (realize) or
+/// `completeness_guaranteed` / `consistency_undetermined` (classify), and a text
+/// consumer reads this note. Callers pass `false` for an answer the closure proves.
+fn note_saturation_only(command: &str, show: bool) {
+    if show {
+        eprintln!(
+            "note: {command} --saturation-only answers from the EL saturation closure alone, \
+             with no tableau probe. Every positive answer is entailed, but a \"no\", or a \
+             type, member or subsumption left out, may be wrong, and an inconsistency the \
+             closure does not derive goes undetected (an inconsistent ontology entails \
+             everything). Run without --saturation-only for the full answer."
         );
     }
 }
@@ -2430,6 +2449,8 @@ fn run() -> Result<()> {
                 (verdict, stats.no_verdict)
             };
             println!("{}", if verdict { "yes" } else { "no" });
+            // A "yes" from the closure is entailed; only a "no" is in doubt.
+            note_saturation_only("subclass", saturation_only && !verdict);
             // #493: as `sat`.
             exit_if_no_verdict(no_verdict);
         }
@@ -2512,6 +2533,7 @@ fn run() -> Result<()> {
                 verdict
             };
             println!("{}", if verdict { "yes" } else { "no" });
+            note_saturation_only("instance", saturation_only && !verdict);
             warn_consistency_undetermined("instance", undetermined);
             // #493: a "yes" whose lazy check's own probe stalled (a likely bug): the
             // answer stands, then #449's note, exit 3. (A likely-bug "no" exited above.)
@@ -2539,6 +2561,7 @@ fn run() -> Result<()> {
             for iri in members {
                 println!("{iri}");
             }
+            note_saturation_only("instances", saturation_only);
             // #493: a likely-bug cut gets #449's note and exit 3, after the list.
             if flags.incomplete && !flags.no_verdict {
                 warn_probes_cut(
@@ -2714,19 +2737,25 @@ fn run() -> Result<()> {
                 }
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&json_out::build_realize_json(&r, dropped))?
+                    serde_json::to_string_pretty(&json_out::build_realize_json(
+                        &r,
+                        dropped,
+                        saturation_only,
+                    ))?
                 );
                 note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
                 // #574: the cut warning on stderr too (same guard as the text branch).
                 if r.incomplete() && !r.no_verdict() {
                     warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped(), false);
                 }
+                note_saturation_only("realize", saturation_only);
                 // #493: last, after the JSON.
                 exit_if_no_verdict(r.no_verdict());
                 return Ok(());
             }
             print_realization(&r);
             note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
+            note_saturation_only("realize", saturation_only);
             // #493: a likely-bug cut gets #449's note at the end, not the budget advice.
             if r.incomplete() && !r.no_verdict() {
                 // #510 C2: `Realization` has no `depth_cap_hit` yet.

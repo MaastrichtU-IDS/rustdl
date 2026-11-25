@@ -123,3 +123,34 @@ fn pure_el_reads_zero() {
     assert_eq!(v["trusted_sat_refutations"], 0, "{v}");
     assert_eq!(v["completeness_guaranteed"], true, "{v}");
 }
+
+/// Horn, not EL, with no unsatisfiable class: every non-subsumption is a refutation.
+const HORN: &str = "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+Declaration(Class(:D)) Declaration(ObjectProperty(:r))
+SubClassOf(:A ObjectAllValuesFrom(:r :B))
+SubClassOf(:C ObjectSomeValuesFrom(:r :D))
+SubClassOf(:D :B)";
+
+/// With the label channels off, the remaining summands are the per-pair wedge `Sat`
+/// (`hyper_refuted_pairs`) and, under `RUSTDL_SNAPSHOT_CAPTURE=1` (default off), the
+/// snapshot replay. Each is pinned on its own: dropping it from the sum reads 0.
+#[test]
+fn the_per_pair_and_snapshot_channels_are_counted() {
+    let f = Fixture::new(HORN, "horn");
+    let no_labels = [
+        ("RUSTDL_LABEL_HEURISTIC", "0"),
+        ("RUSTDL_UNSAT_VIA_LABELS", "0"),
+    ];
+    let v = classify(f.path(), &no_labels);
+    assert!(
+        v["trusted_sat_refutations"].as_u64().unwrap() > 0,
+        "per-pair wedge Sat: {v}"
+    );
+    let mut snapshot = no_labels.to_vec();
+    snapshot.push(("RUSTDL_SNAPSHOT_CAPTURE", "1"));
+    let v = classify(f.path(), &snapshot);
+    assert!(
+        v["trusted_sat_refutations"].as_u64().unwrap() > 0,
+        "snapshot replay: {v}"
+    );
+}

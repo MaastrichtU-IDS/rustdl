@@ -52,9 +52,10 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
 /// - `wedge_sat_probe_hits`: a class taken as satisfiable (`C ⋢ ⊥`) from its
 ///   wedge `Sat` label.
 ///
-/// A count of DECISIONS, not of distinct pairs (the sweep can re-decide a pair the
-/// walk pruned), and a LOWER bound on what rests on a trusted `Sat`: a refutation
-/// of `C ⊑ D` also stops the walk below `D`, and those pairs are never decided.
+/// A count of DECISIONS, not of distinct pairs (a pair can be pruned in both the
+/// walk and the sweep). Undecided pairs below a pruned super are not included: a
+/// refutation of `C ⊑ D` also stops the walk below `D`, and those pairs are never
+/// decided.
 ///
 /// No fragment is exempt (#568). `Horn` was, on the premise that the Horn
 /// fixpoint is complete; #124 refuted that, and the #564 shape with
@@ -63,10 +64,11 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
 /// driver answers it from the saturator before any wedge runs.
 ///
 /// **This is an EXPOSURE count, not a defect count.** At the CLI's default budget
-/// it reads 971 on `ro`, about 119,250 on `sio` and 2,623 on `pizza` (2026-11-25,
-/// three runs each; label prunes are most of it), and all three are MISSED=0
-/// against the Konclude oracle in the FP=0 net. Before #568 it counted only the
-/// per-pair channel (58, 163 and 102). A non-zero value says these verdicts
+/// it reads 971 on `ro`, about 119,255 on `sio` and about 2,623 on `pizza`
+/// (2026-11-25, three interleaved runs each; label prunes are most of it), and all
+/// three are MISSED=0 against the Konclude oracle in the FP=0 net. Before #568 it
+/// counted only the per-pair channel, which reads the same now: 164, 336-343 and
+/// 102-103 on main `22a69b81`. A non-zero value says these verdicts
 /// were reached WITHOUT the tableau, not that any is wrong, which is why it is a
 /// diagnostic and not a stderr warning.
 ///
@@ -125,7 +127,7 @@ pub(crate) struct ClassifyJson {
     /// (pairs concluded NOT SUBSUMED, and classes taken as satisfiable) without
     /// the tableau — so this hierarchy CAN disagree with `rustdl subclass` on
     /// the same binary and the same pair while `incomplete` stays `false`. An
-    /// EXPOSURE count, not a defect count, and a lower bound: see
+    /// EXPOSURE count of decisions, not of distinct pairs: see
     /// [`trusted_sat_risk`].
     ///
     /// Deliberately a SEPARATE field rather than folded into `incomplete`:
@@ -163,8 +165,9 @@ pub(crate) struct ClassifyJson {
     /// Added because on `X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`, `∃s.Z ⊑ W` (⟹ `X ⊑ W`,
     /// derived by both Konclude and `HermiT`) every other field here reads
     /// clean: `consistent: true`, `incomplete: false` (correctly — no class pair
-    /// was cut), `trusted_sat_refutations: 0` (the pair was not refuted by a
-    /// trusted `Sat`), `direct_subsumptions: []`. The miss was surfaced NOWHERE.
+    /// was cut), `trusted_sat_refutations: 0` (before #568, which exempted Horn;
+    /// it now reads 4 there, an exposure count that does not name the miss),
+    /// `direct_subsumptions: []`. The miss was surfaced NOWHERE.
     ///
     /// A SEPARATE field rather than a change to `incomplete`, whose contract is
     /// "a pair or probe was cut" and which callers depend on: this reports a strictly

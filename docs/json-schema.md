@@ -122,9 +122,14 @@ HermiT derive while `incomplete` is `false`, `trusted_sat_refutations` is `0`, a
 `consistent` is `true` — every field reading clean on a wrong answer. That is what
 `completeness_guaranteed` exists to say, and it is `false` there.
 
-`trusted_sat_refutations` = pairs concluded not-subsumed from the wedge's own
-`Sat` verdict outside the fragment where that verdict is complete. An exposure
-count, not a defect count; `0` does not imply completeness either.
+`trusted_sat_refutations` = verdicts taken on the wedge's own trusted `Sat`
+without the tableau (#66, #568): pairs refuted per pair, pairs pruned from the
+label cache, snapshot-replay refutations, and classes taken as satisfiable from
+their wedge label. A count of decisions and a lower bound; no fragment is exempt
+(`PureEl` reads 0 because no wedge runs there). An exposure count, not a defect
+count; `0` does not imply completeness either. The label channels are not gated by
+`RUSTDL_HYPERTABLEAU_TRUST_SAT`: to verify everything, set it to `0` together with
+`RUSTDL_LABEL_HEURISTIC=0`.
 
 `matrix_closure_added_pairs` = pairs the transitive closure of the recorded
 relation added (#448, `RUSTDL_CLASSIFY_CLOSE_MATRIX`, default on; `=0` disables): pairs recorded

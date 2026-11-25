@@ -6696,7 +6696,8 @@ fn inject_wedge_abox_coverage(internal: &mut InternalOntology) {
 /// `A ⊑ ∃t.B`, `B ⊑ ∃s⁻.{a}`, `Functional(s)`, `InverseFunctional(t)` read `Q`
 /// satisfiable in `classify` while `rustdl sat Q` (the main tableau, since #559) said
 /// unsatisfiable, with `trusted_sat_refutations: 0` and `incomplete: false`: the
-/// D10 shape. The same holds without nominals (a merge through a functional
+/// D10 shape. (Since #568 `trusted_sat_refutations` counts those trusted label
+/// verdicts, so with this flag off it reads non-zero.) The same holds without nominals (a merge through a functional
 /// super-role does it), so the cure is the bound, not a nominal test.
 ///
 /// **Cost, measured** (2026-11-23, release binaries `main@91a6f3e8` vs this flag,

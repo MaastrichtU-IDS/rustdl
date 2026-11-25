@@ -742,7 +742,7 @@ pub struct ClassificationStats {
     /// equality classify may be missing, as it always did before #354, so
     /// [`Classification::completeness_guaranteed`] is false when this is non-zero and
     /// `classify --json` reports it. It does NOT set `incomplete`, which means only that
-    /// a class pair or probe was cut (#574).
+    /// a class pair or per-class unsat probe was cut (#574); an equality probe is neither.
     pub derived_same_undecided: usize,
     /// #354: candidate pairs considered and probes run (cost telemetry).
     pub derived_same_candidates: usize,
@@ -872,7 +872,7 @@ pub struct ClassificationStats {
     /// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`): each built nodes only to merge them away
     /// while the NN guard refused their blockers, and returned `Stalled`, so its probe
     /// or pair went to the main tableau instead. Diagnostic: no answer was guessed
-    /// and nothing was cut, so it does NOT set `incomplete`; a fall-through the
+    /// and the stop itself cuts nothing, so it does NOT set `incomplete`; a fall-through the
     /// tableau could not finish shows up in the usual fields. Counts the classify
     /// wedge only, not the consistency wedge (whose `Stalled` sets
     /// `consistency_undetermined`).

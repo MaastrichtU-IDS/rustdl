@@ -138,7 +138,7 @@ def test_wedge_clauses_refused_is_its_own_signal(tmp_path, monkeypatch):
 def test_derived_same_undecided_is_its_own_signal(tmp_path, monkeypatch):
     # #354: a candidate individual equality past the probe cap is reported by
     # `derived_same_undecided` and warned about once, while `complete` keeps
-    # meaning "no timeout fired". With the cap lifted, the equality is used.
+    # meaning "nothing was cut". With the cap lifted, the equality is used.
     import warnings
     fixture = tmp_path / "eq.ofn"
     fixture.write_text(

@@ -104,6 +104,15 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
         // parents), this recursion would need a visited-conclusion memo to avoid redundant
         // re-processing (still correct, just wasted work) — see the Task 4 review fold-in M4.2.
         OWLAxiom conclusion = RustdlOfn.singleLogicalAxiom(node.conclusion);
+        if (node.derived_axioms != null && !node.derived_axioms.isEmpty()) {
+            // #586: the step rests on an axiom rustdl derived during conversion. It is not a
+            // source axiom, so it cannot be shown as "asserted", and leaving it out would show
+            // the step proved from fewer premises than it used (from nothing, for a leaf).
+            // Refuse the proof, as #402 refuses a premise-less fallback.
+            throw new IllegalStateException(
+                "rustdl prove: a proof step uses an axiom rustdl derived during conversion, "
+                    + "which is not in the source ontology, so the step proof cannot be shown");
+        }
 
         List<OWLAxiom> premises = new ArrayList<>();
         if (node.axioms != null) {

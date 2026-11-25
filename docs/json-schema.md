@@ -457,6 +457,8 @@ below).
 // ProofNodeJson
 { "conclusion": ofn_document, "rule": rule_name,
   "axioms": [ofn_document, ...], "axiom_missing": bool,
+  "builtin_axioms": [ofn_document, ...],   // omitted when empty
+  "derived_axioms": [ofn_document, ...],   // omitted when empty
   "premises": [ProofNodeJson, ...], "unproved_premises": [ofn_document, ...] }
 ```
 
@@ -474,12 +476,18 @@ Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
   text `prove` renderer (`render_proof_with_defs`) uses, so the OFN is
   faithful, never fabricated. `rule` is the `ElRule`'s display name (e.g.
   `"ToldSubsumer"`, `"SubsumerTransitivity(fwd)"`). `axioms` are that step's
-  cited source axioms — each `node.axiom_refs` index resolved against the
-  same `InternalOntology` the query ran over and reverse-converted to a
-  horned-owl axiom, each its own one-axiom OFN document; empty for a step whose
-  rule needs no axiom (reflexivity, transitivity, fact inheritance, the unsat
-  propagations). `axiom_missing` is `true` when the step's rule does apply an
-  axiom but none was recorded for it. `premises` recurses; a leaf step has
+  cited source axioms, each its own one-axiom OFN document and each **a component
+  of the source ontology as written** (#586; annotations dropped), so a consumer
+  can look it up literally: the cited internal axiom is traced back to the source
+  component conversion made it from (including the per-axiom rewrites and a long
+  chain's decomposition), never reverse-rendered from conversion's normalised form.
+  Empty for a step whose rule needs no axiom (reflexivity, transitivity, fact
+  inheritance, the unsat propagations). `builtin_axioms` (#539) are axioms
+  conversion added from the OWL semantics. `derived_axioms` (#586) are axioms a
+  later conversion pass built from several (e.g. a datatype seed edge), so no single
+  source axiom is their written form; they are rendered from the internal form and
+  never listed in `axioms`. `axiom_missing` is `true` when the step's rule does
+  apply an axiom but none was recorded for it. `premises` recurses; a leaf step has
   `premises: []`. `unproved_premises` lists, as one-axiom OFN documents,
   premises the step used whose own derivation was not recorded, so no
   sub-proof exists for them. `proof_complete` is `false` when any node has

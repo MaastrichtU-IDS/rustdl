@@ -1166,7 +1166,9 @@ pub(crate) struct ProofNodeJson {
     pub(crate) conclusion: String,
     /// `ElRule` name (its `Display` impl — matches the text renderer).
     pub(crate) rule: String,
-    /// Source axioms used at this step, each its own OFN ontology document.
+    /// Source axioms used at this step, each its own OFN ontology document. #586: each is
+    /// a component of the source ontology as written (not conversion's normalised form),
+    /// so a consumer can look it up literally.
     pub(crate) axioms: Vec<String>,
     /// #539: axioms used at this step that conversion added from the OWL semantics
     /// (e.g. `∃owl:bottomObjectProperty.⊤ ⊑ ⊥`), not taken from the source; each its
@@ -1174,6 +1176,12 @@ pub(crate) struct ProofNodeJson {
     /// them as the user's. Omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) builtin_axioms: Vec<String>,
+    /// #586: axioms used at this step that conversion derived from several source
+    /// axioms (a later pass built them), so no single source axiom is their written form;
+    /// each rendered from rustdl's internal form, its own OFN ontology document. Never
+    /// listed in `axioms`. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) derived_axioms: Vec<String>,
     /// The rule applies an axiom but none was recorded for this step.
     pub(crate) axiom_missing: bool,
     pub(crate) premises: Vec<ProofNodeJson>,
@@ -1347,12 +1355,44 @@ fn derived_fact_to_component(
     })
 }
 
+/// #586: where a proof's cited IR axioms came from in the source: see
+/// [`owl_dl_core::provenance`].
+pub(crate) struct Citations<'a> {
+    literal:
+        HashMap<owl_dl_core::ontology::Axiom, &'a horned_owl::model::AnnotatedComponent<RcStr>>,
+}
+
+impl<'a> Citations<'a> {
+    pub(crate) fn new(src: &'a SetOntology<RcStr>, internal: &InternalOntology) -> Self {
+        Self {
+            literal: owl_dl_core::provenance::literal_sources(src, internal),
+        }
+    }
+
+    /// The source component `ax` is the stored form of, if one is: directly, or, for a
+    /// piece of a decomposed chain, through the chain it came from.
+    fn source_of(
+        &self,
+        ax: &owl_dl_core::ontology::Axiom,
+        internal: &InternalOntology,
+    ) -> Option<&'a Component<RcStr>> {
+        self.literal
+            .get(ax)
+            .or_else(|| {
+                let chain = owl_dl_core::provenance::decomposed_chain_origin(internal, ax)?;
+                self.literal.get(&chain)
+            })
+            .map(|ac| &ac.component)
+    }
+}
+
 /// Recursively build a `ProofNodeJson` from a `ProofNode`: the conclusion
 /// and each cited source axiom are each rendered as their own self-contained
 /// OFN ontology document.
 fn build_proof_node_json(
     node: &owl_dl_reasoner::ProofNode,
     internal: &InternalOntology,
+    cites: &Citations<'_>,
     defs: &HashMap<ClassId, SyntheticDef>,
     pm: &PrefixMapping,
     build: &Build<RcStr>,
@@ -1378,13 +1418,28 @@ fn build_proof_node_json(
         .iter()
         .filter_map(|r| internal.axioms.get(r.0))
         .partition(|ax| internal.builtin.contains(ax));
-    let axioms: Vec<String> = source_refs.into_iter().map(render).collect();
+    // #586: a cited axiom is rendered as the source component it came from, as written,
+    // never as conversion stored it (which Protégé's literal lookup rejects). One with no
+    // single source (a later pass derived it) goes to `derived_axioms`.
+    let mut axioms: Vec<String> = Vec::new();
+    let mut derived_axioms: Vec<String> = Vec::new();
+    for ax in source_refs {
+        match cites.source_of(ax, internal) {
+            Some(component) => {
+                let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
+                if !axioms.contains(&doc) {
+                    axioms.push(doc);
+                }
+            }
+            None => derived_axioms.push(render(ax)),
+        }
+    }
     let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(render).collect();
 
     let premises = node
         .premises
         .iter()
-        .map(|p| build_proof_node_json(p, internal, defs, pm, build))
+        .map(|p| build_proof_node_json(p, internal, cites, defs, pm, build))
         .collect::<Result<Vec<_>>>()?;
     let unproved_premises = node
         .unproved_premises
@@ -1398,9 +1453,13 @@ fn build_proof_node_json(
     Ok(ProofNodeJson {
         conclusion,
         rule: node.rule.to_string(),
-        axiom_missing: node.rule.needs_axiom() && axioms.is_empty() && builtin_axioms.is_empty(),
+        axiom_missing: node.rule.needs_axiom()
+            && axioms.is_empty()
+            && builtin_axioms.is_empty()
+            && derived_axioms.is_empty(),
         axioms,
         builtin_axioms,
+        derived_axioms,
         premises,
         unproved_premises,
     })
@@ -1428,6 +1487,7 @@ fn proof_is_complete(node: &ProofNodeJson) -> bool {
 pub(crate) fn build_prove_json(
     result: &ProveEntailmentResult,
     flags: owl_dl_reasoner::ProveFlags,
+    src: &SetOntology<RcStr>,
     internal: &InternalOntology,
     pm: &PrefixMapping,
 ) -> Result<ProveJson> {
@@ -1448,9 +1508,11 @@ pub(crate) fn build_prove_json(
     Ok(match result {
         ProveEntailmentResult::SaturatorProof(data) => {
             let build: Build<RcStr> = Build::new_rc();
+            let cites = Citations::new(src, internal);
             let proof = build_proof_node_json(
                 &data.root,
                 internal,
+                &cites,
                 &data.trace.synthetic_defs,
                 pm,
                 &build,
@@ -1596,7 +1658,9 @@ mod tests {
             unproved_premises: Vec::new(),
         };
         let build = Build::new();
-        let j = build_proof_node_json(&node, &internal, &HashMap::new(), &pm, &build).unwrap();
+        let cites = Citations::new(&onto, &internal);
+        let j =
+            build_proof_node_json(&node, &internal, &cites, &HashMap::new(), &pm, &build).unwrap();
         assert_eq!(j.axioms.len(), 1, "source axioms: {:?}", j.axioms);
         assert!(j.axioms[0].contains(":D"), "{}", j.axioms[0]);
         assert_eq!(j.builtin_axioms.len(), 1, "{:?}", j.builtin_axioms);
@@ -1608,12 +1672,16 @@ mod tests {
             j.builtin_axioms[0]
         );
         assert!(!j.axiom_missing);
+        assert!(j.derived_axioms.is_empty(), "{:?}", j.derived_axioms);
         // Sabotage check of the partition itself: with the builtin record emptied, the
-        // same step would list both axioms as the source's.
+        // builtin axiom is no longer kept apart. #586: it still never reads as the
+        // source's, since no source component converts to it: it is derived.
         let mut stripped = internal.clone();
         stripped.builtin.clear();
-        let j2 = build_proof_node_json(&node, &stripped, &HashMap::new(), &pm, &build).unwrap();
-        assert_eq!(j2.axioms.len(), 2);
+        let j2 =
+            build_proof_node_json(&node, &stripped, &cites, &HashMap::new(), &pm, &build).unwrap();
+        assert_eq!(j2.axioms.len(), 1, "{:?}", j2.axioms);
         assert!(j2.builtin_axioms.is_empty());
+        assert_eq!(j2.derived_axioms.len(), 1, "{:?}", j2.derived_axioms);
     }
 }

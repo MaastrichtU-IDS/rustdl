@@ -175,6 +175,23 @@ public class RustdlProofTest {
     }
 
     /**
+     * #586: a step that rests on an axiom rustdl derived during conversion (listed under
+     * {@code derived_axioms}, never {@code axioms}) is refused, not shown with that premise
+     * missing (a leaf would read as proved from nothing).
+     */
+    @Test
+    public void aStepUsingADerivedAxiomIsRefused() throws Exception {
+        RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove_derived.json"));
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+            () -> RustdlProof.fromProveJson(json, goal, proveJsonSource()));
+        assertTrue(e.getMessage(), e.getMessage().contains("derived during conversion"));
+        // The same proof without the derived axiom builds, so the refusal is that field's.
+        RustdlProof.fromProveJson(
+            RustdlProcess.parseProve(fixture("prove.json")), goal, proveJsonSource());
+    }
+
+    /**
      * #56 — a genuine proof survives verification unchanged.
      *
      * The companion to {@link #aFabricatedLeafAxiomIsRejected}: without this one, "the guard

@@ -3,7 +3,7 @@
 # id: M13
 # base: 2f1b21485e355bca1e4620db2f06795de589c7a2
 # layer: conversion (n-ary operands, #538); consistent / classify see it, instance / instances-expr / realize do not
-# reopens: #538 for DifferentIndividuals: DifferentIndividuals(:a :a) read as a ≠ a, a false inconsistency every surface shares
+# reopens: #538 for DifferentIndividuals: DifferentIndividuals(:a :a) read as a ≠ a, a false inconsistency (not shared by every surface)
 # env: -
 # expect: U1k@nary_duplicate_538,L5@nary_duplicate_538
 diff --git a/crates/owl-dl-core/src/set_operands.rs b/crates/owl-dl-core/src/set_operands.rs

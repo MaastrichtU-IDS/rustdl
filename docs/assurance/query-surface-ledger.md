@@ -279,15 +279,19 @@ Ratchets, counted against `crates/owl-dl-cli/tests/fixtures/laws/baseline.json`:
 Not a ratchet, but an oracle check like U1:
 
 - **U1k** (#573): a rustdl surface says the KB is inconsistent (classify `consistent: false`,
-  `consistent`, or a per-query `Inconsistent` error when those two were killed). Per-class U1 is
+  `consistent`, or a per-query `Inconsistent` error when neither of those two says inconsistent). Per-class U1 is
   skipped there, and every surface sharing a false inconsistency agrees with itself, so before
   #573 nothing compared it. The claim is checked against the spec's `known_kb` (a recorded HermiT
-  verdict; every consistent spec in the quick set has one) or `known_sat`: a contradiction is a
+  verdict, recorded in `crates/owl-dl-cli/tests/fixtures/laws/known-kb-hermit.tsv`; every
+  consistent spec in the quick set has one) or `known_sat`: a contradiction is a
   hard violation, which the cargo gate sees. Otherwise the Konclude oracle: consistent is a U1k
   `discrepancy`; without an oracle the claim is `unverified`. Neither is ratcheted or fails a run
   on its own, because Konclude calls inconsistent KBs consistent (#432, #490); `--hermit` decides
   both (HermiT refutes: a confirmed false inconsistency; undecided: unadjudicated; both fail the
-  run). The run prints a `U1k CANDIDATE` line for each one HermiT has not confirmed.
+  run). The run prints a `U1k CANDIDATE` line for each one HermiT has not confirmed. Without
+  `--hermit`, an unlabelled false inconsistency therefore exits 0 (listed under `unverified` /
+  `discrepancies`, not failed). A labelled inconsistent KB that classify calls consistent is
+  listed as `inconsistency_missed`, a miss, not a failure.
 
 A pair in the committed Konclude closure is a classify miss. A pair absent from it is a
 candidate false positive, which fails a run only if HermiT confirms it (`--hermit`). U1 is

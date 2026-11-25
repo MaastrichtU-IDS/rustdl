@@ -57,15 +57,18 @@ Ratchets (counted against a committed per-ontology baseline):
       `--hermit` decides (HermiT refutes: a confirmed false inconsistency, which
       fails the run; undecided: unadjudicated, which fails it too). Per-class U1
       is skipped on an inconsistent KB (every class is then unsat); U1k is not.
-      On a labelled consistent KB that rustdl calls consistent, one U1k `ok`.
+      On a labelled consistent KB that rustdl calls consistent, one U1k `ok`; a
+      labelled inconsistent KB that classify calls consistent is listed
+      (`inconsistency_missed` in report.json), not failed. The labels' HermiT
+      record: tests/fixtures/laws/known-kb-hermit.tsv.
 Adjudication: a pair in the committed Konclude closure is a classify MISS; a
 pair absent from it is a CANDIDATE FP, confirmed only by HermiT (`--hermit`).
 Konclude alone never fails a run (it under-reports in documented cases); a U1
 baseline entry therefore needs a recorded HermiT verdict, never Konclude alone.
 HermiT is asked per claim (`--consistency=C`, `--supers=C`), so it also decides on
 an ontology with unsat classes. A HermiT answer that decides nothing (timeout,
-failure, an inconsistent ontology) is listed under `unadjudicated` and fails the
-run, and `--hermit` without a JVM is an error (#502): an oracle that cannot
+failure, an inconsistent ontology, except for U1k, where an inconsistent ontology is
+the answer) is listed under `unadjudicated` and fails the run, and `--hermit` without a JVM is an error (#502): an oracle that cannot
 answer must never read as zero false positives.
 
 COVERAGE, stated: `--self-test` shows each law CAN fire, on fabricated operands;
@@ -128,7 +131,8 @@ SMALL_CAPS = dict(pos=5, neg=5, sat=5, inst=5, disj=5, eq=3)
 # `known_kb` (#573): the KB verdict, adjudicated by HermiT (`CommandLine
 # --consistency=<owl:Thing>`, 2026-11-25, robot.jar's HermiT; every consistent spec in the
 # quick set has one, so a false inconsistency fails the cargo gate as a U1k violation).
-# Re-check it with HermiT when a fixture file changes.
+# The record (file, verdict, sha256 prefix): LAWS_FIX / "known-kb-hermit.tsv". Re-check it
+# with HermiT when a file changes.
 CODE_PIZZA = "http://www.co-ode.org/ontologies/pizza/pizza.owl#"
 CURATED = [
     # The #76 pairs on the Stanford (co-ode) pizza. Pins whose IRIs are not declared
@@ -768,8 +772,9 @@ def u1k(obs, kb_inconsistent, incons_op):
 
     A false inconsistency that every rustdl surface shares agrees with itself, so no
     cross-command law sees it, and per-class U1 is skipped exactly there. The claim is
-    made by classify `consistent: false`, `consistent` = inconsistent, or (when both of
-    those were killed or said consistent) any per-query command erroring `Inconsistent`."""
+    made by classify `consistent: false`, `consistent` = inconsistent, or (when neither of
+    those says inconsistent: killed, or consistent) any per-query command erroring
+    `Inconsistent`."""
     o, q, c = obs["onto"], obs["q"], obs.get("classify", {"status": "unknown"})
     claim = incons_op if kb_inconsistent else next(
         (a for k, a in q.items() if k[0] != "consistent" and a and a["v"] == "inconsistent"), None)
@@ -779,6 +784,13 @@ def u1k(obs, kb_inconsistent, incons_op):
         # arm compared.
         if known == "consistent" and c["status"] == "ok" and c.get("consistent"):
             return [check("U1k", o, True, "", ans("ok", "", c.get("cmd")))]
+        # A labelled inconsistent KB that classify calls consistent: a miss, listed (like
+        # U1's unsat-missed), never a failure.
+        if known == "inconsistent" and c["status"] == "ok" and c.get("consistent") \
+                and not c.get("undetermined"):
+            return [outcome("U1k", o, "inconsistency-missed",
+                            "the KB is inconsistent (known_kb); classify says consistent",
+                            ans("ok", "", c.get("cmd")))]
         return []
     if known == "consistent" or obs.get("known_sat"):
         why = "known_kb" if known == "consistent" else "known_sat"
@@ -1163,6 +1175,17 @@ def self_test():
                   u1k_of(ob), [("ok", "classify")]))
     ob = dict(onto="t", q={("consistent",): Y}, classify=base()["classify"], oracle_unsat=set())
     cases.append(("#573 U1k: no claim, no label -> nothing", u1k_of(ob), []))
+    ob = dict(onto="t", q={("consistent",): Y, ("sat", "C"): K}, classify=base()["classify"],
+              known_kb="consistent")
+    cases.append(("#573 U1k: a per-query Inconsistent error while classify and consistent say "
+                  "consistent is a claim", u1k_of(ob), [("violation", "sat")]))
+    ob = dict(onto="t", q={("consistent",): U}, classify=base()["classify"],
+              known_kb="inconsistent")
+    cases.append(("#573 U1k: a labelled inconsistent KB classify calls consistent is listed",
+                  (laws_of(ob, "inconsistency-missed"), laws_of(ob, "violation")), (["U1k"], [])))
+    ob = dict(onto="t", q={}, classify=base(undetermined=True)["classify"],
+              known_kb="inconsistent")
+    cases.append(("#573 U1k: ... but not when classify's verdict is undetermined", u1k_of(ob), []))
     ob = dict(onto="t", q={("consistent",): Cn}, classify=base()["classify"], oracle_unsat=set())
     cases.append(("#573 U1k and R3 both fire on consistent=no vs classify consistent",
                   sorted(laws_of(ob, "discrepancy")), ["R3", "U1k"]))
@@ -1192,6 +1215,8 @@ def self_test():
              ([], {}, [])),
             ("HermiT refutes: a confirmed FP", [dict(u_u, hermit="refutes")],
              (["HermiT-confirmed FP"], {}, [])),
+            ("HermiT refutes a Konclude discrepancy: a confirmed FP",
+             [dict(u_d, hermit="refutes")], (["HermiT-confirmed FP"], {}, [])),
             ("HermiT undecided: unadjudicated", [dict(u_d, hermit="unavailable (HermiT timeout)")],
              ([], {}, ["U1k"]))):
         by_, fails_, rat_, over_, unadj_ = summarize([dict(onto="t", outcomes=outs)], {})
@@ -1494,7 +1519,10 @@ def main():
                   unsat_missed=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
                                 if o["kind"] == "unsat-missed"],
                   unverified=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
-                              if o["kind"] == "unverified"])
+                              if o["kind"] == "unverified"],
+                  inconsistency_missed=[o | {"onto": r["onto"]} for r in results
+                                        for o in r["outcomes"]
+                                        if o["kind"] == "inconsistency-missed"])
     (a.out / "report.json").write_text(json.dumps(report, indent=1, default=list))
     if a.write_baseline:
         bl = defaultdict(dict)

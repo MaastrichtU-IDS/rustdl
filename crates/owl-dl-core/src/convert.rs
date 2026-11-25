@@ -2761,7 +2761,7 @@ fn top_level_conjuncts<A: ForIRI>(ce: &ClassExpression<A>) -> Vec<&ClassExpressi
 /// `ore_ont_14379` lost `ObservationEvent ⊑ Event` this way: one conjunct of
 /// `ObservationEvent ≡ Event ⊓ … ⊓ ∀usingStrictOrder.xsd:boolean` has an
 /// unsupported data range, so the whole equivalence was dropped.
-fn salvage_necessary_conjuncts<A: ForIRI>(
+pub(crate) fn salvage_necessary_conjuncts<A: ForIRI>(
     c: &Component<A>,
     vocab: &mut Vocabulary,
     pool: &mut ConceptPool,

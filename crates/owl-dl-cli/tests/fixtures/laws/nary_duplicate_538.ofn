@@ -3,9 +3,9 @@ Prefix(:=<http://ex.org/nd538#>)
 Ontology(<http://ex.org/nd538>
 # #538 / #573: a consistent KB whose n-ary operands repeat. The operands are a set
 # (OWL 2 Structural Specification §2.1), so DifferentIndividuals(:a :a) says nothing;
-# reading it as a list made every surface call the KB inconsistent, which no
-# cross-command law sees. U1k does: this spec's `known_kb` is HermiT's "consistent".
-# Mutant M13 reopens it.
+# read as a list, it is a false inconsistency. U1k checks the KB verdict against this
+# spec's `known_kb`, HermiT's "consistent". Mutant M13 reopens it (L5 also fires there,
+# since instance / realize still answer).
 Declaration(Class(:A)) Declaration(Class(:B))
 Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
 SubClassOf(:A :B)

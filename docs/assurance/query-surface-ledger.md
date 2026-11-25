@@ -344,7 +344,12 @@ discrepancies for an (ontology, law) than the unmutated control under the same e
 | M10 | `disjoint` | inconsistency guards removed | L5 (`inconsistent_small`) | no: fixture only |
 | M11 | `individuals` | every probed pair published as different | L11 (`individuals_three`) | no: fixture only |
 | M12 | `--saturation-only` JSON | one reversed edge (structural) | L8 | yes: all four |
-| M13 | conversion, n-ary operands (shared; added by #573) | #538 for `DifferentIndividuals`: `(:a :a)` read as a ≠ a, a false inconsistency | U1k (`nary_duplicate_538`, a hand label backed by HermiT, not a cross-command law) | no: fixture only |
+| M13 | conversion, n-ary operands (added by #573) | #538 for `DifferentIndividuals`: `(:a :a)` read as a ≠ a, a false inconsistency | U1k (`nary_duplicate_538`'s HermiT-backed label) and L5: `instance`, `instances-expr` and `realize` still answer, so the fault is not fully shared² | no: fixture only |
+
+² M13, measured 2026-11-25 on main 2f1b2148 plus #573 (quick set, no `--hermit`): U1k 1
+violation, L5 5. A fault every surface shares would leave only U1k; the self-test covers that
+shape on fabricated operands. A shared variant through `DisjointClasses(:B :B)` cannot be
+adjudicated: HermiT also reads that axiom's operands as a list and calls the KB inconsistent.
 
 ¹ **The HermiT part of these labels cannot be checked from the record.**
 - The 2026-11-02 run wrote to `mktemp` directories that no longer exist, and before #502 a

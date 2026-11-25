@@ -1800,8 +1800,11 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     )?;
     writeln!(
         out,
-        "# satisfiability probes: saturation={} tableau={}",
-        stats.saturation_unsat_hits, stats.tableau_unsat_calls
+        "# satisfiability probes: saturation={} wedge_unsat={} wedge_sat={} tableau={}",
+        stats.saturation_unsat_hits,
+        stats.wedge_unsat_probe_hits,
+        stats.wedge_sat_probe_hits,
+        stats.tableau_unsat_calls
     )?;
     writeln!(
         out,
@@ -1925,8 +1928,13 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     if tsr > 0 {
         writeln!(
             out,
-            "# trusted-Sat refutations: {tsr} (decided without the tableau; \
-             see issue #66 — NOT an error signal, this is 0 MISSED on ro/sio/pizza)"
+            "# trusted-Sat refutations: {tsr} (decided on a wedge Sat without the tableau: \
+             per-pair={} label-pruned={} snapshot={} class-sat={}; see issues #66, #568 — \
+             NOT an error signal, this is 0 MISSED on ro/sio/pizza)",
+            stats.hyper_refuted_pairs,
+            stats.label_cache_pruned,
+            stats.snapshot_replay_not_subsumed,
+            stats.wedge_sat_probe_hits,
         )?;
     }
     if stats.hyper_proven_pairs > 0 {

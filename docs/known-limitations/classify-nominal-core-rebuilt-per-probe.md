@@ -9,7 +9,7 @@
 | default (3 reps each) | 33.5–33.8 CPU-s | 2.4–2.7 CPU-s | 1,077 / 53 |
 | 1000 | 2,603.5 CPU-s | 3.25 CPU-s | 1,077 / 2 |
 
-Trust caveat: on #480 the wedge now decides 9540's consistency, so `relies_on_trusted_consistency: true` and `trusted_sat_refutations: 2`, where main had `false` / `0`. Both are signalled and both are the default `trust_sat` completeness caveat. The rows are unchanged. The mechanism below is the pre-#480 diagnosis, kept for the record.
+Trust caveat: on #480 the wedge now decides 9540's consistency, so `relies_on_trusted_consistency: true` and `trusted_sat_refutations: 2`, where main had `false` / `0` (counts from before #568, which widened `trusted_sat_refutations` to every trusted-`Sat` channel, so it now reads higher). Both are signalled and both are the default `trust_sat` completeness caveat. The rows are unchanged. The mechanism below is the pre-#480 diagnosis, kept for the record.
 **Severity:** wall/CPU only, no answer is lost. `ore_ont_9540` is 2× slower with wedge nominals at the default `--pair-timeout-ms`, and ~36× slower (831 s vs 23 s wall) at `--pair-timeout-ms 1000`. Rows are identical either way.
 
 ## Symptom

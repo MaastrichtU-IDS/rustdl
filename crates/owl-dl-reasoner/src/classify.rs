@@ -596,8 +596,8 @@ pub struct Classification {
 }
 
 /// The expressivity fragment of an ontology, used to surface
-/// whether `trust_sat` is sound by construction (EL+ or Horn) or
-/// sound by composition (the empirical fragment). See
+/// whether `trust_sat` is sound by construction (EL+) or only
+/// empirically (`Horn` and the rest; see #124, #568). See
 /// `docs/fragment-completeness.md` for the precise contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FragmentClassification {
@@ -644,8 +644,9 @@ impl std::fmt::Display for FragmentClassification {
 /// Classify the expressivity fragment of an ontology. `PureEl` means
 /// the saturator is complete on this input. `Horn` means the
 /// clausified form has only Horn clauses (≤ 1 head atom) and no
-/// deferred axioms — the hyper Horn fixpoint is complete by
-/// construction. Anything else is `OutOfFragment` — the engine remains
+/// deferred axioms — a clause-shape label, NOT a completeness claim
+/// (#124): the wedge's trusted `Sat` can miss there too (#564, #568).
+/// Anything else is `OutOfFragment` — the engine remains
 /// empirically sound across the measured corpus, but no formal proof
 /// of completeness covers it.
 ///
@@ -663,6 +664,19 @@ pub fn analyze_fragment(internal: &InternalOntology) -> FragmentClassification {
         return FragmentClassification::Horn;
     }
     FragmentClassification::OutOfFragment
+}
+
+/// #568: which engine decided a class in the top-down driver's unsat probe.
+#[derive(Debug, Clone, Copy)]
+enum ProbeBy {
+    /// The EL saturator's closure (`C ⊑ ⊥`).
+    Saturation,
+    /// The label cache's wedge `Unsat`: sound in any fragment.
+    WedgeUnsat,
+    /// The label cache's wedge `Sat`: trusted, not verified.
+    WedgeSat,
+    /// The main tableau (including a cut probe).
+    Tableau,
 }
 
 /// Per-call instrumentation: who decided what during the pairwise
@@ -822,11 +836,24 @@ pub struct ClassificationStats {
     pub fallthrough_from_diverged: usize,
     pub fallthrough_subsumed_diverged: usize,
     /// Classes flagged as `⊑ ⊥` by saturation directly (no per-class
-    /// tableau probe issued).
+    /// tableau probe issued). #568: only the EL saturator; before, the top-down
+    /// driver also counted the wedge label verdicts here (now
+    /// `wedge_unsat_probe_hits` / `wedge_sat_probe_hits`).
     pub saturation_unsat_hits: usize,
     /// Classes that needed a per-class tableau satisfiability probe
     /// (saturation had no opinion).
     pub tableau_unsat_calls: usize,
+    /// #568: classes the top-down driver's unsat probe found unsatisfiable from the
+    /// label cache's wedge `Unsat` (sound in any fragment), without a tableau call.
+    pub wedge_unsat_probe_hits: usize,
+    /// #568: classes the top-down driver's unsat probe took as SATISFIABLE from the
+    /// label cache's wedge `Sat`, without a tableau call. A trusted `Sat`: sound only
+    /// where the wedge is complete, so it can hide an unsatisfiable class (the #564
+    /// shape with `RUSTDL_CLASSIFY_WEDGE_IF_BOUND=0`). Part of the CLI's
+    /// `trusted_sat_refutations`. With `saturation_unsat_hits`,
+    /// `wedge_unsat_probe_hits` and `tableau_unsat_calls` it sums to the class count
+    /// on that driver.
+    pub wedge_sat_probe_hits: usize,
     /// True iff the entire ontology fits inside the EL fragment
     /// our saturation engine is complete for — in that case the
     /// tableau is never invoked and saturation's `no` answer is
@@ -4970,12 +4997,12 @@ fn classify_top_down_internal_impl(
                 .push((i, labels));
         }
     };
-    let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
+    let unsat_probe_results: Result<Vec<(usize, bool, ProbeBy)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
             let class_id = reported.class_id(i);
             if closure.is_unsatisfiable(class_id) {
-                return Ok((i, false, true));
+                return Ok((i, false, ProbeBy::Saturation));
             }
             // Perf (unsat-probe de-redundancy, 2026-06-10): the Phase-7 label
             // cache (the WEDGE) already decided satisfiability for most classes
@@ -4987,12 +5014,12 @@ fn classify_top_down_internal_impl(
             // already trusted in `find_direct_parents_top_down`; `Sat` matches
             // the trust_sat model the label cache + pruning already rely on.
             // `NoVerdict`/absent (heuristic off, or build deadline) falls
-            // through to the main-tableau probe unchanged. Third tuple field is
-            // the "used_saturation" stat flag — `true` = "decided without a
-            // tableau call" (wedge), keeping `tableau_unsat_calls` honest.
+            // through to the main-tableau probe unchanged. Third tuple field says
+            // which engine decided (#568: a wedge `Sat` is counted apart, since it
+            // is a trusted verdict that `trusted_sat_refutations` must see).
             if crate::unsat_via_labels_enabled() {
                 match label_cache.get(i) {
-                    Some(crate::LabelOracle::Unsat) => return Ok((i, false, true)),
+                    Some(crate::LabelOracle::Unsat) => return Ok((i, false, ProbeBy::WedgeUnsat)),
                     Some(crate::LabelOracle::Sat { .. }) => {
                         // Concrete-domain verify: the wedge has no `card_sat`
                         // and does not materialise DKey cardinality, so it
@@ -5041,7 +5068,7 @@ fn classify_top_down_internal_impl(
                                         prepared.complex_qualifier_counting_classes.contains(s)
                                     })));
                         if !needs_verify {
-                            return Ok((i, true, true));
+                            return Ok((i, true, ProbeBy::WedgeSat));
                         }
                         // else: fall through to the main-tableau probe below.
                     }
@@ -5086,7 +5113,7 @@ fn classify_top_down_internal_impl(
                     }
                     Err(other) => return Err(other),
                 };
-                Ok((i, sat, false))
+                Ok((i, sat, ProbeBy::Tableau))
             } else {
                 // No deadline, but a `RUSTDL_MAX_NODES` trip still yields no
                 // verdict; record it like a deadline cut (#218).
@@ -5110,18 +5137,19 @@ fn classify_top_down_internal_impl(
                 if verdict.is_none() {
                     record_cut_probe(&cut_probes, i, no_verdict);
                 }
-                Ok((i, verdict.unwrap_or(true), false))
+                Ok((i, verdict.unwrap_or(true), ProbeBy::Tableau))
             }
         })
         .collect();
     let unsat_probe_results = unsat_probe_results?;
     flag_cut_probes(cut_probes, &mut stats);
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
-    for (i, is_sat, used_saturation) in unsat_probe_results {
-        if used_saturation {
-            stats.saturation_unsat_hits += 1;
-        } else {
-            stats.tableau_unsat_calls += 1;
+    for (i, is_sat, by) in unsat_probe_results {
+        match by {
+            ProbeBy::Saturation => stats.saturation_unsat_hits += 1,
+            ProbeBy::WedgeUnsat => stats.wedge_unsat_probe_hits += 1,
+            ProbeBy::WedgeSat => stats.wedge_sat_probe_hits += 1,
+            ProbeBy::Tableau => stats.tableau_unsat_calls += 1,
         }
         if !is_sat {
             unsatisfiable_idxs.insert(i);
@@ -6286,10 +6314,12 @@ fn subsumes_via_tableau(
     // through to the tableau.
     //
     // Gated on the FRAGMENT, not applied blanket, so `PureEl`/`Horn` inputs keep
-    // the fast path: the saturator carries `PureEl` and the Horn fixpoint
-    // carries `Horn`, so a trusted `Sat` on those cannot be wrong and verifying
-    // it would be pure cost. That is what makes this cheaper than
-    // `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` for the same completeness.
+    // the fast path. For `Horn` the premise is stale: it read "the Horn fixpoint
+    // carries `Horn`", which #124 refuted (a Horn ontology exists where `classify`
+    // misses an oracle-confirmed subsumption), so under this flag a Horn input's
+    // trusted `Sat` is still not verified. Changing the gate changes answers under
+    // the flag, so it is tracked apart from #568, which only counts these verdicts
+    // (`trusted_sat_refutations` no longer exempts `Horn`).
     //
     // `stats.fragment` is stamped before the pair loop, so reading it here is
     // one gate covering every call site rather than four threaded parameters.

@@ -726,7 +726,7 @@ pub struct ClassificationStats {
     /// silently, so completeness is not guaranteed: [`Classification::
     /// completeness_guaranteed`] is false and `classify --json` reports this
     /// field (`RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND`). It does NOT set
-    /// `incomplete`, which means only "a deadline fired".
+    /// `incomplete`, which means only that a class pair or probe was cut (#574).
     pub wedge_hierarchy_blind: bool,
     /// #353: clauses the wedge's matcher refuses (a body it cannot match even
     /// after the clausifier splits over-cap bodies into named branches). A refused
@@ -734,7 +734,7 @@ pub struct ClassificationStats {
     /// silently: [`Classification::completeness_guaranteed`] is false when this is
     /// non-zero, and `classify --json` reports it
     /// (`RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`). It does NOT set `incomplete`, which
-    /// means only "a deadline fired". 0 when there is no wedge.
+    /// means only that a class pair or probe was cut (#574). 0 when there is no wedge.
     pub wedge_clauses_refused: usize,
     /// #354: individual equalities the KB forces that classify found and gave the
     /// classify wedge (`RUSTDL_CLASSIFY_DERIVED_SAME`).
@@ -743,8 +743,8 @@ pub struct ClassificationStats {
     /// by its budget or the global deadline, or the probe cap was reached). Each is an
     /// equality classify may be missing, as it always did before #354, so
     /// [`Classification::completeness_guaranteed`] is false when this is non-zero and
-    /// `classify --json` reports it. It does NOT set `incomplete`, which means only "a
-    /// deadline fired" on a class pair.
+    /// `classify --json` reports it. It does NOT set `incomplete`, which means only that
+    /// a class pair or per-class unsat probe was cut (#574); an equality probe is neither.
     pub derived_same_undecided: usize,
     /// #354: candidate pairs considered and probes run (cost telemetry).
     pub derived_same_candidates: usize,
@@ -874,7 +874,7 @@ pub struct ClassificationStats {
     /// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`): each built nodes only to merge them away
     /// while the NN guard refused their blockers, and returned `Stalled`, so its probe
     /// or pair went to the main tableau instead. Diagnostic: no answer was guessed
-    /// and no deadline fired, so it does NOT set `incomplete`; a fall-through the
+    /// and the stop itself cuts nothing, so it does NOT set `incomplete`; a fall-through the
     /// tableau could not finish shows up in the usual fields. Counts the classify
     /// wedge only, not the consistency wedge (whose `Stalled` sets
     /// `consistency_undetermined`).
@@ -1849,6 +1849,9 @@ pub(crate) fn classify_saturation_only_internal(
     let fragment = analyze_fragment(internal);
     let pure_el = matches!(fragment, FragmentClassification::PureEl);
     let mut h = classify_pure_el(internal, &reported, &index, &closure, fragment);
+    // #557: as the other classify entry points do; without it a dropped axiom (a
+    // SWRL rule, `HasKey`) left `completeness_guaranteed` true on this path.
+    h.stats.dropped = internal.dropped.clone();
     // #539: off the pure-EL fragment the saturator is not complete for
     // consistency, and nothing else checks it here, so "no clash found" is all
     // `consistent: true` can mean. `r(a,b)` with `¬r(a,b)` read `consistent: true`

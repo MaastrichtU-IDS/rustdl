@@ -23,7 +23,8 @@ Added without a `schema_version` bump to `classify` (`no_verdict_pairs`, an int)
 It does **not** mean "any `NoVerdict`". On a probe with a deadline that did not stall (a pair budget, such as
 `classify`'s default `--pair-timeout-ms` or the 1000 ms default of `disjoint`, `individuals` and
 `property-values`), a `NoVerdict` is the routine decision-depth cut (#288): it sets only
-`incomplete` (and, in `classify`, the depth-limit banner line), not this field, and the exit code
+`incomplete` (and, in `classify`, `depth_capped_pairs` and the depth-limit banner line; in
+`realize`, `instances-expr` and `justify`, `depth_capped`), not this field, and the exit code
 follows the command's usual give-up convention. So these fields are `false` / `0` on a
 budgeted run whatever the tableau did, and `--pair-timeout-ms 0` is the setting under which they
 can fire.
@@ -46,14 +47,21 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
+  "depth_capped_pairs": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...],
   "dropped": { "<axiom kind>": int },
   "collapsed_operands": { "axioms": int, "vacuous": int } }
 ```
 
-`incomplete` = some class pair hit the time budget (defaulted to not-subsumed);
-the hierarchy is sound (no false subsumptions) but may miss real ones.
+`incomplete` = some class pair or per-class unsat probe was cut without a verdict and took its
+sound default (not subsumed; satisfiable), or a preparation cut left a partial closure; the hierarchy is sound (no false subsumptions) but may miss real ones. A cut is
+any of: a deadline (per-pair, preparation, conversion or the global one), the node cap, the
+tableau's decision-depth limit (counted in `depth_capped_pairs`), a #462 `NoVerdict` (counted
+in `no_verdict_pairs`), or a bound-the-tail skip (`RUSTDL_BOUND_DIVERGED_TAIL`,
+`RUSTDL_BOUND_STALL_TAIL`). Before #574 this said "hit the time budget" only, which the code
+has not matched since the node cap and depth-limit cuts were recorded (#218, #288, #462). With
+`RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE=0` a cut per-class unsat probe is not counted.
 
 `prep_timed_out` = the `--global-timeout-ms` budget ran out during preparation
 (EL saturation or building the prepared ontology; parsing and conversion are
@@ -97,7 +105,7 @@ no such flag: the Python API parses before any budget applies.
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where
 the engine that answered is provably complete (pure EL), and only when no pair
-timed out, `wedge_hierarchy_blind` and `consistency_undetermined` are false,
+was cut (`incomplete` is false), `wedge_hierarchy_blind` and `consistency_undetermined` are false,
 `wedge_clauses_refused` and `derived_same_undecided` are 0, and `dropped` is
 empty. `docs/assurance/completeness-guarantee-ledger.md` lists each condition
 with its source issue and test.
@@ -106,8 +114,8 @@ with its source issue and test.
 matching (Layer A off: `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`, or the role closure
 exceeded `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`) on an ontology with a
 non-trivial role hierarchy (#214). Entailments needing sub-role, inverse or
-symmetric reasoning may then be missing. A separate field, because no deadline
-fired: it does not set `incomplete`.
+symmetric reasoning may then be missing. A separate field, because nothing was
+cut: it does not set `incomplete`.
 
 `consistency_undetermined` = the KB-level inconsistency pre-check reached no
 verdict: a route gave up, or was skipped because `--global-timeout-ms` had
@@ -118,7 +126,8 @@ EL (#539): only the saturation closure looked for a clash. `consistent: true`
 then means "no clash found", not "proven consistent". A separate field; it does
 not set `incomplete`.
 
-**`incomplete: false` does NOT mean complete.** It means no deadline fired.
+**`incomplete: false` does NOT mean complete.** It means no class pair or per-class unsat probe was cut (other give-ups, such
+as `consistency_undetermined` or `derived_same_undecided`, have their own fields).
 There are Horn ontologies where `classify` misses a subsumption both Konclude and
 HermiT derive while `incomplete` is `false`, `trusted_sat_refutations` is `0`, and
 `consistent` is `true` — every field reading clean on a wrong answer. That is what
@@ -141,6 +150,13 @@ while the transitive closure of the answer is the same.
 pair probes) that ended in `NoVerdict` with no deadline (e.g. under `--pair-timeout-ms 0`) or
 after their saturation stalled; see the
 `no_verdict` section above. Each also counts toward `incomplete`, but not as a depth-limit cut.
+
+`depth_capped_pairs` (#288; in the JSON since #574, without a `schema_version` bump) = of the cut
+pairs and probes, those cut by the tableau's decision-depth limit, directly or through early
+abandon, rather than by a deadline or the node cap. A larger `--pair-timeout-ms` or node cap does
+not recover them; the deadline-free search (`--pair-timeout-ms 0`), whose limit is far larger,
+may. Each also counts toward `incomplete`. The text banner's depth-limit line reports the same
+count.
 
 `equivalent_groups` lists only *satisfiable* equivalence classes; unsatisfiable
 classes are reported in `unsatisfiable` (they are all mutually equivalent to
@@ -191,7 +207,7 @@ depth cap), #497.
 { "schema_version": 1, "incomplete": bool, "witness_prune_active": bool,
   "witness_prune_may_drop": bool, "witness_prune_reasons": [string],
   "direct_types_unverified": bool, "relies_on_trusted_consistency": bool,
-  "no_verdict": bool, "saturation_only": bool,
+  "no_verdict": bool, "depth_capped": bool, "saturation_only": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
 ```
@@ -202,6 +218,11 @@ another:
 
 - `incomplete` = an instance probe was cut (deadline, node cap or depth limit),
   so a type may be MISSING from `types` and `direct_types`.
+- `depth_capped` (#574) = at least one cut instance probe hit the tableau's decision-depth
+  limit; implies `incomplete`. A larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not
+  help; the deadline-free probe (`=0`) may. It covers the instance probes only: a depth cut in
+  realize's own classification step sets neither field. Under `--json` the cut warning is also
+  printed on stderr since #574.
 - `witness_prune_active` = the pseudo-model witness prune was applied, so some
   non-memberships were skipped rather than refuted. It is true on almost every
   off-fragment ontology with individuals.
@@ -380,7 +401,7 @@ edges may be missing.
 
 ```json
 { "schema_version": 1, "status": "entailed" | "not-entailed" | "unknown",
-  "incomplete": bool, "no_verdict": bool,
+  "incomplete": bool, "no_verdict": bool, "depth_capped": bool,
   "enumeration_complete": bool, "minimal": bool, "laconic": bool,
   "justifications": [ { "ofn": ofn_document } ] }
 ```
@@ -389,11 +410,15 @@ edges may be missing.
 without at least one justification). `"unknown"` (exit 3) means the top-level
 entailment check gave up (#396), so `justifications` is empty but this is NOT a
 non-entailment. `incomplete` means a probe gave up (the same meaning as in the
-other query JSONs, not classify's deadline-only one): either the top level
+other query JSONs): either the top level
 (`"unknown"`), or a probe inside the search. In that case every justification
 still entails, `minimal` is `false` if a justification's own QuickXplain gave
 up, and under `--all` `enumeration_complete` is `false`, since a pruned branch
-may hide a justification. Added in #396 without a `schema_version` bump. `minimal` = every returned
+may hide a justification. Added in #396 without a `schema_version` bump.
+`depth_capped` (#574, no bump) = a check gave up and at least one instance check hit the
+tableau's decision-depth limit, where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does
+not help and the deadline-free probe (`=0`) may; it implies `incomplete`, but not that the depth
+cut caused the give-up. Only instance checks set it. `minimal` = every returned
 justification is *guaranteed* minimal (`Justification::minimal_guaranteed`
 across the whole saturator/tableau fragment the query resolved in — some
 SROIQ-only entailments return a sound but not-provably-minimal axiom set,
@@ -503,7 +528,7 @@ no axioms and `incomplete` is `true`. `false` is not a proof of consistency.
   "relies_on_trusted_consistency": bool, "consistency_undetermined": bool,
   "no_verdict": bool, "entailed": bool }                             // subclass-expr
 { "schema_version": 1, "incomplete": bool, "completeness_guaranteed": bool,
-  "consistency_undetermined": bool, "no_verdict": bool,
+  "consistency_undetermined": bool, "no_verdict": bool, "depth_capped": bool,
   "instances": [iri] }                                               // instances-expr
 ```
 
@@ -512,6 +537,10 @@ no axioms and `incomplete` is `true`. `false` is not a proof of consistency.
   direction (`satisfiable: true` / `entailed: false`) and **exit 3**; `instances-expr` lists the
   members it proved (sound, possibly short) and exits 0. Until package 2's prerequisite this was
   also `true` whenever the ontology was not pure EL; that is now `completeness_guaranteed`.
+- `depth_capped` (`instances-expr` only, #574): at least one cut instance probe hit the tableau's
+  decision-depth limit; implies `incomplete`. A larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node
+  cap does not help; the deadline-free probe (`=0`) may. Under `--json` the cut warning is also
+  printed on stderr since #574.
 - `completeness_guaranteed`: the answer is guaranteed complete: answered on the pure-EL fast path
   (`instances-expr`: the realize saturation fast path) and nothing gave up. `false` means a
   "satisfiable" / "not entailed" / member list is not proven complete, not that it is wrong (the

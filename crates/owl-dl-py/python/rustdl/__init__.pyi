@@ -26,7 +26,9 @@ class Classification:
         ...
     @property
     def timed_out_pairs(self) -> int:
-        """Number of subsumption pairs that hit the per-pair timeout."""
+        """Number of class pairs and per-class unsat probes cut without a verdict
+        (a deadline, the node cap, the decision-depth limit, a `NoVerdict` or a
+        tail skip)."""
         ...
     @property
     def depth_capped_pairs(self) -> int:
@@ -42,18 +44,19 @@ class Classification:
         ...
     @property
     def complete(self) -> bool:
-        """True iff no pair timed out. `True` does NOT mean no entailment is
-        missing: that is the stronger `completeness_guaranteed`. See also
-        `wedge_hierarchy_blind`: a result can be `complete` (no timeout) and
-        still miss entailments."""
+        """True iff no class pair or per-class unsat probe was cut (a deadline,
+        the node cap, the decision-depth limit, a `NoVerdict` or a tail skip). `True` does NOT mean
+        no entailment is missing: that is the stronger `completeness_guaranteed`.
+        See also `wedge_hierarchy_blind`: a result can be `complete` (nothing cut)
+        and still miss entailments."""
         ...
     @property
     def completeness_guaranteed(self) -> bool:
         """True iff the hierarchy is guaranteed complete (no missed
-        subsumptions): pure EL, no timeout, no `wedge_hierarchy_blind`, no
+        subsumptions): pure EL, nothing cut, no `wedge_hierarchy_blind`, no
         `wedge_clauses_refused`, no `derived_same_undecided`, no
         `consistency_undetermined` and no dropped axiom. Stronger than
-        `complete`, which only says no pair timed out."""
+        `complete`, which only says nothing was cut."""
         ...
     @property
     def collapsed_operands(self) -> tuple[int, int]:
@@ -133,7 +136,7 @@ class Classification:
 
 class IncompleteClassificationWarning(UserWarning):
     """Emitted when the hierarchy may be missing subsumptions (sound but
-    possibly incomplete): a timeout fired, the wedge ran without
+    possibly incomplete): a pair or probe was cut (`complete` is False), the wedge ran without
     role-hierarchy matching (`Classification.wedge_hierarchy_blind`), the
     wedge refused clauses (`Classification.wedge_clauses_refused`), or
     candidate individual equalities went undecided

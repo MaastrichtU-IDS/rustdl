@@ -47,7 +47,7 @@ fn a_hierarchy_blind_wedge_flags_the_result_and_a_plain_one_does_not() {
         "precondition: without Layer A the wedge misses this (else the test is vacuous)"
     );
     assert!(c.stats().wedge_hierarchy_blind);
-    assert_eq!(c.stats().timed_out_pairs, 0, "no deadline fired");
+    assert_eq!(c.stats().timed_out_pairs, 0, "nothing was cut");
 
     // No role axioms at all: nothing for the wedge to be blind to.
     let plain = classify(

@@ -3087,9 +3087,9 @@ pub fn unsat_probe_cut_incomplete_enabled() -> bool {
 /// trusted `Sat` can silently miss entailments that need sub-role, inverse or
 /// symmetric reasoning (#214's probes: disjoint roles via a sub-role, symmetry
 /// on a super-role, …). The signal is a SEPARATE field, not `incomplete`, which
-/// keeps meaning "a deadline fired"; `completeness_guaranteed()` is false when
-/// it is set. Reporting only: no answer changes. On the 394 ORE ontologies with
-/// ≥100 role-hierarchy axioms it is set on 26 (the Layer-A-capped ones), and
+/// means only that a class pair or probe was cut (#574); `completeness_guaranteed()`
+/// is false when it is set. Reporting only: no answer changes. On the 394 ORE
+/// ontologies with ≥100 role-hierarchy axioms it is set on 26 (the Layer-A-capped ones), and
 /// the 8 of those with no timed-out pair were in fact complete against Konclude.
 #[must_use]
 pub fn report_wedge_hierarchy_blind_enabled() -> bool {
@@ -3103,9 +3103,9 @@ pub fn report_wedge_hierarchy_blind_enabled() -> bool {
 /// trusted `Sat` can miss an entailment that needs it, with no deadline involved.
 /// The clausifier splits over-cap bodies into named branches
 /// (`RUSTDL_WEDGE_BODY_DECOMPOSE`), so this counts what it could not split. Like
-/// `wedge_hierarchy_blind` it is a SEPARATE field, not `incomplete`, which keeps
-/// meaning "a deadline fired", and `completeness_guaranteed()` is false when it is
-/// non-zero. Reporting only: no answer changes.
+/// `wedge_hierarchy_blind` it is a SEPARATE field, not `incomplete`, which means
+/// only that a class pair or probe was cut (#574), and `completeness_guaranteed()` is
+/// false when it is non-zero. Reporting only: no answer changes.
 #[must_use]
 pub fn report_wedge_clauses_refused_enabled() -> bool {
     std::env::var_os("RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED").is_none_or(|v| v != "0")

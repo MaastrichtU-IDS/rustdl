@@ -81,8 +81,16 @@ pub(crate) fn trusted_sat_risk(stats: &owl_dl_reasoner::ClassificationStats) -> 
 pub(crate) struct ClassifyJson {
     pub(crate) schema_version: u32,
     pub(crate) consistent: bool,
-    /// A class pair hit a DEADLINE and was recorded as not-subsumed. Reports
-    /// only that; it does NOT cover the `trust_sat` risk below.
+    /// A class pair or per-class unsat probe was CUT without a verdict and took its sound
+    /// default (not subsumed; satisfiable), or a preparation / conversion cut left a
+    /// partial closure (`ClassificationStats::timed_out_pairs > 0`). #574: not only a deadline (per-pair,
+    /// preparation, conversion or the global one) but also the node cap, the tableau's
+    /// decision-depth limit (`depth_capped_pairs`), a #462 `NoVerdict`
+    /// (`no_verdict_pairs`) and the bound-the-tail skips (`RUSTDL_BOUND_DIVERGED_TAIL`,
+    /// `RUSTDL_BOUND_STALL_TAIL`). Reports only that something was cut; it does NOT
+    /// cover the `trust_sat` risk below, nor anything else that is not a pair or probe
+    /// cut (e.g. `consistency_undetermined`, `derived_same_undecided`). With
+    /// `RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE=0` a cut per-class unsat probe is not counted.
     pub(crate) incomplete: bool,
     /// #162: the global deadline ran out during PREPARATION (EL saturation or
     /// building the prepared ontology; conversion too, but only with
@@ -113,7 +121,7 @@ pub(crate) struct ClassifyJson {
     /// see [`trusted_sat_risk`] for the measured false-alarm rate.
     ///
     /// Deliberately a SEPARATE field rather than folded into `incomplete`:
-    /// that flag means "a deadline fired", and overloading it would destroy a
+    /// that flag means "a pair or probe was cut", and overloading it would destroy a
     /// distinction callers already depend on. Same reasoning as
     /// `Realization::witness_prune_active`.
     pub(crate) trusted_sat_refutations: usize,
@@ -148,28 +156,28 @@ pub(crate) struct ClassifyJson {
     ///
     /// Added because on `X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`, `∃s.Z ⊑ W` (⟹ `X ⊑ W`,
     /// derived by both Konclude and `HermiT`) every other field here reads
-    /// clean: `consistent: true`, `incomplete: false` (correctly — no deadline
-    /// fired), `trusted_sat_refutations: 0` (the pair was not refuted by a
+    /// clean: `consistent: true`, `incomplete: false` (correctly — no class pair
+    /// was cut), `trusted_sat_refutations: 0` (the pair was not refuted by a
     /// trusted `Sat`), `direct_subsumptions: []`. The miss was surfaced NOWHERE.
     ///
     /// A SEPARATE field rather than a change to `incomplete`, whose contract is
-    /// "a deadline fired" and which callers depend on: this reports a strictly
+    /// "a pair or probe was cut" and which callers depend on: this reports a strictly
     /// broader thing, and `incomplete == false` implies nothing about
     /// completeness on its own.
     pub(crate) completeness_guaranteed: bool,
     /// #214: the wedge decided pairs with Layer A off (by flag, or above the
     /// role-closure cost cap) over a non-trivial role hierarchy, so entailments
     /// needing sub-role, inverse or symmetric reasoning may be missing.
-    /// A SEPARATE field for the same reason as `consistency_undetermined`: no
-    /// deadline fired, and `incomplete` means exactly that.
+    /// A SEPARATE field for the same reason as `consistency_undetermined`: no class
+    /// pair was cut, and `incomplete` means exactly that.
     pub(crate) wedge_hierarchy_blind: bool,
     /// #353: clauses the wedge's matcher refuses, which therefore never fire, so
     /// entailments that need them may be missing. A SEPARATE field for the same
-    /// reason as `wedge_hierarchy_blind`: no deadline fired. 0 when there is none.
+    /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
     pub(crate) wedge_clauses_refused: usize,
     /// #354: candidate individual equalities classify did not decide (budget, the
     /// global deadline or the probe cap), so it may be missing entailments that need
-    /// them. A SEPARATE field: no class pair's deadline fired.
+    /// them. A SEPARATE field: no class pair was cut.
     pub(crate) derived_same_undecided: usize,
     /// #448: pairs the transitive closure of the recorded relation added
     /// (`RUSTDL_CLASSIFY_CLOSE_MATRIX`, default on; `=0` disables): pairs recorded
@@ -181,7 +189,7 @@ pub(crate) struct ClassifyJson {
     /// #564: classify-wedge fixpoints the merge-churn guard stopped
     /// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`): a fixpoint that built nodes only to merge
     /// them away, with every blocker refused by the NN guard, returned no verdict, and
-    /// its probe went to the main tableau. NOT `incomplete`: no deadline fired and no
+    /// its probe went to the main tableau. NOT `incomplete`: no pair was cut and no
     /// answer was guessed. A fall-through the tableau could not finish is reported by
     /// the fields that cover that. Diagnostic; 0 when the guard never fired.
     pub(crate) wedge_merge_churn_stops: u64,
@@ -194,6 +202,14 @@ pub(crate) struct ClassifyJson {
     /// It does NOT count every `NoVerdict`: on a budgeted probe that did not stall, a
     /// `NoVerdict` is the routine decision-depth cut (#288). 0 when there is none.
     pub(crate) no_verdict_pairs: usize,
+    /// #574: of the cut pairs and probes, those cut by the tableau's decision-depth limit
+    /// (`ClassificationStats::depth_capped_pairs`, #288), directly or through early
+    /// abandon, rather than by a deadline or the node cap. A larger `--pair-timeout-ms`
+    /// or node cap does not recover these; the deadline-free search
+    /// (`--pair-timeout-ms 0`), whose limit is far larger, may. Each also sets
+    /// `incomplete`; a #462 `NoVerdict` is counted in `no_verdict_pairs`, not here. 0 when
+    /// there is none. Added without a `schema_version` bump.
+    pub(crate) depth_capped_pairs: usize,
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
@@ -308,6 +324,12 @@ pub(crate) struct RealizeJson {
     /// `realize` lacked entirely until 2026-08-18 — a consumer could not tell a
     /// complete type set from a truncated one. See `Realization::incomplete`.
     pub(crate) incomplete: bool,
+    /// #574: at least one cut instance probe hit the tableau's decision-depth limit
+    /// (`Realization::depth_capped`), where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or
+    /// node cap does not help and the deadline-free probe (`=0`) may. Implies
+    /// `incomplete`. It covers the instance probes only: a depth cut in realize's own
+    /// classification step sets neither field.
+    pub(crate) depth_capped: bool,
     /// The pseudo-model witness prune was ACTIVE, so some reported non-memberships were
     /// SKIPPED rather than refuted by a probe. Distinct from `incomplete` (which reports
     /// CUT probes) and NOT implied by it: the prune's loss is silent, leaving
@@ -483,6 +505,11 @@ pub(crate) struct InstancesExprJson {
     /// (Before package 2 this was also `true` whenever the ontology was not pure
     /// EL.)
     pub(crate) incomplete: bool,
+    /// #574: at least one cut instance probe hit the tableau's decision-depth limit
+    /// (`CeInstances::depth_capped`), where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or
+    /// node cap does not help and the deadline-free probe (`=0`) may. Implies
+    /// `incomplete`.
+    pub(crate) depth_capped: bool,
     /// The list is guaranteed complete: the instance query ran on the realize
     /// saturation fast path and conversion dropped no axiom (#540). Off it the tableau path's pseudo-model prune is not
     /// proven complete, so this is `false` even when nothing was cut.
@@ -536,6 +563,7 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
     InstancesExprJson {
         schema_version: SCHEMA_VERSION,
         incomplete: r.incomplete(),
+        depth_capped: r.depth_capped(),
         completeness_guaranteed: r.completeness_guaranteed(),
         consistency_undetermined: r.consistency_undetermined(),
         no_verdict: r.no_verdict(),
@@ -621,6 +649,7 @@ pub(crate) fn build_classify_json(
         matrix_closure_added_pairs: stats.matrix_closure_added_pairs,
         wedge_merge_churn_stops: stats.wedge_merge_churn_stops,
         no_verdict_pairs: stats.no_verdict_pairs,
+        depth_capped_pairs: stats.depth_capped_pairs,
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,
@@ -652,6 +681,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         matrix_closure_added_pairs: 0,
         wedge_merge_churn_stops: 0,
         no_verdict_pairs: 0,
+        depth_capped_pairs: 0,
         unsatisfiable: Vec::new(),
         equivalent_groups: Vec::new(),
         direct_subsumptions: Vec::new(),
@@ -660,10 +690,12 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
     }
 }
 
-/// `(incomplete, prep_timed_out, conversion_timed_out)`: a deadline fired
-/// anywhere, it fired during preparation, and it fired during conversion. A cut
-/// preparation counts as one timed-out pair and a cut conversion is also a cut
-/// preparation, so each flag implies the one before but not the converse.
+/// `(incomplete, prep_timed_out, conversion_timed_out)`: something was cut anywhere
+/// (a deadline, the node cap, the decision-depth limit, a `NoVerdict` or a tail skip:
+/// see `ClassifyJson::incomplete`), a deadline fired during preparation, and one fired
+/// during conversion. A cut preparation counts as one timed-out pair and a cut
+/// conversion is also a cut preparation, so each flag implies the one before but not
+/// the converse.
 fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool, bool) {
     (
         stats.timed_out_pairs > 0,
@@ -747,6 +779,7 @@ pub(crate) fn build_realize_json(
     RealizeJson {
         schema_version: SCHEMA_VERSION,
         incomplete: r.incomplete(),
+        depth_capped: r.depth_capped(),
         witness_prune_active: r.witness_prune_active(),
         witness_prune_may_drop: r.witness_prune_may_drop(),
         witness_prune_reasons: if r.witness_prune_active() {
@@ -978,6 +1011,12 @@ pub(crate) struct JustifyJson {
     /// inside the search (the justifications still entail, but may be non-minimal
     /// or, under `--all`, incomplete). Give-up meaning, as in the other query JSONs.
     pub(crate) incomplete: bool,
+    /// #574: a check gave up (`incomplete`) and at least one instance check hit the
+    /// tableau's decision-depth limit (`JustifyOutcome::depth_capped`), where a larger
+    /// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not help and the deadline-free
+    /// probe (`=0`) may. Implies `incomplete`, but not that the depth cut caused the
+    /// give-up. Only instance checks set it; another check's depth limit is `no_verdict`.
+    pub(crate) depth_capped: bool,
     pub(crate) enumeration_complete: bool,
     pub(crate) minimal: bool, // all justifications minimal_guaranteed
     pub(crate) laconic: bool,
@@ -1054,6 +1093,7 @@ pub(crate) fn build_justify_json(
         }
         .to_owned(),
         incomplete: outcome.incomplete,
+        depth_capped: outcome.depth_capped,
         enumeration_complete,
         minimal,
         laconic,

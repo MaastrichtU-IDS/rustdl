@@ -276,6 +276,23 @@ Ratchets, counted against `crates/owl-dl-cli/tests/fixtures/laws/baseline.json`:
   synthetic spec's hand-checked `known_sat` list, a hard violation) has satisfiable. Never
   exempted for a budget cut. Oracle unsat classes classify misses are listed, not ratcheted.
 
+Not a ratchet, but an oracle check like U1:
+
+- **U1k** (#573): a rustdl surface says the KB is inconsistent (classify `consistent: false`,
+  `consistent`, or a per-query `Inconsistent` error when neither of those two says inconsistent). Per-class U1 is
+  skipped there, and every surface sharing a false inconsistency agrees with itself, so before
+  #573 nothing compared it. The claim is checked against the spec's `known_kb` (a recorded HermiT
+  verdict, recorded in `crates/owl-dl-cli/tests/fixtures/laws/known-kb-hermit.tsv`; every
+  consistent spec in the quick set has one) or `known_sat`: a contradiction is a
+  hard violation, which the cargo gate sees. Otherwise the Konclude oracle: consistent is a U1k
+  `discrepancy`; without an oracle the claim is `unverified`. Neither is ratcheted or fails a run
+  on its own, because Konclude calls inconsistent KBs consistent (#432, #490); `--hermit` decides
+  both (HermiT refutes: a confirmed false inconsistency; undecided: unadjudicated; both fail the
+  run). The run prints a `U1k CANDIDATE` line for each one HermiT has not confirmed. Without
+  `--hermit`, an unlabelled false inconsistency therefore exits 0 (listed under `unverified` /
+  `discrepancies`, not failed). A labelled inconsistent KB that classify calls consistent is
+  listed as `inconsistency_missed`, a miss, not a failure.
+
 A pair in the committed Konclude closure is a classify miss. A pair absent from it is a
 candidate false positive, which fails a run only if HermiT confirms it (`--hermit`). U1 is
 stricter: any U1 discrepancy over the baseline fails the run, and a U1 baseline entry needs a
@@ -331,6 +348,12 @@ discrepancies for an (ontology, law) than the unmutated control under the same e
 | M10 | `disjoint` | inconsistency guards removed | L5 (`inconsistent_small`) | no: fixture only |
 | M11 | `individuals` | every probed pair published as different | L11 (`individuals_three`) | no: fixture only |
 | M12 | `--saturation-only` JSON | one reversed edge (structural) | L8 | yes: all four |
+| M13 | conversion, n-ary operands (added by #573) | #538 for `DifferentIndividuals`: `(:a :a)` read as a ≠ a, a false inconsistency | U1k (`nary_duplicate_538`'s HermiT-backed label) and L5: `instance`, `instances-expr` and `realize` still answer, so the fault is not fully shared² | no: fixture only |
+
+² M13, measured 2026-11-25 on main 2f1b2148 plus #573 (quick set, no `--hermit`): U1k 1
+violation, L5 5. A fault every surface shares would leave only U1k; the self-test covers that
+shape on fabricated operands. A shared variant through `DisjointClasses(:B :B)` cannot be
+adjudicated: HermiT also reads that axiom's operands as a list and calls the KB inconsistent.
 
 ¹ **The HermiT part of these labels cannot be checked from the record.**
 - The 2026-11-02 run wrote to `mktemp` directories that no longer exist, and before #502 a
@@ -1338,8 +1361,8 @@ single `instance` calls.
   only an oracle sees it. The oracles are asked only about discrepancies, claims and new
   positives.
 - **A gap in the laws** (Fable's review of #507): a false "inconsistent" shared by classify and
-  the per-query commands, while `consistent` is killed, reads as agreement. A U1 arm (classify
-  `consistent: false` against an oracle) is proposed.
+  the per-query commands, while `consistent` is killed, reads as agreement. Closed by U1k (#573)
+  in the in-tree script; this census ran before it.
 - **Oracle reach:** HermiT fails on pizza-ontostart, so claims there are Konclude-only.
 - **Not reproducible from the repo.** The instrument (a modified copy of `cross-command-laws.py`)
   and the raw data are on the shared measurement host only (below).

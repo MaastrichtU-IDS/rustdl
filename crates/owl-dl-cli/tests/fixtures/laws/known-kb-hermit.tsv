@@ -1,0 +1,23 @@
+# #573: HermiT verdicts behind the laws specs' `known_kb` labels.
+# java -cp robot.jar org.semanticweb.HermiT.cli.CommandLine --consistency=<owl:Thing> FILE, 2026-11-25:
+# InconsistentOntologyException -> inconsistent; "owl:Thing is satisfiable." -> consistent.
+# id	verdict	sha256[:12] of the file
+pizza	consistent	bcf0ba7c48af
+ro	consistent	5864c9f9eae3
+sulo	consistent	93b03c65c195
+bibtex	consistent	a8a20986f674
+wine	consistent	21af42e09116
+sio	consistent	587e186159d3
+go-basic	consistent	786e9e6913fb
+family	inconsistent	f274ec8f1955
+all_unsat	consistent	accc89415aa7
+complex_qualifier_98	consistent	de584a9b798c
+disjoint_up	consistent	8f273f20390f
+functional_data_min1	consistent	29ead447392d
+gci_domain_nonatomic	consistent	613221c82a0b
+inconsistent_small	inconsistent	872a439a043d
+individuals_three	consistent	3df5a75a2851
+maxmerge_fp	consistent	228ec9150029
+neg_disjunct_forall	consistent	7b6607a54103
+realize_disjunction	consistent	97bd9b0c04ef
+nary_duplicate_538	consistent	5218562b9f03

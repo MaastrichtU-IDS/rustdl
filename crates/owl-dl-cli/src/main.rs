@@ -2658,6 +2658,16 @@ fn run() -> Result<()> {
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_instances_expr_json(&r))?
                 );
+                // #574: the cut warning on stderr too, as `justify --json` prints its own;
+                // stdout stays one JSON object. Same guard as the text branch (#493).
+                if r.incomplete() && !r.no_verdict() {
+                    warn_probes_cut(
+                        "instances-expr",
+                        "RUSTDL_QUERY_MAX_NODES",
+                        r.depth_capped(),
+                        false,
+                    );
+                }
                 // #493: last, after the JSON.
                 exit_if_no_verdict(r.no_verdict());
                 return Ok(());
@@ -2707,6 +2717,10 @@ fn run() -> Result<()> {
                     serde_json::to_string_pretty(&json_out::build_realize_json(&r, dropped))?
                 );
                 note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
+                // #574: the cut warning on stderr too (same guard as the text branch).
+                if r.incomplete() && !r.no_verdict() {
+                    warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped(), false);
+                }
                 // #493: last, after the JSON.
                 exit_if_no_verdict(r.no_verdict());
                 return Ok(());

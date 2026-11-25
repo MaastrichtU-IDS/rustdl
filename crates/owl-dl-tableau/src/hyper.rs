@@ -108,6 +108,12 @@ fn trace_body_vars() -> bool {
 /// per-step clock read here is a measured cost in this codebase.
 const MATCH_DEADLINE_STRIDE: u64 = 4096;
 
+/// #569: `partition_rec` calls between two `Instant::now()` reads in the `≤n`
+/// partition enumeration ([`HyperEngine::partition_deadline_passed`]). Each call
+/// walks `must_be_distinct` over a block or, at a leaf, merges a whole partition
+/// and runs a `solve`, so a read every 64 calls costs nothing measurable.
+const PARTITION_DEADLINE_STRIDE: u64 = 64;
+
 /// Nodes between two clock reads in the open-rule scans
 /// (`find_open_disjunction`, `find_open_at_most`). See
 /// [`HyperEngine::open_scan_deadline_passed`].
@@ -841,6 +847,9 @@ pub struct SearchStats {
     /// Of `branches_taken`, those from the `≤n` merge rule
     /// (`find_open_at_most`).
     pub merge_branches: u64,
+    /// #569: times the `≤n` partition enumeration was cut by the deadline
+    /// (`partition_deadline_passed` latching). At most one per decide.
+    pub partition_deadline_cuts: u64,
     /// Failed branches whose graph was restored (`Unsat`/`Stalled`).
     pub restores: u64,
     /// Deepest branch nesting reached (0 ⇒ no branching).
@@ -1006,6 +1015,11 @@ pub struct HyperEngine<'c> {
     match_deadline_hit: std::cell::Cell<bool>,
     /// Stride counter for the match-enumeration deadline probe.
     match_steps: std::cell::Cell<u64>,
+    /// #569: stride counter for the `≤n` partition-enumeration deadline probe.
+    partition_steps: u64,
+    /// #569: latched once that probe sees the deadline passed, so every
+    /// enclosing `partition_rec` frame returns at once.
+    partition_deadline_hit: bool,
     /// Trigger indexes routing derivation events to the clauses they
     /// newly enable (see [`ClauseIndexes`]). Read-only after construction
     /// (never mutated during search). Stored as `Arc` so
@@ -2128,6 +2142,8 @@ impl<'c> HyperEngine<'c> {
             deadline: None,
             match_deadline_hit: std::cell::Cell::new(false),
             match_steps: std::cell::Cell::new(0),
+            partition_steps: 0,
+            partition_deadline_hit: false,
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -2227,6 +2243,8 @@ impl<'c> HyperEngine<'c> {
             deadline: None,
             match_deadline_hit: std::cell::Cell::new(false),
             match_steps: std::cell::Cell::new(0),
+            partition_steps: 0,
+            partition_deadline_hit: false,
             indexes,
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -4041,6 +4059,8 @@ impl<'c> HyperEngine<'c> {
         // A truncation flag belongs to the decide that set it.
         self.match_deadline_hit.set(false);
         self.match_steps.set(0);
+        self.partition_steps = 0;
+        self.partition_deadline_hit = false;
         self.reseed_interval = RESEED_INITIAL_INTERVAL;
         self.reseed_skip_left = RESEED_INITIAL_INTERVAL;
         self.fixpoint_stride = 1;
@@ -4439,6 +4459,8 @@ impl<'c> HyperEngine<'c> {
             deadline: None,
             match_deadline_hit: std::cell::Cell::new(false),
             match_steps: std::cell::Cell::new(0),
+            partition_steps: 0,
+            partition_deadline_hit: false,
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -5758,7 +5780,9 @@ impl<'c> HyperEngine<'c> {
             &mut any_stalled,
             &mut child_acc,
         ) {
-            return sat; // Sat — completed model kept (no restore).
+            // `Sat`: completed model kept (no restore). `Stalled`: the deadline
+            // cut the enumeration (#569); every branch was already restored.
+            return sat;
         }
         if any_stalled {
             return HyperResult::Stalled;
@@ -5843,8 +5867,10 @@ impl<'c> HyperEngine<'c> {
     /// the `n` cap. At a complete assignment it merges each block into its
     /// first member and recurses via [`Self::solve`]. Returns `Some(Sat)`
     /// to short-circuit the whole enumeration (model found, state kept);
-    /// `None` to keep enumerating (sets `*any_stalled` on a depth-bound
-    /// hit). Every branch is restored before the next partition.
+    /// `Some(Stalled)` once the deadline has passed (#569: the enumeration is
+    /// exponential and must stop itself; nothing is kept); `None` to keep
+    /// enumerating (sets `*any_stalled` on a depth-bound hit). Every branch
+    /// is restored before the next partition.
     #[allow(
         clippy::too_many_arguments,
         reason = "recursive restricted-growth enumeration; the read-only probe accumulator \
@@ -5860,6 +5886,17 @@ impl<'c> HyperEngine<'c> {
         any_stalled: &mut bool,
         child_acc: &mut DepSet,
     ) -> Option<HyperResult> {
+        // #569: the enumeration itself must read the clock. Past the deadline
+        // every leaf's `solve` returns `Stalled` at entry, but the partitions of
+        // `succs` into `≤ n` blocks are exponentially many (101 witnesses into
+        // ≤100 blocks ran for minutes after a 5 s deadline), so without this the
+        // loop below never ends. Stopping returns `Stalled` (never `Sat`), and
+        // no state is held here: a leaf restores before it returns, and each
+        // caller pops its `groups` push.
+        if self.partition_deadline_passed() {
+            *any_stalled = true;
+            return Some(HyperResult::Stalled);
+        }
         if idx == succs.len() {
             // Complete partition (≤ n blocks). Merge each block into its
             // representative, then continue the search one level down.
@@ -5919,6 +5956,29 @@ impl<'c> HyperEngine<'c> {
             }
         }
         None
+    }
+
+    /// #569: the [`Self::partition_rec`] deadline probe, reading the clock once
+    /// every [`PARTITION_DEADLINE_STRIDE`] calls. With no deadline it is false and
+    /// never reads the clock. Once it has seen the deadline passed it latches, so
+    /// the enclosing frames (and any outer `≤n` enumeration) return at once.
+    fn partition_deadline_passed(&mut self) -> bool {
+        if self.partition_deadline_hit {
+            return true;
+        }
+        let Some(dl) = self.deadline else {
+            return false;
+        };
+        self.partition_steps = self.partition_steps.wrapping_add(1);
+        if self
+            .partition_steps
+            .is_multiple_of(PARTITION_DEADLINE_STRIDE)
+            && Instant::now() >= dl
+        {
+            self.partition_deadline_hit = true;
+            self.stats.partition_deadline_cuts += 1;
+        }
+        self.partition_deadline_hit
     }
 
     /// Find a node with a violated `≤n` constraint: more distinct
@@ -12704,5 +12764,125 @@ mod tests {
             );
             assert!(eng.stats().head_clash_refutations >= 1, "net={net}");
         }
+    }
+
+    /// #569, deterministic: a `≤n` partition search entered with the deadline
+    /// already passed stops within one probe stride, with `Stalled`. Nine
+    /// mergeable `r`-successors under `≤8 r` have 21,146 partitions into ≤ 8
+    /// blocks; without the probe every one is merged, searched (`Stalled` at
+    /// entry) and restored.
+    #[test]
+    fn partition_search_stops_at_an_expired_deadline() {
+        const K: u32 = 9;
+        let role = Role::Named(RoleId::new(0));
+        let root = cls(0);
+        let mut clauses: Vec<DlClause> = (1..=K)
+            .map(|i| DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cls(i), X)],
+            })
+            .collect();
+        clauses.push(DlClause {
+            body: vec![Atom::Class(root, X)],
+            head: vec![Atom::AtMost(role, None, K - 1, X)],
+        });
+        let mut eng = HyperEngine::new(&clauses, root);
+        assert_eq!(
+            eng.horn_fixpoint(10_000),
+            HyperResult::Sat,
+            "the Horn part saturates"
+        );
+        let (node, succs, n) = eng.find_open_at_most().expect("the `≤8 r` is violated");
+        assert_eq!(succs.len(), K as usize);
+        eng.deadline = Some(Instant::now());
+        let r = eng.solve_at_most(node, &succs, n as usize, 64);
+        assert_eq!(r, HyperResult::Stalled);
+        let st = eng.stats();
+        assert_eq!(st.partition_deadline_cuts, 1, "the probe must fire, once");
+        assert!(
+            st.merge_branches <= PARTITION_DEADLINE_STRIDE,
+            "the enumeration ran on past the deadline: {} leaves",
+            st.merge_branches
+        );
+    }
+
+    /// #569: once the partition probe has seen the deadline passed it stays
+    /// true for the rest of the decide. One enumeration already unwinds on its
+    /// own (`Some(Stalled)` short-circuits every frame); the latch is for an
+    /// OUTER `≤n` enumeration whose leaf ran the inner one, which would
+    /// otherwise run up to a stride more calls before its own probe reads the
+    /// clock.
+    #[test]
+    fn partition_deadline_probe_latches() {
+        let root = cls(0);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(root, X)],
+            head: vec![Atom::Class(cls(1), X)],
+        }];
+        let mut eng = HyperEngine::new(&clauses, root);
+        assert!(!eng.partition_deadline_passed(), "no deadline, no cut");
+        eng.deadline = Some(Instant::now());
+        let fired = (0..PARTITION_DEADLINE_STRIDE)
+            .filter(|_| eng.partition_deadline_passed())
+            .count();
+        assert_eq!(fired, 1, "the clock is read once per stride");
+        // Later calls between two clock reads, and even a moved deadline,
+        // still see the cut.
+        eng.deadline = Some(Instant::now() + std::time::Duration::from_secs(60));
+        assert!(eng.partition_deadline_passed(), "the cut must latch");
+        assert_eq!(eng.stats().partition_deadline_cuts, 1);
+        // A new decide starts unlatched.
+        let _ = eng.decide_with_deadline(4, None);
+        assert!(!eng.partition_deadline_passed());
+    }
+
+    /// #569 end to end: `X ⊑ ∃t.X`, `X ⊑ ∃s.{a}`, `{a} ⊑ ≤100 s⁻`. Every `X` node
+    /// is one of `a`'s witnesses, so the #376 NN guard refuses each as a blocker
+    /// and the `t`-chain grows until `a` has 101 witnesses. The `≤100` partition
+    /// search over them outlives the deadline and must stop there with
+    /// `Stalled`; before the fix it ran on for minutes after a 5 s deadline.
+    /// The KB is consistent, so the verdict may never be `Unsat`. Timing-based
+    /// (it needs the chain built before the deadline), hence ignored;
+    /// [`partition_search_stops_at_an_expired_deadline`] is the deterministic guard.
+    #[test]
+    #[ignore = "timing-based #569 repro; run in release"]
+    fn nominal_witness_chain_respects_the_deadline() {
+        let (role_t, role_s) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (class_x, nom) = (cls(0), cls(10));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(class_x, X)],
+                head: vec![Atom::Exists(role_t, class_x, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(class_x, X)],
+                head: vec![Atom::Exists(role_s, nom, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(nom, X)],
+                head: vec![Atom::AtMost(role_s.flip(), None, 100, X)],
+            },
+        ];
+        // Long enough to build the chain and reach the `≤100` partition search
+        // (about 0.5 s in release, under 3 s in a debug build).
+        let budget = std::time::Duration::from_secs(if cfg!(debug_assertions) { 30 } else { 5 });
+        let slack = std::time::Duration::from_secs(4);
+        // The search runs on its own thread so an overrun fails the test at
+        // `budget + slack` instead of hanging it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut eng = HyperEngine::new(&clauses, class_x)
+                .with_incremental_fixpoint()
+                .with_double_blocking()
+                .with_nominals(10, 1);
+            let started = Instant::now();
+            let r = eng.decide_with_deadline(64, Some(started + budget));
+            let _ = tx.send((r, started.elapsed(), eng.stats().partition_deadline_cuts));
+        });
+        let (r, elapsed, cuts) = rx
+            .recv_timeout(budget + slack)
+            .expect("decide_with_deadline ran past its deadline (#569)");
+        assert_eq!(r, HyperResult::Stalled, "after {elapsed:?}");
+        assert_eq!(cuts, 1, "the deadline did not cut the partition search");
     }
 }

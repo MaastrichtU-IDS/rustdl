@@ -1,0 +1,15 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(:=<http://ex.org/nd538#>)
+Ontology(<http://ex.org/nd538>
+# #538 / #573: a consistent KB whose n-ary operands repeat. The operands are a set
+# (OWL 2 Structural Specification §2.1), so DifferentIndividuals(:a :a) says nothing;
+# reading it as a list made every surface call the KB inconsistent, which no
+# cross-command law sees. U1k does: this spec's `known_kb` is HermiT's "consistent".
+# Mutant M13 reopens it.
+Declaration(Class(:A)) Declaration(Class(:B))
+Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+SubClassOf(:A :B)
+ClassAssertion(:A :a)
+DifferentIndividuals(:a :a)
+DifferentIndividuals(:a :b)
+)

@@ -46,6 +46,18 @@ Ratchets (counted against a committed per-ontology baseline):
       Oracle unsat classes classify misses are listed in report.json
       (`unsat_missed`), not ratcheted. Unlike R1/R2, a U1 discrepancy over the
       baseline fails the run without HermiT: an empty baseline admits none.
+  U1k (#573) the KB verdict. When any rustdl surface says the KB is inconsistent
+      (classify `consistent: false`, `consistent` = inconsistent, or a per-query
+      command erroring `Inconsistent`), the claim is compared with a spec's
+      hand-adjudicated `known_kb` (recorded HermiT verdicts) or `known_sat`, else
+      with the Konclude oracle. A hand label that says consistent is a hard U1k
+      violation. Konclude has the KB consistent: a U1k `discrepancy`. No oracle
+      and no label: U1k `unverified`. Neither is ratcheted, and neither fails a
+      run on its own: Konclude calls inconsistent KBs consistent (#432, #490), so
+      `--hermit` decides (HermiT refutes: a confirmed false inconsistency, which
+      fails the run; undecided: unadjudicated, which fails it too). Per-class U1
+      is skipped on an inconsistent KB (every class is then unsat); U1k is not.
+      On a labelled consistent KB that rustdl calls consistent, one U1k `ok`.
 Adjudication: a pair in the committed Konclude closure is a classify MISS; a
 pair absent from it is a CANDIDATE FP, confirmed only by HermiT (`--hermit`).
 Konclude alone never fails a run (it under-reports in documented cases); a U1
@@ -113,44 +125,50 @@ PAIR_MS = "1000"
 DEFAULT_CAPS = dict(pos=40, neg=40, sat=20, inst=20, disj=20, eq=10)
 SMALL_CAPS = dict(pos=5, neg=5, sat=5, inst=5, disj=5, eq=3)
 
+# `known_kb` (#573): the KB verdict, adjudicated by HermiT (`CommandLine
+# --consistency=<owl:Thing>`, 2026-11-25, robot.jar's HermiT; every consistent spec in the
+# quick set has one, so a false inconsistency fails the cargo gate as a U1k violation).
+# Re-check it with HermiT when a fixture file changes.
 CODE_PIZZA = "http://www.co-ode.org/ontologies/pizza/pizza.owl#"
 CURATED = [
     # The #76 pairs on the Stanford (co-ode) pizza. Pins whose IRIs are not declared
     # (another pizza vintage) are dropped in observe().
-    dict(id="pizza", path=REAL / "pizza.ofn", oracle="pizza-classified.owx",
+    dict(id="pizza", known_kb="consistent", path=REAL / "pizza.ofn", oracle="pizza-classified.owx",
          pin_neg=[(CODE_PIZZA + "Margherita", CODE_PIZZA + "InterestingPizza"),
                   (CODE_PIZZA + "QuattroFormaggi", CODE_PIZZA + "InterestingPizza")]),
-    dict(id="ro", path=REAL / "ro.ofn", oracle="ro-classified.owx"),
-    dict(id="sulo", path=REAL / "sulo.ofn", oracle="sulo-classified.owx"),
-    dict(id="bibtex", path=REAL / "bibtex.ofn", oracle="bibtex-classified.owx"),
-    dict(id="wine", path=REAL / "wine.ofn", oracle="wine-classified.owx", caps=SMALL_CAPS),
-    dict(id="sio", path=REAL / "sio.ofn", oracle="sio-classified.owx",
+    dict(id="ro", known_kb="consistent", path=REAL / "ro.ofn", oracle="ro-classified.owx"),
+    dict(id="sulo", known_kb="consistent", path=REAL / "sulo.ofn", oracle="sulo-classified.owx"),
+    dict(id="bibtex", known_kb="consistent", path=REAL / "bibtex.ofn", oracle="bibtex-classified.owx"),
+    dict(id="wine", known_kb="consistent", path=REAL / "wine.ofn", oracle="wine-classified.owx", caps=SMALL_CAPS),
+    dict(id="sio", known_kb="consistent", path=REAL / "sio.ofn", oracle="sio-classified.owx",
          caps=dict(pos=10, neg=10, sat=10, inst=10, disj=10, eq=5)),
-    dict(id="go-basic", path=REAL / "go-basic.ofn", caps=SMALL_CAPS),
-    dict(id="family", path=REAL / "family.ofn", laws={"L4", "L5", "R3"},
+    dict(id="go-basic", known_kb="consistent", path=REAL / "go-basic.ofn", caps=SMALL_CAPS),
+    dict(id="family", known_kb="inconsistent", path=REAL / "family.ofn", laws={"L4", "L5", "R3"},
          caps=dict(pos=0, neg=0, sat=5, inst=5, disj=5, eq=0)),
 ]
 SYNTHETIC = [
     # #76's non-entailed `A ⊑ I`; pinned as an R1 probe. Its sabotage (both
     # `RUSTDL_MAX_CHOICE_POINT=0` and `RUSTDL_MAX_TRIAL_MERGE=0`) is in SABOTAGES.
-    dict(id="maxmerge_fp", path=LAWS_FIX / "maxmerge_fp.ofn",
+    dict(id="maxmerge_fp", known_kb="consistent", path=LAWS_FIX / "maxmerge_fp.ofn",
          pin_neg=[("http://ex.org/p#A", "http://ex.org/p#I")]),
-    dict(id="complex_qualifier_98", path=LAWS_FIX / "complex_qualifier_98.ofn"),
+    dict(id="complex_qualifier_98", known_kb="consistent", path=LAWS_FIX / "complex_qualifier_98.ofn"),
     # Targets for the package F-lite mutants (scripts/mutants/). Each one makes a
     # law able to see one fault class on the unmutated engine from now on.
-    dict(id="all_unsat", path=LAWS_FIX / "all_unsat.ofn"),
-    dict(id="neg_disjunct_forall", path=LAWS_FIX / "neg_disjunct_forall.ofn",
+    dict(id="all_unsat", known_kb="consistent", path=LAWS_FIX / "all_unsat.ofn"),
+    dict(id="neg_disjunct_forall", known_kb="consistent", path=LAWS_FIX / "neg_disjunct_forall.ofn",
          pin_neg=[("http://ex.org/nd#T", "http://ex.org/nd#S")]),
-    dict(id="disjoint_up", path=LAWS_FIX / "disjoint_up.ofn"),
-    dict(id="realize_disjunction", path=LAWS_FIX / "realize_disjunction.ofn"),
-    dict(id="gci_domain_nonatomic", path=LAWS_FIX / "gci_domain_nonatomic.ofn",
+    dict(id="disjoint_up", known_kb="consistent", path=LAWS_FIX / "disjoint_up.ofn"),
+    dict(id="realize_disjunction", known_kb="consistent", path=LAWS_FIX / "realize_disjunction.ofn"),
+    dict(id="gci_domain_nonatomic", known_kb="consistent", path=LAWS_FIX / "gci_domain_nonatomic.ofn",
          pin_neg=[("http://ex.org/gd#X", "http://ex.org/gd#Z")]),
     # `known_sat`: classes adjudicated satisfiable by hand (no Konclude oracle for
     # the synthetics); U1 checks classify's unsat set against them.
-    dict(id="functional_data_min1", path=LAWS_FIX / "functional_data_min1.ofn",
+    dict(id="functional_data_min1", known_kb="consistent", path=LAWS_FIX / "functional_data_min1.ofn",
          known_sat=["http://ex.org/fd#C", "http://ex.org/fd#D"]),
-    dict(id="inconsistent_small", path=LAWS_FIX / "inconsistent_small.ofn"),
-    dict(id="individuals_three", path=LAWS_FIX / "individuals_three.ofn"),
+    dict(id="inconsistent_small", known_kb="inconsistent", path=LAWS_FIX / "inconsistent_small.ofn"),
+    dict(id="nary_duplicate_538", known_kb="consistent",
+         path=LAWS_FIX / "nary_duplicate_538.ofn"),
+    dict(id="individuals_three", known_kb="consistent", path=LAWS_FIX / "individuals_three.ofn"),
 ]
 QUICK_IDS = {"pizza", "ro", "sulo", "bibtex"} | {s["id"] for s in SYNTHETIC}
 QUICK_CAPS = dict(pos=10, neg=10, sat=10, inst=10, disj=10, eq=5)
@@ -394,6 +412,8 @@ def observe(spec, runner, caps, seed, log=print):
         obs["oracle_unsat"] = owx_closure(KONCLUDE / spec["oracle"])[1]
     if spec.get("known_sat"):
         obs["known_sat"] = set(spec["known_sat"])
+    if spec.get("known_kb"):
+        obs["known_kb"] = spec["known_kb"]
 
     # classify once at the in-tree convention, and saturation-only for L8.
     r = runner.run(oid, ["classify", "--json", "--pair-timeout-ms", PAIR_MS, path],
@@ -728,6 +748,7 @@ def evaluate(obs):
             for x in bad:
                 out.append(check("U1", o, False,
                                  f"classify says {x} unsat; it is satisfiable (known_sat)", cl_op))
+    out += u1k(obs, kb_inconsistent, incons_op)
     # L8
     so = obs.get("satonly")
     if so is not None and cl_ok:
@@ -742,6 +763,38 @@ def evaluate(obs):
     return out
 
 
+def u1k(obs, kb_inconsistent, incons_op):
+    """#573: rustdl's KB verdict against a hand label or the Konclude oracle.
+
+    A false inconsistency that every rustdl surface shares agrees with itself, so no
+    cross-command law sees it, and per-class U1 is skipped exactly there. The claim is
+    made by classify `consistent: false`, `consistent` = inconsistent, or (when both of
+    those were killed or said consistent) any per-query command erroring `Inconsistent`."""
+    o, q, c = obs["onto"], obs["q"], obs.get("classify", {"status": "unknown"})
+    claim = incons_op if kb_inconsistent else next(
+        (a for k, a in q.items() if k[0] != "consistent" and a and a["v"] == "inconsistent"), None)
+    known, ou = obs.get("known_kb"), obs.get("oracle_unsat")
+    if claim is None:
+        # One `ok` where a label says consistent and classify agrees, so a run shows the
+        # arm compared.
+        if known == "consistent" and c["status"] == "ok" and c.get("consistent"):
+            return [check("U1k", o, True, "", ans("ok", "", c.get("cmd")))]
+        return []
+    if known == "consistent" or obs.get("known_sat"):
+        why = "known_kb" if known == "consistent" else "known_sat"
+        return [check("U1k", o, False,
+                      f"rustdl says the KB is inconsistent; it is consistent ({why})", claim)]
+    if known == "inconsistent" or (ou is not None and THING in ou):
+        return [check("U1k", o, True, "", claim)]
+    if ou is not None:
+        return [outcome("U1k", o, "discrepancy",
+                        "rustdl says the KB is inconsistent; Konclude has it consistent", claim)
+                | dict(pair=[THING, NOTHING])]
+    return [outcome("U1k", o, "unverified",
+                    "rustdl says the KB is inconsistent; no oracle or hand label", claim)
+            | dict(pair=[THING, NOTHING])]
+
+
 # --------------------------------------------------------------------------
 # Adjudication of ratchet discrepancies
 # --------------------------------------------------------------------------
@@ -750,6 +803,15 @@ def adjudicate(outcomes, spec, hermit=None):
     if spec.get("oracle") and (KONCLUDE / spec["oracle"]).exists():
         oracle = owx_closure(KONCLUDE / spec["oracle"])
     for d in outcomes:
+        if d["law"] == "U1k" and d["kind"] in ("discrepancy", "unverified"):
+            # #573: Konclude alone never decides a KB verdict (it calls inconsistent KBs
+            # consistent: #432, #490); HermiT does, with or without a Konclude oracle.
+            d["verdict"] = ("candidate false inconsistency (Konclude: consistent)"
+                            if d["kind"] == "discrepancy" else "no oracle: HermiT decides"
+                            if hermit else "no oracle: unverified")
+            if hermit:
+                d["hermit"] = hermit(spec, d)
+            continue
         if d["kind"] != "discrepancy":
             continue
         s, t = d["pair"]
@@ -835,10 +897,23 @@ def hermit_check(spec, d, cli=hermit_cli):
     is false: a false positive), 'confirms' (it holds: a classify miss), or
     'unavailable (why)', which `summarize` lists as unadjudicated and fails the run on.
 
-    The claim: R2 / U1 `s` is unsat; R1 `s ⊑ t`. Per-claim queries replace the old
+    The claim: R2 / U1 `s` is unsat; R1 `s ⊑ t`; U1k the KB is inconsistent. Per-claim queries replace the old
     whole-file `robot reason`, which writes nothing on an ontology with an unsat class
     and so could never adjudicate an R1 claim there (pizza has two)."""
     path, (s, t), law = spec["path"], d["pair"], d["law"]
+    if law == "U1k":
+        # #573: the claim is "the KB is inconsistent". HermiT's InconsistentOntologyException
+        # is the answer here (it confirms), not a failure to decide.
+        st, out = cli(path, [f"--consistency=<{THING}>"])
+        if st == "inconsistent":
+            return "confirms"
+        if st != "ok":
+            return f"unavailable (HermiT {st})"
+        if " is not satisfiable." in out:
+            return "confirms"
+        if " is satisfiable." in out:
+            return "refutes"
+        return f"unavailable (HermiT output {out[-80:]!r})"
     st, out = cli(path, [f"--consistency=<{s}>"])
     if st == "inconsistent":
         return "unavailable (HermiT: the ontology is inconsistent)"
@@ -1039,7 +1114,12 @@ def self_test():
     cases.append(("U1 skipped on an inconsistent oracle", laws_of(ob, "discrepancy"), []))
     ob = dict(onto="t", q={}, classify=base(consistent=False, unsat={"A"})["classify"],
               oracle_unsat=set())
-    cases.append(("U1 skipped when classify says inconsistent", laws_of(ob, "discrepancy"), []))
+    # Per-class U1 stays skipped there; before #573 this case also showed the KB verdict
+    # itself was never compared (the expected list was empty). U1k now compares it.
+    cases.append(("U1 per-class skipped when classify says inconsistent",
+                  [x["law"] for x in evaluate(ob) if x["law"] == "U1"], []))
+    cases.append(("#573 U1k: classify inconsistent, oracle consistent -> discrepancy",
+                  laws_of(ob, "discrepancy"), ["U1k"]))
     ob = dict(onto="t", q={}, classify=base(unsat={"C"})["classify"], known_sat={"C", "D"})
     cases.append(("U1 known_sat class unsat is a violation", laws_of(ob, "violation"), ["U1"]))
     # A deadline never makes a class unsat, so U1 is ratcheted even when budget-cut.
@@ -1047,6 +1127,96 @@ def self_test():
               oracle_unsat=set())
     res = [dict(onto="t", outcomes=evaluate(ob))]
     cases.append(("budget-cut U1 still ratcheted", dict(summarize(res, {})[2]), {("t", "U1"): 1}))
+    # #573 U1k: the KB verdict against an oracle or a hand label.
+    u1k_of = lambda ob_: sorted((x["kind"], x["operands"][0]["cmd"] if x["operands"] else None)
+                                for x in evaluate(ob_) if x["law"] == "U1k")
+    ob = dict(onto="t", q={}, classify=base(consistent=False, unsat={"A"})["classify"],
+              oracle_unsat={THING, "A"})
+    cases.append(("#573 U1k: oracle inconsistent too -> one ok", u1k_of(ob), [("ok", "classify")]))
+    K = ans("inconsistent", "error Inconsistent", "sat", 1)
+    Cn = ans("no", cmd="consistent")
+    ob = dict(onto="t", q={("consistent",): Cn}, classify=dict(status="unknown", why="killed",
+                                                                cmd="classify"),
+              oracle_unsat=set())
+    cases.append(("#573 U1k: consistent=no, classify killed, oracle consistent -> discrepancy "
+                  "on consistent's operand", u1k_of(ob), [("discrepancy", "consistent")]))
+    ob = dict(onto="t", q={("consistent",): U, ("sat", "C"): K},
+              classify=dict(status="unknown", why="killed", cmd="classify"), oracle_unsat=set())
+    cases.append(("#573 U1k: classify and consistent killed, a per-query Inconsistent error "
+                  "is the claim", u1k_of(ob), [("discrepancy", "sat")]))
+    ob = dict(onto="t", q={}, classify=base(consistent=False)["classify"], known_sat={"C"})
+    cases.append(("#573 U1k: known_sat + classify inconsistent -> violation",
+                  laws_of(ob, "violation"), ["U1k"]))
+    ob = dict(onto="t", q={}, classify=base(consistent=False)["classify"],
+              known_kb="consistent", oracle_unsat={THING})
+    cases.append(("#573 U1k: known_kb consistent wins over the oracle -> violation",
+                  laws_of(ob, "violation"), ["U1k"]))
+    ob = dict(onto="t", q={}, classify=base(consistent=False)["classify"],
+              known_kb="inconsistent", oracle_unsat=set())
+    cases.append(("#573 U1k: known_kb inconsistent wins over Konclude's consistent -> ok",
+                  (laws_of(ob, "ok"), laws_of(ob, "discrepancy")), (["U1k"], [])))
+    ob = dict(onto="t", q={}, classify=base(consistent=False)["classify"])
+    cases.append(("#573 U1k: no oracle, no label -> unverified", laws_of(ob, "unverified"),
+                  ["U1k"]))
+    ob = dict(onto="t", q={("consistent",): Y}, classify=base()["classify"], known_kb="consistent")
+    cases.append(("#573 U1k: a labelled consistent KB rustdl calls consistent -> one ok",
+                  u1k_of(ob), [("ok", "classify")]))
+    ob = dict(onto="t", q={("consistent",): Y}, classify=base()["classify"], oracle_unsat=set())
+    cases.append(("#573 U1k: no claim, no label -> nothing", u1k_of(ob), []))
+    ob = dict(onto="t", q={("consistent",): Cn}, classify=base()["classify"], oracle_unsat=set())
+    cases.append(("#573 U1k and R3 both fire on consistent=no vs classify consistent",
+                  sorted(laws_of(ob, "discrepancy")), ["R3", "U1k"]))
+    # adjudicate sends both U1k kinds to HermiT, with and without a Konclude oracle.
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".owx", delete=False) as f:
+        f.write('<SubClassOf><Class IRI="http://e/C"/><Class IRI="http://e/D"/></SubClassOf>')
+    asked = []
+    fake_h = lambda sp_, d_: asked.append(d_["law"]) or "confirms"
+    for oracle_ in (f.name, None):
+        sp_ = dict(id="t", path="x.ofn") | ({"oracle": oracle_} if oracle_ else {})
+        ob = dict(onto="t", q={}, classify=base(consistent=False)["classify"],
+                  oracle_unsat=set() if oracle_ else None)
+        outs = adjudicate(evaluate(ob), sp_, hermit=fake_h)
+        cases.append((f"#573 adjudicate asks HermiT for U1k ({'oracle' if oracle_ else 'no oracle'})",
+                      [(x["kind"], x.get("hermit")) for x in outs if x["law"] == "U1k"],
+                      [("discrepancy" if oracle_ else "unverified", "confirms")]))
+    os.unlink(f.name)
+    cases.append(("#573 HermiT was asked twice", list(asked), ["U1k", "U1k"]))
+    # summarize: Konclude alone, or no oracle, never fails a run; HermiT's verdict does.
+    u_d = dict(law="U1k", kind="discrepancy", reason="", operands=[], pair=[THING, NOTHING])
+    u_u = dict(u_d, kind="unverified")
+    for name, outs, want in (
+            ("Konclude-only U1k discrepancy: no failure, not ratcheted", [u_d, u_u],
+             ([], {}, [])),
+            ("HermiT confirms (Konclude under-reports): no failure", [dict(u_d, hermit="confirms")],
+             ([], {}, [])),
+            ("HermiT refutes: a confirmed FP", [dict(u_u, hermit="refutes")],
+             (["HermiT-confirmed FP"], {}, [])),
+            ("HermiT undecided: unadjudicated", [dict(u_d, hermit="unavailable (HermiT timeout)")],
+             ([], {}, ["U1k"]))):
+        by_, fails_, rat_, over_, unadj_ = summarize([dict(onto="t", outcomes=outs)], {})
+        cases.append((f"#573 summarize: {name}",
+                      ([x["kind"] for x in fails_], dict(rat_), [x["law"] for x in unadj_]), want))
+    # hermit_check's U1k branch, and the per-class branch is unchanged.
+    _u1k_file = Path(tempfile.mkdtemp()) / "k.ofn"  # read only for its Prefix lines
+    _u1k_file.write_text("Prefix(:=<http://e#>)\nOntology(<http://e>)\n")
+    sp = dict(id="t", path=_u1k_file)
+    hk = lambda st_: hermit_check(sp, dict(law="U1k", pair=[THING, NOTHING]),
+                                  lambda path, args: st_)
+    cases.append(("#573 HermiT U1k: InconsistentOntologyException confirms",
+                  hk(("inconsistent", "")), "confirms"))
+    cases.append(("#573 HermiT U1k: owl:Thing satisfiable refutes",
+                  hk(("ok", "<http://www.w3.org/2002/07/owl#Thing> is satisfiable.\n")), "refutes"))
+    cases.append(("#573 HermiT U1k: a timeout is unavailable", hk(("timeout", "")).startswith(
+        "unavailable"), True))
+    cases.append(("#573 HermiT U1k asks about owl:Thing",
+                  [hermit_check(sp, dict(law="U1k", pair=[THING, NOTHING]),
+                                lambda path, args: asked.append(args) or ("inconsistent", ""))]
+                  + asked[-1:], ["confirms", [f"--consistency=<{THING}>"]]))
+    cases.append(("#573 per-class U1 on an inconsistent ontology stays unavailable",
+                  hermit_check(sp, dict(law="U1", pair=["http://e#A", NOTHING]),
+                               lambda path, args: ("inconsistent", "")).startswith("unavailable"),
+                  True))
     # The OWLAPI form of an unsat class in an oracle file.
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".owx", delete=False) as f:
@@ -1206,17 +1376,20 @@ def summarize(results, baseline):
             by_law[o["law"]][o["kind"]] += 1
             if o["kind"] == "violation":
                 fails.append(o)
-            if o["kind"] == "discrepancy" and not o.get("budget_cut"):
+            # #573: U1k is never ratcheted: Konclude's word (or no oracle) never fails a
+            # run; HermiT's does, below.
+            if o["kind"] == "discrepancy" and not o.get("budget_cut") and o["law"] != "U1k":
                 ratchet[(res["onto"], o["law"])] += 1
             # hermit_check reports whether HermiT CONFIRMS rustdl's per-pair claim;
             # a refuted claim is a false positive of the per-pair surface, whatever
             # classify's budget did, so it fails the run even when budget-cut.
-            if o["kind"] == "discrepancy" and o.get("hermit") == "refutes":
+            adjudicable = o["kind"] == "discrepancy" or (o["kind"] == "unverified"
+                                                          and o["law"] == "U1k")
+            if adjudicable and o.get("hermit") == "refutes":
                 fails.append(dict(o, kind="HermiT-confirmed FP"))
             # #502: HermiT was asked and did not decide. Listed and failing the run, so a
             # run where the oracle never answered cannot read as zero false positives.
-            if o["kind"] == "discrepancy" and "hermit" in o \
-                    and o["hermit"] not in ("refutes", "confirms"):
+            if adjudicable and "hermit" in o and o["hermit"] not in ("refutes", "confirms"):
                 unadj.append(o | {"onto": res["onto"]})
     over = []
     for (onto, law), n in sorted(ratchet.items()):
@@ -1319,17 +1492,20 @@ def main():
                                  if o["kind"] == "discrepancy"],
                   unresolved=[o for r in results for o in r["outcomes"] if o["kind"] == "unresolved"],
                   unsat_missed=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
-                                if o["kind"] == "unsat-missed"])
+                                if o["kind"] == "unsat-missed"],
+                  unverified=[o | {"onto": r["onto"]} for r in results for o in r["outcomes"]
+                              if o["kind"] == "unverified"])
     (a.out / "report.json").write_text(json.dumps(report, indent=1, default=list))
     if a.write_baseline:
         bl = defaultdict(dict)
         for (onto, law), n in ratchet.items():
             bl[onto][law] = n
         a.write_baseline.write_text(json.dumps(dict(sorted(bl.items())), indent=1, sort_keys=True) + "\n")
-    print("\nlaw    ok  violation  unresolved  discrepancy")
+    print("\nlaw    ok  violation  unresolved  discrepancy  unverified")
     for law in sorted(by_law):
         k = by_law[law]
-        print(f"{law:5} {k['ok']:4} {k['violation']:10} {k['unresolved']:11} {k['discrepancy']:12}")
+        print(f"{law:5} {k['ok']:4} {k['violation']:10} {k['unresolved']:11} {k['discrepancy']:12}"
+              f" {k['unverified']:11}")
     for f in fails:
         print(f"FAIL {f['law']} {f['onto']}: {f['reason']}")
         for op in f["operands"]:
@@ -1338,7 +1514,14 @@ def main():
         print(f"RATCHET {ov['onto']} {ov['law']}: {ov['count']} > baseline {ov['baseline']}")
     for u in unadj:
         print(f"UNADJUDICATED {u['law']} {u['onto']}: {u['reason']} -- {u['hermit']}")
-    n_disc = sum(o["kind"] == "discrepancy" and "hermit" not in o
+    # #573: a KB-verdict candidate is named, since it is never ratcheted.
+    for r in results:
+        for o in r["outcomes"]:
+            if o["law"] == "U1k" and o["kind"] in ("discrepancy", "unverified") \
+                    and o.get("hermit") != "confirms":
+                print(f"U1k CANDIDATE {r['onto']}: {o['reason']}"
+                      + (f" -- HermiT {o['hermit']}" if "hermit" in o else " (no --hermit)"))
+    n_disc = sum(o["kind"] in ("discrepancy", "unverified") and "hermit" not in o
                  for r in results for o in r["outcomes"])
     if n_disc:
         print(f"note: {n_disc} discrepancies not sent to HermiT"

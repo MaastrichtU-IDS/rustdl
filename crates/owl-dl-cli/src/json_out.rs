@@ -341,6 +341,12 @@ pub(crate) struct RealizeJson {
     /// is set too. A plain depth cut, deadline or node cap does not set it. Not covered:
     /// the pseudo-model witness build. (Realize runs no #369 lazy consistency check.)
     pub(crate) no_verdict: bool,
+    /// #539: the run was `realize --saturation-only`, which reads types off the EL
+    /// saturation closure alone and runs no tableau probe and no consistency check.
+    /// A sound under-approximation: every listed type is entailed, but a type may
+    /// be MISSING with every other flag clean, and an inconsistent ontology (where
+    /// every type is entailed) may go undetected. `false` on a plain `realize`.
+    pub(crate) saturation_only: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -715,7 +721,11 @@ pub(crate) fn build_verify_el_json(
 }
 
 #[must_use]
-pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>) -> RealizeJson {
+pub(crate) fn build_realize_json(
+    r: &Realization,
+    dropped: BTreeMap<String, u64>,
+    saturation_only: bool,
+) -> RealizeJson {
     let mut individuals: Vec<IndividualTypesJson> = r
         .individuals()
         .iter()
@@ -745,6 +755,7 @@ pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>
         direct_types_unverified: r.direct_types_unverified(),
         relies_on_trusted_consistency: r.relies_on_trusted_consistency(),
         no_verdict: r.no_verdict(),
+        saturation_only,
         individuals,
         dropped,
     }

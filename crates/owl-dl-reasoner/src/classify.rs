@@ -1807,7 +1807,9 @@ pub fn classify_n2_with_timeout<A: ForIRI>(
 ///   (cardinality, disjunction-with-clash, nominal merges, …)
 ///   are missed;
 /// - classes that are unsatisfiable only via tableau reasoning
-///   are reported as satisfiable.
+///   are reported as satisfiable;
+/// - an inconsistency only the tableau can find goes undetected, so
+///   off the pure-EL fragment `consistency_undetermined` is set (#539).
 ///
 /// On hybrid SROIQ workloads where saturation handles ≥ 95% of
 /// real subsumptions (e.g. SIO: 10 440 saturation hits vs 5
@@ -1842,13 +1844,19 @@ pub(crate) fn classify_saturation_only_internal(
         .map(|(i, iri)| (iri.clone(), i))
         .collect();
     let closure = saturate(internal);
-    Ok(classify_pure_el(
-        internal,
-        &reported,
-        &index,
-        &closure,
-        analyze_fragment(internal),
-    ))
+    let fragment = analyze_fragment(internal);
+    let pure_el = matches!(fragment, FragmentClassification::PureEl);
+    let mut h = classify_pure_el(internal, &reported, &index, &closure, fragment);
+    // #539: off the pure-EL fragment the saturator is not complete for
+    // consistency, and nothing else checks it here, so "no clash found" is all
+    // `consistent: true` can mean. `r(a,b)` with `¬r(a,b)` read `consistent: true`
+    // with every flag clean. On PureEl the saturator decides consistency, as on
+    // the default classify's pure-EL path. A proved inconsistency wins: every
+    // surface reads the field as `consistency_undetermined && !inconsistent`.
+    if !pure_el {
+        h.stats.consistency_undetermined = true;
+    }
+    Ok(h)
 }
 
 /// Internal entry point. Useful for tests that hand-build an

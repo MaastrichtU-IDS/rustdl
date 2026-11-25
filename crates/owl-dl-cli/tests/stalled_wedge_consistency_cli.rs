@@ -4,7 +4,7 @@
 //! keeps `consistency_undetermined: true`.
 //!
 //! The fixture is the #564 r-cycle with `A(d)`: the merge-churn guard stops the
-//! consistency wedge, and HermiT says the KB is consistent (with `Q ≡ ⊥`).
+//! consistency wedge, and `HermiT` says the KB is consistent (with `Q ≡ ⊥`).
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;

@@ -484,8 +484,9 @@ Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
   Empty for a step whose rule needs no axiom (reflexivity, transitivity, fact
   inheritance, the unsat propagations). `builtin_axioms` (#539) are axioms
   conversion added from the OWL semantics. `derived_axioms` (#586) are axioms a
-  later conversion pass built from several (e.g. a datatype seed edge), so no single
-  source axiom is their written form; they are rendered from the internal form and
+  later conversion pass built from one or several source axioms (e.g. a datatype seed
+  edge, a data-axiom pattern, the `≤1` GCI of a functional role), so no source axiom is
+  their written form; they are rendered from the internal form and
   never listed in `axioms`. `axiom_missing` is `true` when the step's rule does
   apply an axiom but none was recorded for it. `premises` recurses; a leaf step has
   `premises: []`. `unproved_premises` lists, as one-axiom OFN documents,

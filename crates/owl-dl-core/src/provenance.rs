@@ -16,8 +16,12 @@
 //! produces is a DERIVED axiom (a later pass built it from several axioms or from the OWL
 //! semantics) and has no single source.
 //!
-//! A hit is never a wrong citation: the component converted to exactly that IR axiom,
-//! so it entails it.
+//! A hit is never a fabricated citation: the cited component is in the source, and it
+//! converted to exactly that IR axiom (for a chain piece, to the chain the piece is part
+//! of: the pieces are a conservative extension of the chain through their aux role, not
+//! entailed by it alone). Where several components give the same IR axiom (salvage and
+//! the union split make that possible for non-equivalent ones), the cited one entails the
+//! IR axiom but need not be the weakest such component.
 
 use std::collections::HashMap;
 
@@ -35,8 +39,8 @@ use crate::ontology::{Axiom, InternalOntology, SubRolePath};
 const AUX_ROLE_PREFIX: &str = "urn:rustdl-aux-role:";
 
 /// Every IR form a source component of `src` takes in `internal`, mapped to that
-/// component. When several components give the same IR axiom (they are then
-/// equivalent), the least one in the components' order wins, so the result does not
+/// component. When several components give the same IR axiom, the least one in the
+/// components' order wins, so the result does not
 /// depend on the set's iteration order.
 ///
 /// `internal` must be `convert_ontology(src)` (in this process, so the same `RUSTDL_*`
@@ -47,8 +51,6 @@ pub fn literal_sources<'a, A: ForIRI>(
     src: &'a SetOntology<A>,
     internal: &InternalOntology,
 ) -> HashMap<Axiom, &'a AnnotatedComponent<A>> {
-    let mut components: Vec<&AnnotatedComponent<A>> = src.iter().collect();
-    components.sort_unstable();
     // One scratch ontology for all components: interning is by IRI and hash-consed, so
     // ids already in `internal` are reproduced, and anything new gets a fresh id that no
     // stored axiom uses.
@@ -56,10 +58,18 @@ pub fn literal_sources<'a, A: ForIRI>(
     scratch.vocabulary = internal.vocabulary.clone();
     scratch.concepts = internal.concepts.clone();
     let salvage = salvage_dropped_conjuncts_enabled();
-    let mut map = HashMap::new();
-    for ac in components {
+    let mut map: HashMap<Axiom, &AnnotatedComponent<A>> = HashMap::new();
+    // Unsorted iteration, keeping the least component on a collision: the same result as
+    // a sorted pass without a second sort of every component.
+    for ac in src {
         for ax in stored_forms(ac, &mut scratch, salvage) {
-            map.entry(ax).or_insert(ac);
+            map.entry(ax)
+                .and_modify(|cur| {
+                    if ac < *cur {
+                        *cur = ac;
+                    }
+                })
+                .or_insert(ac);
         }
     }
     map

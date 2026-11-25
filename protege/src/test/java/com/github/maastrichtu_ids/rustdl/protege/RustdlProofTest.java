@@ -185,10 +185,20 @@ public class RustdlProofTest {
         OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
         IllegalStateException e = assertThrows(IllegalStateException.class,
             () -> RustdlProof.fromProveJson(json, goal, proveJsonSource()));
-        assertTrue(e.getMessage(), e.getMessage().contains("derived during conversion"));
+        assertTrue(e.getMessage(), e.getMessage().contains("added during conversion"));
         // The same proof without the derived axiom builds, so the refusal is that field's.
         RustdlProof.fromProveJson(
             RustdlProcess.parseProve(fixture("prove.json")), goal, proveJsonSource());
+    }
+
+    /** #539: a step resting on a built-in axiom is refused the same way, not shown without it. */
+    @Test
+    public void aStepUsingABuiltinAxiomIsRefused() throws Exception {
+        RustdlJson.ProveJson json = RustdlProcess.parseProve(fixture("prove_builtin.json"));
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+            () -> RustdlProof.fromProveJson(json, goal, proveJsonSource()));
+        assertTrue(e.getMessage(), e.getMessage().contains("added during conversion"));
     }
 
     /**

@@ -1176,8 +1176,8 @@ pub(crate) struct ProofNodeJson {
     /// them as the user's. Omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) builtin_axioms: Vec<String>,
-    /// #586: axioms used at this step that conversion derived from several source
-    /// axioms (a later pass built them), so no single source axiom is their written form;
+    /// #586: axioms used at this step that a later conversion pass built (from one or
+    /// several source axioms), so no source axiom is their written form;
     /// each rendered from rustdl's internal form, its own OFN ontology document. Never
     /// listed in `axioms`. Omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]

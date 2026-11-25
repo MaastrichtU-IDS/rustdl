@@ -703,7 +703,7 @@ pub struct ClassificationStats {
     /// false, and `classify --json` reports it as `consistency_undetermined`
     /// (#204 review: a pigeonhole over `TBox`-only individuals read
     /// `consistent: true, incomplete: false`). #539: `classify_saturation_only`
-    /// sets it whenever the input is not PureEl and the closure found no clash,
+    /// sets it whenever the input is not `PureEl` and the closure found no clash,
     /// since nothing but the closure looked for one.
     pub consistency_undetermined: bool,
     /// #429: "consistent" rests on a consistency-wedge `Sat` that no main-tableau
@@ -7282,8 +7282,8 @@ Ontology(<http://rustdl.test/test>\n\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 
-    /// #539: `classify_saturation_only` marks consistency undetermined off PureEl,
-    /// but never next to a proved inconsistency, and never on PureEl.
+    /// #539: `classify_saturation_only` marks consistency undetermined off `PureEl`,
+    /// but never next to a proved inconsistency, and never on `PureEl`.
     #[test]
     fn saturation_only_consistency_undetermined_raw_stat() {
         let run = |body: &str| {

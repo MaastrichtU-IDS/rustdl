@@ -230,8 +230,9 @@ public class RustdlReasoner extends OWLReasonerBase {
 
     /**
      * The warnings a classify result warrants, one per signal. Each signal has its own
-     * message because they mean different things: {@code incomplete} says a deadline
-     * fired, {@code wedge_hierarchy_blind} says role-hierarchy reasoning was skipped,
+     * message because they mean different things: {@code incomplete} says a class pair
+     * or probe was cut (a time budget, the node cap or the search-depth limit),
+     * {@code wedge_hierarchy_blind} says role-hierarchy reasoning was skipped,
      * {@code wedge_clauses_refused} says some clauses could not be matched and never fire,
      * {@code derived_same_undecided} says some individual equalities were not decided.
      * Either way the hierarchy stays sound and may miss subsumptions.
@@ -239,7 +240,8 @@ public class RustdlReasoner extends OWLReasonerBase {
     static List<String> classifyWarnings(RustdlJson.ClassifyJson c) {
         List<String> out = new ArrayList<>();
         if (c.incomplete) {
-            out.add("rustdl reports an INCOMPLETE classification (some class pairs timed out); "
+            out.add("rustdl reports an INCOMPLETE classification (some class pairs were cut "
+                + "without a verdict: a time budget, the node cap or the search-depth limit); "
                 + "the hierarchy is a sound under-approximation.");
         }
         if (c.wedge_hierarchy_blind) {

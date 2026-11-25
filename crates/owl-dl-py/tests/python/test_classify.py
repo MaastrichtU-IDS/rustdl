@@ -81,7 +81,7 @@ def test_unbounded_timeout_accepted(fixtures_dir):
 def test_wedge_hierarchy_blind_is_its_own_signal(fixtures_dir, monkeypatch):
     # #214: with Layer A off the wedge ignores the role hierarchy. That is
     # reported by `wedge_hierarchy_blind` and warned about, while `complete`
-    # keeps meaning "no timeout fired". Fixture: #214's probe t9.
+    # keeps meaning "nothing was cut". Fixture: #214's probe t9.
     import warnings
     fixture = str(fixtures_dir / "role_hierarchy_blind.ofn")
     monkeypatch.setenv("RUSTDL_CLASSIFY_ROLE_HIERARCHY", "0")
@@ -103,7 +103,7 @@ def test_wedge_hierarchy_blind_is_its_own_signal(fixtures_dir, monkeypatch):
 def test_wedge_clauses_refused_is_its_own_signal(tmp_path, monkeypatch):
     # #353: a clause body the wedge cannot match is reported by
     # `wedge_clauses_refused` and warned about, while `complete` keeps meaning
-    # "no timeout fired". With the clausifier's split reverted, the 9-variable
+    # "nothing was cut". With the clausifier's split reverted, the 9-variable
     # body of the sufficient condition below is refused.
     import warnings
     lhs = " ".join(f"ObjectSomeValuesFrom(:s{i} :S{i})" for i in range(1, 9))
@@ -138,7 +138,7 @@ def test_wedge_clauses_refused_is_its_own_signal(tmp_path, monkeypatch):
 def test_derived_same_undecided_is_its_own_signal(tmp_path, monkeypatch):
     # #354: a candidate individual equality past the probe cap is reported by
     # `derived_same_undecided` and warned about once, while `complete` keeps
-    # meaning "no timeout fired". With the cap lifted, the equality is used.
+    # meaning "nothing was cut". With the cap lifted, the equality is used.
     import warnings
     fixture = tmp_path / "eq.ofn"
     fixture.write_text(

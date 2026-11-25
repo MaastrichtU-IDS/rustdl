@@ -70,7 +70,7 @@ def pizza() -> str:
 
     The ontostart pizza ontology — 88 classes modelling pizza making,
     aligned to the SULO upper ontology. Classifies in milliseconds, fully
-    complete (no timeouts):
+    complete (nothing cut):
 
         >>> import rustdl
         >>> result = rustdl.classify(rustdl.examples.pizza())

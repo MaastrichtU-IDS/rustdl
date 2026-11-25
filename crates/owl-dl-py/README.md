@@ -105,7 +105,7 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, 
   (wine: 7.5× faster, identical hierarchy, MISSED=0 vs HermiT).
 - `saturation_only` — skip the tableau entirely; EL-closure-only
   under-approximation. Dramatically faster on mostly-EL ontologies, and
-  always `complete` (no tableau ⇒ no timeout).
+  always `complete` (no tableau ⇒ nothing is cut).
 
 `classify` / `classify_bytes` return a `Classification`:
 

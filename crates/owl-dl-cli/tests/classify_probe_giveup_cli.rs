@@ -1,6 +1,7 @@
 //! #446: when classify's consistency probe is admitted and gives up, `classify --json`
 //! reports `consistency_undetermined: true`. `incomplete` stays false: it means only
-//! that a pair deadline fired, and the probe's budget is not one.
+//! that a class pair or per-class unsat probe was cut (#574), and the consistency probe
+//! is neither.
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;

@@ -26,7 +26,9 @@ class Classification:
         ...
     @property
     def timed_out_pairs(self) -> int:
-        """Number of subsumption pairs that hit the per-pair timeout."""
+        """Number of class pairs and per-class unsat probes cut without a verdict
+        (a deadline, the node cap, the decision-depth limit, a `NoVerdict` or a
+        tail skip)."""
         ...
     @property
     def depth_capped_pairs(self) -> int:
@@ -42,8 +44,8 @@ class Classification:
         ...
     @property
     def complete(self) -> bool:
-        """True iff no pair or probe was cut (a deadline, the node cap, the
-        decision-depth limit, a `NoVerdict` or a tail skip). `True` does NOT mean
+        """True iff no class pair or per-class unsat probe was cut (a deadline,
+        the node cap, the decision-depth limit, a `NoVerdict` or a tail skip). `True` does NOT mean
         no entailment is missing: that is the stronger `completeness_guaranteed`.
         See also `wedge_hierarchy_blind`: a result can be `complete` (nothing cut)
         and still miss entailments."""
@@ -132,7 +134,7 @@ class Classification:
 
 class IncompleteClassificationWarning(UserWarning):
     """Emitted when the hierarchy may be missing subsumptions (sound but
-    possibly incomplete): a timeout fired, the wedge ran without
+    possibly incomplete): a pair or probe was cut (`complete` is False), the wedge ran without
     role-hierarchy matching (`Classification.wedge_hierarchy_blind`), the
     wedge refused clauses (`Classification.wedge_clauses_refused`), or
     candidate individual equalities went undecided

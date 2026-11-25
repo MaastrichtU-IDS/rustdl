@@ -673,21 +673,27 @@ fn classify_json_counts_depth_capped_pairs() {
             .as_u64()
             .unwrap_or_else(|| panic!("no `depth_capped_pairs` in {v}"))
     };
-    // At the default early abandon the pair is cut by the depth limit (as the banner
-    // test above shows), long before its 10 s deadline.
+    // At the default early abandon the pair is cut by the depth limit after 32 hits
+    // (4.7 CPU-s in a debug build), far inside a 60 s pair budget.
     let r = run(
         &[],
-        &["classify", "--json", "--pair-timeout-ms", "10000", f.path()],
+        &[
+            "classify",
+            "--json",
+            "--pair-timeout-ms",
+            LONG_DEADLINE_MS,
+            f.path(),
+        ],
     );
     assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
     let v = json(&r);
     assert!(flag(&v, "incomplete"), "{v}");
     assert!(count(&v) >= 1, "{v}");
-    // Control: with early abandon effectively off the same pair is cut by its deadline,
-    // so `incomplete` without a depth cut.
+    // Control: with early abandon off the probe can only be cut by its deadline, so
+    // `incomplete` without a depth cut, whatever the host's speed.
     let r = run(
-        &[("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000")],
-        &["classify", "--json", "--pair-timeout-ms", "10000", f.path()],
+        &[("RUSTDL_TABLEAU_EARLY_ABANDON", "0")],
+        &["classify", "--json", "--pair-timeout-ms", "2000", f.path()],
     );
     let v = json(&r);
     assert!(flag(&v, "incomplete"), "{v}");

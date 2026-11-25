@@ -46,9 +46,10 @@ impl PyClassification {
         self.inner.stats().inconsistent
     }
 
-    /// Number of class pairs that exceeded the per-pair timeout and
-    /// were recorded as "not subsumed" (unless recorded subsumptions imply them:
-    /// see `matrix_closure_added_pairs`). `> 0` means the classification
+    /// Number of class pairs and per-class unsat probes that were cut without a
+    /// verdict (a deadline, the node cap, the decision-depth limit, a `NoVerdict`
+    /// or a tail skip; #574) and took their sound default (unless recorded
+    /// subsumptions imply them: see `matrix_closure_added_pairs`). `> 0` means the classification
     /// is a sound under-approximation — no false subsumptions, but real
     /// ones may be missing. `0` when classification ran to completion
     /// (or no timeout was set).
@@ -77,9 +78,9 @@ impl PyClassification {
         self.inner.stats().no_verdict_pairs
     }
 
-    /// True iff classification ran to completion — no pair or probe was cut
-    /// (a deadline, the node cap, the decision-depth limit, a `NoVerdict` or a
-    /// tail skip; #574). When `False`, the hierarchy may be missing real
+    /// True iff classification ran to completion — no class pair or per-class
+    /// unsat probe was cut (a deadline, the node cap, the decision-depth limit, a
+    /// `NoVerdict` or a tail skip; #574). When `False`, the hierarchy may be missing real
     /// subsumptions (see `timed_out_pairs`); re-classify with
     /// `per_pair_timeout_ms=0, global_deadline_ms=0` for the unbounded result.
     /// `True` does NOT mean no entailment is missing: that is the stronger
@@ -159,7 +160,7 @@ impl PyClassification {
     /// off, by flag or above the role-closure cost cap) on an ontology with a
     /// non-trivial role hierarchy (#214). Then entailments needing sub-role,
     /// inverse or symmetric reasoning may be missing even though `complete`
-    /// (no timeout) is `True`.
+    /// (nothing cut) is `True`.
     #[getter]
     fn wedge_hierarchy_blind(&self) -> bool {
         self.inner.stats().wedge_hierarchy_blind
@@ -167,7 +168,7 @@ impl PyClassification {
 
     /// How many clauses the wedge cannot match (#353). A refused clause never
     /// fires, so entailments that need it may be missing even though `complete`
-    /// (no timeout) is `True`. 0 when there is no wedge.
+    /// (nothing cut) is `True`. 0 when there is no wedge.
     #[getter]
     fn wedge_clauses_refused(&self) -> usize {
         self.inner.stats().wedge_clauses_refused

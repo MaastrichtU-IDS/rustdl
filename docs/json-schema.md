@@ -54,13 +54,14 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "collapsed_operands": { "axioms": int, "vacuous": int } }
 ```
 
-`incomplete` = some class pair or probe was cut without a verdict and defaulted to
-not-subsumed; the hierarchy is sound (no false subsumptions) but may miss real ones. A cut is
+`incomplete` = some class pair or per-class unsat probe was cut without a verdict and took its
+sound default (not subsumed; satisfiable), or a preparation cut left a partial closure; the hierarchy is sound (no false subsumptions) but may miss real ones. A cut is
 any of: a deadline (per-pair, preparation, conversion or the global one), the node cap, the
 tableau's decision-depth limit (counted in `depth_capped_pairs`), a #462 `NoVerdict` (counted
 in `no_verdict_pairs`), or a bound-the-tail skip (`RUSTDL_BOUND_DIVERGED_TAIL`,
-`RUSTDL_BOUND_STALL_TAIL`). Before #574 this said "hit the time budget" only; the code has
-always counted every cut.
+`RUSTDL_BOUND_STALL_TAIL`). Before #574 this said "hit the time budget" only, which the code
+has not matched since the node cap and depth-limit cuts were recorded (#218, #288, #462). With
+`RUSTDL_UNSAT_PROBE_CUT_INCOMPLETE=0` a cut per-class unsat probe is not counted.
 
 `prep_timed_out` = the `--global-timeout-ms` budget ran out during preparation
 (EL saturation or building the prepared ontology; parsing and conversion are
@@ -104,7 +105,7 @@ no such flag: the Python API parses before any budget applies.
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where
 the engine that answered is provably complete (pure EL), and only when no pair
-timed out, `wedge_hierarchy_blind` and `consistency_undetermined` are false,
+was cut (`incomplete` is false), `wedge_hierarchy_blind` and `consistency_undetermined` are false,
 `wedge_clauses_refused` and `derived_same_undecided` are 0, and `dropped` is
 empty. `docs/assurance/completeness-guarantee-ledger.md` lists each condition
 with its source issue and test.
@@ -123,7 +124,8 @@ unsatisfiable class, an incomplete `ABox` run, or counted data values) and gave
 up (#446). `consistent: true` then means "no clash found", not
 "proven consistent". A separate field; it does not set `incomplete`.
 
-**`incomplete: false` does NOT mean complete.** It means nothing was cut.
+**`incomplete: false` does NOT mean complete.** It means no class pair or per-class unsat probe was cut (other give-ups, such
+as `consistency_undetermined` or `derived_same_undecided`, have their own fields).
 There are Horn ontologies where `classify` misses a subsumption both Konclude and
 HermiT derive while `incomplete` is `false`, `trusted_sat_refutations` is `0`, and
 `consistent` is `true` — every field reading clean on a wrong answer. That is what

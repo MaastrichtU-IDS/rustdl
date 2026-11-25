@@ -937,7 +937,7 @@ fn classify_with_parse_deadline(args: ClassifyArgs) -> Result<()> {
     }
 }
 
-/// #214: say why completeness is not guaranteed when no deadline fired.
+/// #214: say why completeness is not guaranteed when nothing was cut.
 fn warn_if_hierarchy_blind(blind: bool) {
     if blind {
         eprintln!(

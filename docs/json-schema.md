@@ -129,13 +129,23 @@ not set `incomplete`.
 **`incomplete: false` does NOT mean complete.** It means no class pair or per-class unsat probe was cut (other give-ups, such
 as `consistency_undetermined` or `derived_same_undecided`, have their own fields).
 There are Horn ontologies where `classify` misses a subsumption both Konclude and
-HermiT derive while `incomplete` is `false`, `trusted_sat_refutations` is `0`, and
-`consistent` is `true` — every field reading clean on a wrong answer. That is what
-`completeness_guaranteed` exists to say, and it is `false` there.
+HermiT derive while `incomplete` is `false` and `consistent` is `true`. Before #568,
+`trusted_sat_refutations` read `0` there too (Horn was exempt), so every field read
+clean on a wrong answer; it now reads non-zero (4 on `X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`,
+`∃s.Z ⊑ W`), which says verdicts rest on a trusted `Sat`, not which one is wrong.
+`completeness_guaranteed` is the field that says the answer may be incomplete, and it
+is `false` there.
 
-`trusted_sat_refutations` = pairs concluded not-subsumed from the wedge's own
-`Sat` verdict outside the fragment where that verdict is complete. An exposure
-count, not a defect count; `0` does not imply completeness either.
+`trusted_sat_refutations` = verdicts taken on the wedge's own trusted `Sat`
+without the tableau (#66, #568): pairs refuted per pair, pairs pruned from the
+label cache, snapshot-replay refutations, and classes taken as satisfiable from
+their wedge label. A count of decisions, not of distinct pairs (a pair can be pruned
+in both the walk and the sweep); undecided pairs below a pruned super are not
+included. No fragment is exempt
+(`PureEl` reads 0 because no wedge runs there). An exposure count, not a defect
+count; `0` does not imply completeness either. The label channels are not gated by
+`RUSTDL_HYPERTABLEAU_TRUST_SAT`: to verify everything, set it to `0` together with
+`RUSTDL_LABEL_HEURISTIC=0`.
 
 `matrix_closure_added_pairs` = pairs the transitive closure of the recorded
 relation added (#448, `RUSTDL_CLASSIFY_CLOSE_MATRIX`, default on; `=0` disables): pairs recorded

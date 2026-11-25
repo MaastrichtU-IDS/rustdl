@@ -250,8 +250,11 @@ fn run_classify(ontology: &SetOntology<RcStr>) -> Result<()> {
         stats.saturation_subsumption_hits, stats.tableau_subsumption_calls
     );
     println!(
-        "satisfiability probes: saturation={} tableau={}",
-        stats.saturation_unsat_hits, stats.tableau_unsat_calls
+        "satisfiability probes: saturation={} wedge_unsat={} wedge_sat={} tableau={}",
+        stats.saturation_unsat_hits,
+        stats.wedge_unsat_probe_hits,
+        stats.wedge_sat_probe_hits,
+        stats.tableau_unsat_calls
     );
     println!("unsat classes: {}", h.unsatisfiable_classes().len());
     println!("elapsed: {elapsed:.3?}");
@@ -287,8 +290,11 @@ fn run_classify_repeated(ontology: &SetOntology<RcStr>, repeats: usize) -> Resul
         stats.saturation_subsumption_hits, stats.tableau_subsumption_calls
     );
     println!(
-        "satisfiability probes: saturation={} tableau={}",
-        stats.saturation_unsat_hits, stats.tableau_unsat_calls
+        "satisfiability probes: saturation={} wedge_unsat={} wedge_sat={} tableau={}",
+        stats.saturation_unsat_hits,
+        stats.wedge_unsat_probe_hits,
+        stats.wedge_sat_probe_hits,
+        stats.tableau_unsat_calls
     );
     println!("unsat classes: {}", h.unsatisfiable_classes().len());
     println!("elapsed: med={median:.3?} min={min:.3?} max={max:.3?} (n={repeats})");
@@ -409,6 +415,8 @@ fn run_corpus(dir: &Path, quiet: bool, repeats: usize, pair_timeout_ms: Option<u
     let mut total_tab_sub = 0usize;
     let mut total_sat_unsat = 0usize;
     let mut total_tab_unsat = 0usize;
+    let mut total_wedge_unsat = 0usize;
+    let mut total_wedge_sat = 0usize;
     let mut total_elapsed = std::time::Duration::ZERO;
     let mut failures: Vec<(PathBuf, String)> = Vec::new();
     for path in &paths {
@@ -497,6 +505,8 @@ fn run_corpus(dir: &Path, quiet: bool, repeats: usize, pair_timeout_ms: Option<u
         total_tab_sub += stats.tableau_subsumption_calls;
         total_sat_unsat += stats.saturation_unsat_hits;
         total_tab_unsat += stats.tableau_unsat_calls;
+        total_wedge_unsat += stats.wedge_unsat_probe_hits;
+        total_wedge_sat += stats.wedge_sat_probe_hits;
         total_elapsed += median;
     }
     println!();
@@ -509,7 +519,10 @@ fn run_corpus(dir: &Path, quiet: bool, repeats: usize, pair_timeout_ms: Option<u
     println!("  classes (sum): {total_classes}");
     println!("  pure-EL files: {total_pure_el} / {total}");
     println!("  subsumption queries: saturation={total_sat_sub} tableau={total_tab_sub}");
-    println!("  satisfiability probes: saturation={total_sat_unsat} tableau={total_tab_unsat}");
+    println!(
+        "  satisfiability probes: saturation={total_sat_unsat} wedge_unsat={total_wedge_unsat} \
+         wedge_sat={total_wedge_sat} tableau={total_tab_unsat}"
+    );
     if repeats > 1 {
         println!("  wall clock (sum of medians, {repeats} repeats each): {total_elapsed:.3?}");
     } else {

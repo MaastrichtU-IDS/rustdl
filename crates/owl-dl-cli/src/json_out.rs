@@ -41,37 +41,47 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
         .unwrap_or_default()
 }
 
-/// Pairs whose "not subsumed" came from the wedge's `Sat` verdict on an
-/// ontology outside the fragment where that verdict is complete by
-/// construction (issue #66).
+/// Decisions taken on the wedge's trusted `Sat` verdict, without the tableau
+/// (issue #66; #568 widened it to every channel):
 ///
-/// **This is an EXPOSURE count, not a defect count, and the difference is
-/// measured.** It reads 58 on `ro`, 163 on `sio` and 102 on `pizza` — all
-/// three of which are MISSED=0 against the Konclude oracle in the FP=0 net.
-/// So a non-zero value says these pairs were decided WITHOUT the tableau, not
-/// that any of them is wrong. It is emitted as a diagnostic for exactly that
-/// reason; an earlier revision raised a stderr WARNING here and was withdrawn
-/// once those three numbers were measured, because a warning that fires on
-/// three verifiably-correct flagship fixtures trains users to ignore the
-/// channel.
+/// - `hyper_refuted_pairs`: a pair refuted by the per-pair wedge `Sat`;
+/// - `label_cache_pruned`: a pair refuted because the super is absent from the
+///   sub's wedge `Sat` labels (the tier walk and the defined-sup sweep);
+/// - `snapshot_replay_not_subsumed`: a pair refuted by a replayed snapshot
+///   (`RUSTDL_SNAPSHOT_CAPTURE`, default off);
+/// - `wedge_sat_probe_hits`: a class taken as satisfiable (`C ⋢ ⊥`) from its
+///   wedge `Sat` label.
 ///
-/// What it IS good for: a consumer that needs exactness (the issue-#66
-/// reporter was diffing two `classify` hierarchies) can see that the
-/// hierarchy contains un-tableau-verified refutations and re-run with
-/// `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`, or ask `subclass` per pair.
+/// A count of DECISIONS, not of distinct pairs (a pair can be pruned in both the
+/// walk and the sweep). Undecided pairs below a pruned super are not included: a
+/// refutation of `C ⊑ D` also stops the walk below `D`, and those pairs are never
+/// decided.
 ///
-/// `PureEl` and `Horn` return 0: `trust_sat` is complete by construction there
-/// (the saturator carries `PureEl`, the Horn fixpoint carries `Horn`), so
-/// there is no exposure to report.
+/// No fragment is exempt (#568). `Horn` was, on the premise that the Horn
+/// fixpoint is complete; #124 refuted that, and the #564 shape with
+/// `RUSTDL_CLASSIFY_WEDGE_IF_BOUND=0` read 0 here while `classify` called an
+/// unsatisfiable class satisfiable. `PureEl` reads 0 by construction: every
+/// driver answers it from the saturator before any wedge runs.
+///
+/// **This is an EXPOSURE count, not a defect count.** At the CLI's default budget
+/// it reads 971 on `ro`, about 119,255 on `sio` and about 2,623 on `pizza`
+/// (2026-11-25, three interleaved runs each; label prunes are most of it), and all
+/// three are MISSED=0 against the Konclude oracle in the FP=0 net. Before #568 it
+/// counted only the per-pair channel, which reads the same now: 164, 336-343 and
+/// 102-103 on main `22a69b81`. A non-zero value says these verdicts
+/// were reached WITHOUT the tableau, not that any is wrong, which is why it is a
+/// diagnostic and not a stderr warning.
+///
+/// What it IS good for: a consumer that needs exactness (the issue-#66 reporter
+/// was diffing two `classify` hierarchies) can see that the hierarchy rests on
+/// unverified `Sat` verdicts, and re-run with `RUSTDL_LABEL_HEURISTIC=0` and
+/// `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` (the label channels are not gated by
+/// `TRUST_SAT`), or ask `subclass` per pair.
 pub(crate) fn trusted_sat_risk(stats: &owl_dl_reasoner::ClassificationStats) -> usize {
-    if matches!(
-        stats.fragment,
-        owl_dl_reasoner::FragmentClassification::OutOfFragment
-    ) {
-        stats.hyper_refuted_pairs
-    } else {
-        0
-    }
+    stats.hyper_refuted_pairs
+        + stats.label_cache_pruned
+        + stats.snapshot_replay_not_subsumed
+        + stats.wedge_sat_probe_hits
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema,
@@ -113,12 +123,12 @@ pub(crate) struct ClassifyJson {
     /// `conversion_timed_out` and `consistency_undetermined`. Never set without
     /// hard mode, or with `RUSTDL_PARSE_DEADLINE=0`.
     pub(crate) parse_timed_out: bool,
-    /// Issue #66: pairs concluded NOT SUBSUMED from the wedge's own `Sat`
-    /// verdict, on an ontology OUTSIDE the fragment where that verdict is
-    /// complete by construction — so this hierarchy CAN disagree with
-    /// `rustdl subclass` on the same binary and the same pair while
-    /// `incomplete` stays `false`. An EXPOSURE count, not a defect count:
-    /// see [`trusted_sat_risk`] for the measured false-alarm rate.
+    /// Issue #66, #568: verdicts taken on the wedge's own trusted `Sat`
+    /// (pairs concluded NOT SUBSUMED, and classes taken as satisfiable) without
+    /// the tableau — so this hierarchy CAN disagree with `rustdl subclass` on
+    /// the same binary and the same pair while `incomplete` stays `false`. An
+    /// EXPOSURE count of decisions, not of distinct pairs: see
+    /// [`trusted_sat_risk`].
     ///
     /// Deliberately a SEPARATE field rather than folded into `incomplete`:
     /// that flag means "a pair or probe was cut", and overloading it would destroy a
@@ -157,8 +167,9 @@ pub(crate) struct ClassifyJson {
     /// Added because on `X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`, `∃s.Z ⊑ W` (⟹ `X ⊑ W`,
     /// derived by both Konclude and `HermiT`) every other field here reads
     /// clean: `consistent: true`, `incomplete: false` (correctly — no class pair
-    /// was cut), `trusted_sat_refutations: 0` (the pair was not refuted by a
-    /// trusted `Sat`), `direct_subsumptions: []`. The miss was surfaced NOWHERE.
+    /// was cut), `trusted_sat_refutations: 0` (before #568, which exempted Horn;
+    /// it now reads 4 there, an exposure count that does not name the miss),
+    /// `direct_subsumptions: []`. The miss was surfaced NOWHERE.
     ///
     /// A SEPARATE field rather than a change to `incomplete`, whose contract is
     /// "a pair or probe was cut" and which callers depend on: this reports a strictly

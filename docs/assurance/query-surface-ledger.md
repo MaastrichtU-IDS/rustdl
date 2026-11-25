@@ -39,8 +39,9 @@ No surface in the #363 audit turned a give-up into a definite **positive**.
 | Python | `IncompleteQueryWarning`; the return value keeps its sound direction | as the Rust field |
 
 These `incomplete` fields mean "a probe gave up". That differs from classify's
-`incomplete`, which means only "a per-pair deadline fired" (see the
-completeness ledger and #220/#221). Each surface's field documents its own
+`incomplete`, which means "a class pair or probe was cut" (a deadline, the node cap, the
+decision-depth limit, a `NoVerdict` or a tail skip; #574 corrected the older "only a per-pair
+deadline fired"; see the completeness ledger and #220/#221). Each surface's field documents its own
 meaning.
 
 The plain Rust functions (`is_consistent`, `is_class_satisfiable`,

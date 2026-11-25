@@ -263,3 +263,66 @@ fn a_multi_member_enumeration_entails_what_each_member_does() {
            SubClassOf(DataHasValue(:d "2"^^xsd:integer) :E)"#
     ));
 }
+
+/// #556 review (draft B): a facet literal of another datatype is not read as the
+/// restricted type. `xsd:float maxInclusive "0.1"^^xsd:double` used to be read as
+/// the float 0.1, a different number (f32 0.1 > f64 0.1), and `xsd:decimal
+/// minInclusive "0.1"^^xsd:double` as the decimal 0.1 (decimal 0.1 < f64 0.1). Both
+/// gave false subsumptions, for `DataHasValue` on main and for `DataOneOf` with the
+/// new edges. `HermiT` rejects the inputs (`UnsupportedFacetException`); rustdl now
+/// drops the restriction and says so in `dropped`. None may derive anything.
+#[test]
+fn a_facet_literal_of_another_datatype_derives_nothing_and_is_dropped() {
+    let float_facet = some(r#"DatatypeRestriction(xsd:float xsd:maxInclusive "0.1"^^xsd:double)"#);
+    let dec_facet = some(r#"DatatypeRestriction(xsd:decimal xsd:minInclusive "0.1"^^xsd:double)"#);
+    let double_facet = some(r#"DatatypeRestriction(xsd:double xsd:maxInclusive "0.1"^^xsd:float)"#);
+    for (what, sub, sup) in [
+        (
+            "float enumeration",
+            some(r#"DataOneOf("0.1"^^xsd:float)"#),
+            &float_facet,
+        ),
+        ("float value", has(r#""0.1"^^xsd:float"#), &float_facet),
+        (
+            "smaller float enumeration",
+            some(r#"DataOneOf("0.05"^^xsd:float)"#),
+            &float_facet,
+        ),
+        (
+            "decimal enumeration",
+            some(r#"DataOneOf("0.1"^^xsd:decimal)"#),
+            &dec_facet,
+        ),
+        ("decimal value", has(r#""0.1"^^xsd:decimal"#), &dec_facet),
+        (
+            "double enumeration",
+            some(r#"DataOneOf("0.1"^^xsd:double)"#),
+            &double_facet,
+        ),
+    ] {
+        let body = format!("SubClassOf(:C {sub})\nSubClassOf({sup} :E)");
+        assert!(
+            !c_sub_e(&body),
+            "{what}: nothing is derived from a mistyped facet"
+        );
+        let h = owl_dl_reasoner::classify(&onto(&body)).expect("classify");
+        assert!(
+            !h.stats().dropped.is_empty(),
+            "{what}: the mistyped restriction is reported in `dropped`"
+        );
+    }
+}
+
+/// The control for the test above: an integer literal on an `xsd:decimal` facet is a
+/// decimal and is kept (`HermiT` and Konclude derive this).
+#[test]
+fn an_integer_literal_on_a_decimal_facet_is_kept() {
+    let body = format!(
+        "SubClassOf(:C {})\nSubClassOf({} :E)",
+        some(r#"DataOneOf("3"^^xsd:decimal)"#),
+        some(r#"DatatypeRestriction(xsd:decimal xsd:minInclusive "2"^^xsd:integer)"#)
+    );
+    assert!(c_sub_e(&body));
+    let h = owl_dl_reasoner::classify(&onto(&body)).expect("classify");
+    assert!(h.stats().dropped.is_empty(), "nothing dropped");
+}

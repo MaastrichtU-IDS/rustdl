@@ -506,8 +506,9 @@ mod tests {
     }
 
     /// #529: an inverse role keeps its polarity in every position `role_to_ope`
-    /// writes: concept roles, Domain / Range, sub-role (plain and chain) and super-role,
-    /// role characteristics, Equivalent / Disjoint properties and both assertions.
+    /// writes: concept roles (∃, ∀, ≥, ≤, =, Self, `HasValue`), Domain / Range, sub-role
+    /// (plain and chain) and super-role, the seven role characteristics, Equivalent /
+    /// Disjoint properties and both assertions (23 cases).
     /// Each case checks the reversed component contains `ObjectInverseOf` and that a
     /// second forward conversion reaches the same axiom.
     #[test]
@@ -574,6 +575,24 @@ mod tests {
                 "r",
             ))),
             Component::IrreflexiveObjectProperty(ho::IrreflexiveObjectProperty(inv("r"))),
+            Component::SymmetricObjectProperty(ho::SymmetricObjectProperty(inv("r"))),
+            Component::AsymmetricObjectProperty(ho::AsymmetricObjectProperty(inv("r"))),
+            Component::ReflexiveObjectProperty(ho::ReflexiveObjectProperty(inv("r"))),
+            Component::SubClassOf(ho::SubClassOf {
+                sub: ce_class("X"),
+                sup: ClassExpression::ObjectHasValue {
+                    ope: inv("r"),
+                    i: ind("a"),
+                },
+            }),
+            Component::SubClassOf(ho::SubClassOf {
+                sub: ce_class("X"),
+                sup: ClassExpression::ObjectExactCardinality {
+                    n: 1,
+                    ope: inv("r"),
+                    bce: bce(),
+                },
+            }),
             Component::EquivalentObjectProperties(ho::EquivalentObjectProperties(vec![
                 inv("r"),
                 ope("s"),
@@ -613,7 +632,7 @@ mod tests {
             assert_eq!(ax1, ax2, "{c:?} came back as {back:?}");
         }
         assert_eq!(
-            with_inverse, 17,
+            with_inverse, 22,
             "cases that come back with ObjectInverseOf"
         );
     }

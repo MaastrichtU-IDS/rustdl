@@ -117,7 +117,9 @@ pub(crate) struct ClassifyJson {
     /// distinction callers already depend on. Same reasoning as
     /// `Realization::witness_prune_active`.
     pub(crate) trusted_sat_refutations: usize,
-    /// The inconsistency pre-check reached no verdict: a route gave up, or was
+    /// The inconsistency pre-check reached no verdict: a route gave up (since
+    /// #571 a `Stalled` consistency wedge counts only if the main-tableau
+    /// fallback after it gave up too), or was
     /// skipped because the global deadline had already passed (#162), or
     /// classify's consistency probe was admitted (an unsatisfiable class, an
     /// incomplete `ABox` run, or counted data values) and gave up (#446). So

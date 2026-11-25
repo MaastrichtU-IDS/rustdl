@@ -138,7 +138,9 @@ pub(crate) struct ClassifyJson {
     /// The inconsistency pre-check reached no verdict: a route gave up, or was
     /// skipped because the global deadline had already passed (#162), or
     /// classify's consistency probe was admitted (an unsatisfiable class, an
-    /// incomplete `ABox` run, or counted data values) and gave up (#446). So
+    /// incomplete `ABox` run, or counted data values) and gave up (#446), or the
+    /// run was `--saturation-only` on an input that is not pure EL, where only the
+    /// closure looked for a clash (#539). So
     /// `consistent: true` means "no clash found", not "proven consistent". On
     /// an inconsistent KB every class is unsatisfiable, so the hierarchy below
     /// may then be missing entailments (#204 review: a pigeonhole over
@@ -374,6 +376,12 @@ pub(crate) struct RealizeJson {
     /// is set too. A plain depth cut, deadline or node cap does not set it. Not covered:
     /// the pseudo-model witness build. (Realize runs no #369 lazy consistency check.)
     pub(crate) no_verdict: bool,
+    /// #539: the run was `realize --saturation-only`, which reads types off the EL
+    /// saturation closure alone and runs no tableau probe and no consistency check.
+    /// A sound under-approximation: every listed type is entailed, but a type may
+    /// be MISSING with every other flag clean, and an inconsistent ontology (where
+    /// every type is entailed) may go undetected. `false` on a plain `realize`.
+    pub(crate) saturation_only: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -758,7 +766,11 @@ pub(crate) fn build_verify_el_json(
 }
 
 #[must_use]
-pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>) -> RealizeJson {
+pub(crate) fn build_realize_json(
+    r: &Realization,
+    dropped: BTreeMap<String, u64>,
+    saturation_only: bool,
+) -> RealizeJson {
     let mut individuals: Vec<IndividualTypesJson> = r
         .individuals()
         .iter()
@@ -789,6 +801,7 @@ pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>
         direct_types_unverified: r.direct_types_unverified(),
         relies_on_trusted_consistency: r.relies_on_trusted_consistency(),
         no_verdict: r.no_verdict(),
+        saturation_only,
         individuals,
         dropped,
     }

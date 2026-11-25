@@ -121,8 +121,10 @@ cut: it does not set `incomplete`.
 verdict: a route gave up, or was skipped because `--global-timeout-ms` had
 already run out (#162), or classify's consistency probe was admitted (an
 unsatisfiable class, an incomplete `ABox` run, or counted data values) and gave
-up (#446). `consistent: true` then means "no clash found", not
-"proven consistent". A separate field; it does not set `incomplete`.
+up (#446). Under `--saturation-only` it is set whenever the input is not pure
+EL (#539): only the saturation closure looked for a clash. `consistent: true`
+then means "no clash found", not "proven consistent". A separate field; it does
+not set `incomplete`.
 
 **`incomplete: false` does NOT mean complete.** It means no class pair or per-class unsat probe was cut (other give-ups, such
 as `consistency_undetermined` or `derived_same_undecided`, have their own fields).
@@ -215,7 +217,7 @@ depth cap), #497.
 { "schema_version": 1, "incomplete": bool, "witness_prune_active": bool,
   "witness_prune_may_drop": bool, "witness_prune_reasons": [string],
   "direct_types_unverified": bool, "relies_on_trusted_consistency": bool,
-  "no_verdict": bool, "depth_capped": bool,
+  "no_verdict": bool, "depth_capped": bool, "saturation_only": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
 ```
@@ -265,6 +267,11 @@ another:
   instance", or an unchecked pair), `incomplete` is set too, and the command exits 3 after
   printing this JSON. Not covered: the pseudo-model witness build (a stall there only disables
   the prune) and the #369 lazy consistency check.
+- `saturation_only` (#539, no `schema_version` bump): the run was `realize --saturation-only`.
+  Types come from the EL saturation closure alone, with no tableau probe, so a type may be
+  MISSING with every other flag `false`, and an inconsistency the closure does not derive goes
+  undetected (an inconsistent ontology entails every type). Every listed type is still
+  entailed. `false` on a plain `realize`. The command also prints a stderr note.
 
 `dropped` maps each axiom kind dropped at conversion to its count (empty when
 nothing was dropped).

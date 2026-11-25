@@ -185,6 +185,20 @@ pub(crate) struct ClassifyJson {
     /// answer was guessed. A fall-through the tableau could not finish is reported by
     /// the fields that cover that. Diagnostic; 0 when the guard never fired.
     pub(crate) wedge_merge_churn_stops: u64,
+    /// #571: classify's consistency wedge returned `Stalled` (no verdict). Since
+    /// #571 the main tableau then runs in what is left of the wedge's budget, and
+    /// `stalled_wedge_fallback` says what it answered. Diagnostic.
+    pub(crate) consistency_wedge_stalled: bool,
+    /// #571: that consistency wedge's fixpoints the merge-churn guard stopped: the
+    /// cause of the `Stalled` when non-zero, its deadline or another cap when 0.
+    /// Separate from `wedge_merge_churn_stops`, which counts the classify wedge.
+    pub(crate) consistency_wedge_merge_churn_stops: u64,
+    /// #571: what the main-tableau fallback after a `Stalled` consistency wedge
+    /// answered: `"consistent"` (a model), `"inconsistent"` (a clash), `"gave_up"`
+    /// (no verdict in budget; `consistency_undetermined` stays set), or `null` when
+    /// it did not run (`RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK=0`, no budget left,
+    /// or no `Stalled` wedge).
+    pub(crate) stalled_wedge_fallback: Option<&'static str>,
     /// #462/#475: probes (per-class unsat probes and pair probes) that ended in
     /// `NoVerdict` as an internal limit, likely a reasoner bug (#449): any probe with NO
     /// deadline (e.g. under `--pair-timeout-ms 0`), and any probe whose deterministic
@@ -614,6 +628,11 @@ pub(crate) fn build_classify_json(
         derived_same_undecided: stats.derived_same_undecided,
         matrix_closure_added_pairs: stats.matrix_closure_added_pairs,
         wedge_merge_churn_stops: stats.wedge_merge_churn_stops,
+        consistency_wedge_stalled: stats.consistency_wedge_stalled,
+        consistency_wedge_merge_churn_stops: stats.consistency_wedge_merge_churn_stops,
+        stalled_wedge_fallback: stats
+            .stalled_wedge_fallback
+            .map(owl_dl_reasoner::StalledWedgeFallback::as_str),
         no_verdict_pairs: stats.no_verdict_pairs,
         unsatisfiable,
         equivalent_groups: groups,
@@ -645,6 +664,9 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         derived_same_undecided: 0,
         matrix_closure_added_pairs: 0,
         wedge_merge_churn_stops: 0,
+        consistency_wedge_stalled: false,
+        consistency_wedge_merge_churn_stops: 0,
+        stalled_wedge_fallback: None,
         no_verdict_pairs: 0,
         unsatisfiable: Vec::new(),
         equivalent_groups: Vec::new(),

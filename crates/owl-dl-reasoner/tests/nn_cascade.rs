@@ -880,9 +880,10 @@ fn r_cycle() -> String {
 }
 
 /// `(consistent, consistency_undetermined)` on the r-cycle with `assertion`, from
-/// the unbounded top-down driver, a deadline-bearing run (2 s), and the `n²`
-/// driver. Each runs the pre-check on a different deadline: none (capped at
-/// `consistency_fallback_ms`), the global deadline, and none again.
+/// the top-down driver, a run with a per-pair timeout (30 s, generous so a loaded
+/// runner cannot cut it), and the `n²` driver. Every one of them gives the
+/// pre-check its own adaptive budget (`classify_inconsistency_budget_ms`); the
+/// no-deadline cap is pinned separately, in `stalled_wedge_consistency_cli.rs`.
 fn r_cycle_classify(assertion: &str) -> [(bool, bool); 3] {
     let o = onto(&format!("{}\n{assertion}", r_cycle()));
     let read = |c: owl_dl_reasoner::Classification| {
@@ -892,7 +893,7 @@ fn r_cycle_classify(assertion: &str) -> [(bool, bool); 3] {
     [
         read(owl_dl_reasoner::classify(&o).unwrap()),
         read(
-            owl_dl_reasoner::classify_with_timeout(&o, std::time::Duration::from_secs(2)).unwrap(),
+            owl_dl_reasoner::classify_with_timeout(&o, std::time::Duration::from_secs(30)).unwrap(),
         ),
         read(owl_dl_reasoner::classify_n2(&o).unwrap()),
     ]

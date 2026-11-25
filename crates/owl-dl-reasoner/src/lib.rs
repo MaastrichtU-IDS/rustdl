@@ -3661,19 +3661,38 @@ pub(crate) fn classify_inconsistency_precheck_capturing(
                     std::time::Instant::now()
                         + std::time::Duration::from_millis(consistency_fallback_ms())
                 });
+                // `bounded_prep` reuses `closure` instead of saturating again. That is
+                // sound only for a COMPLETE closure of this same `internal`, and both
+                // callers guarantee it: `classify_top_down_internal_impl` returns early
+                // (`classify_prep_timeout`, "saturate") when its saturation was
+                // aborted, before it reaches this pre-check, and
+                // `classify_internal_with_timeout_impl` saturates without a deadline.
                 let route = MainConsistencyRoute {
                     abox_saturation_done: route1_done,
                     wedge_stalled: true,
+                    reflexive_checked_by_caller: true,
                     bounded_prep: Some(closure.clone()),
                 };
-                let verdict = is_consistent_internal_with(internal.clone(), Some(deadline), route);
+                // As `rustdl consistent` runs it (#182): no early abandon, so the
+                // fallback gives up only on its budget.
+                let verdict = {
+                    let _full =
+                        consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
+                    is_consistent_internal_with(internal.clone(), Some(deadline), route)
+                };
                 if trace {
                     eprintln!("classify: consistency wedge Stalled; main tableau: {verdict:?}");
                 }
-                match verdict {
-                    Ok(Some(false)) => return true,
-                    Ok(Some(true)) => cut = false,
-                    Ok(None) | Err(_) => cut = true,
+                let outcome = match verdict {
+                    Ok(Some(false)) => StalledWedgeFallback::Inconsistent,
+                    Ok(Some(true)) => StalledWedgeFallback::Consistent,
+                    Ok(None) | Err(_) => StalledWedgeFallback::GaveUp,
+                };
+                update_consistency_wedge_report(|r| r.fallback = Some(outcome));
+                match outcome {
+                    StalledWedgeFallback::Inconsistent => return true,
+                    StalledWedgeFallback::Consistent => cut = false,
+                    StalledWedgeFallback::GaveUp => cut = true,
                 }
             } else {
                 if trace {
@@ -3837,6 +3856,70 @@ thread_local! {
     static CONSISTENCY_TRUSTED_WEDGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+thread_local! {
+    /// #571: what classify's pre-check saw of its consistency wedge, and what the
+    /// main-tableau fallback after a `Stalled` wedge answered. Same discipline as
+    /// [`CONSISTENCY_UNDETERMINED`]: cleared by the classify drivers before the run
+    /// and moved into `ClassificationStats` after it.
+    static CONSISTENCY_WEDGE_REPORT: std::cell::Cell<ConsistencyWedgeReport> =
+        const { std::cell::Cell::new(ConsistencyWedgeReport::NONE) };
+}
+
+/// See [`CONSISTENCY_WEDGE_REPORT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConsistencyWedgeReport {
+    /// The consistency wedge returned `Stalled`.
+    pub(crate) stalled: bool,
+    /// Its fixpoints the merge-churn guard stopped.
+    pub(crate) merge_churn_stops: u64,
+    /// The #571 fallback's verdict, if it ran.
+    pub(crate) fallback: Option<StalledWedgeFallback>,
+}
+
+impl ConsistencyWedgeReport {
+    const NONE: Self = Self {
+        stalled: false,
+        merge_churn_stops: 0,
+        fallback: None,
+    };
+}
+
+/// The verdict of the #571 main-tableau fallback after a `Stalled` consistency wedge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StalledWedgeFallback {
+    /// The main tableau found a model.
+    Consistent,
+    /// The main tableau (or a check before it) found a clash.
+    Inconsistent,
+    /// No verdict within the budget, or an error.
+    GaveUp,
+}
+
+impl StalledWedgeFallback {
+    /// The `classify --json` spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Consistent => "consistent",
+            Self::Inconsistent => "inconsistent",
+            Self::GaveUp => "gave_up",
+        }
+    }
+}
+
+fn update_consistency_wedge_report(f: impl FnOnce(&mut ConsistencyWedgeReport)) {
+    CONSISTENCY_WEDGE_REPORT.with(|c| {
+        let mut r = c.get();
+        f(&mut r);
+        c.set(r);
+    });
+}
+
+/// Read and clear [`CONSISTENCY_WEDGE_REPORT`].
+pub(crate) fn take_consistency_wedge_report() -> ConsistencyWedgeReport {
+    CONSISTENCY_WEDGE_REPORT.with(|c| c.replace(ConsistencyWedgeReport::NONE))
+}
+
 /// Record that classify's consistency rests on a trusted wedge `Sat` (#429).
 pub(crate) fn mark_consistency_trusted_wedge() {
     CONSISTENCY_TRUSTED_WEDGE.with(|f| f.set(true));
@@ -3893,6 +3976,11 @@ fn classify_wedge_consistency(
         }
         _ => cache.decide(deadline),
     };
+    let churn = cache.merge_churn_stops();
+    update_consistency_wedge_report(|r| {
+        r.stalled |= verdict == HyperResult::Stalled;
+        r.merge_churn_stops += churn;
+    });
     if verdict == HyperResult::Unsat && std::env::var_os("RUSTDL_TRACE").is_some() {
         eprintln!("classify: KB inconsistent (wedge Unsat)");
     }
@@ -6871,6 +6959,9 @@ pub(crate) struct ConsistencyCache {
     /// the engine never sees them, so a witness built here can lack what they
     /// entail (#387).
     deferred_clauses: usize,
+    /// #571: wedge fixpoints the merge-churn guard stopped, over every engine this
+    /// cache ran. Diagnostic.
+    merge_churn_stops: std::sync::atomic::AtomicU64,
 }
 
 impl ConsistencyCache {
@@ -6974,6 +7065,7 @@ impl ConsistencyCache {
             num_individuals,
             sat_lookahead,
             deferred_clauses,
+            merge_churn_stops: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -7040,7 +7132,24 @@ impl ConsistencyCache {
         if owl_dl_tableau::seeded_fixpoint_uncapped_enabled() {
             engine = engine.with_deadline_bounded_fixpoint();
         }
-        engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
+        let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        self.note_churn(&engine);
+        verdict
+    }
+
+    /// #571: add an engine's merge-churn stops to this cache's total.
+    fn note_churn(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) {
+        let n = engine.merge_churn_stops();
+        if n > 0 {
+            self.merge_churn_stops
+                .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// #571: wedge fixpoints the merge-churn guard stopped so far.
+    pub(crate) fn merge_churn_stops(&self) -> u64 {
+        self.merge_churn_stops
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// [`Self::decide`], also returning the model on `Sat` (#430): the same engine,
@@ -7056,6 +7165,7 @@ impl ConsistencyCache {
             engine = engine.with_deadline_bounded_fixpoint();
         }
         let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        self.note_churn(&engine);
         let witness = (verdict == HyperResult::Sat).then(|| self.witness_of_sat(&engine));
         (verdict, witness)
     }
@@ -8966,9 +9076,13 @@ pub(crate) struct MainConsistencyRoute {
     /// deterministic, so a second run would stall again; go straight to the main
     /// tableau.
     wedge_stalled: bool,
+    /// The caller runs [`reflexive_empty_clause_inconsistent`] itself (classify's
+    /// pre-check does, last), so it is not run twice.
+    reflexive_checked_by_caller: bool,
     /// Build the [`PreparedOntology`] under the deadline (an expiry is `Ok(None)`),
-    /// reusing this complete closure of the same `internal`. `None` keeps the
-    /// unbounded `from_internal`, as before #571.
+    /// reusing this complete closure of the same `internal`, and without the wedge
+    /// caches (`HyperCache`, `ConsistencyCache`) this route never reads. `None`
+    /// keeps the unbounded `from_internal`, as before #571.
     bounded_prep: Option<owl_dl_saturation::Subsumers>,
 }
 
@@ -8995,7 +9109,7 @@ fn is_consistent_internal_with(
     // guess.
     let remaining = deadline.map(|d| d.saturating_duration_since(std::time::Instant::now()));
     if (!route.abox_saturation_done && abox_saturation_inconsistent_bounded(&internal, remaining))
-        || reflexive_empty_clause_inconsistent(&internal)
+        || (!route.reflexive_checked_by_caller && reflexive_empty_clause_inconsistent(&internal))
     {
         return Ok(Some(false));
     }
@@ -9012,8 +9126,7 @@ fn is_consistent_internal_with(
     let prepared = match route.bounded_prep {
         None => PreparedOntology::from_internal(internal)?,
         Some(closure) => {
-            match PreparedOntology::from_internal_with_deadline(internal, deadline, Some(closure))?
-            {
+            match PreparedOntology::from_internal_prep(internal, deadline, Some(closure), false)? {
                 Some(p) => p,
                 None => return Ok(None),
             }
@@ -11636,9 +11749,21 @@ impl PreparedOntology {
     /// complete by construction at the call site — but a future caller must preserve
     /// that, or pass `None`.
     pub(crate) fn from_internal_with_deadline(
+        internal: InternalOntology,
+        deadline: Option<std::time::Instant>,
+        precomputed_closure: Option<owl_dl_saturation::Subsumers>,
+    ) -> Result<Option<Self>, ReasonError> {
+        Self::from_internal_prep(internal, deadline, precomputed_closure, true)
+    }
+
+    /// [`Self::from_internal_with_deadline`]; with `wedges` false the wedge caches
+    /// (`hyper`, `consistency`) are not built (#571: the main-tableau consistency
+    /// fallback never reads them, and building them clausifies the KB again).
+    fn from_internal_prep(
         mut internal: InternalOntology,
         deadline: Option<std::time::Instant>,
         precomputed_closure: Option<owl_dl_saturation::Subsumers>,
+        wedges: bool,
     ) -> Result<Option<Self>, ReasonError> {
         // One-liner so each boundary below is a single readable line. `None` ⇒
         // constant-false (the closure is inlined and the branch folds away).
@@ -11697,7 +11822,7 @@ impl PreparedOntology {
         if expired() {
             return Ok(None);
         }
-        let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
+        let hyper = (wedges && hyper_wedge_enabled()).then(|| HyperCache::build(&internal));
         if expired() {
             return Ok(None);
         }
@@ -11707,8 +11832,9 @@ impl PreparedOntology {
         // byte-identical). Built from the un-mutated `internal`,
         // before the absorb/NNF passes below consume it — so every
         // nominal/role id is matched-by-construction with the clause set.
-        let consistency = (wedge_consistency_enabled() && internal_has_individuals(&internal))
-            .then(|| ConsistencyCache::build(&internal));
+        let consistency =
+            (wedges && wedge_consistency_enabled() && internal_has_individuals(&internal))
+                .then(|| ConsistencyCache::build(&internal));
         let wedge_sat_skips_data_counting = consistency.is_some()
             && consistency_data_counting_verify_enabled()
             && pool_has_dkey_counting(&internal.concepts, &dkey_ranges);

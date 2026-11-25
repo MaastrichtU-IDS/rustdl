@@ -50,9 +50,8 @@ impl Drop for Fixture {
     }
 }
 
-/// `classify --json` with no inherited `RUSTDL_*` settings, plus `env`; returns
-/// `(consistent, consistency_undetermined)`.
-fn classify(path: &str, env: &[(&str, &str)]) -> (bool, bool) {
+/// `classify --json` with no inherited `RUSTDL_*` settings, plus `env`.
+fn classify_json(path: &str, env: &[(&str, &str)]) -> serde_json::Value {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("RUSTDL_") {
@@ -65,16 +64,54 @@ fn classify(path: &str, env: &[(&str, &str)]) -> (bool, bool) {
         .output()
         .unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+    serde_json::from_str(&stdout).unwrap_or_else(|e| {
         panic!(
             "{env:?}: {e}: {stdout} / {}",
             String::from_utf8_lossy(&out.stderr)
         )
-    });
+    })
+}
+
+/// [`classify_json`]'s `(consistent, consistency_undetermined)`.
+fn classify(path: &str, env: &[(&str, &str)]) -> (bool, bool) {
+    let v = classify_json(path, env);
     (
         v["consistent"].as_bool().unwrap(),
         v["consistency_undetermined"].as_bool().unwrap(),
     )
+}
+
+/// The diagnostics that count fallback firings: the wedge stalled on the
+/// merge-churn guard, and the fallback's verdict, `null` when it did not run.
+#[test]
+fn the_json_reports_the_stall_and_the_fallback_verdict() {
+    let f = Fixture::new("json");
+    let fields = |env: &[(&str, &str)]| {
+        let v = classify_json(f.path(), env);
+        (
+            v["consistency_wedge_stalled"].as_bool().unwrap(),
+            v["consistency_wedge_merge_churn_stops"].as_u64().unwrap() > 0,
+            v["stalled_wedge_fallback"].clone(),
+        )
+    };
+    assert_eq!(
+        fields(&[]),
+        (true, true, serde_json::json!("consistent")),
+        "default"
+    );
+    assert_eq!(
+        fields(&[
+            ("RUSTDL_MAX_NODES", "1"),
+            ("RUSTDL_CLASSIFY_CONSISTENCY_PROBE", "0")
+        ]),
+        (true, true, serde_json::json!("gave_up")),
+        "node cap"
+    );
+    assert_eq!(
+        fields(&[("RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK", "0")]),
+        (true, true, serde_json::Value::Null),
+        "fallback off"
+    );
 }
 
 #[test]
@@ -108,5 +145,30 @@ fn a_main_tableau_give_up_keeps_the_kb_undetermined() {
         ),
         (true, true),
         "node cap: undetermined"
+    );
+}
+
+/// The no-deadline cap. With `RUSTDL_CLASSIFY_INCONSISTENCY_MS=0` the pre-check
+/// routes have no budget of their own (and the CLI sets no global deadline), so the
+/// fallback is capped at `RUSTDL_CONSISTENCY_FALLBACK_MS` instead of running
+/// unbounded. A zero cap leaves it no time, so the KB stays undetermined; a fallback
+/// that ran with no deadline would decide it. The #446 probe is off as above.
+#[test]
+fn with_no_route_budget_the_fallback_is_capped() {
+    let f = Fixture::new("cap");
+    let no_budget = ("RUSTDL_CLASSIFY_INCONSISTENCY_MS", "0");
+    let no_probe = ("RUSTDL_CLASSIFY_CONSISTENCY_PROBE", "0");
+    assert_eq!(
+        classify(f.path(), &[no_budget, no_probe]),
+        (true, false),
+        "no route budget, default cap: decided"
+    );
+    assert_eq!(
+        classify(
+            f.path(),
+            &[no_budget, no_probe, ("RUSTDL_CONSISTENCY_FALLBACK_MS", "0")]
+        ),
+        (true, true),
+        "no route budget, zero cap: undetermined"
     );
 }

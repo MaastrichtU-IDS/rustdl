@@ -877,6 +877,17 @@ pub struct ClassificationStats {
     /// wedge only, not the consistency wedge (whose `Stalled` sets
     /// `consistency_undetermined`).
     pub wedge_merge_churn_stops: u64,
+    /// #571: classify's consistency wedge (the pre-check's `ABox`-seeded wedge)
+    /// returned `Stalled`. Diagnostic.
+    pub consistency_wedge_stalled: bool,
+    /// #571: that wedge's fixpoints the merge-churn guard stopped, the usual cause
+    /// of its `Stalled` (none means it stalled on its deadline or another cap).
+    /// Not in `wedge_merge_churn_stops`, which counts the classify wedge only.
+    pub consistency_wedge_merge_churn_stops: u64,
+    /// #571: the verdict of the main-tableau fallback that ran after a `Stalled`
+    /// consistency wedge (`RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK`), or `None` when
+    /// it did not run. `GaveUp` leaves `consistency_undetermined` set.
+    pub stalled_wedge_fallback: Option<crate::StalledWedgeFallback>,
     /// #448: wall time of the closure passes, in microseconds (a no-op pass on a
     /// transitive matrix is far below a millisecond). Diagnostic.
     pub matrix_closure_us: u64,
@@ -1868,6 +1879,7 @@ pub(crate) fn classify_internal_with_timeout(
 ) -> Result<Classification, ReasonError> {
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
+    crate::take_consistency_wedge_report();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
     c.stats.collapsed_operands = internal.collapsed_operands;
@@ -1880,6 +1892,10 @@ pub(crate) fn classify_internal_with_timeout(
         && !c.stats.inconsistent;
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
+    let wedge = crate::take_consistency_wedge_report();
+    c.stats.consistency_wedge_stalled = wedge.stalled;
+    c.stats.consistency_wedge_merge_churn_stops = wedge.merge_churn_stops;
+    c.stats.stalled_wedge_fallback = wedge.fallback;
     Ok(c)
 }
 
@@ -4420,6 +4436,7 @@ pub(crate) fn classify_top_down_internal_capturing(
     }
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
+    crate::take_consistency_wedge_report();
     let mut c =
         classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline, capture)?;
     c.stats.dropped = internal.dropped.clone();
@@ -4433,6 +4450,10 @@ pub(crate) fn classify_top_down_internal_capturing(
         && !c.stats.inconsistent;
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
+    let wedge = crate::take_consistency_wedge_report();
+    c.stats.consistency_wedge_stalled = wedge.stalled;
+    c.stats.consistency_wedge_merge_churn_stops = wedge.merge_churn_stops;
+    c.stats.stalled_wedge_fallback = wedge.fallback;
     Ok(c)
 }
 

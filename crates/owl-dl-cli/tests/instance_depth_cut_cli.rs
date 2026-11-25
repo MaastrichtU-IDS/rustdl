@@ -555,3 +555,141 @@ fn a_deadline_cut_in_justify_and_repair_is_not_a_depth_cut() {
     );
     assert!(!r.stderr.contains("decision-depth limit"), "{}", r.stderr);
 }
+
+// --- #574: the `--json` surfaces carry the cut cause (`depth_capped`, classify's
+// `depth_capped_pairs`), and `instances-expr` / `realize` print the cut warning on stderr
+// under `--json` too. Each positive case has a deadline-cut control, so a field wired to
+// `incomplete` instead of the depth cause fails.
+
+fn json(r: &Out) -> serde_json::Value {
+    serde_json::from_str(&r.stdout)
+        .unwrap_or_else(|e| panic!("stdout is not one JSON object ({e}): {}", r.stdout))
+}
+
+/// A boolean field; a missing key fails rather than reading as `false`.
+fn flag(v: &serde_json::Value, key: &str) -> bool {
+    v[key]
+        .as_bool()
+        .unwrap_or_else(|| panic!("no boolean `{key}` in {v}"))
+}
+
+#[test]
+fn instances_expr_and_realize_json_name_a_depth_cut() {
+    let f = Fixture::forall("json-list-depth", false);
+    let p = f.path();
+    let env = [("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", LONG_DEADLINE_MS)];
+    for (args, what) in [
+        (vec!["instances-expr", "--json", p, ":Y"], "instances-expr"),
+        (vec!["realize", "--json", p], "realize"),
+    ] {
+        let r = run(&env, &args);
+        assert_eq!(r.code, 0, "{what}: {}\n{}", r.stdout, r.stderr);
+        let v = json(&r);
+        assert!(flag(&v, "incomplete"), "{what}: {v}");
+        assert!(flag(&v, "depth_capped"), "{what}: {v}");
+        assert!(
+            r.stderr.contains(&format!("warning: {what}: {LIST_DEPTH}")),
+            "{what}: the cut warning under --json: {}",
+            r.stderr
+        );
+
+        // The deadline-free probe answers: nothing cut, no warning.
+        let r = run(&[("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "0")], &args);
+        assert_eq!(r.code, 0, "{what}: {}\n{}", r.stdout, r.stderr);
+        let v = json(&r);
+        assert!(!flag(&v, "incomplete"), "{what}: {v}");
+        assert!(!flag(&v, "depth_capped"), "{what}: {v}");
+        assert!(!r.stderr.contains("warning"), "{what}: {}", r.stderr);
+    }
+}
+
+#[test]
+fn a_deadline_cut_on_instances_expr_and_realize_json_is_not_a_depth_cut() {
+    let f = Fixture::forall("json-list-deadline", false);
+    let p = f.path();
+    let env = [
+        ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
+        ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "1"),
+    ];
+    for (args, what) in [
+        (vec!["instances-expr", "--json", p, ":Y"], "instances-expr"),
+        (vec!["realize", "--json", p], "realize"),
+    ] {
+        let r = run(&env, &args);
+        let v = json(&r);
+        assert!(flag(&v, "incomplete"), "{what}: {v}");
+        assert!(!flag(&v, "depth_capped"), "{what}: {v}");
+        assert!(
+            r.stderr.contains(&format!(
+                "warning: {what}: at least one instance probe was cut (deadline or node cap)"
+            )),
+            "{what}: {}",
+            r.stderr
+        );
+    }
+}
+
+#[test]
+fn justify_json_names_a_depth_cut() {
+    let env = [("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", LONG_DEADLINE_MS)];
+    // The top-level check gives up.
+    let f = Fixture::forall("json-justify-depth", false);
+    let p = f.path();
+    let r = run(&env, &["justify", "--json", p, "instance", A, Y]);
+    assert_eq!(r.code, 3, "{}\n{}", r.stdout, r.stderr);
+    let v = json(&r);
+    assert_eq!(v["status"], "unknown", "{v}");
+    assert!(flag(&v, "incomplete") && flag(&v, "depth_capped"), "{v}");
+    // The deadline-free probe decides "not entailed", with nothing cut.
+    let r = run(
+        &[("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "0")],
+        &["justify", "--json", p, "instance", A, Y],
+    );
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    let v = json(&r);
+    assert_eq!(v["status"], "not-entailed", "{v}");
+    assert!(!flag(&v, "incomplete") && !flag(&v, "depth_capped"), "{v}");
+    // Deadline control: a cut, but not a depth cut.
+    let r = run(
+        &[
+            ("RUSTDL_TABLEAU_EARLY_ABANDON", "0"),
+            ("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "1"),
+        ],
+        &["justify", "--json", p, "instance", A, Y],
+    );
+    let v = json(&r);
+    assert!(flag(&v, "incomplete") && !flag(&v, "depth_capped"), "{v}");
+    // Not covered: a give-up inside justify's search. With `a : Y` asserted
+    // (`Fixture::forall(_, true)`), justify finds the told axiom with nothing cut
+    // (measured: `incomplete: false`); the depth-cut probe there is repair's own check,
+    // and repair has no `--json`.
+}
+
+#[test]
+fn classify_json_counts_depth_capped_pairs() {
+    let f = Fixture::forall("json-classify", false);
+    let count = |v: &serde_json::Value| {
+        v["depth_capped_pairs"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("no `depth_capped_pairs` in {v}"))
+    };
+    // At the default early abandon the pair is cut by the depth limit (as the banner
+    // test above shows), long before its 10 s deadline.
+    let r = run(
+        &[],
+        &["classify", "--json", "--pair-timeout-ms", "10000", f.path()],
+    );
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    let v = json(&r);
+    assert!(flag(&v, "incomplete"), "{v}");
+    assert!(count(&v) >= 1, "{v}");
+    // Control: with early abandon effectively off the same pair is cut by its deadline,
+    // so `incomplete` without a depth cut.
+    let r = run(
+        &[("RUSTDL_TABLEAU_EARLY_ABANDON_HITS", "1000000")],
+        &["classify", "--json", "--pair-timeout-ms", "10000", f.path()],
+    );
+    let v = json(&r);
+    assert!(flag(&v, "incomplete"), "{v}");
+    assert_eq!(count(&v), 0, "{v}");
+}

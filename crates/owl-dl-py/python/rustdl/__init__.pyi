@@ -42,18 +42,19 @@ class Classification:
         ...
     @property
     def complete(self) -> bool:
-        """True iff no pair timed out. `True` does NOT mean no entailment is
-        missing: that is the stronger `completeness_guaranteed`. See also
-        `wedge_hierarchy_blind`: a result can be `complete` (no timeout) and
-        still miss entailments."""
+        """True iff no pair or probe was cut (a deadline, the node cap, the
+        decision-depth limit, a `NoVerdict` or a tail skip). `True` does NOT mean
+        no entailment is missing: that is the stronger `completeness_guaranteed`.
+        See also `wedge_hierarchy_blind`: a result can be `complete` (nothing cut)
+        and still miss entailments."""
         ...
     @property
     def completeness_guaranteed(self) -> bool:
         """True iff the hierarchy is guaranteed complete (no missed
-        subsumptions): pure EL, no timeout, no `wedge_hierarchy_blind`, no
+        subsumptions): pure EL, nothing cut, no `wedge_hierarchy_blind`, no
         `wedge_clauses_refused`, no `derived_same_undecided`, no
         `consistency_undetermined` and no dropped axiom. Stronger than
-        `complete`, which only says no pair timed out."""
+        `complete`, which only says nothing was cut."""
         ...
     @property
     def collapsed_operands(self) -> tuple[int, int]:

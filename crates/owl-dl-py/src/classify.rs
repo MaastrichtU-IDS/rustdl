@@ -77,8 +77,9 @@ impl PyClassification {
         self.inner.stats().no_verdict_pairs
     }
 
-    /// True iff classification ran to completion — no pair hit the
-    /// timeout. When `False`, the hierarchy may be missing real
+    /// True iff classification ran to completion — no pair or probe was cut
+    /// (a deadline, the node cap, the decision-depth limit, a `NoVerdict` or a
+    /// tail skip; #574). When `False`, the hierarchy may be missing real
     /// subsumptions (see `timed_out_pairs`); re-classify with
     /// `per_pair_timeout_ms=0, global_deadline_ms=0` for the unbounded result.
     /// `True` does NOT mean no entailment is missing: that is the stronger

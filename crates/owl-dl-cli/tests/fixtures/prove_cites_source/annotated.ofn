@@ -1,0 +1,11 @@
+Prefix(:=<http://t/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Ontology(<http://t/o>
+Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:Y)) Declaration(Class(:D))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q)) Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u)) Declaration(ObjectProperty(:v))
+Declaration(DataProperty(:dp)) Declaration(DataProperty(:dq)) Declaration(NamedIndividual(:a))
+SubClassOf(Annotation(rdfs:comment "a note") :X :Y)
+SubClassOf(:Y :D)
+)

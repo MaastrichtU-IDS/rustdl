@@ -390,11 +390,12 @@ fn go_pure_el_classify() {
 //
 // RO carries 25 `DLSafeRule` (SWRL) axioms encoding ABox-level
 // inferences over object-property atoms, plus chain axioms.
-// rustdl silently *skips* SWRL rules (see `C::Rule(_)` in
-// `crates/owl-dl-core/src/convert.rs`) on the same soundness
-// argument as length-N chain skipping: the rules' head predicates
-// don't enter class definitions, so class-side classification is
-// unaffected.
+// rustdl skips SWRL rules (see `C::Rule(_)` in
+// `crates/owl-dl-core/src/convert.rs`), a sound under-approximation,
+// and since #557 counts each one in `dropped` as
+// `"Rule: unsupported axiom (SWRL)"`, so the completeness claims
+// that read `dropped` (e.g. `completeness_guaranteed`) are false
+// on RO.
 //
 // HermiT on this box hit the 10-minute wrapper on RO (the earlier
 // session-start run took 1785 s = ~30 min); rustdl finishes the

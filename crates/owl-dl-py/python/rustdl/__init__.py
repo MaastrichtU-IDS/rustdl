@@ -88,11 +88,12 @@ Classification.superclasses_of = _superclasses_of  # type: ignore[attr-defined]
 
 class IncompleteClassificationWarning(UserWarning):
     """Raised when the returned hierarchy may be missing real subsumptions.
-    It is still a sound under-approximation (no false subsumptions). Three
+    It is still a sound under-approximation (no false subsumptions). The
     causes, each with its own remedy:
 
-    * a timeout fired (`result.complete is False`): pass
-      `per_pair_timeout_ms=0, global_timeout_ms=0` for the unbounded result;
+    * a class pair or probe was cut (`result.complete is False`): a time
+      budget or the node cap; pass `per_pair_timeout_ms=0, global_timeout_ms=0`
+      for the unbounded result;
     * a probe hit the tableau's search-depth limit
       (`result.depth_capped_pairs > 0`, #288): a larger `per_pair_timeout_ms`
       does not help; the unbounded run has a far larger limit but may not terminate;

@@ -105,7 +105,7 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, 
   (wine: 7.5× faster, identical hierarchy, MISSED=0 vs HermiT).
 - `saturation_only` — skip the tableau entirely; EL-closure-only
   under-approximation. Dramatically faster on mostly-EL ontologies, and
-  always `complete` (no tableau ⇒ no timeout).
+  always `complete` (no tableau ⇒ nothing is cut).
 
 `classify` / `classify_bytes` return a `Classification`:
 
@@ -205,9 +205,11 @@ default classifier is empirically near-complete across the measured corpus but
 not provably complete on all of SROIQ. `saturation_only` and
 `per_pair_timeout_ms` are sound-but-incomplete by construction.
 
-Data-property and datatype axioms outside the recognized preprocessing patterns
-are silently dropped (a sound under-approximation). `HasKey` and role chains
-longer than length 2 raise `UnsupportedAxiomError`. SWRL rules are skipped.
+Axioms the conversion cannot represent (data-property and datatype axioms outside
+the recognized preprocessing patterns, `HasKey`, SWRL rules) are dropped rather
+than raising an error: reasoning proceeds over the rest, a sound
+under-approximation. `dropped_axioms(path)` reports their kinds and counts. Role
+chains longer than 2 are supported (decomposed into length-2 chains).
 
 See the [project documentation](https://github.com/MaastrichtU-IDS/rustdl) for
 the full coverage matrix, soundness contract, and architecture notes.

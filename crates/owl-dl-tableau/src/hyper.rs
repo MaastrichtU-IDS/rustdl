@@ -108,6 +108,12 @@ fn trace_body_vars() -> bool {
 /// per-step clock read here is a measured cost in this codebase.
 const MATCH_DEADLINE_STRIDE: u64 = 4096;
 
+/// #569: `partition_rec` calls between two `Instant::now()` reads in the `≤n`
+/// partition enumeration ([`HyperEngine::partition_deadline_passed`]). Each call
+/// walks `must_be_distinct` over a block or, at a leaf, merges a whole partition
+/// and runs a `solve`, so a read every 64 calls costs nothing measurable.
+const PARTITION_DEADLINE_STRIDE: u64 = 64;
+
 /// Nodes between two clock reads in the open-rule scans
 /// (`find_open_disjunction`, `find_open_at_most`). See
 /// [`HyperEngine::open_scan_deadline_passed`].
@@ -1006,6 +1012,8 @@ pub struct HyperEngine<'c> {
     match_deadline_hit: std::cell::Cell<bool>,
     /// Stride counter for the match-enumeration deadline probe.
     match_steps: std::cell::Cell<u64>,
+    /// #569: stride counter for the `≤n` partition-enumeration deadline probe.
+    partition_steps: u64,
     /// Trigger indexes routing derivation events to the clauses they
     /// newly enable (see [`ClauseIndexes`]). Read-only after construction
     /// (never mutated during search). Stored as `Arc` so
@@ -2128,6 +2136,7 @@ impl<'c> HyperEngine<'c> {
             deadline: None,
             match_deadline_hit: std::cell::Cell::new(false),
             match_steps: std::cell::Cell::new(0),
+            partition_steps: 0,
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -2227,6 +2236,7 @@ impl<'c> HyperEngine<'c> {
             deadline: None,
             match_deadline_hit: std::cell::Cell::new(false),
             match_steps: std::cell::Cell::new(0),
+            partition_steps: 0,
             indexes,
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -4041,6 +4051,7 @@ impl<'c> HyperEngine<'c> {
         // A truncation flag belongs to the decide that set it.
         self.match_deadline_hit.set(false);
         self.match_steps.set(0);
+        self.partition_steps = 0;
         self.reseed_interval = RESEED_INITIAL_INTERVAL;
         self.reseed_skip_left = RESEED_INITIAL_INTERVAL;
         self.fixpoint_stride = 1;
@@ -4439,6 +4450,7 @@ impl<'c> HyperEngine<'c> {
             deadline: None,
             match_deadline_hit: std::cell::Cell::new(false),
             match_steps: std::cell::Cell::new(0),
+            partition_steps: 0,
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -5860,6 +5872,17 @@ impl<'c> HyperEngine<'c> {
         any_stalled: &mut bool,
         child_acc: &mut DepSet,
     ) -> Option<HyperResult> {
+        // #569: the enumeration itself must read the clock. Past the deadline
+        // every leaf's `solve` returns `Stalled` at entry, but the partitions of
+        // `succs` into `≤ n` blocks are exponentially many (101 witnesses into
+        // ≤100 blocks ran for minutes after a 5 s deadline), so without this the
+        // loop below never ends. Stopping returns `Stalled` (never `Sat`), and
+        // no state is held here: a leaf restores before it returns, and each
+        // caller pops its `groups` push.
+        if self.partition_deadline_passed() {
+            *any_stalled = true;
+            return Some(HyperResult::Stalled);
+        }
         if idx == succs.len() {
             // Complete partition (≤ n blocks). Merge each block into its
             // representative, then continue the search one level down.
@@ -5919,6 +5942,19 @@ impl<'c> HyperEngine<'c> {
             }
         }
         None
+    }
+
+    /// #569: the [`Self::partition_rec`] deadline probe, reading the clock once
+    /// every [`PARTITION_DEADLINE_STRIDE`] calls. With no deadline it is false and
+    /// never reads the clock.
+    fn partition_deadline_passed(&mut self) -> bool {
+        let Some(dl) = self.deadline else {
+            return false;
+        };
+        self.partition_steps = self.partition_steps.wrapping_add(1);
+        self.partition_steps
+            .is_multiple_of(PARTITION_DEADLINE_STRIDE)
+            && Instant::now() >= dl
     }
 
     /// Find a node with a violated `≤n` constraint: more distinct
@@ -12704,5 +12740,58 @@ mod tests {
             );
             assert!(eng.stats().head_clash_refutations >= 1, "net={net}");
         }
+    }
+
+    /// #569: `X ⊑ ∃t.X`, `X ⊑ ∃s.{a}`, `{a} ⊑ ≤100 s⁻`. Every `X` node is one of
+    /// `a`'s witnesses, so the #376 NN guard refuses each as a blocker and the
+    /// `t`-chain grows until `a` has 101 witnesses. The `≤100` partition search
+    /// over them then outlives the deadline, and its enumeration (exponentially
+    /// many partitions) must stop there with `Stalled`. Before the fix it ran on
+    /// for minutes after a 5 s deadline, each leaf's `solve` returning `Stalled`
+    /// at entry. The KB is consistent, so the verdict may never be `Unsat`; a
+    /// `Sat` inside the budget would be right, but no engine today gets there
+    /// (if one does, enlarge the bound so the test still reaches the cut).
+    #[test]
+    fn nominal_witness_chain_respects_the_deadline() {
+        let (role_t, role_s) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (class_x, nom) = (cls(0), cls(10));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(class_x, X)],
+                head: vec![Atom::Exists(role_t, class_x, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(class_x, X)],
+                head: vec![Atom::Exists(role_s, nom, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(nom, X)],
+                head: vec![Atom::AtMost(role_s.flip(), None, 100, X)],
+            },
+        ];
+        // Long enough to build the chain and reach the `≤100` partition search
+        // (about 0.5 s in release, under 3 s in a debug build).
+        let budget = std::time::Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 1 });
+        let slack = std::time::Duration::from_secs(4);
+        // The search runs on its own thread so an overrun fails the test at
+        // `budget + slack` instead of hanging it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut eng = HyperEngine::new(&clauses, class_x)
+                .with_incremental_fixpoint()
+                .with_double_blocking()
+                .with_nominals(10, 1);
+            let started = Instant::now();
+            let r = eng.decide_with_deadline(64, Some(started + budget));
+            let _ = tx.send((r, started.elapsed(), eng.stats().merge_branches));
+        });
+        let (r, elapsed, merge_branches) = rx
+            .recv_timeout(budget + slack)
+            .expect("decide_with_deadline ran past its deadline (#569)");
+        assert_eq!(r, HyperResult::Stalled, "after {elapsed:?}");
+        assert!(
+            merge_branches > 0,
+            "the run never reached the partition search"
+        );
     }
 }

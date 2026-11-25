@@ -30,6 +30,9 @@ SubClassOf(:A :C)
 ClassAssertion(:A :a)
 RULE)";
 
+/// An unsupported axiom of another kind, for the `--saturation-only` case.
+const HASKEY: &str = "Declaration(ObjectProperty(:r)) HasKey(:A (:r) ())";
+
 const RULE: &str = "DLSafeRule(Body(ClassAtom(:A Variable(<urn:swrl:var#x>))) \
                     Head(ClassAtom(:B Variable(<urn:swrl:var#x>))))";
 
@@ -37,11 +40,15 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn new(body: &str, rule: bool, tag: &str) -> Self {
+        Self::with(body, if rule { RULE } else { "" }, tag)
+    }
+
+    fn with(body: &str, extra: &str, tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "rustdl-swrl-dropped-{}-{tag}.ofn",
             std::process::id()
         ));
-        let text = body.replace("RULE", if rule { RULE } else { "" });
+        let text = body.replace("RULE", extra);
         std::fs::write(&path, text).unwrap();
         Self(path)
     }
@@ -119,4 +126,26 @@ fn instances_expr_with_a_swrl_rule_is_not_guaranteed() {
     assert_eq!(v["instances"], serde_json::json!([]), "control: {v}");
     assert_eq!(v["completeness_guaranteed"], true, "control: {v}");
     assert!(!stderr.contains("dropped"), "control: {stderr:?}");
+}
+
+/// Fable review of #577: `classify --saturation-only` (and Python's
+/// `classify(saturation_only=True)`) never copied `dropped` into its stats, so a
+/// pure-EL `TBox` with a rule, or with `HasKey`, still read `dropped: {}` and
+/// `completeness_guaranteed: true` there.
+#[test]
+fn saturation_only_classify_reports_the_drop() {
+    for (what, extra, kind) in [
+        ("rule", RULE, RULE_KIND),
+        ("HasKey", HASKEY, "HasKey: unsupported axiom (HasKey)"),
+    ] {
+        let f = Fixture::with(TBOX, extra, &format!("satonly-{what}"));
+        let (v, _) = json(&["classify", "--saturation-only", "--json", f.path()]);
+        assert_eq!(v["dropped"][kind], 1, "{what}: {v}");
+        assert_eq!(v["completeness_guaranteed"], false, "{what}: {v}");
+    }
+
+    let c = Fixture::with(TBOX, "", "satonly-none");
+    let (v, _) = json(&["classify", "--saturation-only", "--json", c.path()]);
+    assert_eq!(v["dropped"], serde_json::json!({}), "control: {v}");
+    assert_eq!(v["completeness_guaranteed"], true, "control: {v}");
 }

@@ -1842,13 +1842,17 @@ pub(crate) fn classify_saturation_only_internal(
         .map(|(i, iri)| (iri.clone(), i))
         .collect();
     let closure = saturate(internal);
-    Ok(classify_pure_el(
+    let mut c = classify_pure_el(
         internal,
         &reported,
         &index,
         &closure,
         analyze_fragment(internal),
-    ))
+    );
+    // #557: as the other classify entry points do; without it a dropped axiom (a
+    // SWRL rule, `HasKey`) left `completeness_guaranteed` true on this path.
+    c.stats.dropped = internal.dropped.clone();
+    Ok(c)
 }
 
 /// Internal entry point. Useful for tests that hand-build an

@@ -393,8 +393,9 @@ fn go_pure_el_classify() {
 // rustdl skips SWRL rules (see `C::Rule(_)` in
 // `crates/owl-dl-core/src/convert.rs`), a sound under-approximation,
 // and since #557 counts each one in `dropped` as
-// `"Rule: unsupported axiom (SWRL)"`, so no completeness claim
-// survives them.
+// `"Rule: unsupported axiom (SWRL)"`, so the completeness claims
+// that read `dropped` (e.g. `completeness_guaranteed`) are false
+// on RO.
 //
 // HermiT on this box hit the 10-minute wrapper on RO (the earlier
 // session-start run took 1785 s = ~30 min); rustdl finishes the

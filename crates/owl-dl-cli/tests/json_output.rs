@@ -861,7 +861,7 @@ fn prove_json_not_entailed() {
 }
 
 /// #214: with Layer A off the wedge is blind to the role hierarchy. That is
-/// reported in its own field; `incomplete` keeps meaning "a deadline fired".
+/// reported in its own field; `incomplete` keeps meaning "a class pair or probe was cut".
 /// The fixture is #214's probe t9 (`HermiT`: `A ≡ Nothing`).
 #[test]
 fn classify_reports_a_hierarchy_blind_wedge_in_its_own_field() {
@@ -884,7 +884,7 @@ fn classify_reports_a_hierarchy_blind_wedge_in_its_own_field() {
     };
     let blind = run("0");
     assert_eq!(blind["wedge_hierarchy_blind"], true);
-    assert_eq!(blind["incomplete"], false, "no deadline fired");
+    assert_eq!(blind["incomplete"], false, "nothing was cut");
     assert_eq!(blind["completeness_guaranteed"], false);
 
     // Layer A on (the default): not blind, and the clash is found.
@@ -977,8 +977,8 @@ fn classify_reports_a_cut_preparation_or_conversion_in_its_own_field() {
 }
 
 /// `completeness_guaranteed` at its two ends: a pure-EL ontology with nothing
-/// cut or dropped gets it, and one with a dropped axiom does not, even though no
-/// deadline fired. The predicate itself is pinned condition by condition in
+/// cut or dropped gets it, and one with a dropped axiom does not, even though
+/// nothing was cut. The predicate itself is pinned condition by condition in
 /// `owl-dl-reasoner/tests/completeness_contract.rs`; this pins the serialized
 /// field. See `docs/assurance/completeness-guarantee-ledger.md`.
 #[test]
@@ -1003,7 +1003,7 @@ fn classify_json_completeness_guaranteed_ends() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/json/dropped_tiny.ofn"
     ));
-    assert_eq!(dropped["incomplete"], false, "no deadline fired");
+    assert_eq!(dropped["incomplete"], false, "nothing was cut");
     assert!(
         dropped["dropped"]
             .as_object()

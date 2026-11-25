@@ -120,7 +120,9 @@ pub(crate) struct ClassifyJson {
     /// The inconsistency pre-check reached no verdict: a route gave up, or was
     /// skipped because the global deadline had already passed (#162), or
     /// classify's consistency probe was admitted (an unsatisfiable class, an
-    /// incomplete `ABox` run, or counted data values) and gave up (#446). So
+    /// incomplete `ABox` run, or counted data values) and gave up (#446), or the
+    /// run was `--saturation-only` on an input that is not pure EL, where only the
+    /// closure looked for a clash (#539). So
     /// `consistent: true` means "no clash found", not "proven consistent". On
     /// an inconsistent KB every class is unsatisfiable, so the hierarchy below
     /// may then be missing entailments (#204 review: a pigeonhole over

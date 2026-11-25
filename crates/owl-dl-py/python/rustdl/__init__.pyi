@@ -79,7 +79,9 @@ class Classification:
     @property
     def consistency_undetermined(self) -> bool:
         """True iff the inconsistency pre-check reached no verdict (#162), or
-        classify's consistency probe was admitted and gave up (#446), so
+        classify's consistency probe was admitted and gave up (#446), or
+        `saturation_only=True` ran on an input that is not pure EL, where only
+        the saturation closure looked for a clash (#539). So
         `inconsistent is False` means "no clash found", not "proven
         consistent"."""
         ...

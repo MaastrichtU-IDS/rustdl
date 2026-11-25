@@ -38,6 +38,12 @@ const FORALL_MISS: &str = "Declaration(Class(:C)) Declaration(Class(:D)) Declara
                            SubClassOf(ObjectSomeValuesFrom(:r ObjectIntersectionOf(:D :E)) :F)\n\
                            ClassAssertion(:C :a)";
 
+/// A functional role, `TBox` only: consistent (`HermiT` and Konclude).
+const FUNCTIONAL_TBOX: &str = "Declaration(Class(:C)) Declaration(Class(:D))\n\
+                               Declaration(ObjectProperty(:r))\n\
+                               FunctionalObjectProperty(:r)\n\
+                               SubClassOf(:C ObjectSomeValuesFrom(:r :D))";
+
 const NOTE: &str = "--saturation-only answers from the EL saturation closure alone";
 
 /// Writes the fixture to a per-test file (tests run in parallel).
@@ -118,6 +124,30 @@ fn a_proved_positive_carries_no_note() {
     ]);
     assert_eq!((code, out.trim()), (0, "yes"), "{err}");
     assert!(!err.contains(NOTE), "{err}");
+    // `instance`: the told `C(a)` is a closure "yes".
+    let g = Fixture::new("instance-yes", FORALL_MISS);
+    let (code, out, err) = run(&[
+        "instance",
+        "--saturation-only",
+        g.path(),
+        &iri("C"),
+        &iri("a"),
+    ]);
+    assert_eq!((code, out.trim()), (0, "yes"), "{err}");
+    assert!(!err.contains(NOTE), "instance: {err}");
+}
+
+/// Saturator-complete for the classify gate but not `PureEl` (a functional role):
+/// only `PureEl` lets saturation-only claim consistency, so it stays undetermined.
+#[test]
+fn a_saturator_complete_input_that_is_not_pure_el_stays_undetermined() {
+    let f = Fixture::new("functional", FUNCTIONAL_TBOX);
+    let (code, out, err) = run(&["classify", "--saturation-only", "--json", f.path()]);
+    assert_eq!(code, 0, "{err}");
+    let v = json(&out);
+    assert_eq!(v["consistent"], true, "{v}");
+    assert_eq!(v["consistency_undetermined"], true, "{v}");
+    assert_eq!(v["completeness_guaranteed"], false, "{v}");
 }
 
 #[test]
@@ -157,8 +187,9 @@ fn an_undetected_inconsistency_is_flagged() {
         assert_eq!(v["consistency_undetermined"], true, "{tag}: {v}");
         assert_eq!(v["completeness_guaranteed"], false, "{tag}: {v}");
         assert!(err.contains(NOTE), "{tag}: {err}");
-        let (_, out, _) = run(&["classify", "--saturation-only", f.path()]);
+        let (_, out, err) = run(&["classify", "--saturation-only", f.path()]);
         assert!(out.contains("# consistency: undetermined"), "{tag}: {out}");
+        assert!(err.contains(NOTE), "{tag}: text classify: {err}");
 
         let (code, out, err) = run(&["realize", "--saturation-only", "--json", f.path()]);
         assert_eq!(code, 0, "{tag}: {err}");

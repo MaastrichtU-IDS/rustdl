@@ -4394,14 +4394,14 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         out,
         &float_dkeys,
         &float_oneof_dkeys,
-        float_range_holds_nonzero,
+        float_range_holds_signed_zero_safe,
         float_range_nonzero_point,
     );
     seed_range_oneof_subsumptions(
         out,
         &double_dkeys,
         &double_oneof_dkeys,
-        float_range_holds_nonzero,
+        float_range_holds_signed_zero_safe,
         float_range_nonzero_point,
     );
     seed_range_oneof_subsumptions(
@@ -4538,9 +4538,11 @@ fn seed_range_oneof_disjoint<R, V>(
 ///
 /// Both are exact set inclusions over the bucket's exact key type, so an edge is
 /// never claimed for sets that are not nested. A key with no listed value (empty)
-/// gets no edge. `O(ranges × enumerations)`; the numeric enumeration buckets are
-/// empty on the ORE corpus (`docs/2026-08-03-dkey-volume-scan.md`) and under
-/// `RUSTDL_DKEY_ONEOF_SEED=0`, which makes this a no-op.
+/// gets no edge. Only a POINT range counts as finite for the IEEE and ordered
+/// buckets (a sound miss otherwise). `O(ranges × enumerations)`; 7 of the 1,920 ORE
+/// files carry a numeric enumeration (1 to 12 edges each, #556), and
+/// `RUSTDL_DKEY_ONEOF_SEED=0` empties the enumeration buckets, which makes this a
+/// no-op.
 fn seed_range_oneof_subsumptions<R, V: Ord>(
     out: &mut InternalOntology,
     ranges: &[(ClassId, R)],
@@ -4571,23 +4573,36 @@ fn seed_range_oneof_subsumptions<R, V: Ord>(
     }
 }
 
-/// `v ∈ r` for the IEEE buckets, but never for a zero. The buckets collapse `-0`
-/// and `+0` ([`crate::data_axioms::OrdF64::new`]), which is safe for the
-/// disjointness they were built for (it can only hide a clash), but a subsumption
-/// edge resting on that collapse could claim `{-0} ⊑ {+0}`. Leaving zero out is a
-/// sound miss.
-fn float_range_holds_nonzero(r: &FloatRange, v: &crate::data_axioms::OrdF64) -> bool {
-    v.0 != 0.0 && r.contains(v.0)
+/// `v ∈ r` for the IEEE buckets, except where signed zero makes it ambiguous. The
+/// buckets collapse `-0` and `+0` ([`crate::data_axioms::OrdF64::new`]), which is
+/// safe for the disjointness they were built for (it can only hide a clash), but an
+/// edge resting on that collapse could claim `{-0} ⊑ [+0, …]`, and `HermiT` keeps the
+/// two apart. A zero member therefore counts only when zero is strictly inside the
+/// range (no bound at zero), where both zeros are in it. A zero at a bound is a
+/// sound miss, recorded in `docs/known-limitations/`.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "matches the `Fn(&R, &V)` shape every bucket's `contains` takes"
+)]
+fn float_range_holds_signed_zero_safe(r: &FloatRange, v: &crate::data_axioms::OrdF64) -> bool {
+    let not_zero = |x: f64| x.total_cmp(&0.0).is_ne() && x.total_cmp(&-0.0).is_ne();
+    r.contains(v.0) && (not_zero(v.0) || (r.min.is_none_or(not_zero) && r.max.is_none_or(not_zero)))
 }
 
 /// The single value of a point IEEE range (`[p, p]`, both ends inclusive), unless
-/// it is zero or NaN (see [`float_range_holds_nonzero`]).
+/// it is a zero (see [`float_range_holds_signed_zero_safe`]). NaN never parses.
 fn float_range_nonzero_point(
     r: &FloatRange,
     _cap: usize,
 ) -> Option<Vec<crate::data_axioms::OrdF64>> {
     match (r.min, r.max) {
-        (Some(lo), Some(hi)) if lo == hi && r.min_incl && r.max_incl && lo != 0.0 => {
+        (Some(lo), Some(hi))
+            if lo.total_cmp(&hi).is_eq()
+                && r.min_incl
+                && r.max_incl
+                && lo.total_cmp(&0.0).is_ne()
+                && lo.total_cmp(&-0.0).is_ne() =>
+        {
             Some(vec![crate::data_axioms::OrdF64::new(lo)])
         }
         _ => None,

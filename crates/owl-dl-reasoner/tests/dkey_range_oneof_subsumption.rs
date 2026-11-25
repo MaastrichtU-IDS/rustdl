@@ -74,6 +74,132 @@ fn negative_control_a_two_member_enumeration_is_not_a_point() {
     ));
 }
 
+/// `C ⊑ E` for `C ⊑ sub`, `sup ⊑ E`.
+fn entails(sub: &str, sup: &str) -> bool {
+    c_sub_e(&format!("SubClassOf(:C {sub})\nSubClassOf({sup} :E)"))
+}
+
+fn some(range: &str) -> String {
+    format!("DataSomeValuesFrom(:d {range})")
+}
+
+fn has(lit: &str) -> String {
+    format!("DataHasValue(:d {lit})")
+}
+
+/// Negative controls, one per direction and bucket shape; both oracles say no
+/// (`HermiT` alone for signed zero, where Konclude says yes).
+#[test]
+fn negative_controls_per_direction() {
+    let cases: [(&str, String, String); 6] = [
+        (
+            "a range with a value outside the enumeration (4 ∉ {3,5,7})",
+            some(
+                r#"DatatypeRestriction(xsd:integer xsd:minInclusive "3"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)"#,
+            ),
+            some(r#"DataOneOf("3"^^xsd:integer "5"^^xsd:integer "7"^^xsd:integer)"#),
+        ),
+        (
+            "a dense decimal range is not its two endpoints",
+            some(
+                r#"DatatypeRestriction(xsd:decimal xsd:minInclusive "1.5"^^xsd:decimal xsd:maxInclusive "2.5"^^xsd:decimal)"#,
+            ),
+            some(r#"DataOneOf("1.5"^^xsd:decimal "2.5"^^xsd:decimal)"#),
+        ),
+        (
+            "-0 is not the enumerated +0 (HermiT; Konclude says yes)",
+            has(r#""-0.0"^^xsd:double"#),
+            some(r#"DataOneOf("0.0"^^xsd:double)"#),
+        ),
+        (
+            "an xsd:float enumeration is not an xsd:double point",
+            some(r#"DataOneOf("2.5"^^xsd:float)"#),
+            has(r#""2.5"^^xsd:double"#),
+        ),
+        (
+            "an exclusive bound leaves out its endpoint",
+            some(r#"DataOneOf("1.5"^^xsd:float)"#),
+            some(r#"DatatypeRestriction(xsd:float xsd:minExclusive "1.5"^^xsd:float)"#),
+        ),
+        (
+            "an integer outside a derived type's range (300 ∉ xsd:byte)",
+            some(r#"DataOneOf("300"^^xsd:integer)"#),
+            some("xsd:byte"),
+        ),
+    ];
+    for (what, sub, sup) in cases {
+        assert!(!entails(&sub, &sup), "{what}: no subsumption");
+    }
+    // `xsd:date` is outside the OWL 2 datatype map (HermiT rejects it); Konclude
+    // says no here and yes on the twin below.
+    assert!(!entails(
+        &some(r#"DataOneOf("2020-06-01"^^xsd:date)"#),
+        &has(r#""2020-06-02"^^xsd:date"#)
+    ));
+}
+
+/// Positives per bucket and direction; both oracles say yes unless noted.
+#[test]
+fn positives_per_direction_and_bucket() {
+    let cases: [(&str, String, String); 7] = [
+        (
+            "decimal point ⊑ enumeration (\"1.50\" is 1.5)",
+            has(r#""1.50"^^xsd:decimal"#),
+            some(r#"DataOneOf("1.5"^^xsd:decimal "2.5"^^xsd:decimal)"#),
+        ),
+        (
+            "dateTime point ⊑ enumeration",
+            has(r#""2020-06-01T00:00:00"^^xsd:dateTime"#),
+            some(
+                r#"DataOneOf("2020-06-01T00:00:00"^^xsd:dateTime "2021-06-01T00:00:00"^^xsd:dateTime)"#,
+            ),
+        ),
+        (
+            "finite integer range ⊑ enumeration ((2,6) is {3,4,5}; HermiT, Konclude under-reports)",
+            some(
+                r#"DatatypeRestriction(xsd:integer xsd:minExclusive "2"^^xsd:integer xsd:maxExclusive "6"^^xsd:integer)"#,
+            ),
+            some(
+                r#"DataOneOf("3"^^xsd:integer "4"^^xsd:integer "5"^^xsd:integer "7"^^xsd:integer)"#,
+            ),
+        ),
+        (
+            "xsd:float rounding (16777217 and 16777216 are one f32)",
+            some(r#"DataOneOf("16777217"^^xsd:float)"#),
+            has(r#""16777216"^^xsd:float"#),
+        ),
+        (
+            "an integer inside a derived type (100 ∈ xsd:byte)",
+            some(r#"DataOneOf("100"^^xsd:integer)"#),
+            some("xsd:byte"),
+        ),
+        (
+            "a zero strictly inside the range",
+            some(r#"DataOneOf("0.0"^^xsd:double "1.0"^^xsd:double)"#),
+            some(r#"DatatypeRestriction(xsd:double xsd:minInclusive "-1.0"^^xsd:double)"#),
+        ),
+        (
+            "xsd:date enumeration ⊑ point (Konclude; HermiT rejects xsd:date)",
+            some(r#"DataOneOf("2020-06-01"^^xsd:date)"#),
+            has(r#""2020-06-01"^^xsd:date"#),
+        ),
+    ];
+    for (what, sub, sup) in cases {
+        assert!(entails(&sub, &sup), "{what}: subsumed");
+    }
+}
+
+/// Residual: a zero AT a range bound gets no edge, because the buckets collapse
+/// `-0` and `+0`. `HermiT` and Konclude derive this one; rustdl misses it.
+#[test]
+#[ignore = "#556 residual: signed zero at a bound (docs/known-limitations)"]
+fn an_enumerated_zero_against_a_zero_point() {
+    assert!(entails(
+        &some(r#"DataOneOf("0.0"^^xsd:double)"#),
+        &has(r#""0.0"^^xsd:double"#)
+    ));
+}
+
 #[test]
 fn an_excluded_enumerated_value_is_inconsistent_in_every_datatype() {
     for (oneof, excluded) in [
@@ -124,4 +250,16 @@ fn excluding_every_member_of_a_multi_member_enumeration() {
            NegativeDataPropertyAssertion(:d :a "2"^^xsd:integer)"#,
     );
     assert!(!owl_dl_reasoner::is_consistent(&o).expect("consistency"));
+}
+
+/// The `TBox` form of the residual above; it reads `completeness_guaranteed: true`
+/// (`docs/known-limitations/dkey-enumeration-case-split-and-signed-zero.md`).
+#[test]
+#[ignore = "#556 residual: needs the enumeration split into its points"]
+fn a_multi_member_enumeration_entails_what_each_member_does() {
+    assert!(c_sub_e(
+        r#"SubClassOf(:C DataSomeValuesFrom(:d DataOneOf("1"^^xsd:integer "2"^^xsd:integer)))
+           SubClassOf(DataHasValue(:d "1"^^xsd:integer) :E)
+           SubClassOf(DataHasValue(:d "2"^^xsd:integer) :E)"#
+    ));
 }

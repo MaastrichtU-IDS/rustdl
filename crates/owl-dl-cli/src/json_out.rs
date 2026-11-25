@@ -62,9 +62,11 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
 /// unsatisfiable class satisfiable. `PureEl` reads 0 by construction: every
 /// driver answers it from the saturator before any wedge runs.
 ///
-/// **This is an EXPOSURE count, not a defect count.** It reads RO_N on `ro`,
-/// SIO_N on `sio` and PIZZA_N on `pizza` (MEASURED), all three MISSED=0 against
-/// the Konclude oracle in the FP=0 net. A non-zero value says these verdicts
+/// **This is an EXPOSURE count, not a defect count.** At the CLI's default budget
+/// it reads 971 on `ro`, about 119,250 on `sio` and 2,623 on `pizza` (2026-11-25,
+/// three runs each; label prunes are most of it), and all three are MISSED=0
+/// against the Konclude oracle in the FP=0 net. Before #568 it counted only the
+/// per-pair channel (58, 163 and 102). A non-zero value says these verdicts
 /// were reached WITHOUT the tableau, not that any is wrong, which is why it is a
 /// diagnostic and not a stderr warning.
 ///

@@ -8,6 +8,7 @@
 //! The per-pair budget is generous (`--pair-timeout-ms 2000`): at the CLI's 5 ms
 //! default a loaded host can cut a label build and move a class to the tableau.
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::doc_markdown)]
 
 use std::path::PathBuf;
 use std::process::Command;

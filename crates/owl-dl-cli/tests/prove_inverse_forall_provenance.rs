@@ -185,3 +185,17 @@ fn a_nominal_individuals_assertions_are_cited() {
         ])
     );
 }
+
+/// #529: `Range(r⁻, K)` (that is, `Domain(r, K)`) and `X ⊑ ∃r.A` ⟹ `X ⊑ K`. The proof
+/// cites the range axiom as written. It used to print `ObjectPropertyRange(:r :K)`, an
+/// axiom not in the ontology (`convert_back::role_to_ope` dropped the inverse).
+#[test]
+fn an_inverse_role_axiom_is_cited_with_its_inverse() {
+    assert_eq!(
+        cited_axioms("prove_inverse_range_529", "X", "K"),
+        sorted(&[
+            "ObjectPropertyRange(ObjectInverseOf(:r) :K)",
+            "SubClassOf(:X ObjectSomeValuesFrom(:r :A))",
+        ])
+    );
+}

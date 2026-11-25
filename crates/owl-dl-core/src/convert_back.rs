@@ -2,9 +2,10 @@
 //! [`SetOntology`]. Pairs with [`crate::convert`] to close the bijection
 //! for the axiom shapes our IR can faithfully represent.
 //!
-//! Lossy on the source side only where Phase 0 already errors during
-//! forward conversion (inverse roles, anonymous individuals, data ranges),
-//! so the reverse never has to produce those.
+//! Lossy on the source side only where forward conversion already drops or
+//! errors (anonymous individuals, data ranges), so the reverse never has to
+//! produce those. Inverse roles are kept by forward conversion (`Role::Inverse`,
+//! from `ObjectInverseOf`) and reversed as `ObjectInverseOf` (#529).
 //!
 //! Concept-level rewrites in [`crate::convert`] are *not* inverted bit-for-
 //! bit. Specifically:
@@ -87,15 +88,21 @@ pub fn concept_to_class_expression(
     }
 }
 
-/// Reverse a [`Role`] (named only in Phase 0) into an
-/// [`ObjectPropertyExpression`].
+/// Reverse a [`Role`] into an [`ObjectPropertyExpression`], keeping its polarity:
+/// `r⁻` is `ObjectInverseOf(r)`. #529: this used to render `r⁻` as `r`, so a proof
+/// citing `ObjectPropertyRange(ObjectInverseOf(:r) :C)` printed `ObjectPropertyRange(:r
+/// :C)`, an axiom not in the ontology.
 fn role_to_ope(
     role: Role,
     vocab: &Vocabulary,
     build: &Build<RcStr>,
 ) -> ObjectPropertyExpression<RcStr> {
-    let iri = vocab.role_iri(role.role_id());
-    ObjectPropertyExpression::ObjectProperty(build.object_property(iri))
+    let p = build.object_property(vocab.role_iri(role.role_id()));
+    if role.is_inverse() {
+        ObjectPropertyExpression::InverseObjectProperty(p)
+    } else {
+        ObjectPropertyExpression::ObjectProperty(p)
+    }
 }
 
 fn class_to_named(id: ClassId, vocab: &Vocabulary, build: &Build<RcStr>) -> Class<RcStr> {
@@ -112,6 +119,31 @@ fn named_individual(
 
 fn role_to_named(role: Role, vocab: &Vocabulary, build: &Build<RcStr>) -> ObjectProperty<RcStr> {
     build.object_property(vocab.role_iri(role.role_id()))
+}
+
+/// `InverseObjectProperties(a, b)` (`b ≡ a⁻`). OWL's axiom takes named properties
+/// only; forward conversion builds it from named roles, but the IR allows either
+/// operand to be an inverse, so those forms are written as the equivalent axiom
+/// rather than dropping a polarity (#529): `(r⁻, s)` is `s ≡ r`, `(r, s⁻)` is
+/// `s ≡ r`, and `(r⁻, s⁻)` is `s ≡ r⁻`, i.e. `InverseObjectProperties(r, s)`.
+fn inverse_object_properties(
+    a: Role,
+    b: Role,
+    vocab: &Vocabulary,
+    build: &Build<RcStr>,
+) -> Component<RcStr> {
+    let (na, nb) = (
+        role_to_named(a, vocab, build),
+        role_to_named(b, vocab, build),
+    );
+    if a.is_inverse() == b.is_inverse() {
+        Component::InverseObjectProperties(InverseObjectProperties(na, nb))
+    } else {
+        Component::EquivalentObjectProperties(EquivalentObjectProperties(vec![
+            ObjectPropertyExpression::ObjectProperty(na),
+            ObjectPropertyExpression::ObjectProperty(nb),
+        ]))
+    }
 }
 
 fn ids_to_class_expressions(
@@ -198,12 +230,7 @@ pub fn axiom_to_component(
         Axiom::DisjointObjectProperties(roles) => Component::DisjointObjectProperties(
             DisjointObjectProperties(roles_to_opes(roles, vocab, build)),
         ),
-        Axiom::InverseObjectProperties(a, b) => {
-            Component::InverseObjectProperties(InverseObjectProperties(
-                role_to_named(*a, vocab, build),
-                role_to_named(*b, vocab, build),
-            ))
-        }
+        Axiom::InverseObjectProperties(a, b) => inverse_object_properties(*a, *b, vocab, build),
         Axiom::ObjectPropertyDomain { role, domain } => {
             Component::ObjectPropertyDomain(ObjectPropertyDomain {
                 ope: role_to_ope(*role, vocab, build),
@@ -472,6 +499,159 @@ mod tests {
             ho::DeclareNamedIndividual(b().named_individual("a")),
         ));
         assert_eq!(ax1, ax2);
+    }
+
+    fn inv(name: &str) -> ObjectPropertyExpression<RcStr> {
+        ObjectPropertyExpression::InverseObjectProperty(b().object_property(name))
+    }
+
+    /// #529: an inverse role keeps its polarity in every position `role_to_ope`
+    /// writes: concept roles, Domain / Range, sub-role (plain and chain) and super-role,
+    /// role characteristics, Equivalent / Disjoint properties and both assertions.
+    /// Each case checks the reversed component contains `ObjectInverseOf` and that a
+    /// second forward conversion reaches the same axiom.
+    #[test]
+    fn inverse_roles_round_trip_in_every_position() {
+        let bce = || Box::new(ce_class("A"));
+        let cases: Vec<Component<RcStr>> = vec![
+            Component::SubClassOf(ho::SubClassOf {
+                sub: ce_class("X"),
+                sup: ClassExpression::ObjectSomeValuesFrom {
+                    ope: inv("r"),
+                    bce: bce(),
+                },
+            }),
+            Component::SubClassOf(ho::SubClassOf {
+                sub: ce_class("X"),
+                sup: ClassExpression::ObjectAllValuesFrom {
+                    ope: inv("r"),
+                    bce: bce(),
+                },
+            }),
+            Component::SubClassOf(ho::SubClassOf {
+                sub: ce_class("X"),
+                sup: ClassExpression::ObjectMinCardinality {
+                    n: 2,
+                    ope: inv("r"),
+                    bce: bce(),
+                },
+            }),
+            Component::SubClassOf(ho::SubClassOf {
+                sub: ce_class("X"),
+                sup: ClassExpression::ObjectMaxCardinality {
+                    n: 1,
+                    ope: inv("r"),
+                    bce: bce(),
+                },
+            }),
+            Component::SubClassOf(ho::SubClassOf {
+                sub: ce_class("X"),
+                sup: ClassExpression::ObjectHasSelf(inv("r")),
+            }),
+            Component::ObjectPropertyDomain(ho::ObjectPropertyDomain {
+                ope: inv("r"),
+                ce: ce_class("A"),
+            }),
+            Component::ObjectPropertyRange(ho::ObjectPropertyRange {
+                ope: inv("r"),
+                ce: ce_class("A"),
+            }),
+            Component::SubObjectPropertyOf(ho::SubObjectPropertyOf {
+                sub: SubObjectPropertyExpression::ObjectPropertyExpression(inv("r")),
+                sup: ope("s"),
+            }),
+            Component::SubObjectPropertyOf(ho::SubObjectPropertyOf {
+                sub: SubObjectPropertyExpression::ObjectPropertyExpression(ope("r")),
+                sup: inv("s"),
+            }),
+            Component::SubObjectPropertyOf(ho::SubObjectPropertyOf {
+                sub: SubObjectPropertyExpression::ObjectPropertyChain(vec![inv("r"), ope("s")]),
+                sup: ope("t"),
+            }),
+            Component::TransitiveObjectProperty(ho::TransitiveObjectProperty(inv("r"))),
+            Component::FunctionalObjectProperty(ho::FunctionalObjectProperty(inv("r"))),
+            Component::InverseFunctionalObjectProperty(ho::InverseFunctionalObjectProperty(inv(
+                "r",
+            ))),
+            Component::IrreflexiveObjectProperty(ho::IrreflexiveObjectProperty(inv("r"))),
+            Component::EquivalentObjectProperties(ho::EquivalentObjectProperties(vec![
+                inv("r"),
+                ope("s"),
+            ])),
+            Component::DisjointObjectProperties(ho::DisjointObjectProperties(vec![
+                inv("r"),
+                ope("s"),
+            ])),
+            Component::ObjectPropertyAssertion(ho::ObjectPropertyAssertion {
+                ope: inv("r"),
+                from: ind("a"),
+                to: ind("b"),
+            }),
+            Component::NegativeObjectPropertyAssertion(ho::NegativeObjectPropertyAssertion {
+                ope: inv("r"),
+                from: ind("a"),
+                to: ind("b"),
+            }),
+        ];
+        let mut with_inverse = 0;
+        for c in cases {
+            let mut o = InternalOntology::new();
+            let Some(ax1) = convert_component(&c, &mut o.vocabulary, &mut o.concepts).unwrap()
+            else {
+                panic!("forward conversion dropped {c:?}");
+            };
+            let back = axiom_to_component(&ax1, &o, &b());
+            // Forward conversion normalises one inverse away: `InverseFunctional(r⁻)` is
+            // `Functional(r)`. Every other case keeps `r⁻`, and the reverse must too.
+            let normalised = matches!(c, Component::InverseFunctionalObjectProperty(_));
+            let kept = format!("{back:?}").contains("InverseObjectProperty(");
+            assert_eq!(kept, !normalised, "{c:?} came back as {back:?}");
+            with_inverse += usize::from(kept);
+            let ax2 = convert_component(&back, &mut o.vocabulary, &mut o.concepts)
+                .unwrap()
+                .unwrap();
+            assert_eq!(ax1, ax2, "{c:?} came back as {back:?}");
+        }
+        assert_eq!(
+            with_inverse, 17,
+            "cases that come back with ObjectInverseOf"
+        );
+    }
+
+    /// #529: an `InverseObjectProperties` axiom with an inverse operand (the IR allows
+    /// it; OWL's axiom takes named properties) is written as the equivalent axiom.
+    #[test]
+    fn inverse_object_properties_with_an_inverse_operand_keeps_its_meaning() {
+        let mut o = InternalOntology::new();
+        let r = o.vocabulary.intern_role("r");
+        let s = o.vocabulary.intern_role("s");
+        let back = |a: Role, bb: Role, o: &InternalOntology| {
+            axiom_to_component(&Axiom::InverseObjectProperties(a, bb), o, &b())
+        };
+        // (r⁻, s): s ≡ r.
+        assert_eq!(
+            back(Role::inverse(r), Role::named(s), &o),
+            Component::EquivalentObjectProperties(ho::EquivalentObjectProperties(vec![
+                ope("r"),
+                ope("s")
+            ]))
+        );
+        // (r, s⁻): s⁻ ≡ r⁻, so s ≡ r.
+        assert_eq!(
+            back(Role::named(r), Role::inverse(s), &o),
+            Component::EquivalentObjectProperties(ho::EquivalentObjectProperties(vec![
+                ope("r"),
+                ope("s")
+            ]))
+        );
+        // (r⁻, s⁻): s⁻ ≡ r, so s ≡ r⁻.
+        assert_eq!(
+            back(Role::inverse(r), Role::inverse(s), &o),
+            Component::InverseObjectProperties(ho::InverseObjectProperties(
+                b().object_property("r"),
+                b().object_property("s")
+            ))
+        );
     }
 
     #[test]

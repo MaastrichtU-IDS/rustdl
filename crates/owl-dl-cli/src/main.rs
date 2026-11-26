@@ -998,6 +998,21 @@ fn warn_if_clauses_refused(refused: usize, off_flag: &str) {
     }
 }
 
+/// #558: a trusted consistency-wedge `Sat` whose clausifier deferred clause encodings
+/// is a model of a weaker KB, as with refused clauses. The count is of deferral events
+/// (one axiom can count more than once), and 0 is not proof of a full KB.
+fn warn_if_consistency_deferred(stats: &owl_dl_reasoner::QueryStats) {
+    if stats.relies_on_trusted_consistency && stats.wedge_clauses_deferred > 0 {
+        eprintln!(
+            "\n⚠  NOT GUARANTEED COMPLETE: the consistency wedge's clausifier skipped {} \
+             encoding(s) of the input's axioms (deferrals; one axiom can count more than \
+             once), so its model may violate them and a clash they cause may be missed \
+             (#558). RUSTDL_WEDGE_CONSISTENCY=0 decides on the main tableau (no deadline).",
+            stats.wedge_clauses_deferred
+        );
+    }
+}
+
 /// `warn_if_incomplete` for a classification, with a cut PREPARATION reported as
 /// what it is. `classify_prep_timeout` counts the cut as one timed-out "pair" so
 /// `incomplete` fires; without this split the warning blamed one class pair for
@@ -2176,6 +2191,7 @@ fn run() -> Result<()> {
                             true,
                             false,
                             0,
+                            0,
                             true,
                             dropped,
                             owl_dl_core::set_operands::count(&onto).into()
@@ -2199,6 +2215,7 @@ fn run() -> Result<()> {
                         incomplete,
                         stats.relies_on_trusted_consistency,
                         stats.wedge_clauses_refused,
+                        stats.wedge_clauses_deferred,
                         false,
                         dropped,
                         owl_dl_core::set_operands::count(&onto).into()
@@ -2210,6 +2227,7 @@ fn run() -> Result<()> {
                         stats.wedge_clauses_refused,
                         "RUSTDL_WEDGE_CONSISTENCY=0 (main tableau, no deadline)",
                     );
+                    warn_if_consistency_deferred(&stats);
                 }
                 if incomplete {
                     std::process::exit(3);
@@ -2244,6 +2262,7 @@ fn run() -> Result<()> {
                     stats.wedge_clauses_refused,
                     "RUSTDL_WEDGE_CONSISTENCY=0 (main tableau, no deadline)",
                 );
+                warn_if_consistency_deferred(&stats);
             }
             warn_if_dropped(&dropped);
         }

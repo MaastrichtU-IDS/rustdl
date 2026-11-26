@@ -186,6 +186,14 @@ pub(crate) struct ClassifyJson {
     /// entailments that need them may be missing. A SEPARATE field for the same
     /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
     pub(crate) wedge_clauses_refused: usize,
+    /// #558: when `relies_on_trusted_consistency`, the clauses the CONSISTENCY
+    /// wedge refuses and the deferral events of its clausifier (encodings it skipped;
+    /// one axiom can count more than once): its `Sat` is a model of a KB weaker by
+    /// these, so it can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, and axiom kinds the clausifier ignores). A different wedge from
+    /// `wedge_clauses_refused` (classify's own). 0 when consistency does not rest on
+    /// that wedge.
+    pub(crate) consistency_wedge_clauses_refused: usize,
+    pub(crate) consistency_wedge_clauses_deferred: usize,
     /// #354: candidate individual equalities classify did not decide (budget, the
     /// global deadline or the probe cap), so it may be missing entailments that need
     /// them. A SEPARATE field: no class pair was cut.
@@ -275,6 +283,11 @@ pub(crate) struct ConsistentJson {
     /// `incomplete` (a give-up), as in `classify --json`. Counted whenever the
     /// consistency wedge was consulted; 0 when it was not.
     pub(crate) wedge_clauses_refused: usize,
+    /// #558: beside `wedge_clauses_refused`, the deferral events of the consistency
+    /// wedge's clausifier (encodings it skipped; one axiom can count more than once),
+    /// so a `consistent: true` from the wedge may miss a clash they cause. Counted
+    /// whenever the wedge was consulted. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, and axiom kinds the clausifier ignores).
+    pub(crate) wedge_clauses_deferred: usize,
     /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
     /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
     /// stalled, budgeted or not. The command also prints a "likely a reasoner bug" note
@@ -664,6 +677,8 @@ pub(crate) fn build_classify_json(
         completeness_guaranteed: h.completeness_guaranteed(),
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
         wedge_clauses_refused: stats.wedge_clauses_refused,
+        consistency_wedge_clauses_refused: stats.consistency_wedge_clauses_refused,
+        consistency_wedge_clauses_deferred: stats.consistency_wedge_clauses_deferred,
         derived_same_undecided: stats.derived_same_undecided,
         matrix_closure_added_pairs: stats.matrix_closure_added_pairs,
         wedge_merge_churn_stops: stats.wedge_merge_churn_stops,
@@ -696,6 +711,8 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         completeness_guaranteed: false,
         wedge_hierarchy_blind: false,
         wedge_clauses_refused: 0,
+        consistency_wedge_clauses_refused: 0,
+        consistency_wedge_clauses_deferred: 0,
         derived_same_undecided: 0,
         matrix_closure_added_pairs: 0,
         wedge_merge_churn_stops: 0,
@@ -723,14 +740,16 @@ fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool, 
     )
 }
 
-// `fn_params_excessive_bools`: one parameter per `ConsistentJson` schema field.
-#[allow(clippy::fn_params_excessive_bools)]
+// `fn_params_excessive_bools`, `too_many_arguments`: one parameter per
+// `ConsistentJson` schema field.
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
 #[must_use]
 pub(crate) fn build_consistent_json(
     consistent: bool,
     incomplete: bool,
     relies_on_trusted_consistency: bool,
     wedge_clauses_refused: usize,
+    wedge_clauses_deferred: usize,
     no_verdict: bool,
     dropped: BTreeMap<String, u64>,
     collapsed_operands: CollapsedOperandsJson,
@@ -741,6 +760,7 @@ pub(crate) fn build_consistent_json(
         incomplete,
         relies_on_trusted_consistency,
         wedge_clauses_refused,
+        wedge_clauses_deferred,
         no_verdict,
         dropped,
         collapsed_operands,

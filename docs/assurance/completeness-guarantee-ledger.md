@@ -36,7 +36,7 @@ All eight must hold.
 | 1 | `fragment == PureEl` | Only on PureEl is the engine that answers (the EL saturator) complete. `Horn` is a clause-shape label, not an engine property, and a Horn ontology exists on which `classify` misses an oracle-confirmed subsumption. `OutOfFragment` relies on the wedge's trusted `Sat`, which can miss silently. | #124 | `fragment` | not serialized (stderr banner `# fragment:` in non-JSON mode) | not exposed | `completeness_contract.rs`: `pure_el_guarantees_completeness`, `out_of_fragment_does_not_guarantee_completeness`, `horn_clause_shape_does_not_guarantee_completeness`, table test |
 | 2 | `timed_out_pairs == 0` | A cut pair is reported "not subsumed" without a verdict. A preparation or conversion timeout also bumps this count and forces `OutOfFragment`. | anytime contract; #162 | `timed_out_pairs`, `timed_out_pair_ids` | `incomplete` (also `prep_timed_out`, `conversion_timed_out`) | `timed_out_pairs`, `complete`, `prep_timed_out`, `conversion_timed_out` | table test; `json_output.rs` `classify_reports_a_cut_preparation_or_conversion_in_its_own_field`; `prep_deadline.rs`; `hard_global_deadline.rs` |
 | 3 | `!wedge_hierarchy_blind` | With role-hierarchy matching (Layer A) off, the wedge cannot see sub-role, inverse or symmetric reasoning, and its trusted `Sat` can miss. | #214 | `wedge_hierarchy_blind` | `wedge_hierarchy_blind` | `wedge_hierarchy_blind` | table test; `json_output.rs` `classify_reports_a_hierarchy_blind_wedge_in_its_own_field` |
-| 4 | `wedge_clauses_refused == 0` | A clause the wedge's matcher refuses never fires. | #353 | `wedge_clauses_refused` | `wedge_clauses_refused` | `wedge_clauses_refused` | table test |
+| 4 | `wedge_clauses_refused == 0` | A clause the wedge's matcher refuses never fires. This is the CLASSIFY wedge. The consistency wedge is a different clause set (it also clausifies the `ABox`); its refused and deferred counts are reported, when classify trusted its `Sat`, as `consistency_wedge_clauses_refused` / `consistency_wedge_clauses_deferred` (#558), and they void the guarantee through condition 8. | #353 | `wedge_clauses_refused` | `wedge_clauses_refused` | `wedge_clauses_refused` | table test |
 | 5 | `derived_same_undecided == 0` | An individual equality the KB may force was not decided, so the classify wedge may lack it. The count depends on a budget: probing stops after `RUSTDL_CLASSIFY_DERIVED_SAME_STALLS` (default 8) consecutive stalls, or at `RUSTDL_CLASSIFY_DERIVED_SAME_MAX` (default 64) probes. Candidates already proved distinct (`DifferentIndividuals`, told-disjoint told types) are dropped unprobed and do not count, and candidates are grouped by signed role: a shared object is a candidate only under a bound on the inverse role, and a bound reached through a declared inverse now counts (#368). Before #368 such a pair was never a candidate, so `0` could hide it. On current `main` this condition cannot change the result. `derive_nominal_same_with` looks for candidates only when the ontology has a counted role (`≥`, `≤`, functional or inverse-functional), a nominal, and an asserted `ObjectPropertyAssertion` on a counted role. The PureEl gate admits neither nominals nor property assertions. If a TBox-only path to candidates is ever added, re-check this. | #354 | `derived_same_undecided` | `derived_same_undecided` | `derived_same_undecided` | table test |
 | 6 | `!consistency_undetermined` | The inconsistency pre-check reached no verdict, or (#446) classify's consistency probe was admitted and gave up (#466: a cut per-class unsat probe admits it on a `TBox`-only run too, where an empty unsat set had read as consistent). If the KB is in fact inconsistent, every class is unsatisfiable and the hierarchy misses entailments. | #162, #228 review | `consistency_undetermined` | `consistency_undetermined` (reported as `undetermined && !inconsistent`) | `consistency_undetermined` (same masking) | table test |
 | 7 | `dropped` is empty | The engine reasoned over a strictly weaker KB than the input. | #43, #246 | `dropped` | `dropped` | module-level `rustdl.dropped_axioms(path)` only, not on `Classification` | `completeness_contract.rs` `a_dropped_axiom_voids_the_guarantee` and its control; table test; `json_output.rs` `classify_json_completeness_guaranteed_ends`; `test_classify.py` `test_dropped_axiom_voids_the_guarantee` |
@@ -47,6 +47,53 @@ The table test is `each_condition_alone_voids_the_guarantee` in
 state that guarantees completeness and flips each condition on its own. Deleting a
 conjunct from the predicate makes exactly that row fail, so the test is also the
 guard's sabotage check.
+
+## The consistency wedge's weaker KB (#558)
+
+The consistency wedge's `Sat` is trusted (condition 8). Its clause set can be
+weaker than the input in two ways: clauses its matcher refuses never fire, and
+encodings its clausifier defers it never sees. A model of that weaker KB need not
+be a model of the input, so the trusted `Sat` can hide an inconsistency (a miss,
+never a false positive). The deferred count is of deferral events, not axioms (a
+`DisjointUnion` with two complex members reads 3), and 0 does not prove the wedge
+saw the whole KB: the pairwise-disjointness half of a `DisjointUnion` whose members
+do not encode, and the axiom kinds the clausifier ignores, drop clauses uncounted.
+
+Surfaces that carry the counts (#558):
+- `consistent --json`: `wedge_clauses_refused` / `wedge_clauses_deferred`, whenever
+  the wedge was consulted, with a stderr warning on a trusted `consistent`;
+- `classify --json` and `ClassificationStats`: `consistency_wedge_clauses_refused` /
+  `consistency_wedge_clauses_deferred`, only when classify relied on that `Sat`
+  (the refused count also obeys `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`, as on
+  `consistent`; the deferred count deliberately does not, since that flag is for
+  the refused count's #357 over-report);
+- `QueryStats::wedge_clauses_refused` / `wedge_clauses_deferred` from
+  `is_consistent_with_stats`, and from a single query that dropped its `ABox` on
+  that `Sat`;
+- Python `is_consistent`: the counts in the `TrustedConsistencyWarning` text.
+
+Known gaps (no count reaches the caller; for #600 or a follow-up): `realize`,
+`sat-expr`, `subclass-expr`, `justify` and `prove` JSON; plain-text `classify`
+stderr; the Python `Classification` accessors; the CLI reads `QueryStats`'s
+deferred count only on `consistent`; the bounded API (`is_consistent_with_timeout`
+returns no stats).
+
+**Part B (verifying such a `Sat`) is not built: its measured reach is one
+ontology.** Recorded 2026-11-26 by rustdl-manager under Michel's delegation. The
+reach census (`consistent --json`, main `22a69b81`, 60 s cap, over the 1,176 ORE
+files that name an individual or a nominal) found 944 trusted consistency-wedge
+`Sat`s, **0** with refused clauses (instrument check: the #357 star with
+`RUSTDL_WEDGE_BODY_DECOMPOSE=0` reads 1), and **1** with a deferred axiom
+(`ore_ont_12698`, one `disjoint-antecedent`; second pass with the part-A binary).
+The root cause is clausification: the deferred `DisjointUnion` / `DisjointClasses`
+kinds also cost answers on the classify wedge, so they are fixed in the clausifier
+(the follow-up issue) rather than verified per query. Should verification ever be
+built, the decision on its give-up stands: **a verify give-up keeps today's
+output** (`consistent`, `relies_on_trusted_consistency: true`, the gap counts, no
+`incomplete`), because those flags already name the gap and turning a consistent
+KB into `unknown` (exit 3) would lose answers, against "defaults favour
+completeness". Considered and rejected: reporting the give-up as
+`incomplete: true` per #574's contract, the #344 behaviour.
 
 ## Signals deliberately outside the guarantee
 

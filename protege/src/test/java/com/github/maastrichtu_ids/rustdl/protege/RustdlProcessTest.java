@@ -34,11 +34,11 @@ public class RustdlProcessTest {
         RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_blind.json"));
         assertTrue(c.wedge_hierarchy_blind);
         assertFalse(c.incomplete);
-        // One warning, the blind one: no deadline fired, so the incomplete warning must not appear.
+        // One warning, the blind one: nothing was cut, so the incomplete warning must not appear.
         java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
         assertEquals(1, w.size());
         assertTrue(w.get(0).contains("role-hierarchy"));
-        assertFalse(w.get(0).contains("timed out"));
+        assertFalse(w.get(0).contains("were cut"));
     }
 
     @Test public void wedgeHierarchyBlindDefaultsFalseWhenAbsent() throws Exception {
@@ -47,18 +47,18 @@ public class RustdlProcessTest {
         assertFalse(c.wedge_hierarchy_blind);
         java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
         assertEquals(1, w.size());
-        assertTrue(w.get(0).contains("timed out"));
+        assertTrue(w.get(0).contains("were cut"));
     }
 
     @Test public void parsesWedgeClausesRefusedAsItsOwnSignal() throws Exception {
         RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_refused.json"));
         assertEquals(2, c.wedge_clauses_refused);
         assertFalse(c.incomplete);
-        // One warning, the refused one: no deadline fired and the hierarchy was not skipped.
+        // One warning, the refused one: nothing was cut and the hierarchy was not skipped.
         java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
         assertEquals(1, w.size());
         assertTrue(w.get(0).contains("cannot match the body of 2 clause(s)"));
-        assertFalse(w.get(0).contains("timed out"));
+        assertFalse(w.get(0).contains("were cut"));
     }
 
     @Test public void wedgeClausesRefusedDefaultsToZeroWhenAbsent() throws Exception {

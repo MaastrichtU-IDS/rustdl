@@ -121,19 +121,31 @@ cut: it does not set `incomplete`.
 verdict: a route gave up, or was skipped because `--global-timeout-ms` had
 already run out (#162), or classify's consistency probe was admitted (an
 unsatisfiable class, an incomplete `ABox` run, or counted data values) and gave
-up (#446). `consistent: true` then means "no clash found", not
-"proven consistent". A separate field; it does not set `incomplete`.
+up (#446). Under `--saturation-only` it is set whenever the input is not pure
+EL (#539): only the saturation closure looked for a clash. `consistent: true`
+then means "no clash found", not "proven consistent". A separate field; it does
+not set `incomplete`.
 
 **`incomplete: false` does NOT mean complete.** It means no class pair or per-class unsat probe was cut (other give-ups, such
 as `consistency_undetermined` or `derived_same_undecided`, have their own fields).
 There are Horn ontologies where `classify` misses a subsumption both Konclude and
-HermiT derive while `incomplete` is `false`, `trusted_sat_refutations` is `0`, and
-`consistent` is `true` — every field reading clean on a wrong answer. That is what
-`completeness_guaranteed` exists to say, and it is `false` there.
+HermiT derive while `incomplete` is `false` and `consistent` is `true`. Before #568,
+`trusted_sat_refutations` read `0` there too (Horn was exempt), so every field read
+clean on a wrong answer; it now reads non-zero (4 on `X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`,
+`∃s.Z ⊑ W`), which says verdicts rest on a trusted `Sat`, not which one is wrong.
+`completeness_guaranteed` is the field that says the answer may be incomplete, and it
+is `false` there.
 
-`trusted_sat_refutations` = pairs concluded not-subsumed from the wedge's own
-`Sat` verdict outside the fragment where that verdict is complete. An exposure
-count, not a defect count; `0` does not imply completeness either.
+`trusted_sat_refutations` = verdicts taken on the wedge's own trusted `Sat`
+without the tableau (#66, #568): pairs refuted per pair, pairs pruned from the
+label cache, snapshot-replay refutations, and classes taken as satisfiable from
+their wedge label. A count of decisions, not of distinct pairs (a pair can be pruned
+in both the walk and the sweep); undecided pairs below a pruned super are not
+included. No fragment is exempt
+(`PureEl` reads 0 because no wedge runs there). An exposure count, not a defect
+count; `0` does not imply completeness either. The label channels are not gated by
+`RUSTDL_HYPERTABLEAU_TRUST_SAT`: to verify everything, set it to `0` together with
+`RUSTDL_LABEL_HEURISTIC=0`.
 
 `matrix_closure_added_pairs` = pairs the transitive closure of the recorded
 relation added (#448, `RUSTDL_CLASSIFY_CLOSE_MATRIX`, default on; `=0` disables): pairs recorded
@@ -205,7 +217,7 @@ depth cap), #497.
 { "schema_version": 1, "incomplete": bool, "witness_prune_active": bool,
   "witness_prune_may_drop": bool, "witness_prune_reasons": [string],
   "direct_types_unverified": bool, "relies_on_trusted_consistency": bool,
-  "no_verdict": bool, "depth_capped": bool,
+  "no_verdict": bool, "depth_capped": bool, "saturation_only": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
 ```
@@ -255,6 +267,11 @@ another:
   instance", or an unchecked pair), `incomplete` is set too, and the command exits 3 after
   printing this JSON. Not covered: the pseudo-model witness build (a stall there only disables
   the prune) and the #369 lazy consistency check.
+- `saturation_only` (#539, no `schema_version` bump): the run was `realize --saturation-only`.
+  Types come from the EL saturation closure alone, with no tableau probe, so a type may be
+  MISSING with every other flag `false`, and an inconsistency the closure does not derive goes
+  undetected (an inconsistent ontology entails every type). Every listed type is still
+  entailed. `false` on a plain `realize`. The command also prints a stderr note.
 
 `dropped` maps each axiom kind dropped at conversion to its count (empty when
 nothing was dropped).
@@ -447,6 +464,8 @@ below).
 // ProofNodeJson
 { "conclusion": ofn_document, "rule": rule_name,
   "axioms": [ofn_document, ...], "axiom_missing": bool,
+  "builtin_axioms": [ofn_document, ...],   // omitted when empty
+  "derived_axioms": [ofn_document, ...],   // omitted when empty
   "premises": [ProofNodeJson, ...], "unproved_premises": [ofn_document, ...] }
 ```
 
@@ -464,12 +483,19 @@ Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
   text `prove` renderer (`render_proof_with_defs`) uses, so the OFN is
   faithful, never fabricated. `rule` is the `ElRule`'s display name (e.g.
   `"ToldSubsumer"`, `"SubsumerTransitivity(fwd)"`). `axioms` are that step's
-  cited source axioms — each `node.axiom_refs` index resolved against the
-  same `InternalOntology` the query ran over and reverse-converted to a
-  horned-owl axiom, each its own one-axiom OFN document; empty for a step whose
-  rule needs no axiom (reflexivity, transitivity, fact inheritance, the unsat
-  propagations). `axiom_missing` is `true` when the step's rule does apply an
-  axiom but none was recorded for it. `premises` recurses; a leaf step has
+  cited source axioms, each its own one-axiom OFN document and each **a component
+  of the source ontology as written** (#586; annotations dropped), so a consumer
+  can look it up literally: the cited internal axiom is traced back to the source
+  component conversion made it from (including the per-axiom rewrites and a long
+  chain's decomposition), never reverse-rendered from conversion's normalised form.
+  Empty for a step whose rule needs no axiom (reflexivity, transitivity, fact
+  inheritance, the unsat propagations). `builtin_axioms` (#539) are axioms
+  conversion added from the OWL semantics. `derived_axioms` (#586) are axioms a
+  later conversion pass built from one or several source axioms (e.g. a datatype seed
+  edge, a data-axiom pattern, the `≤1` GCI of a functional role), so no source axiom is
+  their written form; they are rendered from the internal form and
+  never listed in `axioms`. `axiom_missing` is `true` when the step's rule does
+  apply an axiom but none was recorded for it. `premises` recurses; a leaf step has
   `premises: []`. `unproved_premises` lists, as one-axiom OFN documents,
   premises the step used whose own derivation was not recorded, so no
   sub-proof exists for them. `proof_complete` is `false` when any node has

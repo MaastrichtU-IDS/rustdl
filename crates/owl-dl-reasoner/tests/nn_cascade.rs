@@ -860,3 +860,122 @@ fn issue_564_fallback_give_up_is_undetermined() {
         "a 1 ms fallback is no verdict"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #568: the unsat probe's trusted wedge `Sat` is counted apart
+// (`wedge_sat_probe_hits`), so the CLI's `trusted_sat_refutations` sees it.
+// ---------------------------------------------------------------------------
+
+/// The four unsat-probe counters of the top-down driver, which sum to the class count.
+fn probe_split(c: &owl_dl_reasoner::Classification) -> [usize; 4] {
+    let s = c.stats();
+    let split = [
+        s.saturation_unsat_hits,
+        s.wedge_unsat_probe_hits,
+        s.wedge_sat_probe_hits,
+        s.tableau_unsat_calls,
+    ];
+    assert_eq!(
+        split.iter().sum::<usize>(),
+        c.classes().len(),
+        "every class decided once: {split:?}"
+    );
+    split
+}
+
+/// The CLI's `trusted_sat_refutations` sum (`json_out::trusted_sat_risk`).
+fn trusted_sat(c: &owl_dl_reasoner::Classification) -> usize {
+    let s = c.stats();
+    s.hyper_refuted_pairs
+        + s.label_cache_pruned
+        + s.snapshot_replay_not_subsumed
+        + s.wedge_sat_probe_hits
+}
+
+/// The repro is decided by wedge labels alone: `Q` by the bounded wedge's `Unsat`,
+/// the rest by its `Sat`. Unbounded, so the label builds have no cap.
+#[test]
+fn issue_568_unsat_probe_counts_the_wedge_label_verdicts() {
+    let _l = lock();
+    let c = owl_dl_reasoner::classify(&onto(&repro())).unwrap();
+    assert!(
+        c.unsatisfiable_classes()
+            .contains(&format!("{NS}Q").as_str())
+    );
+    let [sat, wedge_unsat, wedge_sat, tableau] = probe_split(&c);
+    assert_eq!(
+        (sat, wedge_unsat, tableau),
+        (0, 1, 0),
+        "{:?}",
+        probe_split(&c)
+    );
+    assert_eq!(wedge_sat, c.classes().len() - 1, "{:?}", probe_split(&c));
+}
+
+/// The D10 pin: with the bound off, `classify` calls `Q` satisfiable (wrong; HermiT
+/// and `rustdl sat Q` say unsatisfiable) on a trusted wedge `Sat`, and the exposure
+/// count now says so. It read 0 before #568 (`Horn` was exempt and the class-level
+/// `Sat` was not counted).
+#[test]
+fn issue_568_the_564_miss_is_counted() {
+    let _l = lock();
+    let _b = SetEnvGuard::set("RUSTDL_CLASSIFY_WEDGE_IF_BOUND", "0");
+    let c = owl_dl_reasoner::classify(&onto(&repro())).unwrap();
+    assert!(
+        !c.unsatisfiable_classes()
+            .contains(&format!("{NS}Q").as_str()),
+        "precondition: the #564 miss"
+    );
+    assert_eq!(c.stats().timed_out_pairs, 0, "no deadline fired");
+    assert_eq!(
+        probe_split(&c)[2],
+        c.classes().len(),
+        "Q's wrong Sat is a trusted wedge Sat"
+    );
+    assert!(trusted_sat(&c) >= c.classes().len());
+}
+
+/// Controls: with the label path off, and on the `n²` driver (no wedge), the probe
+/// goes to the main tableau and no wedge verdict is counted.
+#[test]
+fn issue_568_wedge_counters_follow_the_channel() {
+    let _l = lock();
+    {
+        let _u = SetEnvGuard::set("RUSTDL_UNSAT_VIA_LABELS", "0");
+        let c = owl_dl_reasoner::classify(&onto(&repro())).unwrap();
+        let [_, wedge_unsat, wedge_sat, tableau] = probe_split(&c);
+        assert_eq!((wedge_unsat, wedge_sat), (0, 0));
+        assert!(tableau > 0);
+    }
+    let c = owl_dl_reasoner::classify_n2(&onto(&repro())).unwrap();
+    assert_eq!(
+        (
+            c.stats().wedge_unsat_probe_hits,
+            c.stats().wedge_sat_probe_hits
+        ),
+        (0, 0)
+    );
+}
+
+/// PureEl is answered by the saturator before any wedge runs, so nothing rests on a
+/// trusted `Sat` and the exposure is 0 with no fragment exemption in the code.
+#[test]
+fn issue_568_pure_el_reads_zero_trusted_sat() {
+    let _l = lock();
+    let c = owl_dl_reasoner::classify(&onto(
+        "SubClassOf(:A :B) SubClassOf(:Q ObjectSomeValuesFrom(:r :A))",
+    ))
+    .unwrap();
+    assert_eq!(
+        c.stats().fragment,
+        owl_dl_reasoner::FragmentClassification::PureEl
+    );
+    assert_eq!(trusted_sat(&c), 0);
+    assert_eq!(
+        (
+            c.stats().wedge_unsat_probe_hits,
+            c.stats().wedge_sat_probe_hits
+        ),
+        (0, 0)
+    );
+}

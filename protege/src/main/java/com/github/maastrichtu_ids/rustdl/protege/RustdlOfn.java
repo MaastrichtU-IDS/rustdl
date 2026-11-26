@@ -111,10 +111,12 @@ final class RustdlOfn {
      * <p><b>Only literal source axioms may be passed here.</b> Anything ENTAILED BY rather than
      * EQUAL TO a source axiom will be rejected as fabrication — see
      * {@code RustdlExplanationGenerator#materialize}'s laconic carve-out, which skips this guard
-     * for exactly that reason. On the proof surface the cited {@code axioms[]} resolve from
-     * {@code axiom_refs} into the converted ontology's own axiom list and are reverse-rendered by
-     * {@code owl_dl_core::axiom_to_component}, so they ARE literal; a proof's conclusions and
-     * intermediate premises are derived and must NOT be passed.</p>
+     * for exactly that reason. On the proof surface the cited {@code axioms[]} ARE literal: since
+     * #586 rustdl traces each cited internal axiom back to the source component it was converted
+     * from and renders that component (before, it reverse-rendered conversion's normalised form,
+     * which this guard rejected). An axiom rustdl derived from several comes as
+     * {@code derived_axioms}, which {@link RustdlProof} refuses rather than passing here. A
+     * proof's conclusions and intermediate premises are derived and must NOT be passed.</p>
      */
     static Set<OWLAxiom> verifiedAgainst(Set<OWLAxiom> parsed, OWLOntology source, String what) {
         for (OWLAxiom axiom : parsed) {

@@ -14,13 +14,15 @@ public final class RustdlJson {
          * The wedge decided pairs without its role-hierarchy matching on an ontology with a
          * non-trivial role hierarchy (#214), so entailments needing sub-role, inverse or
          * symmetric reasoning may be missing. Separate from {@code incomplete}, which means
-         * only "a deadline fired". Absent in output from rustdl before 0.4.37, read as false.
+         * only that a class pair or probe was cut. Absent in output from rustdl before
+         * 0.4.37, read as false.
          */
         public boolean wedge_hierarchy_blind;
         /**
          * How many clauses the wedge engine cannot match (#353). A refused clause never fires,
          * so entailments that need it may be missing. Separate from {@code incomplete}, which
-         * means only "a deadline fired". Absent in output from rustdl before 0.4.42, read as 0.
+         * means only that a class pair or probe was cut. Absent in output from rustdl
+         * before 0.4.42, read as 0.
          */
         public int wedge_clauses_refused;
         /**
@@ -126,6 +128,18 @@ public final class RustdlJson {
         public String conclusion;
         public String rule;
         public List<String> axioms;
+        /**
+         * #586: axioms the step used that rustdl derived during conversion from several
+         * source axioms, so none of them is in the source. Absent (null) when there are none,
+         * and in output from rustdl before the field existed.
+         */
+        public List<String> derived_axioms;
+        /**
+         * #539: axioms the step used that rustdl added from the OWL semantics during
+         * conversion (e.g. {@code ∃owl:bottomObjectProperty.⊤ ⊑ ⊥}); not source axioms. Absent
+         * (null) when there are none.
+         */
+        public List<String> builtin_axioms;
         public List<ProofNodeJson> premises;
     }
 }

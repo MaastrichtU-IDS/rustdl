@@ -104,7 +104,10 @@ fn inert_uses_leave_the_guarantee_and_print_nothing() {
         let f = Fixture::new(tag, body);
         let (uro, guaranteed, err) = classify_flags(&f);
         assert_eq!(uro, false, "{tag}");
-        assert_eq!(guaranteed, true, "{tag}: pure EL, nothing read as ordinary");
+        // `Reflexive` is outside the EL fragment, so only `sub` can carry the guarantee.
+        if tag == "sub" {
+            assert_eq!(guaranteed, true, "{tag}: pure EL, nothing read as ordinary");
+        }
         assert!(!err.contains(NOTE), "{tag}: {err}");
         let (_, _, err) = run(&["subclass", f.path(), &iri("C"), &iri("E")]);
         assert!(!err.contains(NOTE), "{tag}: {err}");
@@ -333,4 +336,26 @@ fn a_role_above_top_flags_the_role_level_surfaces_only() {
     let (uro, _, err) = classify_flags(&f);
     assert_eq!(uro, false, "class level: inert");
     assert!(!err.contains(NOTE), "{err}");
+}
+
+/// A proved inconsistency masks the flag: every entailment holds in an inconsistent
+/// KB, so the universal role cannot hide one. `a : ⊥` is inconsistent (HermiT too).
+#[test]
+fn a_proved_inconsistency_masks_the_flag() {
+    let f = Fixture::new(
+        "masked",
+        "SubClassOf(:C ObjectSomeValuesFrom(owl:topObjectProperty :D)) \
+         ClassAssertion(owl:Nothing :a)",
+    );
+    let (code, out, err) = run(&["consistent", "--json", f.path()]);
+    assert_eq!(code, 0, "{err}");
+    let v = json(&out);
+    assert_eq!(v["consistent"], false, "{v}");
+    assert_eq!(v["universal_role_ordinary"], false, "{v}");
+    assert!(!err.contains(NOTE), "{err}");
+    let (code, out, err) = run(&["classify", "--json", f.path()]);
+    assert_eq!(code, 0, "{err}");
+    let v = json(&out);
+    assert_eq!(v["consistent"], false, "{v}");
+    assert_eq!(v["universal_role_ordinary"], false, "{v}");
 }

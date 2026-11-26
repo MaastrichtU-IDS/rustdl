@@ -576,7 +576,7 @@ def _warn_if_oracle_trusted(name: str, trusted: bool) -> None:
 
 def _warn_if_classification_universal(result: "Classification") -> "Classification":
     # #543: the flag rides on the result, so no second conversion.
-    _warn_if_universal_role("classify", result.universal_role_ordinary, stacklevel=3)
+    _warn_if_universal_role("classify", result.universal_role_ordinary, stacklevel=4)
     return result
 
 
@@ -1000,6 +1000,13 @@ def object_property_values(path):
     return triples
 
 
+def _ce_note(name: str, native: dict) -> dict:
+    # #543: the flag of the PROBED conversion, so a universal role used only in the
+    # query expression is caught too.
+    _warn_if_universal_role(name, native["universal_role_ordinary"], stacklevel=4)
+    return native
+
+
 def _ce_verdict(native: dict) -> ClassExpressionVerdict:
     return ClassExpressionVerdict(
         holds=native["holds"],
@@ -1009,6 +1016,7 @@ def _ce_verdict(native: dict) -> ClassExpressionVerdict:
         consistency_undetermined=native["consistency_undetermined"],
         no_verdict=native["no_verdict"],
         dropped=tuple(sorted(native["dropped"].items())),
+        universal_role_ordinary=native["universal_role_ordinary"],
     )
 
 
@@ -1021,6 +1029,7 @@ def _ce_instances(native: dict) -> ClassExpressionInstances:
         no_verdict=native["no_verdict"],
         depth_capped=native["depth_capped"],
         dropped=tuple(sorted(native["dropped"].items())),
+        universal_role_ordinary=native["universal_role_ordinary"],
     )
 
 
@@ -1031,7 +1040,7 @@ def class_expression_satisfiable_result(path, ce):
     trusted), `dropped` (the kinds the conversion dropped, the query expression's
     included) and the other signals. Emits the same warnings as
     `class_expression_satisfiable`."""
-    r = _ce_verdict(_class_expression_satisfiable_native(path, ce))
+    r = _ce_verdict(_ce_note("class_expression_satisfiable", _class_expression_satisfiable_native(path, ce)))
     _warn_if_answer_no_verdict("class_expression_satisfiable", r.incomplete, r.no_verdict)
     _warn_if_trusted_consistency("class_expression_satisfiable", r.relies_on_trusted_consistency)
     _warn_if_consistency_undetermined(
@@ -1051,7 +1060,7 @@ def class_expression_satisfiable(path, ce):
     conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493).
     `class_expression_satisfiable_result` returns the signals with the answer."""
-    r = _ce_verdict(_class_expression_satisfiable_native(path, ce))
+    r = _ce_verdict(_ce_note("class_expression_satisfiable", _class_expression_satisfiable_native(path, ce)))
     _warn_if_answer_no_verdict("class_expression_satisfiable", r.incomplete, r.no_verdict)
     _warn_if_trusted_consistency("class_expression_satisfiable", r.relies_on_trusted_consistency)
     _warn_if_consistency_undetermined(
@@ -1065,7 +1074,7 @@ def class_expression_entailed_subclass_result(path, sub_ce, sup_ce):
     """`class_expression_entailed_subclass` as a `ClassExpressionVerdict` (#552); see
     `class_expression_satisfiable_result`. Emits the same warnings as
     `class_expression_entailed_subclass`."""
-    r = _ce_verdict(_class_expression_entailed_subclass_native(path, sub_ce, sup_ce))
+    r = _ce_verdict(_ce_note("class_expression_entailed_subclass", _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)))
     name = "class_expression_entailed_subclass"
     _warn_if_answer_no_verdict(name, r.incomplete, r.no_verdict)
     _warn_if_trusted_consistency(name, r.relies_on_trusted_consistency)
@@ -1084,7 +1093,7 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493).
     `class_expression_entailed_subclass_result` returns the signals with the answer."""
-    r = _ce_verdict(_class_expression_entailed_subclass_native(path, sub_ce, sup_ce))
+    r = _ce_verdict(_ce_note("class_expression_entailed_subclass", _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)))
     name = "class_expression_entailed_subclass"
     _warn_if_answer_no_verdict(name, r.incomplete, r.no_verdict)
     _warn_if_trusted_consistency(name, r.relies_on_trusted_consistency)
@@ -1099,7 +1108,7 @@ def class_expression_instances_result(path, ce):
     saturation fast path, no probe was cut, nothing was dropped, and the KB's
     consistency was checked and decided), `dropped` and the other signals. Emits the
     same warnings as `class_expression_instances`."""
-    r = _ce_instances(_class_expression_instances_native(path, ce))
+    r = _ce_instances(_ce_note("class_expression_instances", _class_expression_instances_native(path, ce)))
     name = "class_expression_instances"
     _warn_if_list_incomplete(name, r.incomplete, r.no_verdict, r.depth_capped)
     _warn_if_consistency_undetermined(name, r.consistency_undetermined)
@@ -1118,7 +1127,7 @@ def class_expression_instances(path, ce):
     an internal limit (likely a reasoner bug, #449) is reported by
     `IncompleteQueryWarning` with that text; the members are still returned (#493).
     `class_expression_instances_result` returns the signals with the members."""
-    r = _ce_instances(_class_expression_instances_native(path, ce))
+    r = _ce_instances(_ce_note("class_expression_instances", _class_expression_instances_native(path, ce)))
     name = "class_expression_instances"
     _warn_if_list_incomplete(name, r.incomplete, r.no_verdict, r.depth_capped)
     _warn_if_consistency_undetermined(name, r.consistency_undetermined)
@@ -1317,9 +1326,6 @@ for _name in (
     "different_individuals",
     "object_property_values",
     "data_property_values",
-    "class_expression_satisfiable",
-    "class_expression_entailed_subclass",
-    "class_expression_instances",
 ):
     globals()[_name] = _with_universal_role_note(_name, globals()[_name])
 del _name

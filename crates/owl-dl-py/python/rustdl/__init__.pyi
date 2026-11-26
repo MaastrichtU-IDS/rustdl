@@ -443,6 +443,7 @@ class ClassExpressionVerdict(Mapping[str, object]):
     consistency_undetermined: bool
     no_verdict: bool
     dropped: tuple[tuple[str, int], ...]
+    universal_role_ordinary: bool
     def to_dict(self) -> dict: ...
 
 class ClassExpressionInstances(Mapping[str, object]):
@@ -456,6 +457,7 @@ class ClassExpressionInstances(Mapping[str, object]):
     no_verdict: bool
     depth_capped: bool
     dropped: tuple[tuple[str, int], ...]
+    universal_role_ordinary: bool
     def to_dict(self) -> dict: ...
 
 def class_expression_satisfiable_result(path: str, ce: str) -> ClassExpressionVerdict:

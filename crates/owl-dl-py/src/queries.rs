@@ -408,6 +408,8 @@ fn ce_verdict_dict<'py>(
     d.set_item("no_verdict", v.no_verdict())?;
     // #540/#552: the PROBED conversion's drops, the query expression's included.
     d.set_item("dropped", v.dropped().by_kind().clone())?;
+    // #543: the probed conversion's, so a universal role in the query counts too.
+    d.set_item("universal_role_ordinary", v.universal_role_ordinary())?;
     Ok(d)
 }
 
@@ -475,6 +477,7 @@ pub(crate) fn class_expression_instances<'py>(
     // #510: a depth cut; the wrapper names the limit.
     d.set_item("depth_capped", r.depth_capped())?;
     d.set_item("dropped", r.dropped().by_kind().clone())?;
+    d.set_item("universal_role_ordinary", r.universal_role_ordinary())?;
     Ok(d)
 }
 

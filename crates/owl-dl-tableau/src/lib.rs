@@ -233,9 +233,9 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     asymmetric_roles: Vec<RoleId>,
     /// Pairs of roles declared mutually disjoint (decomposed from
     /// `DisjointObjectProperties` n-ary axioms). The
-    /// [`apply_role_axioms`] rule flags `⊥` when a node has both an
-    /// `r`-edge and an `s`-edge to the same neighbour.
-    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
+    /// [`apply_role_axioms`] rule flags `⊥` when a node has a view of
+    /// `r` and a view of `s` to the same neighbour (signed roles, #534).
+    disjoint_role_pairs: Vec<(Role, Role)>,
     graph: CompletionGraph,
     trail: TableauTrail,
     /// Optional wall-clock deadline. When set, [`crate::search`] checks
@@ -1386,17 +1386,29 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self
     }
 
-    /// Declare `r` and `s` as `DisjointObjectProperties` (one
-    /// unordered pair). The [`apply_role_axioms`](crate::apply_role_axioms)
-    /// rule rejects any node with both an `r`- and an `s`-edge to the
-    /// same neighbour. Stored once; the rule symmetrizes when
-    /// iterating.
-    pub fn declare_disjoint_role_pair(&mut self, r: RoleId, s: RoleId) -> &mut Self {
-        if r != s
-            && !self.disjoint_role_pairs.contains(&(r, s))
-            && !self.disjoint_role_pairs.contains(&(s, r))
+    /// Declare `r` and `s` as `DisjointObjectProperties` (one unordered pair of SIGNED
+    /// roles, #534). `Disjoint(r, s⁻)` forbids `r(a,b) ∧ s(b,a)`; the
+    /// [`apply_role_axioms`](crate::apply_role_axioms) rule flags any node with a view of
+    /// `r` and a view of `s` to the same neighbour. The pair is stored with its first
+    /// operand forward (flipping both is the same constraint). `(r, r⁻)` is kept (it is
+    /// asymmetry); an exactly repeated role is not, as before.
+    pub fn declare_disjoint_role_pair(&mut self, r: Role, s: Role) -> &mut Self {
+        if r == s {
+            return self;
+        }
+        let pair = if r.is_inverse() {
+            (r.flip(), s.flip())
+        } else {
+            (r, s)
+        };
+        let swapped = if pair.1.is_inverse() {
+            (pair.1.flip(), pair.0.flip())
+        } else {
+            (pair.1, pair.0)
+        };
+        if !self.disjoint_role_pairs.contains(&pair) && !self.disjoint_role_pairs.contains(&swapped)
         {
-            self.disjoint_role_pairs.push((r, s));
+            self.disjoint_role_pairs.push(pair);
         }
         self
     }
@@ -1407,7 +1419,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     #[must_use]
-    pub fn disjoint_role_pairs(&self) -> &[(RoleId, RoleId)] {
+    pub fn disjoint_role_pairs(&self) -> &[(Role, Role)] {
         &self.disjoint_role_pairs
     }
 

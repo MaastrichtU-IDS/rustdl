@@ -2035,8 +2035,9 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
 /// - `AsymmetricObjectProperty(r)`: at every node `x`, if both
 ///   `x —r→ y` and `y —r→ x` exist for some `y`, then `r(x,y)` and
 ///   `r(y,x)` together violate asymmetry — flag `⊥`.
-/// - `DisjointObjectProperties(r, s)`: at every node `x`, if both
-///   `x —r→ y` and `x —s→ y` exist, the two pairs collapse — flag `⊥`.
+/// - `DisjointObjectProperties(r, s)` on SIGNED roles (#534): at every node `x`, if
+///   a view of `r` and a view of `s` reach the same `y`, flag `⊥`. For forward roles
+///   that is `x —r→ y` with `x —s→ y`; `Disjoint(r, s⁻)` is `x —r→ y` with `y —s→ x`.
 ///
 /// Edges are matched through [`TableauContext::edge_satisfies`], so an edge on a
 /// sub-role or a declared inverse counts, and a self-loop counts in both
@@ -2080,13 +2081,15 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         .asymmetric_roles()
         .iter()
         .any(|&r| pair_at(ctx, Role::Named(r), Role::Inverse(r)));
-    // Disjoint `(r, s)` (forward pairs only, see `collect_disjoint_role_pairs`):
-    // `r(node, y)` and `s(node, y)`.
+    // Disjoint `(r, s)` on SIGNED roles (#534): a view of `r` and a view of `s` to one
+    // `y`. `Disjoint(r, s⁻)` is `r(node, y)` with `s(y, node)`. The same constraint read
+    // from `y`'s end is the flipped pair, so test both: otherwise detection depended on
+    // which endpoint was swept (and not blocked).
     if !violated {
         violated = ctx
             .disjoint_role_pairs()
             .iter()
-            .any(|&(r, s)| pair_at(ctx, Role::Named(r), Role::Named(s)));
+            .any(|&(r, s)| pair_at(ctx, r, s) || pair_at(ctx, r.flip(), s.flip()));
     }
     if violated {
         // Conservative deps: the violation depends on whichever

@@ -8238,8 +8238,9 @@ pub struct QueryStats {
     /// `true` iff this run took the pure-EL fast path (the closure
     /// is also complete for the CONVERTED input, so a closure miss is itself
     /// the verdict). #540: not a completeness guarantee for the input when
-    /// conversion dropped an axiom ([`dropped_axioms`]); a caller presenting
-    /// it as one must check that too, as `explain` and the expression queries do.
+    /// conversion dropped an axiom ([`Self::dropped_axioms`] non-zero); a caller
+    /// presenting it as one must check that too, as `explain` and the expression
+    /// queries do.
     pub pure_el_mode: bool,
     /// `true` iff the verdict is a GIVE-UP reported in its sound direction
     /// rather than a witnessed answer. For consistency (#182): the fall-through
@@ -8295,6 +8296,39 @@ pub struct QueryStats {
     /// CLI adds #449's note and exits 3. Set only where `consistency_undetermined`
     /// can be (see above).
     pub no_verdict: bool,
+    /// #552: how many axioms the query's conversion dropped
+    /// ([`DroppedAxioms::total`](owl_dl_core::DroppedAxioms::total)): the input's,
+    /// plus the probe axioms' for an expression query. Non-zero means the engine
+    /// reasoned over a strictly weaker KB, so [`Self::pure_el_mode`] guarantees
+    /// nothing about the input. Set by every single query that converts an
+    /// ontology (satisfiability, subsumption, consistency, the expression
+    /// queries); a hand-built `QueryStats` (`Default`) reads 0, so do not read it
+    /// off stats that no conversion produced. A count rather than the kinds, so
+    /// `QueryStats` stays `Copy`; [`dropped_axioms`] gives the kinds.
+    pub dropped_axioms: u64,
+}
+
+impl QueryStats {
+    /// #552: a NEGATIVE verdict ("satisfiable" / "not subsumed") of a named-class
+    /// or expression satisfiability/subsumption query is guaranteed complete: it
+    /// came off the pure-EL fast path, nothing gave up, conversion dropped nothing,
+    /// and the KB's consistency is neither undetermined nor resting on a trusted
+    /// wedge `Sat` (`classify`'s conditions 6 and 8 in
+    /// `docs/assurance/completeness-guarantee-ledger.md`). One predicate, so the CLI's
+    /// `explain` and the expression queries cannot drift apart.
+    ///
+    /// **Only for those verdicts.** The consistency query sets `pure_el_mode` under
+    /// `saturation_fast_path_admits`, which is wider than `is_pure_el`, so this is
+    /// not a guarantee for [`is_consistent_with_stats`] (or for `⊤`'s satisfiability,
+    /// which is that query).
+    #[must_use]
+    pub fn completeness_guaranteed(&self) -> bool {
+        self.pure_el_mode
+            && !self.incomplete
+            && self.dropped_axioms == 0
+            && !self.consistency_undetermined
+            && !self.relies_on_trusted_consistency
+    }
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -8730,6 +8764,19 @@ pub(crate) fn is_class_satisfiable_keeping(
     class_iri: &str,
     closure: Option<owl_dl_saturation::Subsumers>,
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
+    // #552: stamped once here, so no early return can leave it at 0.
+    let dropped = internal.dropped.total();
+    let (holds, mut stats, left) =
+        is_class_satisfiable_keeping_inner(internal, class_iri, closure)?;
+    stats.dropped_axioms = dropped;
+    Ok((holds, stats, left))
+}
+
+fn is_class_satisfiable_keeping_inner(
+    internal: InternalOntology,
+    class_iri: &str,
+    closure: Option<owl_dl_saturation::Subsumers>,
+) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     let class_id = match resolve_query_class(&internal.vocabulary, class_iri)? {
         // #427: `⊤` is satisfiable iff the ontology is consistent, so this is the
         // consistency check itself, with its stats (`incomplete`: a give-up
@@ -8771,6 +8818,7 @@ pub(crate) fn is_class_satisfiable_keeping(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8787,6 +8835,7 @@ pub(crate) fn is_class_satisfiable_keeping(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8810,6 +8859,7 @@ pub(crate) fn is_class_satisfiable_keeping(
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
             no_verdict: false,
+            dropped_axioms: 0,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -9165,6 +9215,16 @@ mod consistent_el_fastpath_tests {
 fn is_consistent_internal_full(
     internal: InternalOntology,
 ) -> Result<(bool, QueryStats), ReasonError> {
+    // #552: stamped once here, so no early return can leave it at 0.
+    let dropped = internal.dropped.total();
+    let (consistent, mut stats) = is_consistent_internal_full_inner(internal)?;
+    stats.dropped_axioms = dropped;
+    Ok((consistent, stats))
+}
+
+fn is_consistent_internal_full_inner(
+    internal: InternalOntology,
+) -> Result<(bool, QueryStats), ReasonError> {
     // Sound ABox-saturation pre-check (gated, default off): a clash derived by
     // consequence-based saturation over named individuals is a real inconsistency.
     // Runs before `from_internal` (which moves `internal`); guarded by
@@ -9185,6 +9245,7 @@ fn is_consistent_internal_full(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
         ));
     }
@@ -9205,6 +9266,7 @@ fn is_consistent_internal_full(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
         ));
     }
@@ -9241,6 +9303,7 @@ fn is_consistent_internal_full(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
         ));
     }
@@ -9260,6 +9323,7 @@ fn is_consistent_internal_full(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
         ));
     }
@@ -9290,6 +9354,7 @@ fn is_consistent_internal_full(
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
                     no_verdict: false,
+                    dropped_axioms: 0,
                 },
             ));
         }
@@ -9315,6 +9380,7 @@ fn is_consistent_internal_full(
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
                     no_verdict: false,
+                    dropped_axioms: 0,
                 },
             ));
         }
@@ -9336,6 +9402,7 @@ fn is_consistent_internal_full(
                     relies_on_trusted_consistency: true,
                     consistency_undetermined: false,
                     no_verdict: false,
+                    dropped_axioms: 0,
                 },
             ));
         }
@@ -9440,6 +9507,7 @@ fn is_consistent_internal_full(
             relies_on_trusted_consistency: false,
             consistency_undetermined: false,
             no_verdict: false,
+            dropped_axioms: 0,
         },
     ))
 }
@@ -9896,6 +9964,20 @@ pub(crate) fn is_subclass_of_keeping(
     super_iri: &str,
     closure: Option<owl_dl_saturation::Subsumers>,
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
+    // #552: stamped once here, so no early return can leave it at 0.
+    let dropped = internal.dropped.total();
+    let (holds, mut stats, left) =
+        is_subclass_of_keeping_inner(internal, sub_iri, super_iri, closure)?;
+    stats.dropped_axioms = dropped;
+    Ok((holds, stats, left))
+}
+
+fn is_subclass_of_keeping_inner(
+    internal: InternalOntology,
+    sub_iri: &str,
+    super_iri: &str,
+    closure: Option<owl_dl_saturation::Subsumers>,
+) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     // #427: both arguments resolve before any shortcut (a typo still errors).
     let sub = resolve_query_class(&internal.vocabulary, sub_iri)?;
     let sup = resolve_query_class(&internal.vocabulary, super_iri)?;
@@ -9939,6 +10021,7 @@ pub(crate) fn is_subclass_of_keeping(
         relies_on_trusted_consistency: false,
         consistency_undetermined: false,
         no_verdict: false,
+        dropped_axioms: 0,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -9996,6 +10079,7 @@ pub(crate) fn is_subclass_of_keeping(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -10026,6 +10110,7 @@ pub(crate) fn is_subclass_of_keeping(
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
             no_verdict: false,
+            dropped_axioms: 0,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -10543,7 +10628,7 @@ pub(crate) struct OwnedAboxCheckInputs {
     told: owl_dl_core::told::ToldTables,
     hierarchy: RoleHierarchy,
     inverse_pairs: Vec<(RoleId, RoleId)>,
-    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
+    disjoint_role_pairs: Vec<(Role, Role)>,
 }
 
 impl OwnedAboxCheckInputs {
@@ -10936,7 +11021,7 @@ pub(crate) struct PreparedOntology {
     inverse_pairs: Vec<(RoleId, RoleId)>,
     chain_axioms: Vec<(Role, Role, Role)>,
     asymmetric_roles: Vec<RoleId>,
-    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
+    disjoint_role_pairs: Vec<(Role, Role)>,
     complements: Vec<(ConceptId, ConceptId)>,
     pub(crate) abox: Abox,
     /// `(individual, Nominal(individual))` for each individual named only
@@ -13232,50 +13317,114 @@ fn collect_asymmetric_roles(internal: &InternalOntology) -> Vec<RoleId> {
     out
 }
 
-/// Decompose every `DisjointObjectProperties(r, s, …)` axiom into its
-/// pairwise constituents. Reflexive entries `(r, r)` (degenerate
-/// `Disjoint(r)`) are skipped — they'd assert the role is disjoint
-/// from itself, which is only satisfiable when no pair is in `r`. We
-/// leave that diagnosis to higher-level validators rather than seed
-/// universal clashes.
-/// Collect forward-only disjoint role pairs from `DisjointObjectProperties` axioms.
+/// Decompose every `DisjointObjectProperties(r₁, …, rₙ)` axiom into its pairwise
+/// constituents, keeping each operand's POLARITY (#534).
 ///
-/// **Soundness restriction (forward-only):** a `DisjointObjectProperties(r, ObjectInverseOf(s))`
-/// axiom forbids `r(a,b) ∧ s(b,a)`, NOT `r(a,b) ∧ s(a,b)`. The `(RoleId, RoleId)` pair type
-/// strips polarity via `role_id()`, so emitting an inverse-involving pair would represent a
-/// DIFFERENT (weaker) semantic constraint and would cause false-positive clashes in the P9
-/// `ABox` pre-check and the tableau disjoint-role rule.
+/// `Disjoint(r, s⁻)` forbids `r(a,b) ∧ s(b,a)`, which a polarity-stripped `(RoleId,
+/// RoleId)` pair cannot say, so this used to skip every pair with an inverse operand. The
+/// main tableau (the per-query surface's engine) and `abox_check` P9 then never saw those
+/// clashes while `classify` found them through the wedge, whose clauses were already signed.
 ///
-/// Solution: emit a pair only when **both** roles are forward/named (`!role.is_inverse()`).
-/// Axioms that involve an inverse are silently skipped — a sound under-approximation
-/// (may miss a clash, never produces a false positive).  Polarity-aware disjoint-role
-/// handling (storing the full `Role` pair) is deferred as future work.
-fn collect_disjoint_role_pairs(internal: &InternalOntology) -> Vec<(RoleId, RoleId)> {
+/// Each pair is normalised so its first operand is forward: flipping both operands and
+/// swapping the endpoints is the same constraint, so `Disjoint(r⁻, s)` is `(r, s⁻)` and
+/// `Disjoint(r⁻, s⁻)` is `(r, s)`. A same-id opposite-polarity pair `(r, r⁻)` is kept: it
+/// forbids `r(a,b) ∧ r(b,a)`, i.e. `r` is asymmetric. An exactly repeated operand
+/// (`Disjoint(r, r)`, which would make `r` empty) is skipped, as before and as the wedge
+/// does; conversion already collapses structural duplicates.
+fn collect_disjoint_role_pairs(internal: &InternalOntology) -> Vec<(Role, Role)> {
     let mut pairs = Vec::new();
     for ax in &internal.axioms {
         if let Axiom::DisjointObjectProperties(roles) = ax {
             for i in 0..roles.len() {
                 for j in (i + 1)..roles.len() {
-                    let ri = roles[i];
-                    let rj = roles[j];
-                    // Soundness: only forward–forward disjoint pairs.  An inverse-involving
-                    // pair (e.g. `Disjoint(r, Inv(s))`) forbids `r(a,b) ∧ s(b,a)`, not
-                    // `r(a,b) ∧ s(a,b)`.  The polarity-stripped `(RoleId, RoleId)` representation
-                    // cannot express that distinction; emitting it would be an FP in P9 and the
-                    // tableau disjoint-role clash.  Skip — a sound under-approximation.
-                    if ri.is_inverse() || rj.is_inverse() {
+                    if roles[i] == roles[j] {
                         continue;
                     }
-                    let a = ri.role_id();
-                    let b = rj.role_id();
-                    if a != b {
-                        pairs.push((a, b));
-                    }
+                    pairs.push(normalize_disjoint_role_pair(roles[i], roles[j]));
                 }
             }
         }
     }
     pairs
+}
+
+/// #534: the same disjoint-role constraint with its first operand forward (flip both).
+fn normalize_disjoint_role_pair(r: Role, s: Role) -> (Role, Role) {
+    if r.is_inverse() {
+        (r.flip(), s.flip())
+    } else {
+        (r, s)
+    }
+}
+
+#[cfg(test)]
+mod disjoint_role_pair_tests {
+    use super::*;
+
+    /// The pairs of `body` with each role named, `"r"` or `"r-"` for its inverse, sorted.
+    fn named(body: &str) -> Vec<(String, String)> {
+        let src = format!(
+            "Prefix(:=<http://t/>)\nOntology(<http://t/x>\n\
+             Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+             Declaration(ObjectProperty(:u))\n{body}\n)"
+        );
+        let (onto, _): (
+            horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+            _,
+        ) = horned_owl::io::ofn::reader::read(
+            &mut std::io::Cursor::new(src),
+            horned_owl::io::ParserConfiguration::default(),
+        )
+        .expect("parse");
+        let internal = convert_ontology(&onto).expect("convert");
+        let name = |r: Role| {
+            let iri = internal.vocabulary.role_iri(r.role_id());
+            let local = iri.rsplit('/').next().unwrap_or(iri).to_string();
+            if r.is_inverse() {
+                format!("{local}-")
+            } else {
+                local
+            }
+        };
+        let mut v: Vec<(String, String)> = collect_disjoint_role_pairs(&internal)
+            .into_iter()
+            .map(|(a, b)| (name(a), name(b)))
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn pair(a: &str, b: &str) -> (String, String) {
+        (a.to_string(), b.to_string())
+    }
+
+    /// Forward-only axioms give the pairs they gave before #534.
+    #[test]
+    fn forward_only_axioms_are_unchanged() {
+        assert_eq!(
+            named("DisjointObjectProperties(:r :s :u)"),
+            vec![pair("r", "s"), pair("r", "u"), pair("s", "u")]
+        );
+    }
+
+    /// Inverse operands are kept, normalised so the first operand is forward.
+    #[test]
+    fn inverse_operands_are_kept_and_normalised() {
+        // `Disjoint(r⁻, s)` is `(r, s⁻)`, not `(s, r⁻)` or a polarity-stripped pair.
+        assert_eq!(
+            named("DisjointObjectProperties(ObjectInverseOf(:r) :s)"),
+            vec![pair("r", "s-")]
+        );
+        assert_eq!(
+            named("DisjointObjectProperties(ObjectInverseOf(:r) ObjectInverseOf(:s))"),
+            vec![pair("r", "s")]
+        );
+        // `(r, r⁻)` is asymmetry and is kept.
+        assert_eq!(
+            named("DisjointObjectProperties(:r ObjectInverseOf(:r))"),
+            vec![pair("r", "r-")]
+        );
+    }
 }
 
 /// Collect declared inverse-role pairs from `InverseObjectProperties`
@@ -13314,7 +13463,7 @@ fn decide<F>(
     inverse_pairs: &[(RoleId, RoleId)],
     chain_axioms: &[(Role, Role, Role)],
     asymmetric_roles: &[RoleId],
-    disjoint_role_pairs: &[(RoleId, RoleId)],
+    disjoint_role_pairs: &[(Role, Role)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
     extra_distinct: &[(IndividualId, IndividualId)],
@@ -13359,7 +13508,7 @@ fn decide_capturing<F>(
     inverse_pairs: &[(RoleId, RoleId)],
     chain_axioms: &[(Role, Role, Role)],
     asymmetric_roles: &[RoleId],
-    disjoint_role_pairs: &[(RoleId, RoleId)],
+    disjoint_role_pairs: &[(Role, Role)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
     extra_distinct: &[(IndividualId, IndividualId)],

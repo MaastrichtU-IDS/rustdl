@@ -668,7 +668,7 @@ So `apply_max` on `r⁻` is reached on the per-query `sat` surface, and hardly a
 | the consistency wedge never sees `NegativeObjectPropertyAssertion` (trusted Sat) | 00111, 00219, 00250, 00271, 00287 | #532 |
 | the wedge under-enforces `Reflexive` with `≤0`, and `InverseFunctional(s)` with `s ≡ r⁻` (trusted Sat) | 00656, 00847 | #535 (with #532, under one umbrella: the trusted wedge accepts inconsistent ABoxes) |
 | classify omits a nominal + ABox pair that `subclass` proves, with no signal | 00474, 00631, 00863 | #533 |
-| per-query `sat` misses unsat or inconsistency with an inverse `DisjointObjectProperties` operand (classify is right) | 00105, 00108, 00143, 00418, 00642, 00794, 00880, 00972 | #534 |
+| per-query `sat` misses unsat or inconsistency with an inverse `DisjointObjectProperties` operand (classify is right) | 00105, 00108, 00143, 00418, 00642, 00794, 00880, 00972 | #534, fixed: re-run on the fix, `sat` agrees with classify on all 57 class queries (41 disagreed on main 0d6444d4) |
 | realize / instance on an ABox made inconsistent by a negative assertion: a definite wrong `no`, unflagged (the gate certifies what the saturation route drops) | 00730 | #536 |
 | not reproduced on the serial shrink check | 00456 | none |
 

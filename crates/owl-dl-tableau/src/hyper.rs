@@ -823,6 +823,11 @@ impl DepSetSnapshot {
 pub struct SearchStats {
     /// Disjuncts asserted across the whole search (decisions made).
     pub branches_taken: u64,
+    /// #533: NOT set by `decide`. Classify's wedge cache sets it after a `Sat` when
+    /// the completion touches a nominal while some `ABox` fact was not given to the
+    /// engine ([`HyperEngine::live_node_labelled_in`]), so the model may not be a
+    /// model of the full `KB`.
+    pub abox_blind: bool,
     /// #137: times the completeness net's re-seed recovered work the
     /// incremental delta drain had left undone. **Nonzero means a rule premise
     /// can arrive without a trigger** — the verdict is still correct (the net
@@ -7363,6 +7368,37 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn root_labels(&self) -> &[ClassId] {
         &self.nodes[self.resolve(HNode(0)).index()].labels
+    }
+
+    /// #533: the nominal classes (ids in `[start, start + count)`, the range
+    /// [`Self::with_nominals`] takes) that some live node of the current completion
+    /// carries, sorted and duplicate-free. Empty means the completion shares no
+    /// element with the named individuals, so it can be united disjointly with any
+    /// model of the full `KB` (`ABox` included); one that touches a nominal cannot,
+    /// since a fact about an individual the engine was not given, or one that applies
+    /// only on a node this completion lacks, may contradict it.
+    ///
+    /// Merged-away nodes are skipped: `merge_with_cause` copies their labels onto the
+    /// survivor, so counting them would change nothing. No test pins the `resolve`
+    /// filter; a sabotage that drops it passes the suite.
+    #[must_use]
+    pub fn live_labels_in(&self, start: u32, count: u32) -> Vec<u32> {
+        let end = start.saturating_add(count);
+        let mut out: Vec<u32> = Vec::new();
+        for (i, node) in self.nodes.iter().enumerate() {
+            let n = HNode(u32::try_from(i).unwrap_or(u32::MAX));
+            if self.resolve(n) == n {
+                out.extend(
+                    node.labels
+                        .iter()
+                        .map(|c| c.index())
+                        .filter(|c| (start..end).contains(c)),
+                );
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The seed (root) node — node `0`, where [`Self::new`] asserts the

@@ -7,6 +7,35 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **`classify` reports when its wedge trusted a model that was blind to `ABox` facts (#533):
+  `wedge_abox_blind`.** Classify's wedge is given the facts of the individuals in the nominal
+  reach only, and object-property assertions only under `RUSTDL_CLASSIFY_NOMINAL_OPA=1`. Its
+  models are then models of a weaker KB, and classify trusted them (label prunes, candidate
+  generation, the unsat probe, per-pair refutations). On the issue's three fixtures and five
+  more probes (`X ⊑ ∃R.{a}` with unseen facts about `a`), `subclass` derived a pair, or an
+  unsatisfiable class, that classify missed with `incomplete: false` and nothing else set. HermiT
+  and Konclude agree on all eight and on their four controls. A ninth, from the PR review,
+  has every fact given but the forcing individual absent from the model.
+  - A completion with no nominal-labelled node can be united disjointly with any model of the
+    full KB, so unseen facts cannot invalidate it. Only a trusted model that touches a nominal
+    while some fact did not apply in it counts: a fact not given to the wedge, or one given
+    for an individual the model does not instantiate (a pushed fact fires only on a node
+    carrying that individual).
+  - The signal is a separate field, not `incomplete`: `classify --json` `wedge_abox_blind`,
+    `ClassificationStats::wedge_abox_blind` (with the count `wedge_abox_blind_models`), the
+    Python `Classification.wedge_abox_blind` and its `IncompleteClassificationWarning`, and a
+    stderr warning. `completeness_guaranteed()` requires it to be false (unreachable on PureEl,
+    which admits no nominal; kept for the invariant). `RUSTDL_REPORT_WEDGE_ABOX_BLIND`, default
+    ON. No answer changes.
+  - `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (default OFF) demotes such a model instead: a class's
+    label `Sat` becomes no verdict and a per-pair `NotSubsumed` goes to the `ABox`-seeded main
+    tableau. All eight entailments are then found. Counted in `wedge_abox_demoted` (JSON and
+    stats). Its default waits for a full sweep.
+  - Census at the defaults over the 435 ORE ontologies with a nominal and an `ABox` assertion
+    (60 s cap): 398 finish, of which 24 are inconsistent (never set) and 374 consistent. The
+    signal is set on 353 of those 374, so expect it on almost any such input. All 398 already had
+    `completeness_guaranteed: false`. The 29 that do not finish are cap-borderline or also time
+    out on `main`. On the 3 that `main` finished, serial CPU is equal across 3 runs each.
 - **How much weaker the trusted consistency wedge's KB is (#558).** The consistency wedge's `Sat` is trusted; a clause its matcher refuses never fires, and an encoding its clausifier defers it never sees, so that `Sat` can be a model of a weaker KB and hide an inconsistency. `consistent --json` gains `wedge_clauses_deferred` beside `wedge_clauses_refused` (and a stderr warning); `classify --json` gains `consistency_wedge_clauses_refused` / `consistency_wedge_clauses_deferred` (when classify relied on that `Sat`; a different wedge from its own `wedge_clauses_refused`); `QueryStats::wedge_clauses_deferred` and the matching `ClassificationStats` fields; Python's `is_consistent` names both counts in its `TrustedConsistencyWarning`. The deferred count is of deferral events, not axioms, and 0 does not prove the wedge saw the whole KB (some drops are uncounted). Other surfaces (`realize`, the expression queries, `justify`/`prove`, plain `classify`, Python `Classification`) do not carry the counts yet. No answer changes. Known miss this now signals: `DisjointUnion(:C :A ObjectSomeValuesFrom(:r :B))` with `C(c)`, `¬A(c)`, `∀r.¬B(c)` is inconsistent (HermiT, Konclude and the main tableau agree), but `consistent` reports it consistent, now with `wedge_clauses_deferred: 1`; #600 fixes the clausifier. Verifying such a `Sat` (#558's option 1) is not built: on the ORE pool it would reach one ontology (0 of 944 trusted `Sat`s have refused clauses, 1 has a deferral).
 - **`prove --json --source-fallback` (#594).** A step proof that uses an axiom rustdl added during conversion (`builtin_axioms` / `derived_axioms`) now also carries a source-only justification (`justification_fallback`) when the flag is given, and a top-level `proof_uses_non_source_axioms` reports the first case. The Protégé plugin passes the flag and shows that justification instead of refusing the proof (#593), so its user gets an explanation. A failed or empty search leaves the proof as it is, with a note. The plugin retries without the flag if an older `rustdl` (a `rustdl.bin` override) rejects it.
 - **Completeness signals for the class-expression queries in Python and Rust (#552).**

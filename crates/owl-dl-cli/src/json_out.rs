@@ -366,7 +366,8 @@ pub(crate) struct RealizeJson {
     /// the tableau's decision-depth limit, where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
     /// does not help and the deadline-free check (`=0`) may. `false` with
     /// `direct_types_unverified`: a deadline or the node cap cut the checks (a larger
-    /// budget may decide them), or they did not run. Implies `direct_types_unverified`.
+    /// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or `RUSTDL_MAX_NODES` may decide them), or they did
+    /// not run. "At least one": other checks may have been cut otherwise. Implies `direct_types_unverified`.
     /// Added without a `schema_version` bump. See `Realization::direct_types_depth_capped`.
     pub(crate) direct_types_depth_capped: bool,
     /// #429: the classification under this realization took the ontology as

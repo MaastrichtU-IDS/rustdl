@@ -2,14 +2,18 @@
 //! what may decide them: the check's cut cause (`direct_types_depth_capped` in JSON) and
 //! the remedy in the text warning.
 //!
-//! Fixture: #510 C's pigeonhole (9 pigeons, 8 holes, forced only under `¬Y`) with `a : X`
-//! and `a : Y` told. `X ⊑ Y` is entailed, but refuting `X ⊓ ¬Y` must cover every
-//! placement, so realize's classification and the co-leaf check are cut at the default
-//! 750 ms (measured: decided with a 60 s budget after ~17 CPU-s in a debug build). The
-//! search depth is at most 9, so the cut is the deadline, never the depth limit: `types`
-//! is `{X, Y}` either way, and `direct_types` keeps the superclass `Y`, flagged.
+//! Fixture: #510 C's pigeonhole, one size up (10 pigeons, 9 holes, forced only under
+//! `¬Y`), with `a : X` and `a : Y` told. `X ⊑ Y` is entailed, but refuting `X ⊓ ¬Y` must
+//! cover every placement, so realize's classification and the co-leaf check are cut at
+//! any practical budget. (#583's measurement used 8 holes, which a 60 s budget decides
+//! after ~17 CPU-s in a debug build; 9 holes keeps a fast release build from deciding it
+//! at the default 750 ms.) The search depth is at most 10, so the cut is the deadline,
+//! never the depth limit: `types` is `{X, Y}` either way, and `direct_types` keeps the
+//! superclass `Y`, flagged.
 //!
-//! Not pinned: a depth-capped co-leaf check (no fixture found; see #583's measurement).
+//! Not pinned: a depth-capped co-leaf check (no fixture found; see #583's measurement),
+//! and the no-advice branch for a deadline-free run or a likely-bug `NoVerdict` (a
+//! deadline-free run of this fixture does not finish in test time).
 #![allow(clippy::unwrap_used)]
 
 use std::fmt::Write as _;
@@ -22,7 +26,7 @@ impl Fixture {
     /// `tag` keeps each test's file apart: the tests run in parallel, and each drop
     /// removes its file.
     fn pigeonhole_with_y(tag: &str) -> Self {
-        const HOLES: usize = 8;
+        const HOLES: usize = 9;
         let p = |i: usize, j: usize| format!(":P{i}_{j}");
         let holes = |i: usize| (0..HOLES).map(|j| p(i, j)).collect::<Vec<_>>().join(" ");
         let mut src = String::from(
@@ -99,7 +103,8 @@ fn a_deadline_cut_check_names_the_budget_as_the_remedy() {
     assert!(err.contains(UNDECIDED), "{err}");
     assert!(
         err.contains(
-            "cut by its deadline or the node cap; a larger RUSTDL_REALIZE_PAIR_TIMEOUT_MS"
+            "For a deadline or node-cap cut, a larger RUSTDL_REALIZE_PAIR_TIMEOUT_MS or \
+             RUSTDL_MAX_NODES"
         ),
         "{err}"
     );

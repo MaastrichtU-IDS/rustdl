@@ -268,8 +268,9 @@ another:
   `direct_types_unverified`, at least one check was cut by the tableau's decision-depth
   limit: a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` does not help, `=0` (no deadline) may.
   `false` with `direct_types_unverified` set: a deadline or the node cap cut the checks
-  (a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` may decide them), or no check ran. The text
-  warning names the remedy.
+  (a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or `RUSTDL_MAX_NODES` may decide them), or no
+  check ran. "At least one": other checks may have been cut otherwise. The text warning
+  names the remedies.
 - `relies_on_trusted_consistency` (#429): as in `classify --json`; not a give-up.
 - `no_verdict` (#493): a probe ended in `NoVerdict` on an internal limit, likely a reasoner bug
   (see the `no_verdict` section): realize's own classification, an instance probe (anonymous

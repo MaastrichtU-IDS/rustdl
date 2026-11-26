@@ -941,25 +941,35 @@ fn classify_with_parse_deadline(args: ClassifyArgs) -> Result<()> {
 }
 
 /// #388 / #583: some individual's direct types hold a pair whose subsumption was left
-/// undecided. Says what may decide it: the check's cut cause (#583), or that the check
-/// is switched off.
-fn warn_direct_types_unverified(depth_capped: bool, saturation_only: bool) {
+/// undecided. Says what may decide it: that the check did not run, or the remedies for
+/// the cut causes. `depth_capped` says at least one check hit the decision-depth limit;
+/// other checks may have been cut otherwise, so a deadline or node-cap remedy is still
+/// named. Nothing is advised after a likely-bug `NoVerdict` (#449's note follows) or when
+/// the checks already ran deadline-free.
+fn warn_direct_types_unverified(depth_capped: bool, saturation_only: bool, no_verdict: bool) {
+    let deadline_free = std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS").is_ok_and(|v| v == "0");
+    let budget = "For a deadline or node-cap cut, a larger RUSTDL_REALIZE_PAIR_TIMEOUT_MS or \
+                  RUSTDL_MAX_NODES may decide it.";
     let remedy = if saturation_only {
-        "--saturation-only runs no check; plain realize checks such pairs"
+        " --saturation-only runs no check; plain realize checks such pairs.".to_owned()
     } else if !owl_dl_reasoner::realize_verify_direct_enabled() {
-        "The check is off (RUSTDL_REALIZE_VERIFY_DIRECT=0); without that setting it runs"
+        " The check is off (RUSTDL_REALIZE_VERIFY_DIRECT=0); without that setting it runs."
+            .to_owned()
+    } else if no_verdict || deadline_free {
+        String::new()
     } else if depth_capped {
-        "A check hit the tableau's decision-depth limit, where a larger budget does not \
-         help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (no deadline, a far larger depth limit) may \
-         decide it, but can take much longer"
+        format!(
+            " At least one check hit the tableau's decision-depth limit, where a larger \
+             budget does not help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (no deadline, a far \
+             larger depth limit) may decide it, but can take much longer. {budget}"
+        )
     } else {
-        "A check was cut by its deadline or the node cap; a larger \
-         RUSTDL_REALIZE_PAIR_TIMEOUT_MS may decide it"
+        format!(" {budget}")
     };
     eprintln!(
         "warning: realize: some individual has two direct types whose subsumption was left \
          undecided, so a listed direct type may be a superclass of another; every listed type \
-         is a genuine type. {remedy}."
+         is a genuine type.{remedy}"
     );
 }
 
@@ -2785,7 +2795,11 @@ fn run() -> Result<()> {
                 warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped(), false);
             }
             if r.direct_types_unverified() {
-                warn_direct_types_unverified(r.direct_types_depth_capped(), saturation_only);
+                warn_direct_types_unverified(
+                    r.direct_types_depth_capped(),
+                    saturation_only,
+                    r.no_verdict(),
+                );
             }
             if r.witness_prune_may_drop() {
                 // #387: no probe was cut, so `incomplete` stays false; the

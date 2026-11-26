@@ -1354,7 +1354,9 @@ pub struct Realization {
     /// abandon), where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not
     /// help and the deadline-free check (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) may.
     /// `false` with `direct_types_unverified` set: the checks were cut by their deadline
-    /// or the node cap (a larger budget may decide them), or did not run
+    /// or the node cap (a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or `RUSTDL_MAX_NODES` may
+    /// decide them), or did not run. "At least one": other checks may have been cut
+    /// otherwise, or skipped after a cut
     /// (`RUSTDL_REALIZE_VERIFY_DIRECT=0`, the saturation-only realize). Report-only.
     direct_types_depth_capped: bool,
     /// #429: the classification this realization ran took the ontology as

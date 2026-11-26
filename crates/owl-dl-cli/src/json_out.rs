@@ -375,6 +375,14 @@ pub(crate) struct RealizeJson {
     /// missing) and from `witness_prune_active`, not implied by either, and does not
     /// cover them. See `Realization::direct_types_unverified`.
     pub(crate) direct_types_unverified: bool,
+    /// #583: with `direct_types_unverified`, at least one of the #388 checks was cut by
+    /// the tableau's decision-depth limit, where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
+    /// does not help and the deadline-free check (`=0`) may. `false` with
+    /// `direct_types_unverified`: a deadline or the node cap cut the checks (a larger
+    /// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or `RUSTDL_MAX_NODES` may decide them), or they did
+    /// not run. "At least one": other checks may have been cut otherwise. Implies `direct_types_unverified`.
+    /// Added without a `schema_version` bump. See `Realization::direct_types_depth_capped`.
+    pub(crate) direct_types_depth_capped: bool,
     /// #429: the classification under this realization took the ontology as
     /// consistent on a consistency-wedge `Sat` alone (the `consistent --json` /
     /// `classify --json` field). Not a give-up. See
@@ -819,6 +827,7 @@ pub(crate) fn build_realize_json(
             Vec::new()
         },
         direct_types_unverified: r.direct_types_unverified(),
+        direct_types_depth_capped: r.direct_types_depth_capped(),
         relies_on_trusted_consistency: r.relies_on_trusted_consistency(),
         no_verdict: r.no_verdict(),
         saturation_only,

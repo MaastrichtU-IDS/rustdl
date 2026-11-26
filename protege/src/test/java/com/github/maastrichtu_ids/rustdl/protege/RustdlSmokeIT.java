@@ -354,4 +354,35 @@ public class RustdlSmokeIT {
             Files.deleteIfExists(ofn);
         }
     }
+
+    /**
+     * #610, against a REAL rustdl binary: a HasKey axiom (which rustdl drops) and a use of
+     * owl:topObjectProperty as the universal role produce the two warnings. Run on real
+     * output so a field name the plugin misspells (read as its default) fails here.
+     */
+    @Test public void droppedAndUniversalRoleAreWarnedOnWithRealBinary() throws Exception {
+        assumeTrue("no rustdl binary available",
+            RustdlBinary.configuredOverride() != null
+            || RustdlBinary.class.getResource("/native") != null);
+        OWLOntologyManager m = OWLManager.createOWLOntologyManager();
+        OWLDataFactory df = m.getOWLDataFactory();
+        OWLOntology o = m.createOntology(IRI.create("http://ex610/"));
+        OWLClass a = df.getOWLClass(IRI.create("http://ex610/#A"));
+        OWLClass b = df.getOWLClass(IRI.create("http://ex610/#B"));
+        OWLObjectProperty p = df.getOWLObjectProperty(IRI.create("http://ex610/#p"));
+        m.addAxiom(o, df.getOWLHasKeyAxiom(a, p));
+        m.addAxiom(o, df.getOWLSubClassOfAxiom(a,
+            df.getOWLObjectAllValuesFrom(df.getOWLTopObjectProperty(), b)));
+        Path ofn = Files.createTempFile("rustdl-610-", ".ofn");
+        try {
+            FlattenedOntology.writeOfn(o, ofn);
+            RustdlJson.ClassifyJson c = RustdlProcess.classify(ofn, 120, 1000);
+            assertNotNull("dropped must be read", c.dropped);
+            java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+            assertTrue(w.toString(), w.stream().anyMatch(x -> x.contains("HasKey")));
+            assertTrue(w.toString(), w.stream().anyMatch(x -> x.contains("universal role")));
+        } finally {
+            Files.deleteIfExists(ofn);
+        }
+    }
 }

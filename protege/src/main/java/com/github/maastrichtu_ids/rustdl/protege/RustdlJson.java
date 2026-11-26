@@ -32,7 +32,8 @@ public final class RustdlJson {
          */
         public int derived_same_undecided;
         /**
-         * #610: axioms rustdl could not convert and left out, by kind ({@code "HasKey" -> 1});
+         * #610: axioms rustdl could not convert and left out, by label
+         * ({@code "HasKey: unsupported axiom (HasKey)" -> 1});
          * the hierarchy is computed over a strictly weaker ontology. Absent (null) in older
          * output.
          */

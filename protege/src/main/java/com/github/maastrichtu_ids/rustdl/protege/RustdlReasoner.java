@@ -179,7 +179,7 @@ public class RustdlReasoner extends OWLReasonerBase {
                     && classifyResult != null && classifyResult.consistent
                     && !getRootOntology().getIndividualsInSignature(true).isEmpty()) {
                 realizeResult = RustdlProcess.realize(ofn, timeoutSec);
-                for (String w : surfaceWarnings("realize", "type", realizeResult.incomplete,
+                for (String w : surfaceWarnings("realize", "instance-types", realizeResult.incomplete,
                         realizeResult.universal_role_ordinary, false, null)) {
                     LOG.warning(w);
                 }
@@ -279,7 +279,9 @@ public class RustdlReasoner extends OWLReasonerBase {
         }
         // Trust alone is set on almost every ontology (pizza, wine, a one-axiom file), so it
         // is not warned on by itself; the CLI prints it as a note. It is when the wedge's
-        // model is of a KB weaker by refused clauses or deferred encodings (#558).
+        // model is of a KB weaker by refused clauses or deferred encodings (#558). Those
+        // counts can undercount (some drops are not counted, json_out's field doc), so a
+        // 0 is no guarantee; the warning covers the measured case only.
         if (c.relies_on_trusted_consistency
                 && (c.consistency_wedge_clauses_refused > 0
                     || c.consistency_wedge_clauses_deferred > 0)) {

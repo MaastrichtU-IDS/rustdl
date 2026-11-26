@@ -1,0 +1,10 @@
+Prefix(:=<http://t/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://t/o>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:D1)) Declaration(Class(:D2)) Declaration(Class(:E)) Declaration(Class(:K)) Declaration(Class(:M))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+SubClassOf(:A :M)
+SubClassOf(:M ObjectAllValuesFrom(:r :C))
+EquivalentClasses(:M ObjectIntersectionOf(:K ObjectAllValuesFrom(:s :E)))
+EquivalentClasses(:D ObjectIntersectionOf(:K ObjectAllValuesFrom(:r :C)))
+)

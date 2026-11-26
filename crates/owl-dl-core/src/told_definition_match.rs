@@ -286,3 +286,185 @@ pub fn derive_told_definition_matches(onto: &mut InternalOntology) -> usize {
     }
     added
 }
+
+/// #603: the told-definition match for ONE pair, with the axioms it used, so a surface
+/// that cites source axioms (`prove --json`) can cite the premises of an `A ⊑ D` this
+/// pass emitted instead of the derived edge itself.
+///
+/// It replays the pass's rule over an edge index built once from the FINAL axiom list,
+/// each edge carrying the index of the axiom behind it:
+/// - told edges `a → b`: `SubClassOf(a, b)`, `EquivalentClasses` among atomic operands,
+///   `DisjointUnion` member → class (as [`build_told_tables`]), and an atomic member of a
+///   union a class is defined as (`EquivalentClasses(b, a ⊔ …)`: `a ⊑ a ⊔ … ⊑ b`);
+/// - asserted-conjunct edges `b → k` for an atomic conjunct `k` of `b`'s non-atomic
+///   super (`SubClassOf(b, …)`, or the `b ⊑ y` direction of `EquivalentClasses(b, y)`),
+///   followed only under [`told_match_conjunct_supers_enabled`], as in the pass;
+/// - for a complex conjunct `k`, the classes asserting it and the axiom that does.
+///
+/// Every edge is a necessary direction, so ANY premise set it returns entails `a ⊑ d`,
+/// whichever path the pass itself took. The caller decides which axioms may be used
+/// (`eligible`): the edge being explained must not be, or it explains itself.
+pub struct MatchIndex {
+    told: HashMap<ClassId, Vec<(ClassId, usize)>>,
+    conj: HashMap<ClassId, Vec<(ClassId, usize)>>,
+    asserted_by: HashMap<ConceptId, Vec<(ClassId, usize)>>,
+    defs: HashMap<ClassId, Vec<(usize, ConceptId)>>,
+    close_conjuncts: bool,
+}
+
+impl MatchIndex {
+    /// One pass over `onto.axioms`.
+    #[must_use]
+    pub fn build(onto: &InternalOntology) -> Self {
+        let pool = &onto.concepts;
+        let mut ix = Self {
+            told: HashMap::new(),
+            conj: HashMap::new(),
+            asserted_by: HashMap::new(),
+            defs: HashMap::new(),
+            close_conjuncts: told_match_conjunct_supers_enabled(),
+        };
+        let assert_on = |ix: &mut Self, b: ClassId, sup: ConceptId, i: usize| {
+            for k in conjuncts(sup, pool) {
+                match pool.get(k) {
+                    ConceptExpr::Atomic(c) => ix.conj.entry(b).or_default().push((*c, i)),
+                    ConceptExpr::Top => {}
+                    _ => ix.asserted_by.entry(k).or_default().push((b, i)),
+                }
+            }
+        };
+        for (i, ax) in onto.axioms.iter().enumerate() {
+            match ax {
+                Axiom::SubClassOf { sub, sup } => {
+                    let Some(a) = atomic(*sub, pool) else {
+                        continue;
+                    };
+                    match atomic(*sup, pool) {
+                        Some(b) => ix.told.entry(a).or_default().push((b, i)),
+                        None => assert_on(&mut ix, a, *sup, i),
+                    }
+                }
+                Axiom::EquivalentClasses(ids) => {
+                    let atoms: Vec<ClassId> = ids.iter().filter_map(|&c| atomic(c, pool)).collect();
+                    for &x in &atoms {
+                        for &y in &atoms {
+                            if x != y {
+                                ix.told.entry(x).or_default().push((y, i));
+                            }
+                        }
+                    }
+                    for &d in &atoms {
+                        for &y in ids {
+                            if atomic(y, pool).is_some() {
+                                continue;
+                            }
+                            if let ConceptExpr::Or(members) = pool.get(y) {
+                                for &m in members {
+                                    if let Some(m) = atomic(m, pool) {
+                                        ix.told.entry(m).or_default().push((d, i));
+                                    }
+                                }
+                            }
+                            assert_on(&mut ix, d, y, i);
+                            if conjuncts(y, pool).iter().any(|&k| !is_el(k, pool))
+                                && !matches!(pool.get(y), ConceptExpr::Bot)
+                            {
+                                ix.defs.entry(d).or_default().push((i, y));
+                            }
+                        }
+                    }
+                }
+                Axiom::DisjointUnion { class, members } => {
+                    for &m in members {
+                        if let Some(m) = atomic(m, pool) {
+                            ix.told.entry(m).or_default().push((*class, i));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        ix
+    }
+
+    /// Indices of axioms that together give `a ⊑ d` by the pass's rule, using only
+    /// axioms `eligible` admits; `None` when no such set is found.
+    #[must_use]
+    pub fn premises(
+        &self,
+        onto: &InternalOntology,
+        a: ClassId,
+        d: ClassId,
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> Option<Vec<usize>> {
+        let pool = &onto.concepts;
+        // BFS from `a` (reflexive), the parent edge of each reached class.
+        let mut parent: HashMap<ClassId, Option<(ClassId, usize)>> = HashMap::new();
+        parent.insert(a, None);
+        let mut queue = std::collections::VecDeque::from([a]);
+        while let Some(b) = queue.pop_front() {
+            let told = self.told.get(&b).into_iter().flatten();
+            let conj = self
+                .conj
+                .get(&b)
+                .into_iter()
+                .flatten()
+                .filter(|_| self.close_conjuncts);
+            for &(c, i) in told.chain(conj) {
+                if eligible(i) && !parent.contains_key(&c) {
+                    parent.insert(c, Some((b, i)));
+                    queue.push_back(c);
+                }
+            }
+        }
+        let path = |mut c: ClassId, out: &mut Vec<usize>| {
+            while let Some(Some((p, i))) = parent.get(&c) {
+                out.push(*i);
+                c = *p;
+            }
+        };
+        // A told path already gives `a ⊑ d` (e.g. an edge another pass derived from a
+        // union definition): cite the path.
+        if d != a && parent.contains_key(&d) {
+            let mut out = Vec::new();
+            path(d, &mut out);
+            out.sort_unstable();
+            out.dedup();
+            return Some(out);
+        }
+        'defs: for &(di, y) in self.defs.get(&d).into_iter().flatten() {
+            if !eligible(di) {
+                continue;
+            }
+            let mut out = vec![di];
+            for k in conjuncts(y, pool) {
+                match pool.get(k) {
+                    ConceptExpr::Top => {}
+                    ConceptExpr::Atomic(c) => {
+                        if !parent.contains_key(c) {
+                            continue 'defs;
+                        }
+                        path(*c, &mut out);
+                    }
+                    _ => {
+                        let Some(&(b, i)) = self
+                            .asserted_by
+                            .get(&k)
+                            .into_iter()
+                            .flatten()
+                            .find(|&&(b, i)| eligible(i) && parent.contains_key(&b))
+                        else {
+                            continue 'defs;
+                        };
+                        out.push(i);
+                        path(b, &mut out);
+                    }
+                }
+            }
+            out.sort_unstable();
+            out.dedup();
+            return Some(out);
+        }
+        None
+    }
+}

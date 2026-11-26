@@ -1589,18 +1589,28 @@ fn derived_fact_to_component(
 pub(crate) struct Citations<'a> {
     literal:
         HashMap<owl_dl_core::ontology::Axiom, &'a horned_owl::model::AnnotatedComponent<RcStr>>,
+    /// #603: the told-definition match index, built on first use (only a proof citing a
+    /// non-literal atomic `SubClassOf` needs it).
+    matches: std::cell::OnceCell<owl_dl_core::told_definition_match::MatchIndex>,
+    /// #603: resolved axiom index → its source components (successes only).
+    resolved: std::cell::RefCell<HashMap<usize, Vec<&'a Component<RcStr>>>>,
+    /// #603: axioms being resolved, so a derived edge never explains itself.
+    in_progress: std::cell::RefCell<std::collections::HashSet<usize>>,
 }
 
 impl<'a> Citations<'a> {
     pub(crate) fn new(src: &'a SetOntology<RcStr>, internal: &InternalOntology) -> Self {
         Self {
             literal: owl_dl_core::provenance::literal_sources(src, internal),
+            matches: std::cell::OnceCell::new(),
+            resolved: std::cell::RefCell::new(HashMap::new()),
+            in_progress: std::cell::RefCell::new(std::collections::HashSet::new()),
         }
     }
 
     /// The source component `ax` is the stored form of, if one is: directly, or, for a
     /// piece of a decomposed chain, through the chain it came from.
-    fn source_of(
+    fn literal_of(
         &self,
         ax: &owl_dl_core::ontology::Axiom,
         internal: &InternalOntology,
@@ -1612,6 +1622,65 @@ impl<'a> Citations<'a> {
                 self.literal.get(&chain)
             })
             .map(|ac| &ac.component)
+    }
+
+    /// The source components to cite for `internal.axioms[idx]`: its own source
+    /// component, or (#603) for an atomic `A ⊑ D` the told-definition match emitted,
+    /// the source components of its premises. `None`: no source form (it is listed as
+    /// derived). All or nothing: a premise without a source form fails the whole set,
+    /// so what is cited always entails the axiom.
+    fn sources_of(
+        &self,
+        idx: usize,
+        internal: &InternalOntology,
+    ) -> Option<Vec<&'a Component<RcStr>>> {
+        let ax = internal.axioms.get(idx)?;
+        if let Some(c) = self.literal_of(ax, internal) {
+            return Some(vec![c]);
+        }
+        if let Some(v) = self.resolved.borrow().get(&idx) {
+            return Some(v.clone());
+        }
+        let owl_dl_core::ontology::Axiom::SubClassOf { sub, sup } = ax else {
+            return None;
+        };
+        let pool = &internal.concepts;
+        let (owl_dl_core::ir::ConceptExpr::Atomic(a), owl_dl_core::ir::ConceptExpr::Atomic(d)) =
+            (pool.get(*sub), pool.get(*sup))
+        else {
+            return None;
+        };
+        if !self.in_progress.borrow_mut().insert(idx) {
+            return None;
+        }
+        let ix = self
+            .matches
+            .get_or_init(|| owl_dl_core::told_definition_match::MatchIndex::build(internal));
+        let is_literal = |i: usize| self.literal_of(&internal.axioms[i], internal).is_some();
+        // Literal premises first (a first-round edge needs nothing else); then other
+        // derived edges, never one being resolved (it would explain itself).
+        let premises = ix.premises(internal, *a, *d, &is_literal).or_else(|| {
+            let progress = self.in_progress.borrow().clone();
+            ix.premises(internal, *a, *d, &|i| {
+                i != idx && (is_literal(i) || !progress.contains(&i))
+            })
+        });
+        let out = premises.and_then(|ps| {
+            let mut out: Vec<&'a Component<RcStr>> = Vec::new();
+            for p in ps {
+                for c in self.sources_of(p, internal)? {
+                    if !out.contains(&c) {
+                        out.push(c);
+                    }
+                }
+            }
+            Some(out)
+        });
+        self.in_progress.borrow_mut().remove(&idx);
+        if let Some(v) = &out {
+            self.resolved.borrow_mut().insert(idx, v.clone());
+        }
+        out
     }
 }
 
@@ -1645,25 +1714,27 @@ fn build_proof_node_json(
     let (builtin_refs, source_refs): (Vec<_>, Vec<_>) = node
         .axiom_refs
         .iter()
-        .filter_map(|r| internal.axioms.get(r.0))
-        .partition(|ax| internal.builtin.contains(ax));
+        .filter_map(|r| internal.axioms.get(r.0).map(|ax| (r.0, ax)))
+        .partition(|(_, ax)| internal.builtin.contains(ax));
     // #586: a cited axiom is rendered as the source component it came from, as written,
     // never as conversion stored it (which Protégé's literal lookup rejects). One with no
     // single source (a later pass derived it) goes to `derived_axioms`.
     let mut axioms: Vec<String> = Vec::new();
     let mut derived_axioms: Vec<String> = Vec::new();
-    for ax in source_refs {
-        match cites.source_of(ax, internal) {
-            Some(component) => {
-                let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
-                if !axioms.contains(&doc) {
-                    axioms.push(doc);
+    for (idx, ax) in source_refs {
+        match cites.sources_of(idx, internal) {
+            Some(components) => {
+                for component in components {
+                    let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
+                    if !axioms.contains(&doc) {
+                        axioms.push(doc);
+                    }
                 }
             }
             None => derived_axioms.push(render(ax)),
         }
     }
-    let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(render).collect();
+    let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(|(_, ax)| render(ax)).collect();
 
     let premises = node
         .premises

@@ -1639,6 +1639,21 @@ fn build_proof_node_json(
             None => derived_axioms.push(render(ax)),
         }
     }
+    // #543 part 2: a built-in that holds only given a source axiom (a universal-role
+    // fold) cites that axiom too, so the step is not credited to OWL semantics alone.
+    for ax in &builtin_refs {
+        if let Some((_, lic)) = internal.builtin_licenses.iter().find(|(b, _)| b == *ax) {
+            match cites.source_of(lic, internal) {
+                Some(component) => {
+                    let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
+                    if !axioms.contains(&doc) {
+                        axioms.push(doc);
+                    }
+                }
+                None => derived_axioms.push(render(lic)),
+            }
+        }
+    }
     let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(render).collect();
 
     let premises = node

@@ -124,6 +124,17 @@ pub struct InternalOntology {
     /// `owl:bottomObjectProperty` / `owl:bottomDataProperty`, or tells a universal role
     /// empty, or negates an assertion on one.
     pub builtin: Vec<Axiom>,
+    /// #543 (S+F): for a built-in that holds only GIVEN a source axiom (a fold of a
+    /// universal-role use licensed by a `ClassAssertion`, an `ObjectPropertyDomain` /
+    /// `Range`, an `IrreflexiveRole` / `AsymmetricRole` or a
+    /// `DisjointObjectProperties`), the pair (built-in, licensing source axiom). A
+    /// surface citing the built-in cites that source axiom with it, so a step is never
+    /// credited to "OWL semantics" alone when a user axiom is responsible. A built-in
+    /// with no entry holds in every interpretation.
+    pub builtin_licenses: Vec<(Axiom, Axiom)>,
+    /// #543 (S+F): how many axioms the universal-role fold added (`unlowered`'s
+    /// `universal_role_folds`; the zero-fold check of the no-sweep argument reads it).
+    pub universal_role_folds: usize,
     /// #538: n-ary axioms whose repeated operands were collapsed while reading (their
     /// operands are a set). Kept apart from `dropped`: no content is lost under the set
     /// reading, so completeness is unaffected; a caller reading the operands as a list

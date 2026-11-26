@@ -3258,8 +3258,45 @@ pub fn convert_ontology<A: ForIRI>(
     if !conversion_cut() {
         crate::top_bottom_roles::state_top_bottom_role_semantics(&mut out);
     }
+    // #543 (S+F): state the universal-role meaning of the uses that need no fresh
+    // symbol; the rest stay flagged (`universal_role_ordinary`). A no-op unless
+    // `owl:topObjectProperty` is interned. Data properties are never folded: an IRI used
+    // as both (outside OWL 2 DL) would turn a data axiom into a universal consequence.
+    if !conversion_cut() && crate::top_bottom_roles::fold_enabled() {
+        let data_iris = data_property_iris(src);
+        crate::top_bottom_roles::fold_universal_role_uses(&mut out, &data_iris);
+    }
     out.axioms.sort();
     Ok(out)
+}
+
+/// The IRIs the source uses as data properties: declared, asserted or axiomatised as
+/// one. #543's fold refuses any universal role among them. Class-expression data
+/// restrictions are not scanned; OWL 2 DL requires their properties to be declared.
+fn data_property_iris<A: ForIRI>(src: &SetOntology<A>) -> std::collections::BTreeSet<String> {
+    use horned_owl::model::Component as C;
+    let mut out = std::collections::BTreeSet::new();
+    let mut add = |dp: &horned_owl::model::DataProperty<A>| {
+        out.insert(dp.0.as_ref().to_string());
+    };
+    for c in src {
+        match &c.component {
+            C::DeclareDataProperty(d) => add(&d.0),
+            C::DataPropertyAssertion(a) => add(&a.dp),
+            C::NegativeDataPropertyAssertion(a) => add(&a.dp),
+            C::SubDataPropertyOf(a) => {
+                add(&a.sub);
+                add(&a.sup);
+            }
+            C::EquivalentDataProperties(a) => a.0.iter().for_each(&mut add),
+            C::DisjointDataProperties(a) => a.0.iter().for_each(&mut add),
+            C::DataPropertyDomain(a) => add(&a.dp),
+            C::DataPropertyRange(a) => add(&a.dp),
+            C::FunctionalDataProperty(a) => add(&a.0),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// `RUSTDL_INVERSE_PAIR_FUNC` — derive functionality across a declared inverse

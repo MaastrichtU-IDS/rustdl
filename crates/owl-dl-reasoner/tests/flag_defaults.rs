@@ -77,6 +77,11 @@ fn expected() -> Vec<FlagRow> {
     vec![
         // ── owl-dl-core ──────────────────────────────────────────────────
         (
+            "RUSTDL_UNIVERSAL_ROLE_FOLD",
+            owl_dl_core::top_bottom_roles::fold_enabled as fn() -> bool,
+            true,
+        ),
+        (
             "RUSTDL_DOMAIN_ABSORPTION",
             owl_dl_core::absorb::domain_absorption_enabled as fn() -> bool,
             true,

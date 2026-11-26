@@ -20,6 +20,20 @@ All notable changes to rustdl are documented here. Format is based on
 - **The Python class-expression queries now warn on dropped axioms (#552).** `class_expression_satisfiable`, `class_expression_entailed_subclass` and `class_expression_instances` emit `DroppedAxiomsWarning` when conversion dropped axioms from the ontology or the query expression, where they used to be silent. Under `-W error` (or `simplefilter("error")`) they now raise on such input. The other Python queries stay silent on dropped axioms until #597.
 
 ### Fixed
+- **The universal role's meaning is stated where it needs no new symbol (#543, part 2: "S+F").** Part 1 flagged every semantic use of `owl:topObjectProperty`. Now conversion adds an axiom, recorded as built-in, that states the universal-role meaning of each use below. Every added axiom holds in every model under the Direct Semantics (`top` is `Δ × Δ`). These uses now answer right and are no longer flagged:
+  - `∃top.⊤`, `∃top.{a}`, and `∃top.D` / `≥1 top.D` where D has a told instance (a `ClassAssertion`, also through told sub-classes), which are `⊤`;
+  - `∀top.⊥`, and `∀top.¬D` / `≤0 top.D` with D as above, which are `⊥`;
+  - `Self(top)`, which is `⊤`;
+  - `Domain(top, C)` and `Range(top, C)`, which give `⊤ ⊑ C`;
+  - `Irreflexive(top)` and `Asymmetric(top)`, which give `⊤ ⊑ ⊥`;
+  - `Disjoint(top, r)`, which empties `r` (and with two universal members gives `⊤ ⊑ ⊥`).
+
+  The same applies to properties above top. For example, `D(a)`, `C(b)` and `∃top.D ⊑ E` now give `⊤ ⊑ E` and `E(b)`, which HermiT confirms.
+  - **Still flagged:** `∃top.D` where D may be empty, other `∀` restrictions, cardinalities, `Functional(top)`, chain legs, the data top, and properties also used as data properties.
+  - **Role-level surfaces** keep the flag after a property-disjointness fold.
+  - **Citation.** `prove` cites the licensing source axiom of a conditional fold.
+  - **Rollback:** `RUSTDL_UNIVERSAL_ROLE_FOLD=0` restores part 1. Default ON; it reaches no ORE ontology.
+  - **Known gap.** `verify-el` reports a false "violated" on the `∃top.⊤` fold (#611).
 - **Where rustdl reads the universal role as an ordinary property, it now says so (#543, part 1).** `owl:topObjectProperty` is an ordinary role to every engine. That is sound for positive answers, but it misses entailments of `Δ × Δ`, and the misses went unflagged. For example, `⊤ ⊑ ∃r.D` with `∃owl:topObjectProperty.D ⊑ ⊥` is inconsistent (HermiT), yet `consistent` said consistent and `classify --json` said `completeness_guaranteed: true`. `C ⊑ D` with `∃top.D ⊑ E` entails `C ⊑ E`, which `classify` missed under the same guarantee.
   - **Detection.** Conversion detects a *semantic* use of a universal role: `owl:topObjectProperty`, any property above it, and `owl:topDataProperty` outside the super-property position.
     - Semantic: inside a class expression, domain or range, `Functional`, `InverseFunctional`, `Irreflexive`, `Asymmetric`, a property disjointness, or a chain leg into an ordinary property.

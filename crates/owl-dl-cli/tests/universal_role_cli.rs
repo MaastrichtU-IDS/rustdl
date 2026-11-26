@@ -237,12 +237,14 @@ fn a_missed_subsumption_is_flagged_on_every_class_surface() {
     );
 }
 
-/// `D(a)`, `C(b)`, `∃top.D ⊑ E` entail `E(a)` and `E(b)`. HermiT derives both.
+/// `(∃r.D)(a)`, `C(b)`, `∃top.D ⊑ E` entail `E(b)`. HermiT derives it.
 #[test]
 fn a_missed_type_is_flagged_on_every_instance_surface() {
     let f = Fixture::new(
         "abox",
-        "ClassAssertion(:D :a) ClassAssertion(:C :b) \
+        // D is non-empty only through an anonymous witness (no told instance), so
+        // the use is not folded (#543 part 2 folds `∃u.D` only for a told instance).
+        "ClassAssertion(ObjectSomeValuesFrom(:r :D) :a) ClassAssertion(:C :b) \
          SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :E)",
     );
     let (code, out, err) = run(&["instance", f.path(), &iri("E"), &iri("b")]);
@@ -262,13 +264,15 @@ fn a_missed_type_is_flagged_on_every_instance_surface() {
     assert_eq!(v["completeness_guaranteed"], false, "{v}");
 }
 
-/// `C ⊑ ∀top.⊥`: `C` is unsatisfiable (the universal role reaches `C`'s own element).
-/// HermiT: C unsat. rustdl: satisfiable, flagged.
+/// `(∃r.D)(a)`, `C ⊑ ∀top.¬D`: `C` is unsatisfiable (the universal role reaches `a`'s
+/// D-successor). HermiT: C unsat. rustdl: satisfiable, flagged.
 #[test]
 fn a_missed_unsatisfiable_class_is_flagged() {
     let f = Fixture::new(
         "all",
-        "SubClassOf(:C ObjectAllValuesFrom(owl:topObjectProperty owl:Nothing))",
+        // Not folded: D has no told instance (only an anonymous witness).
+        "ClassAssertion(ObjectSomeValuesFrom(:r :D) :a) \
+         SubClassOf(:C ObjectAllValuesFrom(owl:topObjectProperty ObjectComplementOf(:D)))",
     );
     let (code, out, err) = run(&["sat", f.path(), &iri("C")]);
     assert_eq!(code, 0, "{err}");
@@ -304,7 +308,8 @@ fn a_use_in_the_query_only_is_flagged() {
         "instances-expr",
         "--json",
         f.path(),
-        "owl:topObjectProperty some :D",
+        // `:E` has no told instance, so the use is not folded (#543 part 2).
+        "owl:topObjectProperty some :E",
     ]);
     assert_eq!(code, 0, "{err}");
     let v = json(&out);
@@ -421,8 +426,10 @@ fn a_data_top_restriction_is_a_flagged_miss() {
 fn the_note_reaches_the_other_arms() {
     let f = Fixture::new(
         "arms",
+        // `ClassAssertion(:E :a)` gives the arms an individual without giving `:D` a
+        // told instance, so `∃top.D` stays unfolded (#543 part 2).
         "SubClassOf(:C :D) SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :E) \
-         ClassAssertion(:C :a)",
+         ClassAssertion(:E :a)",
     );
     for args in [
         vec!["disjoint", f.path()],

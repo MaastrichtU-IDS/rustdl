@@ -33,6 +33,19 @@ fn injected_class_iri(y: ClassId, r: RoleId) -> String {
     )
 }
 
+/// #611: the IRI of a fresh class with no axioms that `build_model` adds to the working
+/// ontology before saturating. Its subsumers are exactly what the closure derives for an
+/// ARBITRARY element, i.e. the classes it entails of `⊤` — including a `⊤ ⊑ E` no axiom
+/// states (`⊤ ⊑ ∃u.⊤`, `∃u.⊤ ⊑ E`), which the axiom scan in `compute_top_floor` cannot
+/// see. Carries `SYNTHETIC_CLASS_IRI_PREFIX`, so reporting filters it.
+#[must_use]
+pub fn top_probe_iri() -> String {
+    format!(
+        "{}verify-top-probe",
+        owl_dl_core::residual_absorbability::SYNTHETIC_CLASS_IRI_PREFIX
+    )
+}
+
 /// What a prior round's injection did for gap `(a, r)`, looked up by the
 /// deterministic IRI `inject_conjunction` interns under.
 ///
@@ -329,6 +342,16 @@ impl FiniteModel {
                 }
                 _ => {}
             }
+        }
+        // #611: what the closure derives of `⊤`, not only what an axiom asserts. A
+        // `⊤ ⊑ ∃u.⊤` witness otherwise came out unlabelled, and `∃u.⊤ ⊑ E` read as
+        // violated on it although the closure has `⊤ ⊑ E`. Taken from the closure under
+        // test (the probe's own subsumers), never from axioms: if the closure misses a
+        // `⊤`-super, the floor misses it too and the violation is still reported.
+        if let Some(p) = internal.vocabulary.class_id(&top_probe_iri())
+            && !subs.is_unsatisfiable(p)
+        {
+            floor.extend(subs.subsumers_of(p).into_iter().filter(|&c| c != p));
         }
         floor.sort_unstable_by_key(|c| c.index());
         floor.dedup();

@@ -298,7 +298,9 @@ pub fn derive_told_definition_matches(onto: &mut InternalOntology) -> usize {
 ///   union a class is defined as (`EquivalentClasses(b, a ⊔ …)`: `a ⊑ a ⊔ … ⊑ b`);
 /// - asserted-conjunct edges `b → k` for an atomic conjunct `k` of `b`'s non-atomic
 ///   super (`SubClassOf(b, …)`, or the `b ⊑ y` direction of `EquivalentClasses(b, y)`),
-///   followed only under [`told_match_conjunct_supers_enabled`], as in the pass;
+///   followed only under [`told_match_conjunct_supers_enabled`] (default on). With it off
+///   the pass still follows one such hop and this replay none, so those edges stay
+///   derived: a miss, never a wrong citation;
 /// - for a complex conjunct `k`, the classes asserting it and the axiom that does.
 ///
 /// Every edge is a necessary direction, so ANY premise set it returns entails `a ⊑ d`,

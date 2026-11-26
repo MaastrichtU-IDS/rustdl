@@ -1596,6 +1596,9 @@ pub(crate) struct Citations<'a> {
     resolved: std::cell::RefCell<HashMap<usize, Vec<&'a Component<RcStr>>>>,
     /// #603: axioms being resolved, so a derived edge never explains itself.
     in_progress: std::cell::RefCell<std::collections::HashSet<usize>>,
+    /// #603: the ontology the index and the memo are keyed to (axiom indices); every
+    /// call must pass that same `InternalOntology`.
+    internal_id: usize,
 }
 
 impl<'a> Citations<'a> {
@@ -1605,6 +1608,7 @@ impl<'a> Citations<'a> {
             matches: std::cell::OnceCell::new(),
             resolved: std::cell::RefCell::new(HashMap::new()),
             in_progress: std::cell::RefCell::new(std::collections::HashSet::new()),
+            internal_id: std::ptr::from_ref(internal) as usize,
         }
     }
 
@@ -1638,6 +1642,12 @@ impl<'a> Citations<'a> {
         if let Some(c) = self.literal_of(ax, internal) {
             return Some(vec![c]);
         }
+        // Only the told-definition replay below is keyed to one ontology.
+        debug_assert_eq!(
+            std::ptr::from_ref(internal) as usize,
+            self.internal_id,
+            "Citations used with another InternalOntology than it was built for"
+        );
         if let Some(v) = self.resolved.borrow().get(&idx) {
             return Some(v.clone());
         }
@@ -1995,8 +2005,17 @@ mod tests {
         // source's, since no source component converts to it: it is derived.
         let mut stripped = internal.clone();
         stripped.builtin.clear();
-        let j2 =
-            build_proof_node_json(&node, &stripped, &cites, &HashMap::new(), &pm, &build).unwrap();
+        // #603: `Citations` is keyed to the ontology it was built for.
+        let stripped_cites = Citations::new(&onto, &stripped);
+        let j2 = build_proof_node_json(
+            &node,
+            &stripped,
+            &stripped_cites,
+            &HashMap::new(),
+            &pm,
+            &build,
+        )
+        .unwrap();
         assert_eq!(j2.axioms.len(), 1, "{:?}", j2.axioms);
         assert!(j2.builtin_axioms.is_empty());
         assert_eq!(j2.derived_axioms.len(), 1, "{:?}", j2.derived_axioms);

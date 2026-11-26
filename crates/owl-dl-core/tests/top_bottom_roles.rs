@@ -329,6 +329,24 @@ fn semantic_universal_role_uses_are_flagged() {
          SubClassOf(ObjectSomeValuesFrom(:r :D) :C)",
         // `owl:topDataProperty` outside the super-property position.
         "SubClassOf(:C DataSomeValuesFrom(owl:topDataProperty rdfs:Literal))",
+        "SubClassOf(DataSomeValuesFrom(owl:topDataProperty rdfs:Literal) :C)",
+        // `owl:topDataProperty` as a sub-property: `topData ⊑ bottomData` is
+        // inconsistent, and no #539 built-in covers the data top.
+        "SubDataPropertyOf(owl:topDataProperty owl:bottomDataProperty)",
+        "SubDataPropertyOf(owl:topDataProperty :p)",
+        // A negated assertion on the (punned) data top: #539's A4 covers only the
+        // object top.
+        "NegativeObjectPropertyAssertion(owl:topDataProperty :a :b)",
+        // The closure through equivalence, inverse, an inverse sub-role and a cycle,
+        // each followed by a use of `r`.
+        "EquivalentObjectProperties(owl:topObjectProperty :r) \
+         SubClassOf(:C ObjectAllValuesFrom(:r :D))",
+        "InverseObjectProperties(owl:topObjectProperty :r) \
+         SubClassOf(:C ObjectAllValuesFrom(:r :D))",
+        "SubObjectPropertyOf(ObjectInverseOf(owl:topObjectProperty) :r) \
+         SubClassOf(:C ObjectAllValuesFrom(:r :D))",
+        "SubObjectPropertyOf(:r owl:topObjectProperty) SubObjectPropertyOf(owl:topObjectProperty :r) \
+         SubClassOf(:C ObjectAllValuesFrom(:r :D))",
     ] {
         assert!(flagged(body), "a semantic use, flagged: {body}");
     }

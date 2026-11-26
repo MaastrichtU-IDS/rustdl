@@ -475,6 +475,7 @@ def _prepared_justify(self: "PreparedOntology", query):
     axioms, incomplete, trusted, depth_capped = self._justify_reporting(query)
     _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete, depth_capped)
     _warn_if_oracle_trusted("PreparedOntology.justify", trusted)
+    _warn_if_universal_role("PreparedOntology.justify", self.universal_role_ordinary)
     return axioms
 
 
@@ -487,6 +488,7 @@ def _prepared_justify_all(self: "PreparedOntology", query, max=10):
         "PreparedOntology.justify_all", incomplete, depth_capped
     )
     _warn_if_oracle_trusted("PreparedOntology.justify_all", trusted)
+    _warn_if_universal_role("PreparedOntology.justify_all", self.universal_role_ordinary)
     return js
 
 
@@ -1288,6 +1290,11 @@ _ROLE_LEVEL = frozenset({
 })
 
 
+# #543: a proved inconsistency masks the flag (every entailment holds), as in
+# `classify` and the CLI's `consistent`: `is_consistent` warns only on `True`.
+_MASKED_BY_INCONSISTENCY = {"is_consistent": lambda consistent: consistent}
+
+
 def _with_universal_role_note(name, fn):
     """Wrap a path-taking query so it warns `UniversalRoleWarning` after answering.
     `universal_role_ordinary` searches the file's bytes first, so an ontology that
@@ -1297,6 +1304,8 @@ def _with_universal_role_note(name, fn):
     @functools.wraps(fn)
     def wrapper(path, *args, **kwargs):
         result = fn(path, *args, **kwargs)
+        if not _MASKED_BY_INCONSISTENCY.get(name, lambda _r: True)(result):
+            return result
         _warn_if_universal_role(
             name, universal_role_ordinary(path, role_level=name in _ROLE_LEVEL), stacklevel=3
         )

@@ -77,3 +77,21 @@ def test_a_role_above_top_flags_the_role_level_functions(tmp_path):
     path = _write(tmp_path, "topsub.ofn", src)
     assert rustdl.universal_role_ordinary(path) is False
     assert rustdl.universal_role_ordinary(path, role_level=True) is True
+
+
+def test_is_consistent_is_masked_by_a_proved_inconsistency(tmp_path):
+    src = HEAD + """SubClassOf(:C ObjectSomeValuesFrom(owl:topObjectProperty :D))
+ClassAssertion(owl:Nothing :a)
+)"""
+    path = _write(tmp_path, "masked.ofn", src)
+    consistent, ws = _universal_warnings(rustdl.is_consistent, path)
+    assert consistent is False
+    assert not ws, "a proved inconsistency is not hidden by the universal role"
+
+
+def test_prepared_justify_warns(tmp_path):
+    path = _write(tmp_path, "prep.ofn", POSITIVE)
+    p = rustdl.prepare(path)
+    assert p.universal_role_ordinary is True
+    _, ws = _universal_warnings(p.justify, ["subclass", "http://e#C", "http://e#D"])
+    assert ws

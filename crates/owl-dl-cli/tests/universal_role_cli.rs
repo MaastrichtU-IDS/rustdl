@@ -2,8 +2,12 @@
 //! positives but loses entailments of the universal role `Δ × Δ`. Where that can change
 //! an answer, every surface now says so: `completeness_guaranteed` is false
 //! (condition 9), the JSON outputs carry `universal_role_ordinary: true`, the text
-//! outputs print one stderr note, and the exit codes are unchanged. The answers
-//! themselves are unchanged; part 2 of #543 implements the semantics.
+//! outputs print one stderr note, and the exit codes are unchanged except `verify-el`'s,
+//! which turns `Verified` (0) into `Unresolved` (3), as a dropped axiom does. The answers
+//! themselves are unchanged; part 2 of #543 implements the semantics. A proved
+//! inconsistency masks the flag on `classify` and `consistent` (and Python's
+//! `classify` / `is_consistent`); the other surfaces either error on an inconsistent KB
+//! or report the flag as converted.
 //!
 //! Oracle: `HermiT` for every case it accepts (∃/∀ on top, `top ⊑ r`, chains). It
 //! rejects top in `Functional`, cardinality and disjointness ("non-simple property")
@@ -213,12 +217,15 @@ fn a_missed_subsumption_is_flagged_on_every_class_surface() {
     assert_eq!(v["completeness_guaranteed"], false, "{v}");
 
     let (code, out, _) = run(&["verify-el", "--json", f.path()]);
-    assert_ne!(code, 0, "verify-el cannot verify a weaker reading");
+    assert_eq!(code, 3, "verify-el cannot verify a weaker reading: {out}");
     let v = json(&out);
     assert_eq!(v["universal_role_ordinary"], true, "{v}");
+    assert_eq!(v["verdict"], "unresolved", "{v}");
     assert!(
-        out.contains("UniversalRoleReadAsOrdinary") || v["verdict"] == "unresolved",
-        "{out}"
+        v["unresolved"].as_array().unwrap().iter().any(|r| r
+            .as_str()
+            .is_some_and(|r| r.contains("UniversalRoleReadAsOrdinary"))),
+        "the specific reason: {v}"
     );
 }
 
@@ -358,4 +365,77 @@ fn a_proved_inconsistency_masks_the_flag() {
     let v = json(&out);
     assert_eq!(v["consistent"], false, "{v}");
     assert_eq!(v["universal_role_ordinary"], false, "{v}");
+}
+
+/// `topData ⊑ bottomData` is inconsistent by the Direct Semantics (`Δ × D` is not
+/// empty); no #539 built-in covers the data top, so it must be flagged. HermiT and
+/// Konclude call it consistent (they read the data top as a syntax restriction), so
+/// adjudicated by hand from the Direct Semantics. The punned negated assertion on the
+/// data top is flagged for the same reason.
+#[test]
+fn the_data_top_as_a_sub_property_is_flagged() {
+    for (tag, body) in [
+        (
+            "td-sub",
+            "SubDataPropertyOf(owl:topDataProperty owl:bottomDataProperty)",
+        ),
+        (
+            "td-nopa",
+            "NegativeObjectPropertyAssertion(owl:topDataProperty :a :b)",
+        ),
+    ] {
+        let f = Fixture::new(tag, body);
+        let (code, out, err) = run(&["consistent", "--json", f.path()]);
+        assert_eq!(code, 0, "{tag}: {err}");
+        assert_eq!(json(&out)["universal_role_ordinary"], true, "{tag}: {out}");
+        let (uro, guaranteed, _) = classify_flags(&f);
+        assert_eq!((uro, guaranteed), (true.into(), false.into()), "{tag}");
+    }
+}
+
+/// `∃topData.rdfs:Literal ⊑ E` entails `⊤ ⊑ E` (every element has every data value as
+/// a `topData`-successor). Adjudicated by hand from the Direct Semantics (HermiT
+/// rejects the input). rustdl misses it; the miss is flagged.
+#[test]
+fn a_data_top_restriction_is_a_flagged_miss() {
+    let f = Fixture::new(
+        "td-some",
+        "Declaration(DataProperty(:p)) \
+         SubClassOf(DataSomeValuesFrom(owl:topDataProperty rdfs:Literal) :E)",
+    );
+    let (code, out, err) = run(&["subclass", f.path(), &iri("C"), &iri("E")]);
+    assert_eq!((code, out.trim()), (0, "no"), "today's miss: {err}");
+    assert!(err.contains(NOTE), "{err}");
+}
+
+/// The note on arms the class-surface tests do not reach.
+#[test]
+fn the_note_reaches_the_other_arms() {
+    let f = Fixture::new(
+        "arms",
+        "SubClassOf(:C :D) SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :E) \
+         ClassAssertion(:C :a)",
+    );
+    for args in [
+        vec!["disjoint", f.path()],
+        vec!["individuals", f.path()],
+        vec!["justify", f.path(), "subclass", &iri("C"), &iri("D")],
+        vec!["prove", f.path(), &iri("C"), &iri("D")],
+    ] {
+        let (_, _, err) = run(&args);
+        assert!(err.contains(NOTE), "{}: {err}", args[0]);
+    }
+}
+
+/// `consistent` in text mode masks the flag on a proved inconsistency.
+#[test]
+fn the_consistent_text_path_is_masked() {
+    let f = Fixture::new(
+        "masked-text",
+        "SubClassOf(:C ObjectSomeValuesFrom(owl:topObjectProperty :D)) \
+         ClassAssertion(owl:Nothing :a)",
+    );
+    let (code, out, err) = run(&["consistent", f.path()]);
+    assert_eq!((code, out.trim()), (0, "inconsistent"), "{err}");
+    assert!(!err.contains(NOTE), "{err}");
 }

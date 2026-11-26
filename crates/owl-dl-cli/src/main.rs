@@ -1457,21 +1457,6 @@ fn warn_structural_gaps(what: &str, gaps: &[String]) {
 /// Goes to stderr, so it is emitted on the `--json` paths too: stdout stays a
 /// single JSON object, and for the commands whose JSON carries no `dropped`
 /// block this is the only signal available.
-/// #543: the ontology uses a universal role where its semantics could change the
-/// answer, and rustdl reads it as an ordinary property (see
-/// `owl_dl_core::top_bottom_roles::universal_role_ordinary`). Beside every
-/// `warn_if_dropped`: the same kind of declared under-approximation. Not a give-up,
-/// so stdout and the exit code are unchanged.
-fn note_universal_role(flagged: bool) {
-    if flagged {
-        eprintln!(
-            "note: owl:topObjectProperty is used here as the universal role, which rustdl \
-             treats as an ordinary property. Positive answers are sound; a negative answer \
-             or a missing entailment may be wrong."
-        );
-    }
-}
-
 fn warn_if_dropped(dropped: &std::collections::BTreeMap<String, u64>) {
     let total: u64 = dropped.values().sum();
     if total == 0 {
@@ -1486,6 +1471,21 @@ fn warn_if_dropped(dropped: &std::collections::BTreeMap<String, u64>) {
          under-approximation",
         kinds.join(", ")
     );
+}
+
+/// #543: the ontology uses a universal role where its semantics could change the
+/// answer, and rustdl reads it as an ordinary property (see
+/// `owl_dl_core::top_bottom_roles::universal_role_ordinary`). Beside every
+/// `warn_if_dropped`: the same kind of declared under-approximation. Not a give-up,
+/// so stdout and the exit code are unchanged.
+fn note_universal_role(flagged: bool) {
+    if flagged {
+        eprintln!(
+            "note: owl:topObjectProperty is used here as the universal role, which rustdl \
+             treats as an ordinary property. Positive answers are sound; a negative answer \
+             or a missing entailment may be wrong."
+        );
+    }
 }
 
 /// #540: run an expression query whose result names the probed conversion's drops
@@ -2249,6 +2249,11 @@ fn run() -> Result<()> {
                     .map(|u| serde_json::json!({"axiom": u.axiom, "site": u.site, "concept": u.concept}))
                     .collect::<Vec<_>>()
             };
+            // #543: `classify_certified` / `realize_certified` say only that the fast-path
+            // gate admits the ontology (its lowering is checked below). They are not
+            // completeness claims: with `universal_role_ordinary` set the admitted
+            // closure is complete for the ORDINARY reading of the universal role only,
+            // which is why the flag sits beside them.
             println!(
                 "{}",
                 serde_json::json!({

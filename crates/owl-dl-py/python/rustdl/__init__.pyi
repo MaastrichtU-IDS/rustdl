@@ -577,6 +577,12 @@ class PreparedOntology:
     (parse + axiom split + fragment classification). Reuse it to justify many
     queries without re-doing that full-ontology work on each call. Use it from
     the thread that created it."""
+    @property
+    def universal_role_ordinary(self) -> bool:
+        """True iff the ontology uses a universal role where rustdl's
+        ordinary-property reading can miss entailments (#543); `justify` and
+        `justify_all` then emit `UniversalRoleWarning`."""
+        ...
     def justify(self, query: list[str]) -> list[str]:
         """One minimal justification (Manchester axioms) for `query`. Emits
         `IncompleteQueryWarning` when a reasoner check gave up."""

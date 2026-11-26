@@ -307,6 +307,13 @@ impl FiniteModel {
     /// `⊤ ⊑ C` for a NAMED class. That is an acceptable trade here — the axiom is
     /// asserted, not derived — but it is a real narrowing of what a `Verified`
     /// on such an ontology means.
+    ///
+    /// **#611: the derived part.** The floor also takes the subsumers of the probe class
+    /// `build_model` adds ([`top_probe_iri`]): what the closure derives of an arbitrary
+    /// element, which covers a `⊤ ⊑ E` no axiom states (`⊤ ⊑ ∃u.⊤`, `∃u.⊤ ⊑ E`). That
+    /// part comes from the closure under test, so it hides nothing the closure misses.
+    /// [`Self::seed`] called directly (without `build_model`) has no probe and gets the
+    /// asserted part only.
     fn compute_top_floor(internal: &InternalOntology, subs: &Subsumers) -> Vec<ClassId> {
         let pool = &internal.concepts;
         let mut floor: Vec<ClassId> = Vec::new();

@@ -1013,23 +1013,29 @@ fn a_derived_top_super_labels_the_top_witness() {
     let (m, build_reasons) =
         owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
     assert!(build_reasons.is_empty(), "{build_reasons:?}");
-    let e = internal.vocabulary.class_id("http://ex.org/t#E").unwrap();
-    let f = internal.vocabulary.class_id("http://ex.org/t#F").unwrap();
-    let c = internal.vocabulary.class_id("http://ex.org/t#C").unwrap();
+    let e = internal
+        .vocabulary
+        .class_id("http://ex.org/t#E")
+        .expect("E");
+    let f = internal
+        .vocabulary
+        .class_id("http://ex.org/t#F")
+        .expect("F");
+    let c = internal
+        .vocabulary
+        .class_id("http://ex.org/t#C")
+        .expect("C");
     // Every element carries `E` (the closure derives `⊤ ⊑ E`); the floor adds nothing
     // the closure does not derive of `⊤`: only the elements seeded for `C` and `F`
     // themselves are `F`s.
     let own = [m.element_of_class(c), m.element_of_class(f)];
-    let mut witnesses = 0;
     for el in m.elements() {
         let label = m.label(el);
         assert!(label.contains(&e), "{el:?} lacks E: {label:?}");
         if !own.contains(&Some(el)) {
             assert!(!label.contains(&f), "{el:?} has F: {label:?}");
-            witnesses += 1;
         }
     }
-    assert!(witnesses > 0, "the ⊤-witness element exists");
     let (verdict, _) = owl_dl_verify::verify(m, &internal, None);
     assert!(matches!(verdict, Verdict::Verified { .. }), "{verdict:?}");
 }

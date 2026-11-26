@@ -66,25 +66,39 @@ fn the_object_gate_reads_dropped() {
     assert!(!v.incomplete(), "control");
 }
 
+/// Every structural surface reports a drop, each accessor on its own: the CLI and
+/// Python merge object and data lists, so a merged check cannot tell which insert
+/// fired.
 #[test]
 fn the_data_half_reports_dropped_as_a_gap() {
     for (tag, head, body) in dropping() {
         let gaps = property_structural_gaps(&onto(head, body)).unwrap();
-        for (surface, list) in [
-            ("data_values", gaps.data_values().to_vec()),
-            ("hierarchy", gaps.hierarchy()),
-            ("disjoint", gaps.disjoint()),
+        for (surface, list, kind) in [
+            ("data_values", gaps.data_values(), "data-dropped-axioms"),
+            (
+                "object_hierarchy",
+                gaps.object_hierarchy(),
+                "object-dropped-axioms",
+            ),
+            (
+                "data_hierarchy",
+                gaps.data_hierarchy(),
+                "data-dropped-axioms",
+            ),
+            (
+                "object_disjoint",
+                gaps.object_disjoint(),
+                "object-dropped-axioms",
+            ),
+            ("data_disjoint", gaps.data_disjoint(), "data-dropped-axioms"),
         ] {
-            assert!(
-                list.iter().any(|k| k.ends_with("-dropped-axioms")),
-                "{tag}/{surface}: {list:?}"
-            );
+            assert!(list.iter().any(|k| k == kind), "{tag}/{surface}: {list:?}");
         }
     }
     let gaps = property_structural_gaps(&onto("", "")).unwrap();
     assert!(
-        gaps.data_values().is_empty() && gaps.hierarchy().is_empty(),
-        "control"
+        gaps.data_values().is_empty() && gaps.hierarchy().is_empty() && gaps.disjoint().is_empty(),
+        "control: {gaps:?}"
     );
 }
 

@@ -2352,7 +2352,8 @@ fn run() -> Result<()> {
             }
             if classes.incomplete() {
                 eprintln!(
-                    "warning: disjointness incomplete (budget/fragment) — sound under-approximation"
+                    "warning: disjointness incomplete (budget, fragment or dropped axioms) — sound \
+                     under-approximation"
                 );
             }
             println!("# disjoint object properties");
@@ -2401,7 +2402,8 @@ fn run() -> Result<()> {
             }
             if same.incomplete() || different.incomplete() {
                 eprintln!(
-                    "warning: individuals incomplete (budget/fragment) — sound under-approximation"
+                    "warning: individuals incomplete (budget, fragment or dropped axioms) — sound \
+                     under-approximation"
                 );
             }
             warn_consistency_undetermined(
@@ -2452,7 +2454,8 @@ fn run() -> Result<()> {
             }
             if obj.incomplete() || data.incomplete() {
                 eprintln!(
-                    "warning: property values incomplete (budget/fragment) — sound under-approximation"
+                    "warning: property values incomplete (budget, fragment or dropped axioms) — \
+                     sound under-approximation"
                 );
             }
             warn_structural_gaps("data property values", &gaps);

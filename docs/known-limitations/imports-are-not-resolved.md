@@ -14,7 +14,9 @@ import)`. So:
 - every completeness claim that reads `dropped` is false: `classify --json`'s
   `completeness_guaranteed`, the expression queries', `property-values`' and
   `individuals`' `incomplete`, and the structural surfaces' `*-dropped-axioms` gap;
-- the CLI prints the `not understood and dropped` warning;
+- the reasoning commands print the `not understood and dropped` warning, except
+  `justify`, `prove`, `repair`, `diagnose` and `report`, which never call
+  `warn_if_dropped` (a gap of their own, for any drop kind; follow-up issue);
 - `verify-el` reports `Unresolved` (exit 3) instead of `Verified`;
 - Python's `class_expression_*` functions emit `DroppedAxiomsWarning`.
 

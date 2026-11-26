@@ -108,6 +108,15 @@ fn an_unresolved_import_withdraws_every_guarantee() {
     assert!(!text.contains("closure is complete"), "{text}");
     // `verify-el` cannot verify a closure of a KB it did not see (exit 3).
     assert_eq!(run(&["verify-el", f.path()]).status.code(), Some(3));
+    // Behaviour changes that follow (#579 review N2): the class half of `disjoint`
+    // reads `completeness_guaranteed`, so its `incomplete` flips on a pure-EL file
+    // with an `Import`; `classify --saturation-only` prints its under-approximation
+    // note, which it skips only when the answer is guaranteed.
+    let v = json(&["disjoint", "--json", f.path()]);
+    assert_eq!(v["incomplete"], true, "disjoint class half: {v}");
+    let err = String::from_utf8_lossy(&run(&["classify", "--saturation-only", f.path()]).stderr)
+        .into_owned();
+    assert!(err.contains("--saturation-only answers from"), "{err}");
 
     let v = json(&["classify", "--json", c.path()]);
     assert_eq!(v["dropped"], serde_json::json!({}), "control: {v}");
@@ -128,6 +137,14 @@ fn an_unresolved_import_withdraws_every_guarantee() {
         "control: {out:?}"
     );
     assert_eq!(run(&["verify-el", c.path()]).status.code(), Some(0));
+    let v = json(&["disjoint", "--json", c.path()]);
+    assert_eq!(v["incomplete"], false, "control disjoint: {v}");
+    let err = String::from_utf8_lossy(&run(&["classify", "--saturation-only", c.path()]).stderr)
+        .into_owned();
+    assert!(
+        !err.contains("--saturation-only answers from"),
+        "control: {err}"
+    );
 }
 
 /// `A(?x), B(?y) -> r(?x,?y)` with `A(a)`, `B(b)` entails `r(a,b)` (HermiT). No seed

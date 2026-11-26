@@ -73,3 +73,29 @@ def test_data_property_values_report_a_drop_as_a_gap(tmp_path):
     control = _write(tmp_path, "plain.ofn", DECLS + ABOX)
     _, cats = _warned(rustdl.data_property_values, control)
     assert rustdl.StructuralGapWarning not in cats
+
+
+def test_any_drop_now_warns_from_the_individual_and_class_queries(tmp_path):
+    # #579 review N2: these now warn on ANY dropped axiom (here a SWRL rule, not an
+    # Import): `same_individuals` (its seed is complete only for converted axioms),
+    # `object_property_values` (its whitelist gate), and `disjoint_classes` (its class
+    # half follows classify's guarantee, which reads `dropped`).
+    same_rule = "DLSafeRule(Body() Head(SameIndividualAtom(:c :e)))\n"
+    path = _write(tmp_path, "same.ofn", DECLS + same_rule)
+    groups, cats = _warned(rustdl.same_individuals, path)
+    assert groups == []
+    assert rustdl.IncompleteQueryWarning in cats
+    control = _write(tmp_path, "same-plain.ofn", DECLS)
+    _, cats = _warned(rustdl.same_individuals, control)
+    assert rustdl.IncompleteQueryWarning not in cats
+
+    path = _write(tmp_path, "rule.ofn", DECLS + ABOX + RULE)
+    _, cats = _warned(rustdl.object_property_values, path)
+    assert rustdl.IncompleteQueryWarning in cats
+
+    path = _write(tmp_path, "disj.ofn", IMPORT + DECLS + "SubClassOf(:A :B)\n")
+    _, cats = _warned(rustdl.disjoint_classes, path)
+    assert rustdl.IncompleteQueryWarning in cats
+    control = _write(tmp_path, "disj-plain.ofn", DECLS + "SubClassOf(:A :B)\n")
+    _, cats = _warned(rustdl.disjoint_classes, control)
+    assert rustdl.IncompleteQueryWarning not in cats

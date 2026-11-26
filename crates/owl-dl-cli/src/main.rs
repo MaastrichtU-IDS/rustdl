@@ -448,9 +448,9 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// With `--json`: when the step proof uses an axiom that is not a source axiom
-        /// (`builtin_axioms` / `derived_axioms`) or is not complete, also search a
-        /// source-only justification of the same entailment and emit it as
-        /// `justification_fallback` (#594). One extra justification search, only then.
+        /// (`builtin_axioms` / `derived_axioms`), also search a source-only justification
+        /// of the same entailment and emit it as `justification_fallback` (#594). One extra
+        /// justification search, only then.
         #[arg(long, requires = "json")]
         source_fallback: bool,
     },
@@ -1000,6 +1000,11 @@ fn add_source_fallback(
             prove_json.justification_fallback = Some(json_out::justification_doc(&j.axioms, pm));
             prove_json.justification_minimal = Some(j.minimal_guaranteed && !o.incomplete);
         }
+        Ok(o) if o.status == Verdict::NotEntailed => eprintln!(
+            "note: --source-fallback: the justification search refuted the entailment the \
+             step proof shows; this is likely a reasoner bug, please report the input. The \
+             step proof is shown as it is."
+        ),
         Ok(_) => eprintln!(
             "note: --source-fallback: no source-only justification was found (the search \
              gave up or found none); the step proof is shown as it is."
@@ -3239,10 +3244,10 @@ fn run() -> Result<()> {
                 let mut prove_json =
                     json_out::build_prove_json(&result, flags, &onto, &internal, &pm)
                         .context("rendering prove --json proof tree")?;
-                if source_fallback
-                    && (prove_json.proof_uses_non_source_axioms == Some(true)
-                        || prove_json.proof_complete == Some(false))
-                {
+                // Only for a proof a source-only consumer would refuse anyway, so the extra
+                // search (unbounded in time; the node cap bounds each probe) never delays a
+                // proof that could be shown. An incomplete source-only proof is not covered.
+                if source_fallback && prove_json.proof_uses_non_source_axioms == Some(true) {
                     add_source_fallback(&mut prove_json, &onto, &sub, &sup, &pm);
                 }
                 println!("{}", serde_json::to_string_pretty(&prove_json)?);

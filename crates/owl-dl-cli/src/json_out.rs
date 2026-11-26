@@ -1196,8 +1196,8 @@ pub(crate) struct ProveJson {
     pub(crate) proof: Option<ProofNodeJson>,
     /// OFN ontology document. Present when `has_proof` is `false` and `entailed` is
     /// `true`; #594: with `prove --source-fallback`, also alongside a step proof that
-    /// uses a non-source axiom or is not complete, as a source-only justification of
-    /// the same entailment that a consumer can show instead.
+    /// uses a non-source axiom, as a source-only justification of the same entailment
+    /// that a consumer can show instead.
     pub(crate) justification_fallback: Option<String>,
     /// Present iff `justification_fallback` is: `true` when that justification is
     /// guaranteed minimal. An EMPTY fallback with `justification_minimal: true`

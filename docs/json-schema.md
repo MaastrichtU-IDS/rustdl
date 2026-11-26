@@ -485,7 +485,8 @@ below).
   "proof_complete": bool | null,
   "proof_uses_non_source_axioms": bool | null,
   "proof": ProofNodeJson | null,
-  "justification_fallback": ofn_document | null }
+  "justification_fallback": ofn_document | null,
+  "justification_minimal": bool | null }
 ```
 
 ```json
@@ -504,7 +505,7 @@ Three shapes, mirroring `ProveEntailmentResult`:
   `ProofNode` tree rooted at the queried `SUB ⊑ SUP`, `justification_fallback:
   null` — except with `prove --json --source-fallback` (#594): when some step uses a
   non-source axiom (`proof_uses_non_source_axioms: true`: a step has `builtin_axioms`
-  or `derived_axioms`) or `proof_complete` is `false`, `justification_fallback` also
+  or `derived_axioms`), `justification_fallback` also
   carries a source-only justification of the same entailment (the search `justify`
   runs, under `prove`'s query node cap) with `justification_minimal`, for a consumer
   that shows source axioms only (the Protégé plugin shows it instead of the proof). If

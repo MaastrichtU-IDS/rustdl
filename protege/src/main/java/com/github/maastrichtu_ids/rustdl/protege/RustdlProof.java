@@ -46,7 +46,8 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
      *     {@link RustdlProofService} — only builds a proof for an entailed result).
      * @param goal the OWLAxiom the caller asked {@link RustdlProofService#getProof} to explain.
      *     Used directly as the synthetic fallback inference's conclusion when
-     *     {@code has_proof == false} (there is no OFN document representing the goal in that
+     *     {@code justification_fallback} is shown: {@code has_proof == false}, or (#594) a
+     *     step proof that came with one (there is no OFN document representing the goal in that
      *     branch — {@code justification_fallback} carries only the justification's axioms, not
      *     the entailment itself). When {@code has_proof == true} the root node's own parsed
      *     conclusion is used instead (expected — not re-checked here — to be structurally equal

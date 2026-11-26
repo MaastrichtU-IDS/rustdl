@@ -288,6 +288,8 @@ fn inert_universal_role_occurrences_are_not_flagged() {
         "EquivalentObjectProperties(owl:topObjectProperty :r)",
         "InverseObjectProperties(owl:topObjectProperty :r)",
         "SubObjectPropertyOf(ObjectPropertyChain(:r :s) owl:topObjectProperty)",
+        // A chain with a universal leg INTO U: `top ∘ s ⊑ top` always holds.
+        "SubObjectPropertyOf(ObjectPropertyChain(owl:topObjectProperty :s) owl:topObjectProperty)",
         "SubObjectPropertyOf(owl:topObjectProperty :r)",
         // A negated assertion: #539's A4 already makes it `⊤ ⊑ ⊥`.
         "NegativeObjectPropertyAssertion(owl:topObjectProperty :a :b)",

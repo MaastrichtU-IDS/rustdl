@@ -20,10 +20,11 @@
 //! ```
 //!
 //! The proptest generator excludes `ObjectHasValue`, `ObjectExactCardinality`,
-//! `ObjectOneOf`, and `InverseObjectProperty` — those forms either rewrite to
-//! a different shape on the way back (per the docs of [`crate::convert_back`])
-//! or are deliberately rejected in Phase 0. Their per-axiom round-trip is
-//! covered by unit tests in `src/convert_back.rs`.
+//! `ObjectOneOf`, and `InverseObjectProperty` — the first three rewrite to a
+//! different shape on the way back (per the docs of [`crate::convert_back`]), and
+//! inverse roles are not generated. Their per-axiom round-trip, inverse roles in
+//! every position included (#529), is covered by unit tests in
+//! `src/convert_back.rs`.
 
 use horned_owl::model::{
     Build, ClassExpression, Component, DisjointClasses, EquivalentClasses, Individual,

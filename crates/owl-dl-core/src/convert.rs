@@ -2659,17 +2659,18 @@ pub fn convert_component<A: ForIRI>(
         // ── HasKey: advanced feature, deferred ──────────────────────────
         C::HasKey(_) => Err(ConversionError::UnsupportedAxiom { kind: "HasKey" }),
 
-        // ── SWRL rules: silently skipped ────────────────────────────────
-        // DL-safe `Rule` axioms are FOL-style entailment rules over
-        // individuals; on real workloads (e.g. RO with 25 such rules)
-        // they encode ABox-level inferences (`if x has property P
-        // and y holds, then ...`). They don't enter class-side
-        // classification — no class definition references their head
-        // predicates — so silently dropping them is sound for the
-        // `classify` use case. A future `swrl` feature gate could
-        // materialise them via tableau extensions if needed.
-        #[allow(clippy::match_same_arms)]
-        C::Rule(_) => Ok(None),
+        // ── SWRL rules: not supported, and RECORDED as dropped (#557) ──
+        // DL-safe `Rule` axioms are FOL-style rules over named individuals. We do
+        // not reason with them, so skipping one is a sound under-approximation,
+        // but NOT a benign one: a rule such as `A(?x) -> B(?x)` entails
+        // `ClassAssertion(B, a)` from `ClassAssertion(A, a)`, and with a nominal or
+        // an ABox it can change classification too. Until #557 this arm returned
+        // `Ok(None)`, so a rule vanished without a trace and every completeness
+        // claim that reads `dropped` (`classify --json`'s `completeness_guaranteed`,
+        // the expression queries' since #540) stayed `true`. Returning `Err` counts
+        // it as `"Rule: unsupported axiom (SWRL)"`, which turns those claims false
+        // and makes the CLI warn, as the README already promised.
+        C::Rule(_) => Err(ConversionError::UnsupportedAxiom { kind: "SWRL" }),
     }
 }
 
@@ -2703,6 +2704,7 @@ fn component_kind<A: ForIRI>(c: &Component<A>) -> &'static str {
         C::DisjointDataProperties(_) => "DisjointDataProperties",
         C::FunctionalDataProperty(_) => "FunctionalDataProperty",
         C::DatatypeDefinition(_) => "DatatypeDefinition",
+        C::Rule(_) => "Rule",
         _ => "Other",
     }
 }
@@ -2759,7 +2761,7 @@ fn top_level_conjuncts<A: ForIRI>(ce: &ClassExpression<A>) -> Vec<&ClassExpressi
 /// `ore_ont_14379` lost `ObservationEvent ⊑ Event` this way: one conjunct of
 /// `ObservationEvent ≡ Event ⊓ … ⊓ ∀usingStrictOrder.xsd:boolean` has an
 /// unsupported data range, so the whole equivalence was dropped.
-fn salvage_necessary_conjuncts<A: ForIRI>(
+pub(crate) fn salvage_necessary_conjuncts<A: ForIRI>(
     c: &Component<A>,
     vocab: &mut Vocabulary,
     pool: &mut ConceptPool,
@@ -6959,6 +6961,46 @@ mod tests {
                 .by_kind()
                 .keys()
                 .any(|k| k.contains("HasKey"))
+        );
+    }
+
+    #[test]
+    fn convert_records_each_swrl_rule_as_dropped() {
+        // #557: a SWRL rule was `Ok(None)`, i.e. skipped without a trace, so every
+        // completeness claim that reads `dropped` stayed true on a ruled ontology.
+        let src = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+            Declaration(ObjectProperty(:r))
+            SubClassOf(:A :C)
+            DLSafeRule(Body(ClassAtom(:A Variable(<urn:swrl:var#x>)))
+                       Head(ClassAtom(:B Variable(<urn:swrl:var#x>))))
+            DLSafeRule(Body(ObjectPropertyAtom(:r Variable(<urn:swrl:var#x>)
+                                                  Variable(<urn:swrl:var#y>)))
+                       Head(ClassAtom(:B Variable(<urn:swrl:var#y>)))))";
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("must not abort");
+        assert!(
+            internal
+                .axioms
+                .iter()
+                .any(|a| matches!(a, Axiom::SubClassOf { .. })),
+            "supported axiom survives"
+        );
+        assert_eq!(
+            internal
+                .dropped
+                .by_kind()
+                .get("Rule: unsupported axiom (SWRL)"),
+            Some(&2),
+            "each rule is counted: {:?}",
+            internal.dropped.by_kind()
+        );
+        assert_eq!(
+            internal.dropped.total(),
+            2,
+            "{:?}",
+            internal.dropped.by_kind()
         );
     }
 

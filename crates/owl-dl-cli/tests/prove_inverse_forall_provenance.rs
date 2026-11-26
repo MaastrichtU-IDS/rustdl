@@ -101,13 +101,16 @@ fn a_nominal_inverse_forall_cites_the_class_assertion() {
 }
 
 /// #274, two members: `C ⊑ G` rests on both members' assertions and on the told
-/// `D ⊑ G`, `E ⊑ G` — and not on `F`, which holds of `a` only.
+/// `D ⊑ G`, `E ⊑ G` — and not on `F`, which holds of `a` only. #586: the `∀` axiom is
+/// cited as the source has it (`ObjectOneOf(:a :b)`); this test used to expect
+/// conversion's form, `ObjectUnionOf(ObjectOneOf(:a) ObjectOneOf(:b))`, which is not in the
+/// fixture, so it pinned the defect.
 #[test]
 fn a_nominal_set_inverse_forall_cites_every_members_typing() {
     assert_eq!(
         cited_axioms("prove_inverse_forall_nominal_set", "C", "G"),
         sorted(&[
-            "SubClassOf(:A ObjectAllValuesFrom(:R ObjectUnionOf(ObjectOneOf(:a) ObjectOneOf(:b))))",
+            "SubClassOf(:A ObjectAllValuesFrom(:R ObjectOneOf(:a :b)))",
             "InverseObjectProperties(:S :R)",
             "SubClassOf(:C ObjectSomeValuesFrom(:S :A))",
             "ClassAssertion(:D :a)",
@@ -182,6 +185,20 @@ fn a_nominal_individuals_assertions_are_cited() {
             "ObjectPropertyAssertion(:S :a :c)",
             "ClassAssertion(:E :c)",
             "EquivalentClasses(:W ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:S :E)))",
+        ])
+    );
+}
+
+/// #529: `Range(r⁻, K)` (that is, `Domain(r, K)`) and `X ⊑ ∃r.A` ⟹ `X ⊑ K`. The proof
+/// cites the range axiom as written. It used to print `ObjectPropertyRange(:r :K)`, an
+/// axiom not in the ontology (`convert_back::role_to_ope` dropped the inverse).
+#[test]
+fn an_inverse_role_axiom_is_cited_with_its_inverse() {
+    assert_eq!(
+        cited_axioms("prove_inverse_range_529", "X", "K"),
+        sorted(&[
+            "ObjectPropertyRange(ObjectInverseOf(:r) :K)",
+            "SubClassOf(:X ObjectSomeValuesFrom(:r :A))",
         ])
     );
 }

@@ -22,7 +22,9 @@ incomplete. Answers stay sound either way: a reported subsumption is entailed
 whether or not the guarantee holds.
 
 Do not confuse the guarantee with `incomplete` (CLI) or `complete` (Python). Those
-report only whether a per-pair deadline fired, which is a strictly narrower thing.
+report only whether a pair or probe was cut (a deadline, the node cap, the decision-depth
+limit, a `NoVerdict` or a tail skip; #574 corrected "a per-pair deadline fired"), which is a
+strictly narrower thing.
 A result can have `complete == True` and `completeness_guaranteed == False`.
 
 ## Conditions in the guarantee
@@ -52,15 +54,18 @@ guard's sabotage check.
 |---|---|
 | `prep_timed_out`, `conversion_timed_out` | Covered by condition 2: `classify_prep_timeout` bumps `timed_out_pairs` and forces `fragment = OutOfFragment`. |
 | `parse_timed_out` (CLI only) | Nothing was read. `parse_timed_out_classify_json` in `json_out.rs` sets `completeness_guaranteed: false` directly, pinned by `parse_deadline.rs`. |
-| `trusted_sat_refutations` | Excluded by composition, not by the predicate: a PureEl classification is answered by the saturator and never consults the wedge's trusted `Sat` for a pair. If PureEl ever routes pairs through the wedge, this needs a condition. The consistency wedge's `Sat` is the other trust site, and it is condition 8. |
-| `incomplete` (CLI), `complete` (Python) | These report only that a deadline fired. They are a view of condition 2, kept separate on purpose: their contract is "a deadline fired", and callers depend on it. |
+| `trusted_sat_refutations` | Excluded by composition, not by the predicate: a PureEl classification is answered by the saturator and never consults the wedge's trusted `Sat`, for a pair or for a class. If PureEl ever routes pairs or unsat probes through the wedge, this needs a condition. Since #568 the count covers every classify channel that trusts a wedge `Sat` (per-pair refutations, label-cache prunes, snapshot replays, and classes taken as satisfiable from their label) and exempts no fragment, so it reads non-zero on `Horn` too; it is 0 on PureEl by construction, pinned by `nn_cascade.rs` `issue_568_pure_el_reads_zero_trusted_sat`. The consistency wedge's `Sat` is the other trust site, and it is condition 8. |
+| `incomplete` (CLI), `complete` (Python) | These report only that a pair or probe was cut (#574: not only by a deadline). They are a view of condition 2, kept separate on purpose: their contract is "something was cut", and callers depend on it. |
 | Inconsistent KB | `classify_inconsistent` builds normal stats with the ontology's fragment. A pure-EL inconsistent KB with nothing cut or dropped therefore reports `completeness_guaranteed: true`. That is correct: every class is unsatisfiable and every subsumption entailed, which is exactly what is reported. Pinned by `json_output.rs` `classify_json_completeness_guaranteed_ends` (`⊤ ⊑ ⊥`). An inconsistent KB with an ABox is not PureEl, so it reports `false`. |
 
 ## Known gaps in the surfaces
 
 - **Python does not expose the fragment** and reports dropped axioms only through
-  a separate `dropped_axioms(path)` call. The guarantee property is the way to read
-  conditions 1 and 7 from a `Classification`.
+  a separate `dropped_axioms(path)` call, except for the class-expression queries
+  (#552: their `*_result` forms carry `dropped` and `completeness_guaranteed`, and
+  they emit `DroppedAxiomsWarning`). The guarantee property is the way to read
+  conditions 1 and 7 from a `Classification`. No other Python query warns on dropped
+  axioms; widening `DroppedAxiomsWarning` to them is a separate follow-up.
 - **The JSON schema does not serialize the fragment.** A caller sees why the
   guarantee is false for conditions 2–7, but not for condition 1.
 - **Any ABox takes an ontology out of PureEl.** A pure-EL TBox with one
@@ -88,17 +93,52 @@ claimed completeness while missing an entailment of the dropped axiom.
 
 | Surface | Rust | CLI | Python | Conditions | Pinned by |
 |---|---|---|---|---|---|
-| `sat-expr`, `subclass-expr` | `CeVerdict::completeness_guaranteed` | `--json` `completeness_guaranteed` | not exposed (the bindings return `incomplete` only) | pure-EL fast path (`QueryStats::pure_el_mode`), no give-up, nothing dropped by the probed ontology's conversion (the input's drops and the query expression's own; `CeVerdict::dropped` returns that list, and the CLI's stderr warning names it in text and `--json` mode) | `class_expr_query.rs` `each_condition_alone_voids_the_expression_guarantee` (the table test; deleting a conjunct fails its row); `completeness_contract.rs` `a_dropped_axiom_voids_the_expression_query_guarantee` with its `xsd:string` control; `expr_dropped_axiom_cli.rs`: input-side drops and query-side drops (`*_with_a_query_side_drop_warns_and_is_not_guaranteed`, which pin both the flag and the warning) |
-| `instances-expr` | `CeInstances::completeness_guaranteed` | `--json` `completeness_guaranteed` | not exposed | realize saturation fast path (`realize_saturation_eligible`), no probe cut, nothing dropped by the probed conversion (`CeInstances::dropped`, warned as above) | same |
-| `explain` | — (text only) | the suffix "(input is pure EL; closure is complete)" | no binding | `QueryStats::pure_el_mode` and nothing dropped (the CLI reads `dropped_block`). With a drop, a pure-EL "no" reads "pure EL after dropping axioms it could not convert; closure is NOT complete for the input"; `explain` also prints the stderr drop warning since #540 | `expr_dropped_axiom_cli.rs` `explain_with_a_dropped_axiom_does_not_claim_a_complete_closure` |
+| `sat-expr`, `subclass-expr` | `CeVerdict::completeness_guaranteed`, which reads `QueryStats::completeness_guaranteed` (#552) | `--json` `completeness_guaranteed` | `class_expression_satisfiable_result` / `class_expression_entailed_subclass_result` (#552): `completeness_guaranteed` and `dropped`; the bare functions emit `DroppedAxiomsWarning` | pure-EL fast path (`QueryStats::pure_el_mode`), no give-up, nothing dropped by the probed ontology's conversion (`QueryStats::dropped_axioms`; the input's drops and the query expression's own; `CeVerdict::dropped` returns that list, and the CLI's stderr warning names it in text and `--json` mode), and (#552) consistency neither undetermined nor resting on a trusted wedge `Sat` | `class_expr_query.rs` `each_condition_alone_voids_the_expression_guarantee` (the table test over `QueryStats`; deleting a conjunct fails its row); `query_stats_dropped.rs` (the count on every single-query path, and the shared predicate); `completeness_contract.rs` `a_dropped_axiom_voids_the_expression_query_guarantee` with its `xsd:string` control; `expr_dropped_axiom_cli.rs`: input-side drops and query-side drops (`*_with_a_query_side_drop_warns_and_is_not_guaranteed`, which pin both the flag and the warning) |
+| `instances-expr` | `CeInstances::completeness_guaranteed` | `--json` `completeness_guaranteed` | `class_expression_instances_result` (#552), as above | realize saturation fast path (`realize_saturation_eligible`), no probe cut, nothing dropped by the probed conversion (`CeInstances::dropped`, warned as above), and (#552) consistency not undetermined and the eager inconsistency check on (`RUSTDL_QUERY_INCONSISTENCY_GUARD`, default on) | `class_expr_query.rs` `each_condition_alone_voids_the_instances_guarantee`; `expr_consistency_guarantee_cli.rs` (the guard-off row on a real input); as above |
+| `explain` | — (text only) | the suffix "(input is pure EL; closure is complete)" | no binding | `QueryStats::completeness_guaranteed` (#552; before, `pure_el_mode` and nothing dropped). `explain owl:Thing owl:Nothing` is the consistency query, whose `pure_el_mode` follows the wider `saturation_fast_path_admits` gate: it reads "(decided by saturation on a fragment where it is complete)" instead, pinned by `expr_consistency_guarantee_cli.rs` `explain_consistency_does_not_claim_pure_el`. With a drop, a pure-EL "no" reads "pure EL after dropping axioms it could not convert; closure is NOT complete for the input"; `explain` also prints the stderr drop warning since #540 | `expr_dropped_axiom_cli.rs` `explain_with_a_dropped_axiom_does_not_claim_a_complete_closure` |
 
-Not added to these claims, though `classify` has them: `consistency_undetermined`
-and `relies_on_trusted_consistency`. Both are reported in their own fields on the
-expression queries (`instances-expr --json` has no `relies_on_trusted_consistency`),
-so a caller can see them; whether they belong in the conjunction is an open
-follow-up, not settled by #540. `QueryStats::pure_el_mode` itself
-stays a path flag: it says the closure is complete for the CONVERTED ontology, and
-a caller presenting it as a guarantee must check `dropped_axioms` too.
+**Consistency conditions (#552, decided).** The expression queries now read
+`classify`'s conditions 6 and 8 too, with these reasons (from a code trace, Fable
+plan review of #552):
+
+- `relies_on_trusted_consistency` (sat/subclass): the verdict was reached with the
+  `ABox` seed dropped on a consistency-wedge `Sat`. If that `Sat` is wrong the KB is
+  inconsistent and a "satisfiable" / "not entailed" is a miss, which is exactly
+  what the guarantee covers. **It cannot meet the pure-EL fast path today**: every
+  `QueryStats` that can carry `pure_el_mode` sets it `false`, and the trusted flag
+  comes only from the wedge path after the pure-EL return. So this is a defensive
+  invariant, like condition 8 for `classify`.
+- `consistency_undetermined` on a sat/subclass verdict is set only on a POSITIVE
+  answer (the #369 lazy check), which is entailed even on an inconsistent KB, so it
+  cannot void that answer's completeness. It is included because it is cheap and
+  conservative, not for `classify`'s reason. It cannot meet the pure-EL path at
+  default flags either: the lazy check is clean without individuals, and pure EL
+  admits none.
+- `consistency_undetermined` on an instance list is a real condition: on an
+  inconsistent KB every individual is an instance, so a short list misses members.
+  The realize fast path returns default flags, so it cannot meet it today.
+- **Negative answers on the complete paths rest on a decided consistency.**
+  Sat/subclass: a pure-EL KB has no individual, so it is inconsistent iff `⊤` is
+  unsatisfiable, which the query guard's saturation check finds before the query
+  runs. Instances: `instance_query_inconsistent_fast` runs eagerly, before any
+  answer. Both rest on the fragment gates being complete for `⊤ ⊑ ⊥`, the gates'
+  existing contract.
+- **The one gap found, closed in code:** with `RUSTDL_QUERY_INCONSISTENCY_GUARD=0`
+  the instance fast path ran no consistency check at all and still claimed the
+  guarantee. The instances conjunction now requires the guard to be on.
+
+No CLI or Rust output changes at default flags. The Python bare functions do change:
+they now emit `DroppedAxiomsWarning` when conversion dropped axioms, so under
+`-W error` they raise where they used to return; the other Python queries stay
+silent on dropped axioms until #597. With the guard off, sat-expr / subclass-expr
+stay safe only because the saturator propagates `⊤ ⊑ ⊥` into every context, so an
+inconsistent pure-EL TBox makes every class unsatisfiable in the closure and their
+answers positive. `QueryStats::pure_el_mode` itself stays
+a path flag: it says the closure is complete for the CONVERTED ontology. Use
+`QueryStats::completeness_guaranteed()`, which reads `dropped_axioms` and the
+consistency flags too; it is valid for named-class and expression
+satisfiability/subsumption verdicts, not for the consistency query, whose
+`pure_el_mode` follows the wider `saturation_fast_path_admits` gate.
 
 ## Structural property surfaces (#389, #390)
 

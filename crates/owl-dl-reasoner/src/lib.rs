@@ -10559,7 +10559,7 @@ pub(crate) struct OwnedAboxCheckInputs {
     told: owl_dl_core::told::ToldTables,
     hierarchy: RoleHierarchy,
     inverse_pairs: Vec<(RoleId, RoleId)>,
-    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
+    disjoint_role_pairs: Vec<(Role, Role)>,
 }
 
 impl OwnedAboxCheckInputs {
@@ -10952,7 +10952,7 @@ pub(crate) struct PreparedOntology {
     inverse_pairs: Vec<(RoleId, RoleId)>,
     chain_axioms: Vec<(Role, Role, Role)>,
     asymmetric_roles: Vec<RoleId>,
-    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
+    disjoint_role_pairs: Vec<(Role, Role)>,
     complements: Vec<(ConceptId, ConceptId)>,
     pub(crate) abox: Abox,
     /// `(individual, Nominal(individual))` for each individual named only
@@ -13240,50 +13240,114 @@ fn collect_asymmetric_roles(internal: &InternalOntology) -> Vec<RoleId> {
     out
 }
 
-/// Decompose every `DisjointObjectProperties(r, s, …)` axiom into its
-/// pairwise constituents. Reflexive entries `(r, r)` (degenerate
-/// `Disjoint(r)`) are skipped — they'd assert the role is disjoint
-/// from itself, which is only satisfiable when no pair is in `r`. We
-/// leave that diagnosis to higher-level validators rather than seed
-/// universal clashes.
-/// Collect forward-only disjoint role pairs from `DisjointObjectProperties` axioms.
+/// Decompose every `DisjointObjectProperties(r₁, …, rₙ)` axiom into its pairwise
+/// constituents, keeping each operand's POLARITY (#534).
 ///
-/// **Soundness restriction (forward-only):** a `DisjointObjectProperties(r, ObjectInverseOf(s))`
-/// axiom forbids `r(a,b) ∧ s(b,a)`, NOT `r(a,b) ∧ s(a,b)`. The `(RoleId, RoleId)` pair type
-/// strips polarity via `role_id()`, so emitting an inverse-involving pair would represent a
-/// DIFFERENT (weaker) semantic constraint and would cause false-positive clashes in the P9
-/// `ABox` pre-check and the tableau disjoint-role rule.
+/// `Disjoint(r, s⁻)` forbids `r(a,b) ∧ s(b,a)`, which a polarity-stripped `(RoleId,
+/// RoleId)` pair cannot say, so this used to skip every pair with an inverse operand. The
+/// main tableau (the per-query surface's engine) and `abox_check` P9 then never saw those
+/// clashes while `classify` found them through the wedge, whose clauses were already signed.
 ///
-/// Solution: emit a pair only when **both** roles are forward/named (`!role.is_inverse()`).
-/// Axioms that involve an inverse are silently skipped — a sound under-approximation
-/// (may miss a clash, never produces a false positive).  Polarity-aware disjoint-role
-/// handling (storing the full `Role` pair) is deferred as future work.
-fn collect_disjoint_role_pairs(internal: &InternalOntology) -> Vec<(RoleId, RoleId)> {
+/// Each pair is normalised so its first operand is forward: flipping both operands and
+/// swapping the endpoints is the same constraint, so `Disjoint(r⁻, s)` is `(r, s⁻)` and
+/// `Disjoint(r⁻, s⁻)` is `(r, s)`. A same-id opposite-polarity pair `(r, r⁻)` is kept: it
+/// forbids `r(a,b) ∧ r(b,a)`, i.e. `r` is asymmetric. An exactly repeated operand
+/// (`Disjoint(r, r)`, which would make `r` empty) is skipped, as before and as the wedge
+/// does; conversion already collapses structural duplicates.
+fn collect_disjoint_role_pairs(internal: &InternalOntology) -> Vec<(Role, Role)> {
     let mut pairs = Vec::new();
     for ax in &internal.axioms {
         if let Axiom::DisjointObjectProperties(roles) = ax {
             for i in 0..roles.len() {
                 for j in (i + 1)..roles.len() {
-                    let ri = roles[i];
-                    let rj = roles[j];
-                    // Soundness: only forward–forward disjoint pairs.  An inverse-involving
-                    // pair (e.g. `Disjoint(r, Inv(s))`) forbids `r(a,b) ∧ s(b,a)`, not
-                    // `r(a,b) ∧ s(a,b)`.  The polarity-stripped `(RoleId, RoleId)` representation
-                    // cannot express that distinction; emitting it would be an FP in P9 and the
-                    // tableau disjoint-role clash.  Skip — a sound under-approximation.
-                    if ri.is_inverse() || rj.is_inverse() {
+                    if roles[i] == roles[j] {
                         continue;
                     }
-                    let a = ri.role_id();
-                    let b = rj.role_id();
-                    if a != b {
-                        pairs.push((a, b));
-                    }
+                    pairs.push(normalize_disjoint_role_pair(roles[i], roles[j]));
                 }
             }
         }
     }
     pairs
+}
+
+/// #534: the same disjoint-role constraint with its first operand forward (flip both).
+fn normalize_disjoint_role_pair(r: Role, s: Role) -> (Role, Role) {
+    if r.is_inverse() {
+        (r.flip(), s.flip())
+    } else {
+        (r, s)
+    }
+}
+
+#[cfg(test)]
+mod disjoint_role_pair_tests {
+    use super::*;
+
+    /// The pairs of `body` with each role named, `"r"` or `"r-"` for its inverse, sorted.
+    fn named(body: &str) -> Vec<(String, String)> {
+        let src = format!(
+            "Prefix(:=<http://t/>)\nOntology(<http://t/x>\n\
+             Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+             Declaration(ObjectProperty(:u))\n{body}\n)"
+        );
+        let (onto, _): (
+            horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+            _,
+        ) = horned_owl::io::ofn::reader::read(
+            &mut std::io::Cursor::new(src),
+            horned_owl::io::ParserConfiguration::default(),
+        )
+        .expect("parse");
+        let internal = convert_ontology(&onto).expect("convert");
+        let name = |r: Role| {
+            let iri = internal.vocabulary.role_iri(r.role_id());
+            let local = iri.rsplit('/').next().unwrap_or(iri).to_string();
+            if r.is_inverse() {
+                format!("{local}-")
+            } else {
+                local
+            }
+        };
+        let mut v: Vec<(String, String)> = collect_disjoint_role_pairs(&internal)
+            .into_iter()
+            .map(|(a, b)| (name(a), name(b)))
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn pair(a: &str, b: &str) -> (String, String) {
+        (a.to_string(), b.to_string())
+    }
+
+    /// Forward-only axioms give the pairs they gave before #534.
+    #[test]
+    fn forward_only_axioms_are_unchanged() {
+        assert_eq!(
+            named("DisjointObjectProperties(:r :s :u)"),
+            vec![pair("r", "s"), pair("r", "u"), pair("s", "u")]
+        );
+    }
+
+    /// Inverse operands are kept, normalised so the first operand is forward.
+    #[test]
+    fn inverse_operands_are_kept_and_normalised() {
+        // `Disjoint(r⁻, s)` is `(r, s⁻)`, not `(s, r⁻)` or a polarity-stripped pair.
+        assert_eq!(
+            named("DisjointObjectProperties(ObjectInverseOf(:r) :s)"),
+            vec![pair("r", "s-")]
+        );
+        assert_eq!(
+            named("DisjointObjectProperties(ObjectInverseOf(:r) ObjectInverseOf(:s))"),
+            vec![pair("r", "s")]
+        );
+        // `(r, r⁻)` is asymmetry and is kept.
+        assert_eq!(
+            named("DisjointObjectProperties(:r ObjectInverseOf(:r))"),
+            vec![pair("r", "r-")]
+        );
+    }
 }
 
 /// Collect declared inverse-role pairs from `InverseObjectProperties`
@@ -13322,7 +13386,7 @@ fn decide<F>(
     inverse_pairs: &[(RoleId, RoleId)],
     chain_axioms: &[(Role, Role, Role)],
     asymmetric_roles: &[RoleId],
-    disjoint_role_pairs: &[(RoleId, RoleId)],
+    disjoint_role_pairs: &[(Role, Role)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
     extra_distinct: &[(IndividualId, IndividualId)],
@@ -13367,7 +13431,7 @@ fn decide_capturing<F>(
     inverse_pairs: &[(RoleId, RoleId)],
     chain_axioms: &[(Role, Role, Role)],
     asymmetric_roles: &[RoleId],
-    disjoint_role_pairs: &[(RoleId, RoleId)],
+    disjoint_role_pairs: &[(Role, Role)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
     extra_distinct: &[(IndividualId, IndividualId)],

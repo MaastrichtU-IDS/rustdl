@@ -388,43 +388,58 @@ fn parse_ce(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("class expression: {e}")))
 }
 
-/// `(satisfiable, incomplete, relies_on_trusted_consistency,
-/// consistency_undetermined)` for the class expression `ce` (the last is #369's,
-/// set on an "unsatisfiable" whose KB consistency stayed undetermined): `incomplete` means the probe gave up (node cap) and
+/// #552: the signals of an expression verdict as a dict, so a position can never
+/// be transposed (they were five positional bools). The Python wrappers build the
+/// `ClassExpressionVerdict` result from it.
+fn ce_verdict_dict<'py>(
+    py: Python<'py>,
+    v: &owl_dl_reasoner::CeVerdict,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("holds", v.holds())?;
+    d.set_item("incomplete", v.incomplete())?;
+    d.set_item("completeness_guaranteed", v.completeness_guaranteed())?;
+    d.set_item(
+        "relies_on_trusted_consistency",
+        v.relies_on_trusted_consistency(),
+    )?;
+    d.set_item("consistency_undetermined", v.consistency_undetermined())?;
+    // #462/#493: a likely-bug NoVerdict (#449); the wrapper warns with that text.
+    d.set_item("no_verdict", v.no_verdict())?;
+    // #540/#552: the PROBED conversion's drops, the query expression's included.
+    d.set_item("dropped", v.dropped().by_kind().clone())?;
+    Ok(d)
+}
+
+/// The class expression `ce`'s satisfiability and its signals (see
+/// `ce_verdict_dict`): `incomplete` means the probe gave up (node cap) and
 /// "satisfiable" is the sound direction (#363 A2); an answer off pure EL is not
-/// `incomplete`. Runs under the single-query node cap, like
-/// `is_class_satisfiable`.
+/// `incomplete`. Runs under the single-query node cap, like `is_class_satisfiable`.
 #[pyfunction]
-pub(crate) fn class_expression_satisfiable(
+pub(crate) fn class_expression_satisfiable<'py>(
+    py: Python<'py>,
     path: &str,
     ce: &str,
-) -> PyResult<(bool, bool, bool, bool, bool)> {
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
     let ce = parse_ce(ce, &pm, &build)?;
     let v = owl_dl_reasoner::class_expression_satisfiable(&o, &ce).map_err(reason_error_to_py)?;
-    Ok((
-        v.holds(),
-        v.incomplete(),
-        v.relies_on_trusted_consistency(),
-        v.consistency_undetermined(),
-        // #462/#493: a likely-bug NoVerdict (#449); the wrapper warns with that text.
-        v.no_verdict(),
-    ))
+    ce_verdict_dict(py, &v)
 }
 
-/// `(entailed, incomplete, relies_on_trusted_consistency,
-/// consistency_undetermined)` for `sub_ce ⊑ sup_ce` (the last as in
-/// `class_expression_satisfiable`): `incomplete` means the probe gave up and "not entailed"
-/// is the sound direction; an answer off pure EL is not `incomplete`. Runs
-/// under the single-query node cap, like `is_subclass_of`.
+/// Whether `sub_ce ⊑ sup_ce` is entailed, and its signals (as in
+/// `class_expression_satisfiable`): `incomplete` means the probe gave up and "not
+/// entailed" is the sound direction. Runs under the single-query node cap, like
+/// `is_subclass_of`.
 #[pyfunction]
-pub(crate) fn class_expression_entailed_subclass(
+pub(crate) fn class_expression_entailed_subclass<'py>(
+    py: Python<'py>,
     path: &str,
     sub_ce: &str,
     sup_ce: &str,
-) -> PyResult<(bool, bool, bool, bool, bool)> {
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
@@ -432,39 +447,35 @@ pub(crate) fn class_expression_entailed_subclass(
     let sup_ce = parse_ce(sup_ce, &pm, &build)?;
     let v = owl_dl_reasoner::class_expression_entailed_subclass(&o, &sub_ce, &sup_ce)
         .map_err(reason_error_to_py)?;
-    Ok((
-        v.holds(),
-        v.incomplete(),
-        v.relies_on_trusted_consistency(),
-        v.consistency_undetermined(),
-        // #462/#493: a likely-bug NoVerdict (#449); the wrapper warns with that text.
-        v.no_verdict(),
-    ))
+    ce_verdict_dict(py, &v)
 }
 
-/// `(individuals, incomplete, consistency_undetermined, no_verdict, depth_capped)`:
-/// named individuals provably in `ce`; `incomplete` means at least one instance probe
-/// was cut, so members may be missing (those returned are sound); the rest as in
-/// `instances_of`. Runs under the single-query node cap, like `instances_of`.
+/// The named individuals provably in `ce`, and the signals: `incomplete` means at
+/// least one instance probe was cut, so members may be missing (those returned are
+/// sound); the rest as in `instances_of`, plus `completeness_guaranteed` and the
+/// probed conversion's `dropped` (#552). Runs under the single-query node cap.
 #[pyfunction]
-pub(crate) fn class_expression_instances(
+pub(crate) fn class_expression_instances<'py>(
+    py: Python<'py>,
     path: &str,
     ce: &str,
-) -> PyResult<(Vec<String>, bool, bool, bool, bool)> {
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
     let ce = parse_ce(ce, &pm, &build)?;
     let r = owl_dl_reasoner::class_expression_instances(&o, &ce).map_err(reason_error_to_py)?;
-    Ok((
-        r.individuals().to_vec(),
-        r.incomplete(),
-        r.consistency_undetermined(),
-        // #493: a likely-bug `NoVerdict` (#449); the wrapper warns with that text.
-        r.no_verdict(),
-        // #510: a depth cut; the wrapper names the limit.
-        r.depth_capped(),
-    ))
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("individuals", r.individuals().to_vec())?;
+    d.set_item("incomplete", r.incomplete())?;
+    d.set_item("completeness_guaranteed", r.completeness_guaranteed())?;
+    d.set_item("consistency_undetermined", r.consistency_undetermined())?;
+    // #493: a likely-bug `NoVerdict` (#449); the wrapper warns with that text.
+    d.set_item("no_verdict", r.no_verdict())?;
+    // #510: a depth cut; the wrapper names the limit.
+    d.set_item("depth_capped", r.depth_capped())?;
+    d.set_item("dropped", r.dropped().by_kind().clone())?;
+    Ok(d)
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -336,10 +336,14 @@ fn semantic_universal_role_uses_are_flagged() {
 /// pair, which the property-assertion surfaces do not list.
 #[test]
 fn a_role_above_top_is_a_universal_super_role() {
-    let o = convert(&format!("{BASE} SubObjectPropertyOf(owl:topObjectProperty :r)"));
+    let o = convert(&format!(
+        "{BASE} SubObjectPropertyOf(owl:topObjectProperty :r)"
+    ));
     assert!(!owl_dl_core::top_bottom_roles::universal_role_ordinary(&o));
     let r = o.vocabulary.role_id("http://ex#r").unwrap();
     assert!(owl_dl_core::top_bottom_roles::universal_super_roles(&o).contains(&r));
-    let plain = convert(&format!("{BASE} SubObjectPropertyOf(:r owl:topObjectProperty)"));
+    let plain = convert(&format!(
+        "{BASE} SubObjectPropertyOf(:r owl:topObjectProperty)"
+    ));
     assert!(owl_dl_core::top_bottom_roles::universal_super_roles(&plain).is_empty());
 }

@@ -95,10 +95,11 @@ pub(crate) enum ClashReason {
         q2: ClassId,
     },
     /// P9: `DisjointObjectProperties(R, S)` and both `R(a, b)` and
-    /// `S(a, b)` are directly asserted in the `ABox`.
+    /// `S(a, b)` are directly asserted in the `ABox`. `R` is forward; an inverse `S`
+    /// (#534) means the clashing assertion is `S(b, a)`.
     DisjointRolePairViolation {
         r: RoleId,
-        s: RoleId,
+        s: Role,
         from: IndividualId,
         to: IndividualId,
     },
@@ -148,7 +149,7 @@ pub(crate) struct AboxCheckInputs<'a> {
     pub(crate) pool: &'a owl_dl_core::ir::ConceptPool,
     pub(crate) inverse_pairs: &'a [(RoleId, RoleId)],
     pub(crate) hierarchy: &'a crate::RoleHierarchy,
-    pub(crate) disjoint_role_pairs: &'a [(RoleId, RoleId)],
+    pub(crate) disjoint_role_pairs: &'a [(Role, Role)],
     pub(crate) closure: &'a owl_dl_saturation::Subsumers,
 }
 
@@ -642,15 +643,33 @@ pub(crate) fn check(inputs: &AboxCheckInputs<'_>) -> AboxVerdict {
 
     // P9: DisjointObjectProperties direct ABox clash.
     // For each disjoint pair (r, s), check whether any (from, to) has
-    // both r(from, to) and s(from, to) directly asserted. Uses `pos`
+    // r(from, to) and s(from, to) directly asserted (s(to, from) when `s` is
+    // inverse, #534). Uses `pos`
     // (already built for P3) for O(1) lookup per triple.
     // Sound: only reports when both assertions are present verbatim —
     // no role-hierarchy expansion (a sub-role assertion implies a
     // super-role, but that direction never CREATES a new disjoint
     // violation; the violation is on the asserted roles themselves).
+    // #534: the pair is signed with `r` forward. `Disjoint(r, s⁻)` forbids `r(a,b)` with
+    // `s(b,a)`, so an inverse `s` looks for the reversed assertion.
     for &(r, s) in inputs.disjoint_role_pairs {
+        // The collector normalises; re-normalise anyway, so a pair built elsewhere with
+        // an inverse first operand cannot be read as its polarity-stripped (FP) form.
+        let (r, s) = if r.is_inverse() {
+            (r.flip(), s.flip())
+        } else {
+            (r, s)
+        };
+        let r_id = r.role_id();
+        let s_id = s.role_id();
         for &(from, role, to) in &inputs.abox.property_assertions {
-            if role == r && pos.contains(&(from, s, to)) {
+            let clash = if s.is_inverse() {
+                pos.contains(&(to, s_id, from))
+            } else {
+                pos.contains(&(from, s_id, to))
+            };
+            if role == r_id && clash {
+                let r = r_id;
                 return AboxVerdict::Inconsistent {
                     reason: ClashReason::DisjointRolePairViolation { r, s, from, to },
                 };
@@ -848,12 +867,10 @@ mod tests {
     /// `DisjointObjectProperties(:r ObjectInverseOf(:s))` + `r(a,b)` +
     /// `s(a,b)` → consistent.
     ///
-    /// The axiom forbids `r(a,b) ∧ s(b,a)`, NOT `r(a,b) ∧ s(a,b)`.
-    /// Before the fix, the polarity-stripped `(r,s)` pair was emitted and
-    /// P9 would fire here — a false positive.  After the fix, the inverse-
-    /// involving pair is skipped and this configuration is correctly
-    /// classified as `Unknown` (= consistent from the `ABox` pre-check's
-    /// perspective).
+    /// The axiom forbids `r(a,b) ∧ s(b,a)`, NOT `r(a,b) ∧ s(a,b)`. A
+    /// polarity-stripped `(r,s)` pair would fire here, a false positive. Since #534
+    /// the pair is kept SIGNED, as `(r, s⁻)`, and P9 looks for the reversed
+    /// assertion; this same-direction configuration stays `Unknown`.
     #[test]
     fn p9_inverse_disjoint_same_direction_is_consistent() {
         let src = "Prefix(:=<http://t/>)\n\
@@ -877,6 +894,85 @@ mod tests {
              (this was the FP the fix closes): {:?}",
             verdict_of(src)
         );
+    }
+
+    /// #534: P9 on signed pairs. `true` when P9 reports a disjoint-role clash.
+    fn p9_fires(axioms: &str) -> bool {
+        let src = format!(
+            "Prefix(:=<http://t/>)\n\
+             Ontology(<http://t/p9signed>\n\
+               Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+               Declaration(ObjectProperty(:u))\n\
+               Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+               {axioms}\n)"
+        );
+        matches!(
+            verdict_of(&src),
+            AboxVerdict::Inconsistent {
+                reason: ClashReason::DisjointRolePairViolation { .. }
+            }
+        )
+    }
+
+    /// `Disjoint(r, s⁻)` with `r(a,b)` and `s(b,a)`: the reversed assertion clashes.
+    #[test]
+    fn p9_mixed_pair_reversed_assertion_fires() {
+        assert!(p9_fires(
+            "DisjointObjectProperties(:r ObjectInverseOf(:s)) \
+             ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :a)"
+        ));
+        // The operand order does not matter.
+        assert!(p9_fires(
+            "DisjointObjectProperties(ObjectInverseOf(:s) :r) \
+             ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :a)"
+        ));
+    }
+
+    /// `Disjoint(r⁻, s⁻)` is `Disjoint(r, s)`: same direction fires, reversed does not.
+    #[test]
+    fn p9_both_inverse_is_the_forward_pair() {
+        let ax = "DisjointObjectProperties(ObjectInverseOf(:r) ObjectInverseOf(:s))";
+        assert!(p9_fires(&format!(
+            "{ax} ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :a :b)"
+        )));
+        assert!(!p9_fires(&format!(
+            "{ax} ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :a)"
+        )));
+    }
+
+    /// A three-operand axiom with one inverse: each pair keeps its own polarity.
+    #[test]
+    fn p9_three_operands_with_one_inverse() {
+        let ax = "DisjointObjectProperties(:r ObjectInverseOf(:s) :u)";
+        // (r, s⁻): reversed fires.
+        assert!(p9_fires(&format!(
+            "{ax} ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:s :b :a)"
+        )));
+        // (r, u): forward, same direction fires.
+        assert!(p9_fires(&format!(
+            "{ax} ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:u :a :b)"
+        )));
+        // (s⁻, u) = (s, u⁻): `s(a,b)` with `u(b,a)` fires; same direction does not.
+        assert!(p9_fires(&format!(
+            "{ax} ObjectPropertyAssertion(:s :a :b) ObjectPropertyAssertion(:u :b :a)"
+        )));
+        assert!(!p9_fires(&format!(
+            "{ax} ObjectPropertyAssertion(:s :a :b) ObjectPropertyAssertion(:u :a :b)"
+        )));
+    }
+
+    /// `Disjoint(r, r⁻)` is asymmetry: `r(a,b)` with `r(b,a)` fires, and so does a
+    /// single `r(a,a)` (asymmetry entails irreflexivity).
+    #[test]
+    fn p9_asymmetry_form() {
+        let ax = "DisjointObjectProperties(:r ObjectInverseOf(:r))";
+        assert!(p9_fires(&format!(
+            "{ax} ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :b :a)"
+        )));
+        assert!(p9_fires(&format!("{ax} ObjectPropertyAssertion(:r :a :a)")));
+        assert!(!p9_fires(&format!(
+            "{ax} ObjectPropertyAssertion(:r :a :b)"
+        )));
     }
 
     // ── #527 / #528: the arms the polarity fix added fire on the right edges ─────

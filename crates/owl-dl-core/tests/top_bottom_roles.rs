@@ -367,3 +367,15 @@ fn a_role_above_top_is_a_universal_super_role() {
     ));
     assert!(owl_dl_core::top_bottom_roles::universal_super_roles(&plain).is_empty());
 }
+
+/// Determinism: the detector is a pure function of the converted ontology (ordered
+/// sets only), so repeated conversions agree. #606's CI failure looked like
+/// nondeterminism but was two CLI tests sharing a fixture path.
+#[test]
+fn the_detector_is_deterministic() {
+    let body = "SubClassOf(:C :D) SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :E)";
+    for _ in 0..20 {
+        assert!(flagged(body));
+        assert!(!flagged("SubObjectPropertyOf(:r owl:topObjectProperty)"));
+    }
+}

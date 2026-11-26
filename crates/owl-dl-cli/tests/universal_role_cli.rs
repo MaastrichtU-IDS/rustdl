@@ -24,10 +24,18 @@ const NOTE: &str = "owl:topObjectProperty is used here as the universal role";
 
 struct Fixture(PathBuf);
 
+/// Makes every fixture path unique within the test process. Tests run in parallel
+/// threads of ONE process, so a pid-and-tag name collides when two tests pick the same
+/// tag: one test then reads (or deletes) the other's file. That is what made
+/// `a_missed_subsumption_is_flagged_on_every_class_surface` read the inert fixture on
+/// CI, while every surface it checked was right.
+static NEXT_FIXTURE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl Fixture {
     fn new(tag: &str, body: &str) -> Self {
+        let n = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "rustdl-universal-role-{}-{tag}.ofn",
+            "rustdl-universal-role-{}-{n}-{tag}.ofn",
             std::process::id()
         ));
         let src = format!(
@@ -95,7 +103,7 @@ fn classify_flags(f: &Fixture) -> (serde_json::Value, serde_json::Value, String)
 fn inert_uses_leave_the_guarantee_and_print_nothing() {
     for (tag, body) in [
         (
-            "sub",
+            "inert-sub",
             "SubObjectPropertyOf(:r owl:topObjectProperty) \
              SubClassOf(:C ObjectSomeValuesFrom(:r :D))",
         ),
@@ -109,7 +117,7 @@ fn inert_uses_leave_the_guarantee_and_print_nothing() {
         let (uro, guaranteed, err) = classify_flags(&f);
         assert_eq!(uro, false, "{tag}");
         // `Reflexive` is outside the EL fragment, so only `sub` can carry the guarantee.
-        if tag == "sub" {
+        if tag == "inert-sub" {
             assert_eq!(guaranteed, true, "{tag}: pure EL, nothing read as ordinary");
         }
         assert!(!err.contains(NOTE), "{tag}: {err}");

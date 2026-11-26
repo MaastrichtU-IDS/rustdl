@@ -135,6 +135,41 @@ def test_wedge_clauses_refused_is_its_own_signal(tmp_path, monkeypatch):
     assert r.is_subclass("http://ex.org/A", "http://ex.org/G")
 
 
+def test_wedge_clauses_deferred_is_its_own_signal(tmp_path):
+    # #600: an encoding the classify wedge's clausifier skips (here the
+    # antecedent DNF cap: seven binary unions are 2^7 = 128 alternatives, over
+    # 64) is reported by `wedge_clauses_deferred` and warned about, while
+    # `complete` keeps meaning "nothing was cut".
+    import warnings
+    ors = " ".join(f"ObjectUnionOf(:L{i} :R{i})" for i in range(7))
+    fixture = tmp_path / "dnf.ofn"
+    fixture.write_text(
+        "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/o>\n"
+        f"SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
+    )
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_clauses_deferred > 0
+    assert r.complete is True
+    assert any(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning)
+        and "wedge_clauses_deferred" in str(w.message)
+        for w in rec
+    )
+
+    control = tmp_path / "plain.ofn"
+    control.write_text(
+        "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/o>\n"
+        "SubClassOf(ObjectIntersectionOf(:L0 ObjectUnionOf(:L1 :R1)) :D)\n)\n"
+    )
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(control), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_clauses_deferred == 0
+    assert not any("wedge_clauses_deferred" in str(w.message) for w in rec)
+
+
 def test_derived_same_undecided_is_its_own_signal(tmp_path, monkeypatch):
     # #354: a candidate individual equality past the probe cap is reported by
     # `derived_same_undecided` and warned about once, while `complete` keeps

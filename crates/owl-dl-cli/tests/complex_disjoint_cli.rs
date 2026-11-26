@@ -68,19 +68,28 @@ fn json(args: &[&str], env: &[(&str, &str)]) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-/// `consistent --json`'s decided verdict. Only exit 0 is a verdict: exit 3 is a
-/// give-up (printed as `consistent: true`, its sound direction, but not a proof), and
-/// accepting it would let a give-up hide a false inconsistency in the FP control below.
-/// The wedge's fallback deadline is raised so that a loaded host cannot turn these
-/// small fixtures into a give-up.
+/// `consistent --json`'s decided verdict, as #605 does it: only exit 0 with
+/// `incomplete: false` is a verdict. Exit 3 is a give-up (printed as `consistent:
+/// true`, its sound direction, but not a proof), and accepting it would make the FP
+/// control and the flag-off arms vacuous. A give-up is retried (host load can cut the
+/// wedge), up to 3 attempts; never decided fails. The fallback deadline is raised too.
 fn consistent(f: &Fixture, env: &[(&str, &str)]) -> bool {
     let mut env = env.to_vec();
     env.push(("RUSTDL_CONSISTENCY_FALLBACK_MS", "600000"));
-    let out = run(&["consistent", "--json", f.path()], &env);
-    assert_eq!(out.status.code(), Some(0), "{env:?}: {out:?}");
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["incomplete"], false, "{env:?}: {v}");
-    v["consistent"].as_bool().unwrap()
+    let mut last = None;
+    for attempt in 1..=3 {
+        let out = run(&["consistent", "--json", f.path()], &env);
+        let v: Option<serde_json::Value> = serde_json::from_slice(&out.stdout).ok();
+        if let Some(v) = v
+            .as_ref()
+            .filter(|v| out.status.code() == Some(0) && v["incomplete"] == false)
+        {
+            return v["consistent"].as_bool().unwrap();
+        }
+        eprintln!("consistent not decided on attempt {attempt} (host load?): retrying");
+        last = Some(out);
+    }
+    panic!("consistent never decided in 3 attempts {env:?}: {last:?}");
 }
 
 /// `classify --json` with no per-pair deadline, so every answer is decided: at the
@@ -268,5 +277,112 @@ fn the_horn_shift_reaches_justify() {
         fragment(&[OFF]).contains("out-of-EL"),
         "{}",
         fragment(&[OFF])
+    );
+}
+
+/// #600 review (cost canary): a trigger-less fallback (no body-encodable conjunct) is a
+/// `⊤`-bodied disjunctive clause, and classify cost grew exponentially in their number
+/// (Fable's generator: 5 axioms 1 s, 8 cut, 32 a timeout; main 0.02 s). Past
+/// `TRIGGERLESS_FALLBACK_CAP` they are deferred and counted, so K = 32 finishes uncut,
+/// with every row the flag-off arm (main's behaviour) finds.
+#[test]
+fn many_trigger_less_axioms_do_not_blow_up() {
+    use std::fmt::Write as _;
+    const K: usize = 32;
+    let cap = owl_dl_core::clause::TRIGGERLESS_FALLBACK_CAP;
+    for (tag, shape) in [
+        (
+            "hard-pair",
+            "DisjointClasses(ObjectAllValuesFrom(:r{i} :B{i}) ObjectAllValuesFrom(:s{i} :C{i}))",
+        ),
+        (
+            "max-pair",
+            "DisjointClasses(ObjectMaxCardinality(1 :r{i} :B{i}) ObjectMaxCardinality(1 :s{i} :C{i}))",
+        ),
+        // `∀r.B ⊑ U` is the trigger-less part; `A ⊑ U` is a told row.
+        (
+            "du-member",
+            "DisjointUnion(:U{i} :A{i} ObjectAllValuesFrom(:r{i} :B{i}))",
+        ),
+    ] {
+        let mut body = String::new();
+        for n in 1..20 {
+            let _ = writeln!(
+                body,
+                "SubClassOf(:N{n} ObjectSomeValuesFrom(:t :N{}))",
+                n - 1
+            );
+        }
+        for i in 0..K {
+            let _ = writeln!(body, "{}", shape.replace("{i}", &i.to_string()));
+        }
+        let f = Fixture::new(&body, &format!("cost-{tag}"));
+        // A deadline that only a blow-up reaches: `incomplete` then reads true.
+        let args = [
+            "classify",
+            "--json",
+            "--pair-timeout-ms",
+            "5000",
+            "--global-timeout-ms",
+            "120000",
+            f.path(),
+        ];
+        let on = json(&args, &[]);
+        assert_eq!(on["incomplete"], false, "{tag}: cut, a blow-up: {on}");
+        assert_eq!(on["wedge_clauses_deferred"], K - cap, "{tag}: {on}");
+        let off = json(&args, &[OFF]);
+        assert_eq!(off["incomplete"], false, "{tag}: flag off: {off}");
+        for key in ["direct_subsumptions", "unsatisfiable", "equivalent_groups"] {
+            assert_eq!(on[key], off[key], "{tag}: {key} lost or changed");
+        }
+        if tag == "du-member" {
+            assert!(
+                has_row(&on, "A0", "U0") && has_row(&on, "A31", "U31"),
+                "{on}"
+            );
+        }
+    }
+}
+
+/// The deferral signal at default flags: what #600 leaves deferrable is the antecedent
+/// DNF cap (and the reflexive-derived cap). Seven binary unions in an antecedent are
+/// 2⁷ = 128 alternatives, over the 64 cap, so classify reports the deferral.
+#[test]
+fn the_dnf_cap_deferral_is_reported_at_default_flags() {
+    use std::fmt::Write as _;
+    let mut ors = String::new();
+    for i in 0..7 {
+        let _ = write!(ors, "ObjectUnionOf(:L{i} :R{i}) ");
+    }
+    let f = Fixture::new(
+        &format!("SubClassOf(ObjectIntersectionOf({ors}) :D)"),
+        "dnf-cap",
+    );
+    let v = classify(&f, &[]);
+    assert!(
+        v["wedge_clauses_deferred"].as_u64().unwrap() > 0,
+        "the DNF-cap deferral is not reported: {v}"
+    );
+    // Text mode warns, as for refused clauses; the JSON run warns on stderr too.
+    for args in [
+        vec!["classify", "--pair-timeout-ms", "0", f.path()],
+        vec!["classify", "--json", "--pair-timeout-ms", "0", f.path()],
+    ] {
+        let out = run(&args, &[]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("clausifier skipped"), "{args:?}: {err}");
+    }
+    let out = run(&["classify", "--pair-timeout-ms", "0", f.path()], &[]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("# wedge clauses deferred: "), "{text}");
+    let control = Fixture::new("SubClassOf(ObjectIntersectionOf(:A :B) :D)", "dnf-control");
+    let out = run(&["classify", "--pair-timeout-ms", "0", control.path()], &[]);
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("clausifier skipped"),
+        "{out:?}"
     );
 }

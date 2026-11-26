@@ -174,6 +174,15 @@ impl PyClassification {
         self.inner.stats().wedge_clauses_refused
     }
 
+    /// The classify wedge clausifier's deferral events (#600): encodings of the
+    /// input's axioms it skipped, so the wedge never sees them and entailments that
+    /// need them may be missing. One axiom can count more than once. 0 when there is
+    /// no wedge.
+    #[getter]
+    fn wedge_clauses_deferred(&self) -> usize {
+        self.inner.stats().wedge_clauses_deferred
+    }
+
     /// How many candidate individual equalities classify did not decide (a probe
     /// was cut by its budget or the deadline, or the probe cap was reached; #354).
     /// Each may be an entailed equality the hierarchy does not use.

@@ -6954,7 +6954,7 @@ impl ConsistencyCache {
     /// refuses (they never fire) and the clausifier's deferral events (encodings it
     /// skipped, so the wedge never sees them; one axiom can count more than once). A
     /// `Sat` of this wedge is a model of that weaker KB, so a trusted `Sat` with either
-    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm). Unflagged: callers
+    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the axiom kinds the clausifier ignores, its `_ => {}` arm; and, only with `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which #600 otherwise clausifies or counts). Unflagged: callers
     /// apply `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED` to the refused count.
     pub(crate) fn weaker_kb_gaps(&self) -> (usize, usize) {
         (
@@ -8279,7 +8279,7 @@ pub struct QueryStats {
     /// weaker by these too. Set where `wedge_clauses_refused` is (the consistency
     /// query, and a single query that dropped its `ABox` on that wedge's `Sat`).
     /// Deliberately not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`: that flag
-    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm).
+    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the axiom kinds the clausifier ignores, its `_ => {}` arm; and, only with `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which #600 otherwise clausifies or counts).
     pub wedge_clauses_deferred: usize,
     /// The verdict rests on the KB being consistent, and the only evidence for
     /// that is a consistency-wedge `Sat` that no main-tableau run verified (the

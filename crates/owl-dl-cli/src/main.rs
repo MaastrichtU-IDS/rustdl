@@ -860,6 +860,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
         warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
+        warn_if_clauses_deferred(h.stats().wedge_clauses_deferred);
         note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
         note_saturation_only("classify", *saturation_only && !h.completeness_guaranteed());
         exit_if_no_verdict(h.stats().no_verdict_pairs > 0);
@@ -872,6 +873,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
     warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
     warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
     warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
+    warn_if_clauses_deferred(h.stats().wedge_clauses_deferred);
     warn_if_dropped(&dropped);
     exit_if_no_verdict(h.stats().no_verdict_pairs > 0);
     Ok(())
@@ -994,6 +996,20 @@ fn warn_if_clauses_refused(refused: usize, off_flag: &str) {
             "\n⚠  NOT GUARANTEED COMPLETE: the wedge cannot match the body of {refused} \
              clause(s), so they never fire and entailments that need them may be \
              missing (#353). {off_flag} decides without the wedge, at a time cost."
+        );
+    }
+}
+
+/// #600 review: the classify wedge's clausifier deferred clause encodings (a
+/// trigger-less disjointness fallback past its cap, the antecedent DNF cap, …), so
+/// its trusted `Sat` can miss what they entail, as with refused clauses.
+fn warn_if_clauses_deferred(deferred: usize) {
+    if deferred > 0 {
+        eprintln!(
+            "\n⚠  NOT GUARANTEED COMPLETE: the wedge's clausifier skipped {deferred} \
+             encoding(s) of the input's axioms (deferrals; one axiom can count more than \
+             once), so entailments that need them may be missing (#600). \
+             RUSTDL_HYPERTABLEAU=0 decides without the wedge, at a time cost."
         );
     }
 }
@@ -1974,6 +1990,13 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             out,
             "# wedge clauses refused: {} (never fire): completeness not guaranteed",
             stats.wedge_clauses_refused
+        )?;
+    }
+    if stats.wedge_clauses_deferred > 0 {
+        writeln!(
+            out,
+            "# wedge clauses deferred: {} (never seen): completeness not guaranteed",
+            stats.wedge_clauses_deferred
         )?;
     }
     if stats.derived_same_candidates > 0 {

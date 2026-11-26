@@ -56,14 +56,20 @@ encodings its clausifier defers it never sees. A model of that weaker KB need no
 be a model of the input, so the trusted `Sat` can hide an inconsistency (a miss,
 never a false positive). The deferred count is of deferral events, not axioms (a
 `DisjointUnion` with two complex members reads 3), and 0 does not prove the wedge
-saw the whole KB: the pairwise-disjointness half of a `DisjointUnion` whose members
-do not encode, and the axiom kinds the clausifier ignores, drop clauses uncounted.
+saw the whole KB: the axiom kinds the clausifier ignores drop clauses uncounted, and
+so, only with `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`, does the pairwise-disjointness half
+of a `DisjointUnion` whose members do not encode (#600 otherwise clausifies or counts it).
 
 Since #600 the clausifier encodes complex `DisjointClasses` / `DisjointUnion`
 members and the `DisjointUnion` covering (`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT`, default
-on), the deferrals behind the live misses #558 found. What can still be deferred is
-the antecedent DNF cap and the reflexive-derived cap (on the ORE pool, one file,
-`ore_ont_8142`, has two cap deferrals). `classify --json` also reports the classify
+on), the deferrals behind the live misses #558 found. A fallback with no soft trigger
+(no body-encodable conjunct: `∀r.B`, `≤1 s.C`, `∀r.B ⊓ ∀s.C`, …) is a `⊤`-bodied
+disjunctive clause whose cost grows exponentially with their number, so at most
+`TRIGGERLESS_FALLBACK_CAP` (2) are emitted per clausification; the rest are deferred
+under their pre-#600 kinds and counted (a trigger-less `DisjointUnion` pair as
+`disjoint-union-pair`). Besides those, what we observed deferred on the ORE pool is the
+antecedent DNF cap (one file, `ore_ont_8142`, two deferrals); the reflexive-derived cap
+can also defer. `classify --json` also reports the classify
 wedge's own deferrals as `wedge_clauses_deferred`.
 
 Surfaces that carry the counts (#558):

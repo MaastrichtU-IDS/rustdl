@@ -31,6 +31,36 @@ public final class RustdlJson {
          * Separate from {@code incomplete}. Absent in output from rustdl before 0.4.42, read as 0.
          */
         public int derived_same_undecided;
+        /**
+         * #610: axioms rustdl could not convert and left out, by kind ({@code "HasKey" -> 1});
+         * the hierarchy is computed over a strictly weaker ontology. Absent (null) in older
+         * output.
+         */
+        public java.util.Map<String, Long> dropped;
+        /**
+         * #543 / #610: the ontology uses {@code owl:topObjectProperty} where its universal-role
+         * semantics could change an answer, and rustdl reads it as an ordinary property: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean universal_role_ordinary;
+        /**
+         * #610: consistency rests on the consistency wedge's model alone, which is not proven
+         * complete; if that model is wrong the KB is inconsistent. Absent in older output, false.
+         */
+        public boolean relies_on_trusted_consistency;
+        /**
+         * #558 / #610: with {@code relies_on_trusted_consistency}, the clauses the consistency
+         * wedge refused and its clausifier's deferral events: its model is of a KB weaker by
+         * these. Absent in older output, 0.
+         */
+        public int consistency_wedge_clauses_refused;
+        public int consistency_wedge_clauses_deferred;
+        /**
+         * #446 / #610: rustdl could not establish that the KB is consistent ({@code consistent:
+         * true} then means no clash was found). If it is in fact inconsistent, every class is
+         * unsatisfiable. Absent in older output, false.
+         */
+        public boolean consistency_undetermined;
         public List<String> unsatisfiable;
         public List<List<String>> equivalent_groups;
         public List<List<String>> direct_subsumptions;
@@ -41,6 +71,14 @@ public final class RustdlJson {
     }
     public static final class RealizeJson {
         public int schema_version;
+        /** #610: an instance probe was cut, so a type may be missing. */
+        public boolean incomplete;
+        /**
+         * #543 / #610: the ontology uses {@code owl:topObjectProperty} where its universal-role
+         * semantics could change an answer, and rustdl reads it as an ordinary property: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean universal_role_ordinary;
         public List<IndividualJson> individuals;
     }
     public static final class IndividualJson {
@@ -52,6 +90,18 @@ public final class RustdlJson {
     public static final class DisjointJson {
         public int schema_version;
         public boolean incomplete;
+        /**
+         * #543 / #610: the ontology uses {@code owl:topObjectProperty} where its universal-role
+         * semantics could change an answer, and rustdl reads it as an ordinary property: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean universal_role_ordinary;
+        /**
+         * #610: the KB's consistency stayed undetermined, so a positive answer may be the
+         * vacuous one of an inconsistent KB (see docs/json-schema.md for this surface's
+         * scope). Absent in older output, false.
+         */
+        public boolean consistency_undetermined;
         public List<List<String>> disjoint_classes;
         public List<List<String>> disjoint_object_properties;
         public List<List<String>> disjoint_data_properties;
@@ -63,18 +113,48 @@ public final class RustdlJson {
     public static final class PropHierJson {
         public int schema_version;
         public boolean incomplete;
+        /**
+         * #543 / #610: the ontology uses {@code owl:topObjectProperty} where its universal-role
+         * semantics could change an answer, and rustdl reads it as an ordinary property: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean universal_role_ordinary;
         public PropHierSide object_properties;
         public PropHierSide data_properties;
     }
     public static final class IndividualsJson {
         public int schema_version;
         public boolean incomplete;
+        /**
+         * #543 / #610: the ontology uses {@code owl:topObjectProperty} where its universal-role
+         * semantics could change an answer, and rustdl reads it as an ordinary property: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean universal_role_ordinary;
+        /**
+         * #610: the KB's consistency stayed undetermined, so a positive answer may be the
+         * vacuous one of an inconsistent KB (see docs/json-schema.md for this surface's
+         * scope). Absent in older output, false.
+         */
+        public boolean consistency_undetermined;
         public List<List<String>> same_groups;
         public List<List<String>> different_pairs;
     }
     public static final class PropertyValuesJson {
         public int schema_version;
         public boolean incomplete;
+        /**
+         * #543 / #610: the ontology uses {@code owl:topObjectProperty} where its universal-role
+         * semantics could change an answer, and rustdl reads it as an ordinary property: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean universal_role_ordinary;
+        /**
+         * #610: the KB's consistency stayed undetermined, so a positive answer may be the
+         * vacuous one of an inconsistent KB (see docs/json-schema.md for this surface's
+         * scope). Absent in older output, false.
+         */
+        public boolean consistency_undetermined;
         public List<List<String>> object_property_values;   // [subj, prop, obj]
         public List<List<String>> data_property_values;     // [subj, prop, lexical, datatype]
     }

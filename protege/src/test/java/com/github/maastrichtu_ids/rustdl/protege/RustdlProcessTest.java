@@ -360,4 +360,76 @@ public class RustdlProcessTest {
             if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
         }
     }
+
+    // ---- #610: dropped, universal_role_ordinary and the consistency signals -------------
+    // The dropped / universal-role fixtures are real `classify --json` / `realize --json`
+    // / `property-values --json` output (a HasKey axiom; `A ⊑ ∀owl:topObjectProperty.B`),
+    // so a field name the plugin misspells would read as its default and fail here.
+
+    @Test public void droppedAxiomsAreWarnedOnWithKindsAndCounts() throws Exception {
+        RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_dropped.json"));
+        assertFalse(c.incomplete);
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(w.toString(), 1, w.size());
+        assertTrue(w.get(0), w.get(0).contains("1 axiom(s) (HasKey: unsupported axiom (HasKey) ×1)"));
+        assertTrue(w.get(0), w.get(0).contains("weaker ontology"));
+    }
+
+    @Test public void theUniversalRoleIsWarnedOnInClassify() throws Exception {
+        RustdlJson.ClassifyJson c =
+            RustdlProcess.parseClassify(fixture("classify_universal_role.json"));
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(w.toString(), 1, w.size());
+        assertTrue(w.get(0), w.get(0).contains("owl:topObjectProperty is used here as the universal role"));
+    }
+
+    @Test public void theUniversalRoleIsWarnedOnPerSurface() throws Exception {
+        RustdlJson.RealizeJson r = RustdlProcess.parseRealize(fixture("realize_universal_role.json"));
+        assertTrue(r.universal_role_ordinary);
+        java.util.List<String> w = RustdlReasoner.surfaceWarnings("realize", "type", r.incomplete,
+            r.universal_role_ordinary, false, null);
+        assertEquals(w.toString(), 1, w.size());
+        assertTrue(w.get(0), w.get(0).startsWith("rustdl realize: owl:topObjectProperty"));
+        RustdlJson.PropertyValuesJson pv =
+            RustdlProcess.parsePropertyValues(fixture("property_values_universal_role.json"));
+        assertTrue(pv.universal_role_ordinary);
+        w = RustdlReasoner.surfaceWarnings("property-values", "property-values", pv.incomplete,
+            pv.universal_role_ordinary, pv.consistency_undetermined, "a positive answer");
+        assertTrue(w.toString(), w.stream().anyMatch(x -> x.contains("universal role")));
+    }
+
+    @Test public void trustedConsistencyIsWarnedOnOnlyOverAWeakerKb() throws Exception {
+        // Trust with nothing refused or deferred (the real HasKey output): no trust warning.
+        RustdlJson.ClassifyJson plain = RustdlProcess.parseClassify(fixture("classify_dropped.json"));
+        assertTrue(plain.relies_on_trusted_consistency);
+        assertFalse(RustdlReasoner.classifyWarnings(plain).toString().contains("consistency wedge"));
+        RustdlJson.ClassifyJson c =
+            RustdlProcess.parseClassify(fixture("classify_trusted_weaker.json"));
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(w.toString(), 1, w.size());
+        assertTrue(w.get(0), w.get(0).contains("weaker by 2 refused clause(s) and 3 deferred"));
+    }
+
+    @Test public void undeterminedConsistencyIsWarnedOn() throws Exception {
+        RustdlJson.ClassifyJson c = RustdlProcess.parseClassify(fixture("classify_undetermined.json"));
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(w.toString(), 1, w.size());
+        assertTrue(w.get(0), w.get(0).contains("could not establish that the ontology is consistent"));
+        java.util.List<String> s = RustdlReasoner.surfaceWarnings("disjoint", "disjointness",
+            false, false, true, "a disjoint-property answer");
+        assertEquals(s.toString(), 1, s.size());
+        assertTrue(s.get(0), s.get(0).contains("a disjoint-property answer may be the vacuous one"));
+    }
+
+    @Test public void oldOrCleanOutputAddsNoNewWarning() throws Exception {
+        // classify.json is clean; classify_unsat.json is older output without the fields.
+        assertTrue(RustdlReasoner.classifyWarnings(
+            RustdlProcess.parseClassify(fixture("classify.json"))).isEmpty());
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(
+            RustdlProcess.parseClassify(fixture("classify_unsat.json")));
+        assertEquals(w.toString(), 1, w.size());
+        assertNull(RustdlReasoner.droppedSummary(null));
+        assertNull(RustdlReasoner.droppedSummary(new java.util.HashMap<>()));
+        assertTrue(RustdlReasoner.surfaceWarnings("x", "y", false, false, false, null).isEmpty());
+    }
 }

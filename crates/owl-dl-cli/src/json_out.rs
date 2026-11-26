@@ -199,7 +199,7 @@ pub(crate) struct ClassifyJson {
     /// completeness_guaranteed()`, i.e. **this hierarchy is provably free of
     /// missed subsumptions**. `true` only on a fragment where the engine that
     /// answered is complete and when none of the other signals in this struct
-    /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no
+    /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no `wedge_abox_blind`, no
     /// `wedge_clauses_refused`, no `derived_same_undecided`, no
     /// `consistency_undetermined` and nothing in `dropped` (#246).
     /// `ClassificationStats::completeness_guaranteed` is the predicate, and
@@ -223,6 +223,19 @@ pub(crate) struct ClassifyJson {
     /// A SEPARATE field for the same reason as `consistency_undetermined`: no class
     /// pair was cut, and `incomplete` means exactly that.
     pub(crate) wedge_hierarchy_blind: bool,
+    /// #533: classify trusted a wedge model that touches a nominal while some `ABox`
+    /// fact did not apply in it (not given to the classify wedge, or given for an
+    /// individual the model does not instantiate), so the model may not be a model of
+    /// the full `KB`, and a subsumption or an unsatisfiable class may be missing.
+    /// A SEPARATE field for the same reason as `wedge_hierarchy_blind`: no class pair
+    /// was cut. `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` decides those cases on the main
+    /// tableau instead, and this is then false. Near-universal on input with both a
+    /// nominal and an `ABox`: set on 353 of the 374 consistent ORE ontologies of that
+    /// kind that finish at 60 s, all of which already had `completeness_guaranteed: false`.
+    pub(crate) wedge_abox_blind: bool,
+    /// #533: wedge models demoted under `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (see
+    /// `wedge_abox_blind`). Diagnostic; 0 with the flag off.
+    pub(crate) wedge_abox_demoted: u64,
     /// #353: clauses the wedge's matcher refuses, which therefore never fire, so
     /// entailments that need them may be missing. A SEPARATE field for the same
     /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
@@ -793,6 +806,8 @@ pub(crate) fn build_classify_json(
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
+        wedge_abox_blind: stats.wedge_abox_blind,
+        wedge_abox_demoted: stats.wedge_abox_demoted,
         wedge_clauses_refused: stats.wedge_clauses_refused,
         consistency_wedge_clauses_refused: stats.consistency_wedge_clauses_refused,
         consistency_wedge_clauses_deferred: stats.consistency_wedge_clauses_deferred,
@@ -833,6 +848,8 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         trusted_sat_refutations: 0,
         completeness_guaranteed: false,
         wedge_hierarchy_blind: false,
+        wedge_abox_blind: false,
+        wedge_abox_demoted: 0,
         wedge_clauses_refused: 0,
         consistency_wedge_clauses_refused: 0,
         consistency_wedge_clauses_deferred: 0,

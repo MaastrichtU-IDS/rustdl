@@ -54,6 +54,7 @@ class Classification:
     def completeness_guaranteed(self) -> bool:
         """True iff the hierarchy is guaranteed complete (no missed
         subsumptions): pure EL, nothing cut, no `wedge_hierarchy_blind`, no
+        `wedge_abox_blind`, no
         `wedge_clauses_refused`, no `derived_same_undecided`, no
         `consistency_undetermined` and no dropped axiom. Stronger than
         `complete`, which only says nothing was cut."""
@@ -106,6 +107,15 @@ class Classification:
         """True iff the wedge ran without role-hierarchy matching (Layer A
         off) over a non-trivial role hierarchy, so entailments needing
         sub-role, inverse or symmetric reasoning may be missing (#214)."""
+        ...
+    @property
+    def wedge_abox_blind(self) -> bool:
+        """True iff classify trusted a wedge model that touches a nominal
+        while some ABox fact did not apply in it (not given to the classify
+        wedge, or given for an individual the model lacks), so a
+        subsumption or an unsatisfiable class that depends on an individual's
+        facts may be missing (#533). Near-universal on input with both a
+        nominal and an ABox."""
         ...
     @property
     def wedge_clauses_refused(self) -> int:

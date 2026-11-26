@@ -100,6 +100,30 @@ def test_wedge_hierarchy_blind_is_its_own_signal(fixtures_dir, monkeypatch):
     assert "http://ex.org/A" in r.unsatisfiable
 
 
+def test_wedge_abox_blind_is_its_own_signal(fixtures_dir, monkeypatch):
+    # #533: classify's wedge is not given `S(b, a)`, and `X`'s model touches `{a}`,
+    # so its trusted `Sat` hides `X ⊑ D` (HermiT and Konclude derive it). That is
+    # reported by `wedge_abox_blind` and warned about, while `complete` keeps
+    # meaning "nothing was cut". The demotion flag lets the main tableau find it.
+    import warnings
+    fixture = str(fixtures_dir / "wedge_abox_blind_p1.ofn")
+    monkeypatch.delenv("RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE", raising=False)
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(fixture, per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_abox_blind is True
+    assert r.complete is True
+    assert r.completeness_guaranteed is False
+    assert sum(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning) for w in rec
+    ) == 1
+
+    monkeypatch.setenv("RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE", "1")
+    r = rustdl.classify(fixture, per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_abox_blind is False
+    assert r.is_subclass("http://ex/#X", "http://ex/#D")
+
+
 def test_wedge_clauses_refused_is_its_own_signal(tmp_path, monkeypatch):
     # #353: a clause body the wedge cannot match is reported by
     # `wedge_clauses_refused` and warned about, while `complete` keeps meaning
@@ -154,8 +178,12 @@ def test_derived_same_undecided_is_its_own_signal(tmp_path, monkeypatch):
         r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
     assert r.derived_same_undecided == 1
     assert r.complete is True
+    # Counted by message: the fixture's nominals and ABox also raise #533's
+    # `wedge_abox_blind` warning, which is a separate signal.
     assert sum(
-        issubclass(w.category, rustdl.IncompleteClassificationWarning) for w in rec
+        issubclass(w.category, rustdl.IncompleteClassificationWarning)
+        and "derived_same_undecided" in str(w.message)
+        for w in rec
     ) == 1
 
     monkeypatch.delenv("RUSTDL_CLASSIFY_DERIVED_SAME_MAX")

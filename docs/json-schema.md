@@ -216,7 +216,8 @@ depth cap), #497.
 ```json
 { "schema_version": 1, "incomplete": bool, "witness_prune_active": bool,
   "witness_prune_may_drop": bool, "witness_prune_reasons": [string],
-  "direct_types_unverified": bool, "relies_on_trusted_consistency": bool,
+  "direct_types_unverified": bool, "direct_types_depth_capped": bool,
+  "relies_on_trusted_consistency": bool,
   "no_verdict": bool, "depth_capped": bool, "saturation_only": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
@@ -259,7 +260,17 @@ another:
   pairs are checked with the main tableau, so it is set only when a check was cut
   (or `RUSTDL_REALIZE_VERIFY_DIRECT=0`). The saturation-only realize runs no check,
   so there any undecided pair sets it. It does not cover a type dropped through
-  `incomplete` or the prune, which can also leave a superclass listed.
+  `incomplete` or the prune, which can also leave a superclass listed. It is also not
+  implied by `incomplete`: a cut in realize's own classification step leaves the pair
+  to this check, so with both cut, `direct_types_unverified` is set and `incomplete` is
+  not (#583).
+- `direct_types_depth_capped` (#583, no `schema_version` bump) = with
+  `direct_types_unverified`, at least one check was cut by the tableau's decision-depth
+  limit: a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` does not help, `=0` (no deadline) may.
+  `false` with `direct_types_unverified` set: a deadline or the node cap cut the checks
+  (a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or `RUSTDL_MAX_NODES` may decide them), or no
+  check ran. "At least one": other checks may have been cut otherwise. The text warning
+  names the remedies.
 - `relies_on_trusted_consistency` (#429): as in `classify --json`; not a give-up.
 - `no_verdict` (#493): a probe ended in `NoVerdict` on an internal limit, likely a reasoner bug
   (see the `no_verdict` section): realize's own classification, an instance probe (anonymous

@@ -55,6 +55,8 @@ from rustdl._native import (
 )
 
 from ._results import (
+    ClassExpressionInstances as ClassExpressionInstances,
+    ClassExpressionVerdict as ClassExpressionVerdict,
     Diagnosis as Diagnosis,
     Root as Root,
     Derived as Derived,
@@ -578,6 +580,33 @@ def _warn_if_classification_trusted(result: "Classification") -> "Classification
     return result
 
 
+class DroppedAxiomsWarning(UserWarning):
+    """Emitted by the class-expression queries (`class_expression_satisfiable`,
+    `class_expression_entailed_subclass`, `class_expression_instances` and their
+    `*_result` forms) when conversion dropped axioms it could not represent, from the
+    ontology or from the query expression itself (#552). The engine then reasoned
+    over a strictly weaker KB: the answer is sound, but a "satisfiable", a "not
+    entailed" or a missing member may be wrong in that direction. The `*_result`
+    forms carry the kinds in `dropped` and read `completeness_guaranteed: False`.
+    Not an `IncompleteQueryWarning`: nothing was cut.
+
+    New in #552, so the bare functions now warn where they used to be silent (under
+    `-W error` they raise). The other Python queries do not warn on dropped axioms
+    yet (#597); `dropped_axioms(path)` reports the ontology's own drops."""
+
+
+def _warn_if_dropped(name: str, dropped: tuple) -> None:
+    if dropped:
+        kinds = ", ".join(f"{k} ×{n}" for k, n in dropped)
+        _warnings.warn(
+            f"{name}: {sum(n for _, n in dropped)} axiom(s) not understood and dropped "
+            f"({kinds}); the answer is a sound under-approximation "
+            "(see DroppedAxiomsWarning).",
+            DroppedAxiomsWarning,
+            stacklevel=3,
+        )
+
+
 class ConsistencyUndeterminedWarning(UserWarning):
     """Raised when a POSITIVE answer's KB consistency stayed undetermined (#369):
     the consistency wedge stalled or ran out of budget, so the answer may be the
@@ -964,21 +993,78 @@ def object_property_values(path):
     return triples
 
 
+def _ce_verdict(native: dict) -> ClassExpressionVerdict:
+    return ClassExpressionVerdict(
+        holds=native["holds"],
+        incomplete=native["incomplete"],
+        completeness_guaranteed=native["completeness_guaranteed"],
+        relies_on_trusted_consistency=native["relies_on_trusted_consistency"],
+        consistency_undetermined=native["consistency_undetermined"],
+        no_verdict=native["no_verdict"],
+        dropped=tuple(sorted(native["dropped"].items())),
+    )
+
+
+def _ce_instances(native: dict) -> ClassExpressionInstances:
+    return ClassExpressionInstances(
+        individuals=tuple(native["individuals"]),
+        incomplete=native["incomplete"],
+        completeness_guaranteed=native["completeness_guaranteed"],
+        consistency_undetermined=native["consistency_undetermined"],
+        no_verdict=native["no_verdict"],
+        depth_capped=native["depth_capped"],
+        dropped=tuple(sorted(native["dropped"].items())),
+    )
+
+
+def class_expression_satisfiable_result(path, ce):
+    """`class_expression_satisfiable` as a `ClassExpressionVerdict` (#552): `holds`
+    plus `completeness_guaranteed` (the answer came off the pure-EL fast path, nothing
+    gave up, nothing was dropped, and the KB's consistency is decided and not
+    trusted), `dropped` (the kinds the conversion dropped, the query expression's
+    included) and the other signals. Emits the same warnings as
+    `class_expression_satisfiable`."""
+    r = _ce_verdict(_class_expression_satisfiable_native(path, ce))
+    _warn_if_answer_no_verdict("class_expression_satisfiable", r.incomplete, r.no_verdict)
+    _warn_if_trusted_consistency("class_expression_satisfiable", r.relies_on_trusted_consistency)
+    _warn_if_consistency_undetermined(
+        "class_expression_satisfiable", r.consistency_undetermined
+    )
+    _warn_if_dropped("class_expression_satisfiable", r.dropped)
+    return r
+
+
 def class_expression_satisfiable(path, ce):
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (`ce` is resolved against the ontology's
     own prefix map, e.g. `:A`). If the probe gave up (node cap), returns `True`
     and emits `IncompleteQueryWarning`, as `is_class_satisfiable` does; an
     answer off the pure-EL fragment no longer warns. Emits
-    `ConsistencyUndeterminedWarning` (#369). A positive answer whose consistency check's own probe stalled (likely a
-    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
-    holds, incomplete, trusted, undetermined, no_verdict = _class_expression_satisfiable_native(
-        path, ce
+    `ConsistencyUndeterminedWarning` (#369), and `DroppedAxiomsWarning` when
+    conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493).
+    `class_expression_satisfiable_result` returns the signals with the answer."""
+    r = _ce_verdict(_class_expression_satisfiable_native(path, ce))
+    _warn_if_answer_no_verdict("class_expression_satisfiable", r.incomplete, r.no_verdict)
+    _warn_if_trusted_consistency("class_expression_satisfiable", r.relies_on_trusted_consistency)
+    _warn_if_consistency_undetermined(
+        "class_expression_satisfiable", r.consistency_undetermined
     )
-    _warn_if_answer_no_verdict("class_expression_satisfiable", incomplete, no_verdict)
-    _warn_if_trusted_consistency("class_expression_satisfiable", trusted)
-    _warn_if_consistency_undetermined("class_expression_satisfiable", undetermined)
-    return holds
+    _warn_if_dropped("class_expression_satisfiable", r.dropped)
+    return r.holds
+
+
+def class_expression_entailed_subclass_result(path, sub_ce, sup_ce):
+    """`class_expression_entailed_subclass` as a `ClassExpressionVerdict` (#552); see
+    `class_expression_satisfiable_result`. Emits the same warnings as
+    `class_expression_entailed_subclass`."""
+    r = _ce_verdict(_class_expression_entailed_subclass_native(path, sub_ce, sup_ce))
+    name = "class_expression_entailed_subclass"
+    _warn_if_answer_no_verdict(name, r.incomplete, r.no_verdict)
+    _warn_if_trusted_consistency(name, r.relies_on_trusted_consistency)
+    _warn_if_consistency_undetermined(name, r.consistency_undetermined)
+    _warn_if_dropped(name, r.dropped)
+    return r
 
 
 def class_expression_entailed_subclass(path, sub_ce, sup_ce):
@@ -987,17 +1073,31 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     ontology's own prefix map). If the probe gave up (node cap), returns `False`
     and emits `IncompleteQueryWarning`, as `is_subclass_of` does; an answer off
     the pure-EL fragment no longer warns. Emits
-    `ConsistencyUndeterminedWarning` (#369). A positive answer whose consistency check's own probe stalled (likely a
-    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
-    holds, incomplete, trusted, undetermined, no_verdict = (
-        _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)
-    )
-    _warn_if_answer_no_verdict("class_expression_entailed_subclass", incomplete, no_verdict)
-    _warn_if_trusted_consistency("class_expression_entailed_subclass", trusted)
-    _warn_if_consistency_undetermined(
-        "class_expression_entailed_subclass", undetermined
-    )
-    return holds
+    `ConsistencyUndeterminedWarning` (#369), and `DroppedAxiomsWarning` when
+    conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493).
+    `class_expression_entailed_subclass_result` returns the signals with the answer."""
+    r = _ce_verdict(_class_expression_entailed_subclass_native(path, sub_ce, sup_ce))
+    name = "class_expression_entailed_subclass"
+    _warn_if_answer_no_verdict(name, r.incomplete, r.no_verdict)
+    _warn_if_trusted_consistency(name, r.relies_on_trusted_consistency)
+    _warn_if_consistency_undetermined(name, r.consistency_undetermined)
+    _warn_if_dropped(name, r.dropped)
+    return r.holds
+
+
+def class_expression_instances_result(path, ce):
+    """`class_expression_instances` as a `ClassExpressionInstances` (#552):
+    `individuals` plus `completeness_guaranteed` (the list came off the realize
+    saturation fast path, no probe was cut, nothing was dropped, and the KB's
+    consistency was checked and decided), `dropped` and the other signals. Emits the
+    same warnings as `class_expression_instances`."""
+    r = _ce_instances(_class_expression_instances_native(path, ce))
+    name = "class_expression_instances"
+    _warn_if_list_incomplete(name, r.incomplete, r.no_verdict, r.depth_capped)
+    _warn_if_consistency_undetermined(name, r.consistency_undetermined)
+    _warn_if_dropped(name, r.dropped)
+    return r
 
 
 def class_expression_instances(path, ce):
@@ -1006,15 +1106,17 @@ def class_expression_instances(path, ce):
     prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
     (members may be missing; those returned are sound), as `instances_of`
     does; an answer off the pure-EL fragment no longer warns.
-    Emits `ConsistencyUndeterminedWarning` (#369). A probe that ended in NoVerdict on
+    Emits `ConsistencyUndeterminedWarning` (#369), and `DroppedAxiomsWarning` when
+    conversion dropped axioms (#552). A probe that ended in NoVerdict on
     an internal limit (likely a reasoner bug, #449) is reported by
-    `IncompleteQueryWarning` with that text; the members are still returned (#493)."""
-    individuals, incomplete, undetermined, no_verdict, depth_capped = (
-        _class_expression_instances_native(path, ce)
-    )
-    _warn_if_list_incomplete("class_expression_instances", incomplete, no_verdict, depth_capped)
-    _warn_if_consistency_undetermined("class_expression_instances", undetermined)
-    return individuals
+    `IncompleteQueryWarning` with that text; the members are still returned (#493).
+    `class_expression_instances_result` returns the signals with the members."""
+    r = _ce_instances(_class_expression_instances_native(path, ce))
+    name = "class_expression_instances"
+    _warn_if_list_incomplete(name, r.incomplete, r.no_verdict, r.depth_capped)
+    _warn_if_consistency_undetermined(name, r.consistency_undetermined)
+    _warn_if_dropped(name, r.dropped)
+    return list(r.individuals)
 
 
 def _resolve_global_timeout(global_timeout_ms, global_deadline_ms):
@@ -1164,6 +1266,12 @@ __all__ = [
     "class_expression_satisfiable",
     "class_expression_entailed_subclass",
     "class_expression_instances",
+    "class_expression_satisfiable_result",
+    "class_expression_entailed_subclass_result",
+    "class_expression_instances_result",
+    "ClassExpressionVerdict",
+    "ClassExpressionInstances",
+    "DroppedAxiomsWarning",
     "dropped_axioms",
     "RustdlError",
     "ParseError",

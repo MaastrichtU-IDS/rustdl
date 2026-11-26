@@ -8202,8 +8202,9 @@ pub struct QueryStats {
     /// `true` iff this run took the pure-EL fast path (the closure
     /// is also complete for the CONVERTED input, so a closure miss is itself
     /// the verdict). #540: not a completeness guarantee for the input when
-    /// conversion dropped an axiom ([`dropped_axioms`]); a caller presenting
-    /// it as one must check that too, as `explain` and the expression queries do.
+    /// conversion dropped an axiom ([`Self::dropped_axioms`] non-zero); a caller
+    /// presenting it as one must check that too, as `explain` and the expression
+    /// queries do.
     pub pure_el_mode: bool,
     /// `true` iff the verdict is a GIVE-UP reported in its sound direction
     /// rather than a witnessed answer. For consistency (#182): the fall-through
@@ -8253,6 +8254,39 @@ pub struct QueryStats {
     /// CLI adds #449's note and exits 3. Set only where `consistency_undetermined`
     /// can be (see above).
     pub no_verdict: bool,
+    /// #552: how many axioms the query's conversion dropped
+    /// ([`DroppedAxioms::total`](owl_dl_core::DroppedAxioms::total)): the input's,
+    /// plus the probe axioms' for an expression query. Non-zero means the engine
+    /// reasoned over a strictly weaker KB, so [`Self::pure_el_mode`] guarantees
+    /// nothing about the input. Set by every single query that converts an
+    /// ontology (satisfiability, subsumption, consistency, the expression
+    /// queries); a hand-built `QueryStats` (`Default`) reads 0, so do not read it
+    /// off stats that no conversion produced. A count rather than the kinds, so
+    /// `QueryStats` stays `Copy`; [`dropped_axioms`] gives the kinds.
+    pub dropped_axioms: u64,
+}
+
+impl QueryStats {
+    /// #552: a NEGATIVE verdict ("satisfiable" / "not subsumed") of a named-class
+    /// or expression satisfiability/subsumption query is guaranteed complete: it
+    /// came off the pure-EL fast path, nothing gave up, conversion dropped nothing,
+    /// and the KB's consistency is neither undetermined nor resting on a trusted
+    /// wedge `Sat` (`classify`'s conditions 6 and 8 in
+    /// `docs/assurance/completeness-guarantee-ledger.md`). One predicate, so the CLI's
+    /// `explain` and the expression queries cannot drift apart.
+    ///
+    /// **Only for those verdicts.** The consistency query sets `pure_el_mode` under
+    /// `saturation_fast_path_admits`, which is wider than `is_pure_el`, so this is
+    /// not a guarantee for [`is_consistent_with_stats`] (or for `⊤`'s satisfiability,
+    /// which is that query).
+    #[must_use]
+    pub fn completeness_guaranteed(&self) -> bool {
+        self.pure_el_mode
+            && !self.incomplete
+            && self.dropped_axioms == 0
+            && !self.consistency_undetermined
+            && !self.relies_on_trusted_consistency
+    }
 }
 
 /// Errors that can surface from the public reasoning API.
@@ -8688,6 +8722,19 @@ pub(crate) fn is_class_satisfiable_keeping(
     class_iri: &str,
     closure: Option<owl_dl_saturation::Subsumers>,
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
+    // #552: stamped once here, so no early return can leave it at 0.
+    let dropped = internal.dropped.total();
+    let (holds, mut stats, left) =
+        is_class_satisfiable_keeping_inner(internal, class_iri, closure)?;
+    stats.dropped_axioms = dropped;
+    Ok((holds, stats, left))
+}
+
+fn is_class_satisfiable_keeping_inner(
+    internal: InternalOntology,
+    class_iri: &str,
+    closure: Option<owl_dl_saturation::Subsumers>,
+) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     let class_id = match resolve_query_class(&internal.vocabulary, class_iri)? {
         // #427: `⊤` is satisfiable iff the ontology is consistent, so this is the
         // consistency check itself, with its stats (`incomplete`: a give-up
@@ -8728,6 +8775,7 @@ pub(crate) fn is_class_satisfiable_keeping(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8743,6 +8791,7 @@ pub(crate) fn is_class_satisfiable_keeping(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8759,6 +8808,7 @@ pub(crate) fn is_class_satisfiable_keeping(
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
             no_verdict: false,
+            dropped_axioms: 0,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -9114,6 +9164,16 @@ mod consistent_el_fastpath_tests {
 fn is_consistent_internal_full(
     internal: InternalOntology,
 ) -> Result<(bool, QueryStats), ReasonError> {
+    // #552: stamped once here, so no early return can leave it at 0.
+    let dropped = internal.dropped.total();
+    let (consistent, mut stats) = is_consistent_internal_full_inner(internal)?;
+    stats.dropped_axioms = dropped;
+    Ok((consistent, stats))
+}
+
+fn is_consistent_internal_full_inner(
+    internal: InternalOntology,
+) -> Result<(bool, QueryStats), ReasonError> {
     // Sound ABox-saturation pre-check (gated, default off): a clash derived by
     // consequence-based saturation over named individuals is a real inconsistency.
     // Runs before `from_internal` (which moves `internal`); guarded by
@@ -9133,6 +9193,7 @@ fn is_consistent_internal_full(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
         ));
     }
@@ -9152,6 +9213,7 @@ fn is_consistent_internal_full(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
         ));
     }
@@ -9187,6 +9249,7 @@ fn is_consistent_internal_full(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
         ));
     }
@@ -9205,6 +9268,7 @@ fn is_consistent_internal_full(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
         ));
     }
@@ -9233,6 +9297,7 @@ fn is_consistent_internal_full(
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
                     no_verdict: false,
+                    dropped_axioms: 0,
                 },
             ));
         }
@@ -9257,6 +9322,7 @@ fn is_consistent_internal_full(
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
                     no_verdict: false,
+                    dropped_axioms: 0,
                 },
             ));
         }
@@ -9277,6 +9343,7 @@ fn is_consistent_internal_full(
                     relies_on_trusted_consistency: true,
                     consistency_undetermined: false,
                     no_verdict: false,
+                    dropped_axioms: 0,
                 },
             ));
         }
@@ -9380,6 +9447,7 @@ fn is_consistent_internal_full(
             relies_on_trusted_consistency: false,
             consistency_undetermined: false,
             no_verdict: false,
+            dropped_axioms: 0,
         },
     ))
 }
@@ -9836,6 +9904,20 @@ pub(crate) fn is_subclass_of_keeping(
     super_iri: &str,
     closure: Option<owl_dl_saturation::Subsumers>,
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
+    // #552: stamped once here, so no early return can leave it at 0.
+    let dropped = internal.dropped.total();
+    let (holds, mut stats, left) =
+        is_subclass_of_keeping_inner(internal, sub_iri, super_iri, closure)?;
+    stats.dropped_axioms = dropped;
+    Ok((holds, stats, left))
+}
+
+fn is_subclass_of_keeping_inner(
+    internal: InternalOntology,
+    sub_iri: &str,
+    super_iri: &str,
+    closure: Option<owl_dl_saturation::Subsumers>,
+) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     // #427: both arguments resolve before any shortcut (a typo still errors).
     let sub = resolve_query_class(&internal.vocabulary, sub_iri)?;
     let sup = resolve_query_class(&internal.vocabulary, super_iri)?;
@@ -9878,6 +9960,7 @@ pub(crate) fn is_subclass_of_keeping(
         relies_on_trusted_consistency: false,
         consistency_undetermined: false,
         no_verdict: false,
+        dropped_axioms: 0,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -9934,6 +10017,7 @@ pub(crate) fn is_subclass_of_keeping(
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
+                dropped_axioms: 0,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -9957,6 +10041,7 @@ pub(crate) fn is_subclass_of_keeping(
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
             no_verdict: false,
+            dropped_axioms: 0,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))

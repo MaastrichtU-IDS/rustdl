@@ -54,6 +54,7 @@ class Classification:
     def completeness_guaranteed(self) -> bool:
         """True iff the hierarchy is guaranteed complete (no missed
         subsumptions): pure EL, nothing cut, no `wedge_hierarchy_blind`, no
+        `wedge_abox_blind`, no
         `wedge_clauses_refused`, no `derived_same_undecided`, no
         `consistency_undetermined` and no dropped axiom. Stronger than
         `complete`, which only says nothing was cut."""
@@ -89,6 +90,13 @@ class Classification:
         consistent"."""
         ...
     @property
+    def universal_role_ordinary(self) -> bool:
+        """True iff the ontology uses a universal role where its semantics could
+        change the hierarchy (#543); rustdl treats it as an ordinary property, so an
+        entailment may be missing. Voids `completeness_guaranteed`. `classify` emits
+        `UniversalRoleWarning`."""
+        ...
+    @property
     def relies_on_trusted_consistency(self) -> bool:
         """True iff `inconsistent is False` rests on a consistency-wedge model
         that no main-tableau run verified (#429). Not a give-up; `classify`
@@ -99,6 +107,15 @@ class Classification:
         """True iff the wedge ran without role-hierarchy matching (Layer A
         off) over a non-trivial role hierarchy, so entailments needing
         sub-role, inverse or symmetric reasoning may be missing (#214)."""
+        ...
+    @property
+    def wedge_abox_blind(self) -> bool:
+        """True iff classify trusted a wedge model that touches a nominal
+        while some ABox fact did not apply in it (not given to the classify
+        wedge, or given for an individual the model lacks), so a
+        subsumption or an unsatisfiable class that depends on an individual's
+        facts may be missing (#533). Near-universal on input with both a
+        nominal and an ABox."""
         ...
     @property
     def wedge_clauses_refused(self) -> int:
@@ -184,6 +201,15 @@ class TrustedConsistencyWarning(UserWarning):
     `class_expression_entailed_subclass` when the answer was computed without the
     ABox on its strength (#401). Not an `IncompleteQueryWarning`: nothing was
     cut."""
+
+class DroppedAxiomsWarning(UserWarning):
+    """Emitted by the class-expression queries and their `*_result` forms when
+    conversion dropped axioms it could not represent, from the ontology or from the
+    query expression itself (#552). The answer is sound, but a "satisfiable", a
+    "not entailed" or a missing member may be wrong in that direction. Not an
+    `IncompleteQueryWarning`: nothing was cut. New in #552: the bare functions now
+    warn where they used to be silent (under `-W error` they raise). The other
+    Python queries do not warn on dropped axioms yet (#597)."""
 
 class ConsistencyUndeterminedWarning(UserWarning):
     """Emitted when a positive answer's KB consistency stayed undetermined (#369),
@@ -392,7 +418,8 @@ def class_expression_satisfiable(path: str, ce: str) -> bool:
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (resolved against the ontology's own prefix
     map). If the probe gave up (node cap), returns `True` and emits
-    `IncompleteQueryWarning`; an answer off pure EL does not warn. A positive answer whose consistency check's own probe stalled (likely a
+    `IncompleteQueryWarning`; an answer off pure EL does not warn. Emits
+    `DroppedAxiomsWarning` when conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
@@ -400,7 +427,8 @@ def class_expression_entailed_subclass(path: str, sub_ce: str, sup_ce: str) -> b
     """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
     (Manchester-syntax class expressions, resolved against the ontology's own
     prefix map). If the probe gave up (node cap), returns `False` and emits
-    `IncompleteQueryWarning`; an answer off pure EL does not warn. A positive answer whose consistency check's own probe stalled (likely a
+    `IncompleteQueryWarning`; an answer off pure EL does not warn. Emits
+    `DroppedAxiomsWarning` when conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
@@ -409,10 +437,69 @@ def class_expression_instances(path: str, ce: str) -> list[str]:
     `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
     prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
     (members may be missing; those returned are sound); an answer off pure EL
-    does not warn."""
+    does not warn. Emits `DroppedAxiomsWarning` when conversion dropped axioms
+    (#552)."""
+    ...
+
+class ClassExpressionVerdict(Mapping[str, object]):
+    """#552: a class-expression satisfiability or subsumption verdict and its
+    signals, named as the Rust `CeVerdict` accessors (the CLI's `--json` names the
+    answer `satisfiable` / `entailed` and has no `dropped`). Immutable and hashable:
+    `dropped` is `(kind, count)` pairs sorted by kind; `dict(r.dropped)` maps them."""
+    holds: bool
+    incomplete: bool
+    completeness_guaranteed: bool
+    relies_on_trusted_consistency: bool
+    consistency_undetermined: bool
+    no_verdict: bool
+    dropped: tuple[tuple[str, int], ...]
+    universal_role_ordinary: bool
+    def to_dict(self) -> dict: ...
+
+class ClassExpressionInstances(Mapping[str, object]):
+    """#552: a class-expression instance query's members and its signals, named as
+    the Rust `CeInstances` accessors (the CLI names the members `instances`).
+    Immutable and hashable, as `ClassExpressionVerdict`."""
+    individuals: tuple[str, ...]
+    incomplete: bool
+    completeness_guaranteed: bool
+    consistency_undetermined: bool
+    no_verdict: bool
+    depth_capped: bool
+    dropped: tuple[tuple[str, int], ...]
+    universal_role_ordinary: bool
+    def to_dict(self) -> dict: ...
+
+def class_expression_satisfiable_result(path: str, ce: str) -> ClassExpressionVerdict:
+    """`class_expression_satisfiable` with its signals (#552). `completeness_guaranteed`:
+    the answer came off the pure-EL fast path, nothing gave up, nothing was dropped,
+    and the KB's consistency is decided and not trusted. `dropped`: the kinds the
+    conversion dropped, the query expression's included. Same warnings."""
+    ...
+
+def class_expression_entailed_subclass_result(
+    path: str, sub_ce: str, sup_ce: str
+) -> ClassExpressionVerdict:
+    """`class_expression_entailed_subclass` with its signals (#552). Same warnings."""
+    ...
+
+def class_expression_instances_result(path: str, ce: str) -> ClassExpressionInstances:
+    """`class_expression_instances` with its signals (#552). `completeness_guaranteed`:
+    the list came off the realize saturation fast path, no probe was cut, nothing was
+    dropped, and the KB's consistency was checked and decided. Same warnings."""
     ...
 
 # ── conversion diagnostics ──────────────────────────────────────────────────
+
+class UniversalRoleWarning(UserWarning): ...
+
+def universal_role_ordinary(path: str, role_level: bool = False) -> bool:
+    """True iff the ontology at `path` uses a universal role where rustdl's
+    ordinary-property reading can miss entailments (#543). Every path-taking query
+    emits `UniversalRoleWarning` when this holds. `role_level=True` also counts a
+    property above `owl:topObjectProperty`, whose edges between every pair of
+    individuals the property-assertion functions do not list."""
+    ...
 
 def dropped_axioms(path: str) -> dict[str, int]:
     """Kinds and counts of axioms conversion could not represent (a sound
@@ -500,6 +587,12 @@ class PreparedOntology:
     (parse + axiom split + fragment classification). Reuse it to justify many
     queries without re-doing that full-ontology work on each call. Use it from
     the thread that created it."""
+    @property
+    def universal_role_ordinary(self) -> bool:
+        """True iff the ontology uses a universal role where rustdl's
+        ordinary-property reading can miss entailments (#543); `justify` and
+        `justify_all` then emit `UniversalRoleWarning`."""
+        ...
     def justify(self, query: list[str]) -> list[str]:
         """One minimal justification (Manchester axioms) for `query`. Emits
         `IncompleteQueryWarning` when a reasoner check gave up."""

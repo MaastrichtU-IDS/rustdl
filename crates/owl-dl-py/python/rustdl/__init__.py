@@ -33,6 +33,7 @@ from rustdl._native import (
     class_expression_entailed_subclass as _class_expression_entailed_subclass_native,
     class_expression_instances as _class_expression_instances_native,
     dropped_axioms as dropped_axioms,
+    universal_role_ordinary as universal_role_ordinary,
     RustdlError as RustdlError,
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
@@ -55,6 +56,8 @@ from rustdl._native import (
 )
 
 from ._results import (
+    ClassExpressionInstances as ClassExpressionInstances,
+    ClassExpressionVerdict as ClassExpressionVerdict,
     Diagnosis as Diagnosis,
     Root as Root,
     Derived as Derived,
@@ -108,6 +111,10 @@ class IncompleteClassificationWarning(UserWarning):
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` or because the role closure exceeded
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`; raising that cap trades
       time for the missing entailments;
+    * the classify wedge trusted models that touch a nominal while some ABox
+      fact did not apply in them (`result.wedge_abox_blind is True`, #533);
+      `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` decides those classes on the main
+      tableau;
     * the wedge cannot match some clauses' bodies
       (`result.wedge_clauses_refused > 0`): those clauses never fire (#353);
     * candidate individual equalities went undecided
@@ -204,6 +211,19 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             "RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE), so entailments that need "
             "sub-role, inverse or symmetric reasoning may be missing. It is still "
             "sound (no false subsumptions); check result.wedge_hierarchy_blind.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    if result.wedge_abox_blind:
+        # #533: a trusted wedge model touched a nominal while some ABox fact did not
+        # apply in it, so completeness is not guaranteed.
+        _warnings.warn(
+            "the classification trusted wedge models that touch a nominal while some "
+            "ABox fact did not apply in them, so a subsumption or an unsatisfiable class that "
+            "depends on an individual's facts may be missing. It is still sound (no "
+            "false subsumptions); check result.wedge_abox_blind. "
+            "RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 decides those classes on the main "
+            "tableau, at a time cost.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )
@@ -472,6 +492,7 @@ def _prepared_justify(self: "PreparedOntology", query):
     axioms, incomplete, trusted, depth_capped = self._justify_reporting(query)
     _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete, depth_capped)
     _warn_if_oracle_trusted("PreparedOntology.justify", trusted)
+    _warn_if_universal_role("PreparedOntology.justify", self.universal_role_ordinary)
     return axioms
 
 
@@ -484,6 +505,7 @@ def _prepared_justify_all(self: "PreparedOntology", query, max=10):
         "PreparedOntology.justify_all", incomplete, depth_capped
     )
     _warn_if_oracle_trusted("PreparedOntology.justify_all", trusted)
+    _warn_if_universal_role("PreparedOntology.justify_all", self.universal_role_ordinary)
     return js
 
 
@@ -495,14 +517,23 @@ def is_consistent(path):
     """True iff the ontology at `path` is consistent. A give-up (budget or node
     cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`.
     A `True` that rests on the consistency wedge's model alone (the wedge is not
-    proven complete) emits `TrustedConsistencyWarning` (#392)."""
-    consistent, incomplete, trusted = _is_consistent_native(path)
+    proven complete) emits `TrustedConsistencyWarning` (#392). When that wedge
+    refuses clauses or its clausifier skipped encodings of axioms (deferrals), the
+    warning says how many: its
+    model is then a model of a weaker KB (#558)."""
+    consistent, incomplete, trusted, refused, deferred = _is_consistent_native(path)
     _warn_if_query_incomplete("is_consistent", incomplete)
     if trusted:
+        gaps = ""
+        if refused or deferred:
+            gaps = (
+                f" The wedge's KB is weaker than the input: {refused} clause(s) it "
+                f"cannot match and {deferred} deferral(s) by its clausifier (#558)."
+            )
         _warnings.warn(
             "is_consistent: consistent on the consistency wedge's model alone; the "
             "wedge is not proven complete and no main-tableau model was built "
-            "(see TrustedConsistencyWarning).",
+            f"(see TrustedConsistencyWarning).{gaps}",
             TrustedConsistencyWarning,
             stacklevel=2,
         )
@@ -571,11 +602,44 @@ def _warn_if_oracle_trusted(name: str, trusted: bool) -> None:
         )
 
 
+def _warn_if_classification_universal(result: "Classification") -> "Classification":
+    # #543: the flag rides on the result, so no second conversion.
+    _warn_if_universal_role("classify", result.universal_role_ordinary, stacklevel=4)
+    return result
+
+
 def _warn_if_classification_trusted(result: "Classification") -> "Classification":
     _warn_if_trusted_wedge_consistency(
         "classify", result.relies_on_trusted_consistency, stacklevel=4
     )
     return result
+
+
+class DroppedAxiomsWarning(UserWarning):
+    """Emitted by the class-expression queries (`class_expression_satisfiable`,
+    `class_expression_entailed_subclass`, `class_expression_instances` and their
+    `*_result` forms) when conversion dropped axioms it could not represent, from the
+    ontology or from the query expression itself (#552). The engine then reasoned
+    over a strictly weaker KB: the answer is sound, but a "satisfiable", a "not
+    entailed" or a missing member may be wrong in that direction. The `*_result`
+    forms carry the kinds in `dropped` and read `completeness_guaranteed: False`.
+    Not an `IncompleteQueryWarning`: nothing was cut.
+
+    New in #552, so the bare functions now warn where they used to be silent (under
+    `-W error` they raise). The other Python queries do not warn on dropped axioms
+    yet (#597); `dropped_axioms(path)` reports the ontology's own drops."""
+
+
+def _warn_if_dropped(name: str, dropped: tuple) -> None:
+    if dropped:
+        kinds = ", ".join(f"{k} ×{n}" for k, n in dropped)
+        _warnings.warn(
+            f"{name}: {sum(n for _, n in dropped)} axiom(s) not understood and dropped "
+            f"({kinds}); the answer is a sound under-approximation "
+            "(see DroppedAxiomsWarning).",
+            DroppedAxiomsWarning,
+            stacklevel=3,
+        )
 
 
 class ConsistencyUndeterminedWarning(UserWarning):
@@ -964,21 +1028,87 @@ def object_property_values(path):
     return triples
 
 
+def _ce_note(name: str, native: dict) -> dict:
+    # #543: the flag of the PROBED conversion, so a universal role used only in the
+    # query expression is caught too.
+    _warn_if_universal_role(name, native["universal_role_ordinary"], stacklevel=4)
+    return native
+
+
+def _ce_verdict(native: dict) -> ClassExpressionVerdict:
+    return ClassExpressionVerdict(
+        holds=native["holds"],
+        incomplete=native["incomplete"],
+        completeness_guaranteed=native["completeness_guaranteed"],
+        relies_on_trusted_consistency=native["relies_on_trusted_consistency"],
+        consistency_undetermined=native["consistency_undetermined"],
+        no_verdict=native["no_verdict"],
+        dropped=tuple(sorted(native["dropped"].items())),
+        universal_role_ordinary=native["universal_role_ordinary"],
+    )
+
+
+def _ce_instances(native: dict) -> ClassExpressionInstances:
+    return ClassExpressionInstances(
+        individuals=tuple(native["individuals"]),
+        incomplete=native["incomplete"],
+        completeness_guaranteed=native["completeness_guaranteed"],
+        consistency_undetermined=native["consistency_undetermined"],
+        no_verdict=native["no_verdict"],
+        depth_capped=native["depth_capped"],
+        dropped=tuple(sorted(native["dropped"].items())),
+        universal_role_ordinary=native["universal_role_ordinary"],
+    )
+
+
+def class_expression_satisfiable_result(path, ce):
+    """`class_expression_satisfiable` as a `ClassExpressionVerdict` (#552): `holds`
+    plus `completeness_guaranteed` (the answer came off the pure-EL fast path, nothing
+    gave up, nothing was dropped, and the KB's consistency is decided and not
+    trusted), `dropped` (the kinds the conversion dropped, the query expression's
+    included) and the other signals. Emits the same warnings as
+    `class_expression_satisfiable`."""
+    r = _ce_verdict(_ce_note("class_expression_satisfiable", _class_expression_satisfiable_native(path, ce)))
+    _warn_if_answer_no_verdict("class_expression_satisfiable", r.incomplete, r.no_verdict)
+    _warn_if_trusted_consistency("class_expression_satisfiable", r.relies_on_trusted_consistency)
+    _warn_if_consistency_undetermined(
+        "class_expression_satisfiable", r.consistency_undetermined
+    )
+    _warn_if_dropped("class_expression_satisfiable", r.dropped)
+    return r
+
+
 def class_expression_satisfiable(path, ce):
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (`ce` is resolved against the ontology's
     own prefix map, e.g. `:A`). If the probe gave up (node cap), returns `True`
     and emits `IncompleteQueryWarning`, as `is_class_satisfiable` does; an
     answer off the pure-EL fragment no longer warns. Emits
-    `ConsistencyUndeterminedWarning` (#369). A positive answer whose consistency check's own probe stalled (likely a
-    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
-    holds, incomplete, trusted, undetermined, no_verdict = _class_expression_satisfiable_native(
-        path, ce
+    `ConsistencyUndeterminedWarning` (#369), and `DroppedAxiomsWarning` when
+    conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493).
+    `class_expression_satisfiable_result` returns the signals with the answer."""
+    r = _ce_verdict(_ce_note("class_expression_satisfiable", _class_expression_satisfiable_native(path, ce)))
+    _warn_if_answer_no_verdict("class_expression_satisfiable", r.incomplete, r.no_verdict)
+    _warn_if_trusted_consistency("class_expression_satisfiable", r.relies_on_trusted_consistency)
+    _warn_if_consistency_undetermined(
+        "class_expression_satisfiable", r.consistency_undetermined
     )
-    _warn_if_answer_no_verdict("class_expression_satisfiable", incomplete, no_verdict)
-    _warn_if_trusted_consistency("class_expression_satisfiable", trusted)
-    _warn_if_consistency_undetermined("class_expression_satisfiable", undetermined)
-    return holds
+    _warn_if_dropped("class_expression_satisfiable", r.dropped)
+    return r.holds
+
+
+def class_expression_entailed_subclass_result(path, sub_ce, sup_ce):
+    """`class_expression_entailed_subclass` as a `ClassExpressionVerdict` (#552); see
+    `class_expression_satisfiable_result`. Emits the same warnings as
+    `class_expression_entailed_subclass`."""
+    r = _ce_verdict(_ce_note("class_expression_entailed_subclass", _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)))
+    name = "class_expression_entailed_subclass"
+    _warn_if_answer_no_verdict(name, r.incomplete, r.no_verdict)
+    _warn_if_trusted_consistency(name, r.relies_on_trusted_consistency)
+    _warn_if_consistency_undetermined(name, r.consistency_undetermined)
+    _warn_if_dropped(name, r.dropped)
+    return r
 
 
 def class_expression_entailed_subclass(path, sub_ce, sup_ce):
@@ -987,17 +1117,31 @@ def class_expression_entailed_subclass(path, sub_ce, sup_ce):
     ontology's own prefix map). If the probe gave up (node cap), returns `False`
     and emits `IncompleteQueryWarning`, as `is_subclass_of` does; an answer off
     the pure-EL fragment no longer warns. Emits
-    `ConsistencyUndeterminedWarning` (#369). A positive answer whose consistency check's own probe stalled (likely a
-    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
-    holds, incomplete, trusted, undetermined, no_verdict = (
-        _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)
-    )
-    _warn_if_answer_no_verdict("class_expression_entailed_subclass", incomplete, no_verdict)
-    _warn_if_trusted_consistency("class_expression_entailed_subclass", trusted)
-    _warn_if_consistency_undetermined(
-        "class_expression_entailed_subclass", undetermined
-    )
-    return holds
+    `ConsistencyUndeterminedWarning` (#369), and `DroppedAxiomsWarning` when
+    conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
+    reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493).
+    `class_expression_entailed_subclass_result` returns the signals with the answer."""
+    r = _ce_verdict(_ce_note("class_expression_entailed_subclass", _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)))
+    name = "class_expression_entailed_subclass"
+    _warn_if_answer_no_verdict(name, r.incomplete, r.no_verdict)
+    _warn_if_trusted_consistency(name, r.relies_on_trusted_consistency)
+    _warn_if_consistency_undetermined(name, r.consistency_undetermined)
+    _warn_if_dropped(name, r.dropped)
+    return r.holds
+
+
+def class_expression_instances_result(path, ce):
+    """`class_expression_instances` as a `ClassExpressionInstances` (#552):
+    `individuals` plus `completeness_guaranteed` (the list came off the realize
+    saturation fast path, no probe was cut, nothing was dropped, and the KB's
+    consistency was checked and decided), `dropped` and the other signals. Emits the
+    same warnings as `class_expression_instances`."""
+    r = _ce_instances(_ce_note("class_expression_instances", _class_expression_instances_native(path, ce)))
+    name = "class_expression_instances"
+    _warn_if_list_incomplete(name, r.incomplete, r.no_verdict, r.depth_capped)
+    _warn_if_consistency_undetermined(name, r.consistency_undetermined)
+    _warn_if_dropped(name, r.dropped)
+    return r
 
 
 def class_expression_instances(path, ce):
@@ -1006,15 +1150,17 @@ def class_expression_instances(path, ce):
     prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
     (members may be missing; those returned are sound), as `instances_of`
     does; an answer off the pure-EL fragment no longer warns.
-    Emits `ConsistencyUndeterminedWarning` (#369). A probe that ended in NoVerdict on
+    Emits `ConsistencyUndeterminedWarning` (#369), and `DroppedAxiomsWarning` when
+    conversion dropped axioms (#552). A probe that ended in NoVerdict on
     an internal limit (likely a reasoner bug, #449) is reported by
-    `IncompleteQueryWarning` with that text; the members are still returned (#493)."""
-    individuals, incomplete, undetermined, no_verdict, depth_capped = (
-        _class_expression_instances_native(path, ce)
-    )
-    _warn_if_list_incomplete("class_expression_instances", incomplete, no_verdict, depth_capped)
-    _warn_if_consistency_undetermined("class_expression_instances", undetermined)
-    return individuals
+    `IncompleteQueryWarning` with that text; the members are still returned (#493).
+    `class_expression_instances_result` returns the signals with the members."""
+    r = _ce_instances(_ce_note("class_expression_instances", _class_expression_instances_native(path, ce)))
+    name = "class_expression_instances"
+    _warn_if_list_incomplete(name, r.incomplete, r.no_verdict, r.depth_capped)
+    _warn_if_consistency_undetermined(name, r.consistency_undetermined)
+    _warn_if_dropped(name, r.dropped)
+    return list(r.individuals)
 
 
 def _resolve_global_timeout(global_timeout_ms, global_deadline_ms):
@@ -1055,14 +1201,14 @@ def classify(
 
     `global_deadline_ms` is a deprecated alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_classification_trusted(_warn_if_incomplete(
+    return _warn_if_classification_universal(_warn_if_classification_trusted(_warn_if_incomplete(
         _classify_native(
             path,
             per_pair_timeout_ms=per_pair_timeout_ms,
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    ))
+    )))
 
 
 def classify_bytes(
@@ -1079,7 +1225,7 @@ def classify_bytes(
     timeout/completeness semantics. `global_deadline_ms` is a deprecated
     alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_classification_trusted(_warn_if_incomplete(
+    return _warn_if_classification_universal(_warn_if_classification_trusted(_warn_if_incomplete(
         _classify_bytes_native(
             data,
             format=format,
@@ -1087,7 +1233,7 @@ def classify_bytes(
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    ))
+    )))
 
 
 def debug(path):
@@ -1133,6 +1279,93 @@ def debug(path):
     )
 
 
+class UniversalRoleWarning(UserWarning):
+    """The ontology uses a universal role (`owl:topObjectProperty`, a property above
+    it, or `owl:topDataProperty` outside the super-property position) where its
+    universal-role semantics could change an answer (#543). rustdl treats it as an
+    ordinary property: positive answers are sound, but a negative answer
+    ("satisfiable", "not subsumed", "not an instance", "consistent") or a missing
+    entailment may be wrong. `universal_role_ordinary(path)` reports the same fact,
+    and `Classification.universal_role_ordinary` carries it for `classify`."""
+
+
+def _warn_if_universal_role(name: str, flagged: bool, stacklevel: int = 3) -> None:
+    if flagged:
+        _warnings.warn(
+            f"{name}: owl:topObjectProperty is used here as the universal role, which "
+            "rustdl treats as an ordinary property. Positive answers are sound; a "
+            "negative answer or a missing entailment may be wrong "
+            "(see UniversalRoleWarning).",
+            UniversalRoleWarning,
+            stacklevel=stacklevel,
+        )
+
+
+_ROLE_LEVEL = frozenset({
+    "object_property_values",
+    "materialize_inferred_property_assertions",
+})
+
+
+# #543: a proved inconsistency masks the flag (every entailment holds), as in
+# `classify` and the CLI's `consistent`: `is_consistent` warns only on `True`.
+_MASKED_BY_INCONSISTENCY = {"is_consistent": lambda consistent: consistent}
+
+
+def _with_universal_role_note(name, fn):
+    """Wrap a path-taking query so it warns `UniversalRoleWarning` after answering.
+    `universal_role_ordinary` searches the file's bytes first, so an ontology that
+    names neither top property is not parsed again."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(path, *args, **kwargs):
+        result = fn(path, *args, **kwargs)
+        if not _MASKED_BY_INCONSISTENCY.get(name, lambda _r: True)(result):
+            return result
+        _warn_if_universal_role(
+            name, universal_role_ordinary(path, role_level=name in _ROLE_LEVEL), stacklevel=3
+        )
+        return result
+
+    return wrapper
+
+
+# #543: every path-taking surface whose answer can be a definite negative or an
+# incomplete list. `classify` / `classify_bytes` read the flag off the result
+# instead (no second conversion); `debug` warns through `diagnose`.
+for _name in (
+    "justify",
+    "justify_all",
+    "diagnose",
+    "repair",
+    "is_consistent",
+    "is_class_satisfiable",
+    "is_subclass_of",
+    "is_instance_of",
+    "instances_of",
+    "realize",
+    "materialize_inferred_subclass_axioms",
+    "materialize_inferred_class_assertions",
+    "materialize_existential_successors",
+    "materialize_inferred_property_assertions",
+    "materialize_inferred_data_property_assertions",
+    "materialize_inferred_subobjectproperty_axioms",
+    "materialize_inferred_subdataproperty_axioms",
+    "object_property_hierarchy",
+    "data_property_hierarchy",
+    "disjoint_classes",
+    "disjoint_object_properties",
+    "disjoint_data_properties",
+    "same_individuals",
+    "different_individuals",
+    "object_property_values",
+    "data_property_values",
+):
+    globals()[_name] = _with_universal_role_note(_name, globals()[_name])
+del _name
+
+
 __all__ = [
     "__version__",
     "examples",
@@ -1164,7 +1397,15 @@ __all__ = [
     "class_expression_satisfiable",
     "class_expression_entailed_subclass",
     "class_expression_instances",
+    "class_expression_satisfiable_result",
+    "class_expression_entailed_subclass_result",
+    "class_expression_instances_result",
+    "ClassExpressionVerdict",
+    "ClassExpressionInstances",
+    "DroppedAxiomsWarning",
     "dropped_axioms",
+    "universal_role_ordinary",
+    "UniversalRoleWarning",
     "RustdlError",
     "ParseError",
     "UnsupportedAxiomError",

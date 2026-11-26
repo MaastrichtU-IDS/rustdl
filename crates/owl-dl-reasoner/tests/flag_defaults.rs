@@ -483,6 +483,16 @@ fn expected() -> Vec<FlagRow> {
             false,
         ),
         (
+            "RUSTDL_REPORT_WEDGE_ABOX_BLIND",
+            owl_dl_reasoner::report_wedge_abox_blind_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE",
+            owl_dl_reasoner::classify_wedge_abox_demote_enabled,
+            false,
+        ),
+        (
             "RUSTDL_CLASSIFY_NOMINAL_SAME",
             owl_dl_reasoner::classify_nominal_same_enabled,
             true,
@@ -740,6 +750,13 @@ fn expected() -> Vec<FlagRow> {
         (
             "RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK",
             owl_dl_reasoner::classify_main_consistency_fallback_enabled,
+            true,
+        ),
+        // #571: a `Stalled` consistency wedge hands the rest of its deadline to the
+        // main tableau instead of leaving `consistency_undetermined`. `=0` reverts.
+        (
+            "RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK",
+            owl_dl_reasoner::classify_stalled_wedge_fallback_enabled,
             true,
         ),
         // #535: a `≤0` bound on a reflexive role gets its (entailed) self-loop

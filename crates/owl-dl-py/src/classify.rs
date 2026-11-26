@@ -94,10 +94,10 @@ impl PyClassification {
     /// silent or flagged. The same value as the Rust
     /// `Classification::completeness_guaranteed()` and the `classify --json`
     /// field. It holds only on a pure-EL ontology with no timed-out pair, no
-    /// `wedge_hierarchy_blind`, no `wedge_clauses_refused`, no
-    /// `derived_same_undecided`, no `consistency_undetermined` and no dropped
-    /// axiom. `False` means completeness is not guaranteed, not that the
-    /// hierarchy is incomplete.
+    /// `wedge_hierarchy_blind`, no `wedge_abox_blind`, no `wedge_clauses_refused`, no
+    /// `derived_same_undecided`, no `consistency_undetermined`, no dropped
+    /// axiom and no `universal_role_ordinary` (#543). `False` means completeness is not
+    /// guaranteed, not that the hierarchy is incomplete.
     #[getter]
     fn completeness_guaranteed(&self) -> bool {
         self.inner.completeness_guaranteed()
@@ -147,6 +147,19 @@ impl PyClassification {
         st.consistency_undetermined && !st.inconsistent
     }
 
+    /// True iff the ontology uses a universal role (`owl:topObjectProperty`, a
+    /// property above it, or `owl:topDataProperty` outside the super-property
+    /// position) where its semantics could change the hierarchy (#543). rustdl
+    /// treats it as an ordinary property: every reported subsumption holds, but one
+    /// may be missing and a class reported satisfiable may be unsatisfiable. Voids
+    /// `completeness_guaranteed`; `classify` emits `UniversalRoleWarning`. `False`
+    /// when the ontology is proved inconsistent.
+    #[getter]
+    fn universal_role_ordinary(&self) -> bool {
+        let st = self.inner.stats();
+        st.universal_role_ordinary && !st.inconsistent
+    }
+
     /// True iff `inconsistent is False` rests on a consistency-wedge model that no
     /// main-tableau run verified (#429; the #392 fact `is_consistent` warns on).
     /// Not a give-up. If that model is wrong the ontology is inconsistent and every
@@ -164,6 +177,17 @@ impl PyClassification {
     #[getter]
     fn wedge_hierarchy_blind(&self) -> bool {
         self.inner.stats().wedge_hierarchy_blind
+    }
+
+    /// True iff classify trusted a wedge model that touches a nominal while some
+    /// `ABox` fact did not apply in it: not given to the classify wedge, or given for
+    /// an individual the model does not instantiate (#533). Then a subsumption
+    /// or an unsatisfiable class that depends on an individual's facts may be
+    /// missing even though `complete` (nothing cut) is `True`. Near-universal on
+    /// input with both a nominal and an `ABox`.
+    #[getter]
+    fn wedge_abox_blind(&self) -> bool {
+        self.inner.stats().wedge_abox_blind
     }
 
     /// How many clauses the wedge cannot match (#353). A refused clause never

@@ -756,6 +756,14 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_core::clause::max_qualifier_fix_enabled,
             true,
         ),
+        // #600: a complex `DisjointClasses` / `DisjointUnion` member, and a
+        // `DisjointUnion` covering with one, go through the GCI path instead of being
+        // deferred. `=0` reverts.
+        (
+            "RUSTDL_CLAUSIFY_COMPLEX_DISJOINT",
+            owl_dl_core::clause::complex_disjoint_clausify_enabled,
+            true,
+        ),
         (
             "RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY",
             owl_dl_reasoner::consistency_data_counting_verify_enabled,

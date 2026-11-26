@@ -310,17 +310,28 @@ fn a_deferred_axiom_is_reported_on_both_surfaces() {
         "Declaration(Class(:E)) Declaration(Class(:F)) Declaration(Class(:G))\n\
          DisjointUnion(:E :F ObjectSomeValuesFrom(:r :G)) ClassAssertion(:E :b)",
     );
-    let r = run(&["consistent", "--json", f.path()], &[]);
+    // #600 encodes this covering, so the deferral is reproduced with the fix off;
+    // the signal itself is what this test pins.
+    let off = [("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0")];
+    let r = run(&["consistent", "--json", f.path()], &off);
     assert_eq!(r.code, 0, "{}", r.stderr);
     let v = json(&r);
     assert_eq!(v["consistent"], true, "{}", r.stdout);
     assert_eq!(v["relies_on_trusted_consistency"], true, "{}", r.stdout);
     assert_eq!(v["wedge_clauses_deferred"], 1, "{}", r.stdout);
     assert!(r.stderr.contains("skipped 1"), "{}", r.stderr);
-    let r = run(&["classify", "--json", f.path()], &[]);
+    let r = run(&["classify", "--json", f.path()], &off);
     let v = json(&r);
     assert_eq!(v["relies_on_trusted_consistency"], true, "{}", r.stdout);
     assert_eq!(v["consistency_wedge_clauses_deferred"], 1, "{}", r.stdout);
+    assert_eq!(
+        v["wedge_clauses_deferred"], 1,
+        "classify's own wedge too: {}",
+        r.stdout
+    );
+    // #600: with the fix on (the default) nothing is deferred.
+    let v = json(&run(&["consistent", "--json", f.path()], &[]));
+    assert_eq!(v["wedge_clauses_deferred"], 0, "{v}");
     // Control: without the `DisjointUnion` nothing is deferred and nothing is warned.
     let c = Fixture::new("deferred-control", "");
     let r = run(&["consistent", "--json", c.path()], &[]);

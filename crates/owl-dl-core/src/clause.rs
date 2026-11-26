@@ -207,6 +207,8 @@ struct Clausifier {
     card_disjunct_atoms: bool,
     /// [`max_qualifier_fix_enabled`], read once per clausification (#554).
     max_qualifier_cover: bool,
+    /// [`complex_disjoint_clausify_enabled`], read once per clausification (#600).
+    complex_disjoint: bool,
 }
 
 impl Clausifier {
@@ -230,6 +232,7 @@ impl Clausifier {
             card_disjunct_atoms: std::env::var_os("RUSTDL_CARD_DISJUNCT_ATOMS")
                 .is_none_or(|v| v != "0" && !v.is_empty()),
             max_qualifier_cover: max_qualifier_fix_enabled(),
+            complex_disjoint: complex_disjoint_clausify_enabled(),
         }
     }
 
@@ -310,7 +313,16 @@ impl Clausifier {
                             self.encode_antecedent(ids[i], X),
                             self.encode_antecedent(ids[j], X),
                         ) else {
-                            self.defer("disjoint-antecedent");
+                            // #600: a member the body encoder rejects (`∀`, `≤n`, …)
+                            // goes through the GCI path, `Ai ⊓ Aj ⊑ ⊥`, whose partial
+                            // absorption handles hard antecedents. Only this fallback:
+                            // routing every pair through `And` would put the pair's
+                            // cross-product under the DNF cap.
+                            if self.complex_disjoint {
+                                self.clausify_disjoint_pair(ids[i], ids[j]);
+                            } else {
+                                self.defer("disjoint-antecedent");
+                            }
                             continue;
                         };
                         for a in &alts_a {
@@ -348,6 +360,10 @@ impl Clausifier {
                                     });
                                 }
                             }
+                        } else if self.complex_disjoint {
+                            // #600: as for `DisjointClasses`. Before, this pair was
+                            // skipped silently (not even counted as deferred).
+                            self.clausify_disjoint_pair(members[i], members[j]);
                         }
                     }
                 }
@@ -361,6 +377,10 @@ impl Clausifier {
                                 head: vec![Atom::Class(*class, X)],
                             });
                         }
+                    } else if self.complex_disjoint {
+                        // #600: `member ⊑ class` through the GCI path.
+                        let class_c = self.pool.atomic(*class);
+                        self.clausify_gci(m, class_c);
                     } else {
                         self.defer("disjoint-union-member");
                     }
@@ -391,6 +411,14 @@ impl Clausifier {
                         body: vec![Atom::Class(*class, X)],
                         head,
                     });
+                } else if self.complex_disjoint {
+                    // #600: `class ⊑ ⊔members` through the GCI path, whose
+                    // `emit_head` names each compound disjunct with `Q ⊑ D` (the
+                    // head direction). Never a head with a disjunct missing: that
+                    // would be a narrower union, an unsound positive.
+                    let class_c = self.pool.atomic(*class);
+                    let cover = self.pool.or(members.iter().copied());
+                    self.clausify_gci(class_c, cover);
                 } else {
                     self.defer("disjoint-union-covering");
                 }
@@ -514,6 +542,14 @@ impl Clausifier {
     /// splits into one clause per disjunct (`(A ⊔ B) ⊑ D` ≡
     /// `A ⊑ D ∧ B ⊑ D`). Otherwise encode the antecedent into a
     /// body and recurse into the consequent.
+    /// #600: `a ⊓ b ⊑ ⊥` through the GCI path, for a disjointness pair whose member
+    /// the body encoder rejects.
+    fn clausify_disjoint_pair(&mut self, a: ConceptId, b: ConceptId) {
+        let both = self.pool.and([a, b]);
+        let bot = self.pool.bot();
+        self.clausify_gci(both, bot);
+    }
+
     fn clausify_gci(&mut self, sub: ConceptId, sup: ConceptId) {
         self.next_var = X + 1;
         match self.encode_antecedent(sub, X) {
@@ -1109,6 +1145,18 @@ enum MaxQualifier {
 #[must_use]
 pub fn max_qualifier_fix_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_QUALIFIER_COVER").is_none_or(|v| v != "0")
+}
+
+/// `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` (**default ON**, `=0` reverts, #600): a
+/// `DisjointClasses` / `DisjointUnion` member that the body encoder rejects (`∀`,
+/// `≤n`, `¬`, …), and a `DisjointUnion` covering with a complex member, are
+/// clausified through the GCI path (`a ⊓ b ⊑ ⊥`, `member ⊑ class`,
+/// `class ⊑ ⊔members`) instead of being deferred. Off, the wedges never saw those
+/// axioms, and their trusted `Sat` missed inconsistencies, unsatisfiable classes and
+/// subsumptions the main tableau finds.
+#[must_use]
+pub fn complex_disjoint_clausify_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT").is_none_or(|v| v != "0")
 }
 
 /// Clausify an ontology into DL-clauses. Runs NNF then a
@@ -1996,6 +2044,56 @@ SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
             stats.deferred >= 1,
             "over-cap antecedent must defer; stats={stats:?}"
         );
+    }
+
+    /// #600: each complex `DisjointClasses` / `DisjointUnion` shape clausifies with
+    /// nothing deferred (it used to defer `disjoint-antecedent`,
+    /// `disjoint-union-member` or `disjoint-union-covering`). The flag-off arm is
+    /// pinned in `owl-dl-reasoner/tests/complex_disjoint_clausify.rs` (env-mutating).
+    #[test]
+    fn complex_disjoint_members_are_not_deferred() {
+        for axiom in [
+            "DisjointUnion(:C :A ObjectSomeValuesFrom(:r :B))",
+            "DisjointUnion(:C :A ObjectAllValuesFrom(:r :B))",
+            "DisjointUnion(:C :A ObjectAllValuesFrom(:r :B) ObjectMaxCardinality(1 :r :B))",
+            "DisjointClasses(:A ObjectAllValuesFrom(:r :B))",
+            "DisjointClasses(:A ObjectMaxCardinality(1 :r :B))",
+            "DisjointClasses(:A ObjectMinCardinality(2 :r :B))",
+            "DisjointClasses(:A ObjectIntersectionOf(:B ObjectAllValuesFrom(:r :B)))",
+            "DisjointClasses(:A ObjectUnionOf(:B ObjectAllValuesFrom(:r :B)))",
+        ] {
+            let src = format!(
+                "{HEADER}Ontology(\nDeclaration(Class(:A)) Declaration(Class(:B)) \
+                 Declaration(Class(:C)) Declaration(ObjectProperty(:r))\n{axiom}\n)\n"
+            );
+            let (_clauses, stats) = clausify_ofn(&src);
+            assert_eq!(stats.deferred, 0, "{axiom}: {stats:?}");
+        }
+    }
+
+    /// #600 keeps the fast path: pairs whose members encode as bodies are emitted as
+    /// their cross-product, uncapped. Routing them through `A ⊓ B ⊑ ⊥` would put the
+    /// product under [`ANTECEDENT_DNF_CAP`]: a 9×9 union pair is 81 clauses, over 64.
+    #[test]
+    fn encodable_disjoint_pairs_keep_the_uncapped_cross_product() {
+        use std::fmt::Write as _;
+        let (mut decls, mut a, mut b) = (String::new(), String::new(), String::new());
+        for i in 0..9 {
+            let _ = write!(
+                decls,
+                "Declaration(Class(:A{i})) Declaration(Class(:B{i})) "
+            );
+            let _ = write!(a, ":A{i} ");
+            let _ = write!(b, ":B{i} ");
+        }
+        let src = format!(
+            "{HEADER}Ontology(\n{decls}\n\
+             DisjointClasses(ObjectUnionOf({a}) ObjectUnionOf({b}))\n)\n"
+        );
+        let (clauses, stats) = clausify_ofn(&src);
+        assert_eq!(stats.deferred, 0, "{stats:?}");
+        let bottoms = clauses.iter().filter(|c| c.head.is_empty()).count();
+        assert_eq!(bottoms, 81, "one ⊥-clause per alternative pair");
     }
 
     /// `ReflexiveObjectProperty(r)` + `ObjectPropertyRange(r, C)` (+ transitivity,

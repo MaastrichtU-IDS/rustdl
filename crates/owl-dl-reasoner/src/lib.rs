@@ -5075,6 +5075,9 @@ pub(crate) struct HyperCache {
     /// Indexes are **read-only after construction** — rayon safety holds.
     /// See `docs/superpowers/specs/2026-06-16-soundcaching-design-and-gonogo.md` §5.
     base_indexes: std::sync::Arc<owl_dl_tableau::hyper::ClauseIndexes>,
+    /// #600: the clausifier's deferral events for this wedge (`ClauseStats::deferred`):
+    /// encodings it skipped, so the wedge never sees them.
+    deferred_clauses: usize,
     /// Pre-built pairwise-disjoint set for `self.clauses`. Shared via
     /// `Arc::clone` per `classify_labels` probe (Q-clause is not
     /// ⊥-headed so adds no new pairs — same set for every probe).
@@ -5246,6 +5249,11 @@ impl HyperCache {
         self.base_indexes.refused_clauses()
     }
 
+    /// #600: the clausifier's deferral events for this wedge.
+    pub(crate) fn clauses_deferred(&self) -> usize {
+        self.deferred_clauses
+    }
+
     /// #564: add an engine's merge-churn stops to this cache's total.
     fn note_churn(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) {
         let n = engine.merge_churn_stops();
@@ -5284,7 +5292,8 @@ impl HyperCache {
                 eprintln!("classify wedge: {added} declined inverse-functional bound(s) added");
             }
         }
-        let (base, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let (base, base_stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let deferred_clauses = base_stats.deferred;
         internal.axioms.truncate(n_axioms);
         let defs = owl_dl_core::definitions::extract_definitions(&internal);
         // Label-cache back-fold (Task 1): precompute the ∃-bearing defined
@@ -5611,6 +5620,7 @@ impl HyperCache {
             sup_neg,
             fresh_q,
             base_indexes,
+            deferred_clauses,
             base_disjoint_pairs,
             amortize_idx,
             sub_roles,
@@ -12052,6 +12062,12 @@ impl PreparedOntology {
     /// #353: how many clauses the wedge refuses (0 when there is no wedge).
     pub(crate) fn wedge_clauses_refused(&self) -> usize {
         self.hyper.as_ref().map_or(0, HyperCache::clauses_refused)
+    }
+
+    /// #600: the classify wedge clausifier's deferral events (0 when there is no
+    /// wedge).
+    pub(crate) fn wedge_clauses_deferred(&self) -> usize {
+        self.hyper.as_ref().map_or(0, HyperCache::clauses_deferred)
     }
 
     /// #564: classify-wedge fixpoints the merge-churn guard stopped (0 without a wedge).

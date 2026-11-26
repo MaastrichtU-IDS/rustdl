@@ -1,8 +1,9 @@
 //! #558 review: each path that reports the trusted consistency wedge's weaker KB.
 //!
-//! A `DisjointUnion` with a complex member makes the clausifier defer its covering
-//! half (`disjoint-union-covering`), so the consistency wedge's KB is weaker by one
-//! deferral. The fixtures here are consistent, except the labelled pin of the #600
+//! A `DisjointUnion` with a complex member made the clausifier defer its covering
+//! half (`disjoint-union-covering`), so the consistency wedge's KB was weaker by one
+//! deferral. #600 encodes it; these plumbing tests reproduce the deferral with
+//! `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`. The fixtures here are consistent, except the labelled pin of the #600
 //! miss.
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::doc_markdown)]
@@ -81,6 +82,8 @@ fn onto(extra: &str) -> SetOntology<RcStr> {
 #[test]
 fn the_classify_probe_route_records_the_gaps() {
     let _l = lock();
+    // #600 encodes the covering; the deferral these signals report needs the fix off.
+    let _fix = SetEnvGuard::set("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0");
     let _off = SetEnvGuard::set("RUSTDL_CLASSIFY_WEDGE_INCONSISTENCY", "0");
     let c = owl_dl_reasoner::classify(&onto("SubClassOf(:U owl:Nothing)")).unwrap();
     let s = c.stats();
@@ -98,6 +101,8 @@ fn the_classify_probe_route_records_the_gaps() {
 #[test]
 fn verified_consistency_masks_the_gaps() {
     let _l = lock();
+    // #600 encodes the covering; the deferral these signals report needs the fix off.
+    let _fix = SetEnvGuard::set("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0");
     let c = owl_dl_reasoner::classify(&onto(
         "SubClassOf(:A DataMaxCardinality(2 :p DataOneOf(\"1\"^^xsd:integer \"2\"^^xsd:integer)))\n\
          DataPropertyAssertion(:p :a \"1\"^^xsd:integer)",
@@ -118,6 +123,8 @@ fn verified_consistency_masks_the_gaps() {
 #[test]
 fn single_queries_report_the_deferral() {
     let _l = lock();
+    // #600 encodes the covering; the deferral these signals report needs the fix off.
+    let _fix = SetEnvGuard::set("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0");
     // The seeded probe would answer first (#401's seeded-first budget); `0` goes
     // straight to the consistency step and the `ABox`-free probe.
     let _s = SetEnvGuard::set("RUSTDL_QUERY_SEEDED_FIRST_MS", "0");
@@ -137,25 +144,28 @@ fn single_queries_report_the_deferral() {
     assert_eq!(s.wedge_clauses_deferred, 1, "subclass");
 }
 
-/// PINS A KNOWN WRONG ANSWER (#600): this KB is inconsistent (HermiT, Konclude, and
-/// the main tableau with `RUSTDL_WEDGE_CONSISTENCY=0` agree), but the consistency
-/// wedge never sees the deferred covering `E ⊑ F ⊔ ∃r.G` and its trusted `Sat` says
-/// consistent. Part A's signal is the deferral. #600 must flip the first assertion
-/// to `!consistent` (and may then drop the deferral to 0).
+/// #600: this KB is inconsistent (HermiT, Konclude, and the main tableau with
+/// `RUSTDL_WEDGE_CONSISTENCY=0` agree). Before #600 the consistency wedge never saw
+/// the deferred covering `E ⊑ F ⊔ ∃r.G`, and its trusted `Sat` said consistent with
+/// one deferral as the only signal; `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0` still shows
+/// that. Now the covering is clausified and the wedge finds the clash.
 #[test]
-fn issue_600_pin_the_deferred_covering_miss_and_its_signal() {
+fn issue_600_the_deferred_covering_miss_is_fixed() {
     let _l = lock();
     let o = onto(
         "ClassAssertion(ObjectComplementOf(:F) :b)\n\
          ClassAssertion(ObjectAllValuesFrom(:r ObjectComplementOf(:G)) :b)",
     );
     let (consistent, s) = owl_dl_reasoner::is_consistent_with_stats(&o).unwrap();
-    assert!(
-        consistent,
-        "#600: today's wrong answer; flip when the clausifier is fixed"
-    );
-    assert!(s.relies_on_trusted_consistency);
-    assert_eq!(s.wedge_clauses_deferred, 1, "the signal for the miss");
+    assert!(!consistent, "#600: the wedge sees the covering");
+    assert_eq!(s.wedge_clauses_deferred, 0, "nothing deferred");
+    {
+        let _off = SetEnvGuard::set("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0");
+        let (consistent, s) = owl_dl_reasoner::is_consistent_with_stats(&o).unwrap();
+        assert!(consistent, "fix off: the old trusted miss");
+        assert!(s.relies_on_trusted_consistency);
+        assert_eq!(s.wedge_clauses_deferred, 1, "fix off: its signal");
+    }
     let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
     let (consistent, _) = owl_dl_reasoner::is_consistent_with_stats(&o).unwrap();
     assert!(!consistent, "control: the main tableau finds the clash");

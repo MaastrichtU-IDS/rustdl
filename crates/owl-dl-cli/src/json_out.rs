@@ -186,6 +186,11 @@ pub(crate) struct ClassifyJson {
     /// entailments that need them may be missing. A SEPARATE field for the same
     /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
     pub(crate) wedge_clauses_refused: usize,
+    /// #600: the classify wedge clausifier's deferral events (encodings of the
+    /// input's axioms it skipped; one axiom can count more than once), so its trusted
+    /// `Sat` can miss what they entail. A SEPARATE field, like `wedge_clauses_refused`.
+    /// 0 when there is no wedge; 0 is not proof the wedge saw the whole KB.
+    pub(crate) wedge_clauses_deferred: usize,
     /// #558: when `relies_on_trusted_consistency`, the clauses the CONSISTENCY
     /// wedge refuses and the deferral events of its clausifier (encodings it skipped;
     /// one axiom can count more than once): its `Sat` is a model of a KB weaker by
@@ -677,6 +682,7 @@ pub(crate) fn build_classify_json(
         completeness_guaranteed: h.completeness_guaranteed(),
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
         wedge_clauses_refused: stats.wedge_clauses_refused,
+        wedge_clauses_deferred: stats.wedge_clauses_deferred,
         consistency_wedge_clauses_refused: stats.consistency_wedge_clauses_refused,
         consistency_wedge_clauses_deferred: stats.consistency_wedge_clauses_deferred,
         derived_same_undecided: stats.derived_same_undecided,
@@ -711,6 +717,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         completeness_guaranteed: false,
         wedge_hierarchy_blind: false,
         wedge_clauses_refused: 0,
+        wedge_clauses_deferred: 0,
         consistency_wedge_clauses_refused: 0,
         consistency_wedge_clauses_deferred: 0,
         derived_same_undecided: 0,

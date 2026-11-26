@@ -48,6 +48,7 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "depth_capped_pairs": int,
+  "wedge_clauses_deferred": int,
   "consistency_wedge_clauses_refused": int, "consistency_wedge_clauses_deferred": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...],
@@ -161,6 +162,12 @@ while the transitive closure of the answer is the same.
 pair probes) that ended in `NoVerdict` with no deadline (e.g. under `--pair-timeout-ms 0`) or
 after their saturation stalled; see the
 `no_verdict` section above. Each also counts toward `incomplete`, but not as a depth-limit cut.
+
+`wedge_clauses_deferred` (#600, without a `schema_version` bump) = the classify wedge clausifier's
+deferral events: encodings of the input's axioms it skipped, so its trusted `Sat` can miss what they
+entail (one axiom can count more than once; 0 is not proof the wedge saw the whole KB). Since #600
+complex `DisjointClasses` / `DisjointUnion` members are encoded, so what remains is the antecedent DNF
+cap and the reflexive-derived cap.
 
 `consistency_wedge_clauses_refused` and `consistency_wedge_clauses_deferred` (#558, without a
 `schema_version` bump) = when `relies_on_trusted_consistency`, the consistency wedge's refused clauses

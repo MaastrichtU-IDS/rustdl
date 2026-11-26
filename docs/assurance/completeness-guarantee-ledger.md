@@ -59,6 +59,13 @@ never a false positive). The deferred count is of deferral events, not axioms (a
 saw the whole KB: the pairwise-disjointness half of a `DisjointUnion` whose members
 do not encode, and the axiom kinds the clausifier ignores, drop clauses uncounted.
 
+Since #600 the clausifier encodes complex `DisjointClasses` / `DisjointUnion`
+members and the `DisjointUnion` covering (`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT`, default
+on), the deferrals behind the live misses #558 found. What can still be deferred is
+the antecedent DNF cap and the reflexive-derived cap (on the ORE pool, one file,
+`ore_ont_8142`, has two cap deferrals). `classify --json` also reports the classify
+wedge's own deferrals as `wedge_clauses_deferred`.
+
 Surfaces that carry the counts (#558):
 - `consistent --json`: `wedge_clauses_refused` / `wedge_clauses_deferred`, whenever
   the wedge was consulted, with a stderr warning on a trusted `consistent`;

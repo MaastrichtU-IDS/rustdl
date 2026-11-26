@@ -49,6 +49,7 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "wedge_abox_demoted": int, "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "depth_capped_pairs": int,
+  "consistency_wedge_clauses_refused": int, "consistency_wedge_clauses_deferred": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...],
   "dropped": { "<axiom kind>": int },
@@ -177,6 +178,12 @@ pair probes) that ended in `NoVerdict` with no deadline (e.g. under `--pair-time
 after their saturation stalled; see the
 `no_verdict` section above. Each also counts toward `incomplete`, but not as a depth-limit cut.
 
+`consistency_wedge_clauses_refused` and `consistency_wedge_clauses_deferred` (#558, without a
+`schema_version` bump) = when `relies_on_trusted_consistency`, the consistency wedge's refused clauses
+and deferral events (as `consistent --json` reports them), 0 otherwise; the refused count also reads 0
+with `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`. That is a different wedge from `wedge_clauses_refused`
+here, which is classify's own and clausifies no `ABox`.
+
 `depth_capped_pairs` (#288; in the JSON since #574, without a `schema_version` bump) = of the cut
 pairs and probes, those cut by the tableau's decision-depth limit, directly or through early
 abandon, rather than by a deadline or the node cap. A larger `--pair-timeout-ms` or node cap does
@@ -196,6 +203,7 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
   "incomplete": bool,
   "relies_on_trusted_consistency": bool,
   "wedge_clauses_refused": int,
+  "wedge_clauses_deferred": int,
   "no_verdict": bool,
   "dropped": { "<axiom kind>": int },
   "collapsed_operands": { "axioms": int, "vacuous": int } }
@@ -212,8 +220,16 @@ likely-bug `NoVerdict` too (#475). On the deadline-free `NoVerdict` path `wedge_
 `relies_on_trusted_consistency` is `false` and `no_verdict` (#462) is `true`.
 `wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
 match, so a wedge `consistent` may miss a clash; 0 when the wedge was not
-consulted. `dropped` counts the axioms rustdl does not reason with, as in
-`classify --json`.
+consulted. `wedge_clauses_deferred` (#558, added without a `schema_version` bump)
+counts that wedge clausifier's deferral events: encodings of the input's axioms it
+skipped, so the wedge never sees them (one axiom can count more than once, e.g. a
+`DisjointUnion` with two complex members reads 3). It has the same consequence.
+Unlike `wedge_clauses_refused` it is not silenced by
+`RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`, which exists for the refused count's
+over-report (#357). Neither 0 proves the wedge saw the whole KB: some drops are not
+counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not
+encode, and the axiom kinds the clausifier ignores). `dropped` counts the axioms
+rustdl does not reason with, as in `classify --json`.
 
 `relies_on_trusted_consistency` was added in #392, without a `schema_version`
 bump. It is `true` when `consistent: true` rests only on the consistency wedge's
@@ -232,7 +248,8 @@ depth cap), #497.
 ```json
 { "schema_version": 1, "incomplete": bool, "witness_prune_active": bool,
   "witness_prune_may_drop": bool, "witness_prune_reasons": [string],
-  "direct_types_unverified": bool, "relies_on_trusted_consistency": bool,
+  "direct_types_unverified": bool, "direct_types_depth_capped": bool,
+  "relies_on_trusted_consistency": bool,
   "no_verdict": bool, "depth_capped": bool, "saturation_only": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
@@ -275,7 +292,17 @@ another:
   pairs are checked with the main tableau, so it is set only when a check was cut
   (or `RUSTDL_REALIZE_VERIFY_DIRECT=0`). The saturation-only realize runs no check,
   so there any undecided pair sets it. It does not cover a type dropped through
-  `incomplete` or the prune, which can also leave a superclass listed.
+  `incomplete` or the prune, which can also leave a superclass listed. It is also not
+  implied by `incomplete`: a cut in realize's own classification step leaves the pair
+  to this check, so with both cut, `direct_types_unverified` is set and `incomplete` is
+  not (#583).
+- `direct_types_depth_capped` (#583, no `schema_version` bump) = with
+  `direct_types_unverified`, at least one check was cut by the tableau's decision-depth
+  limit: a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` does not help, `=0` (no deadline) may.
+  `false` with `direct_types_unverified` set: a deadline or the node cap cut the checks
+  (a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or `RUSTDL_MAX_NODES` may decide them), or no
+  check ran. "At least one": other checks may have been cut otherwise. The text warning
+  names the remedies.
 - `relies_on_trusted_consistency` (#429): as in `classify --json`; not a give-up.
 - `no_verdict` (#493): a probe ended in `NoVerdict` on an internal limit, likely a reasoner bug
   (see the `no_verdict` section): realize's own classification, an instance probe (anonymous
@@ -472,8 +499,10 @@ below).
   "kb_inconsistent": bool, "no_verdict": bool,
   "has_proof": bool,
   "proof_complete": bool | null,
+  "proof_uses_non_source_axioms": bool | null,
   "proof": ProofNodeJson | null,
-  "justification_fallback": ofn_document | null }
+  "justification_fallback": ofn_document | null,
+  "justification_minimal": bool | null }
 ```
 
 ```json
@@ -485,12 +514,20 @@ below).
   "premises": [ProofNodeJson, ...], "unproved_premises": [ofn_document, ...] }
 ```
 
-Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
+Three shapes, mirroring `ProveEntailmentResult`:
 
 - **Step-level EL proof** (entailment held by the EL saturation fragment):
   `entailed: true, has_proof: true`, `proof` is the recursively-built
   `ProofNode` tree rooted at the queried `SUB ⊑ SUP`, `justification_fallback:
-  null`. Each node's `conclusion` is a one-axiom OFN document rendering that
+  null` — except with `prove --json --source-fallback` (#594): when some step uses a
+  non-source axiom (`proof_uses_non_source_axioms: true`: a step has `builtin_axioms`
+  or `derived_axioms`), `justification_fallback` also
+  carries a source-only justification of the same entailment (the search `justify`
+  runs, under `prove`'s query node cap) with `justification_minimal`, for a consumer
+  that shows source axioms only (the Protégé plugin shows it instead of the proof). If
+  that search fails or finds none, the field stays `null` and a note goes to stderr;
+  the proof, `incomplete` and the exit code are unchanged.
+  `proof_uses_non_source_axioms` is `null` when there is no proof. Each node's `conclusion` is a one-axiom OFN document rendering that
   node's `DerivedFact` (`Sub(s,p)` → `SubClassOf(s p)`; `Exist(s,r,t)` →
   `SubClassOf(s ObjectSomeValuesFrom(r t))`; `Unsat(c)` → `SubClassOf(c
   owl:Nothing)`) — classes beyond the source vocabulary (Tseitin/marker/

@@ -514,14 +514,23 @@ def is_consistent(path):
     """True iff the ontology at `path` is consistent. A give-up (budget or node
     cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`.
     A `True` that rests on the consistency wedge's model alone (the wedge is not
-    proven complete) emits `TrustedConsistencyWarning` (#392)."""
-    consistent, incomplete, trusted = _is_consistent_native(path)
+    proven complete) emits `TrustedConsistencyWarning` (#392). When that wedge
+    refuses clauses or its clausifier skipped encodings of axioms (deferrals), the
+    warning says how many: its
+    model is then a model of a weaker KB (#558)."""
+    consistent, incomplete, trusted, refused, deferred = _is_consistent_native(path)
     _warn_if_query_incomplete("is_consistent", incomplete)
     if trusted:
+        gaps = ""
+        if refused or deferred:
+            gaps = (
+                f" The wedge's KB is weaker than the input: {refused} clause(s) it "
+                f"cannot match and {deferred} deferral(s) by its clausifier (#558)."
+            )
         _warnings.warn(
             "is_consistent: consistent on the consistency wedge's model alone; the "
             "wedge is not proven complete and no main-tableau model was built "
-            "(see TrustedConsistencyWarning).",
+            f"(see TrustedConsistencyWarning).{gaps}",
             TrustedConsistencyWarning,
             stacklevel=2,
         )

@@ -229,6 +229,13 @@ fn a_parked_clause_still_finds_the_inconsistency() {
 /// it has timing-driven sources (a prep deadline, the consistency probe giving up),
 /// which a loaded debug build can trip. The wedge's own verdict is pinned by the
 /// `consistent` tests above.
+///
+/// #595: `C3`'s unsatisfiability is asserted on a deadline-free classify with the wait
+/// on (0.05 CPU-s in a debug build), not at the default per-pair budget, which a loaded
+/// host cut (`C3 is unsatisfiable: []`). The on/off comparison stays at the default
+/// budgets (with the wait off, a deadline-free classify does not finish: that is #480):
+/// up to 3 attempts, so a load cut in either arm is retried while a deterministic
+/// difference, a non-deadline cut, or a wait-on run cut every time still fails.
 #[test]
 fn every_command_answers_the_same() {
     for (tag, axioms) in [("same939", CASE_939), ("samemin", MIN_939)] {
@@ -236,18 +243,47 @@ fn every_command_answers_the_same() {
         let c3 = format!("{NS}C3");
         let c1 = format!("{NS}C1");
         let c0 = format!("{NS}C0");
-        let classify = |wait| json(&rustdl(&["classify", "--json", f.path()], wait), tag);
-        let (on, off) = (classify(true), classify(false));
+        let free = json(
+            &rustdl(
+                &["classify", "--json", "--pair-timeout-ms", "0", f.path()],
+                true,
+            ),
+            tag,
+        );
         assert!(
-            on["unsatisfiable"]
+            free["unsatisfiable"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|c| c == c3.as_str()),
             "[{tag}] C3 is unsatisfiable: {}",
-            on["unsatisfiable"]
+            free["unsatisfiable"]
         );
-        assert_eq!(content(&on), content(&off), "[{tag}] classify");
+        let classify = |wait| json(&rustdl(&["classify", "--json", f.path()], wait), tag);
+        // Up to 3 attempts: a load-cut probe (in either arm) is retried, a deterministic
+        // difference fails every attempt, and a wait-on run cut every time fails too.
+        let mut agreed = false;
+        let mut last_difference = None;
+        for _ in 0..3 {
+            let (on, off) = (classify(true), classify(false));
+            // A cut that is not the deadline is not host load: never retried away.
+            assert_eq!(on["no_verdict_pairs"], 0, "[{tag}] {on}");
+            assert_eq!(on["depth_capped_pairs"], 0, "[{tag}] {on}");
+            if on["incomplete"] == true {
+                eprintln!("[{tag}] classify with the wait was cut (host load): retrying");
+            } else if content(&on) == content(&off) {
+                agreed = true;
+                break;
+            } else {
+                eprintln!("[{tag}] classify on/off differ (a load cut?): retrying");
+                last_difference = Some((on, off));
+            }
+        }
+        if !agreed {
+            let (on, off) = last_difference
+                .unwrap_or_else(|| panic!("[{tag}] classify with the wait was cut every time"));
+            assert_eq!(content(&on), content(&off), "[{tag}] classify");
+        }
 
         let realize = |wait| json(&rustdl(&["realize", "--json", f.path()], wait), tag);
         let (on, off) = (realize(true), realize(false));

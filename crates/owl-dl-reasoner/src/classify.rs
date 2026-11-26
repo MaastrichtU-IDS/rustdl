@@ -809,6 +809,15 @@ pub struct ClassificationStats {
     /// Stamped by the two internal classify entry points, so no result path
     /// can forget it.
     pub dropped: owl_dl_core::DroppedAxioms,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a role above
+    /// it, or `owl:topDataProperty` outside the super-property position) where its
+    /// universal-role semantics could change a class-level entailment. rustdl treats it
+    /// as an ordinary property, which is sound for positives, so a negative answer or a
+    /// missing entailment may be wrong. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`. Stamped next to
+    /// `dropped`. Condition 9 of [`Self::completeness_guaranteed`]; a proved
+    /// inconsistency masks it (every entailment then holds).
+    pub universal_role_ordinary: bool,
     /// #538: n-ary axioms whose repeated operands conversion collapsed (their operands
     /// are a set; `owl_dl_core::set_operands`). Not a give-up and not in `dropped`: under
     /// the set reading nothing is lost. Under a list reading each could add positives
@@ -1173,6 +1182,10 @@ impl ClassificationStats {
     ///    beside condition 1 today: `PureEl` admits no `ABox` assertion and no
     ///    nominal, so no individual exists and the consistency wedge never runs.
     ///    Kept so the invariant holds if `PureEl` ever admits one.
+    /// 9. no universal role is used where its semantics could change an entailment
+    ///    (#543, `universal_role_ordinary`), unless the KB is proved inconsistent:
+    ///    rustdl reasons with `owl:topObjectProperty` as an ordinary property, which
+    ///    misses entailments of `Δ × Δ` (`⊤ ⊑ ∃r.D`, `∃top.D ⊑ ⊥` is inconsistent).
     ///
     /// `docs/assurance/completeness-guarantee-ledger.md` records each condition
     /// with its source issue, the CLI/Python field that reports it and the test
@@ -1215,6 +1228,7 @@ impl ClassificationStats {
             && !self.consistency_undetermined
             && self.dropped.is_empty()
             && !self.relies_on_trusted_consistency
+            && (!self.universal_role_ordinary || self.inconsistent)
     }
 }
 
@@ -1930,6 +1944,8 @@ pub(crate) fn classify_saturation_only_internal(
     // #557: as the other classify entry points do; without it a dropped axiom (a
     // SWRL rule, `HasKey`) left `completeness_guaranteed` true on this path.
     h.stats.dropped = internal.dropped.clone();
+    h.stats.universal_role_ordinary =
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
     // #539: off the pure-EL fragment the saturator is not complete for
     // consistency, and nothing else checks it here, so "no clash found" is all
     // `consistent: true` can mean. `r(a,b)` with `¬r(a,b)` read `consistent: true`
@@ -1964,6 +1980,8 @@ pub(crate) fn classify_internal_with_timeout(
     crate::take_consistency_trusted_gaps();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
+    c.stats.universal_role_ordinary =
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
     c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
@@ -4530,6 +4548,8 @@ pub(crate) fn classify_top_down_internal_capturing(
     let mut c =
         classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline, capture)?;
     c.stats.dropped = internal.dropped.clone();
+    c.stats.universal_role_ordinary =
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
     c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.

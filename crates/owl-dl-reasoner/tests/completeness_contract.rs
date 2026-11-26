@@ -152,7 +152,7 @@ fn each_condition_alone_voids_the_guarantee() {
     );
 
     type Flip = fn(&mut ClassificationStats);
-    let rows: [(&str, Flip); 10] = [
+    let rows: [(&str, Flip); 11] = [
         ("fragment Horn (#124)", |s| {
             s.fragment = FragmentClassification::Horn;
         }),
@@ -183,8 +183,11 @@ fn each_condition_alone_voids_the_guarantee() {
         ("relies_on_trusted_consistency (#429)", |s| {
             s.relies_on_trusted_consistency = true;
         }),
+        ("universal_role_ordinary (#543)", |s| {
+            s.universal_role_ordinary = true;
+        }),
     ];
-    // Eight conditions; the fragment condition has two failing values. Keep the
+    // Nine conditions; the fragment condition has two failing values. Keep the
     // rows in step with the predicate and the ledger.
 
     for (name, flip) in rows {
@@ -195,6 +198,20 @@ fn each_condition_alone_voids_the_guarantee() {
             "{name}: this condition alone must void the guarantee"
         );
     }
+}
+
+/// #543: a proved inconsistency masks condition 9. Every entailment holds in an
+/// inconsistent KB, so a universal role cannot hide one.
+#[test]
+fn a_proved_inconsistency_masks_the_universal_role_condition() {
+    use owl_dl_reasoner::{ClassificationStats, FragmentClassification};
+    let s = ClassificationStats {
+        fragment: FragmentClassification::PureEl,
+        universal_role_ordinary: true,
+        inconsistent: true,
+        ..ClassificationStats::default()
+    };
+    assert!(s.completeness_guaranteed());
 }
 
 /// `Classification::completeness_guaranteed` and the stats predicate are the

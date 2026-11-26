@@ -123,7 +123,9 @@ const NEGATIVE: &[(&str, &str)] = &[
         "SubObjectPropertyOf(:r owl:topObjectProperty) NegativeObjectPropertyAssertion(:r :a :b) \
          ClassAssertion(:C :a)",
     ),
-    // A chain with an ordinary leg does not make its super-role universal (it empties s).
+    // A chain with an ordinary leg does not make its super-role universal. Semantically
+    // it empties s (`top(x, x) ∘ s(x, y)` gives `r(x, y)`), which rustdl does not derive
+    // yet: `n7edge` in `universal_role_cli.rs` (#543 part 2). Here s has no edge.
     (
         "n7",
         "SubObjectPropertyOf(ObjectPropertyChain(owl:topObjectProperty :s) :r) \

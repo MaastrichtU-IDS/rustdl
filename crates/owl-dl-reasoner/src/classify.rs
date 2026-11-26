@@ -1177,7 +1177,7 @@ impl ClassificationStats {
             && !self.consistency_undetermined
             && self.dropped.is_empty()
             && !self.relies_on_trusted_consistency
-            && !(self.universal_role_ordinary && !self.inconsistent)
+            && (!self.universal_role_ordinary || self.inconsistent)
     }
 }
 

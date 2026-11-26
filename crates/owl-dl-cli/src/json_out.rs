@@ -453,6 +453,8 @@ pub(crate) struct RealizeJson {
     pub(crate) universal_role_ordinary: bool,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct DisjointJson {
     pub(crate) schema_version: u32,
@@ -816,6 +818,10 @@ fn deadline_flags(stats: &owl_dl_reasoner::ClassificationStats) -> (bool, bool, 
 }
 
 // `fn_params_excessive_bools`: one parameter per `ConsistentJson` schema field.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per published JSON field"
+)]
 #[allow(clippy::fn_params_excessive_bools)]
 #[must_use]
 pub(crate) fn build_consistent_json(
@@ -1005,6 +1011,8 @@ pub(crate) fn build_disjoint_json(
     }
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct IndividualsJson {
     pub(crate) schema_version: u32,
@@ -1075,6 +1083,8 @@ pub(crate) fn build_individuals_json(
     }
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct PropertyValuesJson {
     pub(crate) schema_version: u32,

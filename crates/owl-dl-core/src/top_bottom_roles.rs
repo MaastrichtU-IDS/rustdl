@@ -268,8 +268,6 @@ fn axiom_uses(
             SubRolePath::Role(_) => false,
             SubRolePath::Chain(legs) => !in_u(sup) && legs.iter().any(in_u),
         },
-        // Equivalence and inverse within U are inert (the closure takes both sides).
-        Axiom::EquivalentObjectProperties(_) | Axiom::InverseObjectProperties(..) => false,
         Axiom::DisjointObjectProperties(rs) => rs.iter().any(in_u),
         Axiom::ObjectPropertyDomain { role, domain: c }
         | Axiom::ObjectPropertyRange { role, range: c } => in_u(role) || concept(*c),
@@ -277,9 +275,17 @@ fn axiom_uses(
         | Axiom::IrreflexiveRole(r)
         | Axiom::FunctionalRole(r)
         | Axiom::InverseFunctionalRole(r) => in_u(r),
-        Axiom::TransitiveRole(_) | Axiom::SymmetricRole(_) | Axiom::ReflexiveRole(_) => false,
         Axiom::ClassAssertion { class, .. } => concept(*class),
-        Axiom::ObjectPropertyAssertion { .. }
+        // Inert: equivalence and inverse within U (the closure takes both sides);
+        // `Transitive`, `Symmetric`, `Reflexive` (true of `Δ × Δ`); assertions (a
+        // positive one is true of `Δ × Δ`, a negative one is #539's A4); the rest
+        // name no role.
+        Axiom::EquivalentObjectProperties(_)
+        | Axiom::InverseObjectProperties(..)
+        | Axiom::TransitiveRole(_)
+        | Axiom::SymmetricRole(_)
+        | Axiom::ReflexiveRole(_)
+        | Axiom::ObjectPropertyAssertion { .. }
         | Axiom::NegativeObjectPropertyAssertion { .. }
         | Axiom::SameIndividual(_)
         | Axiom::DifferentIndividuals(_)

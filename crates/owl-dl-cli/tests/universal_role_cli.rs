@@ -10,7 +10,7 @@
 //! and `owl:topDataProperty` outside the super-property position; those cases say
 //! "adjudicated by hand from the Direct Semantics". Konclude under-reports
 //! universal-role `ABox`es (#539), so it is not used. Negative controls come first.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::doc_markdown)]
 
 use std::path::PathBuf;
 use std::process::Command;

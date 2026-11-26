@@ -165,10 +165,10 @@ after their saturation stalled; see the
 
 `wedge_clauses_deferred` (#600, without a `schema_version` bump) = the classify wedge clausifier's
 deferral events: encodings of the input's axioms it skipped, so its trusted `Sat` can miss what they
-entail (one axiom can count more than once; 0 is not proof the wedge saw the whole KB). Since #600
-complex `DisjointClasses` / `DisjointUnion` members are encoded, except trigger-less ones past a cap
-of 2 per clausification (their `⊤`-bodied clauses cost exponentially), which are deferred and
-counted here. Besides those, what we observed deferred on the ORE pool is the antecedent DNF cap; the
+entail (one axiom can count more than once; 0 is not proof the wedge saw the whole KB). At the
+default it counts complex `DisjointClasses` / `DisjointUnion` members (#600); the opt-in
+`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1` encodes them, except trigger-less ones past a cap of 2 per
+clausification, which it defers and counts. Besides those, what we observed deferred on the ORE pool is the antecedent DNF cap; the
 reflexive-derived cap can also defer.
 
 `consistency_wedge_clauses_refused` and `consistency_wedge_clauses_deferred` (#558, without a
@@ -220,9 +220,9 @@ skipped, so the wedge never sees them (one axiom can count more than once, e.g. 
 Unlike `wedge_clauses_refused` it is not silenced by
 `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`, which exists for the refused count's
 over-report (#357). Neither 0 proves the wedge saw the whole KB: some drops are not
-counted (the axiom kinds the clausifier ignores; and, only with
-`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`, the pairwise-disjointness half of a
-`DisjointUnion` whose members do not encode, which #600 otherwise clausifies or counts). `dropped` counts the axioms
+counted (the axiom kinds the clausifier ignores; and, unless the opt-in
+`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a
+`DisjointUnion` whose members do not encode, which that flag clausifies or counts). `dropped` counts the axioms
 rustdl does not reason with, as in `classify --json`.
 
 `relies_on_trusted_consistency` was added in #392, without a `schema_version`

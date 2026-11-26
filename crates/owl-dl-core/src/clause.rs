@@ -1202,19 +1202,27 @@ pub fn max_qualifier_fix_enabled() -> bool {
 /// emits; the rest are deferred and counted. Measured on Fable's K-scaling generator
 /// (release, quiet core, 5 reps): K = 2 such axioms cost 0.06–0.10 CPU-s (main
 /// 0.02–0.03), K = 3 cost 0.3–0.5 s and the classify was cut. A fallback with a soft
-/// trigger is not capped.
+/// trigger is not capped. Which two are admitted depends on axiom order (the order
+/// the clausifier visits the normalized axioms in), not on which matter most.
 pub const TRIGGERLESS_FALLBACK_CAP: usize = 2;
 
-/// `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` (**default ON**, `=0` reverts, #600): a
+/// `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` (**default OFF**, opt-in with any value but
+/// `0`, #600): a
 /// `DisjointClasses` / `DisjointUnion` member that the body encoder rejects (`∀`,
 /// `≤n`, `¬`, …), and a `DisjointUnion` covering with a complex member, are
 /// clausified through the GCI path (`a ⊓ b ⊑ ⊥`, `member ⊑ class`,
 /// `class ⊑ ⊔members`) instead of being deferred. Off, the wedges never saw those
-/// axioms, and their trusted `Sat` missed inconsistencies, unsatisfiable classes and
-/// subsumptions the main tableau finds.
+/// axioms, and their trusted `Sat` misses inconsistencies, unsatisfiable classes and
+/// subsumptions the main tableau finds; `wedge_clauses_deferred` reports the
+/// deferrals. Opt-in because the fallback's `⊤`-bodied clauses have unbounded cost on
+/// growing ontologies: with one trigger-less axiom and a 200-class chain classify
+/// took 24.8 s and was cut (main 0.07 s, complete), and soft-trigger fallbacks with
+/// range axioms blow up too (64 axioms: 21.7 s, cut). A cut loses answers main
+/// finds. A default flip needs a cost guard first (the `#[ignore]`d sentinel
+/// `a_long_chain_with_one_trigger_less_axiom_stays_complete` gates it).
 #[must_use]
 pub fn complex_disjoint_clausify_enabled() -> bool {
-    std::env::var_os("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT").is_none_or(|v| v != "0")
+    std::env::var_os("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT").is_some_and(|v| v != "0")
 }
 
 /// Clausify an ontology into DL-clauses. Runs NNF then a
@@ -2104,87 +2112,9 @@ SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
         );
     }
 
-    /// #600: each complex `DisjointClasses` / `DisjointUnion` shape clausifies with
-    /// nothing deferred (it used to defer `disjoint-antecedent`,
-    /// `disjoint-union-member` or `disjoint-union-covering`). The flag-off arm is
-    /// pinned in `owl-dl-core/tests/complex_disjoint_flag.rs` (env-mutating).
-    #[test]
-    fn complex_disjoint_members_are_not_deferred() {
-        for axiom in [
-            "DisjointUnion(:C :A ObjectSomeValuesFrom(:r :B))",
-            "DisjointUnion(:C :A ObjectAllValuesFrom(:r :B))",
-            "DisjointClasses(:A ObjectAllValuesFrom(:r :B))",
-            "DisjointClasses(:A ObjectMaxCardinality(1 :r :B))",
-            "DisjointClasses(:A ObjectMinCardinality(2 :r :B))",
-            "DisjointClasses(:A ObjectIntersectionOf(:B ObjectAllValuesFrom(:r :B)))",
-            "DisjointClasses(:A ObjectUnionOf(:B ObjectAllValuesFrom(:r :B)))",
-        ] {
-            let src = format!(
-                "{HEADER}Ontology(\nDeclaration(Class(:A)) Declaration(Class(:B)) \
-                 Declaration(Class(:C)) Declaration(ObjectProperty(:r))\n{axiom}\n)\n"
-            );
-            let (_clauses, stats) = clausify_ofn(&src);
-            assert_eq!(stats.deferred, 0, "{axiom}: {stats:?}");
-        }
-    }
-
-    /// #600 review: trigger-less fallbacks (no body-encodable conjunct, so a
-    /// `⊤`-bodied clause) are capped at [`TRIGGERLESS_FALLBACK_CAP`] per
-    /// clausification; the rest are deferred under their pre-#600 kind and counted.
-    /// Fallbacks with a soft trigger are not capped.
-    #[test]
-    fn trigger_less_fallbacks_are_capped() {
-        use std::fmt::Write as _;
-        let census = |body: &str| {
-            let src = format!("{HEADER}Ontology(\n{body}\n)\n");
-            let mut reader = Cursor::new(src);
-            let (onto, _): (SetOntology<RcStr>, _) =
-                read(&mut reader, ParserConfiguration::default()).expect("parse");
-            let internal = convert_ontology(&onto).expect("convert");
-            let (_c, stats) = clausify_with_stats(&internal);
-            (stats.deferred, deferred_census(&internal))
-        };
-        let axioms = |k: usize, f: &dyn Fn(usize) -> String| {
-            (0..k).fold(String::new(), |mut acc, i| {
-                let _ = writeln!(acc, "{}", f(i));
-                acc
-            })
-        };
-        let hard_pair = |i: usize| {
-            format!(
-                "DisjointClasses(ObjectAllValuesFrom(:r{i} :B) ObjectMaxCardinality(1 :s{i} :C))"
-            )
-        };
-        let cap = TRIGGERLESS_FALLBACK_CAP;
-        assert_eq!(
-            census(&axioms(cap, &hard_pair)).0,
-            0,
-            "up to the cap: all admitted"
-        );
-        let (n, kinds) = census(&axioms(cap + 3, &hard_pair));
-        assert_eq!(n, 3, "{kinds:?}");
-        assert_eq!(kinds, vec![("disjoint-antecedent", 3)]);
-        // A soft trigger (the atomic member) is never capped.
-        let soft = |i: usize| format!("DisjointClasses(:A{i} ObjectAllValuesFrom(:r{i} :B))");
-        assert_eq!(census(&axioms(cap + 8, &soft)).0, 0);
-        // `DisjointUnion` members (`∀r.B ⊑ U`) count against the same cap, and a
-        // trigger-less union pair past it is now counted, not skipped silently.
-        let member = |i: usize| format!("DisjointUnion(:U{i} :A{i} ObjectAllValuesFrom(:r{i} :B))");
-        let (n, kinds) = census(&axioms(cap + 2, &member));
-        assert_eq!((n, kinds), (2, vec![("disjoint-union-member", 2)]));
-        let union_pair = |i: usize| {
-            format!(
-                "DisjointUnion(:U{i} ObjectAllValuesFrom(:r{i} :B) ObjectMaxCardinality(1 :s{i} :C))"
-            )
-        };
-        // Per axiom the pair comes first, then the two members: the first axiom's
-        // pair and first member take the cap; everything after is deferred.
-        let (_n, kinds) = census(&axioms(2, &union_pair));
-        assert_eq!(
-            kinds,
-            vec![("disjoint-union-member", 3), ("disjoint-union-pair", 1)]
-        );
-    }
+    // #600: the opt-in fallback's own tests (nothing deferred with the flag on, the
+    // trigger-less cap) set `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` and so live in
+    // `owl-dl-core/tests/complex_disjoint_flag.rs`, under its env lock.
 
     /// #600 keeps the fast path: pairs whose members encode as bodies are emitted as
     /// their cross-product, uncapped. Routing them through `A ⊓ B ⊑ ⊥` would put the

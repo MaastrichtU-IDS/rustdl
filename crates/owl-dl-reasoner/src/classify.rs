@@ -764,11 +764,12 @@ pub struct ClassificationStats {
     pub wedge_clauses_refused: usize,
     /// #600: the classify wedge clausifier's deferral events: encodings of the
     /// input's axioms it skipped, so the wedge never sees them and its trusted `Sat`
-    /// can miss what they entail (one axiom can count more than once). Since #600 the
-    /// clausifier encodes complex `DisjointClasses` / `DisjointUnion` members, except
-    /// trigger-less ones past `TRIGGERLESS_FALLBACK_CAP`, counted here; besides those,
-    /// what we observed deferred on ORE is the antecedent DNF cap (the
-    /// reflexive-derived cap can also defer). Reported only:
+    /// can miss what they entail (one axiom can count more than once). At the default
+    /// this counts complex `DisjointClasses` / `DisjointUnion` members (#600; the
+    /// opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1` encodes them up to
+    /// `TRIGGERLESS_FALLBACK_CAP` trigger-less ones); what we observed deferred on ORE
+    /// otherwise is the antecedent DNF cap (the reflexive-derived cap can also
+    /// defer). Reported only:
     /// the guarantee needs `PureEl`, which answers from the saturator without a wedge.
     /// 0 when there is no wedge.
     pub wedge_clauses_deferred: usize,

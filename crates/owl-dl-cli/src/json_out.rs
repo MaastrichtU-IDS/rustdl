@@ -194,7 +194,7 @@ pub(crate) struct ClassifyJson {
     /// #558: when `relies_on_trusted_consistency`, the clauses the CONSISTENCY
     /// wedge refuses and the deferral events of its clausifier (encodings it skipped;
     /// one axiom can count more than once): its `Sat` is a model of a KB weaker by
-    /// these, so it can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (axiom kinds the clausifier ignores, its `_ => {}` arm; and, only with `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which #600 otherwise clausifies or counts). A different wedge from
+    /// these, so it can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (axiom kinds the clausifier ignores, its `_ => {}` arm; and, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which that flag clausifies or counts). A different wedge from
     /// `wedge_clauses_refused` (classify's own). 0 when consistency does not rest on
     /// that wedge.
     pub(crate) consistency_wedge_clauses_refused: usize,
@@ -291,7 +291,7 @@ pub(crate) struct ConsistentJson {
     /// #558: beside `wedge_clauses_refused`, the deferral events of the consistency
     /// wedge's clausifier (encodings it skipped; one axiom can count more than once),
     /// so a `consistent: true` from the wedge may miss a clash they cause. Counted
-    /// whenever the wedge was consulted. 0 does not mean the wedge saw the whole KB: some drops are not counted (axiom kinds the clausifier ignores, its `_ => {}` arm; and, only with `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which #600 otherwise clausifies or counts).
+    /// whenever the wedge was consulted. 0 does not mean the wedge saw the whole KB: some drops are not counted (axiom kinds the clausifier ignores, its `_ => {}` arm; and, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which that flag clausifies or counts).
     pub(crate) wedge_clauses_deferred: usize,
     /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
     /// bug (#449): a probe with NO deadline, or one whose deterministic saturation

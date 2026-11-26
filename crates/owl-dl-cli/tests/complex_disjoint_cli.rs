@@ -1,12 +1,13 @@
-//! #600: the wedge clausifier used to defer a `DisjointClasses` / `DisjointUnion`
-//! member it could not encode as a body (`∀`, `≤n`, `≥n`, …) and a `DisjointUnion`
-//! covering with any complex member. Both wedges trust their `Sat`, so `consistent`
-//! and `classify` missed inconsistencies, unsatisfiable classes and subsumptions the
-//! main tableau (`sat`, `subclass`) finds. Every expected answer below was checked
-//! against HermiT (and Konclude for the issue's repros).
+//! #600: the wedge clausifier defers a `DisjointClasses` / `DisjointUnion` member it
+//! cannot encode as a body (`∀`, `≤n`, `≥n`, …) and a `DisjointUnion` covering with
+//! any complex member. Both wedges trust their `Sat`, so `consistent` and `classify`
+//! miss inconsistencies, unsatisfiable classes and subsumptions the main tableau
+//! (`sat`, `subclass`) finds. The fix, `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1`, is
+//! opt-in (default OFF) until its cost is guarded. Every expected answer below was
+//! checked against HermiT (and Konclude for the issue's repros).
 //!
-//! Negatives first: each case runs through the command that showed the miss, and
-//! with `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0` it must show the old miss (attribution).
+//! Negatives first: each case runs through the command that showed the miss, with
+//! the fix on, and at the default it must show the old miss.
 //! Then non-entailment controls (a covering with a disjunct missing would be an
 //! unsound positive), and justify's minimality, which the fix moves.
 #![allow(clippy::unwrap_used)]
@@ -16,7 +17,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const NS: &str = "http://ex/#";
-const OFF: (&str, &str) = ("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0");
+/// #600's fix is opt-in (default OFF: its `⊤`-bodied fallback clauses have unbounded
+/// cost on growing ontologies). Every "fixed" arm sets it; every "old miss" arm runs at
+/// the default, so these tests also pin that the default still misses.
+const ON: (&str, &str) = ("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "1");
 
 struct Fixture(PathBuf);
 
@@ -71,7 +75,7 @@ fn json(args: &[&str], env: &[(&str, &str)]) -> serde_json::Value {
 /// `consistent --json`'s decided verdict, as #605 does it: only exit 0 with
 /// `incomplete: false` is a verdict. Exit 3 is a give-up (printed as `consistent:
 /// true`, its sound direction, but not a proof), and accepting it would make the FP
-/// control and the flag-off arms vacuous. A give-up is retried (host load can cut the
+/// control and the default-flag arms vacuous. A give-up is retried (host load can cut the
 /// wedge), up to 3 attempts; never decided fails. The fallback deadline is raised too.
 fn consistent(f: &Fixture, env: &[(&str, &str)]) -> bool {
     let mut env = env.to_vec();
@@ -94,7 +98,7 @@ fn consistent(f: &Fixture, env: &[(&str, &str)]) -> bool {
 
 /// `classify --json` with no per-pair deadline, so every answer is decided: at the
 /// 5 ms default a loaded host cut pairs (`incomplete: true`) and the positive
-/// assertions below missed. The flag-off misses do not depend on timing: they come
+/// assertions below missed. The default-flag misses do not depend on timing: they come
 /// from the wedge's trusted `Sat` on the weaker clause set.
 fn classify(f: &Fixture, env: &[(&str, &str)]) -> serde_json::Value {
     let v = json(
@@ -135,9 +139,9 @@ fn inconsistent_abox_forms_are_found() {
         ),
     ] {
         let f = Fixture::new(body, &format!("incons-{tag}"));
-        assert!(!consistent(&f, &[]), "{tag}: consistent");
-        assert_eq!(classify(&f, &[])["consistent"], false, "{tag}: classify");
-        assert!(consistent(&f, &[OFF]), "{tag}: flag off shows the old miss");
+        assert!(!consistent(&f, &[ON]), "{tag}: consistent");
+        assert_eq!(classify(&f, &[ON])["consistent"], false, "{tag}: classify");
+        assert!(consistent(&f, &[]), "{tag}: the default shows the old miss");
     }
 }
 
@@ -179,12 +183,12 @@ fn unsatisfiable_classes_are_found() {
     ] {
         let f = Fixture::new(body, &format!("unsat-{tag}"));
         assert!(
-            unsat(&classify(&f, &[]), "D"),
+            unsat(&classify(&f, &[ON]), "D"),
             "{tag}: classify misses D ⊑ ⊥"
         );
         assert!(
-            !unsat(&classify(&f, &[OFF]), "D"),
-            "{tag}: flag off shows the old miss"
+            !unsat(&classify(&f, &[]), "D"),
+            "{tag}: the default shows the old miss"
         );
         // Control through the main tableau: `sat` decides it either way.
         let out = run(&["sat", f.path(), &format!("{NS}D")], &[]);
@@ -205,12 +209,12 @@ fn a_complex_member_is_a_subclass_of_the_union() {
         "member",
     );
     assert!(
-        has_row(&classify(&f, &[]), "D", "C"),
+        has_row(&classify(&f, &[ON]), "D", "C"),
         "classify misses D ⊑ C"
     );
     assert!(
-        !has_row(&classify(&f, &[OFF]), "D", "C"),
-        "flag off: the old miss"
+        !has_row(&classify(&f, &[]), "D", "C"),
+        "the default: the old miss"
     );
 }
 
@@ -220,7 +224,7 @@ fn a_complex_member_is_a_subclass_of_the_union() {
 #[test]
 fn nothing_is_entailed_beyond_the_axioms() {
     let f = Fixture::new("DisjointUnion(:C :A ObjectSomeValuesFrom(:r :B))", "fp-du");
-    let v = classify(&f, &[]);
+    let v = classify(&f, &[ON]);
     assert!(!has_row(&v, "C", "A"), "C ⋢ A: {v}");
     assert!(has_row(&v, "A", "C"), "A ⊑ C: {v}");
     assert!(!unsat(&v, "C"), "C satisfiable: {v}");
@@ -228,7 +232,7 @@ fn nothing_is_entailed_beyond_the_axioms() {
         "DisjointClasses(:A ObjectAllValuesFrom(:r :B)) SubClassOf(:D :A)",
         "fp-dc",
     );
-    let v = classify(&f, &[]);
+    let v = classify(&f, &[ON]);
     assert!(
         !unsat(&v, "A") && !unsat(&v, "D"),
         "A and D satisfiable: {v}"
@@ -240,7 +244,7 @@ fn nothing_is_entailed_beyond_the_axioms() {
              ClassAssertion(ObjectComplementOf(:B) :c)",
             "fp-dc-abox",
         ),
-        &[]
+        &[ON]
     ));
 }
 
@@ -258,8 +262,8 @@ fn the_horn_shift_reaches_justify() {
     let q = ["justify", "--json", f.path(), "subclass"];
     let (d, a) = (format!("{NS}D"), format!("{NS}A"));
     let args = [q[0], q[1], q[2], q[3], d.as_str(), a.as_str()];
-    assert_eq!(json(&args, &[])["minimal"], true);
-    assert_eq!(json(&args, &[OFF])["minimal"], false);
+    assert_eq!(json(&args, &[ON])["minimal"], true);
+    assert_eq!(json(&args, &[])["minimal"], false);
     let fragment = |env: &[(&str, &str)]| {
         let out = run(&["classify", f.path()], env);
         let text = format!(
@@ -272,19 +276,15 @@ fn the_horn_shift_reaches_justify() {
             .map(str::to_owned)
             .unwrap_or_default()
     };
-    assert!(fragment(&[]).contains("Horn"), "{}", fragment(&[]));
-    assert!(
-        fragment(&[OFF]).contains("out-of-EL"),
-        "{}",
-        fragment(&[OFF])
-    );
+    assert!(fragment(&[ON]).contains("Horn"), "{}", fragment(&[ON]));
+    assert!(fragment(&[]).contains("out-of-EL"), "{}", fragment(&[]));
 }
 
 /// #600 review (cost canary): a trigger-less fallback (no body-encodable conjunct) is a
 /// `⊤`-bodied disjunctive clause, and classify cost grew exponentially in their number
 /// (Fable's generator: 5 axioms 1 s, 8 cut, 32 a timeout; main 0.02 s). Past
 /// `TRIGGERLESS_FALLBACK_CAP` they are deferred and counted, so K = 32 finishes uncut,
-/// with every row the flag-off arm (main's behaviour) finds.
+/// with every row the default arm (main's behaviour) finds.
 #[test]
 fn many_trigger_less_axioms_do_not_blow_up() {
     use std::fmt::Write as _;
@@ -327,11 +327,11 @@ fn many_trigger_less_axioms_do_not_blow_up() {
             "120000",
             f.path(),
         ];
-        let on = json(&args, &[]);
+        let on = json(&args, &[ON]);
         assert_eq!(on["incomplete"], false, "{tag}: cut, a blow-up: {on}");
         assert_eq!(on["wedge_clauses_deferred"], K - cap, "{tag}: {on}");
-        let off = json(&args, &[OFF]);
-        assert_eq!(off["incomplete"], false, "{tag}: flag off: {off}");
+        let off = json(&args, &[]);
+        assert_eq!(off["incomplete"], false, "{tag}: default: {off}");
         for key in ["direct_subsumptions", "unsatisfiable", "equivalent_groups"] {
             assert_eq!(on[key], off[key], "{tag}: {key} lost or changed");
         }
@@ -384,5 +384,41 @@ fn the_dnf_cap_deferral_is_reported_at_default_flags() {
     assert!(
         !String::from_utf8_lossy(&out.stderr).contains("clausifier skipped"),
         "{out:?}"
+    );
+}
+
+/// #600 review (Fable): **the cost sentinel that gates a default flip.** One
+/// trigger-less axiom (`DisjointClasses(∀r.B ∀s.C)`, a `⊤`-bodied clause, admitted under
+/// the cap) beside a 200-class `∃t` chain: with the fix on, classify took 24.8–27 s
+/// (release) and was cut, losing what main (0.07–0.11 s, complete) finds. A count cap
+/// does not bound that cost; the fix stays opt-in until a cost guard makes this pass.
+/// `#[ignore]`d because it fails today (with a 120 s global deadline, so it ends).
+#[test]
+#[ignore = "fails until the opt-in fallback is cost-guarded (#600); gates a default flip"]
+fn a_long_chain_with_one_trigger_less_axiom_stays_complete() {
+    use std::fmt::Write as _;
+    let mut body =
+        String::from("DisjointClasses(ObjectAllValuesFrom(:r :B) ObjectAllValuesFrom(:s :C))\n");
+    for n in 1..200 {
+        let _ = writeln!(
+            body,
+            "SubClassOf(:N{n} ObjectSomeValuesFrom(:t :N{}))",
+            n - 1
+        );
+    }
+    let f = Fixture::new(&body, "cost-sentinel");
+    let v = json(
+        &[
+            "classify",
+            "--json",
+            "--global-timeout-ms",
+            "120000",
+            f.path(),
+        ],
+        &[ON],
+    );
+    assert_eq!(
+        v["incomplete"], false,
+        "the fallback's cost cut classify: {v}"
     );
 }

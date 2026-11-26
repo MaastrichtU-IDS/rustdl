@@ -2,9 +2,9 @@
 //!
 //! A `DisjointUnion` with a complex member made the clausifier defer its covering
 //! half (`disjoint-union-covering`), so the consistency wedge's KB was weaker by one
-//! deferral. #600 encodes it; these plumbing tests reproduce the deferral with
-//! `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`. The fixtures here are consistent, except the labelled pin of the #600
-//! miss.
+//! deferral. #600's opt-in fix (`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1`, default off) encodes
+//! it; these plumbing tests pin the deferral with the fix off. The fixtures here are consistent,
+//! except the labelled pin of the #600 miss.
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::doc_markdown)]
 
@@ -147,24 +147,26 @@ fn single_queries_report_the_deferral() {
 /// #600: this KB is inconsistent (HermiT, Konclude, and the main tableau with
 /// `RUSTDL_WEDGE_CONSISTENCY=0` agree). Before #600 the consistency wedge never saw
 /// the deferred covering `E ⊑ F ⊔ ∃r.G`, and its trusted `Sat` said consistent with
-/// one deferral as the only signal; `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0` still shows
-/// that. Now the covering is clausified and the wedge finds the clash.
+/// one deferral as the only signal. **This pins the defect at the default**: the
+/// fix is opt-in (`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1`) because its `⊤`-bodied
+/// fallback clauses have unbounded cost on growing ontologies (#600 review). With the
+/// fix on, the covering is clausified and the wedge finds the clash.
 #[test]
-fn issue_600_the_deferred_covering_miss_is_fixed() {
+fn issue_600_the_deferred_covering_miss_at_the_default() {
     let _l = lock();
     let o = onto(
         "ClassAssertion(ObjectComplementOf(:F) :b)\n\
          ClassAssertion(ObjectAllValuesFrom(:r ObjectComplementOf(:G)) :b)",
     );
     let (consistent, s) = owl_dl_reasoner::is_consistent_with_stats(&o).unwrap();
-    assert!(!consistent, "#600: the wedge sees the covering");
-    assert_eq!(s.wedge_clauses_deferred, 0, "nothing deferred");
+    assert!(consistent, "the default: the trusted miss (WRONG; #600)");
+    assert!(s.relies_on_trusted_consistency);
+    assert_eq!(s.wedge_clauses_deferred, 1, "the default: its signal");
     {
-        let _off = SetEnvGuard::set("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0");
+        let _on = SetEnvGuard::set("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "1");
         let (consistent, s) = owl_dl_reasoner::is_consistent_with_stats(&o).unwrap();
-        assert!(consistent, "fix off: the old trusted miss");
-        assert!(s.relies_on_trusted_consistency);
-        assert_eq!(s.wedge_clauses_deferred, 1, "fix off: its signal");
+        assert!(!consistent, "fix on: the wedge sees the covering");
+        assert_eq!(s.wedge_clauses_deferred, 0, "fix on: nothing deferred");
     }
     let _w = SetEnvGuard::set("RUSTDL_WEDGE_CONSISTENCY", "0");
     let (consistent, _) = owl_dl_reasoner::is_consistent_with_stats(&o).unwrap();

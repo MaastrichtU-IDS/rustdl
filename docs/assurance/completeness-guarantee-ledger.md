@@ -57,12 +57,18 @@ be a model of the input, so the trusted `Sat` can hide an inconsistency (a miss,
 never a false positive). The deferred count is of deferral events, not axioms (a
 `DisjointUnion` with two complex members reads 3), and 0 does not prove the wedge
 saw the whole KB: the axiom kinds the clausifier ignores drop clauses uncounted, and
-so, only with `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=0`, does the pairwise-disjointness half
-of a `DisjointUnion` whose members do not encode (#600 otherwise clausifies or counts it).
+so, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, does the pairwise-disjointness half
+of a `DisjointUnion` whose members do not encode (that flag clausifies or counts it).
 
-Since #600 the clausifier encodes complex `DisjointClasses` / `DisjointUnion`
-members and the `DisjointUnion` covering (`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT`, default
-on), the deferrals behind the live misses #558 found. A fallback with no soft trigger
+#600 adds an **opt-in** fix (`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1`, default OFF) that
+encodes complex `DisjointClasses` / `DisjointUnion` members and the `DisjointUnion`
+covering, the deferrals behind the live misses #558 found. At the default those
+misses remain, and `wedge_clauses_deferred` (classify) and the consistency counts
+report them. Opt-in because its cost is unbounded on growing ontologies: one
+trigger-less fallback beside a 200-class chain took 24.8 s and was cut (main 0.07 s,
+complete), and soft-trigger fallbacks with range axioms blow up too (64 axioms:
+21.7 s, cut); a cut loses answers main finds. A default flip waits for a cost guard
+(follow-up issue). With the flag on, a fallback with no soft trigger
 (no body-encodable conjunct: `∀r.B`, `≤1 s.C`, `∀r.B ⊓ ∀s.C`, …) is a `⊤`-bodied
 disjunctive clause whose cost grows exponentially with their number, so at most
 `TRIGGERLESS_FALLBACK_CAP` (2) are emitted per clausification; the rest are deferred

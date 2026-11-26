@@ -86,6 +86,12 @@ pub enum UnresolvedReason {
     AxiomsDroppedAtConversion {
         count: u64,
     },
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change an entailment, and conversion reads it as an ordinary
+    /// property. A model of that reading need not be a model of the input, so a
+    /// `Verified` would vouch for a weaker closure, as with dropped axioms.
+    UniversalRoleReadAsOrdinary,
 }
 
 /// One axiom that a checked model fails to satisfy.

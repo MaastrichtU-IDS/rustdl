@@ -41,6 +41,45 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
         .unwrap_or_default()
 }
 
+/// `dropped_block` plus #543's `universal_role_ordinary`, from ONE conversion, for
+/// the commands that report both. A failed conversion reads as nothing dropped and
+/// no flag, as `dropped_block` does.
+pub(crate) fn conversion_block(onto: &SetOntology<RcStr>) -> (BTreeMap<String, u64>, bool) {
+    owl_dl_reasoner::conversion_report(onto)
+        .map(|(d, uro)| (d.by_kind().clone(), uro))
+        .unwrap_or_default()
+}
+
+/// #543's flag for a command that does not otherwise convert the ontology: a byte
+/// search of the file for the two top property names first, so an ontology that
+/// names neither (all but a handful) is not converted a second time.
+pub(crate) fn universal_role_flag(file: &std::path::Path, onto: &SetOntology<RcStr>) -> bool {
+    names_a_top_property(file) && conversion_block(onto).1
+}
+
+/// #543 for the role-level surfaces (`property-values`, `realize --properties`): also
+/// set when a role sits above a top property, whose edges between every pair of
+/// individuals those surfaces do not list. See
+/// `owl_dl_reasoner::universal_role_ordinary_for_roles`.
+pub(crate) fn universal_role_flag_for_roles(
+    file: &std::path::Path,
+    onto: &SetOntology<RcStr>,
+) -> bool {
+    names_a_top_property(file)
+        && owl_dl_reasoner::universal_role_ordinary_for_roles(onto).unwrap_or(false)
+}
+
+/// Does the file name `owl:topObjectProperty` or `owl:topDataProperty` at all? A
+/// pre-filter only (any spelling of the IRI contains the local name); unreadable
+/// counts as yes, so the conversion decides.
+fn names_a_top_property(file: &std::path::Path) -> bool {
+    let Ok(bytes) = std::fs::read(file) else {
+        return true;
+    };
+    let mentions = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    mentions(b"topObjectProperty") || mentions(b"topDataProperty")
+}
+
 /// Decisions taken on the wedge's trusted `Sat` verdict, without the tableau
 /// (issue #66; #568 widened it to every channel):
 ///
@@ -244,6 +283,13 @@ pub(crate) struct ClassifyJson {
     /// these axioms could add answers (both Konclude and `HermiT` keep the repeats); this
     /// field is how a caller sees that. `{"axioms": 0, "vacuous": 0}` when none.
     pub(crate) collapsed_operands: CollapsedOperandsJson,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 /// `collapsed_operands` in `classify --json` and `consistent --json` (#538).
@@ -303,6 +349,13 @@ pub(crate) struct ConsistentJson {
     /// #538: as in `classify --json`. A repeated operand of `DifferentIndividuals` or
     /// `DisjointClasses` no longer makes the ontology inconsistent.
     pub(crate) collapsed_operands: CollapsedOperandsJson,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 /// One entry of `VerifyElJson::violations`.
@@ -329,6 +382,13 @@ pub(crate) struct VerifyElJson {
     pub(crate) violations: Vec<VerifyElViolationJson>,
     pub(crate) unresolved: Vec<String>,
     pub(crate) dropped: BTreeMap<String, u64>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[derive(Serialize)]
@@ -405,8 +465,17 @@ pub(crate) struct RealizeJson {
     pub(crate) saturation_only: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct DisjointJson {
     pub(crate) schema_version: u32,
@@ -435,6 +504,13 @@ pub(crate) struct DisjointJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -480,6 +556,13 @@ pub(crate) struct SatExprJson {
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) satisfiable: bool,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -525,6 +608,13 @@ pub(crate) struct SubclassExprJson {
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) entailed: bool,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -560,12 +650,20 @@ pub(crate) struct InstancesExprJson {
     /// check's own probe (after a positive answer) sets it with `consistency_undetermined`.
     pub(crate) no_verdict: bool,
     pub(crate) instances: Vec<String>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[must_use]
 pub(crate) fn build_sat_expr_json(v: &owl_dl_reasoner::CeVerdict) -> SatExprJson {
     SatExprJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: v.universal_role_ordinary(),
         incomplete: v.incomplete(),
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
@@ -579,6 +677,7 @@ pub(crate) fn build_sat_expr_json(v: &owl_dl_reasoner::CeVerdict) -> SatExprJson
 pub(crate) fn build_subclass_expr_json(v: &owl_dl_reasoner::CeVerdict) -> SubclassExprJson {
     SubclassExprJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: v.universal_role_ordinary(),
         incomplete: v.incomplete(),
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
@@ -594,6 +693,7 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
     instances.sort();
     InstancesExprJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: r.universal_role_ordinary(),
         incomplete: r.incomplete(),
         depth_capped: r.depth_capped(),
         completeness_guaranteed: r.completeness_guaranteed(),
@@ -666,6 +766,7 @@ pub(crate) fn build_classify_json(
 
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: stats.universal_role_ordinary && !stats.inconsistent,
         consistent: !stats.inconsistent,
         incomplete: deadline_flags(&stats).0,
         prep_timed_out: deadline_flags(&stats).1,
@@ -700,6 +801,7 @@ pub(crate) fn build_classify_json(
 pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: false,
         consistent: true,
         incomplete: true,
         prep_timed_out: true,
@@ -753,9 +855,11 @@ pub(crate) fn build_consistent_json(
     no_verdict: bool,
     dropped: BTreeMap<String, u64>,
     collapsed_operands: CollapsedOperandsJson,
+    universal_role_ordinary: bool,
 ) -> ConsistentJson {
     ConsistentJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         consistent,
         incomplete,
         relies_on_trusted_consistency,
@@ -781,9 +885,11 @@ pub(crate) fn build_verify_el_json(
     violations: Vec<VerifyElViolationJson>,
     unresolved: Vec<String>,
     dropped: BTreeMap<String, u64>,
+    universal_role_ordinary: bool,
 ) -> VerifyElJson {
     VerifyElJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         verdict,
         domain_size,
         axioms_checked,
@@ -798,6 +904,7 @@ pub(crate) fn build_realize_json(
     r: &Realization,
     dropped: BTreeMap<String, u64>,
     saturation_only: bool,
+    universal_role_ordinary: bool,
 ) -> RealizeJson {
     let mut individuals: Vec<IndividualTypesJson> = r
         .individuals()
@@ -817,6 +924,7 @@ pub(crate) fn build_realize_json(
     individuals.sort_by(|a, b| a.iri.cmp(&b.iri));
     RealizeJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: r.incomplete(),
         depth_capped: r.depth_capped(),
         witness_prune_active: r.witness_prune_active(),
@@ -854,6 +962,13 @@ pub(crate) struct PropHierJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 fn side(c: &PropertyClassification) -> PropHierSide {
@@ -876,9 +991,11 @@ pub(crate) fn build_prophier_json(
     obj: &PropertyClassification,
     data: &PropertyClassification,
     structural_gaps: Vec<String>,
+    universal_role_ordinary: bool,
 ) -> PropHierJson {
     PropHierJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: false,
         object_properties: side(obj),
         data_properties: side(data),
@@ -893,6 +1010,7 @@ pub(crate) fn build_disjoint_json(
     data: Vec<(String, String)>,
     consistency_undetermined: bool,
     structural_gaps: Vec<String>,
+    universal_role_ordinary: bool,
 ) -> DisjointJson {
     let to_arr = |v: Vec<(String, String)>| {
         let mut a: Vec<[String; 2]> = v.into_iter().map(|(x, y)| [x, y]).collect();
@@ -907,6 +1025,7 @@ pub(crate) fn build_disjoint_json(
     dc.sort();
     DisjointJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: classes.incomplete(),
         disjoint_classes: dc,
         disjoint_object_properties: to_arr(obj),
@@ -917,6 +1036,8 @@ pub(crate) fn build_disjoint_json(
     }
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct IndividualsJson {
     pub(crate) schema_version: u32,
@@ -939,12 +1060,20 @@ pub(crate) struct IndividualsJson {
     pub(crate) no_verdict: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[must_use]
 pub(crate) fn build_individuals_json(
     same: &SameIndividuals,
     different: &DifferentIndividuals,
+    universal_role_ordinary: bool,
 ) -> IndividualsJson {
     let mut same_groups: Vec<Vec<String>> = same
         .groups()
@@ -969,6 +1098,7 @@ pub(crate) fn build_individuals_json(
 
     IndividualsJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: same.incomplete() || different.incomplete(),
         consistency_undetermined: same.consistency_undetermined()
             || different.consistency_undetermined(),
@@ -978,6 +1108,8 @@ pub(crate) fn build_individuals_json(
     }
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct PropertyValuesJson {
     pub(crate) schema_version: u32,
@@ -1006,6 +1138,13 @@ pub(crate) struct PropertyValuesJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[must_use]
@@ -1013,6 +1152,7 @@ pub(crate) fn build_property_values_json(
     obj: &ObjectPropertyValues,
     data: &DataPropertyValues,
     structural_gaps: Vec<String>,
+    universal_role_ordinary: bool,
 ) -> PropertyValuesJson {
     let mut object_property_values: Vec<[String; 3]> = obj
         .triples()
@@ -1032,6 +1172,7 @@ pub(crate) fn build_property_values_json(
 
     PropertyValuesJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: obj.incomplete() || data.incomplete(),
         object_property_values,
         consistency_undetermined: obj.consistency_undetermined() || data.consistency_undetermined(),
@@ -1077,6 +1218,13 @@ pub(crate) struct JustifyJson {
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) justifications: Vec<JustificationJson>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[derive(Serialize)]
@@ -1115,6 +1263,7 @@ pub(crate) fn build_justify_json(
     pm: &PrefixMapping,
     laconic: bool,
     enumeration_complete: bool,
+    universal_role_ordinary: bool,
 ) -> JustifyJson {
     let justs = &outcome.justifications;
     let minimal = justs.iter().all(|j| j.minimal_guaranteed);
@@ -1126,6 +1275,7 @@ pub(crate) fn build_justify_json(
         .collect();
     JustifyJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         status: match outcome.status {
             Verdict::Entailed => "entailed",
             Verdict::NotEntailed => "not-entailed",
@@ -1205,6 +1355,13 @@ pub(crate) struct ProveJson {
     /// with no axioms at all, unlike an empty fallback with `incomplete: true`,
     /// where the search gave up (#402).
     pub(crate) justification_minimal: Option<bool>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[derive(Serialize)]
@@ -1555,6 +1712,7 @@ pub(crate) fn build_prove_json(
 ) -> Result<ProveJson> {
     let verdict = |entailed: bool, status: &str| ProveJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: owl_dl_core::top_bottom_roles::universal_role_ordinary(internal),
         entailed,
         status: status.to_owned(),
         incomplete: flags.incomplete,

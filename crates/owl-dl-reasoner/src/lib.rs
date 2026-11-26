@@ -6419,8 +6419,8 @@ pub fn classify_tbox_only_enabled() -> bool {
 /// **Completeness:** nominal-free SROIQ(D) is closed under disjoint union, so on
 /// a consistent KB with no nominal in the `TBox` or the query, `T ∪ A ⊨ C ⊑ D`
 /// iff `T ⊨ C ⊑ D`. rustdl does not implement the universal role, the one
-/// construct that breaks this (`owl:topObjectProperty` is an ordinary role).
-/// A consistency verdict that rests on a trusted wedge `Sat` is reported through
+/// construct that breaks this (`owl:topObjectProperty` is an ordinary role; #543
+/// flags its uses, and implementing it must gate this route). A consistency verdict that rests on a trusted wedge `Sat` is reported through
 /// [`QueryStats::relies_on_trusted_consistency`].
 #[must_use]
 pub fn query_tbox_only_enabled() -> bool {
@@ -7507,6 +7507,42 @@ pub fn dropped_axioms<A: horned_owl::model::ForIRI>(
     Ok(owl_dl_core::convert::convert_ontology(ontology)?.dropped)
 }
 
+/// The conversion's report on what reasoning will under-approximate: the dropped
+/// axioms (#43) and whether a universal role is used where rustdl's ordinary-role
+/// reading can miss entailments (#543,
+/// [`owl_dl_core::top_bottom_roles::universal_role_ordinary`]). One conversion for
+/// both, for surfaces that report them before or beside their answer.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn conversion_report<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(DroppedAxioms, bool), ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    Ok((internal.dropped, uro))
+}
+
+/// #543, for the ROLE-level surfaces (`property-values`, materialized property
+/// assertions): `true` when [`conversion_report`]'s flag is set, or when a role sits
+/// above a top property (`top ⊑* r`). Such an `r` relates every pair of individuals,
+/// an edge those surfaces do not report, even where the class-level answers are
+/// unaffected.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn universal_role_ordinary_for_roles<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<bool, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    Ok(
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal)
+            || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty(),
+    )
+}
+
 use std::collections::HashMap;
 
 use horned_owl::model::ForIRI;
@@ -8309,6 +8345,11 @@ pub struct QueryStats {
     /// off stats that no conversion produced. A count rather than the kinds, so
     /// `QueryStats` stays `Copy`; [`dropped_axioms`] gives the kinds.
     pub dropped_axioms: u64,
+    /// #543: the query's conversion uses a universal role where its semantics could
+    /// change the answer (`owl_dl_core::top_bottom_roles::universal_role_ordinary`);
+    /// rustdl reads it as an ordinary property, so a negative verdict may be wrong.
+    /// Voids [`Self::completeness_guaranteed`], as `dropped_axioms` does. Stamped with it.
+    pub universal_role_ordinary: bool,
 }
 
 impl QueryStats {
@@ -8329,6 +8370,7 @@ impl QueryStats {
         self.pure_el_mode
             && !self.incomplete
             && self.dropped_axioms == 0
+            && !self.universal_role_ordinary
             && !self.consistency_undetermined
             && !self.relies_on_trusted_consistency
     }
@@ -8769,9 +8811,11 @@ pub(crate) fn is_class_satisfiable_keeping(
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (holds, mut stats, left) =
         is_class_satisfiable_keeping_inner(internal, class_iri, closure)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((holds, stats, left))
 }
 
@@ -8822,6 +8866,7 @@ fn is_class_satisfiable_keeping_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8839,6 +8884,7 @@ fn is_class_satisfiable_keeping_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8863,6 +8909,7 @@ fn is_class_satisfiable_keeping_inner(
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -9220,8 +9267,10 @@ fn is_consistent_internal_full(
 ) -> Result<(bool, QueryStats), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (consistent, mut stats) = is_consistent_internal_full_inner(internal)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((consistent, stats))
 }
 
@@ -9249,6 +9298,7 @@ fn is_consistent_internal_full_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9270,6 +9320,7 @@ fn is_consistent_internal_full_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9307,6 +9358,7 @@ fn is_consistent_internal_full_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9327,6 +9379,7 @@ fn is_consistent_internal_full_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9358,6 +9411,7 @@ fn is_consistent_internal_full_inner(
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9384,6 +9438,7 @@ fn is_consistent_internal_full_inner(
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9406,6 +9461,7 @@ fn is_consistent_internal_full_inner(
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9511,6 +9567,7 @@ fn is_consistent_internal_full_inner(
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
     ))
 }
@@ -9969,9 +10026,11 @@ pub(crate) fn is_subclass_of_keeping(
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (holds, mut stats, left) =
         is_subclass_of_keeping_inner(internal, sub_iri, super_iri, closure)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((holds, stats, left))
 }
 
@@ -10025,6 +10084,7 @@ fn is_subclass_of_keeping_inner(
         consistency_undetermined: false,
         no_verdict: false,
         dropped_axioms: 0,
+        universal_role_ordinary: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -10083,6 +10143,7 @@ fn is_subclass_of_keeping_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -10114,6 +10175,7 @@ fn is_subclass_of_keeping_inner(
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))

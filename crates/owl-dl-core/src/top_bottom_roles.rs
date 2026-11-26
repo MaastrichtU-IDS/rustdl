@@ -56,11 +56,17 @@ pub const OWL_BOTTOM_DATA_PROPERTY: &str = "http://www.w3.org/2002/07/owl#bottom
 /// non-empty domain), `EquivalentObjectProperties` and `InverseObjectProperties`
 /// (`U⁻ = U`, so polarity is irrelevant and the set is over role ids).
 fn universal_roles(out: &InternalOntology) -> BTreeSet<RoleId> {
-    let mut u: BTreeSet<RoleId> = out
-        .vocabulary
-        .role_id(OWL_TOP_OBJECT_PROPERTY)
-        .into_iter()
-        .collect();
+    upward_closure(
+        out,
+        out.vocabulary
+            .role_id(OWL_TOP_OBJECT_PROPERTY)
+            .into_iter()
+            .collect(),
+    )
+}
+
+/// `seeds` closed upward as [`universal_roles`] describes.
+fn upward_closure(out: &InternalOntology, mut u: BTreeSet<RoleId>) -> BTreeSet<RoleId> {
     if u.is_empty() {
         return u;
     }
@@ -177,4 +183,190 @@ pub(crate) fn state_top_bottom_role_semantics(out: &mut InternalOntology) {
             out.builtin.push(ax);
         }
     }
+}
+
+/// #543: does the ontology use a universal role where its universal-role semantics,
+/// which rustdl does not implement, could change a class-level entailment?
+///
+/// `owl:topObjectProperty` (and `owl:topDataProperty`, which OWL 2 DL allows only as a
+/// super-property) is an ordinary role to every engine. That is sound for positives:
+/// a model of the ordinary reading in which every universal role `u` is reinterpreted
+/// as `Δ × Δ` still satisfies every *inert* occurrence of `u`, so the ordinary
+/// entailments are a subset of the universal ones. An occurrence that is not inert
+/// can lose entailments, and then `completeness_guaranteed` and every definite
+/// negative must say so (condition 9 of `ClassificationStats::completeness_guaranteed`).
+///
+/// U is both top properties closed upward (inclusion, all-universal chains,
+/// equivalence, inverses). **Inert** occurrences of `u ∈ U`:
+/// - `x ⊑ u` (any `x`), and a chain whose super-role is in U;
+/// - equivalence and inverse within U (the closure puts both sides in U);
+/// - `Transitive(u)`, `Symmetric(u)`, `Reflexive(u)`: true of `Δ × Δ`;
+/// - a positive assertion `u(a, b)`: true of `Δ × Δ`;
+/// - a negative assertion `¬u(a, b)` on an OBJECT universal role: #539's A4 already
+///   states `⊤ ⊑ ⊥` for it.
+///
+/// `owl:topDataProperty` anywhere but the super position of a property inclusion is a
+/// use: OWL 2 DL allows nothing else, and #539 states nothing for it (`topData ⊑
+/// bottomData` is inconsistent, as `Δ × D` is not empty).
+///
+/// Everything else is a **use**: `u` inside any concept (`∃`, `∀`, cardinality,
+/// `Self`, `HasValue`, data restrictions on `owl:topDataProperty`), the domain or
+/// range of `u`, `Functional`, `InverseFunctional`, `Irreflexive` or `Asymmetric(u)`,
+/// `u` in a `DisjointObjectProperties`, and `u` as a leg of a chain into a role
+/// outside U. The match below is exhaustive on purpose: a new axiom kind must be
+/// classified, not defaulted to inert. #539's built-in axioms are skipped (they state
+/// semantics; `∃bottom.⊤ ⊑ ⊥` is not a use even when `top ⊑* bottom` puts bottom in U).
+///
+/// "Inert" is about CLASS-level entailments. Role-level surfaces (`property-values`,
+/// materialized property assertions) miss `r(x, y)` for every `r ∈ U \ {top}` under
+/// any occurrence; [`universal_super_roles`] names those roles.
+///
+/// A pure function of the converted ontology: `O(1)` when neither top property is
+/// interned, which is every ontology that does not mention them.
+#[must_use]
+pub fn universal_role_ordinary(out: &InternalOntology) -> bool {
+    let seeds: BTreeSet<RoleId> = [OWL_TOP_OBJECT_PROPERTY, OWL_TOP_DATA_PROPERTY]
+        .iter()
+        .filter_map(|iri| out.vocabulary.role_id(iri))
+        .collect();
+    if seeds.is_empty() {
+        return false;
+    }
+    let u = upward_closure(out, seeds);
+    // #539's A3/A4 cover the OBJECT universal roles only (`universal_roles`); a role
+    // universal only through `owl:topDataProperty` gets no built-in, so nothing is
+    // inert on #539's account there.
+    let u_obj = universal_roles(out);
+    let top_data = out.vocabulary.role_id(OWL_TOP_DATA_PROPERTY);
+    let mut seen: std::collections::HashMap<crate::ir::ConceptId, bool> =
+        std::collections::HashMap::new();
+    let roles = RoleSets {
+        u: &u,
+        u_obj: &u_obj,
+        top_data,
+    };
+    out.axioms
+        .iter()
+        .filter(|ax| !out.builtin.contains(ax))
+        .any(|ax| axiom_uses(ax, &roles, &mut |c| concept_mentions(out, c, &u, &mut seen)))
+}
+
+/// The role sets [`axiom_uses`] classifies against.
+struct RoleSets<'a> {
+    /// Every universal role (both top properties, closed upward).
+    u: &'a BTreeSet<RoleId>,
+    /// The object universal roles, which #539's A3/A4 cover.
+    u_obj: &'a BTreeSet<RoleId>,
+    /// `owl:topDataProperty`, if interned.
+    top_data: Option<RoleId>,
+}
+
+impl RoleSets<'_> {
+    fn in_u(&self, r: Role) -> bool {
+        self.u.contains(&r.role_id())
+    }
+    fn is_top_data(&self, r: Role) -> bool {
+        self.top_data == Some(r.role_id())
+    }
+}
+
+/// The roles that are universal only because they sit above a top property
+/// (`top ⊑* r`, `r` not a top property itself). Every named pair is an `r`-edge of
+/// the ontology, which the role-level surfaces do not report (#543).
+#[must_use]
+pub fn universal_super_roles(out: &InternalOntology) -> BTreeSet<RoleId> {
+    let seeds: BTreeSet<RoleId> = [OWL_TOP_OBJECT_PROPERTY, OWL_TOP_DATA_PROPERTY]
+        .iter()
+        .filter_map(|iri| out.vocabulary.role_id(iri))
+        .collect();
+    if seeds.is_empty() {
+        return seeds;
+    }
+    let mut u = upward_closure(out, seeds.clone());
+    u.retain(|r| !seeds.contains(r));
+    u
+}
+
+fn axiom_uses(
+    ax: &Axiom,
+    roles: &RoleSets<'_>,
+    concept: &mut impl FnMut(crate::ir::ConceptId) -> bool,
+) -> bool {
+    let in_u = |r: &Role| roles.in_u(*r);
+    let top_data = |r: &Role| roles.is_top_data(*r);
+    match ax {
+        Axiom::SubClassOf { sub, sup } => concept(*sub) || concept(*sup),
+        Axiom::EquivalentClasses(cs) | Axiom::DisjointClasses(cs) => cs.iter().any(|c| concept(*c)),
+        Axiom::DisjointUnion { members, .. } => members.iter().any(|c| concept(*c)),
+        Axiom::SubObjectPropertyOf { sub, sup } => match sub {
+            // OWL 2 DL allows `owl:topDataProperty` only as a super-property, and no
+            // built-in covers it: `topData ⊑ bottomData` is inconsistent (`Δ × D` is
+            // not empty) and read as consistent. Any sub use of it is flagged.
+            SubRolePath::Role(r) if top_data(r) => true,
+            // `x ⊑ u` is inert; `u ⊑ r` puts `r` in U, so it is inert too.
+            SubRolePath::Role(_) => false,
+            SubRolePath::Chain(legs) => {
+                legs.iter().any(top_data) || (!in_u(sup) && legs.iter().any(in_u))
+            }
+        },
+        // Within U these are inert (the closure takes both sides), but not with
+        // `owl:topDataProperty` as an operand, for the reason above.
+        Axiom::EquivalentObjectProperties(rs) => rs.iter().any(top_data),
+        Axiom::InverseObjectProperties(p, q) => top_data(p) || top_data(q),
+        // A negated assertion on an OBJECT universal role is #539's A4 (`⊤ ⊑ ⊥`); on
+        // a role universal only through `owl:topDataProperty` (punned) nothing states
+        // it, so it is a use.
+        Axiom::NegativeObjectPropertyAssertion { role, .. } => {
+            in_u(role) && !roles.u_obj.contains(&role.role_id())
+        }
+        Axiom::DisjointObjectProperties(rs) => rs.iter().any(in_u),
+        Axiom::ObjectPropertyDomain { role, domain: c }
+        | Axiom::ObjectPropertyRange { role, range: c } => in_u(role) || concept(*c),
+        Axiom::AsymmetricRole(r)
+        | Axiom::IrreflexiveRole(r)
+        | Axiom::FunctionalRole(r)
+        | Axiom::InverseFunctionalRole(r) => in_u(r),
+        Axiom::ClassAssertion { class, .. } => concept(*class),
+        // Inert: `Transitive`, `Symmetric`, `Reflexive` (true of `Δ × Δ`); a positive
+        // assertion (true of `Δ × Δ`); the rest name no role.
+        Axiom::TransitiveRole(_)
+        | Axiom::SymmetricRole(_)
+        | Axiom::ReflexiveRole(_)
+        | Axiom::ObjectPropertyAssertion { .. }
+        | Axiom::SameIndividual(_)
+        | Axiom::DifferentIndividuals(_)
+        | Axiom::DeclareClass(_)
+        | Axiom::DeclareObjectProperty(_)
+        | Axiom::DeclareNamedIndividual(_) => false,
+    }
+}
+
+/// Does concept `c` contain a restriction on a role in `u`? Memoised per concept.
+fn concept_mentions(
+    out: &InternalOntology,
+    c: crate::ir::ConceptId,
+    u: &BTreeSet<RoleId>,
+    seen: &mut std::collections::HashMap<crate::ir::ConceptId, bool>,
+) -> bool {
+    use crate::ir::ConceptExpr as E;
+    if let Some(&v) = seen.get(&c) {
+        return v;
+    }
+    // Provisional entry: the pool is a DAG, but this keeps a cycle from recursing.
+    seen.insert(c, false);
+    let v = match out.concepts.get(c) {
+        E::Top | E::Bot | E::Atomic(_) | E::Nominal(_) => false,
+        E::SelfRestriction(r) => u.contains(&r.role_id()),
+        E::Not(x) => concept_mentions(out, *x, u, seen),
+        E::And(xs) | E::Or(xs) => {
+            let xs: Vec<_> = xs.to_vec();
+            xs.into_iter().any(|x| concept_mentions(out, x, u, seen))
+        }
+        E::Some(r, x) | E::All(r, x) | E::Min(_, r, x) | E::Max(_, r, x) => {
+            let (r, x) = (*r, *x);
+            u.contains(&r.role_id()) || concept_mentions(out, x, u, seen)
+        }
+    };
+    seen.insert(c, v);
+    v
 }

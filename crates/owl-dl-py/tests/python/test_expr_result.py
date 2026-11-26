@@ -137,6 +137,7 @@ def test_result_is_a_read_only_mapping(tmp_path):
         "consistency_undetermined",
         "no_verdict",
         "dropped",
+        "universal_role_ordinary",
     }
     with pytest.raises(Exception):
         v.holds = False  # frozen

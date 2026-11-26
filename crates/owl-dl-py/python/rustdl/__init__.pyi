@@ -183,6 +183,13 @@ class TrustedConsistencyWarning(UserWarning):
     ABox on its strength (#401). Not an `IncompleteQueryWarning`: nothing was
     cut."""
 
+class DroppedAxiomsWarning(UserWarning):
+    """Emitted by the class-expression queries and their `*_result` forms when
+    conversion dropped axioms it could not represent, from the ontology or from the
+    query expression itself (#552). The answer is sound, but a "satisfiable", a
+    "not entailed" or a missing member may be wrong in that direction. Not an
+    `IncompleteQueryWarning`: nothing was cut."""
+
 class ConsistencyUndeterminedWarning(UserWarning):
     """Emitted when a positive answer's KB consistency stayed undetermined (#369),
     so it may be the vacuous answer of an inconsistent KB: by
@@ -390,7 +397,8 @@ def class_expression_satisfiable(path: str, ce: str) -> bool:
     """True iff the Manchester-syntax class expression `ce` is satisfiable
     w.r.t. the ontology at `path` (resolved against the ontology's own prefix
     map). If the probe gave up (node cap), returns `True` and emits
-    `IncompleteQueryWarning`; an answer off pure EL does not warn. A positive answer whose consistency check's own probe stalled (likely a
+    `IncompleteQueryWarning`; an answer off pure EL does not warn. Emits
+    `DroppedAxiomsWarning` when conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
@@ -398,7 +406,8 @@ def class_expression_entailed_subclass(path: str, sub_ce: str, sup_ce: str) -> b
     """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
     (Manchester-syntax class expressions, resolved against the ontology's own
     prefix map). If the probe gave up (node cap), returns `False` and emits
-    `IncompleteQueryWarning`; an answer off pure EL does not warn. A positive answer whose consistency check's own probe stalled (likely a
+    `IncompleteQueryWarning`; an answer off pure EL does not warn. Emits
+    `DroppedAxiomsWarning` when conversion dropped axioms (#552). A positive answer whose consistency check's own probe stalled (likely a
     reasoner bug, #449) also emits `IncompleteQueryWarning` with that text (#493)."""
     ...
 
@@ -407,7 +416,50 @@ def class_expression_instances(path: str, ce: str) -> list[str]:
     `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
     prefix map). Emits `IncompleteQueryWarning` when an instance probe was cut
     (members may be missing; those returned are sound); an answer off pure EL
-    does not warn."""
+    does not warn. Emits `DroppedAxiomsWarning` when conversion dropped axioms
+    (#552)."""
+    ...
+
+class ClassExpressionVerdict(Mapping[str, object]):
+    """#552: a class-expression satisfiability or subsumption verdict and its
+    signals (the Rust `CeVerdict` accessors; the CLI's `--json` keys)."""
+    holds: bool
+    incomplete: bool
+    completeness_guaranteed: bool
+    relies_on_trusted_consistency: bool
+    consistency_undetermined: bool
+    no_verdict: bool
+    dropped: dict[str, int]
+    def to_dict(self) -> dict: ...
+
+class ClassExpressionInstances(Mapping[str, object]):
+    """#552: a class-expression instance query's members and its signals."""
+    individuals: tuple[str, ...]
+    incomplete: bool
+    completeness_guaranteed: bool
+    consistency_undetermined: bool
+    no_verdict: bool
+    depth_capped: bool
+    dropped: dict[str, int]
+    def to_dict(self) -> dict: ...
+
+def class_expression_satisfiable_result(path: str, ce: str) -> ClassExpressionVerdict:
+    """`class_expression_satisfiable` with its signals (#552). `completeness_guaranteed`:
+    the answer came off the pure-EL fast path, nothing gave up, nothing was dropped,
+    and the KB's consistency is decided and not trusted. `dropped`: the kinds the
+    conversion dropped, the query expression's included. Same warnings."""
+    ...
+
+def class_expression_entailed_subclass_result(
+    path: str, sub_ce: str, sup_ce: str
+) -> ClassExpressionVerdict:
+    """`class_expression_entailed_subclass` with its signals (#552). Same warnings."""
+    ...
+
+def class_expression_instances_result(path: str, ce: str) -> ClassExpressionInstances:
+    """`class_expression_instances` with its signals (#552). `completeness_guaranteed`:
+    the list came off the realize saturation fast path, no probe was cut, nothing was
+    dropped, and the KB's consistency was checked and decided. Same warnings."""
     ...
 
 # ── conversion diagnostics ──────────────────────────────────────────────────

@@ -76,3 +76,33 @@ class Diagnosis(_MappingDataclass):
     def _keys(self) -> tuple[str, ...]:
         base = ("consistent", "unsatisfiable", "roots", "derived")
         return base if self.consistent else base + ("inconsistency",)
+
+
+# #552: the expression queries' structured results. Field names match the Rust
+# accessors (`CeVerdict`, `CeInstances`) and the CLI's `--json` keys.
+
+
+@dataclass(frozen=True)
+class ClassExpressionVerdict(_MappingDataclass):
+    """A class-expression satisfiability or subsumption verdict and its signals."""
+
+    holds: bool
+    incomplete: bool
+    completeness_guaranteed: bool
+    relies_on_trusted_consistency: bool
+    consistency_undetermined: bool
+    no_verdict: bool
+    dropped: dict
+
+
+@dataclass(frozen=True)
+class ClassExpressionInstances(_MappingDataclass):
+    """A class-expression instance query's members and its signals."""
+
+    individuals: tuple[str, ...]
+    incomplete: bool
+    completeness_guaranteed: bool
+    consistency_undetermined: bool
+    no_verdict: bool
+    depth_capped: bool
+    dropped: dict

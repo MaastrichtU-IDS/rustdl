@@ -2781,13 +2781,19 @@ fn run() -> Result<()> {
             };
             let completeness = if structural {
                 " (owl:Thing / owl:Nothing: holds in every ontology)"
-            } else if stats.pure_el_mode && dropped.is_empty() {
+            } else if stats.completeness_guaranteed() {
+                // #552: the shared predicate (`dropped` empty, no give-up, consistency
+                // decided and not trusted), as the expression queries read it.
                 " (input is pure EL; closure is complete)"
-            } else if stats.pure_el_mode && !verdict {
+            } else if stats.pure_el_mode && !verdict && stats.dropped_axioms > 0 {
                 // #540: the closure is complete for what conversion kept, not
                 // for the input; a "no" may miss an entailment of a dropped axiom.
                 " (pure EL after dropping axioms it could not convert; closure is NOT \
                  complete for the input)"
+            } else if stats.pure_el_mode && !verdict {
+                // #552: pure EL, nothing dropped, but a give-up or the KB's consistency
+                // (undetermined, or resting on a trusted wedge `Sat`) voids the claim.
+                " (pure EL, but completeness is not guaranteed for this answer)"
             } else if stats.answered_by_saturation {
                 " (closure produced a positive witness)"
             } else {

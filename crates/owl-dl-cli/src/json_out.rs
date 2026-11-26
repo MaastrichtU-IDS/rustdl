@@ -41,37 +41,47 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
         .unwrap_or_default()
 }
 
-/// Pairs whose "not subsumed" came from the wedge's `Sat` verdict on an
-/// ontology outside the fragment where that verdict is complete by
-/// construction (issue #66).
+/// Decisions taken on the wedge's trusted `Sat` verdict, without the tableau
+/// (issue #66; #568 widened it to every channel):
 ///
-/// **This is an EXPOSURE count, not a defect count, and the difference is
-/// measured.** It reads 58 on `ro`, 163 on `sio` and 102 on `pizza` — all
-/// three of which are MISSED=0 against the Konclude oracle in the FP=0 net.
-/// So a non-zero value says these pairs were decided WITHOUT the tableau, not
-/// that any of them is wrong. It is emitted as a diagnostic for exactly that
-/// reason; an earlier revision raised a stderr WARNING here and was withdrawn
-/// once those three numbers were measured, because a warning that fires on
-/// three verifiably-correct flagship fixtures trains users to ignore the
-/// channel.
+/// - `hyper_refuted_pairs`: a pair refuted by the per-pair wedge `Sat`;
+/// - `label_cache_pruned`: a pair refuted because the super is absent from the
+///   sub's wedge `Sat` labels (the tier walk and the defined-sup sweep);
+/// - `snapshot_replay_not_subsumed`: a pair refuted by a replayed snapshot
+///   (`RUSTDL_SNAPSHOT_CAPTURE`, default off);
+/// - `wedge_sat_probe_hits`: a class taken as satisfiable (`C ⋢ ⊥`) from its
+///   wedge `Sat` label.
 ///
-/// What it IS good for: a consumer that needs exactness (the issue-#66
-/// reporter was diffing two `classify` hierarchies) can see that the
-/// hierarchy contains un-tableau-verified refutations and re-run with
-/// `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`, or ask `subclass` per pair.
+/// A count of DECISIONS, not of distinct pairs (a pair can be pruned in both the
+/// walk and the sweep). Undecided pairs below a pruned super are not included: a
+/// refutation of `C ⊑ D` also stops the walk below `D`, and those pairs are never
+/// decided.
 ///
-/// `PureEl` and `Horn` return 0: `trust_sat` is complete by construction there
-/// (the saturator carries `PureEl`, the Horn fixpoint carries `Horn`), so
-/// there is no exposure to report.
+/// No fragment is exempt (#568). `Horn` was, on the premise that the Horn
+/// fixpoint is complete; #124 refuted that, and the #564 shape with
+/// `RUSTDL_CLASSIFY_WEDGE_IF_BOUND=0` read 0 here while `classify` called an
+/// unsatisfiable class satisfiable. `PureEl` reads 0 by construction: every
+/// driver answers it from the saturator before any wedge runs.
+///
+/// **This is an EXPOSURE count, not a defect count.** At the CLI's default budget
+/// it reads 971 on `ro`, about 119,255 on `sio` and about 2,623 on `pizza`
+/// (2026-11-25, three interleaved runs each; label prunes are most of it), and all
+/// three are MISSED=0 against the Konclude oracle in the FP=0 net. Before #568 it
+/// counted only the per-pair channel, which reads the same now: 164, 336-343 and
+/// 102-103 on main `22a69b81`. A non-zero value says these verdicts
+/// were reached WITHOUT the tableau, not that any is wrong, which is why it is a
+/// diagnostic and not a stderr warning.
+///
+/// What it IS good for: a consumer that needs exactness (the issue-#66 reporter
+/// was diffing two `classify` hierarchies) can see that the hierarchy rests on
+/// unverified `Sat` verdicts, and re-run with `RUSTDL_LABEL_HEURISTIC=0` and
+/// `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` (the label channels are not gated by
+/// `TRUST_SAT`), or ask `subclass` per pair.
 pub(crate) fn trusted_sat_risk(stats: &owl_dl_reasoner::ClassificationStats) -> usize {
-    if matches!(
-        stats.fragment,
-        owl_dl_reasoner::FragmentClassification::OutOfFragment
-    ) {
-        stats.hyper_refuted_pairs
-    } else {
-        0
-    }
+    stats.hyper_refuted_pairs
+        + stats.label_cache_pruned
+        + stats.snapshot_replay_not_subsumed
+        + stats.wedge_sat_probe_hits
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema,
@@ -113,12 +123,12 @@ pub(crate) struct ClassifyJson {
     /// `conversion_timed_out` and `consistency_undetermined`. Never set without
     /// hard mode, or with `RUSTDL_PARSE_DEADLINE=0`.
     pub(crate) parse_timed_out: bool,
-    /// Issue #66: pairs concluded NOT SUBSUMED from the wedge's own `Sat`
-    /// verdict, on an ontology OUTSIDE the fragment where that verdict is
-    /// complete by construction — so this hierarchy CAN disagree with
-    /// `rustdl subclass` on the same binary and the same pair while
-    /// `incomplete` stays `false`. An EXPOSURE count, not a defect count:
-    /// see [`trusted_sat_risk`] for the measured false-alarm rate.
+    /// Issue #66, #568: verdicts taken on the wedge's own trusted `Sat`
+    /// (pairs concluded NOT SUBSUMED, and classes taken as satisfiable) without
+    /// the tableau — so this hierarchy CAN disagree with `rustdl subclass` on
+    /// the same binary and the same pair while `incomplete` stays `false`. An
+    /// EXPOSURE count of decisions, not of distinct pairs: see
+    /// [`trusted_sat_risk`].
     ///
     /// Deliberately a SEPARATE field rather than folded into `incomplete`:
     /// that flag means "a pair or probe was cut", and overloading it would destroy a
@@ -128,7 +138,9 @@ pub(crate) struct ClassifyJson {
     /// The inconsistency pre-check reached no verdict: a route gave up, or was
     /// skipped because the global deadline had already passed (#162), or
     /// classify's consistency probe was admitted (an unsatisfiable class, an
-    /// incomplete `ABox` run, or counted data values) and gave up (#446). So
+    /// incomplete `ABox` run, or counted data values) and gave up (#446), or the
+    /// run was `--saturation-only` on an input that is not pure EL, where only the
+    /// closure looked for a clash (#539). So
     /// `consistent: true` means "no clash found", not "proven consistent". On
     /// an inconsistent KB every class is unsatisfiable, so the hierarchy below
     /// may then be missing entailments (#204 review: a pigeonhole over
@@ -155,8 +167,9 @@ pub(crate) struct ClassifyJson {
     /// Added because on `X ⊑ ∃r.B`, `Domain(r, ∃s.Z)`, `∃s.Z ⊑ W` (⟹ `X ⊑ W`,
     /// derived by both Konclude and `HermiT`) every other field here reads
     /// clean: `consistent: true`, `incomplete: false` (correctly — no class pair
-    /// was cut), `trusted_sat_refutations: 0` (the pair was not refuted by a
-    /// trusted `Sat`), `direct_subsumptions: []`. The miss was surfaced NOWHERE.
+    /// was cut), `trusted_sat_refutations: 0` (before #568, which exempted Horn;
+    /// it now reads 4 there, an exposure count that does not name the miss),
+    /// `direct_subsumptions: []`. The miss was surfaced NOWHERE.
     ///
     /// A SEPARATE field rather than a change to `incomplete`, whose contract is
     /// "a pair or probe was cut" and which callers depend on: this reports a strictly
@@ -363,6 +376,12 @@ pub(crate) struct RealizeJson {
     /// is set too. A plain depth cut, deadline or node cap does not set it. Not covered:
     /// the pseudo-model witness build. (Realize runs no #369 lazy consistency check.)
     pub(crate) no_verdict: bool,
+    /// #539: the run was `realize --saturation-only`, which reads types off the EL
+    /// saturation closure alone and runs no tableau probe and no consistency check.
+    /// A sound under-approximation: every listed type is entailed, but a type may
+    /// be MISSING with every other flag clean, and an inconsistent ontology (where
+    /// every type is entailed) may go undetected. `false` on a plain `realize`.
+    pub(crate) saturation_only: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -747,7 +766,11 @@ pub(crate) fn build_verify_el_json(
 }
 
 #[must_use]
-pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>) -> RealizeJson {
+pub(crate) fn build_realize_json(
+    r: &Realization,
+    dropped: BTreeMap<String, u64>,
+    saturation_only: bool,
+) -> RealizeJson {
     let mut individuals: Vec<IndividualTypesJson> = r
         .individuals()
         .iter()
@@ -778,6 +801,7 @@ pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>
         direct_types_unverified: r.direct_types_unverified(),
         relies_on_trusted_consistency: r.relies_on_trusted_consistency(),
         no_verdict: r.no_verdict(),
+        saturation_only,
         individuals,
         dropped,
     }
@@ -1155,7 +1179,9 @@ pub(crate) struct ProofNodeJson {
     pub(crate) conclusion: String,
     /// `ElRule` name (its `Display` impl — matches the text renderer).
     pub(crate) rule: String,
-    /// Source axioms used at this step, each its own OFN ontology document.
+    /// Source axioms used at this step, each its own OFN ontology document. #586: each is
+    /// a component of the source ontology as written (not conversion's normalised form),
+    /// so a consumer can look it up literally.
     pub(crate) axioms: Vec<String>,
     /// #539: axioms used at this step that conversion added from the OWL semantics
     /// (e.g. `∃owl:bottomObjectProperty.⊤ ⊑ ⊥`), not taken from the source; each its
@@ -1163,6 +1189,12 @@ pub(crate) struct ProofNodeJson {
     /// them as the user's. Omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) builtin_axioms: Vec<String>,
+    /// #586: axioms used at this step that a later conversion pass built (from one or
+    /// several source axioms), so no source axiom is their written form;
+    /// each rendered from rustdl's internal form, its own OFN ontology document. Never
+    /// listed in `axioms`. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) derived_axioms: Vec<String>,
     /// The rule applies an axiom but none was recorded for this step.
     pub(crate) axiom_missing: bool,
     pub(crate) premises: Vec<ProofNodeJson>,
@@ -1336,12 +1368,44 @@ fn derived_fact_to_component(
     })
 }
 
+/// #586: where a proof's cited IR axioms came from in the source: see
+/// [`owl_dl_core::provenance`].
+pub(crate) struct Citations<'a> {
+    literal:
+        HashMap<owl_dl_core::ontology::Axiom, &'a horned_owl::model::AnnotatedComponent<RcStr>>,
+}
+
+impl<'a> Citations<'a> {
+    pub(crate) fn new(src: &'a SetOntology<RcStr>, internal: &InternalOntology) -> Self {
+        Self {
+            literal: owl_dl_core::provenance::literal_sources(src, internal),
+        }
+    }
+
+    /// The source component `ax` is the stored form of, if one is: directly, or, for a
+    /// piece of a decomposed chain, through the chain it came from.
+    fn source_of(
+        &self,
+        ax: &owl_dl_core::ontology::Axiom,
+        internal: &InternalOntology,
+    ) -> Option<&'a Component<RcStr>> {
+        self.literal
+            .get(ax)
+            .or_else(|| {
+                let chain = owl_dl_core::provenance::decomposed_chain_origin(internal, ax)?;
+                self.literal.get(&chain)
+            })
+            .map(|ac| &ac.component)
+    }
+}
+
 /// Recursively build a `ProofNodeJson` from a `ProofNode`: the conclusion
 /// and each cited source axiom are each rendered as their own self-contained
 /// OFN ontology document.
 fn build_proof_node_json(
     node: &owl_dl_reasoner::ProofNode,
     internal: &InternalOntology,
+    cites: &Citations<'_>,
     defs: &HashMap<ClassId, SyntheticDef>,
     pm: &PrefixMapping,
     build: &Build<RcStr>,
@@ -1367,13 +1431,28 @@ fn build_proof_node_json(
         .iter()
         .filter_map(|r| internal.axioms.get(r.0))
         .partition(|ax| internal.builtin.contains(ax));
-    let axioms: Vec<String> = source_refs.into_iter().map(render).collect();
+    // #586: a cited axiom is rendered as the source component it came from, as written,
+    // never as conversion stored it (which Protégé's literal lookup rejects). One with no
+    // single source (a later pass derived it) goes to `derived_axioms`.
+    let mut axioms: Vec<String> = Vec::new();
+    let mut derived_axioms: Vec<String> = Vec::new();
+    for ax in source_refs {
+        match cites.source_of(ax, internal) {
+            Some(component) => {
+                let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
+                if !axioms.contains(&doc) {
+                    axioms.push(doc);
+                }
+            }
+            None => derived_axioms.push(render(ax)),
+        }
+    }
     let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(render).collect();
 
     let premises = node
         .premises
         .iter()
-        .map(|p| build_proof_node_json(p, internal, defs, pm, build))
+        .map(|p| build_proof_node_json(p, internal, cites, defs, pm, build))
         .collect::<Result<Vec<_>>>()?;
     let unproved_premises = node
         .unproved_premises
@@ -1387,9 +1466,13 @@ fn build_proof_node_json(
     Ok(ProofNodeJson {
         conclusion,
         rule: node.rule.to_string(),
-        axiom_missing: node.rule.needs_axiom() && axioms.is_empty() && builtin_axioms.is_empty(),
+        axiom_missing: node.rule.needs_axiom()
+            && axioms.is_empty()
+            && builtin_axioms.is_empty()
+            && derived_axioms.is_empty(),
         axioms,
         builtin_axioms,
+        derived_axioms,
         premises,
         unproved_premises,
     })
@@ -1417,6 +1500,7 @@ fn proof_is_complete(node: &ProofNodeJson) -> bool {
 pub(crate) fn build_prove_json(
     result: &ProveEntailmentResult,
     flags: owl_dl_reasoner::ProveFlags,
+    src: &SetOntology<RcStr>,
     internal: &InternalOntology,
     pm: &PrefixMapping,
 ) -> Result<ProveJson> {
@@ -1437,9 +1521,11 @@ pub(crate) fn build_prove_json(
     Ok(match result {
         ProveEntailmentResult::SaturatorProof(data) => {
             let build: Build<RcStr> = Build::new_rc();
+            let cites = Citations::new(src, internal);
             let proof = build_proof_node_json(
                 &data.root,
                 internal,
+                &cites,
                 &data.trace.synthetic_defs,
                 pm,
                 &build,
@@ -1585,7 +1671,9 @@ mod tests {
             unproved_premises: Vec::new(),
         };
         let build = Build::new();
-        let j = build_proof_node_json(&node, &internal, &HashMap::new(), &pm, &build).unwrap();
+        let cites = Citations::new(&onto, &internal);
+        let j =
+            build_proof_node_json(&node, &internal, &cites, &HashMap::new(), &pm, &build).unwrap();
         assert_eq!(j.axioms.len(), 1, "source axioms: {:?}", j.axioms);
         assert!(j.axioms[0].contains(":D"), "{}", j.axioms[0]);
         assert_eq!(j.builtin_axioms.len(), 1, "{:?}", j.builtin_axioms);
@@ -1597,12 +1685,16 @@ mod tests {
             j.builtin_axioms[0]
         );
         assert!(!j.axiom_missing);
+        assert!(j.derived_axioms.is_empty(), "{:?}", j.derived_axioms);
         // Sabotage check of the partition itself: with the builtin record emptied, the
-        // same step would list both axioms as the source's.
+        // builtin axiom is no longer kept apart. #586: it still never reads as the
+        // source's, since no source component converts to it: it is derived.
         let mut stripped = internal.clone();
         stripped.builtin.clear();
-        let j2 = build_proof_node_json(&node, &stripped, &HashMap::new(), &pm, &build).unwrap();
-        assert_eq!(j2.axioms.len(), 2);
+        let j2 =
+            build_proof_node_json(&node, &stripped, &cites, &HashMap::new(), &pm, &build).unwrap();
+        assert_eq!(j2.axioms.len(), 1, "{:?}", j2.axioms);
         assert!(j2.builtin_axioms.is_empty());
+        assert_eq!(j2.derived_axioms.len(), 1, "{:?}", j2.derived_axioms);
     }
 }

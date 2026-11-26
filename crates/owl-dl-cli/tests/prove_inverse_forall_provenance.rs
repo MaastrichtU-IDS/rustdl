@@ -101,13 +101,16 @@ fn a_nominal_inverse_forall_cites_the_class_assertion() {
 }
 
 /// #274, two members: `C ⊑ G` rests on both members' assertions and on the told
-/// `D ⊑ G`, `E ⊑ G` — and not on `F`, which holds of `a` only.
+/// `D ⊑ G`, `E ⊑ G` — and not on `F`, which holds of `a` only. #586: the `∀` axiom is
+/// cited as the source has it (`ObjectOneOf(:a :b)`); this test used to expect
+/// conversion's form, `ObjectUnionOf(ObjectOneOf(:a) ObjectOneOf(:b))`, which is not in the
+/// fixture, so it pinned the defect.
 #[test]
 fn a_nominal_set_inverse_forall_cites_every_members_typing() {
     assert_eq!(
         cited_axioms("prove_inverse_forall_nominal_set", "C", "G"),
         sorted(&[
-            "SubClassOf(:A ObjectAllValuesFrom(:R ObjectUnionOf(ObjectOneOf(:a) ObjectOneOf(:b))))",
+            "SubClassOf(:A ObjectAllValuesFrom(:R ObjectOneOf(:a :b)))",
             "InverseObjectProperties(:S :R)",
             "SubClassOf(:C ObjectSomeValuesFrom(:S :A))",
             "ClassAssertion(:D :a)",

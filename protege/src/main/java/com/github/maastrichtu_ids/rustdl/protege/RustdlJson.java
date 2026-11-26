@@ -128,6 +128,18 @@ public final class RustdlJson {
         public String conclusion;
         public String rule;
         public List<String> axioms;
+        /**
+         * #586: axioms the step used that rustdl derived during conversion from several
+         * source axioms, so none of them is in the source. Absent (null) when there are none,
+         * and in output from rustdl before the field existed.
+         */
+        public List<String> derived_axioms;
+        /**
+         * #539: axioms the step used that rustdl added from the OWL semantics during
+         * conversion (e.g. {@code ∃owl:bottomObjectProperty.⊤ ⊑ ⊥}); not source axioms. Absent
+         * (null) when there are none.
+         */
+        public List<String> builtin_axioms;
         public List<ProofNodeJson> premises;
     }
 }

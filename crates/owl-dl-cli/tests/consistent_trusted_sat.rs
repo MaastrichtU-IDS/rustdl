@@ -131,6 +131,60 @@ fn an_inconsistency_is_not_flagged() {
 /// With refused clauses too (#357), both lines print: the trust note first, then
 /// the narrower refused-clauses warning. `RUSTDL_WEDGE_BODY_DECOMPOSE=0` leaves
 /// the 9-variable star body refused (`wedge_body_decompose.rs`).
+/// The #357 star: a 9-variable body that `RUSTDL_WEDGE_BODY_DECOMPOSE=0` leaves
+/// refused (`wedge_body_decompose.rs`).
+fn star() -> String {
+    use std::fmt::Write as _;
+    let mut star = String::from(
+        "SubClassOf(:B1 :J) SubClassOf(:B2 :J) DisjointClasses(:B1 :B2)\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:q :B1)) SubClassOf(:A ObjectSomeValuesFrom(:q :B2))\n",
+    );
+    let mut lhs = String::new();
+    for i in 1..=8 {
+        writeln!(star, "SubClassOf(:A ObjectSomeValuesFrom(:s{i} :S{i}))").unwrap();
+        write!(lhs, " ObjectSomeValuesFrom(:s{i} :S{i})").unwrap();
+    }
+    writeln!(
+        star,
+        "SubClassOf(ObjectIntersectionOf({lhs} ObjectMinCardinality(2 :q :J)) :G)"
+    )
+    .unwrap();
+    star
+}
+
+/// #558: `classify --json` names the CONSISTENCY wedge's refused clauses when it
+/// trusted that wedge's `Sat`, in their own field, and `consistent --json` carries
+/// the deferred count beside the refused one. With decomposition on (the default)
+/// the body is split and nothing is refused: the control.
+#[test]
+fn classify_names_the_trusted_consistency_wedges_refused_clauses() {
+    let f = Fixture::new("refused-classify", &star());
+    for (decompose, want) in [("0", 1), ("1", 0)] {
+        let env = [("RUSTDL_WEDGE_BODY_DECOMPOSE", decompose)];
+        let r = run(&["classify", "--json", f.path()], &env);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        let v = json(&r);
+        assert_eq!(v["relies_on_trusted_consistency"], true, "{}", r.stdout);
+        assert_eq!(v["consistency_wedge_clauses_refused"], want, "{}", r.stdout);
+        assert_eq!(v["consistency_wedge_clauses_deferred"], 0, "{}", r.stdout);
+        let r = run(&["consistent", "--json", f.path()], &env);
+        let v = json(&r);
+        assert_eq!(v["wedge_clauses_refused"], want, "{}", r.stdout);
+        assert_eq!(v["wedge_clauses_deferred"], 0, "{}", r.stdout);
+    }
+    // Not trusted (the wedge off decides on the main tableau): the field reads 0.
+    let r = run(
+        &["classify", "--json", f.path()],
+        &[
+            ("RUSTDL_WEDGE_BODY_DECOMPOSE", "0"),
+            ("RUSTDL_WEDGE_CONSISTENCY", "0"),
+        ],
+    );
+    let v = json(&r);
+    assert_eq!(v["relies_on_trusted_consistency"], false, "{}", r.stdout);
+    assert_eq!(v["consistency_wedge_clauses_refused"], 0, "{}", r.stdout);
+}
+
 #[test]
 fn the_note_precedes_the_refused_clauses_warning() {
     use std::fmt::Write as _;
@@ -230,4 +284,36 @@ fn a_node_cap_give_up_without_the_wedge_names_the_node_cap() {
     let r = run(&["consistent", p], &[("RUSTDL_QUERY_MAX_NODES", "1")]);
     assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
     assert_eq!(r.stdout.trim(), "consistent", "{}", r.stdout);
+}
+
+/// #558: the clausifier defers the covering half of a `DisjointUnion` with a complex
+/// member, so the consistency wedge's KB lacks `E ⊑ F ⊔ ∃r.G`. Its trusted `Sat` is
+/// then a model of a weaker KB, and both surfaces say how much weaker. (With
+/// `E(c)`, `¬F(c)` and `∀r.¬G(c)` the KB is inconsistent, which the main tableau
+/// finds and the wedge does not: that miss is what #558's part B verifies away; this
+/// test pins only the signal, on a consistent KB.)
+#[test]
+fn a_deferred_axiom_is_reported_on_both_surfaces() {
+    let f = Fixture::new(
+        "deferred",
+        "Declaration(Class(:E)) Declaration(Class(:F)) Declaration(Class(:G))\n\
+         DisjointUnion(:E :F ObjectSomeValuesFrom(:r :G)) ClassAssertion(:E :b)",
+    );
+    let r = run(&["consistent", "--json", f.path()], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let v = json(&r);
+    assert_eq!(v["consistent"], true, "{}", r.stdout);
+    assert_eq!(v["relies_on_trusted_consistency"], true, "{}", r.stdout);
+    assert_eq!(v["wedge_clauses_deferred"], 1, "{}", r.stdout);
+    assert!(r.stderr.contains("deferred 1 axiom(s)"), "{}", r.stderr);
+    let r = run(&["classify", "--json", f.path()], &[]);
+    let v = json(&r);
+    assert_eq!(v["relies_on_trusted_consistency"], true, "{}", r.stdout);
+    assert_eq!(v["consistency_wedge_clauses_deferred"], 1, "{}", r.stdout);
+    // Control: without the `DisjointUnion` nothing is deferred and nothing is warned.
+    let c = Fixture::new("deferred-control", "");
+    let r = run(&["consistent", "--json", c.path()], &[]);
+    let v = json(&r);
+    assert_eq!(v["wedge_clauses_deferred"], 0, "{}", r.stdout);
+    assert!(!r.stderr.contains("deferred"), "{}", r.stderr);
 }

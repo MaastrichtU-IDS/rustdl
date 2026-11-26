@@ -48,6 +48,7 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "depth_capped_pairs": int,
+  "consistency_wedge_clauses_refused": int, "consistency_wedge_clauses_deferred": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...],
   "dropped": { "<axiom kind>": int },
@@ -180,6 +181,7 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
   "incomplete": bool,
   "relies_on_trusted_consistency": bool,
   "wedge_clauses_refused": int,
+  "wedge_clauses_deferred": int,
   "no_verdict": bool,
   "dropped": { "<axiom kind>": int },
   "collapsed_operands": { "axioms": int, "vacuous": int } }
@@ -196,7 +198,15 @@ likely-bug `NoVerdict` too (#475). On the deadline-free `NoVerdict` path `wedge_
 `relies_on_trusted_consistency` is `false` and `no_verdict` (#462) is `true`.
 `wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
 match, so a wedge `consistent` may miss a clash; 0 when the wedge was not
-consulted. `dropped` counts the axioms rustdl does not reason with, as in
+consulted. `wedge_clauses_deferred` (#558) counts the axioms that wedge's
+clausifier deferred, with the same consequence; unlike `wedge_clauses_refused` it
+is not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`.
+
+In `classify --json`, `consistency_wedge_clauses_refused` and
+`consistency_wedge_clauses_deferred` (#558) are the same two counts for the
+consistency wedge whose `Sat` classify trusted, and 0 unless
+`relies_on_trusted_consistency`. They are a different wedge from
+`wedge_clauses_refused` there (classify's own, which also clausifies no `ABox`). `dropped` counts the axioms rustdl does not reason with, as in
 `classify --json`.
 
 `relies_on_trusted_consistency` was added in #392, without a `schema_version`

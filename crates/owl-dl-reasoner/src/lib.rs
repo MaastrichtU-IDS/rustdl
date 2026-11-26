@@ -13198,7 +13198,8 @@ fn normalize_disjoint_role_pair(r: Role, s: Role) -> (Role, Role) {
 mod disjoint_role_pair_tests {
     use super::*;
 
-    fn pairs_of(body: &str) -> Vec<(Role, Role)> {
+    /// The pairs of `body` with each role named, `"r"` or `"r-"` for its inverse, sorted.
+    fn named(body: &str) -> Vec<(String, String)> {
         let src = format!(
             "Prefix(:=<http://t/>)\nOntology(<http://t/x>\n\
              Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
@@ -13213,32 +13214,53 @@ mod disjoint_role_pair_tests {
         )
         .expect("parse");
         let internal = convert_ontology(&onto).expect("convert");
-        collect_disjoint_role_pairs(&internal)
+        let name = |r: Role| {
+            let iri = internal.vocabulary.role_iri(r.role_id());
+            let local = iri.rsplit('/').next().unwrap_or(iri).to_string();
+            if r.is_inverse() {
+                format!("{local}-")
+            } else {
+                local
+            }
+        };
+        let mut v: Vec<(String, String)> = collect_disjoint_role_pairs(&internal)
+            .into_iter()
+            .map(|(a, b)| (name(a), name(b)))
+            .collect();
+        v.sort();
+        v
     }
 
-    /// Forward-only axioms give the pairs they gave before #534: every one forward.
+    fn pair(a: &str, b: &str) -> (String, String) {
+        (a.to_string(), b.to_string())
+    }
+
+    /// Forward-only axioms give the pairs they gave before #534.
     #[test]
     fn forward_only_axioms_are_unchanged() {
-        let p = pairs_of("DisjointObjectProperties(:r :s :u)");
-        assert_eq!(p.len(), 3);
-        assert!(
-            p.iter()
-                .all(|(a, b)| !a.is_inverse() && !b.is_inverse() && a != b)
+        assert_eq!(
+            named("DisjointObjectProperties(:r :s :u)"),
+            vec![pair("r", "s"), pair("r", "u"), pair("s", "u")]
         );
     }
 
     /// Inverse operands are kept, normalised so the first operand is forward.
     #[test]
     fn inverse_operands_are_kept_and_normalised() {
-        let p = pairs_of("DisjointObjectProperties(ObjectInverseOf(:r) :s)");
-        assert_eq!(p.len(), 1);
-        assert!(!p[0].0.is_inverse() && p[0].1.is_inverse(), "{p:?}");
-        let p = pairs_of("DisjointObjectProperties(ObjectInverseOf(:r) ObjectInverseOf(:s))");
-        assert!(!p[0].0.is_inverse() && !p[0].1.is_inverse(), "{p:?}");
+        // `Disjoint(r⁻, s)` is `(r, s⁻)`, not `(s, r⁻)` or a polarity-stripped pair.
+        assert_eq!(
+            named("DisjointObjectProperties(ObjectInverseOf(:r) :s)"),
+            vec![pair("r", "s-")]
+        );
+        assert_eq!(
+            named("DisjointObjectProperties(ObjectInverseOf(:r) ObjectInverseOf(:s))"),
+            vec![pair("r", "s")]
+        );
         // `(r, r⁻)` is asymmetry and is kept.
-        let p = pairs_of("DisjointObjectProperties(:r ObjectInverseOf(:r))");
-        assert_eq!(p.len(), 1, "{p:?}");
-        assert_eq!(p[0].0.role_id(), p[0].1.role_id());
+        assert_eq!(
+            named("DisjointObjectProperties(:r ObjectInverseOf(:r))"),
+            vec![pair("r", "r-")]
+        );
     }
 }
 

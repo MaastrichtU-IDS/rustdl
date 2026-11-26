@@ -18,9 +18,12 @@ All notable changes to rustdl are documented here. Format is based on
   on an inconsistent `ABox` the #428 guard said nothing. The pairs are now signed, with the first
   operand forward (`Disjoint(r⁻, s)` is `(r, s⁻)`, and `Disjoint(r, r⁻)` is asymmetry). The
   tableau checks each pair from both endpoints, and P9 matches `r(a,b)` with `s(b,a)` for a mixed
-  pair. On the eight role-polarity fuzz cases recorded for #534, `sat` now agrees with
-  `classify` on all 57 class queries (41 disagreed). No ORE ontology has an inverse operand in
-  `DisjointObjectProperties`, so forward-only ontologies are unchanged.
+  pair. `classify` with the wedge off (`RUSTDL_HYPERTABLEAU=0`) decides on the same tableau and
+  now finds these too. On the eight role-polarity fuzz cases recorded for #534, `sat` now agrees
+  with `classify` on all 57 class queries (41 disagreed). Forward-only pairs are collected and
+  checked as before; no ORE ontology has an inverse operand in `DisjointObjectProperties`. API:
+  `TableauContext::declare_disjoint_role_pair` and `disjoint_role_pairs()` take and return
+  signed `Role`s instead of `RoleId`s.
 - **SWRL rules are counted in `dropped` (#557).** Conversion skipped each `DLSafeRule` as if it were an annotation, so a ruled ontology reported an empty `dropped` and no stderr warning, and the completeness claims stayed on: `completeness_guaranteed: true` on `classify --json` and the expression queries, while missing what the rules entail (with `A(?x) -> B(?x)` and `A(a)`, `instances-expr B` returned nothing and claimed completeness). Each rule is now counted as `"Rule: unsupported axiom (SWRL)"`, as the README already said. Answers are unchanged: rules are still not reasoned with. What changes on an ontology with a rule (RO has 25):
   - The `--json` outputs that carry a `dropped` block (`classify`, `realize`, `consistent`) report the rules there, without a stderr warning. The text modes, and the commands whose JSON has no `dropped` block (the expression queries, `disjoint`, `verify-el`), print the stderr warning.
   - Every completeness claim that reads `dropped` turns false: `completeness_guaranteed` on `classify --json` and the expression queries. `classify --saturation-only` (and Python's `classify(saturation_only=True)`) now reads `dropped` at all; before, it reported `dropped: {}` and `completeness_guaranteed: true` even for a `HasKey`.

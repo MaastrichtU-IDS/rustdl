@@ -2035,8 +2035,9 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
 /// - `AsymmetricObjectProperty(r)`: at every node `x`, if both
 ///   `x —r→ y` and `y —r→ x` exist for some `y`, then `r(x,y)` and
 ///   `r(y,x)` together violate asymmetry — flag `⊥`.
-/// - `DisjointObjectProperties(r, s)`: at every node `x`, if both
-///   `x —r→ y` and `x —s→ y` exist, the two pairs collapse — flag `⊥`.
+/// - `DisjointObjectProperties(r, s)` on SIGNED roles (#534): at every node `x`, if
+///   a view of `r` and a view of `s` reach the same `y`, flag `⊥`. For forward roles
+///   that is `x —r→ y` with `x —s→ y`; `Disjoint(r, s⁻)` is `x —r→ y` with `y —s→ x`.
 ///
 /// Edges are matched through [`TableauContext::edge_satisfies`], so an edge on a
 /// sub-role or a declared inverse counts, and a self-loop counts in both

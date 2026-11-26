@@ -643,7 +643,8 @@ pub(crate) fn check(inputs: &AboxCheckInputs<'_>) -> AboxVerdict {
 
     // P9: DisjointObjectProperties direct ABox clash.
     // For each disjoint pair (r, s), check whether any (from, to) has
-    // both r(from, to) and s(from, to) directly asserted. Uses `pos`
+    // r(from, to) and s(from, to) directly asserted (s(to, from) when `s` is
+    // inverse, #534). Uses `pos`
     // (already built for P3) for O(1) lookup per triple.
     // Sound: only reports when both assertions are present verbatim —
     // no role-hierarchy expansion (a sub-role assertion implies a
@@ -652,7 +653,13 @@ pub(crate) fn check(inputs: &AboxCheckInputs<'_>) -> AboxVerdict {
     // #534: the pair is signed with `r` forward. `Disjoint(r, s⁻)` forbids `r(a,b)` with
     // `s(b,a)`, so an inverse `s` looks for the reversed assertion.
     for &(r, s) in inputs.disjoint_role_pairs {
-        debug_assert!(!r.is_inverse(), "collect_disjoint_role_pairs normalises");
+        // The collector normalises; re-normalise anyway, so a pair built elsewhere with
+        // an inverse first operand cannot be read as its polarity-stripped (FP) form.
+        let (r, s) = if r.is_inverse() {
+            (r.flip(), s.flip())
+        } else {
+            (r, s)
+        };
         let r_id = r.role_id();
         let s_id = s.role_id();
         for &(from, role, to) in &inputs.abox.property_assertions {

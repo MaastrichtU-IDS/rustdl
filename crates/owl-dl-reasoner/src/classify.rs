@@ -733,6 +733,18 @@ pub struct ClassificationStats {
     /// consistency probe, admitted later, then gave up (#446). The #392/#401 name
     /// for the same fact.
     pub relies_on_trusted_consistency: bool,
+    /// #558: when [`Self::relies_on_trusted_consistency`], the clauses the
+    /// CONSISTENCY wedge's matcher refuses (they never fire), so its `Sat` is a model
+    /// of a weaker KB. A different wedge from [`Self::wedge_clauses_refused`]
+    /// (classify's own, condition 4 of the guarantee): this one also clausifies the
+    /// `ABox`. 0 when consistency does not rest on that wedge, and (as on
+    /// `consistent`) with `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`.
+    pub consistency_wedge_clauses_refused: usize,
+    /// #558: as [`Self::consistency_wedge_clauses_refused`], for that wedge
+    /// clausifier's deferral events (encodings it skipped; one axiom can count more
+    /// than once). Masked by trust the same way; not by the report flag (see
+    /// `QueryStats::wedge_clauses_deferred`). 0 is not proof the wedge saw the whole KB.
+    pub consistency_wedge_clauses_deferred: usize,
     /// #214: the wedge decided pairs with Layer A OFF (`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`,
     /// or above `layer_a_affordable`'s cap) on an ontology whose role hierarchy is
     /// non-trivial. Its exact-id role matching cannot see sub-role, inverse or
@@ -773,6 +785,15 @@ pub struct ClassificationStats {
     /// Stamped by the two internal classify entry points, so no result path
     /// can forget it.
     pub dropped: owl_dl_core::DroppedAxioms,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a role above
+    /// it, or `owl:topDataProperty` outside the super-property position) where its
+    /// universal-role semantics could change a class-level entailment. rustdl treats it
+    /// as an ordinary property, which is sound for positives, so a negative answer or a
+    /// missing entailment may be wrong. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`. Stamped next to
+    /// `dropped`. Condition 9 of [`Self::completeness_guaranteed`]; a proved
+    /// inconsistency masks it (every entailment then holds).
+    pub universal_role_ordinary: bool,
     /// #538: n-ary axioms whose repeated operands conversion collapsed (their operands
     /// are a set; `owl_dl_core::set_operands`). Not a give-up and not in `dropped`: under
     /// the set reading nothing is lost. Under a list reading each could add positives
@@ -1113,6 +1134,20 @@ pub struct ClassificationStats {
 }
 
 impl ClassificationStats {
+    /// #558: store the trusted consistency wedge's gaps, masked to 0 when
+    /// consistency does not rest on that wedge (set `relies_on_trusted_consistency`
+    /// first).
+    pub(crate) fn set_consistency_wedge_gaps(&mut self, (refused, deferred): (usize, usize)) {
+        let trusted = self.relies_on_trusted_consistency;
+        self.consistency_wedge_clauses_refused =
+            if trusted && crate::report_wedge_clauses_refused_enabled() {
+                refused
+            } else {
+                0
+            };
+        self.consistency_wedge_clauses_deferred = if trusted { deferred } else { 0 };
+    }
+
     /// `true` iff these stats guarantee the hierarchy is complete — no missed
     /// subsumptions, silent or flagged.
     ///
@@ -1134,6 +1169,10 @@ impl ClassificationStats {
     ///    beside condition 1 today: `PureEl` admits no `ABox` assertion and no
     ///    nominal, so no individual exists and the consistency wedge never runs.
     ///    Kept so the invariant holds if `PureEl` ever admits one.
+    /// 9. no universal role is used where its semantics could change an entailment
+    ///    (#543, `universal_role_ordinary`), unless the KB is proved inconsistent:
+    ///    rustdl reasons with `owl:topObjectProperty` as an ordinary property, which
+    ///    misses entailments of `Δ × Δ` (`⊤ ⊑ ∃r.D`, `∃top.D ⊑ ⊥` is inconsistent).
     ///
     /// `docs/assurance/completeness-guarantee-ledger.md` records each condition
     /// with its source issue, the CLI/Python field that reports it and the test
@@ -1175,6 +1214,7 @@ impl ClassificationStats {
             && !self.consistency_undetermined
             && self.dropped.is_empty()
             && !self.relies_on_trusted_consistency
+            && (!self.universal_role_ordinary || self.inconsistent)
     }
 }
 
@@ -1890,6 +1930,8 @@ pub(crate) fn classify_saturation_only_internal(
     // #557: as the other classify entry points do; without it a dropped axiom (a
     // SWRL rule, `HasKey`) left `completeness_guaranteed` true on this path.
     h.stats.dropped = internal.dropped.clone();
+    h.stats.universal_role_ordinary =
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
     // #539: off the pure-EL fragment the saturator is not complete for
     // consistency, and nothing else checks it here, so "no clash found" is all
     // `consistent: true` can mean. `r(a,b)` with `¬r(a,b)` read `consistent: true`
@@ -1922,8 +1964,11 @@ pub(crate) fn classify_internal_with_timeout(
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
     crate::take_consistency_wedge_report();
+    crate::take_consistency_trusted_gaps();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
+    c.stats.universal_role_ordinary =
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
     c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
@@ -1938,6 +1983,8 @@ pub(crate) fn classify_internal_with_timeout(
     c.stats.consistency_wedge_stalled = wedge.stalled;
     c.stats.consistency_wedge_merge_churn_stops = wedge.merge_churn_stops;
     c.stats.stalled_wedge_fallback = wedge.fallback;
+    c.stats
+        .set_consistency_wedge_gaps(crate::take_consistency_trusted_gaps());
     Ok(c)
 }
 
@@ -2699,6 +2746,7 @@ fn probe_says_inconsistent(
         // counting `Sat` is not relied on (layer 3 decides), so it marks nothing.
         Some(owl_dl_tableau::hyper::HyperResult::Sat) if !counting => {
             crate::mark_consistency_trusted_wedge();
+            crate::note_consistency_trusted_gaps(prepared.consistency_wedge_gaps());
             stats.consistency_probe_gave_up = false;
             return false;
         }
@@ -4479,9 +4527,12 @@ pub(crate) fn classify_top_down_internal_capturing(
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
     crate::take_consistency_wedge_report();
+    crate::take_consistency_trusted_gaps();
     let mut c =
         classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline, capture)?;
     c.stats.dropped = internal.dropped.clone();
+    c.stats.universal_role_ordinary =
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(internal);
     c.stats.collapsed_operands = internal.collapsed_operands;
     // #446: a consistency-probe give-up is kept apart from the pre-check routes' flag
     // so that a probe verdict cannot clear a route's give-up.
@@ -4496,6 +4547,8 @@ pub(crate) fn classify_top_down_internal_capturing(
     c.stats.consistency_wedge_stalled = wedge.stalled;
     c.stats.consistency_wedge_merge_churn_stops = wedge.merge_churn_stops;
     c.stats.stalled_wedge_fallback = wedge.fallback;
+    c.stats
+        .set_consistency_wedge_gaps(crate::take_consistency_trusted_gaps());
     Ok(c)
 }
 

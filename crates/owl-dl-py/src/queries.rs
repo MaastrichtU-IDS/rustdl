@@ -8,13 +8,15 @@ use pyo3::prelude::*;
 use crate::errors::reason_error_to_py;
 use crate::load;
 
-/// `(consistent, incomplete, relies_on_trusted_consistency)` for the ontology at
-/// `path`. `incomplete` is set when "consistent" is a give-up rather than a
-/// verdict (the `QueryStats` contract, #363 A2); the third flag when it rests
-/// only on the consistency wedge's unverified `Sat` (#392). The Python wrapper
-/// (`__init__.py`) warns on each and returns the bool.
+/// `(consistent, incomplete, relies_on_trusted_consistency, wedge_clauses_refused,
+/// wedge_clauses_deferred)` for the ontology at `path`. `incomplete` is set when
+/// "consistent" is a give-up rather than a verdict (the `QueryStats` contract, #363
+/// A2); the third flag when it rests only on the consistency wedge's unverified
+/// `Sat` (#392); the two counts (#558) say how much weaker than the input that
+/// wedge's KB is. The Python wrapper (`__init__.py`) warns on each and returns the
+/// bool.
 #[pyfunction]
-pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool)> {
+pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool, usize, usize)> {
     let ontology = load::load_path(path)?;
     let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&ontology).map_err(reason_error_to_py)?;
@@ -22,6 +24,8 @@ pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool)> {
         verdict,
         verdict && stats.incomplete,
         stats.relies_on_trusted_consistency,
+        stats.wedge_clauses_refused,
+        stats.wedge_clauses_deferred,
     ))
 }
 
@@ -352,6 +356,31 @@ pub(crate) fn dropped_axioms(path: &str) -> PyResult<std::collections::BTreeMap<
         .map_err(reason_error_to_py)
 }
 
+/// #543: does the ontology at `path` use a universal role where rustdl's
+/// ordinary-property reading can miss entailments? A byte search for the two top
+/// property names comes first, so an ontology that names neither (all but a handful)
+/// is not parsed a second time; one that does is parsed and converted.
+/// `role_level=True` also counts a role above a top property, for the role-level
+/// functions (`object_property_values`, `materialize_inferred_property_assertions`):
+/// it relates every pair of individuals, which they do not list.
+#[pyfunction]
+#[pyo3(signature = (path, role_level=false))]
+pub(crate) fn universal_role_ordinary(path: &str, role_level: bool) -> PyResult<bool> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| crate::errors::ParseError::new_err(format!("read {path}: {e}")))?;
+    let mentions = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    if !mentions(b"topObjectProperty") && !mentions(b"topDataProperty") {
+        return Ok(false);
+    }
+    let o = load::load_path(path)?;
+    if role_level {
+        return owl_dl_reasoner::universal_role_ordinary_for_roles(&o).map_err(reason_error_to_py);
+    }
+    owl_dl_reasoner::conversion_report(&o)
+        .map(|(_, uro)| uro)
+        .map_err(reason_error_to_py)
+}
+
 /// Parse a Manchester-syntax class expression against the ontology's own
 /// prefix map (so e.g. `:A` resolves via the file's `Prefix(:=...)`).
 fn parse_ce(
@@ -383,6 +412,8 @@ fn ce_verdict_dict<'py>(
     d.set_item("no_verdict", v.no_verdict())?;
     // #540/#552: the PROBED conversion's drops, the query expression's included.
     d.set_item("dropped", v.dropped().by_kind().clone())?;
+    // #543: the probed conversion's, so a universal role in the query counts too.
+    d.set_item("universal_role_ordinary", v.universal_role_ordinary())?;
     Ok(d)
 }
 
@@ -450,6 +481,7 @@ pub(crate) fn class_expression_instances<'py>(
     // #510: a depth cut; the wrapper names the limit.
     d.set_item("depth_capped", r.depth_capped())?;
     d.set_item("dropped", r.dropped().by_kind().clone())?;
+    d.set_item("universal_role_ordinary", r.universal_role_ordinary())?;
     Ok(d)
 }
 
@@ -473,5 +505,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(class_expression_entailed_subclass, m)?)?;
     m.add_function(wrap_pyfunction!(class_expression_instances, m)?)?;
     m.add_function(wrap_pyfunction!(dropped_axioms, m)?)?;
+    m.add_function(wrap_pyfunction!(universal_role_ordinary, m)?)?;
     Ok(())
 }

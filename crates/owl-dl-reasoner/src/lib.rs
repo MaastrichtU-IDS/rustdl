@@ -3643,6 +3643,9 @@ pub(crate) fn classify_inconsistency_precheck_capturing(
         Some(HyperResult::Sat) => {
             cut = false;
             mark_consistency_trusted_wedge();
+            if let Some(cache) = wedge_cache.as_ref() {
+                note_consistency_trusted_gaps(cache.weaker_kb_gaps());
+            }
         }
         // #571: a `Stalled` wedge decides nothing (the merge-churn guard stops it on
         // a nominal cycle within milliseconds), so run the main tableau, as the
@@ -3923,6 +3926,27 @@ pub(crate) fn take_consistency_wedge_report() -> ConsistencyWedgeReport {
 /// Record that classify's consistency rests on a trusted wedge `Sat` (#429).
 pub(crate) fn mark_consistency_trusted_wedge() {
     CONSISTENCY_TRUSTED_WEDGE.with(|f| f.set(true));
+}
+
+thread_local! {
+    /// #558: the trusted consistency wedge's [`ConsistencyCache::weaker_kb_gaps`],
+    /// recorded beside [`mark_consistency_trusted_wedge`].
+    static CONSISTENCY_TRUSTED_GAPS: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+/// #558: record the gaps of the consistency wedge whose `Sat` classify now trusts
+/// (the largest seen, if two routes trusted one).
+pub(crate) fn note_consistency_trusted_gaps(gaps: (usize, usize)) {
+    CONSISTENCY_TRUSTED_GAPS.with(|g| {
+        let (r, d) = g.get();
+        g.set((r.max(gaps.0), d.max(gaps.1)));
+    });
+}
+
+/// Read and clear the gaps (see [`note_consistency_trusted_gaps`]).
+pub(crate) fn take_consistency_trusted_gaps() -> (usize, usize) {
+    CONSISTENCY_TRUSTED_GAPS.with(|g| g.replace((0, 0)))
 }
 
 /// A main-tableau model verified consistency: nothing rests on the wedge (#429).
@@ -6545,8 +6569,8 @@ pub fn classify_tbox_only_enabled() -> bool {
 /// **Completeness:** nominal-free SROIQ(D) is closed under disjoint union, so on
 /// a consistent KB with no nominal in the `TBox` or the query, `T ∪ A ⊨ C ⊑ D`
 /// iff `T ⊨ C ⊑ D`. rustdl does not implement the universal role, the one
-/// construct that breaks this (`owl:topObjectProperty` is an ordinary role).
-/// A consistency verdict that rests on a trusted wedge `Sat` is reported through
+/// construct that breaks this (`owl:topObjectProperty` is an ordinary role; #543
+/// flags its uses, and implementing it must gate this route). A consistency verdict that rests on a trusted wedge `Sat` is reported through
 /// [`QueryStats::relies_on_trusted_consistency`].
 #[must_use]
 pub fn query_tbox_only_enabled() -> bool {
@@ -7068,6 +7092,19 @@ impl ConsistencyCache {
             deferred_clauses,
             merge_churn_stops: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// #558: how far this wedge's KB is weaker than the input: clauses its matcher
+    /// refuses (they never fire) and the clausifier's deferral events (encodings it
+    /// skipped, so the wedge never sees them; one axiom can count more than once). A
+    /// `Sat` of this wedge is a model of that weaker KB, so a trusted `Sat` with either
+    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm). Unflagged: callers
+    /// apply `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED` to the refused count.
+    pub(crate) fn weaker_kb_gaps(&self) -> (usize, usize) {
+        (
+            owl_dl_tableau::hyper::refused_clause_count(&self.clauses),
+            self.deferred_clauses,
+        )
     }
 
     /// Build a fresh ABox-seeded [`owl_dl_tableau::hyper::HyperEngine`]
@@ -7640,6 +7677,42 @@ pub fn dropped_axioms<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<DroppedAxioms, ReasonError> {
     Ok(owl_dl_core::convert::convert_ontology(ontology)?.dropped)
+}
+
+/// The conversion's report on what reasoning will under-approximate: the dropped
+/// axioms (#43) and whether a universal role is used where rustdl's ordinary-role
+/// reading can miss entailments (#543,
+/// [`owl_dl_core::top_bottom_roles::universal_role_ordinary`]). One conversion for
+/// both, for surfaces that report them before or beside their answer.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn conversion_report<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(DroppedAxioms, bool), ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    Ok((internal.dropped, uro))
+}
+
+/// #543, for the ROLE-level surfaces (`property-values`, materialized property
+/// assertions): `true` when [`conversion_report`]'s flag is set, or when a role sits
+/// above a top property (`top ⊑* r`). Such an `r` relates every pair of individuals,
+/// an edge those surfaces do not report, even where the class-level answers are
+/// unaffected.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn universal_role_ordinary_for_roles<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<bool, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    Ok(
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal)
+            || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty(),
+    )
 }
 
 use std::collections::HashMap;
@@ -8398,6 +8471,14 @@ pub struct QueryStats {
     /// wedge `consistent` can then miss a clash, so this is a completeness signal,
     /// separate from `incomplete` (which means a give-up).
     pub wedge_clauses_refused: usize,
+    /// #558: beside [`Self::wedge_clauses_refused`], the consistency wedge
+    /// clausifier's deferral events (encodings it skipped, so the wedge never sees
+    /// them; one axiom can count more than once), so its `Sat` is a model of a KB
+    /// weaker by these too. Set where `wedge_clauses_refused` is (the consistency
+    /// query, and a single query that dropped its `ABox` on that wedge's `Sat`).
+    /// Deliberately not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`: that flag
+    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm).
+    pub wedge_clauses_deferred: usize,
     /// The verdict rests on the KB being consistent, and the only evidence for
     /// that is a consistency-wedge `Sat` that no main-tableau run verified (the
     /// wedge is not proven complete; it missed clashes in #290 and #376). Not a
@@ -8436,6 +8517,11 @@ pub struct QueryStats {
     /// off stats that no conversion produced. A count rather than the kinds, so
     /// `QueryStats` stays `Copy`; [`dropped_axioms`] gives the kinds.
     pub dropped_axioms: u64,
+    /// #543: the query's conversion uses a universal role where its semantics could
+    /// change the answer (`owl_dl_core::top_bottom_roles::universal_role_ordinary`);
+    /// rustdl reads it as an ordinary property, so a negative verdict may be wrong.
+    /// Voids [`Self::completeness_guaranteed`], as `dropped_axioms` does. Stamped with it.
+    pub universal_role_ordinary: bool,
 }
 
 impl QueryStats {
@@ -8456,6 +8542,7 @@ impl QueryStats {
         self.pure_el_mode
             && !self.incomplete
             && self.dropped_axioms == 0
+            && !self.universal_role_ordinary
             && !self.consistency_undetermined
             && !self.relies_on_trusted_consistency
     }
@@ -8896,9 +8983,11 @@ pub(crate) fn is_class_satisfiable_keeping(
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (holds, mut stats, left) =
         is_class_satisfiable_keeping_inner(internal, class_iri, closure)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((holds, stats, left))
 }
 
@@ -8944,10 +9033,12 @@ fn is_class_satisfiable_keeping_inner(
                 pure_el_mode: pure_el,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8960,16 +9051,24 @@ fn is_class_satisfiable_keeping_inner(
                 pure_el_mode: true,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
     }
     let ((sat, cut, trusted, refused), prepared) =
         run_satisfiability_keeping(internal, move |pool| pool.atomic(class_id))?;
+    // #558: only when the `ABox` was dropped on the consistency wedge's `Sat`.
+    let deferred = if trusted {
+        prepared.consistency_wedge_gaps().1
+    } else {
+        0
+    };
     Ok((
         sat,
         QueryStats {
@@ -8977,10 +9076,12 @@ fn is_class_satisfiable_keeping_inner(
             pure_el_mode: false,
             incomplete: cut,
             wedge_clauses_refused: refused,
+            wedge_clauses_deferred: deferred,
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -9384,8 +9485,10 @@ fn is_consistent_internal_full(
 ) -> Result<(bool, QueryStats), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (consistent, mut stats) = is_consistent_internal_full_inner(internal)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((consistent, stats))
 }
 
@@ -9408,10 +9511,12 @@ fn is_consistent_internal_full_inner(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9428,10 +9533,12 @@ fn is_consistent_internal_full_inner(
                 pure_el_mode: true,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9464,10 +9571,12 @@ fn is_consistent_internal_full_inner(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9483,15 +9592,18 @@ fn is_consistent_internal_full_inner(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
     let trace = std::env::var_os("RUSTDL_TRACE").is_some();
     let refused = prepared.consistency_wedge_clauses_refused();
+    let deferred = prepared.consistency_wedge_gaps().1;
     // ABox-seeded wedge route (default on; kills the `decide(Top)` hang
     // on out-of-EL ABoxes). `Some` only when enabled AND an individual is
     // named (ABox or TBox nominal); otherwise fall straight through to the
@@ -9512,10 +9624,12 @@ fn is_consistent_internal_full_inner(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
+                    wedge_clauses_deferred: deferred,
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9537,10 +9651,12 @@ fn is_consistent_internal_full_inner(
                     pure_el_mode: false,
                     incomplete: gave_up,
                     wedge_clauses_refused: refused,
+                    wedge_clauses_deferred: deferred,
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9558,10 +9674,12 @@ fn is_consistent_internal_full_inner(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
+                    wedge_clauses_deferred: deferred,
                     relies_on_trusted_consistency: true,
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9662,10 +9780,12 @@ fn is_consistent_internal_full_inner(
             pure_el_mode: false,
             incomplete,
             wedge_clauses_refused: refused,
+            wedge_clauses_deferred: deferred,
             relies_on_trusted_consistency: false,
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
     ))
 }
@@ -10124,9 +10244,11 @@ pub(crate) fn is_subclass_of_keeping(
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (holds, mut stats, left) =
         is_subclass_of_keeping_inner(internal, sub_iri, super_iri, closure)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((holds, stats, left))
 }
 
@@ -10175,10 +10297,12 @@ fn is_subclass_of_keeping_inner(
         pure_el_mode: pure_el,
         incomplete: false,
         wedge_clauses_refused: 0,
+        wedge_clauses_deferred: 0,
         relies_on_trusted_consistency: false,
         consistency_undetermined: false,
         no_verdict: false,
         dropped_axioms: 0,
+        universal_role_ordinary: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -10232,10 +10356,12 @@ fn is_subclass_of_keeping_inner(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -10249,6 +10375,12 @@ fn is_subclass_of_keeping_inner(
             let not_super = pool.not(super_concept);
             pool.and(vec![sub_concept, not_super])
         })?;
+    // #558: as in `is_class_satisfiable_keeping`.
+    let deferred = if trusted {
+        prepared.consistency_wedge_gaps().1
+    } else {
+        0
+    };
     Ok((
         !sat,
         QueryStats {
@@ -10256,10 +10388,12 @@ fn is_subclass_of_keeping_inner(
             pure_el_mode: false,
             incomplete: cut,
             wedge_clauses_refused: refused,
+            wedge_clauses_deferred: deferred,
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -12062,6 +12196,14 @@ impl PreparedOntology {
         deadline: Option<std::time::Instant>,
     ) -> Option<owl_dl_tableau::hyper::HyperResult> {
         self.consistency.as_ref().map(|c| c.decide(deadline))
+    }
+
+    /// #558: [`ConsistencyCache::weaker_kb_gaps`] of this ontology's consistency
+    /// wedge, `(0, 0)` when there is none.
+    pub(crate) fn consistency_wedge_gaps(&self) -> (usize, usize) {
+        self.consistency
+            .as_ref()
+            .map_or((0, 0), ConsistencyCache::weaker_kb_gaps)
     }
 
     /// #357: clauses the consistency wedge refuses (0 when there is no wedge or

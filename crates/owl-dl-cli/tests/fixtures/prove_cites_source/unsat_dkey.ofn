@@ -1,0 +1,8 @@
+Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/o>
+Declaration(Class(:X)) Declaration(Class(:D)) Declaration(DataProperty(:dp))
+SubClassOf(:X DataHasValue(:dp "5"^^xsd:integer))
+EquivalentClasses(:D DataSomeValuesFrom(:dp DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer)))
+DisjointClasses(:X :D)
+)

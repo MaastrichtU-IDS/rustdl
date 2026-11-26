@@ -50,3 +50,52 @@ def test_no_warning_on_an_inconsistency(tmp_path):
     result, cats = _is_consistent(tmp_path, "ClassAssertion(ObjectComplementOf(:B) :a)")
     assert result is False
     assert cats == [], cats
+
+
+def _star():
+    """The #357 star: a 9-variable body `RUSTDL_WEDGE_BODY_DECOMPOSE=0` leaves refused."""
+    s = (
+        "SubClassOf(:B1 :J) SubClassOf(:B2 :J) DisjointClasses(:B1 :B2)\n"
+        "SubClassOf(:A ObjectSomeValuesFrom(:q :B1)) SubClassOf(:A ObjectSomeValuesFrom(:q :B2))\n"
+    )
+    lhs = ""
+    for i in range(1, 9):
+        s += f"SubClassOf(:A ObjectSomeValuesFrom(:s{i} :S{i}))\n"
+        lhs += f" ObjectSomeValuesFrom(:s{i} :S{i})"
+    return s + f"SubClassOf(ObjectIntersectionOf({lhs} ObjectMinCardinality(2 :q :J)) :G)\n"
+
+
+def test_the_warning_names_the_wedges_weaker_kb(tmp_path, monkeypatch):
+    """#558: the trusted wedge's refused clauses are named in the warning; with the body
+    decomposed (the default) nothing is refused and the text does not mention them."""
+    monkeypatch.delenv("RUSTDL_WEDGE_CONSISTENCY", raising=False)
+    p = tmp_path / "star.ofn"
+    p.write_text(SRC.format(extra=_star()))
+    for decompose, named in (("0", True), ("1", False)):
+        monkeypatch.setenv("RUSTDL_WEDGE_BODY_DECOMPOSE", decompose)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert rustdl.is_consistent(str(p)) is True
+        msgs = [str(w.message) for w in caught if w.category is rustdl.TrustedConsistencyWarning]
+        assert msgs, caught
+        assert ("1 clause(s) it cannot match" in msgs[0]) is named, msgs
+
+
+def test_the_warning_names_the_wedges_deferrals(tmp_path, monkeypatch):
+    """#558 review: a `DisjointUnion` with a complex member makes the consistency
+    wedge's clausifier defer its covering; the warning names that deferral, and the
+    control (no `DisjointUnion`) does not."""
+    monkeypatch.delenv("RUSTDL_WEDGE_CONSISTENCY", raising=False)
+    du = (
+        "Declaration(Class(:E)) Declaration(Class(:F)) Declaration(Class(:G))\n"
+        "DisjointUnion(:E :F ObjectSomeValuesFrom(:r :G)) ClassAssertion(:E :b)"
+    )
+    for extra, named in ((du, True), ("", False)):
+        p = tmp_path / f"du{int(named)}.ofn"
+        p.write_text(SRC.format(extra=extra))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert rustdl.is_consistent(str(p)) is True
+        msgs = [str(w.message) for w in caught if w.category is rustdl.TrustedConsistencyWarning]
+        assert msgs, caught
+        assert ("1 deferral(s)" in msgs[0]) is named, msgs

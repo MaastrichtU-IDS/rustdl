@@ -191,6 +191,44 @@ public class RustdlProofTest {
             RustdlProcess.parseProve(fixture("prove.json")), goal, proveJsonSource());
     }
 
+    /**
+     * #594: a step proof the plugin cannot show (it uses a derived axiom) that came with a
+     * source-only justification ({@code prove --source-fallback}) is shown as that
+     * justification instead of being refused.
+     */
+    @Test
+    public void aFlaggedProofWithASourceFallbackShowsTheJustification() throws Exception {
+        RustdlJson.ProveJson json =
+            RustdlProcess.parseProve(fixture("prove_derived_with_fallback.json"));
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+        RustdlProof proof = RustdlProof.fromProveJson(json, goal, proveJsonSource());
+        Collection<? extends Inference<OWLAxiom>> inferences = proof.getInferences(goal);
+        assertEquals(1, inferences.size());
+        Inference<OWLAxiom> j = inferences.iterator().next();
+        assertEquals("justification", j.getName());
+        assertEquals(2, j.getPremises().size());
+    }
+
+    /** #594: the fallback is verified like any other: a non-source axiom rejects it. */
+    @Test(expected = ExplanationException.class)
+    public void aFabricatedSourceFallbackIsRejected() throws Exception {
+        RustdlJson.ProveJson json =
+            RustdlProcess.parseProve(fixture("prove_derived_fabricated_fallback.json"));
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+        RustdlProof.fromProveJson(json, goal, proveJsonSource());
+    }
+
+    /** #594: an empty fallback is refused (#402), never shown as proved from nothing. */
+    @Test
+    public void anEmptySourceFallbackIsRefused() throws Exception {
+        RustdlJson.ProveJson json =
+            RustdlProcess.parseProve(fixture("prove_derived_empty_fallback.json"));
+        OWLSubClassOfAxiom goal = DF.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+            () -> RustdlProof.fromProveJson(json, goal, proveJsonSource()));
+        assertTrue(e.getMessage(), e.getMessage().contains("no justification is available"));
+    }
+
     /** #539: a step resting on a built-in axiom is refused the same way, not shown without it. */
     @Test
     public void aStepUsingABuiltinAxiomIsRefused() throws Exception {

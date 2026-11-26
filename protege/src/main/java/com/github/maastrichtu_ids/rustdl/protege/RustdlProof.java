@@ -46,7 +46,8 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
      *     {@link RustdlProofService} — only builds a proof for an entailed result).
      * @param goal the OWLAxiom the caller asked {@link RustdlProofService#getProof} to explain.
      *     Used directly as the synthetic fallback inference's conclusion when
-     *     {@code has_proof == false} (there is no OFN document representing the goal in that
+     *     {@code justification_fallback} is shown: {@code has_proof == false}, or (#594) a
+     *     step proof that came with one (there is no OFN document representing the goal in that
      *     branch — {@code justification_fallback} carries only the justification's axioms, not
      *     the entailment itself). When {@code has_proof == true} the root node's own parsed
      *     conclusion is used instead (expected — not re-checked here — to be structurally equal
@@ -58,7 +59,10 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
             throw new IllegalArgumentException("rustdl prove --json returned no result");
         }
         RustdlProof proof = new RustdlProof();
-        if (json.has_proof) {
+        // #594: a step proof that came with a source-only justification is one rustdl flagged
+        // as not showable here (it uses an axiom rustdl added during conversion, or is not
+        // complete); show the justification instead, verified like any fallback.
+        if (json.has_proof && json.justification_fallback == null) {
             if (json.proof == null) {
                 throw new IllegalStateException(
                     "rustdl prove --json: has_proof=true but proof is null");

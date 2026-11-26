@@ -104,7 +104,8 @@ class Classification:
     @property
     def wedge_abox_blind(self) -> bool:
         """True iff classify trusted a wedge model that touches a nominal
-        while some ABox fact was not given to the classify wedge, so a
+        while some ABox fact did not apply in it (not given to the classify
+        wedge, or given for an individual the model lacks), so a
         subsumption or an unsatisfiable class that depends on an individual's
         facts may be missing (#533). Near-universal on input with both a
         nominal and an ABox."""

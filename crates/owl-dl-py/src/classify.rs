@@ -167,7 +167,8 @@ impl PyClassification {
     }
 
     /// True iff classify trusted a wedge model that touches a nominal while some
-    /// `ABox` fact was not given to the classify wedge (#533). Then a subsumption
+    /// `ABox` fact did not apply in it: not given to the classify wedge, or given for
+    /// an individual the model does not instantiate (#533). Then a subsumption
     /// or an unsatisfiable class that depends on an individual's facts may be
     /// missing even though `complete` (nothing cut) is `True`. Near-universal on
     /// input with both a nominal and an `ABox`.

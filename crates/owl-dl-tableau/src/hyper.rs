@@ -7370,27 +7370,35 @@ impl<'c> HyperEngine<'c> {
         &self.nodes[self.resolve(HNode(0)).index()].labels
     }
 
-    /// #533: whether some live node of the current completion carries a nominal class
-    /// (an id in `[start, start + count)`, the range [`Self::with_nominals`] takes).
-    /// A completion with no nominal-labelled node shares no element with the named
-    /// individuals, so it can be united disjointly with any model of the full `KB`
-    /// (`ABox` included); one that touches a nominal cannot, since a fact about that
-    /// individual the engine was not given may contradict it.
+    /// #533: the nominal classes (ids in `[start, start + count)`, the range
+    /// [`Self::with_nominals`] takes) that some live node of the current completion
+    /// carries, sorted and duplicate-free. Empty means the completion shares no
+    /// element with the named individuals, so it can be united disjointly with any
+    /// model of the full `KB` (`ABox` included); one that touches a nominal cannot,
+    /// since a fact about an individual the engine was not given, or one that applies
+    /// only on a node this completion lacks, may contradict it.
     ///
     /// Merged-away nodes are skipped: `merge_with_cause` copies their labels onto the
-    /// survivor. Counting them could only over-report (the safe direction), so no test
-    /// pins the `resolve` filter; a sabotage that drops it passes the suite.
+    /// survivor, so counting them would change nothing. No test pins the `resolve`
+    /// filter; a sabotage that drops it passes the suite.
     #[must_use]
-    pub fn live_node_labelled_in(&self, start: u32, count: u32) -> bool {
+    pub fn live_labels_in(&self, start: u32, count: u32) -> Vec<u32> {
         let end = start.saturating_add(count);
-        (0..self.nodes.len()).any(|i| {
+        let mut out: Vec<u32> = Vec::new();
+        for (i, node) in self.nodes.iter().enumerate() {
             let n = HNode(u32::try_from(i).unwrap_or(u32::MAX));
-            self.resolve(n) == n
-                && self.nodes[i]
-                    .labels
-                    .iter()
-                    .any(|c| (start..end).contains(&c.index()))
-        })
+            if self.resolve(n) == n {
+                out.extend(
+                    node.labels
+                        .iter()
+                        .map(|c| c.index())
+                        .filter(|c| (start..end).contains(c)),
+                );
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The seed (root) node — node `0`, where [`Self::new`] asserts the

@@ -958,8 +958,8 @@ fn warn_if_hierarchy_blind(blind: bool) {
 fn warn_if_abox_blind(blind: bool) {
     if blind {
         eprintln!(
-            "\n⚠  NOT GUARANTEED COMPLETE: the classify wedge was not given every ABox \
-             fact, and some of its models touch a nominal, so a subsumption or an \
+            "\n⚠  NOT GUARANTEED COMPLETE: some classify wedge models touch a nominal \
+             while an ABox fact did not apply in them, so a subsumption or an \
              unsatisfiable class that depends on an individual's facts may be missing \
              (#533). RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 decides those classes on the \
              main tableau, at a time cost."
@@ -1938,7 +1938,7 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     if stats.wedge_abox_blind {
         writeln!(
             out,
-            "# wedge models blind to unfed ABox facts: {}: completeness not guaranteed",
+            "# wedge models blind to ABox facts: {}: completeness not guaranteed",
             stats.wedge_abox_blind_models
         )?;
     }

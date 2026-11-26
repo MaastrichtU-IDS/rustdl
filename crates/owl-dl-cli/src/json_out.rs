@@ -183,7 +183,8 @@ pub(crate) struct ClassifyJson {
     /// pair was cut, and `incomplete` means exactly that.
     pub(crate) wedge_hierarchy_blind: bool,
     /// #533: classify trusted a wedge model that touches a nominal while some `ABox`
-    /// fact was not given to the classify wedge, so the model may not be a model of
+    /// fact did not apply in it (not given to the classify wedge, or given for an
+    /// individual the model does not instantiate), so the model may not be a model of
     /// the full `KB`, and a subsumption or an unsatisfiable class may be missing.
     /// A SEPARATE field for the same reason as `wedge_hierarchy_blind`: no class pair
     /// was cut. `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` decides those cases on the main

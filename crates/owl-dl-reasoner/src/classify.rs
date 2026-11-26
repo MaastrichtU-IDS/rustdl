@@ -743,9 +743,10 @@ pub struct ClassificationStats {
     /// `incomplete`, which means only that a class pair or probe was cut (#574).
     pub wedge_hierarchy_blind: bool,
     /// #533: classify trusted at least one wedge model that may not be a model of the
-    /// full `KB`: it touches a nominal while some `ABox` fact was not given to the
-    /// classify wedge (outside the nominal reach, or an object-property assertion
-    /// while `RUSTDL_CLASSIFY_NOMINAL_OPA` is off). Such a model can hide a real
+    /// full `KB`: it touches a nominal while some `ABox` fact did not apply in it (not
+    /// given to the classify wedge, i.e. outside the nominal reach or an
+    /// object-property assertion while `RUSTDL_CLASSIFY_NOMINAL_OPA` is off; or given
+    /// for an individual the model does not instantiate). Such a model can hide a real
     /// subsumption or an unsatisfiable class, so [`Classification::
     /// completeness_guaranteed`] is false and `classify --json` reports this field
     /// (`RUSTDL_REPORT_WEDGE_ABOX_BLIND`). A model with no nominal-labelled node is
@@ -4889,13 +4890,16 @@ fn classify_top_down_internal_impl(
             for k in 0..scan {
                 let i = (k * stride).min(n - 1);
                 let id = reported.class_id(i);
+                // #533: raw, so a demoted `Sat` is a finished build, not a failing one.
+                // A settled demotion is reused as the final `NoVerdict` it is, which
+                // also keeps the class from being built and counted again.
                 let r = prepared
-                    .classify_labels(id, effective_deadline(global_deadline, Some(small_dur)));
+                    .classify_labels_raw(id, effective_deadline(global_deadline, Some(small_dur)));
                 if matches!(r, crate::LabelOracle::NoVerdict) {
                     failing = Some(i);
                     break;
                 }
-                probe_reuse.push((i, r));
+                probe_reuse.push((i, prepared.settle_label_oracle(r)));
             }
             match failing {
                 // Nothing fails at the current budget within the scan window, so there is
@@ -4912,12 +4916,14 @@ fn classify_top_down_internal_impl(
                     // 1000 ms; deciding at 2× removes the knife-edge without changing what
                     // gets applied on success.
                     let decide_dur = probe_dur.saturating_mul(2);
-                    let rescued = prepared
-                        .classify_labels(id, effective_deadline(global_deadline, Some(decide_dur)));
+                    let rescued = prepared.classify_labels_raw(
+                        id,
+                        effective_deadline(global_deadline, Some(decide_dur)),
+                    );
                     let rescued_nv = matches!(rescued, crate::LabelOracle::NoVerdict);
                     if !rescued_nv {
                         // Escalating, and this class is now decided — carry it over too.
-                        probe_reuse.push((i, rescued));
+                        probe_reuse.push((i, prepared.settle_label_oracle(rescued)));
                     }
                     if rescued_nv {
                         // Fails at BOTH budgets — the `9540` shape. Escalating would spend
@@ -4964,7 +4970,8 @@ fn classify_top_down_internal_impl(
             .map(|i| {
                 // Already decided by the escalation probe, at a budget whose VERDICT is
                 // valid here — skip the rebuild. See the probe block for why a verdict
-                // carries over and a `NoVerdict` does not.
+                // carries over and a timed-out `NoVerdict` does not (a #533 demotion is
+                // carried over: it is final).
                 if let Some(Some(r)) = reuse.get(i) {
                     return r.clone();
                 }
@@ -6489,8 +6496,8 @@ fn subsumes_via_tableau(
                 // behaviour (trust every NotSubsumed verdict).
                 let threshold = crate::hyper_trust_sat_min_ms();
                 if abox_blind && crate::classify_wedge_abox_demote_enabled() {
-                    // #533: the model touches a nominal while some `ABox` fact was
-                    // not given to the wedge, so it may not be a model of the full
+                    // #533: the model touches a nominal while some `ABox` fact did
+                    // not apply in it, so it may not be a model of the full
                     // `KB`. Demoted: the main tableau, which seeds the `ABox`,
                     // decides the pair. Sound: only swaps a trusted `Sat` for the
                     // complete path.

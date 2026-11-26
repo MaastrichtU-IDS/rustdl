@@ -119,9 +119,10 @@ symmetric reasoning may then be missing. A separate field, because nothing was
 cut: it does not set `incomplete`.
 
 `wedge_abox_blind` = classify trusted a wedge model that touches a nominal while
-some `ABox` fact was not given to the classify wedge (#533). That wedge sees the
-facts of the individuals in the nominal reach only, and object-property
-assertions only under `RUSTDL_CLASSIFY_NOMINAL_OPA=1`. A model that touches no
+some `ABox` fact did not apply in it (#533). That wedge sees the facts of the
+individuals in the nominal reach only, and object-property assertions only under
+`RUSTDL_CLASSIFY_NOMINAL_OPA=1`; a fact it does see applies only on a node that
+carries the individual, so a model lacking that individual counts too. A model that touches no
 nominal is not counted: it can be united disjointly with any model of the full
 KB. A subsumption or an unsatisfiable class that depends on an individual's facts
 may be missing. A separate field: nothing was cut, so it does not set

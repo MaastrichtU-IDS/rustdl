@@ -14,10 +14,13 @@ All notable changes to rustdl are documented here. Format is based on
   generation, the unsat probe, per-pair refutations). On the issue's three fixtures and five
   more probes (`X ⊑ ∃R.{a}` with unseen facts about `a`), `subclass` derived a pair, or an
   unsatisfiable class, that classify missed with `incomplete: false` and nothing else set. HermiT
-  and Konclude agree on all eight and on their four controls.
+  and Konclude agree on all eight and on their four controls. A ninth, from the PR review,
+  has every fact given but the forcing individual absent from the model.
   - A completion with no nominal-labelled node can be united disjointly with any model of the
     full KB, so unseen facts cannot invalidate it. Only a trusted model that touches a nominal
-    while some fact is unfed counts.
+    while some fact did not apply in it counts: a fact not given to the wedge, or one given
+    for an individual the model does not instantiate (a pushed fact fires only on a node
+    carrying that individual).
   - The signal is a separate field, not `incomplete`: `classify --json` `wedge_abox_blind`,
     `ClassificationStats::wedge_abox_blind` (with the count `wedge_abox_blind_models`), the
     Python `Classification.wedge_abox_blind` and its `IncompleteClassificationWarning`, and a

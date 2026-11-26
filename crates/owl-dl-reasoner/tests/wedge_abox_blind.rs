@@ -10,7 +10,8 @@
 //!
 //! A completion with no nominal-labelled node can be united disjointly with any model
 //! of the full `KB`, so unseen facts cannot invalidate it. Only a trusted model that
-//! touches a nominal, while some fact was unfed, is blind:
+//! touches a nominal, while some fact was unfed or applies only on an individual the
+//! model lacks, is blind:
 //!
 //! - by default classify reports it (`wedge_abox_blind`, and `completeness_guaranteed`
 //!   is false); no answer changes;
@@ -95,12 +96,30 @@ fn onto(decls: &str, body: &str) -> SetOntology<RcStr> {
         .0
 }
 
+/// Removes the variables it set on drop, so a panicking classify cannot leave
+/// `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` behind for the next test.
+struct EnvGuard<'a>(&'a [(&'a str, &'a str)]);
+
+impl Drop for EnvGuard<'_> {
+    fn drop(&mut self) {
+        for (k, _) in self.0 {
+            // SAFETY: dropped while the test still holds `ENV_MUTEX`.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::remove_var(k);
+            }
+        }
+    }
+}
+
 /// Classify `body` with the given `(variable, value)` settings, at a pair budget no
 /// fixture here comes near.
 fn run(decls: &str, body: &str, env: &[(&str, &str)]) -> Classification {
     let _g = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Declared after `_g`, so it drops (and unsets) before the lock is released.
+    let _env = EnvGuard(env);
     // SAFETY: every test in this binary holds `ENV_MUTEX` while the variables are set.
     for (k, v) in env {
         #[allow(unsafe_code)]
@@ -108,14 +127,7 @@ fn run(decls: &str, body: &str, env: &[(&str, &str)]) -> Classification {
             std::env::set_var(k, v);
         }
     }
-    let c = classify_with_timeout(&onto(decls, body), Duration::from_secs(2));
-    for (k, _) in env {
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::remove_var(k);
-        }
-    }
-    c.expect("classify")
+    classify_with_timeout(&onto(decls, body), Duration::from_secs(2)).expect("classify")
 }
 
 fn iri(c: &str) -> String {
@@ -154,8 +166,9 @@ fn pairs(p: &[(&str, &str)]) -> Vec<(String, String)> {
 }
 
 /// The oracle closure must be found with the demotion on, and nothing else; with it
-/// off, whatever classify misses must be reported as `wedge_abox_blind`.
-fn check(decls: &str, names: &[&str], body: &str, oracle: &[(&str, &str)]) {
+/// off, whatever classify misses must be reported as `wedge_abox_blind`. Returns that
+/// default run's `wedge_abox_blind`, which every positive asserts outright.
+fn check(decls: &str, names: &[&str], body: &str, oracle: &[(&str, &str)]) -> bool {
     let want = pairs(oracle);
 
     let off = run(decls, body, &[]);
@@ -182,10 +195,20 @@ fn check(decls: &str, names: &[&str], body: &str, oracle: &[(&str, &str)]) {
         want,
         "with the demotion the closure must be the oracles'\n{body}"
     );
-    let s = on.stats();
+    let s_on = on.stats();
     assert!(
-        !s.wedge_abox_blind,
-        "a demoted model is not trusted, so it is not reported: {s:?}"
+        !s_on.wedge_abox_blind,
+        "a demoted model is not trusted, so it is not reported: {s_on:?}"
+    );
+    s.wedge_abox_blind
+}
+
+/// A positive: `check`, and the default run must raise the signal whether or not this
+/// build happens to miss the pair.
+fn check_blind(decls: &str, names: &[&str], body: &str, oracle: &[(&str, &str)]) {
+    assert!(
+        check(decls, names, body, oracle),
+        "a blind wedge model must be reported\n{body}"
     );
 }
 
@@ -193,12 +216,14 @@ fn check(decls: &str, names: &[&str], body: &str, oracle: &[(&str, &str)]) {
 
 #[test]
 fn p1_control_without_the_fact_stays_empty() {
-    check(P_DECLS, P_NAMES, &format!("{X_TO_A} {P1_TBOX}"), &[]);
+    // The signal may legitimately fire here (unfed facts, a nominal touched).
+    let _ = check(P_DECLS, P_NAMES, &format!("{X_TO_A} {P1_TBOX}"), &[]);
 }
 
 #[test]
 fn p2_control_without_the_edge_stays_empty() {
-    check(
+    // The signal may legitimately fire here (unfed facts, a nominal touched).
+    let _ = check(
         P_DECLS,
         P_NAMES,
         &format!(
@@ -211,12 +236,14 @@ fn p2_control_without_the_edge_stays_empty() {
 
 #[test]
 fn p4_control_without_the_type_stays_empty() {
-    check(P_DECLS, P_NAMES, &format!("{X_TO_A} {P4_REST}"), &[]);
+    // The signal may legitimately fire here (unfed facts, a nominal touched).
+    let _ = check(P_DECLS, P_NAMES, &format!("{X_TO_A} {P4_REST}"), &[]);
 }
 
 #[test]
 fn p5_control_without_the_edge_keeps_x_satisfiable() {
-    check(
+    // The signal may legitimately fire here (unfed facts, a nominal touched).
+    let _ = check(
         P_DECLS,
         P_NAMES,
         &format!(
@@ -268,17 +295,17 @@ fn a_fully_fed_abox_raises_nothing() {
 
 #[test]
 fn c474_property_assertions_on_the_nominal() {
-    check(C_DECLS, C_NAMES, C474, &[("C3", "C7")]);
+    check_blind(C_DECLS, C_NAMES, C474, &[("C3", "C7")]);
 }
 
 #[test]
 fn c631_class_assertions_outside_the_reach() {
-    check(C_DECLS, C_NAMES, C631, &[("C4", "C0"), ("C4", "C3")]);
+    check_blind(C_DECLS, C_NAMES, C631, &[("C4", "C0"), ("C4", "C3")]);
 }
 
 #[test]
 fn c863_an_equality_only_type_reasoning_derives() {
-    check(
+    check_blind(
         C_DECLS,
         C_NAMES,
         C863,
@@ -295,7 +322,7 @@ fn c863_an_equality_only_type_reasoning_derives() {
 
 #[test]
 fn p1_an_inverse_edge_into_the_nominal() {
-    check(
+    check_blind(
         P_DECLS,
         P_NAMES,
         &format!("{X_TO_A} {P1_FACT} {P1_TBOX}"),
@@ -305,7 +332,7 @@ fn p1_an_inverse_edge_into_the_nominal() {
 
 #[test]
 fn p2_a_universal_through_an_unfed_edge() {
-    check(
+    check_blind(
         P_DECLS,
         P_NAMES,
         &format!("{X_TO_A} {P1_FACT} {P2_REST}"),
@@ -315,7 +342,7 @@ fn p2_a_universal_through_an_unfed_edge() {
 
 #[test]
 fn p3_an_existential_fact_outside_the_reach() {
-    check(
+    check_blind(
         P_DECLS,
         P_NAMES,
         &format!("{X_TO_A} {P3_FACT} {P1_TBOX}"),
@@ -325,7 +352,7 @@ fn p3_an_existential_fact_outside_the_reach() {
 
 #[test]
 fn p4_an_equality_forced_by_a_range() {
-    check(
+    check_blind(
         P_DECLS,
         P_NAMES,
         &format!("{X_TO_A} {P4_REST} {P4_FACT}"),
@@ -335,10 +362,79 @@ fn p4_an_equality_forced_by_a_range() {
 
 #[test]
 fn p5_an_unsatisfiable_class_the_label_model_hid() {
-    check(
+    check_blind(
         P_DECLS,
         P_NAMES,
         &format!("{X_TO_A} {P1_FACT} {P5_REST}"),
         &[("X", "Nothing")],
+    );
+}
+
+/// Fable PR review finding: a FED fact applies only on a live `{b}` node. `E ⊑ {b}`
+/// puts `b` in the reach, so `b : ∃S.{a}` is pushed, but `X`'s model touches `{a}`
+/// and never instantiates `{b}`. Before the fed-individual check nothing was unfed,
+/// so the miss went unreported and the demotion never engaged. Oracles: `X ⊑ D` only.
+#[test]
+fn p3_a_fed_fact_on_an_individual_the_model_lacks() {
+    check_blind(
+        P_DECLS,
+        P_NAMES,
+        &format!("{X_TO_A} {P3_FACT} {P1_TBOX} SubClassOf(:E ObjectOneOf(:b))"),
+        &[("X", "D")],
+    );
+}
+
+/// The property-assertion side of the same check, with `RUSTDL_CLASSIFY_NOMINAL_OPA=1`
+/// so nothing is unfed: `E ⊑ {b}` puts `b` in the reach and `S(b, d)` is pushed, but
+/// only `{b}`'s node would fire it and `X`'s model touches `{a}` alone. `Domain(S) =
+/// {a}` makes `b = a`, so `a` has an `S`-edge and `X ⊑ D`. Oracles: `X ⊑ D` only.
+#[test]
+fn p6_a_fed_property_assertion_on_an_individual_the_model_lacks() {
+    let body = format!(
+        "{X_TO_A} SubClassOf(:E ObjectOneOf(:b)) ObjectPropertyAssertion(:S :b :c) \
+         ObjectPropertyDomain(:S ObjectOneOf(:a)) \
+         SubClassOf(ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(:S owl:Thing)) :D)"
+    );
+    let want = pairs(&[("X", "D")]);
+    let off = run(P_DECLS, &body, &[(OPA, "1")]);
+    let got = closure(&off, P_NAMES);
+    assert!(got.iter().all(|p| want.contains(p)), "{got:?}");
+    let s = off.stats();
+    assert!(
+        s.wedge_abox_blind && !off.completeness_guaranteed(),
+        "{s:?}"
+    );
+    let on = run(P_DECLS, &body, &[(OPA, "1"), (DEMOTE, "1")]);
+    assert_eq!(closure(&on, P_NAMES), want);
+    assert!(on.stats().wedge_abox_demoted > 0, "{:?}", on.stats());
+}
+
+/// The deferral guard: `a_fully_fed_abox_raises_nothing`'s input plus a `TBox` axiom
+/// the clausifier defers (#600's `DisjointUnion` with a `∀` member). The wedge cannot
+/// tell which axiom a deferral came from, so with facts pushed it counts as unfed and
+/// the nominal-touching models are reported. Over-reporting by design: only the
+/// signal is pinned, not a miss.
+#[test]
+fn a_deferred_clause_counts_as_unfed() {
+    let body = format!("{C474} DisjointUnion(:C8 ObjectAllValuesFrom(:r1 :C0) :C1)");
+    let c = run(C_DECLS, &body, &[(OPA, "1")]);
+    let s = c.stats();
+    assert!(s.wedge_abox_blind && s.wedge_abox_blind_models > 0, "{s:?}");
+}
+
+/// The negative of `a_deferred_clause_counts_as_unfed`: the same `TBox` (nominals and the
+/// deferred `DisjointUnion`) without an `ABox`. There is no fact a model could have missed,
+/// so a deferral alone must not raise the `ABox` signal (the `TBox`-only gap is #600's).
+#[test]
+fn a_deferral_without_abox_facts_raises_nothing() {
+    let body = "SubClassOf(ObjectSomeValuesFrom(:r1 ObjectUnionOf(:C8 :C3)) :C7) \
+         EquivalentClasses(:C3 ObjectOneOf(:a0)) \
+         SubClassOf(ObjectSomeValuesFrom(ObjectInverseOf(:r0) ObjectOneOf(:a2 :a0)) :C3) \
+         DisjointUnion(:C8 ObjectAllValuesFrom(:r1 :C0) :C1)";
+    let c = run(C_DECLS, body, &[(OPA, "1")]);
+    let s = c.stats();
+    assert!(
+        !s.wedge_abox_blind && s.wedge_abox_blind_models == 0,
+        "{s:?}"
     );
 }

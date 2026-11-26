@@ -4977,7 +4977,9 @@ fn nominal_reach(
 /// handles any asserted class (atomic, complex, nominal) uniformly. Returns the
 /// axiom count before the push: the caller clausifies, then truncates back, so the
 /// other consumers of `internal` see the original axioms while the concept pool
-/// (append-only) stays shared and no concept id can be reused.
+/// (append-only) stays shared and no concept id can be reused. Also returns whether
+/// some fact was NOT pushed (#533) and the sorted indices of the individuals whose
+/// facts were pushed (a pushed fact only applies on a live `{a}` node).
 ///
 /// Only individuals that can label a classify node get facts: those occurring as a
 /// nominal in a concept, closed under `SameIndividual` (`same`) and property
@@ -4989,7 +4991,7 @@ fn push_nominal_abox_axioms(
     internal: &mut InternalOntology,
     same: bool,
     opa: bool,
-) -> (usize, bool) {
+) -> (usize, bool, Vec<u32>) {
     use owl_dl_core::ontology::Axiom;
     let before = internal.axioms.len();
     let reach = nominal_reach(internal, same, opa);
@@ -5006,16 +5008,19 @@ fn push_nominal_abox_axioms(
         _ => false,
     });
     if reach.is_empty() {
-        return (before, unfed);
+        return (before, unfed, Vec::new());
     }
     let mut extra: Vec<Axiom> = Vec::new();
+    let mut fed: Vec<u32> = Vec::new();
     for ax in &internal.axioms[..before] {
         match ax {
             Axiom::ClassAssertion { class, individual } if reach.contains(individual) => {
                 let sub = internal.concepts.nominal(*individual);
                 extra.push(Axiom::SubClassOf { sub, sup: *class });
+                fed.push(individual.index());
             }
             Axiom::SameIndividual(inds) if same && inds.iter().any(|i| reach.contains(i)) => {
+                fed.extend(inds.iter().map(|i| i.index()));
                 for w in inds.windows(2) {
                     let (x, y) = (
                         internal.concepts.nominal(w[0]),
@@ -5038,6 +5043,7 @@ fn push_nominal_abox_axioms(
                 let to_a = internal.concepts.some(role.flip(), a);
                 extra.push(Axiom::SubClassOf { sub: a, sup: to_b });
                 extra.push(Axiom::SubClassOf { sub: b, sup: to_a });
+                fed.extend([subject.index(), object.index()]);
             }
             _ => {}
         }
@@ -5047,7 +5053,9 @@ fn push_nominal_abox_axioms(
     // for nominals (e.g. the sat-seed saturation's enumeration members) sees them too;
     // that is sound, since every fact pushed for them is asserted.
     internal.axioms.extend(extra);
-    (before, unfed)
+    fed.sort_unstable();
+    fed.dedup();
+    (before, unfed, fed)
 }
 
 /// One line per classify on `RUSTDL_ID_STATS=1`, so the shutoff's inputs can be
@@ -5110,11 +5118,25 @@ pub(crate) struct HyperCache {
     /// model of the full `KB`. One that touches a nominal is not: a fact the wedge was
     /// not given about that individual may contradict it.
     ///
-    /// Holds the nominal id range `(start, count)` when some fact was unfed, else
-    /// `None` (nothing unfed, or no individual). [`Self::sat_is_abox_blind`] reads it.
-    /// The argument is about the semantics the engine implements: the universal role
-    /// is an ordinary role there (#543), which is a separate gap.
+    /// A FED fact is no better unless its individual is on a live node: it is
+    /// pushed as a `{a}`-antecedent clause, which never fires while no node carries
+    /// `{a}`. A model touching `{b}` may lack `{a}`, whose fact (`a : ∃S.{b}`) the
+    /// full `KB` would apply to `b`.
+    ///
+    /// Holds the nominal id range `(start, count)` when some fact was unfed or fed,
+    /// else `None` (no `ABox`, or no individual). [`Self::sat_is_abox_blind`] reads
+    /// it with [`Self::abox_unfed`] and [`Self::abox_fed_ids`]. The argument is about
+    /// the semantics the engine implements: the universal role is an ordinary role
+    /// there (#543), which is a separate gap. So is a `TBox` axiom on a nominal the
+    /// model does not instantiate (`{a} ⊑ ∃S.{b}` with no `ABox`).
     abox_blind_ids: Option<(u32, u32)>,
+    /// #533: some `ABox` fact was not given to this wedge, or the clausifier deferred
+    /// some clause while facts were pushed (it cannot tell which axiom a deferral came
+    /// from, so this over-reports; no deferring `ABox` shape is known).
+    abox_unfed: bool,
+    /// #533: the clausifier nominal ids (sorted) of the individuals whose facts were
+    /// pushed. A model touching a nominal must carry every one of them on a live node.
+    abox_fed_ids: Vec<u32>,
     /// #533: trusted wedge models that were `ABox`-blind (a label `Sat` kept, or a
     /// per-pair `NotSubsumed` trusted) with `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE` off.
     /// Read into `ClassificationStats::wedge_abox_blind_models`.
@@ -5317,12 +5339,26 @@ impl HyperCache {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// #533: whether the `Sat` completion `engine` just found is `ABox`-blind: some
-    /// `ABox` fact was not given to this wedge AND a live node carries a nominal. See
-    /// [`Self::abox_blind_ids`] for why both are needed.
+    /// #533: whether the `Sat` completion `engine` just found is `ABox`-blind: a live
+    /// node carries a nominal AND either some `ABox` fact was not given to this wedge or
+    /// some individual whose facts were given is on no live node. See
+    /// [`Self::abox_blind_ids`] for why each part is needed.
     fn sat_is_abox_blind(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) -> bool {
-        self.abox_blind_ids
-            .is_some_and(|(start, count)| engine.live_node_labelled_in(start, count))
+        let Some((start, count)) = self.abox_blind_ids else {
+            return false;
+        };
+        let live = engine.live_labels_in(start, count);
+        if live.is_empty() {
+            return false;
+        }
+        // `live` is sorted and duplicate-free, so more fed ids than live ones means one
+        // is missing without a search.
+        self.abox_unfed
+            || self.abox_fed_ids.len() > live.len()
+            || self
+                .abox_fed_ids
+                .iter()
+                .any(|id| live.binary_search(id).is_err())
     }
 
     /// #533: count one `ABox`-blind wedge model that classify trusted.
@@ -5352,7 +5388,7 @@ impl HyperCache {
         let mut internal = internal.clone();
         // #277/#279: clausify with the nominal individuals' `ABox` facts as
         // `{a}`-antecedent GCIs, then drop them again so nothing below sees them.
-        let (n_axioms, abox_unfed) = if classify_nominal_types_enabled() {
+        let (n_axioms, abox_unfed, abox_fed) = if classify_nominal_types_enabled() {
             push_nominal_abox_axioms(
                 &mut internal,
                 classify_nominal_same_enabled(),
@@ -5368,7 +5404,7 @@ impl HyperCache {
                         | owl_dl_core::ontology::Axiom::NegativeObjectPropertyAssertion { .. }
                 )
             });
-            (internal.axioms.len(), unfed)
+            (internal.axioms.len(), unfed, Vec::new())
         };
         // #564: the inverse-functional bounds conversion declined, clausified with the
         // rest and then dropped like the nominal facts above.
@@ -5378,7 +5414,9 @@ impl HyperCache {
                 eprintln!("classify wedge: {added} declined inverse-functional bound(s) added");
             }
         }
-        let (base, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let (base, clause_stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        // #533: a pushed fact the clausifier deferred is not in the wedge either.
+        let abox_unfed = abox_unfed || (!abox_fed.is_empty() && clause_stats.deferred > 0);
         internal.axioms.truncate(n_axioms);
         let defs = owl_dl_core::definitions::extract_definitions(&internal);
         // Label-cache back-fold (Task 1): precompute the ∃-bearing defined
@@ -5700,10 +5738,15 @@ impl HyperCache {
         let abox_blind_ids = u32::try_from(internal.vocabulary.num_classes())
             .ok()
             .zip(u32::try_from(internal.vocabulary.num_individuals()).ok())
-            .filter(|&(_, count)| abox_unfed && count > 0);
+            .filter(|&(_, count)| (abox_unfed || !abox_fed.is_empty()) && count > 0);
+        let abox_fed_ids: Vec<u32> = abox_blind_ids.map_or_else(Vec::new, |(start, _)| {
+            abox_fed.iter().map(|&i| start + i).collect()
+        });
         Self {
             nominal_range,
             abox_blind_ids,
+            abox_unfed,
+            abox_fed_ids,
             abox_blind_models: std::sync::atomic::AtomicU64::new(0),
             abox_demoted: std::sync::atomic::AtomicU64::new(0),
             layer_a,
@@ -12184,18 +12227,35 @@ impl PreparedOntology {
         c: owl_dl_core::ir::ClassId,
         deadline: Option<std::time::Instant>,
     ) -> LabelOracle {
-        let Some(hc) = self.hyper.as_ref() else {
-            return LabelOracle::NoVerdict;
-        };
-        let oracle = hc.classify_labels(c, deadline);
-        // #533: a label `Sat` from an `ABox`-blind completion is not a proven
-        // counterexample (see `HyperCache::abox_blind_ids`). Demoted, the class
-        // goes the way a wedge timeout does: the unsat probe and candidate
-        // generation use the `ABox`-seeded main tableau, and its pairs are decided
-        // per pair. Kept, it is counted so classify reports `wedge_abox_blind`.
-        if let LabelOracle::Sat {
-            abox_blind: true, ..
-        } = oracle
+        self.settle_label_oracle(self.classify_labels_raw(c, deadline))
+    }
+
+    /// [`Self::classify_labels`] before #533's count and demotion: a `NoVerdict` here
+    /// means only that the wedge did not finish. The label-cache escalation probe reads
+    /// it so a demoted `Sat` is not mistaken for a budget failure; it then passes the
+    /// oracle through [`Self::settle_label_oracle`] exactly once.
+    pub(crate) fn classify_labels_raw(
+        &self,
+        c: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> LabelOracle {
+        self.hyper
+            .as_ref()
+            .map_or(LabelOracle::NoVerdict, |hc| hc.classify_labels(c, deadline))
+    }
+
+    /// #533: a label `Sat` from an `ABox`-blind completion is not a proven
+    /// counterexample (see `HyperCache::abox_blind_ids`). Demoted, the class goes the
+    /// way a wedge timeout does: the unsat probe and candidate generation use the
+    /// `ABox`-seeded main tableau, and its pairs are decided per pair. Kept, it is
+    /// counted so classify reports `wedge_abox_blind`. Call once per oracle.
+    pub(crate) fn settle_label_oracle(&self, oracle: LabelOracle) -> LabelOracle {
+        if let (
+            Some(hc),
+            LabelOracle::Sat {
+                abox_blind: true, ..
+            },
+        ) = (self.hyper.as_ref(), &oracle)
         {
             if classify_wedge_abox_demote_enabled() {
                 hc.note_abox_demoted();

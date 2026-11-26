@@ -194,7 +194,7 @@ public class RustdlProcessTest {
             java.util.List<String> cmd = RustdlProcess.buildProveCommand(
                 Paths.get("ont.ofn"), "http://ex/#A", "http://ex/#C");
             assertEquals(Arrays.asList(
-                fakeBin.toString(), "prove", "--json", "--", "ont.ofn",
+                fakeBin.toString(), "prove", "--json", "--source-fallback", "--", "ont.ofn",
                 "http://ex/#A", "http://ex/#C"), cmd);
         } finally {
             if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);

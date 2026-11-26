@@ -117,8 +117,10 @@ public final class RustdlProcess {
     static List<String> buildProveCommand(Path ofn, String sub, String sup) throws IOException {
         // "--" ends option parsing (see buildJustifyCommand): the ontology path and the two
         // entity IRIs are positionals and must not be misparsed as flags if they start with '-'.
-        return Arrays.asList(
-            RustdlBinary.resolve().toString(), "prove", "--json", "--", ofn.toString(), sub, sup);
+        // #594: --source-fallback asks for a source-only justification next to a step proof
+        // this plugin could not show (a builtin or derived axiom, or an incomplete proof).
+        return Arrays.asList(RustdlBinary.resolve().toString(), "prove", "--json",
+            "--source-fallback", "--", ofn.toString(), sub, sup);
     }
 
     static RustdlJson.ProveJson parseProve(String json) {

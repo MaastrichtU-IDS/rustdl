@@ -447,6 +447,12 @@ enum Command {
         /// Emit machine-readable JSON (schema v1) instead of text.
         #[arg(long)]
         json: bool,
+        /// With `--json`: when the step proof uses an axiom that is not a source axiom
+        /// (`builtin_axioms` / `derived_axioms`) or is not complete, also search a
+        /// source-only justification of the same entailment and emit it as
+        /// `justification_fallback` (#594). One extra justification search, only then.
+        #[arg(long, requires = "json")]
+        source_fallback: bool,
     },
     /// Diagnose a broken ontology: partition unsatisfiable classes into ROOT
     /// (genuine causes) and DERIVED (collateral), justify the roots, and on an
@@ -971,6 +977,38 @@ fn warn_direct_types_unverified(depth_capped: bool, saturation_only: bool, no_ve
          undecided, so a listed direct type may be a superclass of another; every listed type \
          is a genuine type.{remedy}"
     );
+}
+
+/// #594: a source-only justification of `sub ⊑ sup` next to a step proof a source-only
+/// consumer cannot show (the same search `justify` runs, under `prove`'s query node
+/// cap). A failure, give-up or empty result leaves the proof as it is, with a note: it
+/// never changes the proof, `incomplete` or the exit code.
+fn add_source_fallback(
+    prove_json: &mut json_out::ProveJson,
+    onto: &SetOntology<RcStr>,
+    sub: &str,
+    sup: &str,
+    pm: &PrefixMapping,
+) {
+    let q = owl_dl_reasoner::justify::Entailment::SubClassOf {
+        sub: sub.to_owned(),
+        sup: sup.to_owned(),
+    };
+    match owl_dl_reasoner::justify::find_one_justification_reporting(onto, &q) {
+        Ok(o) if o.status == Verdict::Entailed && !o.justifications.is_empty() => {
+            let j = &o.justifications[0];
+            prove_json.justification_fallback = Some(json_out::justification_doc(&j.axioms, pm));
+            prove_json.justification_minimal = Some(j.minimal_guaranteed && !o.incomplete);
+        }
+        Ok(_) => eprintln!(
+            "note: --source-fallback: no source-only justification was found (the search \
+             gave up or found none); the step proof is shown as it is."
+        ),
+        Err(e) => eprintln!(
+            "note: --source-fallback: the justification search failed ({e:#}); the step \
+             proof is shown as it is."
+        ),
+    }
 }
 
 /// #214: say why completeness is not guaranteed when nothing was cut.
@@ -3157,6 +3195,7 @@ fn run() -> Result<()> {
             sup,
             verify_proof,
             json,
+            source_fallback,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             // A single query, like `subclass` / `explain`: the 500k query cap
@@ -3197,8 +3236,15 @@ fn run() -> Result<()> {
             if json {
                 let internal = owl_dl_core::convert::convert_ontology(&onto)
                     .context("re-convert for rendering")?;
-                let prove_json = json_out::build_prove_json(&result, flags, &onto, &internal, &pm)
-                    .context("rendering prove --json proof tree")?;
+                let mut prove_json =
+                    json_out::build_prove_json(&result, flags, &onto, &internal, &pm)
+                        .context("rendering prove --json proof tree")?;
+                if source_fallback
+                    && (prove_json.proof_uses_non_source_axioms == Some(true)
+                        || prove_json.proof_complete == Some(false))
+                {
+                    add_source_fallback(&mut prove_json, &onto, &sub, &sup, &pm);
+                }
                 println!("{}", serde_json::to_string_pretty(&prove_json)?);
                 warn_gave_up();
                 if unknown || flags.no_verdict {

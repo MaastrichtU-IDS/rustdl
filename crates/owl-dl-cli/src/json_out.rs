@@ -1189,9 +1189,15 @@ pub(crate) struct ProveJson {
     /// every premise has a sub-proof; `false` when some step cannot be completed from
     /// the cited axioms; `null` when there is no proof.
     pub(crate) proof_complete: Option<bool>,
+    /// #594: `true` when some proof step uses an axiom that is not a source axiom
+    /// (`builtin_axioms` or `derived_axioms`), so a consumer that shows only source
+    /// axioms (the Protégé plugin) cannot show that step; `null` when there is no proof.
+    pub(crate) proof_uses_non_source_axioms: Option<bool>,
     pub(crate) proof: Option<ProofNodeJson>,
-    /// OFN ontology document (present iff `has_proof` is `false` and
-    /// `entailed` is `true`).
+    /// OFN ontology document. Present when `has_proof` is `false` and `entailed` is
+    /// `true`; #594: with `prove --source-fallback`, also alongside a step proof that
+    /// uses a non-source axiom or is not complete, as a source-only justification of
+    /// the same entailment that a consumer can show instead.
     pub(crate) justification_fallback: Option<String>,
     /// Present iff `justification_fallback` is: `true` when that justification is
     /// guaranteed minimal. An EMPTY fallback with `justification_minimal: true`
@@ -1520,6 +1526,20 @@ fn build_proof_node_json(
 /// No node is missing an axiom or a premise's sub-proof. Read off the rendered JSON
 /// so `proof_complete` agrees with the per-node fields by construction (an axiom ref
 /// that fails to resolve counts as missing there too).
+/// #594: some step of the tree uses a builtin or derived axiom (the condition the
+/// Protégé plugin refuses a step proof on).
+fn proof_uses_non_source(node: &ProofNodeJson) -> bool {
+    !node.builtin_axioms.is_empty()
+        || !node.derived_axioms.is_empty()
+        || node.premises.iter().any(proof_uses_non_source)
+}
+
+/// #594: a justification's axioms as one OFN document, as `justification_fallback`
+/// renders them.
+pub(crate) fn justification_doc(axioms: &[Component<RcStr>], pm: &PrefixMapping) -> String {
+    axioms_to_ofn_doc(axioms, pm)
+}
+
 fn proof_is_complete(node: &ProofNodeJson) -> bool {
     !node.axiom_missing
         && node.unproved_premises.is_empty()
@@ -1543,6 +1563,7 @@ pub(crate) fn build_prove_json(
         no_verdict: flags.no_verdict,
         has_proof: false,
         proof_complete: None,
+        proof_uses_non_source_axioms: None,
         proof: None,
         justification_fallback: None,
         justification_minimal: None,
@@ -1562,6 +1583,7 @@ pub(crate) fn build_prove_json(
             ProveJson {
                 has_proof: true,
                 proof_complete: Some(proof_is_complete(&proof)),
+                proof_uses_non_source_axioms: Some(proof_uses_non_source(&proof)),
                 proof: Some(proof),
                 ..verdict(true, "entailed")
             }

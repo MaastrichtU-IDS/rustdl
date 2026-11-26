@@ -58,7 +58,10 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
             throw new IllegalArgumentException("rustdl prove --json returned no result");
         }
         RustdlProof proof = new RustdlProof();
-        if (json.has_proof) {
+        // #594: a step proof that came with a source-only justification is one rustdl flagged
+        // as not showable here (it uses an axiom rustdl added during conversion, or is not
+        // complete); show the justification instead, verified like any fallback.
+        if (json.has_proof && json.justification_fallback == null) {
             if (json.proof == null) {
                 throw new IllegalStateException(
                     "rustdl prove --json: has_proof=true but proof is null");

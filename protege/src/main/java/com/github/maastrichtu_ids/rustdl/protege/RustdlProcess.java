@@ -110,15 +110,40 @@ public final class RustdlProcess {
      */
     public static RustdlJson.ProveJson prove(Path ofn, String sub, String sup, long timeoutSec)
             throws IOException {
-        return parseProve(runCommand(buildProveCommand(ofn, sub, sup), "prove", timeoutSec));
+        try {
+            return parseProve(
+                runCommand(buildProveCommand(ofn, sub, sup, true), "prove", timeoutSec));
+        } catch (IOException e) {
+            // #594: a rustdl older than --source-fallback (a -Drustdl.bin / RUSTDL_BIN
+            // override; the bundled binary always has it) rejects the flag. Run without it.
+            if (!rejectedSourceFallback(e)) {
+                throw e;
+            }
+            return parseProve(
+                runCommand(buildProveCommand(ofn, sub, sup, false), "prove", timeoutSec));
+        }
+    }
+
+    /** #594: clap's usage error (exit 2) for an unknown {@code --source-fallback}. */
+    static boolean rejectedSourceFallback(IOException e) {
+        String m = e.getMessage();
+        return m != null && m.contains("exited 2") && m.contains("--source-fallback");
     }
 
     /** Package-visible so tests can assert on the command list without spawning. */
-    static List<String> buildProveCommand(Path ofn, String sub, String sup) throws IOException {
+    static List<String> buildProveCommand(Path ofn, String sub, String sup, boolean sourceFallback)
+            throws IOException {
         // "--" ends option parsing (see buildJustifyCommand): the ontology path and the two
         // entity IRIs are positionals and must not be misparsed as flags if they start with '-'.
-        return Arrays.asList(
-            RustdlBinary.resolve().toString(), "prove", "--json", "--", ofn.toString(), sub, sup);
+        // #594: --source-fallback asks for a source-only justification next to a step proof
+        // this plugin could not show (one that uses an axiom rustdl added during conversion).
+        List<String> cmd = new java.util.ArrayList<>(
+            Arrays.asList(RustdlBinary.resolve().toString(), "prove", "--json"));
+        if (sourceFallback) {
+            cmd.add("--source-fallback");
+        }
+        cmd.addAll(Arrays.asList("--", ofn.toString(), sub, sup));
+        return cmd;
     }
 
     static RustdlJson.ProveJson parseProve(String json) {

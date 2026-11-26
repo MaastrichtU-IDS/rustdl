@@ -733,6 +733,18 @@ pub struct ClassificationStats {
     /// consistency probe, admitted later, then gave up (#446). The #392/#401 name
     /// for the same fact.
     pub relies_on_trusted_consistency: bool,
+    /// #558: when [`Self::relies_on_trusted_consistency`], the clauses the
+    /// CONSISTENCY wedge's matcher refuses (they never fire), so its `Sat` is a model
+    /// of a weaker KB. A different wedge from [`Self::wedge_clauses_refused`]
+    /// (classify's own, condition 4 of the guarantee): this one also clausifies the
+    /// `ABox`. 0 when consistency does not rest on that wedge, and (as on
+    /// `consistent`) with `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`.
+    pub consistency_wedge_clauses_refused: usize,
+    /// #558: as [`Self::consistency_wedge_clauses_refused`], for that wedge
+    /// clausifier's deferral events (encodings it skipped; one axiom can count more
+    /// than once). Masked by trust the same way; not by the report flag (see
+    /// `QueryStats::wedge_clauses_deferred`). 0 is not proof the wedge saw the whole KB.
+    pub consistency_wedge_clauses_deferred: usize,
     /// #214: the wedge decided pairs with Layer A OFF (`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`,
     /// or above `layer_a_affordable`'s cap) on an ontology whose role hierarchy is
     /// non-trivial. Its exact-id role matching cannot see sub-role, inverse or
@@ -1111,6 +1123,20 @@ pub struct ClassificationStats {
 }
 
 impl ClassificationStats {
+    /// #558: store the trusted consistency wedge's gaps, masked to 0 when
+    /// consistency does not rest on that wedge (set `relies_on_trusted_consistency`
+    /// first).
+    pub(crate) fn set_consistency_wedge_gaps(&mut self, (refused, deferred): (usize, usize)) {
+        let trusted = self.relies_on_trusted_consistency;
+        self.consistency_wedge_clauses_refused =
+            if trusted && crate::report_wedge_clauses_refused_enabled() {
+                refused
+            } else {
+                0
+            };
+        self.consistency_wedge_clauses_deferred = if trusted { deferred } else { 0 };
+    }
+
     /// `true` iff these stats guarantee the hierarchy is complete — no missed
     /// subsumptions, silent or flagged.
     ///
@@ -1926,6 +1952,7 @@ pub(crate) fn classify_internal_with_timeout(
 ) -> Result<Classification, ReasonError> {
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
+    crate::take_consistency_trusted_gaps();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
     c.stats.universal_role_ordinary =
@@ -1940,6 +1967,8 @@ pub(crate) fn classify_internal_with_timeout(
         && !c.stats.inconsistent;
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
+    c.stats
+        .set_consistency_wedge_gaps(crate::take_consistency_trusted_gaps());
     Ok(c)
 }
 
@@ -2701,6 +2730,7 @@ fn probe_says_inconsistent(
         // counting `Sat` is not relied on (layer 3 decides), so it marks nothing.
         Some(owl_dl_tableau::hyper::HyperResult::Sat) if !counting => {
             crate::mark_consistency_trusted_wedge();
+            crate::note_consistency_trusted_gaps(prepared.consistency_wedge_gaps());
             stats.consistency_probe_gave_up = false;
             return false;
         }
@@ -4480,6 +4510,7 @@ pub(crate) fn classify_top_down_internal_capturing(
     }
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
+    crate::take_consistency_trusted_gaps();
     let mut c =
         classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline, capture)?;
     c.stats.dropped = internal.dropped.clone();
@@ -4495,6 +4526,8 @@ pub(crate) fn classify_top_down_internal_capturing(
         && !c.stats.inconsistent;
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
+    c.stats
+        .set_consistency_wedge_gaps(crate::take_consistency_trusted_gaps());
     Ok(c)
 }
 

@@ -447,6 +447,12 @@ enum Command {
         /// Emit machine-readable JSON (schema v1) instead of text.
         #[arg(long)]
         json: bool,
+        /// With `--json`: when the step proof uses an axiom that is not a source axiom
+        /// (`builtin_axioms` / `derived_axioms`), also search a source-only justification
+        /// of the same entailment and emit it as `justification_fallback` (#594). One extra
+        /// justification search, only then.
+        #[arg(long, requires = "json")]
+        source_fallback: bool,
     },
     /// Diagnose a broken ontology: partition unsatisfiable classes into ROOT
     /// (genuine causes) and DERIVED (collateral), justify the roots, and on an
@@ -949,6 +955,76 @@ fn classify_with_parse_deadline(args: ClassifyArgs) -> Result<()> {
     }
 }
 
+/// #388 / #583: some individual's direct types hold a pair whose subsumption was left
+/// undecided. Says what may decide it: that the check did not run, or the remedies for
+/// the cut causes. `depth_capped` says at least one check hit the decision-depth limit;
+/// other checks may have been cut otherwise, so a deadline or node-cap remedy is still
+/// named. Nothing is advised after a likely-bug `NoVerdict` (#449's note follows) or when
+/// the checks already ran deadline-free.
+fn warn_direct_types_unverified(depth_capped: bool, saturation_only: bool, no_verdict: bool) {
+    let deadline_free = std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS").is_ok_and(|v| v == "0");
+    let budget = "For a deadline or node-cap cut, a larger RUSTDL_REALIZE_PAIR_TIMEOUT_MS or \
+                  RUSTDL_MAX_NODES may decide it.";
+    let remedy = if saturation_only {
+        " --saturation-only runs no check; plain realize checks such pairs.".to_owned()
+    } else if !owl_dl_reasoner::realize_verify_direct_enabled() {
+        " The check is off (RUSTDL_REALIZE_VERIFY_DIRECT=0); without that setting it runs."
+            .to_owned()
+    } else if no_verdict || deadline_free {
+        String::new()
+    } else if depth_capped {
+        format!(
+            " At least one check hit the tableau's decision-depth limit, where a larger \
+             budget does not help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (no deadline, a far \
+             larger depth limit) may decide it, but can take much longer. {budget}"
+        )
+    } else {
+        format!(" {budget}")
+    };
+    eprintln!(
+        "warning: realize: some individual has two direct types whose subsumption was left \
+         undecided, so a listed direct type may be a superclass of another; every listed type \
+         is a genuine type.{remedy}"
+    );
+}
+
+/// #594: a source-only justification of `sub ⊑ sup` next to a step proof a source-only
+/// consumer cannot show (the same search `justify` runs, under `prove`'s query node
+/// cap). A failure, give-up or empty result leaves the proof as it is, with a note: it
+/// never changes the proof, `incomplete` or the exit code.
+fn add_source_fallback(
+    prove_json: &mut json_out::ProveJson,
+    onto: &SetOntology<RcStr>,
+    sub: &str,
+    sup: &str,
+    pm: &PrefixMapping,
+) {
+    let q = owl_dl_reasoner::justify::Entailment::SubClassOf {
+        sub: sub.to_owned(),
+        sup: sup.to_owned(),
+    };
+    match owl_dl_reasoner::justify::find_one_justification_reporting(onto, &q) {
+        Ok(o) if o.status == Verdict::Entailed && !o.justifications.is_empty() => {
+            let j = &o.justifications[0];
+            prove_json.justification_fallback = Some(json_out::justification_doc(&j.axioms, pm));
+            prove_json.justification_minimal = Some(j.minimal_guaranteed && !o.incomplete);
+        }
+        Ok(o) if o.status == Verdict::NotEntailed => eprintln!(
+            "note: --source-fallback: the justification search refuted the entailment the \
+             step proof shows; this is likely a reasoner bug, please report the input. The \
+             step proof is shown as it is."
+        ),
+        Ok(_) => eprintln!(
+            "note: --source-fallback: no source-only justification was found (the search \
+             gave up or found none); the step proof is shown as it is."
+        ),
+        Err(e) => eprintln!(
+            "note: --source-fallback: the justification search failed ({e:#}); the step \
+             proof is shown as it is."
+        ),
+    }
+}
+
 /// #214: say why completeness is not guaranteed when nothing was cut.
 fn warn_if_hierarchy_blind(blind: bool) {
     if blind {
@@ -970,6 +1046,21 @@ fn warn_if_clauses_refused(refused: usize, off_flag: &str) {
             "\n⚠  NOT GUARANTEED COMPLETE: the wedge cannot match the body of {refused} \
              clause(s), so they never fire and entailments that need them may be \
              missing (#353). {off_flag} decides without the wedge, at a time cost."
+        );
+    }
+}
+
+/// #558: a trusted consistency-wedge `Sat` whose clausifier deferred clause encodings
+/// is a model of a weaker KB, as with refused clauses. The count is of deferral events
+/// (one axiom can count more than once), and 0 is not proof of a full KB.
+fn warn_if_consistency_deferred(stats: &owl_dl_reasoner::QueryStats) {
+    if stats.relies_on_trusted_consistency && stats.wedge_clauses_deferred > 0 {
+        eprintln!(
+            "\n⚠  NOT GUARANTEED COMPLETE: the consistency wedge's clausifier skipped {} \
+             encoding(s) of the input's axioms (deferrals; one axiom can count more than \
+             once), so its model may violate them and a clash they cause may be missed \
+             (#558). RUSTDL_WEDGE_CONSISTENCY=0 decides on the main tableau (no deadline).",
+            stats.wedge_clauses_deferred
         );
     }
 }
@@ -2189,6 +2280,7 @@ fn run() -> Result<()> {
                             true,
                             false,
                             0,
+                            0,
                             true,
                             dropped,
                             owl_dl_core::set_operands::count(&onto).into(),
@@ -2213,6 +2305,7 @@ fn run() -> Result<()> {
                         incomplete,
                         stats.relies_on_trusted_consistency,
                         stats.wedge_clauses_refused,
+                        stats.wedge_clauses_deferred,
                         false,
                         dropped,
                         owl_dl_core::set_operands::count(&onto).into(),
@@ -2228,6 +2321,7 @@ fn run() -> Result<()> {
                         stats.wedge_clauses_refused,
                         "RUSTDL_WEDGE_CONSISTENCY=0 (main tableau, no deadline)",
                     );
+                    warn_if_consistency_deferred(&stats);
                 }
                 if incomplete {
                     std::process::exit(3);
@@ -2263,6 +2357,7 @@ fn run() -> Result<()> {
                     stats.wedge_clauses_refused,
                     "RUSTDL_WEDGE_CONSISTENCY=0 (main tableau, no deadline)",
                 );
+                warn_if_consistency_deferred(&stats);
             }
             warn_if_dropped(&dropped);
             note_universal_role(uro && verdict);
@@ -2841,10 +2936,10 @@ fn run() -> Result<()> {
                 warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped(), false);
             }
             if r.direct_types_unverified() {
-                eprintln!(
-                    "warning: realize: some individual has two direct types whose subsumption \
-                     was left undecided, so a listed direct type may be a superclass of \
-                     another; every listed type is a genuine type."
+                warn_direct_types_unverified(
+                    r.direct_types_depth_capped(),
+                    saturation_only,
+                    r.no_verdict(),
                 );
             }
             if r.witness_prune_may_drop() {
@@ -3202,6 +3297,7 @@ fn run() -> Result<()> {
             sup,
             verify_proof,
             json,
+            source_fallback,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             // #543: the same declared under-approximation as a dropped axiom.
@@ -3245,8 +3341,15 @@ fn run() -> Result<()> {
             if json {
                 let internal = owl_dl_core::convert::convert_ontology(&onto)
                     .context("re-convert for rendering")?;
-                let prove_json = json_out::build_prove_json(&result, flags, &onto, &internal, &pm)
-                    .context("rendering prove --json proof tree")?;
+                let mut prove_json =
+                    json_out::build_prove_json(&result, flags, &onto, &internal, &pm)
+                        .context("rendering prove --json proof tree")?;
+                // Only for a proof a source-only consumer would refuse anyway, so the extra
+                // search (unbounded in time; the node cap bounds each probe) never delays a
+                // proof that could be shown. An incomplete source-only proof is not covered.
+                if source_fallback && prove_json.proof_uses_non_source_axioms == Some(true) {
+                    add_source_fallback(&mut prove_json, &onto, &sub, &sup, &pm);
+                }
                 println!("{}", serde_json::to_string_pretty(&prove_json)?);
                 warn_gave_up();
                 if unknown || flags.no_verdict {

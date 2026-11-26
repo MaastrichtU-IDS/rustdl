@@ -3636,6 +3636,9 @@ pub(crate) fn classify_inconsistency_precheck_capturing(
         Some(HyperResult::Sat) => {
             cut = false;
             mark_consistency_trusted_wedge();
+            if let Some(cache) = wedge_cache.as_ref() {
+                note_consistency_trusted_gaps(cache.weaker_kb_gaps());
+            }
         }
         Some(HyperResult::Stalled) => cut = true,
         // #564: with the consistency wedge off (`RUSTDL_WEDGE_CONSISTENCY=0`) on a KB
@@ -3778,6 +3781,27 @@ thread_local! {
 /// Record that classify's consistency rests on a trusted wedge `Sat` (#429).
 pub(crate) fn mark_consistency_trusted_wedge() {
     CONSISTENCY_TRUSTED_WEDGE.with(|f| f.set(true));
+}
+
+thread_local! {
+    /// #558: the trusted consistency wedge's [`ConsistencyCache::weaker_kb_gaps`],
+    /// recorded beside [`mark_consistency_trusted_wedge`].
+    static CONSISTENCY_TRUSTED_GAPS: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+/// #558: record the gaps of the consistency wedge whose `Sat` classify now trusts
+/// (the largest seen, if two routes trusted one).
+pub(crate) fn note_consistency_trusted_gaps(gaps: (usize, usize)) {
+    CONSISTENCY_TRUSTED_GAPS.with(|g| {
+        let (r, d) = g.get();
+        g.set((r.max(gaps.0), d.max(gaps.1)));
+    });
+}
+
+/// Read and clear the gaps (see [`note_consistency_trusted_gaps`]).
+pub(crate) fn take_consistency_trusted_gaps() -> (usize, usize) {
+    CONSISTENCY_TRUSTED_GAPS.with(|g| g.replace((0, 0)))
 }
 
 /// A main-tableau model verified consistency: nothing rests on the wedge (#429).
@@ -6916,6 +6940,19 @@ impl ConsistencyCache {
         }
     }
 
+    /// #558: how far this wedge's KB is weaker than the input: clauses its matcher
+    /// refuses (they never fire) and the clausifier's deferral events (encodings it
+    /// skipped, so the wedge never sees them; one axiom can count more than once). A
+    /// `Sat` of this wedge is a model of that weaker KB, so a trusted `Sat` with either
+    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm). Unflagged: callers
+    /// apply `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED` to the refused count.
+    pub(crate) fn weaker_kb_gaps(&self) -> (usize, usize) {
+        (
+            owl_dl_tableau::hyper::refused_clause_count(&self.clauses),
+            self.deferred_clauses,
+        )
+    }
+
     /// Build a fresh ABox-seeded [`owl_dl_tableau::hyper::HyperEngine`]
     /// configured EXACTLY like the classify wedge — the nine configurators
     /// `with_sub_roles` + `with_nominals` (unconditional) and the gated
@@ -8262,6 +8299,14 @@ pub struct QueryStats {
     /// wedge `consistent` can then miss a clash, so this is a completeness signal,
     /// separate from `incomplete` (which means a give-up).
     pub wedge_clauses_refused: usize,
+    /// #558: beside [`Self::wedge_clauses_refused`], the consistency wedge
+    /// clausifier's deferral events (encodings it skipped, so the wedge never sees
+    /// them; one axiom can count more than once), so its `Sat` is a model of a KB
+    /// weaker by these too. Set where `wedge_clauses_refused` is (the consistency
+    /// query, and a single query that dropped its `ABox` on that wedge's `Sat`).
+    /// Deliberately not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`: that flag
+    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm).
+    pub wedge_clauses_deferred: usize,
     /// The verdict rests on the KB being consistent, and the only evidence for
     /// that is a consistency-wedge `Sat` that no main-tableau run verified (the
     /// wedge is not proven complete; it missed clashes in #290 and #376). Not a
@@ -8816,6 +8861,7 @@ fn is_class_satisfiable_keeping_inner(
                 pure_el_mode: pure_el,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
@@ -8833,6 +8879,7 @@ fn is_class_satisfiable_keeping_inner(
                 pure_el_mode: true,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
@@ -8844,6 +8891,12 @@ fn is_class_satisfiable_keeping_inner(
     }
     let ((sat, cut, trusted, refused), prepared) =
         run_satisfiability_keeping(internal, move |pool| pool.atomic(class_id))?;
+    // #558: only when the `ABox` was dropped on the consistency wedge's `Sat`.
+    let deferred = if trusted {
+        prepared.consistency_wedge_gaps().1
+    } else {
+        0
+    };
     Ok((
         sat,
         QueryStats {
@@ -8851,6 +8904,7 @@ fn is_class_satisfiable_keeping_inner(
             pure_el_mode: false,
             incomplete: cut,
             wedge_clauses_refused: refused,
+            wedge_clauses_deferred: deferred,
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
             no_verdict: false,
@@ -9239,6 +9293,7 @@ fn is_consistent_internal_full_inner(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
@@ -9260,6 +9315,7 @@ fn is_consistent_internal_full_inner(
                 pure_el_mode: true,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
@@ -9297,6 +9353,7 @@ fn is_consistent_internal_full_inner(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
@@ -9317,6 +9374,7 @@ fn is_consistent_internal_full_inner(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
@@ -9327,6 +9385,7 @@ fn is_consistent_internal_full_inner(
     }
     let trace = std::env::var_os("RUSTDL_TRACE").is_some();
     let refused = prepared.consistency_wedge_clauses_refused();
+    let deferred = prepared.consistency_wedge_gaps().1;
     // ABox-seeded wedge route (default on; kills the `decide(Top)` hang
     // on out-of-EL ABoxes). `Some` only when enabled AND an individual is
     // named (ABox or TBox nominal); otherwise fall straight through to the
@@ -9347,6 +9406,7 @@ fn is_consistent_internal_full_inner(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
+                    wedge_clauses_deferred: deferred,
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
                     no_verdict: false,
@@ -9373,6 +9433,7 @@ fn is_consistent_internal_full_inner(
                     pure_el_mode: false,
                     incomplete: gave_up,
                     wedge_clauses_refused: refused,
+                    wedge_clauses_deferred: deferred,
                     relies_on_trusted_consistency: false,
                     consistency_undetermined: false,
                     no_verdict: false,
@@ -9395,6 +9456,7 @@ fn is_consistent_internal_full_inner(
                     pure_el_mode: false,
                     incomplete: false,
                     wedge_clauses_refused: refused,
+                    wedge_clauses_deferred: deferred,
                     relies_on_trusted_consistency: true,
                     consistency_undetermined: false,
                     no_verdict: false,
@@ -9500,6 +9562,7 @@ fn is_consistent_internal_full_inner(
             pure_el_mode: false,
             incomplete,
             wedge_clauses_refused: refused,
+            wedge_clauses_deferred: deferred,
             relies_on_trusted_consistency: false,
             consistency_undetermined: false,
             no_verdict: false,
@@ -10016,6 +10079,7 @@ fn is_subclass_of_keeping_inner(
         pure_el_mode: pure_el,
         incomplete: false,
         wedge_clauses_refused: 0,
+        wedge_clauses_deferred: 0,
         relies_on_trusted_consistency: false,
         consistency_undetermined: false,
         no_verdict: false,
@@ -10074,6 +10138,7 @@ fn is_subclass_of_keeping_inner(
                 pure_el_mode: false,
                 incomplete: false,
                 wedge_clauses_refused: 0,
+                wedge_clauses_deferred: 0,
                 relies_on_trusted_consistency: false,
                 consistency_undetermined: false,
                 no_verdict: false,
@@ -10092,6 +10157,12 @@ fn is_subclass_of_keeping_inner(
             let not_super = pool.not(super_concept);
             pool.and(vec![sub_concept, not_super])
         })?;
+    // #558: as in `is_class_satisfiable_keeping`.
+    let deferred = if trusted {
+        prepared.consistency_wedge_gaps().1
+    } else {
+        0
+    };
     Ok((
         !sat,
         QueryStats {
@@ -10099,6 +10170,7 @@ fn is_subclass_of_keeping_inner(
             pure_el_mode: false,
             incomplete: cut,
             wedge_clauses_refused: refused,
+            wedge_clauses_deferred: deferred,
             relies_on_trusted_consistency: trusted,
             consistency_undetermined: false,
             no_verdict: false,
@@ -11893,6 +11965,14 @@ impl PreparedOntology {
         deadline: Option<std::time::Instant>,
     ) -> Option<owl_dl_tableau::hyper::HyperResult> {
         self.consistency.as_ref().map(|c| c.decide(deadline))
+    }
+
+    /// #558: [`ConsistencyCache::weaker_kb_gaps`] of this ontology's consistency
+    /// wedge, `(0, 0)` when there is none.
+    pub(crate) fn consistency_wedge_gaps(&self) -> (usize, usize) {
+        self.consistency
+            .as_ref()
+            .map_or((0, 0), ConsistencyCache::weaker_kb_gaps)
     }
 
     /// #357: clauses the consistency wedge refuses (0 when there is no wedge or

@@ -8,13 +8,15 @@ use pyo3::prelude::*;
 use crate::errors::reason_error_to_py;
 use crate::load;
 
-/// `(consistent, incomplete, relies_on_trusted_consistency)` for the ontology at
-/// `path`. `incomplete` is set when "consistent" is a give-up rather than a
-/// verdict (the `QueryStats` contract, #363 A2); the third flag when it rests
-/// only on the consistency wedge's unverified `Sat` (#392). The Python wrapper
-/// (`__init__.py`) warns on each and returns the bool.
+/// `(consistent, incomplete, relies_on_trusted_consistency, wedge_clauses_refused,
+/// wedge_clauses_deferred)` for the ontology at `path`. `incomplete` is set when
+/// "consistent" is a give-up rather than a verdict (the `QueryStats` contract, #363
+/// A2); the third flag when it rests only on the consistency wedge's unverified
+/// `Sat` (#392); the two counts (#558) say how much weaker than the input that
+/// wedge's KB is. The Python wrapper (`__init__.py`) warns on each and returns the
+/// bool.
 #[pyfunction]
-pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool)> {
+pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool, usize, usize)> {
     let ontology = load::load_path(path)?;
     let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&ontology).map_err(reason_error_to_py)?;
@@ -22,6 +24,8 @@ pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool)> {
         verdict,
         verdict && stats.incomplete,
         stats.relies_on_trusted_consistency,
+        stats.wedge_clauses_refused,
+        stats.wedge_clauses_deferred,
     ))
 }
 

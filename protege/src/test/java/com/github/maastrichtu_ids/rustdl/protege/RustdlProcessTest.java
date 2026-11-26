@@ -192,10 +192,20 @@ public class RustdlProcessTest {
         System.setProperty("rustdl.bin", fakeBin.toString());
         try {
             java.util.List<String> cmd = RustdlProcess.buildProveCommand(
-                Paths.get("ont.ofn"), "http://ex/#A", "http://ex/#C");
+                Paths.get("ont.ofn"), "http://ex/#A", "http://ex/#C", true);
+            assertEquals(Arrays.asList(
+                fakeBin.toString(), "prove", "--json", "--source-fallback", "--", "ont.ofn",
+                "http://ex/#A", "http://ex/#C"), cmd);
+            // #594: the retry for a rustdl without the flag.
             assertEquals(Arrays.asList(
                 fakeBin.toString(), "prove", "--json", "--", "ont.ofn",
-                "http://ex/#A", "http://ex/#C"), cmd);
+                "http://ex/#A", "http://ex/#C"),
+                RustdlProcess.buildProveCommand(
+                    Paths.get("ont.ofn"), "http://ex/#A", "http://ex/#C", false));
+            assertTrue(RustdlProcess.rejectedSourceFallback(new java.io.IOException(
+                "rustdl prove exited 2: error: unexpected argument '--source-fallback' found")));
+            assertFalse(RustdlProcess.rejectedSourceFallback(new java.io.IOException(
+                "rustdl prove exited 3: warning: the reasoner check gave up")));
         } finally {
             if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
         }

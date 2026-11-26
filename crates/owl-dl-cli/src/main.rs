@@ -2315,7 +2315,8 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            warn_if_dropped(&json_out::dropped_block(&onto));
+            let dropped = json_out::dropped_block(&onto);
+            warn_if_dropped(&dropped);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let classes =
@@ -2338,7 +2339,8 @@ fn run() -> Result<()> {
                         obj,
                         data,
                         undetermined,
-                        gaps
+                        gaps,
+                        dropped
                     ))?
                 );
                 exit_if_no_verdict(classes.no_verdict());
@@ -2371,7 +2373,8 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            warn_if_dropped(&json_out::dropped_block(&onto));
+            let dropped = json_out::dropped_block(&onto);
+            warn_if_dropped(&dropped);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let same =
@@ -2382,7 +2385,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_individuals_json(
-                        &same, &different
+                        &same, &different, dropped
                     ))?
                 );
                 exit_if_no_verdict(same.no_verdict() || different.no_verdict());
@@ -2413,7 +2416,8 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            warn_if_dropped(&json_out::dropped_block(&onto));
+            let dropped = json_out::dropped_block(&onto);
+            warn_if_dropped(&dropped);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let obj = inferred_object_property_values(&onto, deadline)
@@ -2428,7 +2432,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_property_values_json(
-                        &obj, &data, gaps
+                        &obj, &data, gaps, dropped
                     ))?
                 );
                 exit_if_no_verdict(obj.no_verdict());
@@ -2460,7 +2464,8 @@ fn run() -> Result<()> {
         }
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
-            warn_if_dropped(&json_out::dropped_block(&onto));
+            let dropped = json_out::dropped_block(&onto);
+            warn_if_dropped(&dropped);
             let h = owl_dl_reasoner::classify_property_hierarchies(&onto)
                 .context("classify_property_hierarchies")?;
             let (obj, data, gaps) = (h.object, h.data, h.gaps.hierarchy());
@@ -2468,7 +2473,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_prophier_json(
-                        &obj, &data, gaps
+                        &obj, &data, gaps, dropped
                     ))?
                 );
                 return Ok(());

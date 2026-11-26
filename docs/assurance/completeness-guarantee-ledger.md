@@ -39,7 +39,7 @@ All eight must hold.
 | 4 | `wedge_clauses_refused == 0` | A clause the wedge's matcher refuses never fires. This is the CLASSIFY wedge. The consistency wedge is a different clause set (it also clausifies the `ABox`); its refused and deferred counts are reported, when classify trusted its `Sat`, as `consistency_wedge_clauses_refused` / `consistency_wedge_clauses_deferred` (#558), and they void the guarantee through condition 8. | #353 | `wedge_clauses_refused` | `wedge_clauses_refused` | `wedge_clauses_refused` | table test |
 | 5 | `derived_same_undecided == 0` | An individual equality the KB may force was not decided, so the classify wedge may lack it. The count depends on a budget: probing stops after `RUSTDL_CLASSIFY_DERIVED_SAME_STALLS` (default 8) consecutive stalls, or at `RUSTDL_CLASSIFY_DERIVED_SAME_MAX` (default 64) probes. Candidates already proved distinct (`DifferentIndividuals`, told-disjoint told types) are dropped unprobed and do not count, and candidates are grouped by signed role: a shared object is a candidate only under a bound on the inverse role, and a bound reached through a declared inverse now counts (#368). Before #368 such a pair was never a candidate, so `0` could hide it. On current `main` this condition cannot change the result. `derive_nominal_same_with` looks for candidates only when the ontology has a counted role (`≥`, `≤`, functional or inverse-functional), a nominal, and an asserted `ObjectPropertyAssertion` on a counted role. The PureEl gate admits neither nominals nor property assertions. If a TBox-only path to candidates is ever added, re-check this. | #354 | `derived_same_undecided` | `derived_same_undecided` | `derived_same_undecided` | table test |
 | 6 | `!consistency_undetermined` | The inconsistency pre-check reached no verdict, or (#446) classify's consistency probe was admitted and gave up (#466: a cut per-class unsat probe admits it on a `TBox`-only run too, where an empty unsat set had read as consistent). If the KB is in fact inconsistent, every class is unsatisfiable and the hierarchy misses entailments. | #162, #228 review | `consistency_undetermined` | `consistency_undetermined` (reported as `undetermined && !inconsistent`) | `consistency_undetermined` (same masking) | table test |
-| 7 | `dropped` is empty | The engine reasoned over a strictly weaker KB than the input. | #43, #246 | `dropped` | `dropped` | module-level `rustdl.dropped_axioms(path)` only, not on `Classification` | `completeness_contract.rs` `a_dropped_axiom_voids_the_guarantee` and its control; table test; `json_output.rs` `classify_json_completeness_guaranteed_ends`; `test_classify.py` `test_dropped_axiom_voids_the_guarantee` |
+| 7 | `dropped` is empty | The engine reasoned over a strictly weaker KB than the input. Since #579 an unresolved `Import` counts too: nothing loads the imported ontology. | #43, #246, #579 | `dropped` | `dropped` | module-level `rustdl.dropped_axioms(path)` only, not on `Classification` | `completeness_contract.rs` `a_dropped_axiom_voids_the_guarantee` and its control; table test; `json_output.rs` `classify_json_completeness_guaranteed_ends`; `test_classify.py` `test_dropped_axiom_voids_the_guarantee` |
 | 8 | `!relies_on_trusted_consistency` | "Consistent" rests on a consistency-wedge `Sat` that no main-tableau run verified. If that `Sat` is wrong, the KB is inconsistent and every class is unsatisfiable, so the hierarchy misses entailments. **This cannot fail beside condition 1 today.** PureEl admits no `ABox` assertion and no nominal, so no individual exists, and the consistency wedge (`classify_wedge_consistency`) needs one to run. The probe that could also trust it runs only after the PureEl dispatch. The condition is kept so the invariant holds if PureEl ever admits an individual. | #429 | `relies_on_trusted_consistency` | `relies_on_trusted_consistency` | `relies_on_trusted_consistency`, plus `TrustedConsistencyWarning` | table test; `trusted_consistency_surfaces.rs` `pure_el_and_trust_never_meet` |
 
 The table test is `each_condition_alone_voids_the_guarantee` in
@@ -187,6 +187,19 @@ consistency flags too; it is valid for named-class and expression
 satisfiability/subsumption verdicts, not for the consistency query, whose
 `pure_el_mode` follows the wider `saturation_fast_path_admits` gate.
 
+## Object property values and same individuals (#579)
+
+Two non-structural surfaces claim completeness with `incomplete: false`:
+`inferred_object_property_values` (every axiom inside the ABox saturator's
+edge-complete whitelist and no extension probe ran) and `same_individuals` (the
+told + functional-merge seed returned alone). Both now also require that nothing
+was dropped: the whitelist and the seed only see the converted axioms, and a SWRL
+rule or an unresolved `Import` can entail an edge or an equality. Pinned by
+`crates/owl-dl-reasoner/tests/dropped_axiom_gates.rs` (one drop of each of four
+kinds) and `crates/owl-dl-cli/tests/dropped_axiom_signals_cli.rs`.
+`different_individuals`' `incomplete` means only a cut and makes no completeness
+claim; `individuals --json` carries `dropped` beside it.
+
 ## Structural property surfaces (#389, #390)
 
 These surfaces are structural closures over told axioms. They never probe the
@@ -196,7 +209,9 @@ ontology that the closure ignores and that can entail a relation it would report
 An empty list means none of the enumerated routes occurs, not that the answer is
 complete. Not enumerated, and so never reported: a property that is empty because
 its domain or range is unsatisfiable outside the EL fragment, and routes not yet
-found. `structural_gaps` is outside `incomplete` on purpose: nothing was cut, so
+found. Since #579 a non-empty `dropped` is itself a gap (`object-dropped-axioms`,
+`data-dropped-axioms`) on every structural surface, whatever the drop kind, and the
+JSONs carry the `dropped` block too. `structural_gaps` is outside `incomplete` on purpose: nothing was cut, so
 more time changes nothing.
 
 | Surface | Rust | CLI | Python | Pinned by |

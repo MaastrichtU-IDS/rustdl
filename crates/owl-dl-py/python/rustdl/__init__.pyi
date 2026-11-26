@@ -364,7 +364,8 @@ def data_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str,
 def same_individuals(path: str) -> list[list[str]]:
     """Groups of individuals proven equal (asserted + functional-forced + entailed).
     Bounded by a 1s per-pair deadline; emits `IncompleteQueryWarning` whenever any
-    extension probe beyond the sound-complete seed ran."""
+    extension probe beyond the seed ran, or conversion dropped an axiom (#579: the
+    seed is complete only for the converted axioms)."""
     ...
 
 def different_individuals(path: str) -> list[tuple[str, str]]:
@@ -378,7 +379,8 @@ def different_individuals(path: str) -> list[tuple[str, str]]:
 def object_property_values(path: str) -> list[tuple[str, str, str]]:
     """Inferred object property values (subject, property, object) over named
     individuals. Bounded by a 1s per-pair deadline; emits `IncompleteQueryWarning`
-    if the budget was exhausted."""
+    if the budget was exhausted, an axiom fell outside the edge-complete whitelist,
+    the bounded extension ran, or conversion dropped an axiom (#579)."""
     ...
 
 def data_property_values(path: str) -> list[tuple[str, str, str, str, str]]:

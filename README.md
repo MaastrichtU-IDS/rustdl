@@ -63,7 +63,9 @@ reporting an `incomplete` flag.
 the conversion can't represent — the narrow datatype tail (nested composite
 ranges like `DataComplementOf(DataUnionOf(…))`, `∀` / range / cardinality *over* a
 union or complement, unparseable / cross-datatype literals), plus `HasKey`, SWRL
-rules, and other unsupported constructs. Reasoning proceeds over the supported
+rules, unresolved `Import`s (rustdl never loads an imported ontology: merge the
+import closure first, e.g. `robot merge`, and remove the `Import` declarations),
+and other unsupported constructs. Reasoning proceeds over the supported
 fragment; the dropped axioms are surfaced as a count-by-kind diagnostic
 (`dropped_axioms`, a `dropped` block in `--json`, a stderr warning). Positives
 depending on them may be missed, never falsely asserted.

@@ -2271,7 +2271,8 @@ macro_rules! ce_or_skip {
 ///   bearing content: assertions, ranges, domains, …) but unsupported in this
 ///   phase — unsupported data ranges via the `ce_or_skip!` macro, unrecognized
 ///   data-property literals/ranges, the `RUSTDL_DATA_PROPERTIES=0` gate-off
-///   fall-through, anonymous individuals, `HasKey`, etc. Issue #43:
+///   fall-through, anonymous individuals, `HasKey`, SWRL rules (#557), an
+///   `Import`, which is never resolved (#579), etc. Issue #43:
 ///   `convert_ontology` no longer aborts on this — it records the drop in
 ///   `InternalOntology::dropped` (via [`drop_label`]) and continues with the
 ///   remaining components.
@@ -2289,7 +2290,6 @@ pub fn convert_component<A: ForIRI>(
         C::OntologyID(_)
         | C::DocIRI(_)
         | C::OntologyAnnotation(_)
-        | C::Import(_)
         | C::DeclareAnnotationProperty(_)
         | C::AnnotationAssertion(_)
         | C::SubAnnotationPropertyOf(_)
@@ -2671,6 +2671,19 @@ pub fn convert_component<A: ForIRI>(
         // it as `"Rule: unsupported axiom (SWRL)"`, which turns those claims false
         // and makes the CLI warn, as the README already promised.
         C::Rule(_) => Err(ConversionError::UnsupportedAxiom { kind: "SWRL" }),
+
+        // ── Imports: not resolved, and RECORDED as dropped (#579) ──
+        // Neither the CLI nor the reasoner loads an imported ontology, so its
+        // axioms are missing from what we reason with. Until #579 this was
+        // `Ok(None)` with the metadata above, and a pure-EL file importing
+        // anything still read `completeness_guaranteed: true`. Recording it as
+        // `"Import: unsupported axiom (unresolved import)"` turns every claim that
+        // reads `dropped` false. Answers do not change. A caller that has merged
+        // the import closure (Protégé's plugin writes a fresh flattened ontology,
+        // so it carries no `Import`) should also remove the declarations.
+        C::Import(_) => Err(ConversionError::UnsupportedAxiom {
+            kind: "unresolved import",
+        }),
     }
 }
 
@@ -2705,6 +2718,7 @@ fn component_kind<A: ForIRI>(c: &Component<A>) -> &'static str {
         C::FunctionalDataProperty(_) => "FunctionalDataProperty",
         C::DatatypeDefinition(_) => "DatatypeDefinition",
         C::Rule(_) => "Rule",
+        C::Import(_) => "Import",
         _ => "Other",
     }
 }
@@ -6961,6 +6975,37 @@ mod tests {
                 .by_kind()
                 .keys()
                 .any(|k| k.contains("HasKey"))
+        );
+    }
+
+    #[test]
+    fn convert_records_each_unresolved_import_as_dropped() {
+        // #579: an `Import` was `Ok(None)` like ontology metadata, so a file that
+        // imports anything kept every completeness claim that reads `dropped`.
+        let src = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Import(<http://example.org/not-loaded>)
+            Import(<http://example.org/also-not-loaded>)
+            Declaration(Class(:A)) Declaration(Class(:B))
+            SubClassOf(:A :B))";
+        let internal = convert_ontology(&read_ofn_str(src)).expect("must not abort");
+        assert_eq!(
+            internal
+                .dropped
+                .by_kind()
+                .get("Import: unsupported axiom (unresolved import)"),
+            Some(&2),
+            "{:?}",
+            internal.dropped.by_kind()
+        );
+        assert_eq!(internal.dropped.total(), 2);
+        let control = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/> Declaration(Class(:A)) SubClassOf(:A :A))";
+        assert!(
+            convert_ontology(&read_ofn_str(control))
+                .unwrap()
+                .dropped
+                .is_empty()
         );
     }
 

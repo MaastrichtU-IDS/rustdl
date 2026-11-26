@@ -310,8 +310,15 @@ nothing was dropped).
   "disjoint_classes": [[a_iri, b_iri], ...],
   "disjoint_object_properties": [[a_iri, b_iri], ...],
   "disjoint_data_properties": [[a_iri, b_iri], ...],
-  "no_verdict": bool, "consistency_undetermined": bool }
+  "no_verdict": bool, "consistency_undetermined": bool,
+  "structural_gaps": [kind, ...], "dropped": { kind: count } }
 ```
+
+`dropped` (#579, no `schema_version` bump) = the axioms conversion dropped, by kind, as in
+`classify --json`. `structural_gaps` (#389/#390) = the routes the structural property half
+ignores; `object-dropped-axioms` / `data-dropped-axioms` (#579) are among them whenever
+`dropped` is non-empty. The class half already reads the drop: `incomplete` follows
+`completeness_guaranteed`, which is `false` when anything was dropped.
 
 `consistency_undetermined` (#369 follow-up, no `schema_version` bump): the property half's
 answer is non-empty and the KB's consistency stayed undetermined (see the `*-expr` section). An
@@ -344,7 +351,8 @@ whenever `incomplete` is `true`; it never reports a pair that isn't entailed.
   "data_properties": {
     "equivalent_groups": [[iri, ...], ...],
     "direct_subsumptions": [[sub_iri, sup_iri], ...]
-  }
+  },
+  "structural_gaps": [kind, ...], "dropped": { kind: count }
 }
 ```
 
@@ -355,9 +363,12 @@ told + equivalent for data properties. No entailment probe is run.
 `direct_subsumptions` are the Hasse edges between distinct groups
 (`[sub_iri, sup_iri]`).
 
-`incomplete` is always `false`: this query is complete-by-construction for the
-(structural) fragment it reasons over — there is no probe that can time out
-or under-approximate.
+`incomplete` is always `false`: no probe runs, so nothing can be cut. It is not
+a completeness claim. The routes the structural closure ignores are listed in
+`structural_gaps` (#389/#390), with `object-dropped-axioms` / `data-dropped-axioms`
+whenever conversion dropped anything (#579: e.g. a SWRL rule `r(?x,?y) -> s(?x,?y)`
+entails `r ⊑ s`, which the closure misses). `dropped` (#579, no `schema_version`
+bump) lists the drops by kind.
 
 ## `individuals --json`
 
@@ -365,8 +376,12 @@ or under-approximate.
 { "schema_version": 1, "incomplete": bool,
   "consistency_undetermined": bool, "no_verdict": bool,
   "same_groups": [[iri, ...], ...],
-  "different_pairs": [[a_iri, b_iri], ...] }
+  "different_pairs": [[a_iri, b_iri], ...],
+  "dropped": { kind: count } }
 ```
+
+`dropped` (#579, no `schema_version` bump) = the axioms conversion dropped, by kind, as in
+`classify --json`.
 
 `consistency_undetermined` was added in #369 without a `schema_version` bump;
 see the `*-expr` section. Here it is set when a probe (not a told or
@@ -381,10 +396,12 @@ pairs (`a < b` by IRI) — `a ≠ b` is only ever reported from a PROVEN
 `DifferentIndividuals`/`AllDifferent`.
 
 `incomplete` = `same_individuals`'s `incomplete() || different_individuals`'s
-`incomplete()`. For `same_groups`: `true` iff ANY pairwise extension probe
-beyond the sound seed was consulted at all (even one that adds nothing) or
+`incomplete()`. For `same_groups`: `true` iff conversion dropped an axiom (#579:
+the seed is complete only for the converted axioms), or ANY pairwise extension
+probe beyond the sound seed was consulted at all (even one that adds nothing) or
 timed out. For `different_pairs`: `true` iff a pairwise `{a} ⊓ {b}` probe
-timed out (or hit the deadline-free `NodeCap` safety net). Sound
+timed out (or hit the deadline-free `NodeCap` safety net); it does not read
+`dropped`, which is reported beside it. Sound
 under-approximation in both directions: a reported group/pair is always
 genuinely entailed; `incomplete` warns the set may be missing entailed
 merges/distinctions.
@@ -394,9 +411,14 @@ merges/distinctions.
 ```json
 { "schema_version": 1, "incomplete": bool,
   "object_property_values": [[s_iri, p_iri, o_iri], ...],
-  "data_property_values": [[s_iri, p_iri, lexical, datatype_iri], ...],
-  "consistency_undetermined": bool, "no_verdict": bool }
+  "data_property_values": [[s_iri, p_iri, lexical, datatype_iri, lang], ...],
+  "consistency_undetermined": bool, "no_verdict": bool,
+  "structural_gaps": [kind, ...], "dropped": { kind: count } }
 ```
+
+`dropped` (#579, no `schema_version` bump) = the axioms conversion dropped, by kind, as in
+`classify --json`. `structural_gaps` (#389/#390) = the routes the data half's passthrough
+ignores; `data-dropped-axioms` (#579) is one of them, present whenever `dropped` is non-empty.
 
 `consistency_undetermined` (#369 follow-up, no `schema_version` bump): the answer is non-empty
 and the KB's consistency stayed undetermined (see the `*-expr` section). An inconsistency the
@@ -409,13 +431,15 @@ fixpoint over named individuals) plus a BUDGETED, hard-bounded entailment
 extension over the seed's own individual-pair neighborhood (never the full
 `|individuals|² × |properties|` cross product). `data_property_values` = a
 pure structural passthrough over the inferred data-property-assertion closure
-with the `lang` element dropped to a 4-tuple (`[subject, property, lexical,
-datatype]`); no entailment probe.
+as 5-tuples (`[subject, property, lexical, datatype, lang]`, `lang` empty unless
+the datatype is `rdf:langString`, #72); no entailment probe.
 
 `incomplete` = object values' `incomplete() || data values`' `incomplete()`
-(the latter is always `false` — data values are complete for their
-structural fragment). Object values' `incomplete` is `true` iff: the
-ontology contains an axiom outside `object_property_edge_complete`'s
+(the latter is always `false`: the passthrough runs no probe to cut; what it
+ignores is in `structural_gaps`). Object values' `incomplete` is `true` iff:
+conversion dropped an axiom (#579: `dropped` non-empty; the whitelist sees only
+converted axioms, and a dropped SWRL rule or unresolved `Import` can entail an
+edge); OR the ontology contains an axiom outside `object_property_edge_complete`'s
 whitelist — the sound over-approximation of the ABox saturator's OWN
 genuinely edge-complete fragment (NOT `analyze_fragment`'s `PureEl`/`Horn`,
 which measures a different engine — the classification wedge/EL-saturator —
@@ -428,8 +452,8 @@ and the bounded extension has no candidate pair to even probe when that
 happens; OR the bounded extension ran at all (even if it added nothing — the
 extension is itself a non-exhaustive, seed-neighborhood-only policy); OR an
 extension probe timed out. `false` is a genuine guarantee — every entailed
-object-property edge over named individuals is included — and requires BOTH
-that every axiom is in the whitelist AND that the seed alone was returned
+object-property edge over named individuals is included — and requires that
+nothing was dropped, that every axiom is in the whitelist, AND that the seed alone was returned
 (no extension candidates). Sound under-approximation: a
 reported triple is always genuinely entailed (FP=0); `incomplete` warns real
 edges may be missing.

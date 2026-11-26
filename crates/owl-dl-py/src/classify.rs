@@ -94,7 +94,7 @@ impl PyClassification {
     /// silent or flagged. The same value as the Rust
     /// `Classification::completeness_guaranteed()` and the `classify --json`
     /// field. It holds only on a pure-EL ontology with no timed-out pair, no
-    /// `wedge_hierarchy_blind`, no `wedge_clauses_refused`, no
+    /// `wedge_hierarchy_blind`, no `wedge_abox_blind`, no `wedge_clauses_refused`, no
     /// `derived_same_undecided`, no `consistency_undetermined` and no dropped
     /// axiom. `False` means completeness is not guaranteed, not that the
     /// hierarchy is incomplete.
@@ -164,6 +164,16 @@ impl PyClassification {
     #[getter]
     fn wedge_hierarchy_blind(&self) -> bool {
         self.inner.stats().wedge_hierarchy_blind
+    }
+
+    /// True iff classify trusted a wedge model that touches a nominal while some
+    /// `ABox` fact was not given to the classify wedge (#533). Then a subsumption
+    /// or an unsatisfiable class that depends on an individual's facts may be
+    /// missing even though `complete` (nothing cut) is `True`. Near-universal on
+    /// input with both a nominal and an `ABox`.
+    #[getter]
+    fn wedge_abox_blind(&self) -> bool {
+        self.inner.stats().wedge_abox_blind
     }
 
     /// How many clauses the wedge cannot match (#353). A refused clause never

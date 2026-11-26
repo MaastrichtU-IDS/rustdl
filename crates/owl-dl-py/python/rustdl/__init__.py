@@ -110,6 +110,10 @@ class IncompleteClassificationWarning(UserWarning):
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY=0` or because the role closure exceeded
       `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`; raising that cap trades
       time for the missing entailments;
+    * the classify wedge was not given every ABox fact and trusted models that
+      touch a nominal (`result.wedge_abox_blind is True`, #533);
+      `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` decides those classes on the main
+      tableau;
     * the wedge cannot match some clauses' bodies
       (`result.wedge_clauses_refused > 0`): those clauses never fire (#353);
     * candidate individual equalities went undecided
@@ -206,6 +210,19 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             "RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE), so entailments that need "
             "sub-role, inverse or symmetric reasoning may be missing. It is still "
             "sound (no false subsumptions); check result.wedge_hierarchy_blind.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    if result.wedge_abox_blind:
+        # #533: a trusted wedge model touched a nominal while some ABox fact was not
+        # given to the classify wedge, so completeness is not guaranteed.
+        _warnings.warn(
+            "the classification trusted wedge models that were not given every ABox "
+            "fact and touch a nominal, so a subsumption or an unsatisfiable class that "
+            "depends on an individual's facts may be missing. It is still sound (no "
+            "false subsumptions); check result.wedge_abox_blind. "
+            "RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 decides those classes on the main "
+            "tableau, at a time cost.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )

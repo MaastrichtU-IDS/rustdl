@@ -859,6 +859,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         );
         warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
+        warn_if_abox_blind(h.stats().wedge_abox_blind);
         warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
         note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
         note_saturation_only("classify", *saturation_only && !h.completeness_guaranteed());
@@ -871,6 +872,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
     note_saturation_only("classify", *saturation_only && !h.completeness_guaranteed());
     warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
     warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
+    warn_if_abox_blind(h.stats().wedge_abox_blind);
     warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
     warn_if_dropped(&dropped);
     exit_if_no_verdict(h.stats().no_verdict_pairs > 0);
@@ -949,6 +951,18 @@ fn warn_if_hierarchy_blind(blind: bool) {
              role closure exceeded RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE), so \
              entailments that need sub-role, inverse or symmetric reasoning may be \
              missing. Raising the cap trades time for them."
+        );
+    }
+}
+
+fn warn_if_abox_blind(blind: bool) {
+    if blind {
+        eprintln!(
+            "\n⚠  NOT GUARANTEED COMPLETE: the classify wedge was not given every ABox \
+             fact, and some of its models touch a nominal, so a subsumption or an \
+             unsatisfiable class that depends on an individual's facts may be missing \
+             (#533). RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 decides those classes on the \
+             main tableau, at a time cost."
         );
     }
 }
@@ -1919,6 +1933,20 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
         writeln!(
             out,
             "# wedge ran without the role hierarchy (Layer A off): completeness not guaranteed"
+        )?;
+    }
+    if stats.wedge_abox_blind {
+        writeln!(
+            out,
+            "# wedge models blind to unfed ABox facts: {}: completeness not guaranteed",
+            stats.wedge_abox_blind_models
+        )?;
+    }
+    if stats.wedge_abox_demoted > 0 {
+        writeln!(
+            out,
+            "# wedge models demoted (RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE): {}",
+            stats.wedge_abox_demoted
         )?;
     }
     if stats.wedge_clauses_refused > 0 {

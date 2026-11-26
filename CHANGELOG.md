@@ -7,6 +7,32 @@ All notable changes to rustdl are documented here. Format is based on
 ## [Unreleased]
 
 ### Added
+- **`classify` reports when its wedge trusted a model that was blind to `ABox` facts (#533):
+  `wedge_abox_blind`.** Classify's wedge is given the facts of the individuals in the nominal
+  reach only, and object-property assertions only under `RUSTDL_CLASSIFY_NOMINAL_OPA=1`. Its
+  models are then models of a weaker KB, and classify trusted them (label prunes, candidate
+  generation, the unsat probe, per-pair refutations). On the issue's three fixtures and five
+  more probes (`X ⊑ ∃R.{a}` with unseen facts about `a`), `subclass` derived a pair, or an
+  unsatisfiable class, that classify missed with `incomplete: false` and nothing else set. HermiT
+  and Konclude agree on all eight and on their four controls.
+  - A completion with no nominal-labelled node can be united disjointly with any model of the
+    full KB, so unseen facts cannot invalidate it. Only a trusted model that touches a nominal
+    while some fact is unfed counts.
+  - The signal is a separate field, not `incomplete`: `classify --json` `wedge_abox_blind`,
+    `ClassificationStats::wedge_abox_blind` (with the count `wedge_abox_blind_models`), the
+    Python `Classification.wedge_abox_blind` and its `IncompleteClassificationWarning`, and a
+    stderr warning. `completeness_guaranteed()` requires it to be false (unreachable on PureEl,
+    which admits no nominal; kept for the invariant). `RUSTDL_REPORT_WEDGE_ABOX_BLIND`, default
+    ON. No answer changes.
+  - `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (default OFF) demotes such a model instead: a class's
+    label `Sat` becomes no verdict and a per-pair `NotSubsumed` goes to the `ABox`-seeded main
+    tableau. All eight entailments are then found. Counted in `wedge_abox_demoted` (JSON and
+    stats). Its default waits for a full sweep.
+  - Census at the defaults over the 435 ORE ontologies with a nominal and an `ABox` assertion
+    (60 s cap): 398 finish, of which 24 are inconsistent (never set) and 374 consistent. The
+    signal is set on 353 of those 374, so expect it on almost any such input. All 398 already had
+    `completeness_guaranteed: false`. The 29 that do not finish are cap-borderline or also time
+    out on `main`. On the 3 that `main` finished, serial CPU is equal across 3 runs each.
 - **Completeness signals for the class-expression queries in Python and Rust (#552).**
   - Python: `class_expression_satisfiable_result`, `class_expression_entailed_subclass_result` and `class_expression_instances_result` return `ClassExpressionVerdict` / `ClassExpressionInstances` (immutable, hashable mappings; fields named as the Rust accessors, `dropped` as sorted `(kind, count)` pairs) carrying the answer, `completeness_guaranteed`, `dropped` (the probed conversion's drops, the query expression's included) and the other signals. The bare functions keep their return types. All six emit the new `DroppedAxiomsWarning` when conversion dropped axioms; before, a Python caller could not tell a complete "no" from one over a lossy conversion.
   - Rust: `QueryStats::dropped_axioms` (the conversion's drop count, set on every single query, the `owl:Thing` / `owl:Nothing` shortcuts included) and `QueryStats::completeness_guaranteed()`, the one predicate `explain` and the expression queries now share. Before, a caller of `is_subclass_of_with_stats` had to call `dropped_axioms` separately to know whether `pure_el_mode` meant anything.

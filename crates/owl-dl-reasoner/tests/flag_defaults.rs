@@ -483,6 +483,16 @@ fn expected() -> Vec<FlagRow> {
             false,
         ),
         (
+            "RUSTDL_REPORT_WEDGE_ABOX_BLIND",
+            owl_dl_reasoner::report_wedge_abox_blind_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE",
+            owl_dl_reasoner::classify_wedge_abox_demote_enabled,
+            false,
+        ),
+        (
             "RUSTDL_CLASSIFY_NOMINAL_SAME",
             owl_dl_reasoner::classify_nominal_same_enabled,
             true,

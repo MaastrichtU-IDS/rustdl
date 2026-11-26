@@ -45,7 +45,8 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
 { "schema_version": 1, "consistent": bool, "incomplete": bool,
   "prep_timed_out": bool, "conversion_timed_out": bool, "parse_timed_out": bool,
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
-  "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
+  "wedge_hierarchy_blind": bool, "wedge_abox_blind": bool,
+  "wedge_abox_demoted": int, "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "depth_capped_pairs": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
@@ -105,7 +106,7 @@ no such flag: the Python API parses before any budget applies.
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where
 the engine that answered is provably complete (pure EL), and only when no pair
-was cut (`incomplete` is false), `wedge_hierarchy_blind` and `consistency_undetermined` are false,
+was cut (`incomplete` is false), `wedge_hierarchy_blind`, `wedge_abox_blind` and `consistency_undetermined` are false,
 `wedge_clauses_refused` and `derived_same_undecided` are 0, and `dropped` is
 empty. `docs/assurance/completeness-guarantee-ledger.md` lists each condition
 with its source issue and test.
@@ -116,6 +117,20 @@ exceeded `RUSTDL_CLASSIFY_ROLE_HIERARCHY_MAX_CLOSURE`) on an ontology with a
 non-trivial role hierarchy (#214). Entailments needing sub-role, inverse or
 symmetric reasoning may then be missing. A separate field, because nothing was
 cut: it does not set `incomplete`.
+
+`wedge_abox_blind` = classify trusted a wedge model that touches a nominal while
+some `ABox` fact was not given to the classify wedge (#533). That wedge sees the
+facts of the individuals in the nominal reach only, and object-property
+assertions only under `RUSTDL_CLASSIFY_NOMINAL_OPA=1`. A model that touches no
+nominal is not counted: it can be united disjointly with any model of the full
+KB. A subsumption or an unsatisfiable class that depends on an individual's facts
+may be missing. A separate field: nothing was cut, so it does not set
+`incomplete`. With `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (default off) those
+models are demoted to the main tableau instead, counted in `wedge_abox_demoted`
+(0 with the flag off), and this field stays false. Expect it on almost any input
+with both a nominal and an `ABox`: it is set on 353 of the 374 consistent ORE
+ontologies of that kind that finish at 60 s (every one of which already had
+`completeness_guaranteed: false`).
 
 `consistency_undetermined` = the KB-level inconsistency pre-check reached no
 verdict: a route gave up, or was skipped because `--global-timeout-ms` had

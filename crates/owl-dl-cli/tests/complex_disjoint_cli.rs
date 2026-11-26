@@ -68,18 +68,32 @@ fn json(args: &[&str], env: &[(&str, &str)]) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-/// `consistent --json`'s verdict. Exit 3 (a give-up, reported as `consistent:
-/// true`, its sound direction) is accepted: on a loaded host the debug build's wedge
-/// budget can run out, and the FP control below only needs "not inconsistent".
+/// `consistent --json`'s decided verdict. Only exit 0 is a verdict: exit 3 is a
+/// give-up (printed as `consistent: true`, its sound direction, but not a proof), and
+/// accepting it would let a give-up hide a false inconsistency in the FP control below.
+/// The wedge's fallback deadline is raised so that a loaded host cannot turn these
+/// small fixtures into a give-up.
 fn consistent(f: &Fixture, env: &[(&str, &str)]) -> bool {
-    let out = run(&["consistent", "--json", f.path()], env);
-    assert!(matches!(out.status.code(), Some(0 | 3)), "{env:?}: {out:?}");
+    let mut env = env.to_vec();
+    env.push(("RUSTDL_CONSISTENCY_FALLBACK_MS", "600000"));
+    let out = run(&["consistent", "--json", f.path()], &env);
+    assert_eq!(out.status.code(), Some(0), "{env:?}: {out:?}");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["incomplete"], false, "{env:?}: {v}");
     v["consistent"].as_bool().unwrap()
 }
 
+/// `classify --json` with no per-pair deadline, so every answer is decided: at the
+/// 5 ms default a loaded host cut pairs (`incomplete: true`) and the positive
+/// assertions below missed. The flag-off misses do not depend on timing: they come
+/// from the wedge's trusted `Sat` on the weaker clause set.
 fn classify(f: &Fixture, env: &[(&str, &str)]) -> serde_json::Value {
-    json(&["classify", "--json", f.path()], env)
+    let v = json(
+        &["classify", "--json", "--pair-timeout-ms", "0", f.path()],
+        env,
+    );
+    assert_eq!(v["incomplete"], false, "{env:?}: {v}");
+    v
 }
 
 fn unsat(v: &serde_json::Value, class: &str) -> bool {

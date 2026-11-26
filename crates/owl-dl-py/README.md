@@ -120,6 +120,7 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, 
 | `.conversion_timed_out` | `bool` | `True` if, with `RUSTDL_HARD_GLOBAL_DEADLINE=1`, the budget ran out during conversion, so only part of the ontology was read (implies `.prep_timed_out`) |
 | `.consistency_undetermined` | `bool` | `True` if the inconsistency pre-check reached no verdict (or classify's consistency probe gave up, #446), so `.inconsistent is False` means "no clash found", not "proven consistent" |
 | `.wedge_hierarchy_blind` | `bool` | `True` if role-hierarchy matching was off (Layer A), so sub-role / inverse / symmetric entailments may be missing even with `.complete` |
+| `.wedge_abox_blind` | `bool` | `True` if classify trusted wedge models that touch a nominal while some `ABox` fact did not apply in them: not given to the classify wedge, or given for an individual the model lacks (#533), so entailments that depend on an individual's facts may be missing even with `.complete` |
 | `.is_subclass(sub, sup)` | `bool` | is `sub ⊑ sup` entailed? |
 | `.subclasses_of(cls)` | `list[str]` | every `D` with `D ⊑ cls` |
 | `.superclasses_of(cls)` | `list[str]` | every `D` with `cls ⊑ D` |

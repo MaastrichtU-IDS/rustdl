@@ -152,7 +152,7 @@ fn each_condition_alone_voids_the_guarantee() {
     );
 
     type Flip = fn(&mut ClassificationStats);
-    let rows: [(&str, Flip); 10] = [
+    let rows: [(&str, Flip); 11] = [
         ("fragment Horn (#124)", |s| {
             s.fragment = FragmentClassification::Horn;
         }),
@@ -162,6 +162,9 @@ fn each_condition_alone_voids_the_guarantee() {
         ("timed_out_pairs", |s| s.timed_out_pairs = 1),
         ("wedge_hierarchy_blind (#214)", |s| {
             s.wedge_hierarchy_blind = true;
+        }),
+        ("wedge_abox_blind (#533)", |s| {
+            s.wedge_abox_blind = true;
         }),
         ("wedge_clauses_refused (#353)", |s| {
             s.wedge_clauses_refused = 1;

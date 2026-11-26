@@ -61,16 +61,22 @@ never a false positive). Part A of #558 reports both counts wherever the trusted
 `QueryStats` fields of the same names, and the text of Python's
 `TrustedConsistencyWarning` from `is_consistent`.
 
-**Decision for part B (verification), recorded 2026-11-26 by rustdl-manager under
-Michel's delegation.** Part B will verify such a `Sat` on the main tableau, as #344
-does for data counting, behind `RUSTDL_CONSISTENCY_VERIFY_REFUSED` (default OFF
-until a sweep decides). A clash makes the KB inconsistent; a model makes the
-verdict verified. **A verify give-up keeps today's output**: `consistent`, with
-`relies_on_trusted_consistency: true` and the gap counts, and no `incomplete`.
-Reason: those flags already name the gap, and turning a consistent KB into
-`unknown` (exit 3) would lose answers, against "defaults favour completeness".
-Considered and rejected: reporting the give-up as `incomplete: true` per #574's
-contract ("a pair or probe was cut"), which is the #344 behaviour.
+**Part B (verifying such a `Sat`) is not built: its measured reach is one
+ontology.** Recorded 2026-11-26 by rustdl-manager under Michel's delegation. The
+reach census (`consistent --json`, main `22a69b81`, 60 s cap, over the 1,176 ORE
+files that name an individual or a nominal) found 944 trusted consistency-wedge
+`Sat`s, **0** with refused clauses (instrument check: the #357 star with
+`RUSTDL_WEDGE_BODY_DECOMPOSE=0` reads 1), and **1** with a deferred axiom
+(`ore_ont_12698`, one `disjoint-antecedent`; second pass with the part-A binary).
+The root cause is clausification: the deferred `DisjointUnion` / `DisjointClasses`
+kinds also cost answers on the classify wedge, so they are fixed in the clausifier
+(the follow-up issue) rather than verified per query. Should verification ever be
+built, the decision on its give-up stands: **a verify give-up keeps today's
+output** (`consistent`, `relies_on_trusted_consistency: true`, the gap counts, no
+`incomplete`), because those flags already name the gap and turning a consistent
+KB into `unknown` (exit 3) would lose answers, against "defaults favour
+completeness". Considered and rejected: reporting the give-up as
+`incomplete: true` per #574's contract, the #344 behaviour.
 
 ## Signals deliberately outside the guarantee
 

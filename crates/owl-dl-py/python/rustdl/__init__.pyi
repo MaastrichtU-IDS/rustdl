@@ -89,6 +89,13 @@ class Classification:
         consistent"."""
         ...
     @property
+    def universal_role_ordinary(self) -> bool:
+        """True iff the ontology uses a universal role where its semantics could
+        change the hierarchy (#543); rustdl treats it as an ordinary property, so an
+        entailment may be missing. Voids `completeness_guaranteed`. `classify` emits
+        `UniversalRoleWarning`."""
+        ...
+    @property
     def relies_on_trusted_consistency(self) -> bool:
         """True iff `inconsistent is False` rests on a consistency-wedge model
         that no main-tableau run verified (#429). Not a give-up; `classify`
@@ -413,6 +420,16 @@ def class_expression_instances(path: str, ce: str) -> list[str]:
     ...
 
 # ── conversion diagnostics ──────────────────────────────────────────────────
+
+class UniversalRoleWarning(UserWarning): ...
+
+def universal_role_ordinary(path: str, role_level: bool = False) -> bool:
+    """True iff the ontology at `path` uses a universal role where rustdl's
+    ordinary-property reading can miss entailments (#543). Every path-taking query
+    emits `UniversalRoleWarning` when this holds. `role_level=True` also counts a
+    property above `owl:topObjectProperty`, whose edges between every pair of
+    individuals the property-assertion functions do not list."""
+    ...
 
 def dropped_axioms(path: str) -> dict[str, int]:
     """Kinds and counts of axioms conversion could not represent (a sound

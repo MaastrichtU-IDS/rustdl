@@ -33,6 +33,7 @@ from rustdl._native import (
     class_expression_entailed_subclass as _class_expression_entailed_subclass_native,
     class_expression_instances as _class_expression_instances_native,
     dropped_axioms as dropped_axioms,
+    universal_role_ordinary as universal_role_ordinary,
     RustdlError as RustdlError,
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
@@ -571,6 +572,12 @@ def _warn_if_oracle_trusted(name: str, trusted: bool) -> None:
         )
 
 
+def _warn_if_classification_universal(result: "Classification") -> "Classification":
+    # #543: the flag rides on the result, so no second conversion.
+    _warn_if_universal_role("classify", result.universal_role_ordinary, stacklevel=3)
+    return result
+
+
 def _warn_if_classification_trusted(result: "Classification") -> "Classification":
     _warn_if_trusted_wedge_consistency(
         "classify", result.relies_on_trusted_consistency, stacklevel=4
@@ -1055,14 +1062,14 @@ def classify(
 
     `global_deadline_ms` is a deprecated alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_classification_trusted(_warn_if_incomplete(
+    return _warn_if_classification_universal(_warn_if_classification_trusted(_warn_if_incomplete(
         _classify_native(
             path,
             per_pair_timeout_ms=per_pair_timeout_ms,
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    ))
+    )))
 
 
 def classify_bytes(
@@ -1079,7 +1086,7 @@ def classify_bytes(
     timeout/completeness semantics. `global_deadline_ms` is a deprecated
     alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_classification_trusted(_warn_if_incomplete(
+    return _warn_if_classification_universal(_warn_if_classification_trusted(_warn_if_incomplete(
         _classify_bytes_native(
             data,
             format=format,
@@ -1087,7 +1094,7 @@ def classify_bytes(
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    ))
+    )))
 
 
 def debug(path):
@@ -1133,6 +1140,89 @@ def debug(path):
     )
 
 
+class UniversalRoleWarning(UserWarning):
+    """The ontology uses a universal role (`owl:topObjectProperty`, a property above
+    it, or `owl:topDataProperty` outside the super-property position) where its
+    universal-role semantics could change an answer (#543). rustdl treats it as an
+    ordinary property: positive answers are sound, but a negative answer
+    ("satisfiable", "not subsumed", "not an instance", "consistent") or a missing
+    entailment may be wrong. `universal_role_ordinary(path)` reports the same fact,
+    and `Classification.universal_role_ordinary` carries it for `classify`."""
+
+
+def _warn_if_universal_role(name: str, flagged: bool, stacklevel: int = 3) -> None:
+    if flagged:
+        _warnings.warn(
+            f"{name}: owl:topObjectProperty is used here as the universal role, which "
+            "rustdl treats as an ordinary property. Positive answers are sound; a "
+            "negative answer or a missing entailment may be wrong "
+            "(see UniversalRoleWarning).",
+            UniversalRoleWarning,
+            stacklevel=stacklevel,
+        )
+
+
+_ROLE_LEVEL = frozenset({
+    "object_property_values",
+    "materialize_inferred_property_assertions",
+})
+
+
+def _with_universal_role_note(name, fn):
+    """Wrap a path-taking query so it warns `UniversalRoleWarning` after answering.
+    `universal_role_ordinary` searches the file's bytes first, so an ontology that
+    names neither top property is not parsed again."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(path, *args, **kwargs):
+        result = fn(path, *args, **kwargs)
+        _warn_if_universal_role(
+            name, universal_role_ordinary(path, role_level=name in _ROLE_LEVEL), stacklevel=3
+        )
+        return result
+
+    return wrapper
+
+
+# #543: every path-taking surface whose answer can be a definite negative or an
+# incomplete list. `classify` / `classify_bytes` read the flag off the result
+# instead (no second conversion); `debug` warns through `diagnose`.
+for _name in (
+    "justify",
+    "justify_all",
+    "diagnose",
+    "repair",
+    "is_consistent",
+    "is_class_satisfiable",
+    "is_subclass_of",
+    "is_instance_of",
+    "instances_of",
+    "realize",
+    "materialize_inferred_subclass_axioms",
+    "materialize_inferred_class_assertions",
+    "materialize_existential_successors",
+    "materialize_inferred_property_assertions",
+    "materialize_inferred_data_property_assertions",
+    "materialize_inferred_subobjectproperty_axioms",
+    "materialize_inferred_subdataproperty_axioms",
+    "object_property_hierarchy",
+    "data_property_hierarchy",
+    "disjoint_classes",
+    "disjoint_object_properties",
+    "disjoint_data_properties",
+    "same_individuals",
+    "different_individuals",
+    "object_property_values",
+    "data_property_values",
+    "class_expression_satisfiable",
+    "class_expression_entailed_subclass",
+    "class_expression_instances",
+):
+    globals()[_name] = _with_universal_role_note(_name, globals()[_name])
+del _name
+
+
 __all__ = [
     "__version__",
     "examples",
@@ -1165,6 +1255,8 @@ __all__ = [
     "class_expression_entailed_subclass",
     "class_expression_instances",
     "dropped_axioms",
+    "universal_role_ordinary",
+    "UniversalRoleWarning",
     "RustdlError",
     "ParseError",
     "UnsupportedAxiomError",

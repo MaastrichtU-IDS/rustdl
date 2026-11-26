@@ -262,3 +262,84 @@ fn a_builtin_axiom_is_never_a_collapsed_operand_axiom() {
     assert_eq!(o.builtin.len(), 1);
     assert_eq!(o.collapsed_operands.axioms, 1, "{:?}", o.collapsed_operands);
 }
+
+// ── #543: where a universal role is read as an ordinary one ──
+
+fn flagged(body: &str) -> bool {
+    owl_dl_core::top_bottom_roles::universal_role_ordinary(&convert(&format!("{BASE} {body}")))
+}
+
+/// Inert occurrences: each holds in the model that reinterprets the universal role as
+/// `Δ × Δ`, so no class-level entailment depends on it.
+#[test]
+fn inert_universal_role_occurrences_are_not_flagged() {
+    for body in [
+        // No top at all (and the O(1) exit).
+        "SubClassOf(:C ObjectSomeValuesFrom(:r :D))",
+        // `x ⊑ top`, the only ORE use.
+        "SubObjectPropertyOf(:r owl:topObjectProperty) SubClassOf(:C ObjectSomeValuesFrom(:r :D))",
+        "SubDataPropertyOf(:p owl:topDataProperty)",
+        // A positive assertion, and characteristics `Δ × Δ` has.
+        "ObjectPropertyAssertion(owl:topObjectProperty :a :b)",
+        "TransitiveObjectProperty(owl:topObjectProperty) \
+         ReflexiveObjectProperty(owl:topObjectProperty) \
+         SymmetricObjectProperty(owl:topObjectProperty)",
+        // Equivalence and inverse within U, and a chain INTO U.
+        "EquivalentObjectProperties(owl:topObjectProperty :r)",
+        "InverseObjectProperties(owl:topObjectProperty :r)",
+        "SubObjectPropertyOf(ObjectPropertyChain(:r :s) owl:topObjectProperty)",
+        "SubObjectPropertyOf(owl:topObjectProperty :r)",
+        // A negated assertion: #539's A4 already makes it `⊤ ⊑ ⊥`.
+        "NegativeObjectPropertyAssertion(owl:topObjectProperty :a :b)",
+        // #539's A3: `top ⊑ r ⊑ bottom` puts bottom in U, and the built-in
+        // `∃bottom.⊤ ⊑ ⊥` must not count as a use.
+        "SubObjectPropertyOf(owl:topObjectProperty :r) \
+         SubObjectPropertyOf(:r owl:bottomObjectProperty)",
+    ] {
+        assert!(!flagged(body), "inert, not flagged: {body}");
+    }
+}
+
+/// Semantic uses: each can lose an entailment under the ordinary reading.
+#[test]
+fn semantic_universal_role_uses_are_flagged() {
+    for body in [
+        "SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :C)",
+        "SubClassOf(:C ObjectSomeValuesFrom(owl:topObjectProperty :D))",
+        "SubClassOf(:C ObjectAllValuesFrom(owl:topObjectProperty :D))",
+        "SubClassOf(:C ObjectMinCardinality(2 owl:topObjectProperty :D))",
+        "SubClassOf(:C ObjectMaxCardinality(1 owl:topObjectProperty :D))",
+        "SubClassOf(:C ObjectHasSelf(owl:topObjectProperty))",
+        "SubClassOf(:C ObjectHasValue(owl:topObjectProperty :a))",
+        "SubClassOf(:C ObjectSomeValuesFrom(ObjectInverseOf(owl:topObjectProperty) :D))",
+        "ClassAssertion(ObjectAllValuesFrom(owl:topObjectProperty :D) :a)",
+        "ObjectPropertyDomain(owl:topObjectProperty :C)",
+        "ObjectPropertyRange(owl:topObjectProperty :C)",
+        "FunctionalObjectProperty(owl:topObjectProperty)",
+        "InverseFunctionalObjectProperty(owl:topObjectProperty)",
+        "IrreflexiveObjectProperty(owl:topObjectProperty)",
+        "AsymmetricObjectProperty(owl:topObjectProperty)",
+        "DisjointObjectProperties(owl:topObjectProperty :r)",
+        // A chain with a universal leg into an ordinary role.
+        "SubObjectPropertyOf(ObjectPropertyChain(:s owl:topObjectProperty) :r)",
+        // A role above top, used: `top ⊑ r` makes `r` universal.
+        "SubObjectPropertyOf(owl:topObjectProperty :r) \
+         SubClassOf(ObjectSomeValuesFrom(:r :D) :C)",
+        // `owl:topDataProperty` outside the super-property position.
+        "SubClassOf(:C DataSomeValuesFrom(owl:topDataProperty rdfs:Literal))",
+    ] {
+        assert!(flagged(body), "a semantic use, flagged: {body}");
+    }
+}
+
+/// The role-level companion: `top ⊑ r` is inert for classes but makes `r` relate every
+/// pair, which the property-assertion surfaces do not list.
+#[test]
+fn a_role_above_top_is_a_universal_super_role() {
+    let o = convert(&format!("{BASE} SubObjectPropertyOf(owl:topObjectProperty :r)"));
+    assert!(!owl_dl_core::top_bottom_roles::universal_role_ordinary(&o));
+    let r = o.vocabulary.role_id("http://ex#r").unwrap();
+    assert!(owl_dl_core::top_bottom_roles::universal_super_roles(&o).contains(&r));
+    let plain = convert(&format!("{BASE} SubObjectPropertyOf(:r owl:topObjectProperty)"));
+    assert!(owl_dl_core::top_bottom_roles::universal_super_roles(&plain).is_empty());
+}

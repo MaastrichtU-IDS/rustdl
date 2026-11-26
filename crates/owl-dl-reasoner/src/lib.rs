@@ -6395,8 +6395,8 @@ pub fn classify_tbox_only_enabled() -> bool {
 /// **Completeness:** nominal-free SROIQ(D) is closed under disjoint union, so on
 /// a consistent KB with no nominal in the `TBox` or the query, `T ∪ A ⊨ C ⊑ D`
 /// iff `T ⊨ C ⊑ D`. rustdl does not implement the universal role, the one
-/// construct that breaks this (`owl:topObjectProperty` is an ordinary role).
-/// A consistency verdict that rests on a trusted wedge `Sat` is reported through
+/// construct that breaks this (`owl:topObjectProperty` is an ordinary role; #543
+/// flags its uses, and implementing it must gate this route). A consistency verdict that rests on a trusted wedge `Sat` is reported through
 /// [`QueryStats::relies_on_trusted_consistency`].
 #[must_use]
 pub fn query_tbox_only_enabled() -> bool {
@@ -7468,6 +7468,42 @@ pub fn dropped_axioms<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<DroppedAxioms, ReasonError> {
     Ok(owl_dl_core::convert::convert_ontology(ontology)?.dropped)
+}
+
+/// The conversion's report on what reasoning will under-approximate: the dropped
+/// axioms (#43) and whether a universal role is used where rustdl's ordinary-role
+/// reading can miss entailments (#543,
+/// [`owl_dl_core::top_bottom_roles::universal_role_ordinary`]). One conversion for
+/// both, for surfaces that report them before or beside their answer.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn conversion_report<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(DroppedAxioms, bool), ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    Ok((internal.dropped, uro))
+}
+
+/// #543, for the ROLE-level surfaces (`property-values`, materialized property
+/// assertions): `true` when [`conversion_report`]'s flag is set, or when a role sits
+/// above a top property (`top ⊑* r`). Such an `r` relates every pair of individuals,
+/// an edge those surfaces do not report, even where the class-level answers are
+/// unaffected.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn universal_role_ordinary_for_roles<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<bool, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    Ok(
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal)
+            || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty(),
+    )
 }
 
 use std::collections::HashMap;

@@ -352,6 +352,31 @@ pub(crate) fn dropped_axioms(path: &str) -> PyResult<std::collections::BTreeMap<
         .map_err(reason_error_to_py)
 }
 
+/// #543: does the ontology at `path` use a universal role where rustdl's
+/// ordinary-property reading can miss entailments? A byte search for the two top
+/// property names comes first, so an ontology that names neither (all but a handful)
+/// is not parsed a second time; one that does is parsed and converted.
+/// `role_level=True` also counts a role above a top property, for the role-level
+/// functions (`object_property_values`, `materialize_inferred_property_assertions`):
+/// it relates every pair of individuals, which they do not list.
+#[pyfunction]
+#[pyo3(signature = (path, role_level=false))]
+pub(crate) fn universal_role_ordinary(path: &str, role_level: bool) -> PyResult<bool> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| crate::errors::ParseError::new_err(format!("read {path}: {e}")))?;
+    let mentions = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    if !mentions(b"topObjectProperty") && !mentions(b"topDataProperty") {
+        return Ok(false);
+    }
+    let o = load::load_path(path)?;
+    if role_level {
+        return owl_dl_reasoner::universal_role_ordinary_for_roles(&o).map_err(reason_error_to_py);
+    }
+    owl_dl_reasoner::conversion_report(&o)
+        .map(|(_, uro)| uro)
+        .map_err(reason_error_to_py)
+}
+
 /// Parse a Manchester-syntax class expression against the ontology's own
 /// prefix map (so e.g. `:A` resolves via the file's `Prefix(:=...)`).
 fn parse_ce(
@@ -462,5 +487,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(class_expression_entailed_subclass, m)?)?;
     m.add_function(wrap_pyfunction!(class_expression_instances, m)?)?;
     m.add_function(wrap_pyfunction!(dropped_axioms, m)?)?;
+    m.add_function(wrap_pyfunction!(universal_role_ordinary, m)?)?;
     Ok(())
 }

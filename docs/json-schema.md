@@ -51,7 +51,8 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...],
   "dropped": { "<axiom kind>": int },
-  "collapsed_operands": { "axioms": int, "vacuous": int } }
+  "collapsed_operands": { "axioms": int, "vacuous": int },
+  "universal_role_ordinary": bool }
 ```
 
 `incomplete` = some class pair or per-class unsat probe was cut without a verdict and took its
@@ -126,6 +127,17 @@ EL (#539): only the saturation closure looked for a clash. `consistent: true`
 then means "no clash found", not "proven consistent". A separate field; it does
 not set `incomplete`.
 
+`universal_role_ordinary` (#543, no `schema_version` bump) = the ontology uses
+`owl:topObjectProperty` (or a property above it, or `owl:topDataProperty` outside the
+super-property position) where its universal-role semantics could change an answer, and
+rustdl reads it as an ordinary property. Positive answers are sound; a negative answer or
+a missing entailment may be wrong. It voids `completeness_guaranteed`, is `false` when the
+ontology is proved inconsistent, and comes with one stderr note. The same field, with the
+same meaning, is on `consistent`, `realize`, `disjoint`, `individuals`, `property-values`
+(where a property above top also sets it: it relates every pair, which the output does not
+list), `property-hierarchy`, `sat-expr`, `subclass-expr`, `instances-expr`, `justify`,
+`prove` and `verify-el`.
+
 **`incomplete: false` does NOT mean complete.** It means no class pair or per-class unsat probe was cut (other give-ups, such
 as `consistency_undetermined` or `derived_same_undecided`, have their own fields).
 There are Horn ontologies where `classify` misses a subsumption both Konclude and
@@ -182,7 +194,8 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
   "wedge_clauses_refused": int,
   "no_verdict": bool,
   "dropped": { "<axiom kind>": int },
-  "collapsed_operands": { "axioms": int, "vacuous": int } }
+  "collapsed_operands": { "axioms": int, "vacuous": int },
+  "universal_role_ordinary": bool }
 ```
 
 `incomplete` (#182) means `consistent: true` is a give-up in its sound
@@ -218,6 +231,7 @@ depth cap), #497.
   "witness_prune_may_drop": bool, "witness_prune_reasons": [string],
   "direct_types_unverified": bool, "relies_on_trusted_consistency": bool,
   "no_verdict": bool, "depth_capped": bool, "saturation_only": bool,
+  "universal_role_ordinary": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
 ```

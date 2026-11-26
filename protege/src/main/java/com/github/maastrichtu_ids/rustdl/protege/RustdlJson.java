@@ -93,10 +93,12 @@ public final class RustdlJson {
     }
 
     /**
-     * `prove --json` top-level payload (docs/json-schema.md). Three mutually exclusive shapes:
+     * `prove --json` top-level payload (docs/json-schema.md). Three shapes:
      * <ul>
      * <li>step-level EL proof: {@code entailed=true, has_proof=true, proof} set,
-     *     {@code justification_fallback=null};</li>
+     *     {@code justification_fallback=null}; #594: with {@code --source-fallback}, a proof
+     *     this plugin could not show (a builtin or derived axiom, or incomplete) can also
+     *     carry {@code justification_fallback}, a source-only justification shown instead;</li>
      * <li>SROIQ-only justification fallback: {@code entailed=true, has_proof=false, proof=null},
      *     {@code justification_fallback} set (a full OFN ontology document, not a single axiom);</li>
      * <li>not entailed: {@code entailed=false, has_proof=false}, both {@code proof} and

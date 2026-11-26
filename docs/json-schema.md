@@ -483,8 +483,10 @@ below).
   "kb_inconsistent": bool, "no_verdict": bool,
   "has_proof": bool,
   "proof_complete": bool | null,
+  "proof_uses_non_source_axioms": bool | null,
   "proof": ProofNodeJson | null,
-  "justification_fallback": ofn_document | null }
+  "justification_fallback": ofn_document | null,
+  "justification_minimal": bool | null }
 ```
 
 ```json
@@ -496,12 +498,20 @@ below).
   "premises": [ProofNodeJson, ...], "unproved_premises": [ofn_document, ...] }
 ```
 
-Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
+Three shapes, mirroring `ProveEntailmentResult`:
 
 - **Step-level EL proof** (entailment held by the EL saturation fragment):
   `entailed: true, has_proof: true`, `proof` is the recursively-built
   `ProofNode` tree rooted at the queried `SUB ⊑ SUP`, `justification_fallback:
-  null`. Each node's `conclusion` is a one-axiom OFN document rendering that
+  null` — except with `prove --json --source-fallback` (#594): when some step uses a
+  non-source axiom (`proof_uses_non_source_axioms: true`: a step has `builtin_axioms`
+  or `derived_axioms`), `justification_fallback` also
+  carries a source-only justification of the same entailment (the search `justify`
+  runs, under `prove`'s query node cap) with `justification_minimal`, for a consumer
+  that shows source axioms only (the Protégé plugin shows it instead of the proof). If
+  that search fails or finds none, the field stays `null` and a note goes to stderr;
+  the proof, `incomplete` and the exit code are unchanged.
+  `proof_uses_non_source_axioms` is `null` when there is no proof. Each node's `conclusion` is a one-axiom OFN document rendering that
   node's `DerivedFact` (`Sub(s,p)` → `SubClassOf(s p)`; `Exist(s,r,t)` →
   `SubClassOf(s ObjectSomeValuesFrom(r t))`; `Unsat(c)` → `SubClassOf(c
   owl:Nothing)`) — classes beyond the source vocabulary (Tseitin/marker/

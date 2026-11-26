@@ -262,10 +262,10 @@ struct RoleSets<'a> {
 }
 
 impl RoleSets<'_> {
-    fn in_u(&self, r: &Role) -> bool {
+    fn in_u(&self, r: Role) -> bool {
         self.u.contains(&r.role_id())
     }
-    fn is_top_data(&self, r: &Role) -> bool {
+    fn is_top_data(&self, r: Role) -> bool {
         self.top_data == Some(r.role_id())
     }
 }
@@ -292,8 +292,8 @@ fn axiom_uses(
     roles: &RoleSets<'_>,
     concept: &mut impl FnMut(crate::ir::ConceptId) -> bool,
 ) -> bool {
-    let in_u = |r: &Role| roles.in_u(r);
-    let top_data = |r: &Role| roles.is_top_data(r);
+    let in_u = |r: &Role| roles.in_u(*r);
+    let top_data = |r: &Role| roles.is_top_data(*r);
     match ax {
         Axiom::SubClassOf { sub, sup } => concept(*sub) || concept(*sup),
         Axiom::EquivalentClasses(cs) | Axiom::DisjointClasses(cs) => cs.iter().any(|c| concept(*c)),

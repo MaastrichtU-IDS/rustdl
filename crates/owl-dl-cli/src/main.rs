@@ -940,6 +940,29 @@ fn classify_with_parse_deadline(args: ClassifyArgs) -> Result<()> {
     }
 }
 
+/// #388 / #583: some individual's direct types hold a pair whose subsumption was left
+/// undecided. Says what may decide it: the check's cut cause (#583), or that the check
+/// is switched off.
+fn warn_direct_types_unverified(depth_capped: bool, saturation_only: bool) {
+    let remedy = if saturation_only {
+        "--saturation-only runs no check; plain realize checks such pairs"
+    } else if !owl_dl_reasoner::realize_verify_direct_enabled() {
+        "The check is off (RUSTDL_REALIZE_VERIFY_DIRECT=0); without that setting it runs"
+    } else if depth_capped {
+        "A check hit the tableau's decision-depth limit, where a larger budget does not \
+         help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (no deadline, a far larger depth limit) may \
+         decide it, but can take much longer"
+    } else {
+        "A check was cut by its deadline or the node cap; a larger \
+         RUSTDL_REALIZE_PAIR_TIMEOUT_MS may decide it"
+    };
+    eprintln!(
+        "warning: realize: some individual has two direct types whose subsumption was left \
+         undecided, so a listed direct type may be a superclass of another; every listed type \
+         is a genuine type. {remedy}."
+    );
+}
+
 /// #214: say why completeness is not guaranteed when nothing was cut.
 fn warn_if_hierarchy_blind(blind: bool) {
     if blind {
@@ -2762,11 +2785,7 @@ fn run() -> Result<()> {
                 warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped(), false);
             }
             if r.direct_types_unverified() {
-                eprintln!(
-                    "warning: realize: some individual has two direct types whose subsumption \
-                     was left undecided, so a listed direct type may be a superclass of \
-                     another; every listed type is a genuine type."
-                );
+                warn_direct_types_unverified(r.direct_types_depth_capped(), saturation_only);
             }
             if r.witness_prune_may_drop() {
                 // #387: no probe was cut, so `incomplete` stays false; the

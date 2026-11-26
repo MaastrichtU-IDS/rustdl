@@ -1349,6 +1349,14 @@ pub struct Realization {
     /// the types and the hierarchy come from one saturation closure on a fragment
     /// where it is complete.
     direct_types_unverified: bool,
+    /// #583: with [`Self::direct_types_unverified`], at least one of #388's co-leaf
+    /// checks was cut by the tableau's decision-depth limit (directly or through early
+    /// abandon), where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` or node cap does not
+    /// help and the deadline-free check (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`) may.
+    /// `false` with `direct_types_unverified` set: the checks were cut by their deadline
+    /// or the node cap (a larger budget may decide them), or did not run
+    /// (`RUSTDL_REALIZE_VERIFY_DIRECT=0`, the saturation-only realize). Report-only.
+    direct_types_depth_capped: bool,
     /// #429: the classification this realization ran took the ontology as
     /// consistent on a consistency-wedge `Sat` that no main-tableau run verified
     /// (`ClassificationStats::relies_on_trusted_consistency`). If that `Sat` is
@@ -1442,6 +1450,13 @@ impl Realization {
         self.direct_types_unverified
     }
 
+    /// #583: see [`Self::direct_types_depth_capped`]'s field doc. Implies
+    /// [`Self::direct_types_unverified`].
+    #[must_use]
+    pub fn direct_types_depth_capped(&self) -> bool {
+        self.direct_types_depth_capped
+    }
+
     #[must_use]
     pub fn individuals(&self) -> &[String] {
         &self.individuals
@@ -1523,12 +1538,12 @@ fn subsumption_verdict(
     sub_iri: &str,
     sup_iri: &str,
     pair_deadline_ms: Option<u64>,
-) -> Result<(PairVerdict, bool), ReasonError> {
+) -> Result<(PairVerdict, bool, bool), ReasonError> {
     let (Some(sub), Some(sup)) = (
         internal.vocabulary.class_id(sub_iri),
         internal.vocabulary.class_id(sup_iri),
     ) else {
-        return Ok((PairVerdict::Cut, false));
+        return Ok((PairVerdict::Cut, false, false));
     };
     let build = move |pool: &mut ConceptPool| {
         let a = pool.atomic(sub);
@@ -1542,16 +1557,23 @@ fn subsumption_verdict(
         Some(d) => prepared.decide_classify_with_deadline(d, build),
         None => prepared.decide_classify_raw(build),
     };
+    // #583: the third element says a cut was the decision-depth limit (#288's flag,
+    // read on this thread right after the probe), as an instance probe's
+    // `depth_capped` does.
     Ok(match sat {
-        Ok(Some(false)) => (PairVerdict::Proven, false),
-        Ok(Some(true)) => (PairVerdict::Refuted, false),
+        Ok(Some(false)) => (PairVerdict::Proven, false, false),
+        Ok(Some(true)) => (PairVerdict::Refuted, false, false),
         // A deadline, node cap or depth bail-out is no verdict; like a cut instance
         // probe it must not fail the whole realization.
-        Ok(None) => (PairVerdict::Cut, false),
+        Ok(None) => (PairVerdict::Cut, false, crate::last_probe_depth_capped()),
         // #493: a `NoVerdict` with no deadline, or from a stalled probe, is #462 /
         // #475's likely-bug signal. It is still a cut here (the sound default), and
         // the flag reports it. Read on this thread, right after the probe.
-        Err(ReasonError::NoVerdict) => (PairVerdict::Cut, crate::no_verdict_is_a_bug(deadline)),
+        Err(ReasonError::NoVerdict) => (
+            PairVerdict::Cut,
+            crate::no_verdict_is_a_bug(deadline),
+            crate::last_probe_depth_capped(),
+        ),
         Err(e) => return Err(e),
     })
 }
@@ -1565,7 +1587,7 @@ fn verify_co_leaf_pairs(
     hierarchy: &crate::Classification,
     leaf_sets: &[&[String]],
     pair_deadline_ms: Option<u64>,
-) -> Result<(PairVerdicts, bool), ReasonError> {
+) -> Result<(PairVerdicts, bool, bool), ReasonError> {
     let mut pairs: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
     for leaves in leaf_sets {
         for x in *leaves {
@@ -1580,14 +1602,19 @@ fn verify_co_leaf_pairs(
     // #493: whether any check's cut was the likely-bug `NoVerdict`. Each check sets
     // it on its own rayon thread, right after its probe.
     let no_verdict = std::sync::atomic::AtomicBool::new(false);
+    // #583: whether any check's cut was the decision-depth limit, set the same way.
+    let depth_capped = std::sync::atomic::AtomicBool::new(false);
     let verdicts = decide_pairs_until_cut(&pairs, |x, y| {
-        let (verdict, nv) = subsumption_verdict(internal, prepared, x, y, pair_deadline_ms)?;
+        let (verdict, nv, depth) = subsumption_verdict(internal, prepared, x, y, pair_deadline_ms)?;
         if nv {
             no_verdict.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        if depth {
+            depth_capped.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(verdict)
     })?;
-    Ok((verdicts, no_verdict.into_inner()))
+    Ok((verdicts, no_verdict.into_inner(), depth_capped.into_inner()))
 }
 
 /// Decide `pairs` in parallel, and stop starting new checks once one is cut.
@@ -1779,6 +1806,8 @@ pub fn realize_saturation_only_internal(
         witness_prune_reasons: WitnessPruneReasons::default(),
         // No tableau on this path by contract, so an undecided pair stays undecided.
         direct_types_unverified,
+        // #583: the saturation-only realize runs no check.
+        direct_types_depth_capped: false,
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // No tableau probe runs on this path, so no likely-bug `NoVerdict` (#493).
         no_verdict: false,
@@ -1986,6 +2015,7 @@ pub(crate) fn realize_via_saturation_internal(
         // Types and hierarchy come from one saturation closure on a fragment where
         // it is complete (see the field doc).
         direct_types_unverified: false,
+        direct_types_depth_capped: false,
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // No tableau probe runs on this path, so no likely-bug `NoVerdict` (#493).
         no_verdict: false,
@@ -2335,9 +2365,9 @@ pub(crate) fn realize_tableau_internal(
             pair_deadline_ms,
         )?
     } else {
-        (PairVerdicts::new(), false)
+        (PairVerdicts::new(), false, false)
     };
-    let (verdicts, pairs_no_verdict) = verdicts;
+    let (verdicts, pairs_no_verdict, pairs_depth_capped) = verdicts;
     // #493: the likely-bug `NoVerdict` from the realize classification (#471's
     // convention for surfaces that classify first), the instance probes and #388's
     // checks. Anonymous individuals' probes count: this is a bug signal, not a row.
@@ -2372,6 +2402,8 @@ pub(crate) fn realize_tableau_internal(
         witness_prune_active: base_model.is_some(),
         witness_prune_reasons,
         direct_types_unverified,
+        // #583: only with the field it qualifies.
+        direct_types_depth_capped: direct_types_unverified && pairs_depth_capped,
         relies_on_trusted_consistency: hierarchy.stats().relies_on_trusted_consistency,
         // #493: a likely-bug cut is a cut too, whatever row it hit (anonymous rows
         // are not published, so `incomplete` alone would miss them).
@@ -2628,11 +2660,11 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         for deadline in [Some(750), None] {
             assert_eq!(
                 subsumption_verdict(&internal, &prepared, &x, &y, deadline).expect("x ⊑ y"),
-                (PairVerdict::Proven, false)
+                (PairVerdict::Proven, false, false)
             );
             assert_eq!(
                 subsumption_verdict(&internal, &prepared, &y, &x, deadline).expect("y ⊑ x"),
-                (PairVerdict::Refuted, false)
+                (PairVerdict::Refuted, false, false)
             );
         }
     }

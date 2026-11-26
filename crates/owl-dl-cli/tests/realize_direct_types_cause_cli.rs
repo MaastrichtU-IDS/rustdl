@@ -4,11 +4,11 @@
 //!
 //! Fixture: #510 C's pigeonhole, one size up (10 pigeons, 9 holes, forced only under
 //! `¬Y`), with `a : X` and `a : Y` told. `X ⊑ Y` is entailed, but refuting `X ⊓ ¬Y` must
-//! cover every placement, so realize's classification and the co-leaf check are cut at
-//! any practical budget. (#583's measurement used 8 holes, which a 60 s budget decides
-//! after ~17 CPU-s in a debug build; 9 holes keeps a fast release build from deciding it
-//! at the default 750 ms.) The search depth is at most 10, so the cut is the deadline,
-//! never the depth limit: `types` is `{X, Y}` either way, and `direct_types` keeps the
+//! cover every placement. #595: the tests run with `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=1`,
+//! which bounds both realize's classification step and the co-leaf check, so the cut
+//! does not depend on how fast the host is (at the default 750 ms a fast enough build
+//! could decide it). The search depth is at most 10, so the cut is the deadline, never
+//! the depth limit: `types` is `{X, Y}` either way, and `direct_types` keeps the
 //! superclass `Y`, flagged.
 //!
 //! Not pinned: a depth-capped co-leaf check (no fixture found; see #583's measurement),
@@ -90,16 +90,19 @@ fn run(env: &[(&str, &str)], args: &[&str]) -> (String, String) {
     )
 }
 
+/// A 1 ms per-pair budget: no host decides the fixture within it (#595).
+const CUT: &[(&str, &str)] = &[("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "1")];
+
 const UNDECIDED: &str = "some individual has two direct types whose subsumption was left undecided";
 
 #[test]
 fn a_deadline_cut_check_names_the_budget_as_the_remedy() {
     let f = Fixture::pigeonhole_with_y("deadline");
-    let (out, _) = run(&[], &["realize", "--json", f.path()]);
+    let (out, _) = run(CUT, &["realize", "--json", f.path()]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["direct_types_unverified"], true, "{v}");
     assert_eq!(v["direct_types_depth_capped"], false, "{v}");
-    let (_, err) = run(&[], &["realize", f.path()]);
+    let (_, err) = run(CUT, &["realize", f.path()]);
     assert!(err.contains(UNDECIDED), "{err}");
     assert!(
         err.contains(
@@ -115,7 +118,7 @@ fn a_deadline_cut_check_names_the_budget_as_the_remedy() {
 fn a_check_that_did_not_run_says_why() {
     let f = Fixture::pigeonhole_with_y("not-run");
     let (_, err) = run(
-        &[("RUSTDL_REALIZE_VERIFY_DIRECT", "0")],
+        &[("RUSTDL_REALIZE_VERIFY_DIRECT", "0"), CUT[0]],
         &["realize", f.path()],
     );
     assert!(err.contains(UNDECIDED), "{err}");

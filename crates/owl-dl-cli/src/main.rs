@@ -965,13 +965,15 @@ fn warn_if_clauses_refused(refused: usize, off_flag: &str) {
     }
 }
 
-/// #558: a trusted consistency-wedge `Sat` whose clausifier deferred axioms is a model
-/// of a weaker KB, as with refused clauses.
+/// #558: a trusted consistency-wedge `Sat` whose clausifier deferred clause encodings
+/// is a model of a weaker KB, as with refused clauses. The count is of deferral events
+/// (one axiom can count more than once), and 0 is not proof of a full KB.
 fn warn_if_consistency_deferred(stats: &owl_dl_reasoner::QueryStats) {
     if stats.relies_on_trusted_consistency && stats.wedge_clauses_deferred > 0 {
         eprintln!(
-            "\n⚠  NOT GUARANTEED COMPLETE: the consistency wedge's clausifier deferred {} \
-             axiom(s), so its model may violate them and a clash they cause may be missed \
+            "\n⚠  NOT GUARANTEED COMPLETE: the consistency wedge's clausifier skipped {} \
+             encoding(s) of the input's axioms (deferrals; one axiom can count more than \
+             once), so its model may violate them and a clash they cause may be missed \
              (#558). RUSTDL_WEDGE_CONSISTENCY=0 decides on the main tableau (no deadline).",
             stats.wedge_clauses_deferred
         );

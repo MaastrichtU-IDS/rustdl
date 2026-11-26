@@ -187,8 +187,9 @@ pub(crate) struct ClassifyJson {
     /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
     pub(crate) wedge_clauses_refused: usize,
     /// #558: when `relies_on_trusted_consistency`, the clauses the CONSISTENCY
-    /// wedge refuses and the axioms its clausifier deferred: its `Sat` is a model of
-    /// a KB weaker by these, so it can hide an inconsistency. A different wedge from
+    /// wedge refuses and the deferral events of its clausifier (encodings it skipped;
+    /// one axiom can count more than once): its `Sat` is a model of a KB weaker by
+    /// these, so it can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, and axiom kinds the clausifier ignores). A different wedge from
     /// `wedge_clauses_refused` (classify's own). 0 when consistency does not rest on
     /// that wedge.
     pub(crate) consistency_wedge_clauses_refused: usize,
@@ -282,9 +283,10 @@ pub(crate) struct ConsistentJson {
     /// `incomplete` (a give-up), as in `classify --json`. Counted whenever the
     /// consistency wedge was consulted; 0 when it was not.
     pub(crate) wedge_clauses_refused: usize,
-    /// #558: beside `wedge_clauses_refused`, the axioms the consistency wedge's
-    /// clausifier deferred (it never sees them), so a `consistent: true` from the
-    /// wedge may miss a clash they cause. Counted whenever the wedge was consulted.
+    /// #558: beside `wedge_clauses_refused`, the deferral events of the consistency
+    /// wedge's clausifier (encodings it skipped; one axiom can count more than once),
+    /// so a `consistent: true` from the wedge may miss a clash they cause. Counted
+    /// whenever the wedge was consulted. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, and axiom kinds the clausifier ignores).
     pub(crate) wedge_clauses_deferred: usize,
     /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
     /// bug (#449): a probe with NO deadline, or one whose deterministic saturation

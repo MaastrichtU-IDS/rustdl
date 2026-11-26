@@ -737,10 +737,13 @@ pub struct ClassificationStats {
     /// CONSISTENCY wedge's matcher refuses (they never fire), so its `Sat` is a model
     /// of a weaker KB. A different wedge from [`Self::wedge_clauses_refused`]
     /// (classify's own, condition 4 of the guarantee): this one also clausifies the
-    /// `ABox`. 0 when consistency does not rest on that wedge.
+    /// `ABox`. 0 when consistency does not rest on that wedge, and (as on
+    /// `consistent`) with `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`.
     pub consistency_wedge_clauses_refused: usize,
-    /// #558: as [`Self::consistency_wedge_clauses_refused`], for the axioms that
-    /// wedge's clausifier deferred (it never sees them).
+    /// #558: as [`Self::consistency_wedge_clauses_refused`], for that wedge
+    /// clausifier's deferral events (encodings it skipped; one axiom can count more
+    /// than once). Masked by trust the same way; not by the report flag (see
+    /// `QueryStats::wedge_clauses_deferred`). 0 is not proof the wedge saw the whole KB.
     pub consistency_wedge_clauses_deferred: usize,
     /// #214: the wedge decided pairs with Layer A OFF (`RUSTDL_CLASSIFY_ROLE_HIERARCHY=0`,
     /// or above `layer_a_affordable`'s cap) on an ontology whose role hierarchy is
@@ -1116,7 +1119,12 @@ impl ClassificationStats {
     /// first).
     pub(crate) fn set_consistency_wedge_gaps(&mut self, (refused, deferred): (usize, usize)) {
         let trusted = self.relies_on_trusted_consistency;
-        self.consistency_wedge_clauses_refused = if trusted { refused } else { 0 };
+        self.consistency_wedge_clauses_refused =
+            if trusted && crate::report_wedge_clauses_refused_enabled() {
+                refused
+            } else {
+                0
+            };
         self.consistency_wedge_clauses_deferred = if trusted { deferred } else { 0 };
     }
 

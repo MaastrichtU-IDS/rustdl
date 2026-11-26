@@ -498,7 +498,8 @@ def is_consistent(path):
     cap, no clash witnessed) returns `True` and emits `IncompleteQueryWarning`.
     A `True` that rests on the consistency wedge's model alone (the wedge is not
     proven complete) emits `TrustedConsistencyWarning` (#392). When that wedge
-    refuses clauses or its clausifier deferred axioms, the warning says how many: its
+    refuses clauses or its clausifier skipped encodings of axioms (deferrals), the
+    warning says how many: its
     model is then a model of a weaker KB (#558)."""
     consistent, incomplete, trusted, refused, deferred = _is_consistent_native(path)
     _warn_if_query_incomplete("is_consistent", incomplete)
@@ -507,7 +508,7 @@ def is_consistent(path):
         if refused or deferred:
             gaps = (
                 f" The wedge's KB is weaker than the input: {refused} clause(s) it "
-                f"cannot match and {deferred} axiom(s) its clausifier deferred (#558)."
+                f"cannot match and {deferred} deferral(s) by its clausifier (#558)."
             )
         _warnings.warn(
             "is_consistent: consistent on the consistency wedge's model alone; the "

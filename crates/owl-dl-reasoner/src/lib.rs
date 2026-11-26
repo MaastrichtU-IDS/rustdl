@@ -6941,10 +6941,11 @@ impl ConsistencyCache {
     }
 
     /// #558: how far this wedge's KB is weaker than the input: clauses its matcher
-    /// refuses (they never fire) and axioms the clausifier deferred (it never sees
-    /// them). A `Sat` of this wedge is a model of that weaker KB, so a trusted `Sat`
-    /// with either count non-zero can hide an inconsistency. Unflagged: it does not
-    /// read `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`.
+    /// refuses (they never fire) and the clausifier's deferral events (encodings it
+    /// skipped, so the wedge never sees them; one axiom can count more than once). A
+    /// `Sat` of this wedge is a model of that weaker KB, so a trusted `Sat` with either
+    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm). Unflagged: callers
+    /// apply `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED` to the refused count.
     pub(crate) fn weaker_kb_gaps(&self) -> (usize, usize) {
         (
             owl_dl_tableau::hyper::refused_clause_count(&self.clauses),
@@ -8262,11 +8263,13 @@ pub struct QueryStats {
     /// wedge `consistent` can then miss a clash, so this is a completeness signal,
     /// separate from `incomplete` (which means a give-up).
     pub wedge_clauses_refused: usize,
-    /// #558: beside [`Self::wedge_clauses_refused`], the axioms the consistency
-    /// wedge's clausifier deferred (the wedge never sees them), so its `Sat` is a
-    /// model of a KB weaker by these too. Set where `wedge_clauses_refused` is (the
-    /// consistency query, and a single query that dropped its `ABox` on that wedge's
-    /// `Sat`); unlike it, not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`.
+    /// #558: beside [`Self::wedge_clauses_refused`], the consistency wedge
+    /// clausifier's deferral events (encodings it skipped, so the wedge never sees
+    /// them; one axiom can count more than once), so its `Sat` is a model of a KB
+    /// weaker by these too. Set where `wedge_clauses_refused` is (the consistency
+    /// query, and a single query that dropped its `ABox` on that wedge's `Sat`).
+    /// Deliberately not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`: that flag
+    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm).
     pub wedge_clauses_deferred: usize,
     /// The verdict rests on the KB being consistent, and the only evidence for
     /// that is a consistency-wedge `Sat` that no main-tableau run verified (the

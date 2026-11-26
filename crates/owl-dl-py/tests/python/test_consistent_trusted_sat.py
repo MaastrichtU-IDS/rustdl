@@ -79,3 +79,23 @@ def test_the_warning_names_the_wedges_weaker_kb(tmp_path, monkeypatch):
         msgs = [str(w.message) for w in caught if w.category is rustdl.TrustedConsistencyWarning]
         assert msgs, caught
         assert ("1 clause(s) it cannot match" in msgs[0]) is named, msgs
+
+
+def test_the_warning_names_the_wedges_deferrals(tmp_path, monkeypatch):
+    """#558 review: a `DisjointUnion` with a complex member makes the consistency
+    wedge's clausifier defer its covering; the warning names that deferral, and the
+    control (no `DisjointUnion`) does not."""
+    monkeypatch.delenv("RUSTDL_WEDGE_CONSISTENCY", raising=False)
+    du = (
+        "Declaration(Class(:E)) Declaration(Class(:F)) Declaration(Class(:G))\n"
+        "DisjointUnion(:E :F ObjectSomeValuesFrom(:r :G)) ClassAssertion(:E :b)"
+    )
+    for extra, named in ((du, True), ("", False)):
+        p = tmp_path / f"du{int(named)}.ofn"
+        p.write_text(SRC.format(extra=extra))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert rustdl.is_consistent(str(p)) is True
+        msgs = [str(w.message) for w in caught if w.category is rustdl.TrustedConsistencyWarning]
+        assert msgs, caught
+        assert ("1 deferral(s)" in msgs[0]) is named, msgs

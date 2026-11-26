@@ -172,6 +172,17 @@ fn classify_names_the_trusted_consistency_wedges_refused_clauses() {
         assert_eq!(v["wedge_clauses_refused"], want, "{}", r.stdout);
         assert_eq!(v["wedge_clauses_deferred"], 0, "{}", r.stdout);
     }
+    // `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0` silences the refused count on both
+    // surfaces alike (#558 review).
+    let env = [
+        ("RUSTDL_WEDGE_BODY_DECOMPOSE", "0"),
+        ("RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED", "0"),
+    ];
+    let v = json(&run(&["classify", "--json", f.path()], &env));
+    assert_eq!(v["relies_on_trusted_consistency"], true, "{v}");
+    assert_eq!(v["consistency_wedge_clauses_refused"], 0, "{v}");
+    let v = json(&run(&["consistent", "--json", f.path()], &env));
+    assert_eq!(v["wedge_clauses_refused"], 0, "{v}");
     // Not trusted (the wedge off decides on the main tableau): the field reads 0.
     let r = run(
         &["classify", "--json", f.path()],
@@ -305,7 +316,7 @@ fn a_deferred_axiom_is_reported_on_both_surfaces() {
     assert_eq!(v["consistent"], true, "{}", r.stdout);
     assert_eq!(v["relies_on_trusted_consistency"], true, "{}", r.stdout);
     assert_eq!(v["wedge_clauses_deferred"], 1, "{}", r.stdout);
-    assert!(r.stderr.contains("deferred 1 axiom(s)"), "{}", r.stderr);
+    assert!(r.stderr.contains("skipped 1"), "{}", r.stderr);
     let r = run(&["classify", "--json", f.path()], &[]);
     let v = json(&r);
     assert_eq!(v["relies_on_trusted_consistency"], true, "{}", r.stdout);

@@ -52,14 +52,31 @@ guard's sabotage check.
 
 The consistency wedge's `Sat` is trusted (condition 8). Its clause set can be
 weaker than the input in two ways: clauses its matcher refuses never fire, and
-axioms its clausifier defers it never sees. A model of that weaker KB need not be
-a model of the input, so the trusted `Sat` can hide an inconsistency (a miss,
-never a false positive). Part A of #558 reports both counts wherever the trusted
-`Sat` is visible: `consistent --json` `wedge_clauses_refused` /
-`wedge_clauses_deferred`, `classify --json` `consistency_wedge_clauses_refused` /
-`consistency_wedge_clauses_deferred` (only when classify relied on that `Sat`), the
-`QueryStats` fields of the same names, and the text of Python's
-`TrustedConsistencyWarning` from `is_consistent`.
+encodings its clausifier defers it never sees. A model of that weaker KB need not
+be a model of the input, so the trusted `Sat` can hide an inconsistency (a miss,
+never a false positive). The deferred count is of deferral events, not axioms (a
+`DisjointUnion` with two complex members reads 3), and 0 does not prove the wedge
+saw the whole KB: the pairwise-disjointness half of a `DisjointUnion` whose members
+do not encode, and the axiom kinds the clausifier ignores, drop clauses uncounted.
+
+Surfaces that carry the counts (#558):
+- `consistent --json`: `wedge_clauses_refused` / `wedge_clauses_deferred`, whenever
+  the wedge was consulted, with a stderr warning on a trusted `consistent`;
+- `classify --json` and `ClassificationStats`: `consistency_wedge_clauses_refused` /
+  `consistency_wedge_clauses_deferred`, only when classify relied on that `Sat`
+  (the refused count also obeys `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`, as on
+  `consistent`; the deferred count deliberately does not, since that flag is for
+  the refused count's #357 over-report);
+- `QueryStats::wedge_clauses_refused` / `wedge_clauses_deferred` from
+  `is_consistent_with_stats`, and from a single query that dropped its `ABox` on
+  that `Sat`;
+- Python `is_consistent`: the counts in the `TrustedConsistencyWarning` text.
+
+Known gaps (no count reaches the caller; for #600 or a follow-up): `realize`,
+`sat-expr`, `subclass-expr`, `justify` and `prove` JSON; plain-text `classify`
+stderr; the Python `Classification` accessors; the CLI reads `QueryStats`'s
+deferred count only on `consistent`; the bounded API (`is_consistent_with_timeout`
+returns no stats).
 
 **Part B (verifying such a `Sat`) is not built: its measured reach is one
 ontology.** Recorded 2026-11-26 by rustdl-manager under Michel's delegation. The

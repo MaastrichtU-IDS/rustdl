@@ -162,6 +162,12 @@ pair probes) that ended in `NoVerdict` with no deadline (e.g. under `--pair-time
 after their saturation stalled; see the
 `no_verdict` section above. Each also counts toward `incomplete`, but not as a depth-limit cut.
 
+`consistency_wedge_clauses_refused` and `consistency_wedge_clauses_deferred` (#558, without a
+`schema_version` bump) = when `relies_on_trusted_consistency`, the consistency wedge's refused clauses
+and deferral events (as `consistent --json` reports them), 0 otherwise; the refused count also reads 0
+with `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`. That is a different wedge from `wedge_clauses_refused`
+here, which is classify's own and clausifies no `ABox`.
+
 `depth_capped_pairs` (#288; in the JSON since #574, without a `schema_version` bump) = of the cut
 pairs and probes, those cut by the tableau's decision-depth limit, directly or through early
 abandon, rather than by a deadline or the node cap. A larger `--pair-timeout-ms` or node cap does
@@ -198,16 +204,16 @@ likely-bug `NoVerdict` too (#475). On the deadline-free `NoVerdict` path `wedge_
 `relies_on_trusted_consistency` is `false` and `no_verdict` (#462) is `true`.
 `wedge_clauses_refused` (#357) counts clauses the consistency wedge cannot
 match, so a wedge `consistent` may miss a clash; 0 when the wedge was not
-consulted. `wedge_clauses_deferred` (#558) counts the axioms that wedge's
-clausifier deferred, with the same consequence; unlike `wedge_clauses_refused` it
-is not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`.
-
-In `classify --json`, `consistency_wedge_clauses_refused` and
-`consistency_wedge_clauses_deferred` (#558) are the same two counts for the
-consistency wedge whose `Sat` classify trusted, and 0 unless
-`relies_on_trusted_consistency`. They are a different wedge from
-`wedge_clauses_refused` there (classify's own, which also clausifies no `ABox`). `dropped` counts the axioms rustdl does not reason with, as in
-`classify --json`.
+consulted. `wedge_clauses_deferred` (#558, added without a `schema_version` bump)
+counts that wedge clausifier's deferral events: encodings of the input's axioms it
+skipped, so the wedge never sees them (one axiom can count more than once, e.g. a
+`DisjointUnion` with two complex members reads 3). It has the same consequence.
+Unlike `wedge_clauses_refused` it is not silenced by
+`RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`, which exists for the refused count's
+over-report (#357). Neither 0 proves the wedge saw the whole KB: some drops are not
+counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not
+encode, and the axiom kinds the clausifier ignores). `dropped` counts the axioms
+rustdl does not reason with, as in `classify --json`.
 
 `relies_on_trusted_consistency` was added in #392, without a `schema_version`
 bump. It is `true` when `consistent: true` rests only on the consistency wedge's

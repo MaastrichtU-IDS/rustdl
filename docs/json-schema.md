@@ -46,7 +46,8 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "prep_timed_out": bool, "conversion_timed_out": bool, "parse_timed_out": bool,
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "wedge_hierarchy_blind": bool, "wedge_abox_blind": bool,
-  "wedge_abox_demoted": int, "consistency_undetermined": bool,
+  "wedge_abox_demoted": int, "tbox_individuals_unseeded": bool,
+  "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "depth_capped_pairs": int,
   "wedge_clauses_deferred": int,
@@ -109,7 +110,8 @@ no such flag: the Python API parses before any budget applies.
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where
 the engine that answered is provably complete (pure EL), and only when no pair
-was cut (`incomplete` is false), `wedge_hierarchy_blind`, `wedge_abox_blind` and `consistency_undetermined` are false,
+was cut (`incomplete` is false), `wedge_hierarchy_blind`, `wedge_abox_blind`,
+`tbox_individuals_unseeded` and `consistency_undetermined` are false,
 `wedge_clauses_refused` and `derived_same_undecided` are 0, and `dropped` is
 empty. `docs/assurance/completeness-guarantee-ledger.md` lists each condition
 with its source issue and test.
@@ -135,6 +137,16 @@ models are demoted to the main tableau instead, counted in `wedge_abox_demoted`
 with both a nominal and an `ABox`: it is set on 353 of the 374 consistent ORE
 ontologies of that kind that finish at 60 s (every one of which already had
 `completeness_guaranteed: false`).
+
+`tbox_individuals_unseeded` = some classify probe did not instantiate an individual
+named in a `TBox` nominal (`{b}`, `ObjectHasValue(S b)`) that has no `ABox` fact: no
+`ABox` axiom at all, or (for the wedge) only `DifferentIndividuals`, because
+`RUSTDL_CLASSIFY_TBOX_INDIVIDUALS` is off, the default (#608). Every named individual
+exists in every model, so what the `TBox` says about it (`{b} ⊑ ∃S.{a}`) can force a
+subsumption or an unsatisfiable class that classify then misses while `subclass`
+finds it. A separate field: nothing was cut, so it does not set `incomplete`. The
+flag seeds those individuals and clears it, unless `RUSTDL_CLASSIFY_WEDGE_NOMINALS=0`.
+Set on 56 of the 406 ORE ontologies with a nominal that classify finishes at 60 s.
 
 `consistency_undetermined` = the KB-level inconsistency pre-check reached no
 verdict: a route gave up, or was skipped because `--global-timeout-ms` had

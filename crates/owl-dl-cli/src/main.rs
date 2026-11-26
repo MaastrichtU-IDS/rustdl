@@ -866,6 +866,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
         warn_if_abox_blind(h.stats().wedge_abox_blind);
+        warn_if_tbox_individuals_unseeded(h.stats().tbox_individuals_unseeded_count);
         warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
         warn_if_clauses_deferred(h.stats().wedge_clauses_deferred);
         note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
@@ -881,6 +882,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
     warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
     warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
     warn_if_abox_blind(h.stats().wedge_abox_blind);
+    warn_if_tbox_individuals_unseeded(h.stats().tbox_individuals_unseeded_count);
     warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
     warn_if_clauses_deferred(h.stats().wedge_clauses_deferred);
     warn_if_dropped(&dropped);
@@ -1050,6 +1052,17 @@ fn warn_if_abox_blind(blind: bool) {
              unsatisfiable class that depends on an individual's facts may be missing \
              (#533). RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 decides those classes on the \
              main tableau, at a time cost."
+        );
+    }
+}
+
+fn warn_if_tbox_individuals_unseeded(unseeded: u64) {
+    if unseeded > 0 {
+        eprintln!(
+            "\n⚠  NOT GUARANTEED COMPLETE: classify's probes were not seeded with \
+             {unseeded} individual(s) named in TBox nominals, so a subsumption or an \
+             unsatisfiable class that follows from what the TBox says about them may be \
+             missing (#608). RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1 seeds them, at a time cost."
         );
     }
 }
@@ -2092,6 +2105,14 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             out,
             "# wedge models blind to ABox facts: {}: completeness not guaranteed",
             stats.wedge_abox_blind_models
+        )?;
+    }
+    if stats.tbox_individuals_unseeded {
+        writeln!(
+            out,
+            "# TBox-only individuals not seeded in classify's probes: {}: \
+             completeness not guaranteed",
+            stats.tbox_individuals_unseeded_count
         )?;
     }
     if stats.wedge_abox_demoted > 0 {

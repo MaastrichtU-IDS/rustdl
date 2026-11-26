@@ -100,6 +100,33 @@ def test_wedge_hierarchy_blind_is_its_own_signal(fixtures_dir, monkeypatch):
     assert "http://ex.org/A" in r.unsatisfiable
 
 
+def test_tbox_individuals_unseeded_is_its_own_signal(fixtures_dir, monkeypatch):
+    # #608: `{b} ⊑ ∃S.{a}` with no ABox. Classify's probes do not seed `b` at the
+    # default, so they miss `X ⊑ D` (HermiT and Konclude derive it). That is
+    # reported by `tbox_individuals_unseeded` and warned about, while `complete`
+    # keeps meaning "nothing was cut". The seeding flag finds the pair.
+    import warnings
+    fixture = str(fixtures_dir / "tbox_individuals_unseeded_t1.ofn")
+    monkeypatch.delenv("RUSTDL_CLASSIFY_TBOX_INDIVIDUALS", raising=False)
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(fixture, per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.tbox_individuals_unseeded is True
+    assert r.complete is True
+    assert r.completeness_guaranteed is False
+    assert not r.is_subclass("http://ex/#X", "http://ex/#D")
+    assert sum(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning)
+        and "tbox_individuals_unseeded" in str(w.message)
+        for w in rec
+    ) == 1
+
+    monkeypatch.setenv("RUSTDL_CLASSIFY_TBOX_INDIVIDUALS", "1")
+    r = rustdl.classify(fixture, per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.tbox_individuals_unseeded is False
+    assert r.is_subclass("http://ex/#X", "http://ex/#D")
+
+
 def test_wedge_abox_blind_is_its_own_signal(fixtures_dir, monkeypatch):
     # #533: classify's wedge is not given `S(b, a)`, and `X`'s model touches `{a}`,
     # so its trusted `Sat` hides `X ⊑ D` (HermiT and Konclude derive it). That is

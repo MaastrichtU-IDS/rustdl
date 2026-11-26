@@ -54,7 +54,7 @@ class Classification:
     def completeness_guaranteed(self) -> bool:
         """True iff the hierarchy is guaranteed complete (no missed
         subsumptions): pure EL, nothing cut, no `wedge_hierarchy_blind`, no
-        `wedge_abox_blind`, no
+        `wedge_abox_blind`, no `tbox_individuals_unseeded`, no
         `wedge_clauses_refused`, no `derived_same_undecided`, no
         `consistency_undetermined` and no dropped axiom. Stronger than
         `complete`, which only says nothing was cut."""
@@ -116,6 +116,14 @@ class Classification:
         subsumption or an unsatisfiable class that depends on an individual's
         facts may be missing (#533). Near-universal on input with both a
         nominal and an ABox."""
+        ...
+    @property
+    def tbox_individuals_unseeded(self) -> bool:
+        """True iff some classify probe did not instantiate an individual
+        named in a TBox nominal that has no ABox fact
+        (`RUSTDL_CLASSIFY_TBOX_INDIVIDUALS` off, the default), so a subsumption
+        or an unsatisfiable class that follows from what the TBox says about it
+        may be missing (#608)."""
         ...
     @property
     def wedge_clauses_refused(self) -> int:

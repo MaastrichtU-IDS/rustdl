@@ -3155,10 +3155,41 @@ pub fn classify_wedge_abox_demote_enabled() -> bool {
 /// only restricts the probe to genuine models: it can add real clashes, never an
 /// invented one. Without the seed a probe that never reaches `{b}` ignores what
 /// the `TBox` says about `b`, and on a KB inconsistent only through `b`, `sat`
-/// answered `sat`. Classify's pairwise probes (`decide_classify*`) are unchanged.
+/// answered `sat`. Classify's pairwise probes have their own flag,
+/// [`classify_tbox_individuals_enabled`] (#608).
 #[must_use]
 pub fn query_tbox_individuals_enabled() -> bool {
     std::env::var_os("RUSTDL_QUERY_TBOX_INDIVIDUALS").is_none_or(|v| v != "0")
+}
+
+/// Whether classify's pairwise probes seed the individuals named only in `TBox`
+/// nominals, as the per-query probes do under [`query_tbox_individuals_enabled`]
+/// (#608, `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS`, **default OFF**, `=1` enables).
+///
+/// Both probes get them. The main tableau's `decide_classify*` seed (which already
+/// carries every `ABox` individual) adds one node per such individual. Every classify
+/// wedge engine starts with one node per individual of `wedge_unaccounted_individuals`
+/// beside its root: those, plus the ones the `ABox` names only in
+/// `DifferentIndividuals`, since the wedge instantiates no individual on its own. The
+/// wedge seeds only when a clause head carries a nominal; with its nominal semantics
+/// off (`RUSTDL_CLASSIFY_WEDGE_NOMINALS=0`) it cannot, and
+/// `ClassificationStats::tbox_individuals_unseeded` stays set.
+///
+/// Without the seed a probe whose model reaches `{a}` but never `{b}` ignores what the
+/// `TBox` says about `b`, and its `Sat` (trusted, in the wedge's case) refutes a
+/// subsumption that every real model forces. Seeding only restricts each probe to
+/// genuine models: every named individual exists in every model, so the seed can add
+/// real clashes and never an invented one.
+///
+/// Side effects with the flag on: realize's type-subsumption checks (#388), which use
+/// `decide_classify*`, get the seed too. A seeded node is a nominal every wedge model
+/// touches, so on input that also has `ABox` facts #533's `wedge_abox_blind` counts
+/// every trusted model (conservative), and `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1`
+/// demotes them all. Each main-tableau probe clones the `ABox` to add the seed; cache
+/// it before any default flip.
+#[must_use]
+pub fn classify_tbox_individuals_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_TBOX_INDIVIDUALS").is_some_and(|v| v == "1")
 }
 
 /// Whether classify takes same-tier sweep candidates from the MAIN TABLEAU's
@@ -5302,7 +5333,8 @@ pub(crate) struct HyperCache {
     /// it with [`Self::abox_unfed`] and [`Self::abox_fed_ids`]. The argument is about
     /// the semantics the engine implements: the universal role is an ordinary role
     /// there (#543), which is a separate gap. So is a `TBox` axiom on a nominal the
-    /// model does not instantiate (`{a} ⊑ ∃S.{b}` with no `ABox`).
+    /// model does not instantiate (`{a} ⊑ ∃S.{b}` with no `ABox`), which
+    /// [`Self::tbox_seed_nominals`] closes under `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS` (#608).
     abox_blind_ids: Option<(u32, u32)>,
     /// #533: some `ABox` fact was not given to this wedge, or the clausifier deferred
     /// some clause while facts were pushed (it cannot tell which axiom a deferral came
@@ -5319,6 +5351,17 @@ pub(crate) struct HyperCache {
     /// per-pair `NotSubsumed` to the main tableau) with the demotion flag on.
     /// Read into `ClassificationStats::wedge_abox_demoted`.
     abox_demoted: std::sync::atomic::AtomicU64,
+    /// #608: the nominal class of each individual of [`wedge_unaccounted_individuals`],
+    /// seeded as its own node in every engine ([`classify_tbox_individuals_enabled`]).
+    /// Empty when the flag is off or `nominal_range` is `None`: with no nominal in a
+    /// clause head no engine node ever carries a nominal, and such a completion is
+    /// disjoint from the named individuals (the argument at `abox_blind_ids`).
+    tbox_seed_nominals: Vec<owl_dl_core::ir::ClassId>,
+    /// #608: how many [`wedge_unaccounted_individuals`] this wedge's engines do not
+    /// instantiate: all of them unless they are seeded, or unless `nominal_range` is
+    /// `None` because no clause head carries a nominal (the disjoint-union argument).
+    /// A `None` forced by `RUSTDL_CLASSIFY_WEDGE_NOMINALS=0` still counts them.
+    unseeded_individuals: u64,
     /// Pre-built trigger indexes for `self.clauses` plus the Q-clause
     /// delta (`x_trigger[fresh_q] += [clauses.len()]`). Built once in
     /// `HyperCache::build` and shared via `Arc::clone` (O(1) ref-count
@@ -5567,6 +5610,8 @@ impl HyperCache {
     /// Clausify `internal` and pre-compute the `¬sup` expansions once.
     pub(crate) fn build(internal: &InternalOntology) -> Self {
         use owl_dl_core::ir::ClassId;
+        // #608: read before `push_nominal_abox_axioms` interns `{x}` for `ABox` individuals.
+        let unaccounted = wedge_unaccounted_individuals(internal);
         let mut internal = internal.clone();
         // #277/#279: clausify with the nominal individuals' `ABox` facts as
         // `{a}`-antecedent GCIs, then drop them again so nothing below sees them.
@@ -5925,6 +5970,23 @@ impl HyperCache {
         let abox_fed_ids: Vec<u32> = abox_blind_ids.map_or_else(Vec::new, |(start, _)| {
             abox_fed.iter().map(|&i| start + i).collect()
         });
+        let seed = classify_tbox_individuals_enabled();
+        let tbox_seed_nominals: Vec<ClassId> = match nominal_range {
+            Some((start, count)) if seed => unaccounted
+                .iter()
+                .map(|ind| ind.index())
+                .filter(|&i| i < count)
+                .map(|i| ClassId::new(start + i))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let unseeded_individuals = if (seed && nominal_range.is_some())
+            || (nominal_range.is_none() && classify_wedge_nominals_enabled())
+        {
+            0
+        } else {
+            unaccounted.len() as u64
+        };
         Self {
             nominal_range,
             abox_blind_ids,
@@ -5932,6 +5994,8 @@ impl HyperCache {
             abox_fed_ids,
             abox_blind_models: std::sync::atomic::AtomicU64::new(0),
             abox_demoted: std::sync::atomic::AtomicU64::new(0),
+            tbox_seed_nominals,
+            unseeded_individuals,
             layer_a,
             id_shallow_waste_us: std::sync::atomic::AtomicU64::new(0),
             merge_churn_stops: std::sync::atomic::AtomicU64::new(0),
@@ -6349,7 +6413,9 @@ impl HyperCache {
             engine = engine.with_double_blocking();
         }
         if let Some((st, ct)) = self.nominal_range {
-            engine = engine.with_nominals(st, ct);
+            engine = engine
+                .with_nominals(st, ct)
+                .with_seeded_nominals(&self.tbox_seed_nominals);
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
@@ -6422,7 +6488,9 @@ impl HyperCache {
             engine = engine.with_double_blocking();
         }
         if let Some((st, ct)) = self.nominal_range {
-            engine = engine.with_nominals(st, ct);
+            engine = engine
+                .with_nominals(st, ct)
+                .with_seeded_nominals(&self.tbox_seed_nominals);
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
@@ -6613,7 +6681,9 @@ impl HyperCache {
             engine = engine.with_double_blocking();
         }
         if let Some((st, ct)) = self.nominal_range {
-            engine = engine.with_nominals(st, ct);
+            engine = engine
+                .with_nominals(st, ct)
+                .with_seeded_nominals(&self.tbox_seed_nominals);
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
@@ -11508,7 +11578,8 @@ pub(crate) struct PreparedOntology {
     /// in a `TBox` nominal (`{a}`, `ObjectHasValue`), never in an `ABox`
     /// axiom. The consistency probe seeds them alongside `abox`, because
     /// every named individual denotes a domain element (#194 item 2).
-    /// Classify's per-pair probes do not.
+    /// Classify's per-pair probes do so only under
+    /// [`classify_tbox_individuals_enabled`] (#608).
     tbox_individuals: Vec<(IndividualId, ConceptId)>,
     /// Lever A (2026-07-20): true iff the `ABox` is provably irrelevant to class
     /// subsumption — the ontology has `ABox` axioms, uses NO nominals, and the
@@ -12599,6 +12670,13 @@ impl PreparedOntology {
         }
     }
 
+    /// #608: individuals this classify's wedge does not instantiate although the
+    /// `TBox` can constrain them (0 without a wedge). See
+    /// `HyperCache::unseeded_individuals`.
+    fn wedge_unseeded_individuals(&self) -> u64 {
+        self.hyper.as_ref().map_or(0, |h| h.unseeded_individuals)
+    }
+
     /// #533: `(trusted, demoted)` `ABox`-blind wedge models so far (`(0, 0)`
     /// without a wedge).
     pub(crate) fn wedge_abox_blind_counts(&self) -> (u64, u64) {
@@ -13057,6 +13135,29 @@ impl PreparedOntology {
         std::borrow::Cow::Owned(a)
     }
 
+    /// The seed for classify's pairwise main-tableau probes (#608): see
+    /// [`classify_tbox_individuals_enabled`].
+    fn classify_abox(&self) -> std::borrow::Cow<'_, Abox> {
+        self.abox_with_tbox_individuals(classify_tbox_individuals_enabled())
+    }
+
+    /// #608: how many individuals named in a `TBox` nominal some classify probe does
+    /// not instantiate. The main tableau seeds every `ABox` individual, so it leaves
+    /// out [`Self::tbox_individuals`] while [`classify_tbox_individuals_enabled`] is
+    /// off. The wedge instantiates no individual on its own and leaves out
+    /// `HyperCache::unseeded_individuals`, a superset of those whenever non-zero
+    /// (it adds the individuals the `ABox` names only in `DifferentIndividuals`). So
+    /// the larger of the two counts the union. Read into
+    /// `ClassificationStats::tbox_individuals_unseeded`.
+    pub(crate) fn classify_unseeded_tbox_individuals(&self) -> u64 {
+        let main = if classify_tbox_individuals_enabled() {
+            0
+        } else {
+            self.tbox_individuals.len() as u64
+        };
+        main.max(self.wedge_unseeded_individuals())
+    }
+
     /// The seed for a per-query probe (#356): see [`query_tbox_individuals_enabled`].
     fn query_abox(&self) -> std::borrow::Cow<'_, Abox> {
         self.abox_with_tbox_individuals(query_tbox_individuals_enabled())
@@ -13094,10 +13195,11 @@ impl PreparedOntology {
         F: FnOnce(&mut ConceptPool) -> ConceptId,
     {
         let empty = Abox::default();
+        let seeded = self.classify_abox();
         let abox = if self.abox_irrelevant_to_classify {
             &empty
         } else {
-            &self.abox
+            &*seeded
         };
         decide(
             &self.pool,
@@ -13254,10 +13356,11 @@ impl PreparedOntology {
         F: FnOnce(&mut ConceptPool) -> ConceptId,
     {
         let empty = Abox::default();
+        let seeded = self.classify_abox();
         let abox = if self.abox_irrelevant_to_classify {
             &empty
         } else {
-            &self.abox
+            &*seeded
         };
         decide_capturing(
             &self.pool,
@@ -13293,10 +13396,11 @@ impl PreparedOntology {
         F: FnOnce(&mut ConceptPool) -> ConceptId,
     {
         let empty = Abox::default();
+        let seeded = self.classify_abox();
         let abox = if self.abox_irrelevant_to_classify {
             &empty
         } else {
-            &self.abox
+            &*seeded
         };
         decide(
             &self.pool,
@@ -13395,6 +13499,48 @@ struct Abox {
     /// stored in `negative_property_assertions` is for the tableau;
     /// this is for the `ABox` consistency check.
     pub(crate) negative_property_triples: Vec<(IndividualId, RoleId, IndividualId)>,
+}
+
+/// #608: the individuals named in a nominal of `internal`'s concepts that carry no
+/// `ABox` fact the classify wedge accounts for. The wedge instantiates no individual
+/// on its own: an individual's facts are clauses with a `{x}` antecedent, and #533
+/// reports a trusted model that touches a nominal while such a fact did not apply.
+/// An individual with no class, property or `SameIndividual` assertion has no such
+/// fact, so what the `TBox` says about it (`{b} ⊑ ∃S.{a}`) is invisible to the wedge
+/// and to #533 alike. That is every [`tbox_only_individuals`] member, and also an
+/// individual the `ABox` names only in `DifferentIndividuals` (clausified directly,
+/// `{a} ⊓ {b} → ⊥`, so it never counts in #533). Read before
+/// `push_nominal_abox_axioms` interns `{x}` for the `ABox` individuals it feeds.
+/// The asserted individuals are left to #533; with `RUSTDL_REPORT_WEDGE_ABOX_BLIND=0`
+/// they go unreported, which is that flag's explicit opt-out.
+fn wedge_unaccounted_individuals(internal: &InternalOntology) -> Vec<IndividualId> {
+    use owl_dl_core::ontology::Axiom;
+    let mut asserted: std::collections::HashSet<IndividualId> = std::collections::HashSet::new();
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::ClassAssertion { individual, .. } => {
+                asserted.insert(*individual);
+            }
+            Axiom::ObjectPropertyAssertion {
+                subject, object, ..
+            }
+            | Axiom::NegativeObjectPropertyAssertion {
+                subject, object, ..
+            } => {
+                asserted.extend([*subject, *object]);
+            }
+            Axiom::SameIndividual(inds) => asserted.extend(inds.iter().copied()),
+            _ => {}
+        }
+    }
+    internal
+        .concepts
+        .iter_with_ids()
+        .filter_map(|(_, e)| match e {
+            ConceptExpr::Nominal(ind) if !asserted.contains(ind) => Some(*ind),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Individuals whose nominal is interned in `pool` but that no `ABox` axiom

@@ -115,6 +115,10 @@ class IncompleteClassificationWarning(UserWarning):
       fact did not apply in them (`result.wedge_abox_blind is True`, #533);
       `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` decides those classes on the main
       tableau;
+    * classify's probes did not instantiate some individual named in a TBox
+      nominal that has no ABox fact (`result.tbox_individuals_unseeded is True`,
+      #608);
+      `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1` seeds them;
     * the wedge cannot match some clauses' bodies
       (`result.wedge_clauses_refused > 0`): those clauses never fire (#353);
     * the wedge's clausifier deferred some encodings
@@ -226,6 +230,18 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             "false subsumptions); check result.wedge_abox_blind. "
             "RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 decides those classes on the main "
             "tableau, at a time cost.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    if result.tbox_individuals_unseeded:
+        # #608: classify's probes left a TBox-only individual out, so completeness
+        # is not guaranteed.
+        _warnings.warn(
+            "the classification's probes did not instantiate some individual named "
+            "in TBox nominals, so a subsumption or an unsatisfiable class that "
+            "follows from what the TBox says about it may be missing. It is still "
+            "sound (no false subsumptions); check result.tbox_individuals_unseeded. "
+            "RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1 seeds those individuals, at a time cost.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )

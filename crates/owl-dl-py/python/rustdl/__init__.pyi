@@ -190,7 +190,9 @@ class DroppedAxiomsWarning(UserWarning):
     conversion dropped axioms it could not represent, from the ontology or from the
     query expression itself (#552). The answer is sound, but a "satisfiable", a
     "not entailed" or a missing member may be wrong in that direction. Not an
-    `IncompleteQueryWarning`: nothing was cut."""
+    `IncompleteQueryWarning`: nothing was cut. New in #552: the bare functions now
+    warn where they used to be silent (under `-W error` they raise). The other
+    Python queries do not warn on dropped axioms yet (#597)."""
 
 class ConsistencyUndeterminedWarning(UserWarning):
     """Emitted when a positive answer's KB consistency stayed undetermined (#369),
@@ -424,25 +426,29 @@ def class_expression_instances(path: str, ce: str) -> list[str]:
 
 class ClassExpressionVerdict(Mapping[str, object]):
     """#552: a class-expression satisfiability or subsumption verdict and its
-    signals (the Rust `CeVerdict` accessors; the CLI's `--json` keys)."""
+    signals, named as the Rust `CeVerdict` accessors (the CLI's `--json` names the
+    answer `satisfiable` / `entailed` and has no `dropped`). Immutable and hashable:
+    `dropped` is `(kind, count)` pairs sorted by kind; `dict(r.dropped)` maps them."""
     holds: bool
     incomplete: bool
     completeness_guaranteed: bool
     relies_on_trusted_consistency: bool
     consistency_undetermined: bool
     no_verdict: bool
-    dropped: dict[str, int]
+    dropped: tuple[tuple[str, int], ...]
     def to_dict(self) -> dict: ...
 
 class ClassExpressionInstances(Mapping[str, object]):
-    """#552: a class-expression instance query's members and its signals."""
+    """#552: a class-expression instance query's members and its signals, named as
+    the Rust `CeInstances` accessors (the CLI names the members `instances`).
+    Immutable and hashable, as `ClassExpressionVerdict`."""
     individuals: tuple[str, ...]
     incomplete: bool
     completeness_guaranteed: bool
     consistency_undetermined: bool
     no_verdict: bool
     depth_capped: bool
-    dropped: dict[str, int]
+    dropped: tuple[tuple[str, int], ...]
     def to_dict(self) -> dict: ...
 
 def class_expression_satisfiable_result(path: str, ce: str) -> ClassExpressionVerdict:

@@ -95,7 +95,7 @@ claimed completeness while missing an entailment of the dropped axiom.
 |---|---|---|---|---|---|
 | `sat-expr`, `subclass-expr` | `CeVerdict::completeness_guaranteed`, which reads `QueryStats::completeness_guaranteed` (#552) | `--json` `completeness_guaranteed` | `class_expression_satisfiable_result` / `class_expression_entailed_subclass_result` (#552): `completeness_guaranteed` and `dropped`; the bare functions emit `DroppedAxiomsWarning` | pure-EL fast path (`QueryStats::pure_el_mode`), no give-up, nothing dropped by the probed ontology's conversion (`QueryStats::dropped_axioms`; the input's drops and the query expression's own; `CeVerdict::dropped` returns that list, and the CLI's stderr warning names it in text and `--json` mode), and (#552) consistency neither undetermined nor resting on a trusted wedge `Sat` | `class_expr_query.rs` `each_condition_alone_voids_the_expression_guarantee` (the table test over `QueryStats`; deleting a conjunct fails its row); `query_stats_dropped.rs` (the count on every single-query path, and the shared predicate); `completeness_contract.rs` `a_dropped_axiom_voids_the_expression_query_guarantee` with its `xsd:string` control; `expr_dropped_axiom_cli.rs`: input-side drops and query-side drops (`*_with_a_query_side_drop_warns_and_is_not_guaranteed`, which pin both the flag and the warning) |
 | `instances-expr` | `CeInstances::completeness_guaranteed` | `--json` `completeness_guaranteed` | `class_expression_instances_result` (#552), as above | realize saturation fast path (`realize_saturation_eligible`), no probe cut, nothing dropped by the probed conversion (`CeInstances::dropped`, warned as above), and (#552) consistency not undetermined and the eager inconsistency check on (`RUSTDL_QUERY_INCONSISTENCY_GUARD`, default on) | `class_expr_query.rs` `each_condition_alone_voids_the_instances_guarantee`; `expr_consistency_guarantee_cli.rs` (the guard-off row on a real input); as above |
-| `explain` | — (text only) | the suffix "(input is pure EL; closure is complete)" | no binding | `QueryStats::completeness_guaranteed` (#552; before, `pure_el_mode` and nothing dropped). With a drop, a pure-EL "no" reads "pure EL after dropping axioms it could not convert; closure is NOT complete for the input"; `explain` also prints the stderr drop warning since #540 | `expr_dropped_axiom_cli.rs` `explain_with_a_dropped_axiom_does_not_claim_a_complete_closure` |
+| `explain` | — (text only) | the suffix "(input is pure EL; closure is complete)" | no binding | `QueryStats::completeness_guaranteed` (#552; before, `pure_el_mode` and nothing dropped). `explain owl:Thing owl:Nothing` is the consistency query, whose `pure_el_mode` follows the wider `saturation_fast_path_admits` gate: it reads "(decided by saturation on a fragment where it is complete)" instead, pinned by `expr_consistency_guarantee_cli.rs` `explain_consistency_does_not_claim_pure_el`. With a drop, a pure-EL "no" reads "pure EL after dropping axioms it could not convert; closure is NOT complete for the input"; `explain` also prints the stderr drop warning since #540 | `expr_dropped_axiom_cli.rs` `explain_with_a_dropped_axiom_does_not_claim_a_complete_closure` |
 
 **Consistency conditions (#552, decided).** The expression queries now read
 `classify`'s conditions 6 and 8 too, with these reasons (from a code trace, Fable
@@ -127,7 +127,13 @@ plan review of #552):
   the instance fast path ran no consistency check at all and still claimed the
   guarantee. The instances conjunction now requires the guard to be on.
 
-No public output changes at default flags. `QueryStats::pure_el_mode` itself stays
+No CLI or Rust output changes at default flags. The Python bare functions do change:
+they now emit `DroppedAxiomsWarning` when conversion dropped axioms, so under
+`-W error` they raise where they used to return; the other Python queries stay
+silent on dropped axioms until #597. With the guard off, sat-expr / subclass-expr
+stay safe only because the saturator propagates `⊤ ⊑ ⊥` into every context, so an
+inconsistent pure-EL TBox makes every class unsatisfiable in the closure and their
+answers positive. `QueryStats::pure_el_mode` itself stays
 a path flag: it says the closure is complete for the CONVERTED ontology. Use
 `QueryStats::completeness_guaranteed()`, which reads `dropped_axioms` and the
 consistency flags too; it is valid for named-class and expression

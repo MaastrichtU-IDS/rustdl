@@ -82,3 +82,35 @@ fn the_guard_off_fast_path_is_not_guaranteed() {
         "control, guard off: {v}"
     );
 }
+
+/// #596 review: `explain owl:Thing owl:Nothing` is the consistency query, whose
+/// `pure_el_mode` follows the saturator's wider fast-path gate. On this input
+/// (functional role: not pure EL, but saturation-complete) it printed "input is pure
+/// EL; closure is complete".
+#[test]
+fn explain_consistency_does_not_claim_pure_el() {
+    let f = Fixture::new(
+        "Declaration(ObjectProperty(:r))\nFunctionalObjectProperty(:r)\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:r :B))",
+        "explain-top",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_rustdl"))
+        .args([
+            "explain",
+            f.path(),
+            "http://www.w3.org/2002/07/owl#Thing",
+            "http://www.w3.org/2002/07/owl#Nothing",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains(": no "),
+        "precondition: consistent: {stdout}"
+    );
+    assert!(
+        !stdout.contains("input is pure EL"),
+        "the consistency query must not claim pure EL: {stdout}"
+    );
+}

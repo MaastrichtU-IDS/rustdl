@@ -2816,8 +2816,22 @@ fn run() -> Result<()> {
             } else {
                 "tableau"
             };
+            // #427: `owl:Thing ⊑ owl:Nothing` IS the consistency check.
+            let is_consistency_query =
+                sub == owl_dl_core::OWL_THING_IRI && sup == owl_dl_core::OWL_NOTHING_IRI;
             let completeness = if structural {
                 " (owl:Thing / owl:Nothing: holds in every ontology)"
+            } else if is_consistency_query {
+                // #552 review: the consistency query's `pure_el_mode` follows the wider
+                // `saturation_fast_path_admits` gate, so `completeness_guaranteed()` (a
+                // sat/subclass predicate) and "input is pure EL" do not apply here.
+                if stats.pure_el_mode && stats.dropped_axioms == 0 {
+                    " (decided by saturation on a fragment where it is complete)"
+                } else if stats.answered_by_saturation {
+                    " (closure produced a positive witness)"
+                } else {
+                    " (closure didn't witness it; tableau adjudicated)"
+                }
             } else if stats.completeness_guaranteed() {
                 // #552: the shared predicate (`dropped` empty, no give-up, consistency
                 // decided and not trusted), as the expression queries read it.
@@ -2827,18 +2841,20 @@ fn run() -> Result<()> {
                 // for the input; a "no" may miss an entailment of a dropped axiom.
                 " (pure EL after dropping axioms it could not convert; closure is NOT \
                  complete for the input)"
-            } else if stats.pure_el_mode && !verdict {
-                // #552: pure EL, nothing dropped, but a give-up or the KB's consistency
-                // (undetermined, or resting on a trusted wedge `Sat`) voids the claim.
-                " (pure EL, but completeness is not guaranteed for this answer)"
-            } else if stats.answered_by_saturation {
-                " (closure produced a positive witness)"
             } else {
-                " (closure didn't witness it; tableau adjudicated)"
+                // #552 review: a pure-EL "no" with nothing dropped is always guaranteed
+                // (the pure-EL path neither gives up nor trusts a wedge, and the lazy
+                // check flags only positive answers), so it never reaches here.
+                debug_assert!(
+                    !(stats.pure_el_mode && !verdict && !stats.incomplete),
+                    "a pure-EL no that is not guaranteed: {stats:?}"
+                );
+                if stats.answered_by_saturation {
+                    " (closure produced a positive witness)"
+                } else {
+                    " (closure didn't witness it; tableau adjudicated)"
+                }
             };
-            // #427: `owl:Thing ⊑ owl:Nothing` IS the consistency check.
-            let is_consistency_query =
-                sub == owl_dl_core::OWL_THING_IRI && sup == owl_dl_core::OWL_NOTHING_IRI;
             if stats.incomplete {
                 if is_consistency_query {
                     println!("{sub} ⊑ {sup} : unknown — the consistency check gave up");

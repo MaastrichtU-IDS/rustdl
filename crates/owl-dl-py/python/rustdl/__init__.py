@@ -588,14 +588,18 @@ class DroppedAxiomsWarning(UserWarning):
     over a strictly weaker KB: the answer is sound, but a "satisfiable", a "not
     entailed" or a missing member may be wrong in that direction. The `*_result`
     forms carry the kinds in `dropped` and read `completeness_guaranteed: False`.
-    Not an `IncompleteQueryWarning`: nothing was cut."""
+    Not an `IncompleteQueryWarning`: nothing was cut.
+
+    New in #552, so the bare functions now warn where they used to be silent (under
+    `-W error` they raise). The other Python queries do not warn on dropped axioms
+    yet (#597); `dropped_axioms(path)` reports the ontology's own drops."""
 
 
-def _warn_if_dropped(name: str, dropped: dict) -> None:
+def _warn_if_dropped(name: str, dropped: tuple) -> None:
     if dropped:
-        kinds = ", ".join(f"{k} ×{n}" for k, n in sorted(dropped.items()))
+        kinds = ", ".join(f"{k} ×{n}" for k, n in dropped)
         _warnings.warn(
-            f"{name}: {sum(dropped.values())} axiom(s) not understood and dropped "
+            f"{name}: {sum(n for _, n in dropped)} axiom(s) not understood and dropped "
             f"({kinds}); the answer is a sound under-approximation "
             "(see DroppedAxiomsWarning).",
             DroppedAxiomsWarning,
@@ -997,7 +1001,7 @@ def _ce_verdict(native: dict) -> ClassExpressionVerdict:
         relies_on_trusted_consistency=native["relies_on_trusted_consistency"],
         consistency_undetermined=native["consistency_undetermined"],
         no_verdict=native["no_verdict"],
-        dropped=dict(native["dropped"]),
+        dropped=tuple(sorted(native["dropped"].items())),
     )
 
 
@@ -1009,7 +1013,7 @@ def _ce_instances(native: dict) -> ClassExpressionInstances:
         consistency_undetermined=native["consistency_undetermined"],
         no_verdict=native["no_verdict"],
         depth_capped=native["depth_capped"],
-        dropped=dict(native["dropped"]),
+        dropped=tuple(sorted(native["dropped"].items())),
     )
 
 

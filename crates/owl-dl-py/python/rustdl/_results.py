@@ -79,7 +79,10 @@ class Diagnosis(_MappingDataclass):
 
 
 # #552: the expression queries' structured results. Field names match the Rust
-# accessors (`CeVerdict`, `CeInstances`) and the CLI's `--json` keys.
+# accessors (`CeVerdict`, `CeInstances`); the CLI's `--json` names the answer
+# `satisfiable` / `entailed` / `instances` and has no `dropped`. `dropped` is a tuple
+# of `(kind, count)` pairs sorted by kind, so a result is immutable and hashable;
+# `dict(r.dropped)` gives the mapping.
 
 
 @dataclass(frozen=True)
@@ -92,7 +95,7 @@ class ClassExpressionVerdict(_MappingDataclass):
     relies_on_trusted_consistency: bool
     consistency_undetermined: bool
     no_verdict: bool
-    dropped: dict
+    dropped: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True)
@@ -105,4 +108,4 @@ class ClassExpressionInstances(_MappingDataclass):
     consistency_undetermined: bool
     no_verdict: bool
     depth_capped: bool
-    dropped: dict
+    dropped: tuple[tuple[str, int], ...]

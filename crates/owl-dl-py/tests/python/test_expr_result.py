@@ -62,7 +62,7 @@ def test_input_side_drop_is_reported(tmp_path):
     assert v.holds is False, "precondition: C ⊑ E is missed"
     assert v.completeness_guaranteed is False
     assert v.incomplete is False, "nothing was cut: the two signals differ"
-    assert v.dropped == rustdl.dropped_axioms(path)
+    assert dict(v.dropped) == rustdl.dropped_axioms(path)
     assert w, "DroppedAxiomsWarning expected"
 
     v, w = _call(rustdl.class_expression_satisfiable_result, path, ":C")
@@ -90,14 +90,14 @@ def test_control_drops_nothing_and_is_guaranteed(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error", rustdl.DroppedAxiomsWarning)
         v = rustdl.class_expression_entailed_subclass_result(path, ":C", ":E")
-        assert v.holds is True and v.completeness_guaranteed is True and v.dropped == {}
+        assert v.holds is True and v.completeness_guaranteed is True and v.dropped == ()
         # A guaranteed "no": E ⋢ C, on the pure-EL fast path.
         v = rustdl.class_expression_entailed_subclass_result(path, ":E", ":C")
         assert v.holds is False and v.completeness_guaranteed is True
         ipath = _write(tmp_path, "keep-inst.ofn", INST)
         r = rustdl.class_expression_instances_result(ipath, ":E")
         assert r.individuals == ("http://e#a",)
-        assert r.completeness_guaranteed is True and r.dropped == {}
+        assert r.completeness_guaranteed is True and r.dropped == ()
         # The bare forms still return the plain values.
         assert rustdl.class_expression_instances(ipath, ":E") == ["http://e#a"]
         assert rustdl.class_expression_entailed_subclass(path, ":C", ":E") is True
@@ -122,7 +122,7 @@ def test_off_el_is_not_guaranteed_and_does_not_warn(tmp_path):
         v = rustdl.class_expression_entailed_subclass_result(path, ":E", ":C")
     assert v.holds is False
     assert v.completeness_guaranteed is False
-    assert v.dropped == {}
+    assert v.dropped == ()
 
 
 def test_result_is_a_read_only_mapping(tmp_path):
@@ -140,3 +140,17 @@ def test_result_is_a_read_only_mapping(tmp_path):
     }
     with pytest.raises(Exception):
         v.holds = False  # frozen
+
+
+def test_results_are_immutable_and_hashable(tmp_path):
+    """#596 review: `dropped` was a mutable dict, so a "frozen" result could still be
+    changed through it, and no result could be hashed."""
+    path = _write(tmp_path, "drop.ofn", BODY, "xsd:dateTimeStamp")
+    v = rustdl.class_expression_satisfiable_result(path, ":C")
+    assert isinstance(v.dropped, tuple) and v.dropped
+    assert all(isinstance(p, tuple) for p in v.dropped)
+    assert hash(v) == hash(rustdl.class_expression_satisfiable_result(path, ":C"))
+    ipath = _write(tmp_path, "drop-inst.ofn", INST, "xsd:dateTimeStamp")
+    r = rustdl.class_expression_instances_result(ipath, ":E")
+    assert isinstance(r.individuals, tuple) and isinstance(r.dropped, tuple)
+    hash(r)

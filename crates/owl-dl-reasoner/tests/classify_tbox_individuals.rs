@@ -117,6 +117,18 @@ const T8: &str = "SubClassOf(ObjectOneOf(:b) ObjectSomeValuesFrom(:S :E)) \
      SubClassOf(:X ObjectSomeValuesFrom(:R :E)) \
      SubClassOf(ObjectSomeValuesFrom(:R ObjectSomeValuesFrom(ObjectInverseOf(:S) owl:Thing)) :D)";
 
+/// #609's role-assertion fact written in the `TBox` (Fable review of #629): `{a} ⊑
+/// ∃S.{to}` with `Range(S) = D` types `b` when `to` is `b`, and `X ⊑ ∃R.({b} ⊓ ¬D)` is
+/// then unsatisfiable. Neither individual has an `ABox` fact, so this is #608's shape,
+/// not #533's. `HermiT` and Konclude agree (`~/rustdl/sweeps/bugfix/609/fable/v09*`).
+fn t9(to: &str) -> String {
+    format!(
+        "SubClassOf(ObjectOneOf(:a) ObjectHasValue(:S :{to})) ObjectPropertyRange(:S :D) \
+         SubClassOf(:X ObjectSomeValuesFrom(:R ObjectIntersectionOf(ObjectOneOf(:b) \
+         ObjectComplementOf(:D))))"
+    )
+}
+
 fn onto(body: &str) -> SetOntology<RcStr> {
     let src = format!(
         "Prefix(:=<{EX}>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
@@ -347,4 +359,46 @@ fn asserted_individuals_are_left_to_wedge_abox_blind() {
         pairs(&[("X", "D")]),
         "the main tableau finds it"
     );
+}
+
+#[test]
+fn t9_control_the_tbox_fact_points_at_an_unreached_individual() {
+    check(&t9("c"), &[]);
+}
+
+#[test]
+fn t9_a_tbox_role_fact_types_the_nominal_the_class_negates() {
+    check(&t9("b"), &[("X", "Nothing")]);
+}
+
+/// `t9` plus an unrelated `ABox` assertion on `b`. #533 reports the wedge's blind
+/// model, and `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` demotes it and clears that signal,
+/// yet the main tableau still misses `X` unsat because `a` is unseeded. This signal must
+/// survive the demotion; the flag finds the class.
+#[test]
+fn demotion_clears_wedge_abox_blind_but_not_this_signal() {
+    let body = format!(
+        "Declaration(ObjectProperty(:T)) ObjectPropertyAssertion(:T :b :c) {}",
+        t9("b")
+    );
+    let want = pairs(&[("X", "Nothing")]);
+    let default = run(&body, &[]);
+    assert!(
+        default.stats().wedge_abox_blind && default.stats().tbox_individuals_unseeded,
+        "both signals at the default: {:?}",
+        default.stats()
+    );
+    let demoted = run(&body, &[("RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE", "1")]);
+    let s = demoted.stats();
+    assert!(
+        s.wedge_abox_demoted > 0 && !s.wedge_abox_blind,
+        "the demotion cleared #533's signal: {s:?}"
+    );
+    assert!(
+        s.tbox_individuals_unseeded && !demoted.completeness_guaranteed(),
+        "{s:?}"
+    );
+    let got = closure(&demoted);
+    assert!(got.iter().all(|p| want.contains(p)), "{got:?}");
+    assert_eq!(closure(&run(&body, &[SEED])), want, "seeded");
 }

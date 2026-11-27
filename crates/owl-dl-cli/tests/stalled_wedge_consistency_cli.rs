@@ -4,7 +4,9 @@
 //! keeps `consistency_undetermined: true`.
 //!
 //! The fixture is the #564 r-cycle with `A(d)`: the merge-churn guard stops the
-//! consistency wedge, and `HermiT` says the KB is consistent (with `Q ≡ ⊥`).
+//! consistency wedge, and `HermiT` says the KB is consistent (with `Q ≡ ⊥`). Since
+//! #570 that churn happens only on the old generation order, so every run here sets
+//! `RUSTDL_WEDGE_NOMINAL_GEN_FIRST=0`.
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
@@ -58,6 +60,9 @@ fn classify_json(path: &str, env: &[(&str, &str)]) -> serde_json::Value {
             cmd.env_remove(key);
         }
     }
+    // #570 removes the fixture's churn: pin the old generation order so the wedge
+    // stalls, which is what these tests exercise. A test may override it.
+    cmd.env("RUSTDL_WEDGE_NOMINAL_GEN_FIRST", "0");
     let out = cmd
         .args(["classify", "--json", path])
         .envs(env.iter().copied())

@@ -589,11 +589,12 @@ fn classify_consistent(body: &str, what: &str) -> bool {
     !s.inconsistent
 }
 
-/// The r-cycle shape. With the bound, the wedge's Horn fixpoint on it builds nodes
-/// that its nominal merges fold straight back, and the NN guard refuses every
-/// blocker, so it never settles; the merge-churn guard
-/// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`) stops it with `Stalled` and the main tableau
-/// decides. Before the guard the unbounded `classify` did not return on it.
+/// The r-cycle shape. On the old generation order (`RUSTDL_WEDGE_NOMINAL_GEN_FIRST=0`)
+/// the wedge's Horn fixpoint on it builds nodes that its nominal merges fold
+/// straight back, and the NN guard refuses every blocker, so it never settles; the
+/// merge-churn guard (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`) stops it with `Stalled` and
+/// the main tableau decides. Before the guard the unbounded `classify` did not
+/// return on it. Since #570 the default order merges first and the wedge decides.
 const R_CYCLE: &str = "an r-cycle back from B to A";
 
 #[test]
@@ -613,6 +614,10 @@ fn issue_564_classify_finds_q_unsat_on_every_cascade_shape() {
 #[test]
 fn issue_564_r_cycle_terminates_in_classify() {
     let _l = lock();
+    // #570 removes this churn on the default order; the old order keeps the
+    // guard's classify-level positive (`RUSTDL_WEDGE_MERGE_CHURN_GUARD=0` brings
+    // the non-termination back there).
+    let _o = SetEnvGuard::set("RUSTDL_WEDGE_NOMINAL_GEN_FIRST", "0");
     let (_, body) = inconsistent_shapes()
         .into_iter()
         .find(|(w, _)| *w == R_CYCLE)
@@ -902,6 +907,9 @@ fn r_cycle_classify(assertion: &str) -> [(bool, bool); 3] {
 #[test]
 fn issue_571_stalled_wedge_r_cycle_abox_is_decided() {
     let _l = lock();
+    // #570 removes the r-cycle's churn, so the wedge no longer stalls on it by
+    // default; the old order keeps the stall these tests are about.
+    let _o = SetEnvGuard::set("RUSTDL_WEDGE_NOMINAL_GEN_FIRST", "0");
     for x in ["A", "B"] {
         assert_eq!(
             r_cycle_classify(&format!("ClassAssertion(:{x} :d)")),
@@ -921,6 +929,9 @@ fn issue_571_stalled_wedge_r_cycle_abox_is_decided() {
 #[test]
 fn issue_571_flags_off_leave_the_stalled_wedge_undetermined() {
     let _l = lock();
+    // #570 removes the r-cycle's churn, so the wedge no longer stalls on it by
+    // default; the old order keeps the stall these tests are about.
+    let _o = SetEnvGuard::set("RUSTDL_WEDGE_NOMINAL_GEN_FIRST", "0");
     for flag in [
         "RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK",
         "RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK",
@@ -1056,4 +1067,34 @@ fn issue_568_pure_el_reads_zero_trusted_sat() {
         ),
         (0, 0)
     );
+}
+
+/// #570: with nominal generators first (the default), the consistency wedge decides
+/// the r-cycle `ABox` forms itself: no stall, so no fallback, and the same verdicts.
+#[test]
+fn issue_570_the_consistency_wedge_no_longer_stalls_on_the_r_cycle() {
+    let _l = lock();
+    for (x, consistent) in [("A", true), ("B", true), ("Q", false)] {
+        // On a worker thread, so an order that sends the wedge into a cycle fails
+        // here instead of hanging the suite (a sabotage did: 13 h on one core).
+        let body = format!("{}\nClassAssertion(:{x} :d)", r_cycle());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let c = owl_dl_reasoner::classify(&onto(&body)).unwrap();
+            let _ = tx.send(c.stats());
+        });
+        let s = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("{x}(d): classify did not return within 60 s"));
+        assert_eq!(
+            (
+                !s.inconsistent,
+                s.consistency_undetermined,
+                s.consistency_wedge_stalled
+            ),
+            (consistent, false, false),
+            "{x}(d)"
+        );
+        assert_eq!(s.stalled_wedge_fallback, None, "{x}(d): no fallback ran");
+    }
 }

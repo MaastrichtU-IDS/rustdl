@@ -65,7 +65,8 @@ def test_a_use_in_the_query_only_is_caught(tmp_path):
     path = _write(tmp_path, "q.ofn", QUERY_ONLY)
     assert rustdl.universal_role_ordinary(path) is False
     r, ws = _universal_warnings(
-        rustdl.class_expression_instances_result, path, "owl:topObjectProperty some :D"
+        # `:C` has no told instance, so the use is not folded (#543 part 2).
+        rustdl.class_expression_instances_result, path, "owl:topObjectProperty some :C"
     )
     assert ws
     assert r.universal_role_ordinary is True
@@ -95,3 +96,18 @@ def test_prepared_justify_warns(tmp_path):
     assert p.universal_role_ordinary is True
     _, ws = _universal_warnings(p.justify, ["subclass", "http://e#C", "http://e#D"])
     assert ws
+
+
+def test_a_folded_use_answers_right_without_a_warning(tmp_path):
+    """#543 part 2: `∃top.D ⊑ E` with `D(a)` is folded: `⊤ ⊑ E` (HermiT), no warning."""
+    src = HEAD + """Declaration(Class(:E))
+ClassAssertion(:D :a)
+SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :E)
+)"""
+    path = _write(tmp_path, "fold.ofn", src)
+    assert rustdl.universal_role_ordinary(path) is False
+    sub, ws = _universal_warnings(
+        rustdl.is_subclass_of, path, "http://www.w3.org/2002/07/owl#Thing", "http://e#E"
+    )
+    assert sub is True
+    assert not ws

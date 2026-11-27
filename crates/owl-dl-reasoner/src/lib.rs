@@ -5327,6 +5327,9 @@ pub(crate) struct HyperCache {
     /// Indexes are **read-only after construction** — rayon safety holds.
     /// See `docs/superpowers/specs/2026-06-16-soundcaching-design-and-gonogo.md` §5.
     base_indexes: std::sync::Arc<owl_dl_tableau::hyper::ClauseIndexes>,
+    /// #600: the clausifier's deferral events for this wedge (`ClauseStats::deferred`):
+    /// encodings it skipped, so the wedge never sees them.
+    deferred_clauses: usize,
     /// Pre-built pairwise-disjoint set for `self.clauses`. Shared via
     /// `Arc::clone` per `classify_labels` probe (Q-clause is not
     /// ⊥-headed so adds no new pairs — same set for every probe).
@@ -5498,6 +5501,11 @@ impl HyperCache {
         self.base_indexes.refused_clauses()
     }
 
+    /// #600: the clausifier's deferral events for this wedge.
+    pub(crate) fn clauses_deferred(&self) -> usize {
+        self.deferred_clauses
+    }
+
     /// #564: add an engine's merge-churn stops to this cache's total.
     fn note_churn(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) {
         let n = engine.merge_churn_stops();
@@ -5589,6 +5597,7 @@ impl HyperCache {
             }
         }
         let (base, clause_stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let deferred_clauses = clause_stats.deferred;
         // #533: a pushed fact the clausifier deferred is not in the wedge either.
         let abox_unfed = abox_unfed || (!abox_fed.is_empty() && clause_stats.deferred > 0);
         internal.axioms.truncate(n_axioms);
@@ -5932,6 +5941,7 @@ impl HyperCache {
             sup_neg,
             fresh_q,
             base_indexes,
+            deferred_clauses,
             base_disjoint_pairs,
             amortize_idx,
             sub_roles,
@@ -7285,7 +7295,7 @@ impl ConsistencyCache {
     /// refuses (they never fire) and the clausifier's deferral events (encodings it
     /// skipped, so the wedge never sees them; one axiom can count more than once). A
     /// `Sat` of this wedge is a model of that weaker KB, so a trusted `Sat` with either
-    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm). Unflagged: callers
+    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the axiom kinds the clausifier ignores, its `_ => {}` arm; and, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which that flag clausifies or counts). Unflagged: callers
     /// apply `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED` to the refused count.
     pub(crate) fn weaker_kb_gaps(&self) -> (usize, usize) {
         (
@@ -8664,7 +8674,7 @@ pub struct QueryStats {
     /// weaker by these too. Set where `wedge_clauses_refused` is (the consistency
     /// query, and a single query that dropped its `ABox` on that wedge's `Sat`).
     /// Deliberately not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`: that flag
-    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm).
+    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the axiom kinds the clausifier ignores, its `_ => {}` arm; and, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which that flag clausifies or counts).
     pub wedge_clauses_deferred: usize,
     /// The verdict rests on the KB being consistent, and the only evidence for
     /// that is a consistency-wedge `Sat` that no main-tableau run verified (the
@@ -12532,6 +12542,12 @@ impl PreparedOntology {
     /// #353: how many clauses the wedge refuses (0 when there is no wedge).
     pub(crate) fn wedge_clauses_refused(&self) -> usize {
         self.hyper.as_ref().map_or(0, HyperCache::clauses_refused)
+    }
+
+    /// #600: the classify wedge clausifier's deferral events (0 when there is no
+    /// wedge).
+    pub(crate) fn wedge_clauses_deferred(&self) -> usize {
+        self.hyper.as_ref().map_or(0, HyperCache::clauses_deferred)
     }
 
     /// #564: classify-wedge fixpoints the merge-churn guard stopped (0 without a wedge).

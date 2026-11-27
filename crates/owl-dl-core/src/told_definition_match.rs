@@ -79,7 +79,6 @@ fn is_el(cid: ConceptId, pool: &ConceptPool) -> bool {
     }
 }
 
-/// The conjuncts of `cid`: its operands if it is an `And`, else itself.
 /// #603: the atomic members of the union `u`, or `None` if `u` is not a union or a
 /// member is not atomic (`disjunction_existential` requires them all atomic).
 fn atomic_members(u: ConceptId, pool: &ConceptPool) -> Option<Vec<ClassId>> {
@@ -89,6 +88,7 @@ fn atomic_members(u: ConceptId, pool: &ConceptPool) -> Option<Vec<ClassId>> {
     members.iter().map(|&m| atomic(m, pool)).collect()
 }
 
+/// The conjuncts of `cid`: its operands if it is an `And`, else itself.
 fn conjuncts(cid: ConceptId, pool: &ConceptPool) -> Vec<ConceptId> {
     match pool.get(cid) {
         ConceptExpr::And(cs) => cs.to_vec(),

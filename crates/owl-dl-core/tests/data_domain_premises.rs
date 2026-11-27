@@ -165,3 +165,67 @@ fn unrelated_components_are_not_cited() {
         "{ps:?}"
     );
 }
+
+/// Forms that do not say `C` has a `d`-value: no premises, even with a domain on `d`.
+#[test]
+fn forms_that_give_no_value_get_no_premises() {
+    for (what, sup) in [
+        ("at most one", "DataMaxCardinality(1 :d)"),
+        ("only integers", "DataAllValuesFrom(:d xsd:integer)"),
+        ("at least zero", "DataMinCardinality(0 :d)"),
+        ("exactly zero", "DataExactCardinality(0 :d)"),
+        (
+            "a union member",
+            "ObjectUnionOf(DataSomeValuesFrom(:d xsd:integer) :E)",
+        ),
+        (
+            "a complement",
+            "ObjectComplementOf(DataSomeValuesFrom(:d xsd:integer))",
+        ),
+    ] {
+        let body = format!("DataPropertyDomain(:d :E)\nSubClassOf(:C {sup})");
+        assert!(premises(&body).is_none(), "{what}: {:?}", premises(&body));
+    }
+    // A union domain is the common-subsumer pass's, not this replay's.
+    assert!(
+        premises(
+            "Declaration(Class(:F))
+         DataPropertyDomain(:d ObjectUnionOf(:E :F))
+         SubClassOf(:C DataSomeValuesFrom(:d xsd:integer))"
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn equivalent_properties_and_a_multi_hop_chain_reach_the_domain() {
+    let ps = premises(
+        "EquivalentDataProperties(:d :e)
+         DataPropertyDomain(:e :E)
+         SubClassOf(:C DataSomeValuesFrom(:d xsd:integer))",
+    )
+    .expect("an equivalent property");
+    assert_eq!(ps.len(), 3, "{ps:?}");
+    let ps = premises(
+        "Declaration(DataProperty(:f)) Declaration(DataProperty(:g))
+         SubDataPropertyOf(:d :f) SubDataPropertyOf(:f :g)
+         DataPropertyDomain(:g :E)
+         SubClassOf(:C DataSomeValuesFrom(:d xsd:integer))",
+    )
+    .expect("a two-hop chain");
+    assert_eq!(ps.len(), 4, "{ps:?}");
+}
+
+/// The citation does not depend on the hash-backed set's iteration order: with two
+/// qualifying routes, separately parsed copies give the same premises.
+#[test]
+fn the_citation_is_deterministic() {
+    let body = "Declaration(DataProperty(:f))
+         DataPropertyDomain(:d :E) DataPropertyDomain(:f :E)
+         SubClassOf(:C DataSomeValuesFrom(:d xsd:integer))
+         SubClassOf(:C DataSomeValuesFrom(:f xsd:string))";
+    let first = premises(body).unwrap();
+    for _ in 0..8 {
+        assert_eq!(premises(body).unwrap(), first);
+    }
+}

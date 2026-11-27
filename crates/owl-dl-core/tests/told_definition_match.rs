@@ -328,3 +328,47 @@ fn the_union_replay_cites_the_path_to_the_asserting_class() {
     let not_all = |i: usize| eligible(i) && !is_edge(&o.axioms[i], "D2", "C");
     assert!(ix.premises(&o, id("A"), id("C"), &not_all).is_none());
 }
+
+/// The union replay's limits: every member atomic (a complex member gives no premises,
+/// as the pass derives nothing), any number of members, and a union inside a
+/// definition's conjunction is an `X ⊑ ⊔Dᵢ` only, never `Dᵢ ⊑ X`.
+#[test]
+fn the_union_replay_keeps_to_the_pass_s_rule() {
+    let all = |_: usize| true;
+    let id =
+        |o: &InternalOntology, n: &str| o.vocabulary.class_id(&format!("http://ex#{n}")).unwrap();
+    // Three members, all ⊑ C.
+    let o = convert(
+        "SubClassOf(:X ObjectUnionOf(:D1 :D2 :D3))
+        SubClassOf(:D1 :C) SubClassOf(:D2 :C) SubClassOf(:D3 :C)",
+    );
+    let not_derived = |i: usize| {
+        !matches!(&o.axioms[i], Axiom::SubClassOf { sub, sup }
+        if matches!(o.concepts.get(*sub), ConceptExpr::Atomic(_))
+        && matches!(o.concepts.get(*sup), ConceptExpr::Atomic(c) if *c == id(&o, "C"))
+        && !matches!(o.concepts.get(*sub), ConceptExpr::Atomic(c)
+            if [id(&o, "D1"), id(&o, "D2"), id(&o, "D3")].contains(c)))
+    };
+    let ix = owl_dl_core::told_definition_match::MatchIndex::build(&o);
+    assert_eq!(
+        ix.premises(&o, id(&o, "X"), id(&o, "C"), &not_derived)
+            .map(|p| p.len()),
+        Some(4)
+    );
+    // A complex member: the pass derives nothing, and the replay finds nothing.
+    let o = convert(
+        "Declaration(ObjectProperty(:r))
+        SubClassOf(:X ObjectUnionOf(:D1 ObjectSomeValuesFrom(:r :D2)))
+        SubClassOf(:D1 :C) SubClassOf(:D2 :C)",
+    );
+    assert!(!has_edge(&o, "X", "C"));
+    let ix = owl_dl_core::told_definition_match::MatchIndex::build(&o);
+    assert!(ix.premises(&o, id(&o, "X"), id(&o, "C"), &all).is_none());
+    // `X ≡ A ⊓ (D1 ⊔ D2)`: `D1 ⊑ X` does not follow, and no premises are found for it.
+    let o = convert(
+        "EquivalentClasses(:X ObjectIntersectionOf(:A ObjectUnionOf(:D1 :D2)))
+        SubClassOf(:D1 :C) SubClassOf(:D2 :C)",
+    );
+    let ix = owl_dl_core::told_definition_match::MatchIndex::build(&o);
+    assert!(ix.premises(&o, id(&o, "D1"), id(&o, "X"), &all).is_none());
+}

@@ -1,11 +1,14 @@
 //! #603: a step proof that rests on an `A ⊑ D` the told-definition match derived
 //! (#139/#180) cites that edge's source premises, not the derived edge. On the curated
 //! corpus these were the only derived axioms step proofs cited (wine 47 of 150 sampled
-//! proofs, pizza 2 of 113). The union common-subsumer `disjunction_existential` derives
-//! (`X ⊑ D₁ ⊔ … ⊔ Dₙ`, every `Dᵢ` told-below `C`, so `X ⊑ C`) is replayed the same way:
-//! on ORE ontologies rich in data axioms it was the only derived kind step proofs cited
-//! (38 proofs in 20 ontologies of 13,727 calls: SWEET, OLiA, OAEI), and wine's
-//! `Fruit ⊑ EdibleThing`.
+//! proofs, pizza 2 of 113). Two more kinds are replayed the same way. On ORE ontologies
+//! rich in data axioms (13,727 calls), they were the derived kinds step proofs cited,
+//! DKey seed edges apart:
+//! - the union common-subsumer `disjunction_existential` derives (`X ⊑ D₁ ⊔ … ⊔ Dₙ`,
+//!   every `Dᵢ` told-below `C`, so `X ⊑ C`): 15 proofs (SWEET, `OLiA`), plus wine's
+//!   `Fruit ⊑ EdibleThing`;
+//! - `data_axioms`' domain inference (`C ⊑ =1 dp`, `domain(dp) = D`, so `C ⊑ D`):
+//!   23 proofs (OAEI benchmarks, SWEET), replayed on the source components.
 //!
 //! Each test checks the citation three ways: nothing is left in `derived_axioms`; every
 //! cited axiom is a component of the source; and the cited axioms ALONE entail the goal
@@ -200,7 +203,7 @@ fn a_union_common_subsumer_cites_its_premises() {
     }
 }
 
-/// As OLiA asserts it (`X ⊑ D₁ ⊔ D₂`, a subclass axiom, not a definition), with a member
+/// As `OLiA` asserts it (`X ⊑ D₁ ⊔ D₂`, a subclass axiom, not a definition), with a member
 /// reaching the common subsumer through a told path.
 #[test]
 fn a_union_super_with_a_told_path_cites_the_path() {

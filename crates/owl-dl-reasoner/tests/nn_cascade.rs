@@ -902,6 +902,9 @@ fn r_cycle_classify(assertion: &str) -> [(bool, bool); 3] {
 #[test]
 fn issue_571_stalled_wedge_r_cycle_abox_is_decided() {
     let _l = lock();
+    // #570 removes the r-cycle's churn, so the wedge no longer stalls on it by
+    // default; the old order keeps the stall these tests are about.
+    let _o = SetEnvGuard::set("RUSTDL_WEDGE_NOMINAL_GEN_FIRST", "0");
     for x in ["A", "B"] {
         assert_eq!(
             r_cycle_classify(&format!("ClassAssertion(:{x} :d)")),
@@ -921,6 +924,9 @@ fn issue_571_stalled_wedge_r_cycle_abox_is_decided() {
 #[test]
 fn issue_571_flags_off_leave_the_stalled_wedge_undetermined() {
     let _l = lock();
+    // #570 removes the r-cycle's churn, so the wedge no longer stalls on it by
+    // default; the old order keeps the stall these tests are about.
+    let _o = SetEnvGuard::set("RUSTDL_WEDGE_NOMINAL_GEN_FIRST", "0");
     for flag in [
         "RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK",
         "RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK",
@@ -1056,4 +1062,34 @@ fn issue_568_pure_el_reads_zero_trusted_sat() {
         ),
         (0, 0)
     );
+}
+
+/// #570: with nominal generators first (the default), the consistency wedge decides
+/// the r-cycle `ABox` forms itself: no stall, so no fallback, and the same verdicts.
+#[test]
+fn issue_570_the_consistency_wedge_no_longer_stalls_on_the_r_cycle() {
+    let _l = lock();
+    for (x, consistent) in [("A", true), ("B", true), ("Q", false)] {
+        // On a worker thread, so an order that sends the wedge into a cycle fails
+        // here instead of hanging the suite (a sabotage did: 13 h on one core).
+        let body = format!("{}\nClassAssertion(:{x} :d)", r_cycle());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let c = owl_dl_reasoner::classify(&onto(&body)).unwrap();
+            let _ = tx.send(c.stats());
+        });
+        let s = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("{x}(d): classify did not return within 60 s"));
+        assert_eq!(
+            (
+                !s.inconsistent,
+                s.consistency_undetermined,
+                s.consistency_wedge_stalled
+            ),
+            (consistent, false, false),
+            "{x}(d)"
+        );
+        assert_eq!(s.stalled_wedge_fallback, None, "{x}(d): no fallback ran");
+    }
 }

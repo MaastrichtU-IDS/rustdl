@@ -7146,6 +7146,18 @@ pub fn wedge_generate_last_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_GENERATE_LAST").is_none_or(|v| v != "0")
 }
 
+/// #570 `RUSTDL_WEDGE_NOMINAL_GEN_FIRST` (default ON, `=0` reverts): among the
+/// generating clauses #465 B defers, those whose target is a nominal (`∃R.{a}`,
+/// `≥n R.{a}`, or a class Horn clauses force into one) fire before the others. On
+/// the #564 `r`-cycle each new node used to build its `r`-successor before its
+/// `∃s⁻.{a}` merge folded it back, so the fixpoint churned until the merge-churn
+/// guard stopped it; with the nominal generator first, the node merges and then
+/// finds the nominal's successors as witnesses.
+#[must_use]
+pub fn wedge_nominal_gen_first_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_NOMINAL_GEN_FIRST").is_none_or(|v| v != "0")
+}
+
 /// #564 `RUSTDL_WEDGE_MERGE_CHURN_GUARD` (default ON, `=0` reverts): a wedge Horn
 /// fixpoint that has built at least `MERGE_CHURN_FLOOR` (128) nodes, merged nearly all
 /// of them away again, and had the NN guard refuse their blockers, stops with

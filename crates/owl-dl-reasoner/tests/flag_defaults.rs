@@ -296,6 +296,12 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::wedge_merge_churn_guard_enabled,
             true,
         ),
+        // #570: deferred generators whose target is a nominal fire first. `=0` reverts.
+        (
+            "RUSTDL_WEDGE_NOMINAL_GEN_FIRST",
+            owl_dl_tableau::wedge_nominal_gen_first_enabled,
+            true,
+        ),
         (
             "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
             owl_dl_reasoner::property_asymmetric_disjoint_enabled,

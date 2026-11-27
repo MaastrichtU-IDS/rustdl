@@ -211,6 +211,44 @@ more time changes nothing.
 caller that turns budget warnings into errors is not tripped by a structural gap.
 In text mode each command prints one stderr `warning:` line naming the kinds.
 
+## Justification minimality (#584)
+
+`Justification::minimal_guaranteed` (`justify --json` `minimal`, `prove --json`
+`justification_minimal`, `repair`'s `complete`) claims that no proper subset of the
+returned set entails the query. `QuickXplain` keeps an axiom exactly when the subset
+without it is answered "not entailed", so the claim holds iff every such "not
+entailed" is right. It is `true` when all of:
+
+1. the fragment is `PureEl` or `Horn`;
+2. no subset probe gave up (#396): a give-up is `Unknown`, never a silent "no";
+3. (#584) the search did not run on the saturation-only `Inconsistent` oracle.
+
+Why condition 1 admits `Horn` (the argument, not a fragment-completeness claim; #124
+refuted that for classify): for `SubClassOf` and `Unsatisfiable` on named classes the
+oracle is the single-query surface (`entails_reporting` →
+`is_subclass_of_with_stats` / `is_class_satisfiable_with_stats`). There a "yes" comes
+from the EL closure or the query wedge's `Subsumed`, and a "no" from the pure-EL
+closure (not reachable on `Horn`) or the deadline-free main tableau
+(`run_satisfiability_keeping` → `decide_query_raw`), whose only give-up is reported
+as `Unknown`. No trusted wedge `Sat` decides a "no" there. The #401 `ABox` drop on a
+consistency-wedge `Sat` is flagged (`relies_on_trusted_consistency`) and cannot cost
+minimality for these queries: with the lent verdict every subset probe answers for
+the subset's `TBox`, so `QuickXplain` keeps no `ABox` axiom. So minimality on named
+queries rests on main-tableau completeness, which holds outside `Horn` too; the
+`PureEl | Horn` restriction is conservative, not what carries the claim.
+
+Not covered by that argument:
+- `Inconsistent` queries on the full oracle trust the consistency wedge's `Sat`
+  (`is_consistent_with_stats`): `minimal` can read `true` beside
+  `relies_on_trusted_consistency: true`. No wrong consistency-wedge `Sat` on `Horn` is
+  known; that is exposure, not a demonstrated error.
+- `Inconsistent` queries on the saturation-only oracle: condition 3. The `ABox`
+  saturator is incomplete even on EL (no anonymous witnesses, no `∀` rule); on
+  `h2.ofn` the search returned 7 axioms with `minimal: true` while 5 of them are
+  inconsistent. Pinned by `crates/owl-dl-cli/tests/justify_sat_oracle_minimal.rs`
+  (`justify` in both query forms, and `prove`'s `justification_minimal`).
+- `InstanceOf` queries go through `realize::instance_reporting`; not traced.
+
 ## Rule for changes
 
 A change that adds a completeness signal, or a new way for `classify` to miss an

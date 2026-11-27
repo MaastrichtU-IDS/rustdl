@@ -50,34 +50,28 @@ pub(crate) fn conversion_block(onto: &SetOntology<RcStr>) -> (BTreeMap<String, u
         .unwrap_or_default()
 }
 
-/// #543's flag for a command that does not otherwise convert the ontology: a byte
-/// search of the file for the two top property names first, so an ontology that
-/// names neither (all but a handful) is not converted a second time.
-pub(crate) fn universal_role_flag(file: &std::path::Path, onto: &SetOntology<RcStr>) -> bool {
-    names_a_top_property(file) && conversion_block(onto).1
-}
-
 /// #543 for the role-level surfaces (`property-values`, `realize --properties`): also
 /// set when a role sits above a top property, whose edges between every pair of
 /// individuals those surfaces do not list. See
-/// `owl_dl_reasoner::universal_role_ordinary_for_roles`.
-pub(crate) fn universal_role_flag_for_roles(
-    file: &std::path::Path,
-    onto: &SetOntology<RcStr>,
-) -> bool {
-    names_a_top_property(file)
-        && owl_dl_reasoner::universal_role_ordinary_for_roles(onto).unwrap_or(false)
+/// `owl_dl_reasoner::universal_role_ordinary_for_roles`. #619: no byte prefilter of the
+/// file any more: a prefix that cuts inside the name (`Prefix(t:=<…owl#top>)` with
+/// `t:ObjectProperty`) hid the use from it, so the flag was missed.
+pub(crate) fn universal_role_flag_for_roles(onto: &SetOntology<RcStr>) -> bool {
+    owl_dl_reasoner::universal_role_ordinary_for_roles(onto).unwrap_or(false)
 }
 
-/// Does the file name `owl:topObjectProperty` or `owl:topDataProperty` at all? A
-/// pre-filter only (any spelling of the IRI contains the local name); unreadable
-/// counts as yes, so the conversion decides.
-fn names_a_top_property(file: &std::path::Path) -> bool {
-    let Ok(bytes) = std::fs::read(file) else {
-        return true;
+/// #619: [`conversion_block`] with the role-level flag of
+/// [`universal_role_flag_for_roles`], from ONE conversion, for the role-level commands
+/// that report both. A failed conversion reads as nothing dropped and no flag.
+pub(crate) fn conversion_block_for_roles(
+    onto: &SetOntology<RcStr>,
+) -> (BTreeMap<String, u64>, bool) {
+    let Ok(internal) = owl_dl_core::convert::convert_ontology(onto) else {
+        return (BTreeMap::new(), false);
     };
-    let mentions = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
-    mentions(b"topObjectProperty") || mentions(b"topDataProperty")
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal)
+        || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty();
+    (internal.dropped.by_kind().clone(), uro)
 }
 
 /// Decisions taken on the wedge's trusted `Sat` verdict, without the tableau
@@ -1281,6 +1275,13 @@ pub(crate) struct JustifyJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #619: axioms conversion could not represent and dropped (kind → count), as on the
+    /// other surfaces. The search ran over the weaker ontology: a justification that
+    /// needs a dropped axiom is missing and `"not-entailed"` may be wrong, so with a drop
+    /// `enumeration_complete` is `false`. `minimal` is unaffected (a dropped axiom is in no
+    /// justification found). Empty when nothing was dropped. Added without a
+    /// `schema_version` bump.
+    pub(crate) dropped: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize)]
@@ -1320,6 +1321,7 @@ pub(crate) fn build_justify_json(
     laconic: bool,
     enumeration_complete: bool,
     universal_role_ordinary: bool,
+    dropped: BTreeMap<String, u64>,
 ) -> JustifyJson {
     let justs = &outcome.justifications;
     let minimal = justs.iter().all(|j| j.minimal_guaranteed);
@@ -1346,6 +1348,7 @@ pub(crate) fn build_justify_json(
         relies_on_trusted_consistency: outcome.relies_on_trusted_consistency,
         no_verdict: outcome.no_verdict,
         justifications,
+        dropped,
     }
 }
 
@@ -1418,6 +1421,11 @@ pub(crate) struct ProveJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #619: axioms conversion could not represent and dropped (kind → count), as on the
+    /// other surfaces. A proof that needs a dropped axiom is missing and
+    /// `"not-entailed"` may be wrong. Empty when nothing was dropped. Added without a
+    /// `schema_version` bump.
+    pub(crate) dropped: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize)]
@@ -1875,6 +1883,7 @@ pub(crate) fn build_prove_json(
     let verdict = |entailed: bool, status: &str| ProveJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary: owl_dl_core::top_bottom_roles::universal_role_ordinary(internal),
+        dropped: internal.dropped.by_kind().clone(),
         entailed,
         status: status.to_owned(),
         incomplete: flags.incomplete,

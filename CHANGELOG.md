@@ -51,6 +51,12 @@ All notable changes to rustdl are documented here. Format is based on
 - **The Python class-expression queries now warn on dropped axioms (#552).** `class_expression_satisfiable`, `class_expression_entailed_subclass` and `class_expression_instances` emit `DroppedAxiomsWarning` when conversion dropped axioms from the ontology or the query expression, where they used to be silent. Under `-W error` (or `simplefilter("error")`) they now raise on such input. The other Python queries stay silent on dropped axioms until #597.
 
 ### Fixed
+- **`justify`, `prove`, `repair`, `diagnose` and `report` warn about dropped axioms (#619).** Every other reasoning command warned when conversion dropped content (an unresolved `Import`, a SWRL rule, `HasKey`, …); these explanation surfaces did not, so a justification, proof, repair or unsatisfiable class that needed a dropped axiom went missing without a hint.
+  - Each now prints a stderr warning naming what the drop can cost there. For a repair, it may not break the entailment in the full ontology, or may not be minimal. "Sound under-approximation" is false for those.
+  - `justify --json` and `prove --json` carry a `dropped` block (additive in schema v1). With a drop, `enumeration_complete` is `false`.
+  - The text `repair` and the `report` footer claim completeness only "w.r.t. the converted ontology".
+  - The `report` HTML shows a dropped-axioms banner and a universal-role banner. The universal-role banner is not masked on an inconsistent KB, whose repairs rest on negative answers.
+  - The five commands now take the universal-role flag from a conversion, not a byte prefilter: a prefix that cuts inside `topObjectProperty` no longer hides it.
 - **The universal role's meaning is stated where it needs no new symbol (#543, part 2: "S+F").** Part 1 flagged every semantic use of `owl:topObjectProperty`. Now conversion adds an axiom, recorded as built-in, that states the universal-role meaning of each use below. Every added axiom holds in every model under the Direct Semantics (`top` is `Δ × Δ`). These uses now answer right and are no longer flagged:
   - `∃top.⊤`, `∃top.{a}`, and `∃top.D` / `≥1 top.D` where D has a told instance (a `ClassAssertion`, also through told sub-classes), which are `⊤`;
   - `∀top.⊥`, and `∀top.¬D` / `≤0 top.D` with D as above, which are `⊥`;

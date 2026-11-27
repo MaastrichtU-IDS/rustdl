@@ -52,6 +52,14 @@ pub(crate) struct Report {
     /// limit, likely a reasoner bug, #449). `incomplete` is set too; the CLI adds #449's
     /// note and exits 3.
     pub(crate) no_verdict: bool,
+    /// #619: axioms conversion could not represent and dropped (kind → count), from the
+    /// classification the report runs (the same conversion as its justifications and
+    /// repairs). Rendered as a banner; the footer then claims no completeness.
+    pub(crate) dropped: std::collections::BTreeMap<String, u64>,
+    /// #619 / #543: a universal role read as an ordinary property. Not masked on an
+    /// inconsistent ontology: the report's repairs are verified by negative answers,
+    /// which the flag says may be wrong. Rendered as a banner.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 /// HTML-escape text for safe, faithful embedding as element content.
@@ -197,6 +205,32 @@ pub(crate) fn render_html(
         );
     }
 
+    // #619: the two declared under-approximations, as on the CLI's stderr.
+    let dropped_total: u64 = report.dropped.values().sum();
+    if dropped_total > 0 {
+        let kinds: Vec<String> = report
+            .dropped
+            .iter()
+            .map(|(k, n)| format!("{} ×{n}", html_escape(k)))
+            .collect();
+        h.push_str(&format!(
+            "<p style=\"border:1px solid #b45309;padding:.6em\"><strong>Axioms dropped:</strong> \
+             {dropped_total} axiom(s) were not understood and left out ({}). This report is \
+             computed over the weaker ontology: an unsatisfiable class or an inconsistency that \
+             needs a dropped axiom is not shown, a root may derive from another root through \
+             one, and a repair may not break the problem in the full ontology.</p>",
+            kinds.join(", ")
+        ));
+    }
+    if report.universal_role_ordinary {
+        h.push_str(
+            "<p style=\"border:1px solid #b45309;padding:.6em\"><strong>Universal role:</strong> \
+             owl:topObjectProperty is used here as the universal role, which rustdl treats as an \
+             ordinary property. Positive answers are sound; a negative answer, and so a repair \
+             verified by one, may be wrong.</p>",
+        );
+    }
+
     if let Some(sec) = &report.inconsistency {
         h.push_str("<h2>Inconsistent ontology — responsible axioms</h2>");
         h.push_str("<div class=\"block why\"><div class=\"h\">Why it is inconsistent (minimal justification)</div>");
@@ -265,13 +299,20 @@ pub(crate) fn render_html(
         }
     }
 
-    let completeness = if report.repairs_complete {
+    let completeness = if report.repairs_complete && dropped_total > 0 {
+        "minimal repairs complete w.r.t. the converted ontology (axioms were dropped, see above)"
+    } else if report.repairs_complete {
         "minimal repairs complete"
     } else {
         "repairs w.r.t. found justifications (completeness not guaranteed)"
     };
+    let over = if dropped_total > 0 {
+        ", over the converted ontology"
+    } else {
+        ""
+    };
     h.push_str(&format!(
-        "<p class=\"foot\">Sound by construction: every justification and repair is verified against the reasoner. {completeness}. Self-contained HTML, no external resources. This report is read-only — it never modifies the ontology.</p>"
+        "<p class=\"foot\">Sound by construction: every justification and repair is verified against the reasoner{over}. {completeness}. Self-contained HTML, no external resources. This report is read-only — it never modifies the ontology.</p>"
     ));
     h.push_str("</body></html>");
     h
@@ -287,6 +328,9 @@ pub(crate) fn build_report(
     let classification = owl_dl_reasoner::classify(onto).context("classify")?;
     let class_count = classification.classes().len();
     let fragment = format!("{}", classification.stats().fragment);
+    // #619: the classification's conversion is the one the justifier and repairs use.
+    let dropped = classification.stats().dropped.by_kind().clone();
+    let universal_role_ordinary = classification.stats().universal_role_ordinary;
 
     let diag = owl_dl_reasoner::diagnose(onto).context("diagnose")?;
 
@@ -327,6 +371,8 @@ pub(crate) fn build_report(
             truncated_roots: 0,
             incomplete,
             no_verdict,
+            dropped,
+            universal_role_ordinary,
         });
     }
 
@@ -389,6 +435,8 @@ pub(crate) fn build_report(
         truncated_roots,
         incomplete,
         no_verdict,
+        dropped,
+        universal_role_ordinary,
     })
 }
 
@@ -440,6 +488,8 @@ mod render_tests {
             truncated_roots: 0,
             incomplete: false,
             no_verdict: false,
+            dropped: std::collections::BTreeMap::new(),
+            universal_role_ordinary: false,
         }
     }
 

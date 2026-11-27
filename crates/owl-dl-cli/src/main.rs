@@ -1503,6 +1503,40 @@ fn warn_if_dropped(dropped: &std::collections::BTreeMap<String, u64>) {
     );
 }
 
+/// #619: [`warn_if_dropped`] for the explanation surfaces (`justify`, `prove`,
+/// `repair`, `diagnose`, `report`), where "a sound under-approximation" is false: a
+/// repair found over the weaker ontology may not break the entailment in the full one.
+/// `consequence` says what the drop can cost on that surface.
+fn warn_if_dropped_explaining(
+    dropped: &std::collections::BTreeMap<String, u64>,
+    consequence: &str,
+) {
+    let total: u64 = dropped.values().sum();
+    if total == 0 {
+        return;
+    }
+    let kinds: Vec<String> = dropped
+        .iter()
+        .map(|(kind, count)| format!("{kind} ×{count}"))
+        .collect();
+    eprintln!(
+        "warning: {total} axiom(s) not understood and dropped ({}); the explanation is computed \
+         over a weaker ontology, so {consequence}",
+        kinds.join(", ")
+    );
+}
+
+/// #619: what a drop can cost each explanation surface.
+const DROPPED_JUSTIFY: &str = "a justification that needs a dropped axiom is missing, and \
+     \"not entailed\" may be wrong.";
+const DROPPED_PROVE: &str = "a proof that needs a dropped axiom is missing, and \"not entailed\" \
+     may be wrong.";
+const DROPPED_REPAIR: &str = "a repair may not break the entailment in the full ontology (a \
+     dropped axiom can also support it) and may not be minimal, and \"not entailed\" may be wrong.";
+const DROPPED_DIAGNOSE: &str = "an unsatisfiable class or an inconsistency that needs a dropped \
+     axiom goes undetected, a class shown as a root may derive from another root through a \
+     dropped axiom (and the reverse), and a repair may not break it in the full ontology.";
+
 /// #543: the ontology uses a universal role where its semantics could change the
 /// answer, and rustdl reads it as an ordinary property (see
 /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`). Beside every
@@ -2425,11 +2459,11 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, _) = json_out::conversion_block(&onto);
+            // #619: one conversion for the drops and the role-level flag.
+            let (dropped_kinds, uro) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped_kinds);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
-            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
@@ -2487,11 +2521,11 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, _) = json_out::conversion_block(&onto);
+            // #619: one conversion for the drops and the role-level flag.
+            let (dropped_kinds, uro) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped_kinds);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
-            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
@@ -2534,11 +2568,11 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, _) = json_out::conversion_block(&onto);
+            // #619: one conversion for the drops and the role-level flag.
+            let (dropped_kinds, uro) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped_kinds);
             // #543: role-level, so a role above top counts even where no class-level
             // answer changes.
-            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
@@ -2586,11 +2620,11 @@ fn run() -> Result<()> {
         }
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, _) = json_out::conversion_block(&onto);
+            // #619: one conversion for the drops and the role-level flag.
+            let (dropped_kinds, uro) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped_kinds);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
-            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let h = owl_dl_reasoner::classify_property_hierarchies(&onto)
                 .context("classify_property_hierarchies")?;
@@ -3024,7 +3058,7 @@ fn run() -> Result<()> {
             if properties {
                 // #543: the property section is role-level; a role above top relates
                 // every pair, which it does not list.
-                if !uro && json_out::universal_role_flag_for_roles(&file, &onto) {
+                if !uro && json_out::universal_role_flag_for_roles(&onto) {
                     note_universal_role(true);
                 }
                 write_materialized_properties(
@@ -3146,8 +3180,10 @@ fn run() -> Result<()> {
             json,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            // #543: the same declared under-approximation as a dropped axiom.
-            let uro = json_out::universal_role_flag(&file, &onto);
+            // #619 / #543: one conversion for the dropped axioms and the universal role (a
+            // superset of the byte-prefiltered flag, which a prefix cut inside the name hides).
+            let (dropped, uro) = json_out::conversion_block(&onto);
+            warn_if_dropped_explaining(&dropped, DROPPED_JUSTIFY);
             note_universal_role(uro);
             let q =
                 owl_dl_reasoner::justify::parse_query(&query).map_err(|e| anyhow::anyhow!(e))?;
@@ -3196,8 +3232,10 @@ fn run() -> Result<()> {
                         &outcome,
                         &pm,
                         laconic,
-                        enumeration_complete,
+                        // #619: complete over the converted ontology only.
+                        enumeration_complete && dropped.is_empty(),
                         uro,
+                        dropped.clone(),
                     ))?
                 );
                 if warn_if_justify_gave_up(&outcome) {
@@ -3272,8 +3310,10 @@ fn run() -> Result<()> {
         } => {
             use owl_dl_reasoner::justify::component_entities;
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            // #543: the same declared under-approximation as a dropped axiom.
-            let uro = json_out::universal_role_flag(&file, &onto);
+            // #619 / #543: one conversion for the dropped axioms and the universal role (a
+            // superset of the byte-prefiltered flag, which a prefix cut inside the name hides).
+            let (dropped, uro) = json_out::conversion_block(&onto);
+            warn_if_dropped_explaining(&dropped, DROPPED_REPAIR);
             note_universal_role(uro);
             let q =
                 owl_dl_reasoner::justify::parse_query(&query).map_err(|e| anyhow::anyhow!(e))?;
@@ -3334,7 +3374,7 @@ fn run() -> Result<()> {
                 println!("entailed, but no verifiable axiom removal found");
                 // #584 review: say whether "none found" is complete, as the
                 // non-empty path does.
-                if !r.complete {
+                if !r.complete || !dropped.is_empty() {
                     println!("# (completeness not guaranteed)");
                 }
                 note_dropped_unverified();
@@ -3343,7 +3383,10 @@ fn run() -> Result<()> {
                 return Ok(());
             }
 
-            let completeness = if r.complete {
+            let completeness = if r.complete && !dropped.is_empty() {
+                // #619: complete over the converted ontology, not the input.
+                "complete w.r.t. the converted ontology (axioms were dropped; see the warning)"
+            } else if r.complete {
                 "complete"
             } else {
                 "w.r.t. found justifications (completeness not guaranteed)"
@@ -3380,8 +3423,12 @@ fn run() -> Result<()> {
             source_fallback,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            // #543: the same declared under-approximation as a dropped axiom.
-            let uro = json_out::universal_role_flag(&file, &onto);
+            // #619 / #543: the one conversion the stderr notes and `--json` share (the
+            // prover converts again internally).
+            let internal = owl_dl_core::convert::convert_ontology(&onto).context("convert")?;
+            let dropped = internal.dropped.by_kind().clone();
+            let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+            warn_if_dropped_explaining(&dropped, DROPPED_PROVE);
             note_universal_role(uro);
             // A single query, like `subclass` / `explain`: the 500k query cap
             // (#402). It covers the justification fallback too (thread-local).
@@ -3419,8 +3466,6 @@ fn run() -> Result<()> {
                 }
             };
             if json {
-                let internal = owl_dl_core::convert::convert_ontology(&onto)
-                    .context("re-convert for rendering")?;
                 let mut prove_json =
                     json_out::build_prove_json(&result, flags, &onto, &internal, &pm)
                         .context("rendering prove --json proof tree")?;
@@ -3578,8 +3623,10 @@ fn run() -> Result<()> {
                 find_one_justification_reporting,
             };
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            // #543: the same declared under-approximation as a dropped axiom.
-            let uro = json_out::universal_role_flag(&file, &onto);
+            // #619 / #543: one conversion for the dropped axioms and the universal role (a
+            // superset of the byte-prefiltered flag, which a prefix cut inside the name hides).
+            let (dropped, uro) = json_out::conversion_block(&onto);
+            warn_if_dropped_explaining(&dropped, DROPPED_DIAGNOSE);
             note_universal_role(uro);
             let label_map = labels.then(|| build_label_map(&onto));
 
@@ -3727,8 +3774,10 @@ fn run() -> Result<()> {
             max_roots,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            // #543: the same declared under-approximation as a dropped axiom.
-            let uro = json_out::universal_role_flag(&file, &onto);
+            // #619 / #543: one conversion for the dropped axioms and the universal role (a
+            // superset of the byte-prefiltered flag, which a prefix cut inside the name hides).
+            let (dropped, uro) = json_out::conversion_block(&onto);
+            warn_if_dropped_explaining(&dropped, DROPPED_DIAGNOSE);
             note_universal_role(uro);
             let label_map = labels.then(|| build_label_map(&onto));
             let report = report::build_report(&onto, file.display().to_string(), max_roots)?;

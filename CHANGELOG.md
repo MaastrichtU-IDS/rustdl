@@ -9,6 +9,35 @@ All notable changes to rustdl are documented here. Format is based on
 ### Added
 - **Opt-in: the wedges can see complex `DisjointClasses` / `DisjointUnion` members (#600; `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1`, default OFF).** The wedge clausifier defers a member it cannot encode as a body (`∀`, `≤n`, `≥n`, …) and a `DisjointUnion` covering with any complex member, and skips (uncounted) the pairwise half for such a member. Both wedges trust their `Sat`, so `consistent` and `classify` miss what those axioms entail while `sat` / `subclass` (the main tableau) find it: `DisjointUnion(:C :A ∃r.B)` with `C(c)`, `¬A(c)`, `∀r.¬B(c)` reads consistent; `DisjointClasses(:A ∀r.B)` with `D ⊑ A, ∀r.B` leaves `D` satisfiable; `DisjointUnion(:C :A ∀r.B)` with `D ⊑ ∀r.B` misses `D ⊑ C` (HermiT and Konclude agree on all). **These misses remain at the default.** With the flag on they go through the GCI path (`a ⊓ b ⊑ ⊥`, `member ⊑ class`, `class ⊑ ⊔members`) where the body encoding fails, and at most 2 trigger-less fallbacks (`TRIGGERLESS_FALLBACK_CAP`) are emitted per clausification. It is opt-in because the fallback's `⊤`-bodied clauses have unbounded cost on growing ontologies: one trigger-less axiom beside a 200-class chain took 24.8 s and was cut (main 0.07 s, complete), and soft-trigger fallbacks with range axioms blow up too (64 axioms: 21.7 s, cut); a cut loses answers. A default flip waits for a cost guard (see the follow-up issue; the `#[ignore]`d sentinel `a_long_chain_with_one_trigger_less_axiom_stays_complete` gates it).
 - **`classify --json` reports `wedge_clauses_deferred` (#600):** the classify wedge's own deferral events (complex disjointness members at the default, the antecedent DNF cap, the reflexive-derived cap), so the miss above is visible. A non-zero count prints a `NOT GUARANTEED COMPLETE` stderr warning and a `# wedge clauses deferred` line, as `wedge_clauses_refused` does, and Python's `Classification.wedge_clauses_deferred` carries it with an `IncompleteClassificationWarning`. The Protégé plugin does not read it yet.
+- **`classify` can seed the individuals named in `TBox` nominals, and says when it did not
+  (#608): `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS` (default OFF) and `tbox_individuals_unseeded`.**
+  Every named individual exists in every model, so `{b} ⊑ ∃S.{a}` constrains every class whose
+  model reaches `{a}` even with no `ABox`. Classify's per-pair probes never seeded `b` when it had
+  no `ABox` axiom (the main tableau's seed carried only the `ABox`, the wedge only the probe
+  root), nor, in the wedge, when the `ABox` named it only in `DifferentIndividuals`. On the
+  issue's repro and seven more shapes, `subclass` derived a pair, or an unsatisfiable class,
+  that classify missed with nothing reported. `HermiT` agrees on all eight and their controls;
+  Konclude agrees on all but one, where it contradicts the semantics.
+  - `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1` seeds those individuals in both probes (in the wedge,
+    one node per individual beside the root, when a clause head has a nominal), as #356 did
+    for the per-query probes. Every one of these entailments is then found, through the
+    default classifier and through the main tableau alone.
+  - The signal is a separate field, not `incomplete`: `classify --json`
+    `tbox_individuals_unseeded`, `ClassificationStats::tbox_individuals_unseeded` (with the
+    count `tbox_individuals_unseeded_count`), the Python `Classification.tbox_individuals_unseeded`
+    and its `IncompleteClassificationWarning`, and a stderr warning. `completeness_guaranteed()`
+    requires it to be false (unreachable on PureEl, which admits no nominal; kept for the
+    invariant). No answer changes at the default. Set on 56 of the 406 ORE ontologies with a
+    nominal that classify finishes at 60 s.
+  - Census of the flag over the 448 ORE ontologies with a nominal (60 s cap): outcomes
+    identical on every file, and no ORE pair recovered. CPU +3.5% overall; on the 58 files where
+    the flag seeds an individual and both arms finish, ×1.33 aggregate on the first 53 (median
+    ×1.03, max ×2.05) and ×1.21 on the 5 the `DifferentIndividuals` case adds (max ×4.36, 6.0
+    vs 1.4 s). On 3 files that the default 5 ms per-pair budget truncates on both arms, the
+    seeded arm loses 1–4 rows; at `--pair-timeout-ms 1000` content is identical over 3 runs
+    each. With the flag on, #533's `wedge_abox_blind` counts more models on input that also has
+    `ABox` facts (a seeded node is a nominal every model touches). The default waits for a
+    full sweep.
 - **`classify` reports when its wedge trusted a model that was blind to `ABox` facts (#533):
   `wedge_abox_blind`.** Classify's wedge is given the facts of the individuals in the nominal
   reach only, and object-property assertions only under `RUSTDL_CLASSIFY_NOMINAL_OPA=1`. Its
@@ -48,7 +77,8 @@ All notable changes to rustdl are documented here. Format is based on
 - **`--json` names a decision-depth cut (#574).** `instances-expr`, `realize` and `justify` carry `depth_capped`, and `classify` carries `depth_capped_pairs`. Each says that a cut hit the tableau's decision-depth limit, where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` / `--pair-timeout-ms` or node cap does not help and the deadline-free probe (`=0`) may. Each implies `incomplete`. Additive in schema v1. `instances-expr --json` and `realize --json` now also print the cut warning on stderr, as `justify --json` already did; stdout is still one JSON object.
 
 ### Changed
-- **The Python class-expression queries now warn on dropped axioms (#552).** `class_expression_satisfiable`, `class_expression_entailed_subclass` and `class_expression_instances` emit `DroppedAxiomsWarning` when conversion dropped axioms from the ontology or the query expression, where they used to be silent. Under `-W error` (or `simplefilter("error")`) they now raise on such input. The other Python queries stay silent on dropped axioms until #597.
+- **The Python class-expression queries now warn on dropped axioms (#552).** `class_expression_satisfiable`, `class_expression_entailed_subclass` and `class_expression_instances` emit `DroppedAxiomsWarning` when conversion dropped axioms from the ontology or the query expression, where they used to be silent. Under `-W error` (or `simplefilter("error")`) they now raise on such input. Since #597 the other Python queries warn too (next entry).
+- **Every Python query now warns on dropped axioms (#597).** `classify` / `classify_bytes` (the kinds are in the new `Classification.dropped`), `PreparedOntology.justify` / `justify_all` (new `PreparedOntology.dropped`) and every other path-taking query (`is_consistent`, `is_subclass_of`, `realize`, `instances_of`, the `materialize_*`, hierarchy, disjointness, individual and property-value queries, `justify`, `justify_all`, `diagnose`, `repair` and `debug`, which warns once) emit `DroppedAxiomsWarning`, where they used to be silent. **Under `-W error` (or `simplefilter("error")`) they now raise on an ontology with dropped axioms**; `warnings.filterwarnings("ignore", category=rustdl.DroppedAxiomsWarning)` restores the old behaviour. As on the CLI, a proved inconsistency does not silence it. The path-taking queries take the drops from their own parse: the native converts the already-parsed ontology once more (`is_consistent`, `is_class_satisfiable` and `is_subclass_of` only when something was dropped) and never parses the file twice. This replaces #543's universal-role check, which parsed a file naming a top property a second time on every call. Cost, measured on go-basic (core-pinned, 3 interleaved reps, CPU-s): parsing is about 13.3 and conversion about 1.4, so the extra conversion adds nothing measurable to `is_subclass_of` (16.30 → 16.16) and +1.35 CPU-s (+8%) to `object_property_hierarchy` (17.23 → 18.58), the worst case: a query whose own reasoning is cheap. Peak memory is unchanged. The warning text no longer calls the answer a sound under-approximation, which an inconsistency verdict or a repair is not; it says an entailment may be missing.
 
 ### Fixed
 - **An unresolved `Import` is counted as dropped, and the property and individual surfaces read `dropped` (#579).**

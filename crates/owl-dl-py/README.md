@@ -121,6 +121,7 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, 
 | `.consistency_undetermined` | `bool` | `True` if the inconsistency pre-check reached no verdict (or classify's consistency probe gave up, #446), so `.inconsistent is False` means "no clash found", not "proven consistent" |
 | `.wedge_hierarchy_blind` | `bool` | `True` if role-hierarchy matching was off (Layer A), so sub-role / inverse / symmetric entailments may be missing even with `.complete` |
 | `.wedge_abox_blind` | `bool` | `True` if classify trusted wedge models that touch a nominal while some `ABox` fact did not apply in them: not given to the classify wedge, or given for an individual the model lacks (#533), so entailments that depend on an individual's facts may be missing even with `.complete` |
+| `.tbox_individuals_unseeded` | `bool` | `True` if classify's probes did not instantiate some individual named in a `TBox` nominal that has no `ABox` fact (`RUSTDL_CLASSIFY_TBOX_INDIVIDUALS` off, the default; #608), so entailments that follow from what the `TBox` says about it may be missing even with `.complete` |
 | `.is_subclass(sub, sup)` | `bool` | is `sub ⊑ sup` entailed? |
 | `.subclasses_of(cls)` | `list[str]` | every `D` with `D ⊑ cls` |
 | `.superclasses_of(cls)` | `list[str]` | every `D` with `cls ⊑ D` |
@@ -210,7 +211,8 @@ Axioms the conversion cannot represent (data-property and datatype axioms outsid
 the recognized preprocessing patterns, `HasKey`, SWRL rules, and `Import`
 declarations, which are never resolved) are dropped rather
 than raising an error: reasoning proceeds over the rest, a sound
-under-approximation. `dropped_axioms(path)` reports their kinds and counts. Role
+under-approximation. Every query then emits `DroppedAxiomsWarning` (#597), and
+`dropped_axioms(path)` reports their kinds and counts. Role
 chains longer than 2 are supported (decomposed into length-2 chains).
 
 See the [project documentation](https://github.com/MaastrichtU-IDS/rustdl) for

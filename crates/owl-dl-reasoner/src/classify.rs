@@ -778,6 +778,26 @@ pub struct ClassificationStats {
     /// `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (a label `Sat` turned into no verdict,
     /// a per-pair `NotSubsumed` sent to the main tableau). 0 with the flag off.
     pub wedge_abox_demoted: u64,
+    /// #608: some classify probe did not instantiate an individual named in a `TBox`
+    /// nominal (`{b}`, `ObjectHasValue(S b)`) whose omission no other signal reports.
+    /// The main tableau leaves out one with no `ABox` axiom; the wedge, which
+    /// instantiates no individual on its own, also leaves out one the `ABox` names
+    /// only in `DifferentIndividuals` (an individual with a fact is #533's
+    /// `wedge_abox_blind`). Such an individual exists in every model, so what the
+    /// `TBox` says about it (`{b} ⊑ ∃S.{a}`) constrains every class whose model
+    /// reaches `{a}`; a probe that never instantiates it can miss a subsumption or an
+    /// unsatisfiable class that `subclass` (seeded since #356) finds.
+    /// [`Classification::completeness_guaranteed`] is false when this is set. It does
+    /// NOT set `incomplete`, which means only that a class pair or probe was cut
+    /// (#574). `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1` seeds them and clears it, unless
+    /// the wedge's nominal semantics are off (`RUSTDL_CLASSIFY_WEDGE_NOMINALS=0`).
+    /// False on input with no such individual. Set on 56 of the 406 ORE ontologies
+    /// with a nominal that classify finishes at 60 s (2026-11-27).
+    pub tbox_individuals_unseeded: bool,
+    /// #608: how many individuals [`Self::tbox_individuals_unseeded`] counts (over
+    /// both probes). Diagnostic; may include an individual some probe reaches anyway
+    /// through the class under test.
+    pub tbox_individuals_unseeded_count: u64,
     /// #353: clauses the wedge's matcher refuses (a body it cannot match even
     /// after the clausifier splits over-cap bodies into named branches). A refused
     /// clause never fires, so the wedge's trusted `Sat` can miss an entailment
@@ -1245,6 +1265,7 @@ impl ClassificationStats {
             && self.timed_out_pairs == 0
             && !self.wedge_hierarchy_blind
             && !self.wedge_abox_blind
+            && !self.tbox_individuals_unseeded
             && self.wedge_clauses_refused == 0
             && self.derived_same_undecided == 0
             && !self.consistency_undetermined
@@ -2378,6 +2399,7 @@ fn classify_internal_with_timeout_impl(
     apply_test_cuts(&mut entailed, &mut stats, &classes, &unsatisfiable_idxs);
     stats.wedge_merge_churn_stops = prepared.wedge_merge_churn_stops();
     read_wedge_abox_blind(&mut stats, &prepared);
+    read_tbox_individuals_unseeded(&mut stats, &prepared);
     let mut c = Classification {
         classes,
         index,
@@ -4344,6 +4366,13 @@ fn read_wedge_abox_blind(stats: &mut ClassificationStats, prepared: &PreparedOnt
     stats.wedge_abox_blind = crate::report_wedge_abox_blind_enabled() && trusted > 0;
 }
 
+/// #608: read how many `TBox`-only individuals classify's probes left unseeded.
+fn read_tbox_individuals_unseeded(stats: &mut ClassificationStats, prepared: &PreparedOntology) {
+    let n = prepared.classify_unseeded_tbox_individuals();
+    stats.tbox_individuals_unseeded_count = n;
+    stats.tbox_individuals_unseeded = n > 0;
+}
+
 /// #214: the wedge will decide pairs blind to a non-trivial role hierarchy.
 fn wedge_hierarchy_blind(prepared: &PreparedOntology) -> bool {
     crate::report_wedge_hierarchy_blind_enabled() && prepared.wedge_hierarchy_blind()
@@ -6087,6 +6116,7 @@ fn classify_top_down_internal_impl(
     apply_test_cuts(&mut entailed, &mut stats, &classes, &unsatisfiable_idxs);
     stats.wedge_merge_churn_stops = prepared.wedge_merge_churn_stops();
     read_wedge_abox_blind(&mut stats, &prepared);
+    read_tbox_individuals_unseeded(&mut stats, &prepared);
     let mut c = Classification {
         classes,
         index,

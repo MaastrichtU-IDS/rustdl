@@ -120,6 +120,8 @@ class IncompleteClassificationWarning(UserWarning):
       tableau;
     * the wedge cannot match some clauses' bodies
       (`result.wedge_clauses_refused > 0`): those clauses never fire (#353);
+    * the wedge's clausifier deferred some encodings
+      (`result.wedge_clauses_deferred > 0`): the wedge never sees them (#600);
     * candidate individual equalities went undecided
       (`result.derived_same_undecided > 0`): a probe was cut or capped (#354);
     * a probe ended without a verdict on an internal limit
@@ -238,6 +240,17 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             "clause(s), so they never fire and entailments that need them may be "
             "missing. It is still sound (no false subsumptions); check "
             "result.wedge_clauses_refused.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
+    if result.wedge_clauses_deferred:
+        # #600: deferred encodings are never seen by the wedge, so completeness is
+        # not guaranteed even with no timeout.
+        _warnings.warn(
+            f"the wedge's clausifier skipped {result.wedge_clauses_deferred} "
+            "encoding(s) of the input's axioms, so entailments that need them may "
+            "be missing. It is still sound (no false subsumptions); check "
+            "result.wedge_clauses_deferred.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )

@@ -773,6 +773,14 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_core::clause::max_qualifier_fix_enabled,
             true,
         ),
+        // #600: opt-in. A complex `DisjointClasses` / `DisjointUnion` member, and a
+        // `DisjointUnion` covering with one, go through the GCI path instead of being
+        // deferred; OFF because the fallback's cost is unbounded on growing ontologies.
+        (
+            "RUSTDL_CLAUSIFY_COMPLEX_DISJOINT",
+            owl_dl_core::clause::complex_disjoint_clausify_enabled,
+            false,
+        ),
         (
             "RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY",
             owl_dl_reasoner::consistency_data_counting_verify_enabled,

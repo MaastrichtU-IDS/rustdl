@@ -478,6 +478,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_CLASSIFY_TBOX_INDIVIDUALS",
+            owl_dl_reasoner::classify_tbox_individuals_enabled,
+            false,
+        ),
+        (
             "RUSTDL_WEDGE_BODY_DECOMPOSE",
             owl_dl_core::clause::body_decompose_enabled,
             true,

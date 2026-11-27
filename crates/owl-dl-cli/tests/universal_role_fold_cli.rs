@@ -31,6 +31,7 @@ impl Fixture {
         ));
         let src = format!(
             "Prefix(:=<{T}>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+             Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)\n\
              Ontology(<http://ex.org/t>\n\
              Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))\n\
              Declaration(Class(:Woman)) Declaration(Class(:Person))\n\
@@ -332,4 +333,27 @@ fn verify_el_accepts_the_f1_fold() {
     );
     let (code, out, _) = run(&["verify-el", f.path()]);
     assert_eq!(code, 0, "{out}");
+}
+
+/// #624 review (blocking): a role used as a data property only inside a class
+/// expression is never folded. With `top ⊑ :q` folded as an object property,
+/// `DataMaxCardinality(0 :q)` read `C` unsatisfiable and `∃q.Literal ⊑ E` read
+/// `⊤ ⊑ E`, both with the flag off. Unfolded, C stays satisfiable, nothing is derived,
+/// and the use stays flagged. (Punning a property as object and data is outside
+/// OWL 2 DL; no oracle accepts it.)
+#[test]
+fn a_property_used_as_data_in_a_class_expression_is_not_folded() {
+    let f = Fixture::new(
+        "pun-max0",
+        "SubObjectPropertyOf(owl:topObjectProperty :q) SubClassOf(:C DataMaxCardinality(0 :q))",
+    );
+    assert_eq!(run(&["sat", f.path(), &iri("C")]).1.trim(), "sat");
+    assert_eq!(classify_json(&f, &[])["universal_role_ordinary"], true);
+    let f = Fixture::new(
+        "pun-some",
+        "SubObjectPropertyOf(owl:topObjectProperty :q) \
+         SubClassOf(DataSomeValuesFrom(:q rdfs:Literal) :E)",
+    );
+    assert_eq!(subclass(&f, THING, &iri("E")), "no");
+    assert_eq!(classify_json(&f, &[])["universal_role_ordinary"], true);
 }

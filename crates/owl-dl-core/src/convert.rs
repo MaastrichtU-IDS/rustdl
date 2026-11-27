@@ -3262,7 +3262,15 @@ pub fn convert_ontology<A: ForIRI>(
     // symbol; the rest stay flagged (`universal_role_ordinary`). A no-op unless
     // `owl:topObjectProperty` is interned. Data properties are never folded: an IRI used
     // as both (outside OWL 2 DL) would turn a data axiom into a universal consequence.
-    if !conversion_cut() && crate::top_bottom_roles::fold_enabled() {
+    // The early return comes first: the data-property walk visits every component, so
+    // it runs only when `owl:topObjectProperty` is interned.
+    if !conversion_cut()
+        && crate::top_bottom_roles::fold_enabled()
+        && out
+            .vocabulary
+            .role_id(crate::top_bottom_roles::OWL_TOP_OBJECT_PROPERTY)
+            .is_some()
+    {
         let data_iris = data_property_iris(src);
         crate::top_bottom_roles::fold_universal_role_uses(&mut out, &data_iris);
     }
@@ -3270,33 +3278,26 @@ pub fn convert_ontology<A: ForIRI>(
     Ok(out)
 }
 
-/// The IRIs the source uses as data properties: declared, asserted or axiomatised as
-/// one. #543's fold refuses any universal role among them. Class-expression data
-/// restrictions are not scanned; OWL 2 DL requires their properties to be declared.
+/// The IRIs the source uses as data properties, in ANY position: declarations, data
+/// axioms, and data restrictions inside class expressions (`DataSomeValuesFrom`,
+/// `DataMaxCardinality`, …), found by walking every component with horned-owl's
+/// visitor, which reports each typed `DataProperty`. #543's fold refuses any universal
+/// role among them: a role used as both (punning, outside OWL 2 DL) would otherwise have
+/// a data restriction folded as if on the universal object role.
 fn data_property_iris<A: ForIRI>(src: &SetOntology<A>) -> std::collections::BTreeSet<String> {
-    use horned_owl::model::Component as C;
-    let mut out = std::collections::BTreeSet::new();
-    let mut add = |dp: &horned_owl::model::DataProperty<A>| {
-        out.insert(dp.0.as_ref().to_string());
-    };
-    for c in src {
-        match &c.component {
-            C::DeclareDataProperty(d) => add(&d.0),
-            C::DataPropertyAssertion(a) => add(&a.dp),
-            C::NegativeDataPropertyAssertion(a) => add(&a.dp),
-            C::SubDataPropertyOf(a) => {
-                add(&a.sub);
-                add(&a.sup);
-            }
-            C::EquivalentDataProperties(a) => a.0.iter().for_each(&mut add),
-            C::DisjointDataProperties(a) => a.0.iter().for_each(&mut add),
-            C::DataPropertyDomain(a) => add(&a.dp),
-            C::DataPropertyRange(a) => add(&a.dp),
-            C::FunctionalDataProperty(a) => add(&a.0),
-            _ => {}
+    use horned_owl::model::DataProperty;
+    use horned_owl::visitor::immutable::{Visit, Walk};
+    struct Collect(std::collections::BTreeSet<String>);
+    impl<A: ForIRI> Visit<A> for Collect {
+        fn visit_data_property(&mut self, dp: &DataProperty<A>) {
+            self.0.insert(dp.0.as_ref().to_string());
         }
     }
-    out
+    let mut walk = Walk::new(Collect(std::collections::BTreeSet::new()));
+    for c in src {
+        walk.annotated_component(c);
+    }
+    walk.into_visit().0
 }
 
 /// `RUSTDL_INVERSE_PAIR_FUNC` — derive functionality across a declared inverse

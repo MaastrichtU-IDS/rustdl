@@ -127,11 +127,14 @@ pub struct InternalOntology {
     /// #543 (S+F): for a built-in that holds only GIVEN a source axiom (a fold of a
     /// universal-role use licensed by a `ClassAssertion`, an `ObjectPropertyDomain` /
     /// `Range`, an `IrreflexiveRole` / `AsymmetricRole` or a
-    /// `DisjointObjectProperties`), the pair (built-in, licensing source axiom). A
-    /// surface citing the built-in cites that source axiom with it, so a step is never
-    /// credited to "OWL semantics" alone when a user axiom is responsible. A built-in
-    /// with no entry holds in every interpretation.
-    pub builtin_licenses: Vec<(Axiom, Axiom)>,
+    /// `DisjointObjectProperties`), the pair (built-in, licensing source axioms): the
+    /// axiom itself, or a `ClassAssertion` with the told `SubClassOf` /
+    /// `EquivalentClasses` path from its class. A surface citing the built-in cites those
+    /// axioms with it, so a step is never credited to "OWL semantics" alone when user
+    /// axioms are responsible. One licence per built-in: the first one found, though
+    /// other source axioms may license it too. A built-in with no entry holds in every
+    /// interpretation.
+    pub builtin_licenses: Vec<(Axiom, Vec<Axiom>)>,
     /// #543 (S+F): how many axioms the universal-role fold added (`unlowered`'s
     /// `universal_role_folds`; the zero-fold check of the no-sweep argument reads it).
     pub universal_role_folds: usize,

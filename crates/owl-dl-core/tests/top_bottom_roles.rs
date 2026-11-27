@@ -453,7 +453,10 @@ fn a_conditional_fold_records_its_licence() {
     assert_eq!(o.builtin_licenses.len(), 1, "{:?}", o.builtin_licenses);
     let (b, lic) = &o.builtin_licenses[0];
     assert!(o.builtin.contains(b));
-    assert!(matches!(lic, Axiom::ClassAssertion { .. }), "{lic:?}");
+    assert!(
+        matches!(lic.as_slice(), [Axiom::ClassAssertion { .. }]),
+        "{lic:?}"
+    );
     // F1 holds in every interpretation: no licence.
     let o = convert(&format!(
         "{BASE} SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty owl:Thing) :C)"
@@ -481,4 +484,72 @@ fn a_top_free_ontology_gets_no_fold() {
     ));
     assert_eq!(o.universal_role_folds, 0);
     assert!(o.builtin.is_empty() && o.builtin_licenses.is_empty());
+}
+
+/// The licence of a fold through a told sub-class carries the path: the assertion AND
+/// each `SubClassOf` used, so the cited set entails the fold (#624 review).
+#[test]
+fn a_told_subclass_licence_carries_the_path() {
+    let o = convert(&format!(
+        "{BASE} ClassAssertion(:D :a) SubClassOf(:D :C) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :C) :D)"
+    ));
+    assert_eq!(o.builtin_licenses.len(), 1, "{:?}", o.builtin_licenses);
+    let lic = &o.builtin_licenses[0].1;
+    assert!(
+        matches!(
+            lic.as_slice(),
+            [Axiom::ClassAssertion { .. }, Axiom::SubClassOf { .. }]
+        ),
+        "{lic:?}"
+    );
+}
+
+/// FP direction of the told closure: `C ⊑ D` with `D(a)` says nothing about `C`, so
+/// `∃top.C` is NOT folded (C may be empty).
+#[test]
+fn the_told_closure_goes_up_only() {
+    let o = convert(&format!(
+        "{BASE} ClassAssertion(:D :a) SubClassOf(:C :D) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :C) :D)"
+    ));
+    assert_eq!(o.universal_role_folds, 0);
+    assert!(owl_dl_core::top_bottom_roles::universal_role_ordinary(&o));
+}
+
+/// A told instance through a conjunction or an equivalence counts; an n-ary and an
+/// inverse property disjointness fold (F9).
+#[test]
+fn more_told_instance_and_disjointness_shapes() {
+    for body in [
+        "ClassAssertion(ObjectIntersectionOf(:C :D) :a) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :C)",
+        "ClassAssertion(:C :a) EquivalentClasses(:C :D) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :C)",
+        "DisjointObjectProperties(owl:topObjectProperty :r :s)",
+        "DisjointObjectProperties(ObjectInverseOf(owl:topObjectProperty) :r)",
+        "DisjointObjectProperties(owl:topObjectProperty ObjectInverseOf(:r))",
+    ] {
+        let o = convert(&format!("{BASE} {body}"));
+        assert!(o.universal_role_folds > 0, "{body}");
+        assert!(
+            !owl_dl_core::top_bottom_roles::universal_role_ordinary(&o),
+            "{body}"
+        );
+    }
+}
+
+/// #624 review (blocking): a role used as a data property only inside a class
+/// expression is a data property too. Folding `top ⊑ :p` there would make
+/// `DataMaxCardinality(0 :p)` unsatisfiable or `∃:p.Literal` everything.
+#[test]
+fn a_data_property_used_only_in_a_class_expression_is_not_folded() {
+    for body in [
+        "SubObjectPropertyOf(owl:topObjectProperty :q) SubClassOf(:C DataMaxCardinality(0 :q))",
+        "SubObjectPropertyOf(owl:topObjectProperty :q) \
+         SubClassOf(DataSomeValuesFrom(:q rdfs:Literal) :C)",
+    ] {
+        let o = convert(&format!("{BASE} Declaration(ObjectProperty(:q)) {body}"));
+        assert_eq!(o.universal_role_folds, 0, "{body}");
+    }
 }

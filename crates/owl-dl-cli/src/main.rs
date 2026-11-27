@@ -3481,18 +3481,26 @@ fn run() -> Result<()> {
                         );
                         for idx in all_refs {
                             if let Some(ax) = internal.axioms.get(idx) {
-                                if let Some((_, lic)) =
+                                if let Some((_, lics)) =
                                     internal.builtin_licenses.iter().find(|(b, _)| b == ax)
                                 {
-                                    // #543 part 2: it holds given a source axiom; name it.
-                                    let at = internal
-                                        .axioms
+                                    // #543 part 2: it holds given source axioms; name them.
+                                    let at: Vec<String> = lics
                                         .iter()
-                                        .position(|a| a == lic)
-                                        .map_or_else(|| "?".to_owned(), |i| i.to_string());
+                                        .map(|lic| {
+                                            internal
+                                                .axioms
+                                                .iter()
+                                                .position(|a| a == lic)
+                                                .map_or_else(
+                                                    || "?".to_owned(),
+                                                    |i| format!("axiom[{i}]"),
+                                                )
+                                        })
+                                        .collect();
                                     println!(
-                                        "  axiom[{idx}] (built-in, licensed by source \
-                                         axiom[{at}]: {lic:?}): {ax:?}"
+                                        "  axiom[{idx}] (built-in, licensed by source {}): {ax:?}",
+                                        at.join(", ")
                                     );
                                 } else if internal.builtin.contains(ax) {
                                     println!(

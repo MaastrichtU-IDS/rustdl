@@ -439,9 +439,14 @@ enum Fold {
 /// conjunction containing it), closed upward through told atomic `SubClassOf` /
 /// `EquivalentClasses`. Each, with its licensing assertion. Every such class is
 /// non-empty in every model.
-fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir::ClassId, Axiom> {
+fn told_instances(
+    out: &InternalOntology,
+) -> std::collections::HashMap<crate::ir::ClassId, Vec<Axiom>> {
     use crate::ir::ConceptExpr as E;
-    let mut inst: std::collections::HashMap<crate::ir::ClassId, Axiom> =
+    // Each class with the source axioms that make it non-empty: the assertion, then
+    // the told `SubClassOf` / `EquivalentClasses` path from its class (#624 review: a
+    // citation of the assertion alone does not entail the fold).
+    let mut inst: std::collections::HashMap<crate::ir::ClassId, Vec<Axiom>> =
         std::collections::HashMap::new();
     for ax in &out.axioms {
         if let Axiom::ClassAssertion { class, .. } = ax {
@@ -449,7 +454,7 @@ fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir
             while let Some(c) = stack.pop() {
                 match out.concepts.get(c) {
                     E::Atomic(id) => {
-                        inst.entry(*id).or_insert_with(|| ax.clone());
+                        inst.entry(*id).or_insert_with(|| vec![ax.clone()]);
                     }
                     E::And(xs) => stack.extend(xs.iter().copied()),
                     _ => {}
@@ -458,7 +463,7 @@ fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir
         }
     }
     // Told atomic super-classes: D(a), D ⊑ E ⊢ E(a).
-    let mut edges: Vec<(crate::ir::ClassId, crate::ir::ClassId)> = Vec::new();
+    let mut edges: Vec<(crate::ir::ClassId, crate::ir::ClassId, &Axiom)> = Vec::new();
     let atomic = |c: crate::ir::ConceptId| match out.concepts.get(c) {
         E::Atomic(id) => Some(*id),
         _ => None,
@@ -467,7 +472,7 @@ fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir
         match ax {
             Axiom::SubClassOf { sub, sup } => {
                 if let (Some(a), Some(b)) = (atomic(*sub), atomic(*sup)) {
-                    edges.push((a, b));
+                    edges.push((a, b, ax));
                 }
             }
             Axiom::EquivalentClasses(cs) => {
@@ -475,7 +480,7 @@ fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir
                 for a in &ids {
                     for b in &ids {
                         if a != b {
-                            edges.push((*a, *b));
+                            edges.push((*a, *b, ax));
                         }
                     }
                 }
@@ -485,10 +490,12 @@ fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir
     }
     loop {
         let mut grew = false;
-        for (a, b) in &edges {
-            if let Some(lic) = inst.get(a).cloned()
-                && !inst.contains_key(b)
+        for (a, b, via) in &edges {
+            if !inst.contains_key(b)
+                && let Some(lic) = inst.get(a)
             {
+                let mut lic = lic.clone();
+                lic.push((*via).clone());
                 inst.insert(*b, lic);
                 grew = true;
             }
@@ -503,12 +510,12 @@ fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir
 enum NonEmpty {
     /// In every interpretation (`⊤`, a nominal).
     Always,
-    /// Given this source axiom (a told instance).
-    Given(Axiom),
+    /// Given these source axioms (a told instance and its told sub-class path).
+    Given(Vec<Axiom>),
 }
 
 impl NonEmpty {
-    fn licence(self) -> Option<Axiom> {
+    fn licence(self) -> Option<Vec<Axiom>> {
         match self {
             NonEmpty::Always => None,
             NonEmpty::Given(a) => Some(a),
@@ -519,7 +526,7 @@ impl NonEmpty {
 /// The context [`FoldCtx::fold_of`] needs.
 struct FoldCtx<'a> {
     u_obj: &'a BTreeSet<RoleId>,
-    instances: &'a std::collections::HashMap<crate::ir::ClassId, Axiom>,
+    instances: &'a std::collections::HashMap<crate::ir::ClassId, Vec<Axiom>>,
 }
 
 impl FoldCtx<'_> {
@@ -542,7 +549,7 @@ impl FoldCtx<'_> {
         &self,
         out: &InternalOntology,
         c: crate::ir::ConceptId,
-    ) -> Option<(Fold, Option<Axiom>)> {
+    ) -> Option<(Fold, Option<Vec<Axiom>>)> {
         use crate::ir::ConceptExpr as E;
         let universal = |r: &Role| self.u_obj.contains(&r.role_id());
         match out.concepts.get(c) {
@@ -636,7 +643,7 @@ pub(crate) fn fold_universal_role_uses(
         u_obj: &u_obj,
         instances: &instances,
     };
-    let mut added: Vec<(Axiom, Option<Axiom>)> = Vec::new();
+    let mut added: Vec<(Axiom, Option<Vec<Axiom>>)> = Vec::new();
     for c in reachable_concepts(out) {
         if let Some((fold, lic)) = ctx.fold_of(out, c) {
             let ax = match fold {
@@ -666,16 +673,25 @@ pub(crate) fn fold_universal_role_uses(
                 if universal(role) =>
             {
                 let top = out.concepts.top();
-                added.push((Axiom::SubClassOf { sub: top, sup: *c }, Some(ax.clone())));
+                added.push((
+                    Axiom::SubClassOf { sub: top, sup: *c },
+                    Some(vec![ax.clone()]),
+                ));
             }
             Axiom::IrreflexiveRole(r) | Axiom::AsymmetricRole(r) if universal(r) => {
                 let (top, bot) = (out.concepts.top(), out.concepts.bot());
-                added.push((Axiom::SubClassOf { sub: top, sup: bot }, Some(ax.clone())));
+                added.push((
+                    Axiom::SubClassOf { sub: top, sup: bot },
+                    Some(vec![ax.clone()]),
+                ));
             }
             Axiom::DisjointObjectProperties(rs) if rs.iter().any(universal) => {
                 if rs.iter().filter(|r| universal(r)).count() >= 2 {
                     let (top, bot) = (out.concepts.top(), out.concepts.bot());
-                    added.push((Axiom::SubClassOf { sub: top, sup: bot }, Some(ax.clone())));
+                    added.push((
+                        Axiom::SubClassOf { sub: top, sup: bot },
+                        Some(vec![ax.clone()]),
+                    ));
                 } else {
                     for s in rs.iter().filter(|r| !universal(r)) {
                         let (top, bot) = (out.concepts.top(), out.concepts.bot());
@@ -685,7 +701,7 @@ pub(crate) fn fold_universal_role_uses(
                                 sub: some,
                                 sup: bot,
                             },
-                            Some(ax.clone()),
+                            Some(vec![ax.clone()]),
                         ));
                     }
                 }

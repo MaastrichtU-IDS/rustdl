@@ -91,6 +91,37 @@ fn the_report_claims_a_minimal_justification_only_when_guaranteed() {
     );
 }
 
+/// The root sections too: an unsatisfiable root reached only through a disjunction
+/// (out of the EL/Horn fragment) is not claimed minimal; an EL root is.
+#[test]
+fn the_report_root_headings_follow_minimal_guaranteed() {
+    let disj = Fixture::new(
+        "Prefix(:=<http://ex.org/>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://ex.org/r>\n\
+         Declaration(Class(:X)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+         SubClassOf(:B owl:Nothing) SubClassOf(:C owl:Nothing)\n\
+         SubClassOf(:X ObjectUnionOf(:B :C))\n)\n",
+        "root-disj",
+    );
+    let html = run(&["report", disj.path()], &[]);
+    assert!(
+        html.contains("Why it's unsatisfiable (a justification; minimality not guaranteed)"),
+        "{html}"
+    );
+    let el = Fixture::new(
+        "Prefix(:=<http://ex.org/>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+         Ontology(<http://ex.org/s>\n\
+         Declaration(Class(:X)) Declaration(Class(:B))\n\
+         SubClassOf(:B owl:Nothing) SubClassOf(:X :B)\n)\n",
+        "root-el",
+    );
+    let html = run(&["report", el.path()], &[]);
+    assert!(
+        html.contains("Why it's unsatisfiable (minimal justification)"),
+        "EL control: {html}"
+    );
+}
+
 #[test]
 fn enumeration_complete_needs_every_justification_minimal() {
     let q = |f: &Fixture| -> serde_json::Value {

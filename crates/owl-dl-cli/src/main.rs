@@ -383,7 +383,8 @@ enum Command {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
-    /// Explain WHY an entailment holds: print a minimal responsible-axiom set.
+    /// Explain WHY an entailment holds: print a responsible-axiom set (minimal where guaranteed;
+    /// each says whether it is).
     Justify {
         /// Path to the ontology (.ofn).
         file: PathBuf,
@@ -396,7 +397,7 @@ enum Command {
         /// `data-value A DP V` (V = `"lex"^^xsd:type` or `"lex"`).
         #[arg(num_args = 1..)]
         query: Vec<String>,
-        /// Print ALL minimal justifications (capped by --max), not just one.
+        /// Print ALL justifications (capped by --max), not just one.
         #[arg(long)]
         all: bool,
         /// Cap on the number of justifications printed with --all.
@@ -460,7 +461,7 @@ enum Command {
     Diagnose {
         /// Path to the ontology (.ofn / .owx / .owl / .rdf / .omn).
         file: PathBuf,
-        /// Print ALL minimal justifications per root (capped by --max), not just one.
+        /// Print ALL justifications per root (capped by --max), not just one.
         #[arg(long)]
         all: bool,
         /// Cap on the number of justifications printed with --all.

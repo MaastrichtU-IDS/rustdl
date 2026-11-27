@@ -274,9 +274,10 @@ class Justifications(Mapping[str, object]):
     ontology is EL/Horn (`in_fragment`), no subset probe gave up (`incomplete`) and
     the saturation-only oracle was not used (`saturation_oracle`); `False` means not
     guaranteed. It does not cover `relies_on_trusted_consistency` (#429).
-    `enumeration_complete`: no justification is known to be missing (always `True`
-    for a single-justification query; for `justify_all_result`, nothing gave up,
-    every one is minimal, and `max` did not truncate)."""
+    `enumeration_complete`: no justification is known to be missing (for a single
+    query, `False` only when none was found on a give-up; for `justify_all_result`,
+    nothing gave up, no saturation-only oracle, every one minimal, and fewer than
+    `max` found)."""
     justifications: tuple[tuple[str, ...], ...]
     minimal: tuple[bool, ...]
     enumeration_complete: bool

@@ -40,6 +40,22 @@ SubClassOf(:B :D)
 )
 """
 SUB = ["subclass", "http://ex.org/A", "http://ex.org/D"]
+# Three justifications of `A ⊑ D` in EL: {A⊑D}, {A⊑B, B⊑D}, {A⊑C, C⊑D}.
+MULTI = """Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/m>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))
+SubClassOf(:A :B) SubClassOf(:B :D) SubClassOf(:A :C) SubClassOf(:C :D) SubClassOf(:A :D)
+)
+"""
+# Two unsatisfiable roots, each only through a disjunction (out of EL/Horn).
+TWO_ROOTS = """Prefix(:=<http://ex.org/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://ex.org/t>
+Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:B)) Declaration(Class(:C))
+SubClassOf(:B owl:Nothing) SubClassOf(:C owl:Nothing)
+SubClassOf(:X ObjectUnionOf(:B :C)) SubClassOf(:Y ObjectUnionOf(:B :C))
+)
+"""
 
 
 @pytest.fixture(autouse=True)
@@ -107,18 +123,45 @@ def test_el_is_minimal_and_silent(tmp_path):
     assert r.in_fragment and r.minimal == (True,) and not ws
     r, ws = _minimality(rustdl.justify_all_result, path, SUB)
     assert r.minimal == (True,) and r.enumeration_complete is True and not ws
-    # A truncated set is not complete: `max` equal to... below the count.
-    assert rustdl.justify_all_result(path, SUB, 0).enumeration_complete is False
+    r = rustdl.justify_all_result(path, SUB, 0)
+    assert r.justifications == () and r.enumeration_complete is False
+
+
+@pytest.mark.parametrize("max_, found, complete", [(2, 2, False), (3, 3, False), (5, 3, True)])
+def test_truncation_and_exactly_max(tmp_path, max_, found, complete):
+    """Fewer than `max` found is complete; exactly `max` may be truncated, so not."""
+    path = _write(tmp_path, "multi.ofn", MULTI)
+    r, ws = _minimality(rustdl.justify_all_result, path, SUB, max_)
+    assert len(r.justifications) == found and len(r.minimal) == found
+    assert r.enumeration_complete is complete and all(r.minimal) and not ws
+    assert len(rustdl.justify_all(path, SUB, max_)) == found
+
+
+def test_a_not_entailed_query_is_silent(tmp_path):
+    path = _write(tmp_path, "disj.ofn", DISJUNCTIVE)
+    r, ws = _minimality(rustdl.justify_result, path, ["subclass", "http://ex.org/D", "http://ex.org/A"])
+    assert r.justifications == () and r.minimal == () and not ws
+    assert r.enumeration_complete is True and r.incomplete is False
 
 
 def test_the_warning_points_at_the_caller(tmp_path):
     path = _write(tmp_path, "disj.ofn", DISJUNCTIVE)
-    for fn, args in ((rustdl.justify, (SUB,)), (rustdl.justify_all_result, (SUB,))):
-        _, ws = _minimality(fn, path, *args)
-        assert ws[0].filename == __file__, (fn.__name__, ws[0].filename)
     p = rustdl.prepare(path)
-    _, ws = _minimality(p.justify, SUB)
-    assert len(ws) == 1 and ws[0].filename == __file__
+    for label, call in (
+        ("justify", lambda: rustdl.justify(path, SUB)),
+        ("justify_result", lambda: rustdl.justify_result(path, SUB)),
+        ("justify_all", lambda: rustdl.justify_all(path, SUB)),
+        ("justify_all_result", lambda: rustdl.justify_all_result(path, SUB)),
+        ("p.justify", lambda: p.justify(SUB)),
+        ("p.justify_result", lambda: p.justify_result(SUB)),
+        ("p.justify_all", lambda: p.justify_all(SUB)),
+        ("p.justify_all_result", lambda: p.justify_all_result(SUB)),
+        ("debug", lambda: rustdl.debug(_write(tmp_path, "two.ofn", TWO_ROOTS))),
+    ):
+        _, ws = _minimality(call)
+        assert len(ws) == 1, (label, [str(w.message) for w in ws])
+        # The lambda's line is in this file; so is the call site the warning names.
+        assert ws[0].filename == __file__, (label, ws[0].filename)
 
 
 def test_prepared_ontology_carries_minimality(tmp_path):
@@ -129,6 +172,16 @@ def test_prepared_ontology_carries_minimality(tmp_path):
     assert r.enumeration_complete is False and len(ws) == 1
     js, ws = _minimality(p.justify_all, ["inconsistent"], 5)
     assert js and len(ws) == 1
+
+
+def test_debug_warns_once_over_several_roots(tmp_path):
+    d, ws = _minimality(rustdl.debug, _write(tmp_path, "two.ofn", TWO_ROOTS))
+    # `B` and `C` are roots too (each told ⊑ ⊥). The fragment is the whole ontology's,
+    # which the disjunction takes out of EL/Horn, so no root's justification is
+    # guaranteed minimal: four roots, one warning.
+    assert {r.iri for r in d.roots} >= {"http://ex.org/X", "http://ex.org/Y"}
+    assert all(r.minimal is False for r in d.roots)
+    assert len(ws) == 1 and f"{len(d.roots)} justification(s)" in str(ws[0].message)
 
 
 def test_debug_warns_once_and_marks_each_section(tmp_path):

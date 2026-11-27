@@ -1507,7 +1507,8 @@ def _section(cls, j: Justifications, **fields):
     """#625: a `Root` / `Inconsistency` from a `Justifications` (at most one)."""
     return cls(
         justification=j.justifications[0] if j.justifications else (),
-        minimal=j.minimal[0] if j.minimal else True,
+        # Nothing found (a give-up) claims no minimality.
+        minimal=j.minimal[0] if j.minimal else False,
         **fields,
     )
 

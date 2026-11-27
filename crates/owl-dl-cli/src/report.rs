@@ -371,7 +371,8 @@ pub(crate) fn build_report(
             .justifications
             .into_iter()
             .next()
-            .map_or((Vec::new(), true), |j| (j.axioms, j.minimal_guaranteed));
+            // #625: nothing found (a give-up) claims no minimality.
+            .map_or((Vec::new(), false), |j| (j.axioms, j.minimal_guaranteed));
         let repairs = rep.repairs.into_iter().map(|r| r.remove).collect();
         return Ok(Report {
             ontology_path,
@@ -420,7 +421,8 @@ pub(crate) fn build_report(
             .justifications
             .into_iter()
             .next()
-            .map_or((Vec::new(), true), |j| (j.axioms, j.minimal_guaranteed));
+            // #625: nothing found (a give-up) claims no minimality.
+            .map_or((Vec::new(), false), |j| (j.axioms, j.minimal_guaranteed));
         let rep =
             owl_dl_reasoner::find_repairs_prepared(prepared, &q, 10).context("repair root")?;
         repairs_complete &= rep.complete;

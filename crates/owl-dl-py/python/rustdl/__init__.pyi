@@ -123,6 +123,12 @@ class Classification:
         fires, so entailments that need it may be missing (#353)."""
         ...
     @property
+    def wedge_clauses_deferred(self) -> int:
+        """The classify wedge clausifier's deferral events (#600): encodings of
+        the input's axioms it skipped, so entailments that need them may be
+        missing. One axiom can count more than once."""
+        ...
+    @property
     def derived_same_undecided(self) -> int:
         """How many candidate individual equalities classify did not decide,
         so entailments that need them may be missing (#354)."""

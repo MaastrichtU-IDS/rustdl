@@ -41,6 +41,45 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
         .unwrap_or_default()
 }
 
+/// `dropped_block` plus #543's `universal_role_ordinary`, from ONE conversion, for
+/// the commands that report both. A failed conversion reads as nothing dropped and
+/// no flag, as `dropped_block` does.
+pub(crate) fn conversion_block(onto: &SetOntology<RcStr>) -> (BTreeMap<String, u64>, bool) {
+    owl_dl_reasoner::conversion_report(onto)
+        .map(|(d, uro)| (d.by_kind().clone(), uro))
+        .unwrap_or_default()
+}
+
+/// #543's flag for a command that does not otherwise convert the ontology: a byte
+/// search of the file for the two top property names first, so an ontology that
+/// names neither (all but a handful) is not converted a second time.
+pub(crate) fn universal_role_flag(file: &std::path::Path, onto: &SetOntology<RcStr>) -> bool {
+    names_a_top_property(file) && conversion_block(onto).1
+}
+
+/// #543 for the role-level surfaces (`property-values`, `realize --properties`): also
+/// set when a role sits above a top property, whose edges between every pair of
+/// individuals those surfaces do not list. See
+/// `owl_dl_reasoner::universal_role_ordinary_for_roles`.
+pub(crate) fn universal_role_flag_for_roles(
+    file: &std::path::Path,
+    onto: &SetOntology<RcStr>,
+) -> bool {
+    names_a_top_property(file)
+        && owl_dl_reasoner::universal_role_ordinary_for_roles(onto).unwrap_or(false)
+}
+
+/// Does the file name `owl:topObjectProperty` or `owl:topDataProperty` at all? A
+/// pre-filter only (any spelling of the IRI contains the local name); unreadable
+/// counts as yes, so the conversion decides.
+fn names_a_top_property(file: &std::path::Path) -> bool {
+    let Ok(bytes) = std::fs::read(file) else {
+        return true;
+    };
+    let mentions = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    mentions(b"topObjectProperty") || mentions(b"topDataProperty")
+}
+
 /// Decisions taken on the wedge's trusted `Sat` verdict, without the tableau
 /// (issue #66; #568 widened it to every channel):
 ///
@@ -135,7 +174,9 @@ pub(crate) struct ClassifyJson {
     /// distinction callers already depend on. Same reasoning as
     /// `Realization::witness_prune_active`.
     pub(crate) trusted_sat_refutations: usize,
-    /// The inconsistency pre-check reached no verdict: a route gave up, or was
+    /// The inconsistency pre-check reached no verdict: a route gave up (since
+    /// #571 a `Stalled` consistency wedge counts only if the main-tableau
+    /// fallback after it gave up too), or was
     /// skipped because the global deadline had already passed (#162), or
     /// classify's consistency probe was admitted (an unsatisfiable class, an
     /// incomplete `ABox` run, or counted data values) and gave up (#446), or the
@@ -158,7 +199,7 @@ pub(crate) struct ClassifyJson {
     /// completeness_guaranteed()`, i.e. **this hierarchy is provably free of
     /// missed subsumptions**. `true` only on a fragment where the engine that
     /// answered is complete and when none of the other signals in this struct
-    /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no
+    /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no `wedge_abox_blind`, no
     /// `wedge_clauses_refused`, no `derived_same_undecided`, no
     /// `consistency_undetermined` and nothing in `dropped` (#246).
     /// `ClassificationStats::completeness_guaranteed` is the predicate, and
@@ -182,6 +223,19 @@ pub(crate) struct ClassifyJson {
     /// A SEPARATE field for the same reason as `consistency_undetermined`: no class
     /// pair was cut, and `incomplete` means exactly that.
     pub(crate) wedge_hierarchy_blind: bool,
+    /// #533: classify trusted a wedge model that touches a nominal while some `ABox`
+    /// fact did not apply in it (not given to the classify wedge, or given for an
+    /// individual the model does not instantiate), so the model may not be a model of
+    /// the full `KB`, and a subsumption or an unsatisfiable class may be missing.
+    /// A SEPARATE field for the same reason as `wedge_hierarchy_blind`: no class pair
+    /// was cut. `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` decides those cases on the main
+    /// tableau instead, and this is then false. Near-universal on input with both a
+    /// nominal and an `ABox`: set on 353 of the 374 consistent ORE ontologies of that
+    /// kind that finish at 60 s, all of which already had `completeness_guaranteed: false`.
+    pub(crate) wedge_abox_blind: bool,
+    /// #533: wedge models demoted under `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (see
+    /// `wedge_abox_blind`). Diagnostic; 0 with the flag off.
+    pub(crate) wedge_abox_demoted: u64,
     /// #353: clauses the wedge's matcher refuses, which therefore never fire, so
     /// entailments that need them may be missing. A SEPARATE field for the same
     /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
@@ -217,6 +271,20 @@ pub(crate) struct ClassifyJson {
     /// answer was guessed. A fall-through the tableau could not finish is reported by
     /// the fields that cover that. Diagnostic; 0 when the guard never fired.
     pub(crate) wedge_merge_churn_stops: u64,
+    /// #571: classify's consistency wedge returned `Stalled` (no verdict). Since
+    /// #571 the main tableau then runs in what is left of the wedge's budget, and
+    /// `stalled_wedge_fallback` says what it answered. Diagnostic.
+    pub(crate) consistency_wedge_stalled: bool,
+    /// #571: that consistency wedge's fixpoints the merge-churn guard stopped: the
+    /// cause of the `Stalled` when non-zero, its deadline or another cap when 0.
+    /// Separate from `wedge_merge_churn_stops`, which counts the classify wedge.
+    pub(crate) consistency_wedge_merge_churn_stops: u64,
+    /// #571: what the main-tableau fallback after a `Stalled` consistency wedge
+    /// answered: `"consistent"` (a model), `"inconsistent"` (a clash), `"gave_up"`
+    /// (no verdict in budget; `consistency_undetermined` stays set), or `null` when
+    /// it did not run (`RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK=0`, no budget left,
+    /// or no `Stalled` wedge).
+    pub(crate) stalled_wedge_fallback: Option<&'static str>,
     /// #462/#475: probes (per-class unsat probes and pair probes) that ended in
     /// `NoVerdict` as an internal limit, likely a reasoner bug (#449): any probe with NO
     /// deadline (e.g. under `--pair-timeout-ms 0`), and any probe whose deterministic
@@ -249,6 +317,13 @@ pub(crate) struct ClassifyJson {
     /// these axioms could add answers (both Konclude and `HermiT` keep the repeats); this
     /// field is how a caller sees that. `{"axioms": 0, "vacuous": 0}` when none.
     pub(crate) collapsed_operands: CollapsedOperandsJson,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 /// `collapsed_operands` in `classify --json` and `consistent --json` (#538).
@@ -308,6 +383,13 @@ pub(crate) struct ConsistentJson {
     /// #538: as in `classify --json`. A repeated operand of `DifferentIndividuals` or
     /// `DisjointClasses` no longer makes the ontology inconsistent.
     pub(crate) collapsed_operands: CollapsedOperandsJson,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 /// One entry of `VerifyElJson::violations`.
@@ -334,6 +416,13 @@ pub(crate) struct VerifyElJson {
     pub(crate) violations: Vec<VerifyElViolationJson>,
     pub(crate) unresolved: Vec<String>,
     pub(crate) dropped: BTreeMap<String, u64>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[derive(Serialize)]
@@ -410,8 +499,17 @@ pub(crate) struct RealizeJson {
     pub(crate) saturation_only: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct DisjointJson {
     pub(crate) schema_version: u32,
@@ -440,6 +538,13 @@ pub(crate) struct DisjointJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -485,6 +590,13 @@ pub(crate) struct SatExprJson {
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) satisfiable: bool,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -530,6 +642,13 @@ pub(crate) struct SubclassExprJson {
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) entailed: bool,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -565,12 +684,20 @@ pub(crate) struct InstancesExprJson {
     /// check's own probe (after a positive answer) sets it with `consistency_undetermined`.
     pub(crate) no_verdict: bool,
     pub(crate) instances: Vec<String>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[must_use]
 pub(crate) fn build_sat_expr_json(v: &owl_dl_reasoner::CeVerdict) -> SatExprJson {
     SatExprJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: v.universal_role_ordinary(),
         incomplete: v.incomplete(),
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
@@ -584,6 +711,7 @@ pub(crate) fn build_sat_expr_json(v: &owl_dl_reasoner::CeVerdict) -> SatExprJson
 pub(crate) fn build_subclass_expr_json(v: &owl_dl_reasoner::CeVerdict) -> SubclassExprJson {
     SubclassExprJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: v.universal_role_ordinary(),
         incomplete: v.incomplete(),
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
@@ -599,6 +727,7 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
     instances.sort();
     InstancesExprJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: r.universal_role_ordinary(),
         incomplete: r.incomplete(),
         depth_capped: r.depth_capped(),
         completeness_guaranteed: r.completeness_guaranteed(),
@@ -671,6 +800,7 @@ pub(crate) fn build_classify_json(
 
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: stats.universal_role_ordinary && !stats.inconsistent,
         consistent: !stats.inconsistent,
         incomplete: deadline_flags(&stats).0,
         prep_timed_out: deadline_flags(&stats).1,
@@ -681,6 +811,8 @@ pub(crate) fn build_classify_json(
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
+        wedge_abox_blind: stats.wedge_abox_blind,
+        wedge_abox_demoted: stats.wedge_abox_demoted,
         wedge_clauses_refused: stats.wedge_clauses_refused,
         wedge_clauses_deferred: stats.wedge_clauses_deferred,
         consistency_wedge_clauses_refused: stats.consistency_wedge_clauses_refused,
@@ -688,6 +820,11 @@ pub(crate) fn build_classify_json(
         derived_same_undecided: stats.derived_same_undecided,
         matrix_closure_added_pairs: stats.matrix_closure_added_pairs,
         wedge_merge_churn_stops: stats.wedge_merge_churn_stops,
+        consistency_wedge_stalled: stats.consistency_wedge_stalled,
+        consistency_wedge_merge_churn_stops: stats.consistency_wedge_merge_churn_stops,
+        stalled_wedge_fallback: stats
+            .stalled_wedge_fallback
+            .map(owl_dl_reasoner::StalledWedgeFallback::as_str),
         no_verdict_pairs: stats.no_verdict_pairs,
         depth_capped_pairs: stats.depth_capped_pairs,
         unsatisfiable,
@@ -706,6 +843,7 @@ pub(crate) fn build_classify_json(
 pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: false,
         consistent: true,
         incomplete: true,
         prep_timed_out: true,
@@ -716,6 +854,8 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         trusted_sat_refutations: 0,
         completeness_guaranteed: false,
         wedge_hierarchy_blind: false,
+        wedge_abox_blind: false,
+        wedge_abox_demoted: 0,
         wedge_clauses_refused: 0,
         wedge_clauses_deferred: 0,
         consistency_wedge_clauses_refused: 0,
@@ -723,6 +863,9 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         derived_same_undecided: 0,
         matrix_closure_added_pairs: 0,
         wedge_merge_churn_stops: 0,
+        consistency_wedge_stalled: false,
+        consistency_wedge_merge_churn_stops: 0,
+        stalled_wedge_fallback: None,
         no_verdict_pairs: 0,
         depth_capped_pairs: 0,
         unsatisfiable: Vec::new(),
@@ -760,9 +903,11 @@ pub(crate) fn build_consistent_json(
     no_verdict: bool,
     dropped: BTreeMap<String, u64>,
     collapsed_operands: CollapsedOperandsJson,
+    universal_role_ordinary: bool,
 ) -> ConsistentJson {
     ConsistentJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         consistent,
         incomplete,
         relies_on_trusted_consistency,
@@ -788,9 +933,11 @@ pub(crate) fn build_verify_el_json(
     violations: Vec<VerifyElViolationJson>,
     unresolved: Vec<String>,
     dropped: BTreeMap<String, u64>,
+    universal_role_ordinary: bool,
 ) -> VerifyElJson {
     VerifyElJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         verdict,
         domain_size,
         axioms_checked,
@@ -805,6 +952,7 @@ pub(crate) fn build_realize_json(
     r: &Realization,
     dropped: BTreeMap<String, u64>,
     saturation_only: bool,
+    universal_role_ordinary: bool,
 ) -> RealizeJson {
     let mut individuals: Vec<IndividualTypesJson> = r
         .individuals()
@@ -824,6 +972,7 @@ pub(crate) fn build_realize_json(
     individuals.sort_by(|a, b| a.iri.cmp(&b.iri));
     RealizeJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: r.incomplete(),
         depth_capped: r.depth_capped(),
         witness_prune_active: r.witness_prune_active(),
@@ -861,6 +1010,13 @@ pub(crate) struct PropHierJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 fn side(c: &PropertyClassification) -> PropHierSide {
@@ -883,9 +1039,11 @@ pub(crate) fn build_prophier_json(
     obj: &PropertyClassification,
     data: &PropertyClassification,
     structural_gaps: Vec<String>,
+    universal_role_ordinary: bool,
 ) -> PropHierJson {
     PropHierJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: false,
         object_properties: side(obj),
         data_properties: side(data),
@@ -900,6 +1058,7 @@ pub(crate) fn build_disjoint_json(
     data: Vec<(String, String)>,
     consistency_undetermined: bool,
     structural_gaps: Vec<String>,
+    universal_role_ordinary: bool,
 ) -> DisjointJson {
     let to_arr = |v: Vec<(String, String)>| {
         let mut a: Vec<[String; 2]> = v.into_iter().map(|(x, y)| [x, y]).collect();
@@ -914,6 +1073,7 @@ pub(crate) fn build_disjoint_json(
     dc.sort();
     DisjointJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: classes.incomplete(),
         disjoint_classes: dc,
         disjoint_object_properties: to_arr(obj),
@@ -924,6 +1084,8 @@ pub(crate) fn build_disjoint_json(
     }
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct IndividualsJson {
     pub(crate) schema_version: u32,
@@ -946,12 +1108,20 @@ pub(crate) struct IndividualsJson {
     pub(crate) no_verdict: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[must_use]
 pub(crate) fn build_individuals_json(
     same: &SameIndividuals,
     different: &DifferentIndividuals,
+    universal_role_ordinary: bool,
 ) -> IndividualsJson {
     let mut same_groups: Vec<Vec<String>> = same
         .groups()
@@ -976,6 +1146,7 @@ pub(crate) fn build_individuals_json(
 
     IndividualsJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: same.incomplete() || different.incomplete(),
         consistency_undetermined: same.consistency_undetermined()
             || different.consistency_undetermined(),
@@ -985,6 +1156,8 @@ pub(crate) fn build_individuals_json(
     }
 }
 
+// `struct_excessive_bools`: each bool is a field of the published JSON schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 pub(crate) struct PropertyValuesJson {
     pub(crate) schema_version: u32,
@@ -1013,6 +1186,13 @@ pub(crate) struct PropertyValuesJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[must_use]
@@ -1020,6 +1200,7 @@ pub(crate) fn build_property_values_json(
     obj: &ObjectPropertyValues,
     data: &DataPropertyValues,
     structural_gaps: Vec<String>,
+    universal_role_ordinary: bool,
 ) -> PropertyValuesJson {
     let mut object_property_values: Vec<[String; 3]> = obj
         .triples()
@@ -1039,6 +1220,7 @@ pub(crate) fn build_property_values_json(
 
     PropertyValuesJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         incomplete: obj.incomplete() || data.incomplete(),
         object_property_values,
         consistency_undetermined: obj.consistency_undetermined() || data.consistency_undetermined(),
@@ -1084,6 +1266,13 @@ pub(crate) struct JustifyJson {
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
     pub(crate) justifications: Vec<JustificationJson>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[derive(Serialize)]
@@ -1122,6 +1311,7 @@ pub(crate) fn build_justify_json(
     pm: &PrefixMapping,
     laconic: bool,
     enumeration_complete: bool,
+    universal_role_ordinary: bool,
 ) -> JustifyJson {
     let justs = &outcome.justifications;
     let minimal = justs.iter().all(|j| j.minimal_guaranteed);
@@ -1133,6 +1323,7 @@ pub(crate) fn build_justify_json(
         .collect();
     JustifyJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary,
         status: match outcome.status {
             Verdict::Entailed => "entailed",
             Verdict::NotEntailed => "not-entailed",
@@ -1196,9 +1387,15 @@ pub(crate) struct ProveJson {
     /// every premise has a sub-proof; `false` when some step cannot be completed from
     /// the cited axioms; `null` when there is no proof.
     pub(crate) proof_complete: Option<bool>,
+    /// #594: `true` when some proof step uses an axiom that is not a source axiom
+    /// (`builtin_axioms` or `derived_axioms`), so a consumer that shows only source
+    /// axioms (the Protégé plugin) cannot show that step; `null` when there is no proof.
+    pub(crate) proof_uses_non_source_axioms: Option<bool>,
     pub(crate) proof: Option<ProofNodeJson>,
-    /// OFN ontology document (present iff `has_proof` is `false` and
-    /// `entailed` is `true`).
+    /// OFN ontology document. Present when `has_proof` is `false` and `entailed` is
+    /// `true`; #594: with `prove --source-fallback`, also alongside a step proof that
+    /// uses a non-source axiom, as a source-only justification of the same entailment
+    /// that a consumer can show instead.
     pub(crate) justification_fallback: Option<String>,
     /// Present iff `justification_fallback` is: `true` when that justification is
     /// guaranteed minimal. An EMPTY fallback with `justification_minimal: true`
@@ -1206,6 +1403,13 @@ pub(crate) struct ProveJson {
     /// with no axioms at all, unlike an empty fallback with `incomplete: true`,
     /// where the search gave up (#402).
     pub(crate) justification_minimal: Option<bool>,
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change this answer. rustdl treats it as an ordinary property:
+    /// positive answers are sound, but a negative answer or a missing entailment may be
+    /// wrong. Not a give-up; the command also prints a stderr note. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    pub(crate) universal_role_ordinary: bool,
 }
 
 #[derive(Serialize)]
@@ -1409,18 +1613,32 @@ fn derived_fact_to_component(
 pub(crate) struct Citations<'a> {
     literal:
         HashMap<owl_dl_core::ontology::Axiom, &'a horned_owl::model::AnnotatedComponent<RcStr>>,
+    /// #603: the told-definition match index, built on first use (only a proof citing a
+    /// non-literal atomic `SubClassOf` needs it).
+    matches: std::cell::OnceCell<owl_dl_core::told_definition_match::MatchIndex>,
+    /// #603: resolved axiom index → its source components (successes only).
+    resolved: std::cell::RefCell<HashMap<usize, Vec<&'a Component<RcStr>>>>,
+    /// #603: axioms being resolved, so a derived edge never explains itself.
+    in_progress: std::cell::RefCell<std::collections::HashSet<usize>>,
+    /// #603: the ontology the index and the memo are keyed to (axiom indices); every
+    /// call must pass that same `InternalOntology`.
+    internal_id: usize,
 }
 
 impl<'a> Citations<'a> {
     pub(crate) fn new(src: &'a SetOntology<RcStr>, internal: &InternalOntology) -> Self {
         Self {
             literal: owl_dl_core::provenance::literal_sources(src, internal),
+            matches: std::cell::OnceCell::new(),
+            resolved: std::cell::RefCell::new(HashMap::new()),
+            in_progress: std::cell::RefCell::new(std::collections::HashSet::new()),
+            internal_id: std::ptr::from_ref(internal) as usize,
         }
     }
 
     /// The source component `ax` is the stored form of, if one is: directly, or, for a
     /// piece of a decomposed chain, through the chain it came from.
-    fn source_of(
+    fn literal_of(
         &self,
         ax: &owl_dl_core::ontology::Axiom,
         internal: &InternalOntology,
@@ -1432,6 +1650,71 @@ impl<'a> Citations<'a> {
                 self.literal.get(&chain)
             })
             .map(|ac| &ac.component)
+    }
+
+    /// The source components to cite for `internal.axioms[idx]`: its own source
+    /// component, or (#603) for an atomic `A ⊑ D` the told-definition match emitted,
+    /// the source components of its premises. `None`: no source form (it is listed as
+    /// derived). All or nothing: a premise without a source form fails the whole set,
+    /// so what is cited always entails the axiom.
+    fn sources_of(
+        &self,
+        idx: usize,
+        internal: &InternalOntology,
+    ) -> Option<Vec<&'a Component<RcStr>>> {
+        let ax = internal.axioms.get(idx)?;
+        if let Some(c) = self.literal_of(ax, internal) {
+            return Some(vec![c]);
+        }
+        // Only the told-definition replay below is keyed to one ontology.
+        debug_assert_eq!(
+            std::ptr::from_ref(internal) as usize,
+            self.internal_id,
+            "Citations used with another InternalOntology than it was built for"
+        );
+        if let Some(v) = self.resolved.borrow().get(&idx) {
+            return Some(v.clone());
+        }
+        let owl_dl_core::ontology::Axiom::SubClassOf { sub, sup } = ax else {
+            return None;
+        };
+        let pool = &internal.concepts;
+        let (owl_dl_core::ir::ConceptExpr::Atomic(a), owl_dl_core::ir::ConceptExpr::Atomic(d)) =
+            (pool.get(*sub), pool.get(*sup))
+        else {
+            return None;
+        };
+        if !self.in_progress.borrow_mut().insert(idx) {
+            return None;
+        }
+        let ix = self
+            .matches
+            .get_or_init(|| owl_dl_core::told_definition_match::MatchIndex::build(internal));
+        let is_literal = |i: usize| self.literal_of(&internal.axioms[i], internal).is_some();
+        // Literal premises first (a first-round edge needs nothing else); then other
+        // derived edges, never one being resolved (it would explain itself).
+        let premises = ix.premises(internal, *a, *d, &is_literal).or_else(|| {
+            let progress = self.in_progress.borrow().clone();
+            ix.premises(internal, *a, *d, &|i| {
+                i != idx && (is_literal(i) || !progress.contains(&i))
+            })
+        });
+        let out = premises.and_then(|ps| {
+            let mut out: Vec<&'a Component<RcStr>> = Vec::new();
+            for p in ps {
+                for c in self.sources_of(p, internal)? {
+                    if !out.contains(&c) {
+                        out.push(c);
+                    }
+                }
+            }
+            Some(out)
+        });
+        self.in_progress.borrow_mut().remove(&idx);
+        if let Some(v) = &out {
+            self.resolved.borrow_mut().insert(idx, v.clone());
+        }
+        out
     }
 }
 
@@ -1465,25 +1748,27 @@ fn build_proof_node_json(
     let (builtin_refs, source_refs): (Vec<_>, Vec<_>) = node
         .axiom_refs
         .iter()
-        .filter_map(|r| internal.axioms.get(r.0))
-        .partition(|ax| internal.builtin.contains(ax));
+        .filter_map(|r| internal.axioms.get(r.0).map(|ax| (r.0, ax)))
+        .partition(|(_, ax)| internal.builtin.contains(ax));
     // #586: a cited axiom is rendered as the source component it came from, as written,
     // never as conversion stored it (which Protégé's literal lookup rejects). One with no
     // single source (a later pass derived it) goes to `derived_axioms`.
     let mut axioms: Vec<String> = Vec::new();
     let mut derived_axioms: Vec<String> = Vec::new();
-    for ax in source_refs {
-        match cites.source_of(ax, internal) {
-            Some(component) => {
-                let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
-                if !axioms.contains(&doc) {
-                    axioms.push(doc);
+    for (idx, ax) in source_refs {
+        match cites.sources_of(idx, internal) {
+            Some(components) => {
+                for component in components {
+                    let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
+                    if !axioms.contains(&doc) {
+                        axioms.push(doc);
+                    }
                 }
             }
             None => derived_axioms.push(render(ax)),
         }
     }
-    let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(render).collect();
+    let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(|(_, ax)| render(ax)).collect();
 
     let premises = node
         .premises
@@ -1527,6 +1812,20 @@ fn build_proof_node_json(
 /// No node is missing an axiom or a premise's sub-proof. Read off the rendered JSON
 /// so `proof_complete` agrees with the per-node fields by construction (an axiom ref
 /// that fails to resolve counts as missing there too).
+/// #594: some step of the tree uses a builtin or derived axiom (the condition the
+/// Protégé plugin refuses a step proof on).
+fn proof_uses_non_source(node: &ProofNodeJson) -> bool {
+    !node.builtin_axioms.is_empty()
+        || !node.derived_axioms.is_empty()
+        || node.premises.iter().any(proof_uses_non_source)
+}
+
+/// #594: a justification's axioms as one OFN document, as `justification_fallback`
+/// renders them.
+pub(crate) fn justification_doc(axioms: &[Component<RcStr>], pm: &PrefixMapping) -> String {
+    axioms_to_ofn_doc(axioms, pm)
+}
+
 fn proof_is_complete(node: &ProofNodeJson) -> bool {
     !node.axiom_missing
         && node.unproved_premises.is_empty()
@@ -1542,6 +1841,7 @@ pub(crate) fn build_prove_json(
 ) -> Result<ProveJson> {
     let verdict = |entailed: bool, status: &str| ProveJson {
         schema_version: SCHEMA_VERSION,
+        universal_role_ordinary: owl_dl_core::top_bottom_roles::universal_role_ordinary(internal),
         entailed,
         status: status.to_owned(),
         incomplete: flags.incomplete,
@@ -1550,6 +1850,7 @@ pub(crate) fn build_prove_json(
         no_verdict: flags.no_verdict,
         has_proof: false,
         proof_complete: None,
+        proof_uses_non_source_axioms: None,
         proof: None,
         justification_fallback: None,
         justification_minimal: None,
@@ -1569,6 +1870,7 @@ pub(crate) fn build_prove_json(
             ProveJson {
                 has_proof: true,
                 proof_complete: Some(proof_is_complete(&proof)),
+                proof_uses_non_source_axioms: Some(proof_uses_non_source(&proof)),
                 proof: Some(proof),
                 ..verdict(true, "entailed")
             }
@@ -1727,8 +2029,17 @@ mod tests {
         // source's, since no source component converts to it: it is derived.
         let mut stripped = internal.clone();
         stripped.builtin.clear();
-        let j2 =
-            build_proof_node_json(&node, &stripped, &cites, &HashMap::new(), &pm, &build).unwrap();
+        // #603: `Citations` is keyed to the ontology it was built for.
+        let stripped_cites = Citations::new(&onto, &stripped);
+        let j2 = build_proof_node_json(
+            &node,
+            &stripped,
+            &stripped_cites,
+            &HashMap::new(),
+            &pm,
+            &build,
+        )
+        .unwrap();
         assert_eq!(j2.axioms.len(), 1, "{:?}", j2.axioms);
         assert!(j2.builtin_axioms.is_empty());
         assert_eq!(j2.derived_axioms.len(), 1, "{:?}", j2.derived_axioms);

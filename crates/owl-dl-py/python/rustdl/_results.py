@@ -96,6 +96,9 @@ class ClassExpressionVerdict(_MappingDataclass):
     consistency_undetermined: bool
     no_verdict: bool
     dropped: tuple[tuple[str, int], ...]
+    # #543: a universal role (in the ontology or the query) is read as an ordinary
+    # property, so a negative answer may be wrong; voids `completeness_guaranteed`.
+    universal_role_ordinary: bool = False
 
 
 @dataclass(frozen=True)
@@ -109,3 +112,6 @@ class ClassExpressionInstances(_MappingDataclass):
     no_verdict: bool
     depth_capped: bool
     dropped: tuple[tuple[str, int], ...]
+    # #543: a universal role (in the ontology or the query) is read as an ordinary
+    # property, so a negative answer may be wrong; voids `completeness_guaranteed`.
+    universal_role_ordinary: bool = False

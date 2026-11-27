@@ -1,0 +1,24 @@
+{ "schema_version": 1, "entailed": true, "has_proof": true,
+  "proof": {
+    "conclusion": "Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :C)\n)\n",
+    "rule": "SubsumerTransitivity(fwd)",
+    "axioms": [],
+    "premises": [
+      {
+        "conclusion": "Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :B)\n)\n",
+        "rule": "ToldSubsumer",
+        "axioms": ["Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :B)\n)\n"],
+        "premises": []
+      },
+      {
+        "conclusion": "Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:B :C)\n)\n",
+        "rule": "ToldSubsumer",
+        "axioms": [],
+        "derived_axioms": ["Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:B :C)\n)\n"],
+        "premises": []
+      }
+    ]
+  },
+  "proof_uses_non_source_axioms": true,
+  "justification_fallback": "Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :B)\n  SubClassOf(:B :Z)\n)\n"
+}

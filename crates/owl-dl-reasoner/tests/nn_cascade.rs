@@ -862,6 +862,84 @@ fn issue_564_fallback_give_up_is_undetermined() {
 }
 
 // ---------------------------------------------------------------------------
+// #571: a `Stalled` consistency wedge in classify's pre-check.
+//
+// On the r-cycle shape the merge-churn guard stops the consistency wedge with
+// `Stalled`. With `Q(d)` classify still ends inconsistent through `Q`'s unsat probe,
+// but with `A(d)` or `B(d)` (HermiT: consistent, `Q ≡ ⊥`) nothing else decides,
+// and the pre-check left `consistency_undetermined` set. The main-tableau fallback
+// (`RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK`) now decides it.
+// ---------------------------------------------------------------------------
+
+fn r_cycle() -> String {
+    inconsistent_shapes()
+        .into_iter()
+        .find(|(w, _)| *w == R_CYCLE)
+        .unwrap()
+        .1
+}
+
+/// `(consistent, consistency_undetermined)` on the r-cycle with `assertion`, from
+/// the top-down driver, a run with a per-pair timeout (30 s, generous so a loaded
+/// runner cannot cut it), and the `n²` driver. Every one of them gives the
+/// pre-check its own adaptive budget (`classify_inconsistency_budget_ms`); the
+/// no-deadline cap is pinned separately, in `stalled_wedge_consistency_cli.rs`.
+fn r_cycle_classify(assertion: &str) -> [(bool, bool); 3] {
+    let o = onto(&format!("{}\n{assertion}", r_cycle()));
+    let read = |c: owl_dl_reasoner::Classification| {
+        let s = c.stats();
+        (!s.inconsistent, s.consistency_undetermined)
+    };
+    [
+        read(owl_dl_reasoner::classify(&o).unwrap()),
+        read(
+            owl_dl_reasoner::classify_with_timeout(&o, std::time::Duration::from_secs(30)).unwrap(),
+        ),
+        read(owl_dl_reasoner::classify_n2(&o).unwrap()),
+    ]
+}
+
+#[test]
+fn issue_571_stalled_wedge_r_cycle_abox_is_decided() {
+    let _l = lock();
+    for x in ["A", "B"] {
+        assert_eq!(
+            r_cycle_classify(&format!("ClassAssertion(:{x} :d)")),
+            [(true, false); 3],
+            "{x}(d): consistent, decided"
+        );
+    }
+    assert_eq!(
+        r_cycle_classify("ClassAssertion(:Q :d)"),
+        [(false, false); 3],
+        "Q(d): inconsistent"
+    );
+}
+
+/// The fallback is what decides `A(d)`: either flag off brings back the undecided
+/// pre-check, and `Q(d)` stays inconsistent either way.
+#[test]
+fn issue_571_flags_off_leave_the_stalled_wedge_undetermined() {
+    let _l = lock();
+    for flag in [
+        "RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK",
+        "RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK",
+    ] {
+        let _f = SetEnvGuard::set(flag, "0");
+        assert_eq!(
+            r_cycle_classify("ClassAssertion(:A :d)"),
+            [(true, true); 3],
+            "{flag}=0: A(d) undetermined"
+        );
+        assert_eq!(
+            r_cycle_classify("ClassAssertion(:Q :d)"),
+            [(false, false); 3],
+            "{flag}=0: Q(d) inconsistent"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #568: the unsat probe's trusted wedge `Sat` is counted apart
 // (`wedge_sat_probe_hits`), so the CLI's `trusted_sat_refutations` sees it.
 // ---------------------------------------------------------------------------

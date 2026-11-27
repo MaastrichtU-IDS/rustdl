@@ -54,6 +54,7 @@ class Classification:
     def completeness_guaranteed(self) -> bool:
         """True iff the hierarchy is guaranteed complete (no missed
         subsumptions): pure EL, nothing cut, no `wedge_hierarchy_blind`, no
+        `wedge_abox_blind`, no
         `wedge_clauses_refused`, no `derived_same_undecided`, no
         `consistency_undetermined` and no dropped axiom. Stronger than
         `complete`, which only says nothing was cut."""
@@ -89,6 +90,13 @@ class Classification:
         consistent"."""
         ...
     @property
+    def universal_role_ordinary(self) -> bool:
+        """True iff the ontology uses a universal role where its semantics could
+        change the hierarchy (#543); rustdl treats it as an ordinary property, so an
+        entailment may be missing. Voids `completeness_guaranteed`. `classify` emits
+        `UniversalRoleWarning`."""
+        ...
+    @property
     def relies_on_trusted_consistency(self) -> bool:
         """True iff `inconsistent is False` rests on a consistency-wedge model
         that no main-tableau run verified (#429). Not a give-up; `classify`
@@ -99,6 +107,15 @@ class Classification:
         """True iff the wedge ran without role-hierarchy matching (Layer A
         off) over a non-trivial role hierarchy, so entailments needing
         sub-role, inverse or symmetric reasoning may be missing (#214)."""
+        ...
+    @property
+    def wedge_abox_blind(self) -> bool:
+        """True iff classify trusted a wedge model that touches a nominal
+        while some ABox fact did not apply in it (not given to the classify
+        wedge, or given for an individual the model lacks), so a
+        subsumption or an unsatisfiable class that depends on an individual's
+        facts may be missing (#533). Near-universal on input with both a
+        nominal and an ABox."""
         ...
     @property
     def wedge_clauses_refused(self) -> int:
@@ -442,6 +459,7 @@ class ClassExpressionVerdict(Mapping[str, object]):
     consistency_undetermined: bool
     no_verdict: bool
     dropped: tuple[tuple[str, int], ...]
+    universal_role_ordinary: bool
     def to_dict(self) -> dict: ...
 
 class ClassExpressionInstances(Mapping[str, object]):
@@ -455,6 +473,7 @@ class ClassExpressionInstances(Mapping[str, object]):
     no_verdict: bool
     depth_capped: bool
     dropped: tuple[tuple[str, int], ...]
+    universal_role_ordinary: bool
     def to_dict(self) -> dict: ...
 
 def class_expression_satisfiable_result(path: str, ce: str) -> ClassExpressionVerdict:
@@ -477,6 +496,16 @@ def class_expression_instances_result(path: str, ce: str) -> ClassExpressionInst
     ...
 
 # ── conversion diagnostics ──────────────────────────────────────────────────
+
+class UniversalRoleWarning(UserWarning): ...
+
+def universal_role_ordinary(path: str, role_level: bool = False) -> bool:
+    """True iff the ontology at `path` uses a universal role where rustdl's
+    ordinary-property reading can miss entailments (#543). Every path-taking query
+    emits `UniversalRoleWarning` when this holds. `role_level=True` also counts a
+    property above `owl:topObjectProperty`, whose edges between every pair of
+    individuals the property-assertion functions do not list."""
+    ...
 
 def dropped_axioms(path: str) -> dict[str, int]:
     """Kinds and counts of axioms conversion could not represent (a sound
@@ -564,6 +593,12 @@ class PreparedOntology:
     (parse + axiom split + fragment classification). Reuse it to justify many
     queries without re-doing that full-ontology work on each call. Use it from
     the thread that created it."""
+    @property
+    def universal_role_ordinary(self) -> bool:
+        """True iff the ontology uses a universal role where rustdl's
+        ordinary-property reading can miss entailments (#543); `justify` and
+        `justify_all` then emit `UniversalRoleWarning`."""
+        ...
     def justify(self, query: list[str]) -> list[str]:
         """One minimal justification (Manchester axioms) for `query`. Emits
         `IncompleteQueryWarning` when a reasoner check gave up."""

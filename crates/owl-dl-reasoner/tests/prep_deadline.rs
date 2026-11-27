@@ -443,6 +443,8 @@ fn unmeetable_budget_reports_the_unbounded_fallback() {
 
 /// A budget comfortably above conversion cost ⇒ prep IS bounded ⇒ flag clear.
 /// Without this control the test above would pass with the flag hard-wired true.
+/// #595: 600 s, not a wall-clock margin over conversion cost: 250 ms failed on a loaded
+/// host running a debug build. Any budget conversion cannot spend tests the same thing.
 #[test]
 fn meetable_budget_does_not_report_the_fallback() {
     let _lock = ENV_MUTEX
@@ -450,12 +452,12 @@ fn meetable_budget_does_not_report_the_fallback() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let onto = parse(&chain_ontology(500));
     let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "1");
-    let h = classify_with_budget(&onto, None, Some(Duration::from_millis(250)))
+    let h = classify_with_budget(&onto, None, Some(Duration::from_secs(600)))
         .expect("classify under a meetable budget");
     assert!(
         !h.stats().prep_unbounded_budget_spent,
-        "250 ms is >10x conversion cost for this fixture (the margin #61/#62 settled \
-         on), so prep must be bounded and the fallback flag clear"
+        "600 s is far beyond conversion cost for this fixture, so prep must be bounded \
+         and the fallback flag clear"
     );
 }
 

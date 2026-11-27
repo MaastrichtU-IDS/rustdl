@@ -184,10 +184,30 @@ pub(crate) fn repair(
 #[pyclass(name = "PreparedOntology", module = "rustdl", unsendable)]
 pub(crate) struct PyPreparedOntology {
     inner: owl_dl_reasoner::justify::PreparedJustifier<RcStr>,
+    /// #543, computed once at prepare time; the wrappers warn `UniversalRoleWarning`.
+    universal_role_ordinary: bool,
+}
+
+/// #543's flag for a prepared ontology: converted again only when the source text
+/// names a top property at all.
+fn prepared_universal_role(
+    src: &[u8],
+    onto: &horned_owl::ontology::set::SetOntology<RcStr>,
+) -> bool {
+    let mentions = |needle: &[u8]| src.windows(needle.len()).any(|w| w == needle);
+    (mentions(b"topObjectProperty") || mentions(b"topDataProperty"))
+        && owl_dl_reasoner::conversion_report(onto).is_ok_and(|(_, uro)| uro)
 }
 
 #[pymethods]
 impl PyPreparedOntology {
+    /// #543: the ontology uses a universal role where rustdl's ordinary-property
+    /// reading can miss entailments; a "not entailed" may be wrong.
+    #[getter]
+    fn universal_role_ordinary(&self) -> bool {
+        self.universal_role_ordinary
+    }
+
     /// One minimal justification for a query (CLI-style tokens; see `justify`),
     /// paired with `incomplete` (#396). The Python package binds a
     /// `PreparedOntology.justify` wrapper over this that warns instead.
@@ -225,8 +245,10 @@ impl PyPreparedOntology {
 #[pyfunction]
 pub(crate) fn prepare(path: &str) -> PyResult<PyPreparedOntology> {
     let onto = load::load_path(path)?;
+    let src = std::fs::read(path).unwrap_or_default();
     Ok(PyPreparedOntology {
         inner: owl_dl_reasoner::justify::PreparedJustifier::prepare(&onto),
+        universal_role_ordinary: prepared_universal_role(&src, &onto),
     })
 }
 
@@ -239,6 +261,7 @@ pub(crate) fn prepare_bytes(data: &[u8], format: &str) -> PyResult<PyPreparedOnt
     let onto = load::load_bytes(data, format)?;
     Ok(PyPreparedOntology {
         inner: owl_dl_reasoner::justify::PreparedJustifier::prepare(&onto),
+        universal_role_ordinary: prepared_universal_role(data, &onto),
     })
 }
 

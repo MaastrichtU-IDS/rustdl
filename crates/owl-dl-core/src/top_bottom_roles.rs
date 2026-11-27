@@ -486,11 +486,11 @@ fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir
     loop {
         let mut grew = false;
         for (a, b) in &edges {
-            if let Some(lic) = inst.get(a).cloned() {
-                if !inst.contains_key(b) {
-                    inst.insert(*b, lic);
-                    grew = true;
-                }
+            if let Some(lic) = inst.get(a).cloned()
+                && !inst.contains_key(b)
+            {
+                inst.insert(*b, lic);
+                grew = true;
             }
         }
         if !grew {
@@ -499,7 +499,24 @@ fn told_instances(out: &InternalOntology) -> std::collections::HashMap<crate::ir
     }
 }
 
-/// The context [`fold_of`] needs.
+/// Why a concept is non-empty in every model.
+enum NonEmpty {
+    /// In every interpretation (`⊤`, a nominal).
+    Always,
+    /// Given this source axiom (a told instance).
+    Given(Axiom),
+}
+
+impl NonEmpty {
+    fn licence(self) -> Option<Axiom> {
+        match self {
+            NonEmpty::Always => None,
+            NonEmpty::Given(a) => Some(a),
+        }
+    }
+}
+
+/// The context [`FoldCtx::fold_of`] needs.
 struct FoldCtx<'a> {
     u_obj: &'a BTreeSet<RoleId>,
     instances: &'a std::collections::HashMap<crate::ir::ClassId, Axiom>,
@@ -507,12 +524,12 @@ struct FoldCtx<'a> {
 
 impl FoldCtx<'_> {
     /// Is concept `x` non-empty in every model of the ontology? `⊤`, a nominal, or an
-    /// atomic class with a told instance. With the licensing axiom, if any.
-    fn non_empty(&self, out: &InternalOntology, x: crate::ir::ConceptId) -> Option<Option<Axiom>> {
+    /// atomic class with a told instance; `None` otherwise.
+    fn non_empty(&self, out: &InternalOntology, x: crate::ir::ConceptId) -> Option<NonEmpty> {
         use crate::ir::ConceptExpr as E;
         match out.concepts.get(x) {
-            E::Top | E::Nominal(_) => Some(None),
-            E::Atomic(id) => self.instances.get(id).map(|a| Some(a.clone())),
+            E::Top | E::Nominal(_) => Some(NonEmpty::Always),
+            E::Atomic(id) => self.instances.get(id).map(|a| NonEmpty::Given(a.clone())),
             _ => None,
         }
     }
@@ -531,14 +548,16 @@ impl FoldCtx<'_> {
         match out.concepts.get(c) {
             E::SelfRestriction(r) if universal(r) => Some((Fold::Top, None)),
             E::Some(r, x) | E::Min(1, r, x) if universal(r) => {
-                self.non_empty(out, *x).map(|lic| (Fold::Top, lic))
+                self.non_empty(out, *x).map(|n| (Fold::Top, n.licence()))
             }
             E::All(r, x) if universal(r) => match out.concepts.get(*x) {
                 E::Bot => Some((Fold::Bot, None)),
-                E::Not(y) => self.non_empty(out, *y).map(|lic| (Fold::Bot, lic)),
+                E::Not(y) => self.non_empty(out, *y).map(|n| (Fold::Bot, n.licence())),
                 _ => None,
             },
-            E::Max(0, r, x) if universal(r) => self.non_empty(out, *x).map(|lic| (Fold::Bot, lic)),
+            E::Max(0, r, x) if universal(r) => {
+                self.non_empty(out, *x).map(|n| (Fold::Bot, n.licence()))
+            }
             _ => None,
         }
     }
@@ -685,10 +704,10 @@ pub(crate) fn fold_universal_role_uses(
             out.builtin.push(ax.clone());
             out.universal_role_folds += 1;
         }
-        if let Some(lic) = lic {
-            if !out.builtin_licenses.iter().any(|(b, _)| b == &ax) {
-                out.builtin_licenses.push((ax, lic));
-            }
+        if let Some(lic) = lic
+            && !out.builtin_licenses.iter().any(|(b, _)| b == &ax)
+        {
+            out.builtin_licenses.push((ax, lic));
         }
     }
 }
@@ -725,10 +744,10 @@ impl Folded {
                 }
                 if sup_bot {
                     f.bot.insert(*sub);
-                    if let E::Some(r, x) = out.concepts.get(*sub) {
-                        if matches!(out.concepts.get(*x), E::Top) {
-                            f.emptied.insert(r.role_id());
-                        }
+                    if let E::Some(r, x) = out.concepts.get(*sub)
+                        && matches!(out.concepts.get(*x), E::Top)
+                    {
+                        f.emptied.insert(r.role_id());
                     }
                 }
             }

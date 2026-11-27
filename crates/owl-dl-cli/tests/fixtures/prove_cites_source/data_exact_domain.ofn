@@ -1,0 +1,10 @@
+Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/data_exact_domain>
+Declaration(Class(:Manual)) Declaration(Class(:Reference)) Declaration(Class(:Other))
+Declaration(DataProperty(:title)) Declaration(DataProperty(:edition))
+SubClassOf(:Manual DataExactCardinality(1 :title))
+SubClassOf(:Manual DataMaxCardinality(1 :edition))
+SubClassOf(:Manual :Other)
+DataPropertyDomain(:title :Reference)
+)

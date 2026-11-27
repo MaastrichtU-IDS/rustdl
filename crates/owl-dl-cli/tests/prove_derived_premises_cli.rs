@@ -227,3 +227,34 @@ fn a_union_conjunct_cites_its_premises() {
     assert_eq!(c.len(), 3, "{c:?}");
     assert!(entailed_by("union_common_conjunct", &c, &a, &d), "{c:?}");
 }
+
+/// `data_axioms`' domain inference, as OAEI benchmarks assert it: `Manual ⊑ =1 title`
+/// and `domain(title) = Reference` give `Manual ⊑ Reference`. It derives from source
+/// components, so the replay is on the source: the restriction and the domain, each
+/// needed.
+#[test]
+fn a_data_property_domain_inference_cites_its_premises() {
+    for (file, sub, sup) in [
+        ("data_exact_domain", "Manual", "Reference"),
+        // SWEET's shape: `Neutral ⊑ hasValue(hasCharge, 0)`.
+        ("data_hasvalue_domain", "Neutral", "Chemical"),
+    ] {
+        let (a, d) = (format!("{T}{sub}"), format!("{T}{sup}"));
+        let c = cited(file, &a, &d);
+        assert_eq!(c.len(), 2, "{file}: {c:?}");
+        assert!(
+            c.iter().any(|x| x.starts_with("DataPropertyDomain(")),
+            "{file}: {c:?}"
+        );
+        assert!(entailed_by(file, &c, &a, &d), "{file}: {c:?}");
+        for i in 0..c.len() {
+            let mut fewer = c.clone();
+            fewer.remove(i);
+            assert!(
+                !entailed_by(file, &fewer, &a, &d),
+                "{file}: {c:?} without {}",
+                c[i]
+            );
+        }
+    }
+}

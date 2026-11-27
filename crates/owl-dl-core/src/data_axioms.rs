@@ -50,8 +50,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use horned_owl::model::{
-    ClassExpression, Component, DataProperty, DataRange, FacetRestriction, ForIRI, Individual,
-    Literal,
+    AnnotatedComponent, ClassExpression, Component, DataProperty, DataRange, FacetRestriction,
+    ForIRI, Individual, Literal,
 };
 use horned_owl::ontology::set::SetOntology;
 use horned_owl::vocab::Facet;
@@ -95,6 +95,76 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_data_cardinality_violations_typed(src, top_id, bot_id, &mut out);
     emit_disjoint_dp_same_value_clash(&facts, top_id, bot_id, &mut out);
     out
+}
+
+/// #603: the source components behind Pattern 3 / Pattern 4's derived `C ⊑ D`
+/// (`class_iri` ⊑ `d_iri`), for a proof that cites it: a component asserting
+/// `C ⊑ DataSome(dp, _)` (or a `≥n` / `=n` / `hasValue` restriction on `dp`), the
+/// `SubDataPropertyOf` chain from `dp` up to a property `g` (reflexive), and either
+/// `DataPropertyDomain(g, D)` or `SubClassOf(DataSome(g, _), D)`. Each component is
+/// scanned on its own, so every fact is traced to the component that gave it; the
+/// premises entail `C ⊑ D` by the pattern's own reasoning. `None` when no such set is
+/// found (e.g. a `class_some` fact `propagate_intersection_bounds` lifted through a
+/// definition): the edge then stays derived, a miss, never a wrong citation.
+#[must_use]
+pub fn domain_inference_premises<'a, A: ForIRI>(
+    src: &'a SetOntology<A>,
+    class_iri: &str,
+    d_iri: &str,
+) -> Option<Vec<&'a AnnotatedComponent<A>>> {
+    let comps: Vec<&'a AnnotatedComponent<A>> = src.iter().collect();
+    let facts: Vec<Facts> = comps
+        .iter()
+        .map(|ac| {
+            let mut f = Facts::default();
+            scan_component(&ac.component, &mut f);
+            f
+        })
+        .collect();
+    // Edges `sub → sup` of the data-property hierarchy, with their component.
+    let mut up: BTreeMap<&str, Vec<(&str, usize)>> = BTreeMap::new();
+    for (i, f) in facts.iter().enumerate() {
+        for (sub, sup) in &f.sub_data_property {
+            up.entry(sub.as_str()).or_default().push((sup.as_str(), i));
+        }
+    }
+    let concludes = |g: &str| -> Option<usize> {
+        facts.iter().position(|f| {
+            f.domains.iter().any(|(dp, d)| dp == g && d == d_iri)
+                || f.some_super.get(g).is_some_and(|ds| ds.contains(d_iri))
+        })
+    };
+    for (si, f) in facts.iter().enumerate() {
+        for (c, dp) in &f.class_some {
+            if c != class_iri {
+                continue;
+            }
+            // BFS up the hierarchy from `dp` (reflexive), the parent edge of each.
+            let mut parent: BTreeMap<&str, Option<(&str, usize)>> = BTreeMap::new();
+            parent.insert(dp.as_str(), None);
+            let mut queue = std::collections::VecDeque::from([dp.as_str()]);
+            while let Some(g) = queue.pop_front() {
+                if let Some(j) = concludes(g) {
+                    let mut out = vec![si, j];
+                    let mut at = g;
+                    while let Some(Some((p, i))) = parent.get(at) {
+                        out.push(*i);
+                        at = p;
+                    }
+                    out.sort_unstable();
+                    out.dedup();
+                    return Some(out.into_iter().map(|i| comps[i]).collect());
+                }
+                for &(sup, i) in up.get(g).into_iter().flatten() {
+                    if !parent.contains_key(sup) {
+                        parent.insert(sup, Some((g, i)));
+                        queue.push_back(sup);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// DP-2: a data-CARDINALITY violation ⇒ global inconsistency.

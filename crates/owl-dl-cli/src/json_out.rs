@@ -1668,6 +1668,9 @@ pub(crate) struct Citations<'a> {
     /// #603: the ontology the index and the memo are keyed to (axiom indices); every
     /// call must pass that same `InternalOntology`.
     internal_id: usize,
+    /// #603: the source, for the data-axiom replay (`data_axioms` derives from source
+    /// components, not from the internal axioms).
+    src: &'a SetOntology<RcStr>,
 }
 
 impl<'a> Citations<'a> {
@@ -1678,6 +1681,7 @@ impl<'a> Citations<'a> {
             resolved: std::cell::RefCell::new(HashMap::new()),
             in_progress: std::cell::RefCell::new(std::collections::HashSet::new()),
             internal_id: std::ptr::from_ref(internal) as usize,
+            src,
         }
     }
 
@@ -1744,17 +1748,28 @@ impl<'a> Citations<'a> {
                 i != idx && (is_literal(i) || !progress.contains(&i))
             })
         });
-        let out = premises.and_then(|ps| {
-            let mut out: Vec<&'a Component<RcStr>> = Vec::new();
-            for p in ps {
-                for c in self.sources_of(p, internal)? {
-                    if !out.contains(&c) {
-                        out.push(c);
+        let out = premises
+            .and_then(|ps| {
+                let mut out: Vec<&'a Component<RcStr>> = Vec::new();
+                for p in ps {
+                    for c in self.sources_of(p, internal)? {
+                        if !out.contains(&c) {
+                            out.push(c);
+                        }
                     }
                 }
-            }
-            Some(out)
-        });
+                Some(out)
+            })
+            .or_else(|| {
+                // #603: `data_axioms`' domain inference (Pattern 3 / 4), replayed on the
+                // source: literal components only, so nothing to resolve further.
+                owl_dl_core::data_axioms::domain_inference_premises(
+                    self.src,
+                    internal.vocabulary.class_iri(*a),
+                    internal.vocabulary.class_iri(*d),
+                )
+                .map(|cs| cs.into_iter().map(|ac| &ac.component).collect())
+            });
         self.in_progress.borrow_mut().remove(&idx);
         if let Some(v) = &out {
             self.resolved.borrow_mut().insert(idx, v.clone());

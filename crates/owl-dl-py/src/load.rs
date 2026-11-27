@@ -45,6 +45,48 @@ pub(crate) fn load_path(path: &str) -> PyResult<SetOntology<RcStr>> {
     parse_with_format(&src, format)
 }
 
+/// #597: what a query's conversion dropped, plus #543's two universal-role flags
+/// (class level, role level), as the Python wrappers warn them.
+pub(crate) type ConversionNotes = (std::collections::BTreeMap<String, u64>, bool, bool);
+
+thread_local! {
+    /// #597: the notes of the last noted load on this thread. A Python wrapper
+    /// clears it, calls the native query, and takes it, so it never parses the file
+    /// a second time. A thread-local, not a return value, so the 26 natives keep
+    /// their signatures; the Python call and its native run on one thread.
+    static LAST_NOTES: std::cell::RefCell<Option<ConversionNotes>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// #597: record `notes` for the Python wrapper to take.
+pub(crate) fn set_notes(notes: ConversionNotes) {
+    LAST_NOTES.with(|c| *c.borrow_mut() = Some(notes));
+}
+
+/// #597: the notes of `ontology`'s conversion, from the already-parsed ontology
+/// (the parse, which dominates, is not repeated). A conversion that fails records
+/// nothing; the query itself then fails on the same conversion.
+pub(crate) fn note_conversion(ontology: &SetOntology<RcStr>) {
+    if let Ok((dropped, uro, uro_for_roles)) = owl_dl_reasoner::conversion_notes(ontology) {
+        set_notes((dropped.by_kind().clone(), uro, uro_for_roles));
+    }
+}
+
+/// [`load_path`], recording the conversion's notes for the Python wrapper (#597).
+pub(crate) fn load_path_noted(path: &str) -> PyResult<SetOntology<RcStr>> {
+    let ontology = load_path(path)?;
+    note_conversion(&ontology);
+    Ok(ontology)
+}
+
+/// `rustdl._take_conversion_notes()`: the notes the last noted native query on
+/// this thread recorded, cleared on read; `None` if there are none (#597).
+#[pyo3::pyfunction]
+#[pyo3(name = "_take_conversion_notes")]
+pub(crate) fn take_conversion_notes() -> Option<ConversionNotes> {
+    LAST_NOTES.with(|c| c.borrow_mut().take())
+}
+
 /// Like [`load_path`], but also returns the [`PrefixMapping`] the OFN/OWX/OMN
 /// reader collected — used to resolve Manchester class-expression strings
 /// (e.g. `:A`) against the ontology's own prefixes. The RDF/XML reader does

@@ -21,7 +21,7 @@ use crate::load;
 pub(crate) fn materialize_inferred_subclass_axioms(
     path: &str,
 ) -> PyResult<(Vec<(String, String)>, PyClassification)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let classification = owl_dl_reasoner::classify(&ontology).map_err(reason_error_to_py)?;
     let classes = classification.classes();
     let unsat: std::collections::HashSet<&str> =
@@ -69,7 +69,7 @@ pub(crate) fn materialize_inferred_subclass_axioms(
 pub(crate) fn materialize_inferred_class_assertions(
     path: &str,
 ) -> PyResult<(Vec<(String, String)>, bool, bool, bool, bool, bool, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     let mut out = Vec::new();
     for ind in realization.individuals() {
@@ -98,7 +98,7 @@ pub(crate) fn materialize_inferred_class_assertions(
 pub(crate) fn materialize_inferred_property_assertions(
     path: &str,
 ) -> PyResult<(Vec<(String, String, String)>, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     owl_dl_reasoner::materialize_object_property_assertions_reporting(&ontology)
         .map_err(reason_error_to_py)
 }
@@ -117,7 +117,7 @@ pub(crate) fn materialize_inferred_data_property_assertions(
     Vec<String>,
     bool,
 )> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let (rows, undetermined) =
         owl_dl_reasoner::materialize_data_property_assertions_reporting(&ontology)
             .map_err(reason_error_to_py)?;
@@ -135,7 +135,7 @@ pub(crate) fn materialize_inferred_data_property_assertions(
 pub(crate) fn materialize_inferred_subobjectproperty_axioms(
     path: &str,
 ) -> PyResult<(Vec<(String, String)>, Vec<String>, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let (rows, undetermined) =
         owl_dl_reasoner::materialize_subobjectproperty_axioms_reporting(&ontology)
             .map_err(reason_error_to_py)?;
@@ -153,7 +153,7 @@ pub(crate) fn materialize_inferred_subobjectproperty_axioms(
 pub(crate) fn materialize_inferred_subdataproperty_axioms(
     path: &str,
 ) -> PyResult<(Vec<(String, String)>, Vec<String>, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let (rows, undetermined) =
         owl_dl_reasoner::materialize_subdataproperty_axioms_reporting(&ontology)
             .map_err(reason_error_to_py)?;
@@ -187,7 +187,7 @@ pub(crate) fn materialize_existential_successors(
     bool,
     bool,
 )> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     owl_dl_reasoner::materialize_existential_successors_reporting(&ontology)
         .map(|(rows, flags)| {
             (

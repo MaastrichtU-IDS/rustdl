@@ -992,3 +992,50 @@ fn topwitness_closes_its_label_once_the_witness_carries_its_range() {
         "every written axiom of topwitness.ofn holds in the built model: {verdict:?}"
     );
 }
+
+/// #611: `⊤ ⊑ ∃u.⊤` and `∃u.⊤ ⊑ E` entail `⊤ ⊑ E`, which no axiom states. The `∃u.⊤`
+/// witness came out with an EMPTY label (the ⊤ floor read only asserted `⊤ ⊑ C`), so
+/// `∃u.⊤ ⊑ E` read as violated on it: a false lead on a two-axiom pure-EL input. The
+/// floor now also takes what the closure derives of an arbitrary element (a fresh probe
+/// class), so the witness carries `E`.
+const TOP_EXISTS_TOP: &str = "Prefix(:=<http://ex.org/t#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://ex.org/t>
+Declaration(Class(:C)) Declaration(Class(:E)) Declaration(Class(:F)) Declaration(ObjectProperty(:u))
+SubClassOf(owl:Thing ObjectSomeValuesFrom(:u owl:Thing))
+SubClassOf(ObjectSomeValuesFrom(:u owl:Thing) :E)
+SubClassOf(:C :F)
+)";
+
+#[test]
+fn a_derived_top_super_labels_the_top_witness() {
+    let internal = load(TOP_EXISTS_TOP);
+    let (m, build_reasons) =
+        owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    assert!(build_reasons.is_empty(), "{build_reasons:?}");
+    let e = internal
+        .vocabulary
+        .class_id("http://ex.org/t#E")
+        .expect("E");
+    let f = internal
+        .vocabulary
+        .class_id("http://ex.org/t#F")
+        .expect("F");
+    let c = internal
+        .vocabulary
+        .class_id("http://ex.org/t#C")
+        .expect("C");
+    // Every element carries `E` (the closure derives `⊤ ⊑ E`); the floor adds nothing
+    // the closure does not derive of `⊤`: only the elements seeded for `C` and `F`
+    // themselves are `F`s.
+    let own = [m.element_of_class(c), m.element_of_class(f)];
+    for el in m.elements() {
+        let label = m.label(el);
+        assert!(label.contains(&e), "{el:?} lacks E: {label:?}");
+        if !own.contains(&Some(el)) {
+            assert!(!label.contains(&f), "{el:?} has F: {label:?}");
+        }
+    }
+    let (verdict, _) = owl_dl_verify::verify(m, &internal, None);
+    assert!(matches!(verdict, Verdict::Verified { .. }), "{verdict:?}");
+}

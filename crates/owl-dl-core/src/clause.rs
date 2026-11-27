@@ -207,6 +207,11 @@ struct Clausifier {
     card_disjunct_atoms: bool,
     /// [`max_qualifier_fix_enabled`], read once per clausification (#554).
     max_qualifier_cover: bool,
+    /// [`complex_disjoint_clausify_enabled`], read once per clausification (#600).
+    complex_disjoint: bool,
+    /// #600: how many more trigger-less fallback GCIs this clausification may emit
+    /// ([`TRIGGERLESS_FALLBACK_CAP`]); see [`Self::fallback_admitted`].
+    triggerless_left: usize,
 }
 
 impl Clausifier {
@@ -230,6 +235,8 @@ impl Clausifier {
             card_disjunct_atoms: std::env::var_os("RUSTDL_CARD_DISJUNCT_ATOMS")
                 .is_none_or(|v| v != "0" && !v.is_empty()),
             max_qualifier_cover: max_qualifier_fix_enabled(),
+            complex_disjoint: complex_disjoint_clausify_enabled(),
+            triggerless_left: TRIGGERLESS_FALLBACK_CAP,
         }
     }
 
@@ -310,7 +317,16 @@ impl Clausifier {
                             self.encode_antecedent(ids[i], X),
                             self.encode_antecedent(ids[j], X),
                         ) else {
-                            self.defer("disjoint-antecedent");
+                            // #600: a member the body encoder rejects (`∀`, `≤n`, …)
+                            // goes through the GCI path, `Ai ⊓ Aj ⊑ ⊥`, whose partial
+                            // absorption handles hard antecedents. Only this fallback:
+                            // routing every pair through `And` would put the pair's
+                            // cross-product under the DNF cap.
+                            if !(self.complex_disjoint
+                                && self.clausify_disjoint_pair(ids[i], ids[j]))
+                            {
+                                self.defer("disjoint-antecedent");
+                            }
                             continue;
                         };
                         for a in &alts_a {
@@ -348,6 +364,14 @@ impl Clausifier {
                                     });
                                 }
                             }
+                        } else if self.complex_disjoint {
+                            // #600: as for `DisjointClasses`. Before, this pair was
+                            // skipped silently (not even counted as deferred); past the
+                            // trigger-less cap it is now deferred and counted. (Flag
+                            // off, it is still skipped uncounted, byte-identical.)
+                            if !self.clausify_disjoint_pair(members[i], members[j]) {
+                                self.defer("disjoint-union-pair");
+                            }
                         }
                     }
                 }
@@ -361,6 +385,10 @@ impl Clausifier {
                                 head: vec![Atom::Class(*class, X)],
                             });
                         }
+                    } else if self.complex_disjoint && self.fallback_admitted(m) {
+                        // #600: `member ⊑ class` through the GCI path.
+                        let class_c = self.pool.atomic(*class);
+                        self.clausify_gci(m, class_c);
                     } else {
                         self.defer("disjoint-union-member");
                     }
@@ -391,6 +419,14 @@ impl Clausifier {
                         body: vec![Atom::Class(*class, X)],
                         head,
                     });
+                } else if self.complex_disjoint {
+                    // #600: `class ⊑ ⊔members` through the GCI path, whose
+                    // `emit_head` names each compound disjunct with `Q ⊑ D` (the
+                    // head direction). Never a head with a disjunct missing: that
+                    // would be a narrower union, an unsound positive.
+                    let class_c = self.pool.atomic(*class);
+                    let cover = self.pool.or(members.iter().copied());
+                    self.clausify_gci(class_c, cover);
                 } else {
                     self.defer("disjoint-union-covering");
                 }
@@ -510,6 +546,55 @@ impl Clausifier {
         }
     }
 
+    /// #600: `a ⊓ b ⊑ ⊥` through the GCI path, for a disjointness pair whose member
+    /// the body encoder rejects. `false` (nothing emitted) when the pair is
+    /// trigger-less and the cap is spent: the caller defers it.
+    fn clausify_disjoint_pair(&mut self, a: ConceptId, b: ConceptId) -> bool {
+        let both = self.pool.and([a, b]);
+        if !self.fallback_admitted(both) {
+            return false;
+        }
+        let bot = self.pool.bot();
+        self.clausify_gci(both, bot);
+        true
+    }
+
+    /// #600 review: whether the fallback GCI `sub ⊑ _` may be clausified. Always when
+    /// `sub` has a soft trigger (it encodes as a body, or one of its top-level conjuncts
+    /// does: the partition [`Self::absorb_hard_antecedent`] makes). A trigger-less
+    /// `sub` (`∀r.B`, `≤1 s.C`, `∀r.B ⊓ ∀s.C`, …) becomes a `⊤`-bodied disjunctive
+    /// clause that fires at every node, and classify cost grew exponentially in their
+    /// number (5 such axioms: 1 s, 8: a cut, 32: a timeout, against 0.02 s without).
+    /// So at most [`TRIGGERLESS_FALLBACK_CAP`] of them per clausification; the rest are
+    /// deferred as before #600 and counted.
+    fn fallback_admitted(&mut self, sub: ConceptId) -> bool {
+        if self.has_soft_trigger(sub) {
+            return true;
+        }
+        if self.triggerless_left == 0 {
+            return false;
+        }
+        self.triggerless_left -= 1;
+        true
+    }
+
+    /// Whether `clausify_gci(sub, _)` would emit clauses with a non-empty body: `sub`
+    /// encodes, or [`Self::absorb_hard_antecedent`]'s partition finds a soft conjunct.
+    fn has_soft_trigger(&mut self, sub: ConceptId) -> bool {
+        self.next_var = X + 1;
+        if self.encode_antecedent(sub, X).is_some() {
+            return true;
+        }
+        let parts: Vec<ConceptId> = match self.pool.get(sub) {
+            ConceptExpr::And(ps) => ps.to_vec(),
+            _ => vec![sub],
+        };
+        parts.into_iter().any(|p| {
+            self.next_var = X + 1;
+            self.encode_antecedent(p, X).is_some()
+        })
+    }
+
     /// Clausify a GCI `sub ⊑ sup`. A top-level antecedent `Or`
     /// splits into one clause per disjunct (`(A ⊔ B) ⊑ D` ≡
     /// `A ⊑ D ∧ B ⊑ D`). Otherwise encode the antecedent into a
@@ -532,9 +617,10 @@ impl Clausifier {
             // `soft ⊓ hard ⊑ sup`). The soft trigger keeps the clause
             // from firing at every node — the eager `⊤ ⊑ ¬sub ⊔ sup`
             // internalization without it exploded the search (SIO
-            // 0.45 s → did-not-finish). If there's no soft trigger
-            // (a purely-hard antecedent — not seen in the corpus),
-            // defer (sound: a dropped GCI only weakens the theory).
+            // 0.45 s → did-not-finish). With no soft trigger (a
+            // purely-hard antecedent) it falls back to `⊤ ⊑ ¬sub ⊔ sup`;
+            // #600's disjointness fallback caps how many of those it adds
+            // (`fallback_admitted`).
             None => self.absorb_hard_antecedent(sub, sup),
         }
     }
@@ -1109,6 +1195,34 @@ enum MaxQualifier {
 #[must_use]
 pub fn max_qualifier_fix_enabled() -> bool {
     std::env::var_os("RUSTDL_MAX_QUALIFIER_COVER").is_none_or(|v| v != "0")
+}
+
+/// #600 review: the most trigger-less fallback GCIs (a `DisjointClasses` /
+/// `DisjointUnion` pair or member with no body-encodable conjunct) one clausification
+/// emits; the rest are deferred and counted. Measured on Fable's K-scaling generator
+/// (release, quiet core, 5 reps): K = 2 such axioms cost 0.06–0.10 CPU-s (main
+/// 0.02–0.03), K = 3 cost 0.3–0.5 s and the classify was cut. A fallback with a soft
+/// trigger is not capped. Which two are admitted depends on axiom order (the order
+/// the clausifier visits the normalized axioms in), not on which matter most.
+pub const TRIGGERLESS_FALLBACK_CAP: usize = 2;
+
+/// `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` (**default OFF**, opt-in with any value but
+/// `0`, #600): a
+/// `DisjointClasses` / `DisjointUnion` member that the body encoder rejects (`∀`,
+/// `≤n`, `¬`, …), and a `DisjointUnion` covering with a complex member, are
+/// clausified through the GCI path (`a ⊓ b ⊑ ⊥`, `member ⊑ class`,
+/// `class ⊑ ⊔members`) instead of being deferred. Off, the wedges never saw those
+/// axioms, and their trusted `Sat` misses inconsistencies, unsatisfiable classes and
+/// subsumptions the main tableau finds; `wedge_clauses_deferred` reports the
+/// deferrals. Opt-in because the fallback's `⊤`-bodied clauses have unbounded cost on
+/// growing ontologies: with one trigger-less axiom and a 200-class chain classify
+/// took 24.8 s and was cut (main 0.07 s, complete), and soft-trigger fallbacks with
+/// range axioms blow up too (64 axioms: 21.7 s, cut). A cut loses answers main
+/// finds. A default flip needs a cost guard first (the `#[ignore]`d sentinel
+/// `a_long_chain_with_one_trigger_less_axiom_stays_complete` gates it).
+#[must_use]
+pub fn complex_disjoint_clausify_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT").is_some_and(|v| v != "0")
 }
 
 /// Clausify an ontology into DL-clauses. Runs NNF then a
@@ -1996,6 +2110,35 @@ SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
             stats.deferred >= 1,
             "over-cap antecedent must defer; stats={stats:?}"
         );
+    }
+
+    // #600: the opt-in fallback's own tests (nothing deferred with the flag on, the
+    // trigger-less cap) set `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` and so live in
+    // `owl-dl-core/tests/complex_disjoint_flag.rs`, under its env lock.
+
+    /// #600 keeps the fast path: pairs whose members encode as bodies are emitted as
+    /// their cross-product, uncapped. Routing them through `A ⊓ B ⊑ ⊥` would put the
+    /// product under [`ANTECEDENT_DNF_CAP`]: a 9×9 union pair is 81 clauses, over 64.
+    #[test]
+    fn encodable_disjoint_pairs_keep_the_uncapped_cross_product() {
+        use std::fmt::Write as _;
+        let (mut decls, mut a, mut b) = (String::new(), String::new(), String::new());
+        for i in 0..9 {
+            let _ = write!(
+                decls,
+                "Declaration(Class(:A{i})) Declaration(Class(:B{i})) "
+            );
+            let _ = write!(a, ":A{i} ");
+            let _ = write!(b, ":B{i} ");
+        }
+        let src = format!(
+            "{HEADER}Ontology(\n{decls}\n\
+             DisjointClasses(ObjectUnionOf({a}) ObjectUnionOf({b}))\n)\n"
+        );
+        let (clauses, stats) = clausify_ofn(&src);
+        assert_eq!(stats.deferred, 0, "{stats:?}");
+        let bottoms = clauses.iter().filter(|c| c.head.is_empty()).count();
+        assert_eq!(bottoms, 81, "one ⊥-clause per alternative pair");
     }
 
     /// `ReflexiveObjectProperty(r)` + `ObjectPropertyRange(r, C)` (+ transitivity,

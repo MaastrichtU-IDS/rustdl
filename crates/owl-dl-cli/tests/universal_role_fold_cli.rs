@@ -322,11 +322,9 @@ fn prove_cites_the_licensing_source_axiom() {
     assert!(out.contains("built-in, licensed by source axiom"), "{out}");
 }
 
-/// Known limitation (#611): `verify-el` reports a false "violated" on `⊤ ⊑ ∃u.⊤` with
-/// `∃u.⊤ ⊑ E`, the shape F1 adds, so the F1 canary stays off `verify-el`. Flip this
-/// when #611 is fixed.
+/// `verify-el` on the F1 fold (`⊤ ⊑ ∃top.⊤`, `∃top.⊤ ⊑ E`): verified since #611 gave the
+/// `⊤` witness the closure's derived `⊤`-supers. Before #611 it read a false "violated".
 #[test]
-#[ignore = "#611: verify-el's model leaves the ⊤-witness unlabelled"]
 fn verify_el_accepts_the_f1_fold() {
     let f = Fixture::new(
         "f1-verify",

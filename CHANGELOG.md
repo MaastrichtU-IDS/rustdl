@@ -77,6 +77,13 @@ All notable changes to rustdl are documented here. Format is based on
 - **`--json` names a decision-depth cut (#574).** `instances-expr`, `realize` and `justify` carry `depth_capped`, and `classify` carries `depth_capped_pairs`. Each says that a cut hit the tableau's decision-depth limit, where a larger `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` / `--pair-timeout-ms` or node cap does not help and the deadline-free probe (`=0`) may. Each implies `incomplete`. Additive in schema v1. `instances-expr --json` and `realize --json` now also print the cut warning on stderr, as `justify --json` already did; stdout is still one JSON object.
 
 ### Changed
+- **Python `justify*` and the HTML report claim minimality only when it is guaranteed (#625).**
+  - **New result functions:** `justify_result` / `justify_all_result` and their `PreparedOntology` forms return a `Justifications` result: per-justification `minimal` (`minimal_guaranteed`), `enumeration_complete`, `saturation_oracle`, `in_fragment` and the existing flags.
+  - **New warning:** `justify`, `justify_all`, the `PreparedOntology` forms and `debug` (once; `Root` / `Inconsistency` gain `minimal`) emit `MinimalityNotGuaranteedWarning` when a returned justification is not guaranteed minimal, because the ontology is outside EL/Horn or the saturation-only oracle ran (#584). For `justify_all`, a justification may also be missing. A give-up stays `IncompleteQueryWarning`'s.
+  - **Behaviour change:** these functions now warn where they used to be silent, on most answers over an ontology outside EL/Horn, as the CLI's "minimality NOT guaranteed" note does. **Under `-W error` they raise**; `warnings.filterwarnings("ignore", category=rustdl.MinimalityNotGuaranteedWarning)` restores silence.
+  - **Docstrings:** they no longer say "minimal" unconditionally.
+  - **Report headings:** "(minimal justification)" only when guaranteed; else "(a justification; minimality not guaranteed)". #584's saturation-oracle inconsistency hit this case.
+  - **`justify --all --json` `enumeration_complete`** is now also `false` when a returned justification is not guaranteed minimal: a search that is out of fragment or on the saturation-only oracle may have pruned a branch, as `repair`'s `complete` already reads it. Python's `justify_all_result` reads exactly `max` found as not known to be complete (it does not run the CLI's `max + 1` probe, whose extra search could set `incomplete` or the trust flag for a justification it then discards).
 - **The Python class-expression queries now warn on dropped axioms (#552).** `class_expression_satisfiable`, `class_expression_entailed_subclass` and `class_expression_instances` emit `DroppedAxiomsWarning` when conversion dropped axioms from the ontology or the query expression, where they used to be silent. Under `-W error` (or `simplefilter("error")`) they now raise on such input. Since #597 the other Python queries warn too (next entry).
 - **Every Python query now warns on dropped axioms (#597).** `classify` / `classify_bytes` (the kinds are in the new `Classification.dropped`), `PreparedOntology.justify` / `justify_all` (new `PreparedOntology.dropped`) and every other path-taking query (`is_consistent`, `is_subclass_of`, `realize`, `instances_of`, the `materialize_*`, hierarchy, disjointness, individual and property-value queries, `justify`, `justify_all`, `diagnose`, `repair` and `debug`, which warns once) emit `DroppedAxiomsWarning`, where they used to be silent. **Under `-W error` (or `simplefilter("error")`) they now raise on an ontology with dropped axioms**; `warnings.filterwarnings("ignore", category=rustdl.DroppedAxiomsWarning)` restores the old behaviour. As on the CLI, a proved inconsistency does not silence it. The path-taking queries take the drops from their own parse: the native converts the already-parsed ontology once more (`is_consistent`, `is_class_satisfiable` and `is_subclass_of` only when something was dropped) and never parses the file twice. This replaces #543's universal-role check, which parsed a file naming a top property a second time on every call. Cost, measured on go-basic (core-pinned, 3 interleaved reps, CPU-s): parsing is about 13.3 and conversion about 1.4, so the extra conversion adds nothing measurable to `is_subclass_of` (16.30 → 16.16) and +1.35 CPU-s (+8%) to `object_property_hierarchy` (17.23 → 18.58), the worst case: a query whose own reasoning is cheap. Peak memory is unchanged. The warning text no longer calls the answer a sound under-approximation, which an inconsistency verdict or a repair is not; it says an entailment may be missing.
 
@@ -97,8 +104,37 @@ All notable changes to rustdl are documented here. Format is based on
   - `individuals`: `same_individuals`' `incomplete` reads `dropped` (its seed is complete only for converted axioms: `-> sameAs(c, e)` was missed with `incomplete: false`); `different_individuals`' stays a cut flag.
   - `individuals --json`, `property-values --json`, `disjoint --json` and `property-hierarchy --json` gain a `dropped` block, as `classify --json` has (no `schema_version` bump).
   - Visible follow-on changes. On a file with an `Import` (other drops already did this): `disjoint`'s class-half `incomplete` turns `true`, since it follows `completeness_guaranteed`, so Python `disjoint_classes` warns; `classify --saturation-only` prints its under-approximation note. On a file with any dropped axiom: Python `same_individuals` and `object_property_values` emit `IncompleteQueryWarning`. The `incomplete` warnings of `individuals`, `property-values` and `disjoint`, and Python's `IncompleteQueryWarning` text, now name dropped axioms as a cause.
-  - `justify`, `prove`, `repair`, `diagnose` and `report` still print no dropped-axiom warning (follow-up).
+  - `justify`, `prove`, `repair`, `diagnose` and `report` warn too since #619 (below).
   - Answers do not change.
+- **`justify`, `prove`, `repair`, `diagnose` and `report` warn about dropped axioms (#619).** Every other reasoning command warned when conversion dropped content (an unresolved `Import`, a SWRL rule, `HasKey`, …); these explanation surfaces did not, so a justification, proof, repair or unsatisfiable class that needed a dropped axiom went missing without a hint.
+  - Each now prints a stderr warning naming what the drop can cost there. For a repair, it may not break the entailment in the full ontology, or may not be minimal. "Sound under-approximation" is false for those.
+  - `justify --json` and `prove --json` carry a `dropped` block (additive in schema v1). With a drop, `enumeration_complete` is `false`.
+  - The text `repair` and the `report` footer claim completeness only "w.r.t. the converted ontology".
+  - The `report` HTML shows a dropped-axioms banner and a universal-role banner. The universal-role banner is not masked on an inconsistent KB, whose repairs rest on negative answers.
+  - `diagnose` says its "consistent" and "coherent" lines hold over the converted ontology when axioms were dropped.
+  - **No byte prefilter for the universal-role flag any more:** the five commands, the role-level commands (`property-values`, `property-hierarchy`, `disjoint`, `individuals`, `realize --properties`), Python's `universal_role_ordinary(path)` and `PreparedOntology` now take it from a conversion. A prefix that cuts inside `topObjectProperty` (`Prefix(t:=<…owl#top>)` with `t:ObjectProperty`) hid it before.
+  - **The role-level flag counts a property disjointness with a universal member again**, as #624 defined it:
+    - in the CLI's role-level commands, which now take drops and both flags from one conversion;
+    - in Python (#623's `conversion_notes` used the older two-case formula).
+
+    Python's role-level functions now take that flag too: the property-value, property-hierarchy, property-disjointness and same/different-individual functions and the property materializers. Before, only `object_property_values` and `materialize_inferred_property_assertions` did.
+- **A wedge decide with no deadline no longer loops in the #376 re-fire pass (#620):
+  `RUSTDL_WEDGE_REFIRE_BOUND`, default ON, `=0` reverts.** The #564 merge-churn guard
+  reads one Horn fixpoint at a time. Under a generation order that fires ordinary
+  generators before the nominal-target one (a #570 sabotage), the r-cycle `ABox` form
+  instead ran the re-fire loop in `run_reseed_net` as thousands of short fixpoints, each
+  building three nodes and merging them away, and an unbounded `classify` ran 13 h on
+  one core. In a decide with no deadline, that loop now keeps its own churn baseline
+  and stops with `Stalled` (never `Sat`) when it churns as #564 means across its
+  passes (after 44 passes there; counted in `wedge_merge_churn_stops`), or after 1,024
+  passes. Over the 448 ORE ontologies with a nominal at the CLI's defaults, every one of
+  the 46,267 such loops ran a single pass. This loop had no bound on its iterations. One more same-depth recursion,
+  the search's unit-force step, is not bounded by this change; a review probe did not
+  make it loop. The search itself can still be exponential. A decide with a deadline is not touched, so
+  budgeted runs, the CLI's default among them, are unchanged. On a 150-file ORE sample
+  at the CLI's defaults no wedge decide ran without a deadline. 138 finished, and 12
+  were cut at 32 s, so those 12 were observed only until the cut. The same instrument
+  reported 4 on a run with no deadline. The shipped (FIFO) order did not hit the loop.
 - **The universal role's meaning is stated where it needs no new symbol (#543, part 2: "S+F").** Part 1 flagged every semantic use of `owl:topObjectProperty`. Now conversion adds an axiom, recorded as built-in, that states the universal-role meaning of each use below. Every added axiom holds in every model under the Direct Semantics (`top` is `Δ × Δ`). These uses now answer right and are no longer flagged:
   - `∃top.⊤`, `∃top.{a}`, and `∃top.D` / `≥1 top.D` where D has a told instance (a `ClassAssertion`, also through told sub-classes), which are `⊤`;
   - `∀top.⊥`, and `∀top.¬D` / `≤0 top.D` with D as above, which are `⊥`;

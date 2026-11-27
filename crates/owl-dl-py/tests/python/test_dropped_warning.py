@@ -28,6 +28,8 @@ WITH_KEY = HEAD + "HasKey(:A (:r) ())\n)\n"
 WRAPPED = {
     "justify": (["subclass", E + "A", E + "B"],),
     "justify_all": (["subclass", E + "A", E + "B"],),
+    "justify_result": (["subclass", E + "A", E + "B"],),
+    "justify_all_result": (["subclass", E + "A", E + "B"],),
     "diagnose": (),
     "repair": (["subclass", E + "A", E + "B"],),
     "is_consistent": (),

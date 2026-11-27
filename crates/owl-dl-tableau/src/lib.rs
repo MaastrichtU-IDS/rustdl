@@ -7162,6 +7162,19 @@ pub fn wedge_merge_churn_guard_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_MERGE_CHURN_GUARD").is_none_or(|v| v != "0")
 }
 
+/// #620 `RUSTDL_WEDGE_REFIRE_BOUND` (default ON, `=0` reverts): in a wedge decide
+/// with no deadline, the #376 re-fire loop stops with `Stalled` when it churns as
+/// the #564 guard means across its passes (counted as merge churn), or after 1,024
+/// passes. The #564 guard reads one Horn fixpoint at a time, and this loop runs a
+/// short one per pass: under a generation order that fires ordinary generators
+/// before the nominal-target one, the r-cycle `ABox` form ran it for 13 h. A decide
+/// with a deadline is not touched. `Stalled` is never `Sat`. See
+/// `HyperEngine::refire_bound_hit` for what else is and is not bounded.
+#[must_use]
+pub fn wedge_refire_bound_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_REFIRE_BOUND").is_none_or(|v| v != "0")
+}
+
 /// #480 `RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts): the wedge
 /// half of #473's `RUSTDL_NOMINAL_DISJUNCTION_WAIT`. A generating clause that
 /// #465 B deferred does not fire while its node carries an open disjunction with a

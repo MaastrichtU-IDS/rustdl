@@ -19,6 +19,8 @@ use std::collections::HashMap;
 pub(crate) struct RootEntry {
     pub(crate) iri: String,
     pub(crate) justification: Vec<Component<RcStr>>,
+    /// #625: `justification` is guaranteed minimal (`Justification::minimal_guaranteed`).
+    pub(crate) minimal: bool,
     pub(crate) repairs: Vec<Vec<Component<RcStr>>>,
     pub(crate) derives: Vec<String>,
 }
@@ -26,6 +28,9 @@ pub(crate) struct RootEntry {
 /// The inconsistency explanation (when the whole ontology is inconsistent).
 pub(crate) struct Section {
     pub(crate) justification: Vec<Component<RcStr>>,
+    /// #625: `justification` is guaranteed minimal; the inconsistency search may run on
+    /// the saturation-only oracle (#584), which clears it.
+    pub(crate) minimal: bool,
     pub(crate) repairs: Vec<Vec<Component<RcStr>>>,
 }
 
@@ -52,6 +57,24 @@ pub(crate) struct Report {
     /// limit, likely a reasoner bug, #449). `incomplete` is set too; the CLI adds #449's
     /// note and exits 3.
     pub(crate) no_verdict: bool,
+    /// #619: axioms conversion could not represent and dropped (kind → count), from the
+    /// classification the report runs (the same conversion as its justifications and
+    /// repairs). Rendered as a banner; the footer then claims repair completeness only
+    /// w.r.t. the converted ontology.
+    pub(crate) dropped: std::collections::BTreeMap<String, u64>,
+    /// #619 / #543: a universal role read as an ordinary property. Not masked on an
+    /// inconsistent ontology: the report's repairs are verified by negative answers,
+    /// which the flag says may be wrong. Rendered as a banner.
+    pub(crate) universal_role_ordinary: bool,
+}
+
+/// #625: the justification heading claims minimality only when it is guaranteed.
+fn justification_label(minimal: bool) -> &'static str {
+    if minimal {
+        "minimal justification"
+    } else {
+        "a justification; minimality not guaranteed"
+    }
 }
 
 /// HTML-escape text for safe, faithful embedding as element content.
@@ -197,9 +220,38 @@ pub(crate) fn render_html(
         );
     }
 
+    // #619: the two declared under-approximations, as on the CLI's stderr.
+    let dropped_total: u64 = report.dropped.values().sum();
+    if dropped_total > 0 {
+        let kinds: Vec<String> = report
+            .dropped
+            .iter()
+            .map(|(k, n)| format!("{} ×{n}", html_escape(k)))
+            .collect();
+        h.push_str(&format!(
+            "<p style=\"border:1px solid #b45309;padding:.6em\"><strong>Axioms dropped:</strong> \
+             {dropped_total} axiom(s) were not understood and left out ({}). This report is \
+             computed over the weaker ontology: an unsatisfiable class or an inconsistency that \
+             needs a dropped axiom is not shown, a root may derive from another root through \
+             one, and a repair may not break the problem in the full ontology.</p>",
+            kinds.join(", ")
+        ));
+    }
+    if report.universal_role_ordinary {
+        h.push_str(
+            "<p style=\"border:1px solid #b45309;padding:.6em\"><strong>Universal role:</strong> \
+             owl:topObjectProperty is used here as the universal role, which rustdl treats as an \
+             ordinary property. Positive answers are sound; a negative answer, and so a repair \
+             verified by one, may be wrong.</p>",
+        );
+    }
+
     if let Some(sec) = &report.inconsistency {
         h.push_str("<h2>Inconsistent ontology — responsible axioms</h2>");
-        h.push_str("<div class=\"block why\"><div class=\"h\">Why it is inconsistent (minimal justification)</div>");
+        h.push_str(&format!(
+            "<div class=\"block why\"><div class=\"h\">Why it is inconsistent ({})</div>",
+            justification_label(sec.minimal)
+        ));
         for ax in &sec.justification {
             h.push_str(&ax_html(ax, pm, labels));
         }
@@ -218,7 +270,10 @@ pub(crate) fn render_html(
                 "<details><summary><span class=\"tag\">ROOT</span><span class=\"cls\">{}</span></summary>",
                 html_escape(&root.iri)
             ));
-            h.push_str("<div class=\"block why\"><div class=\"h\">Why it's unsatisfiable (minimal justification)</div>");
+            h.push_str(&format!(
+                "<div class=\"block why\"><div class=\"h\">Why it's unsatisfiable ({})</div>",
+                justification_label(root.minimal)
+            ));
             for ax in &root.justification {
                 h.push_str(&ax_html(ax, pm, labels));
             }
@@ -265,13 +320,20 @@ pub(crate) fn render_html(
         }
     }
 
-    let completeness = if report.repairs_complete {
+    let completeness = if report.repairs_complete && dropped_total > 0 {
+        "minimal repairs complete w.r.t. the converted ontology (axioms were dropped, see above)"
+    } else if report.repairs_complete {
         "minimal repairs complete"
     } else {
         "repairs w.r.t. found justifications (completeness not guaranteed)"
     };
+    let over = if dropped_total > 0 {
+        ", over the converted ontology"
+    } else {
+        ""
+    };
     h.push_str(&format!(
-        "<p class=\"foot\">Sound by construction: every justification and repair is verified against the reasoner. {completeness}. Self-contained HTML, no external resources. This report is read-only — it never modifies the ontology.</p>"
+        "<p class=\"foot\">Sound by construction: every justification and repair is verified against the reasoner{over}. {completeness}. Self-contained HTML, no external resources. This report is read-only — it never modifies the ontology.</p>"
     ));
     h.push_str("</body></html>");
     h
@@ -287,6 +349,9 @@ pub(crate) fn build_report(
     let classification = owl_dl_reasoner::classify(onto).context("classify")?;
     let class_count = classification.classes().len();
     let fragment = format!("{}", classification.stats().fragment);
+    // #619: the classification's conversion is the one the justifier and repairs use.
+    let dropped = classification.stats().dropped.by_kind().clone();
+    let universal_role_ordinary = classification.stats().universal_role_ordinary;
 
     let diag = owl_dl_reasoner::diagnose(onto).context("diagnose")?;
 
@@ -302,12 +367,12 @@ pub(crate) fn build_report(
             .context("repair inconsistency")?;
         let incomplete = diag.incomplete || outcome.incomplete || rep.incomplete;
         let no_verdict = diag.no_verdict || outcome.no_verdict || rep.no_verdict;
-        let justification = outcome
+        let (justification, minimal) = outcome
             .justifications
             .into_iter()
             .next()
-            .map(|j| j.axioms)
-            .unwrap_or_default();
+            // #625: nothing found (a give-up) claims no minimality.
+            .map_or((Vec::new(), false), |j| (j.axioms, j.minimal_guaranteed));
         let repairs = rep.repairs.into_iter().map(|r| r.remove).collect();
         return Ok(Report {
             ontology_path,
@@ -316,6 +381,7 @@ pub(crate) fn build_report(
             fragment,
             inconsistency: Some(Section {
                 justification,
+                minimal,
                 repairs,
             }),
             roots: Vec::new(),
@@ -327,6 +393,8 @@ pub(crate) fn build_report(
             truncated_roots: 0,
             incomplete,
             no_verdict,
+            dropped,
+            universal_role_ordinary,
         });
     }
 
@@ -349,12 +417,12 @@ pub(crate) fn build_report(
         let outcome = prepared.find_one_reporting(&q).context("justify root")?;
         incomplete |= outcome.incomplete;
         no_verdict |= outcome.no_verdict;
-        let justification = outcome
+        let (justification, minimal) = outcome
             .justifications
             .into_iter()
             .next()
-            .map(|j| j.axioms)
-            .unwrap_or_default();
+            // #625: nothing found (a give-up) claims no minimality.
+            .map_or((Vec::new(), false), |j| (j.axioms, j.minimal_guaranteed));
         let rep =
             owl_dl_reasoner::find_repairs_prepared(prepared, &q, 10).context("repair root")?;
         repairs_complete &= rep.complete;
@@ -363,6 +431,7 @@ pub(crate) fn build_report(
         let derives = diag.root_derives.get(iri).cloned().unwrap_or_default();
         roots.push(RootEntry {
             iri: iri.clone(),
+            minimal,
             justification,
             repairs: rep.repairs.into_iter().map(|r| r.remove).collect(),
             derives,
@@ -389,6 +458,8 @@ pub(crate) fn build_report(
         truncated_roots,
         incomplete,
         no_verdict,
+        dropped,
+        universal_role_ordinary,
     })
 }
 
@@ -440,6 +511,8 @@ mod render_tests {
             truncated_roots: 0,
             incomplete: false,
             no_verdict: false,
+            dropped: std::collections::BTreeMap::new(),
+            universal_role_ordinary: false,
         }
     }
 
@@ -468,6 +541,7 @@ mod render_tests {
             roots: vec![RootEntry {
                 iri: "urn:Bad".into(),
                 justification: vec![sc(&b, "urn:Bad", "urn:A")],
+                minimal: true,
                 repairs: vec![vec![sc(&b, "urn:Bad", "urn:A")]],
                 derives: vec!["urn:SubBad".into()],
             }],
@@ -482,6 +556,59 @@ mod render_tests {
         assert!(html.to_lowercase().contains("root unsatisfiable"));
         assert!(html.to_lowercase().contains("repair"));
         assert!(html.contains("urn:SubBad"), "lists the derived class");
+    }
+
+    /// #625: the heading claims minimality only when it is guaranteed.
+    #[test]
+    fn the_justification_heading_follows_minimal_guaranteed() {
+        let b = Build::new_rc();
+        let root = |minimal| RootEntry {
+            iri: "urn:Bad".into(),
+            justification: vec![sc(&b, "urn:Bad", "urn:A")],
+            minimal,
+            repairs: Vec::new(),
+            derives: Vec::new(),
+        };
+        let render = |minimal| {
+            render_html(
+                &Report {
+                    roots: vec![root(minimal)],
+                    n_unsat: 1,
+                    n_root: 1,
+                    ..coherent_report()
+                },
+                &prefixes(),
+                None,
+            )
+        };
+        let yes = render(true);
+        assert!(yes.contains("(minimal justification)"), "{yes}");
+        let no = render(false);
+        assert!(!no.contains("(minimal justification)"), "{no}");
+        assert!(
+            no.contains("(a justification; minimality not guaranteed)"),
+            "{no}"
+        );
+        let inconsistent = |minimal| {
+            render_html(
+                &Report {
+                    consistent: false,
+                    inconsistency: Some(Section {
+                        justification: vec![sc(&b, "urn:Bad", "urn:A")],
+                        minimal,
+                        repairs: Vec::new(),
+                    }),
+                    ..coherent_report()
+                },
+                &prefixes(),
+                None,
+            )
+        };
+        assert!(inconsistent(true).contains("inconsistent (minimal justification)"));
+        assert!(
+            inconsistent(false)
+                .contains("inconsistent (a justification; minimality not guaranteed)")
+        );
     }
 
     #[test]
@@ -508,6 +635,7 @@ mod render_tests {
             roots: vec![RootEntry {
                 iri: "urn:a<b".into(),
                 justification: vec![sc(&b, "urn:a<b", "urn:A")],
+                minimal: true,
                 repairs: Vec::new(),
                 derives: Vec::new(),
             }],

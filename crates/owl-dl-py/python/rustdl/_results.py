@@ -51,6 +51,8 @@ class Root(_MappingDataclass):
     justification: tuple[str, ...]
     repairs: tuple[tuple[str, ...], ...]
     derives: tuple[str, ...]
+    # #625: `justification` is guaranteed minimal (`Justifications.minimal`).
+    minimal: bool = True
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,8 @@ class Derived(_MappingDataclass):
 class Inconsistency(_MappingDataclass):
     justification: tuple[str, ...]
     repairs: tuple[tuple[str, ...], ...]
+    # #625: `justification` is guaranteed minimal (`Justifications.minimal`).
+    minimal: bool = True
 
 
 @dataclass(frozen=True)
@@ -115,3 +119,32 @@ class ClassExpressionInstances(_MappingDataclass):
     # #543: a universal role (in the ontology or the query) is read as an ordinary
     # property, so a negative answer may be wrong; voids `completeness_guaranteed`.
     universal_role_ordinary: bool = False
+
+
+@dataclass(frozen=True)
+class Justifications(_MappingDataclass):
+    """#625: a justification query's answer and its signals (`justify_result`,
+    `justify_all_result`, and their `PreparedOntology` forms).
+
+    `justifications` holds each justification's axioms (Manchester strings); every
+    one entails the query. `minimal[i]` is `Justification::minimal_guaranteed`: the
+    ontology is pure EL or Horn (`in_fragment`), no subset probe gave up
+    (`incomplete`), and the search did not run on the saturation-only consistency
+    oracle (`saturation_oracle`, #584). `False` means minimality is not guaranteed,
+    not that the set is not minimal. `minimal` does not cover
+    `relies_on_trusted_consistency` (#429): a check that trusted the consistency
+    wedge's model can only have kept an axiom, so a `True` there also rests on that
+    model. `enumeration_complete`: no justification is known to be missing. For a
+    single-justification query, `False` only when none was found and the search gave
+    up. For `justify_all_result`: nothing gave up, the saturation-only oracle did not
+    run, every justification is minimal, and fewer than `max` were found (exactly `max`
+    may have been truncated, so it reads `False`; ask for more to tell)."""
+
+    justifications: tuple[tuple[str, ...], ...]
+    minimal: tuple[bool, ...]
+    enumeration_complete: bool
+    incomplete: bool
+    relies_on_trusted_consistency: bool
+    depth_capped: bool
+    saturation_oracle: bool
+    in_fragment: bool

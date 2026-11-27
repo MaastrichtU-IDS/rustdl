@@ -208,7 +208,8 @@ not provably complete on all of SROIQ. `saturation_only` and
 `per_pair_timeout_ms` are sound-but-incomplete by construction.
 
 Axioms the conversion cannot represent (data-property and datatype axioms outside
-the recognized preprocessing patterns, `HasKey`, SWRL rules) are dropped rather
+the recognized preprocessing patterns, `HasKey`, SWRL rules, and `Import`
+declarations, which are never resolved) are dropped rather
 than raising an error: reasoning proceeds over the rest, a sound
 under-approximation. Every query then emits `DroppedAxiomsWarning` (#597), and
 `dropped_axioms(path)` reports their kinds and counts. Role

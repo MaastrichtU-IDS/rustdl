@@ -722,6 +722,18 @@ pub(crate) fn gaps_with<A: ForIRI>(
         dv.extend(dh.iter().copied().filter(|k| *k != "data-empty-property"));
     }
 
+    // #579: an axiom conversion dropped (an unresolved `Import`, a SWRL rule,
+    // `HasKey`, an unsupported data range, …) can entail any relation these
+    // closures report, and none of the routes above sees it. Fail-closed for any
+    // future drop kind: the gap reads `dropped`, not a list of kinds.
+    if !internal.dropped.is_empty() {
+        oh.insert("object-dropped-axioms");
+        dh.insert("data-dropped-axioms");
+        od.insert("object-dropped-axioms");
+        dd.insert("data-dropped-axioms");
+        dv.insert("data-dropped-axioms");
+    }
+
     let to_vec = |s: BTreeSet<&str>| s.into_iter().map(str::to_string).collect::<Vec<_>>();
     PropertyStructuralGaps {
         object_hierarchy: to_vec(oh),

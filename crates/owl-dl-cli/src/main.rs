@@ -2491,8 +2491,8 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped_kinds, _, uro) = json_out::conversion_block_for_roles(&onto);
-            warn_if_dropped(&dropped_kinds);
+            let (dropped, _, uro) = json_out::conversion_block_for_roles(&onto);
+            warn_if_dropped(&dropped);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
             note_universal_role(uro);
@@ -2519,6 +2519,7 @@ fn run() -> Result<()> {
                         data,
                         undetermined,
                         gaps,
+                        dropped,
                         uro,
                     ))?
                 );
@@ -2531,7 +2532,8 @@ fn run() -> Result<()> {
             }
             if classes.incomplete() {
                 eprintln!(
-                    "warning: disjointness incomplete (budget/fragment) — sound under-approximation"
+                    "warning: disjointness incomplete (budget, fragment or dropped axioms) — sound \
+                     under-approximation"
                 );
             }
             println!("# disjoint object properties");
@@ -2553,8 +2555,8 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped_kinds, _, uro) = json_out::conversion_block_for_roles(&onto);
-            warn_if_dropped(&dropped_kinds);
+            let (dropped, _, uro) = json_out::conversion_block_for_roles(&onto);
+            warn_if_dropped(&dropped);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
             note_universal_role(uro);
@@ -2568,7 +2570,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_individuals_json(
-                        &same, &different, uro,
+                        &same, &different, dropped, uro,
                     ))?
                 );
                 exit_if_no_verdict(same.no_verdict() || different.no_verdict());
@@ -2584,7 +2586,8 @@ fn run() -> Result<()> {
             }
             if same.incomplete() || different.incomplete() {
                 eprintln!(
-                    "warning: individuals incomplete (budget/fragment) — sound under-approximation"
+                    "warning: individuals incomplete (budget, fragment or dropped axioms) — sound \
+                     under-approximation"
                 );
             }
             warn_consistency_undetermined(
@@ -2600,8 +2603,8 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped_kinds, _, uro) = json_out::conversion_block_for_roles(&onto);
-            warn_if_dropped(&dropped_kinds);
+            let (dropped, _, uro) = json_out::conversion_block_for_roles(&onto);
+            warn_if_dropped(&dropped);
             // #543: role-level, so a role above top counts even where no class-level
             // answer changes.
             note_universal_role(uro);
@@ -2619,7 +2622,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_property_values_json(
-                        &obj, &data, gaps, uro,
+                        &obj, &data, gaps, dropped, uro,
                     ))?
                 );
                 exit_if_no_verdict(obj.no_verdict());
@@ -2639,7 +2642,8 @@ fn run() -> Result<()> {
             }
             if obj.incomplete() || data.incomplete() {
                 eprintln!(
-                    "warning: property values incomplete (budget/fragment) — sound under-approximation"
+                    "warning: property values incomplete (budget, fragment or dropped axioms) — \
+                     sound under-approximation"
                 );
             }
             warn_structural_gaps("data property values", &gaps);
@@ -2652,8 +2656,8 @@ fn run() -> Result<()> {
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped_kinds, _, uro) = json_out::conversion_block_for_roles(&onto);
-            warn_if_dropped(&dropped_kinds);
+            let (dropped, _, uro) = json_out::conversion_block_for_roles(&onto);
+            warn_if_dropped(&dropped);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
             note_universal_role(uro);
@@ -2664,7 +2668,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_prophier_json(
-                        &obj, &data, gaps, uro,
+                        &obj, &data, gaps, dropped, uro,
                     ))?
                 );
                 return Ok(());

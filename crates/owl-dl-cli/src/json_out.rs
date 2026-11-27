@@ -536,6 +536,10 @@ pub(crate) struct DisjointJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #579: the axioms conversion dropped, by kind (an unresolved `Import`, a SWRL
+    /// rule, `HasKey`, …), as in `classify --json`. Non-empty means the answer was
+    /// computed without them.
+    pub(crate) dropped: BTreeMap<String, u64>,
     /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
     /// above it, or `owl:topDataProperty` outside the super-property position) where its
     /// semantics could change this answer. rustdl treats it as an ordinary property:
@@ -1010,6 +1014,10 @@ pub(crate) struct PropHierJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #579: the axioms conversion dropped, by kind (an unresolved `Import`, a SWRL
+    /// rule, `HasKey`, …), as in `classify --json`. Non-empty means the answer was
+    /// computed without them.
+    pub(crate) dropped: BTreeMap<String, u64>,
     /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
     /// above it, or `owl:topDataProperty` outside the super-property position) where its
     /// semantics could change this answer. rustdl treats it as an ordinary property:
@@ -1039,6 +1047,7 @@ pub(crate) fn build_prophier_json(
     obj: &PropertyClassification,
     data: &PropertyClassification,
     structural_gaps: Vec<String>,
+    dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
 ) -> PropHierJson {
     PropHierJson {
@@ -1048,6 +1057,7 @@ pub(crate) fn build_prophier_json(
         object_properties: side(obj),
         data_properties: side(data),
         structural_gaps,
+        dropped,
     }
 }
 
@@ -1058,6 +1068,7 @@ pub(crate) fn build_disjoint_json(
     data: Vec<(String, String)>,
     consistency_undetermined: bool,
     structural_gaps: Vec<String>,
+    dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
 ) -> DisjointJson {
     let to_arr = |v: Vec<(String, String)>| {
@@ -1081,6 +1092,7 @@ pub(crate) fn build_disjoint_json(
         no_verdict: classes.no_verdict(),
         consistency_undetermined,
         structural_gaps,
+        dropped,
     }
 }
 
@@ -1108,6 +1120,10 @@ pub(crate) struct IndividualsJson {
     pub(crate) no_verdict: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
+    /// #579: the axioms conversion dropped, by kind (an unresolved `Import`, a SWRL
+    /// rule, `HasKey`, …), as in `classify --json`. Non-empty means the answer was
+    /// computed without them.
+    pub(crate) dropped: BTreeMap<String, u64>,
     /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
     /// above it, or `owl:topDataProperty` outside the super-property position) where its
     /// semantics could change this answer. rustdl treats it as an ordinary property:
@@ -1121,6 +1137,7 @@ pub(crate) struct IndividualsJson {
 pub(crate) fn build_individuals_json(
     same: &SameIndividuals,
     different: &DifferentIndividuals,
+    dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
 ) -> IndividualsJson {
     let mut same_groups: Vec<Vec<String>> = same
@@ -1153,6 +1170,7 @@ pub(crate) fn build_individuals_json(
         no_verdict: same.no_verdict() || different.no_verdict(),
         same_groups,
         different_pairs,
+        dropped,
     }
 }
 
@@ -1180,12 +1198,18 @@ pub(crate) struct PropertyValuesJson {
     /// with `consistency_undetermined` instead (the answer itself was decided); the
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
-    /// #389/#390: constructs present that the data half of this surface (the object half reports through `incomplete`) ignores and that
-    /// can entail a relation it would report (see
-    /// `owl_dl_reasoner::property_structural_gaps`). Empty means none of the known
-    /// routes occurs, not that the answer is complete. Separate from `incomplete`,
-    /// which means only that a deadline cut a probe.
+    /// #389/#390: constructs present that the data half of this surface ignores
+    /// and that can entail a relation it would report (see
+    /// `owl_dl_reasoner::property_structural_gaps`), `data-dropped-axioms` among
+    /// them (#579). Empty means none of the known routes occurs, not that the answer
+    /// is complete. The object half reports instead through `incomplete`, which for
+    /// it also means an axiom outside its edge-complete whitelist, a dropped axiom
+    /// (#579), or a bounded extension probe, not only a deadline cut.
     pub(crate) structural_gaps: Vec<String>,
+    /// #579: the axioms conversion dropped, by kind (an unresolved `Import`, a SWRL
+    /// rule, `HasKey`, …), as in `classify --json`. Non-empty means the answer was
+    /// computed without them.
+    pub(crate) dropped: BTreeMap<String, u64>,
     /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
     /// above it, or `owl:topDataProperty` outside the super-property position) where its
     /// semantics could change this answer. rustdl treats it as an ordinary property:
@@ -1200,6 +1224,7 @@ pub(crate) fn build_property_values_json(
     obj: &ObjectPropertyValues,
     data: &DataPropertyValues,
     structural_gaps: Vec<String>,
+    dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
 ) -> PropertyValuesJson {
     let mut object_property_values: Vec<[String; 3]> = obj
@@ -1227,6 +1252,7 @@ pub(crate) fn build_property_values_json(
         no_verdict: obj.no_verdict(),
         data_property_values,
         structural_gaps,
+        dropped,
     }
 }
 

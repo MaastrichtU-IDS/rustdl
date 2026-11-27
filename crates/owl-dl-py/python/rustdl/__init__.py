@@ -287,8 +287,10 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
 class IncompleteQueryWarning(UserWarning):
     """Raised by the budgeted inferred queries (`disjoint_classes`,
     `same_individuals`, `different_individuals`, `object_property_values`)
-    when the reasoner's per-pair budget/probe was exhausted, so the returned
-    list is a sound under-approximation (no false pairs/groups/triples, but
+    when the reasoner's per-pair budget/probe was exhausted, or (#579) the
+    answer's completeness claim does not hold because conversion dropped an axiom
+    (`disjoint_classes`, `same_individuals`, `object_property_values`), so the
+    returned list is a sound under-approximation (no false pairs/groups/triples, but
     real ones may be missing). Mirrors `IncompleteClassificationWarning`'s
     convention for `classify`.
 
@@ -314,7 +316,8 @@ class IncompleteQueryWarning(UserWarning):
 def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
     if incomplete:
         _warnings.warn(
-            f"{name} result may be incomplete (budget/fragment exhausted) — "
+            f"{name} result may be incomplete (a budget cut, a fragment limit, or "
+            "axioms conversion dropped) — "
             "sound under-approximation: no false entries, but real ones may be "
             "missing.",
             IncompleteQueryWarning,
@@ -427,7 +430,8 @@ def _warn_if_answer_no_verdict(
 def _warn_if_query_incomplete_at(name: str, incomplete: bool, stacklevel: int) -> None:
     if incomplete:
         _warnings.warn(
-            f"{name} result may be incomplete (budget/fragment exhausted) — "
+            f"{name} result may be incomplete (a budget cut, a fragment limit, or "
+            "axioms conversion dropped) — "
             "sound under-approximation: no false entries, but real ones may be "
             "missing.",
             IncompleteQueryWarning,
@@ -1067,7 +1071,9 @@ def data_property_hierarchy(path):
 def disjoint_classes(path):
     """Entailed disjoint named-class pairs `(c, d)` — `C ⊓ D` is proven
     unsatisfiable. Bounded by a 1s per-pair deadline; emits
-    `IncompleteQueryWarning` when the budget was exhausted (see
+    `IncompleteQueryWarning` when the budget was exhausted, or when classify's
+    completeness guarantee does not hold (outside pure EL, or conversion dropped an
+    axiom, an unresolved `Import` included since #579; see
     `IncompleteQueryWarning`)."""
     pairs, incomplete = _disjoint_classes_native(path)
     _warn_if_query_incomplete("disjoint_classes", incomplete)
@@ -1079,7 +1085,9 @@ def same_individuals(path):
     functional-forced + entailed). Bounded by a 1s per-pair deadline; emits
     `IncompleteQueryWarning` when the budget was exhausted (see
     `IncompleteQueryWarning`) — note this fires whenever ANY extension probe
-    beyond the sound-complete seed ran, even if no new group was found."""
+    beyond the seed ran, even if no new group was found, and (#579) whenever
+    conversion dropped an axiom: the seed is complete only for the converted
+    axioms."""
     groups, incomplete, undetermined = _same_individuals_native(path)
     _warn_if_query_incomplete("same_individuals", incomplete)
     _warn_if_consistency_undetermined("same_individuals", undetermined)
@@ -1100,8 +1108,10 @@ def different_individuals(path):
 def object_property_values(path):
     """Inferred object property values `(subject, property, object)` over
     named individuals. Bounded by a 1s per-pair deadline; emits
-    `IncompleteQueryWarning` when the budget was exhausted (see
-    `IncompleteQueryWarning`), and `ConsistencyUndeterminedWarning` (#369)."""
+    `IncompleteQueryWarning` when the budget was exhausted, an axiom lies outside
+    the edge-complete whitelist, the bounded extension ran, or (#579) conversion
+    dropped an axiom (see `IncompleteQueryWarning`), and
+    `ConsistencyUndeterminedWarning` (#369)."""
     triples, incomplete, undetermined = _object_property_values_native(path)
     _warn_if_query_incomplete("object_property_values", incomplete)
     _warn_if_consistency_undetermined("object_property_values", undetermined)

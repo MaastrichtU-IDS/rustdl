@@ -6,6 +6,7 @@ use horned_owl::io::omn::AsManchester;
 use horned_owl::model::{Component, RcStr};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use crate::errors::reason_error_to_py;
 use crate::load;
@@ -53,76 +54,96 @@ fn is_logical_axiom(c: &Component<RcStr>) -> bool {
     )
 }
 
-/// The first justification's axioms as Manchester strings (empty if none),
-/// with the outcome's give-up flag (#396), its #429 trust flag and its #510
-/// depth-cut flag.
-fn first_rendered(
+/// #625: a justify outcome as a dict, so no position can be transposed. `cap` is
+/// `None` for a single-justification query, and `Some(max)` for `justify_all`. Keys:
+/// - `justifications`: each justification's axioms as Manchester strings;
+/// - `minimal`: `Justification::minimal_guaranteed`, one per justification;
+/// - `incomplete` (#396), `relies_on_trusted_consistency` (#429), `depth_capped` (#510),
+///   `saturation_oracle` (#584): the outcome's flags;
+/// - `in_fragment`: the ontology is pure EL or Horn (true when none was found);
+/// - `enumeration_complete`: no justification is known to be missing. For a single query:
+///   false only when none was found and the search gave up. For `justify_all`: nothing
+///   gave up, the saturation-only oracle did not run, every justification is minimal (a
+///   non-minimal one marks a search whose "not entailed" may have pruned a branch, as
+///   `repair` reads it), and fewer than `max` were found. The search runs with `max`
+///   itself (not the CLI's `max + 1` probe, whose extra search could set `incomplete` or
+///   the trust flag for a justification it then discards), so exactly `max` found reads
+///   as not known to be complete.
+fn outcome_dict<'py>(
+    py: Python<'py>,
     outcome: &owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
-) -> (Vec<String>, bool, bool, bool) {
-    let axioms = outcome
-        .justifications
-        .first()
-        .map(|j| j.axioms.iter().map(render).collect())
-        .unwrap_or_default();
-    (
-        axioms,
-        outcome.incomplete,
-        outcome.relies_on_trusted_consistency,
-        // #510: an instance check's give-up was the decision-depth limit.
-        outcome.depth_capped,
-    )
-}
-
-/// Every justification's axioms as Manchester strings, with the outcome's
-/// give-up flag (#396), its #429 trust flag and its #510 depth-cut flag.
-fn all_rendered(
-    outcome: &owl_dl_reasoner::justify::JustifyOutcome<RcStr>,
-) -> (Vec<Vec<String>>, bool, bool, bool) {
-    let js = outcome
-        .justifications
+    cap: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let kept = &outcome.justifications;
+    let js: Vec<Vec<String>> = kept
         .iter()
         .map(|j| j.axioms.iter().map(render).collect())
         .collect();
-    (
-        js,
-        outcome.incomplete,
+    let minimal: Vec<bool> = kept.iter().map(|j| j.minimal_guaranteed).collect();
+    let in_fragment = outcome.justifications.first().is_none_or(|j| {
+        matches!(
+            j.fragment,
+            owl_dl_reasoner::FragmentClassification::PureEl
+                | owl_dl_reasoner::FragmentClassification::Horn
+        )
+    });
+    let enumeration_complete = match cap {
+        None => !kept.is_empty() || !outcome.incomplete,
+        Some(max) => {
+            !outcome.incomplete
+                && !outcome.saturation_oracle
+                && minimal.iter().all(|m| *m)
+                && kept.len() < max
+        }
+    };
+    let d = PyDict::new(py);
+    d.set_item("justifications", js)?;
+    d.set_item("minimal", minimal)?;
+    d.set_item("incomplete", outcome.incomplete)?;
+    d.set_item(
+        "relies_on_trusted_consistency",
         outcome.relies_on_trusted_consistency,
-        // #510: an instance check's give-up was the decision-depth limit.
-        outcome.depth_capped,
-    )
+    )?;
+    // #510: an instance check's give-up was the decision-depth limit.
+    d.set_item("depth_capped", outcome.depth_capped)?;
+    d.set_item("saturation_oracle", outcome.saturation_oracle)?;
+    d.set_item("in_fragment", in_fragment)?;
+    d.set_item("enumeration_complete", enumeration_complete)?;
+    Ok(d)
 }
 
-/// One minimal justification for a query (CLI-style tokens, e.g.
-/// `["subclass", sub, sup]`, `["unsat", c]`, `["inconsistent"]`) as Manchester
-/// axiom strings — empty if not entailed — paired with `incomplete`: a reasoner
-/// check gave up (#396), so an empty list means "unknown", and a non-empty one
-/// may not be minimal. The `rustdl.justify` wrapper turns the flag into an
-/// `IncompleteQueryWarning`.
+/// One justification for a query (CLI-style tokens, e.g. `["subclass", sub, sup]`,
+/// `["unsat", c]`, `["inconsistent"]`) as [`outcome_dict`]: at most one entry, none if
+/// not entailed or unknown. The `rustdl.justify` / `justify_result` wrappers warn.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool, bool)> {
+pub(crate) fn justify<'py>(
+    py: Python<'py>,
+    path: &str,
+    query: Vec<String>,
+) -> PyResult<Bound<'py, PyDict>> {
     let onto = load::load_path_noted(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_one_justification_reporting(&onto, &q)
         .map_err(reason_error_to_py)?;
-    Ok(first_rendered(&outcome))
+    outcome_dict(py, &outcome, None)
 }
 
-/// All minimal justifications (capped by `max`), paired with `incomplete` (see
-/// `justify`; here it also means some justifications may be missing).
+/// Up to `max` justifications as [`outcome_dict`] (#625).
 #[pyfunction]
 #[pyo3(signature = (path, query, max = 10))]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn justify_all(
+pub(crate) fn justify_all<'py>(
+    py: Python<'py>,
     path: &str,
     query: Vec<String>,
     max: usize,
-) -> PyResult<(Vec<Vec<String>>, bool, bool, bool)> {
+) -> PyResult<Bound<'py, PyDict>> {
     let onto = load::load_path_noted(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_all_justifications_reporting(&onto, &q, max)
         .map_err(reason_error_to_py)?;
-    Ok(all_rendered(&outcome))
+    outcome_dict(py, &outcome, Some(max))
 }
 
 /// Root/derived unsatisfiability partition:
@@ -211,35 +232,40 @@ impl PyPreparedOntology {
         self.inner.dropped().by_kind().clone()
     }
 
-    /// One minimal justification for a query (CLI-style tokens; see `justify`),
-    /// paired with `incomplete` (#396). The Python package binds a
-    /// `PreparedOntology.justify` wrapper over this that warns instead.
+    /// One justification for a query (CLI-style tokens; see `justify`) as the module
+    /// `justify`'s dict (#625). The Python package binds `PreparedOntology.justify` /
+    /// `justify_result` wrappers over this that warn.
     #[pyo3(name = "_justify_reporting")]
     #[allow(clippy::needless_pass_by_value)]
-    fn justify_reporting(&self, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool, bool)> {
+    fn justify_reporting<'py>(
+        &self,
+        py: Python<'py>,
+        query: Vec<String>,
+    ) -> PyResult<Bound<'py, PyDict>> {
         let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
         let outcome = self
             .inner
             .find_one_reporting(&q)
             .map_err(reason_error_to_py)?;
-        Ok(first_rendered(&outcome))
+        outcome_dict(py, &outcome, None)
     }
 
-    /// All minimal justifications (capped by `max`), paired with `incomplete`;
-    /// wrapped by `PreparedOntology.justify_all`.
+    /// Up to `max` justifications as the module `justify_all`'s dict (#625); wrapped by
+    /// `PreparedOntology.justify_all` / `justify_all_result`.
     #[pyo3(name = "_justify_all_reporting", signature = (query, max = 10))]
     #[allow(clippy::needless_pass_by_value)]
-    fn justify_all_reporting(
+    fn justify_all_reporting<'py>(
         &self,
+        py: Python<'py>,
         query: Vec<String>,
         max: usize,
-    ) -> PyResult<(Vec<Vec<String>>, bool, bool, bool)> {
+    ) -> PyResult<Bound<'py, PyDict>> {
         let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
         let outcome = self
             .inner
             .find_all_reporting(&q, max)
             .map_err(reason_error_to_py)?;
-        Ok(all_rendered(&outcome))
+        outcome_dict(py, &outcome, Some(max))
     }
 }
 

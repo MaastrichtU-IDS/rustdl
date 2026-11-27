@@ -27,8 +27,8 @@ with first-class data properties.
   complete.
 - **Proofs.** A step-level, rule-by-rule proof tree for any entailment — a
   checkable certificate of soundness on the EL/Horn fragment.
-- **Explain.** A minimal responsible-axiom set for any entailment, narrowable to
-  the responsible fragment.
+- **Explain.** A responsible-axiom set for any entailment (minimal guaranteed on the
+  EL/Horn fragment, and said so when it is not), narrowable to the responsible fragment.
 - **Repair.** Root-cause diagnosis of unsatisfiability plus minimal, verified
   fixes.
 - **Report.** A self-contained HTML report bundling the explanations, diagnosis,
@@ -110,7 +110,7 @@ rustdl.debug("ontology.ofn")           # consistency + root/derived unsat + just
 rustdl.justify("ontology.ofn", ["unsat", "http://ex.org/Bad"])   # -> list[str] (Manchester)
 onto = rustdl.prepare("ontology.ofn")            # parse + per-ontology justification state
 onto.justify(["subclass", sub, sup])             # same result, without re-deriving it
-onto.justify_all(["unsat", cls], max=10)         # up to `max` minimal justifications
+onto.justify_all(["unsat", cls], max=10)         # up to `max` justifications (`justify_all_result` says which are minimal)
 ```
 
 `prepare` pays the per-ontology setup once — use it whenever you justify more than
@@ -213,7 +213,7 @@ rustdl sat-expr          ontology.ofn '<CE>'           # satisfiability of a Man
 rustdl subclass-expr     ontology.ofn '<sub>' '<sup>'  # is SubClassOf(ce1, ce2) entailed
 rustdl instances-expr    ontology.ofn '<CE>'           # instances of a Manchester class expression
 
-rustdl justify   ontology.ofn <query…>      # minimal responsible-axiom set (why it holds)
+rustdl justify   ontology.ofn <query…>      # a responsible-axiom set (why it holds), minimal where guaranteed
 rustdl justify --laconic ontology.ofn <query…>  # pinpoint the responsible PART of each axiom
 rustdl repair    ontology.ofn <query…>      # minimal axiom removals to break an entailment
 rustdl prove     ontology.ofn <sub> <sup>   # step-level DL proof tree

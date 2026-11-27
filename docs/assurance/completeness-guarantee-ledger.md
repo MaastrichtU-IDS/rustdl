@@ -295,10 +295,12 @@ Not covered by that argument:
 - `--all` enumeration on the saturation-only oracle: a branch probe prunes on "not
   refuted", so a justification can be missing; `JustifyOutcome::saturation_oracle`
   makes `justify --json` report `enumeration_complete: false` (#584 review).
-- Surfaces that carry no minimality signal at all: Python `justify`, `justify_all`
-  and `PreparedOntology.justify*` (their docstrings say "One minimal justification"),
-  and the HTML report's hard-coded "(minimal justification)" (`report.rs`). Follow-up
-  issue.
+- Python `justify*` and the HTML report carry the signal since #625: the
+  `*_result` forms return per-justification `minimal` and `enumeration_complete`, the bare
+  forms emit `MinimalityNotGuaranteedWarning`, and the report's headings say
+  "(minimal justification)" only when it is guaranteed (`minimality_claims_cli.rs`,
+  `test_justify_minimality.py`). `justify --all --json`'s `enumeration_complete` also needs
+  every justification minimal, as `repair`'s `complete` does.
 
 ## Rule for changes
 

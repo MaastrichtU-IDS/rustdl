@@ -65,6 +65,7 @@ from ._results import (
     Root as Root,
     Derived as Derived,
     Inconsistency as Inconsistency,
+    Justifications as Justifications,
 )
 
 from . import examples as examples
@@ -463,28 +464,126 @@ def _warn_if_explanation_incomplete(name: str, incomplete: bool, depth_capped: b
         )
 
 
+class MinimalityNotGuaranteedWarning(UserWarning):
+    """A justification is not guaranteed minimal (#625): it entails the query, but a
+    smaller subset may too. Emitted by `justify`, `justify_all` (one warning per call,
+    naming the justifications), their `*_result` forms, the `PreparedOntology` forms
+    and `debug` (once), when the ontology is outside the EL/Horn fragment (where no
+    minimality is guaranteed) or the search ran on the saturation-only consistency
+    oracle (#584, an `inconsistent` query whose clash the `ABox` saturator finds;
+    `RUSTDL_JUSTIFY_SAT_ORACLE=0` turns it off). For `justify_all` it also says the
+    enumeration may miss a justification. A subset probe that gave up is
+    `IncompleteQueryWarning`'s and is not repeated here. The `*_result` forms carry
+    the per-justification `minimal` flags.
+
+    New in #625, so these functions now warn where they used to be silent: on most
+    ontologies outside EL/Horn, every non-empty answer warns, as the CLI's
+    "minimality NOT guaranteed" note does. Under `-W error` they raise;
+    `warnings.filterwarnings("ignore", category=rustdl.MinimalityNotGuaranteedWarning)`
+    restores the old behaviour."""
+
+
+def _justifications(native: dict) -> Justifications:
+    return Justifications(
+        justifications=tuple(tuple(j) for j in native["justifications"]),
+        minimal=tuple(native["minimal"]),
+        enumeration_complete=native["enumeration_complete"],
+        incomplete=native["incomplete"],
+        relies_on_trusted_consistency=native["relies_on_trusted_consistency"],
+        depth_capped=native["depth_capped"],
+        saturation_oracle=native["saturation_oracle"],
+        in_fragment=native["in_fragment"],
+    )
+
+
+def _minimality_causes(r: Justifications) -> list:
+    """The causes `MinimalityNotGuaranteedWarning` names (a give-up is
+    `IncompleteQueryWarning`'s)."""
+    causes = []
+    if r.saturation_oracle:
+        causes.append("the search ran on the saturation-only consistency oracle (#584)")
+    if not r.in_fragment:
+        causes.append("the ontology is outside the EL/Horn fragment")
+    return causes
+
+
+def _warn_if_not_minimal(name: str, r: Justifications, every: bool, stacklevel: int) -> None:
+    """#625: one warning per call. `every`: a `justify_all` form (names the
+    justifications, and says the enumeration may miss one)."""
+    unguaranteed = [i for i, m in enumerate(r.minimal) if not m]
+    causes = _minimality_causes(r)
+    if not unguaranteed or not causes:
+        return
+    which = (
+        "justification(s) " + ", ".join(str(i) for i in unguaranteed)
+        if every
+        else "the justification"
+    )
+    tail = ", and a justification may be missing from the enumeration" if every else ""
+    _warnings.warn(
+        f"{name}: minimality is not guaranteed for {which} ({'; '.join(causes)}): each "
+        f"still entails the query, but a smaller subset may too{tail} "
+        "(see MinimalityNotGuaranteedWarning).",
+        MinimalityNotGuaranteedWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def _first(r: Justifications) -> list:
+    return list(r.justifications[0]) if r.justifications else []
+
+
+def justify_result(path, query):
+    """`justify` as a `Justifications` result (#625): the justification (at most
+    one) with its `minimal` flag and the search's signals. Emits the same warnings
+    as `justify`."""
+    r = _justifications(_justify_native(path, query))
+    _warn_if_explanation_incomplete("justify_result", r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted("justify_result", r.relies_on_trusted_consistency)
+    _warn_if_not_minimal("justify_result", r, every=False, stacklevel=4)
+    return r
+
+
 def justify(path, query):
-    """One minimal justification (Manchester axioms) for `query` (CLI-style
-    tokens, e.g. ["unsat", c] / ["subclass", s, t] / ["inconsistent"]). Empty if
-    not entailed. Emits `IncompleteQueryWarning` when a reasoner check gave up:
-    an empty list then means unknown, and a justification may not be minimal.
-    Emits `TrustedConsistencyWarning` (#429) when a check answered "not entailed"
-    on the consistency wedge's model alone: an empty list may then be wrong, and
-    a justification may not be minimal."""
-    axioms, incomplete, trusted, depth_capped = _justify_native(path, query)
-    _warn_if_explanation_incomplete("justify", incomplete, depth_capped)
-    _warn_if_oracle_trusted("justify", trusted)
-    return axioms
+    """One justification (Manchester axioms) for `query` (CLI-style tokens, e.g.
+    ["unsat", c] / ["subclass", s, t] / ["inconsistent"]): a set of axioms that
+    entails it, minimal when the ontology is EL or Horn and nothing below gave up
+    (#625; `justify_result` returns the flag). Empty if not entailed. Emits
+    `IncompleteQueryWarning` when a reasoner check gave up: an empty list then
+    means unknown, and a justification may not be minimal. Emits
+    `TrustedConsistencyWarning` (#429) when a check answered "not entailed" on the
+    consistency wedge's model alone: an empty list may then be wrong, and a
+    justification may not be minimal. Emits `MinimalityNotGuaranteedWarning` when
+    minimality is not guaranteed for another reason."""
+    r = _justifications(_justify_native(path, query))
+    _warn_if_explanation_incomplete("justify", r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted("justify", r.relies_on_trusted_consistency)
+    _warn_if_not_minimal("justify", r, every=False, stacklevel=4)
+    return _first(r)
+
+
+def justify_all_result(path, query, max=10):
+    """`justify_all` as a `Justifications` result (#625): up to `max`
+    justifications, one `minimal` flag each, and `enumeration_complete`. Emits the
+    same warnings as `justify_all`."""
+    r = _justifications(_justify_all_native(path, query, max))
+    _warn_if_explanation_incomplete("justify_all_result", r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted("justify_all_result", r.relies_on_trusted_consistency)
+    _warn_if_not_minimal("justify_all_result", r, every=True, stacklevel=4)
+    return r
 
 
 def justify_all(path, query, max=10):
-    """Up to `max` minimal justifications for `query`. Emits
-    `IncompleteQueryWarning` when a reasoner check gave up (see `justify`; some
-    justifications may also be missing)."""
-    js, incomplete, trusted, depth_capped = _justify_all_native(path, query, max)
-    _warn_if_explanation_incomplete("justify_all", incomplete, depth_capped)
-    _warn_if_oracle_trusted("justify_all", trusted)
-    return js
+    """Up to `max` justifications for `query`, each a set of axioms that entails it
+    (minimal under the conditions `justify` states; `justify_all_result` returns the
+    flags and whether the enumeration is complete). Emits `IncompleteQueryWarning`
+    when a reasoner check gave up (see `justify`; some justifications may also be
+    missing), and `MinimalityNotGuaranteedWarning` (#625)."""
+    r = _justifications(_justify_all_native(path, query, max))
+    _warn_if_explanation_incomplete("justify_all", r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted("justify_all", r.relies_on_trusted_consistency)
+    _warn_if_not_minimal("justify_all", r, every=True, stacklevel=4)
+    return [list(j) for j in r.justifications]
 
 
 def diagnose(path):
@@ -521,34 +620,64 @@ def repair(path, query, max=10):
     return repairs
 
 
+def _prepared_justify_result(self: "PreparedOntology", query):
+    """`PreparedOntology.justify` as a `Justifications` result (#625). Emits the same
+    warnings."""
+    name = "PreparedOntology.justify_result"
+    r = _justifications(self._justify_reporting(query))
+    _warn_if_explanation_incomplete(name, r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted(name, r.relies_on_trusted_consistency)
+    _warn_if_not_minimal(name, r, every=False, stacklevel=3)
+    _warn_if_dropped(name, self.dropped)
+    _warn_if_universal_role(name, self.universal_role_ordinary)
+    return r
+
+
 def _prepared_justify(self: "PreparedOntology", query):
-    """One minimal justification (Manchester axioms) for `query`. Emits
-    `IncompleteQueryWarning` when a reasoner check gave up (see
-    `rustdl.justify`)."""
-    axioms, incomplete, trusted, depth_capped = self._justify_reporting(query)
-    _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete, depth_capped)
-    _warn_if_oracle_trusted("PreparedOntology.justify", trusted)
-    _warn_if_dropped("PreparedOntology.justify", self.dropped)
-    _warn_if_universal_role("PreparedOntology.justify", self.universal_role_ordinary)
-    return axioms
+    """One justification (Manchester axioms) for `query` (see `rustdl.justify`).
+    Emits `IncompleteQueryWarning` when a reasoner check gave up, and
+    `MinimalityNotGuaranteedWarning` (#625)."""
+    name = "PreparedOntology.justify"
+    r = _justifications(self._justify_reporting(query))
+    _warn_if_explanation_incomplete(name, r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted(name, r.relies_on_trusted_consistency)
+    _warn_if_not_minimal(name, r, every=False, stacklevel=3)
+    _warn_if_dropped(name, self.dropped)
+    _warn_if_universal_role(name, self.universal_role_ordinary)
+    return _first(r)
+
+
+def _prepared_justify_all_result(self: "PreparedOntology", query, max=10):
+    """`PreparedOntology.justify_all` as a `Justifications` result (#625). Emits the
+    same warnings."""
+    name = "PreparedOntology.justify_all_result"
+    r = _justifications(self._justify_all_reporting(query, max))
+    _warn_if_explanation_incomplete(name, r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted(name, r.relies_on_trusted_consistency)
+    _warn_if_not_minimal(name, r, every=True, stacklevel=3)
+    _warn_if_dropped(name, self.dropped)
+    _warn_if_universal_role(name, self.universal_role_ordinary)
+    return r
 
 
 def _prepared_justify_all(self: "PreparedOntology", query, max=10):
-    """Up to `max` minimal justifications for `query`. Emits
-    `IncompleteQueryWarning` when a reasoner check gave up (see
-    `rustdl.justify_all`)."""
-    js, incomplete, trusted, depth_capped = self._justify_all_reporting(query, max)
-    _warn_if_explanation_incomplete(
-        "PreparedOntology.justify_all", incomplete, depth_capped
-    )
-    _warn_if_oracle_trusted("PreparedOntology.justify_all", trusted)
-    _warn_if_dropped("PreparedOntology.justify_all", self.dropped)
-    _warn_if_universal_role("PreparedOntology.justify_all", self.universal_role_ordinary)
-    return js
+    """Up to `max` justifications for `query` (see `rustdl.justify_all`). Emits
+    `IncompleteQueryWarning` when a reasoner check gave up, and
+    `MinimalityNotGuaranteedWarning` (#625)."""
+    name = "PreparedOntology.justify_all"
+    r = _justifications(self._justify_all_reporting(query, max))
+    _warn_if_explanation_incomplete(name, r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted(name, r.relies_on_trusted_consistency)
+    _warn_if_not_minimal(name, r, every=True, stacklevel=3)
+    _warn_if_dropped(name, self.dropped)
+    _warn_if_universal_role(name, self.universal_role_ordinary)
+    return [list(j) for j in r.justifications]
 
 
 PreparedOntology.justify = _prepared_justify  # type: ignore[attr-defined]
 PreparedOntology.justify_all = _prepared_justify_all  # type: ignore[attr-defined]
+PreparedOntology.justify_result = _prepared_justify_result  # type: ignore[attr-defined]
+PreparedOntology.justify_all_result = _prepared_justify_all_result  # type: ignore[attr-defined]
 
 
 def is_consistent(path):
@@ -1341,16 +1470,47 @@ def debug(path):
     `diagnose`, `justify` and `repair`, and `DroppedAxiomsWarning` /
     `UniversalRoleWarning` once, after them (#597)."""
     _take_conversion_notes()
+    seen = []
+
+    def _justify_quietly(p, q):
+        # #625: the minimality warning is `debug`'s, once; the others stay per call.
+        r = _justifications(_justify_native(p, q))
+        _warn_if_explanation_incomplete("justify", r.incomplete, r.depth_capped)
+        _warn_if_oracle_trusted("justify", r.relies_on_trusted_consistency)
+        seen.append(r)
+        return r
+
     result = _debug(
         path,
         getattr(diagnose, "__wrapped__", diagnose),
-        getattr(justify, "__wrapped__", justify),
+        _justify_quietly,
         getattr(repair, "__wrapped__", repair),
     )
     dropped, uro, _ = _query_notes(path)
     _warn_if_dropped("debug", dropped, stacklevel=3)
     _warn_if_universal_role("debug", uro, stacklevel=3)
+    unguaranteed = [r for r in seen if r.minimal and not r.minimal[0]]
+    causes = sorted({c for r in unguaranteed for c in _minimality_causes(r)})
+    if causes:
+        _warnings.warn(
+            f"debug: minimality is not guaranteed for {len(unguaranteed)} "
+            f"justification(s) ({'; '.join(causes)}): each still entails, but a "
+            "smaller subset may too; `minimal` on each Root / Inconsistency says which "
+            "(see MinimalityNotGuaranteedWarning).",
+            MinimalityNotGuaranteedWarning,
+            stacklevel=2,
+        )
     return result
+
+
+def _section(cls, j: Justifications, **fields):
+    """#625: a `Root` / `Inconsistency` from a `Justifications` (at most one)."""
+    return cls(
+        justification=j.justifications[0] if j.justifications else (),
+        # Nothing found (a give-up) claims no minimality.
+        minimal=j.minimal[0] if j.minimal else False,
+        **fields,
+    )
 
 
 def _debug(path, diagnose, justify, repair):
@@ -1363,15 +1523,15 @@ def _debug(path, diagnose, justify, repair):
             unsatisfiable=(),
             roots=(),
             derived=(),
-            inconsistency=Inconsistency(
-                justification=tuple(justify(path, ["inconsistent"])),
+            inconsistency=_section(
+                Inconsistency, justify(path, ["inconsistent"]),
                 repairs=tuple(tuple(r) for r in repair(path, ["inconsistent"], 10)),
             ),
         )
     root_objs = tuple(
-        Root(
+        _section(
+            Root, justify(path, ["unsat", r]),
             iri=r,
-            justification=tuple(justify(path, ["unsat", r])),
             repairs=tuple(tuple(x) for x in repair(path, ["unsat", r], 10)),
             derives=tuple(d for (d, rs) in derived if r in rs),
         )
@@ -1462,6 +1622,8 @@ def _with_conversion_notes(name, fn):
 for _name in (
     "justify",
     "justify_all",
+    "justify_result",
+    "justify_all_result",
     "diagnose",
     "repair",
     "is_consistent",
@@ -1544,6 +1706,10 @@ __all__ = [
     "materialize_existential_successors",
     "justify",
     "justify_all",
+    "justify_result",
+    "justify_all_result",
+    "Justifications",
+    "MinimalityNotGuaranteedWarning",
     "diagnose",
     "repair",
     "render_manchester",

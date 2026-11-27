@@ -383,7 +383,8 @@ enum Command {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
-    /// Explain WHY an entailment holds: print a minimal responsible-axiom set.
+    /// Explain WHY an entailment holds: print a responsible-axiom set (minimal where guaranteed;
+    /// each says whether it is).
     Justify {
         /// Path to the ontology (.ofn).
         file: PathBuf,
@@ -396,7 +397,7 @@ enum Command {
         /// `data-value A DP V` (V = `"lex"^^xsd:type` or `"lex"`).
         #[arg(num_args = 1..)]
         query: Vec<String>,
-        /// Print ALL minimal justifications (capped by --max), not just one.
+        /// Print ALL justifications (capped by --max), not just one.
         #[arg(long)]
         all: bool,
         /// Cap on the number of justifications printed with --all.
@@ -460,7 +461,7 @@ enum Command {
     Diagnose {
         /// Path to the ontology (.ofn / .owx / .owl / .rdf / .omn).
         file: PathBuf,
-        /// Print ALL minimal justifications per root (capped by --max), not just one.
+        /// Print ALL justifications per root (capped by --max), not just one.
         #[arg(long)]
         all: bool,
         /// Cap on the number of justifications printed with --all.
@@ -3242,6 +3243,12 @@ fn run() -> Result<()> {
                     // A probe that gave up during the search may have pruned a
                     // branch, so the set is not known to be full (#396).
                     let enumeration_complete = if outcome.incomplete {
+                        js.truncate(max);
+                        false
+                    } else if !js.iter().all(|j| j.minimal_guaranteed) {
+                        // #625: a justification not guaranteed minimal marks a search whose
+                        // "not entailed" may have pruned a branch (out of fragment, or the
+                        // saturation-only oracle), as `repair`'s `complete` reads it.
                         js.truncate(max);
                         false
                     } else if outcome.saturation_oracle {

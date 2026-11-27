@@ -113,9 +113,17 @@ fn names_a_top_property(file: &std::path::Path) -> bool {
 ///
 /// What it IS good for: a consumer that needs exactness (the issue-#66 reporter
 /// was diffing two `classify` hierarchies) can see that the hierarchy rests on
-/// unverified `Sat` verdicts, and re-run with `RUSTDL_LABEL_HEURISTIC=0` and
-/// `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` (the label channels are not gated by
-/// `TRUST_SAT`), or ask `subclass` per pair.
+/// unverified `Sat` verdicts, and re-run with one of:
+/// - `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1`: budgeted verification of these
+///   channels on the main tableau. The prune verification stops paying past a
+///   budget, and a prune it does not verify stays trusted and is counted here, so
+///   the claim is "flag on AND this reads 0", not "flag on". It does not cover the
+///   consistency wedge's `Sat` (`relies_on_trusted_consistency`) (#584).
+/// - `RUSTDL_LABEL_HEURISTIC=0` with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`: no label
+///   trust at all, unbudgeted and much slower.
+///   `TRUST_SAT=0` alone is not enough: the label channels are not gated by it.
+///
+/// or ask `subclass` per pair.
 pub(crate) fn trusted_sat_risk(stats: &owl_dl_reasoner::ClassificationStats) -> usize {
     stats.hyper_refuted_pairs
         + stats.label_cache_pruned
@@ -1792,6 +1800,31 @@ fn build_proof_node_json(
                 }
             }
             None => derived_axioms.push(render(ax)),
+        }
+    }
+    // #543 part 2: a built-in that holds only given a source axiom (a universal-role
+    // fold) cites that axiom too, so the step is not credited to OWL semantics alone.
+    for (_, ax) in &builtin_refs {
+        let Some((_, lics)) = internal.builtin_licenses.iter().find(|(b, _)| b == *ax) else {
+            continue;
+        };
+        for lic in lics {
+            let sources = internal
+                .axioms
+                .iter()
+                .position(|a| a == lic)
+                .and_then(|i| cites.sources_of(i, internal));
+            match sources {
+                Some(components) => {
+                    for component in components {
+                        let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
+                        if !axioms.contains(&doc) {
+                            axioms.push(doc);
+                        }
+                    }
+                }
+                None => derived_axioms.push(render(lic)),
+            }
         }
     }
     let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(|(_, ax)| render(ax)).collect();

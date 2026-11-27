@@ -390,21 +390,15 @@ pub(crate) fn dropped_axioms(path: &str) -> PyResult<std::collections::BTreeMap<
 }
 
 /// #543: does the ontology at `path` use a universal role where rustdl's
-/// ordinary-property reading can miss entailments? A byte search for the two top
-/// property names comes first, so an ontology that names neither (all but a handful)
-/// is not parsed a second time; one that does is parsed and converted.
-/// `role_level=True` also counts a role above a top property, for the role-level
-/// functions (`object_property_values`, `materialize_inferred_property_assertions`):
-/// it relates every pair of individuals, which they do not list.
+/// ordinary-property reading can miss entailments? Parsed and converted (#619: no byte
+/// prefilter any more; a prefix that cuts inside the name hid the use from it).
+/// `role_level=True` gives the role-level flag: also a role above a top property, or a
+/// property disjointness with a universal member (#624), whose consequences the
+/// role-level functions (property values and hierarchy, property disjointness,
+/// same/different individuals) do not list.
 #[pyfunction]
 #[pyo3(signature = (path, role_level=false))]
 pub(crate) fn universal_role_ordinary(path: &str, role_level: bool) -> PyResult<bool> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| crate::errors::ParseError::new_err(format!("read {path}: {e}")))?;
-    let mentions = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
-    if !mentions(b"topObjectProperty") && !mentions(b"topDataProperty") {
-        return Ok(false);
-    }
     let o = load::load_path(path)?;
     if role_level {
         return owl_dl_reasoner::universal_role_ordinary_for_roles(&o).map_err(reason_error_to_py);

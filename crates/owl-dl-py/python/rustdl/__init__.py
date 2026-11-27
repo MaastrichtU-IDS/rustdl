@@ -1408,9 +1408,24 @@ def _warn_if_universal_role(name: str, flagged: bool, stacklevel: int = 3) -> No
         )
 
 
+# #543: the role-level functions, which take the role-level flag (a role above a top
+# property, or since #624 a property disjointness with a universal member: role
+# consequences these functions do not list), as the CLI's role-level commands do
+# (`property-values`, `property-hierarchy`, `disjoint`, `individuals`). #619: the list
+# used to stop at the first two.
 _ROLE_LEVEL = frozenset({
     "object_property_values",
+    "data_property_values",
     "materialize_inferred_property_assertions",
+    "materialize_inferred_data_property_assertions",
+    "materialize_inferred_subobjectproperty_axioms",
+    "materialize_inferred_subdataproperty_axioms",
+    "object_property_hierarchy",
+    "data_property_hierarchy",
+    "disjoint_object_properties",
+    "disjoint_data_properties",
+    "same_individuals",
+    "different_individuals",
 })
 
 

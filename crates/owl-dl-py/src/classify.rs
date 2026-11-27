@@ -94,7 +94,8 @@ impl PyClassification {
     /// silent or flagged. The same value as the Rust
     /// `Classification::completeness_guaranteed()` and the `classify --json`
     /// field. It holds only on a pure-EL ontology with no timed-out pair, no
-    /// `wedge_hierarchy_blind`, no `wedge_abox_blind`, no `wedge_clauses_refused`, no
+    /// `wedge_hierarchy_blind`, no `wedge_abox_blind`, no `tbox_individuals_unseeded`, no
+    /// `wedge_clauses_refused`, no
     /// `derived_same_undecided`, no `consistency_undetermined`, no dropped
     /// axiom and no `universal_role_ordinary` (#543). `False` means completeness is not
     /// guaranteed, not that the hierarchy is incomplete.
@@ -198,6 +199,17 @@ impl PyClassification {
     #[getter]
     fn wedge_abox_blind(&self) -> bool {
         self.inner.stats().wedge_abox_blind
+    }
+
+    /// True iff some classify probe did not instantiate an individual named in a
+    /// `TBox` nominal that has no `ABox` fact (#608): `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS`
+    /// is off, the default. Every named individual exists in every model, so a
+    /// subsumption or an unsatisfiable class that follows from what the `TBox`
+    /// says about it may be missing even though `complete` (nothing cut) is
+    /// `True`.
+    #[getter]
+    fn tbox_individuals_unseeded(&self) -> bool {
+        self.inner.stats().tbox_individuals_unseeded
     }
 
     /// How many clauses the wedge cannot match (#353). A refused clause never

@@ -190,7 +190,7 @@ pub(crate) struct ClassifyJson {
     /// missed subsumptions**. `true` only on a fragment where the engine that
     /// answered is complete and when none of the other signals in this struct
     /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no `wedge_abox_blind`, no
-    /// `wedge_clauses_refused`, no `derived_same_undecided`, no
+    /// `tbox_individuals_unseeded`, no `wedge_clauses_refused`, no `derived_same_undecided`, no
     /// `consistency_undetermined` and nothing in `dropped` (#246).
     /// `ClassificationStats::completeness_guaranteed` is the predicate, and
     /// `docs/assurance/completeness-guarantee-ledger.md` lists each condition.
@@ -226,6 +226,14 @@ pub(crate) struct ClassifyJson {
     /// #533: wedge models demoted under `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (see
     /// `wedge_abox_blind`). Diagnostic; 0 with the flag off.
     pub(crate) wedge_abox_demoted: u64,
+    /// #608: some classify probe did not instantiate an individual named in a `TBox`
+    /// nominal that has no `ABox` fact (no axiom, or only `DifferentIndividuals`):
+    /// `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS` is off, the default. Every named individual
+    /// exists in every model, so what the `TBox` says about it can force a subsumption
+    /// or an unsatisfiable class that classify then misses (`subclass` finds it). A
+    /// SEPARATE field for the same reason as `wedge_hierarchy_blind`: no class pair
+    /// was cut. The flag clears it, unless `RUSTDL_CLASSIFY_WEDGE_NOMINALS=0`.
+    pub(crate) tbox_individuals_unseeded: bool,
     /// #353: clauses the wedge's matcher refuses, which therefore never fire, so
     /// entailments that need them may be missing. A SEPARATE field for the same
     /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
@@ -803,6 +811,7 @@ pub(crate) fn build_classify_json(
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
         wedge_abox_blind: stats.wedge_abox_blind,
         wedge_abox_demoted: stats.wedge_abox_demoted,
+        tbox_individuals_unseeded: stats.tbox_individuals_unseeded,
         wedge_clauses_refused: stats.wedge_clauses_refused,
         wedge_clauses_deferred: stats.wedge_clauses_deferred,
         consistency_wedge_clauses_refused: stats.consistency_wedge_clauses_refused,
@@ -846,6 +855,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         wedge_hierarchy_blind: false,
         wedge_abox_blind: false,
         wedge_abox_demoted: 0,
+        tbox_individuals_unseeded: false,
         wedge_clauses_refused: 0,
         wedge_clauses_deferred: 0,
         consistency_wedge_clauses_refused: 0,

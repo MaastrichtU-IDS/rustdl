@@ -1105,10 +1105,11 @@ pub struct HyperEngine<'c> {
     /// `RUSTDL_WEDGE_NOMINAL_GEN_FIRST` (#570): among deferred generating clauses,
     /// those whose target is a nominal fire first. See [`Self::gen_first`].
     nominal_gen_first: bool,
-    /// #570: classes whose instances are forced into a nominal by Horn clauses
-    /// alone (a nominal itself, or a class with a chain of `C → D` clauses to
-    /// one). Built on first use; `None` until then.
-    nominal_implying: Option<std::collections::HashSet<ClassId>>,
+    /// #570: this engine's part of [`NominalImplying`]: the classes its own
+    /// clauses (past the shared `built_len`, and the extras) add to the shared
+    /// set, or the whole set when the shared one does not apply (`.1` false).
+    /// Built on first use; `None` until then.
+    nominal_implying: Option<(std::collections::HashSet<ClassId>, bool)>,
     /// #564 `RUSTDL_WEDGE_MERGE_CHURN_GUARD`: see [`Self::merge_churn`].
     merge_churn_guard: bool,
     /// #564: successful node merges over the engine's life (never restored; only
@@ -1481,6 +1482,9 @@ pub struct ClauseIndexes {
     /// Classify builds an engine per class and per pair, so scanning every
     /// clause per engine was quadratic on large ontologies.
     nominal_scan: std::sync::OnceLock<NominalScan>,
+    /// #570: [`NominalImplying`] over the `built_len` indexed clauses, for the
+    /// nominal range in the key. Computed once and shared like `nominal_scan`.
+    nominal_implying: std::sync::OnceLock<NominalImplying>,
     /// #480: the `nonhorn` entries below `built_len` whose head has a nominal
     /// disjunct on `X`, for the nominal range in the key. Computed once and shared
     /// like `nominal_scan`; see [`HyperEngine::awaits_nominal_disjunction`].
@@ -1501,6 +1505,72 @@ struct NominalDisj {
     range: (u32, u32),
     /// As in `nonhorn`.
     list: Vec<NonHornEntry>,
+}
+
+/// #570: the classes Horn clauses alone force into a nominal: a chain of
+/// single-class clauses `C(x) → D(x)` ending at a nominal in `start..start+count`.
+/// `implied_by` keeps the reverse edges so an engine can extend the closure with
+/// its own extra clauses without rescanning the shared ones.
+#[derive(Debug, Clone, Default)]
+struct NominalImplying {
+    start: u32,
+    count: u32,
+    implied_by: std::collections::HashMap<ClassId, Vec<ClassId>>,
+    set: std::collections::HashSet<ClassId>,
+}
+
+impl NominalImplying {
+    fn is_nominal(start: u32, count: u32, c: ClassId) -> bool {
+        c.index() >= start && c.index() < start.saturating_add(count)
+    }
+
+    /// Extend `set` (classes not already in `base`) with what `clauses` add, walking
+    /// reverse edges through both `base` and `clauses`.
+    fn extend<'a>(
+        start: u32,
+        count: u32,
+        base: Option<&NominalImplying>,
+        clauses: impl Iterator<Item = &'a DlClause>,
+        implied_by: &mut std::collections::HashMap<ClassId, Vec<ClassId>>,
+        set: &mut std::collections::HashSet<ClassId>,
+    ) {
+        let in_base = |c: &ClassId| base.is_some_and(|b| b.set.contains(c));
+        let mut stack = Vec::new();
+        for c in clauses {
+            if let ([Atom::Class(b, X)], [Atom::Class(h, X)]) = (&c.body[..], &c.head[..]) {
+                implied_by.entry(*h).or_default().push(*b);
+                if Self::is_nominal(start, count, *h) || in_base(h) || set.contains(h) {
+                    if !in_base(b) && set.insert(*b) {
+                        stack.push(*b);
+                    }
+                }
+                if Self::is_nominal(start, count, *h) && !in_base(h) && set.insert(*h) {
+                    stack.push(*h);
+                }
+            }
+        }
+        while let Some(x) = stack.pop() {
+            let from_base = base
+                .and_then(|b| b.implied_by.get(&x))
+                .map_or(&[][..], Vec::as_slice);
+            let from_here = implied_by.get(&x).cloned().unwrap_or_default();
+            for &p in from_base.iter().chain(from_here.iter()) {
+                if !in_base(&p) && set.insert(p) {
+                    stack.push(p);
+                }
+            }
+        }
+    }
+
+    fn build<'a>(start: u32, count: u32, clauses: impl Iterator<Item = &'a DlClause>) -> Self {
+        let mut n = Self {
+            start,
+            count,
+            ..Self::default()
+        };
+        Self::extend(start, count, None, clauses, &mut n.implied_by, &mut n.set);
+        n
+    }
 }
 
 /// The clause half of [`HyperEngine::compute_visible_nominals`] for one nominal
@@ -6350,35 +6420,40 @@ impl<'c> HyperEngine<'c> {
         if is_nominal(target) {
             return true;
         }
+        // The shared closure over the indexed clauses, built once per index (as
+        // `compute_visible_nominals` shares its scan); this engine scans only its
+        // own clauses past `built_len` and its extras.
+        let indexes = std::sync::Arc::clone(&self.indexes);
+        let built = indexes.built_len;
+        let shared = (built <= self.clauses.len())
+            .then(|| {
+                indexes.nominal_implying.get_or_init(|| {
+                    NominalImplying::build(start, count, self.clauses[..built].iter())
+                })
+            })
+            .filter(|n| (n.start, n.count) == (start, count));
         if self.nominal_implying.is_none() {
-            // Reverse edges of the single-class Horn clauses `C(x) → D(x)`, walked
-            // back from the nominals.
-            let mut implied_by: std::collections::HashMap<ClassId, Vec<ClassId>> =
-                std::collections::HashMap::new();
-            let mut set: std::collections::HashSet<ClassId> = std::collections::HashSet::new();
-            let n = self.clauses.len() + self.extra_clauses.len();
-            for i in 0..n {
-                let c = self.clause(i);
-                if let ([Atom::Class(b, X)], [Atom::Class(h, X)]) = (&c.body[..], &c.head[..]) {
-                    implied_by.entry(*h).or_default().push(*b);
-                    if is_nominal(*h) {
-                        set.insert(*h);
-                    }
-                }
-            }
-            let mut stack: Vec<ClassId> = set.iter().copied().collect();
-            while let Some(h) = stack.pop() {
-                for &b in implied_by.get(&h).map_or(&[][..], Vec::as_slice) {
-                    if set.insert(b) {
-                        stack.push(b);
-                    }
-                }
-            }
-            self.nominal_implying = Some(set);
+            let mut implied_by = std::collections::HashMap::new();
+            let mut set = std::collections::HashSet::new();
+            let rest = match shared {
+                Some(_) => &self.clauses[built..],
+                None => self.clauses,
+            };
+            NominalImplying::extend(
+                start,
+                count,
+                shared,
+                rest.iter().chain(self.extra_clauses.iter()),
+                &mut implied_by,
+                &mut set,
+            );
+            self.nominal_implying = Some((set, shared.is_some()));
         }
-        self.nominal_implying
+        let local = self
+            .nominal_implying
             .as_ref()
-            .is_some_and(|s| s.contains(&target))
+            .is_some_and(|(s, _)| s.contains(&target));
+        local || shared.is_some_and(|n| n.set.contains(&target))
     }
 
     /// #465 B: fire a deferred generating clause.
@@ -9120,6 +9195,8 @@ mod tests {
         let (r, built, live, _) = r_cycle_run(&clauses, true);
         assert_eq!(r, HyperResult::Sat, "built {built}, live {live}");
         assert!(built <= 12, "built {built}, live {live}");
+        let (r, ..) = r_cycle_run(&clauses, false);
+        assert_eq!(r, HyperResult::Stalled, "old order churns here too");
     }
 
     /// The guard leaves a fixpoint that keeps what it builds alone: a long told

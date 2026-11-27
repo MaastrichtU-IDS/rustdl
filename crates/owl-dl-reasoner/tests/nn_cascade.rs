@@ -589,11 +589,12 @@ fn classify_consistent(body: &str, what: &str) -> bool {
     !s.inconsistent
 }
 
-/// The r-cycle shape. With the bound, the wedge's Horn fixpoint on it builds nodes
-/// that its nominal merges fold straight back, and the NN guard refuses every
-/// blocker, so it never settles; the merge-churn guard
-/// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`) stops it with `Stalled` and the main tableau
-/// decides. Before the guard the unbounded `classify` did not return on it.
+/// The r-cycle shape. On the old generation order (`RUSTDL_WEDGE_NOMINAL_GEN_FIRST=0`)
+/// the wedge's Horn fixpoint on it builds nodes that its nominal merges fold
+/// straight back, and the NN guard refuses every blocker, so it never settles; the
+/// merge-churn guard (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`) stops it with `Stalled` and
+/// the main tableau decides. Before the guard the unbounded `classify` did not
+/// return on it. Since #570 the default order merges first and the wedge decides.
 const R_CYCLE: &str = "an r-cycle back from B to A";
 
 #[test]
@@ -613,6 +614,10 @@ fn issue_564_classify_finds_q_unsat_on_every_cascade_shape() {
 #[test]
 fn issue_564_r_cycle_terminates_in_classify() {
     let _l = lock();
+    // #570 removes this churn on the default order; the old order keeps the
+    // guard's classify-level positive (`RUSTDL_WEDGE_MERGE_CHURN_GUARD=0` brings
+    // the non-termination back there).
+    let _o = SetEnvGuard::set("RUSTDL_WEDGE_NOMINAL_GEN_FIRST", "0");
     let (_, body) = inconsistent_shapes()
         .into_iter()
         .find(|(w, _)| *w == R_CYCLE)

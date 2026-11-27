@@ -82,8 +82,9 @@ All notable changes to rustdl are documented here. Format is based on
 
 ### Fixed
 - **`SubDataPropertyOf` no longer gives a false subsumption by ignoring data ranges (#626).** With `SubDataPropertyOf(:d :e)`, `C ⊑ hasValue(d, 7)` and `hasValue(e, 1) ⊑ E`, the data-axiom preprocessing derived `C ⊑ E` (with `completeness_guaranteed: true`). It read `∃e.Y ⊑ E` regardless of Y. HermiT and Konclude reject the subsumption, since 7 is not 1.
-  - **Fix:** the shortcut now fires only when Y is all data values (`rdfs:Literal`, or a bare min/exact cardinality). Restricted ranges are compared by the lowering. Same values, contained ranges and the same datatype are still derived.
-  - **ORE:** the converted axioms are unchanged on all 197 pool files that use `SubDataPropertyOf`.
+  - A cardinality on the super side failed the same way: `≥2 e`, `=1 e`, `=2 e` and `≥3 e` were each read as "has some e-value", so `C ⊑ hasValue(d, 7)` gave `C ⊑ E` from `DataExactCardinality(1 e) ⊑ E`. This happened even with no real sub-property, since the hierarchy is closed reflexively.
+  - **Fix:** the shortcut now fires only when Y is `DataSomeValuesFrom(e rdfs:Literal)` or `DataMinCardinality(1 e)`. Every other form is compared by the lowering. Same values, contained ranges, the same datatype, an enumeration within its datatype, and `≥2 d` against `≥2 e` are still derived.
+  - **ORE:** REACH_PLACEHOLDER
 - **A `DataOneOf` value now meets the same datatype's ranges and points (#556).** `a : ∃d.{1}` with `¬d(a, 1)` read consistent on every path, and HermiT and Konclude both say it is inconsistent. The cause: `DataOneOf` lowers to an enumeration `DKey` bucket, while a `NegativeDataPropertyAssertion`, a `DataPropertyAssertion`, `DataHasValue` and facet restrictions lower to the range bucket of the same datatype. Only disjointness was seeded across the two (#42 item 2), never subsumption, so `C ⊑ ∃d.{3}` did not give `C ⊑ ∃d.[3,3]` either.
   - Conversion now seeds `enumeration ⊑ range` when every member lies in the range, and `range ⊑ enumeration` when the range is finite and every value in it is a member. This covers integer, decimal, float, double, date and dateTime.
   - Zero is left out of the IEEE edges, because the buckets merge `-0` and `+0` and HermiT keeps them apart.

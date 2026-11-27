@@ -1895,8 +1895,10 @@ struct Facts {
     /// `SubClassOf(C, DataSome(dp, _))` — class C exists with data
     /// property dp. The range is opaque (we don't track it).
     class_some: BTreeSet<(String, String)>,
-    /// `SubClassOf(DataSome(dp, _), D)` — class D is a superset of
-    /// "anything with data property dp". Range opaque.
+    /// `SubClassOf(DataSome(dp, rdfs:Literal), D)` or
+    /// `SubClassOf(DataMinCardinality(1, dp), D)`: class D is a superset of
+    /// "anything with some dp-value". Only these unrestricted forms are recorded
+    /// (#626); see `data_some_any_value_property`.
     some_super: BTreeMap<String, BTreeSet<String>>,
     /// Phase D5 (Tier C): per-(class, dp) integer-range constraints
     /// derived from `SubClassOf(C, DataSome(dp, DatatypeRestriction(xsd:integer, ...)))`
@@ -2096,13 +2098,14 @@ fn scan_subclass_axiom<A: ForIRI>(
         scan_class_for_bounds(&sub_iri, sup, f);
         scan_class_for_existentials(&sub_iri, sup, f);
     }
-    // SubClassOf(DataSome(dp, rdfs:Literal), D) — sub says only "has some dp-value";
-    // D is the super. #626: ONLY with the unrestricted range. Pattern 4 reads
-    // `C ⊑ ∃specific.X` against it, and `∃specific.X ⊑ ∃general.Y` holds for every X
-    // only when Y is all data values. With a restricted Y (`hasValue(e, 1)`), the
-    // pattern derived `C ⊑ D` from `C ⊑ hasValue(d, 7)`: a false subsumption that
-    // HermiT and Konclude reject. Restricted ranges are left to the lowering (the
-    // role hierarchy over `DKey` fillers), which compares the ranges.
+    // SubClassOf(X, D) where X says only "has some dp-value": `∃dp.rdfs:Literal` or
+    // `≥1 dp`. #626: ONLY these. Pattern 4 reads `C ⊑ ∃specific.Z` against it, and
+    // `∃specific.Z ⊑ X` holds for every Z only when X asks for one value of any kind.
+    // With a restricted range (`hasValue(e, 1)`) it derived `C ⊑ D` from
+    // `C ⊑ hasValue(d, 7)`. A count above one (`≥2 e`) or an exact count (`=1 e`,
+    // which also bounds the number from above) failed the same way. HermiT and
+    // Konclude reject all of these. Those forms are left to the lowering (the role
+    // hierarchy over `DKey` fillers and the cardinality rules), which compares them.
     if let (Some(dp), Some(sup_iri)) = (data_some_any_value_property(sub), class_iri(sup)) {
         f.some_super.entry(dp).or_default().insert(sup_iri);
     }
@@ -2891,8 +2894,9 @@ fn emit_subdataprop_transitivity(
     atomic_id: &impl Fn(ClassId) -> ConceptId,
     out: &mut Vec<Axiom>,
 ) {
-    // Pattern 4: SubDataPropertyOf(specific, general) chain +
-    // C ⊑ DataSome(specific) + DataSome(general) ⊑ D ⇒ C ⊑ D.
+    // Pattern 4: SubDataPropertyOf(specific, general) chain (reflexive) +
+    // C ⊑ DataSome(specific, _) + (∃general.rdfs:Literal or ≥1 general) ⊑ D ⇒ C ⊑ D.
+    // The super side is only ever the unrestricted form (#626, `some_super`).
     let closure = closure_sub_dp(&f.sub_data_property);
     for (class_iri, specific_dp) in &f.class_some {
         let Some(supers) = closure.get(specific_dp) else {
@@ -3142,17 +3146,15 @@ fn dpe_iri<A: ForIRI>(d: &DataProperty<A>) -> String {
     d.0.to_string()
 }
 
-/// #626: the data property of `ce` when `ce` says only that a value EXISTS, with no
-/// constraint on it: `DataSomeValuesFrom(dp, rdfs:Literal)`, or `DataMin` /
-/// `DataExactCardinality(n ≥ 1, dp, rdfs:Literal)`. A `DataHasValue` or any narrower
-/// range constrains the value, so it is not one.
+/// #626: the data property of `ce` when `ce` says only that ONE value EXISTS, with no
+/// constraint on it: `DataSomeValuesFrom(dp, rdfs:Literal)` or
+/// `DataMinCardinality(1, dp, rdfs:Literal)`. A `DataHasValue` or narrower range
+/// constrains the value; `≥n` with n ≥ 2 asks for more values; `DataExactCardinality`
+/// also caps the count. None of those is implied by "has some dp-value".
 fn data_some_any_value_property<A: ForIRI>(ce: &ClassExpression<A>) -> Option<String> {
     match ce {
         ClassExpression::DataSomeValuesFrom { dp, dr } if is_rdfs_literal(dr) => Some(dpe_iri(dp)),
-        ClassExpression::DataMinCardinality { dp, n, dr }
-        | ClassExpression::DataExactCardinality { dp, n, dr }
-            if *n >= 1 && is_rdfs_literal(dr) =>
-        {
+        ClassExpression::DataMinCardinality { dp, n: 1, dr } if is_rdfs_literal(dr) => {
             Some(dpe_iri(dp))
         }
         _ => None,

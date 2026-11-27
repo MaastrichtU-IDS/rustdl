@@ -97,6 +97,14 @@ class Classification:
         `UniversalRoleWarning`."""
         ...
     @property
+    def dropped(self) -> dict[str, int]:
+        """The axioms conversion could not represent and dropped, kind → count
+        (#597); empty when none. Every reported subsumption holds, but one may be
+        missing. Voids `completeness_guaranteed`. `classify` emits
+        `DroppedAxiomsWarning`. Reported even when the ontology is proved
+        inconsistent."""
+        ...
+    @property
     def relies_on_trusted_consistency(self) -> bool:
         """True iff `inconsistent is False` rests on a consistency-wedge model
         that no main-tableau run verified (#429). Not a give-up; `classify`
@@ -217,13 +225,17 @@ class TrustedConsistencyWarning(UserWarning):
     cut."""
 
 class DroppedAxiomsWarning(UserWarning):
-    """Emitted by the class-expression queries and their `*_result` forms when
-    conversion dropped axioms it could not represent, from the ontology or from the
-    query expression itself (#552). The answer is sound, but a "satisfiable", a
-    "not entailed" or a missing member may be wrong in that direction. Not an
-    `IncompleteQueryWarning`: nothing was cut. New in #552: the bare functions now
-    warn where they used to be silent (under `-W error` they raise). The other
-    Python queries do not warn on dropped axioms yet (#597)."""
+    """Conversion dropped axioms it could not represent, so the engine reasoned over
+    a strictly weaker KB: what the answer entails holds, but an entailment may be
+    missing. Not an `IncompleteQueryWarning`: nothing was cut. Emitted by every
+    query (#597): `classify` / `classify_bytes` (`Classification.dropped`), the
+    class-expression queries and their `*_result` forms (#552, the query
+    expression's drops included), `PreparedOntology.justify` / `justify_all`
+    (`PreparedOntology.dropped`) and every other path-taking query (`debug` once),
+    even when the KB is proved inconsistent. The path-taking queries take the drops
+    from the query's own parse (no second parse). Behaviour change: before
+    #597 only the class-expression queries warned, so under `-W error` the others
+    now raise on an ontology with dropped axioms."""
 
 class ConsistencyUndeterminedWarning(UserWarning):
     """Emitted when a positive answer's KB consistency stayed undetermined (#369),
@@ -606,6 +618,12 @@ class PreparedOntology:
         """True iff the ontology uses a universal role where rustdl's
         ordinary-property reading can miss entailments (#543); `justify` and
         `justify_all` then emit `UniversalRoleWarning`."""
+        ...
+    @property
+    def dropped(self) -> dict[str, int]:
+        """The axioms conversion dropped, kind → count (#597); empty when none.
+        `justify` and `justify_all` then emit `DroppedAxiomsWarning`: a
+        justification may be missing."""
         ...
     def justify(self, query: list[str]) -> list[str]:
         """One minimal justification (Manchester axioms) for `query`. Emits

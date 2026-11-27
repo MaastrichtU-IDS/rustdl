@@ -2333,6 +2333,7 @@ fn run() -> Result<()> {
                     "classify_certified": found.classify_certified,
                     "realize_certified": found.realize_certified,
                     "universal_role_ordinary": json_out::conversion_block(&onto).1,
+                    "universal_role_folds": owl_dl_reasoner::universal_role_folds(&onto).unwrap_or(0),
                     "classify": rows(&found.classify),
                     "realize": rows(&found.realize),
                 })
@@ -2445,8 +2446,11 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
+            let (dropped_kinds, _) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped_kinds);
+            // #543: role-level surface; a folded property disjointness or a role above
+            // top still counts here (see `universal_role_ordinary_for_roles`).
+            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
@@ -2504,8 +2508,11 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
+            let (dropped_kinds, _) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped_kinds);
+            // #543: role-level surface; a folded property disjointness or a role above
+            // top still counts here (see `universal_role_ordinary_for_roles`).
+            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
@@ -2600,8 +2607,11 @@ fn run() -> Result<()> {
         }
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
+            let (dropped_kinds, _) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped_kinds);
+            // #543: role-level surface; a folded property disjointness or a role above
+            // top still counts here (see `universal_role_ordinary_for_roles`).
+            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let h = owl_dl_reasoner::classify_property_hierarchies(&onto)
                 .context("classify_property_hierarchies")?;
@@ -3506,7 +3516,28 @@ fn run() -> Result<()> {
                         );
                         for idx in all_refs {
                             if let Some(ax) = internal.axioms.get(idx) {
-                                if internal.builtin.contains(ax) {
+                                if let Some((_, lics)) =
+                                    internal.builtin_licenses.iter().find(|(b, _)| b == ax)
+                                {
+                                    // #543 part 2: it holds given source axioms; name them.
+                                    let at: Vec<String> = lics
+                                        .iter()
+                                        .map(|lic| {
+                                            internal
+                                                .axioms
+                                                .iter()
+                                                .position(|a| a == lic)
+                                                .map_or_else(
+                                                    || "?".to_owned(),
+                                                    |i| format!("axiom[{i}]"),
+                                                )
+                                        })
+                                        .collect();
+                                    println!(
+                                        "  axiom[{idx}] (built-in, licensed by source {}): {ax:?}",
+                                        at.join(", ")
+                                    );
+                                } else if internal.builtin.contains(ax) {
                                     println!(
                                         "  axiom[{idx}] (built-in: OWL semantics, not in the \
                                          source): {ax:?}"

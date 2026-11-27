@@ -240,15 +240,27 @@ pub fn universal_role_ordinary(out: &InternalOntology) -> bool {
     let top_data = out.vocabulary.role_id(OWL_TOP_DATA_PROPERTY);
     let mut seen: std::collections::HashMap<crate::ir::ConceptId, bool> =
         std::collections::HashMap::new();
+    // #543 part 2: a use counts as folded only when its exact fold axiom is present.
+    let instances = told_instances(out);
+    let ctx = FoldCtx {
+        u_obj: &u_obj,
+        instances: &instances,
+    };
+    let folded = Folded::of(out);
     let roles = RoleSets {
         u: &u,
         u_obj: &u_obj,
         top_data,
+        folded: &folded,
     };
     out.axioms
         .iter()
         .filter(|ax| !out.builtin.contains(ax))
-        .any(|ax| axiom_uses(ax, &roles, &mut |c| concept_mentions(out, c, &u, &mut seen)))
+        .any(|ax| {
+            axiom_uses(ax, &roles, &mut |c| {
+                concept_mentions(out, c, &u, &ctx, &folded, &mut seen)
+            })
+        })
 }
 
 /// The role sets [`axiom_uses`] classifies against.
@@ -259,6 +271,8 @@ struct RoleSets<'a> {
     u_obj: &'a BTreeSet<RoleId>,
     /// `owl:topDataProperty`, if interned.
     top_data: Option<RoleId>,
+    /// The fold axioms present (#543 part 2).
+    folded: &'a Folded,
 }
 
 impl RoleSets<'_> {
@@ -319,13 +333,31 @@ fn axiom_uses(
         Axiom::NegativeObjectPropertyAssertion { role, .. } => {
             in_u(role) && !roles.u_obj.contains(&role.role_id())
         }
-        Axiom::DisjointObjectProperties(rs) => rs.iter().any(in_u),
+        // #543 part 2: folded (F9) when the members' emptiness (or `⊤ ⊑ ⊥`, with two
+        // universal members) is stated.
+        Axiom::DisjointObjectProperties(rs) => {
+            let obj = |r: &Role| roles.u_obj.contains(&r.role_id());
+            rs.iter().any(in_u)
+                && !(rs.iter().all(|r| !in_u(r) || obj(r))
+                    && (roles.folded.top_is_bot
+                        || (rs.iter().filter(|r| obj(r)).count() == 1
+                            && rs
+                                .iter()
+                                .filter(|r| !obj(r))
+                                .all(|r| roles.folded.emptied.contains(&r.role_id())))))
+        }
+        // Folded (F7) when `⊤ ⊑ C` is stated for a role in the object closure.
         Axiom::ObjectPropertyDomain { role, domain: c }
-        | Axiom::ObjectPropertyRange { role, range: c } => in_u(role) || concept(*c),
-        Axiom::AsymmetricRole(r)
-        | Axiom::IrreflexiveRole(r)
-        | Axiom::FunctionalRole(r)
-        | Axiom::InverseFunctionalRole(r) => in_u(r),
+        | Axiom::ObjectPropertyRange { role, range: c } => {
+            (in_u(role) && !(roles.u_obj.contains(&role.role_id()) && roles.folded.top.contains(c)))
+                || concept(*c)
+        }
+        // Folded (F8) when `⊤ ⊑ ⊥` is stated.
+        Axiom::AsymmetricRole(r) | Axiom::IrreflexiveRole(r) => {
+            in_u(r) && !(roles.u_obj.contains(&r.role_id()) && roles.folded.top_is_bot)
+        }
+        // Not folded (F10 was dropped): `Functional(u)` says `|Δ| = 1`.
+        Axiom::FunctionalRole(r) | Axiom::InverseFunctionalRole(r) => in_u(r),
         Axiom::ClassAssertion { class, .. } => concept(*class),
         // Inert: `Transitive`, `Symmetric`, `Reflexive` (true of `Δ × Δ`); a positive
         // assertion (true of `Δ × Δ`); the rest name no role.
@@ -346,6 +378,8 @@ fn concept_mentions(
     out: &InternalOntology,
     c: crate::ir::ConceptId,
     u: &BTreeSet<RoleId>,
+    ctx: &FoldCtx<'_>,
+    folded: &Folded,
     seen: &mut std::collections::HashMap<crate::ir::ConceptId, bool>,
 ) -> bool {
     use crate::ir::ConceptExpr as E;
@@ -354,19 +388,405 @@ fn concept_mentions(
     }
     // Provisional entry: the pool is a DAG, but this keeps a cycle from recursing.
     seen.insert(c, false);
-    let v = match out.concepts.get(c) {
-        E::Top | E::Bot | E::Atomic(_) | E::Nominal(_) => false,
-        E::SelfRestriction(r) => u.contains(&r.role_id()),
-        E::Not(x) => concept_mentions(out, *x, u, seen),
-        E::And(xs) | E::Or(xs) => {
-            let xs: Vec<_> = xs.to_vec();
-            xs.into_iter().any(|x| concept_mentions(out, x, u, seen))
-        }
-        E::Some(r, x) | E::All(r, x) | E::Min(_, r, x) | E::Max(_, r, x) => {
-            let (r, x) = (*r, *x);
-            u.contains(&r.role_id()) || concept_mentions(out, x, u, seen)
-        }
+    // #543 part 2: a folded occurrence (its exact fold axiom present) is no use. Its
+    // filler is `⊤`, `⊥`, a nominal, an atomic class or the negation of one, so it
+    // holds no further restriction.
+    let is_folded = match ctx.fold_of(out, c) {
+        Some((Fold::Top, _)) => folded.top.contains(&c),
+        Some((Fold::Bot, _)) => folded.bot.contains(&c),
+        None => false,
     };
+    let v = !is_folded
+        && match out.concepts.get(c) {
+            E::Top | E::Bot | E::Atomic(_) | E::Nominal(_) => false,
+            E::SelfRestriction(r) => u.contains(&r.role_id()),
+            E::Not(x) => concept_mentions(out, *x, u, ctx, folded, seen),
+            E::And(xs) | E::Or(xs) => {
+                let xs: Vec<_> = xs.to_vec();
+                xs.into_iter()
+                    .any(|x| concept_mentions(out, x, u, ctx, folded, seen))
+            }
+            // `∃u.⊥` and `∀u.⊤` say nothing about u (`⊥` and `⊤` under any reading).
+            E::Some(_, x) | E::Min(_, _, x) if matches!(out.concepts.get(*x), E::Bot) => false,
+            E::All(_, x) if matches!(out.concepts.get(*x), E::Top) => false,
+            E::Some(r, x) | E::All(r, x) | E::Min(_, r, x) | E::Max(_, r, x) => {
+                let (r, x) = (*r, *x);
+                u.contains(&r.role_id()) || concept_mentions(out, x, u, ctx, folded, seen)
+            }
+        };
     seen.insert(c, v);
     v
+}
+
+// ── #543 part 2 (S+F): fold the universal-role uses that need no fresh symbol ──
+
+/// `RUSTDL_UNIVERSAL_ROLE_FOLD` (default ON; `=0` reverts to part 1's ordinary reading
+/// with every use flagged). See [`fold_universal_role_uses`].
+#[must_use]
+pub fn fold_enabled() -> bool {
+    std::env::var_os("RUSTDL_UNIVERSAL_ROLE_FOLD").is_none_or(|v| v != "0")
+}
+
+/// What a foldable occurrence means under the Direct Semantics, given the ontology:
+/// the concept is `⊤` everywhere or `⊥` everywhere.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fold {
+    Top,
+    Bot,
+}
+
+/// The atomic classes with a told instance: a `ClassAssertion` on the class (or on a
+/// conjunction containing it), closed upward through told atomic `SubClassOf` /
+/// `EquivalentClasses`. Each, with its licensing assertion. Every such class is
+/// non-empty in every model.
+fn told_instances(
+    out: &InternalOntology,
+) -> std::collections::HashMap<crate::ir::ClassId, Vec<Axiom>> {
+    use crate::ir::ConceptExpr as E;
+    // Each class with the source axioms that make it non-empty: the assertion, then
+    // the told `SubClassOf` / `EquivalentClasses` path from its class (#624 review: a
+    // citation of the assertion alone does not entail the fold).
+    let mut inst: std::collections::HashMap<crate::ir::ClassId, Vec<Axiom>> =
+        std::collections::HashMap::new();
+    for ax in &out.axioms {
+        if let Axiom::ClassAssertion { class, .. } = ax {
+            let mut stack = vec![*class];
+            while let Some(c) = stack.pop() {
+                match out.concepts.get(c) {
+                    E::Atomic(id) => {
+                        inst.entry(*id).or_insert_with(|| vec![ax.clone()]);
+                    }
+                    E::And(xs) => stack.extend(xs.iter().copied()),
+                    _ => {}
+                }
+            }
+        }
+    }
+    // Told atomic super-classes: D(a), D ⊑ E ⊢ E(a).
+    let mut edges: Vec<(crate::ir::ClassId, crate::ir::ClassId, &Axiom)> = Vec::new();
+    let atomic = |c: crate::ir::ConceptId| match out.concepts.get(c) {
+        E::Atomic(id) => Some(*id),
+        _ => None,
+    };
+    for ax in &out.axioms {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                if let (Some(a), Some(b)) = (atomic(*sub), atomic(*sup)) {
+                    edges.push((a, b, ax));
+                }
+            }
+            Axiom::EquivalentClasses(cs) => {
+                let ids: Vec<_> = cs.iter().filter_map(|c| atomic(*c)).collect();
+                for a in &ids {
+                    for b in &ids {
+                        if a != b {
+                            edges.push((*a, *b, ax));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    loop {
+        let mut grew = false;
+        for (a, b, via) in &edges {
+            if !inst.contains_key(b)
+                && let Some(lic) = inst.get(a)
+            {
+                let mut lic = lic.clone();
+                lic.push((*via).clone());
+                inst.insert(*b, lic);
+                grew = true;
+            }
+        }
+        if !grew {
+            return inst;
+        }
+    }
+}
+
+/// Why a concept is non-empty in every model.
+enum NonEmpty {
+    /// In every interpretation (`⊤`, a nominal).
+    Always,
+    /// Given these source axioms (a told instance and its told sub-class path).
+    Given(Vec<Axiom>),
+}
+
+impl NonEmpty {
+    fn licence(self) -> Option<Vec<Axiom>> {
+        match self {
+            NonEmpty::Always => None,
+            NonEmpty::Given(a) => Some(a),
+        }
+    }
+}
+
+/// The context [`FoldCtx::fold_of`] needs.
+struct FoldCtx<'a> {
+    u_obj: &'a BTreeSet<RoleId>,
+    instances: &'a std::collections::HashMap<crate::ir::ClassId, Vec<Axiom>>,
+}
+
+impl FoldCtx<'_> {
+    /// Is concept `x` non-empty in every model of the ontology? `⊤`, a nominal, or an
+    /// atomic class with a told instance; `None` otherwise.
+    fn non_empty(&self, out: &InternalOntology, x: crate::ir::ConceptId) -> Option<NonEmpty> {
+        use crate::ir::ConceptExpr as E;
+        match out.concepts.get(x) {
+            E::Top | E::Nominal(_) => Some(NonEmpty::Always),
+            E::Atomic(id) => self.instances.get(id).map(|a| NonEmpty::Given(a.clone())),
+            _ => None,
+        }
+    }
+
+    /// How occurrence `c` folds, if it is a foldable restriction on a universal
+    /// role, with the licensing axiom (if the fold rests on one). F1–F6 of
+    /// `plan-fold.md`: `∃u.X` / `≥1 u.X` with X non-empty is `⊤`; `∀u.¬X` / `≤0 u.X`
+    /// with X non-empty, and `∀u.⊥`, are `⊥`; `Self(u)` is `⊤`.
+    fn fold_of(
+        &self,
+        out: &InternalOntology,
+        c: crate::ir::ConceptId,
+    ) -> Option<(Fold, Option<Vec<Axiom>>)> {
+        use crate::ir::ConceptExpr as E;
+        let universal = |r: &Role| self.u_obj.contains(&r.role_id());
+        match out.concepts.get(c) {
+            E::SelfRestriction(r) if universal(r) => Some((Fold::Top, None)),
+            E::Some(r, x) | E::Min(1, r, x) if universal(r) => {
+                self.non_empty(out, *x).map(|n| (Fold::Top, n.licence()))
+            }
+            E::All(r, x) if universal(r) => match out.concepts.get(*x) {
+                E::Bot => Some((Fold::Bot, None)),
+                E::Not(y) => self.non_empty(out, *y).map(|n| (Fold::Bot, n.licence())),
+                _ => None,
+            },
+            E::Max(0, r, x) if universal(r) => {
+                self.non_empty(out, *x).map(|n| (Fold::Bot, n.licence()))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The ids of every concept reachable from the (non-built-in) axioms.
+fn reachable_concepts(out: &InternalOntology) -> Vec<crate::ir::ConceptId> {
+    use crate::ir::ConceptExpr as E;
+    let mut roots: Vec<crate::ir::ConceptId> = Vec::new();
+    for ax in out.axioms.iter().filter(|ax| !out.builtin.contains(ax)) {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => roots.extend([*sub, *sup]),
+            Axiom::EquivalentClasses(cs) | Axiom::DisjointClasses(cs) => roots.extend(cs),
+            Axiom::DisjointUnion { members, .. } => roots.extend(members),
+            Axiom::ObjectPropertyDomain { domain: c, .. }
+            | Axiom::ObjectPropertyRange { range: c, .. }
+            | Axiom::ClassAssertion { class: c, .. } => roots.push(*c),
+            _ => {}
+        }
+    }
+    let mut seen: std::collections::HashSet<crate::ir::ConceptId> =
+        std::collections::HashSet::new();
+    let mut order = Vec::new();
+    while let Some(c) = roots.pop() {
+        if !seen.insert(c) {
+            continue;
+        }
+        order.push(c);
+        match out.concepts.get(c) {
+            E::Not(x) | E::Some(_, x) | E::All(_, x) | E::Min(_, _, x) | E::Max(_, _, x) => {
+                roots.push(*x);
+            }
+            E::And(xs) | E::Or(xs) => roots.extend(xs.iter().copied()),
+            E::Top | E::Bot | E::Atomic(_) | E::Nominal(_) | E::SelfRestriction(_) => {}
+        }
+    }
+    order
+}
+
+/// #543 part 2 (S+F): for each universal-role use whose meaning needs no fresh symbol,
+/// add the axiom that states it, recorded in `builtin` (with its licensing source axiom
+/// in `builtin_licenses` when it holds only given one). The user's axioms are left as
+/// written, so the surfaces that cite them keep citing what the user wrote.
+///
+/// Every added axiom holds in every model under the Direct Semantics (U = `Δ × Δ`,
+/// `Δ ≠ ∅`), and gives its occurrence exactly its universal-role meaning:
+/// - an occurrence folding to `⊤` (`∃u.X`, `≥1 u.X` with X `⊤`, a nominal or a class
+///   with a told instance; `Self(u)`) gets `⊤ ⊑ c`;
+/// - one folding to `⊥` (`∀u.⊥`; `∀u.¬X`, `≤0 u.X` with X as above) gets `c ⊑ ⊥`;
+/// - `Domain(u, C)` and `Range(u, C)` get `⊤ ⊑ C`;
+/// - `Irreflexive(u)` and `Asymmetric(u)` get `⊤ ⊑ ⊥`;
+/// - `Disjoint(u, s, …)` gets `∃s.⊤ ⊑ ⊥` for each non-universal `s`, and `⊤ ⊑ ⊥` when
+///   two members are universal.
+///
+/// Uses left unfolded (`∃u.D` with D possibly empty, other `∀`, other cardinalities,
+/// `Functional(u)`, chain legs, the data top) stay flagged by
+/// [`universal_role_ordinary`], which treats a use as folded only when its exact
+/// built-in is present. A no-op (early return) when `owl:topObjectProperty` is not
+/// interned, and when a universal role is also used as a data property.
+pub(crate) fn fold_universal_role_uses(
+    out: &mut InternalOntology,
+    data_property_iris: &BTreeSet<String>,
+) {
+    let u_obj = universal_roles(out);
+    if u_obj.is_empty() {
+        return;
+    }
+    if u_obj
+        .iter()
+        .any(|r| data_property_iris.contains(out.vocabulary.role_iri(*r)))
+    {
+        return;
+    }
+    let instances = told_instances(out);
+    let ctx = FoldCtx {
+        u_obj: &u_obj,
+        instances: &instances,
+    };
+    let mut added: Vec<(Axiom, Option<Vec<Axiom>>)> = Vec::new();
+    for c in reachable_concepts(out) {
+        if let Some((fold, lic)) = ctx.fold_of(out, c) {
+            let ax = match fold {
+                Fold::Top => {
+                    let top = out.concepts.top();
+                    Axiom::SubClassOf { sub: top, sup: c }
+                }
+                Fold::Bot => {
+                    let bot = out.concepts.bot();
+                    Axiom::SubClassOf { sub: c, sup: bot }
+                }
+            };
+            added.push((ax, lic));
+        }
+    }
+    let universal = |r: &Role| u_obj.contains(&r.role_id());
+    let axioms: Vec<Axiom> = out
+        .axioms
+        .iter()
+        .filter(|ax| !out.builtin.contains(ax))
+        .cloned()
+        .collect();
+    for ax in axioms {
+        match &ax {
+            Axiom::ObjectPropertyDomain { role, domain: c }
+            | Axiom::ObjectPropertyRange { role, range: c }
+                if universal(role) =>
+            {
+                let top = out.concepts.top();
+                added.push((
+                    Axiom::SubClassOf { sub: top, sup: *c },
+                    Some(vec![ax.clone()]),
+                ));
+            }
+            Axiom::IrreflexiveRole(r) | Axiom::AsymmetricRole(r) if universal(r) => {
+                let (top, bot) = (out.concepts.top(), out.concepts.bot());
+                added.push((
+                    Axiom::SubClassOf { sub: top, sup: bot },
+                    Some(vec![ax.clone()]),
+                ));
+            }
+            Axiom::DisjointObjectProperties(rs) if rs.iter().any(universal) => {
+                if rs.iter().filter(|r| universal(r)).count() >= 2 {
+                    let (top, bot) = (out.concepts.top(), out.concepts.bot());
+                    added.push((
+                        Axiom::SubClassOf { sub: top, sup: bot },
+                        Some(vec![ax.clone()]),
+                    ));
+                } else {
+                    for s in rs.iter().filter(|r| !universal(r)) {
+                        let (top, bot) = (out.concepts.top(), out.concepts.bot());
+                        let some = out.concepts.some(*s, top);
+                        added.push((
+                            Axiom::SubClassOf {
+                                sub: some,
+                                sup: bot,
+                            },
+                            Some(vec![ax.clone()]),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (ax, lic) in added {
+        if out.axioms.contains(&ax) && !out.builtin.contains(&ax) {
+            // The source already states it: it stays the user's, and the use is
+            // folded all the same (the detector checks presence in `axioms`).
+            continue;
+        }
+        if !out.builtin.contains(&ax) {
+            out.axioms.push(ax.clone());
+            out.builtin.push(ax.clone());
+            out.universal_role_folds += 1;
+        }
+        if let Some(lic) = lic
+            && !out.builtin_licenses.iter().any(|(b, _)| b == &ax)
+        {
+            out.builtin_licenses.push((ax, lic));
+        }
+    }
+}
+
+/// Is the fold of a use present? The detector's side of the fold contract: a use is
+/// folded only when the exact axiom [`fold_universal_role_uses`] would add is among the
+/// axioms (built-in, or stated by the user). Robust to a cut or a disabled fold: then
+/// nothing was added and the use stays flagged.
+struct Folded {
+    top: std::collections::HashSet<crate::ir::ConceptId>,
+    bot: std::collections::HashSet<crate::ir::ConceptId>,
+    top_is_bot: bool,
+    emptied: BTreeSet<RoleId>,
+}
+
+impl Folded {
+    fn of(out: &InternalOntology) -> Self {
+        use crate::ir::ConceptExpr as E;
+        let mut f = Folded {
+            top: std::collections::HashSet::new(),
+            bot: std::collections::HashSet::new(),
+            top_is_bot: false,
+            emptied: BTreeSet::new(),
+        };
+        for ax in &out.axioms {
+            if let Axiom::SubClassOf { sub, sup } = ax {
+                let sub_top = matches!(out.concepts.get(*sub), E::Top);
+                let sup_bot = matches!(out.concepts.get(*sup), E::Bot);
+                if sub_top && sup_bot {
+                    f.top_is_bot = true;
+                }
+                if sub_top {
+                    f.top.insert(*sup);
+                }
+                if sup_bot {
+                    f.bot.insert(*sub);
+                    if let E::Some(r, x) = out.concepts.get(*sub)
+                        && matches!(out.concepts.get(*x), E::Top)
+                    {
+                        f.emptied.insert(r.role_id());
+                    }
+                }
+            }
+        }
+        f
+    }
+}
+
+/// #543, for the ROLE-level surfaces (`property-values`, `property-hierarchy`,
+/// `disjoint`, `individuals`, materialized property assertions): class-level
+/// [`universal_role_ordinary`], or a role above a top property (`top ⊑* r`, which
+/// relates every pair), or a property disjointness with a universal member. The
+/// latter's fold (`∃s.⊤ ⊑ ⊥`) settles the class-level answers but not the
+/// role-level ones, which do not list `s` as empty.
+#[must_use]
+pub fn universal_role_ordinary_for_roles(out: &InternalOntology) -> bool {
+    if universal_role_ordinary(out) || !universal_super_roles(out).is_empty() {
+        return true;
+    }
+    let u_obj = universal_roles(out);
+    !u_obj.is_empty()
+        && out.axioms.iter().any(|ax| {
+            matches!(ax, Axiom::DisjointObjectProperties(rs)
+                if rs.iter().any(|r| u_obj.contains(&r.role_id())))
+        })
 }

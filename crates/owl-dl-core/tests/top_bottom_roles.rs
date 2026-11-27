@@ -311,17 +311,10 @@ fn semantic_universal_role_uses_are_flagged() {
         "SubClassOf(:C ObjectAllValuesFrom(owl:topObjectProperty :D))",
         "SubClassOf(:C ObjectMinCardinality(2 owl:topObjectProperty :D))",
         "SubClassOf(:C ObjectMaxCardinality(1 owl:topObjectProperty :D))",
-        "SubClassOf(:C ObjectHasSelf(owl:topObjectProperty))",
-        "SubClassOf(:C ObjectHasValue(owl:topObjectProperty :a))",
         "SubClassOf(:C ObjectSomeValuesFrom(ObjectInverseOf(owl:topObjectProperty) :D))",
         "ClassAssertion(ObjectAllValuesFrom(owl:topObjectProperty :D) :a)",
-        "ObjectPropertyDomain(owl:topObjectProperty :C)",
-        "ObjectPropertyRange(owl:topObjectProperty :C)",
         "FunctionalObjectProperty(owl:topObjectProperty)",
         "InverseFunctionalObjectProperty(owl:topObjectProperty)",
-        "IrreflexiveObjectProperty(owl:topObjectProperty)",
-        "AsymmetricObjectProperty(owl:topObjectProperty)",
-        "DisjointObjectProperties(owl:topObjectProperty :r)",
         // A chain with a universal leg into an ordinary role.
         "SubObjectPropertyOf(ObjectPropertyChain(:s owl:topObjectProperty) :r)",
         // A role above top, used: `top ⊑ r` makes `r` universal.
@@ -377,5 +370,186 @@ fn the_detector_is_deterministic() {
     for _ in 0..20 {
         assert!(flagged(body));
         assert!(!flagged("SubObjectPropertyOf(:r owl:topObjectProperty)"));
+    }
+}
+
+// ── #543 part 2 (S+F): folded uses ──
+
+/// Each foldable shape: the fold adds its axiom (recorded as built-in), the detector
+/// reads it as folded, and with the fold's axioms removed the same use is flagged.
+#[test]
+fn foldable_uses_are_folded_and_unflagged() {
+    for body in [
+        // F1, F2, F3 (and through a told subclass), F4, F5, F6.
+        "SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty owl:Thing) :C)",
+        "SubClassOf(:C ObjectHasValue(owl:topObjectProperty :a))",
+        "ClassAssertion(:D :a) SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :C)",
+        "ClassAssertion(:D :a) SubClassOf(:D :C) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :C) :D)",
+        "SubClassOf(:C ObjectAllValuesFrom(owl:topObjectProperty owl:Nothing))",
+        "ClassAssertion(:D :a) \
+         SubClassOf(:C ObjectAllValuesFrom(owl:topObjectProperty ObjectComplementOf(:D)))",
+        "SubClassOf(:C ObjectHasSelf(owl:topObjectProperty))",
+        // Min(1) and Max(0) reuse F3 / F5.
+        "ClassAssertion(:D :a) SubClassOf(ObjectMinCardinality(1 owl:topObjectProperty :D) :C)",
+        "ClassAssertion(:D :a) SubClassOf(:C ObjectMaxCardinality(0 owl:topObjectProperty :D))",
+        // F7, F8, F9.
+        "ObjectPropertyDomain(owl:topObjectProperty :C)",
+        "ObjectPropertyRange(owl:topObjectProperty :C)",
+        "IrreflexiveObjectProperty(owl:topObjectProperty)",
+        "AsymmetricObjectProperty(owl:topObjectProperty)",
+        "DisjointObjectProperties(owl:topObjectProperty :r)",
+        // A role above top, folded like top.
+        "SubObjectPropertyOf(owl:topObjectProperty :r) ClassAssertion(:D :a) \
+         SubClassOf(ObjectSomeValuesFrom(:r :D) :C)",
+    ] {
+        let o = convert(&format!("{BASE} {body}"));
+        assert!(o.universal_role_folds > 0, "a fold was added: {body}");
+        assert!(
+            !owl_dl_core::top_bottom_roles::universal_role_ordinary(&o),
+            "folded, not flagged: {body}"
+        );
+        let mut bare = o.clone();
+        let folds: Vec<Axiom> = o.builtin.clone();
+        bare.axioms.retain(|a| !folds.contains(a));
+        bare.builtin.clear();
+        assert!(
+            owl_dl_core::top_bottom_roles::universal_role_ordinary(&bare),
+            "without the fold's axioms the use is flagged: {body}"
+        );
+    }
+}
+
+/// Uses with no exact fold stay flagged even with the fold on, and add nothing.
+#[test]
+fn unfoldable_uses_add_no_fold_and_stay_flagged() {
+    for body in [
+        // D may be empty: `∃u.D ⊑ C` does not give `⊤ ⊑ C`.
+        "SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :C)",
+        "SubClassOf(:C ObjectAllValuesFrom(owl:topObjectProperty :D))",
+        "SubClassOf(:C ObjectMinCardinality(2 owl:topObjectProperty :D))",
+        "FunctionalObjectProperty(owl:topObjectProperty) DifferentIndividuals(:a :b)",
+        "SubObjectPropertyOf(ObjectPropertyChain(:s owl:topObjectProperty) :r)",
+    ] {
+        let o = convert(&format!("{BASE} {body}"));
+        // `Functional(top)` is lowered with a derived `∃top.⊤ ⊑ ≤1 top.⊤`, whose
+        // `∃top.⊤` folds (F1); the `≤1` does not, so the flag stays.
+        if !body.starts_with("Functional") {
+            assert_eq!(o.universal_role_folds, 0, "{body}");
+        }
+        assert!(
+            owl_dl_core::top_bottom_roles::universal_role_ordinary(&o),
+            "{body}"
+        );
+    }
+}
+
+/// A conditional fold records its licensing source axiom (for citation).
+#[test]
+fn a_conditional_fold_records_its_licence() {
+    let o = convert(&format!(
+        "{BASE} ClassAssertion(:D :a) SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :C)"
+    ));
+    assert_eq!(o.builtin_licenses.len(), 1, "{:?}", o.builtin_licenses);
+    let (b, lic) = &o.builtin_licenses[0];
+    assert!(o.builtin.contains(b));
+    assert!(
+        matches!(lic.as_slice(), [Axiom::ClassAssertion { .. }]),
+        "{lic:?}"
+    );
+    // F1 holds in every interpretation: no licence.
+    let o = convert(&format!(
+        "{BASE} SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty owl:Thing) :C)"
+    ));
+    assert!(o.builtin_licenses.is_empty());
+}
+
+/// A universal role also used as a data property (punning, outside OWL 2 DL) is never
+/// folded: a data axiom must not become a universal consequence.
+#[test]
+fn a_punned_universal_role_is_not_folded() {
+    let o = convert(&format!(
+        "{BASE} SubObjectPropertyOf(owl:topObjectProperty :p) \
+         DataPropertyDomain(:p :C) ObjectPropertyDomain(:p :C)"
+    ));
+    assert_eq!(o.universal_role_folds, 0);
+    assert!(owl_dl_core::top_bottom_roles::universal_role_ordinary(&o));
+}
+
+/// Identity: no top property, no fold and no built-in.
+#[test]
+fn a_top_free_ontology_gets_no_fold() {
+    let o = convert(&format!(
+        "{BASE} SubClassOf(:C ObjectSomeValuesFrom(:r :D)) ClassAssertion(:D :a)"
+    ));
+    assert_eq!(o.universal_role_folds, 0);
+    assert!(o.builtin.is_empty() && o.builtin_licenses.is_empty());
+}
+
+/// The licence of a fold through a told sub-class carries the path: the assertion AND
+/// each `SubClassOf` used, so the cited set entails the fold (#624 review).
+#[test]
+fn a_told_subclass_licence_carries_the_path() {
+    let o = convert(&format!(
+        "{BASE} ClassAssertion(:D :a) SubClassOf(:D :C) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :C) :D)"
+    ));
+    assert_eq!(o.builtin_licenses.len(), 1, "{:?}", o.builtin_licenses);
+    let lic = &o.builtin_licenses[0].1;
+    assert!(
+        matches!(
+            lic.as_slice(),
+            [Axiom::ClassAssertion { .. }, Axiom::SubClassOf { .. }]
+        ),
+        "{lic:?}"
+    );
+}
+
+/// FP direction of the told closure: `C ⊑ D` with `D(a)` says nothing about `C`, so
+/// `∃top.C` is NOT folded (C may be empty).
+#[test]
+fn the_told_closure_goes_up_only() {
+    let o = convert(&format!(
+        "{BASE} ClassAssertion(:D :a) SubClassOf(:C :D) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :C) :D)"
+    ));
+    assert_eq!(o.universal_role_folds, 0);
+    assert!(owl_dl_core::top_bottom_roles::universal_role_ordinary(&o));
+}
+
+/// A told instance through a conjunction or an equivalence counts; an n-ary and an
+/// inverse property disjointness fold (F9).
+#[test]
+fn more_told_instance_and_disjointness_shapes() {
+    for body in [
+        "ClassAssertion(ObjectIntersectionOf(:C :D) :a) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :C)",
+        "ClassAssertion(:C :a) EquivalentClasses(:C :D) \
+         SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :C)",
+        "DisjointObjectProperties(owl:topObjectProperty :r :s)",
+        "DisjointObjectProperties(ObjectInverseOf(owl:topObjectProperty) :r)",
+        "DisjointObjectProperties(owl:topObjectProperty ObjectInverseOf(:r))",
+    ] {
+        let o = convert(&format!("{BASE} {body}"));
+        assert!(o.universal_role_folds > 0, "{body}");
+        assert!(
+            !owl_dl_core::top_bottom_roles::universal_role_ordinary(&o),
+            "{body}"
+        );
+    }
+}
+
+/// #624 review (blocking): a role used as a data property only inside a class
+/// expression is a data property too. Folding `top ⊑ :p` there would make
+/// `DataMaxCardinality(0 :p)` unsatisfiable or `∃:p.Literal` everything.
+#[test]
+fn a_data_property_used_only_in_a_class_expression_is_not_folded() {
+    for body in [
+        "SubObjectPropertyOf(owl:topObjectProperty :q) SubClassOf(:C DataMaxCardinality(0 :q))",
+        "SubObjectPropertyOf(owl:topObjectProperty :q) \
+         SubClassOf(DataSomeValuesFrom(:q rdfs:Literal) :C)",
+    ] {
+        let o = convert(&format!("{BASE} Declaration(ObjectProperty(:q)) {body}"));
+        assert_eq!(o.universal_role_folds, 0, "{body}");
     }
 }

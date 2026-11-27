@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "incomplete": true,
+  "depth_capped": true,
+  "witness_prune_active": false,
+  "witness_prune_may_drop": false,
+  "witness_prune_reasons": [],
+  "direct_types_unverified": false,
+  "direct_types_depth_capped": false,
+  "relies_on_trusted_consistency": false,
+  "no_verdict": false,
+  "saturation_only": false,
+  "individuals": [
+    {
+      "iri": "http://example.org/d#a",
+      "types": [
+        "http://example.org/d#X"
+      ],
+      "direct_types": [
+        "http://example.org/d#X"
+      ]
+    }
+  ],
+  "dropped": {},
+  "universal_role_ordinary": false
+}

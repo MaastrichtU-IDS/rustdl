@@ -148,6 +148,16 @@ impl PyClassification {
         st.consistency_undetermined && !st.inconsistent
     }
 
+    /// #597: the axioms conversion could not represent and dropped (kind → count);
+    /// empty when none. The hierarchy is computed over the weaker ontology: every
+    /// reported subsumption holds, but one may be missing. Voids
+    /// `completeness_guaranteed`; `classify` emits `DroppedAxiomsWarning`. Reported
+    /// even when the ontology is proved inconsistent, as the CLI does.
+    #[getter]
+    fn dropped(&self) -> std::collections::BTreeMap<String, u64> {
+        self.inner.stats().dropped.by_kind().clone()
+    }
+
     /// True iff the ontology uses a universal role (`owl:topObjectProperty`, a
     /// property above it, or `owl:topDataProperty` outside the super-property
     /// position) where its semantics could change the hierarchy (#543). rustdl

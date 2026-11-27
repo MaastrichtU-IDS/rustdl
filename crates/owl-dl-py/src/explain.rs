@@ -101,7 +101,7 @@ fn all_rendered(
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn justify(path: &str, query: Vec<String>) -> PyResult<(Vec<String>, bool, bool, bool)> {
-    let onto = load::load_path(path)?;
+    let onto = load::load_path_noted(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_one_justification_reporting(&onto, &q)
         .map_err(reason_error_to_py)?;
@@ -118,7 +118,7 @@ pub(crate) fn justify_all(
     query: Vec<String>,
     max: usize,
 ) -> PyResult<(Vec<Vec<String>>, bool, bool, bool)> {
-    let onto = load::load_path(path)?;
+    let onto = load::load_path_noted(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let outcome = owl_dl_reasoner::justify::find_all_justifications_reporting(&onto, &q, max)
         .map_err(reason_error_to_py)?;
@@ -137,7 +137,7 @@ pub(crate) fn justify_all(
 pub(crate) fn diagnose(
     path: &str,
 ) -> PyResult<(bool, Vec<String>, Vec<(String, Vec<String>)>, bool, bool)> {
-    let onto = load::load_path(path)?;
+    let onto = load::load_path_noted(path)?;
     let d = owl_dl_reasoner::diagnose(&onto).map_err(reason_error_to_py)?;
     let derived = d.derived.into_iter().map(|dc| (dc.iri, dc.roots)).collect();
     Ok((
@@ -161,7 +161,7 @@ pub(crate) fn repair(
     query: Vec<String>,
     max: usize,
 ) -> PyResult<(Vec<Vec<String>>, bool, bool, bool)> {
-    let onto = load::load_path(path)?;
+    let onto = load::load_path_noted(path)?;
     let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
     let r = owl_dl_reasoner::find_repairs(&onto, &q, max).map_err(reason_error_to_py)?;
     let repairs = r

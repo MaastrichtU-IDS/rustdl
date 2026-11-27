@@ -20,6 +20,17 @@ pub(crate) fn is_consistent(path: &str) -> PyResult<(bool, bool, bool, usize, us
     let ontology = load::load_path(path)?;
     let (verdict, stats) =
         owl_dl_reasoner::is_consistent_with_stats(&ontology).map_err(reason_error_to_py)?;
+    // #597: the query's own conversion stamped these; the kinds need a second
+    // conversion (no second parse) only when something was dropped.
+    if stats.dropped_axioms > 0 {
+        load::note_conversion(&ontology);
+    } else {
+        load::set_notes((
+            std::collections::BTreeMap::new(),
+            stats.universal_role_ordinary,
+            stats.universal_role_ordinary,
+        ));
+    }
     Ok((
         verdict,
         verdict && stats.incomplete,
@@ -43,6 +54,17 @@ pub(crate) fn is_class_satisfiable(
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (sat, stats) = owl_dl_reasoner::is_class_satisfiable_with_stats(&ontology, class_iri)
         .map_err(reason_error_to_py)?;
+    // #597: the query's own conversion stamped these; the kinds need a second
+    // conversion (no second parse) only when something was dropped.
+    if stats.dropped_axioms > 0 {
+        load::note_conversion(&ontology);
+    } else {
+        load::set_notes((
+            std::collections::BTreeMap::new(),
+            stats.universal_role_ordinary,
+            stats.universal_role_ordinary,
+        ));
+    }
     Ok((
         sat,
         stats.incomplete,
@@ -68,6 +90,17 @@ pub(crate) fn is_subclass_of(
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (subsumed, stats) = owl_dl_reasoner::is_subclass_of_with_stats(&ontology, sub, sup)
         .map_err(reason_error_to_py)?;
+    // #597: the query's own conversion stamped these; the kinds need a second
+    // conversion (no second parse) only when something was dropped.
+    if stats.dropped_axioms > 0 {
+        load::note_conversion(&ontology);
+    } else {
+        load::set_notes((
+            std::collections::BTreeMap::new(),
+            stats.universal_role_ordinary,
+            stats.universal_role_ordinary,
+        ));
+    }
     Ok((
         subsumed,
         stats.incomplete,
@@ -93,7 +126,7 @@ pub(crate) fn is_instance_of(
     class_iri: &str,
     individual_iri: &str,
 ) -> PyResult<(bool, bool, bool, bool, bool, bool, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (holds, flags) =
         owl_dl_reasoner::is_instance_of_reporting(&ontology, class_iri, individual_iri)
@@ -124,7 +157,7 @@ pub(crate) fn instances_of(
     path: &str,
     class_iri: &str,
 ) -> PyResult<(Vec<String>, bool, bool, bool, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let _cap = owl_dl_reasoner::single_query_node_cap();
     let (members, flags) = owl_dl_reasoner::instances_of_reporting(&ontology, class_iri)
         .map_err(reason_error_to_py)?;
@@ -160,7 +193,7 @@ pub(crate) fn realize(
     bool,
     bool,
 )> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let rs_realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     Ok((
         realization_to_dict(&rs_realization),
@@ -188,7 +221,7 @@ fn realization_to_dict(realization: &owl_dl_reasoner::Realization) -> HashMap<St
 /// `IncompleteQueryWarning`).
 #[pyfunction]
 pub(crate) fn disjoint_classes(path: &str) -> PyResult<(Vec<(String, String)>, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     owl_dl_reasoner::disjoint_classes(&ontology, Some(std::time::Duration::from_secs(1)))
         .map(|d| (d.pairs().to_vec(), d.incomplete()))
         .map_err(reason_error_to_py)
@@ -210,7 +243,7 @@ pub(crate) fn gaps<A: horned_owl::model::ForIRI>(
 pub(crate) fn disjoint_object_properties(
     path: &str,
 ) -> PyResult<(Vec<(String, String)>, Vec<String>, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let (pairs, undetermined) = owl_dl_reasoner::disjoint_object_properties_reporting(&ontology)
         .map_err(reason_error_to_py)?;
     Ok((
@@ -227,7 +260,7 @@ pub(crate) fn disjoint_object_properties(
 pub(crate) fn disjoint_data_properties(
     path: &str,
 ) -> PyResult<(Vec<(String, String)>, Vec<String>, bool)> {
-    let ontology = load::load_path(path)?;
+    let ontology = load::load_path_noted(path)?;
     let (pairs, undetermined) = owl_dl_reasoner::disjoint_data_properties_reporting(&ontology)
         .map_err(reason_error_to_py)?;
     Ok((
@@ -244,7 +277,7 @@ pub(crate) fn disjoint_data_properties(
 pub(crate) fn object_property_hierarchy(
     path: &str,
 ) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>, Vec<String>)> {
-    let o = load::load_path(path)?;
+    let o = load::load_path_noted(path)?;
     let h = owl_dl_reasoner::classify_property_hierarchies(&o).map_err(reason_error_to_py)?;
     Ok((
         h.object.equivalent_groups().to_vec(),
@@ -260,7 +293,7 @@ pub(crate) fn object_property_hierarchy(
 pub(crate) fn data_property_hierarchy(
     path: &str,
 ) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>, Vec<String>)> {
-    let o = load::load_path(path)?;
+    let o = load::load_path_noted(path)?;
     let h = owl_dl_reasoner::classify_property_hierarchies(&o).map_err(reason_error_to_py)?;
     Ok((
         h.data.equivalent_groups().to_vec(),
@@ -274,7 +307,7 @@ pub(crate) fn data_property_hierarchy(
 /// See `disjoint_classes` for the tuple/wrapper convention.
 #[pyfunction]
 pub(crate) fn same_individuals(path: &str) -> PyResult<(Vec<Vec<String>>, bool, bool)> {
-    let o = load::load_path(path)?;
+    let o = load::load_path_noted(path)?;
     owl_dl_reasoner::same_individuals(&o, Some(std::time::Duration::from_secs(1)))
         .map(|s| {
             (
@@ -292,7 +325,7 @@ pub(crate) fn same_individuals(path: &str) -> PyResult<(Vec<Vec<String>>, bool, 
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn different_individuals(path: &str) -> PyResult<(Vec<(String, String)>, bool, bool)> {
-    let o = load::load_path(path)?;
+    let o = load::load_path_noted(path)?;
     owl_dl_reasoner::different_individuals(&o, Some(std::time::Duration::from_secs(1)))
         .map(|d| {
             (
@@ -312,7 +345,7 @@ pub(crate) fn different_individuals(path: &str) -> PyResult<(Vec<(String, String
 pub(crate) fn object_property_values(
     path: &str,
 ) -> PyResult<(Vec<(String, String, String)>, bool, bool)> {
-    let o = load::load_path(path)?;
+    let o = load::load_path_noted(path)?;
     owl_dl_reasoner::inferred_object_property_values(&o, Some(std::time::Duration::from_secs(1)))
         .map(|v| {
             (
@@ -335,7 +368,7 @@ pub(crate) fn data_property_values(
     Vec<String>,
     bool,
 )> {
-    let o = load::load_path(path)?;
+    let o = load::load_path_noted(path)?;
     let v = owl_dl_reasoner::inferred_data_property_values(&o).map_err(reason_error_to_py)?;
     Ok((
         v.quints().to_vec(),
@@ -383,8 +416,9 @@ pub(crate) fn universal_role_ordinary(path: &str, role_level: bool) -> PyResult<
 
 /// #597: `(dropped, universal_role_ordinary, universal_role_ordinary_for_roles)`
 /// for the ontology at `path`, from one parse and one conversion. The Python
-/// wrappers call it (cached per file) after a query that does not report its own
-/// drops, to warn `DroppedAxiomsWarning` and `UniversalRoleWarning`.
+/// wrappers take these from the query's own native instead
+/// (`_take_conversion_notes`); this is their fallback, should a native not record
+/// them.
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub(crate) fn conversion_notes(
@@ -522,5 +556,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dropped_axioms, m)?)?;
     m.add_function(wrap_pyfunction!(universal_role_ordinary, m)?)?;
     m.add_function(wrap_pyfunction!(conversion_notes, m)?)?;
+    m.add_function(wrap_pyfunction!(load::take_conversion_notes, m)?)?;
     Ok(())
 }

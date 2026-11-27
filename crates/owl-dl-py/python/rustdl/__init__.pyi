@@ -218,9 +218,8 @@ class DroppedAxiomsWarning(UserWarning):
     class-expression queries and their `*_result` forms (#552, the query
     expression's drops included), `PreparedOntology.justify` / `justify_all`
     (`PreparedOntology.dropped`) and every other path-taking query (`debug` once),
-    even when the KB is proved inconsistent. The path-taking queries convert the
-    file a second time after the answer, cached per file (path, device, inode, size,
-    mtime, ctime, extension, `RUSTDL_*` environment). Behaviour change: before
+    even when the KB is proved inconsistent. The path-taking queries take the drops
+    from the query's own parse (no second parse). Behaviour change: before
     #597 only the class-expression queries warned, so under `-W error` the others
     now raise on an ontology with dropped axioms."""
 

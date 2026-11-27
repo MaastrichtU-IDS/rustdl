@@ -2,8 +2,6 @@
 axioms (before, only the class-expression queries did, #552). `HasKey` is the
 confirmed live drop (crates/owl-dl-reasoner/tests/dropped_axioms.rs)."""
 import inspect
-import os
-import time
 import warnings
 
 import pytest
@@ -147,49 +145,27 @@ def test_both_notes_from_one_conversion(tmp_path):
     assert cats.count(rustdl.UniversalRoleWarning) == 1, cats
 
 
-def test_the_cache_converts_an_unchanged_file_once(tmp_path, monkeypatch):
-    path = _write(tmp_path, "key.ofn", WITH_KEY)
-    calls = []
-    native = rustdl._conversion_notes_native
+def _no_second_parse(monkeypatch):
+    def refuse(p):
+        raise AssertionError(f"fell back to a second parse of {p}")
 
-    def counting(p):
-        calls.append(p)
-        return native(p)
-
-    monkeypatch.setattr(rustdl, "_conversion_notes_native", counting)
-    rustdl._conversion_notes_cache_clear()
-    for _ in range(3):
-        _, ws = _record(rustdl.is_consistent, path)
-        assert len(ws) == 1
-    # A relative path to the same file is the same entry.
-    monkeypatch.chdir(tmp_path)
-    _, ws = _record(rustdl.is_consistent, "key.ofn")
-    assert len(ws) == 1
-    assert len(calls) == 1, calls
+    monkeypatch.setattr(rustdl, "_conversion_notes_native", refuse)
 
 
-def test_a_same_size_rewrite_with_the_same_mtime_is_reread(tmp_path):
-    """The worst case for a stat key: same path, inode, size and mtime (a coarse
-    mtime, or `cp -p` / `os.utime`). Only ctime tells the files apart."""
-    key = "HasKey(:A (:r) ())"
-    clean = WITH_KEY.replace(key, "#" + "x" * (len(key) - 1))
-    assert len(clean.encode()) == len(WITH_KEY.encode())
-    path = _write(tmp_path, "rw.ofn", WITH_KEY)
-    rustdl._conversion_notes_cache_clear()
-    _, ws = _record(rustdl.is_consistent, path)
-    assert len(ws) == 1
-    st = os.stat(path)
-    time.sleep(0.05)  # past a coarse (jiffy) ctime tick
-    with open(path, "w") as f:
-        f.write(clean)
-    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
-    assert os.stat(path).st_mtime_ns == st.st_mtime_ns
-    assert os.stat(path).st_size == st.st_size
-    _, ws = _record(rustdl.is_consistent, path)
-    assert not ws, "stale notes served from the cache"
+@pytest.mark.parametrize("name", sorted(WRAPPED))
+def test_no_query_parses_the_file_twice(tmp_path, monkeypatch, name):
+    """Each native records the notes from its own parse; the wrapper's fallback
+    (a second parse) is never used. The three stats-reporting queries convert again
+    only when something was dropped."""
+    _no_second_parse(monkeypatch)
+    for fixture, expected in ((WITH_KEY, 1), (CLEAN, 0)):
+        path = _write(tmp_path, "o.ofn", fixture)
+        _, ws = _record(getattr(rustdl, name), path, *WRAPPED[name])
+        assert len(ws) == expected, (name, [str(w.message) for w in ws])
 
 
-def test_debug_warns_once(tmp_path):
+def test_debug_warns_once(tmp_path, monkeypatch):
+    _no_second_parse(monkeypatch)
     path = _write(tmp_path, "key.ofn", WITH_KEY.replace("HasKey", "SubClassOf(:C owl:Nothing)\nHasKey"))
     d, ws = _record(rustdl.debug, path)
     assert d.roots, "the fixture has an unsatisfiable root, so justify/repair run"
@@ -246,25 +222,6 @@ def test_a_symlink_is_parsed_as_the_query_parsed_it(tmp_path):
     assert len(ws) == 1
 
 
-def test_the_rustdl_environment_is_part_of_the_key(tmp_path, monkeypatch):
-    path = _write(tmp_path, "key.ofn", WITH_KEY)
-    calls = []
-    native = rustdl._conversion_notes_native
-    monkeypatch.setattr(
-        rustdl, "_conversion_notes_native", lambda p: calls.append(p) or native(p)
-    )
-    rustdl._conversion_notes_cache_clear()
-    rustdl._conversion_notes(path)
-    monkeypatch.setenv("RUSTDL_SALVAGE_DROPPED_CONJUNCTS", "0")
-    rustdl._conversion_notes(path)
-    assert len(calls) == 2, "conversion reads flags per call; a toggle must reconvert"
-
-
-def test_a_missing_file_raises_parse_error(tmp_path):
-    with pytest.raises(rustdl.ParseError):
-        rustdl._conversion_notes(str(tmp_path / "gone.ofn"))
-
-
 def test_warnings_as_errors_raise(tmp_path):
     """The documented behaviour change: under `-W error` a query on an ontology
     with dropped axioms raises."""
@@ -281,7 +238,6 @@ def test_the_role_level_flag_goes_to_the_role_level_queries(tmp_path):
     path = _write(
         tmp_path, "topsub.ofn", CLEAN[:-2] + "SubObjectPropertyOf(owl:topObjectProperty :s)\n)\n"
     )
-    rustdl._conversion_notes_cache_clear()
     for name, expected in (
         ("object_property_values", 1),
         ("materialize_inferred_property_assertions", 1),

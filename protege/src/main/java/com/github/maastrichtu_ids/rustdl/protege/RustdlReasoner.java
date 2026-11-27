@@ -179,8 +179,7 @@ public class RustdlReasoner extends OWLReasonerBase {
                     && classifyResult != null && classifyResult.consistent
                     && !getRootOntology().getIndividualsInSignature(true).isEmpty()) {
                 realizeResult = RustdlProcess.realize(ofn, timeoutSec);
-                for (String w : surfaceWarnings("realize", "instance-types", realizeResult.incomplete,
-                        realizeResult.universal_role_ordinary, false, null)) {
+                for (String w : realizeWarnings(realizeResult, System.getenv())) {
                     LOG.warning(w);
                 }
             }
@@ -263,6 +262,21 @@ public class RustdlReasoner extends OWLReasonerBase {
                 + " clause(s), so they never fire and subsumptions that need them may be missing. "
                 + "The hierarchy is a sound under-approximation.");
         }
+        // #616: the CLI's warn_if_abox_blind, for the plugin.
+        if (c.wedge_abox_blind) {
+            out.add("rustdl classified with wedge models that touch a nominal while an ABox "
+                + "fact did not apply in them, so a subsumption or an unsatisfiable class that "
+                + "depends on an individual's facts may be missing. "
+                + "RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 in Protégé's environment decides those "
+                + "classes on the main tableau, at a time cost. The hierarchy is a sound "
+                + "under-approximation.");
+        }
+        // #616: rustdl exits 3 after this JSON; RustdlProcess.classify accepts it.
+        if (c.no_verdict_pairs > 0) {
+            out.add(noVerdictNote("classify") + " " + c.no_verdict_pairs + " class pair(s) "
+                + "took their sound default (\"not subsumed\"); the hierarchy is a sound "
+                + "under-approximation.");
+        }
         if (c.derived_same_undecided > 0) {
             out.add("rustdl did not decide " + c.derived_same_undecided
                 + " candidate individual equalit(ies) (budget or probe cap), so subsumptions "
@@ -322,6 +336,92 @@ public class RustdlReasoner extends OWLReasonerBase {
                 + undeterminedScope + " may be the vacuous one of an inconsistent KB.");
         }
         return out;
+    }
+
+    /** #616: the CLI's {@code NO_VERDICT_NOTE}, naming the surface. */
+    static String noVerdictNote(String command) {
+        return "rustdl " + command + ": the tableau reached an internal limit without a verdict "
+            + "(NoVerdict). This is likely a reasoner bug; please report the input.";
+    }
+
+    /** The CLI's {@code DEPTH_CUT_ADVICE}. */
+    private static final String DEPTH_CUT_ADVICE = "A longer RUSTDL_REALIZE_PAIR_TIMEOUT_MS or "
+        + "a larger node cap does not help with that; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the "
+        + "deadline-free probe, which searches much deeper (with no time limit).";
+
+    /** The budget remedy, set where the plugin's rustdl reads it. */
+    private static final String REALIZE_BUDGET = "Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default "
+        + "750; 0 = unbounded) or RUSTDL_MAX_NODES in Protégé's environment.";
+
+    /**
+     * #616: the warnings a realize result warrants, one per signal, worded as the CLI's
+     * notes on {@code realize} (main.rs: {@code exit_if_no_verdict}, {@code warn_probes_cut},
+     * the witness-prune warning, {@code warn_direct_types_unverified}, {@code warn_if_dropped},
+     * {@code note_universal_role}). {@code env} is the environment the rustdl child inherits
+     * (Protégé's), read for the settings that change the direct-types remedy, as the CLI does.
+     * {@code relies_on_trusted_consistency} is not warned on: classify ran first and warns
+     * when the consistency wedge's KB is measurably weaker, and trust alone is near-universal.
+     */
+    static List<String> realizeWarnings(RustdlJson.RealizeJson r, java.util.Map<String, String> env) {
+        List<String> out = new ArrayList<>();
+        if (r.no_verdict) {
+            // Implies incomplete; the CLI gives #449's note instead of the budget advice.
+            out.add(noVerdictNote("realize") + " Each such probe or check took its sound "
+                + "default: the listed types are sound, but some may be missing.");
+        } else if (r.incomplete) {
+            if (r.depth_capped) {
+                out.add("rustdl realize: at least one instance probe hit the tableau's "
+                    + "decision-depth limit, so types may be missing; those listed are sound. "
+                    + DEPTH_CUT_ADVICE + " On realize it also takes the deadline off the "
+                    + "classification step, which can then run much longer (and into this "
+                    + "plugin's timeout). For a deadline or node-cap cut: " + REALIZE_BUDGET);
+            } else {
+                out.add("rustdl reports an INCOMPLETE instance-types result (an instance probe "
+                    + "was cut: a deadline or the node cap); sound under-approximation (may "
+                    + "miss, never wrong). " + REALIZE_BUDGET);
+            }
+        }
+        if (r.witness_prune_may_drop) {
+            List<String> reasons = r.witness_prune_reasons == null
+                ? java.util.Collections.<String>emptyList() : r.witness_prune_reasons;
+            out.add("rustdl realize: the pseudo-model prune answered \"not a type\" from a "
+                + "witness model with a known reason to lack an entailed type"
+                + (reasons.isEmpty() ? "" : " (" + String.join(", ", reasons) + ")")
+                + ", so an entailed type may be missing; RUSTDL_PSEUDO_MODEL=0 in Protégé's "
+                + "environment probes every pair instead (slower).");
+        }
+        if (r.direct_types_unverified) {
+            out.add("rustdl realize: some individual has two direct types whose subsumption was "
+                + "left undecided, so a listed direct type may be a superclass of another; every "
+                + "listed type is a genuine type." + directTypesRemedy(r, env));
+        }
+        String dropped = droppedSummary(r.dropped);
+        if (dropped != null) {
+            out.add("rustdl realize: rustdl did not understand and left out " + dropped
+                + "; the types are computed over a weaker ontology, a sound under-approximation.");
+        }
+        if (r.universal_role_ordinary) {
+            out.add(universalRoleNote("realize"));
+        }
+        return out;
+    }
+
+    /** The CLI's {@code warn_direct_types_unverified} remedy (no {@code --saturation-only} here). */
+    private static String directTypesRemedy(RustdlJson.RealizeJson r, java.util.Map<String, String> env) {
+        String budget = " For a deadline or node-cap cut, a larger RUSTDL_REALIZE_PAIR_TIMEOUT_MS "
+            + "or RUSTDL_MAX_NODES in Protégé's environment may decide it.";
+        if ("0".equals(env.get("RUSTDL_REALIZE_VERIFY_DIRECT"))) {
+            return " The check is off (RUSTDL_REALIZE_VERIFY_DIRECT=0); without that setting it runs.";
+        }
+        if (r.no_verdict || "0".equals(env.get("RUSTDL_REALIZE_PAIR_TIMEOUT_MS"))) {
+            return "";
+        }
+        if (r.direct_types_depth_capped) {
+            return " At least one check hit the tableau's decision-depth limit, where a larger "
+                + "budget does not help; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 (no deadline, a far "
+                + "larger depth limit) may decide it, but can take much longer." + budget;
+        }
+        return budget;
     }
 
     /** #610: the CLI's `note_universal_role`, naming the surface. */

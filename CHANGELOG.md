@@ -107,6 +107,23 @@ All notable changes to rustdl are documented here. Format is based on
     - in Python (#623's `conversion_notes` used the older two-case formula).
 
     Python's role-level functions now take that flag too: the property-value, property-hierarchy, property-disjointness and same/different-individual functions and the property materializers. Before, only `object_property_values` and `materialize_inferred_property_assertions` did.
+- **A wedge decide with no deadline no longer loops in the #376 re-fire pass (#620):
+  `RUSTDL_WEDGE_REFIRE_BOUND`, default ON, `=0` reverts.** The #564 merge-churn guard
+  reads one Horn fixpoint at a time. Under a generation order that fires ordinary
+  generators before the nominal-target one (a #570 sabotage), the r-cycle `ABox` form
+  instead ran the re-fire loop in `run_reseed_net` as thousands of short fixpoints, each
+  building three nodes and merging them away, and an unbounded `classify` ran 13 h on
+  one core. In a decide with no deadline, that loop now keeps its own churn baseline
+  and stops with `Stalled` (never `Sat`) when it churns as #564 means across its
+  passes (after 44 passes there; counted in `wedge_merge_churn_stops`), or after 1,024
+  passes. Over the 448 ORE ontologies with a nominal at the CLI's defaults, every one of
+  the 46,267 such loops ran a single pass. This loop had no bound on its iterations. One more same-depth recursion,
+  the search's unit-force step, is not bounded by this change; a review probe did not
+  make it loop. The search itself can still be exponential. A decide with a deadline is not touched, so
+  budgeted runs, the CLI's default among them, are unchanged. On a 150-file ORE sample
+  at the CLI's defaults no wedge decide ran without a deadline. 138 finished, and 12
+  were cut at 32 s, so those 12 were observed only until the cut. The same instrument
+  reported 4 on a run with no deadline. The shipped (FIFO) order did not hit the loop.
 - **The universal role's meaning is stated where it needs no new symbol (#543, part 2: "S+F").** Part 1 flagged every semantic use of `owl:topObjectProperty`. Now conversion adds an axiom, recorded as built-in, that states the universal-role meaning of each use below. Every added axiom holds in every model under the Direct Semantics (`top` is `Δ × Δ`). These uses now answer right and are no longer flagged:
   - `∃top.⊤`, `∃top.{a}`, and `∃top.D` / `≥1 top.D` where D has a told instance (a `ClassAssertion`, also through told sub-classes), which are `⊤`;
   - `∀top.⊥`, and `∀top.¬D` / `≤0 top.D` with D as above, which are `⊥`;

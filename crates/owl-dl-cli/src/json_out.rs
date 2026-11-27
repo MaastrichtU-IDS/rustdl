@@ -267,14 +267,19 @@ pub(crate) struct ClassifyJson {
     /// them away, with every blocker refused by the NN guard, returned no verdict, and
     /// its probe went to the main tableau. NOT `incomplete`: no pair was cut and no
     /// answer was guessed. A fall-through the tableau could not finish is reported by
-    /// the fields that cover that. Diagnostic; 0 when the guard never fired.
+    /// the fields that cover that. Diagnostic; 0 when the guard never fired. Since
+    /// #620 it also counts a #376 re-fire loop of a decide with no deadline that churned
+    /// the same way across its passes (`RUSTDL_WEDGE_REFIRE_BOUND`); that loop's
+    /// pass-cap stop is not counted here, and its `Stalled` shows only as the probe's
+    /// fall-through.
     pub(crate) wedge_merge_churn_stops: u64,
     /// #571: classify's consistency wedge returned `Stalled` (no verdict). Since
     /// #571 the main tableau then runs in what is left of the wedge's budget, and
     /// `stalled_wedge_fallback` says what it answered. Diagnostic.
     pub(crate) consistency_wedge_stalled: bool,
-    /// #571: that consistency wedge's fixpoints the merge-churn guard stopped: the
-    /// cause of the `Stalled` when non-zero, its deadline or another cap when 0.
+    /// #571: that consistency wedge's fixpoints the merge-churn guard stopped (and, since
+    /// #620, its deadline-free re-fire loops that churned): the cause of the `Stalled`
+    /// when non-zero, its deadline or another cap when 0.
     /// Separate from `wedge_merge_churn_stops`, which counts the classify wedge.
     pub(crate) consistency_wedge_merge_churn_stops: u64,
     /// #571: what the main-tableau fallback after a `Stalled` consistency wedge

@@ -786,6 +786,17 @@ pub struct ClassificationStats {
     /// (`RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED`). It does NOT set `incomplete`, which
     /// means only that a class pair or probe was cut (#574). 0 when there is no wedge.
     pub wedge_clauses_refused: usize,
+    /// #600: the classify wedge clausifier's deferral events: encodings of the
+    /// input's axioms it skipped, so the wedge never sees them and its trusted `Sat`
+    /// can miss what they entail (one axiom can count more than once). At the default
+    /// this counts complex `DisjointClasses` / `DisjointUnion` members (#600; the
+    /// opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1` encodes them up to
+    /// `TRIGGERLESS_FALLBACK_CAP` trigger-less ones); what we observed deferred on ORE
+    /// otherwise is the antecedent DNF cap (the reflexive-derived cap can also
+    /// defer). Reported only:
+    /// the guarantee needs `PureEl`, which answers from the saturator without a wedge.
+    /// 0 when there is no wedge.
+    pub wedge_clauses_deferred: usize,
     /// #354: individual equalities the KB forces that classify found and gave the
     /// classify wedge (`RUSTDL_CLASSIFY_DERIVED_SAME`).
     pub derived_same: usize,
@@ -2188,6 +2199,7 @@ fn classify_internal_with_timeout_impl(
         per_class_unsafe_count: prepared.per_class_unsafe_count(),
         wedge_hierarchy_blind: wedge_hierarchy_blind(&prepared),
         wedge_clauses_refused: wedge_clauses_refused(&prepared),
+        wedge_clauses_deferred: prepared.wedge_clauses_deferred(),
         derived_same: derived.pairs.len(),
         derived_same_undecided: derived.undecided,
         derived_same_candidates: derived.candidates,
@@ -4846,6 +4858,7 @@ fn classify_top_down_internal_impl(
         prepare_wall_ms: prepare_ms,
         wedge_hierarchy_blind: wedge_hierarchy_blind(&prepared),
         wedge_clauses_refused: wedge_clauses_refused(&prepared),
+        wedge_clauses_deferred: prepared.wedge_clauses_deferred(),
         derived_same: derived.pairs.len(),
         derived_same_undecided: derived.undecided,
         derived_same_candidates: derived.candidates,

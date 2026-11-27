@@ -10,7 +10,7 @@
 //! report the `rdfs:Literal` and `xsd:int` positives, an under-report (HermiT derives
 //! them). Negative controls first.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::doc_markdown)]
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -95,8 +95,8 @@ fn a_value_inside_the_super_property_range_is_subsumed() {
         ),
         (
             "the same datatype (HermiT)",
-            r#"SubClassOf(:C DataSomeValuesFrom(:d xsd:int))
-               SubClassOf(DataSomeValuesFrom(:e xsd:int) :E)"#,
+            "SubClassOf(:C DataSomeValuesFrom(:d xsd:int))
+             SubClassOf(DataSomeValuesFrom(:e xsd:int) :E)",
         ),
     ] {
         assert!(c_sub_e(body), "{what}: entailed");

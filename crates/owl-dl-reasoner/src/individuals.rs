@@ -33,9 +33,10 @@ impl SameIndividuals {
         &self.groups
     }
 
-    /// `true` iff a probe timed out, or ANY extension probe beyond the
-    /// asserted-`SameIndividual` + derived-functional-merge seed was
-    /// consulted. That seed alone is sound-complete; any further pairwise
+    /// `true` iff conversion dropped an axiom (#579: `dropped` is non-empty, e.g. an
+    /// unresolved `Import` or a SWRL rule), or a probe timed out, or ANY extension
+    /// probe beyond the asserted-`SameIndividual` + derived-functional-merge seed
+    /// was consulted. That seed alone is sound-complete for the converted axioms; any further pairwise
     /// `consistent_with_extra` probe relies on a "consistent" (satisfiable)
     /// verdict, which — while sound for THIS engine call — this query
     /// conservatively treats as a trusted-Sat under-approximation, so the
@@ -83,7 +84,9 @@ impl DifferentIndividuals {
     }
 
     /// `true` iff a probe timed out — the reported set may be missing
-    /// entailed distinctions.
+    /// entailed distinctions. Only a cut: `false` is not a completeness claim,
+    /// and it does not read `dropped` (#579), which `individuals --json` reports
+    /// beside it.
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
@@ -149,7 +152,10 @@ pub fn same_individuals<A: ForIRI>(
 
     // Seed the union-find from told `SameIndividual` axioms + the `ABox`
     // saturator's derived-same (functional-role-forced) pairs. This seed
-    // alone is sound-complete.
+    // alone is sound-complete for the converted axioms; #579: not when
+    // conversion dropped any (a rule `-> sameAs(c, d)`, an unresolved `Import`),
+    // so a drop sets `incomplete` below.
+    let dropped = !internal.dropped.is_empty();
     let n = internal.vocabulary.num_individuals();
     let mut uf = UnionFind::new(n);
     for ax in &internal.axioms {
@@ -169,7 +175,7 @@ pub fn same_individuals<A: ForIRI>(
     let prepared = PreparedOntology::from_internal(internal)?;
     let names = named_individuals(&prepared.vocabulary);
 
-    let mut incomplete = false;
+    let mut incomplete = dropped;
     let mut no_verdict = false;
     let mut probe_merged = false;
     for i in 0..names.len() {

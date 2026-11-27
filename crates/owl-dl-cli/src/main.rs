@@ -866,6 +866,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
         warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
         warn_if_abox_blind(h.stats().wedge_abox_blind);
+        warn_if_tbox_individuals_unseeded(h.stats().tbox_individuals_unseeded_count);
         warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
         warn_if_clauses_deferred(h.stats().wedge_clauses_deferred);
         note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
@@ -881,6 +882,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
     warn_classify_incomplete(&h.stats(), pair_timeout_ms, global_timeout_ms);
     warn_if_hierarchy_blind(h.stats().wedge_hierarchy_blind);
     warn_if_abox_blind(h.stats().wedge_abox_blind);
+    warn_if_tbox_individuals_unseeded(h.stats().tbox_individuals_unseeded_count);
     warn_if_clauses_refused(h.stats().wedge_clauses_refused, "RUSTDL_HYPERTABLEAU=0");
     warn_if_clauses_deferred(h.stats().wedge_clauses_deferred);
     warn_if_dropped(&dropped);
@@ -1050,6 +1052,17 @@ fn warn_if_abox_blind(blind: bool) {
              unsatisfiable class that depends on an individual's facts may be missing \
              (#533). RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 decides those classes on the \
              main tableau, at a time cost."
+        );
+    }
+}
+
+fn warn_if_tbox_individuals_unseeded(unseeded: u64) {
+    if unseeded > 0 {
+        eprintln!(
+            "\n⚠  NOT GUARANTEED COMPLETE: classify's probes were not seeded with \
+             {unseeded} individual(s) named in TBox nominals, so a subsumption or an \
+             unsatisfiable class that follows from what the TBox says about them may be \
+             missing (#608). RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1 seeds them, at a time cost."
         );
     }
 }
@@ -2094,6 +2107,14 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.wedge_abox_blind_models
         )?;
     }
+    if stats.tbox_individuals_unseeded {
+        writeln!(
+            out,
+            "# TBox-only individuals not seeded in classify's probes: {}: \
+             completeness not guaranteed",
+            stats.tbox_individuals_unseeded_count
+        )?;
+    }
     if stats.wedge_abox_demoted > 0 {
         writeln!(
             out,
@@ -2312,6 +2333,7 @@ fn run() -> Result<()> {
                     "classify_certified": found.classify_certified,
                     "realize_certified": found.realize_certified,
                     "universal_role_ordinary": json_out::conversion_block(&onto).1,
+                    "universal_role_folds": owl_dl_reasoner::universal_role_folds(&onto).unwrap_or(0),
                     "classify": rows(&found.classify),
                     "realize": rows(&found.realize),
                 })
@@ -2424,8 +2446,11 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
-            warn_if_dropped(&dropped_kinds);
+            let (dropped, _) = json_out::conversion_block(&onto);
+            warn_if_dropped(&dropped);
+            // #543: role-level surface; a folded property disjointness or a role above
+            // top still counts here (see `universal_role_ordinary_for_roles`).
+            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
@@ -2450,6 +2475,7 @@ fn run() -> Result<()> {
                         data,
                         undetermined,
                         gaps,
+                        dropped,
                         uro,
                     ))?
                 );
@@ -2462,7 +2488,8 @@ fn run() -> Result<()> {
             }
             if classes.incomplete() {
                 eprintln!(
-                    "warning: disjointness incomplete (budget/fragment) — sound under-approximation"
+                    "warning: disjointness incomplete (budget, fragment or dropped axioms) — sound \
+                     under-approximation"
                 );
             }
             println!("# disjoint object properties");
@@ -2483,8 +2510,11 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
-            warn_if_dropped(&dropped_kinds);
+            let (dropped, _) = json_out::conversion_block(&onto);
+            warn_if_dropped(&dropped);
+            // #543: role-level surface; a folded property disjointness or a role above
+            // top still counts here (see `universal_role_ordinary_for_roles`).
+            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
@@ -2496,7 +2526,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_individuals_json(
-                        &same, &different, uro,
+                        &same, &different, dropped, uro,
                     ))?
                 );
                 exit_if_no_verdict(same.no_verdict() || different.no_verdict());
@@ -2512,7 +2542,8 @@ fn run() -> Result<()> {
             }
             if same.incomplete() || different.incomplete() {
                 eprintln!(
-                    "warning: individuals incomplete (budget/fragment) — sound under-approximation"
+                    "warning: individuals incomplete (budget, fragment or dropped axioms) — sound \
+                     under-approximation"
                 );
             }
             warn_consistency_undetermined(
@@ -2527,8 +2558,8 @@ fn run() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, _) = json_out::conversion_block(&onto);
-            warn_if_dropped(&dropped_kinds);
+            let (dropped, _) = json_out::conversion_block(&onto);
+            warn_if_dropped(&dropped);
             // #543: role-level, so a role above top counts even where no class-level
             // answer changes.
             let uro = json_out::universal_role_flag_for_roles(&file, &onto);
@@ -2547,7 +2578,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_property_values_json(
-                        &obj, &data, gaps, uro,
+                        &obj, &data, gaps, dropped, uro,
                     ))?
                 );
                 exit_if_no_verdict(obj.no_verdict());
@@ -2567,7 +2598,8 @@ fn run() -> Result<()> {
             }
             if obj.incomplete() || data.incomplete() {
                 eprintln!(
-                    "warning: property values incomplete (budget/fragment) — sound under-approximation"
+                    "warning: property values incomplete (budget, fragment or dropped axioms) — \
+                     sound under-approximation"
                 );
             }
             warn_structural_gaps("data property values", &gaps);
@@ -2579,8 +2611,11 @@ fn run() -> Result<()> {
         }
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
-            warn_if_dropped(&dropped_kinds);
+            let (dropped, _) = json_out::conversion_block(&onto);
+            warn_if_dropped(&dropped);
+            // #543: role-level surface; a folded property disjointness or a role above
+            // top still counts here (see `universal_role_ordinary_for_roles`).
+            let uro = json_out::universal_role_flag_for_roles(&file, &onto);
             note_universal_role(uro);
             let h = owl_dl_reasoner::classify_property_hierarchies(&onto)
                 .context("classify_property_hierarchies")?;
@@ -2589,7 +2624,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_prophier_json(
-                        &obj, &data, gaps, uro,
+                        &obj, &data, gaps, dropped, uro,
                     ))?
                 );
                 return Ok(());
@@ -3485,7 +3520,28 @@ fn run() -> Result<()> {
                         );
                         for idx in all_refs {
                             if let Some(ax) = internal.axioms.get(idx) {
-                                if internal.builtin.contains(ax) {
+                                if let Some((_, lics)) =
+                                    internal.builtin_licenses.iter().find(|(b, _)| b == ax)
+                                {
+                                    // #543 part 2: it holds given source axioms; name them.
+                                    let at: Vec<String> = lics
+                                        .iter()
+                                        .map(|lic| {
+                                            internal
+                                                .axioms
+                                                .iter()
+                                                .position(|a| a == lic)
+                                                .map_or_else(
+                                                    || "?".to_owned(),
+                                                    |i| format!("axiom[{i}]"),
+                                                )
+                                        })
+                                        .collect();
+                                    println!(
+                                        "  axiom[{idx}] (built-in, licensed by source {}): {ax:?}",
+                                        at.join(", ")
+                                    );
+                                } else if internal.builtin.contains(ax) {
                                     println!(
                                         "  axiom[{idx}] (built-in: OWL semantics, not in the \
                                          source): {ax:?}"

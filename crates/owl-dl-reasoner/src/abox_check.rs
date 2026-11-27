@@ -699,6 +699,8 @@ mod tests {
             axioms: Vec::new(),
             dropped: owl_dl_core::DroppedAxioms::default(),
             builtin: Vec::new(),
+            builtin_licenses: Vec::new(),
+            universal_role_folds: 0,
             collapsed_operands: owl_dl_core::CollapsedOperands::default(),
         };
         let prepared =

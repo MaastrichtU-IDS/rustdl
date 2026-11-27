@@ -1192,16 +1192,47 @@ pub(crate) fn parse_datetime(s: &str) -> Option<DateTimeKey> {
     Some((y, mo, d, h, mi, sec))
 }
 
+/// `xsd:integer` or a type derived from it (#323): its values are integers, hence
+/// decimals. `xsd:unsignedLong` included: it is an integer type even though
+/// [`xsd_integer_derived_range`] cannot bound it.
+fn is_integer_family_datatype(iri: &str) -> bool {
+    iri.strip_prefix("http://www.w3.org/2001/XMLSchema#")
+        .is_some_and(|local| local == "unsignedLong" || xsd_integer_derived_range(local).is_some())
+}
+
+/// The facet literal's datatype IRI, or `None` for a plain or language-tagged
+/// literal (`xsd:string` / `rdf:langString`, never a numeric or temporal type).
+fn facet_literal_datatype<A: ForIRI>(l: &Literal<A>) -> Option<&str> {
+    match l {
+        Literal::Datatype { datatype_iri, .. } => Some(datatype_iri.as_ref()),
+        _ => None,
+    }
+}
+
+/// #556 review (draft B): a facet bound is read in the restricted datatype only when
+/// its literal is of that datatype (or, for `xsd:decimal`, of an integer type, whose
+/// values are decimals). `xsd:float maxInclusive "0.1"^^xsd:double` used to be read
+/// as the float `0.1`, which is a different number, and gave false subsumptions.
+/// Such a restriction is outside OWL 2 DL (`HermiT` rejects it); the caller drops the
+/// whole range, which conversion records in `dropped`.
+fn facet_literal_is<A: ForIRI>(l: &Literal<A>, accepts: &impl Fn(&str) -> bool) -> bool {
+    facet_literal_datatype(l).is_some_and(accepts)
+}
+
 /// Generic facet folder for the [`OrdRange`] datatypes: intersect all
 /// Min/Max Inclusive/Exclusive facets into one range. Any unrecognized
 /// facet or any value `parse_val` rejects ⟹ `None` (drops the whole range,
 /// which drops the whole axiom — the load-bearing conservatism).
 fn parse_ord_facets<A: ForIRI, T: Ord + Clone>(
     facets: &[FacetRestriction<A>],
+    literal_dt: impl Fn(&str) -> bool,
     parse_val: impl Fn(&str) -> Option<T>,
 ) -> Option<OrdRange<T>> {
     let mut range = OrdRange::unbounded();
     for fr in facets {
+        if !facet_literal_is(&fr.l, &literal_dt) {
+            return None;
+        }
         let v = parse_val(fr.l.literal())?;
         match fr.f {
             Facet::MinInclusive => range.tighten_min(v, true),
@@ -1220,12 +1251,13 @@ fn parse_ord_facets<A: ForIRI, T: Ord + Clone>(
 fn parse_ord_range<A: ForIRI, T: Ord + Clone>(
     dr: &DataRange<A>,
     matches_dt: impl Fn(&str) -> bool,
+    literal_dt: impl Fn(&str) -> bool,
     parse_val: impl Fn(&str) -> Option<T>,
 ) -> Option<OrdRange<T>> {
     match dr {
         DataRange::Datatype(dt) if matches_dt(dt.0.as_ref()) => Some(OrdRange::unbounded()),
         DataRange::DatatypeRestriction(dt, facets) if matches_dt(dt.0.as_ref()) => {
-            parse_ord_facets(facets, parse_val)
+            parse_ord_facets(facets, literal_dt, parse_val)
         }
         _ => None,
     }
@@ -1237,17 +1269,27 @@ const XSD_DATETIME: &str = "http://www.w3.org/2001/XMLSchema#dateTime";
 
 /// Phase D8: parse an `xsd:decimal` `DataRange` into an exact range.
 pub(crate) fn parse_decimal_range<A: ForIRI>(dr: &DataRange<A>) -> Option<OrdRange<Decimal>> {
-    parse_ord_range(dr, |iri| iri == XSD_DECIMAL, parse_decimal)
+    parse_ord_range(
+        dr,
+        |iri| iri == XSD_DECIMAL,
+        |iri| iri == XSD_DECIMAL || is_integer_family_datatype(iri),
+        parse_decimal,
+    )
 }
 
 /// Phase D8: parse an `xsd:date` `DataRange` into a component-tuple range.
 pub(crate) fn parse_date_range<A: ForIRI>(dr: &DataRange<A>) -> Option<OrdRange<DateKey>> {
-    parse_ord_range(dr, |iri| iri == XSD_DATE, parse_date)
+    parse_ord_range(dr, |iri| iri == XSD_DATE, |iri| iri == XSD_DATE, parse_date)
 }
 
 /// Phase D8: parse an `xsd:dateTime` `DataRange` into a component-tuple range.
 pub(crate) fn parse_datetime_range<A: ForIRI>(dr: &DataRange<A>) -> Option<OrdRange<DateTimeKey>> {
-    parse_ord_range(dr, |iri| iri == XSD_DATETIME, parse_datetime)
+    parse_ord_range(
+        dr,
+        |iri| iri == XSD_DATETIME,
+        |iri| iri == XSD_DATETIME,
+        parse_datetime,
+    )
 }
 
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
@@ -2373,15 +2415,21 @@ pub(crate) fn parse_xsd_double_range<A: ForIRI>(dr: &DataRange<A>) -> Option<Flo
     match dr {
         DataRange::Datatype(dt) if dt.0.as_ref() == XSD_DOUBLE => Some(FloatRange::unbounded()),
         DataRange::DatatypeRestriction(dt, facets) if dt.0.as_ref() == XSD_DOUBLE => {
-            parse_float_facets(facets)
+            parse_float_facets(facets, XSD_DOUBLE)
         }
         _ => None,
     }
 }
 
-fn parse_float_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<FloatRange> {
+fn parse_float_facets<A: ForIRI>(
+    facets: &[FacetRestriction<A>],
+    literal_dt: &str,
+) -> Option<FloatRange> {
     let mut range = FloatRange::unbounded();
     for fr in facets {
+        if !facet_literal_is(&fr.l, &|iri: &str| iri == literal_dt) {
+            return None;
+        }
         // Reject NaN and ±∞ outright: a non-finite bound would poison the
         // `==`/`>`/`<` comparisons in `subset` (NaN compares false to
         // everything, which could spuriously hit the equal-endpoint
@@ -2407,8 +2455,12 @@ fn parse_float_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<Float
 /// `"0.1000000015"` both round to f32 `0x3DCCCCCD`) produce the SAME bound,
 /// ensuring the DKey encoding is sound for the `xsd:float` value space.
 fn parse_float32_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<FloatRange> {
+    const XSD_FLOAT: &str = "http://www.w3.org/2001/XMLSchema#float";
     let mut range = FloatRange::unbounded();
     for fr in facets {
+        if !facet_literal_is(&fr.l, &|iri: &str| iri == XSD_FLOAT) {
+            return None;
+        }
         // Parse as f32; NaN/±∞ in the f32 domain are also rejected by
         // `is_finite()` on the widened f64 (they widen to NaN/±∞ as well).
         let val: f64 =
@@ -3232,7 +3284,7 @@ fn parse_double_range<A: ForIRI>(range: &DataRange<A>) -> Option<FloatRange> {
     match range {
         DataRange::Datatype(dt) if dt.0.as_ref() == XSD_DOUBLE => Some(FloatRange::unbounded()),
         DataRange::DatatypeRestriction(dt, facets) if dt.0.as_ref() == XSD_DOUBLE => {
-            parse_float_facets(facets)
+            parse_float_facets(facets, XSD_DOUBLE)
         }
         _ => None,
     }
@@ -4224,6 +4276,8 @@ mod tests {
         assert!(fc(36.0, 101.0).subset(fc(36.0, 101.0)), "R ⊆ R (closed)");
     }
 
+    const FLOAT: &str = "http://www.w3.org/2001/XMLSchema#float";
+
     fn float_facet(facet: Facet, lit: &str) -> FacetRestriction<RcStr> {
         use horned_owl::model::{Build, Literal};
         let b: Build<RcStr> = Build::new_rc();
@@ -4241,22 +4295,22 @@ mod tests {
         // A NaN or ±∞ facet literal must drop the WHOLE range (None),
         // never yield a spurious subset.
         assert_eq!(
-            parse_float_facets(&[float_facet(Facet::MinInclusive, "NaN")]),
+            parse_float_facets(&[float_facet(Facet::MinInclusive, "NaN")], FLOAT),
             None,
             "NaN facet → drop"
         );
         assert_eq!(
-            parse_float_facets(&[float_facet(Facet::MaxExclusive, "INF")]),
+            parse_float_facets(&[float_facet(Facet::MaxExclusive, "INF")], FLOAT),
             None,
             "INF facet → drop"
         );
         assert_eq!(
-            parse_float_facets(&[float_facet(Facet::MaxExclusive, "-INF")]),
+            parse_float_facets(&[float_facet(Facet::MaxExclusive, "-INF")], FLOAT),
             None,
             "-INF facet → drop"
         );
         // A finite facet still parses.
-        assert!(parse_float_facets(&[float_facet(Facet::MaxExclusive, "0.01")]).is_some());
+        assert!(parse_float_facets(&[float_facet(Facet::MaxExclusive, "0.01")], FLOAT).is_some());
     }
 
     #[test]
@@ -4265,7 +4319,7 @@ mod tests {
         // be shifted. (36,..) must keep min=36.0 min_incl=false so that
         // [36,..) is correctly NOT a subset of (36,..).
         let parsed =
-            parse_float_facets(&[float_facet(Facet::MinExclusive, "36.0")]).expect("parses");
+            parse_float_facets(&[float_facet(Facet::MinExclusive, "36.0")], FLOAT).expect("parses");
         assert_eq!(parsed.min, Some(36.0), "min value unchanged (no ±1 shift)");
         assert!(!parsed.min_incl, "min is exclusive");
     }

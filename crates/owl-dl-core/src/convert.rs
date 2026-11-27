@@ -2271,7 +2271,8 @@ macro_rules! ce_or_skip {
 ///   bearing content: assertions, ranges, domains, …) but unsupported in this
 ///   phase — unsupported data ranges via the `ce_or_skip!` macro, unrecognized
 ///   data-property literals/ranges, the `RUSTDL_DATA_PROPERTIES=0` gate-off
-///   fall-through, anonymous individuals, `HasKey`, etc. Issue #43:
+///   fall-through, anonymous individuals, `HasKey`, SWRL rules (#557), an
+///   `Import`, which is never resolved (#579), etc. Issue #43:
 ///   `convert_ontology` no longer aborts on this — it records the drop in
 ///   `InternalOntology::dropped` (via [`drop_label`]) and continues with the
 ///   remaining components.
@@ -2289,7 +2290,6 @@ pub fn convert_component<A: ForIRI>(
         C::OntologyID(_)
         | C::DocIRI(_)
         | C::OntologyAnnotation(_)
-        | C::Import(_)
         | C::DeclareAnnotationProperty(_)
         | C::AnnotationAssertion(_)
         | C::SubAnnotationPropertyOf(_)
@@ -2671,6 +2671,19 @@ pub fn convert_component<A: ForIRI>(
         // it as `"Rule: unsupported axiom (SWRL)"`, which turns those claims false
         // and makes the CLI warn, as the README already promised.
         C::Rule(_) => Err(ConversionError::UnsupportedAxiom { kind: "SWRL" }),
+
+        // ── Imports: not resolved, and RECORDED as dropped (#579) ──
+        // Neither the CLI nor the reasoner loads an imported ontology, so its
+        // axioms are missing from what we reason with. Until #579 this was
+        // `Ok(None)` with the metadata above, and a pure-EL file importing
+        // anything still read `completeness_guaranteed: true`. Recording it as
+        // `"Import: unsupported axiom (unresolved import)"` turns every claim that
+        // reads `dropped` false. Answers do not change. A caller that has merged
+        // the import closure (Protégé's plugin writes a fresh flattened ontology,
+        // so it carries no `Import`) should also remove the declarations.
+        C::Import(_) => Err(ConversionError::UnsupportedAxiom {
+            kind: "unresolved import",
+        }),
     }
 }
 
@@ -2705,6 +2718,7 @@ fn component_kind<A: ForIRI>(c: &Component<A>) -> &'static str {
         C::FunctionalDataProperty(_) => "FunctionalDataProperty",
         C::DatatypeDefinition(_) => "DatatypeDefinition",
         C::Rule(_) => "Rule",
+        C::Import(_) => "Import",
         _ => "Other",
     }
 }
@@ -3258,8 +3272,46 @@ pub fn convert_ontology<A: ForIRI>(
     if !conversion_cut() {
         crate::top_bottom_roles::state_top_bottom_role_semantics(&mut out);
     }
+    // #543 (S+F): state the universal-role meaning of the uses that need no fresh
+    // symbol; the rest stay flagged (`universal_role_ordinary`). A no-op unless
+    // `owl:topObjectProperty` is interned. Data properties are never folded: an IRI used
+    // as both (outside OWL 2 DL) would turn a data axiom into a universal consequence.
+    // The early return comes first: the data-property walk visits every component, so
+    // it runs only when `owl:topObjectProperty` is interned.
+    if !conversion_cut()
+        && crate::top_bottom_roles::fold_enabled()
+        && out
+            .vocabulary
+            .role_id(crate::top_bottom_roles::OWL_TOP_OBJECT_PROPERTY)
+            .is_some()
+    {
+        let data_iris = data_property_iris(src);
+        crate::top_bottom_roles::fold_universal_role_uses(&mut out, &data_iris);
+    }
     out.axioms.sort();
     Ok(out)
+}
+
+/// The IRIs the source uses as data properties, in ANY position: declarations, data
+/// axioms, and data restrictions inside class expressions (`DataSomeValuesFrom`,
+/// `DataMaxCardinality`, …), found by walking every component with horned-owl's
+/// visitor, which reports each typed `DataProperty`. #543's fold refuses any universal
+/// role among them: a role used as both (punning, outside OWL 2 DL) would otherwise have
+/// a data restriction folded as if on the universal object role.
+fn data_property_iris<A: ForIRI>(src: &SetOntology<A>) -> std::collections::BTreeSet<String> {
+    use horned_owl::model::DataProperty;
+    use horned_owl::visitor::immutable::{Visit, Walk};
+    struct Collect(std::collections::BTreeSet<String>);
+    impl<A: ForIRI> Visit<A> for Collect {
+        fn visit_data_property(&mut self, dp: &DataProperty<A>) {
+            self.0.insert(dp.0.as_ref().to_string());
+        }
+    }
+    let mut walk = Walk::new(Collect(std::collections::BTreeSet::new()));
+    for c in src {
+        walk.annotated_component(c);
+    }
+    walk.into_visit().0
 }
 
 /// `RUSTDL_INVERSE_PAIR_FUNC` — derive functionality across a declared inverse
@@ -4380,6 +4432,53 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         comp,
     );
     seed_range_oneof_disjoint(out, &dt_dkeys, &dt_oneof_dkeys, OrdRange::contains, comp);
+    // #556 — the SUBSUMPTION half of #42 item 2. Only disjointness was seeded across
+    // the range and enumeration buckets of one datatype, so `∃d.{1}` (the `io:`
+    // bucket) never met `¬∃d.[1,1]` (a `NegativeDataPropertyAssertion`, which lands
+    // in the range bucket): `a : ∃d.{1}`, `¬d(a, 1)` read consistent on every path.
+    // HermiT and Konclude both say inconsistent.
+    seed_range_oneof_subsumptions(
+        out,
+        &int_dkeys,
+        &int_oneof_dkeys,
+        |r: &IntSet, v: &i64| r.contains(*v),
+        |r: &IntSet, cap| enumerate_int_set(r, cap),
+    );
+    seed_range_oneof_subsumptions(
+        out,
+        &float_dkeys,
+        &float_oneof_dkeys,
+        float_range_holds_signed_zero_safe,
+        float_range_nonzero_point,
+    );
+    seed_range_oneof_subsumptions(
+        out,
+        &double_dkeys,
+        &double_oneof_dkeys,
+        float_range_holds_signed_zero_safe,
+        float_range_nonzero_point,
+    );
+    seed_range_oneof_subsumptions(
+        out,
+        &dec_dkeys,
+        &dec_oneof_dkeys,
+        OrdRange::contains,
+        ord_range_point,
+    );
+    seed_range_oneof_subsumptions(
+        out,
+        &date_dkeys,
+        &date_oneof_dkeys,
+        OrdRange::contains,
+        ord_range_point,
+    );
+    seed_range_oneof_subsumptions(
+        out,
+        &dt_dkeys,
+        &dt_oneof_dkeys,
+        OrdRange::contains,
+        ord_range_point,
+    );
     // #247: integer/decimal disjointness, per pair of values. Never blanket: the
     // integer value space is INSIDE the decimal one (see the #86 note above).
     if int_dec_cross {
@@ -4480,6 +4579,95 @@ fn seed_range_oneof_disjoint<R, V>(
                 out.axioms.push(Axiom::DisjointClasses(vec![a, b]));
             }
         }
+    }
+}
+
+/// #556: told `DKey ⊑ DKey` edges between a RANGE bucket and an ENUMERATION bucket
+/// of the SAME datatype, the subsumption half of [`seed_range_oneof_disjoint`].
+///
+/// - `oneof ⊑ range` when every member of the enumeration lies in the range.
+/// - `range ⊑ oneof` when the range is finite (`values` lists it, capped at the
+///   enumeration's size, since a larger range cannot fit) and every value in it is
+///   a member.
+///
+/// Both are exact set inclusions over the bucket's exact key type, so an edge is
+/// never claimed for sets that are not nested. A key with no listed value (empty)
+/// gets no edge. Only a POINT range counts as finite for the IEEE and ordered
+/// buckets (a sound miss otherwise). `O(ranges × enumerations)`; 7 of the 1,920 ORE
+/// files carry a numeric enumeration (1 to 12 edges each, #556), and
+/// `RUSTDL_DKEY_ONEOF_SEED=0` empties the enumeration buckets, which makes this a
+/// no-op.
+fn seed_range_oneof_subsumptions<R, V: Ord>(
+    out: &mut InternalOntology,
+    ranges: &[(ClassId, R)],
+    oneofs: &[(ClassId, std::collections::BTreeSet<V>)],
+    contains: impl Fn(&R, &V) -> bool,
+    values: impl Fn(&R, usize) -> Option<Vec<V>>,
+) {
+    let push = |out: &mut InternalOntology, a: ClassId, b: ClassId| {
+        let sub = out.concepts.atomic(a);
+        let sup = out.concepts.atomic(b);
+        out.axioms.push(Axiom::SubClassOf { sub, sup });
+    };
+    for (o_cid, set) in oneofs {
+        if set.is_empty() {
+            continue;
+        }
+        for (r_cid, r) in ranges {
+            if set.iter().all(|v| contains(r, v)) {
+                push(out, *o_cid, *r_cid);
+            }
+            if let Some(vals) = values(r, set.len())
+                && !vals.is_empty()
+                && vals.iter().all(|v| set.contains(v))
+            {
+                push(out, *r_cid, *o_cid);
+            }
+        }
+    }
+}
+
+/// `v ∈ r` for the IEEE buckets, except where signed zero makes it ambiguous. The
+/// buckets collapse `-0` and `+0` ([`crate::data_axioms::OrdF64::new`]), which is
+/// safe for the disjointness they were built for (it can only hide a clash), but an
+/// edge resting on that collapse could claim `{-0} ⊑ [+0, …]`, and `HermiT` keeps the
+/// two apart. A zero member therefore counts only when zero is strictly inside the
+/// range (no bound at zero), where both zeros are in it. A zero at a bound is a
+/// sound miss, recorded in `docs/known-limitations/`.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "matches the `Fn(&R, &V)` shape every bucket's `contains` takes"
+)]
+fn float_range_holds_signed_zero_safe(r: &FloatRange, v: &crate::data_axioms::OrdF64) -> bool {
+    let not_zero = |x: f64| x.total_cmp(&0.0).is_ne() && x.total_cmp(&-0.0).is_ne();
+    r.contains(v.0) && (not_zero(v.0) || (r.min.is_none_or(not_zero) && r.max.is_none_or(not_zero)))
+}
+
+/// The single value of a point IEEE range (`[p, p]`, both ends inclusive), unless
+/// it is a zero (see [`float_range_holds_signed_zero_safe`]). NaN never parses.
+fn float_range_nonzero_point(
+    r: &FloatRange,
+    _cap: usize,
+) -> Option<Vec<crate::data_axioms::OrdF64>> {
+    match (r.min, r.max) {
+        (Some(lo), Some(hi))
+            if lo.total_cmp(&hi).is_eq()
+                && r.min_incl
+                && r.max_incl
+                && lo.total_cmp(&0.0).is_ne()
+                && lo.total_cmp(&-0.0).is_ne() =>
+        {
+            Some(vec![crate::data_axioms::OrdF64::new(lo)])
+        }
+        _ => None,
+    }
+}
+
+/// The single value of a point ordered range (`[p, p]`, both ends inclusive).
+fn ord_range_point<T: Clone + PartialEq>(r: &OrdRange<T>, _cap: usize) -> Option<Vec<T>> {
+    match (&r.min, &r.max) {
+        (Some(lo), Some(hi)) if lo == hi && r.min_incl && r.max_incl => Some(vec![lo.clone()]),
+        _ => None,
     }
 }
 
@@ -6961,6 +7149,37 @@ mod tests {
                 .by_kind()
                 .keys()
                 .any(|k| k.contains("HasKey"))
+        );
+    }
+
+    #[test]
+    fn convert_records_each_unresolved_import_as_dropped() {
+        // #579: an `Import` was `Ok(None)` like ontology metadata, so a file that
+        // imports anything kept every completeness claim that reads `dropped`.
+        let src = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Import(<http://example.org/not-loaded>)
+            Import(<http://example.org/also-not-loaded>)
+            Declaration(Class(:A)) Declaration(Class(:B))
+            SubClassOf(:A :B))";
+        let internal = convert_ontology(&read_ofn_str(src)).expect("must not abort");
+        assert_eq!(
+            internal
+                .dropped
+                .by_kind()
+                .get("Import: unsupported axiom (unresolved import)"),
+            Some(&2),
+            "{:?}",
+            internal.dropped.by_kind()
+        );
+        assert_eq!(internal.dropped.total(), 2);
+        let control = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/> Declaration(Class(:A)) SubClassOf(:A :A))";
+        assert!(
+            convert_ontology(&read_ofn_str(control))
+                .unwrap()
+                .dropped
+                .is_empty()
         );
     }
 

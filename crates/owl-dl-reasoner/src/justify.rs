@@ -1746,6 +1746,9 @@ pub struct PreparedJustifier<A: ForIRI> {
     /// #520: the full ontology's vocabulary (`None` if it did not convert), for the
     /// typed check of a query's undeclared entities ([`Self::background_for`]).
     vocabulary: Option<owl_dl_core::Vocabulary>,
+    /// #597: the axioms conversion dropped (empty if it did not convert), for a
+    /// caller that reports them beside each justification.
+    dropped: owl_dl_core::DroppedAxioms,
 }
 
 impl<A: ForIRI> PreparedJustifier<A> {
@@ -1758,13 +1761,24 @@ impl<A: ForIRI> PreparedJustifier<A> {
         let fragment = internal
             .as_ref()
             .map_or(FragmentClassification::OutOfFragment, analyze_fragment);
-        let vocabulary = internal.map(|internal| internal.vocabulary);
+        let (vocabulary, dropped) = internal
+            .map_or((None, owl_dl_core::DroppedAxioms::default()), |internal| {
+                (Some(internal.vocabulary), internal.dropped)
+            });
         Self {
             fixed,
             all_candidates,
             fragment,
             vocabulary,
+            dropped,
         }
+    }
+
+    /// #597: the axioms conversion dropped from the prepared ontology. A
+    /// justification is computed over the weaker ontology, so one may be missing.
+    #[must_use]
+    pub fn dropped(&self) -> &owl_dl_core::DroppedAxioms {
+        &self.dropped
     }
 
     /// The non-logical background (declarations, imports, ontology metadata) for

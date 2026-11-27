@@ -2725,6 +2725,28 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
+    /// #608: start the run with one more node per class in `nominals`, each labelled
+    /// with that nominal, beside the root. A named individual exists in every model,
+    /// so its node belongs in every completion; without it a clause whose body needs
+    /// `{b}` never fires in a completion that does not happen to create `b`. The nodes
+    /// come after the root, which stays node 0 for the label readers. Call it on a
+    /// freshly built engine, before `decide`.
+    #[must_use]
+    pub fn with_seeded_nominals(mut self, nominals: &[ClassId]) -> Self {
+        for &c in nominals {
+            let id = u32::try_from(self.nodes.len()).expect("node count fits u32");
+            let mut hn = HyperNode {
+                order: id,
+                ..HyperNode::default()
+            };
+            hn.add(c, DepSet::EMPTY);
+            self.nodes.push(hn);
+            self.representative.push(std::cell::Cell::new(HNode(id)));
+            self.snapshot_origin.push(false);
+        }
+        self
+    }
+
     /// #361: which nominals a blocked copy could contradict. A copy of a node that
     /// carries `{a}` is a second element with `a`'s labels and `a`'s edges. Dropping
     /// `{a}` from it gives a model element unless

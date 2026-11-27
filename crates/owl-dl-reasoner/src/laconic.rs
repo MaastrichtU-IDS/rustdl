@@ -263,6 +263,7 @@ fn laconic_outcome<A: ForIRI>(
         relies_on_trusted_consistency: regular.relies_on_trusted_consistency || weakening_trusted,
         no_verdict: regular.no_verdict || weakening_cuts.no_verdict,
         depth_capped: (regular.depth_capped || weakening_cuts.depth_capped) && incomplete,
+        saturation_oracle: regular.saturation_oracle,
     })
 }
 

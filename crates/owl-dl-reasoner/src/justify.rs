@@ -224,7 +224,10 @@ thread_local! {
     /// itself saturation-detected, so QuickXplain converges on the (valid)
     /// saturation-conflict. Soundness: with a sound refuter as the oracle, a
     /// false-"consistent" can only cost *minimality* (QX keeps extra axioms),
-    /// never validity — the returned set always carries a real clash. Set
+    /// never validity — the returned set always carries a real clash. So (#584)
+    /// a justification found in this mode reports `minimal_guaranteed: false`:
+    /// the ABox saturator is incomplete even on EL (no anonymous witnesses, no
+    /// `∀` rule), and `h2.ofn` returned 7 axioms where 5 are inconsistent. Set
     /// `RUSTDL_JUSTIFY_SAT_ORACLE=0` to force the full-`is_consistent` oracle.
     static SATURATION_ORACLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -1575,9 +1578,13 @@ fn canonical_order<A: ForIRI>(mut axioms: Vec<Component<A>>) -> Vec<Component<A>
 pub struct Justification<A: ForIRI> {
     pub axioms: Vec<Component<A>>,
     pub fragment: FragmentClassification,
-    /// `true` iff minimality is guaranteed: the fragment is EL/Horn (rustdl
-    /// complete) AND no subset probe of this justification's search gave up
-    /// (#396). Otherwise the set still entails, but may not be minimal.
+    /// `true` iff minimality is guaranteed: the fragment is EL/Horn, no subset
+    /// probe of this justification's search gave up (#396), AND (#584) the search
+    /// did not run on the saturation-only `Inconsistent` oracle, whose "not
+    /// refuted" is not a consistency proof. Otherwise the set still entails, but
+    /// may not be minimal. On EL/Horn the claim rests on the subset probes'
+    /// "not entailed" being decided by the deadline-free main tableau (see the
+    /// justify section of `docs/assurance/completeness-guarantee-ledger.md`).
     pub minimal_guaranteed: bool,
 }
 
@@ -1621,6 +1628,15 @@ pub struct JustifyOutcome<A: ForIRI> {
     /// `Unknown` verdict, a give-up, `no_verdict`). A cut ⊥-module check is discarded
     /// (the full set decides), so it leaves a definite answer complete and unflagged.
     pub depth_capped: bool,
+    /// #584: the search ran on the saturation-only `Inconsistent` oracle (an
+    /// `inconsistent` query, or `subclass owl:Thing owl:Nothing`, whose clash the
+    /// `ABox` saturator detects; `RUSTDL_JUSTIFY_SAT_ORACLE=0` turns it off). Its "not
+    /// refuted" is no consistency proof, so each justification's
+    /// `minimal_guaranteed` is `false`, and an `--all` enumeration may have pruned a
+    /// branch that holds another justification: it is not known to be complete.
+    /// Every justification returned is still valid. Not a give-up: separate from
+    /// `incomplete`.
+    pub saturation_oracle: bool,
 }
 
 impl<A: ForIRI> JustifyOutcome<A> {
@@ -1669,6 +1685,8 @@ struct Search<A: ForIRI> {
     no_verdict: bool,
     /// #510: see [`JustifyOutcome::depth_capped`].
     depth_capped: bool,
+    /// #584: see [`JustifyOutcome::saturation_oracle`].
+    saturation_oracle: bool,
 }
 
 impl<A: ForIRI> Search<A> {
@@ -1680,6 +1698,7 @@ impl<A: ForIRI> Search<A> {
             trusted: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         }
     }
 
@@ -1707,6 +1726,7 @@ impl<A: ForIRI> Search<A> {
             relies_on_trusted_consistency: self.trusted,
             no_verdict: self.no_verdict,
             depth_capped: self.depth_capped && incomplete,
+            saturation_oracle: self.saturation_oracle,
         }
     }
 }
@@ -1901,7 +1921,11 @@ fn search_one_inner<A: ForIRI>(
 ) -> Result<Search<A>, ReasonError> {
     let canonical = canonical_builtin_query(q);
     let q = canonical.as_ref().unwrap_or(q);
-    let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    let sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    // #584: the saturation-only oracle's "not refuted" is no proof of consistency,
+    // so a QuickXplain run on it can keep an axiom a smaller subset does without:
+    // its justifications are valid but their minimality is not guaranteed.
+    let minimality_unproven = sat_guard.is_some();
     let _consistency = inherited_query_consistency(fixed, all_candidates, q);
     // #369: this oracle maps `Err(Inconsistent)` to the vacuous answer's verdict.
     let _no_lazy = crate::skip_lazy_query_consistency();
@@ -1914,11 +1938,12 @@ fn search_one_inner<A: ForIRI>(
     let j = quickxplain(fixed, &candidates, q, &mut give_ups)?;
     Ok(Search {
         status: Verdict::Entailed,
-        found: vec![(j, give_ups.gave_up)],
+        found: vec![(j, give_ups.gave_up || minimality_unproven)],
         gave_up: give_ups.gave_up,
         trusted: false,      // set by `search_one`
         no_verdict: false,   // set by `search_one`
         depth_capped: false, // set by `search_one`
+        saturation_oracle: minimality_unproven,
     })
 }
 
@@ -1947,7 +1972,11 @@ fn search_all_inner<A: ForIRI>(
 ) -> Result<Search<A>, ReasonError> {
     let canonical = canonical_builtin_query(q);
     let q = canonical.as_ref().unwrap_or(q);
-    let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    let sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    // #584: the saturation-only oracle's "not refuted" is no proof of consistency,
+    // so a QuickXplain run on it can keep an axiom a smaller subset does without:
+    // its justifications are valid but their minimality is not guaranteed.
+    let minimality_unproven = sat_guard.is_some();
     let _consistency = inherited_query_consistency(fixed, all_candidates, q);
     // #369: this oracle maps `Err(Inconsistent)` to the vacuous answer's verdict.
     let _no_lazy = crate::skip_lazy_query_consistency();
@@ -1989,7 +2018,7 @@ fn search_all_inner<A: ForIRI>(
         // Record if this justification (as an axiom SET) is new.
         let key: BTreeSet<Component<A>> = j.iter().cloned().collect();
         if seen.insert(key) {
-            found.push((j.clone(), give_ups.gave_up));
+            found.push((j.clone(), give_ups.gave_up || minimality_unproven));
         }
         // Branch: remove each justification axiom (by its candidate index).
         for c in &j {
@@ -2007,6 +2036,7 @@ fn search_all_inner<A: ForIRI>(
         trusted: false,      // set by `search_all`
         no_verdict: false,   // set by `search_all`
         depth_capped: false, // set by `search_all`
+        saturation_oracle: minimality_unproven,
     })
 }
 

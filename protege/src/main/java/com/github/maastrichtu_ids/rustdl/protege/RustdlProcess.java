@@ -23,8 +23,15 @@ public final class RustdlProcess {
     private static final int SCHEMA_VERSION = 1;
     private RustdlProcess() {}
 
+    /**
+     * #616: on a {@code NoVerdict} (likely a reasoner bug, #449) rustdl prints the complete
+     * JSON and then exits 3. That result is accepted, and {@code classifyWarnings} reports it.
+     */
     public static RustdlJson.ClassifyJson classify(Path ofn, long timeoutSec, long pairTimeoutMs) throws IOException {
-        return parseClassify(runCommand(buildClassifyCommand(ofn, pairTimeoutMs), "classify", timeoutSec));
+        Run r = runCapturing(buildClassifyCommand(ofn, pairTimeoutMs), "classify", timeoutSec,
+            () -> false);
+        return acceptingNoVerdict(r, "classify", RustdlProcess::parseClassify,
+            c -> c.no_verdict_pairs > 0);
     }
 
     /** Package-visible so tests can assert on the command list without spawning. */
@@ -38,8 +45,44 @@ public final class RustdlProcess {
     public static RustdlJson.ConsistentJson consistent(Path ofn, long timeoutSec) throws IOException {
         return parseConsistent(run("consistent", ofn, timeoutSec));
     }
+    /** #616: accepts rustdl's exit 3 after a {@code no_verdict} JSON, as {@link #classify} does. */
     public static RustdlJson.RealizeJson realize(Path ofn, long timeoutSec) throws IOException {
-        return parseRealize(run("realize", ofn, timeoutSec));
+        Path bin = RustdlBinary.resolve();
+        Run r = runCapturing(Arrays.asList(bin.toString(), "realize", "--json", ofn.toString()),
+            "realize", timeoutSec, () -> false);
+        return acceptingNoVerdict(r, "realize", RustdlProcess::parseRealize, j -> j.no_verdict);
+    }
+
+    /** rustdl's exit code for a {@code NoVerdict} give-up (#449), after its JSON. */
+    static final int EXIT_NO_VERDICT = 3;
+
+    /**
+     * #616: exit 0 parses as usual. Exit 3 is accepted only when stdout is this surface's
+     * complete JSON and {@code isNoVerdict} holds for it: rustdl prints that JSON before it
+     * exits 3. On its other exit-3 path, a {@code NoVerdict} error before any JSON, stdout
+     * is the bare word {@code unknown}. Any other exit, or an exit 3 without that JSON,
+     * fails as every non-zero exit did before, with rustdl's stderr.
+     */
+    static <T> T acceptingNoVerdict(Run r, String label,
+            java.util.function.Function<String, T> parse,
+            java.util.function.Predicate<T> isNoVerdict) throws IOException {
+        if (r.code == 0) return parse.apply(r.out);
+        if (r.code == EXIT_NO_VERDICT) {
+            T parsed;
+            try {
+                parsed = parse.apply(r.out);
+            } catch (IllegalStateException e) {
+                // A newer schema says "upgrade the plugin" whatever the exit code.
+                if (String.valueOf(e.getMessage()).startsWith("Unsupported rustdl JSON schema_version")) {
+                    throw e;
+                }
+                parsed = null;
+            } catch (RuntimeException e) {
+                parsed = null;
+            }
+            if (parsed != null && isNoVerdict.test(parsed)) return parsed;
+        }
+        throw r.failure(label);
     }
     public static RustdlJson.DisjointJson disjoint(Path ofn, long timeoutSec) throws IOException {
         return parseDisjoint(run("disjoint", ofn, timeoutSec));
@@ -233,6 +276,29 @@ public final class RustdlProcess {
      */
     static String runCommand(List<String> command, String label, long timeoutSec,
             BooleanSupplier isCancelled) throws IOException {
+        Run r = runCapturing(command, label, timeoutSec, isCancelled);
+        if (r.code != 0) throw r.failure(label);
+        return r.out;
+    }
+
+    /** A finished rustdl process: exit code, stdout, stderr. */
+    static final class Run {
+        final int code;
+        final String out;
+        final String err;
+        Run(int code, String out, String err) { this.code = code; this.out = out; this.err = err; }
+        /** The failure every non-zero exit has always raised. */
+        IOException failure(String label) {
+            return new IOException("rustdl " + label + " exited " + code + ": " + err.trim());
+        }
+    }
+
+    /**
+     * {@link #runCommand(List, String, long, BooleanSupplier)} without the exit-code check:
+     * the caller decides what a non-zero exit means (#616).
+     */
+    static Run runCapturing(List<String> command, String label, long timeoutSec,
+            BooleanSupplier isCancelled) throws IOException {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false);
         Process proc = pb.start();
@@ -263,11 +329,7 @@ public final class RustdlProcess {
                     + e.getCause(), e);
             }
 
-            int code = proc.exitValue();
-            if (code != 0) {
-                throw new IOException("rustdl " + label + " exited " + code + ": " + err.trim());
-            }
-            return out;
+            return new Run(proc.exitValue(), out, err);
         } finally {
             pool.shutdownNow();
         }

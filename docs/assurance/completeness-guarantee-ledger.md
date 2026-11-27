@@ -41,7 +41,7 @@ All ten must hold.
 | 6 | `!consistency_undetermined` | The inconsistency pre-check reached no verdict, or (#446) classify's consistency probe was admitted and gave up (#466: a cut per-class unsat probe admits it on a `TBox`-only run too, where an empty unsat set had read as consistent). If the KB is in fact inconsistent, every class is unsatisfiable and the hierarchy misses entailments. | #162, #228 review | `consistency_undetermined` | `consistency_undetermined` (reported as `undetermined && !inconsistent`) | `consistency_undetermined` (same masking) | table test |
 | 7 | `dropped` is empty | The engine reasoned over a strictly weaker KB than the input. | #43, #246 | `dropped` | `dropped` | module-level `rustdl.dropped_axioms(path)` only, not on `Classification` | `completeness_contract.rs` `a_dropped_axiom_voids_the_guarantee` and its control; table test; `json_output.rs` `classify_json_completeness_guaranteed_ends`; `test_classify.py` `test_dropped_axiom_voids_the_guarantee` |
 | 8 | `!relies_on_trusted_consistency` | "Consistent" rests on a consistency-wedge `Sat` that no main-tableau run verified. If that `Sat` is wrong, the KB is inconsistent and every class is unsatisfiable, so the hierarchy misses entailments. **This cannot fail beside condition 1 today.** PureEl admits no `ABox` assertion and no nominal, so no individual exists, and the consistency wedge (`classify_wedge_consistency`) needs one to run. The probe that could also trust it runs only after the PureEl dispatch. The condition is kept so the invariant holds if PureEl ever admits an individual. | #429 | `relies_on_trusted_consistency` | `relies_on_trusted_consistency` | `relies_on_trusted_consistency`, plus `TrustedConsistencyWarning` | table test; `trusted_consistency_surfaces.rs` `pure_el_and_trust_never_meet` |
-| 9 | `!(universal_role_ordinary && !inconsistent)` | rustdl reads `owl:topObjectProperty` (and any property above it, and `owl:topDataProperty` outside the super-property position) as an ordinary property. That is sound for positives, but it misses entailments of `Δ × Δ`. For example, `⊤ ⊑ ∃r.D` with `∃top.D ⊑ ⊥` is inconsistent, yet on main it read as consistent with this guarantee set. Inert occurrences are not flagged: `x ⊑ top`, a positive `top(a, b)`, Transitive/Reflexive/Symmetric, equivalence and inverse within the universal roles, a chain into them, and #539's built-ins. A proved inconsistency masks the condition, since every entailment holds then. Detection is `owl_dl_core::top_bottom_roles::universal_role_ordinary`. | #543 | `universal_role_ordinary` | `universal_role_ordinary` (masked by `inconsistent`), plus a stderr note | `universal_role_ordinary`, plus `UniversalRoleWarning` | table test; `completeness_contract.rs` `a_proved_inconsistency_masks_the_universal_role_condition`; `top_bottom_roles.rs` (core) detector tests; `universal_role_cli.rs` |
+| 9 | `!(universal_role_ordinary && !inconsistent)` | rustdl reads `owl:topObjectProperty` (and any property above it, and `owl:topDataProperty` outside the super-property position) as an ordinary property. That is sound for positives, but it misses entailments of `Δ × Δ`. For example, `⊤ ⊑ ∃r.D` with `∃top.D ⊑ ⊥` is inconsistent, yet on main it read as consistent with this guarantee set. Inert occurrences are not flagged: `x ⊑ top`, a positive `top(a, b)`, Transitive/Reflexive/Symmetric, equivalence and inverse within the universal roles, a chain into them, and #539's built-ins. A proved inconsistency masks the condition, since every entailment holds then. Detection is `owl_dl_core::top_bottom_roles::universal_role_ordinary`. Since #543 part 2, a use whose universal-role meaning conversion states as a built-in (the S+F folds, `fold_universal_role_uses`) is not a use; the detector counts it folded only when its exact fold axiom is present, so a disabled or cut fold leaves it flagged. | #543 | `universal_role_ordinary` | `universal_role_ordinary` (masked by `inconsistent`), plus a stderr note | `universal_role_ordinary`, plus `UniversalRoleWarning` | table test; `completeness_contract.rs` `a_proved_inconsistency_masks_the_universal_role_condition`; `top_bottom_roles.rs` (core) detector tests; `universal_role_cli.rs` |
 | 10 | `!wedge_abox_blind` | Classify's wedge is given the `ABox` facts of the nominal reach only (no object-property assertion unless `RUSTDL_CLASSIFY_NOMINAL_OPA=1`), so its models are models of a weaker KB; a fact it is given applies only on a node carrying that individual. A trusted model that touches a nominal while some fact did not apply in it (not given, or given for an individual the model does not instantiate) can then hide a subsumption or an unsatisfiable class. The no-nominal argument: a completion with no nominal-labelled node shares no element with the named individuals, so it can be united disjointly with any model of the full KB, and unseen facts cannot invalidate it; only models that touch a nominal count. **This cannot fail beside condition 1 today:** PureEl admits no nominal. The condition is kept so the invariant holds if PureEl ever admits one. `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (default off) demotes such models instead (`wedge_abox_demoted`). | #533 | `wedge_abox_blind` (count: `wedge_abox_blind_models`) | `wedge_abox_blind` | `wedge_abox_blind` | table test; `wedge_abox_blind.rs` |
 
 The table test is `each_condition_alone_voids_the_guarantee` in
@@ -229,6 +229,60 @@ more time changes nothing.
 `StructuralGapWarning` is a sibling of `IncompleteQueryWarning`, not a subclass, so a
 caller that turns budget warnings into errors is not tripped by a structural gap.
 In text mode each command prints one stderr `warning:` line naming the kinds.
+
+## Justification minimality (#584)
+
+`Justification::minimal_guaranteed` (`justify --json` `minimal`, `prove --json`
+`justification_minimal`, `repair`'s `complete`) claims that no proper subset of the
+returned set entails the query. `QuickXplain` keeps an axiom exactly when the subset
+without it is answered "not entailed", so the claim holds iff every such "not
+entailed" is right. It is `true` when all of:
+
+1. the fragment is `PureEl` or `Horn`;
+2. no subset probe gave up (#396): a give-up is `Unknown`, never a silent "no";
+3. (#584) the search did not run on the saturation-only `Inconsistent` oracle.
+
+Why condition 1 admits `Horn` (the argument, not a fragment-completeness claim; #124
+refuted that for classify): for `SubClassOf` and `Unsatisfiable` on named classes the
+oracle is the single-query surface (`entails_reporting` →
+`is_subclass_of_with_stats` / `is_class_satisfiable_with_stats`). There a "yes" comes
+from the EL closure or the query wedge's `Subsumed`, and a "no" from the EL closure
+when the probed subset is itself pure EL (a `QuickXplain` subset of a `Horn` input
+can be; the closure is complete there) or from the deadline-free main tableau
+(`run_satisfiability_keeping` → `decide_query_raw`), whose only give-up is reported
+as `Unknown`. On a consistent parent, no trusted wedge `Sat` decides a "no" there. The #401 `ABox` drop on a
+consistency-wedge `Sat` is flagged (`relies_on_trusted_consistency`) and cannot cost
+minimality for these queries: with the lent verdict every subset probe answers for
+the subset's `TBox`, so `QuickXplain` keeps no `ABox` axiom. So minimality on named
+queries rests on main-tableau completeness, which holds outside `Horn` too; the
+`PureEl | Horn` restriction is conservative, not what carries the claim.
+
+Not covered by that argument:
+- `Inconsistent` queries on the full oracle trust the consistency wedge's `Sat`
+  (`is_consistent_with_stats`): `minimal` can read `true` beside
+  `relies_on_trusted_consistency: true`. No wrong consistency-wedge `Sat` on `Horn` is
+  known; that is exposure, not a demonstrated error.
+- Named queries on an inconsistent parent: when the #313 guard misses the clash and
+  the seeded probe does not finish in its budget, the single-query surface falls back
+  to `query_consistency()` (`lib.rs`, the #401 seeded-probe fallback), which can rest
+  on the consistency wedge's trusted `Sat` and answer the subset ABox-free.
+- The query kinds the oracle answers through `inconsistent_with` (sub/equivalent
+  property, same/different individual, data-property queries): they ask a
+  consistency check of the subset plus a negated assertion, so they carry the
+  `Inconsistent` exposure above.
+- `Inconsistent` queries on the saturation-only oracle: condition 3. The `ABox`
+  saturator is incomplete even on EL (no anonymous witnesses, no `∀` rule); on
+  `h2.ofn` the search returned 7 axioms with `minimal: true` while 5 of them are
+  inconsistent. Pinned by `crates/owl-dl-cli/tests/justify_sat_oracle_minimal.rs`
+  (`justify` in both query forms, and `prove`'s `justification_minimal`).
+- `InstanceOf` queries go through `realize::instance_reporting`; not traced.
+- `--all` enumeration on the saturation-only oracle: a branch probe prunes on "not
+  refuted", so a justification can be missing; `JustifyOutcome::saturation_oracle`
+  makes `justify --json` report `enumeration_complete: false` (#584 review).
+- Surfaces that carry no minimality signal at all: Python `justify`, `justify_all`
+  and `PreparedOntology.justify*` (their docstrings say "One minimal justification"),
+  and the HTML report's hard-coded "(minimal justification)" (`report.rs`). Follow-up
+  issue.
 
 ## Rule for changes
 

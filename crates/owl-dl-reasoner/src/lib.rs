@@ -2156,16 +2156,6 @@ pub fn hyper_sat_seed_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_SEED").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
-/// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
-/// verdict (concluding "not subsumed" without consulting the tableau).
-/// `Unsat` is sound by construction for any ontology; `Sat` is sound
-/// only if the engine is complete on the workload. **Default on** as
-/// of 2026-05-29 — every tested ontology agrees with Konclude (0 FP)
-/// with this flag and double-blocking both enabled. The original SIO
-/// 38 FPs that motivated the opt-in design were a saturation bug
-/// (`process_fact` range propagation, fixed in f71a012), not a
-/// wedge bug. Disable with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`. Off ⇒
-/// `Sat` verdicts are treated as `Unknown` (older H4 behaviour, falls
 /// `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS` — **default OFF**, `=1` opts in.
 ///
 /// When ON, `classify` stops trusting the wedge's `Sat` verdict on ontologies
@@ -2211,7 +2201,28 @@ pub fn classify_verify_refutations_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_VERIFY_REFUTATIONS").is_some_and(|v| v == "1")
 }
 
+/// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
+/// verdict (concluding "not subsumed" without consulting the tableau).
+/// `Unsat` is sound by construction for any ontology; `Sat` is sound
+/// only if the engine is complete on the workload. **Default on** as
+/// of 2026-05-29 — every tested ontology agrees with Konclude (0 FP)
+/// with this flag and double-blocking both enabled. The original SIO
+/// 38 FPs that motivated the opt-in design were a saturation bug
+/// (`process_fact` range propagation, fixed in f71a012), not a
+/// wedge bug. Disable with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`. Off ⇒
+/// `Sat` verdicts are treated as `Unknown` (older H4 behaviour, falls
 /// through to the tableau).
+///
+/// **Scope (#584 item 2).** `=0` withdraws the trust in the per-pair wedge
+/// `NotSubsumed` (and the snapshot replay) only. It is NOT a "verify everything"
+/// switch: the label-cache prunes and the unsat probe's label `Sat` are gated by
+/// `RUSTDL_LABEL_HEURISTIC` / `RUSTDL_UNSAT_VIA_LABELS`, not by this flag, and the
+/// consistency wedge's `Sat` by neither. Its meaning stays this narrow on purpose:
+/// it is a recorded reference arm of past sweeps. For budgeted verification of the
+/// classify channels use `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1` and read the result
+/// together with `trusted_sat_refutations == 0` (see that flag's doc for what it
+/// covers); for no label trust at all, `RUSTDL_LABEL_HEURISTIC=0` with this flag
+/// `=0`.
 #[must_use]
 pub fn hyper_trust_sat_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").is_none_or(|v| v != "0" && !v.is_empty())
@@ -7920,14 +7931,23 @@ pub fn conversion_notes<A: horned_owl::model::ForIRI>(
 /// # Errors
 ///
 /// As [`dropped_axioms`].
+/// #543 part 2: how many axioms the universal-role fold added on conversion (0 unless
+/// the ontology uses `owl:topObjectProperty` in a foldable position).
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn universal_role_folds<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<usize, ReasonError> {
+    Ok(owl_dl_core::convert::convert_ontology(ontology)?.universal_role_folds)
+}
+
 pub fn universal_role_ordinary_for_roles<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<bool, ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
-    Ok(
-        owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal)
-            || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty(),
-    )
+    Ok(owl_dl_core::top_bottom_roles::universal_role_ordinary_for_roles(&internal))
 }
 
 use std::collections::HashMap;
@@ -10178,6 +10198,8 @@ fn abox_components_inconsistent(
             axioms: idx.iter().map(|&i| internal.axioms[i].clone()).collect(),
             dropped: internal.dropped.clone(),
             builtin: internal.builtin.clone(),
+            builtin_licenses: internal.builtin_licenses.clone(),
+            universal_role_folds: internal.universal_role_folds,
             collapsed_operands: internal.collapsed_operands,
         };
         let started = std::time::Instant::now();
@@ -14947,6 +14969,7 @@ mod tests {
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         for (status, incomplete) in [(Verdict::NotEntailed, false), (Verdict::Unknown, true)] {
             let (r, inc) = fallback_after_inconsistency(outcome(status, incomplete));
@@ -17354,6 +17377,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         let (result, incomplete) = fallback_after_held(gave_up);
         assert!(
@@ -17373,6 +17397,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         let (result, incomplete) = fallback_after_held(not_minimal);
         assert!(matches!(

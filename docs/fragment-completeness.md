@@ -143,19 +143,28 @@ or widen what counts as sound.
 
 > trust_sat is sound iff the engine is complete on the workload.
 
-A workload whose expressivity profile falls entirely inside the Provably
-Complete fragment (supported-EL or Horn DL-clauses, as described above) is
-safe by construction — `Sat` is a genuine model and no tableau call could
-add information. A workload covered by the Validated Corpus Envelope is safe
+A workload whose expressivity profile falls entirely inside the supported-EL
+fragment is safe by construction: the saturator answers it and no wedge `Sat`
+is consulted. **`Horn` is not**: "Horn DL-clauses" is a clause-shape label, and
+#124 found a Horn ontology on which `classify` missed an oracle-confirmed
+subsumption; #584 found two more Horn shapes where a trusted wedge `Sat` loses an
+answer under `RUSTDL_CLASSIFY_WEDGE_IF_BOUND=0`. A workload covered by the Validated Corpus Envelope is safe
 by measurement — every tested ontology in that set agreed with a sound and
 complete oracle at FP=0. A workload that is neither EL/Horn nor a member of
 the validated set is the risk surface: the engine may return `Sat` where a
-complete reasoner would find `Unsat`, producing a missed subsumption. The
-opt-out is `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`
-(`crates/owl-dl-reasoner/src/lib.rs:649-651`), which treats any `Sat`
-verdict from the wedge as `Unknown` and falls through to the full tableau —
-slower (no classification wall reduction), but unconditionally sound on any
-ontology.
+complete reasoner would find `Unsat`, producing a missed subsumption. Every
+answer is sound either way (FP=0); what trust costs is completeness. The
+switches:
+
+- `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` withdraws the trust in the per-pair wedge
+  `NotSubsumed` only. The label-cache prunes and the unsat probe's label `Sat`
+  are gated by `RUSTDL_LABEL_HEURISTIC` / `RUSTDL_UNSAT_VIA_LABELS`, so this
+  flag alone does **not** make classify verify every `Sat` (#584 item 2).
+- `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1` verifies the classify channels on the
+  main tableau, budgeted: read it together with `trusted_sat_refutations == 0`.
+  It does not cover the consistency wedge's `Sat`.
+- `RUSTDL_LABEL_HEURISTIC=0` with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` removes the
+  label trust and the per-pair trust, unbudgeted and much slower.
 
 ## Diagnostic banner at classify time
 

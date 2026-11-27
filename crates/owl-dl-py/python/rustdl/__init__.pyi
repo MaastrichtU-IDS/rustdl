@@ -253,6 +253,8 @@ class Root(Mapping[str, object]):
     justification: tuple[str, ...]
     repairs: tuple[tuple[str, ...], ...]
     derives: tuple[str, ...]
+    minimal: bool
+    """#625: `justification` is guaranteed minimal (see `Justifications.minimal`)."""
     def to_dict(self) -> dict: ...
 
 class Derived(Mapping[str, object]):
@@ -263,7 +265,33 @@ class Derived(Mapping[str, object]):
 class Inconsistency(Mapping[str, object]):
     justification: tuple[str, ...]
     repairs: tuple[tuple[str, ...], ...]
+    minimal: bool
+    """#625: `justification` is guaranteed minimal (see `Justifications.minimal`)."""
     def to_dict(self) -> dict: ...
+
+class Justifications(Mapping[str, object]):
+    """#625: a justification query's answer and its signals. `minimal[i]`: the
+    ontology is EL/Horn (`in_fragment`), no subset probe gave up (`incomplete`) and
+    the saturation-only oracle was not used (`saturation_oracle`); `False` means not
+    guaranteed. It does not cover `relies_on_trusted_consistency` (#429).
+    `enumeration_complete`: no justification is known to be missing (always `True`
+    for a single-justification query; for `justify_all_result`, nothing gave up,
+    every one is minimal, and `max` did not truncate)."""
+    justifications: tuple[tuple[str, ...], ...]
+    minimal: tuple[bool, ...]
+    enumeration_complete: bool
+    incomplete: bool
+    relies_on_trusted_consistency: bool
+    depth_capped: bool
+    saturation_oracle: bool
+    in_fragment: bool
+    def to_dict(self) -> dict: ...
+
+class MinimalityNotGuaranteedWarning(UserWarning):
+    """#625: a returned justification is not guaranteed minimal (the ontology is
+    outside EL/Horn, or the saturation-only oracle ran); for `justify_all`, a
+    justification may also be missing. One per call; `debug` warns once. New in
+    #625: under `-W error` these functions now raise where they were silent."""
 
 class Diagnosis(Mapping[str, object]):
     consistent: bool
@@ -581,16 +609,26 @@ def materialize_existential_successors(path: str) -> list[tuple[str, str, str, s
 # ── explanation & debugging ─────────────────────────────────────────────────
 
 def justify(path: str, query: list[str]) -> list[str]:
-    """One minimal justification (Manchester axioms) for `query`
-    (e.g. ["unsat", c] / ["subclass", s, t] / ["inconsistent"]). Emits
-    `IncompleteQueryWarning` when a reasoner check gave up: an empty list then
-    means unknown, and a justification may not be minimal."""
+    """One justification (Manchester axioms) for `query` (e.g. ["unsat", c] /
+    ["subclass", s, t] / ["inconsistent"]): a set of axioms that entails it, minimal
+    when the ontology is EL/Horn and nothing below gave up. Emits
+    `IncompleteQueryWarning` when a reasoner check gave up, and
+    `MinimalityNotGuaranteedWarning` (#625)."""
+    ...
+
+def justify_result(path: str, query: list[str]) -> Justifications:
+    """`justify` with its `minimal` flag and signals (#625). Same warnings."""
     ...
 
 def justify_all(path: str, query: list[str], max: int = 10) -> list[list[str]]:
-    """Up to `max` minimal justifications for `query`. Emits
-    `IncompleteQueryWarning` when a reasoner check gave up (see `justify`;
-    justifications may also be missing)."""
+    """Up to `max` justifications for `query` (see `justify`). Emits
+    `IncompleteQueryWarning` when a reasoner check gave up (justifications may
+    also be missing), and `MinimalityNotGuaranteedWarning` (#625)."""
+    ...
+
+def justify_all_result(path: str, query: list[str], max: int = 10) -> Justifications:
+    """`justify_all` with one `minimal` flag each and `enumeration_complete`
+    (#625). Same warnings."""
     ...
 
 def diagnose(path: str) -> tuple[bool, list[str], list[tuple[str, list[str]]]]:
@@ -628,12 +666,18 @@ class PreparedOntology:
         justification may be missing."""
         ...
     def justify(self, query: list[str]) -> list[str]:
-        """One minimal justification (Manchester axioms) for `query`. Emits
-        `IncompleteQueryWarning` when a reasoner check gave up."""
+        """One justification for `query` (see `rustdl.justify`). Emits
+        `IncompleteQueryWarning` and `MinimalityNotGuaranteedWarning` (#625)."""
+        ...
+    def justify_result(self, query: list[str]) -> Justifications:
+        """`justify` with its `minimal` flag and signals (#625)."""
         ...
     def justify_all(self, query: list[str], max: int = 10) -> list[list[str]]:
-        """Up to `max` minimal justifications for `query`. Emits
-        `IncompleteQueryWarning` when a reasoner check gave up."""
+        """Up to `max` justifications for `query` (see `rustdl.justify_all`)."""
+        ...
+    def justify_all_result(self, query: list[str], max: int = 10) -> Justifications:
+        """`justify_all` with one `minimal` flag each and `enumeration_complete`
+        (#625)."""
         ...
 
 def prepare(path: str) -> PreparedOntology:

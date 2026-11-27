@@ -3198,6 +3198,12 @@ fn run() -> Result<()> {
                     let enumeration_complete = if outcome.incomplete {
                         js.truncate(max);
                         false
+                    } else if !js.iter().all(|j| j.minimal_guaranteed) {
+                        // #625: a justification not guaranteed minimal marks a search whose
+                        // "not entailed" may have pruned a branch (out of fragment, or the
+                        // saturation-only oracle), as `repair`'s `complete` reads it.
+                        js.truncate(max);
+                        false
                     } else if outcome.saturation_oracle {
                         // #584: a branch probe on the saturation-only oracle prunes
                         // on "not refuted", so a justification may be missing.

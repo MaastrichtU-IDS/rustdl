@@ -545,7 +545,9 @@ responsible fragment when set). `enumeration_complete` is `true` for the
 default single-justification query; for `--all`, `false` when the
 `--max` cap genuinely truncated the true set (probed via `max + 1`, so a
 returned count that happens to equal `max` is not conflated with a cap), or
-when a probe gave up during the search.
+when a probe gave up during the search, or (#625) when a returned justification is not
+guaranteed minimal: out of the EL/Horn fragment, or on the saturation-only oracle, a
+"not entailed" may have pruned a branch, as `repair` reads it.
 
 Each `justifications[i].ofn` is a **self-contained OFN ontology document** —
 a fresh ontology holding exactly that justification's axioms (no more, no

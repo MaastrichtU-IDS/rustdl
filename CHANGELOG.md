@@ -57,7 +57,13 @@ All notable changes to rustdl are documented here. Format is based on
   - `justify --json` and `prove --json` carry a `dropped` block (additive in schema v1). With a drop, `enumeration_complete` is `false`.
   - The text `repair` and the `report` footer claim completeness only "w.r.t. the converted ontology".
   - The `report` HTML shows a dropped-axioms banner and a universal-role banner. The universal-role banner is not masked on an inconsistent KB, whose repairs rest on negative answers.
-  - The five commands now take the universal-role flag from a conversion, not a byte prefilter: a prefix that cuts inside `topObjectProperty` no longer hides it.
+  - `diagnose` says its "consistent" and "coherent" lines hold over the converted ontology when axioms were dropped.
+  - **No byte prefilter for the universal-role flag any more:** the five commands, the role-level commands (`property-values`, `property-hierarchy`, `disjoint`, `individuals`, `realize --properties`), Python's `universal_role_ordinary(path)` and `PreparedOntology` now take it from a conversion. A prefix that cuts inside `topObjectProperty` (`Prefix(t:=<…owl#top>)` with `t:ObjectProperty`) hid it before.
+  - **The role-level flag counts a property disjointness with a universal member again**, as #624 defined it:
+    - in the CLI's role-level commands, which now take drops and both flags from one conversion;
+    - in Python (#623's `conversion_notes` used the older two-case formula).
+
+    Python's role-level functions now take that flag too: the property-value, property-hierarchy, property-disjointness and same/different-individual functions and the property materializers. Before, only `object_property_values` and `materialize_inferred_property_assertions` did.
 - **The universal role's meaning is stated where it needs no new symbol (#543, part 2: "S+F").** Part 1 flagged every semantic use of `owl:topObjectProperty`. Now conversion adds an axiom, recorded as built-in, that states the universal-role meaning of each use below. Every added axiom holds in every model under the Direct Semantics (`top` is `Δ × Δ`). These uses now answer right and are no longer flagged:
   - `∃top.⊤`, `∃top.{a}`, and `∃top.D` / `≥1 top.D` where D has a told instance (a `ClassAssertion`, also through told sub-classes), which are `⊤`;
   - `∀top.⊥`, and `∀top.¬D` / `≤0 top.D` with D as above, which are `⊥`;

@@ -515,8 +515,11 @@ def universal_role_ordinary(path: str, role_level: bool = False) -> bool:
     """True iff the ontology at `path` uses a universal role where rustdl's
     ordinary-property reading can miss entailments (#543). Every path-taking query
     emits `UniversalRoleWarning` when this holds. `role_level=True` also counts a
-    property above `owl:topObjectProperty`, whose edges between every pair of
-    individuals the property-assertion functions do not list."""
+    property above `owl:topObjectProperty` (it relates every pair of individuals) and
+    a property disjointness with a universal member (#624), whose role consequences
+    the role-level functions (property values and hierarchy, property disjointness,
+    same/different individuals, the property materializers) do not list; those
+    functions warn on this flag."""
     ...
 
 def dropped_axioms(path: str) -> dict[str, int]:

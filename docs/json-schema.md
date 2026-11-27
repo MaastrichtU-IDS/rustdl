@@ -512,13 +512,14 @@ responsible fragment when set). `enumeration_complete` is `true` for the
 default single-justification query; for `--all`, `false` when the
 `--max` cap genuinely truncated the true set (probed via `max + 1`, so a
 returned count that happens to equal `max` is not conflated with a cap), or
-when a probe gave up during the search, or (#619) when conversion dropped an axiom.
+when a probe gave up during the search. Since #619 it is also `false`, for the
+single-justification query too, when conversion dropped an axiom.
 
 `dropped` (#619, no `schema_version` bump) maps each axiom kind conversion could not
 represent to its count, as on the other surfaces (empty when nothing was dropped). The
 search ran over the weaker ontology: a justification that needs a dropped axiom is
 missing and `"not-entailed"` may be wrong, so with a drop `enumeration_complete` is
-`false`. `minimal` is unaffected: a dropped axiom is in no justification found. The
+`false` (with or without `--all`). `minimal` is unaffected: a dropped axiom is in no justification found. The
 command also prints a stderr warning. `universal_role_ordinary` (#543) is the flag of
 `classify --json`, unmasked.
 

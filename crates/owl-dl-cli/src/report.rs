@@ -54,7 +54,8 @@ pub(crate) struct Report {
     pub(crate) no_verdict: bool,
     /// #619: axioms conversion could not represent and dropped (kind → count), from the
     /// classification the report runs (the same conversion as its justifications and
-    /// repairs). Rendered as a banner; the footer then claims no completeness.
+    /// repairs). Rendered as a banner; the footer then claims repair completeness only
+    /// w.r.t. the converted ontology.
     pub(crate) dropped: std::collections::BTreeMap<String, u64>,
     /// #619 / #543: a universal role read as an ordinary property. Not masked on an
     /// inconsistent ontology: the report's repairs are verified by negative answers,

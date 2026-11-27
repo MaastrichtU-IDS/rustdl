@@ -137,6 +137,14 @@ fn justify_json_carries_dropped_and_voids_enumeration_complete() {
     assert_eq!(j["status"], "not-entailed", "{j}");
     assert_eq!(j["dropped"]["Rule: unsupported axiom (SWRL)"], 1, "{j}");
     assert_eq!(c["dropped"], serde_json::json!({}), "{c}");
+    // The single-justification query on an entailed query: complete only without the
+    // drop, too.
+    let (r, ctl) = warns_on_the_drop_only(
+        &["justify", "--json", "PATH", "subclass", A, C],
+        "a justification that needs a dropped axiom is missing",
+    );
+    assert_eq!(json(&r)["enumeration_complete"], false, "{}", r.stdout);
+    assert_eq!(json(&ctl)["enumeration_complete"], true, "{}", ctl.stdout);
     // `--all` on an entailed query: complete only without the drop.
     let (r, ctl) = warns_on_the_drop_only(
         &["justify", "--all", "--json", "PATH", "subclass", A, C],
@@ -193,7 +201,7 @@ fn repair_warns_and_claims_completeness_over_the_converted_ontology_only() {
 
 #[test]
 fn diagnose_warns() {
-    let (r, _) = warns_on_the_drop_only(
+    let (r, ctl) = warns_on_the_drop_only(
         &["diagnose", "PATH"],
         "an unsatisfiable class or an inconsistency that needs a dropped axiom goes undetected",
     );
@@ -201,6 +209,18 @@ fn diagnose_warns() {
         r.stdout.contains("http://e#D"),
         "the unsat class is still shown: {}",
         r.stdout
+    );
+    // "consistent" holds over the converted ontology only.
+    assert!(
+        r.stdout
+            .contains("# consistency: consistent (over the converted ontology"),
+        "{}",
+        r.stdout
+    );
+    assert!(
+        ctl.stdout.contains("# consistency: consistent\n"),
+        "{}",
+        ctl.stdout
     );
 }
 
@@ -264,6 +284,8 @@ ClassAssertion(owl:Nothing :a)
     );
     for args in [
         vec!["justify", f.path(), "inconsistent"],
+        vec!["repair", f.path(), "inconsistent"],
+        vec!["prove", f.path(), "http://e#C", "http://e#D"],
         vec!["diagnose", f.path()],
     ] {
         let r = run(&args);

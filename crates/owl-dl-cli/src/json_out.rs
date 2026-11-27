@@ -50,28 +50,16 @@ pub(crate) fn conversion_block(onto: &SetOntology<RcStr>) -> (BTreeMap<String, u
         .unwrap_or_default()
 }
 
-/// #543 for the role-level surfaces (`property-values`, `realize --properties`): also
-/// set when a role sits above a top property, whose edges between every pair of
-/// individuals those surfaces do not list. See
-/// `owl_dl_reasoner::universal_role_ordinary_for_roles`. #619: no byte prefilter of the
-/// file any more: a prefix that cuts inside the name (`Prefix(t:=<…owl#top>)` with
-/// `t:ObjectProperty`) hid the use from it, so the flag was missed.
-pub(crate) fn universal_role_flag_for_roles(onto: &SetOntology<RcStr>) -> bool {
-    owl_dl_reasoner::universal_role_ordinary_for_roles(onto).unwrap_or(false)
-}
-
-/// #619: [`conversion_block`] with the role-level flag of
-/// [`universal_role_flag_for_roles`], from ONE conversion, for the role-level commands
-/// that report both. A failed conversion reads as nothing dropped and no flag.
+/// #619: [`conversion_block`] with both universal-role flags, class level and role
+/// level (`owl_dl_core::top_bottom_roles::universal_role_ordinary_for_roles`), from ONE
+/// conversion, for the commands that report a role-level answer. A failed conversion
+/// reads as nothing dropped and no flag.
 pub(crate) fn conversion_block_for_roles(
     onto: &SetOntology<RcStr>,
-) -> (BTreeMap<String, u64>, bool) {
-    let Ok(internal) = owl_dl_core::convert::convert_ontology(onto) else {
-        return (BTreeMap::new(), false);
-    };
-    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal)
-        || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty();
-    (internal.dropped.by_kind().clone(), uro)
+) -> (BTreeMap<String, u64>, bool, bool) {
+    owl_dl_reasoner::conversion_notes(onto)
+        .map(|(d, uro, for_roles)| (d.by_kind().clone(), uro, for_roles))
+        .unwrap_or_default()
 }
 
 /// Decisions taken on the wedge's trusted `Sat` verdict, without the tableau

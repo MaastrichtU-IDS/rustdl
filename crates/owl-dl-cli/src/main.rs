@@ -1526,6 +1526,16 @@ fn warn_if_dropped_explaining(
     );
 }
 
+/// #619: the qualifier diagnose adds to a claim that holds over the converted ontology
+/// only ("consistent", "coherent").
+fn over_converted(dropped: &std::collections::BTreeMap<String, u64>) -> &'static str {
+    if dropped.values().sum::<u64>() > 0 {
+        " (over the converted ontology: axioms were dropped, see the warning)"
+    } else {
+        ""
+    }
+}
+
 /// #619: what a drop can cost each explanation surface.
 const DROPPED_JUSTIFY: &str = "a justification that needs a dropped axiom is missing, and \
      \"not entailed\" may be wrong.";
@@ -2460,7 +2470,7 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped_kinds, uro) = json_out::conversion_block_for_roles(&onto);
+            let (dropped_kinds, _, uro) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped_kinds);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
@@ -2522,7 +2532,7 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped_kinds, uro) = json_out::conversion_block_for_roles(&onto);
+            let (dropped_kinds, _, uro) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped_kinds);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
@@ -2569,7 +2579,7 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped_kinds, uro) = json_out::conversion_block_for_roles(&onto);
+            let (dropped_kinds, _, uro) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped_kinds);
             // #543: role-level, so a role above top counts even where no class-level
             // answer changes.
@@ -2621,7 +2631,7 @@ fn run() -> Result<()> {
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped_kinds, uro) = json_out::conversion_block_for_roles(&onto);
+            let (dropped_kinds, _, uro) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped_kinds);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
@@ -2995,10 +3005,10 @@ fn run() -> Result<()> {
             } else {
                 realize(&onto).context("realize")?
             };
-            // NOTE: `dropped_block` re-runs `convert_ontology` (see its doc
-            // comment) — one extra conversion per invocation, negligible
-            // vs. reasoning; accepted trade-off.
-            let (dropped, uro) = json_out::conversion_block(&onto);
+            // NOTE: one extra conversion per invocation, negligible vs. reasoning;
+            // accepted trade-off. #619: it gives the role-level flag for
+            // `--properties` too.
+            let (dropped, uro, uro_for_roles) = json_out::conversion_block_for_roles(&onto);
             if json {
                 if properties {
                     // stderr, so stdout stays a single JSON object.
@@ -3058,7 +3068,7 @@ fn run() -> Result<()> {
             if properties {
                 // #543: the property section is role-level; a role above top relates
                 // every pair, which it does not list.
-                if !uro && json_out::universal_role_flag_for_roles(&onto) {
+                if !uro && uro_for_roles {
                     note_universal_role(true);
                 }
                 write_materialized_properties(
@@ -3486,9 +3496,7 @@ fn run() -> Result<()> {
                 ProveEntailmentResult::SaturatorProof(data) => {
                     let root = &data.root;
                     // Render using the internal vocabulary and synthetic defs.
-                    // Re-convert to get the internal ontology (for rendering + content check).
-                    let internal = owl_dl_core::convert::convert_ontology(&onto)
-                        .context("re-convert for rendering")?;
+                    // The internal ontology converted above (rendering + content check).
                     if verify_proof {
                         // Use content-checking variant: validates axiom-ref content, not just range.
                         match owl_dl_reasoner::check_proof_with_content(root, &internal) {
@@ -3724,7 +3732,7 @@ fn run() -> Result<()> {
             if d.consistency_gave_up {
                 println!("# consistency: consistent (NOT witnessed: the check gave up)");
             } else {
-                println!("# consistency: consistent");
+                println!("# consistency: consistent{}", over_converted(&dropped));
             }
             note_trusted_wedge_consistency("diagnose", d.relies_on_trusted_consistency);
             if d.all_unsat.is_empty() {
@@ -3734,7 +3742,10 @@ fn run() -> Result<()> {
                         d.unsat_probes_cut
                     );
                 } else {
-                    println!("# coherent: no unsatisfiable classes");
+                    println!(
+                        "# coherent: no unsatisfiable classes{}",
+                        over_converted(&dropped)
+                    );
                 }
                 exit_if_diagnose_no_verdict();
                 return Ok(());

@@ -7917,8 +7917,9 @@ pub fn conversion_notes<A: horned_owl::model::ForIRI>(
 ) -> Result<(DroppedAxioms, bool, bool), ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
     let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
-    let for_roles =
-        uro || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty();
+    // #619: core's role-level predicate, which since #624 also counts a property
+    // disjointness with a universal member (a hand copy of the older two cases missed it).
+    let for_roles = owl_dl_core::top_bottom_roles::universal_role_ordinary_for_roles(&internal);
     Ok((internal.dropped, uro, for_roles))
 }
 

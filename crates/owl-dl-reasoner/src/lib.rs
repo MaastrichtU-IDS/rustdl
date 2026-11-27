@@ -2156,16 +2156,6 @@ pub fn hyper_sat_seed_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_SEED").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
-/// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
-/// verdict (concluding "not subsumed" without consulting the tableau).
-/// `Unsat` is sound by construction for any ontology; `Sat` is sound
-/// only if the engine is complete on the workload. **Default on** as
-/// of 2026-05-29 — every tested ontology agrees with Konclude (0 FP)
-/// with this flag and double-blocking both enabled. The original SIO
-/// 38 FPs that motivated the opt-in design were a saturation bug
-/// (`process_fact` range propagation, fixed in f71a012), not a
-/// wedge bug. Disable with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`. Off ⇒
-/// `Sat` verdicts are treated as `Unknown` (older H4 behaviour, falls
 /// `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS` — **default OFF**, `=1` opts in.
 ///
 /// When ON, `classify` stops trusting the wedge's `Sat` verdict on ontologies
@@ -2211,7 +2201,28 @@ pub fn classify_verify_refutations_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_VERIFY_REFUTATIONS").is_some_and(|v| v == "1")
 }
 
+/// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
+/// verdict (concluding "not subsumed" without consulting the tableau).
+/// `Unsat` is sound by construction for any ontology; `Sat` is sound
+/// only if the engine is complete on the workload. **Default on** as
+/// of 2026-05-29 — every tested ontology agrees with Konclude (0 FP)
+/// with this flag and double-blocking both enabled. The original SIO
+/// 38 FPs that motivated the opt-in design were a saturation bug
+/// (`process_fact` range propagation, fixed in f71a012), not a
+/// wedge bug. Disable with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`. Off ⇒
+/// `Sat` verdicts are treated as `Unknown` (older H4 behaviour, falls
 /// through to the tableau).
+///
+/// **Scope (#584 item 2).** `=0` withdraws the trust in the per-pair wedge
+/// `NotSubsumed` (and the snapshot replay) only. It is NOT a "verify everything"
+/// switch: the label-cache prunes and the unsat probe's label `Sat` are gated by
+/// `RUSTDL_LABEL_HEURISTIC` / `RUSTDL_UNSAT_VIA_LABELS`, not by this flag, and the
+/// consistency wedge's `Sat` by neither. Its meaning stays this narrow on purpose:
+/// it is a recorded reference arm of past sweeps. For budgeted verification of the
+/// classify channels use `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1` and read the result
+/// together with `trusted_sat_refutations == 0` (see that flag's doc for what it
+/// covers); for no label trust at all, `RUSTDL_LABEL_HEURISTIC=0` with this flag
+/// `=0`.
 #[must_use]
 pub fn hyper_trust_sat_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").is_none_or(|v| v != "0" && !v.is_empty())
@@ -14940,6 +14951,7 @@ mod tests {
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         for (status, incomplete) in [(Verdict::NotEntailed, false), (Verdict::Unknown, true)] {
             let (r, inc) = fallback_after_inconsistency(outcome(status, incomplete));
@@ -17347,6 +17359,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         let (result, incomplete) = fallback_after_held(gave_up);
         assert!(
@@ -17366,6 +17379,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         let (result, incomplete) = fallback_after_held(not_minimal);
         assert!(matches!(

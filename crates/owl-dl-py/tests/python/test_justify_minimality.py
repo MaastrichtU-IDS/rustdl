@@ -190,3 +190,23 @@ def test_debug_warns_once_and_marks_each_section(tmp_path):
     assert d.consistent is False and d.inconsistency.minimal is False
     assert len(ws) == 1 and str(ws[0].message).startswith("debug:")
     assert d["inconsistency"]["minimal"] is False
+
+
+def test_a_section_with_nothing_found_claims_no_minimality():
+    """A give-up leaves `debug` a Root / Inconsistency with no justification; it must
+    not read `minimal=True` (no fixture makes the search give up cheaply, so the
+    builder is pinned directly)."""
+    nothing = rustdl.Justifications(
+        justifications=(),
+        minimal=(),
+        enumeration_complete=False,
+        incomplete=True,
+        relies_on_trusted_consistency=False,
+        depth_capped=False,
+        saturation_oracle=False,
+        in_fragment=True,
+    )
+    root = rustdl._section(rustdl.Root, nothing, iri="urn:X", repairs=(), derives=())
+    assert root.justification == () and root.minimal is False
+    inc = rustdl._section(rustdl.Inconsistency, nothing, repairs=())
+    assert inc.minimal is False

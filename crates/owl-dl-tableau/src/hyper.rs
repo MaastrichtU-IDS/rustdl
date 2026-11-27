@@ -174,37 +174,56 @@ pub struct HNode(u32);
 /// a node with N such edges was queued N times (one per `Event::Edge`), and each
 /// drain re-enumerated all N bindings with an O(N) witness scan: N³ where the
 /// eager order was N² (Fable review of #483).
+///
+/// #570: entries pushed with `first` (a generator whose target is a nominal, see
+/// [`HyperEngine::gen_first`]) wait in a queue of their own that drains before the
+/// others, so a node merges into its nominal's node before it builds its other
+/// successors.
 #[derive(Debug, Clone, Default)]
 struct PendingGen {
+    first: std::collections::VecDeque<(usize, HNode)>,
     queue: std::collections::VecDeque<(usize, HNode)>,
     queued: std::collections::HashSet<(usize, HNode)>,
 }
 
 impl PendingGen {
     /// Queues `(ci, node)` unless it is already waiting; `false` if it was.
-    fn push(&mut self, ci: usize, node: HNode) -> bool {
+    fn push(&mut self, ci: usize, node: HNode, first: bool) -> bool {
         let fresh = self.queued.insert((ci, node));
         if fresh {
-            self.queue.push_back((ci, node));
+            if first {
+                self.first.push_back((ci, node));
+            } else {
+                self.queue.push_back((ci, node));
+            }
         }
         fresh
     }
 
-    /// The oldest entry. It may be queued again from here on: a trigger that
-    /// arrives after this point is not covered by the coming re-match.
+    /// The oldest `first` entry, else the oldest other one. It may be queued again
+    /// from here on: a trigger that arrives after this point is not covered by the
+    /// coming re-match.
     fn pop_front(&mut self) -> Option<(usize, HNode)> {
-        let e = self.queue.pop_front()?;
+        let e = match self.first.pop_front() {
+            Some(e) => e,
+            None => self.queue.pop_front()?,
+        };
         self.queued.remove(&e);
         Some(e)
     }
 
     fn clear(&mut self) {
+        self.first.clear();
         self.queue.clear();
         self.queued.clear();
     }
 
     fn is_empty(&self) -> bool {
-        self.queue.is_empty()
+        self.first.is_empty() && self.queue.is_empty()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &(usize, HNode)> {
+        self.first.iter().chain(self.queue.iter())
     }
 }
 
@@ -1078,6 +1097,13 @@ pub struct HyperEngine<'c> {
     /// nominal label is merged before the node builds successors. See
     /// [`Self::fire_deferred_gen`].
     generate_last: bool,
+    /// `RUSTDL_WEDGE_NOMINAL_GEN_FIRST` (#570): among deferred generating clauses,
+    /// those whose target is a nominal fire first. See [`Self::gen_first`].
+    nominal_gen_first: bool,
+    /// #570: classes whose instances are forced into a nominal by Horn clauses
+    /// alone (a nominal itself, or a class with a chain of `C → D` clauses to
+    /// one). Built on first use; `None` until then.
+    nominal_implying: Option<std::collections::HashSet<ClassId>>,
     /// #564 `RUSTDL_WEDGE_MERGE_CHURN_GUARD`: see [`Self::merge_churn`].
     merge_churn_guard: bool,
     /// #564: successful node merges over the engine's life (never restored; only
@@ -2156,6 +2182,8 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
+            nominal_gen_first: crate::wedge_nominal_gen_first_enabled(),
+            nominal_implying: None,
             merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
             merges_done: 0,
             pending_gen: PendingGen::default(),
@@ -2257,6 +2285,8 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
+            nominal_gen_first: crate::wedge_nominal_gen_first_enabled(),
+            nominal_implying: None,
             merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
             merges_done: 0,
             pending_gen: PendingGen::default(),
@@ -4473,6 +4503,8 @@ impl<'c> HyperEngine<'c> {
             nominal_guard: crate::wedge_nominal_block_guard_enabled(),
             nn_guard: crate::wedge_nn_guard_enabled(),
             generate_last: crate::wedge_generate_last_enabled(),
+            nominal_gen_first: crate::wedge_nominal_gen_first_enabled(),
+            nominal_implying: None,
             merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
             merges_done: 0,
             pending_gen: PendingGen::default(),
@@ -5101,7 +5133,8 @@ impl<'c> HyperEngine<'c> {
             self.park_disabled = true;
             self.stats.park_leaf_fallback += 1;
             while let Some((ci, n)) = self.parked.pop_front() {
-                self.pending_gen.push(ci, n);
+                let first = self.gen_first(ci);
+                self.pending_gen.push(ci, n, first);
             }
             return self.solve(depth);
         }
@@ -5212,7 +5245,6 @@ impl<'c> HyperEngine<'c> {
         // the restored graph.
         debug_assert!(
             self.parked
-                .queue
                 .iter()
                 .all(|&(_, n)| n.index() < self.nodes.len()),
             "#480: a parked clause names a node the restored graph does not have"
@@ -6270,6 +6302,58 @@ impl<'c> HyperEngine<'c> {
             )
     }
 
+    /// #570: whether deferred generating clause `ci` jumps the queue: its head is
+    /// `∃R.C` or `≥n R.C` with `C` a nominal, or a class that Horn clauses alone
+    /// force into one (`∃R.(D ⊓ {a})` clausifies to `∃R.Q`, `Q → {a}`). Firing it
+    /// first merges the node into the nominal's node before its other generators
+    /// build successors there, so they find the nominal's successors as witnesses.
+    /// Only the order of deferred clauses changes: every one still fires.
+    fn gen_first(&mut self, ci: usize) -> bool {
+        if !self.nominal_gen_first {
+            return false;
+        }
+        let Some((start, count)) = self.nominals else {
+            return false;
+        };
+        let target = match self.clause(ci).head.first() {
+            Some(Atom::Exists(_, c, _) | Atom::AtLeast(_, Some(c), _, _)) => *c,
+            _ => return false,
+        };
+        let is_nominal = |c: ClassId| c.index() >= start && c.index() < start.saturating_add(count);
+        if is_nominal(target) {
+            return true;
+        }
+        if self.nominal_implying.is_none() {
+            // Reverse edges of the single-class Horn clauses `C(x) → D(x)`, walked
+            // back from the nominals.
+            let mut implied_by: std::collections::HashMap<ClassId, Vec<ClassId>> =
+                std::collections::HashMap::new();
+            let mut set: std::collections::HashSet<ClassId> = std::collections::HashSet::new();
+            let n = self.clauses.len() + self.extra_clauses.len();
+            for i in 0..n {
+                let c = self.clause(i);
+                if let ([Atom::Class(b, X)], [Atom::Class(h, X)]) = (&c.body[..], &c.head[..]) {
+                    implied_by.entry(*h).or_default().push(*b);
+                    if is_nominal(*h) {
+                        set.insert(*h);
+                    }
+                }
+            }
+            let mut stack: Vec<ClassId> = set.iter().copied().collect();
+            while let Some(h) = stack.pop() {
+                for &b in implied_by.get(&h).map_or(&[][..], Vec::as_slice) {
+                    if set.insert(b) {
+                        stack.push(b);
+                    }
+                }
+            }
+            self.nominal_implying = Some(set);
+        }
+        self.nominal_implying
+            .as_ref()
+            .is_some_and(|s| s.contains(&target))
+    }
+
     /// #465 B: fire a deferred generating clause.
     ///
     /// It re-matches the body at `node`'s representative, on the graph as it
@@ -6331,14 +6415,16 @@ impl<'c> HyperEngine<'c> {
     fn next_deferred_gen(&mut self) -> Option<(usize, HNode)> {
         if !self.parking_allowed() {
             while let Some((ci, n)) = self.parked.pop_front() {
-                self.pending_gen.push(ci, n);
+                let first = self.gen_first(ci);
+                self.pending_gen.push(ci, n, first);
             }
             return self.pending_gen.pop_front();
         }
         loop {
             while let Some((ci, node)) = self.pending_gen.pop_front() {
                 if self.awaits_nominal_disjunction(node) {
-                    if self.parked.push(ci, node) {
+                    let first = self.gen_first(ci);
+                    if self.parked.push(ci, node, first) {
                         self.stats.gen_parked += 1;
                     }
                     continue;
@@ -6352,11 +6438,12 @@ impl<'c> HyperEngine<'c> {
             let mut moved = false;
             while let Some((ci, node)) = self.parked.pop_front() {
                 self.stats.park_retests += 1;
+                let first = self.gen_first(ci);
                 if self.awaits_nominal_disjunction(node) {
-                    still.push(ci, node);
+                    still.push(ci, node, first);
                 } else {
                     self.stats.gen_unparked += 1;
-                    self.pending_gen.push(ci, node);
+                    self.pending_gen.push(ci, node, first);
                     moved = true;
                 }
             }
@@ -6479,7 +6566,8 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         if self.defers_generation(ci) {
-            if self.pending_gen.push(ci, node) {
+            let first = self.gen_first(ci);
+            if self.pending_gen.push(ci, node, first) {
                 self.stats.gen_deferred += 1;
             }
             return FireOutcome::NoChange;
@@ -8834,7 +8922,10 @@ mod tests {
                 .with_double_blocking()
                 .with_nominals(10, 1)
         };
+        // #570's nominal-first order removes this churn at its root, so the guard is
+        // pinned on the old order.
         let mut on = engine();
+        on.nominal_gen_first = false;
         on.merge_churn_guard = true;
         // A long deadline only so that a broken guard fails here instead of hanging.
         let far = Instant::now() + std::time::Duration::from_secs(60);
@@ -8849,6 +8940,7 @@ mod tests {
         );
 
         let mut off = engine();
+        off.nominal_gen_first = false;
         off.merge_churn_guard = false;
         let deadline = Instant::now() + std::time::Duration::from_millis(300);
         assert_eq!(
@@ -8868,6 +8960,108 @@ mod tests {
             "precondition: it churned ({} built, {live} live)",
             off.nodes.len()
         );
+    }
+
+    /// #570: the r-cycle (and its variants) with the merge-churn guard OFF, as the
+    /// classify wedge builds it. Returns `(verdict, nodes built, live nodes,
+    /// merges)`.
+    fn r_cycle_run(clauses: &[DlClause], nominal_first: bool) -> (HyperResult, usize, usize, u64) {
+        let mut e = HyperEngine::new(clauses, cls(0))
+            .with_incremental_fixpoint()
+            .with_double_blocking()
+            .with_nominals(10, 1);
+        e.merge_churn_guard = false;
+        e.nominal_gen_first = nominal_first;
+        let deadline = Instant::now() + std::time::Duration::from_millis(500);
+        let r = e.decide_with_deadline(64, Some(deadline));
+        let live = (0..e.nodes.len())
+            .filter(|&i| {
+                let n = HNode(u32::try_from(i).expect("fits u32"));
+                e.resolve(n) == n
+            })
+            .count();
+        (r, e.nodes.len(), live, e.merges_done)
+    }
+
+    /// #570: with nominal generators first, each new `B` merges into `a`'s `s`-
+    /// successor before `∃r.A` fires, which then finds that node's `r`-successor as
+    /// its witness. The fixpoint ends `Sat` on a handful of nodes, with no guard.
+    /// On the old order the same run is still churning at the deadline.
+    #[test]
+    fn nominal_generators_first_end_the_r_cycle_without_churn() {
+        let clauses = r_cycle_clauses();
+        let (r, built, live, merges) = r_cycle_run(&clauses, true);
+        assert_eq!(
+            r,
+            HyperResult::Sat,
+            "built {built}, live {live}, merges {merges}"
+        );
+        assert!(
+            built <= 10,
+            "a handful of nodes, not churn: built {built}, live {live}"
+        );
+        assert!(merges > 0, "the nominal merge happened");
+        let (r, built, live, _) = r_cycle_run(&clauses, false);
+        assert_eq!(r, HyperResult::Stalled, "old order: churns to the deadline");
+        assert!(
+            built > 64 && live * 16 < built,
+            "old order churned: built {built}, live {live}"
+        );
+    }
+
+    /// #570 control: with `∃s⁻.{a}` listed before `∃r.A`, the old FIFO order
+    /// already fires the nominal generator first, and the fixpoint converges with
+    /// the flag off too. The positive above depends on the clause order, which is
+    /// what the flag removes.
+    #[test]
+    fn r_cycle_with_the_nominal_generator_listed_first_converges_either_way() {
+        let mut clauses = r_cycle_clauses();
+        clauses.swap(1, 2);
+        for flag in [true, false] {
+            let (r, built, live, _) = r_cycle_run(&clauses, flag);
+            assert_eq!(
+                r,
+                HyperResult::Sat,
+                "flag {flag}: built {built}, live {live}"
+            );
+            assert!(built <= 10, "flag {flag}: built {built}");
+        }
+    }
+
+    /// #570: a nominal behind a name. `∃s⁻.N` with `N → {a}` (as `∃s⁻.(D ⊓ {a})`
+    /// clausifies, or a told `N ⊑ {a}`) is a nominal generator too.
+    #[test]
+    fn a_nominal_behind_a_name_is_fired_first() {
+        let mut clauses = r_cycle_clauses();
+        let named = cls(5);
+        if let Atom::Exists(role, _, v) = clauses[2].head[0] {
+            clauses[2].head[0] = Atom::Exists(role, named, v);
+        } else {
+            panic!("fixture: clause 2 is `B → ∃s⁻.{{a}}`");
+        }
+        clauses.push(DlClause {
+            body: vec![Atom::Class(named, X)],
+            head: vec![Atom::Class(cls(10), X)],
+        });
+        let (r, built, live, _) = r_cycle_run(&clauses, true);
+        assert_eq!(r, HyperResult::Sat, "built {built}, live {live}");
+        assert!(built <= 12, "built {built}, live {live}");
+        let (r, ..) = r_cycle_run(&clauses, false);
+        assert_eq!(r, HyperResult::Stalled, "old order churns here too");
+    }
+
+    /// #570: `≥1 s⁻.{a}` (`ObjectMinCardinality(1 s⁻ {a})`) is a nominal generator.
+    #[test]
+    fn an_at_least_with_a_nominal_qualifier_is_fired_first() {
+        let mut clauses = r_cycle_clauses();
+        if let Atom::Exists(role, nom, v) = clauses[2].head[0] {
+            clauses[2].head[0] = Atom::AtLeast(role, Some(nom), 1, v);
+        } else {
+            panic!("fixture: clause 2 is `B → ∃s⁻.{{a}}`");
+        }
+        let (r, built, live, _) = r_cycle_run(&clauses, true);
+        assert_eq!(r, HyperResult::Sat, "built {built}, live {live}");
+        assert!(built <= 12, "built {built}, live {live}");
     }
 
     /// The guard leaves a fixpoint that keeps what it builds alone: a long told

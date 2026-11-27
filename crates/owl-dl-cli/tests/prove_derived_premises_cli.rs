@@ -1,7 +1,11 @@
 //! #603: a step proof that rests on an `A ⊑ D` the told-definition match derived
 //! (#139/#180) cites that edge's source premises, not the derived edge. On the curated
 //! corpus these were the only derived axioms step proofs cited (wine 47 of 150 sampled
-//! proofs, pizza 2 of 113).
+//! proofs, pizza 2 of 113). The union common-subsumer `disjunction_existential` derives
+//! (`X ⊑ D₁ ⊔ … ⊔ Dₙ`, every `Dᵢ` told-below `C`, so `X ⊑ C`) is replayed the same way:
+//! on ORE ontologies rich in data axioms it was the only derived kind step proofs cited
+//! (38 proofs in 20 ontologies of 13,727 calls: SWEET, OLiA, OAEI), and wine's
+//! `Fruit ⊑ EdibleThing`.
 //!
 //! Each test checks the citation three ways: nothing is left in `derived_axioms`; every
 //! cited axiom is a component of the source; and the cited axioms ALONE entail the goal
@@ -170,4 +174,56 @@ fn a_union_member_edge_cites_the_union_definition() {
         "{c:?}"
     );
     assert!(entailed_by("union_member", &c, &x, &d), "{c:?}");
+}
+
+/// The union common-subsumer, as wine (`Fruit ≡ NonSweetFruit ⊔ SweetFruit`, both
+/// `⊑ EdibleThing`) and SWEET (`Sorption ≡ Adsorption ⊔ Absorption`) assert it: the
+/// definition and each member's edge, each needed.
+#[test]
+fn a_union_common_subsumer_cites_its_premises() {
+    let (a, d) = (format!("{T}Fruit"), format!("{T}EdibleThing"));
+    let c = cited("union_common_equiv", &a, &d);
+    assert_eq!(c.len(), 3, "{c:?}");
+    assert!(
+        c.iter().any(|x| x.starts_with("EquivalentClasses(")),
+        "{c:?}"
+    );
+    assert!(entailed_by("union_common_equiv", &c, &a, &d), "{c:?}");
+    for i in 0..c.len() {
+        let mut fewer = c.clone();
+        fewer.remove(i);
+        assert!(
+            !entailed_by("union_common_equiv", &fewer, &a, &d),
+            "{c:?} without {}",
+            c[i]
+        );
+    }
+}
+
+/// As OLiA asserts it (`X ⊑ D₁ ⊔ D₂`, a subclass axiom, not a definition), with a member
+/// reaching the common subsumer through a told path.
+#[test]
+fn a_union_super_with_a_told_path_cites_the_path() {
+    let (a, d) = (format!("{T}X"), format!("{T}P"));
+    let c = cited("union_common_sub_path", &a, &d);
+    assert_eq!(c.len(), 4, "{c:?}");
+    assert!(entailed_by("union_common_sub_path", &c, &a, &d), "{c:?}");
+    for i in 0..c.len() {
+        let mut fewer = c.clone();
+        fewer.remove(i);
+        assert!(
+            !entailed_by("union_common_sub_path", &fewer, &a, &d),
+            "{c:?} without {}",
+            c[i]
+        );
+    }
+}
+
+/// The union as a conjunct of the super (`X ⊑ A ⊓ (D₁ ⊔ D₂)`).
+#[test]
+fn a_union_conjunct_cites_its_premises() {
+    let (a, d) = (format!("{T}X"), format!("{T}C"));
+    let c = cited("union_common_conjunct", &a, &d);
+    assert_eq!(c.len(), 3, "{c:?}");
+    assert!(entailed_by("union_common_conjunct", &c, &a, &d), "{c:?}");
 }

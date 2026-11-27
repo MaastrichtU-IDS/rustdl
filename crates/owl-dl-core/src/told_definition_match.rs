@@ -80,6 +80,15 @@ fn is_el(cid: ConceptId, pool: &ConceptPool) -> bool {
 }
 
 /// The conjuncts of `cid`: its operands if it is an `And`, else itself.
+/// #603: the atomic members of the union `u`, or `None` if `u` is not a union or a
+/// member is not atomic (`disjunction_existential` requires them all atomic).
+fn atomic_members(u: ConceptId, pool: &ConceptPool) -> Option<Vec<ClassId>> {
+    let ConceptExpr::Or(members) = pool.get(u) else {
+        return None;
+    };
+    members.iter().map(|&m| atomic(m, pool)).collect()
+}
+
 fn conjuncts(cid: ConceptId, pool: &ConceptPool) -> Vec<ConceptId> {
     match pool.get(cid) {
         ConceptExpr::And(cs) => cs.to_vec(),
@@ -301,7 +310,10 @@ pub fn derive_told_definition_matches(onto: &mut InternalOntology) -> usize {
 ///   followed only under [`told_match_conjunct_supers_enabled`] (default on). With it off
 ///   the pass still follows one such hop and this replay none, so those edges stay
 ///   derived: a miss, never a wrong citation;
-/// - for a complex conjunct `k`, the classes asserting it and the axiom that does.
+/// - for a complex conjunct `k`, the classes asserting it and the axiom that does;
+/// - (#603) for each class, the unions it asserts (a `D₁ ⊔ … ⊔ Dₙ` conjunct of its super
+///   or of a definition): `disjunction_existential`'s common subsumer `b ⊑ e` holds when
+///   every `Dᵢ` reaches `e`, by cases.
 ///
 /// Every edge is a necessary direction, so ANY premise set it returns entails `a ⊑ d`,
 /// whichever path the pass itself took. The caller decides which axioms may be used
@@ -311,6 +323,8 @@ pub struct MatchIndex {
     conj: HashMap<ClassId, Vec<(ClassId, usize)>>,
     asserted_by: HashMap<ConceptId, Vec<(ClassId, usize)>>,
     defs: HashMap<ClassId, Vec<(usize, ConceptId)>>,
+    /// #603: `b` asserts the union `u` (an `Or` conjunct) in axiom `i`.
+    unions: HashMap<ClassId, Vec<(ConceptId, usize)>>,
     close_conjuncts: bool,
 }
 
@@ -324,6 +338,7 @@ impl MatchIndex {
             conj: HashMap::new(),
             asserted_by: HashMap::new(),
             defs: HashMap::new(),
+            unions: HashMap::new(),
             close_conjuncts: told_match_conjunct_supers_enabled(),
         };
         let assert_on = |ix: &mut Self, b: ClassId, sup: ConceptId, i: usize| {
@@ -331,6 +346,10 @@ impl MatchIndex {
                 match pool.get(k) {
                     ConceptExpr::Atomic(c) => ix.conj.entry(b).or_default().push((*c, i)),
                     ConceptExpr::Top => {}
+                    ConceptExpr::Or(_) => {
+                        ix.unions.entry(b).or_default().push((k, i));
+                        ix.asserted_by.entry(k).or_default().push((b, i));
+                    }
                     _ => ix.asserted_by.entry(k).or_default().push((b, i)),
                 }
             }
@@ -400,25 +419,7 @@ impl MatchIndex {
         eligible: &dyn Fn(usize) -> bool,
     ) -> Option<Vec<usize>> {
         let pool = &onto.concepts;
-        // BFS from `a` (reflexive), the parent edge of each reached class.
-        let mut parent: HashMap<ClassId, Option<(ClassId, usize)>> = HashMap::new();
-        parent.insert(a, None);
-        let mut queue = std::collections::VecDeque::from([a]);
-        while let Some(b) = queue.pop_front() {
-            let told = self.told.get(&b).into_iter().flatten();
-            let conj = self
-                .conj
-                .get(&b)
-                .into_iter()
-                .flatten()
-                .filter(|_| self.close_conjuncts);
-            for &(c, i) in told.chain(conj) {
-                if eligible(i) && !parent.contains_key(&c) {
-                    parent.insert(c, Some((b, i)));
-                    queue.push_back(c);
-                }
-            }
-        }
+        let parent = self.reach(a, eligible);
         let path = |mut c: ClassId, out: &mut Vec<usize>| {
             while let Some(Some((p, i))) = parent.get(&c) {
                 out.push(*i);
@@ -466,6 +467,82 @@ impl MatchIndex {
             out.sort_unstable();
             out.dedup();
             return Some(out);
+        }
+        self.union_premises(pool, &parent, d, eligible)
+    }
+
+    /// BFS from `a` (reflexive) over the told and (when enabled) asserted-conjunct edges
+    /// `eligible` admits: the parent edge `(class, axiom)` of each reached class.
+    fn reach(
+        &self,
+        a: ClassId,
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> HashMap<ClassId, Option<(ClassId, usize)>> {
+        let mut parent: HashMap<ClassId, Option<(ClassId, usize)>> = HashMap::new();
+        parent.insert(a, None);
+        let mut queue = std::collections::VecDeque::from([a]);
+        while let Some(b) = queue.pop_front() {
+            let told = self.told.get(&b).into_iter().flatten();
+            let conj = self
+                .conj
+                .get(&b)
+                .into_iter()
+                .flatten()
+                .filter(|_| self.close_conjuncts);
+            for &(c, i) in told.chain(conj) {
+                if eligible(i) && !parent.contains_key(&c) {
+                    parent.insert(c, Some((b, i)));
+                    queue.push_back(c);
+                }
+            }
+        }
+        parent
+    }
+
+    /// #603: `disjunction_existential`'s common subsumer, replayed. Some class `b` that
+    /// `a` reaches asserts a union `D₁ ⊔ … ⊔ Dₙ` of atomic members, and every `Dᵢ`
+    /// reaches `d`: then `a ⊑ b ⊑ ⊔Dᵢ ⊑ d` by cases. The premises are the path to `b`,
+    /// the axiom asserting the union, and each member's path to `d`, all through edges
+    /// `eligible` admits. `None` when no such union is found.
+    fn union_premises(
+        &self,
+        pool: &ConceptPool,
+        parent: &HashMap<ClassId, Option<(ClassId, usize)>>,
+        d: ClassId,
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> Option<Vec<usize>> {
+        let path = |parent: &HashMap<ClassId, Option<(ClassId, usize)>>,
+                    mut c: ClassId,
+                    out: &mut Vec<usize>| {
+            while let Some(Some((p, i))) = parent.get(&c) {
+                out.push(*i);
+                c = *p;
+            }
+        };
+        // Deterministic order: the reached classes sorted.
+        let mut reached: Vec<ClassId> = parent.keys().copied().collect();
+        reached.sort_unstable();
+        for b in reached {
+            'unions: for &(u, i) in self.unions.get(&b).into_iter().flatten() {
+                if !eligible(i) {
+                    continue;
+                }
+                let Some(members) = atomic_members(u, pool) else {
+                    continue;
+                };
+                let mut out = vec![i];
+                path(parent, b, &mut out);
+                for m in members {
+                    let from_m = self.reach(m, eligible);
+                    if !from_m.contains_key(&d) {
+                        continue 'unions;
+                    }
+                    path(&from_m, d, &mut out);
+                }
+                out.sort_unstable();
+                out.dedup();
+                return Some(out);
+            }
         }
         None
     }

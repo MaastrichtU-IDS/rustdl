@@ -7175,6 +7175,18 @@ pub fn wedge_refire_bound_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_REFIRE_BOUND").is_none_or(|v| v != "0")
 }
 
+/// #580 `RUSTDL_WEDGE_PARTITION_STALL_STOP` (default ON, `=0` reverts): in a wedge
+/// decide with no deadline, a `≤n` partition enumeration stops with `Stalled` at its
+/// first `Stalled` child. Such a child already rules out `Unsat`; the remaining
+/// partitions could only find a `Sat`, and each leaf can open nested enumerations
+/// down to the depth bound, so the #569 graph never returned without a deadline. A
+/// decide with a deadline is not touched (#569's probe bounds it). `Stalled` is
+/// never `Sat`.
+#[must_use]
+pub fn wedge_partition_stall_stop_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_PARTITION_STALL_STOP").is_none_or(|v| v != "0")
+}
+
 /// #480 `RUSTDL_WEDGE_NOMINAL_DISJUNCTION_WAIT` (default ON, `=0` reverts): the wedge
 /// half of #473's `RUSTDL_NOMINAL_DISJUNCTION_WAIT`. A generating clause that
 /// #465 B deferred does not fire while its node carries an open disjunction with a

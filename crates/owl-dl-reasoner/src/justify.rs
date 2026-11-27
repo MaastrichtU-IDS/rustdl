@@ -1628,6 +1628,15 @@ pub struct JustifyOutcome<A: ForIRI> {
     /// `Unknown` verdict, a give-up, `no_verdict`). A cut ⊥-module check is discarded
     /// (the full set decides), so it leaves a definite answer complete and unflagged.
     pub depth_capped: bool,
+    /// #584: the search ran on the saturation-only `Inconsistent` oracle (an
+    /// `inconsistent` query, or `subclass owl:Thing owl:Nothing`, whose clash the
+    /// `ABox` saturator detects; `RUSTDL_JUSTIFY_SAT_ORACLE=0` turns it off). Its "not
+    /// refuted" is no consistency proof, so each justification's
+    /// `minimal_guaranteed` is `false`, and an `--all` enumeration may have pruned a
+    /// branch that holds another justification: it is not known to be complete.
+    /// Every justification returned is still valid. Not a give-up: separate from
+    /// `incomplete`.
+    pub saturation_oracle: bool,
 }
 
 impl<A: ForIRI> JustifyOutcome<A> {
@@ -1676,6 +1685,8 @@ struct Search<A: ForIRI> {
     no_verdict: bool,
     /// #510: see [`JustifyOutcome::depth_capped`].
     depth_capped: bool,
+    /// #584: see [`JustifyOutcome::saturation_oracle`].
+    saturation_oracle: bool,
 }
 
 impl<A: ForIRI> Search<A> {
@@ -1687,6 +1698,7 @@ impl<A: ForIRI> Search<A> {
             trusted: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         }
     }
 
@@ -1714,6 +1726,7 @@ impl<A: ForIRI> Search<A> {
             relies_on_trusted_consistency: self.trusted,
             no_verdict: self.no_verdict,
             depth_capped: self.depth_capped && incomplete,
+            saturation_oracle: self.saturation_oracle,
         }
     }
 }
@@ -1930,6 +1943,7 @@ fn search_one_inner<A: ForIRI>(
         trusted: false,      // set by `search_one`
         no_verdict: false,   // set by `search_one`
         depth_capped: false, // set by `search_one`
+        saturation_oracle: minimality_unproven,
     })
 }
 
@@ -2022,6 +2036,7 @@ fn search_all_inner<A: ForIRI>(
         trusted: false,      // set by `search_all`
         no_verdict: false,   // set by `search_all`
         depth_capped: false, // set by `search_all`
+        saturation_oracle: minimality_unproven,
     })
 }
 

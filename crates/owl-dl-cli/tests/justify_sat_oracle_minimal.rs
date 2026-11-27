@@ -66,6 +66,8 @@ impl Drop for Fixture {
 fn json(args: &[&str], env: &[(&str, &str)]) -> serde_json::Value {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
     cmd.args(args);
+    // The default arm must be the default even if the caller's shell set it.
+    cmd.env_remove("RUSTDL_JUSTIFY_SAT_ORACLE");
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -99,6 +101,7 @@ fn the_saturation_oracle_does_not_claim_minimality() {
         for query in [
             vec!["justify", "--json", f.path(), "inconsistent"],
             vec!["justify", "--json", f.path(), "subclass", THING, NOTHING],
+            vec!["justify", "--json", f.path(), "unsat", THING],
         ] {
             let (n, minimal) = justification(&json(&query, &[]));
             assert!(!minimal, "{tag} {query:?}: {n} axioms claimed minimal");
@@ -141,4 +144,58 @@ fn prove_inherits_the_cleared_claim() {
     assert_eq!(v["justification_minimal"], false, "{v}");
     let v = json(&args, &[FULL_ORACLE]);
     assert_eq!(v["justification_minimal"], true, "full oracle: {v}");
+}
+
+/// #584 review: under `--all`, a branch probe on the saturation-only oracle prunes on
+/// "not refuted", so a justification can be missing while `enumeration_complete` read
+/// `true` (Protégé reads it as "all explanations found"). `TWO` has two independent
+/// clashes: the `∃r`/domain one the saturator misses, and `X ⊓ Y` on `c`, which it
+/// detects; the default search finds only the second.
+const TWO: &str = "ClassAssertion(:A :a)\n\
+    SubClassOf(:A ObjectIntersectionOf(:E ObjectSomeValuesFrom(:r :B)))\n\
+    ObjectPropertyDomain(:r :C)\n\
+    DisjointClasses(:C :E)\n\
+    Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(NamedIndividual(:c))\n\
+    ClassAssertion(:X :c) ClassAssertion(:Y :c) DisjointClasses(:X :Y)\n";
+
+#[test]
+fn the_saturation_oracle_does_not_claim_a_complete_enumeration() {
+    let f = Fixture::new(TWO, "two");
+    let args = ["justify", "--json", "--all", f.path(), "inconsistent"];
+    let v = json(&args, &[]);
+    assert_eq!(v["enumeration_complete"], false, "{v}");
+    assert_eq!(
+        v["justifications"].as_array().unwrap().len(),
+        1,
+        "precondition: {v}"
+    );
+    let v = json(&args, &[FULL_ORACLE]);
+    assert_eq!(v["enumeration_complete"], true, "full oracle: {v}");
+    assert_eq!(
+        v["justifications"].as_array().unwrap().len(),
+        2,
+        "full oracle: {v}"
+    );
+}
+
+/// `repair` inherits it: its `complete` needs every justification minimal, and it now
+/// says so on the empty-repairs path too.
+#[test]
+fn repair_does_not_claim_completeness_on_the_saturation_oracle() {
+    let f = Fixture::new(H2, "repair");
+    let text = |env: &[(&str, &str)]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rustdl"));
+        cmd.args(["repair", f.path(), "inconsistent"]);
+        cmd.env_remove("RUSTDL_JUSTIFY_SAT_ORACLE");
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let t = text(&[]);
+    assert!(t.contains("completeness not guaranteed"), "{t}");
+    let t = text(&[FULL_ORACLE]);
+    assert!(t.contains("— complete"), "full oracle: {t}");
 }

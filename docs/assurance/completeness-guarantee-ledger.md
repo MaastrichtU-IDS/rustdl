@@ -227,10 +227,11 @@ Why condition 1 admits `Horn` (the argument, not a fragment-completeness claim; 
 refuted that for classify): for `SubClassOf` and `Unsatisfiable` on named classes the
 oracle is the single-query surface (`entails_reporting` →
 `is_subclass_of_with_stats` / `is_class_satisfiable_with_stats`). There a "yes" comes
-from the EL closure or the query wedge's `Subsumed`, and a "no" from the pure-EL
-closure (not reachable on `Horn`) or the deadline-free main tableau
+from the EL closure or the query wedge's `Subsumed`, and a "no" from the EL closure
+when the probed subset is itself pure EL (a `QuickXplain` subset of a `Horn` input
+can be; the closure is complete there) or from the deadline-free main tableau
 (`run_satisfiability_keeping` → `decide_query_raw`), whose only give-up is reported
-as `Unknown`. No trusted wedge `Sat` decides a "no" there. The #401 `ABox` drop on a
+as `Unknown`. On a consistent parent, no trusted wedge `Sat` decides a "no" there. The #401 `ABox` drop on a
 consistency-wedge `Sat` is flagged (`relies_on_trusted_consistency`) and cannot cost
 minimality for these queries: with the lent verdict every subset probe answers for
 the subset's `TBox`, so `QuickXplain` keeps no `ABox` axiom. So minimality on named
@@ -242,12 +243,27 @@ Not covered by that argument:
   (`is_consistent_with_stats`): `minimal` can read `true` beside
   `relies_on_trusted_consistency: true`. No wrong consistency-wedge `Sat` on `Horn` is
   known; that is exposure, not a demonstrated error.
+- Named queries on an inconsistent parent: when the #313 guard misses the clash and
+  the seeded probe does not finish in its budget, the single-query surface falls back
+  to `query_consistency()` (`lib.rs`, the #401 seeded-probe fallback), which can rest
+  on the consistency wedge's trusted `Sat` and answer the subset ABox-free.
+- The query kinds the oracle answers through `inconsistent_with` (sub/equivalent
+  property, same/different individual, data-property queries): they ask a
+  consistency check of the subset plus a negated assertion, so they carry the
+  `Inconsistent` exposure above.
 - `Inconsistent` queries on the saturation-only oracle: condition 3. The `ABox`
   saturator is incomplete even on EL (no anonymous witnesses, no `∀` rule); on
   `h2.ofn` the search returned 7 axioms with `minimal: true` while 5 of them are
   inconsistent. Pinned by `crates/owl-dl-cli/tests/justify_sat_oracle_minimal.rs`
   (`justify` in both query forms, and `prove`'s `justification_minimal`).
 - `InstanceOf` queries go through `realize::instance_reporting`; not traced.
+- `--all` enumeration on the saturation-only oracle: a branch probe prunes on "not
+  refuted", so a justification can be missing; `JustifyOutcome::saturation_oracle`
+  makes `justify --json` report `enumeration_complete: false` (#584 review).
+- Surfaces that carry no minimality signal at all: Python `justify`, `justify_all`
+  and `PreparedOntology.justify*` (their docstrings say "One minimal justification"),
+  and the HTML report's hard-coded "(minimal justification)" (`report.rs`). Follow-up
+  issue.
 
 ## Rule for changes
 

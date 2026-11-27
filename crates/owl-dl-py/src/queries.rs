@@ -381,6 +381,21 @@ pub(crate) fn universal_role_ordinary(path: &str, role_level: bool) -> PyResult<
         .map_err(reason_error_to_py)
 }
 
+/// #597: `(dropped, universal_role_ordinary, universal_role_ordinary_for_roles)`
+/// for the ontology at `path`, from one parse and one conversion. The Python
+/// wrappers call it (cached per file) after a query that does not report its own
+/// drops, to warn `DroppedAxiomsWarning` and `UniversalRoleWarning`.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn conversion_notes(
+    path: &str,
+) -> PyResult<(std::collections::BTreeMap<String, u64>, bool, bool)> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::conversion_notes(&o)
+        .map(|(d, uro, for_roles)| (d.by_kind().clone(), uro, for_roles))
+        .map_err(reason_error_to_py)
+}
+
 /// Parse a Manchester-syntax class expression against the ontology's own
 /// prefix map (so e.g. `:A` resolves via the file's `Prefix(:=...)`).
 fn parse_ce(
@@ -506,5 +521,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(class_expression_instances, m)?)?;
     m.add_function(wrap_pyfunction!(dropped_axioms, m)?)?;
     m.add_function(wrap_pyfunction!(universal_role_ordinary, m)?)?;
+    m.add_function(wrap_pyfunction!(conversion_notes, m)?)?;
     Ok(())
 }

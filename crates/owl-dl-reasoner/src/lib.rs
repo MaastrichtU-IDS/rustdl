@@ -7883,6 +7883,24 @@ pub fn conversion_report<A: horned_owl::model::ForIRI>(
     Ok((internal.dropped, uro))
 }
 
+/// #597: [`conversion_report`] plus the role-level flag of
+/// [`universal_role_ordinary_for_roles`], from one conversion: `(dropped,
+/// universal_role_ordinary, universal_role_ordinary_for_roles)`. For a caller that
+/// reports both flags beside answers of either level (the Python bindings).
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn conversion_notes<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(DroppedAxioms, bool, bool), ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    let for_roles =
+        uro || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty();
+    Ok((internal.dropped, uro, for_roles))
+}
+
 /// #543, for the ROLE-level surfaces (`property-values`, materialized property
 /// assertions): `true` when [`conversion_report`]'s flag is set, or when a role sits
 /// above a top property (`top ⊑* r`). Such an `r` relates every pair of individuals,

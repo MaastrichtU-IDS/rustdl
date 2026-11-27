@@ -208,6 +208,14 @@ impl PyPreparedOntology {
         self.universal_role_ordinary
     }
 
+    /// #597: the axioms conversion dropped (kind → count); empty when none. A
+    /// justification is computed over the weaker ontology, so one may be missing.
+    /// `PreparedOntology.justify` / `justify_all` emit `DroppedAxiomsWarning`.
+    #[getter]
+    fn dropped(&self) -> std::collections::BTreeMap<String, u64> {
+        self.inner.dropped().by_kind().clone()
+    }
+
     /// One minimal justification for a query (CLI-style tokens; see `justify`),
     /// paired with `incomplete` (#396). The Python package binds a
     /// `PreparedOntology.justify` wrapper over this that warns instead.

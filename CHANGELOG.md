@@ -58,9 +58,10 @@ All notable changes to rustdl are documented here. Format is based on
     - `no_verdict`;
     - a decision-depth cut (`depth_capped`), apart from a deadline or node-cap cut;
     - `witness_prune_may_drop` with its reasons;
-    - `direct_types_unverified`, with the remedy the CLI gives (it reads the same `RUSTDL_*` settings from Protégé's environment);
-    - `dropped`.
-  - **Classify** warns on `wedge_abox_blind`. That field is near-universal on input with both a nominal and an `ABox`, so the warning is common there. It also warns on `no_verdict_pairs`.
+    - `direct_types_unverified`, with the remedy the CLI gives (it reads the same `RUSTDL_*` settings from Protégé's environment).
+
+    It reads `dropped` but does not warn on it again: classify, which always runs first, already did.
+  - **Classify** warns on `wedge_abox_blind`. That field is near-universal on input with both a nominal and an `ABox`, so the warning is common there. On `no_verdict_pairs` it gives one warning, which takes the place of the budget-cut INCOMPLETE warning: no budget cut those probes, and the JSON does not say how many other pairs were cut.
   - **Exit 3:** rustdl prints its JSON and then exits 3 on a `NoVerdict` (likely a reasoner bug, #449). The plugin used to fail the whole classify or realize on that exit. It now keeps that result, whose answers are sound, and warns. Exit 3 is accepted only with that surface's complete JSON and its `NoVerdict` field set; anything else fails as before.
   - **Not yet covered:** `property-hierarchy`, `disjoint`, `individuals` and `property-values` still fail on their exit 3.
 - **The Protégé plugin warns on `dropped`, `universal_role_ordinary` and undetermined consistency (#610).** It read only the cut signals, so an ontology with axioms rustdl left out (`HasKey`, SWRL rules, …) or a universal-role use looked complete. `classify` now warns on `dropped` (kinds and counts), `universal_role_ordinary`, `consistency_undetermined`, and on `relies_on_trusted_consistency` when the consistency wedge's model is of a KB weaker by refused or deferred clauses (trust alone is set on almost every ontology and is not warned on). The other surfaces (realize, which had no warnings, property hierarchy, disjointness, individuals, property values) warn on their `incomplete`, `universal_role_ordinary` and, where they report it, `consistency_undetermined`.

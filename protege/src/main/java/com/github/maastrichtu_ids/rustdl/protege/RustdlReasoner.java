@@ -241,12 +241,25 @@ public class RustdlReasoner extends OWLReasonerBase {
      * or probe was cut (a time budget, the node cap or the search-depth limit),
      * {@code wedge_hierarchy_blind} says role-hierarchy reasoning was skipped,
      * {@code wedge_clauses_refused} says some clauses could not be matched and never fire,
-     * {@code derived_same_undecided} says some individual equalities were not decided.
-     * Either way the hierarchy stays sound and may miss subsumptions.
+     * {@code derived_same_undecided} says some individual equalities were not decided,
+     * {@code wedge_abox_blind} (#616) says a wedge model may ignore an individual's facts,
+     * {@code no_verdict_pairs} (#616; rustdl exits 3 after this JSON, which
+     * {@link RustdlProcess#classify} accepts) says probes ended in a likely-bug
+     * {@code NoVerdict}, reported in place of the INCOMPLETE warning; the rest are the
+     * #610 signals that are not cuts. Either way the hierarchy stays sound and may miss
+     * subsumptions.
      */
     static List<String> classifyWarnings(RustdlJson.ClassifyJson c) {
         List<String> out = new ArrayList<>();
-        if (c.incomplete) {
+        // #616: a NoVerdict probe sets `incomplete` too, but no budget cut it. The JSON has
+        // no cut count to subtract it from (the CLI's text output does), so with one there
+        // is a single warning that says both.
+        if (c.no_verdict_pairs > 0) {
+            out.add(noVerdictNote("classify") + " " + c.no_verdict_pairs + " probe(s) ended "
+                + "without a verdict and were left undecided ('satisfiable' / 'not subsumed'); "
+                + "other class pairs may also have been cut (a time budget, the node cap or the "
+                + "search-depth limit). The hierarchy is a sound under-approximation.");
+        } else if (c.incomplete) {
             out.add("rustdl reports an INCOMPLETE classification (some class pairs were cut "
                 + "without a verdict: a time budget, the node cap or the search-depth limit); "
                 + "the hierarchy is a sound under-approximation.");
@@ -269,12 +282,6 @@ public class RustdlReasoner extends OWLReasonerBase {
                 + "depends on an individual's facts may be missing. "
                 + "RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1 in Protégé's environment decides those "
                 + "classes on the main tableau, at a time cost. The hierarchy is a sound "
-                + "under-approximation.");
-        }
-        // #616: rustdl exits 3 after this JSON; RustdlProcess.classify accepts it.
-        if (c.no_verdict_pairs > 0) {
-            out.add(noVerdictNote("classify") + " " + c.no_verdict_pairs + " class pair(s) "
-                + "took their sound default (\"not subsumed\"); the hierarchy is a sound "
                 + "under-approximation.");
         }
         if (c.derived_same_undecided > 0) {
@@ -346,8 +353,9 @@ public class RustdlReasoner extends OWLReasonerBase {
 
     /** The CLI's {@code DEPTH_CUT_ADVICE}. */
     private static final String DEPTH_CUT_ADVICE = "A longer RUSTDL_REALIZE_PAIR_TIMEOUT_MS or "
-        + "a larger node cap does not help with that; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the "
-        + "deadline-free probe, which searches much deeper (with no time limit).";
+        + "a larger node cap does not help with that; RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 in "
+        + "Protégé's environment runs the deadline-free probe, which searches much deeper (with "
+        + "no time limit).";
 
     /** The budget remedy, set where the plugin's rustdl reads it. */
     private static final String REALIZE_BUDGET = "Raise RUSTDL_REALIZE_PAIR_TIMEOUT_MS (default "
@@ -356,8 +364,9 @@ public class RustdlReasoner extends OWLReasonerBase {
     /**
      * #616: the warnings a realize result warrants, one per signal, worded as the CLI's
      * notes on {@code realize} (main.rs: {@code exit_if_no_verdict}, {@code warn_probes_cut},
-     * the witness-prune warning, {@code warn_direct_types_unverified}, {@code warn_if_dropped},
-     * {@code note_universal_role}). {@code env} is the environment the rustdl child inherits
+     * the witness-prune warning, {@code warn_direct_types_unverified},
+     * {@code note_universal_role}). {@code dropped} is not warned on: classify, which always
+     * runs first, already warned on the same axioms. {@code env} is the environment the rustdl child inherits
      * (Protégé's), read for the settings that change the direct-types remedy, as the CLI does.
      * {@code relies_on_trusted_consistency} is not warned on: classify ran first and warns
      * when the consistency wedge's KB is measurably weaker, and trust alone is near-universal.
@@ -395,11 +404,8 @@ public class RustdlReasoner extends OWLReasonerBase {
                 + "left undecided, so a listed direct type may be a superclass of another; every "
                 + "listed type is a genuine type." + directTypesRemedy(r, env));
         }
-        String dropped = droppedSummary(r.dropped);
-        if (dropped != null) {
-            out.add("rustdl realize: rustdl did not understand and left out " + dropped
-                + "; the types are computed over a weaker ontology, a sound under-approximation.");
-        }
+        // `dropped` is not warned on here: realize runs only after classify on the same
+        // ontology, and classify already warned on the same axioms.
         if (r.universal_role_ordinary) {
             out.add(universalRoleNote("realize"));
         }

@@ -71,6 +71,12 @@ public final class RustdlProcess {
             T parsed;
             try {
                 parsed = parse.apply(r.out);
+            } catch (IllegalStateException e) {
+                // A newer schema says "upgrade the plugin" whatever the exit code.
+                if (String.valueOf(e.getMessage()).startsWith("Unsupported rustdl JSON schema_version")) {
+                    throw e;
+                }
+                parsed = null;
             } catch (RuntimeException e) {
                 parsed = null;
             }

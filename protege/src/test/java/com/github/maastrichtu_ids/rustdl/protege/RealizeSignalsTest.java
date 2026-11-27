@@ -1,5 +1,6 @@
 package com.github.maastrichtu_ids.rustdl.protege;
 
+import org.junit.After;
 import org.junit.Test;
 import org.semanticweb.owlapi.apibinding.OWLManager;
 import org.semanticweb.owlapi.model.*;
@@ -42,7 +43,8 @@ import static org.junit.Assume.assumeFalse;
  * <li>{@code classify_no_verdict.json}: {@code classify --pair-timeout-ms 20000} on
  *     {@code noverdict_cli.rs}'s {@code SRC}, with the first three of those settings. Exit 3;
  *     {@code no_verdict_pairs: 3}.</li>
- * <li>{@code realize_dropped.json}: realize on a HasKey ontology with one individual. Exit 0.</li>
+ * <li>{@code realize_dropped.json}: realize on a HasKey ontology with one individual. Exit 0.
+ *     (Read, not warned on: classify already warned.)</li>
  * <li>{@code classify_abox_blind.json}: classify on
  *     {@code crates/owl-dl-cli/tests/fixtures/json/wedge_abox_blind_p1.ofn}. Exit 0.</li>
  * </ul>
@@ -91,7 +93,7 @@ public class RealizeSignalsTest {
     @Test public void aDepthCutNamesTheLimitNotTheBudget() throws Exception {
         List<String> w = warnings("realize_depth_capped.json");
         assertOne(w, "hit the tableau's decision-depth limit");
-        assertTrue(w.get(0), w.get(0).contains("RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 runs the deadline-free probe"));
+        assertTrue(w.get(0), w.get(0).contains("RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0 in Protégé's environment runs the deadline-free probe"));
         assertTrue(w.get(0), w.get(0).contains("deadline off the classification step"));
         assertFalse(w.get(0), w.get(0).contains("INCOMPLETE instance-types"));
     }
@@ -142,8 +144,19 @@ public class RealizeSignalsTest {
         assertTrue(w.get(1), w.get(1).endsWith("every listed type is a genuine type."));
     }
 
-    @Test public void droppedAxiomsAreWarnedOnRealize() throws Exception {
-        assertOne(warnings("realize_dropped.json"), "left out 1 axiom(s) (HasKey: unsupported axiom (HasKey) ×1)");
+    @Test public void realizeDoesNotRepeatClassifysDroppedWarning() throws Exception {
+        // Read (the field parses), but classify, which always runs first, already warned.
+        RustdlJson.RealizeJson r = realize("realize_dropped.json");
+        assertEquals(Long.valueOf(1), r.dropped.get("HasKey: unsupported axiom (HasKey)"));
+        assertTrue(RustdlReasoner.realizeWarnings(r, NO_ENV).isEmpty());
+    }
+
+    @Test public void aNoVerdictWithADepthCutStillGivesOnlyTheNote() throws Exception {
+        RustdlJson.RealizeJson r = realize("realize_no_verdict.json");
+        r.depth_capped = true;
+        List<String> w = RustdlReasoner.realizeWarnings(r, NO_ENV);
+        assertOne(w, "likely a reasoner bug");
+        assertFalse(w.get(0), w.get(0).contains("decision-depth"));
     }
 
     @Test public void theUniversalRoleIsStillWarnedOnRealize() throws Exception {
@@ -162,10 +175,14 @@ public class RealizeSignalsTest {
     @Test public void classifyNoVerdictPairsAreWarnedOn() throws Exception {
         List<String> w = RustdlReasoner.classifyWarnings(
             RustdlProcess.parseClassify(fixture("classify_no_verdict.json")));
-        String nv = null;
-        for (String s : w) if (s.contains("likely a reasoner bug")) nv = s;
-        assertNotNull(w.toString(), nv);
-        assertTrue(nv, nv.contains(" 3 class pair(s)"));
+        // One warning: the NoVerdict note in place of the budget-cut INCOMPLETE one, which
+        // would say a time budget cut probes no budget cut.
+        // (The fixture's forced settings also leave consistency undetermined: its own warning.)
+        List<String> nv = new ArrayList<>();
+        for (String x : w) if (x.contains("likely a reasoner bug")) nv.add(x);
+        assertOne(nv, " 3 probe(s) ended without a verdict");
+        assertTrue(nv.get(0), nv.get(0).contains("('satisfiable' / 'not subsumed')"));
+        assertFalse(w.toString(), w.toString().contains("INCOMPLETE classification"));
     }
 
     @Test public void aCleanClassifyHasNeitherNewWarning() throws Exception {
@@ -185,9 +202,21 @@ public class RealizeSignalsTest {
      * A fake rustdl: for {@code classify} it prints {@code classifyOut} and exits
      * {@code classifyCode}; for {@code realize}, {@code realizeOut} and {@code realizeCode}.
      */
-    private static Path fakeRustdl(String classifyOut, int classifyCode, String realizeOut,
+    private final List<Path> fakeDirs = new ArrayList<>();
+
+    @After public void removeFakeRustdls() throws IOException {
+        for (Path d : fakeDirs) {
+            try (java.util.stream.Stream<Path> files = Files.walk(d)) {
+                files.sorted(Comparator.reverseOrder()).forEach(f -> f.toFile().delete());
+            }
+        }
+    }
+
+    private Path fakeRustdl(String classifyOut, int classifyCode, String realizeOut,
             int realizeCode) throws IOException {
         Path dir = Files.createTempDirectory("rustdl-fake-");
+        fakeDirs.add(dir);
+        assumeFalse("the fake script single-quotes its paths", dir.toString().contains("'"));
         Path c = dir.resolve("classify.out");
         Path r = dir.resolve("realize.out");
         Files.write(c, classifyOut.getBytes(StandardCharsets.UTF_8));
@@ -246,6 +275,25 @@ public class RealizeSignalsTest {
             () -> assertExitFailure(() -> RustdlProcess.realize(ofn, 30), "realize", 3));
         withBin(fakeRustdl("", 0, fixture("realize_no_verdict.json"), 1),
             () -> assertExitFailure(() -> RustdlProcess.realize(ofn, 30), "realize", 1));
+        // A truncated no_verdict JSON (the process died mid-write) is not accepted.
+        String nv = fixture("realize_no_verdict.json");
+        withBin(fakeRustdl("", 0, nv.substring(0, nv.length() / 2), 3),
+            () -> assertExitFailure(() -> RustdlProcess.realize(ofn, 30), "realize", 3));
+    }
+
+    @Test public void aNewerSchemaStillSaysUpgradeOnExit3() throws Exception {
+        assumeFalse(windows());
+        Path ofn = Paths.get("unused.ofn");
+        String v2 = fixture("realize_no_verdict.json").replace("\"schema_version\": 1", "\"schema_version\": 2");
+        assertTrue(v2.contains("\"schema_version\": 2"));
+        withBin(fakeRustdl("", 0, v2, 3), () -> {
+            try {
+                RustdlProcess.realize(ofn, 30);
+                fail("a schema-2 JSON must not be accepted");
+            } catch (IllegalStateException e) {
+                assertTrue(e.getMessage(), e.getMessage().contains("upgrade the plugin"));
+            }
+        });
     }
 
     @Test public void classifyAcceptsExit3AfterANoVerdictJsonOnly() throws Exception {
@@ -259,6 +307,8 @@ public class RealizeSignalsTest {
             () -> assertExitFailure(() -> RustdlProcess.classify(ofn, 30, 0), "classify", 3));
         withBin(fakeRustdl("unknown\n", 3, "", 0),
             () -> assertExitFailure(() -> RustdlProcess.classify(ofn, 30, 0), "classify", 3));
+        withBin(fakeRustdl(fixture("classify_no_verdict.json"), 1, "", 0),
+            () -> assertExitFailure(() -> RustdlProcess.classify(ofn, 30, 0), "classify", 1));
     }
 
     // ---- precomputeInferences -------------------------------------------------------------
@@ -280,7 +330,9 @@ public class RealizeSignalsTest {
         Logger log = Logger.getLogger(RustdlReasoner.class.getName());
         log.addHandler(h);
         try {
-            withBin(fakeRustdl(fixture("classify.json"), 0, fixture("realize_no_verdict.json"), 3), () -> {
+            // Both exit 3 after their NoVerdict JSON; classify's result is consistent, so
+            // realize runs too.
+            withBin(fakeRustdl(fixture("classify_no_verdict.json"), 3, fixture("realize_no_verdict.json"), 3), () -> {
                 RustdlReasoner reasoner =
                     (RustdlReasoner) new RustdlReasonerFactory().createReasoner(o);
                 reasoner.precomputeInferences(InferenceType.CLASS_ASSERTIONS);
@@ -289,8 +341,12 @@ public class RealizeSignalsTest {
         } finally {
             log.removeHandler(h);
         }
-        boolean seen = false;
-        for (String s : logged) seen |= s.startsWith(RustdlReasoner.noVerdictNote("realize"));
-        assertTrue(logged.toString(), seen);
+        boolean realize = false, classify = false;
+        for (String s : logged) {
+            realize |= s.startsWith(RustdlReasoner.noVerdictNote("realize"));
+            classify |= s.startsWith(RustdlReasoner.noVerdictNote("classify"));
+        }
+        assertTrue(logged.toString(), realize);
+        assertTrue(logged.toString(), classify);
     }
 }

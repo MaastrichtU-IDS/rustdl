@@ -94,7 +94,8 @@ impl PyClassification {
     /// silent or flagged. The same value as the Rust
     /// `Classification::completeness_guaranteed()` and the `classify --json`
     /// field. It holds only on a pure-EL ontology with no timed-out pair, no
-    /// `wedge_hierarchy_blind`, no `wedge_abox_blind`, no `wedge_clauses_refused`, no
+    /// `wedge_hierarchy_blind`, no `wedge_abox_blind`, no `tbox_individuals_unseeded`, no
+    /// `wedge_clauses_refused`, no
     /// `derived_same_undecided`, no `consistency_undetermined`, no dropped
     /// axiom and no `universal_role_ordinary` (#543). `False` means completeness is not
     /// guaranteed, not that the hierarchy is incomplete.
@@ -147,6 +148,16 @@ impl PyClassification {
         st.consistency_undetermined && !st.inconsistent
     }
 
+    /// #597: the axioms conversion could not represent and dropped (kind → count);
+    /// empty when none. The hierarchy is computed over the weaker ontology: every
+    /// reported subsumption holds, but one may be missing. Voids
+    /// `completeness_guaranteed`; `classify` emits `DroppedAxiomsWarning`. Reported
+    /// even when the ontology is proved inconsistent, as the CLI does.
+    #[getter]
+    fn dropped(&self) -> std::collections::BTreeMap<String, u64> {
+        self.inner.stats().dropped.by_kind().clone()
+    }
+
     /// True iff the ontology uses a universal role (`owl:topObjectProperty`, a
     /// property above it, or `owl:topDataProperty` outside the super-property
     /// position) where its semantics could change the hierarchy (#543). rustdl
@@ -190,12 +201,32 @@ impl PyClassification {
         self.inner.stats().wedge_abox_blind
     }
 
+    /// True iff some classify probe did not instantiate an individual named in a
+    /// `TBox` nominal that has no `ABox` fact (#608): `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS`
+    /// is off, the default. Every named individual exists in every model, so a
+    /// subsumption or an unsatisfiable class that follows from what the `TBox`
+    /// says about it may be missing even though `complete` (nothing cut) is
+    /// `True`.
+    #[getter]
+    fn tbox_individuals_unseeded(&self) -> bool {
+        self.inner.stats().tbox_individuals_unseeded
+    }
+
     /// How many clauses the wedge cannot match (#353). A refused clause never
     /// fires, so entailments that need it may be missing even though `complete`
     /// (nothing cut) is `True`. 0 when there is no wedge.
     #[getter]
     fn wedge_clauses_refused(&self) -> usize {
         self.inner.stats().wedge_clauses_refused
+    }
+
+    /// The classify wedge clausifier's deferral events (#600): encodings of the
+    /// input's axioms it skipped, so the wedge never sees them and entailments that
+    /// need them may be missing. One axiom can count more than once. 0 when there is
+    /// no wedge.
+    #[getter]
+    fn wedge_clauses_deferred(&self) -> usize {
+        self.inner.stats().wedge_clauses_deferred
     }
 
     /// How many candidate individual equalities classify did not decide (a probe

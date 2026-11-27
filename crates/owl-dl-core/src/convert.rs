@@ -2271,7 +2271,8 @@ macro_rules! ce_or_skip {
 ///   bearing content: assertions, ranges, domains, …) but unsupported in this
 ///   phase — unsupported data ranges via the `ce_or_skip!` macro, unrecognized
 ///   data-property literals/ranges, the `RUSTDL_DATA_PROPERTIES=0` gate-off
-///   fall-through, anonymous individuals, `HasKey`, etc. Issue #43:
+///   fall-through, anonymous individuals, `HasKey`, SWRL rules (#557), an
+///   `Import`, which is never resolved (#579), etc. Issue #43:
 ///   `convert_ontology` no longer aborts on this — it records the drop in
 ///   `InternalOntology::dropped` (via [`drop_label`]) and continues with the
 ///   remaining components.
@@ -2289,7 +2290,6 @@ pub fn convert_component<A: ForIRI>(
         C::OntologyID(_)
         | C::DocIRI(_)
         | C::OntologyAnnotation(_)
-        | C::Import(_)
         | C::DeclareAnnotationProperty(_)
         | C::AnnotationAssertion(_)
         | C::SubAnnotationPropertyOf(_)
@@ -2671,6 +2671,19 @@ pub fn convert_component<A: ForIRI>(
         // it as `"Rule: unsupported axiom (SWRL)"`, which turns those claims false
         // and makes the CLI warn, as the README already promised.
         C::Rule(_) => Err(ConversionError::UnsupportedAxiom { kind: "SWRL" }),
+
+        // ── Imports: not resolved, and RECORDED as dropped (#579) ──
+        // Neither the CLI nor the reasoner loads an imported ontology, so its
+        // axioms are missing from what we reason with. Until #579 this was
+        // `Ok(None)` with the metadata above, and a pure-EL file importing
+        // anything still read `completeness_guaranteed: true`. Recording it as
+        // `"Import: unsupported axiom (unresolved import)"` turns every claim that
+        // reads `dropped` false. Answers do not change. A caller that has merged
+        // the import closure (Protégé's plugin writes a fresh flattened ontology,
+        // so it carries no `Import`) should also remove the declarations.
+        C::Import(_) => Err(ConversionError::UnsupportedAxiom {
+            kind: "unresolved import",
+        }),
     }
 }
 
@@ -2705,6 +2718,7 @@ fn component_kind<A: ForIRI>(c: &Component<A>) -> &'static str {
         C::FunctionalDataProperty(_) => "FunctionalDataProperty",
         C::DatatypeDefinition(_) => "DatatypeDefinition",
         C::Rule(_) => "Rule",
+        C::Import(_) => "Import",
         _ => "Other",
     }
 }
@@ -3258,8 +3272,46 @@ pub fn convert_ontology<A: ForIRI>(
     if !conversion_cut() {
         crate::top_bottom_roles::state_top_bottom_role_semantics(&mut out);
     }
+    // #543 (S+F): state the universal-role meaning of the uses that need no fresh
+    // symbol; the rest stay flagged (`universal_role_ordinary`). A no-op unless
+    // `owl:topObjectProperty` is interned. Data properties are never folded: an IRI used
+    // as both (outside OWL 2 DL) would turn a data axiom into a universal consequence.
+    // The early return comes first: the data-property walk visits every component, so
+    // it runs only when `owl:topObjectProperty` is interned.
+    if !conversion_cut()
+        && crate::top_bottom_roles::fold_enabled()
+        && out
+            .vocabulary
+            .role_id(crate::top_bottom_roles::OWL_TOP_OBJECT_PROPERTY)
+            .is_some()
+    {
+        let data_iris = data_property_iris(src);
+        crate::top_bottom_roles::fold_universal_role_uses(&mut out, &data_iris);
+    }
     out.axioms.sort();
     Ok(out)
+}
+
+/// The IRIs the source uses as data properties, in ANY position: declarations, data
+/// axioms, and data restrictions inside class expressions (`DataSomeValuesFrom`,
+/// `DataMaxCardinality`, …), found by walking every component with horned-owl's
+/// visitor, which reports each typed `DataProperty`. #543's fold refuses any universal
+/// role among them: a role used as both (punning, outside OWL 2 DL) would otherwise have
+/// a data restriction folded as if on the universal object role.
+fn data_property_iris<A: ForIRI>(src: &SetOntology<A>) -> std::collections::BTreeSet<String> {
+    use horned_owl::model::DataProperty;
+    use horned_owl::visitor::immutable::{Visit, Walk};
+    struct Collect(std::collections::BTreeSet<String>);
+    impl<A: ForIRI> Visit<A> for Collect {
+        fn visit_data_property(&mut self, dp: &DataProperty<A>) {
+            self.0.insert(dp.0.as_ref().to_string());
+        }
+    }
+    let mut walk = Walk::new(Collect(std::collections::BTreeSet::new()));
+    for c in src {
+        walk.annotated_component(c);
+    }
+    walk.into_visit().0
 }
 
 /// `RUSTDL_INVERSE_PAIR_FUNC` — derive functionality across a declared inverse
@@ -7097,6 +7149,37 @@ mod tests {
                 .by_kind()
                 .keys()
                 .any(|k| k.contains("HasKey"))
+        );
+    }
+
+    #[test]
+    fn convert_records_each_unresolved_import_as_dropped() {
+        // #579: an `Import` was `Ok(None)` like ontology metadata, so a file that
+        // imports anything kept every completeness claim that reads `dropped`.
+        let src = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Import(<http://example.org/not-loaded>)
+            Import(<http://example.org/also-not-loaded>)
+            Declaration(Class(:A)) Declaration(Class(:B))
+            SubClassOf(:A :B))";
+        let internal = convert_ontology(&read_ofn_str(src)).expect("must not abort");
+        assert_eq!(
+            internal
+                .dropped
+                .by_kind()
+                .get("Import: unsupported axiom (unresolved import)"),
+            Some(&2),
+            "{:?}",
+            internal.dropped.by_kind()
+        );
+        assert_eq!(internal.dropped.total(), 2);
+        let control = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/> Declaration(Class(:A)) SubClassOf(:A :A))";
+        assert!(
+            convert_ontology(&read_ofn_str(control))
+                .unwrap()
+                .dropped
+                .is_empty()
         );
     }
 

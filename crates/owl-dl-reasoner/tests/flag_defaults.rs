@@ -77,6 +77,11 @@ fn expected() -> Vec<FlagRow> {
     vec![
         // ── owl-dl-core ──────────────────────────────────────────────────
         (
+            "RUSTDL_UNIVERSAL_ROLE_FOLD",
+            owl_dl_core::top_bottom_roles::fold_enabled as fn() -> bool,
+            true,
+        ),
+        (
             "RUSTDL_DOMAIN_ABSORPTION",
             owl_dl_core::absorb::domain_absorption_enabled as fn() -> bool,
             true,
@@ -473,6 +478,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_CLASSIFY_TBOX_INDIVIDUALS",
+            owl_dl_reasoner::classify_tbox_individuals_enabled,
+            false,
+        ),
+        (
             "RUSTDL_WEDGE_BODY_DECOMPOSE",
             owl_dl_core::clause::body_decompose_enabled,
             true,
@@ -772,6 +782,14 @@ fn expected() -> Vec<FlagRow> {
             "RUSTDL_MAX_QUALIFIER_COVER",
             owl_dl_core::clause::max_qualifier_fix_enabled,
             true,
+        ),
+        // #600: opt-in. A complex `DisjointClasses` / `DisjointUnion` member, and a
+        // `DisjointUnion` covering with one, go through the GCI path instead of being
+        // deferred; OFF because the fallback's cost is unbounded on growing ontologies.
+        (
+            "RUSTDL_CLAUSIFY_COMPLEX_DISJOINT",
+            owl_dl_core::clause::complex_disjoint_clausify_enabled,
+            false,
         ),
         (
             "RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY",

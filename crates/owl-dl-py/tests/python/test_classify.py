@@ -100,6 +100,33 @@ def test_wedge_hierarchy_blind_is_its_own_signal(fixtures_dir, monkeypatch):
     assert "http://ex.org/A" in r.unsatisfiable
 
 
+def test_tbox_individuals_unseeded_is_its_own_signal(fixtures_dir, monkeypatch):
+    # #608: `{b} ⊑ ∃S.{a}` with no ABox. Classify's probes do not seed `b` at the
+    # default, so they miss `X ⊑ D` (HermiT and Konclude derive it). That is
+    # reported by `tbox_individuals_unseeded` and warned about, while `complete`
+    # keeps meaning "nothing was cut". The seeding flag finds the pair.
+    import warnings
+    fixture = str(fixtures_dir / "tbox_individuals_unseeded_t1.ofn")
+    monkeypatch.delenv("RUSTDL_CLASSIFY_TBOX_INDIVIDUALS", raising=False)
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(fixture, per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.tbox_individuals_unseeded is True
+    assert r.complete is True
+    assert r.completeness_guaranteed is False
+    assert not r.is_subclass("http://ex/#X", "http://ex/#D")
+    assert sum(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning)
+        and "tbox_individuals_unseeded" in str(w.message)
+        for w in rec
+    ) == 1
+
+    monkeypatch.setenv("RUSTDL_CLASSIFY_TBOX_INDIVIDUALS", "1")
+    r = rustdl.classify(fixture, per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.tbox_individuals_unseeded is False
+    assert r.is_subclass("http://ex/#X", "http://ex/#D")
+
+
 def test_wedge_abox_blind_is_its_own_signal(fixtures_dir, monkeypatch):
     # #533: classify's wedge is not given `S(b, a)`, and `X`'s model touches `{a}`,
     # so its trusted `Sat` hides `X ⊑ D` (HermiT and Konclude derive it). That is
@@ -157,6 +184,41 @@ def test_wedge_clauses_refused_is_its_own_signal(tmp_path, monkeypatch):
     r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
     assert r.wedge_clauses_refused == 0
     assert r.is_subclass("http://ex.org/A", "http://ex.org/G")
+
+
+def test_wedge_clauses_deferred_is_its_own_signal(tmp_path):
+    # #600: an encoding the classify wedge's clausifier skips (here the
+    # antecedent DNF cap: seven binary unions are 2^7 = 128 alternatives, over
+    # 64) is reported by `wedge_clauses_deferred` and warned about, while
+    # `complete` keeps meaning "nothing was cut".
+    import warnings
+    ors = " ".join(f"ObjectUnionOf(:L{i} :R{i})" for i in range(7))
+    fixture = tmp_path / "dnf.ofn"
+    fixture.write_text(
+        "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/o>\n"
+        f"SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
+    )
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(fixture), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_clauses_deferred > 0
+    assert r.complete is True
+    assert any(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning)
+        and "wedge_clauses_deferred" in str(w.message)
+        for w in rec
+    )
+
+    control = tmp_path / "plain.ofn"
+    control.write_text(
+        "Prefix(:=<http://ex.org/>)\nOntology(<http://ex.org/o>\n"
+        "SubClassOf(ObjectIntersectionOf(:L0 ObjectUnionOf(:L1 :R1)) :D)\n)\n"
+    )
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(control), per_pair_timeout_ms=0, global_timeout_ms=0)
+    assert r.wedge_clauses_deferred == 0
+    assert not any("wedge_clauses_deferred" in str(w.message) for w in rec)
 
 
 def test_derived_same_undecided_is_its_own_signal(tmp_path, monkeypatch):

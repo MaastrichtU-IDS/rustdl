@@ -24,6 +24,13 @@
 //! with unseen facts about `a`), each with a control that drops the forcing fact.
 //! Negatives first. Closures are compared at a non-truncating pair budget (`p2`
 //! recovers only there), so a timing cut cannot pass or fail a test.
+//!
+//! The `q*` fixtures are #609's: an unfed role assertion's range or domain types the
+//! individual a class reaches through a nominal (`S(a, b)`, `Range(S) = D`,
+//! `X ⊑ ∃R.({b} ⊓ ¬D)` makes `X` unsatisfiable). Besides `check`, the object-property
+//! ones pin the other existing remedy: with `RUSTDL_CLASSIFY_NOMINAL_OPA=1` the assertion
+//! is fed and the wedge finds the entailment itself. The same fact written in the `TBox`
+//! (`{a} ⊑ ∃S.{b}`, no `ABox`) is #608's, not #533's: `tbox_individuals_unseeded`.
 #![allow(clippy::unwrap_used)]
 
 use std::io::Cursor;
@@ -85,6 +92,42 @@ const P4_REST: &str = "EquivalentClasses(:C ObjectOneOf(:a)) ObjectPropertyAsser
 const P4_FACT: &str = "ClassAssertion(:E :b)";
 const P5_REST: &str = "ClassAssertion(ObjectAllValuesFrom(:S :E) :b) \
      SubClassOf(:X ObjectAllValuesFrom(:R ObjectComplementOf(:E)))";
+
+/// #609: a role assertion's range or domain types the individual a class reaches
+/// through a nominal. The assertion is unfed by default, so the wedge's `{b}` never
+/// gets `D`. `q1` (the issue's repro) and `q2` make `X` unsatisfiable, `q3` (a
+/// disjunctive range, so saturation cannot find it) gives `X ⊑ E`, and `q4` is a
+/// negative assertion, which `NOMINAL_OPA` does not feed. Each `*N` control points the
+/// assertion at an individual no class reaches; `Q1_FED_N` is fed under `NOMINAL_OPA`
+/// but types the wrong end of the edge. Fixtures from #609 and the Fable review of
+/// #629; `HermiT` and Konclude agree on all of them.
+const Q1: &str = "ObjectPropertyAssertion(:S :a :b) ObjectPropertyRange(:S :D) \
+     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectIntersectionOf(ObjectOneOf(:b) \
+     ObjectComplementOf(:D))))";
+const Q1N: &str = "ObjectPropertyAssertion(:S :a :c) ObjectPropertyRange(:S :D) \
+     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectIntersectionOf(ObjectOneOf(:b) \
+     ObjectComplementOf(:D))))";
+const Q2: &str = "ObjectPropertyAssertion(:S :a :b) ObjectPropertyDomain(:S :D) \
+     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectIntersectionOf(ObjectOneOf(:a) \
+     ObjectComplementOf(:D))))";
+const Q2N: &str = "ObjectPropertyAssertion(:S :c :b) ObjectPropertyDomain(:S :D) \
+     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectIntersectionOf(ObjectOneOf(:a) \
+     ObjectComplementOf(:D))))";
+const Q1_FED_N: &str = "ObjectPropertyAssertion(:S :b :a) ObjectPropertyRange(:S :D) \
+     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectIntersectionOf(ObjectOneOf(:b) \
+     ObjectComplementOf(:D))))";
+const Q3: &str = "ObjectPropertyAssertion(:S :a :b) \
+     ObjectPropertyRange(:S ObjectUnionOf(:D :C)) SubClassOf(:X ObjectHasValue(:R :b)) \
+     SubClassOf(ObjectSomeValuesFrom(:R :D) :E) SubClassOf(ObjectSomeValuesFrom(:R :C) :E)";
+const Q3N: &str = "ObjectPropertyAssertion(:S :a :c) \
+     ObjectPropertyRange(:S ObjectUnionOf(:D :C)) SubClassOf(:X ObjectHasValue(:R :b)) \
+     SubClassOf(ObjectSomeValuesFrom(:R :D) :E) SubClassOf(ObjectSomeValuesFrom(:R :C) :E)";
+const Q4: &str = "NegativeObjectPropertyAssertion(:S :a :b) \
+     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectIntersectionOf(ObjectOneOf(:a) \
+     ObjectHasValue(:S :b))))";
+const Q4N: &str = "NegativeObjectPropertyAssertion(:S :a :c) \
+     SubClassOf(:X ObjectSomeValuesFrom(:R ObjectIntersectionOf(ObjectOneOf(:a) \
+     ObjectHasValue(:S :b))))";
 
 fn onto(decls: &str, body: &str) -> SetOntology<RcStr> {
     let src = format!(
@@ -254,6 +297,26 @@ fn p5_control_without_the_edge_keeps_x_satisfiable() {
     );
 }
 
+/// #609's controls: `check` (default and demoted), and the closure stays empty with
+/// `RUSTDL_CLASSIFY_NOMINAL_OPA=1` too. Only `Q1_FED_N`'s assertion is actually fed
+/// there (both ends are in the nominal reach), so it is the one that would catch a feed
+/// that typed the wrong individual.
+#[test]
+fn q_controls_an_assertion_on_an_unreached_individual_stays_empty() {
+    let fed = run(P_DECLS, Q1_FED_N, &[(OPA, "1")]);
+    assert!(
+        !fed.stats().wedge_abox_blind,
+        "Q1_FED_N's assertion must be fed under NOMINAL_OPA: {:?}",
+        fed.stats()
+    );
+    for body in [Q1N, Q2N, Q3N, Q4N, Q1_FED_N] {
+        // The signal may legitimately fire here (unfed facts, a nominal touched).
+        let _ = check(P_DECLS, P_NAMES, body, &[]);
+        let fed = run(P_DECLS, body, &[(OPA, "1")]);
+        assert_eq!(closure(&fed, P_NAMES), pairs(&[]), "{body}");
+    }
+}
+
 /// The no-nominal argument's negative side: an `ABox` fact is unfed (`b` is outside
 /// the reach of the only nominal, `{a}`) but no class's model touches a nominal
 /// (`{a}` occurs only on the left), so every trusted model is a valid counterexample.
@@ -407,6 +470,49 @@ fn p6_a_fed_property_assertion_on_an_individual_the_model_lacks() {
     let on = run(P_DECLS, &body, &[(OPA, "1"), (DEMOTE, "1")]);
     assert_eq!(closure(&on, P_NAMES), want);
     assert!(on.stats().wedge_abox_demoted > 0, "{:?}", on.stats());
+}
+
+/// #609's positives: reported by default and found when demoted (`check_blind`, plus
+/// the demotion must actually have run), and, for an object-property assertion
+/// (`fed`), found by the wedge itself once the assertion is fed
+/// (`RUSTDL_CLASSIFY_NOMINAL_OPA=1`), with nothing left to report. Oracles: `HermiT`
+/// and Konclude agree (`~/rustdl/sweeps/bugfix/609/oracle/q*.ofn`,
+/// `~/rustdl/sweeps/bugfix/609/fable/v{04,11n,26}*.ofn`).
+fn check_609(body: &str, oracle: &[(&str, &str)], fed: bool) {
+    check_blind(P_DECLS, P_NAMES, body, oracle);
+    let on = run(P_DECLS, body, &[(DEMOTE, "1")]);
+    assert!(
+        on.stats().wedge_abox_demoted > 0,
+        "the demotion must have run: {:?}\n{body}",
+        on.stats()
+    );
+    if !fed {
+        return;
+    }
+    let fed = run(P_DECLS, body, &[(OPA, "1")]);
+    assert_eq!(closure(&fed, P_NAMES), pairs(oracle), "fed\n{body}");
+    let s = fed.stats();
+    assert!(!s.wedge_abox_blind, "every fact is fed: {s:?}\n{body}");
+}
+
+#[test]
+fn q1_a_range_types_the_nominal_the_class_negates() {
+    check_609(Q1, &[("X", "Nothing")], true);
+}
+
+#[test]
+fn q2_a_domain_types_the_nominal_the_class_negates() {
+    check_609(Q2, &[("X", "Nothing")], true);
+}
+
+#[test]
+fn q3_a_disjunctive_range_types_a_has_value_filler() {
+    check_609(Q3, &[("X", "E")], true);
+}
+
+#[test]
+fn q4_a_negative_assertion_contradicts_the_class() {
+    check_609(Q4, &[("X", "Nothing")], false);
 }
 
 /// The deferral guard: `a_fully_fed_abox_raises_nothing`'s input plus a `TBox` axiom

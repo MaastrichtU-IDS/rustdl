@@ -113,9 +113,17 @@ fn names_a_top_property(file: &std::path::Path) -> bool {
 ///
 /// What it IS good for: a consumer that needs exactness (the issue-#66 reporter
 /// was diffing two `classify` hierarchies) can see that the hierarchy rests on
-/// unverified `Sat` verdicts, and re-run with `RUSTDL_LABEL_HEURISTIC=0` and
-/// `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` (the label channels are not gated by
-/// `TRUST_SAT`), or ask `subclass` per pair.
+/// unverified `Sat` verdicts, and re-run with one of:
+/// - `RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1`: budgeted verification of these
+///   channels on the main tableau. The prune verification stops paying past a
+///   budget, and a prune it does not verify stays trusted and is counted here, so
+///   the claim is "flag on AND this reads 0", not "flag on". It does not cover the
+///   consistency wedge's `Sat` (`relies_on_trusted_consistency`) (#584).
+/// - `RUSTDL_LABEL_HEURISTIC=0` with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`: no label
+///   trust at all, unbudgeted and much slower.
+///   `TRUST_SAT=0` alone is not enough: the label channels are not gated by it.
+///
+/// or ask `subclass` per pair.
 pub(crate) fn trusted_sat_risk(stats: &owl_dl_reasoner::ClassificationStats) -> usize {
     stats.hyper_refuted_pairs
         + stats.label_cache_pruned
@@ -200,7 +208,7 @@ pub(crate) struct ClassifyJson {
     /// missed subsumptions**. `true` only on a fragment where the engine that
     /// answered is complete and when none of the other signals in this struct
     /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no `wedge_abox_blind`, no
-    /// `wedge_clauses_refused`, no `derived_same_undecided`, no
+    /// `tbox_individuals_unseeded`, no `wedge_clauses_refused`, no `derived_same_undecided`, no
     /// `consistency_undetermined` and nothing in `dropped` (#246).
     /// `ClassificationStats::completeness_guaranteed` is the predicate, and
     /// `docs/assurance/completeness-guarantee-ledger.md` lists each condition.
@@ -236,14 +244,27 @@ pub(crate) struct ClassifyJson {
     /// #533: wedge models demoted under `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (see
     /// `wedge_abox_blind`). Diagnostic; 0 with the flag off.
     pub(crate) wedge_abox_demoted: u64,
+    /// #608: some classify probe did not instantiate an individual named in a `TBox`
+    /// nominal that has no `ABox` fact (no axiom, or only `DifferentIndividuals`):
+    /// `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS` is off, the default. Every named individual
+    /// exists in every model, so what the `TBox` says about it can force a subsumption
+    /// or an unsatisfiable class that classify then misses (`subclass` finds it). A
+    /// SEPARATE field for the same reason as `wedge_hierarchy_blind`: no class pair
+    /// was cut. The flag clears it, unless `RUSTDL_CLASSIFY_WEDGE_NOMINALS=0`.
+    pub(crate) tbox_individuals_unseeded: bool,
     /// #353: clauses the wedge's matcher refuses, which therefore never fire, so
     /// entailments that need them may be missing. A SEPARATE field for the same
     /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
     pub(crate) wedge_clauses_refused: usize,
+    /// #600: the classify wedge clausifier's deferral events (encodings of the
+    /// input's axioms it skipped; one axiom can count more than once), so its trusted
+    /// `Sat` can miss what they entail. A SEPARATE field, like `wedge_clauses_refused`.
+    /// 0 when there is no wedge; 0 is not proof the wedge saw the whole KB.
+    pub(crate) wedge_clauses_deferred: usize,
     /// #558: when `relies_on_trusted_consistency`, the clauses the CONSISTENCY
     /// wedge refuses and the deferral events of its clausifier (encodings it skipped;
     /// one axiom can count more than once): its `Sat` is a model of a KB weaker by
-    /// these, so it can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, and axiom kinds the clausifier ignores). A different wedge from
+    /// these, so it can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (axiom kinds the clausifier ignores, its `_ => {}` arm; and, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which that flag clausifies or counts). A different wedge from
     /// `wedge_clauses_refused` (classify's own). 0 when consistency does not rest on
     /// that wedge.
     pub(crate) consistency_wedge_clauses_refused: usize,
@@ -361,7 +382,7 @@ pub(crate) struct ConsistentJson {
     /// #558: beside `wedge_clauses_refused`, the deferral events of the consistency
     /// wedge's clausifier (encodings it skipped; one axiom can count more than once),
     /// so a `consistent: true` from the wedge may miss a clash they cause. Counted
-    /// whenever the wedge was consulted. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, and axiom kinds the clausifier ignores).
+    /// whenever the wedge was consulted. 0 does not mean the wedge saw the whole KB: some drops are not counted (axiom kinds the clausifier ignores, its `_ => {}` arm; and, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which that flag clausifies or counts).
     pub(crate) wedge_clauses_deferred: usize,
     /// #462/#475: a probe ended in `NoVerdict` as an internal limit, likely a reasoner
     /// bug (#449): a probe with NO deadline, or one whose deterministic saturation
@@ -533,6 +554,10 @@ pub(crate) struct DisjointJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #579: the axioms conversion dropped, by kind (an unresolved `Import`, a SWRL
+    /// rule, `HasKey`, …), as in `classify --json`. Non-empty means the answer was
+    /// computed without them.
+    pub(crate) dropped: BTreeMap<String, u64>,
     /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
     /// above it, or `owl:topDataProperty` outside the super-property position) where its
     /// semantics could change this answer. rustdl treats it as an ordinary property:
@@ -808,7 +833,9 @@ pub(crate) fn build_classify_json(
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
         wedge_abox_blind: stats.wedge_abox_blind,
         wedge_abox_demoted: stats.wedge_abox_demoted,
+        tbox_individuals_unseeded: stats.tbox_individuals_unseeded,
         wedge_clauses_refused: stats.wedge_clauses_refused,
+        wedge_clauses_deferred: stats.wedge_clauses_deferred,
         consistency_wedge_clauses_refused: stats.consistency_wedge_clauses_refused,
         consistency_wedge_clauses_deferred: stats.consistency_wedge_clauses_deferred,
         derived_same_undecided: stats.derived_same_undecided,
@@ -850,7 +877,9 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         wedge_hierarchy_blind: false,
         wedge_abox_blind: false,
         wedge_abox_demoted: 0,
+        tbox_individuals_unseeded: false,
         wedge_clauses_refused: 0,
+        wedge_clauses_deferred: 0,
         consistency_wedge_clauses_refused: 0,
         consistency_wedge_clauses_deferred: 0,
         derived_same_undecided: 0,
@@ -1003,6 +1032,10 @@ pub(crate) struct PropHierJson {
     /// routes occurs, not that the answer is complete. Separate from `incomplete`,
     /// which means only that a deadline cut a probe.
     pub(crate) structural_gaps: Vec<String>,
+    /// #579: the axioms conversion dropped, by kind (an unresolved `Import`, a SWRL
+    /// rule, `HasKey`, …), as in `classify --json`. Non-empty means the answer was
+    /// computed without them.
+    pub(crate) dropped: BTreeMap<String, u64>,
     /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
     /// above it, or `owl:topDataProperty` outside the super-property position) where its
     /// semantics could change this answer. rustdl treats it as an ordinary property:
@@ -1032,6 +1065,7 @@ pub(crate) fn build_prophier_json(
     obj: &PropertyClassification,
     data: &PropertyClassification,
     structural_gaps: Vec<String>,
+    dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
 ) -> PropHierJson {
     PropHierJson {
@@ -1041,6 +1075,7 @@ pub(crate) fn build_prophier_json(
         object_properties: side(obj),
         data_properties: side(data),
         structural_gaps,
+        dropped,
     }
 }
 
@@ -1051,6 +1086,7 @@ pub(crate) fn build_disjoint_json(
     data: Vec<(String, String)>,
     consistency_undetermined: bool,
     structural_gaps: Vec<String>,
+    dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
 ) -> DisjointJson {
     let to_arr = |v: Vec<(String, String)>| {
@@ -1074,6 +1110,7 @@ pub(crate) fn build_disjoint_json(
         no_verdict: classes.no_verdict(),
         consistency_undetermined,
         structural_gaps,
+        dropped,
     }
 }
 
@@ -1101,6 +1138,10 @@ pub(crate) struct IndividualsJson {
     pub(crate) no_verdict: bool,
     pub(crate) same_groups: Vec<Vec<String>>,
     pub(crate) different_pairs: Vec<[String; 2]>,
+    /// #579: the axioms conversion dropped, by kind (an unresolved `Import`, a SWRL
+    /// rule, `HasKey`, …), as in `classify --json`. Non-empty means the answer was
+    /// computed without them.
+    pub(crate) dropped: BTreeMap<String, u64>,
     /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
     /// above it, or `owl:topDataProperty` outside the super-property position) where its
     /// semantics could change this answer. rustdl treats it as an ordinary property:
@@ -1114,6 +1155,7 @@ pub(crate) struct IndividualsJson {
 pub(crate) fn build_individuals_json(
     same: &SameIndividuals,
     different: &DifferentIndividuals,
+    dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
 ) -> IndividualsJson {
     let mut same_groups: Vec<Vec<String>> = same
@@ -1146,6 +1188,7 @@ pub(crate) fn build_individuals_json(
         no_verdict: same.no_verdict() || different.no_verdict(),
         same_groups,
         different_pairs,
+        dropped,
     }
 }
 
@@ -1173,12 +1216,18 @@ pub(crate) struct PropertyValuesJson {
     /// with `consistency_undetermined` instead (the answer itself was decided); the
     /// light route's opt-in tail is not covered.
     pub(crate) no_verdict: bool,
-    /// #389/#390: constructs present that the data half of this surface (the object half reports through `incomplete`) ignores and that
-    /// can entail a relation it would report (see
-    /// `owl_dl_reasoner::property_structural_gaps`). Empty means none of the known
-    /// routes occurs, not that the answer is complete. Separate from `incomplete`,
-    /// which means only that a deadline cut a probe.
+    /// #389/#390: constructs present that the data half of this surface ignores
+    /// and that can entail a relation it would report (see
+    /// `owl_dl_reasoner::property_structural_gaps`), `data-dropped-axioms` among
+    /// them (#579). Empty means none of the known routes occurs, not that the answer
+    /// is complete. The object half reports instead through `incomplete`, which for
+    /// it also means an axiom outside its edge-complete whitelist, a dropped axiom
+    /// (#579), or a bounded extension probe, not only a deadline cut.
     pub(crate) structural_gaps: Vec<String>,
+    /// #579: the axioms conversion dropped, by kind (an unresolved `Import`, a SWRL
+    /// rule, `HasKey`, …), as in `classify --json`. Non-empty means the answer was
+    /// computed without them.
+    pub(crate) dropped: BTreeMap<String, u64>,
     /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
     /// above it, or `owl:topDataProperty` outside the super-property position) where its
     /// semantics could change this answer. rustdl treats it as an ordinary property:
@@ -1193,6 +1242,7 @@ pub(crate) fn build_property_values_json(
     obj: &ObjectPropertyValues,
     data: &DataPropertyValues,
     structural_gaps: Vec<String>,
+    dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
 ) -> PropertyValuesJson {
     let mut object_property_values: Vec<[String; 3]> = obj
@@ -1220,6 +1270,7 @@ pub(crate) fn build_property_values_json(
         no_verdict: obj.no_verdict(),
         data_property_values,
         structural_gaps,
+        dropped,
     }
 }
 
@@ -1759,6 +1810,31 @@ fn build_proof_node_json(
                 }
             }
             None => derived_axioms.push(render(ax)),
+        }
+    }
+    // #543 part 2: a built-in that holds only given a source axiom (a universal-role
+    // fold) cites that axiom too, so the step is not credited to OWL semantics alone.
+    for (_, ax) in &builtin_refs {
+        let Some((_, lics)) = internal.builtin_licenses.iter().find(|(b, _)| b == *ax) else {
+            continue;
+        };
+        for lic in lics {
+            let sources = internal
+                .axioms
+                .iter()
+                .position(|a| a == lic)
+                .and_then(|i| cites.sources_of(i, internal));
+            match sources {
+                Some(components) => {
+                    for component in components {
+                        let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
+                        if !axioms.contains(&doc) {
+                            axioms.push(doc);
+                        }
+                    }
+                }
+                None => derived_axioms.push(render(lic)),
+            }
         }
     }
     let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(|(_, ax)| render(ax)).collect();

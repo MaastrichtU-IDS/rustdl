@@ -65,7 +65,8 @@ def test_a_use_in_the_query_only_is_caught(tmp_path):
     path = _write(tmp_path, "q.ofn", QUERY_ONLY)
     assert rustdl.universal_role_ordinary(path) is False
     r, ws = _universal_warnings(
-        rustdl.class_expression_instances_result, path, "owl:topObjectProperty some :D"
+        # `:C` has no told instance, so the use is not folded (#543 part 2).
+        rustdl.class_expression_instances_result, path, "owl:topObjectProperty some :C"
     )
     assert ws
     assert r.universal_role_ordinary is True
@@ -94,4 +95,58 @@ def test_prepared_justify_warns(tmp_path):
     p = rustdl.prepare(path)
     assert p.universal_role_ordinary is True
     _, ws = _universal_warnings(p.justify, ["subclass", "http://e#C", "http://e#D"])
+    assert ws
+
+
+def test_a_folded_use_answers_right_without_a_warning(tmp_path):
+    """#543 part 2: `∃top.D ⊑ E` with `D(a)` is folded: `⊤ ⊑ E` (HermiT), no warning."""
+    src = HEAD + """Declaration(Class(:E))
+ClassAssertion(:D :a)
+SubClassOf(ObjectSomeValuesFrom(owl:topObjectProperty :D) :E)
+)"""
+    path = _write(tmp_path, "fold.ofn", src)
+    assert rustdl.universal_role_ordinary(path) is False
+    sub, ws = _universal_warnings(
+        rustdl.is_subclass_of, path, "http://www.w3.org/2002/07/owl#Thing", "http://e#E"
+    )
+    assert sub is True
+    assert not ws
+
+
+def test_a_universal_property_disjointness_flags_the_role_level_functions(tmp_path):
+    """#619: since #624 the role-level flag also counts a property disjointness with a
+    universal member (its fold settles the class-level answers, not the role-level
+    ones). The role-level functions warn on it; a class-level one does not."""
+    src = HEAD + """Declaration(ObjectProperty(:s))
+DisjointObjectProperties(owl:topObjectProperty :s)
+ClassAssertion(:C :a)
+)"""
+    path = _write(tmp_path, "disj.ofn", src)
+    assert rustdl.universal_role_ordinary(path) is False
+    assert rustdl.universal_role_ordinary(path, role_level=True) is True
+    for fn, args, expected in (
+        (rustdl.object_property_hierarchy, (), True),
+        (rustdl.disjoint_object_properties, (), True),
+        (rustdl.same_individuals, (), True),
+        (rustdl.object_property_values, (), True),
+        (rustdl.is_subclass_of, ("http://e#C", "http://e#D"), False),
+    ):
+        _, ws = _universal_warnings(fn, path, *args)
+        assert bool(ws) is expected, fn.__name__
+
+
+def test_a_prefix_cutting_inside_the_name_is_still_seen(tmp_path):
+    """#619: no byte prefilter: `t:ObjectProperty` with `t:` = `owl:top` names
+    `owl:topObjectProperty` without the string `topObjectProperty`."""
+    src = """Prefix(:=<http://e#>)
+Prefix(t:=<http://www.w3.org/2002/07/owl#top>)
+Ontology(
+Declaration(Class(:C)) Declaration(Class(:D))
+SubClassOf(:C ObjectAllValuesFrom(t:ObjectProperty :D))
+)"""
+    path = _write(tmp_path, "cut.ofn", src)
+    assert "topObjectProperty" not in open(path).read()
+    assert rustdl.universal_role_ordinary(path) is True
+    assert rustdl.prepare(path).universal_role_ordinary is True
+    _, ws = _universal_warnings(rustdl.is_subclass_of, path, "http://e#C", "http://e#D")
     assert ws

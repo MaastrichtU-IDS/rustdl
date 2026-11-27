@@ -90,7 +90,7 @@ print(d.unsatisfiable)              # ('urn:pizza#CheeseyVegetableTopping', 'urn
 
 for root in d.roots:
     print("ROOT:", root.iri)
-    for axiom in root.justification:        # the minimal set of axioms responsible
+    for axiom in root.justification:        # a set of axioms responsible (minimal if root.minimal)
         print("   ", axiom)
     print("  derives:", root.derives)       # classes broken as a consequence
     print("  repairs:", root.repairs)       # minimal ways to fix it
@@ -134,7 +134,8 @@ and `d.inconsistency` would hold the justification + repairs for the inconsisten
 
 ```python
 rustdl.justify("broken.omn", ["unsat", "urn:pizza#CheeseyVegetableTopping"])
-# the minimal responsible axiom set (same axioms shown above)
+# a responsible axiom set (same axioms shown above); justify_result(...).minimal says
+# whether it is guaranteed minimal (#625)
 
 rustdl.repair("broken.omn", ["unsat", "urn:pizza#CheeseyVegetableTopping"], 10)
 # every minimal repair, each verified by removal

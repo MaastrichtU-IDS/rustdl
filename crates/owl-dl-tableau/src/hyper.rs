@@ -142,6 +142,10 @@ const FIXPOINT_ITERS: usize = 100_000;
 const MERGE_CHURN_FLOOR: usize = 128;
 /// Steps between two [`HyperEngine::merge_churn`] checks.
 const MERGE_CHURN_STRIDE: usize = 256;
+/// #620 `RUSTDL_WEDGE_REFIRE_BOUND`: the most #376 re-fire passes one
+/// `run_reseed_net` may run in a decide with no deadline before it stops with
+/// `Stalled`. See [`HyperEngine::refire_bound_hit`].
+const REFIRE_PASS_CAP: usize = 1024;
 
 /// Upper bound on the back-off interval for intermediate-frame #137 re-seeds
 /// under `RUSTDL_RESEED_AT_LEAF` (see `HyperEngine::solve_inner`).
@@ -158,6 +162,10 @@ const RESEED_INITIAL_INTERVAL: u32 = 16;
 // Test builds only; a release build has neither the statics nor the increments.
 #[cfg(test)]
 thread_local! {
+    /// #620 test seam: deferred generating clauses with these indices pop only when
+    /// no other one waits, so a test can run the r-cycle under the generation order
+    /// that looped (ordinary generators before the nominal-target one).
+    static GEN_LAST: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
     static RESOLVE_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static COUNT_SUCC_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -193,6 +201,21 @@ impl PendingGen {
     /// The oldest entry. It may be queued again from here on: a trigger that
     /// arrives after this point is not covered by the coming re-match.
     fn pop_front(&mut self) -> Option<(usize, HNode)> {
+        #[cfg(test)]
+        {
+            let at = GEN_LAST.with(|last| {
+                let last = last.borrow();
+                if last.is_empty() {
+                    None
+                } else {
+                    self.queue.iter().position(|(ci, _)| !last.contains(ci))
+                }
+            });
+            if let Some(e) = at.and_then(|i| self.queue.remove(i)) {
+                self.queued.remove(&e);
+                return Some(e);
+            }
+        }
         let e = self.queue.pop_front()?;
         self.queued.remove(&e);
         Some(e)
@@ -943,8 +966,14 @@ pub struct SearchStats {
     /// #564: a Horn fixpoint stopped on the merge-churn guard
     /// (`RUSTDL_WEDGE_MERGE_CHURN_GUARD`): it had built `MERGE_CHURN_FLOOR` nodes,
     /// merged nearly all of them away and had their blockers refused by the NN guard
-    /// (see `HyperEngine::merge_churn`). The verdict was `Stalled`.
+    /// (see `HyperEngine::merge_churn`). Since #620 this also counts a #376 re-fire
+    /// loop of a deadline-free decide that churned the same way across its passes
+    /// (`HyperEngine::refire_bound_hit`). The verdict was `Stalled`.
     pub merge_churn_stops: u64,
+    /// #620: a #376 re-fire loop of a deadline-free decide ran [`REFIRE_PASS_CAP`]
+    /// passes without churning (`HyperEngine::refire_bound_hit`). The verdict was
+    /// `Stalled`.
+    pub refire_cap_stops: u64,
     /// `solve_at_most` partition-exhaustion probe (`RUSTDL_AT_MOST_EXHAUST_PROBE`,
     /// read-only / verdict-preserving): count of exhaustion clashes where the real
     /// narrowing candidate `card_clash_deps(node,succs) ∪ ⋃child_clash_deps` was
@@ -1086,8 +1115,12 @@ pub struct HyperEngine<'c> {
     /// #564 `RUSTDL_WEDGE_MERGE_CHURN_GUARD`: see [`Self::merge_churn`].
     merge_churn_guard: bool,
     /// #564: successful node merges over the engine's life (never restored; only
-    /// differences within one `horn_fixpoint` are read).
+    /// differences within one `horn_fixpoint`, or one #376 re-fire loop, are read).
     merges_done: u64,
+    /// #620 `RUSTDL_WEDGE_REFIRE_BOUND`: see [`Self::refire_bound_hit`].
+    refire_bound: bool,
+    /// #620: [`REFIRE_PASS_CAP`]; a field so a test can lower it.
+    refire_pass_cap: usize,
     /// #465 B: deferred generating clauses `(clause, node)`, oldest first.
     pending_gen: PendingGen,
     /// #465 B: set while a deferred clause fires, so it generates now.
@@ -2163,6 +2196,8 @@ impl<'c> HyperEngine<'c> {
             generate_last: crate::wedge_generate_last_enabled(),
             merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
             merges_done: 0,
+            refire_bound: crate::wedge_refire_bound_enabled(),
+            refire_pass_cap: REFIRE_PASS_CAP,
             pending_gen: PendingGen::default(),
             draining_gen: false,
             nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
@@ -2264,6 +2299,8 @@ impl<'c> HyperEngine<'c> {
             generate_last: crate::wedge_generate_last_enabled(),
             merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
             merges_done: 0,
+            refire_bound: crate::wedge_refire_bound_enabled(),
+            refire_pass_cap: REFIRE_PASS_CAP,
             pending_gen: PendingGen::default(),
             draining_gen: false,
             nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
@@ -2722,6 +2759,28 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_nominals(mut self, start: u32, count: u32) -> Self {
         self.nominals = Some((start, count));
+        self
+    }
+
+    /// #608: start the run with one more node per class in `nominals`, each labelled
+    /// with that nominal, beside the root. A named individual exists in every model,
+    /// so its node belongs in every completion; without it a clause whose body needs
+    /// `{b}` never fires in a completion that does not happen to create `b`. The nodes
+    /// come after the root, which stays node 0 for the label readers. Call it on a
+    /// freshly built engine, before `decide`.
+    #[must_use]
+    pub fn with_seeded_nominals(mut self, nominals: &[ClassId]) -> Self {
+        for &c in nominals {
+            let id = u32::try_from(self.nodes.len()).expect("node count fits u32");
+            let mut hn = HyperNode {
+                order: id,
+                ..HyperNode::default()
+            };
+            hn.add(c, DepSet::EMPTY);
+            self.nodes.push(hn);
+            self.representative.push(std::cell::Cell::new(HNode(id)));
+            self.snapshot_origin.push(false);
+        }
         self
     }
 
@@ -3550,7 +3609,20 @@ impl<'c> HyperEngine<'c> {
         // #564: only a `Sat` pass re-fires. A `Stalled` one (the merge-churn guard,
         // the step cap or the deadline) ends the loop: each `horn_fixpoint` takes a
         // fresh churn baseline, so re-draining a churn would restart it every pass.
+        // #620: for the same reason a churn spread over many short passes never
+        // trips that guard, so the loop keeps its own baseline and pass count.
+        let refire_base = (
+            self.nodes.len(),
+            self.merges_done,
+            self.stats.nn_guard_refusals,
+        );
+        let mut passes = 0usize;
         while self.nn_guard && matches!(r, HyperResult::Sat) && !self.blocked_gen.is_empty() {
+            passes += 1;
+            if self.refire_bound_hit(refire_base, passes) {
+                r = HyperResult::Stalled;
+                break;
+            }
             let mark = self.graph_fingerprint();
             for n in std::mem::take(&mut self.blocked_gen) {
                 if let Some(b) = self.blocked_gen_mark.get_mut(n.index()) {
@@ -4480,6 +4552,8 @@ impl<'c> HyperEngine<'c> {
             generate_last: crate::wedge_generate_last_enabled(),
             merge_churn_guard: crate::wedge_merge_churn_guard_enabled(),
             merges_done: 0,
+            refire_bound: crate::wedge_refire_bound_enabled(),
+            refire_pass_cap: REFIRE_PASS_CAP,
             pending_gen: PendingGen::default(),
             draining_gen: false,
             nominal_disj_wait: crate::wedge_nominal_disjunction_wait_enabled(),
@@ -7279,15 +7353,73 @@ impl<'c> HyperEngine<'c> {
     /// `Stalled`, so this can only turn a verdict into a fall-through, never into
     /// `Sat` or `Unsat`.
     fn merge_churn(&self, base: (usize, u64, u64)) -> bool {
-        if !self.merge_churn_guard {
-            return false;
-        }
+        self.merge_churn_guard && self.churned_since(base)
+    }
+
+    /// The #564 churn predicate since `base` (the node, merge and NN-guard-refusal
+    /// counts then), whatever the flag says. Meaningful only over a stretch with no
+    /// `restore`: one `horn_fixpoint`, or one #376 re-fire loop.
+    fn churned_since(&self, base: (usize, u64, u64)) -> bool {
         let built = self.nodes.len().saturating_sub(base.0) as u64;
         let merged = self.merges_done.saturating_sub(base.1);
         let refused = self.stats.nn_guard_refusals.saturating_sub(base.2);
         built >= MERGE_CHURN_FLOOR as u64
             && merged.saturating_mul(16) >= built.saturating_mul(15)
             && refused.saturating_mul(16) >= built
+    }
+
+    /// #620 `RUSTDL_WEDGE_REFIRE_BOUND` (default ON): whether the #376 re-fire loop in
+    /// `run_reseed_net`, at pass `passes`, must stop with `Stalled`. Only in a decide
+    /// with no deadline; a deadline already ends the loop, and budgeted runs (the CLI's
+    /// default among them) stay as they were. Counts and traces the stop.
+    ///
+    /// The loop runs one `horn_fixpoint` per pass, and each takes a fresh churn
+    /// baseline. Under a generation order that fires ordinary generators before the
+    /// nominal-target one, the r-cycle `ABox` form ran it for 13 h: every pass unblocked
+    /// one node and built three that merged away, so no single fixpoint reached the
+    /// #564 floor. Two stops, both over this one loop, which has no `restore` inside,
+    /// so the #564 predicate keeps its meaning:
+    ///
+    /// - **churn** (also needs `RUSTDL_WEDGE_MERGE_CHURN_GUARD`): the #564 predicate
+    ///   since the loop began. It stops that run after about 45 passes and counts
+    ///   in `merge_churn_stops`, so `classify --json` attributes the stall.
+    /// - **a pass cap**, [`REFIRE_PASS_CAP`]: the general bound for this loop, which had
+    ///   no bound on its iterations. Elsewhere, a `horn_fixpoint` with no deadline is
+    ///   step-capped, the branch and partition recursions lower the depth, and the
+    ///   leaf re-examination and the #480 park fallback run once. Not covered: the
+    ///   unit-force step in `solve_inner` recurses at the same depth and relies on the
+    ///   graph being finite, which an NN-guard churn breaks. A review probe did not
+    ///   make it loop, but nothing here bounds it. The search can also still be
+    ///   exponential. At the CLI's defaults, where this loop runs under a deadline,
+    ///   every one of the 46,267 loops over the 448 ORE ontologies with a nominal ran
+    ///   a single pass (2026-11-27; 45 cut at 32 s, 9 rejected), so the cap leaves
+    ///   three orders of magnitude of headroom.
+    ///
+    /// `Stalled` is never `Sat`, and every caller already handles it (the deadline and
+    /// the step cap return it).
+    fn refire_bound_hit(&mut self, base: (usize, u64, u64), passes: usize) -> bool {
+        if !self.refire_bound || self.deadline.is_some() {
+            return false;
+        }
+        let churn = self.merge_churn_guard && self.churned_since(base);
+        if !churn && passes <= self.refire_pass_cap {
+            return false;
+        }
+        if churn {
+            self.stats.merge_churn_stops += 1;
+        } else {
+            self.stats.refire_cap_stops += 1;
+        }
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!(
+                "wedge: re-fire bound stopped a deadline-free decide after {passes} passes \
+                 ({} nodes built, {} merged; {})",
+                self.nodes.len() - base.0,
+                self.merges_done - base.1,
+                if churn { "churn" } else { "pass cap" }
+            );
+        }
+        true
     }
 
     /// The lowest-index representative other than `rn` carrying nominal `c`,
@@ -8903,6 +9035,206 @@ mod tests {
             off.nodes.len() > 64 && live * 16 < off.nodes.len(),
             "precondition: it churned ({} built, {live} live)",
             off.nodes.len()
+        );
+    }
+
+    /// #620: sets the [`GEN_LAST`] seam and clears it on drop, so a panicking test
+    /// cannot leave it set for the next test on the same thread.
+    struct GenLast;
+
+    impl GenLast {
+        fn set(last: &[usize]) -> Self {
+            GEN_LAST.with(|l| *l.borrow_mut() = last.to_vec());
+            GenLast
+        }
+    }
+
+    impl Drop for GenLast {
+        fn drop(&mut self) {
+            GEN_LAST.with(|l| l.borrow_mut().clear());
+        }
+    }
+
+    /// #620: the classify wedge's label probe for `B` on the r-cycle `ABox` form, as
+    /// `classify` clausified it (`ClassAssertion(:A :d)`; dumped from the run that
+    /// hung). Classes `A` = 0, `B` = 1, `Q` = 3, nominals `{a}`, `{b}`, `{d}` = 4..7,
+    /// the probe root's fresh class = 7; roles `r` = 0, `s` = 1, `t` = 2. Clause 1 is
+    /// the nominal-target generator `B → ∃s⁻.{a}`.
+    fn reversed_r_cycle_clauses() -> Vec<DlClause> {
+        let (role_r, role_s, role_t) = (
+            Role::Named(RoleId::new(0)),
+            Role::Named(RoleId::new(1)),
+            Role::Named(RoleId::new(2)),
+        );
+        let (class_a, class_b, class_q, nom_a, root) = (cls(0), cls(1), cls(3), cls(4), cls(7));
+        let clause = |body: Vec<Atom>, head: Vec<Atom>| DlClause { body, head };
+        vec![
+            clause(
+                vec![Atom::Class(class_b, X)],
+                vec![Atom::Exists(role_r, class_a, X)],
+            ),
+            clause(
+                vec![Atom::Class(class_b, X)],
+                vec![Atom::Exists(role_s.flip(), nom_a, X)],
+            ),
+            clause(
+                vec![Atom::Class(class_a, X)],
+                vec![Atom::Exists(role_t, class_b, X)],
+            ),
+            clause(
+                vec![Atom::Class(class_q, X)],
+                vec![Atom::AtLeast(role_r, Some(class_a), 2, X)],
+            ),
+            clause(
+                vec![Atom::Role(role_s, X, 1)],
+                vec![Atom::AtMost(role_s, None, 1, X)],
+            ),
+            clause(
+                vec![Atom::Role(role_t.flip(), X, 1)],
+                vec![Atom::AtMost(role_t.flip(), None, 1, X)],
+            ),
+            clause(vec![Atom::Class(root, X)], vec![Atom::Class(class_b, X)]),
+            clause(
+                vec![Atom::Class(root, X)],
+                vec![Atom::Exists(role_r, class_a, X)],
+            ),
+        ]
+    }
+
+    fn reversed_r_cycle_engine(clauses: &[DlClause]) -> HyperEngine<'_> {
+        let mut e = HyperEngine::new(clauses, cls(7))
+            .with_incremental_fixpoint()
+            .with_double_blocking()
+            .with_nominals(4, 3);
+        e.merge_churn_guard = true;
+        e.refire_bound = true;
+        e
+    }
+
+    /// Runs `f` on a worker thread with the looping order set, and gives up after
+    /// 60 s, so a broken bound fails the test instead of hanging the suite (the loop
+    /// ran 13 h in #620).
+    fn decide_reversed<F>(f: F) -> (HyperResult, SearchStats, usize)
+    where
+        F: FnOnce(&mut HyperEngine<'_>) + Send + 'static,
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _last = GenLast::set(&[1]);
+            let clauses = reversed_r_cycle_clauses();
+            let mut eng = reversed_r_cycle_engine(&clauses);
+            f(&mut eng);
+            let r = eng.decide(64);
+            let _ = tx.send((r, eng.stats.clone(), eng.nodes.len()));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the decide ends")
+    }
+
+    /// #620: under the order that looped, with no deadline, the re-fire loop's churn
+    /// stop ends the decide: `Stalled`, counted as merge churn, long before the cap.
+    /// No single fixpoint churns enough for the #564 guard, so it is this stop.
+    #[test]
+    fn refire_bound_ends_the_reversed_order_r_cycle() {
+        let (r, stats, nodes) = decide_reversed(|_| {});
+        assert_eq!(r, HyperResult::Stalled, "Stalled, never Sat");
+        assert!(
+            stats.merge_churn_stops > 0 && stats.refire_cap_stops == 0,
+            "the re-fire churn stop fired: {stats:?}"
+        );
+        assert!(
+            nodes < 4 * MERGE_CHURN_FLOOR,
+            "it stopped near the floor: {nodes} nodes"
+        );
+    }
+
+    /// #620: the pass cap alone (the churn check off) ends the same loop, and only
+    /// after it has built more than the churn stop would have allowed: the cap is the
+    /// general bound, the churn stop the fast one. Deterministic: a pass count, no
+    /// clock.
+    #[test]
+    fn refire_pass_cap_ends_it_without_the_churn_check() {
+        let (r, stats, nodes) = decide_reversed(|e| {
+            e.merge_churn_guard = false;
+            e.refire_pass_cap = 200;
+        });
+        assert_eq!(r, HyperResult::Stalled);
+        assert!(
+            stats.refire_cap_stops > 0 && stats.merge_churn_stops == 0,
+            "{stats:?}"
+        );
+        assert!(
+            nodes > MERGE_CHURN_FLOOR,
+            "precondition: it was still churning at the cap ({nodes} nodes)"
+        );
+    }
+
+    /// #620: with the bound off the order still loops: a 2 s deadline, not a guard,
+    /// is what ends it (it ran 13 h in #620 with none).
+    #[test]
+    fn without_the_refire_bound_the_reversed_order_runs_on() {
+        let _last = GenLast::set(&[1]);
+        let clauses = reversed_r_cycle_clauses();
+        let mut eng = reversed_r_cycle_engine(&clauses);
+        eng.refire_bound = false;
+        let t = Instant::now();
+        let r = eng.decide_with_deadline(64, Some(t + std::time::Duration::from_secs(2)));
+        assert_eq!(r, HyperResult::Stalled);
+        assert!(
+            t.elapsed() >= std::time::Duration::from_millis(1900),
+            "ran to the deadline"
+        );
+        // Past the 44th pass, where the churn stop ends it: the deadline cut a
+        // re-fire loop, not something else.
+        assert!(
+            eng.stats.fixpoint_passes > 50,
+            "the re-fire loop ran on: {:?}",
+            eng.stats
+        );
+        assert_eq!(
+            (eng.stats.merge_churn_stops, eng.stats.refire_cap_stops),
+            (0, 0),
+            "no guard fired"
+        );
+    }
+
+    /// #620: a decide with a deadline is left alone even with the bound on: the same
+    /// probe under a short deadline ends on the deadline.
+    #[test]
+    fn refire_bound_leaves_a_budgeted_decide_alone() {
+        let _last = GenLast::set(&[1]);
+        let clauses = reversed_r_cycle_clauses();
+        let mut eng = reversed_r_cycle_engine(&clauses);
+        let t = Instant::now();
+        let r = eng.decide_with_deadline(64, Some(t + std::time::Duration::from_millis(300)));
+        assert_eq!(r, HyperResult::Stalled);
+        assert_eq!(
+            (eng.stats.merge_churn_stops, eng.stats.refire_cap_stops),
+            (0, 0),
+            "{:?}",
+            eng.stats
+        );
+    }
+
+    /// The shipped (FIFO) order on the same probe needs no re-fire bound: it churns
+    /// within one fixpoint, and the #564 per-fixpoint guard stops it.
+    #[test]
+    fn the_fifo_order_needs_no_refire_bound() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let clauses = reversed_r_cycle_clauses();
+            let mut eng = reversed_r_cycle_engine(&clauses);
+            eng.refire_bound = false;
+            let r = eng.decide(64);
+            let _ = tx.send((r, eng.stats.clone()));
+        });
+        let (r, stats) = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("FIFO ends on its own");
+        assert_eq!(r, HyperResult::Stalled);
+        assert!(
+            stats.merge_churn_stops > 0 && stats.refire_cap_stops == 0,
+            "{stats:?}"
         );
     }
 

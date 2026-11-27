@@ -6,6 +6,7 @@ Python bindings for the rustdl Rust crate. Install via
 https://github.com/MaastrichtU-IDS/rustdl for the full project.
 """
 
+import functools as _functools
 import warnings as _warnings
 
 # Native extension built by PyO3 + maturin
@@ -34,6 +35,8 @@ from rustdl._native import (
     class_expression_instances as _class_expression_instances_native,
     dropped_axioms as dropped_axioms,
     universal_role_ordinary as universal_role_ordinary,
+    conversion_notes as _conversion_notes_native,
+    _take_conversion_notes as _take_conversion_notes,
     RustdlError as RustdlError,
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
@@ -62,6 +65,7 @@ from ._results import (
     Root as Root,
     Derived as Derived,
     Inconsistency as Inconsistency,
+    Justifications as Justifications,
 )
 
 from . import examples as examples
@@ -115,6 +119,10 @@ class IncompleteClassificationWarning(UserWarning):
       fact did not apply in them (`result.wedge_abox_blind is True`, #533);
       `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` decides those classes on the main
       tableau;
+    * classify's probes did not instantiate some individual named in a TBox
+      nominal that has no ABox fact (`result.tbox_individuals_unseeded is True`,
+      #608);
+      `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1` seeds them;
     * the wedge cannot match some clauses' bodies
       (`result.wedge_clauses_refused > 0`): those clauses never fire (#353);
     * the wedge's clausifier deferred some encodings
@@ -229,6 +237,18 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             IncompleteClassificationWarning,
             stacklevel=3,
         )
+    if result.tbox_individuals_unseeded:
+        # #608: classify's probes left a TBox-only individual out, so completeness
+        # is not guaranteed.
+        _warnings.warn(
+            "the classification's probes did not instantiate some individual named "
+            "in TBox nominals, so a subsumption or an unsatisfiable class that "
+            "follows from what the TBox says about it may be missing. It is still "
+            "sound (no false subsumptions); check result.tbox_individuals_unseeded. "
+            "RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1 seeds those individuals, at a time cost.",
+            IncompleteClassificationWarning,
+            stacklevel=3,
+        )
     if result.wedge_clauses_refused:
         # #353: refused clauses never fire, so completeness is not guaranteed even
         # with no timeout.
@@ -268,8 +288,10 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
 class IncompleteQueryWarning(UserWarning):
     """Raised by the budgeted inferred queries (`disjoint_classes`,
     `same_individuals`, `different_individuals`, `object_property_values`)
-    when the reasoner's per-pair budget/probe was exhausted, so the returned
-    list is a sound under-approximation (no false pairs/groups/triples, but
+    when the reasoner's per-pair budget/probe was exhausted, or (#579) the
+    answer's completeness claim does not hold because conversion dropped an axiom
+    (`disjoint_classes`, `same_individuals`, `object_property_values`), so the
+    returned list is a sound under-approximation (no false pairs/groups/triples, but
     real ones may be missing). Mirrors `IncompleteClassificationWarning`'s
     convention for `classify`.
 
@@ -295,7 +317,8 @@ class IncompleteQueryWarning(UserWarning):
 def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
     if incomplete:
         _warnings.warn(
-            f"{name} result may be incomplete (budget/fragment exhausted) — "
+            f"{name} result may be incomplete (a budget cut, a fragment limit, or "
+            "axioms conversion dropped) — "
             "sound under-approximation: no false entries, but real ones may be "
             "missing.",
             IncompleteQueryWarning,
@@ -408,7 +431,8 @@ def _warn_if_answer_no_verdict(
 def _warn_if_query_incomplete_at(name: str, incomplete: bool, stacklevel: int) -> None:
     if incomplete:
         _warnings.warn(
-            f"{name} result may be incomplete (budget/fragment exhausted) — "
+            f"{name} result may be incomplete (a budget cut, a fragment limit, or "
+            "axioms conversion dropped) — "
             "sound under-approximation: no false entries, but real ones may be "
             "missing.",
             IncompleteQueryWarning,
@@ -440,28 +464,126 @@ def _warn_if_explanation_incomplete(name: str, incomplete: bool, depth_capped: b
         )
 
 
+class MinimalityNotGuaranteedWarning(UserWarning):
+    """A justification is not guaranteed minimal (#625): it entails the query, but a
+    smaller subset may too. Emitted by `justify`, `justify_all` (one warning per call,
+    naming the justifications), their `*_result` forms, the `PreparedOntology` forms
+    and `debug` (once), when the ontology is outside the EL/Horn fragment (where no
+    minimality is guaranteed) or the search ran on the saturation-only consistency
+    oracle (#584, an `inconsistent` query whose clash the `ABox` saturator finds;
+    `RUSTDL_JUSTIFY_SAT_ORACLE=0` turns it off). For `justify_all` it also says the
+    enumeration may miss a justification. A subset probe that gave up is
+    `IncompleteQueryWarning`'s and is not repeated here. The `*_result` forms carry
+    the per-justification `minimal` flags.
+
+    New in #625, so these functions now warn where they used to be silent: on most
+    ontologies outside EL/Horn, every non-empty answer warns, as the CLI's
+    "minimality NOT guaranteed" note does. Under `-W error` they raise;
+    `warnings.filterwarnings("ignore", category=rustdl.MinimalityNotGuaranteedWarning)`
+    restores the old behaviour."""
+
+
+def _justifications(native: dict) -> Justifications:
+    return Justifications(
+        justifications=tuple(tuple(j) for j in native["justifications"]),
+        minimal=tuple(native["minimal"]),
+        enumeration_complete=native["enumeration_complete"],
+        incomplete=native["incomplete"],
+        relies_on_trusted_consistency=native["relies_on_trusted_consistency"],
+        depth_capped=native["depth_capped"],
+        saturation_oracle=native["saturation_oracle"],
+        in_fragment=native["in_fragment"],
+    )
+
+
+def _minimality_causes(r: Justifications) -> list:
+    """The causes `MinimalityNotGuaranteedWarning` names (a give-up is
+    `IncompleteQueryWarning`'s)."""
+    causes = []
+    if r.saturation_oracle:
+        causes.append("the search ran on the saturation-only consistency oracle (#584)")
+    if not r.in_fragment:
+        causes.append("the ontology is outside the EL/Horn fragment")
+    return causes
+
+
+def _warn_if_not_minimal(name: str, r: Justifications, every: bool, stacklevel: int) -> None:
+    """#625: one warning per call. `every`: a `justify_all` form (names the
+    justifications, and says the enumeration may miss one)."""
+    unguaranteed = [i for i, m in enumerate(r.minimal) if not m]
+    causes = _minimality_causes(r)
+    if not unguaranteed or not causes:
+        return
+    which = (
+        "justification(s) " + ", ".join(str(i) for i in unguaranteed)
+        if every
+        else "the justification"
+    )
+    tail = ", and a justification may be missing from the enumeration" if every else ""
+    _warnings.warn(
+        f"{name}: minimality is not guaranteed for {which} ({'; '.join(causes)}): each "
+        f"still entails the query, but a smaller subset may too{tail} "
+        "(see MinimalityNotGuaranteedWarning).",
+        MinimalityNotGuaranteedWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def _first(r: Justifications) -> list:
+    return list(r.justifications[0]) if r.justifications else []
+
+
+def justify_result(path, query):
+    """`justify` as a `Justifications` result (#625): the justification (at most
+    one) with its `minimal` flag and the search's signals. Emits the same warnings
+    as `justify`."""
+    r = _justifications(_justify_native(path, query))
+    _warn_if_explanation_incomplete("justify_result", r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted("justify_result", r.relies_on_trusted_consistency)
+    _warn_if_not_minimal("justify_result", r, every=False, stacklevel=4)
+    return r
+
+
 def justify(path, query):
-    """One minimal justification (Manchester axioms) for `query` (CLI-style
-    tokens, e.g. ["unsat", c] / ["subclass", s, t] / ["inconsistent"]). Empty if
-    not entailed. Emits `IncompleteQueryWarning` when a reasoner check gave up:
-    an empty list then means unknown, and a justification may not be minimal.
-    Emits `TrustedConsistencyWarning` (#429) when a check answered "not entailed"
-    on the consistency wedge's model alone: an empty list may then be wrong, and
-    a justification may not be minimal."""
-    axioms, incomplete, trusted, depth_capped = _justify_native(path, query)
-    _warn_if_explanation_incomplete("justify", incomplete, depth_capped)
-    _warn_if_oracle_trusted("justify", trusted)
-    return axioms
+    """One justification (Manchester axioms) for `query` (CLI-style tokens, e.g.
+    ["unsat", c] / ["subclass", s, t] / ["inconsistent"]): a set of axioms that
+    entails it, minimal when the ontology is EL or Horn and nothing below gave up
+    (#625; `justify_result` returns the flag). Empty if not entailed. Emits
+    `IncompleteQueryWarning` when a reasoner check gave up: an empty list then
+    means unknown, and a justification may not be minimal. Emits
+    `TrustedConsistencyWarning` (#429) when a check answered "not entailed" on the
+    consistency wedge's model alone: an empty list may then be wrong, and a
+    justification may not be minimal. Emits `MinimalityNotGuaranteedWarning` when
+    minimality is not guaranteed for another reason."""
+    r = _justifications(_justify_native(path, query))
+    _warn_if_explanation_incomplete("justify", r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted("justify", r.relies_on_trusted_consistency)
+    _warn_if_not_minimal("justify", r, every=False, stacklevel=4)
+    return _first(r)
+
+
+def justify_all_result(path, query, max=10):
+    """`justify_all` as a `Justifications` result (#625): up to `max`
+    justifications, one `minimal` flag each, and `enumeration_complete`. Emits the
+    same warnings as `justify_all`."""
+    r = _justifications(_justify_all_native(path, query, max))
+    _warn_if_explanation_incomplete("justify_all_result", r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted("justify_all_result", r.relies_on_trusted_consistency)
+    _warn_if_not_minimal("justify_all_result", r, every=True, stacklevel=4)
+    return r
 
 
 def justify_all(path, query, max=10):
-    """Up to `max` minimal justifications for `query`. Emits
-    `IncompleteQueryWarning` when a reasoner check gave up (see `justify`; some
-    justifications may also be missing)."""
-    js, incomplete, trusted, depth_capped = _justify_all_native(path, query, max)
-    _warn_if_explanation_incomplete("justify_all", incomplete, depth_capped)
-    _warn_if_oracle_trusted("justify_all", trusted)
-    return js
+    """Up to `max` justifications for `query`, each a set of axioms that entails it
+    (minimal under the conditions `justify` states; `justify_all_result` returns the
+    flags and whether the enumeration is complete). Emits `IncompleteQueryWarning`
+    when a reasoner check gave up (see `justify`; some justifications may also be
+    missing), and `MinimalityNotGuaranteedWarning` (#625)."""
+    r = _justifications(_justify_all_native(path, query, max))
+    _warn_if_explanation_incomplete("justify_all", r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted("justify_all", r.relies_on_trusted_consistency)
+    _warn_if_not_minimal("justify_all", r, every=True, stacklevel=4)
+    return [list(j) for j in r.justifications]
 
 
 def diagnose(path):
@@ -498,32 +620,64 @@ def repair(path, query, max=10):
     return repairs
 
 
+def _prepared_justify_result(self: "PreparedOntology", query):
+    """`PreparedOntology.justify` as a `Justifications` result (#625). Emits the same
+    warnings."""
+    name = "PreparedOntology.justify_result"
+    r = _justifications(self._justify_reporting(query))
+    _warn_if_explanation_incomplete(name, r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted(name, r.relies_on_trusted_consistency)
+    _warn_if_not_minimal(name, r, every=False, stacklevel=3)
+    _warn_if_dropped(name, self.dropped)
+    _warn_if_universal_role(name, self.universal_role_ordinary)
+    return r
+
+
 def _prepared_justify(self: "PreparedOntology", query):
-    """One minimal justification (Manchester axioms) for `query`. Emits
-    `IncompleteQueryWarning` when a reasoner check gave up (see
-    `rustdl.justify`)."""
-    axioms, incomplete, trusted, depth_capped = self._justify_reporting(query)
-    _warn_if_explanation_incomplete("PreparedOntology.justify", incomplete, depth_capped)
-    _warn_if_oracle_trusted("PreparedOntology.justify", trusted)
-    _warn_if_universal_role("PreparedOntology.justify", self.universal_role_ordinary)
-    return axioms
+    """One justification (Manchester axioms) for `query` (see `rustdl.justify`).
+    Emits `IncompleteQueryWarning` when a reasoner check gave up, and
+    `MinimalityNotGuaranteedWarning` (#625)."""
+    name = "PreparedOntology.justify"
+    r = _justifications(self._justify_reporting(query))
+    _warn_if_explanation_incomplete(name, r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted(name, r.relies_on_trusted_consistency)
+    _warn_if_not_minimal(name, r, every=False, stacklevel=3)
+    _warn_if_dropped(name, self.dropped)
+    _warn_if_universal_role(name, self.universal_role_ordinary)
+    return _first(r)
+
+
+def _prepared_justify_all_result(self: "PreparedOntology", query, max=10):
+    """`PreparedOntology.justify_all` as a `Justifications` result (#625). Emits the
+    same warnings."""
+    name = "PreparedOntology.justify_all_result"
+    r = _justifications(self._justify_all_reporting(query, max))
+    _warn_if_explanation_incomplete(name, r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted(name, r.relies_on_trusted_consistency)
+    _warn_if_not_minimal(name, r, every=True, stacklevel=3)
+    _warn_if_dropped(name, self.dropped)
+    _warn_if_universal_role(name, self.universal_role_ordinary)
+    return r
 
 
 def _prepared_justify_all(self: "PreparedOntology", query, max=10):
-    """Up to `max` minimal justifications for `query`. Emits
-    `IncompleteQueryWarning` when a reasoner check gave up (see
-    `rustdl.justify_all`)."""
-    js, incomplete, trusted, depth_capped = self._justify_all_reporting(query, max)
-    _warn_if_explanation_incomplete(
-        "PreparedOntology.justify_all", incomplete, depth_capped
-    )
-    _warn_if_oracle_trusted("PreparedOntology.justify_all", trusted)
-    _warn_if_universal_role("PreparedOntology.justify_all", self.universal_role_ordinary)
-    return js
+    """Up to `max` justifications for `query` (see `rustdl.justify_all`). Emits
+    `IncompleteQueryWarning` when a reasoner check gave up, and
+    `MinimalityNotGuaranteedWarning` (#625)."""
+    name = "PreparedOntology.justify_all"
+    r = _justifications(self._justify_all_reporting(query, max))
+    _warn_if_explanation_incomplete(name, r.incomplete, r.depth_capped)
+    _warn_if_oracle_trusted(name, r.relies_on_trusted_consistency)
+    _warn_if_not_minimal(name, r, every=True, stacklevel=3)
+    _warn_if_dropped(name, self.dropped)
+    _warn_if_universal_role(name, self.universal_role_ordinary)
+    return [list(j) for j in r.justifications]
 
 
 PreparedOntology.justify = _prepared_justify  # type: ignore[attr-defined]
 PreparedOntology.justify_all = _prepared_justify_all  # type: ignore[attr-defined]
+PreparedOntology.justify_result = _prepared_justify_result  # type: ignore[attr-defined]
+PreparedOntology.justify_all_result = _prepared_justify_all_result  # type: ignore[attr-defined]
 
 
 def is_consistent(path):
@@ -621,6 +775,12 @@ def _warn_if_classification_universal(result: "Classification") -> "Classificati
     return result
 
 
+def _warn_if_classification_dropped(result: "Classification") -> "Classification":
+    # #597: the drops ride on the result, so no second conversion.
+    _warn_if_dropped("classify", result.dropped, stacklevel=4)
+    return result
+
+
 def _warn_if_classification_trusted(result: "Classification") -> "Classification":
     _warn_if_trusted_wedge_consistency(
         "classify", result.relies_on_trusted_consistency, stacklevel=4
@@ -629,30 +789,70 @@ def _warn_if_classification_trusted(result: "Classification") -> "Classification
 
 
 class DroppedAxiomsWarning(UserWarning):
-    """Emitted by the class-expression queries (`class_expression_satisfiable`,
-    `class_expression_entailed_subclass`, `class_expression_instances` and their
-    `*_result` forms) when conversion dropped axioms it could not represent, from the
-    ontology or from the query expression itself (#552). The engine then reasoned
-    over a strictly weaker KB: the answer is sound, but a "satisfiable", a "not
-    entailed" or a missing member may be wrong in that direction. The `*_result`
-    forms carry the kinds in `dropped` and read `completeness_guaranteed: False`.
-    Not an `IncompleteQueryWarning`: nothing was cut.
+    """Conversion dropped axioms it could not represent (an unsupported construct is
+    recorded and skipped, never an error), so the engine reasoned over a strictly
+    weaker KB: what the answer entails holds, but an entailment may be missing (a
+    "satisfiable", a "not entailed", a "consistent" or a missing member, type, value
+    or justification may be wrong in that direction). Not an `IncompleteQueryWarning`:
+    nothing was cut.
 
-    New in #552, so the bare functions now warn where they used to be silent (under
-    `-W error` they raise). The other Python queries do not warn on dropped axioms
-    yet (#597); `dropped_axioms(path)` reports the ontology's own drops."""
+    Emitted by every query (#597): `classify` / `classify_bytes` (the kinds are in
+    `Classification.dropped`), the class-expression queries and their `*_result`
+    forms (#552; the drops include the query expression's own, and the result's
+    `dropped` carries them), `PreparedOntology.justify` / `justify_all`
+    (`PreparedOntology.dropped`), and every other path-taking query (`is_consistent`,
+    `is_class_satisfiable`, `is_subclass_of`, `is_instance_of`, `instances_of`,
+    `realize`, the `materialize_*` functions, the hierarchy, disjointness,
+    same/different-individual and property-value queries, `justify`,
+    `justify_all`, `diagnose`, `repair` and `debug`).
+    `dropped_axioms(path)` reports the same kinds without a query.
+
+    A proved inconsistency does not silence it, as on the CLI: a repair or a
+    justification found over the weaker KB may not be one of the full KB.
+
+    Those path-taking queries take the drops from the query's own parse: the native
+    converts the parsed ontology once more (`is_consistent`, `is_class_satisfiable`
+    and `is_subclass_of` only when something was dropped, since their query reports
+    the count), and never parses the file a second time. `debug` warns once, after
+    its own queries.
+
+    Behaviour change: before #597 only the class-expression queries warned, so the
+    others now warn where they used to be silent, and under `-W error` (or
+    `warnings.simplefilter("error")`) they raise on an ontology with dropped axioms.
+    Filter by this category to keep the old behaviour:
+    `warnings.filterwarnings("ignore", category=rustdl.DroppedAxiomsWarning)`."""
 
 
-def _warn_if_dropped(name: str, dropped: tuple) -> None:
-    if dropped:
-        kinds = ", ".join(f"{k} ×{n}" for k, n in dropped)
+def _warn_if_dropped(name: str, dropped, stacklevel: int = 3) -> None:
+    """`dropped` is a dict (kind → count) or `(kind, count)` pairs."""
+    pairs = sorted(dropped.items()) if isinstance(dropped, dict) else list(dropped)
+    if pairs:
+        kinds = ", ".join(f"{k} ×{n}" for k, n in pairs)
         _warnings.warn(
-            f"{name}: {sum(n for _, n in dropped)} axiom(s) not understood and dropped "
-            f"({kinds}); the answer is a sound under-approximation "
-            "(see DroppedAxiomsWarning).",
+            f"{name}: {sum(n for _, n in pairs)} axiom(s) not understood and dropped "
+            f"({kinds}); the answer is computed over a weaker ontology, so an "
+            "entailment may be missing (see DroppedAxiomsWarning).",
             DroppedAxiomsWarning,
-            stacklevel=3,
+            stacklevel=stacklevel,
         )
+
+
+def _conversion_notes(path):
+    """#597: `(dropped pairs, universal_role_ordinary, ..._for_roles)` by a parse
+    and conversion of its own: the fallback for a native query that did not record
+    its notes (see `_with_conversion_notes`)."""
+    dropped, uro, uro_for_roles = _conversion_notes_native(path)
+    return tuple(sorted(dropped.items())), uro, uro_for_roles
+
+
+def _query_notes(path):
+    """The notes the native query just recorded from its own parse, or the
+    fallback."""
+    notes = _take_conversion_notes()
+    if notes is None:
+        return _conversion_notes(path)
+    dropped, uro, uro_for_roles = notes
+    return tuple(sorted(dropped.items())), uro, uro_for_roles
 
 
 class ConsistencyUndeterminedWarning(UserWarning):
@@ -1000,7 +1200,9 @@ def data_property_hierarchy(path):
 def disjoint_classes(path):
     """Entailed disjoint named-class pairs `(c, d)` — `C ⊓ D` is proven
     unsatisfiable. Bounded by a 1s per-pair deadline; emits
-    `IncompleteQueryWarning` when the budget was exhausted (see
+    `IncompleteQueryWarning` when the budget was exhausted, or when classify's
+    completeness guarantee does not hold (outside pure EL, or conversion dropped an
+    axiom, an unresolved `Import` included since #579; see
     `IncompleteQueryWarning`)."""
     pairs, incomplete = _disjoint_classes_native(path)
     _warn_if_query_incomplete("disjoint_classes", incomplete)
@@ -1012,7 +1214,9 @@ def same_individuals(path):
     functional-forced + entailed). Bounded by a 1s per-pair deadline; emits
     `IncompleteQueryWarning` when the budget was exhausted (see
     `IncompleteQueryWarning`) — note this fires whenever ANY extension probe
-    beyond the sound-complete seed ran, even if no new group was found."""
+    beyond the seed ran, even if no new group was found, and (#579) whenever
+    conversion dropped an axiom: the seed is complete only for the converted
+    axioms."""
     groups, incomplete, undetermined = _same_individuals_native(path)
     _warn_if_query_incomplete("same_individuals", incomplete)
     _warn_if_consistency_undetermined("same_individuals", undetermined)
@@ -1033,8 +1237,10 @@ def different_individuals(path):
 def object_property_values(path):
     """Inferred object property values `(subject, property, object)` over
     named individuals. Bounded by a 1s per-pair deadline; emits
-    `IncompleteQueryWarning` when the budget was exhausted (see
-    `IncompleteQueryWarning`), and `ConsistencyUndeterminedWarning` (#369)."""
+    `IncompleteQueryWarning` when the budget was exhausted, an axiom lies outside
+    the edge-complete whitelist, the bounded extension ran, or (#579) conversion
+    dropped an axiom (see `IncompleteQueryWarning`), and
+    `ConsistencyUndeterminedWarning` (#369)."""
     triples, incomplete, undetermined = _object_property_values_native(path)
     _warn_if_query_incomplete("object_property_values", incomplete)
     _warn_if_consistency_undetermined("object_property_values", undetermined)
@@ -1214,14 +1420,14 @@ def classify(
 
     `global_deadline_ms` is a deprecated alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_classification_universal(_warn_if_classification_trusted(_warn_if_incomplete(
+    return _warn_if_classification_universal(_warn_if_classification_dropped(_warn_if_classification_trusted(_warn_if_incomplete(
         _classify_native(
             path,
             per_pair_timeout_ms=per_pair_timeout_ms,
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    )))
+    ))))
 
 
 def classify_bytes(
@@ -1238,7 +1444,7 @@ def classify_bytes(
     timeout/completeness semantics. `global_deadline_ms` is a deprecated
     alias for `global_timeout_ms`."""
     global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
-    return _warn_if_classification_universal(_warn_if_classification_trusted(_warn_if_incomplete(
+    return _warn_if_classification_universal(_warn_if_classification_dropped(_warn_if_classification_trusted(_warn_if_incomplete(
         _classify_bytes_native(
             data,
             format=format,
@@ -1246,7 +1452,7 @@ def classify_bytes(
             global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
-    )))
+    ))))
 
 
 def debug(path):
@@ -1261,7 +1467,55 @@ def debug(path):
     derived=[Derived...], inconsistency=None). Inconsistent → consistent=False, empties,
     inconsistency=Inconsistency(...). Read-only; sound by construction. Emits
     `IncompleteQueryWarning` when a reasoner check under it gave up (#396), through
-    `diagnose`, `justify` and `repair`."""
+    `diagnose`, `justify` and `repair`, and `DroppedAxiomsWarning` /
+    `UniversalRoleWarning` once, after them (#597)."""
+    _take_conversion_notes()
+    seen = []
+
+    def _justify_quietly(p, q):
+        # #625: the minimality warning is `debug`'s, once; the others stay per call.
+        r = _justifications(_justify_native(p, q))
+        _warn_if_explanation_incomplete("justify", r.incomplete, r.depth_capped)
+        _warn_if_oracle_trusted("justify", r.relies_on_trusted_consistency)
+        seen.append(r)
+        return r
+
+    result = _debug(
+        path,
+        getattr(diagnose, "__wrapped__", diagnose),
+        _justify_quietly,
+        getattr(repair, "__wrapped__", repair),
+    )
+    dropped, uro, _ = _query_notes(path)
+    _warn_if_dropped("debug", dropped, stacklevel=3)
+    _warn_if_universal_role("debug", uro, stacklevel=3)
+    unguaranteed = [r for r in seen if r.minimal and not r.minimal[0]]
+    causes = sorted({c for r in unguaranteed for c in _minimality_causes(r)})
+    if causes:
+        _warnings.warn(
+            f"debug: minimality is not guaranteed for {len(unguaranteed)} "
+            f"justification(s) ({'; '.join(causes)}): each still entails, but a "
+            "smaller subset may too; `minimal` on each Root / Inconsistency says which "
+            "(see MinimalityNotGuaranteedWarning).",
+            MinimalityNotGuaranteedWarning,
+            stacklevel=2,
+        )
+    return result
+
+
+def _section(cls, j: Justifications, **fields):
+    """#625: a `Root` / `Inconsistency` from a `Justifications` (at most one)."""
+    return cls(
+        justification=j.justifications[0] if j.justifications else (),
+        # Nothing found (a give-up) claims no minimality.
+        minimal=j.minimal[0] if j.minimal else False,
+        **fields,
+    )
+
+
+def _debug(path, diagnose, justify, repair):
+    # The callers pass the unwrapped queries, so their conversion notes are not
+    # warned once per call (#597): `debug` warns them once.
     consistent, roots, derived = diagnose(path)
     if not consistent:
         return Diagnosis(
@@ -1269,15 +1523,15 @@ def debug(path):
             unsatisfiable=(),
             roots=(),
             derived=(),
-            inconsistency=Inconsistency(
-                justification=tuple(justify(path, ["inconsistent"])),
+            inconsistency=_section(
+                Inconsistency, justify(path, ["inconsistent"]),
                 repairs=tuple(tuple(r) for r in repair(path, ["inconsistent"], 10)),
             ),
         )
     root_objs = tuple(
-        Root(
+        _section(
+            Root, justify(path, ["unsat", r]),
             iri=r,
-            justification=tuple(justify(path, ["unsat", r])),
             repairs=tuple(tuple(x) for x in repair(path, ["unsat", r], 10)),
             derives=tuple(d for (d, rs) in derived if r in rs),
         )
@@ -1314,9 +1568,24 @@ def _warn_if_universal_role(name: str, flagged: bool, stacklevel: int = 3) -> No
         )
 
 
+# #543: the role-level functions, which take the role-level flag (a role above a top
+# property, or since #624 a property disjointness with a universal member: role
+# consequences these functions do not list), as the CLI's role-level commands do
+# (`property-values`, `property-hierarchy`, `disjoint`, `individuals`). #619: the list
+# used to stop at the first two.
 _ROLE_LEVEL = frozenset({
     "object_property_values",
+    "data_property_values",
     "materialize_inferred_property_assertions",
+    "materialize_inferred_data_property_assertions",
+    "materialize_inferred_subobjectproperty_axioms",
+    "materialize_inferred_subdataproperty_axioms",
+    "object_property_hierarchy",
+    "data_property_hierarchy",
+    "disjoint_object_properties",
+    "disjoint_data_properties",
+    "same_individuals",
+    "different_individuals",
 })
 
 
@@ -1325,31 +1594,36 @@ _ROLE_LEVEL = frozenset({
 _MASKED_BY_INCONSISTENCY = {"is_consistent": lambda consistent: consistent}
 
 
-def _with_universal_role_note(name, fn):
-    """Wrap a path-taking query so it warns `UniversalRoleWarning` after answering.
-    `universal_role_ordinary` searches the file's bytes first, so an ontology that
-    names neither top property is not parsed again."""
-    import functools
+def _with_conversion_notes(name, fn):
+    """Wrap a path-taking query so it warns `DroppedAxiomsWarning` (#597) and
+    `UniversalRoleWarning` (#543) after answering, from the notes its native recorded
+    from its own parse (`_query_notes`). A proved inconsistency masks only the
+    universal role."""
 
-    @functools.wraps(fn)
+    @_functools.wraps(fn)
     def wrapper(path, *args, **kwargs):
+        _take_conversion_notes()  # discard any left by a query that raised
         result = fn(path, *args, **kwargs)
-        if not _MASKED_BY_INCONSISTENCY.get(name, lambda _r: True)(result):
-            return result
-        _warn_if_universal_role(
-            name, universal_role_ordinary(path, role_level=name in _ROLE_LEVEL), stacklevel=3
-        )
+        dropped, uro, uro_for_roles = _query_notes(path)
+        _warn_if_dropped(name, dropped, stacklevel=3)
+        if _MASKED_BY_INCONSISTENCY.get(name, lambda _r: True)(result):
+            _warn_if_universal_role(
+                name, uro_for_roles if name in _ROLE_LEVEL else uro, stacklevel=3
+            )
         return result
 
     return wrapper
 
 
-# #543: every path-taking surface whose answer can be a definite negative or an
-# incomplete list. `classify` / `classify_bytes` read the flag off the result
-# instead (no second conversion); `debug` warns through `diagnose`.
+# #543/#597: every path-taking surface whose answer can be a definite negative or an
+# incomplete list. `classify` / `classify_bytes` read the flags off the result
+# instead (no second conversion); `debug` calls the unwrapped queries and warns
+# once itself; the class-expression queries read `dropped` off their own result.
 for _name in (
     "justify",
     "justify_all",
+    "justify_result",
+    "justify_all_result",
     "diagnose",
     "repair",
     "is_consistent",
@@ -1375,7 +1649,7 @@ for _name in (
     "object_property_values",
     "data_property_values",
 ):
-    globals()[_name] = _with_universal_role_note(_name, globals()[_name])
+    globals()[_name] = _with_conversion_notes(_name, globals()[_name])
 del _name
 
 
@@ -1432,6 +1706,10 @@ __all__ = [
     "materialize_existential_successors",
     "justify",
     "justify_all",
+    "justify_result",
+    "justify_all_result",
+    "Justifications",
+    "MinimalityNotGuaranteedWarning",
     "diagnose",
     "repair",
     "render_manchester",

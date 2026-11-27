@@ -117,7 +117,8 @@ fn individuals_text_output() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(
         stderr,
-        "warning: individuals incomplete (budget/fragment) — sound under-approximation\n"
+        "warning: individuals incomplete (budget, fragment or dropped axioms) — sound \
+         under-approximation\n"
     );
 }
 

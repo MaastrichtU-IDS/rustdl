@@ -13,10 +13,11 @@
 //! from a satisfying model).
 //!
 //! **Data values**: structural passthrough only (v1 boundary) —
-//! `materialize_data_property_assertions`'s 5-tuples with `lang` dropped to a
-//! 4-tuple. No entailment probe; `incomplete` is always `false` (complete for
-//! that structural fragment, same as `materialize_data_property_assertions`
-//! itself).
+//! `materialize_data_property_assertions`'s 5-tuples (the language tag kept,
+//! #72). No entailment probe; `incomplete` is always `false`, since it means only
+//! that a probe was cut and none runs. What the passthrough cannot see is reported
+//! as structural gaps (`property_structural_gaps(..).data_values()`), including
+//! `data-dropped-axioms` when conversion dropped anything (#579).
 use crate::{PreparedOntology, ReasonError};
 use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
@@ -44,8 +45,9 @@ impl ObjectPropertyValues {
         &self.triples
     }
 
-    /// `true` iff: the ontology contains an axiom outside
-    /// [`object_property_edge_complete`]'s whitelist — the sound
+    /// `true` iff: conversion dropped an axiom (#579: `dropped` is non-empty, e.g.
+    /// an unresolved `Import` or a SWRL rule); OR the ontology contains an axiom
+    /// outside [`object_property_edge_complete`]'s whitelist — the sound
     /// over-approximation of the `ABox` saturator's (`abox_saturation::
     /// saturate_abox_consistency`, which this query's seed actually runs)
     /// genuinely edge-complete fragment (e.g. a conjunctive antecedent
@@ -58,8 +60,8 @@ impl ObjectPropertyValues {
     /// entailed edges between individuals that never co-occur in a seed edge
     /// — may be missed whenever this is `true`. `false` is a genuine
     /// guarantee: every entailed object-property edge over named individuals
-    /// is included. It requires BOTH that every axiom is in
-    /// `object_property_edge_complete`'s whitelist AND that the bounded
+    /// is included. It requires that nothing was dropped, that every axiom is in
+    /// `object_property_edge_complete`'s whitelist, AND that the bounded
     /// extension found no candidate pair to probe at all.
     #[must_use]
     pub fn incomplete(&self) -> bool {
@@ -114,8 +116,10 @@ impl DataPropertyValues {
     }
 
     /// Always `false`: `inferred_data_property_values` is a pure structural
-    /// passthrough over `materialize_data_property_assertions`, which is
-    /// complete for its own (structural) fragment. Kept as a field (not a
+    /// passthrough over `materialize_data_property_assertions` and runs no probe
+    /// that a deadline could cut. It is NOT a completeness claim: the routes the
+    /// passthrough ignores, a dropped axiom among them (#579), are reported by
+    /// `property_structural_gaps(..).data_values()`. Kept as a field (not a
     /// constant) so the type stays parallel to `ObjectPropertyValues` and free
     /// to grow a real entailment extension later without an API break.
     #[must_use]
@@ -422,12 +426,19 @@ fn is_edge_complete_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
 /// doc block above for the full whitelist and per-shape justification. A
 /// sound OVER-approximation: `false` whenever any axiom's capture is not
 /// proven (never the reverse).
+///
+/// #579: also `false` whenever conversion dropped anything (`internal.dropped`:
+/// an unresolved `Import`, a SWRL rule, `HasKey`, …). The whitelist only sees
+/// the axioms that survived conversion, and a dropped one can entail an edge
+/// (`r(?x,?y) -> s(?x,?y)`), so certifying the converted KB would be the D10
+/// shape: a gate certifying a theory the converter truncated.
 pub(crate) fn object_property_edge_complete(internal: &InternalOntology) -> bool {
     let pool = &internal.concepts;
-    internal
-        .axioms
-        .iter()
-        .all(|ax| is_edge_complete_axiom(ax, pool))
+    internal.dropped.is_empty()
+        && internal
+            .axioms
+            .iter()
+            .all(|ax| is_edge_complete_axiom(ax, pool))
 }
 
 /// Inferred OBJECT property values over named individuals: the sound

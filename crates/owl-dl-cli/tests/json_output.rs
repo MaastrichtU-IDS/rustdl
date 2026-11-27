@@ -1080,6 +1080,50 @@ fn structural_property_surfaces_report_their_gaps() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains("structural"));
 }
 
+/// #608: `{b} ⊑ ∃S.{a}` with no `ABox`. Classify's probes do not seed `b` at the
+/// default, so they miss `X ⊑ D` (`HermiT` and Konclude derive it); that is reported
+/// in its own field and warned about, while `incomplete` keeps meaning "a class pair or
+/// probe was cut". With `RUSTDL_CLASSIFY_TBOX_INDIVIDUALS=1` the probes seed `b`, find
+/// the pair, and the field is false.
+#[test]
+fn classify_reports_unseeded_tbox_individuals_in_their_own_field() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/tbox_individuals_unseeded_t1.ofn"
+    );
+    let run = |seed: &str| {
+        let out = rustdl()
+            .args(["classify", "--json", "--pair-timeout-ms", "2000", fixture])
+            .env("RUSTDL_CLASSIFY_TBOX_INDIVIDUALS", seed)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let warned = String::from_utf8_lossy(&out.stderr).contains("(#608)");
+        (
+            serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap(),
+            warned,
+        )
+    };
+    let (unseeded, warned) = run("0");
+    assert_eq!(unseeded["tbox_individuals_unseeded"], true);
+    assert!(warned, "the default warns on stderr");
+    assert_eq!(unseeded["incomplete"], false, "nothing was cut");
+    assert_eq!(unseeded["completeness_guaranteed"], false);
+    assert_eq!(unseeded["direct_subsumptions"], serde_json::json!([]));
+
+    let (seeded, warned) = run("1");
+    assert_eq!(seeded["tbox_individuals_unseeded"], false);
+    assert!(!warned);
+    assert_eq!(
+        seeded["direct_subsumptions"],
+        serde_json::json!([["http://ex/#X", "http://ex/#D"]])
+    );
+}
+
 /// #533: classify's wedge was not given `S(b, a)` (an object-property assertion, fed
 /// only under `RUSTDL_CLASSIFY_NOMINAL_OPA=1`), and `X`'s model touches `{a}`, so its
 /// trusted `Sat` hides `X ⊑ D` (`HermiT` and Konclude derive it). That is reported in

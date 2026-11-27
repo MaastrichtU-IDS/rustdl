@@ -77,6 +77,11 @@ fn expected() -> Vec<FlagRow> {
     vec![
         // ── owl-dl-core ──────────────────────────────────────────────────
         (
+            "RUSTDL_UNIVERSAL_ROLE_FOLD",
+            owl_dl_core::top_bottom_roles::fold_enabled as fn() -> bool,
+            true,
+        ),
+        (
             "RUSTDL_DOMAIN_ABSORPTION",
             owl_dl_core::absorb::domain_absorption_enabled as fn() -> bool,
             true,
@@ -291,6 +296,13 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::wedge_merge_churn_guard_enabled,
             true,
         ),
+        // #620: in a deadline-free wedge decide, the #376 re-fire loop stops with
+        // `Stalled` on churn across its passes or after 1,024 passes. `=0` reverts.
+        (
+            "RUSTDL_WEDGE_REFIRE_BOUND",
+            owl_dl_tableau::wedge_refire_bound_enabled,
+            true,
+        ),
         (
             "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
             owl_dl_reasoner::property_asymmetric_disjoint_enabled,
@@ -471,6 +483,11 @@ fn expected() -> Vec<FlagRow> {
             "RUSTDL_QUERY_TBOX_INDIVIDUALS",
             owl_dl_reasoner::query_tbox_individuals_enabled,
             true,
+        ),
+        (
+            "RUSTDL_CLASSIFY_TBOX_INDIVIDUALS",
+            owl_dl_reasoner::classify_tbox_individuals_enabled,
+            false,
         ),
         (
             "RUSTDL_WEDGE_BODY_DECOMPOSE",

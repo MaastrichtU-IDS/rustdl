@@ -152,7 +152,7 @@ fn each_condition_alone_voids_the_guarantee() {
     );
 
     type Flip = fn(&mut ClassificationStats);
-    let rows: [(&str, Flip); 11] = [
+    let rows: [(&str, Flip); 12] = [
         ("fragment Horn (#124)", |s| {
             s.fragment = FragmentClassification::Horn;
         }),
@@ -165,6 +165,11 @@ fn each_condition_alone_voids_the_guarantee() {
         }),
         ("wedge_abox_blind (#533)", |s| {
             s.wedge_abox_blind = true;
+        }),
+        // #608: unreachable beside `PureEl` today (PureEl admits no nominal, so no
+        // individual is named only in one); pinned all the same.
+        ("tbox_individuals_unseeded (#608)", |s| {
+            s.tbox_individuals_unseeded = true;
         }),
         ("wedge_clauses_refused (#353)", |s| {
             s.wedge_clauses_refused = 1;
@@ -187,7 +192,7 @@ fn each_condition_alone_voids_the_guarantee() {
             s.universal_role_ordinary = true;
         }),
     ];
-    // Nine conditions; the fragment condition has two failing values. Keep the
+    // Eleven conditions; the fragment condition has two failing values. Keep the
     // rows in step with the predicate and the ledger.
 
     for (name, flip) in rows {

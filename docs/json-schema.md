@@ -46,7 +46,8 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "prep_timed_out": bool, "conversion_timed_out": bool, "parse_timed_out": bool,
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
   "wedge_hierarchy_blind": bool, "wedge_abox_blind": bool,
-  "wedge_abox_demoted": int, "consistency_undetermined": bool,
+  "wedge_abox_demoted": int, "tbox_individuals_unseeded": bool,
+  "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "depth_capped_pairs": int,
   "wedge_clauses_deferred": int,
@@ -109,7 +110,8 @@ no such flag: the Python API parses before any budget applies.
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where
 the engine that answered is provably complete (pure EL), and only when no pair
-was cut (`incomplete` is false), `wedge_hierarchy_blind`, `wedge_abox_blind` and `consistency_undetermined` are false,
+was cut (`incomplete` is false), `wedge_hierarchy_blind`, `wedge_abox_blind`,
+`tbox_individuals_unseeded` and `consistency_undetermined` are false,
 `wedge_clauses_refused` and `derived_same_undecided` are 0, and `dropped` is
 empty. `docs/assurance/completeness-guarantee-ledger.md` lists each condition
 with its source issue and test.
@@ -135,6 +137,16 @@ models are demoted to the main tableau instead, counted in `wedge_abox_demoted`
 with both a nominal and an `ABox`: it is set on 353 of the 374 consistent ORE
 ontologies of that kind that finish at 60 s (every one of which already had
 `completeness_guaranteed: false`).
+
+`tbox_individuals_unseeded` = some classify probe did not instantiate an individual
+named in a `TBox` nominal (`{b}`, `ObjectHasValue(S b)`) that has no `ABox` fact: no
+`ABox` axiom at all, or (for the wedge) only `DifferentIndividuals`, because
+`RUSTDL_CLASSIFY_TBOX_INDIVIDUALS` is off, the default (#608). Every named individual
+exists in every model, so what the `TBox` says about it (`{b} ⊑ ∃S.{a}`) can force a
+subsumption or an unsatisfiable class that classify then misses while `subclass`
+finds it. A separate field: nothing was cut, so it does not set `incomplete`. The
+flag seeds those individuals and clears it, unless `RUSTDL_CLASSIFY_WEDGE_NOMINALS=0`.
+Set on 56 of the 406 ORE ontologies with a nominal that classify finishes at 60 s.
 
 `consistency_undetermined` = the KB-level inconsistency pre-check reached no
 verdict: a route gave up, or was skipped because `--global-timeout-ms` had
@@ -350,8 +362,15 @@ nothing was dropped).
   "disjoint_classes": [[a_iri, b_iri], ...],
   "disjoint_object_properties": [[a_iri, b_iri], ...],
   "disjoint_data_properties": [[a_iri, b_iri], ...],
-  "no_verdict": bool, "consistency_undetermined": bool }
+  "no_verdict": bool, "consistency_undetermined": bool,
+  "structural_gaps": [kind, ...], "dropped": { kind: count } }
 ```
+
+`dropped` (#579, no `schema_version` bump) = the axioms conversion dropped, by kind, as in
+`classify --json`. `structural_gaps` (#389/#390) = the routes the structural property half
+ignores; `object-dropped-axioms` / `data-dropped-axioms` (#579) are among them whenever
+`dropped` is non-empty. The class half already reads the drop: `incomplete` follows
+`completeness_guaranteed`, which is `false` when anything was dropped.
 
 `consistency_undetermined` (#369 follow-up, no `schema_version` bump): the property half's
 answer is non-empty and the KB's consistency stayed undetermined (see the `*-expr` section). An
@@ -384,7 +403,8 @@ whenever `incomplete` is `true`; it never reports a pair that isn't entailed.
   "data_properties": {
     "equivalent_groups": [[iri, ...], ...],
     "direct_subsumptions": [[sub_iri, sup_iri], ...]
-  }
+  },
+  "structural_gaps": [kind, ...], "dropped": { kind: count }
 }
 ```
 
@@ -395,9 +415,12 @@ told + equivalent for data properties. No entailment probe is run.
 `direct_subsumptions` are the Hasse edges between distinct groups
 (`[sub_iri, sup_iri]`).
 
-`incomplete` is always `false`: this query is complete-by-construction for the
-(structural) fragment it reasons over — there is no probe that can time out
-or under-approximate.
+`incomplete` is always `false`: no probe runs, so nothing can be cut. It is not
+a completeness claim. The routes the structural closure ignores are listed in
+`structural_gaps` (#389/#390), with `object-dropped-axioms` / `data-dropped-axioms`
+whenever conversion dropped anything (#579: e.g. a SWRL rule `r(?x,?y) -> s(?x,?y)`
+entails `r ⊑ s`, which the closure misses). `dropped` (#579, no `schema_version`
+bump) lists the drops by kind.
 
 ## `individuals --json`
 
@@ -405,8 +428,12 @@ or under-approximate.
 { "schema_version": 1, "incomplete": bool,
   "consistency_undetermined": bool, "no_verdict": bool,
   "same_groups": [[iri, ...], ...],
-  "different_pairs": [[a_iri, b_iri], ...] }
+  "different_pairs": [[a_iri, b_iri], ...],
+  "dropped": { kind: count } }
 ```
+
+`dropped` (#579, no `schema_version` bump) = the axioms conversion dropped, by kind, as in
+`classify --json`.
 
 `consistency_undetermined` was added in #369 without a `schema_version` bump;
 see the `*-expr` section. Here it is set when a probe (not a told or
@@ -421,10 +448,12 @@ pairs (`a < b` by IRI) — `a ≠ b` is only ever reported from a PROVEN
 `DifferentIndividuals`/`AllDifferent`.
 
 `incomplete` = `same_individuals`'s `incomplete() || different_individuals`'s
-`incomplete()`. For `same_groups`: `true` iff ANY pairwise extension probe
-beyond the sound seed was consulted at all (even one that adds nothing) or
+`incomplete()`. For `same_groups`: `true` iff conversion dropped an axiom (#579:
+the seed is complete only for the converted axioms), or ANY pairwise extension
+probe beyond the sound seed was consulted at all (even one that adds nothing) or
 timed out. For `different_pairs`: `true` iff a pairwise `{a} ⊓ {b}` probe
-timed out (or hit the deadline-free `NodeCap` safety net). Sound
+timed out (or hit the deadline-free `NodeCap` safety net); it does not read
+`dropped`, which is reported beside it. Sound
 under-approximation in both directions: a reported group/pair is always
 genuinely entailed; `incomplete` warns the set may be missing entailed
 merges/distinctions.
@@ -434,9 +463,14 @@ merges/distinctions.
 ```json
 { "schema_version": 1, "incomplete": bool,
   "object_property_values": [[s_iri, p_iri, o_iri], ...],
-  "data_property_values": [[s_iri, p_iri, lexical, datatype_iri], ...],
-  "consistency_undetermined": bool, "no_verdict": bool }
+  "data_property_values": [[s_iri, p_iri, lexical, datatype_iri, lang], ...],
+  "consistency_undetermined": bool, "no_verdict": bool,
+  "structural_gaps": [kind, ...], "dropped": { kind: count } }
 ```
+
+`dropped` (#579, no `schema_version` bump) = the axioms conversion dropped, by kind, as in
+`classify --json`. `structural_gaps` (#389/#390) = the routes the data half's passthrough
+ignores; `data-dropped-axioms` (#579) is one of them, present whenever `dropped` is non-empty.
 
 `consistency_undetermined` (#369 follow-up, no `schema_version` bump): the answer is non-empty
 and the KB's consistency stayed undetermined (see the `*-expr` section). An inconsistency the
@@ -449,13 +483,15 @@ fixpoint over named individuals) plus a BUDGETED, hard-bounded entailment
 extension over the seed's own individual-pair neighborhood (never the full
 `|individuals|² × |properties|` cross product). `data_property_values` = a
 pure structural passthrough over the inferred data-property-assertion closure
-with the `lang` element dropped to a 4-tuple (`[subject, property, lexical,
-datatype]`); no entailment probe.
+as 5-tuples (`[subject, property, lexical, datatype, lang]`, `lang` empty unless
+the datatype is `rdf:langString`, #72); no entailment probe.
 
 `incomplete` = object values' `incomplete() || data values`' `incomplete()`
-(the latter is always `false` — data values are complete for their
-structural fragment). Object values' `incomplete` is `true` iff: the
-ontology contains an axiom outside `object_property_edge_complete`'s
+(the latter is always `false`: the passthrough runs no probe to cut; what it
+ignores is in `structural_gaps`). Object values' `incomplete` is `true` iff:
+conversion dropped an axiom (#579: `dropped` non-empty; the whitelist sees only
+converted axioms, and a dropped SWRL rule or unresolved `Import` can entail an
+edge); OR the ontology contains an axiom outside `object_property_edge_complete`'s
 whitelist — the sound over-approximation of the ABox saturator's OWN
 genuinely edge-complete fragment (NOT `analyze_fragment`'s `PureEl`/`Horn`,
 which measures a different engine — the classification wedge/EL-saturator —
@@ -468,8 +504,8 @@ and the bounded extension has no candidate pair to even probe when that
 happens; OR the bounded extension ran at all (even if it added nothing — the
 extension is itself a non-exhaustive, seed-neighborhood-only policy); OR an
 extension probe timed out. `false` is a genuine guarantee — every entailed
-object-property edge over named individuals is included — and requires BOTH
-that every axiom is in the whitelist AND that the seed alone was returned
+object-property edge over named individuals is included — and requires that
+nothing was dropped, that every axiom is in the whitelist, AND that the seed alone was returned
 (no extension candidates). Sound under-approximation: a
 reported triple is always genuinely entailed (FP=0); `incomplete` warns real
 edges may be missing.
@@ -480,7 +516,10 @@ edges may be missing.
 { "schema_version": 1, "status": "entailed" | "not-entailed" | "unknown",
   "incomplete": bool, "no_verdict": bool, "depth_capped": bool,
   "enumeration_complete": bool, "minimal": bool, "laconic": bool,
-  "justifications": [ { "ofn": ofn_document } ] }
+  "relies_on_trusted_consistency": bool,
+  "justifications": [ { "ofn": ofn_document } ],
+  "universal_role_ordinary": bool,
+  "dropped": { "<axiom kind>": int } }
 ```
 
 `status` is `"entailed"` iff `justifications` is non-empty (no query holds
@@ -499,13 +538,28 @@ cut caused the give-up. Only instance checks set it. `minimal` = every returned
 justification is *guaranteed* minimal (`Justification::minimal_guaranteed`
 across the whole saturator/tableau fragment the query resolved in — some
 SROIQ-only entailments return a sound but not-provably-minimal axiom set,
-e.g. `--all`-independent disjunctive derivations). `laconic` echoes the
+e.g. `--all`-independent disjunctive derivations). Since #584 it is also `false`
+for an `inconsistent` query (or `subclass owl:Thing owl:Nothing`) answered on the
+saturation-only oracle (when the whole set's clash is saturation-detected;
+`RUSTDL_JUSTIFY_SAT_ORACLE=0` turns it off), whose "not refuted" is no consistency
+proof. `laconic` echoes the
 `--laconic` flag (each justification's axioms are weakened to their
 responsible fragment when set). `enumeration_complete` is `true` for the
 default single-justification query; for `--all`, `false` when the
 `--max` cap genuinely truncated the true set (probed via `max + 1`, so a
 returned count that happens to equal `max` is not conflated with a cap), or
-when a probe gave up during the search.
+when a probe gave up during the search, or (#625) when a returned justification is not
+guaranteed minimal: out of the EL/Horn fragment, or on the saturation-only oracle, a
+"not entailed" may have pruned a branch, as `repair` reads it. Since #619 it is also
+`false`, for the single-justification query too, when conversion dropped an axiom.
+
+`dropped` (#619, no `schema_version` bump) maps each axiom kind conversion could not
+represent to its count, as on the other surfaces (empty when nothing was dropped). The
+search ran over the weaker ontology: a justification that needs a dropped axiom is
+missing and `"not-entailed"` may be wrong, so with a drop `enumeration_complete` is
+`false` (with or without `--all`). `minimal` is unaffected: a dropped axiom is in no justification found. The
+command also prints a stderr warning. `universal_role_ordinary` (#543) is the flag of
+`classify --json`, unmasked.
 
 Each `justifications[i].ofn` is a **self-contained OFN ontology document** —
 a fresh ontology holding exactly that justification's axioms (no more, no
@@ -526,8 +580,15 @@ below).
   "proof_uses_non_source_axioms": bool | null,
   "proof": ProofNodeJson | null,
   "justification_fallback": ofn_document | null,
-  "justification_minimal": bool | null }
+  "justification_minimal": bool | null,
+  "universal_role_ordinary": bool,
+  "dropped": { "<axiom kind>": int } }
 ```
+
+`dropped` (#619, no `schema_version` bump) maps each axiom kind conversion could not
+represent to its count (empty when nothing was dropped): a proof that needs a dropped
+axiom is missing and `"not-entailed"` may be wrong. The command also prints a stderr
+warning. `universal_role_ordinary` (#543) is the flag of `classify --json`, unmasked.
 
 ```json
 // ProofNodeJson
@@ -609,7 +670,8 @@ step proof), or by the #369 lazy check after the entailment held. The entailment
 then holds vacuously, the payload has the justification-fallback shape, and since
 #456 `justification_fallback` is the inconsistency core: the minimal inconsistent
 subset `rustdl justify <file> inconsistent` searches for (`prove` runs it under its own
-node cap, so a give-up can leave a different, still inconsistent, set). It is minimal for the
+node cap, so a give-up can leave a different, still inconsistent, set; and since #584
+`justification_minimal` is `false` when that search ran on the saturation-only oracle). It is minimal for the
 inconsistency, not for `SUB ⊑ SUP`; a smaller set entailing `SUB ⊑ SUP` by
 ordinary reasoning is not sought. If the core search finds none, the fallback has
 no axioms and `incomplete` is `true`. `false` is not a proof of consistency.

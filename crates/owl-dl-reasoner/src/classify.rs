@@ -754,6 +754,30 @@ pub struct ClassificationStats {
     /// field (`RUSTDL_REPORT_WEDGE_HIERARCHY_BLIND`). It does NOT set
     /// `incomplete`, which means only that a class pair or probe was cut (#574).
     pub wedge_hierarchy_blind: bool,
+    /// #533: classify trusted at least one wedge model that may not be a model of the
+    /// full `KB`: it touches a nominal while some `ABox` fact did not apply in it (not
+    /// given to the classify wedge, i.e. outside the nominal reach or an
+    /// object-property assertion while `RUSTDL_CLASSIFY_NOMINAL_OPA` is off; or given
+    /// for an individual the model does not instantiate). Such a model can hide a real
+    /// subsumption or an unsatisfiable class, so [`Classification::
+    /// completeness_guaranteed`] is false and `classify --json` reports this field
+    /// (`RUSTDL_REPORT_WEDGE_ABOX_BLIND`). A model with no nominal-labelled node is
+    /// not counted: it can be united disjointly with any model of the full `KB`. It
+    /// does NOT set `incomplete`, which means only that a class pair or probe was cut
+    /// (#574). With `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` such models are demoted
+    /// instead (`wedge_abox_demoted`) and this stays false. Near-universal on input with
+    /// both a nominal and an `ABox`: set on 353 of the 374 consistent ORE ontologies of
+    /// that kind that finish at 60 s (2026-11-26), all of which already had
+    /// `completeness_guaranteed()` false.
+    pub wedge_abox_blind: bool,
+    /// #533: the `ABox`-blind wedge models behind `wedge_abox_blind` (per-class
+    /// label models kept, plus per-pair `NotSubsumed` verdicts trusted). Recorded
+    /// whatever `RUSTDL_REPORT_WEDGE_ABOX_BLIND` says. Diagnostic.
+    pub wedge_abox_blind_models: u64,
+    /// #533: `ABox`-blind wedge models demoted under
+    /// `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (a label `Sat` turned into no verdict,
+    /// a per-pair `NotSubsumed` sent to the main tableau). 0 with the flag off.
+    pub wedge_abox_demoted: u64,
     /// #353: clauses the wedge's matcher refuses (a body it cannot match even
     /// after the clausifier splits over-cap bodies into named branches). A refused
     /// clause never fires, so the wedge's trusted `Sat` can miss an entailment
@@ -927,6 +951,17 @@ pub struct ClassificationStats {
     /// wedge only, not the consistency wedge (whose `Stalled` sets
     /// `consistency_undetermined`).
     pub wedge_merge_churn_stops: u64,
+    /// #571: classify's consistency wedge (the pre-check's `ABox`-seeded wedge)
+    /// returned `Stalled`. Diagnostic.
+    pub consistency_wedge_stalled: bool,
+    /// #571: that wedge's fixpoints the merge-churn guard stopped, the usual cause
+    /// of its `Stalled` (none means it stalled on its deadline or another cap).
+    /// Not in `wedge_merge_churn_stops`, which counts the classify wedge only.
+    pub consistency_wedge_merge_churn_stops: u64,
+    /// #571: the verdict of the main-tableau fallback that ran after a `Stalled`
+    /// consistency wedge (`RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK`), or `None` when
+    /// it did not run. `GaveUp` leaves `consistency_undetermined` set.
+    pub stalled_wedge_fallback: Option<crate::StalledWedgeFallback>,
     /// #448: wall time of the closure passes, in microseconds (a no-op pass on a
     /// transitive matrix is far below a millisecond). Diagnostic.
     pub matrix_closure_us: u64,
@@ -1198,6 +1233,7 @@ impl ClassificationStats {
         matches!(self.fragment, FragmentClassification::PureEl)
             && self.timed_out_pairs == 0
             && !self.wedge_hierarchy_blind
+            && !self.wedge_abox_blind
             && self.wedge_clauses_refused == 0
             && self.derived_same_undecided == 0
             && !self.consistency_undetermined
@@ -1952,6 +1988,7 @@ pub(crate) fn classify_internal_with_timeout(
 ) -> Result<Classification, ReasonError> {
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
+    crate::take_consistency_wedge_report();
     crate::take_consistency_trusted_gaps();
     let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
     c.stats.dropped = internal.dropped.clone();
@@ -1967,6 +2004,10 @@ pub(crate) fn classify_internal_with_timeout(
         && !c.stats.inconsistent;
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
+    let wedge = crate::take_consistency_wedge_report();
+    c.stats.consistency_wedge_stalled = wedge.stalled;
+    c.stats.consistency_wedge_merge_churn_stops = wedge.merge_churn_stops;
+    c.stats.stalled_wedge_fallback = wedge.fallback;
     c.stats
         .set_consistency_wedge_gaps(crate::take_consistency_trusted_gaps());
     Ok(c)
@@ -2324,6 +2365,7 @@ fn classify_internal_with_timeout_impl(
     }
     apply_test_cuts(&mut entailed, &mut stats, &classes, &unsatisfiable_idxs);
     stats.wedge_merge_churn_stops = prepared.wedge_merge_churn_stops();
+    read_wedge_abox_blind(&mut stats, &prepared);
     let mut c = Classification {
         classes,
         index,
@@ -4282,6 +4324,14 @@ fn unsat_probe_cap() -> Option<std::time::Duration> {
         .map(std::time::Duration::from_millis)
 }
 
+/// #533: read the classify wedge's `ABox`-blind model counts into `stats`.
+fn read_wedge_abox_blind(stats: &mut ClassificationStats, prepared: &PreparedOntology) {
+    let (trusted, demoted) = prepared.wedge_abox_blind_counts();
+    stats.wedge_abox_blind_models = trusted;
+    stats.wedge_abox_demoted = demoted;
+    stats.wedge_abox_blind = crate::report_wedge_abox_blind_enabled() && trusted > 0;
+}
+
 /// #214: the wedge will decide pairs blind to a non-trivial role hierarchy.
 fn wedge_hierarchy_blind(prepared: &PreparedOntology) -> bool {
     crate::report_wedge_hierarchy_blind_enabled() && prepared.wedge_hierarchy_blind()
@@ -4510,6 +4560,7 @@ pub(crate) fn classify_top_down_internal_capturing(
     }
     crate::take_consistency_undetermined();
     crate::take_consistency_trusted_wedge();
+    crate::take_consistency_wedge_report();
     crate::take_consistency_trusted_gaps();
     let mut c =
         classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline, capture)?;
@@ -4526,6 +4577,10 @@ pub(crate) fn classify_top_down_internal_capturing(
         && !c.stats.inconsistent;
     c.stats.relies_on_trusted_consistency =
         crate::take_consistency_trusted_wedge() && !c.stats.inconsistent;
+    let wedge = crate::take_consistency_wedge_report();
+    c.stats.consistency_wedge_stalled = wedge.stalled;
+    c.stats.consistency_wedge_merge_churn_stops = wedge.merge_churn_stops;
+    c.stats.stalled_wedge_fallback = wedge.fallback;
     c.stats
         .set_consistency_wedge_gaps(crate::take_consistency_trusted_gaps());
     Ok(c)
@@ -4909,13 +4964,16 @@ fn classify_top_down_internal_impl(
             for k in 0..scan {
                 let i = (k * stride).min(n - 1);
                 let id = reported.class_id(i);
+                // #533: raw, so a demoted `Sat` is a finished build, not a failing one.
+                // A settled demotion is reused as the final `NoVerdict` it is, which
+                // also keeps the class from being built and counted again.
                 let r = prepared
-                    .classify_labels(id, effective_deadline(global_deadline, Some(small_dur)));
+                    .classify_labels_raw(id, effective_deadline(global_deadline, Some(small_dur)));
                 if matches!(r, crate::LabelOracle::NoVerdict) {
                     failing = Some(i);
                     break;
                 }
-                probe_reuse.push((i, r));
+                probe_reuse.push((i, prepared.settle_label_oracle(r)));
             }
             match failing {
                 // Nothing fails at the current budget within the scan window, so there is
@@ -4932,12 +4990,14 @@ fn classify_top_down_internal_impl(
                     // 1000 ms; deciding at 2× removes the knife-edge without changing what
                     // gets applied on success.
                     let decide_dur = probe_dur.saturating_mul(2);
-                    let rescued = prepared
-                        .classify_labels(id, effective_deadline(global_deadline, Some(decide_dur)));
+                    let rescued = prepared.classify_labels_raw(
+                        id,
+                        effective_deadline(global_deadline, Some(decide_dur)),
+                    );
                     let rescued_nv = matches!(rescued, crate::LabelOracle::NoVerdict);
                     if !rescued_nv {
                         // Escalating, and this class is now decided — carry it over too.
-                        probe_reuse.push((i, rescued));
+                        probe_reuse.push((i, prepared.settle_label_oracle(rescued)));
                     }
                     if rescued_nv {
                         // Fails at BOTH budgets — the `9540` shape. Escalating would spend
@@ -4984,7 +5044,8 @@ fn classify_top_down_internal_impl(
             .map(|i| {
                 // Already decided by the escalation probe, at a budget whose VERDICT is
                 // valid here — skip the rebuild. See the probe block for why a verdict
-                // carries over and a `NoVerdict` does not.
+                // carries over and a timed-out `NoVerdict` does not (a #533 demotion is
+                // carried over: it is final).
                 if let Some(Some(r)) = reuse.get(i) {
                     return r.clone();
                 }
@@ -6012,6 +6073,7 @@ fn classify_top_down_internal_impl(
     }
     apply_test_cuts(&mut entailed, &mut stats, &classes, &unsatisfiable_idxs);
     stats.wedge_merge_churn_stops = prepared.wedge_merge_churn_stops();
+    read_wedge_abox_blind(&mut stats, &prepared);
     let mut c = Classification {
         classes,
         index,
@@ -6461,7 +6523,7 @@ fn subsumes_via_tableau(
     // per-pair timeout and any global wall-clock deadline.
     let hyper_deadline = effective_deadline(global_deadline, per_pair_timeout);
     let wedge_start = Instant::now();
-    let verdict = prepared.hyper_decide(sub, sup, hyper_deadline);
+    let (verdict, abox_blind) = prepared.hyper_decide_blind(sub, sup, hyper_deadline);
     let wedge_elapsed_ms = u64::try_from(wedge_start.elapsed().as_millis()).unwrap_or(u64::MAX);
     // ─── BEGIN report-position ↔ ClassId conversion boundary ─────────────
     // Genuinely id space, and it never leaves it: `pairs_per_sub` is a
@@ -6507,14 +6569,26 @@ fn subsumes_via_tableau(
                 // threshold. Setting the env var to 0 restores pre-Phase-1
                 // behaviour (trust every NotSubsumed verdict).
                 let threshold = crate::hyper_trust_sat_min_ms();
-                if threshold == 0 || wedge_elapsed_ms >= threshold {
+                if abox_blind && crate::classify_wedge_abox_demote_enabled() {
+                    // #533: the model touches a nominal while some `ABox` fact did
+                    // not apply in it, so it may not be a model of the full
+                    // `KB`. Demoted: the main tableau, which seeds the `ABox`,
+                    // decides the pair. Sound: only swaps a trusted `Sat` for the
+                    // complete path.
+                    prepared.note_abox_blind_pair(true);
+                } else if threshold == 0 || wedge_elapsed_ms >= threshold {
+                    if abox_blind {
+                        // #533: trusted anyway; classify reports `wedge_abox_blind`.
+                        prepared.note_abox_blind_pair(false);
+                    }
                     stats.hyper_refuted_pairs += 1;
                     return Ok(Some(false));
+                } else {
+                    stats.hyper_refuted_fast_pairs += 1;
+                    was_fast_refuted = true;
+                    // fall through to the tableau probe below; if the tableau
+                    // returns Subsumed, bump hyper_refuted_fast_flipped_pairs.
                 }
-                stats.hyper_refuted_fast_pairs += 1;
-                was_fast_refuted = true;
-                // fall through to the tableau probe below; if the tableau
-                // returns Subsumed, bump hyper_refuted_fast_flipped_pairs.
             }
         }
         // #139: the SAME argument as bound-the-tail below, for a wedge stall that did
@@ -7513,6 +7587,7 @@ Ontology(<http://rustdl.test/test>\n\
         label_cache[a.index() as usize] = crate::LabelOracle::Sat {
             labels: std::collections::HashSet::new(),
             derived_sups: vec![c],
+            abox_blind: false,
         };
         let mut stats = ClassificationStats::default();
         inject_backfold_derived_sups(
@@ -7581,6 +7656,7 @@ Ontology(<http://rustdl.test/test>\n\
         label_cache[a.index() as usize] = crate::LabelOracle::Sat {
             labels: std::collections::HashSet::new(),
             derived_sups: vec![c],
+            abox_blind: false,
         };
         let mut stats = ClassificationStats::default();
         inject_backfold_derived_sups(
@@ -7633,6 +7709,7 @@ Ontology(<http://rustdl.test/test>\n\
         label_cache[a.index() as usize] = crate::LabelOracle::Sat {
             labels: std::collections::HashSet::new(),
             derived_sups: vec![c],
+            abox_blind: false,
         };
         let mut stats = ClassificationStats::default();
         inject_backfold_derived_sups(

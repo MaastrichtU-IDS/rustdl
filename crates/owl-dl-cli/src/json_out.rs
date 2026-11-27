@@ -174,7 +174,9 @@ pub(crate) struct ClassifyJson {
     /// distinction callers already depend on. Same reasoning as
     /// `Realization::witness_prune_active`.
     pub(crate) trusted_sat_refutations: usize,
-    /// The inconsistency pre-check reached no verdict: a route gave up, or was
+    /// The inconsistency pre-check reached no verdict: a route gave up (since
+    /// #571 a `Stalled` consistency wedge counts only if the main-tableau
+    /// fallback after it gave up too), or was
     /// skipped because the global deadline had already passed (#162), or
     /// classify's consistency probe was admitted (an unsatisfiable class, an
     /// incomplete `ABox` run, or counted data values) and gave up (#446), or the
@@ -197,7 +199,7 @@ pub(crate) struct ClassifyJson {
     /// completeness_guaranteed()`, i.e. **this hierarchy is provably free of
     /// missed subsumptions**. `true` only on a fragment where the engine that
     /// answered is complete and when none of the other signals in this struct
-    /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no
+    /// reports a gap: no timed-out pair, no `wedge_hierarchy_blind`, no `wedge_abox_blind`, no
     /// `wedge_clauses_refused`, no `derived_same_undecided`, no
     /// `consistency_undetermined` and nothing in `dropped` (#246).
     /// `ClassificationStats::completeness_guaranteed` is the predicate, and
@@ -221,6 +223,19 @@ pub(crate) struct ClassifyJson {
     /// A SEPARATE field for the same reason as `consistency_undetermined`: no class
     /// pair was cut, and `incomplete` means exactly that.
     pub(crate) wedge_hierarchy_blind: bool,
+    /// #533: classify trusted a wedge model that touches a nominal while some `ABox`
+    /// fact did not apply in it (not given to the classify wedge, or given for an
+    /// individual the model does not instantiate), so the model may not be a model of
+    /// the full `KB`, and a subsumption or an unsatisfiable class may be missing.
+    /// A SEPARATE field for the same reason as `wedge_hierarchy_blind`: no class pair
+    /// was cut. `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` decides those cases on the main
+    /// tableau instead, and this is then false. Near-universal on input with both a
+    /// nominal and an `ABox`: set on 353 of the 374 consistent ORE ontologies of that
+    /// kind that finish at 60 s, all of which already had `completeness_guaranteed: false`.
+    pub(crate) wedge_abox_blind: bool,
+    /// #533: wedge models demoted under `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (see
+    /// `wedge_abox_blind`). Diagnostic; 0 with the flag off.
+    pub(crate) wedge_abox_demoted: u64,
     /// #353: clauses the wedge's matcher refuses, which therefore never fire, so
     /// entailments that need them may be missing. A SEPARATE field for the same
     /// reason as `wedge_hierarchy_blind`: no class pair was cut. 0 when there is none.
@@ -251,6 +266,20 @@ pub(crate) struct ClassifyJson {
     /// answer was guessed. A fall-through the tableau could not finish is reported by
     /// the fields that cover that. Diagnostic; 0 when the guard never fired.
     pub(crate) wedge_merge_churn_stops: u64,
+    /// #571: classify's consistency wedge returned `Stalled` (no verdict). Since
+    /// #571 the main tableau then runs in what is left of the wedge's budget, and
+    /// `stalled_wedge_fallback` says what it answered. Diagnostic.
+    pub(crate) consistency_wedge_stalled: bool,
+    /// #571: that consistency wedge's fixpoints the merge-churn guard stopped: the
+    /// cause of the `Stalled` when non-zero, its deadline or another cap when 0.
+    /// Separate from `wedge_merge_churn_stops`, which counts the classify wedge.
+    pub(crate) consistency_wedge_merge_churn_stops: u64,
+    /// #571: what the main-tableau fallback after a `Stalled` consistency wedge
+    /// answered: `"consistent"` (a model), `"inconsistent"` (a clash), `"gave_up"`
+    /// (no verdict in budget; `consistency_undetermined` stays set), or `null` when
+    /// it did not run (`RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK=0`, no budget left,
+    /// or no `Stalled` wedge).
+    pub(crate) stalled_wedge_fallback: Option<&'static str>,
     /// #462/#475: probes (per-class unsat probes and pair probes) that ended in
     /// `NoVerdict` as an internal limit, likely a reasoner bug (#449): any probe with NO
     /// deadline (e.g. under `--pair-timeout-ms 0`), and any probe whose deterministic
@@ -777,12 +806,19 @@ pub(crate) fn build_classify_json(
         trusted_sat_refutations: trusted_sat_risk(&stats),
         completeness_guaranteed: h.completeness_guaranteed(),
         wedge_hierarchy_blind: stats.wedge_hierarchy_blind,
+        wedge_abox_blind: stats.wedge_abox_blind,
+        wedge_abox_demoted: stats.wedge_abox_demoted,
         wedge_clauses_refused: stats.wedge_clauses_refused,
         consistency_wedge_clauses_refused: stats.consistency_wedge_clauses_refused,
         consistency_wedge_clauses_deferred: stats.consistency_wedge_clauses_deferred,
         derived_same_undecided: stats.derived_same_undecided,
         matrix_closure_added_pairs: stats.matrix_closure_added_pairs,
         wedge_merge_churn_stops: stats.wedge_merge_churn_stops,
+        consistency_wedge_stalled: stats.consistency_wedge_stalled,
+        consistency_wedge_merge_churn_stops: stats.consistency_wedge_merge_churn_stops,
+        stalled_wedge_fallback: stats
+            .stalled_wedge_fallback
+            .map(owl_dl_reasoner::StalledWedgeFallback::as_str),
         no_verdict_pairs: stats.no_verdict_pairs,
         depth_capped_pairs: stats.depth_capped_pairs,
         unsatisfiable,
@@ -812,12 +848,17 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
         trusted_sat_refutations: 0,
         completeness_guaranteed: false,
         wedge_hierarchy_blind: false,
+        wedge_abox_blind: false,
+        wedge_abox_demoted: 0,
         wedge_clauses_refused: 0,
         consistency_wedge_clauses_refused: 0,
         consistency_wedge_clauses_deferred: 0,
         derived_same_undecided: 0,
         matrix_closure_added_pairs: 0,
         wedge_merge_churn_stops: 0,
+        consistency_wedge_stalled: false,
+        consistency_wedge_merge_churn_stops: 0,
+        stalled_wedge_fallback: None,
         no_verdict_pairs: 0,
         depth_capped_pairs: 0,
         unsatisfiable: Vec::new(),
@@ -1565,18 +1606,32 @@ fn derived_fact_to_component(
 pub(crate) struct Citations<'a> {
     literal:
         HashMap<owl_dl_core::ontology::Axiom, &'a horned_owl::model::AnnotatedComponent<RcStr>>,
+    /// #603: the told-definition match index, built on first use (only a proof citing a
+    /// non-literal atomic `SubClassOf` needs it).
+    matches: std::cell::OnceCell<owl_dl_core::told_definition_match::MatchIndex>,
+    /// #603: resolved axiom index → its source components (successes only).
+    resolved: std::cell::RefCell<HashMap<usize, Vec<&'a Component<RcStr>>>>,
+    /// #603: axioms being resolved, so a derived edge never explains itself.
+    in_progress: std::cell::RefCell<std::collections::HashSet<usize>>,
+    /// #603: the ontology the index and the memo are keyed to (axiom indices); every
+    /// call must pass that same `InternalOntology`.
+    internal_id: usize,
 }
 
 impl<'a> Citations<'a> {
     pub(crate) fn new(src: &'a SetOntology<RcStr>, internal: &InternalOntology) -> Self {
         Self {
             literal: owl_dl_core::provenance::literal_sources(src, internal),
+            matches: std::cell::OnceCell::new(),
+            resolved: std::cell::RefCell::new(HashMap::new()),
+            in_progress: std::cell::RefCell::new(std::collections::HashSet::new()),
+            internal_id: std::ptr::from_ref(internal) as usize,
         }
     }
 
     /// The source component `ax` is the stored form of, if one is: directly, or, for a
     /// piece of a decomposed chain, through the chain it came from.
-    fn source_of(
+    fn literal_of(
         &self,
         ax: &owl_dl_core::ontology::Axiom,
         internal: &InternalOntology,
@@ -1588,6 +1643,71 @@ impl<'a> Citations<'a> {
                 self.literal.get(&chain)
             })
             .map(|ac| &ac.component)
+    }
+
+    /// The source components to cite for `internal.axioms[idx]`: its own source
+    /// component, or (#603) for an atomic `A ⊑ D` the told-definition match emitted,
+    /// the source components of its premises. `None`: no source form (it is listed as
+    /// derived). All or nothing: a premise without a source form fails the whole set,
+    /// so what is cited always entails the axiom.
+    fn sources_of(
+        &self,
+        idx: usize,
+        internal: &InternalOntology,
+    ) -> Option<Vec<&'a Component<RcStr>>> {
+        let ax = internal.axioms.get(idx)?;
+        if let Some(c) = self.literal_of(ax, internal) {
+            return Some(vec![c]);
+        }
+        // Only the told-definition replay below is keyed to one ontology.
+        debug_assert_eq!(
+            std::ptr::from_ref(internal) as usize,
+            self.internal_id,
+            "Citations used with another InternalOntology than it was built for"
+        );
+        if let Some(v) = self.resolved.borrow().get(&idx) {
+            return Some(v.clone());
+        }
+        let owl_dl_core::ontology::Axiom::SubClassOf { sub, sup } = ax else {
+            return None;
+        };
+        let pool = &internal.concepts;
+        let (owl_dl_core::ir::ConceptExpr::Atomic(a), owl_dl_core::ir::ConceptExpr::Atomic(d)) =
+            (pool.get(*sub), pool.get(*sup))
+        else {
+            return None;
+        };
+        if !self.in_progress.borrow_mut().insert(idx) {
+            return None;
+        }
+        let ix = self
+            .matches
+            .get_or_init(|| owl_dl_core::told_definition_match::MatchIndex::build(internal));
+        let is_literal = |i: usize| self.literal_of(&internal.axioms[i], internal).is_some();
+        // Literal premises first (a first-round edge needs nothing else); then other
+        // derived edges, never one being resolved (it would explain itself).
+        let premises = ix.premises(internal, *a, *d, &is_literal).or_else(|| {
+            let progress = self.in_progress.borrow().clone();
+            ix.premises(internal, *a, *d, &|i| {
+                i != idx && (is_literal(i) || !progress.contains(&i))
+            })
+        });
+        let out = premises.and_then(|ps| {
+            let mut out: Vec<&'a Component<RcStr>> = Vec::new();
+            for p in ps {
+                for c in self.sources_of(p, internal)? {
+                    if !out.contains(&c) {
+                        out.push(c);
+                    }
+                }
+            }
+            Some(out)
+        });
+        self.in_progress.borrow_mut().remove(&idx);
+        if let Some(v) = &out {
+            self.resolved.borrow_mut().insert(idx, v.clone());
+        }
+        out
     }
 }
 
@@ -1621,19 +1741,21 @@ fn build_proof_node_json(
     let (builtin_refs, source_refs): (Vec<_>, Vec<_>) = node
         .axiom_refs
         .iter()
-        .filter_map(|r| internal.axioms.get(r.0))
-        .partition(|ax| internal.builtin.contains(ax));
+        .filter_map(|r| internal.axioms.get(r.0).map(|ax| (r.0, ax)))
+        .partition(|(_, ax)| internal.builtin.contains(ax));
     // #586: a cited axiom is rendered as the source component it came from, as written,
     // never as conversion stored it (which Protégé's literal lookup rejects). One with no
     // single source (a later pass derived it) goes to `derived_axioms`.
     let mut axioms: Vec<String> = Vec::new();
     let mut derived_axioms: Vec<String> = Vec::new();
-    for ax in source_refs {
-        match cites.source_of(ax, internal) {
-            Some(component) => {
-                let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
-                if !axioms.contains(&doc) {
-                    axioms.push(doc);
+    for (idx, ax) in source_refs {
+        match cites.sources_of(idx, internal) {
+            Some(components) => {
+                for component in components {
+                    let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
+                    if !axioms.contains(&doc) {
+                        axioms.push(doc);
+                    }
                 }
             }
             None => derived_axioms.push(render(ax)),
@@ -1641,20 +1763,28 @@ fn build_proof_node_json(
     }
     // #543 part 2: a built-in that holds only given a source axiom (a universal-role
     // fold) cites that axiom too, so the step is not credited to OWL semantics alone.
-    for ax in &builtin_refs {
-        if let Some((_, lic)) = internal.builtin_licenses.iter().find(|(b, _)| b == *ax) {
-            match cites.source_of(lic, internal) {
-                Some(component) => {
+    for (_, ax) in &builtin_refs {
+        let Some((_, lic)) = internal.builtin_licenses.iter().find(|(b, _)| b == *ax) else {
+            continue;
+        };
+        let sources = internal
+            .axioms
+            .iter()
+            .position(|a| a == lic)
+            .and_then(|i| cites.sources_of(i, internal));
+        match sources {
+            Some(components) => {
+                for component in components {
                     let doc = axioms_to_ofn_doc(std::slice::from_ref(component), pm);
                     if !axioms.contains(&doc) {
                         axioms.push(doc);
                     }
                 }
-                None => derived_axioms.push(render(lic)),
             }
+            None => derived_axioms.push(render(lic)),
         }
     }
-    let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(render).collect();
+    let builtin_axioms: Vec<String> = builtin_refs.into_iter().map(|(_, ax)| render(ax)).collect();
 
     let premises = node
         .premises
@@ -1915,8 +2045,17 @@ mod tests {
         // source's, since no source component converts to it: it is derived.
         let mut stripped = internal.clone();
         stripped.builtin.clear();
-        let j2 =
-            build_proof_node_json(&node, &stripped, &cites, &HashMap::new(), &pm, &build).unwrap();
+        // #603: `Citations` is keyed to the ontology it was built for.
+        let stripped_cites = Citations::new(&onto, &stripped);
+        let j2 = build_proof_node_json(
+            &node,
+            &stripped,
+            &stripped_cites,
+            &HashMap::new(),
+            &pm,
+            &build,
+        )
+        .unwrap();
         assert_eq!(j2.axioms.len(), 1, "{:?}", j2.axioms);
         assert!(j2.builtin_axioms.is_empty());
         assert_eq!(j2.derived_axioms.len(), 1, "{:?}", j2.derived_axioms);

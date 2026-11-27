@@ -179,6 +179,10 @@ public class RustdlReasoner extends OWLReasonerBase {
                     && classifyResult != null && classifyResult.consistent
                     && !getRootOntology().getIndividualsInSignature(true).isEmpty()) {
                 realizeResult = RustdlProcess.realize(ofn, timeoutSec);
+                for (String w : surfaceWarnings("realize", "instance-types", realizeResult.incomplete,
+                        realizeResult.universal_role_ordinary, false, null)) {
+                    LOG.warning(w);
+                }
             }
             // Each of the 4 new subprocesses is gated on consistency too (mirroring the
             // realize gate above): rustdl's new subcommands return Err(Inconsistent) on an
@@ -189,36 +193,40 @@ public class RustdlReasoner extends OWLReasonerBase {
             if (wantPropHier && propHierResult == null
                     && classifyResult != null && classifyResult.consistent) {
                 propHierResult = RustdlProcess.propertyHierarchy(ofn, timeoutSec);
-                if (propHierResult.incomplete) {
-                    LOG.warning("rustdl reports an INCOMPLETE property-hierarchy result; "
-                        + "sound under-approximation (may miss, never wrong).");
+                for (String w : surfaceWarnings("property-hierarchy", "property-hierarchy",
+                        propHierResult.incomplete, propHierResult.universal_role_ordinary,
+                        false, null)) {
+                    LOG.warning(w);
                 }
                 rebuildPropHierIndices();
             }
             if (wantDisjoint && disjointResult == null
                     && classifyResult != null && classifyResult.consistent) {
                 disjointResult = RustdlProcess.disjoint(ofn, timeoutSec);
-                if (disjointResult.incomplete) {
-                    LOG.warning("rustdl reports an INCOMPLETE disjointness result; "
-                        + "sound under-approximation (may miss, never wrong).");
+                for (String w : surfaceWarnings("disjoint", "disjointness",
+                        disjointResult.incomplete, disjointResult.universal_role_ordinary,
+                        disjointResult.consistency_undetermined, "a disjoint-property answer")) {
+                    LOG.warning(w);
                 }
                 rebuildDisjointIndices();
             }
             if (wantIndividuals && individualsResult == null
                     && classifyResult != null && classifyResult.consistent) {
                 individualsResult = RustdlProcess.individuals(ofn, timeoutSec);
-                if (individualsResult.incomplete) {
-                    LOG.warning("rustdl reports an INCOMPLETE same/different-individuals result; "
-                        + "sound under-approximation (may miss, never wrong).");
+                for (String w : surfaceWarnings("individuals", "same/different-individuals",
+                        individualsResult.incomplete, individualsResult.universal_role_ordinary,
+                        individualsResult.consistency_undetermined, "a positive answer")) {
+                    LOG.warning(w);
                 }
                 rebuildIndividualsIndices();
             }
             if (wantPropValues && propValuesResult == null
                     && classifyResult != null && classifyResult.consistent) {
                 propValuesResult = RustdlProcess.propertyValues(ofn, timeoutSec);
-                if (propValuesResult.incomplete) {
-                    LOG.warning("rustdl reports an INCOMPLETE property-values result; "
-                        + "sound under-approximation (may miss, never wrong).");
+                for (String w : surfaceWarnings("property-values", "property-values",
+                        propValuesResult.incomplete, propValuesResult.universal_role_ordinary,
+                        propValuesResult.consistency_undetermined, "a positive answer")) {
+                    LOG.warning(w);
                 }
             }
         } catch (Exception e) {
@@ -260,7 +268,85 @@ public class RustdlReasoner extends OWLReasonerBase {
                 + " candidate individual equalit(ies) (budget or probe cap), so subsumptions "
                 + "that need them may be missing. The hierarchy is a sound under-approximation.");
         }
+        // #610: the signals that are not cuts, so `incomplete` stays false for them.
+        String dropped = droppedSummary(c.dropped);
+        if (dropped != null) {
+            out.add("rustdl did not understand and left out " + dropped + "; the hierarchy is "
+                + "computed over a weaker ontology, a sound under-approximation.");
+        }
+        if (c.universal_role_ordinary) {
+            out.add(universalRoleNote("classify"));
+        }
+        // Trust alone is set on almost every ontology (pizza, wine, a one-axiom file), so it
+        // is not warned on by itself; the CLI prints it as a note. It is when the wedge's
+        // model is of a KB weaker by refused clauses or deferred encodings (#558). Those
+        // counts can undercount (some drops are not counted, json_out's field doc), so a
+        // 0 is no guarantee; the warning covers the measured case only.
+        if (c.relies_on_trusted_consistency
+                && (c.consistency_wedge_clauses_refused > 0
+                    || c.consistency_wedge_clauses_deferred > 0)) {
+            out.add("rustdl took the ontology as consistent on its consistency wedge's model "
+                + "alone, and that model is of a KB weaker by " + c.consistency_wedge_clauses_refused
+                + " refused clause(s) and " + c.consistency_wedge_clauses_deferred
+                + " deferred encoding(s), so it can hide an inconsistency. If the ontology is "
+                + "inconsistent, every class is unsatisfiable, which this hierarchy does not show.");
+        }
+        if (c.consistency_undetermined) {
+            out.add("rustdl could not establish that the ontology is consistent (a consistency "
+                + "check gave up or was skipped); 'consistent' means no clash was found. If the "
+                + "ontology is in fact inconsistent, every class is unsatisfiable, which this "
+                + "hierarchy does not show.");
+        }
         return out;
+    }
+
+    /**
+     * #610: one surface's warnings: its existing INCOMPLETE warning, plus
+     * {@code universal_role_ordinary} and {@code consistency_undetermined} where the surface
+     * reports them. {@code undeterminedScope} names what the latter covers on that surface
+     * (e.g. "a positive answer"); null when the surface has no such field.
+     */
+    static List<String> surfaceWarnings(String command, String what, boolean incomplete,
+            boolean universalRoleOrdinary, boolean consistencyUndetermined,
+            String undeterminedScope) {
+        List<String> out = new ArrayList<>();
+        if (incomplete) {
+            out.add("rustdl reports an INCOMPLETE " + what + " result; "
+                + "sound under-approximation (may miss, never wrong).");
+        }
+        if (universalRoleOrdinary) {
+            out.add(universalRoleNote(command));
+        }
+        if (consistencyUndetermined && undeterminedScope != null) {
+            out.add("rustdl " + command + ": the KB's consistency could not be determined, so "
+                + undeterminedScope + " may be the vacuous one of an inconsistent KB.");
+        }
+        return out;
+    }
+
+    /** #610: the CLI's `note_universal_role`, naming the surface. */
+    static String universalRoleNote(String command) {
+        return "rustdl " + command + ": owl:topObjectProperty is used here as the universal "
+            + "role, which rustdl treats as an ordinary property. Positive answers are sound; "
+            + "a negative answer or a missing entailment may be wrong.";
+    }
+
+    /**
+     * #610: "N axiom(s) (Kind ×n, …)" for a non-empty {@code dropped} map, as the CLI's
+     * stderr warning names them; null when nothing was dropped (or the field is absent).
+     */
+    static String droppedSummary(java.util.Map<String, Long> dropped) {
+        if (dropped == null) return null;
+        long total = 0;
+        List<String> kinds = new ArrayList<>();
+        for (java.util.Map.Entry<String, Long> e : new java.util.TreeMap<>(dropped).entrySet()) {
+            long n = e.getValue() == null ? 0 : e.getValue();
+            if (n > 0) {
+                total += n;
+                kinds.add(e.getKey() + " ×" + n);
+            }
+        }
+        return total == 0 ? null : total + " axiom(s) (" + String.join(", ", kinds) + ")";
     }
 
     /** Ensure classify ran (lazy precompute for a supported query issued before precomputeInferences). */

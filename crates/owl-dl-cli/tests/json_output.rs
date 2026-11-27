@@ -1079,3 +1079,42 @@ fn structural_property_surfaces_report_their_gaps() {
         .unwrap();
     assert!(!String::from_utf8_lossy(&out.stderr).contains("structural"));
 }
+
+/// #533: classify's wedge was not given `S(b, a)` (an object-property assertion, fed
+/// only under `RUSTDL_CLASSIFY_NOMINAL_OPA=1`), and `X`'s model touches `{a}`, so its
+/// trusted `Sat` hides `X ⊑ D` (`HermiT` and Konclude derive it). That is reported in
+/// its own field; `incomplete` keeps meaning "a class pair or probe was cut". With
+/// `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` the main tableau decides and finds the pair.
+#[test]
+fn classify_reports_an_abox_blind_wedge_in_its_own_field() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/wedge_abox_blind_p1.ofn"
+    );
+    let run = |demote: &str| {
+        let out = rustdl()
+            .args(["classify", "--json", "--pair-timeout-ms", "2000", fixture])
+            .env("RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE", demote)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let blind = run("0");
+    assert_eq!(blind["wedge_abox_blind"], true);
+    assert_eq!(blind["wedge_abox_demoted"], 0);
+    assert_eq!(blind["incomplete"], false, "nothing was cut");
+    assert_eq!(blind["completeness_guaranteed"], false);
+
+    let demoted = run("1");
+    assert_eq!(demoted["wedge_abox_blind"], false);
+    assert!(demoted["wedge_abox_demoted"].as_u64().unwrap() > 0);
+    assert_eq!(
+        demoted["direct_subsumptions"],
+        serde_json::json!([["http://ex/#X", "http://ex/#D"]])
+    );
+}

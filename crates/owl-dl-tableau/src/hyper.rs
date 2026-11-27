@@ -204,9 +204,9 @@ impl PendingGen {
     /// from here on: a trigger that arrives after this point is not covered by the
     /// coming re-match.
     fn pop_front(&mut self) -> Option<(usize, HNode)> {
-        let e = match self.first.pop_front() {
+        let e = match self.queue.pop_front() {
             Some(e) => e,
-            None => self.queue.pop_front()?,
+            None => self.first.pop_front()?,
         };
         self.queued.remove(&e);
         Some(e)

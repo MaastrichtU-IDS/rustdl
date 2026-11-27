@@ -147,13 +147,6 @@ impl PyClassification {
         st.consistency_undetermined && !st.inconsistent
     }
 
-    /// True iff the ontology uses a universal role (`owl:topObjectProperty`, a
-    /// property above it, or `owl:topDataProperty` outside the super-property
-    /// position) where its semantics could change the hierarchy (#543). rustdl
-    /// treats it as an ordinary property: every reported subsumption holds, but one
-    /// may be missing and a class reported satisfiable may be unsatisfiable. Voids
-    /// `completeness_guaranteed`; `classify` emits `UniversalRoleWarning`. `False`
-    /// when the ontology is proved inconsistent.
     /// #597: the axioms conversion could not represent and dropped (kind → count);
     /// empty when none. The hierarchy is computed over the weaker ontology: every
     /// reported subsumption holds, but one may be missing. Voids
@@ -164,6 +157,13 @@ impl PyClassification {
         self.inner.stats().dropped.by_kind().clone()
     }
 
+    /// True iff the ontology uses a universal role (`owl:topObjectProperty`, a
+    /// property above it, or `owl:topDataProperty` outside the super-property
+    /// position) where its semantics could change the hierarchy (#543). rustdl
+    /// treats it as an ordinary property: every reported subsumption holds, but one
+    /// may be missing and a class reported satisfiable may be unsatisfiable. Voids
+    /// `completeness_guaranteed`; `classify` emits `UniversalRoleWarning`. `False`
+    /// when the ontology is proved inconsistent.
     #[getter]
     fn universal_role_ordinary(&self) -> bool {
         let st = self.inner.stats();

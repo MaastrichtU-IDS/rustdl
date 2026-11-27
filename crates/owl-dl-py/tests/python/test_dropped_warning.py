@@ -1,7 +1,9 @@
 """#597: every Python query warns `DroppedAxiomsWarning` when conversion dropped
 axioms (before, only the class-expression queries did, #552). `HasKey` is the
 confirmed live drop (crates/owl-dl-reasoner/tests/dropped_axioms.rs)."""
+import inspect
 import os
+import time
 import warnings
 
 import pytest
@@ -155,7 +157,7 @@ def test_the_cache_converts_an_unchanged_file_once(tmp_path, monkeypatch):
         return native(p)
 
     monkeypatch.setattr(rustdl, "_conversion_notes_native", counting)
-    rustdl._conversion_notes_keyed.cache_clear()
+    rustdl._conversion_notes_cache_clear()
     for _ in range(3):
         _, ws = _record(rustdl.is_consistent, path)
         assert len(ws) == 1
@@ -173,10 +175,11 @@ def test_a_same_size_rewrite_with_the_same_mtime_is_reread(tmp_path):
     clean = WITH_KEY.replace(key, "#" + "x" * (len(key) - 1))
     assert len(clean.encode()) == len(WITH_KEY.encode())
     path = _write(tmp_path, "rw.ofn", WITH_KEY)
-    rustdl._conversion_notes_keyed.cache_clear()
+    rustdl._conversion_notes_cache_clear()
     _, ws = _record(rustdl.is_consistent, path)
     assert len(ws) == 1
     st = os.stat(path)
+    time.sleep(0.05)  # past a coarse (jiffy) ctime tick
     with open(path, "w") as f:
         f.write(clean)
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
@@ -186,8 +189,107 @@ def test_a_same_size_rewrite_with_the_same_mtime_is_reread(tmp_path):
     assert not ws, "stale notes served from the cache"
 
 
-def test_debug_warns_through_its_queries(tmp_path):
+def test_debug_warns_once(tmp_path):
     path = _write(tmp_path, "key.ofn", WITH_KEY.replace("HasKey", "SubClassOf(:C owl:Nothing)\nHasKey"))
-    _, ws = _record(rustdl.debug, path)
-    names = {str(w.message).split(":", 1)[0] for w in ws}
-    assert "diagnose" in names and names <= {"diagnose", "justify", "repair"}, names
+    d, ws = _record(rustdl.debug, path)
+    assert d.roots, "the fixture has an unsatisfiable root, so justify/repair run"
+    assert len(ws) == 1, [str(w.message) for w in ws]
+    assert str(ws[0].message).startswith("debug:") and ws[0].filename == __file__
+
+
+# Path-taking public functions that warn from their own result, not the wrapper.
+_SELF_REPORTING = {
+    "classify",
+    "debug",
+    "prepare",
+    "class_expression_satisfiable",
+    "class_expression_satisfiable_result",
+    "class_expression_entailed_subclass",
+    "class_expression_entailed_subclass_result",
+    "class_expression_instances",
+    "class_expression_instances_result",
+}
+# Path-taking functions that report, rather than answer a query.
+_REPORTS = {"dropped_axioms", "universal_role_ordinary", "render_manchester"}
+
+
+def test_every_path_taking_query_is_covered():
+    """A new path-taking query must be wrapped (and listed in WRAPPED) or report
+    its drops itself."""
+    path_taking = set()
+    for name in rustdl.__all__:
+        fn = getattr(rustdl, name)
+        if not callable(fn) or isinstance(fn, type):
+            continue
+        try:
+            params = list(inspect.signature(fn).parameters)
+        except (TypeError, ValueError):
+            continue
+        if params[:1] == ["path"]:
+            path_taking.add(name)
+    assert path_taking - _REPORTS == set(WRAPPED) | _SELF_REPORTING, (
+        sorted(path_taking - _REPORTS - set(WRAPPED) - _SELF_REPORTING),
+        sorted((set(WRAPPED) | _SELF_REPORTING) - path_taking),
+    )
+    for name in WRAPPED:
+        assert hasattr(getattr(rustdl, name), "__wrapped__"), name
+
+
+def test_a_symlink_is_parsed_as_the_query_parsed_it(tmp_path):
+    """A content-addressed store (DVC, git-annex, Nix) links `onto.ofn` to a
+    target with no extension; the format comes from the name the caller used."""
+    target = tmp_path / "ab12cd"
+    target.write_text(WITH_KEY)
+    link = tmp_path / "onto.ofn"
+    link.symlink_to(target)
+    _, ws = _record(rustdl.is_consistent, str(link))
+    assert len(ws) == 1
+
+
+def test_the_rustdl_environment_is_part_of_the_key(tmp_path, monkeypatch):
+    path = _write(tmp_path, "key.ofn", WITH_KEY)
+    calls = []
+    native = rustdl._conversion_notes_native
+    monkeypatch.setattr(
+        rustdl, "_conversion_notes_native", lambda p: calls.append(p) or native(p)
+    )
+    rustdl._conversion_notes_cache_clear()
+    rustdl._conversion_notes(path)
+    monkeypatch.setenv("RUSTDL_SALVAGE_DROPPED_CONJUNCTS", "0")
+    rustdl._conversion_notes(path)
+    assert len(calls) == 2, "conversion reads flags per call; a toggle must reconvert"
+
+
+def test_a_missing_file_raises_parse_error(tmp_path):
+    with pytest.raises(rustdl.ParseError):
+        rustdl._conversion_notes(str(tmp_path / "gone.ofn"))
+
+
+def test_warnings_as_errors_raise(tmp_path):
+    """The documented behaviour change: under `-W error` a query on an ontology
+    with dropped axioms raises."""
+    path = _write(tmp_path, "key.ofn", WITH_KEY)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", rustdl.DroppedAxiomsWarning)
+        with pytest.raises(rustdl.DroppedAxiomsWarning):
+            rustdl.is_subclass_of(path, E + "A", E + "B")
+
+
+def test_the_role_level_flag_goes_to_the_role_level_queries(tmp_path):
+    """`top ⊑ r` relates every pair, which the role-level surfaces do not list, but
+    it leaves the class-level answers unaffected (#543)."""
+    path = _write(
+        tmp_path, "topsub.ofn", CLEAN[:-2] + "SubObjectPropertyOf(owl:topObjectProperty :s)\n)\n"
+    )
+    rustdl._conversion_notes_cache_clear()
+    for name, expected in (
+        ("object_property_values", 1),
+        ("materialize_inferred_property_assertions", 1),
+        ("is_subclass_of", 0),
+        ("instances_of", 0),
+    ):
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            getattr(rustdl, name)(path, *WRAPPED[name])
+        got = [w for w in rec if issubclass(w.category, rustdl.UniversalRoleWarning)]
+        assert len(got) == expected, (name, [str(w.message) for w in got])

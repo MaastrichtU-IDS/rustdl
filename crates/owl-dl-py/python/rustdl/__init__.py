@@ -8,6 +8,7 @@ https://github.com/MaastrichtU-IDS/rustdl for the full project.
 
 import functools as _functools
 import os as _os
+import threading as _threading
 import warnings as _warnings
 
 # Native extension built by PyO3 + maturin
@@ -642,8 +643,7 @@ class DroppedAxiomsWarning(UserWarning):
     `is_class_satisfiable`, `is_subclass_of`, `is_instance_of`, `instances_of`,
     `realize`, the `materialize_*` functions, the hierarchy, disjointness,
     same/different-individual and property-value queries, `justify`,
-    `justify_all`, `diagnose` and `repair`; `debug` warns through `diagnose`,
-    `justify` and `repair`).
+    `justify_all`, `diagnose`, `repair` and `debug`).
     `dropped_axioms(path)` reports the same kinds without a query.
 
     A proved inconsistency does not silence it, as on the CLI: a repair or a
@@ -651,8 +651,9 @@ class DroppedAxiomsWarning(UserWarning):
 
     Those path-taking queries find the drops with a second parse and conversion of
     the file after the answer, cached per process on the file's resolved path,
-    device, inode, size and modification and change times (32 files): a repeated
-    query on an unchanged file pays it once.
+    device, inode, size, modification and change times, extension and the
+    `RUSTDL_*` environment (32 files): a repeated query on an unchanged file pays it
+    once. `debug` warns once, after its own queries.
 
     Behaviour change: before #597 only the class-expression queries warned, so the
     others now warn where they used to be silent, and under `-W error` (or
@@ -675,20 +676,51 @@ def _warn_if_dropped(name: str, dropped, stacklevel: int = 3) -> None:
         )
 
 
-@_functools.lru_cache(maxsize=32)
-def _conversion_notes_keyed(real, _dev, _ino, _size, _mtime_ns, _ctime_ns):
-    dropped, uro, uro_for_roles = _conversion_notes_native(real)
-    return tuple(sorted(dropped.items())), uro, uro_for_roles
+_NOTES_CACHE_SIZE = 32
+_notes_cache: "dict[tuple, tuple]" = {}
+_notes_lock = _threading.Lock()
+
+
+def _conversion_notes_cache_clear() -> None:
+    with _notes_lock:
+        _notes_cache.clear()
 
 
 def _conversion_notes(path):
     """#597: `(dropped pairs, universal_role_ordinary, ..._for_roles)` for the file
-    at `path`, cached on its identity and stat (see `DroppedAxiomsWarning`)."""
-    real = _os.path.realpath(_os.fspath(path))
-    st = _os.stat(real)
-    return _conversion_notes_keyed(
-        real, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
-    )
+    at `path`, cached per process (see `DroppedAxiomsWarning`). The key is the
+    resolved file (path, device, inode, size, mtime, ctime), the extension the
+    caller named (the format is chosen from it; a symlink's target may have none)
+    and the `RUSTDL_*` environment (conversion reads some flags per call). The
+    caller's own path is parsed, so a symlink reads as the query read it."""
+    p = _os.fspath(path)
+    try:
+        st = _os.stat(p)
+        key = (
+            _os.path.realpath(p),
+            _os.path.splitext(p)[1].lower(),
+            st.st_dev,
+            st.st_ino,
+            st.st_size,
+            st.st_mtime_ns,
+            st.st_ctime_ns,
+            tuple(sorted((k, v) for k, v in _os.environ.items() if k.startswith("RUSTDL_"))),
+        )
+    except (OSError, ValueError):
+        key = None  # gone or unreadable: the native raises `ParseError`, as the query would
+    if key is not None:
+        with _notes_lock:
+            hit = _notes_cache.get(key)
+        if hit is not None:
+            return hit
+    dropped, uro, uro_for_roles = _conversion_notes_native(p)
+    notes = (tuple(sorted(dropped.items())), uro, uro_for_roles)
+    if key is not None:
+        with _notes_lock:
+            _notes_cache[key] = notes
+            while len(_notes_cache) > _NOTES_CACHE_SIZE:
+                del _notes_cache[next(iter(_notes_cache))]
+    return notes
 
 
 class ConsistencyUndeterminedWarning(UserWarning):
@@ -1297,7 +1329,23 @@ def debug(path):
     derived=[Derived...], inconsistency=None). Inconsistent → consistent=False, empties,
     inconsistency=Inconsistency(...). Read-only; sound by construction. Emits
     `IncompleteQueryWarning` when a reasoner check under it gave up (#396), through
-    `diagnose`, `justify` and `repair`."""
+    `diagnose`, `justify` and `repair`, and `DroppedAxiomsWarning` /
+    `UniversalRoleWarning` once, after them (#597)."""
+    result = _debug(
+        path,
+        getattr(diagnose, "__wrapped__", diagnose),
+        getattr(justify, "__wrapped__", justify),
+        getattr(repair, "__wrapped__", repair),
+    )
+    dropped, uro, _ = _conversion_notes(path)
+    _warn_if_dropped("debug", dropped, stacklevel=3)
+    _warn_if_universal_role("debug", uro, stacklevel=3)
+    return result
+
+
+def _debug(path, diagnose, justify, repair):
+    # The callers pass the unwrapped queries, so their conversion notes are not
+    # warned once per call (#597): `debug` warns them once.
     consistent, roots, derived = diagnose(path)
     if not consistent:
         return Diagnosis(
@@ -1382,8 +1430,8 @@ def _with_conversion_notes(name, fn):
 
 # #543/#597: every path-taking surface whose answer can be a definite negative or an
 # incomplete list. `classify` / `classify_bytes` read the flags off the result
-# instead (no second conversion); `debug` warns through `diagnose`, `justify` and
-# `repair`; the class-expression queries read `dropped` off their own result.
+# instead (no second conversion); `debug` calls the unwrapped queries and warns
+# once itself; the class-expression queries read `dropped` off their own result.
 for _name in (
     "justify",
     "justify_all",

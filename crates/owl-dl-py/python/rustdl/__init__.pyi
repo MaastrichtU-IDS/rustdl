@@ -217,10 +217,10 @@ class DroppedAxiomsWarning(UserWarning):
     query (#597): `classify` / `classify_bytes` (`Classification.dropped`), the
     class-expression queries and their `*_result` forms (#552, the query
     expression's drops included), `PreparedOntology.justify` / `justify_all`
-    (`PreparedOntology.dropped`) and every other path-taking query (`debug` through
-    `diagnose`, `justify` and `repair`), even when the KB is proved inconsistent.
-    The path-taking queries convert the file a second time after the answer, cached
-    per file (path, device, inode, size, mtime, ctime). Behaviour change: before
+    (`PreparedOntology.dropped`) and every other path-taking query (`debug` once),
+    even when the KB is proved inconsistent. The path-taking queries convert the
+    file a second time after the answer, cached per file (path, device, inode, size,
+    mtime, ctime, extension, `RUSTDL_*` environment). Behaviour change: before
     #597 only the class-expression queries warned, so under `-W error` the others
     now raise on an ontology with dropped axioms."""
 

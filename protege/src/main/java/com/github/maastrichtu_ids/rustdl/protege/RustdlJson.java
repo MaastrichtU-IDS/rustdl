@@ -62,6 +62,21 @@ public final class RustdlJson {
          * unsatisfiable. Absent in older output, false.
          */
         public boolean consistency_undetermined;
+        /**
+         * #533 / #616: classify trusted a wedge model that touches a nominal while some ABox
+         * fact did not apply in it, so a subsumption or an unsatisfiable class that depends
+         * on an individual's facts may be missing. Not a cut: {@code incomplete} stays false.
+         * Near-universal on input with both a nominal and an ABox. Absent in older output,
+         * false.
+         */
+        public boolean wedge_abox_blind;
+        /**
+         * #462 / #616: class pairs whose probe ended in {@code NoVerdict} on an internal
+         * limit, likely a reasoner bug (#449). rustdl prints this JSON and then exits 3; the
+         * plugin accepts that exit (see {@link RustdlProcess#classify}). Absent in older
+         * output, 0.
+         */
+        public int no_verdict_pairs;
         public List<String> unsatisfiable;
         public List<List<String>> equivalent_groups;
         public List<List<String>> direct_subsumptions;
@@ -80,6 +95,44 @@ public final class RustdlJson {
          * negative answer or a missing entailment may be wrong. Absent in older output, false.
          */
         public boolean universal_role_ordinary;
+        /**
+         * #574 / #616: a cut instance probe hit the tableau's decision-depth limit, where a
+         * larger budget does not help. Implies {@code incomplete}. Absent in older output, false.
+         */
+        public boolean depth_capped;
+        /**
+         * #387 / #616: the pseudo-model witness prune answered "not a type" from a witness
+         * with a known reason to lack an entailed type, so a type may be missing with
+         * {@code incomplete: false}. {@code false} is "no known reason", not a guarantee
+         * (rustdl's {@code witness_prune_active}, not read here, says only that the prune ran).
+         * Absent in older output, false.
+         */
+        public boolean witness_prune_may_drop;
+        /** #387: why the witness may lack a type ({@code "branched"}, ...); null in older output. */
+        public List<String> witness_prune_reasons;
+        /**
+         * #388 / #616: some individual has two direct types whose subsumption was left
+         * undecided, so a listed direct type may be a superclass of another; every listed
+         * type is a genuine type. Absent in older output, false.
+         */
+        public boolean direct_types_unverified;
+        /**
+         * #583 / #616: with {@code direct_types_unverified}, at least one of those checks hit
+         * the decision-depth limit. Absent in older output, false.
+         */
+        public boolean direct_types_depth_capped;
+        /**
+         * #493 / #616: a probe or check ended in {@code NoVerdict} on an internal limit,
+         * likely a reasoner bug (#449); each took its sound default, so {@code incomplete} is
+         * set too. rustdl prints this JSON and then exits 3; the plugin accepts that exit
+         * (see {@link RustdlProcess#realize}). Absent in older output, false.
+         */
+        public boolean no_verdict;
+        /**
+         * #616: axioms rustdl could not convert and left out, by label, as on
+         * {@link ClassifyJson#dropped}. Absent (null) in older output.
+         */
+        public java.util.Map<String, Long> dropped;
         public List<IndividualJson> individuals;
     }
     public static final class IndividualJson {

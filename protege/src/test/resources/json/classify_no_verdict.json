@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "consistent": true,
+  "incomplete": true,
+  "prep_timed_out": false,
+  "conversion_timed_out": false,
+  "parse_timed_out": false,
+  "trusted_sat_refutations": 0,
+  "consistency_undetermined": true,
+  "relies_on_trusted_consistency": false,
+  "completeness_guaranteed": false,
+  "wedge_hierarchy_blind": false,
+  "wedge_abox_blind": false,
+  "wedge_abox_demoted": 0,
+  "wedge_clauses_refused": 0,
+  "wedge_clauses_deferred": 0,
+  "consistency_wedge_clauses_refused": 0,
+  "consistency_wedge_clauses_deferred": 0,
+  "derived_same_undecided": 0,
+  "matrix_closure_added_pairs": 0,
+  "wedge_merge_churn_stops": 0,
+  "consistency_wedge_stalled": false,
+  "consistency_wedge_merge_churn_stops": 0,
+  "stalled_wedge_fallback": null,
+  "no_verdict_pairs": 3,
+  "depth_capped_pairs": 0,
+  "unsatisfiable": [],
+  "equivalent_groups": [],
+  "direct_subsumptions": [
+    [
+      "http://ex/#C",
+      "http://ex/#E"
+    ],
+    [
+      "http://ex/#D",
+      "http://ex/#E"
+    ]
+  ],
+  "dropped": {},
+  "collapsed_operands": {
+    "axioms": 0,
+    "vacuous": 0
+  },
+  "universal_role_ordinary": false
+}

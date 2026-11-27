@@ -45,14 +45,17 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
 { "schema_version": 1, "consistent": bool, "incomplete": bool,
   "prep_timed_out": bool, "conversion_timed_out": bool, "parse_timed_out": bool,
   "completeness_guaranteed": bool, "trusted_sat_refutations": int,
-  "wedge_hierarchy_blind": bool, "consistency_undetermined": bool,
+  "wedge_hierarchy_blind": bool, "wedge_abox_blind": bool,
+  "wedge_abox_demoted": int, "consistency_undetermined": bool,
   "matrix_closure_added_pairs": int, "no_verdict_pairs": int,
   "depth_capped_pairs": int,
+  "wedge_clauses_deferred": int,
   "consistency_wedge_clauses_refused": int, "consistency_wedge_clauses_deferred": int,
   "unsatisfiable": [iri], "equivalent_groups": [[iri, ...]],
   "direct_subsumptions": [[sub_iri, sup_iri], ...],
   "dropped": { "<axiom kind>": int },
-  "collapsed_operands": { "axioms": int, "vacuous": int } }
+  "collapsed_operands": { "axioms": int, "vacuous": int },
+  "universal_role_ordinary": bool }
 ```
 
 `incomplete` = some class pair or per-class unsat probe was cut without a verdict and took its
@@ -106,7 +109,7 @@ no such flag: the Python API parses before any budget applies.
 `completeness_guaranteed` = **the flag to read if you want to know whether the
 hierarchy can be trusted as complete** (#124). `true` only on a fragment where
 the engine that answered is provably complete (pure EL), and only when no pair
-was cut (`incomplete` is false), `wedge_hierarchy_blind` and `consistency_undetermined` are false,
+was cut (`incomplete` is false), `wedge_hierarchy_blind`, `wedge_abox_blind` and `consistency_undetermined` are false,
 `wedge_clauses_refused` and `derived_same_undecided` are 0, and `dropped` is
 empty. `docs/assurance/completeness-guarantee-ledger.md` lists each condition
 with its source issue and test.
@@ -118,6 +121,21 @@ non-trivial role hierarchy (#214). Entailments needing sub-role, inverse or
 symmetric reasoning may then be missing. A separate field, because nothing was
 cut: it does not set `incomplete`.
 
+`wedge_abox_blind` = classify trusted a wedge model that touches a nominal while
+some `ABox` fact did not apply in it (#533). That wedge sees the facts of the
+individuals in the nominal reach only, and object-property assertions only under
+`RUSTDL_CLASSIFY_NOMINAL_OPA=1`; a fact it does see applies only on a node that
+carries the individual, so a model lacking that individual counts too. A model that touches no
+nominal is not counted: it can be united disjointly with any model of the full
+KB. A subsumption or an unsatisfiable class that depends on an individual's facts
+may be missing. A separate field: nothing was cut, so it does not set
+`incomplete`. With `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (default off) those
+models are demoted to the main tableau instead, counted in `wedge_abox_demoted`
+(0 with the flag off), and this field stays false. Expect it on almost any input
+with both a nominal and an `ABox`: it is set on 353 of the 374 consistent ORE
+ontologies of that kind that finish at 60 s (every one of which already had
+`completeness_guaranteed: false`).
+
 `consistency_undetermined` = the KB-level inconsistency pre-check reached no
 verdict: a route gave up, or was skipped because `--global-timeout-ms` had
 already run out (#162), or classify's consistency probe was admitted (an
@@ -126,6 +144,17 @@ up (#446). Under `--saturation-only` it is set whenever the input is not pure
 EL (#539): only the saturation closure looked for a clash. `consistent: true`
 then means "no clash found", not "proven consistent". A separate field; it does
 not set `incomplete`.
+
+`universal_role_ordinary` (#543, no `schema_version` bump) = the ontology uses
+`owl:topObjectProperty` (or a property above it, or `owl:topDataProperty` outside the
+super-property position) where its universal-role semantics could change an answer, and
+rustdl reads it as an ordinary property. Positive answers are sound; a negative answer or
+a missing entailment may be wrong. It voids `completeness_guaranteed`, is `false` when the
+ontology is proved inconsistent, and comes with one stderr note. The same field, with the
+same meaning, is on `consistent`, `realize`, `disjoint`, `individuals`, `property-values`
+(where a property above top also sets it: it relates every pair, which the output does not
+list), `property-hierarchy`, `sat-expr`, `subclass-expr`, `instances-expr`, `justify`,
+`prove` and `verify-el`.
 
 **`incomplete: false` does NOT mean complete.** It means no class pair or per-class unsat probe was cut (other give-ups, such
 as `consistency_undetermined` or `derived_same_undecided`, have their own fields).
@@ -162,6 +191,14 @@ pair probes) that ended in `NoVerdict` with no deadline (e.g. under `--pair-time
 after their saturation stalled; see the
 `no_verdict` section above. Each also counts toward `incomplete`, but not as a depth-limit cut.
 
+`wedge_clauses_deferred` (#600, without a `schema_version` bump) = the classify wedge clausifier's
+deferral events: encodings of the input's axioms it skipped, so its trusted `Sat` can miss what they
+entail (one axiom can count more than once; 0 is not proof the wedge saw the whole KB). At the
+default it counts complex `DisjointClasses` / `DisjointUnion` members (#600); the opt-in
+`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1` encodes them, except trigger-less ones past a cap of 2 per
+clausification, which it defers and counts. Besides those, what we observed deferred on the ORE pool is the antecedent DNF cap; the
+reflexive-derived cap can also defer.
+
 `consistency_wedge_clauses_refused` and `consistency_wedge_clauses_deferred` (#558, without a
 `schema_version` bump) = when `relies_on_trusted_consistency`, the consistency wedge's refused clauses
 and deferral events (as `consistent --json` reports them), 0 otherwise; the refused count also reads 0
@@ -190,7 +227,8 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
   "wedge_clauses_deferred": int,
   "no_verdict": bool,
   "dropped": { "<axiom kind>": int },
-  "collapsed_operands": { "axioms": int, "vacuous": int } }
+  "collapsed_operands": { "axioms": int, "vacuous": int },
+  "universal_role_ordinary": bool }
 ```
 
 `incomplete` (#182) means `consistent: true` is a give-up in its sound
@@ -211,8 +249,9 @@ skipped, so the wedge never sees them (one axiom can count more than once, e.g. 
 Unlike `wedge_clauses_refused` it is not silenced by
 `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`, which exists for the refused count's
 over-report (#357). Neither 0 proves the wedge saw the whole KB: some drops are not
-counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not
-encode, and the axiom kinds the clausifier ignores). `dropped` counts the axioms
+counted (the axiom kinds the clausifier ignores; and, unless the opt-in
+`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a
+`DisjointUnion` whose members do not encode, which that flag clausifies or counts). `dropped` counts the axioms
 rustdl does not reason with, as in `classify --json`.
 
 `relies_on_trusted_consistency` was added in #392, without a `schema_version`
@@ -235,6 +274,7 @@ depth cap), #497.
   "direct_types_unverified": bool, "direct_types_depth_capped": bool,
   "relies_on_trusted_consistency": bool,
   "no_verdict": bool, "depth_capped": bool, "saturation_only": bool,
+  "universal_role_ordinary": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
 ```

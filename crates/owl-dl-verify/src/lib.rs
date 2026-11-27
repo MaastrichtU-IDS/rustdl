@@ -86,6 +86,12 @@ pub enum UnresolvedReason {
     AxiomsDroppedAtConversion {
         count: u64,
     },
+    /// #543: the ontology uses a universal role (`owl:topObjectProperty`, a property
+    /// above it, or `owl:topDataProperty` outside the super-property position) where its
+    /// semantics could change an entailment, and conversion reads it as an ordinary
+    /// property. A model of that reading need not be a model of the input, so a
+    /// `Verified` would vouch for a weaker closure, as with dropped axioms.
+    UniversalRoleReadAsOrdinary,
 }
 
 /// One axiom that a checked model fails to satisfy.
@@ -327,6 +333,10 @@ pub fn build_model(
 ) -> Result<(FiniteModel, Vec<UnresolvedReason>), UnresolvedReason> {
     let (first_subs, _, _) = owl_dl_saturation::saturate_with_exists_facts(internal);
     let mut working = internal.clone();
+    // #611: a fresh class with no axioms, whose closure is that of an arbitrary element
+    // (see `model::top_probe_iri`). Added before every saturation of `working`, so
+    // seeds, facts and labels still all come from one run.
+    working.vocabulary.intern_class(&model::top_probe_iri());
     let mut reasons: Vec<UnresolvedReason> = Vec::new();
     let mut round = 0usize;
 

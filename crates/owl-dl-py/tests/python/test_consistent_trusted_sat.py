@@ -86,6 +86,8 @@ def test_the_warning_names_the_wedges_deferrals(tmp_path, monkeypatch):
     wedge's clausifier defer its covering; the warning names that deferral, and the
     control (no `DisjointUnion`) does not."""
     monkeypatch.delenv("RUSTDL_WEDGE_CONSISTENCY", raising=False)
+    # #600 encodes this covering; the deferral (and so the warning) needs the fix off.
+    monkeypatch.setenv("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0")
     du = (
         "Declaration(Class(:E)) Declaration(Class(:F)) Declaration(Class(:G))\n"
         "DisjointUnion(:E :F ObjectSomeValuesFrom(:r :G)) ClassAssertion(:E :b)"

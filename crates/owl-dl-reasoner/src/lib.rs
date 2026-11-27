@@ -3111,6 +3111,41 @@ pub fn report_wedge_clauses_refused_enabled() -> bool {
     std::env::var_os("RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED").is_none_or(|v| v != "0")
 }
 
+/// Whether classify records [`crate::classify::ClassificationStats::wedge_abox_blind`]
+/// (#533, `RUSTDL_REPORT_WEDGE_ABOX_BLIND`, **default ON**, `=0` reverts).
+///
+/// Classify's wedge is given the `ABox` facts of the individuals in the nominal reach
+/// only (`push_nominal_abox_axioms`; object-property assertions only under
+/// `RUSTDL_CLASSIFY_NOMINAL_OPA`). Its models are then models of a WEAKER `KB`, and
+/// classify trusts them: label prunes, candidate generation, the unsat probe and
+/// trusted per-pair `NotSubsumed`. A completion with no nominal-labelled node is still
+/// a valid counterexample (it can be united disjointly with any model of the full
+/// `KB`); one that touches a nominal is not, since an unfed fact about that individual
+/// may contradict it. The signal is set when classify trusted at least one completion
+/// that touched a nominal while some `ABox` fact was unfed. A SEPARATE field, not
+/// `incomplete`, which means only that a class pair or probe was cut (#574);
+/// `completeness_guaranteed()` is false when it is set. Reporting only: no answer
+/// changes.
+#[must_use]
+pub fn report_wedge_abox_blind_enabled() -> bool {
+    std::env::var_os("RUSTDL_REPORT_WEDGE_ABOX_BLIND").is_none_or(|v| v != "0")
+}
+
+/// Whether classify demotes an `ABox`-blind wedge model instead of trusting it (#533,
+/// `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE`, **default OFF**, `=1` enables).
+///
+/// See [`report_wedge_abox_blind_enabled`] for when a model is blind. Demoted, a
+/// per-class label `Sat` becomes `NoVerdict` (the class takes the path of a wedge
+/// timeout: the `ABox`-seeded main tableau runs its unsat probe and generates its
+/// candidates), and a per-pair `NotSubsumed` is not trusted: the main tableau
+/// decides the pair. Sound either way (it only replaces a trusted `Sat` with the
+/// complete path); it can recover entailments and costs tableau probes. Counted in
+/// `ClassificationStats::wedge_abox_demoted`. OFF until a full sweep decides it.
+#[must_use]
+pub fn classify_wedge_abox_demote_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE").is_some_and(|v| v == "1")
+}
+
 /// Whether the per-query tableau probes (`sat`, `subclass`, the disjointness and
 /// same-individual probes, realize/instance) seed the individuals named only in
 /// `TBox` nominals, as [`PreparedOntology::decide_consistency`] already does
@@ -3615,21 +3650,28 @@ pub(crate) fn classify_inconsistency_precheck_capturing(
 
     // Route 1: `ABox` saturation over named individuals.
     let mut cut = false;
+    // Whether route 1 ran to completion (no clash, no timeout), or had nothing to
+    // run, so the #571 fallback need not repeat it.
+    let mut route1_done = true;
     if abox_saturation_enabled() && classify::has_abox_axioms(internal) {
         let d = route_deadline();
         if expired(d) {
             cut = true;
+            route1_done = false;
         } else {
             let r = abox_saturation::saturate_abox_consistency_bounded(internal, d);
             if r.clash {
                 return true;
             }
             cut |= r.timed_out;
+            route1_done = !r.timed_out;
         }
     }
 
-    // Route 2: the ABox-seeded wedge (#89).
-    match classify_wedge_consistency(internal, route_deadline(), wedge_cache, capture) {
+    // Route 2: the ABox-seeded wedge (#89). Its deadline is kept: a `Stalled` wedge
+    // hands what is left of it to the main tableau (#571).
+    let wedge_deadline = route_deadline();
+    match classify_wedge_consistency(internal, wedge_deadline, wedge_cache, capture) {
         Some(HyperResult::Unsat) => return true,
         // A wedge model decides consistency, whatever route 1 did. Nothing verifies
         // it here, so classify's "consistent" now rests on it (#429).
@@ -3640,7 +3682,63 @@ pub(crate) fn classify_inconsistency_precheck_capturing(
                 note_consistency_trusted_gaps(cache.weaker_kb_gaps());
             }
         }
-        Some(HyperResult::Stalled) => cut = true,
+        // #571: a `Stalled` wedge decides nothing (the merge-churn guard stops it on
+        // a nominal cycle within milliseconds), so run the main tableau, as the
+        // `None` arm below does, in what is left of the wedge's deadline. With no
+        // deadline at all it is capped at `consistency_fallback_ms`, as the wedge
+        // inside `is_consistent_internal_opt_deadline` is. Steps this pre-check
+        // already ran (the `ABox` saturation, the wedge, the saturation of
+        // `closure`) are not repeated, and the prep reads the deadline.
+        Some(HyperResult::Stalled) => {
+            let trace = std::env::var_os("RUSTDL_TRACE").is_some();
+            if classify_stalled_wedge_fallback_enabled()
+                && classify_main_consistency_fallback_enabled()
+                && !expired(wedge_deadline)
+            {
+                let deadline = wedge_deadline.unwrap_or_else(|| {
+                    std::time::Instant::now()
+                        + std::time::Duration::from_millis(consistency_fallback_ms())
+                });
+                // `bounded_prep` reuses `closure` instead of saturating again. That is
+                // sound only for a COMPLETE closure of this same `internal`, and both
+                // callers guarantee it: `classify_top_down_internal_impl` returns early
+                // (`classify_prep_timeout`, "saturate") when its saturation was
+                // aborted, before it reaches this pre-check, and
+                // `classify_internal_with_timeout_impl` saturates without a deadline.
+                let route = MainConsistencyRoute {
+                    abox_saturation_done: route1_done,
+                    wedge_stalled: true,
+                    reflexive_checked_by_caller: true,
+                    bounded_prep: Some(closure.clone()),
+                };
+                // As `rustdl consistent` runs it (#182): no early abandon, so the
+                // fallback gives up only on its budget.
+                let verdict = {
+                    let _full =
+                        consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
+                    is_consistent_internal_with(internal.clone(), Some(deadline), route)
+                };
+                if trace {
+                    eprintln!("classify: consistency wedge Stalled; main tableau: {verdict:?}");
+                }
+                let outcome = match verdict {
+                    Ok(Some(false)) => StalledWedgeFallback::Inconsistent,
+                    Ok(Some(true)) => StalledWedgeFallback::Consistent,
+                    Ok(None) | Err(_) => StalledWedgeFallback::GaveUp,
+                };
+                update_consistency_wedge_report(|r| r.fallback = Some(outcome));
+                match outcome {
+                    StalledWedgeFallback::Inconsistent => return true,
+                    StalledWedgeFallback::Consistent => cut = false,
+                    StalledWedgeFallback::GaveUp => cut = true,
+                }
+            } else {
+                if trace {
+                    eprintln!("classify: consistency wedge Stalled");
+                }
+                cut = true;
+            }
+        }
         // #564: with the consistency wedge off (`RUSTDL_WEDGE_CONSISTENCY=0`) on a KB
         // that names an individual, route 1 is all that ran, and it finds only the
         // clashes saturation over named individuals derives. "Consistent" then rested
@@ -3665,6 +3763,23 @@ pub(crate) fn classify_inconsistency_precheck_capturing(
     reflexive_empty_clause_inconsistent(internal)
 }
 
+/// `RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK` — **default ON**, `=0` reverts (#571).
+///
+/// When classify's consistency wedge returns `Stalled` on a KB naming an individual
+/// (the merge-churn guard on a nominal cycle, or the wedge's deadline), the
+/// pre-check runs the main-tableau consistency check in what is left of the wedge
+/// route's deadline, without re-running the wedge or the `ABox` saturation. A clash
+/// makes the KB inconsistent; a model makes it consistent; a give-up keeps
+/// `consistency_undetermined`. Before, a `Stalled` wedge always set
+/// `consistency_undetermined`, and `classify` left `Q ⊑ ≥2 r.A`, `A ⊑ ∃t.B`,
+/// `B ⊑ ∃s⁻.{a}`, `B ⊑ ∃r.A`, `Functional(s)`, `InverseFunctional(t)`, `A(d)`
+/// undecided where `rustdl consistent` answers it at once. Also needs
+/// [`classify_main_consistency_fallback_enabled`].
+#[must_use]
+pub fn classify_stalled_wedge_fallback_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK").is_none_or(|v| v != "0")
+}
+
 /// `RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK` — **default ON**, `=0` reverts (#564).
 ///
 /// With the consistency wedge off (`RUSTDL_WEDGE_CONSISTENCY=0`) on a KB naming an
@@ -3674,7 +3789,8 @@ pub(crate) fn classify_inconsistency_precheck_capturing(
 /// makes it consistent; a give-up sets `consistency_undetermined`. Before, only the
 /// `ABox` saturation ran there, and `classify` read `Q ⊑ ≥2 r.A`, `A ⊑ ∃t.B`,
 /// `B ⊑ ∃s⁻.{a}`, `Functional(s)`, `InverseFunctional(t)`, `Q(d)` consistent with every
-/// signal clean. Inert at the default, where the wedge route decides.
+/// signal clean. At the default the wedge route decides, unless it returns `Stalled`:
+/// then this fallback runs too (#571, [`classify_stalled_wedge_fallback_enabled`]).
 #[must_use]
 pub fn classify_main_consistency_fallback_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_MAIN_CONSISTENCY_FALLBACK").is_none_or(|v| v != "0")
@@ -3778,6 +3894,70 @@ thread_local! {
     static CONSISTENCY_TRUSTED_WEDGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+thread_local! {
+    /// #571: what classify's pre-check saw of its consistency wedge, and what the
+    /// main-tableau fallback after a `Stalled` wedge answered. Same discipline as
+    /// [`CONSISTENCY_UNDETERMINED`]: cleared by the classify drivers before the run
+    /// and moved into `ClassificationStats` after it.
+    static CONSISTENCY_WEDGE_REPORT: std::cell::Cell<ConsistencyWedgeReport> =
+        const { std::cell::Cell::new(ConsistencyWedgeReport::NONE) };
+}
+
+/// See [`CONSISTENCY_WEDGE_REPORT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConsistencyWedgeReport {
+    /// The consistency wedge returned `Stalled`.
+    pub(crate) stalled: bool,
+    /// Its fixpoints the merge-churn guard stopped.
+    pub(crate) merge_churn_stops: u64,
+    /// The #571 fallback's verdict, if it ran.
+    pub(crate) fallback: Option<StalledWedgeFallback>,
+}
+
+impl ConsistencyWedgeReport {
+    const NONE: Self = Self {
+        stalled: false,
+        merge_churn_stops: 0,
+        fallback: None,
+    };
+}
+
+/// The verdict of the #571 main-tableau fallback after a `Stalled` consistency wedge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StalledWedgeFallback {
+    /// The main tableau found a model.
+    Consistent,
+    /// The main tableau (or a check before it) found a clash.
+    Inconsistent,
+    /// No verdict within the budget, or an error.
+    GaveUp,
+}
+
+impl StalledWedgeFallback {
+    /// The `classify --json` spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Consistent => "consistent",
+            Self::Inconsistent => "inconsistent",
+            Self::GaveUp => "gave_up",
+        }
+    }
+}
+
+fn update_consistency_wedge_report(f: impl FnOnce(&mut ConsistencyWedgeReport)) {
+    CONSISTENCY_WEDGE_REPORT.with(|c| {
+        let mut r = c.get();
+        f(&mut r);
+        c.set(r);
+    });
+}
+
+/// Read and clear [`CONSISTENCY_WEDGE_REPORT`].
+pub(crate) fn take_consistency_wedge_report() -> ConsistencyWedgeReport {
+    CONSISTENCY_WEDGE_REPORT.with(|c| c.replace(ConsistencyWedgeReport::NONE))
+}
+
 /// Record that classify's consistency rests on a trusted wedge `Sat` (#429).
 pub(crate) fn mark_consistency_trusted_wedge() {
     CONSISTENCY_TRUSTED_WEDGE.with(|f| f.set(true));
@@ -3855,6 +4035,11 @@ fn classify_wedge_consistency(
         }
         _ => cache.decide(deadline),
     };
+    let churn = cache.merge_churn_stops();
+    update_consistency_wedge_report(|r| {
+        r.stalled |= verdict == HyperResult::Stalled;
+        r.merge_churn_stops += churn;
+    });
     if verdict == HyperResult::Unsat && std::env::var_os("RUSTDL_TRACE").is_some() {
         eprintln!("classify: KB inconsistent (wedge Unsat)");
     }
@@ -4717,6 +4902,14 @@ pub(crate) enum LabelOracle {
     Sat {
         labels: std::collections::HashSet<owl_dl_core::ir::ClassId>,
         derived_sups: Vec<owl_dl_core::ir::ClassId>,
+        /// #533: the completion touches a nominal while some `ABox` fact was not
+        /// given to the classify wedge, so it may not be a model of the full `KB`
+        /// and `D ∉ labels` is not a proven non-subsumption. With
+        /// [`classify_wedge_abox_demote_enabled`] the wrapper
+        /// [`PreparedOntology::classify_labels`] turns such an oracle into
+        /// [`Self::NoVerdict`]; otherwise classify keeps it and reports
+        /// `wedge_abox_blind`.
+        abox_blind: bool,
     },
     /// C is unsatisfiable (every model omits C). Orchestrator returns
     /// `true` for every (C, D) — unsat classes vacuously subsume all.
@@ -4958,7 +5151,9 @@ fn nominal_reach(
 /// handles any asserted class (atomic, complex, nominal) uniformly. Returns the
 /// axiom count before the push: the caller clausifies, then truncates back, so the
 /// other consumers of `internal` see the original axioms while the concept pool
-/// (append-only) stays shared and no concept id can be reused.
+/// (append-only) stays shared and no concept id can be reused. Also returns whether
+/// some fact was NOT pushed (#533) and the sorted indices of the individuals whose
+/// facts were pushed (a pushed fact only applies on a live `{a}` node).
 ///
 /// Only individuals that can label a classify node get facts: those occurring as a
 /// nominal in a concept, closed under `SameIndividual` (`same`) and property
@@ -4966,21 +5161,40 @@ fn nominal_reach(
 /// exactly the assertion it encodes, which is the encoding the consistency cache
 /// uses; the classify wedge is built `with_nominals` like it
 /// (`classify_wedge_nominals_enabled`).
-fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bool) -> usize {
+fn push_nominal_abox_axioms(
+    internal: &mut InternalOntology,
+    same: bool,
+    opa: bool,
+) -> (usize, bool, Vec<u32>) {
     use owl_dl_core::ontology::Axiom;
     let before = internal.axioms.len();
     let reach = nominal_reach(internal, same, opa);
+    // #533: whether some `ABox` fact is NOT given to the classify wedge. Its models are
+    // then models of a weaker `KB`; see `HyperCache::abox_unfed`. `DifferentIndividuals`
+    // is clausified directly (`{a} ⊓ {b} → ⊥`), so it never counts.
+    let unfed = internal.axioms[..before].iter().any(|ax| match ax {
+        Axiom::ClassAssertion { individual, .. } => !reach.contains(individual),
+        Axiom::SameIndividual(inds) => !same || !inds.iter().any(|i| reach.contains(i)),
+        Axiom::ObjectPropertyAssertion {
+            subject, object, ..
+        } => !opa || !(reach.contains(subject) || reach.contains(object)),
+        Axiom::NegativeObjectPropertyAssertion { .. } => true,
+        _ => false,
+    });
     if reach.is_empty() {
-        return before;
+        return (before, unfed, Vec::new());
     }
     let mut extra: Vec<Axiom> = Vec::new();
+    let mut fed: Vec<u32> = Vec::new();
     for ax in &internal.axioms[..before] {
         match ax {
             Axiom::ClassAssertion { class, individual } if reach.contains(individual) => {
                 let sub = internal.concepts.nominal(*individual);
                 extra.push(Axiom::SubClassOf { sub, sup: *class });
+                fed.push(individual.index());
             }
             Axiom::SameIndividual(inds) if same && inds.iter().any(|i| reach.contains(i)) => {
+                fed.extend(inds.iter().map(|i| i.index()));
                 for w in inds.windows(2) {
                     let (x, y) = (
                         internal.concepts.nominal(w[0]),
@@ -5003,6 +5217,7 @@ fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bo
                 let to_a = internal.concepts.some(role.flip(), a);
                 extra.push(Axiom::SubClassOf { sub: a, sup: to_b });
                 extra.push(Axiom::SubClassOf { sub: b, sup: to_a });
+                fed.extend([subject.index(), object.index()]);
             }
             _ => {}
         }
@@ -5012,7 +5227,9 @@ fn push_nominal_abox_axioms(internal: &mut InternalOntology, same: bool, opa: bo
     // for nominals (e.g. the sat-seed saturation's enumeration members) sees them too;
     // that is sound, since every fact pushed for them is asserted.
     internal.axioms.extend(extra);
-    before
+    fed.sort_unstable();
+    fed.dedup();
+    (before, unfed, fed)
 }
 
 /// One line per classify on `RUSTDL_ID_STATS=1`, so the shutoff's inputs can be
@@ -5067,6 +5284,41 @@ pub(crate) struct HyperCache {
     /// The nominal id range every engine is built `with_nominals` over, or `None`
     /// (see `classify_nominal_range`).
     nominal_range: Option<(u32, u32)>,
+    /// #533: some `ABox` fact was not given to this wedge (outside the nominal reach,
+    /// an object-property assertion while `RUSTDL_CLASSIFY_NOMINAL_OPA` is off, a
+    /// negative assertion). Its models are then models of a WEAKER `KB`. A `Sat`
+    /// completion that touches no nominal is still a valid counterexample: it shares no
+    /// element with the named individuals, so it can be united disjointly with any
+    /// model of the full `KB`. One that touches a nominal is not: a fact the wedge was
+    /// not given about that individual may contradict it.
+    ///
+    /// A FED fact is no better unless its individual is on a live node: it is
+    /// pushed as a `{a}`-antecedent clause, which never fires while no node carries
+    /// `{a}`. A model touching `{b}` may lack `{a}`, whose fact (`a : ∃S.{b}`) the
+    /// full `KB` would apply to `b`.
+    ///
+    /// Holds the nominal id range `(start, count)` when some fact was unfed or fed,
+    /// else `None` (no `ABox`, or no individual). [`Self::sat_is_abox_blind`] reads
+    /// it with [`Self::abox_unfed`] and [`Self::abox_fed_ids`]. The argument is about
+    /// the semantics the engine implements: the universal role is an ordinary role
+    /// there (#543), which is a separate gap. So is a `TBox` axiom on a nominal the
+    /// model does not instantiate (`{a} ⊑ ∃S.{b}` with no `ABox`).
+    abox_blind_ids: Option<(u32, u32)>,
+    /// #533: some `ABox` fact was not given to this wedge, or the clausifier deferred
+    /// some clause while facts were pushed (it cannot tell which axiom a deferral came
+    /// from, so this over-reports; no deferring `ABox` shape is known).
+    abox_unfed: bool,
+    /// #533: the clausifier nominal ids (sorted) of the individuals whose facts were
+    /// pushed. A model touching a nominal must carry every one of them on a live node.
+    abox_fed_ids: Vec<u32>,
+    /// #533: trusted wedge models that were `ABox`-blind (a label `Sat` kept, or a
+    /// per-pair `NotSubsumed` trusted) with `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE` off.
+    /// Read into `ClassificationStats::wedge_abox_blind_models`.
+    abox_blind_models: std::sync::atomic::AtomicU64,
+    /// #533: `ABox`-blind wedge models demoted (a label `Sat` to `NoVerdict`, a
+    /// per-pair `NotSubsumed` to the main tableau) with the demotion flag on.
+    /// Read into `ClassificationStats::wedge_abox_demoted`.
+    abox_demoted: std::sync::atomic::AtomicU64,
     /// Pre-built trigger indexes for `self.clauses` plus the Q-clause
     /// delta (`x_trigger[fresh_q] += [clauses.len()]`). Built once in
     /// `HyperCache::build` and shared via `Arc::clone` (O(1) ref-count
@@ -5075,6 +5327,9 @@ pub(crate) struct HyperCache {
     /// Indexes are **read-only after construction** — rayon safety holds.
     /// See `docs/superpowers/specs/2026-06-16-soundcaching-design-and-gonogo.md` §5.
     base_indexes: std::sync::Arc<owl_dl_tableau::hyper::ClauseIndexes>,
+    /// #600: the clausifier's deferral events for this wedge (`ClauseStats::deferred`):
+    /// encodings it skipped, so the wedge never sees them.
+    deferred_clauses: usize,
     /// Pre-built pairwise-disjoint set for `self.clauses`. Shared via
     /// `Arc::clone` per `classify_labels` probe (Q-clause is not
     /// ⊥-headed so adds no new pairs — same set for every probe).
@@ -5246,6 +5501,11 @@ impl HyperCache {
         self.base_indexes.refused_clauses()
     }
 
+    /// #600: the clausifier's deferral events for this wedge.
+    pub(crate) fn clauses_deferred(&self) -> usize {
+        self.deferred_clauses
+    }
+
     /// #564: add an engine's merge-churn stops to this cache's total.
     fn note_churn(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) {
         let n = engine.merge_churn_stops();
@@ -5261,20 +5521,72 @@ impl HyperCache {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// #533: whether the `Sat` completion `engine` just found is `ABox`-blind: a live
+    /// node carries a nominal AND either some `ABox` fact was not given to this wedge or
+    /// some individual whose facts were given is on no live node. See
+    /// [`Self::abox_blind_ids`] for why each part is needed.
+    fn sat_is_abox_blind(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) -> bool {
+        let Some((start, count)) = self.abox_blind_ids else {
+            return false;
+        };
+        let live = engine.live_labels_in(start, count);
+        if live.is_empty() {
+            return false;
+        }
+        // `live` is sorted and duplicate-free, so more fed ids than live ones means one
+        // is missing without a search.
+        self.abox_unfed
+            || self.abox_fed_ids.len() > live.len()
+            || self
+                .abox_fed_ids
+                .iter()
+                .any(|id| live.binary_search(id).is_err())
+    }
+
+    /// #533: count one `ABox`-blind wedge model that classify trusted.
+    pub(crate) fn note_abox_blind(&self) {
+        self.abox_blind_models
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// #533: count one `ABox`-blind wedge model that classify demoted.
+    pub(crate) fn note_abox_demoted(&self) {
+        self.abox_demoted
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// #533: `(trusted, demoted)` `ABox`-blind wedge models so far.
+    pub(crate) fn abox_blind_counts(&self) -> (u64, u64) {
+        (
+            self.abox_blind_models
+                .load(std::sync::atomic::Ordering::Relaxed),
+            self.abox_demoted.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
     /// Clausify `internal` and pre-compute the `¬sup` expansions once.
     pub(crate) fn build(internal: &InternalOntology) -> Self {
         use owl_dl_core::ir::ClassId;
         let mut internal = internal.clone();
         // #277/#279: clausify with the nominal individuals' `ABox` facts as
         // `{a}`-antecedent GCIs, then drop them again so nothing below sees them.
-        let n_axioms = if classify_nominal_types_enabled() {
+        let (n_axioms, abox_unfed, abox_fed) = if classify_nominal_types_enabled() {
             push_nominal_abox_axioms(
                 &mut internal,
                 classify_nominal_same_enabled(),
                 classify_nominal_opa_enabled(),
             )
         } else {
-            internal.axioms.len()
+            let unfed = internal.axioms.iter().any(|ax| {
+                matches!(
+                    ax,
+                    owl_dl_core::ontology::Axiom::ClassAssertion { .. }
+                        | owl_dl_core::ontology::Axiom::SameIndividual(_)
+                        | owl_dl_core::ontology::Axiom::ObjectPropertyAssertion { .. }
+                        | owl_dl_core::ontology::Axiom::NegativeObjectPropertyAssertion { .. }
+                )
+            });
+            (internal.axioms.len(), unfed, Vec::new())
         };
         // #564: the inverse-functional bounds conversion declined, clausified with the
         // rest and then dropped like the nominal facts above.
@@ -5284,7 +5596,10 @@ impl HyperCache {
                 eprintln!("classify wedge: {added} declined inverse-functional bound(s) added");
             }
         }
-        let (base, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let (base, clause_stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let deferred_clauses = clause_stats.deferred;
+        // #533: a pushed fact the clausifier deferred is not in the wedge either.
+        let abox_unfed = abox_unfed || (!abox_fed.is_empty() && clause_stats.deferred > 0);
         internal.axioms.truncate(n_axioms);
         let defs = owl_dl_core::definitions::extract_definitions(&internal);
         // Label-cache back-fold (Task 1): precompute the ∃-bearing defined
@@ -5600,8 +5915,23 @@ impl HyperCache {
         };
         let nominal_range =
             classify_nominal_range(&internal, &clauses, &sup_neg, exists_seed.as_ref());
+        // #533: the clausifier's nominal ids, `[num_classes, num_classes +
+        // num_individuals)`, used whether or not `nominal_range` is set: with the
+        // wedge's nominal semantics off a `{a}` label is still the singleton.
+        let abox_blind_ids = u32::try_from(internal.vocabulary.num_classes())
+            .ok()
+            .zip(u32::try_from(internal.vocabulary.num_individuals()).ok())
+            .filter(|&(_, count)| (abox_unfed || !abox_fed.is_empty()) && count > 0);
+        let abox_fed_ids: Vec<u32> = abox_blind_ids.map_or_else(Vec::new, |(start, _)| {
+            abox_fed.iter().map(|&i| start + i).collect()
+        });
         Self {
             nominal_range,
+            abox_blind_ids,
+            abox_unfed,
+            abox_fed_ids,
+            abox_blind_models: std::sync::atomic::AtomicU64::new(0),
+            abox_demoted: std::sync::atomic::AtomicU64::new(0),
             layer_a,
             id_shallow_waste_us: std::sync::atomic::AtomicU64::new(0),
             merge_churn_stops: std::sync::atomic::AtomicU64::new(0),
@@ -5611,6 +5941,7 @@ impl HyperCache {
             sup_neg,
             fresh_q,
             base_indexes,
+            deferred_clauses,
             base_disjoint_pairs,
             amortize_idx,
             sub_roles,
@@ -5677,20 +6008,32 @@ impl HyperCache {
         sup: owl_dl_core::ir::ClassId,
         deadline: Option<std::time::Instant>,
     ) -> HyperVerdict {
+        self.decide_blind(sub, sup, deadline).0
+    }
+
+    /// [`Self::decide`], plus whether a `NotSubsumed` came from an `ABox`-blind
+    /// model (#533; always `false` for the other verdicts).
+    pub(crate) fn decide_blind(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        sup: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> (HyperVerdict, bool) {
         use owl_dl_tableau::hyper::HyperResult;
         let (result, stats) = if crate::iterative_deepening_enabled() {
             self.decide_iterative_deepening(sub, sup, deadline)
         } else {
             self.decide_with_stats(sub, sup, HYPER_WEDGE_DEPTH, deadline)
         };
-        match result {
+        let verdict = match result {
             HyperResult::Unsat => HyperVerdict::Subsumed,
             HyperResult::Sat => HyperVerdict::NotSubsumed,
             // Distinguish a divergence-cut `Stalled` (thrash) from a plain
             // deadline `Stalled`, so bound-the-tail can skip the fallthrough.
             HyperResult::Stalled if stats.diverged => HyperVerdict::UnknownDiverged,
             HyperResult::Stalled => HyperVerdict::Unknown,
-        }
+        };
+        (verdict, stats.abox_blind)
     }
 
     /// Iterative-deepening driver for the classify per-pair oracle
@@ -6028,7 +6371,10 @@ impl HyperCache {
         }
         let result = engine.decide_with_deadline(depth, deadline);
         self.note_churn(&engine);
-        (result, engine.stats())
+        let mut stats = engine.stats();
+        stats.abox_blind =
+            result == owl_dl_tableau::hyper::HyperResult::Sat && self.sat_is_abox_blind(&engine);
+        (result, stats)
     }
 
     /// Diagnostic: wedge satisfiability of `c` ALONE (no `¬sup`), returning the
@@ -6309,6 +6655,7 @@ impl HyperCache {
                         LabelOracle::Sat {
                             labels: v.into_iter().collect(),
                             derived_sups,
+                            abox_blind: self.sat_is_abox_blind(&engine),
                         }
                     })
             }
@@ -6419,8 +6766,8 @@ pub fn classify_tbox_only_enabled() -> bool {
 /// **Completeness:** nominal-free SROIQ(D) is closed under disjoint union, so on
 /// a consistent KB with no nominal in the `TBox` or the query, `T ∪ A ⊨ C ⊑ D`
 /// iff `T ⊨ C ⊑ D`. rustdl does not implement the universal role, the one
-/// construct that breaks this (`owl:topObjectProperty` is an ordinary role).
-/// A consistency verdict that rests on a trusted wedge `Sat` is reported through
+/// construct that breaks this (`owl:topObjectProperty` is an ordinary role; #543
+/// flags its uses, and implementing it must gate this route). A consistency verdict that rests on a trusted wedge `Sat` is reported through
 /// [`QueryStats::relies_on_trusted_consistency`].
 #[must_use]
 pub fn query_tbox_only_enabled() -> bool {
@@ -6834,6 +7181,9 @@ pub(crate) struct ConsistencyCache {
     /// the engine never sees them, so a witness built here can lack what they
     /// entail (#387).
     deferred_clauses: usize,
+    /// #571: wedge fixpoints the merge-churn guard stopped, over every engine this
+    /// cache ran. Diagnostic.
+    merge_churn_stops: std::sync::atomic::AtomicU64,
 }
 
 impl ConsistencyCache {
@@ -6937,6 +7287,7 @@ impl ConsistencyCache {
             num_individuals,
             sat_lookahead,
             deferred_clauses,
+            merge_churn_stops: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -6944,7 +7295,7 @@ impl ConsistencyCache {
     /// refuses (they never fire) and the clausifier's deferral events (encodings it
     /// skipped, so the wedge never sees them; one axiom can count more than once). A
     /// `Sat` of this wedge is a model of that weaker KB, so a trusted `Sat` with either
-    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm). Unflagged: callers
+    /// count non-zero can hide an inconsistency. 0 does not mean the wedge saw the whole KB: some drops are not counted (the axiom kinds the clausifier ignores, its `_ => {}` arm; and, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which that flag clausifies or counts). Unflagged: callers
     /// apply `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED` to the refused count.
     pub(crate) fn weaker_kb_gaps(&self) -> (usize, usize) {
         (
@@ -7016,7 +7367,24 @@ impl ConsistencyCache {
         if owl_dl_tableau::seeded_fixpoint_uncapped_enabled() {
             engine = engine.with_deadline_bounded_fixpoint();
         }
-        engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
+        let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        self.note_churn(&engine);
+        verdict
+    }
+
+    /// #571: add an engine's merge-churn stops to this cache's total.
+    fn note_churn(&self, engine: &owl_dl_tableau::hyper::HyperEngine<'_>) {
+        let n = engine.merge_churn_stops();
+        if n > 0 {
+            self.merge_churn_stops
+                .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// #571: wedge fixpoints the merge-churn guard stopped so far.
+    pub(crate) fn merge_churn_stops(&self) -> u64 {
+        self.merge_churn_stops
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// [`Self::decide`], also returning the model on `Sat` (#430): the same engine,
@@ -7032,6 +7400,7 @@ impl ConsistencyCache {
             engine = engine.with_deadline_bounded_fixpoint();
         }
         let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline);
+        self.note_churn(&engine);
         let witness = (verdict == HyperResult::Sat).then(|| self.witness_of_sat(&engine));
         (verdict, witness)
     }
@@ -7505,6 +7874,42 @@ pub fn dropped_axioms<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<DroppedAxioms, ReasonError> {
     Ok(owl_dl_core::convert::convert_ontology(ontology)?.dropped)
+}
+
+/// The conversion's report on what reasoning will under-approximate: the dropped
+/// axioms (#43) and whether a universal role is used where rustdl's ordinary-role
+/// reading can miss entailments (#543,
+/// [`owl_dl_core::top_bottom_roles::universal_role_ordinary`]). One conversion for
+/// both, for surfaces that report them before or beside their answer.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn conversion_report<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(DroppedAxioms, bool), ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    Ok((internal.dropped, uro))
+}
+
+/// #543, for the ROLE-level surfaces (`property-values`, materialized property
+/// assertions): `true` when [`conversion_report`]'s flag is set, or when a role sits
+/// above a top property (`top ⊑* r`). Such an `r` relates every pair of individuals,
+/// an edge those surfaces do not report, even where the class-level answers are
+/// unaffected.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn universal_role_ordinary_for_roles<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<bool, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    Ok(
+        owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal)
+            || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty(),
+    )
 }
 
 use std::collections::HashMap;
@@ -8269,7 +8674,7 @@ pub struct QueryStats {
     /// weaker by these too. Set where `wedge_clauses_refused` is (the consistency
     /// query, and a single query that dropped its `ABox` on that wedge's `Sat`).
     /// Deliberately not silenced by `RUSTDL_REPORT_WEDGE_CLAUSES_REFUSED=0`: that flag
-    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, clause.rs ~336-353, and the axiom kinds the clausifier ignores, its `_ => {}` arm).
+    /// exists for the refused count's over-report (#357), and a deferral is exact. 0 does not mean the wedge saw the whole KB: some drops are not counted (the axiom kinds the clausifier ignores, its `_ => {}` arm; and, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, the pairwise-disjointness half of a `DisjointUnion` whose members do not encode, which that flag clausifies or counts).
     pub wedge_clauses_deferred: usize,
     /// The verdict rests on the KB being consistent, and the only evidence for
     /// that is a consistency-wedge `Sat` that no main-tableau run verified (the
@@ -8309,6 +8714,11 @@ pub struct QueryStats {
     /// off stats that no conversion produced. A count rather than the kinds, so
     /// `QueryStats` stays `Copy`; [`dropped_axioms`] gives the kinds.
     pub dropped_axioms: u64,
+    /// #543: the query's conversion uses a universal role where its semantics could
+    /// change the answer (`owl_dl_core::top_bottom_roles::universal_role_ordinary`);
+    /// rustdl reads it as an ordinary property, so a negative verdict may be wrong.
+    /// Voids [`Self::completeness_guaranteed`], as `dropped_axioms` does. Stamped with it.
+    pub universal_role_ordinary: bool,
 }
 
 impl QueryStats {
@@ -8329,6 +8739,7 @@ impl QueryStats {
         self.pure_el_mode
             && !self.incomplete
             && self.dropped_axioms == 0
+            && !self.universal_role_ordinary
             && !self.consistency_undetermined
             && !self.relies_on_trusted_consistency
     }
@@ -8769,9 +9180,11 @@ pub(crate) fn is_class_satisfiable_keeping(
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (holds, mut stats, left) =
         is_class_satisfiable_keeping_inner(internal, class_iri, closure)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((holds, stats, left))
 }
 
@@ -8822,6 +9235,7 @@ fn is_class_satisfiable_keeping_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8839,6 +9253,7 @@ fn is_class_satisfiable_keeping_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -8863,6 +9278,7 @@ fn is_class_satisfiable_keeping_inner(
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -8994,6 +9410,38 @@ pub(crate) fn is_consistent_internal_opt_deadline(
     internal: InternalOntology,
     deadline: Option<std::time::Instant>,
 ) -> Result<Option<bool>, ReasonError> {
+    is_consistent_internal_with(internal, deadline, MainConsistencyRoute::default())
+}
+
+/// What a caller of [`is_consistent_internal_with`] has already done (#571).
+/// The default is a caller that did nothing: every step runs, as
+/// [`is_consistent_internal_opt_deadline`] always ran them.
+#[derive(Default)]
+pub(crate) struct MainConsistencyRoute {
+    /// The bounded `ABox` saturation already ran to completion without a clash, so
+    /// running it again could only spend the deadline on the same answer.
+    abox_saturation_done: bool,
+    /// The consistency wedge already returned `Stalled` on this KB. It is
+    /// deterministic, so a second run would stall again; go straight to the main
+    /// tableau.
+    wedge_stalled: bool,
+    /// The caller runs [`reflexive_empty_clause_inconsistent`] itself (classify's
+    /// pre-check does, last), so it is not run twice.
+    reflexive_checked_by_caller: bool,
+    /// Build the [`PreparedOntology`] under the deadline (an expiry is `Ok(None)`),
+    /// reusing this complete closure of the same `internal`, and without the wedge
+    /// caches (`HyperCache`, `ConsistencyCache`) this route never reads. `None`
+    /// keeps the unbounded `from_internal`, as before #571.
+    bounded_prep: Option<owl_dl_saturation::Subsumers>,
+}
+
+/// [`is_consistent_internal_opt_deadline`], skipping the steps `route` says the
+/// caller already ran.
+fn is_consistent_internal_with(
+    internal: InternalOntology,
+    deadline: Option<std::time::Instant>,
+    route: MainConsistencyRoute,
+) -> Result<Option<bool>, ReasonError> {
     let past = |d: Option<std::time::Instant>| d.is_some_and(|d| std::time::Instant::now() >= d);
     // The ABox-saturation pre-check runs FIRST — it is the step whose omission
     // makes satisfiability an unsafe substitute (#74), so skipping it would
@@ -9002,14 +9450,15 @@ pub(crate) fn is_consistent_internal_opt_deadline(
     // IT MUST BE BOUNDED BY THE CALLER'S DEADLINE. A first cut called the
     // unbounded `abox_saturation_inconsistent` here, and `family.ofn` then took
     // 1.17 s against a 500 ms budget — a 2.3x overrun. A deadline-bearing API that
-    // overruns its deadline is a weak contract, and this is the only step that can
-    // do it: everything below is already deadline-capable. A timeout here yields
+    // overruns its deadline is a weak contract. The other step that can is the
+    // `PreparedOntology` build below, which reads the deadline only on the #571
+    // route (`bounded_prep`); elsewhere it is still unbounded. A timeout here yields
     // `false` ("no clash found in budget"), a sound under-approximation, and the
     // deadline check immediately after converts that into `None` rather than a
     // guess.
     let remaining = deadline.map(|d| d.saturating_duration_since(std::time::Instant::now()));
-    if abox_saturation_inconsistent_bounded(&internal, remaining)
-        || reflexive_empty_clause_inconsistent(&internal)
+    if (!route.abox_saturation_done && abox_saturation_inconsistent_bounded(&internal, remaining))
+        || (!route.reflexive_checked_by_caller && reflexive_empty_clause_inconsistent(&internal))
     {
         return Ok(Some(false));
     }
@@ -9023,7 +9472,15 @@ pub(crate) fn is_consistent_internal_opt_deadline(
         ElSaturatorConsistency::Cut => return Ok(None),
         ElSaturatorConsistency::Decided(consistent) => return Ok(Some(consistent)),
     }
-    let prepared = PreparedOntology::from_internal(internal)?;
+    let prepared = match route.bounded_prep {
+        None => PreparedOntology::from_internal(internal)?,
+        Some(closure) => {
+            match PreparedOntology::from_internal_prep(internal, deadline, Some(closure), false)? {
+                Some(p) => p,
+                None => return Ok(None),
+            }
+        }
+    };
     // #310: as in `is_consistent_internal_full`.
     if prepared
         .closure
@@ -9044,7 +9501,12 @@ pub(crate) fn is_consistent_internal_opt_deadline(
     let wedge_cap =
         std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
     let wedge_deadline = deadline.map_or(wedge_cap, |d| wedge_cap.min(d));
-    match prepared.consistency_wedge(Some(wedge_deadline)) {
+    let wedge = if route.wedge_stalled {
+        None
+    } else {
+        prepared.consistency_wedge(Some(wedge_deadline))
+    };
+    match wedge {
         Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return Ok(Some(false)),
         // #344: verify a `Sat` the wedge reached without counting data values. A
         // give-up is no verdict, which this bounded API reports as `None`.
@@ -9220,8 +9682,10 @@ fn is_consistent_internal_full(
 ) -> Result<(bool, QueryStats), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (consistent, mut stats) = is_consistent_internal_full_inner(internal)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((consistent, stats))
 }
 
@@ -9249,6 +9713,7 @@ fn is_consistent_internal_full_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9270,6 +9735,7 @@ fn is_consistent_internal_full_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9307,6 +9773,7 @@ fn is_consistent_internal_full_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9327,6 +9794,7 @@ fn is_consistent_internal_full_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
         ));
     }
@@ -9358,6 +9826,7 @@ fn is_consistent_internal_full_inner(
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9384,6 +9853,7 @@ fn is_consistent_internal_full_inner(
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9406,6 +9876,7 @@ fn is_consistent_internal_full_inner(
                     consistency_undetermined: false,
                     no_verdict: false,
                     dropped_axioms: 0,
+                    universal_role_ordinary: false,
                 },
             ));
         }
@@ -9511,6 +9982,7 @@ fn is_consistent_internal_full_inner(
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
     ))
 }
@@ -9969,9 +10441,11 @@ pub(crate) fn is_subclass_of_keeping(
 ) -> Result<(bool, QueryStats, QueryOntology), ReasonError> {
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (holds, mut stats, left) =
         is_subclass_of_keeping_inner(internal, sub_iri, super_iri, closure)?;
     stats.dropped_axioms = dropped;
+    stats.universal_role_ordinary = uro;
     Ok((holds, stats, left))
 }
 
@@ -10025,6 +10499,7 @@ fn is_subclass_of_keeping_inner(
         consistency_undetermined: false,
         no_verdict: false,
         dropped_axioms: 0,
+        universal_role_ordinary: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -10083,6 +10558,7 @@ fn is_subclass_of_keeping_inner(
                 consistency_undetermined: false,
                 no_verdict: false,
                 dropped_axioms: 0,
+                universal_role_ordinary: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -10114,6 +10590,7 @@ fn is_subclass_of_keeping_inner(
             consistency_undetermined: false,
             no_verdict: false,
             dropped_axioms: 0,
+            universal_role_ordinary: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -11689,9 +12166,21 @@ impl PreparedOntology {
     /// complete by construction at the call site — but a future caller must preserve
     /// that, or pass `None`.
     pub(crate) fn from_internal_with_deadline(
+        internal: InternalOntology,
+        deadline: Option<std::time::Instant>,
+        precomputed_closure: Option<owl_dl_saturation::Subsumers>,
+    ) -> Result<Option<Self>, ReasonError> {
+        Self::from_internal_prep(internal, deadline, precomputed_closure, true)
+    }
+
+    /// [`Self::from_internal_with_deadline`]; with `wedges` false the wedge caches
+    /// (`hyper`, `consistency`) are not built (#571: the main-tableau consistency
+    /// fallback never reads them, and building them clausifies the KB again).
+    fn from_internal_prep(
         mut internal: InternalOntology,
         deadline: Option<std::time::Instant>,
         precomputed_closure: Option<owl_dl_saturation::Subsumers>,
+        wedges: bool,
     ) -> Result<Option<Self>, ReasonError> {
         // One-liner so each boundary below is a single readable line. `None` ⇒
         // constant-false (the closure is inlined and the branch folds away).
@@ -11750,7 +12239,7 @@ impl PreparedOntology {
         if expired() {
             return Ok(None);
         }
-        let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
+        let hyper = (wedges && hyper_wedge_enabled()).then(|| HyperCache::build(&internal));
         if expired() {
             return Ok(None);
         }
@@ -11760,8 +12249,9 @@ impl PreparedOntology {
         // byte-identical). Built from the un-mutated `internal`,
         // before the absorb/NNF passes below consume it — so every
         // nominal/role id is matched-by-construction with the clause set.
-        let consistency = (wedge_consistency_enabled() && internal_has_individuals(&internal))
-            .then(|| ConsistencyCache::build(&internal));
+        let consistency =
+            (wedges && wedge_consistency_enabled() && internal_has_individuals(&internal))
+                .then(|| ConsistencyCache::build(&internal));
         let wedge_sat_skips_data_counting = consistency.is_some()
             && consistency_data_counting_verify_enabled()
             && pool_has_dkey_counting(&internal.concepts, &dkey_ranges);
@@ -12054,11 +12544,18 @@ impl PreparedOntology {
         self.hyper.as_ref().map_or(0, HyperCache::clauses_refused)
     }
 
+    /// #600: the classify wedge clausifier's deferral events (0 when there is no
+    /// wedge).
+    pub(crate) fn wedge_clauses_deferred(&self) -> usize {
+        self.hyper.as_ref().map_or(0, HyperCache::clauses_deferred)
+    }
+
     /// #564: classify-wedge fixpoints the merge-churn guard stopped (0 without a wedge).
     pub(crate) fn wedge_merge_churn_stops(&self) -> u64 {
         self.hyper.as_ref().map_or(0, HyperCache::merge_churn_stops)
     }
 
+    #[cfg(test)]
     pub(crate) fn hyper_decide(
         &self,
         sub: owl_dl_core::ir::ClassId,
@@ -12071,9 +12568,43 @@ impl PreparedOntology {
         // label-miss pair and degenerate classification to the saturation closure.
         // `UnknownDiverged` cannot arise without a wedge run, which is why its
         // sibling bound never needed this.
+        self.hyper_decide_blind(sub, sup, deadline).0
+    }
+
+    /// [`Self::hyper_decide`], plus whether a `NotSubsumed` came from an
+    /// `ABox`-blind wedge model (#533). The caller decides whether it trusts the
+    /// verdict, so it counts the model ([`Self::note_abox_blind_pair`]).
+    pub(crate) fn hyper_decide_blind(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        sup: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> (HyperVerdict, bool) {
         self.hyper
             .as_ref()
-            .map_or(HyperVerdict::NoWedge, |hc| hc.decide(sub, sup, deadline))
+            .map_or((HyperVerdict::NoWedge, false), |hc| {
+                hc.decide_blind(sub, sup, deadline)
+            })
+    }
+
+    /// #533: count one `ABox`-blind wedge `NotSubsumed` that classify trusted
+    /// (`demoted == false`) or sent to the main tableau (`demoted == true`).
+    pub(crate) fn note_abox_blind_pair(&self, demoted: bool) {
+        if let Some(hc) = &self.hyper {
+            if demoted {
+                hc.note_abox_demoted();
+            } else {
+                hc.note_abox_blind();
+            }
+        }
+    }
+
+    /// #533: `(trusted, demoted)` `ABox`-blind wedge models so far (`(0, 0)`
+    /// without a wedge).
+    pub(crate) fn wedge_abox_blind_counts(&self) -> (u64, u64) {
+        self.hyper
+            .as_ref()
+            .map_or((0, 0), HyperCache::abox_blind_counts)
     }
 
     /// Per-class label heuristic: run wedge satisfiability of `c` and
@@ -12085,9 +12616,43 @@ impl PreparedOntology {
         c: owl_dl_core::ir::ClassId,
         deadline: Option<std::time::Instant>,
     ) -> LabelOracle {
+        self.settle_label_oracle(self.classify_labels_raw(c, deadline))
+    }
+
+    /// [`Self::classify_labels`] before #533's count and demotion: a `NoVerdict` here
+    /// means only that the wedge did not finish. The label-cache escalation probe reads
+    /// it so a demoted `Sat` is not mistaken for a budget failure; it then passes the
+    /// oracle through [`Self::settle_label_oracle`] exactly once.
+    pub(crate) fn classify_labels_raw(
+        &self,
+        c: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> LabelOracle {
         self.hyper
             .as_ref()
             .map_or(LabelOracle::NoVerdict, |hc| hc.classify_labels(c, deadline))
+    }
+
+    /// #533: a label `Sat` from an `ABox`-blind completion is not a proven
+    /// counterexample (see `HyperCache::abox_blind_ids`). Demoted, the class goes the
+    /// way a wedge timeout does: the unsat probe and candidate generation use the
+    /// `ABox`-seeded main tableau, and its pairs are decided per pair. Kept, it is
+    /// counted so classify reports `wedge_abox_blind`. Call once per oracle.
+    pub(crate) fn settle_label_oracle(&self, oracle: LabelOracle) -> LabelOracle {
+        if let (
+            Some(hc),
+            LabelOracle::Sat {
+                abox_blind: true, ..
+            },
+        ) = (self.hyper.as_ref(), &oracle)
+        {
+            if classify_wedge_abox_demote_enabled() {
+                hc.note_abox_demoted();
+                return LabelOracle::NoVerdict;
+            }
+            hc.note_abox_blind();
+        }
+        oracle
     }
 
     /// Decide whether the test concept built by `build_test_concept` is
@@ -17067,6 +17632,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 LabelOracle::Sat {
                     labels,
                     derived_sups,
+                    ..
                 } => {
                     let mut l: Vec<u32> = labels.iter().map(|c| c.index()).collect();
                     let mut d: Vec<u32> = derived_sups.iter().map(|c| c.index()).collect();
@@ -17090,6 +17656,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             LabelOracle::Sat {
                 labels,
                 derived_sups,
+                ..
             } => format!(
                 "Sat(|labels|={}, |derived|={})",
                 labels.len(),

@@ -483,6 +483,16 @@ fn expected() -> Vec<FlagRow> {
             false,
         ),
         (
+            "RUSTDL_REPORT_WEDGE_ABOX_BLIND",
+            owl_dl_reasoner::report_wedge_abox_blind_enabled,
+            true,
+        ),
+        (
+            "RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE",
+            owl_dl_reasoner::classify_wedge_abox_demote_enabled,
+            false,
+        ),
+        (
             "RUSTDL_CLASSIFY_NOMINAL_SAME",
             owl_dl_reasoner::classify_nominal_same_enabled,
             true,
@@ -742,6 +752,13 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_reasoner::classify_main_consistency_fallback_enabled,
             true,
         ),
+        // #571: a `Stalled` consistency wedge hands the rest of its deadline to the
+        // main tableau instead of leaving `consistency_undetermined`. `=0` reverts.
+        (
+            "RUSTDL_CLASSIFY_STALLED_WEDGE_FALLBACK",
+            owl_dl_reasoner::classify_stalled_wedge_fallback_enabled,
+            true,
+        ),
         // #535: a `≤0` bound on a reflexive role gets its (entailed) self-loop
         // without waiting for an `R`-edge. `=0` reverts.
         (
@@ -755,6 +772,14 @@ fn expected() -> Vec<FlagRow> {
             "RUSTDL_MAX_QUALIFIER_COVER",
             owl_dl_core::clause::max_qualifier_fix_enabled,
             true,
+        ),
+        // #600: opt-in. A complex `DisjointClasses` / `DisjointUnion` member, and a
+        // `DisjointUnion` covering with one, go through the GCI path instead of being
+        // deferred; OFF because the fallback's cost is unbounded on growing ontologies.
+        (
+            "RUSTDL_CLAUSIFY_COMPLEX_DISJOINT",
+            owl_dl_core::clause::complex_disjoint_clausify_enabled,
+            false,
         ),
         (
             "RUSTDL_CONSISTENCY_DATA_COUNTING_VERIFY",

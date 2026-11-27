@@ -29,13 +29,14 @@ pub struct CeVerdict {
     consistency_undetermined: bool,
     no_verdict: bool,
     dropped: DroppedAxioms,
+    universal_role_ordinary: bool,
 }
 
 impl CeVerdict {
     /// #462: the deadline-free probe ended in `NoVerdict`, an internal limit (likely a
     /// reasoner bug, #449). [`Self::holds`] is then the sound direction ("satisfiable" /
     /// "not entailed") and [`Self::incomplete`] is set too.
-    fn from_no_verdict(holds: bool, dropped: DroppedAxioms) -> Self {
+    fn from_no_verdict(holds: bool, dropped: DroppedAxioms, universal_role_ordinary: bool) -> Self {
         Self {
             holds,
             incomplete: true,
@@ -44,6 +45,7 @@ impl CeVerdict {
             consistency_undetermined: false,
             no_verdict: true,
             dropped,
+            universal_role_ordinary,
         }
     }
 
@@ -106,6 +108,16 @@ impl CeVerdict {
     pub fn dropped(&self) -> &DroppedAxioms {
         &self.dropped
     }
+
+    /// #543: the probed ontology (the input and the query expression) uses a universal
+    /// role where its semantics could change the answer; rustdl treats it as an
+    /// ordinary property, so a negative answer may be wrong. Voids
+    /// [`Self::completeness_guaranteed`]. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    #[must_use]
+    pub fn universal_role_ordinary(&self) -> bool {
+        self.universal_role_ordinary
+    }
 }
 
 /// Result of a complex-class-expression instance query.
@@ -121,6 +133,7 @@ pub struct CeInstances {
     no_verdict: bool,
     depth_capped: bool,
     dropped: DroppedAxioms,
+    universal_role_ordinary: bool,
 }
 
 impl CeInstances {
@@ -176,6 +189,16 @@ impl CeInstances {
     #[must_use]
     pub fn dropped(&self) -> &DroppedAxioms {
         &self.dropped
+    }
+
+    /// #543: the probed ontology (the input and the query expression) uses a universal
+    /// role where its semantics could change the answer; rustdl treats it as an
+    /// ordinary property, so a negative answer may be wrong. Voids
+    /// [`Self::completeness_guaranteed`]. See
+    /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
+    #[must_use]
+    pub fn universal_role_ordinary(&self) -> bool {
+        self.universal_role_ordinary
     }
 }
 
@@ -324,10 +347,13 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     // query reuses the EL closure it builds.
     let closure = crate::bounded_query_guard(&internal, "sat-expr")?;
     let dropped = internal.dropped.clone();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (holds, stats, left) =
         match crate::is_class_satisfiable_keeping(internal, PROBE_IRI, closure) {
             // #462: the sound direction of no verdict is "satisfiable".
-            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(true, dropped)),
+            Err(ReasonError::NoVerdict) => {
+                return Ok(CeVerdict::from_no_verdict(true, dropped, uro));
+            }
             r => r?,
         };
     // #369: "unsatisfiable" on a KB only the wedge finds inconsistent is vacuous.
@@ -349,6 +375,7 @@ pub fn class_expression_satisfiable<A: ForIRI>(
         // #493: the lazy check's own probe stalled (a likely bug); the answer stands.
         no_verdict: lazy.no_verdict,
         dropped,
+        universal_role_ordinary: stats.universal_role_ordinary,
     })
 }
 
@@ -373,10 +400,13 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     // #313: the inconsistent-KB guard, as in `class_expression_satisfiable`.
     let closure = crate::bounded_query_guard(&internal, "subclass-expr")?;
     let dropped = internal.dropped.clone();
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     let (holds, stats, left) =
         match crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2, closure) {
             // #462: the sound direction of no verdict is "not entailed".
-            Err(ReasonError::NoVerdict) => return Ok(CeVerdict::from_no_verdict(false, dropped)),
+            Err(ReasonError::NoVerdict) => {
+                return Ok(CeVerdict::from_no_verdict(false, dropped, uro));
+            }
             r => r?,
         };
     // #369: as in `class_expression_satisfiable`.
@@ -398,6 +428,7 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
         // #493: as in `class_expression_satisfiable`.
         no_verdict: lazy.no_verdict,
         dropped,
+        universal_role_ordinary: stats.universal_role_ordinary,
     })
 }
 
@@ -421,6 +452,7 @@ pub fn class_expression_instances<A: ForIRI>(
     // not a give-up of this query.)
     let internal = owl_dl_core::convert::convert_ontology(&probed)?;
     let fast_path = crate::realize::realize_saturation_eligible(&internal);
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
     // #369: the lazy consistency check runs inside the instance query.
     let (mut individuals, flags) =
         crate::realize::instances_of_reporting_internal(&internal, PROBE_IRI)?;
@@ -433,13 +465,15 @@ pub fn class_expression_instances<A: ForIRI>(
         completeness_guaranteed: instances_guarantee(
             fast_path,
             flags,
-            internal.dropped.is_empty(),
+            // #543: a universal role voids it as a dropped axiom does.
+            internal.dropped.is_empty() && !uro,
             crate::query_inconsistency_guard_enabled(),
         ),
         consistency_undetermined: flags.consistency_undetermined,
         no_verdict: flags.no_verdict,
         depth_capped: flags.depth_capped,
         dropped: internal.dropped.clone(),
+        universal_role_ordinary: uro,
     })
 }
 

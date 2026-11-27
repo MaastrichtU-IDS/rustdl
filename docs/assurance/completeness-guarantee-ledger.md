@@ -29,7 +29,7 @@ A result can have `complete == True` and `completeness_guaranteed == False`.
 
 ## Conditions in the guarantee
 
-All eight must hold.
+All ten must hold.
 
 | # | Condition | Why it voids the guarantee when it fails | Source | Rust stats field | CLI `classify --json` | Python | Pinned by |
 |---|---|---|---|---|---|---|---|
@@ -41,6 +41,8 @@ All eight must hold.
 | 6 | `!consistency_undetermined` | The inconsistency pre-check reached no verdict, or (#446) classify's consistency probe was admitted and gave up (#466: a cut per-class unsat probe admits it on a `TBox`-only run too, where an empty unsat set had read as consistent). If the KB is in fact inconsistent, every class is unsatisfiable and the hierarchy misses entailments. | #162, #228 review | `consistency_undetermined` | `consistency_undetermined` (reported as `undetermined && !inconsistent`) | `consistency_undetermined` (same masking) | table test |
 | 7 | `dropped` is empty | The engine reasoned over a strictly weaker KB than the input. Since #579 an unresolved `Import` counts too: nothing loads the imported ontology. | #43, #246, #579 | `dropped` | `dropped` | module-level `rustdl.dropped_axioms(path)` only, not on `Classification` | `completeness_contract.rs` `a_dropped_axiom_voids_the_guarantee` and its control; table test; `json_output.rs` `classify_json_completeness_guaranteed_ends`; `test_classify.py` `test_dropped_axiom_voids_the_guarantee` |
 | 8 | `!relies_on_trusted_consistency` | "Consistent" rests on a consistency-wedge `Sat` that no main-tableau run verified. If that `Sat` is wrong, the KB is inconsistent and every class is unsatisfiable, so the hierarchy misses entailments. **This cannot fail beside condition 1 today.** PureEl admits no `ABox` assertion and no nominal, so no individual exists, and the consistency wedge (`classify_wedge_consistency`) needs one to run. The probe that could also trust it runs only after the PureEl dispatch. The condition is kept so the invariant holds if PureEl ever admits an individual. | #429 | `relies_on_trusted_consistency` | `relies_on_trusted_consistency` | `relies_on_trusted_consistency`, plus `TrustedConsistencyWarning` | table test; `trusted_consistency_surfaces.rs` `pure_el_and_trust_never_meet` |
+| 9 | `!(universal_role_ordinary && !inconsistent)` | rustdl reads `owl:topObjectProperty` (and any property above it, and `owl:topDataProperty` outside the super-property position) as an ordinary property. That is sound for positives, but it misses entailments of `Δ × Δ`. For example, `⊤ ⊑ ∃r.D` with `∃top.D ⊑ ⊥` is inconsistent, yet on main it read as consistent with this guarantee set. Inert occurrences are not flagged: `x ⊑ top`, a positive `top(a, b)`, Transitive/Reflexive/Symmetric, equivalence and inverse within the universal roles, a chain into them, and #539's built-ins. A proved inconsistency masks the condition, since every entailment holds then. Detection is `owl_dl_core::top_bottom_roles::universal_role_ordinary`. | #543 | `universal_role_ordinary` | `universal_role_ordinary` (masked by `inconsistent`), plus a stderr note | `universal_role_ordinary`, plus `UniversalRoleWarning` | table test; `completeness_contract.rs` `a_proved_inconsistency_masks_the_universal_role_condition`; `top_bottom_roles.rs` (core) detector tests; `universal_role_cli.rs` |
+| 10 | `!wedge_abox_blind` | Classify's wedge is given the `ABox` facts of the nominal reach only (no object-property assertion unless `RUSTDL_CLASSIFY_NOMINAL_OPA=1`), so its models are models of a weaker KB; a fact it is given applies only on a node carrying that individual. A trusted model that touches a nominal while some fact did not apply in it (not given, or given for an individual the model does not instantiate) can then hide a subsumption or an unsatisfiable class. The no-nominal argument: a completion with no nominal-labelled node shares no element with the named individuals, so it can be united disjointly with any model of the full KB, and unseen facts cannot invalidate it; only models that touch a nominal count. **This cannot fail beside condition 1 today:** PureEl admits no nominal. The condition is kept so the invariant holds if PureEl ever admits one. `RUSTDL_CLASSIFY_WEDGE_ABOX_DEMOTE=1` (default off) demotes such models instead (`wedge_abox_demoted`). | #533 | `wedge_abox_blind` (count: `wedge_abox_blind_models`) | `wedge_abox_blind` | `wedge_abox_blind` | table test; `wedge_abox_blind.rs` |
 
 The table test is `each_condition_alone_voids_the_guarantee` in
 `crates/owl-dl-reasoner/tests/completeness_contract.rs`. It starts from the one
@@ -56,8 +58,27 @@ encodings its clausifier defers it never sees. A model of that weaker KB need no
 be a model of the input, so the trusted `Sat` can hide an inconsistency (a miss,
 never a false positive). The deferred count is of deferral events, not axioms (a
 `DisjointUnion` with two complex members reads 3), and 0 does not prove the wedge
-saw the whole KB: the pairwise-disjointness half of a `DisjointUnion` whose members
-do not encode, and the axiom kinds the clausifier ignores, drop clauses uncounted.
+saw the whole KB: the axiom kinds the clausifier ignores drop clauses uncounted, and
+so, unless the opt-in `RUSTDL_CLAUSIFY_COMPLEX_DISJOINT` is on, does the pairwise-disjointness half
+of a `DisjointUnion` whose members do not encode (that flag clausifies or counts it).
+
+#600 adds an **opt-in** fix (`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT=1`, default OFF) that
+encodes complex `DisjointClasses` / `DisjointUnion` members and the `DisjointUnion`
+covering, the deferrals behind the live misses #558 found. At the default those
+misses remain, and `wedge_clauses_deferred` (classify) and the consistency counts
+report them. Opt-in because its cost is unbounded on growing ontologies: one
+trigger-less fallback beside a 200-class chain took 24.8 s and was cut (main 0.07 s,
+complete), and soft-trigger fallbacks with range axioms blow up too (64 axioms:
+21.7 s, cut); a cut loses answers main finds. A default flip waits for a cost guard
+(follow-up issue). With the flag on, a fallback with no soft trigger
+(no body-encodable conjunct: `∀r.B`, `≤1 s.C`, `∀r.B ⊓ ∀s.C`, …) is a `⊤`-bodied
+disjunctive clause whose cost grows exponentially with their number, so at most
+`TRIGGERLESS_FALLBACK_CAP` (2) are emitted per clausification; the rest are deferred
+under their pre-#600 kinds and counted (a trigger-less `DisjointUnion` pair as
+`disjoint-union-pair`). Besides those, what we observed deferred on the ORE pool is the
+antecedent DNF cap (one file, `ore_ont_8142`, two deferrals); the reflexive-derived cap
+can also defer. `classify --json` also reports the classify
+wedge's own deferrals as `wedge_clauses_deferred`.
 
 Surfaces that carry the counts (#558):
 - `consistent --json`: `wedge_clauses_refused` / `wedge_clauses_deferred`, whenever

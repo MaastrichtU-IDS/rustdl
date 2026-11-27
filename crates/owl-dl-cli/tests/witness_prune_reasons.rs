@@ -85,13 +85,20 @@ fn with_the_prune_off_both_read_false() {
     assert!(reasons(&v).is_empty(), "{v}");
 }
 
-/// `DisjointClasses(∀r.F, G)`: the clausifier defers the `∀` antecedent, so the
-/// witness engine never sees that axiom.
+/// `DisjointClasses(∀r.F, G)`: before #600 the clausifier deferred the `∀`
+/// antecedent, so the witness engine never saw that axiom. #600 encodes it
+/// (`RUSTDL_CLAUSIFY_COMPLEX_DISJOINT`); the reason is still reported where a
+/// deferral remains, reproduced here with the fix off.
 #[test]
 fn a_deferred_axiom_reads_deferred_clauses() {
-    let v = realize_json("deferred.ofn", &[]);
+    let v = realize_json("deferred.ofn", &[("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "0")]);
     assert_eq!(v["witness_prune_may_drop"], true);
     assert_eq!(reasons(&v), ["deferred_clauses"]);
+    // #600: the default (the fix is opt-in) still defers; with the fix on nothing is.
+    let v = realize_json("deferred.ofn", &[]);
+    assert_eq!(reasons(&v), ["deferred_clauses"]);
+    let v = realize_json("deferred.ofn", &[("RUSTDL_CLAUSIFY_COMPLEX_DISJOINT", "1")]);
+    assert!(!reasons(&v).contains(&"deferred_clauses"), "{v}");
 }
 
 /// The 12-variable body of `max_body_vars/wide-body-12vars.ofn` plus an

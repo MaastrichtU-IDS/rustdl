@@ -523,7 +523,11 @@ cut caused the give-up. Only instance checks set it. `minimal` = every returned
 justification is *guaranteed* minimal (`Justification::minimal_guaranteed`
 across the whole saturator/tableau fragment the query resolved in — some
 SROIQ-only entailments return a sound but not-provably-minimal axiom set,
-e.g. `--all`-independent disjunctive derivations). `laconic` echoes the
+e.g. `--all`-independent disjunctive derivations). Since #584 it is also `false`
+for an `inconsistent` query (or `subclass owl:Thing owl:Nothing`) answered on the
+saturation-only oracle (when the whole set's clash is saturation-detected;
+`RUSTDL_JUSTIFY_SAT_ORACLE=0` turns it off), whose "not refuted" is no consistency
+proof. `laconic` echoes the
 `--laconic` flag (each justification's axioms are weakened to their
 responsible fragment when set). `enumeration_complete` is `true` for the
 default single-justification query; for `--all`, `false` when the
@@ -633,7 +637,8 @@ step proof), or by the #369 lazy check after the entailment held. The entailment
 then holds vacuously, the payload has the justification-fallback shape, and since
 #456 `justification_fallback` is the inconsistency core: the minimal inconsistent
 subset `rustdl justify <file> inconsistent` searches for (`prove` runs it under its own
-node cap, so a give-up can leave a different, still inconsistent, set). It is minimal for the
+node cap, so a give-up can leave a different, still inconsistent, set; and since #584
+`justification_minimal` is `false` when that search ran on the saturation-only oracle). It is minimal for the
 inconsistency, not for `SUB ⊑ SUP`; a smaller set entailing `SUB ⊑ SUP` by
 ordinary reasoning is not sought. If the core search finds none, the fallback has
 no axioms and `incomplete` is `true`. `false` is not a proof of consistency.

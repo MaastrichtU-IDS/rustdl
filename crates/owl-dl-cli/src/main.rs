@@ -3167,6 +3167,11 @@ fn run() -> Result<()> {
                     let enumeration_complete = if outcome.incomplete {
                         js.truncate(max);
                         false
+                    } else if outcome.saturation_oracle {
+                        // #584: a branch probe on the saturation-only oracle prunes
+                        // on "not refuted", so a justification may be missing.
+                        js.truncate(max);
+                        false
                     } else if max == usize::MAX {
                         true
                     } else if js.len() > max {
@@ -3311,8 +3316,22 @@ fn run() -> Result<()> {
                     );
                 }
             };
+            let note_dropped_unverified = || {
+                if r.dropped_unverified > 0 {
+                    println!(
+                        "# note: {} candidate(s) dropped (failed verification — justification set may be incomplete)",
+                        r.dropped_unverified
+                    );
+                }
+            };
             if r.repairs.is_empty() {
                 println!("entailed, but no verifiable axiom removal found");
+                // #584 review: say whether "none found" is complete, as the
+                // non-empty path does.
+                if !r.complete {
+                    println!("# (completeness not guaranteed)");
+                }
+                note_dropped_unverified();
                 note_gave_up();
                 exit_if_no_verdict(r.no_verdict);
                 return Ok(());
@@ -3342,12 +3361,7 @@ fn run() -> Result<()> {
                     }
                 }
             }
-            if r.dropped_unverified > 0 {
-                println!(
-                    "# note: {} candidate(s) dropped (failed verification — justification set may be incomplete)",
-                    r.dropped_unverified
-                );
-            }
+            note_dropped_unverified();
             note_gave_up();
             exit_if_no_verdict(r.no_verdict);
         }

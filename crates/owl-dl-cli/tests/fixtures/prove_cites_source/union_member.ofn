@@ -1,0 +1,6 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/o>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:D)) Declaration(Class(:X))
+EquivalentClasses(:D ObjectUnionOf(:A :B))
+SubClassOf(:X :A)
+)

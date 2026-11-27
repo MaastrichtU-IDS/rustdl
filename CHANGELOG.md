@@ -92,6 +92,26 @@ All notable changes to rustdl are documented here. Format is based on
   - A cardinality on the super side failed the same way: `≥2 e`, `=1 e`, `=2 e` and `≥3 e` were each read as "has some e-value", so `C ⊑ hasValue(d, 7)` gave `C ⊑ E` from `DataExactCardinality(1 e) ⊑ E`. This happened even with no real sub-property, since the hierarchy is closed reflexively.
   - **Fix:** the shortcut now fires only when Y is `DataSomeValuesFrom(e rdfs:Literal)` or `DataMinCardinality(1 e)`. Every other form is compared by the lowering. Same values, contained ranges, the same datatype, an enumeration within its datatype, and `≥2 d` against `≥2 e` are still derived.
   - **ORE:** 197 pool files use `SubDataPropertyOf`, and 191 of them parse (6 fail on IRI syntax). On those 191, the converted axioms are unchanged, and the remaining shortcut adds nothing that a build without it lacks.
+- **A wedge decide with no deadline no longer enumerates every `≤n` partition after a
+  stalled one (#580): `RUSTDL_WEDGE_PARTITION_STALL_STOP`, default ON, `=0` reverts.**
+  #569 made the partition search stop at a deadline; without one, a leaf that returned
+  `Stalled` (depth bound, step cap, a churn stop) let the enumeration go on through every
+  remaining partition. Each leaf can open a nested enumeration one depth level down, so
+  the #569 graph (`{a} ⊑ ≤100 s⁻` over a growing witness chain) never returned. Now, in a
+  decide with no deadline, the first `Stalled` leaf restores and ends its enumeration
+  with `Stalled` (never `Sat`), and every enclosing level stops on its stalled child:
+  one leaf per depth level instead of all of them (`≤3` at depth 3: 3 leaves against
+  2,954). A stalled child already rules out `Unsat`, so only a later `Sat` is given up.
+  The classify pair wedge and label oracle fall through to the main tableau on it. Query
+  consistency (`RUSTDL_QUERY_LAZY_CONSISTENCY_MS=0`) and classify's consistency fallback
+  report it as undetermined instead. A decide with a deadline is not touched. The stop
+  was not reached on any real ontology measured: at the CLI's defaults, 566 ORE files
+  (the #620 samples, 57 cut at 32 s) and 9 curated ontologies ran 39 partition
+  enumerations, 9 of them on ORE, with no leaf stalling before its deadline; on the 8
+  files that enumerate, deadline-free runs never had a stalled leaf either. What remains
+  on the #569 graph is the engine's own regrowth of the witness chain at every level,
+  quadratic in depth: 43 CPU-s at depth 16, 160 at 32, 633 at 64 (see
+  `docs/known-limitations/wedge-deadline-free-witness-regrowth.md`).
 - **A `DataOneOf` value now meets the same datatype's ranges and points (#556).** `a : ∃d.{1}` with `¬d(a, 1)` read consistent on every path, and HermiT and Konclude both say it is inconsistent. The cause: `DataOneOf` lowers to an enumeration `DKey` bucket, while a `NegativeDataPropertyAssertion`, a `DataPropertyAssertion`, `DataHasValue` and facet restrictions lower to the range bucket of the same datatype. Only disjointness was seeded across the two (#42 item 2), never subsumption, so `C ⊑ ∃d.{3}` did not give `C ⊑ ∃d.[3,3]` either.
   - Conversion now seeds `enumeration ⊑ range` when every member lies in the range, and `range ⊑ enumeration` when the range is finite and every value in it is a member. This covers integer, decimal, float, double, date and dateTime.
   - Zero is left out of the IEEE edges, because the buckets merge `-0` and `+0` and HermiT keeps them apart.

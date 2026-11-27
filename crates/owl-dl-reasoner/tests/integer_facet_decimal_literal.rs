@@ -19,6 +19,12 @@ use std::io::Cursor;
 
 const EX: &str = "http://ex.org/t#";
 
+fn parse(src: &str) -> SetOntology<RcStr> {
+    read_ofn(&mut Cursor::new(src), ParserConfiguration::default())
+        .unwrap()
+        .0
+}
+
 /// `C ⊑ sub`, `∃d.integer[facet] ⊑ E`: is `C ⊑ E`?
 fn entails(sub: &str, facet: &str) -> bool {
     let src = format!(
@@ -28,8 +34,7 @@ fn entails(sub: &str, facet: &str) -> bool {
          SubClassOf(:C {sub})\n\
          SubClassOf(DataSomeValuesFrom(:d DatatypeRestriction(xsd:integer {facet})) :E)\n)\n"
     );
-    let (o, _): (SetOntology<RcStr>, _) =
-        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).unwrap();
+    let o = parse(&src);
     owl_dl_reasoner::is_subclass_of(&o, &format!("{EX}C"), &format!("{EX}E")).unwrap()
 }
 
@@ -70,6 +75,16 @@ fn values_outside_the_decimal_bound_are_not_subsumed() {
             has("-2"),
             r#"xsd:maxExclusive "-2.0"^^xsd:decimal"#,
         ),
+        (
+            "3 is not < 2.5",
+            has("3"),
+            r#"xsd:maxExclusive "2.5"^^xsd:decimal"#,
+        ),
+        (
+            "0 > -0.5 (the sign only in the literal)",
+            has("0"),
+            r#"xsd:maxInclusive "-0.5"^^xsd:decimal"#,
+        ),
     ] {
         assert!(
             !entails(&sub, facet),
@@ -98,7 +113,77 @@ fn values_inside_the_decimal_bound_are_subsumed() {
         ("3 > 2.5", has("3"), r#"xsd:minExclusive "2.5"^^xsd:decimal"#),
         ("-3 ≤ -2.5", has("-3"), r#"xsd:maxInclusive "-2.5"^^xsd:decimal"#),
         ("-3 < -2.0", has("-3"), r#"xsd:maxExclusive "-2.0"^^xsd:decimal"#),
+        ("2 < 2.5", has("2"), r#"xsd:maxExclusive "2.5"^^xsd:decimal"#),
+        ("-1 ≤ -0.5", has("-1"), r#"xsd:maxInclusive "-0.5"^^xsd:decimal"#),
+        (
+            "i64::MIN as a whole decimal",
+            has("-9223372036854775808"),
+            r#"xsd:maxInclusive "-9223372036854775808"^^xsd:decimal"#,
+        ),
     ] {
         assert!(entails(&sub, facet), "{what}: subsumed (HermiT, Konclude)");
+    }
+}
+
+/// #635 review: facets that cross describe no integer, so a class demanding such a
+/// value is unsat (`HermiT`). `[≥ 2.5, ≤ 2.7]` is `[3, 2]` after rounding, and
+/// `[≥ 3, ≤ 2]` is empty as written. Each read satisfiable, with nothing dropped.
+#[test]
+fn crossing_facets_make_the_class_unsat() {
+    for (what, facets) in [
+        (
+            "[≥ 2.5, ≤ 2.7] (c3)",
+            r#"xsd:minInclusive "2.5"^^xsd:decimal xsd:maxInclusive "2.7"^^xsd:decimal"#,
+        ),
+        (
+            "[≥ 3, ≤ 2] (d1)",
+            r#"xsd:minInclusive "3"^^xsd:integer xsd:maxInclusive "2"^^xsd:integer"#,
+        ),
+    ] {
+        let o = parse(&format!(
+            "Prefix(:=<{EX}>)\nPrefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+             Ontology(<http://ex.org/t>\n\
+             Declaration(DataProperty(:d)) Declaration(Class(:C))\n\
+             SubClassOf(:C DataSomeValuesFrom(:d DatatypeRestriction(xsd:integer {facets})))\n)\n"
+        ));
+        assert!(
+            !owl_dl_reasoner::is_class_satisfiable(&o, &format!("{EX}C")).unwrap(),
+            "{what}: C is unsat"
+        );
+        let c = owl_dl_reasoner::classify(&o).unwrap();
+        assert!(
+            c.unsatisfiable_classes()
+                .contains(&format!("{EX}C").as_str()),
+            "{what}: classify"
+        );
+    }
+}
+
+/// #635 review: a facet literal that is not of the integers' value space
+/// (`"2"^^xsd:string`, `"2.0"^^xsd:double`) put the restriction outside OWL 2 DL, and
+/// `HermiT` rejects it. Its lexical form was read as the integer 2, so `{2}` entered
+/// the range and gave `C ⊑ E`. The range is now dropped, and visibly so.
+#[test]
+fn a_facet_literal_outside_the_integers_drops_the_range() {
+    for (what, facet) in [
+        ("a string facet (c8)", r#"xsd:minInclusive "2"^^xsd:string"#),
+        (
+            "a double facet (c7)",
+            r#"xsd:minInclusive "2.0"^^xsd:double"#,
+        ),
+        (
+            "a decimal beyond i64",
+            r#"xsd:minInclusive "99999999999999999999.5"^^xsd:decimal"#,
+        ),
+    ] {
+        assert!(!entails(&has("2"), facet), "{what}: no subsumption");
+        let src = format!(
+            "Prefix(:=<{EX}>)\nPrefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+             Ontology(<http://ex.org/t>\n\
+             Declaration(DataProperty(:d)) Declaration(Class(:E))\n\
+             SubClassOf(DataSomeValuesFrom(:d DatatypeRestriction(xsd:integer {facet})) :E)\n)\n"
+        );
+        let dropped = owl_dl_reasoner::dropped_axioms(&parse(&src)).unwrap();
+        assert!(!dropped.is_empty(), "{what}: recorded in dropped");
     }
 }

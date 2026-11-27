@@ -540,7 +540,7 @@ impl IntegerRange {
         };
         Self { min, max }
     }
-    fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         matches!((self.min, self.max), (Some(a), Some(b)) if a > b)
     }
 
@@ -2305,8 +2305,13 @@ pub(crate) fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<Intege
 /// integers (equal for a whole value). #591: an `xsd:decimal` literal is read as the
 /// decimal it denotes, since the integer value space is part of the decimal one
 /// (OWL 2 Structural Specification §4.1, XML Schema 1.1 Part 2 §3.3.13): `"2.0"` is
-/// the integer 2, and `"2.5"` lies between 2 and 3. Every other literal is read by its
-/// lexical form as an integer, as before; one that does not parse refuses the range.
+/// the integer 2, and `"2.5"` lies between 2 and 3. A literal of an integer type is
+/// read as that integer. Any other literal refuses the range (the caller drops it and
+/// records it in `dropped`): `"2"^^xsd:string` or `"2.0"^^xsd:double` is not a value
+/// of the integers' value space, so the restriction is outside OWL 2 DL (`HermiT`
+/// rejects it), and reading its lexical form as an integer gave false subsumptions
+/// (#635 review, the integer counterpart of #588's facet-literal check). A value
+/// outside `i64` also refuses the range.
 fn integer_facet_bounds<A: ForIRI>(l: &Literal<A>) -> Option<(i64, i64)> {
     const XSD_DECIMAL: &str = "http://www.w3.org/2001/XMLSchema#decimal";
     if let Literal::Datatype {
@@ -2316,22 +2321,25 @@ fn integer_facet_bounds<A: ForIRI>(l: &Literal<A>) -> Option<(i64, i64)> {
         && datatype_iri.as_ref() == XSD_DECIMAL
     {
         let d = parse_decimal(literal)?;
-        let mag: i64 = if d.int.is_empty() {
+        // In `i128` so that `i64::MIN`, whose magnitude is not an `i64`, still reads;
+        // a bound outside `i64` refuses the range, as before.
+        let mag: i128 = if d.int.is_empty() {
             0
         } else {
             d.int.parse().ok()?
         };
         let trunc = if d.negative { -mag } else { mag };
-        if d.frac.is_empty() {
-            return Some((trunc, trunc));
-        }
         // Truncation is toward zero: below it for a negative value, above it for a
         // positive one.
-        return Some(if d.negative {
-            (trunc.checked_sub(1)?, trunc)
-        } else {
-            (trunc, trunc.checked_add(1)?)
-        });
+        let (floor, ceil) = match (d.frac.is_empty(), d.negative) {
+            (true, _) => (trunc, trunc),
+            (false, true) => (trunc - 1, trunc),
+            (false, false) => (trunc, trunc + 1),
+        };
+        return Some((i64::try_from(floor).ok()?, i64::try_from(ceil).ok()?));
+    }
+    if !facet_literal_is(l, &is_integer_family_datatype) {
+        return None;
     }
     let v: i64 = l.literal().parse().ok()?;
     Some((v, v))

@@ -2054,8 +2054,14 @@ fn scan_subclass_axiom<A: ForIRI>(
         scan_class_for_bounds(&sub_iri, sup, f);
         scan_class_for_existentials(&sub_iri, sup, f);
     }
-    // SubClassOf(DataSome(dp, _), D) — sub is a DataSome; D is the super.
-    if let (Some(dp), Some(sup_iri)) = (data_some_property(sub), class_iri(sup)) {
+    // SubClassOf(DataSome(dp, rdfs:Literal), D) — sub says only "has some dp-value";
+    // D is the super. #626: ONLY with the unrestricted range. Pattern 4 reads
+    // `C ⊑ ∃specific.X` against it, and `∃specific.X ⊑ ∃general.Y` holds for every X
+    // only when Y is all data values. With a restricted Y (`hasValue(e, 1)`), the
+    // pattern derived `C ⊑ D` from `C ⊑ hasValue(d, 7)`: a false subsumption that
+    // HermiT and Konclude reject. Restricted ranges are left to the lowering (the
+    // role hierarchy over `DKey` fillers), which compares the ranges.
+    if let (Some(dp), Some(sup_iri)) = (data_some_any_value_property(sub), class_iri(sup)) {
         f.some_super.entry(dp).or_default().insert(sup_iri);
     }
 }
@@ -3084,12 +3090,19 @@ fn dpe_iri<A: ForIRI>(d: &DataProperty<A>) -> String {
     d.0.to_string()
 }
 
-fn data_some_property<A: ForIRI>(ce: &ClassExpression<A>) -> Option<String> {
+/// #626: the data property of `ce` when `ce` says only that a value EXISTS, with no
+/// constraint on it: `DataSomeValuesFrom(dp, rdfs:Literal)`, or `DataMin` /
+/// `DataExactCardinality(n ≥ 1, dp, rdfs:Literal)`. A `DataHasValue` or any narrower
+/// range constrains the value, so it is not one.
+fn data_some_any_value_property<A: ForIRI>(ce: &ClassExpression<A>) -> Option<String> {
     match ce {
-        ClassExpression::DataSomeValuesFrom { dp, .. }
-        | ClassExpression::DataHasValue { dp, .. } => Some(dpe_iri(dp)),
-        ClassExpression::DataMinCardinality { dp, n, .. } if *n >= 1 => Some(dpe_iri(dp)),
-        ClassExpression::DataExactCardinality { dp, n, .. } if *n >= 1 => Some(dpe_iri(dp)),
+        ClassExpression::DataSomeValuesFrom { dp, dr } if is_rdfs_literal(dr) => Some(dpe_iri(dp)),
+        ClassExpression::DataMinCardinality { dp, n, dr }
+        | ClassExpression::DataExactCardinality { dp, n, dr }
+            if *n >= 1 && is_rdfs_literal(dr) =>
+        {
+            Some(dpe_iri(dp))
+        }
         _ => None,
     }
 }

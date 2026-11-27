@@ -14913,6 +14913,7 @@ mod tests {
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         for (status, incomplete) in [(Verdict::NotEntailed, false), (Verdict::Unknown, true)] {
             let (r, inc) = fallback_after_inconsistency(outcome(status, incomplete));
@@ -17320,6 +17321,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         let (result, incomplete) = fallback_after_held(gave_up);
         assert!(
@@ -17339,6 +17341,7 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             relies_on_trusted_consistency: false,
             no_verdict: false,
             depth_capped: false,
+            saturation_oracle: false,
         };
         let (result, incomplete) = fallback_after_held(not_minimal);
         assert!(matches!(

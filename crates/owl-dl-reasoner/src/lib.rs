@@ -7904,6 +7904,24 @@ pub fn conversion_report<A: horned_owl::model::ForIRI>(
     Ok((internal.dropped, uro))
 }
 
+/// #597: [`conversion_report`] plus the role-level flag of
+/// [`universal_role_ordinary_for_roles`], from one conversion: `(dropped,
+/// universal_role_ordinary, universal_role_ordinary_for_roles)`. For a caller that
+/// reports both flags beside answers of either level (the Python bindings).
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn conversion_notes<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<(DroppedAxioms, bool, bool), ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    let for_roles =
+        uro || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty();
+    Ok((internal.dropped, uro, for_roles))
+}
+
 /// #543, for the ROLE-level surfaces (`property-values`, materialized property
 /// assertions): `true` when [`conversion_report`]'s flag is set, or when a role sits
 /// above a top property (`top ⊑* r`). Such an `r` relates every pair of individuals,
@@ -7913,14 +7931,23 @@ pub fn conversion_report<A: horned_owl::model::ForIRI>(
 /// # Errors
 ///
 /// As [`dropped_axioms`].
+/// #543 part 2: how many axioms the universal-role fold added on conversion (0 unless
+/// the ontology uses `owl:topObjectProperty` in a foldable position).
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn universal_role_folds<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<usize, ReasonError> {
+    Ok(owl_dl_core::convert::convert_ontology(ontology)?.universal_role_folds)
+}
+
 pub fn universal_role_ordinary_for_roles<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<bool, ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
-    Ok(
-        owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal)
-            || !owl_dl_core::top_bottom_roles::universal_super_roles(&internal).is_empty(),
-    )
+    Ok(owl_dl_core::top_bottom_roles::universal_role_ordinary_for_roles(&internal))
 }
 
 use std::collections::HashMap;
@@ -10171,6 +10198,8 @@ fn abox_components_inconsistent(
             axioms: idx.iter().map(|&i| internal.axioms[i].clone()).collect(),
             dropped: internal.dropped.clone(),
             builtin: internal.builtin.clone(),
+            builtin_licenses: internal.builtin_licenses.clone(),
+            universal_role_folds: internal.universal_role_folds,
             collapsed_operands: internal.collapsed_operands,
         };
         let started = std::time::Instant::now();

@@ -209,7 +209,8 @@ not provably complete on all of SROIQ. `saturation_only` and
 Axioms the conversion cannot represent (data-property and datatype axioms outside
 the recognized preprocessing patterns, `HasKey`, SWRL rules) are dropped rather
 than raising an error: reasoning proceeds over the rest, a sound
-under-approximation. `dropped_axioms(path)` reports their kinds and counts. Role
+under-approximation. Every query then emits `DroppedAxiomsWarning` (#597), and
+`dropped_axioms(path)` reports their kinds and counts. Role
 chains longer than 2 are supported (decomposed into length-2 chains).
 
 See the [project documentation](https://github.com/MaastrichtU-IDS/rustdl) for

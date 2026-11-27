@@ -210,15 +210,10 @@ pub(crate) struct PyPreparedOntology {
     universal_role_ordinary: bool,
 }
 
-/// #543's flag for a prepared ontology: converted again only when the source text
-/// names a top property at all.
-fn prepared_universal_role(
-    src: &[u8],
-    onto: &horned_owl::ontology::set::SetOntology<RcStr>,
-) -> bool {
-    let mentions = |needle: &[u8]| src.windows(needle.len()).any(|w| w == needle);
-    (mentions(b"topObjectProperty") || mentions(b"topDataProperty"))
-        && owl_dl_reasoner::conversion_report(onto).is_ok_and(|(_, uro)| uro)
+/// #543's flag for a prepared ontology, from a conversion at prepare time (#619: no
+/// byte prefilter; a prefix that cuts inside the name hid the use from it).
+fn prepared_universal_role(onto: &horned_owl::ontology::set::SetOntology<RcStr>) -> bool {
+    owl_dl_reasoner::conversion_report(onto).is_ok_and(|(_, uro)| uro)
 }
 
 #[pymethods]
@@ -280,10 +275,9 @@ impl PyPreparedOntology {
 #[pyfunction]
 pub(crate) fn prepare(path: &str) -> PyResult<PyPreparedOntology> {
     let onto = load::load_path(path)?;
-    let src = std::fs::read(path).unwrap_or_default();
     Ok(PyPreparedOntology {
         inner: owl_dl_reasoner::justify::PreparedJustifier::prepare(&onto),
-        universal_role_ordinary: prepared_universal_role(&src, &onto),
+        universal_role_ordinary: prepared_universal_role(&onto),
     })
 }
 
@@ -296,7 +290,7 @@ pub(crate) fn prepare_bytes(data: &[u8], format: &str) -> PyResult<PyPreparedOnt
     let onto = load::load_bytes(data, format)?;
     Ok(PyPreparedOntology {
         inner: owl_dl_reasoner::justify::PreparedJustifier::prepare(&onto),
-        universal_role_ordinary: prepared_universal_role(data, &onto),
+        universal_role_ordinary: prepared_universal_role(&onto),
     })
 }
 

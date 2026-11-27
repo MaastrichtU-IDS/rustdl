@@ -296,6 +296,13 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::wedge_merge_churn_guard_enabled,
             true,
         ),
+        // #620: in a deadline-free wedge decide, the #376 re-fire loop stops with
+        // `Stalled` on churn across its passes or after 1,024 passes. `=0` reverts.
+        (
+            "RUSTDL_WEDGE_REFIRE_BOUND",
+            owl_dl_tableau::wedge_refire_bound_enabled,
+            true,
+        ),
         (
             "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
             owl_dl_reasoner::property_asymmetric_disjoint_enabled,

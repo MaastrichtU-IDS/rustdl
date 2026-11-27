@@ -1539,10 +1539,11 @@ impl NominalImplying {
         for c in clauses {
             if let ([Atom::Class(b, X)], [Atom::Class(h, X)]) = (&c.body[..], &c.head[..]) {
                 implied_by.entry(*h).or_default().push(*b);
-                if Self::is_nominal(start, count, *h) || in_base(h) || set.contains(h) {
-                    if !in_base(b) && set.insert(*b) {
-                        stack.push(*b);
-                    }
+                if (Self::is_nominal(start, count, *h) || in_base(h) || set.contains(h))
+                    && !in_base(b)
+                    && set.insert(*b)
+                {
+                    stack.push(*b);
                 }
                 if Self::is_nominal(start, count, *h) && !in_base(h) && set.insert(*h) {
                     stack.push(*h);

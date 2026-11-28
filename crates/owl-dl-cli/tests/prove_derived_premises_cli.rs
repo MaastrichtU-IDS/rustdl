@@ -1,7 +1,14 @@
 //! #603: a step proof that rests on an `A ⊑ D` the told-definition match derived
 //! (#139/#180) cites that edge's source premises, not the derived edge. On the curated
 //! corpus these were the only derived axioms step proofs cited (wine 47 of 150 sampled
-//! proofs, pizza 2 of 113).
+//! proofs, pizza 2 of 113). Two more kinds are replayed the same way. On ORE ontologies
+//! rich in data axioms (13,727 calls), they were the derived kinds step proofs cited,
+//! `DKey` seed edges apart:
+//! - the union common-subsumer `disjunction_existential` derives (`X ⊑ D₁ ⊔ … ⊔ Dₙ`,
+//!   every `Dᵢ` told-below `C`, so `X ⊑ C`): 15 proofs (SWEET, `OLiA`), plus wine's
+//!   `Fruit ⊑ EdibleThing`;
+//! - `data_axioms`' domain inference (`C ⊑ =1 dp`, `domain(dp) = D`, so `C ⊑ D`):
+//!   23 proofs (OAEI benchmarks, SWEET), replayed on the source components.
 //!
 //! Each test checks the citation three ways: nothing is left in `derived_axioms`; every
 //! cited axiom is a component of the source; and the cited axioms ALONE entail the goal
@@ -170,4 +177,87 @@ fn a_union_member_edge_cites_the_union_definition() {
         "{c:?}"
     );
     assert!(entailed_by("union_member", &c, &x, &d), "{c:?}");
+}
+
+/// The union common-subsumer, as wine (`Fruit ≡ NonSweetFruit ⊔ SweetFruit`, both
+/// `⊑ EdibleThing`) and SWEET (`Sorption ≡ Adsorption ⊔ Absorption`) assert it: the
+/// definition and each member's edge, each needed.
+#[test]
+fn a_union_common_subsumer_cites_its_premises() {
+    let (a, d) = (format!("{T}Fruit"), format!("{T}EdibleThing"));
+    let c = cited("union_common_equiv", &a, &d);
+    assert_eq!(c.len(), 3, "{c:?}");
+    assert!(
+        c.iter().any(|x| x.starts_with("EquivalentClasses(")),
+        "{c:?}"
+    );
+    assert!(entailed_by("union_common_equiv", &c, &a, &d), "{c:?}");
+    for i in 0..c.len() {
+        let mut fewer = c.clone();
+        fewer.remove(i);
+        assert!(
+            !entailed_by("union_common_equiv", &fewer, &a, &d),
+            "{c:?} without {}",
+            c[i]
+        );
+    }
+}
+
+/// As `OLiA` asserts it (`X ⊑ D₁ ⊔ D₂`, a subclass axiom, not a definition), with a member
+/// reaching the common subsumer through a told path.
+#[test]
+fn a_union_super_with_a_told_path_cites_the_path() {
+    let (a, d) = (format!("{T}X"), format!("{T}P"));
+    let c = cited("union_common_sub_path", &a, &d);
+    assert_eq!(c.len(), 4, "{c:?}");
+    assert!(entailed_by("union_common_sub_path", &c, &a, &d), "{c:?}");
+    for i in 0..c.len() {
+        let mut fewer = c.clone();
+        fewer.remove(i);
+        assert!(
+            !entailed_by("union_common_sub_path", &fewer, &a, &d),
+            "{c:?} without {}",
+            c[i]
+        );
+    }
+}
+
+/// The union as a conjunct of the super (`X ⊑ A ⊓ (D₁ ⊔ D₂)`).
+#[test]
+fn a_union_conjunct_cites_its_premises() {
+    let (a, d) = (format!("{T}X"), format!("{T}C"));
+    let c = cited("union_common_conjunct", &a, &d);
+    assert_eq!(c.len(), 3, "{c:?}");
+    assert!(entailed_by("union_common_conjunct", &c, &a, &d), "{c:?}");
+}
+
+/// `data_axioms`' domain inference, as OAEI benchmarks assert it: `Manual ⊑ =1 title`
+/// and `domain(title) = Reference` give `Manual ⊑ Reference`. It derives from source
+/// components, so the replay is on the source: the restriction and the domain, each
+/// needed.
+#[test]
+fn a_data_property_domain_inference_cites_its_premises() {
+    for (file, sub, sup) in [
+        ("data_exact_domain", "Manual", "Reference"),
+        // SWEET's shape: `Neutral ⊑ hasValue(hasCharge, 0)`.
+        ("data_hasvalue_domain", "Neutral", "Chemical"),
+    ] {
+        let (a, d) = (format!("{T}{sub}"), format!("{T}{sup}"));
+        let c = cited(file, &a, &d);
+        assert_eq!(c.len(), 2, "{file}: {c:?}");
+        assert!(
+            c.iter().any(|x| x.starts_with("DataPropertyDomain(")),
+            "{file}: {c:?}"
+        );
+        assert!(entailed_by(file, &c, &a, &d), "{file}: {c:?}");
+        for i in 0..c.len() {
+            let mut fewer = c.clone();
+            fewer.remove(i);
+            assert!(
+                !entailed_by(file, &fewer, &a, &d),
+                "{file}: {c:?} without {}",
+                c[i]
+            );
+        }
+    }
 }

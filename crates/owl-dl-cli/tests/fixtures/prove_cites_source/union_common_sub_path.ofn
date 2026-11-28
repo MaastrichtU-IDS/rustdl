@@ -1,0 +1,10 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/union_common_sub_path>
+Declaration(Class(:X)) Declaration(Class(:D1)) Declaration(Class(:D2))
+Declaration(Class(:M)) Declaration(Class(:P)) Declaration(Class(:Other))
+SubClassOf(:X ObjectUnionOf(:D1 :D2))
+SubClassOf(:X :Other)
+SubClassOf(:D1 :M)
+SubClassOf(:M :P)
+SubClassOf(:D2 :P)
+)

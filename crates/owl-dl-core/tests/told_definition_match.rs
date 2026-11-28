@@ -284,3 +284,91 @@ fn a_complex_conjunct_is_reached_through_an_asserted_conjunction() {
     assert!(has_edge(&o, "A", "D"));
     assert!(!has_edge(&o, "F", "D"), "F lacks the first conjunct");
 }
+
+/// #603: the replay of `disjunction_existential`'s union common-subsumer reaches the
+/// class asserting the union through a told path: `A ⊑ X`, `X ⊑ D₁ ⊔ D₂`, `Dᵢ ⊑ C`
+/// give `A ⊑ C`. The premises are the path to `X`, the union axiom and each member's
+/// edge; the pass's own derived edges are not eligible (they would explain themselves).
+#[test]
+fn the_union_replay_cites_the_path_to_the_asserting_class() {
+    let o = convert(
+        "SubClassOf(:A :X)
+        SubClassOf(:X ObjectUnionOf(:D1 :D2))
+        SubClassOf(:D1 :C)
+        SubClassOf(:D2 :C)",
+    );
+    let id = |n: &str| o.vocabulary.class_id(&format!("http://ex#{n}")).unwrap();
+    let is_edge = |ax: &Axiom, a: &str, d: &str| {
+        matches!(ax, Axiom::SubClassOf { sub, sup }
+            if matches!(o.concepts.get(*sub), ConceptExpr::Atomic(c) if *c == id(a))
+            && matches!(o.concepts.get(*sup), ConceptExpr::Atomic(c) if *c == id(d)))
+    };
+    // The pass derived `X ⊑ C`; neither it nor an `A ⊑ C` may be used.
+    assert!(has_edge(&o, "X", "C"), "precondition: the pass fired");
+    let eligible = |i: usize| !is_edge(&o.axioms[i], "X", "C") && !is_edge(&o.axioms[i], "A", "C");
+    let ix = owl_dl_core::told_definition_match::MatchIndex::build(&o);
+    let premises = ix
+        .premises(&o, id("A"), id("C"), &eligible)
+        .expect("the union replay finds the premises");
+    let used: Vec<&Axiom> = premises.iter().map(|&i| &o.axioms[i]).collect();
+    assert!(
+        used.iter().any(|ax| is_edge(ax, "A", "X")),
+        "the path to X: {used:?}"
+    );
+    assert!(used.iter().any(|ax| is_edge(ax, "D1", "C")), "{used:?}");
+    assert!(used.iter().any(|ax| is_edge(ax, "D2", "C")), "{used:?}");
+    assert!(
+        used.iter()
+            .any(|ax| matches!(ax, Axiom::SubClassOf { sup, .. }
+            if matches!(o.concepts.get(*sup), ConceptExpr::Or(_)))),
+        "the union axiom: {used:?}"
+    );
+    assert_eq!(premises.len(), 4, "{used:?}");
+    // A member that does not reach C: no premises (the replay never over-claims).
+    let not_all = |i: usize| eligible(i) && !is_edge(&o.axioms[i], "D2", "C");
+    assert!(ix.premises(&o, id("A"), id("C"), &not_all).is_none());
+}
+
+/// The union replay's limits: every member atomic (a complex member gives no premises,
+/// as the pass derives nothing), any number of members, and a union inside a
+/// definition's conjunction is an `X ⊑ ⊔Dᵢ` only, never `Dᵢ ⊑ X`.
+#[test]
+fn the_union_replay_keeps_to_the_pass_s_rule() {
+    let all = |_: usize| true;
+    let id =
+        |o: &InternalOntology, n: &str| o.vocabulary.class_id(&format!("http://ex#{n}")).unwrap();
+    // Three members, all ⊑ C.
+    let o = convert(
+        "SubClassOf(:X ObjectUnionOf(:D1 :D2 :D3))
+        SubClassOf(:D1 :C) SubClassOf(:D2 :C) SubClassOf(:D3 :C)",
+    );
+    let not_derived = |i: usize| {
+        !matches!(&o.axioms[i], Axiom::SubClassOf { sub, sup }
+        if matches!(o.concepts.get(*sub), ConceptExpr::Atomic(_))
+        && matches!(o.concepts.get(*sup), ConceptExpr::Atomic(c) if *c == id(&o, "C"))
+        && !matches!(o.concepts.get(*sub), ConceptExpr::Atomic(c)
+            if [id(&o, "D1"), id(&o, "D2"), id(&o, "D3")].contains(c)))
+    };
+    let ix = owl_dl_core::told_definition_match::MatchIndex::build(&o);
+    assert_eq!(
+        ix.premises(&o, id(&o, "X"), id(&o, "C"), &not_derived)
+            .map(|p| p.len()),
+        Some(4)
+    );
+    // A complex member: the pass derives nothing, and the replay finds nothing.
+    let o = convert(
+        "Declaration(ObjectProperty(:r))
+        SubClassOf(:X ObjectUnionOf(:D1 ObjectSomeValuesFrom(:r :D2)))
+        SubClassOf(:D1 :C) SubClassOf(:D2 :C)",
+    );
+    assert!(!has_edge(&o, "X", "C"));
+    let ix = owl_dl_core::told_definition_match::MatchIndex::build(&o);
+    assert!(ix.premises(&o, id(&o, "X"), id(&o, "C"), &all).is_none());
+    // `X ≡ A ⊓ (D1 ⊔ D2)`: `D1 ⊑ X` does not follow, and no premises are found for it.
+    let o = convert(
+        "EquivalentClasses(:X ObjectIntersectionOf(:A ObjectUnionOf(:D1 :D2)))
+        SubClassOf(:D1 :C) SubClassOf(:D2 :C)",
+    );
+    let ix = owl_dl_core::told_definition_match::MatchIndex::build(&o);
+    assert!(ix.premises(&o, id(&o, "D1"), id(&o, "X"), &all).is_none());
+}

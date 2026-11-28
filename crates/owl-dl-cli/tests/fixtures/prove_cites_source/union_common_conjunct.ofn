@@ -1,0 +1,8 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/union_common_conjunct>
+Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:D1)) Declaration(Class(:D2))
+Declaration(Class(:C))
+SubClassOf(:X ObjectIntersectionOf(:A ObjectUnionOf(:D1 :D2)))
+SubClassOf(:D1 :C)
+SubClassOf(:D2 :C)
+)

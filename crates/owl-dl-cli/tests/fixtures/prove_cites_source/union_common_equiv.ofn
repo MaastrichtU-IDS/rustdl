@@ -1,0 +1,10 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/union_common_equiv>
+Declaration(Class(:Fruit)) Declaration(Class(:SweetFruit)) Declaration(Class(:NonSweetFruit))
+Declaration(Class(:EdibleThing)) Declaration(Class(:ConsumableThing)) Declaration(Class(:Grape))
+EquivalentClasses(:Fruit ObjectUnionOf(:NonSweetFruit :SweetFruit))
+SubClassOf(:NonSweetFruit :EdibleThing)
+SubClassOf(:SweetFruit :EdibleThing)
+SubClassOf(:EdibleThing :ConsumableThing)
+SubClassOf(:Grape :SweetFruit)
+)

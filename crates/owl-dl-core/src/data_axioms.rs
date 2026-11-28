@@ -50,8 +50,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use horned_owl::model::{
-    ClassExpression, Component, DataProperty, DataRange, FacetRestriction, ForIRI, Individual,
-    Literal,
+    AnnotatedComponent, ClassExpression, Component, DataProperty, DataRange, FacetRestriction,
+    ForIRI, Individual, Literal,
 };
 use horned_owl::ontology::set::SetOntology;
 use horned_owl::vocab::Facet;
@@ -95,6 +95,102 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_data_cardinality_violations_typed(src, top_id, bot_id, &mut out);
     emit_disjoint_dp_same_value_clash(&facts, top_id, bot_id, &mut out);
     out
+}
+
+/// #603: the source components behind Pattern 3 / Pattern 4's derived `C ⊑ D`
+/// (`class_iri` ⊑ `d_iri`), for a proof that cites it: a component asserting
+/// `C ⊑ DataSome(dp, _)` (or a `≥n` / `=n` / `hasValue` restriction on `dp`), the
+/// `SubDataPropertyOf` chain from `dp` up to a property `g` (reflexive), and either
+/// `DataPropertyDomain(g, D)` or `SubClassOf(DataSome(g, _), D)` in the unrestricted
+/// form #632 narrowed it to. Each component is scanned on its own with the pass's own
+/// scanner, so every fact is traced to the component that gave it and no premises are
+/// found for an inference the pass does not make; the premises entail `C ⊑ D` by the
+/// pattern's own reasoning. `None` when no such set is found (e.g. a `class_some` fact
+/// `propagate_intersection_bounds` lifted through a definition): the edge then stays
+/// derived, a miss, never a wrong citation. Built once per source (one scan); the
+/// components are in their `Ord` order, so the citation does not depend on the set's
+/// iteration order.
+pub struct DomainReplay<'a, A: ForIRI> {
+    comps: Vec<&'a AnnotatedComponent<A>>,
+    facts: Vec<Facts>,
+    /// `sub → [(sup, component)]` over the data-property hierarchy.
+    up: BTreeMap<String, Vec<(String, usize)>>,
+}
+
+impl<'a, A: ForIRI> DomainReplay<'a, A> {
+    /// One scan of `src`, component by component.
+    #[must_use]
+    pub fn build(src: &'a SetOntology<A>) -> Self {
+        let mut comps: Vec<&'a AnnotatedComponent<A>> = src.iter().collect();
+        comps.sort();
+        let facts: Vec<Facts> = comps
+            .iter()
+            .map(|ac| {
+                let mut f = Facts::default();
+                scan_component(&ac.component, &mut f);
+                f
+            })
+            .collect();
+        let mut up: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
+        for (i, f) in facts.iter().enumerate() {
+            for (sub, sup) in &f.sub_data_property {
+                up.entry(sub.clone()).or_default().push((sup.clone(), i));
+            }
+        }
+        Self { comps, facts, up }
+    }
+
+    /// The premises of `class_iri ⊑ d_iri`, or `None` (see the type's docs).
+    #[must_use]
+    pub fn premises(&self, class_iri: &str, d_iri: &str) -> Option<Vec<&'a AnnotatedComponent<A>>> {
+        let concludes = |g: &str| -> Option<usize> {
+            self.facts.iter().position(|f| {
+                f.domains.iter().any(|(dp, d)| dp == g && d == d_iri)
+                    || f.some_super.get(g).is_some_and(|ds| ds.contains(d_iri))
+            })
+        };
+        for (si, f) in self.facts.iter().enumerate() {
+            for (c, dp) in &f.class_some {
+                if c != class_iri {
+                    continue;
+                }
+                // BFS up the hierarchy from `dp` (reflexive), the parent edge of each.
+                let mut parent: BTreeMap<&str, Option<(&str, usize)>> = BTreeMap::new();
+                parent.insert(dp.as_str(), None);
+                let mut queue = std::collections::VecDeque::from([dp.as_str()]);
+                while let Some(g) = queue.pop_front() {
+                    if let Some(j) = concludes(g) {
+                        let mut out = vec![si, j];
+                        let mut at = g;
+                        while let Some(Some((p, i))) = parent.get(at) {
+                            out.push(*i);
+                            at = p;
+                        }
+                        out.sort_unstable();
+                        out.dedup();
+                        return Some(out.into_iter().map(|i| self.comps[i]).collect());
+                    }
+                    for (sup, i) in self.up.get(g).into_iter().flatten() {
+                        if !parent.contains_key(sup.as_str()) {
+                            parent.insert(sup.as_str(), Some((g, *i)));
+                            queue.push_back(sup.as_str());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// [`DomainReplay`] for one query: one scan of `src`.
+#[must_use]
+pub fn domain_inference_premises<'a, A: ForIRI>(
+    src: &'a SetOntology<A>,
+    class_iri: &str,
+    d_iri: &str,
+) -> Option<Vec<&'a AnnotatedComponent<A>>> {
+    DomainReplay::build(src).premises(class_iri, d_iri)
 }
 
 /// DP-2: a data-CARDINALITY violation ⇒ global inconsistency.

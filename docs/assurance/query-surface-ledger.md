@@ -691,6 +691,84 @@ So `apply_max` on `r⁻` is reached on the per-query `sat` surface, and hardly a
 
 **Cost:** about 1.9 core-h in all. That covers the oracle on 1,000 augmented cases (2.3 CPU-s per case, mostly HermiT's JVM start), the rustdl arms, two mutant builds, rechecks and 26 shrinks. The first 100 control cases are counted at their wall × cores bound. A `time` around `run.py` undercounts: the pool's forkserver workers are never reaped into it. `run.py` therefore records each case's CPU from inside the worker.
 
+### A universal-role profile: `universal` (after #624)
+
+#624 (#543 part 2) states the Direct-Semantics meaning of each foldable use of `owl:topObjectProperty` as built-in axioms, which are new positive derivations. No other profile emitted a top property.
+
+The `universal` profile (`UniversalCase`, its own RNG stream; see `scripts/gen/README.md`) puts top in these positions, all of which HermiT accepts as OWL 2 DL: `∃`, `∀`, `≤0`, `≥1`, `hasValue`, Domain and Range, `Reflexive/Symmetric/Transitive`, `r ⊑ top`, `top ⊑ r`, positive and negative assertions, and `d ⊑ topDataProperty`. Half the cases have individuals with told types. In about half of those, a **licensed-fold motif** is planted for the conditional folds:
+- the four forms are `∃u.X ⊑ B`, `≥1 u.X ⊑ B`, `B ⊑ ∀u.¬X` and `B ⊑ ≤0 u.X`;
+- variant `lic` gives `X` a told instance, directly or through a told subclass;
+- variant `unlic` gives a told instance to an unrelated class only.
+
+Measured 2026-11-28 with seed 20261128, N = 1000, generator `7ae4404de302` and pin `rustdl-control-ac7ff1ee` (main ac7ff1ee).
+- **Arms:** `classify`, `classify --saturation-only`, `consistent`, `realize` and `sat`.
+- **Setup:** cores 33–34; peers capped at 60 s, rustdl at 30 s.
+- **The earlier run:** before the motif, generator `8efe7762dc2b` (N = 1000) also gave 0 findings. Its MU1/MU2 calibrations are below.
+
+**Calibration, with the criteria declared before any run:** each mutant must be detected within B = 500.
+
+| mutant | fault | bodies | detected | first | tier |
+|---|---|---|---:|---|---|
+| MU1 | the licence check is gone: every atomic class counts as non-empty | `8efe7762dc2b` | 131 of 500 | case 0 | all finding (pair, unsat, consistency, type FPs) |
+| MU2 | `∀u.X` folds to ⊥ for any filler | `8efe7762dc2b` | 65 of 500 | case 1 | all finding (unsat, consistency, pair FPs) |
+| MU3 | an unrelated class's told instance licenses the fold, so the licence comes from the wrong class | `7ae4404de302` | 49 of 500 | case 3 | all finding (2 of them under a budget cut); 6 more cases differ only in exposed misses, 3 of them budget-cut |
+
+**Control, N = 1000: 0 findings.**
+
+| bucket | cases |
+|---|---:|
+| clean | 757 |
+| exposed | 202: misses rustdl declares possible (`completeness_guaranteed: false`, or a `consistent --json` gate) |
+| peer-fail | 33: Konclude crashed on 31 (rc = −11, 22 of them with `top ⊑ r`) and timed out on 2; HermiT was ok on all |
+| peer-disagree | 8 (below) |
+| finding | **0** |
+
+**The scored fraction is 959 of 1000.** "0 findings" means two things:
+- no false positive on the 959 scored cases;
+- no miss on the 30 cases with `completeness_guaranteed: true`.
+
+The guaranteed tier is thin: it is 30 of the 824 scored cases rustdl calls consistent. `completeness_guaranteed` requires the pure-EL gate, and of the 794 non-guaranteed cases, 744 also have trusted-Sat refutations and 569 set `universal_role_ordinary`. So **this profile mostly tests for false positives**, which are scored at every tier. Six cases (8, 201, 338, 706, 733, 759) are inconsistent KBs that rustdl calls consistent. Each one sets `universal_role_ordinary` in `classify` and in `consistent`, so each is exposed, not a finding.
+
+**Licensed motifs: does the control exercise the fold?** Scored cases by form and variant, over all 1000; MU3 detections are over cases 0–499 (6 `lic`, 42 `unlic`, 1 without the motif):
+
+| form | `lic` scored | `unlic` scored | consistent `lic` with the consequence derived | MU3 detections, `lic` / `unlic` |
+|---|---:|---:|---:|---:|
+| `∃u.X ⊑ B` | 20 | 33 | 17 of 17 | 1 / 9 |
+| `≥1 u.X ⊑ B` | 29 | 30 | 23 of 23 | 1 / 10 |
+| `B ⊑ ∀u.¬X` | 28 | 29 | 20 of 20 | 1 / 12 |
+| `B ⊑ ≤0 u.X` | 28 | 29 | 19 of 19 | 3 / 11 |
+
+- **How "derived" is read:** I reran classify on every scored motif case. For `∃` and `≥1`, "derived" means every satisfiable named class reaches `B`, since rustdl reports `B ≡ ⊤` as rows, not as an equivalence group with `owl:Thing`. For `∀` and `≤0`, it means `B` is unsatisfiable. The remaining `lic` cases (26 in total) are inconsistent KBs.
+- **The check says both yes and no:** on the `unlic` controls it reads "not derived" on 94 of the 106 consistent cases. Of the other 12, 10 still derive the consequence with the motif axiom deleted (`B` is ⊤ or unsatisfiable for reasons unrelated to `X`). In the remaining 2 (cases 132 and 967), the oracle infers instances of `X`, so the fold is licensed after all. None of the 12 is a finding.
+- **My first check was wrong:** it looked for `owl:Thing` in an equivalence group, so it read 0 on `∃` and `≥1`. Inspecting case 23 showed the row form.
+
+**Peer disagreements (8, not scored), all adjudicated by hand.** HermiT misses universal-role entailments through a role above top. Konclude misses some, and in one case reports an inconsistency that has a model. Neither peer is an oracle here, and the "both agree" rule kept every case out of scoring.
+- **Konclude right, HermiT and rustdl miss (4: cases 397, 690, 762, 780).** Each has `top ⊑ r`, and rustdl declares each case `universal_role_ordinary`.
+  - **397:** `top ⊑ r0` makes `r0` universal, so `∃r0.C3 ⊑ C0` gives `C3 ⊑ C0`.
+  - **690:** `top ⊑ r0` and `r3 = r0⁻` make `C2 ≡ ∃u.C1`, giving `C1 ⊑ C2`. `C6 ⊑ ∃u.(C0 ⊓ C2)` makes `C1` non-empty, giving `C6 ⊑ C2`.
+  - **762:** `top ⊑ r1 ⊑ r2`, and `C3 ⊑ ∃r2.∀r1.C0` gives `C3 ⊑ C0`.
+  - **780:** `top ⊑ r0`, so `∃r0.C2 ⊑ C8` gives `C2 ⊑ C8`.
+- **HermiT right, Konclude and rustdl miss (2: cases 46, 219).** rustdl declares both under `universal_role_ordinary`.
+  - **46:** `C0` has nominal members, so `C8 ≡ ⊤`. `C8 ⊑ ∀r0.(C4 ⊔ ¬C5)` with reflexive `r0` then gives `C5 ⊑ C4`. rustdl also misses `C8 ≡ ⊤`.
+  - **219:** reflexive `r1` makes `C3 ≡ ⊤`, and `C3 ⊑ ∃u.∀u.(C2 ⊔ ¬C1)` then gives `C1 ⊑ C2`. Konclude found this pair on the byte-identical body in the `8efe7762dc2b` run, where the case scored as an exposed rustdl miss. **Konclude is nondeterministic here.**
+- **Consistency: rustdl and HermiT right, Konclude wrong (2).**
+  - **673:** `EquivalentClasses(C0 ObjectComplementOf(C0))` is inconsistent. rustdl says so with no flag.
+  - **704:** Konclude says inconsistent. It has a model: `{a1, a2, c}` with `a1 ∈ C1`, `c ∈ C3`, `C2 = Δ`, and `C0`, `C4`, `C5`, `r2`, `r3` empty.
+
+**A scorer fix found here.** `consistent --json`'s gate predated #543 and did not read `universal_role_ordinary`. The first calibration batch therefore flagged a declared miss (a non-folded `≤0 top.C`) as a finding. The gate now requires the flag to be false.
+
+**A generator fix found here.** HermiT treats top as non-simple, so the first batch, which put top in simple positions, was 48% invalid. The profile now draws only the forms HermiT accepts, measured one file per form. Invalid: 0 of 1000.
+
+**Not covered.**
+- **#624 folds the peers can't adjudicate:** `Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`, `≤1`/`=1` on top, and `topDataProperty` in a class expression. HermiT rejects these as non-DL.
+- **Legal positions not drawn:** top as a property-chain leg, `ObjectInverseOf(top)`, and `EquivalentObjectProperties` / `InverseObjectProperties` with top.
+- **Data ranges:** one data property at most, with top-data only as a super-property.
+- **Size:** ontologies above 9 classes and 14 axioms.
+
+**An oracle limitation, not coverage.** Konclude crashes on 22 of the 314 cases with `top ⊑ r`. Those are peer-fail and never scored, so **a rustdl error on a role above top is under-sampled**: only the `top ⊑ r` cases Konclude survived were scored.
+
+**Cost:** about 4 core-h for the `8efe7762dc2b` run (three release builds, two 500-case calibrations, the 1000-case control). The `7ae4404de302` round added about 1.45 core-h (of the 1.5 granted): the MU3 build, its 500-case calibration, the control rerun and the derivation check. The other profiles' 5300 cases regenerate byte-identically.
+
 ## In-repo pure-EL guard (#440, and layer 2)
 
 The `el_guaranteed` net needs Konclude and HermiT, so it never ran in CI, and #435/#436 reached

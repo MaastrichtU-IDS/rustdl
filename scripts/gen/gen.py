@@ -60,6 +60,8 @@ PROFILES = {
     "el_top": {},
     # Role polarity (#526–#528 follow-up): PolarityCase below, its own RNG stream.
     "polarity": {},
+    # The universal role (#543 part 2, #624's folds): UniversalCase below, own RNG stream.
+    "universal": {},
 }
 
 
@@ -873,6 +875,180 @@ class PolarityCase(Case):
                 f"# motif: {self.motif}\n# polarity: {kinds}")
 
 
+TOP = "owl:topObjectProperty"
+TOP_DATA = "owl:topDataProperty"
+UNIVERSAL_WEIGHTS = {"el": 3, "neg_or": 2, "forall": 2, "card": 2, "roles": 2,
+                     "domrange": 2, "nominal": 1, "bot": 1, "abox": 3, "universal": 6}
+
+
+class UniversalCase(Case):
+    """`universal` (#543 part 2, #624): the universal role in every OWL 2 DL position, so a
+    wrong fold of #624's is a scored false positive.
+
+    #624 states, as built-ins, the Direct-Semantics meaning of each foldable use of
+    `owl:topObjectProperty` (and properties above it): `∃u.X` / `≥1 u.X` with X ⊤, a nominal
+    or a class with a told instance → ⊤; `∀u.⊥`, `∀u.¬X`, `≤0 u.X` → ⊥; `Domain/Range(u, C)`
+    → `⊤ ⊑ C`. No other profile emits a top property.
+
+    **Legal positions only, as HermiT checks them** (measured on 2026-11-28, one file per
+    form): HermiT treats top as non-simple, so it rejects top in `≤1` / `=1` / `≥2`,
+    `Self`, `Functional`, `InverseFunctional`, `Irreflexive`, `Asymmetric` and
+    `DisjointObjectProperties`, and `topDataProperty` in a class expression. Those folds
+    of #624 (`Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`) act on non-DL input,
+    which the peers do not adjudicate: **not covered here**. Allowed and drawn: `∃top`,
+    `∀top`, `≤0 top`, `≥1 top`, `hasValue(top, a)`, Domain and Range of top,
+    `Reflexive/Symmetric/Transitive(top)`, `r ⊑ top`, `top ⊑ r` (which makes `r`, and every
+    role above it, non-simple: pre-drawn, then excluded from the simple positions),
+    positive and negative top assertions, `∃top.C(a)`, and `d ⊑ topDataProperty`.
+    `R()` returns top 30% of the time, but never where a simple role is required. Half the
+    cases have individuals; in half of those a licensed-fold motif is planted
+    (`_plant_licensed`, `# licensed: <form>/<lic|unlic>/<path>`). Not drawn, though legal:
+    top as a chain leg, `ObjectInverseOf(top)`, and `EquivalentObjectProperties` /
+    `InverseObjectProperties` with top. The floor: a case with no top use gets one appended. The `# universal:` line lists the kinds
+    present. Own RNG stream; other profiles untouched.
+    """
+
+    profile = "universal"
+    top_p = 0.3
+    licence_p = 0.5
+
+    def __init__(self, seed, index, profile=None):
+        self.seed, self.index = seed, index
+        self.rng = random.Random(f"{seed}:{index}:{self.profile}")
+        r = self.rng
+        self.classes = [f"C{i}" for i in range(r.randint(4, 9))]
+        self.roles = [f"r{i}" for i in range(r.randint(2, 4))]
+        self.dprops = [f"d{i}" for i in range(r.randint(0, 1))]
+        self.inds = [f"a{i}" for i in range(r.randint(2, 4))] if r.random() < 0.5 else []
+        self.weights = dict(UNIVERSAL_WEIGHTS)
+        if not self.inds:
+            self.weights.pop("abox", None)
+            self.weights.pop("nominal", None)
+        self.role_axioms, self.axioms = [], []
+        self.n_target = r.randint(3, 14)
+        self._draw_roles()
+        # `top ⊑ r` first: `r` (and every role above it) then has a non-simple sub-role.
+        top_subs = [x for x in self.roles if r.random() < 0.12]
+        for x in top_subs:
+            self.axioms.append(f"SubObjectPropertyOf({TOP} :{x})")
+        self.simple = simple_roles(
+            self.roles + ["__top__"],
+            self.role_axioms + [("transitive", "__top__")]
+            + [("sub", "__top__", x) for x in top_subs],
+        ) - {"__top__"}
+        self.licence = "none"
+        if self.inds and r.random() < self.licence_p:
+            self._plant_licensed()
+        self._draw_rest()
+        self._floor()
+
+    def _plant_licensed(self):
+        """#638 review: #624's conditional folds rest on a told instance of the filler
+        (`NonEmpty::Given`, `told_instances`), which random draws almost never give. Plant
+        one of the four forms on a filler `X`: `∃u.X ⊑ B`, `≥1 u.X ⊑ B` (fold: `⊤ ⊑ B`),
+        `B ⊑ ∀u.¬X`, `B ⊑ ≤0 u.X` (fold: `B ⊑ ⊥`). Variant `lic` asserts a told instance of
+        `X` (directly, or of a told subclass `Y ⊑ X`, the licence path); `unlic` asserts an
+        instance of an unrelated class `Z` only, so a licence taken from the wrong class
+        (MU3) folds where nothing licenses it."""
+        r = self.rng
+        form = r.choice(["some", "min1", "all_not", "max0"])
+        var = r.choice(["lic", "unlic"])
+        x, b, z, y = r.sample(self.classes, 4)
+        a = self.I()
+        if var == "lic":
+            if r.random() < 0.5:
+                self.axioms.append(f"ClassAssertion(:{x} {a})")
+                path = "direct"
+            else:
+                self.axioms += [f"SubClassOf(:{y} :{x})", f"ClassAssertion(:{y} {a})"]
+                path = "subclass"
+        else:
+            self.axioms.append(f"ClassAssertion(:{z} {a})")
+            path = "other"
+        self.axioms.append({
+            "some": f"SubClassOf(ObjectSomeValuesFrom({TOP} :{x}) :{b})",
+            "min1": f"SubClassOf(ObjectMinCardinality(1 {TOP} :{x}) :{b})",
+            "all_not": f"SubClassOf(:{b} ObjectAllValuesFrom({TOP} ObjectComplementOf(:{x})))",
+            "max0": f"SubClassOf(:{b} ObjectMaxCardinality(0 {TOP} :{x}))",
+        }[form])
+        self.licence = f"{form}/{var}/{path}"
+
+    def R(self, simple=False):
+        if not simple and self.rng.random() < self.top_p:
+            return TOP
+        return super().R(simple)
+
+    def ax_universal(self):
+        r = self.rng
+        k = r.choice(["domain", "range", "char", "sub_top", "some", "some", "all", "card",
+                      "gci", "abox", "data"])
+        if k == "domain":
+            return f"ObjectPropertyDomain({TOP} {self.ce(1)})"
+        if k == "range":
+            return f"ObjectPropertyRange({TOP} {self.ce(1)})"
+        if k == "char":
+            c = r.choice(["ReflexiveObjectProperty", "SymmetricObjectProperty",
+                          "TransitiveObjectProperty"])
+            return f"{c}({TOP})"
+        if k == "sub_top":
+            return f"SubObjectPropertyOf(:{r.choice(self.roles)} {TOP})"
+        if k == "some":
+            filler = r.choice(["owl:Thing", self.C(), self.ce(1)])
+            if self.inds and r.random() < 0.25:
+                return f"SubClassOf({self.C()} ObjectHasValue({TOP} {self.I()}))"
+            return f"SubClassOf({self.C()} ObjectSomeValuesFrom({TOP} {filler}))"
+        if k == "all":
+            filler = r.choice(["owl:Nothing", f"ObjectComplementOf({self.C()})", self.C()])
+            ce = f"ObjectAllValuesFrom({TOP} {filler})"
+            return f"SubClassOf({self.C()} {ce})" if r.random() < 0.5 else f"SubClassOf({ce} {self.C()})"
+        if k == "card":
+            op, n = r.choice([("ObjectMaxCardinality", 0), ("ObjectMinCardinality", 1)])
+            ce = f"{op}({n} {TOP} {self.C()})"
+            return f"SubClassOf({self.C()} {ce})" if r.random() < 0.6 else f"SubClassOf({ce} {self.C()})"
+        if k == "gci":
+            return f"SubClassOf(ObjectSomeValuesFrom({TOP} {self.C()}) {self.C()})"
+        if k == "abox":
+            if not self.inds:
+                return None
+            a, b = self.I(), self.I()
+            kk = r.choice(["pos", "neg", "some", "some"])
+            if kk == "pos":
+                return f"ObjectPropertyAssertion({TOP} {a} {b})"
+            if kk == "neg":
+                return f"NegativeObjectPropertyAssertion({TOP} {a} {b})"
+            return f"ClassAssertion(ObjectSomeValuesFrom({TOP} {self.C()}) {a})"
+        if not self.dprops:
+            return None
+        return f"SubDataPropertyOf(:{r.choice(self.dprops)} {TOP_DATA})"
+
+    def _floor(self):
+        if not any(TOP in a or TOP_DATA in a for a in self.axioms):
+            for _ in range(20):
+                ax = self.ax_universal()
+                if ax:
+                    self.axioms.append(ax)
+                    break
+
+    def kinds(self):
+        pats = {"domain": f"ObjectPropertyDomain({TOP}", "range": f"ObjectPropertyRange({TOP}",
+                "char": f"ObjectProperty({TOP})", "sub_top": f" {TOP})",
+                "top_sub": f"SubObjectPropertyOf({TOP}",
+                "some": f"ObjectSomeValuesFrom({TOP}", "all": f"ObjectAllValuesFrom({TOP}",
+                "max0": f"ObjectMaxCardinality(0 {TOP}", "min1": f"ObjectMinCardinality(1 {TOP}",
+                "has_value": f"ObjectHasValue({TOP}",
+                "neg_assert": f"NegativeObjectPropertyAssertion({TOP}",
+                "pos_assert": f"ObjectPropertyAssertion({TOP}", "data_top": TOP_DATA}
+        # An assertion kind matches at the axiom's start: `ObjectPropertyAssertion(top` is
+        # a substring of `NegativeObjectPropertyAssertion(top`.
+        starts = {"neg_assert", "pos_assert"}
+        return sorted(k for k, p in pats.items()
+                      if any(a.startswith(p) if k in starts else p in a for a in self.axioms))
+
+    def header(self):
+        return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile {self.profile}\n"
+                f"# universal: {' '.join(self.kinds()) or 'none'}\n# licensed: {self.licence}")
+
+
 def make_case(seed, index, profile="default"):
     if profile == "el_guaranteed":
         return ElCase(seed, index)
@@ -880,6 +1056,8 @@ def make_case(seed, index, profile="default"):
         return ElTopCase(seed, index)
     if profile == "polarity":
         return PolarityCase(seed, index)
+    if profile == "universal":
+        return UniversalCase(seed, index)
     return Case(seed, index, profile)
 
 
@@ -1205,6 +1383,62 @@ def self_test():
     ok("the header carries the motif and the census",
        PolarityCase(13, 1).ofn().splitlines()[1:3][0].startswith("# motif: ")
        and PolarityCase(13, 1).ofn().splitlines()[2].startswith("# polarity: "), True)
+    unis = [UniversalCase(5, i) for i in range(500)]
+    ok("500 universal cases pass the checker", sum(bool(check(c)) for c in unis), 0)
+    ok("every universal case uses a top property",
+       sum(not any(TOP in a or TOP_DATA in a for a in c.axioms) for c in unis), 0)
+    ok("universal is deterministic", UniversalCase(5, 7).ofn() == UniversalCase(5, 7).ofn(), True)
+    drawn = {k for c in unis for k in c.kinds()}
+    ok("every fold kind is drawn",
+       sorted({"domain", "range", "char", "sub_top", "top_sub", "some", "all", "max0", "min1",
+               "has_value", "neg_assert", "pos_assert", "data_top"} - drawn), [])
+    ok("top never in a position HermiT rejects",
+       [a for c in unis for a in c.axioms
+        if (TOP in a and (any(f"{op}{TOP}" in a for op in (
+            "ObjectHasSelf(", "FunctionalObjectProperty(", "IrreflexiveObjectProperty(",
+            "AsymmetricObjectProperty(", "DisjointObjectProperties("))
+            or any(f"{m}{TOP}" in a for m in ("ObjectMaxCardinality(1 ", "ObjectExactCardinality(",
+                                               "ObjectMinCardinality(2 ", "ObjectMinCardinality(3 ",
+                                               "ObjectMaxCardinality(2 ", "ObjectMaxCardinality(3 "))))
+        or f"DataSomeValuesFrom({TOP_DATA}" in a], [])
+    ok("the header carries the census", "# universal: " in UniversalCase(5, 7).ofn(), True)
+    # `top ⊑ r` makes `r`, its super-roles and its inverse partners non-simple (HermiT,
+    # probed 2026-11-28). Recomputed from the emitted lines, not from the case's own set.
+    simple_pos = re.compile(r"(?:Cardinality\(\d+ |ObjectHasSelf\(|FunctionalObjectProperty\(|"
+                            r"IrreflexiveObjectProperty\(|AsymmetricObjectProperty\(|"
+                            r"DisjointObjectProperties\()(?:ObjectInverseOf\()?:(r\d+)")
+    def leaked(c):
+        tops = [a.split(":")[-1].rstrip(")") for a in c.axioms
+                if a.startswith(f"SubObjectPropertyOf({TOP} :")]
+        ok_simple = simple_roles(c.roles + ["__top__"],
+                                 c.role_axioms + [("transitive", "__top__")]
+                                 + [("sub", "__top__", x) for x in tops]) - {"__top__"}
+        used = {m.group(1) for a in c.axioms for m in simple_pos.finditer(a)}
+        # Every operand of a property disjointness, not only the first.
+        used |= {x for a in c.axioms if a.startswith("DisjointObjectProperties(")
+                 for x in re.findall(r":(r\d+)", a)}
+        return sorted(used - ok_simple)
+
+    leaks = [(c.index, x) for c in unis if (x := leaked(c))]
+    ok("no role below top (or above such a role) in a simple position", leaks, [])
+
+    class _Leak:  # negative control: a role below top as the second disjoint operand
+        roles = ["r0", "r1"]
+        role_axioms = []
+        axioms = [f"SubObjectPropertyOf({TOP} :r1)", "DisjointObjectProperties(:r0 :r1)"]
+    ok("the closure pin sees a role below top in the second disjoint position",
+       leaked(_Leak()), ["r1"])
+    lics = [c.licence for c in unis if c.licence != "none"]
+    with_inds = sum(bool(c.inds) for c in unis)
+    ok("about half the cases with individuals carry a licensed-fold motif",
+       0.4 * with_inds <= len(lics) <= 0.75 * with_inds, True)
+    ok("every form and variant is planted, ≤0 licensed included",
+       sorted({f"{f}/{v}" for f in ("some", "min1", "all_not", "max0") for v in ("lic", "unlic")}
+              - {"/".join(l.split("/")[:2]) for l in lics}), [])
+    ok("both licence paths are planted",
+       {"direct", "subclass"} <= {l.split("/")[2] for l in lics if "/lic/" in l}, True)
+    ok("some cases put a role below top", sum(any(a.startswith(f"SubObjectPropertyOf({TOP} :")
+                                                  for a in c.axioms) for c in unis) > 50, True)
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

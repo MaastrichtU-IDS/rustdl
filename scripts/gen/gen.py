@@ -901,13 +901,16 @@ class UniversalCase(Case):
     role above it, non-simple: pre-drawn, then excluded from the simple positions),
     positive and negative top assertions, `∃top.C(a)`, and `d ⊑ topDataProperty`.
     `R()` returns top 30% of the time, but never where a simple role is required. Half the
-    cases have individuals with told types (the conditional folds' licences). The floor: a
-    case with no top use gets one appended. The `# universal:` line lists the kinds
+    cases have individuals; in half of those a licensed-fold motif is planted
+    (`_plant_licensed`, `# licensed: <form>/<lic|unlic>/<path>`). Not drawn, though legal:
+    top as a chain leg, `ObjectInverseOf(top)`, and `EquivalentObjectProperties` /
+    `InverseObjectProperties` with top. The floor: a case with no top use gets one appended. The `# universal:` line lists the kinds
     present. Own RNG stream; other profiles untouched.
     """
 
     profile = "universal"
     top_p = 0.3
+    licence_p = 0.5
 
     def __init__(self, seed, index, profile=None):
         self.seed, self.index = seed, index
@@ -933,8 +936,42 @@ class UniversalCase(Case):
             self.role_axioms + [("transitive", "__top__")]
             + [("sub", "__top__", x) for x in top_subs],
         ) - {"__top__"}
+        self.licence = "none"
+        if self.inds and r.random() < self.licence_p:
+            self._plant_licensed()
         self._draw_rest()
         self._floor()
+
+    def _plant_licensed(self):
+        """#638 review: #624's conditional folds rest on a told instance of the filler
+        (`NonEmpty::Given`, `told_instances`), which random draws almost never give. Plant
+        one of the four forms on a filler `X`: `∃u.X ⊑ B`, `≥1 u.X ⊑ B` (fold: `⊤ ⊑ B`),
+        `B ⊑ ∀u.¬X`, `B ⊑ ≤0 u.X` (fold: `B ⊑ ⊥`). Variant `lic` asserts a told instance of
+        `X` (directly, or of a told subclass `Y ⊑ X`, the licence path); `unlic` asserts an
+        instance of an unrelated class `Z` only, so a licence taken from the wrong class
+        (MU3) folds where nothing licenses it."""
+        r = self.rng
+        form = r.choice(["some", "min1", "all_not", "max0"])
+        var = r.choice(["lic", "unlic"])
+        x, b, z, y = r.sample(self.classes, 4)
+        a = self.I()
+        if var == "lic":
+            if r.random() < 0.5:
+                self.axioms.append(f"ClassAssertion(:{x} {a})")
+                path = "direct"
+            else:
+                self.axioms += [f"SubClassOf(:{y} :{x})", f"ClassAssertion(:{y} {a})"]
+                path = "subclass"
+        else:
+            self.axioms.append(f"ClassAssertion(:{z} {a})")
+            path = "other"
+        self.axioms.append({
+            "some": f"SubClassOf(ObjectSomeValuesFrom({TOP} :{x}) :{b})",
+            "min1": f"SubClassOf(ObjectMinCardinality(1 {TOP} :{x}) :{b})",
+            "all_not": f"SubClassOf(:{b} ObjectAllValuesFrom({TOP} ObjectComplementOf(:{x})))",
+            "max0": f"SubClassOf(:{b} ObjectMaxCardinality(0 {TOP} :{x}))",
+        }[form])
+        self.licence = f"{form}/{var}/{path}"
 
     def R(self, simple=False):
         if not simple and self.rng.random() < self.top_p:
@@ -1009,7 +1046,7 @@ class UniversalCase(Case):
 
     def header(self):
         return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile {self.profile}\n"
-                f"# universal: {' '.join(self.kinds()) or 'none'}")
+                f"# universal: {' '.join(self.kinds()) or 'none'}\n# licensed: {self.licence}")
 
 
 def make_case(seed, index, profile="default"):
@@ -1378,9 +1415,21 @@ def self_test():
                                  c.role_axioms + [("transitive", "__top__")]
                                  + [("sub", "__top__", x) for x in tops]) - {"__top__"}
         used = {m.group(1) for a in c.axioms for m in simple_pos.finditer(a)}
+        # Every operand of a property disjointness, not only the first.
+        used |= {x for a in c.axioms if a.startswith("DisjointObjectProperties(")
+                 for x in re.findall(r":(r\d+)", a)}
         if not used <= ok_simple:
             leaks.append((c.index, sorted(used - ok_simple)))
     ok("no role below top (or above such a role) in a simple position", leaks, [])
+    lics = [c.licence for c in unis if c.licence != "none"]
+    with_inds = sum(bool(c.inds) for c in unis)
+    ok("about half the cases with individuals carry a licensed-fold motif",
+       0.4 * with_inds <= len(lics) <= 0.75 * with_inds, True)
+    ok("every form and variant is planted, ≤0 licensed included",
+       sorted({f"{f}/{v}" for f in ("some", "min1", "all_not", "max0") for v in ("lic", "unlic")}
+              - {"/".join(l.split("/")[:2]) for l in lics}), [])
+    ok("both licence paths are planted",
+       {"direct", "subclass"} <= {l.split("/")[2] for l in lics if "/lic/" in l}, True)
     ok("some cases put a role below top", sum(any(a.startswith(f"SubObjectPropertyOf({TOP} :")
                                                   for a in c.axioms) for c in unis) > 50, True)
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")

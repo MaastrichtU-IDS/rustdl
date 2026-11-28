@@ -1,0 +1,22 @@
+# rustdl universal-role fuzz mutant. DATA: never applied in the tree, never built by CI or
+# cargo test. Built by hand for scripts/gen/run.py's detect (see scripts/gen/README.md).
+# id: MU3
+# base: ac7ff1ee5df1ea7ef93678b1028db67ca7f1e3a9
+# layer: owl-dl-core top_bottom_roles.rs (#624 folds): FoldCtx::non_empty: a class with no told instance is licensed by any other class's told instance (the licence taken from an unrelated class)
+diff --git a/crates/owl-dl-core/src/top_bottom_roles.rs b/crates/owl-dl-core/src/top_bottom_roles.rs
+index 3a78218d..7bd6a9b7 100644
+--- a/crates/owl-dl-core/src/top_bottom_roles.rs
++++ b/crates/owl-dl-core/src/top_bottom_roles.rs
+@@ -536,7 +536,11 @@ impl FoldCtx<'_> {
+         use crate::ir::ConceptExpr as E;
+         match out.concepts.get(x) {
+             E::Top | E::Nominal(_) => Some(NonEmpty::Always),
+-            E::Atomic(id) => self.instances.get(id).map(|a| NonEmpty::Given(a.clone())),
++            E::Atomic(id) => self
++                .instances
++                .get(id)
++                .or_else(|| self.instances.values().next())
++                .map(|a| NonEmpty::Given(a.clone())),
+             _ => None,
+         }
+     }

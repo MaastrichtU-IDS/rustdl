@@ -7,7 +7,7 @@
 20261105    data_heavy   0-499     0199786c97ac   targeted secondary result for M8b
 20261106    el_guaranteed 0-999    97f692139103   #363 step 3a: strict pure EL + motifs, control and M8a
 20261115    polarity     0-999    57c988e466c5   role polarity (#526-#528 follow-up): control, K1/K2/M13/M14 on 0-499 (--realize [--sat])
-20261128    universal    0-999    8efe7762dc2b   universal role (#624 folds): control, MU1/MU2 on 0-499 (--realize --sat) [4243f93465a0 regenerates the bodies]
+20261128    universal    0-999    7ae4404de302   universal role (#624 folds) with the licensed-fold motif: control, MU3 on 0-499 (--realize --sat); 8efe7762dc2b (no motif): control, MU1/MU2
 #
 # 0199786c97ac differs from bd63a61a6921 only in ax_domrange: a non-atomic domain/range head
 # now draws only from the profile's enabled families, so el_only stays EL. On the default
@@ -30,3 +30,7 @@
 # on 2026-11-28. 4243f93465a0 (the committed gen.py) only fixes the `# universal:` census
 # (an assertion kind matched as a substring); it regenerates all 1000 universal bodies
 # byte-identically.
+# 7ae4404de302 (#638 review) plants the licensed-fold motif in about half the cases with
+# individuals, and the licence draw consumes the case's stream, so universal bodies change:
+# 540 of the 1000 keep their 8efe7762dc2b axioms (none of them carries the motif). The other
+# profiles' 5300 bodies are again byte-identical (checked 2026-11-28).

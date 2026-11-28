@@ -78,15 +78,21 @@ Built after #624 (#543 part 2), which states the Direct-Semantics meaning of eac
 **The profile** (`gen.py`, `UniversalCase`, its own RNG stream):
 - **Top in every OWL 2 DL position:** `∃top`, `∀top`, `≤0 top`, `≥1 top`, `hasValue(top, a)`, Domain and Range of top, `Reflexive/Symmetric/Transitive(top)`, `r ⊑ top`, `top ⊑ r`, positive and negative top assertions, `∃top.C(a)`, and `d ⊑ topDataProperty`. `R()` returns top 30% of the time.
 - **Legality as HermiT checks it** (measured one file per form): HermiT treats top as non-simple. So top never appears where a simple role is required, and `top ⊑ r` is drawn first, then `r` and every role above it leave the simple positions too.
-- **Not covered:** #624's folds of `Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`, `≤1`/`=1` on top, and `topDataProperty` in a class expression. HermiT rejects all of these, so the peers never adjudicate them.
-- **Licences:** half the cases have 2–4 individuals with told types, for the conditional folds.
+- **Not covered:**
+  - #624's folds of `Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`, `≤1`/`=1` on top, and `topDataProperty` in a class expression. HermiT rejects all of these, so the peers never adjudicate them.
+  - Legal but not drawn: top as a chain leg, `ObjectInverseOf(top)`, and `EquivalentObjectProperties` / `InverseObjectProperties` with top.
+- **Licences:** half the cases have 2–4 individuals. In about half of those (#638 review), a **licensed-fold motif** is planted on a filler `X`, in one of the four conditional forms: `∃u.X ⊑ B`, `≥1 u.X ⊑ B`, `B ⊑ ∀u.¬X`, `B ⊑ ≤0 u.X`.
+  - Variant `lic` asserts a told instance of `X`, either directly or through a told subclass (the licence path).
+  - Variant `unlic` asserts an instance of an unrelated class only.
+  - The `# licensed: <form>/<variant>/<path>` header line records which.
 - **A floor and a census:** every case uses a top property; `# universal:` lists the kinds present.
 
 **Scoring note:** `consistent --json`'s gate now also requires `universal_role_ordinary: false`. With it set, rustdl declares that a negative answer may be wrong, so a "consistent" on an inconsistent KB is exposed, not a finding. The first calibration batch flagged such a case (a non-folded `≤0 top.C`) as a finding before this change.
 
-**Mutants** (`mutants/MU1.patch`, `mutants/MU2.patch`), faults planted in `top_bottom_roles.rs`'s `FoldCtx`:
+**Mutants** (`mutants/MU1.patch`, `MU2.patch`, `MU3.patch`), faults planted in `top_bottom_roles.rs`'s `FoldCtx`:
 - MU1: every atomic class counts as non-empty, so the licence check is gone and `∃u.C` folds to ⊤ for any `C`;
-- MU2: `∀u.X` folds to ⊥ for any filler, not only `⊥` or `¬X` with X non-empty.
+- MU2: `∀u.X` folds to ⊥ for any filler, not only `⊥` or `¬X` with X non-empty;
+- MU3: a class with no told instance is licensed by any other class's told instance, the licence taken from an unrelated class. The `unlic` motifs are what this one trips.
 
 ## Stop rule
 

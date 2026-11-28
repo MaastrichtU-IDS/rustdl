@@ -127,6 +127,14 @@ fn distinct_zeros_and_the_zero_facet_range_are_not_subsumed() {
             "n_float_vs_double",
             "SubClassOf(:C DataHasValue(:d \"0.0\"^^xsd:float)) SubClassOf(DataHasValue(:d \"0.0\"^^xsd:double) :E)",
         ),
+        (
+            "n_facet_negz_pair_d",
+            "SubClassOf(:C DataSomeValuesFrom(:d DatatypeRestriction(xsd:double xsd:minInclusive \"-0.0\"^^xsd:double xsd:maxInclusive \"-0.0\"^^xsd:double))) SubClassOf(DataHasValue(:d \"-0.0\"^^xsd:double) :E)",
+        ),
+        (
+            "n_facet_negz_pair_f",
+            "SubClassOf(:C DataSomeValuesFrom(:d DatatypeRestriction(xsd:float xsd:minInclusive \"-0.0\"^^xsd:float xsd:maxInclusive \"-0.0\"^^xsd:float))) SubClassOf(DataHasValue(:d \"-0.0\"^^xsd:float) :E)",
+        ),
     ] {
         assert!(!c_sub_e(what, body), "{what}: not subsumed (HermiT)");
     }

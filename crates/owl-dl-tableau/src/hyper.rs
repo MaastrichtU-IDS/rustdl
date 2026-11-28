@@ -878,6 +878,10 @@ pub struct SearchStats {
     /// #569: times the `≤n` partition enumeration was cut by the deadline
     /// (`partition_deadline_passed` latching). At most one per decide.
     pub partition_deadline_cuts: u64,
+    /// #580: `≤n` partition enumerations of a decide with no deadline that stopped
+    /// at a `Stalled` child (`RUSTDL_WEDGE_PARTITION_STALL_STOP`), one per
+    /// enumeration level. The verdict was `Stalled`.
+    pub partition_stall_stops: u64,
     /// Failed branches whose graph was restored (`Unsat`/`Stalled`).
     pub restores: u64,
     /// Deepest branch nesting reached (0 ⇒ no branching).
@@ -1054,6 +1058,9 @@ pub struct HyperEngine<'c> {
     /// #569: latched once that probe sees the deadline passed, so every
     /// enclosing `partition_rec` frame returns at once.
     partition_deadline_hit: bool,
+    /// #580 `RUSTDL_WEDGE_PARTITION_STALL_STOP`: with no deadline, a `Stalled`
+    /// partition leaf ends its enumeration. See [`Self::partition_rec`].
+    partition_stall_stop: bool,
     /// Trigger indexes routing derivation events to the clauses they
     /// newly enable (see [`ClauseIndexes`]). Read-only after construction
     /// (never mutated during search). Stored as `Arc` so
@@ -2182,6 +2189,7 @@ impl<'c> HyperEngine<'c> {
             match_steps: std::cell::Cell::new(0),
             partition_steps: 0,
             partition_deadline_hit: false,
+            partition_stall_stop: crate::wedge_partition_stall_stop_enabled(),
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -2285,6 +2293,7 @@ impl<'c> HyperEngine<'c> {
             match_steps: std::cell::Cell::new(0),
             partition_steps: 0,
             partition_deadline_hit: false,
+            partition_stall_stop: crate::wedge_partition_stall_stop_enabled(),
             indexes,
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -4538,6 +4547,7 @@ impl<'c> HyperEngine<'c> {
             match_steps: std::cell::Cell::new(0),
             partition_steps: 0,
             partition_deadline_hit: false,
+            partition_stall_stop: crate::wedge_partition_stall_stop_enabled(),
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -5947,7 +5957,8 @@ impl<'c> HyperEngine<'c> {
     /// first member and recurses via [`Self::solve`]. Returns `Some(Sat)`
     /// to short-circuit the whole enumeration (model found, state kept);
     /// `Some(Stalled)` once the deadline has passed (#569: the enumeration is
-    /// exponential and must stop itself; nothing is kept); `None` to keep
+    /// exponential and must stop itself; nothing is kept), or, in a decide with
+    /// no deadline, at the first `Stalled` leaf (#580); `None` to keep
     /// enumerating (sets `*any_stalled` on a depth-bound hit). Every branch
     /// is restored before the next partition.
     #[allow(
@@ -6007,7 +6018,23 @@ impl<'c> HyperEngine<'c> {
                             *child_acc = child_acc.union(self.clash_deps);
                         }
                     }
-                    HyperResult::Stalled => *any_stalled = true,
+                    HyperResult::Stalled => {
+                        *any_stalled = true;
+                        // #580: with no deadline nothing else ends this loop. A
+                        // `Stalled` child already rules out `Unsat` for the whole
+                        // enumeration, so the rest could only find a `Sat`; but
+                        // a leaf regrows the graph, nested `≤n` enumerations open
+                        // under it down to the depth bound, and every level above
+                        // a stalled one ran all its partitions (the #569 graph did
+                        // not return). Stop here with `Stalled`, never `Sat`; the
+                        // enclosing level sees a `Stalled` child and stops too.
+                        // With a deadline, #569's probe bounds it instead.
+                        if self.partition_stall_stop && self.deadline.is_none() {
+                            self.stats.partition_stall_stops += 1;
+                            self.restore(saved);
+                            return Some(HyperResult::Stalled);
+                        }
+                    }
                 }
             }
             self.restore(saved);
@@ -13202,6 +13229,143 @@ mod tests {
         // A new decide starts unlatched.
         let _ = eng.decide_with_deadline(4, None);
         assert!(!eng.partition_deadline_passed());
+    }
+
+    /// #580: the #569 graph with `≤n` in place of `≤100`: `X ⊑ ∃t.X`, `X ⊑ ∃s.{a}`,
+    /// `{a} ⊑ ≤n s⁻`. The `t`-chain grows until `a` has `n + 1` witnesses; every
+    /// partition leaf merges some of them and regrows the chain, which opens a
+    /// nested `≤n` enumeration one depth level down, until the depth bound stalls
+    /// the innermost leaf.
+    fn nominal_witness_chain_clauses(n: u32) -> Vec<DlClause> {
+        let (role_t, role_s) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (class_x, nom) = (cls(0), cls(10));
+        vec![
+            DlClause {
+                body: vec![Atom::Class(class_x, X)],
+                head: vec![Atom::Exists(role_t, class_x, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(class_x, X)],
+                head: vec![Atom::Exists(role_s, nom, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(nom, X)],
+                head: vec![Atom::AtMost(role_s.flip(), None, n, X)],
+            },
+        ]
+    }
+
+    fn witness_chain_engine(clauses: &[DlClause], stall_stop: bool) -> HyperEngine<'_> {
+        let mut eng = HyperEngine::new(clauses, cls(0))
+            .with_incremental_fixpoint()
+            .with_double_blocking()
+            .with_nominals(10, 1);
+        eng.partition_stall_stop = stall_stop;
+        eng
+    }
+
+    /// #580: with no deadline, the first `Stalled` leaf ends its enumeration and
+    /// every enclosing one, so the search runs about one leaf per depth level
+    /// instead of every partition at every level. `Stalled`, never `Sat` or `Unsat`
+    /// (the KB is consistent). On a worker thread under a timeout, so a missing
+    /// stop fails here instead of hanging the suite.
+    #[test]
+    fn deadline_free_partition_search_ends_at_a_stalled_child() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let clauses = nominal_witness_chain_clauses(10);
+            let mut eng = witness_chain_engine(&clauses, true);
+            let r = eng.decide(32);
+            let _ = tx.send((r, eng.stats()));
+        });
+        let (r, st) = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the deadline-free partition search ran on (#580)");
+        assert_eq!(r, HyperResult::Stalled, "{st:?}");
+        assert!(st.partition_stall_stops > 0, "{st:?}");
+        assert_eq!(st.partition_deadline_cuts, 0);
+        assert!(
+            st.merge_branches <= 64,
+            "about one leaf per level: {} leaves",
+            st.merge_branches
+        );
+    }
+
+    /// #580, by leaf count, no clock: `≤3` at depth 3 is finite without the stop
+    /// (every leaf at the bottom stalls and each level runs all its partitions:
+    /// 2,954 leaves), so the stop's saving is exact (one leaf per level); and a
+    /// decide WITH a deadline, the stop on, runs the very same leaves as the stop
+    /// off: the deadline path is unchanged.
+    #[test]
+    fn the_stall_stop_cuts_the_enumeration_only_without_a_deadline() {
+        let clauses = nominal_witness_chain_clauses(3);
+        let leaves = |stall_stop: bool, deadline: Option<Instant>| {
+            let mut eng = witness_chain_engine(&clauses, stall_stop);
+            let r = eng.decide_with_deadline(3, deadline);
+            let st = eng.stats();
+            assert_eq!(r, HyperResult::Stalled, "{st:?}");
+            assert_eq!(st.partition_deadline_cuts, 0, "{st:?}");
+            (st.merge_branches, st.partition_stall_stops)
+        };
+        let far = Some(Instant::now() + std::time::Duration::from_secs(600));
+        let (off, off_stops) = leaves(false, None);
+        let (on, on_stops) = leaves(true, None);
+        let (budgeted, budgeted_stops) = leaves(true, far);
+        assert_eq!(off_stops, 0);
+        assert!(on_stops > 0, "the stop fired");
+        assert_eq!(on, 3, "one leaf per depth level");
+        assert!(
+            off > 100 * on,
+            "the stop must cut the enumeration: {on} leaves vs {off} without it"
+        );
+        assert_eq!(budgeted_stops, 0, "the stop is for deadline-free decides");
+        assert_eq!(
+            budgeted, off,
+            "with a deadline the enumeration is as before"
+        );
+    }
+
+    /// #580: a stall stop keeps nothing, like #569's deadline cut: the stalled
+    /// leaf is restored before the enumeration returns. Four mergeable successors
+    /// under `≤3` and an open disjunction, searched one level deep, so the first
+    /// leaf has no depth left to branch and stalls at once.
+    #[test]
+    fn a_stall_stop_keeps_no_state() {
+        let role = Role::Named(RoleId::new(0));
+        let root = cls(0);
+        let mut clauses: Vec<DlClause> = (1..=4)
+            .map(|i| DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cls(i), X)],
+            })
+            .collect();
+        clauses.push(DlClause {
+            body: vec![Atom::Class(root, X)],
+            head: vec![Atom::AtMost(role, None, 3, X)],
+        });
+        // An open disjunction, so a leaf with no depth left must branch: `Stalled`.
+        clauses.push(DlClause {
+            body: vec![Atom::Class(root, X)],
+            head: vec![Atom::Class(cls(5), X), Atom::Class(cls(6), X)],
+        });
+        let mut eng = HyperEngine::new(&clauses, root);
+        eng.partition_stall_stop = true;
+        assert_eq!(eng.horn_fixpoint(10_000), HyperResult::Sat);
+        let (node, succs, n) = eng.find_open_at_most().expect("the `≤3 r` is violated");
+        let before = eng.graph_fingerprint();
+        let r = eng.solve_at_most(node, &succs, n as usize, 1);
+        assert_eq!(r, HyperResult::Stalled);
+        let st = eng.stats();
+        assert_eq!(
+            (st.partition_stall_stops, st.merge_branches),
+            (1, 1),
+            "{st:?}"
+        );
+        assert_eq!(
+            eng.graph_fingerprint(),
+            before,
+            "the stalled leaf was restored"
+        );
     }
 
     /// #569 end to end: `X ⊑ ∃t.X`, `X ⊑ ∃s.{a}`, `{a} ⊑ ≤100 s⁻`. Every `X` node

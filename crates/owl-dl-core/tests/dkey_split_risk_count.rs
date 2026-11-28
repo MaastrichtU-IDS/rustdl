@@ -16,6 +16,7 @@ use horned_owl::ontology::set::SetOntology;
 fn count(body: &str) -> usize {
     let src = format!(
         "Prefix(:=<http://ex.org/t#>)\nPrefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+         Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)\n\
          Ontology(<http://ex.org/t>\nDeclaration(DataProperty(:d))\n\
          Declaration(Class(:C)) Declaration(Class(:E))\n{body}\n)\n"
     );
@@ -102,4 +103,49 @@ fn adjacent_exclusive_float_bounds_are_empty() {
     };
     assert_eq!(count(&range("float")), 1);
     assert_eq!(count(&range("double")), 0);
+}
+
+/// The `xsd:date` space is scanned (a date enumeration against its points), as every
+/// ordered space is (#639 review: no test touched it).
+#[test]
+fn a_date_enumeration_against_its_points_is_counted() {
+    let body = "SubClassOf(:C DataSomeValuesFrom(:d DataOneOf(\"2020-01-01\"^^xsd:date \
+         \"2021-01-01\"^^xsd:date)))\n\
+         SubClassOf(DataHasValue(:d \"2020-01-01\"^^xsd:date) :E)\n\
+         SubClassOf(DataHasValue(:d \"2021-01-01\"^^xsd:date) :E)";
+    assert_eq!(count(body), 1);
+}
+
+/// `rdf:PlainLiteral` spans strings and language-tagged strings: against `xsd:string`
+/// (which has a seeded edge into it) the plain key is counted and the string key is not
+/// (#639 review: no test touched it).
+#[test]
+fn a_plain_literal_key_is_counted_against_strings() {
+    let body = "SubClassOf(:C DataSomeValuesFrom(:d rdf:PlainLiteral))\n\
+         SubClassOf(DataSomeValuesFrom(:d xsd:string) :E)";
+    assert_eq!(count(body), 1);
+}
+
+/// The indexed scan finds a partner that starts before the candidate (`[1,7]` against
+/// `[5,10]`, found by the walk back over the keys sorted by lower bound) as well as one
+/// that starts inside it: both keys count, as the all-pairs scan counted them.
+#[test]
+fn overlaps_from_either_side_are_found() {
+    let body = format!(
+        "SubClassOf(:C DataSomeValuesFrom(:d {}))\nSubClassOf(:E DataSomeValuesFrom(:d {}))",
+        int_range(5, 10),
+        int_range(1, 7)
+    );
+    assert_eq!(count(&body), 2);
+}
+
+/// A string enumeration whose only partner is a key that holds every value: bare
+/// `rdf:langString` meets `{"a","b"}` in the oracles' reading, with no seeded edge
+/// between them. The enumeration is found through the universal keys, the
+/// `langString` key by its own full scan: both count.
+#[test]
+fn a_string_set_meets_a_key_holding_every_value() {
+    let body = "SubClassOf(:C DataSomeValuesFrom(:d DataOneOf(\"a\" \"b\")))\n\
+         SubClassOf(DataSomeValuesFrom(:d rdf:langString) :E)";
+    assert_eq!(count(body), 2);
 }

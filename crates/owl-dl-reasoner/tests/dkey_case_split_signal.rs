@@ -599,3 +599,52 @@ fn empty_ranges_on_every_ordered_bucket_void_the_guarantee() {
         }
     }
 }
+
+/// Whole decimals past `i64` against `nonNegativeInteger` (`pBa.ofn`, Fable review of
+/// #639): `HermiT` derives `C ⊑ E`; the detector's integer × decimal-enumeration arm read
+/// the undecided values as disjoint. The twin (`1.0`, `2.0`) finds `C ⊑ E` outright.
+#[test]
+fn whole_decimals_past_i64_void_the_guarantee() {
+    let src = r#"Prefix(:=<http://ex.org/t#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://ex.org/t>
+Declaration(DataProperty(:d)) Declaration(DataProperty(:e))
+Declaration(Class(:C)) Declaration(Class(:E)) Declaration(Class(:M)) SubClassOf(:C :M)
+SubClassOf(:C DataSomeValuesFrom(:d DataOneOf("100000000000000000000.0"^^xsd:decimal "200000000000000000000.0"^^xsd:decimal)))
+SubClassOf(DataSomeValuesFrom(:d xsd:nonNegativeInteger) :E)
+)"#;
+    assert_eq!(flagged(src), (true, false), "pBa");
+    let ctl = r#"Prefix(:=<http://ex.org/t#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://ex.org/t>
+Declaration(DataProperty(:d)) Declaration(DataProperty(:e))
+Declaration(Class(:C)) Declaration(Class(:E)) Declaration(Class(:M)) SubClassOf(:C :M)
+SubClassOf(:C DataSomeValuesFrom(:d DataOneOf("1.0"^^xsd:decimal "2.0"^^xsd:decimal)))
+SubClassOf(DataSomeValuesFrom(:d xsd:nonNegativeInteger) :E)
+)"#;
+    let c = owl_dl_reasoner::classify(&onto(ctl)).unwrap();
+    assert!(
+        c.is_subclass("http://ex.org/t#C", "http://ex.org/t#E"),
+        "pBa_ctl"
+    );
+}
+
+/// The consistency query stamps the flag too (#639 review: no test read it).
+#[test]
+fn the_consistency_query_reads_the_flag() {
+    let src = with_pre(
+        "Declaration(NamedIndividual(:a)) ClassAssertion(:C :a)\n\
+         SubClassOf(:C DataSomeValuesFrom(:d DataOneOf(\"1\"^^xsd:integer \"2\"^^xsd:integer)))\n\
+         SubClassOf(DataHasValue(:d \"1\"^^xsd:integer) :E)\n\
+         SubClassOf(DataHasValue(:d \"2\"^^xsd:integer) :E)",
+    );
+    let (consistent, stats) = owl_dl_reasoner::is_consistent_with_stats(&onto(&src)).unwrap();
+    assert!(consistent);
+    assert!(stats.data_case_split_risk, "{stats:?}");
+}

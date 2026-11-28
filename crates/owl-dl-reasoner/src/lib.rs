@@ -4665,6 +4665,24 @@ impl ProvedDistinctClasses<'_> {
     }
 }
 
+/// The sub-ontology of `internal` on the axioms at `idx` (the component batches of
+/// `abox_components_inconsistent`), with every conversion report carried over. Only the
+/// verdict of a batch is read today, so a report field left at its default would not
+/// show; the unit test `sub_ontology_carries_every_report` pins the copy (#589 review).
+fn sub_ontology(internal: &InternalOntology, idx: &[usize]) -> InternalOntology {
+    InternalOntology {
+        vocabulary: internal.vocabulary.clone(),
+        concepts: internal.concepts.clone(),
+        axioms: idx.iter().map(|&i| internal.axioms[i].clone()).collect(),
+        dropped: internal.dropped.clone(),
+        builtin: internal.builtin.clone(),
+        builtin_licenses: internal.builtin_licenses.clone(),
+        universal_role_folds: internal.universal_role_folds,
+        dkey_split_risk_keys: internal.dkey_split_risk_keys,
+        collapsed_operands: internal.collapsed_operands,
+    }
+}
+
 /// `internal` with each pair of `pairs` added as `SameIndividual` (#354).
 pub(crate) fn with_derived_same(
     internal: &InternalOntology,
@@ -10318,17 +10336,7 @@ fn abox_components_inconsistent(
         }
         let mut idx: Vec<usize> = tbox.iter().copied().chain(batch.iter().copied()).collect();
         idx.sort_unstable();
-        let sub = InternalOntology {
-            vocabulary: internal.vocabulary.clone(),
-            concepts: internal.concepts.clone(),
-            axioms: idx.iter().map(|&i| internal.axioms[i].clone()).collect(),
-            dropped: internal.dropped.clone(),
-            builtin: internal.builtin.clone(),
-            builtin_licenses: internal.builtin_licenses.clone(),
-            universal_role_folds: internal.universal_role_folds,
-            dkey_split_risk_keys: internal.dkey_split_risk_keys,
-            collapsed_operands: internal.collapsed_operands,
-        };
+        let sub = sub_ontology(internal, &idx);
         let started = std::time::Instant::now();
         let verdict = {
             let _guard = consistency_full_effort_enabled().then(EarlyAbandonSuppression::new);
@@ -10352,7 +10360,7 @@ fn abox_components_inconsistent(
 
 #[cfg(test)]
 mod abox_component_batch_tests {
-    use super::abox_component_batches;
+    use super::{abox_component_batches, sub_ontology};
     use horned_owl::io::ParserConfiguration;
     use horned_owl::io::ofn::reader::read as read_ofn;
     use horned_owl::model::RcStr;
@@ -10360,6 +10368,18 @@ mod abox_component_batch_tests {
     use owl_dl_core::convert::convert_ontology;
     use owl_dl_core::ontology::InternalOntology;
     use std::fmt::Write as _;
+
+    /// #589 review: a batch carries the input's conversion reports, not defaults (only the
+    /// verdict is read today, so no behaviour would show a dropped copy).
+    #[test]
+    fn sub_ontology_carries_every_report() {
+        let mut o = internal("Declaration(Class(<http://e/A>))");
+        o.dkey_split_risk_keys = 3;
+        o.universal_role_folds = 2;
+        let sub = sub_ontology(&o, &[]);
+        assert_eq!(sub.dkey_split_risk_keys, 3);
+        assert_eq!(sub.universal_role_folds, 2);
+    }
 
     fn internal(body: &str) -> InternalOntology {
         let text = format!("Prefix(:=<http://e/>)\nOntology(<http://e/o>\n{body}\n)");

@@ -62,6 +62,8 @@ PROFILES = {
     "polarity": {},
     # The universal role (#543 part 2, #624's folds): UniversalCase below, own RNG stream.
     "universal": {},
+    # Data ranges (#363 after #589): DataCase below, its own RNG stream.
+    "data_range": {},
 }
 
 
@@ -1049,6 +1051,455 @@ class UniversalCase(Case):
                 f"# universal: {' '.join(self.kinds()) or 'none'}\n# licensed: {self.licence}")
 
 
+# ---------------------------------------------------------------- data ranges (#363, #589)
+RDF_PL = "rdf:PlainLiteral"
+BIG = ("100000000000000000000.0", "200000000000000000000.0")  # whole decimals past i64 (#641)
+# Timezone-free: rustdl drops a timezoned dateTime literal as unsupported (measured
+# 2026-11-28); HermiT accepts both.
+DT_PTS = ("2020-01-01T00:00:00", "2020-06-01T00:00:00", "2021-01-01T00:00:00")
+
+
+def lit(space, v):
+    """One literal of a value space."""
+    if space == "int":
+        return f'"{v}"^^xsd:integer'
+    if space == "dec":
+        return f'"{v}"^^xsd:decimal'
+    if space == "dbl":
+        return f'"{v}"^^xsd:double'
+    if space == "flt":
+        return f'"{v}"^^xsd:float'
+    if space == "bool":
+        return f'"{v}"^^xsd:boolean'
+    if space == "str":
+        return f'"{v}"^^xsd:string'
+    if space == "lang":
+        return f'"{v}"@en'
+    if space == "dt":
+        return f'"{v}"^^xsd:dateTime'
+    raise AssertionError(space)
+
+
+DT_NAME = {"int": "xsd:integer", "dec": "xsd:decimal", "dbl": "xsd:double", "flt": "xsd:float",
+           "bool": "xsd:boolean", "str": "xsd:string", "dt": "xsd:dateTime"}
+POOL = {"int": ["-2", "-1", "0", "1", "2", "3"],
+        "dec": ["-1.5", "0.5", "1.0", "1.5", "2.0", "2.5"],
+        "dbl": ["1.0", "1.5", "2.0", "2.5"],
+        "flt": ["1.0", "1.0000001", "1.5", "2.0"],     # 1.0000001 is the float after 1.0
+        "bool": ["true", "false"],
+        "str": ["a", "b", "c"],
+        "lang": ["a", "b"],
+        "dt": list(DT_PTS)}
+ORDERED = ("int", "dec", "dbl", "flt", "dt")
+SPACE_W = {"int": 5, "dec": 4, "dbl": 2, "flt": 2, "bool": 1, "str": 2, "lang": 1, "dt": 1}
+DATA_STRATA = {"el": 4, "disj": 2, "full": 4}
+DATA_MOTIFS = ("enum_cover", "range_cover", "int_sign_cover", "bool_cover", "range_narrow",
+               "empty_key", "cross_type", "dec_oneof_int", "big_dec_int", "ex_in", "abox_cover",
+               "card_count")
+EL_MOTIFS = ("enum_cover", "range_cover", "int_sign_cover", "bool_cover", "range_narrow",
+             "empty_key", "cross_type", "dec_oneof_int", "big_dec_int", "ex_in")
+DISJ_MOTIFS = ("cross_type", "lexical")
+
+
+class DataCase(Case):
+    """`data_range` (#363 after #589): data ranges over every OWL 2 datatype HermiT accepts,
+    so a wrong DKey edge, containment, count or cross-type equality is a scored false positive,
+    and a data miss rustdl certifies is a finding (the D10 shape).
+
+    **Legality as HermiT checks it** (measured 2026-11-28, 70 files, one per form): HermiT
+    rejects `xsd:date` and any `owl:real` literal; it accepts integer, nonNegativeInteger,
+    decimal (incl. whole values past i64), double, float, boolean, string, language-tagged
+    and `rdf:PlainLiteral` literals, dateTime points and facets, facets in/exclusive, mixed
+    `DataOneOf`, `DataIntersectionOf` / `DataUnionOf` / `DataComplementOf`,
+    `DatatypeDefinition`, qualified and unqualified data cardinalities, and every data
+    property axiom and assertion. Not drawn: signed zero, NaN, INF (#640/#590, a known
+    HermiT/Konclude dispute), bare `rdf:langString` (outside the datatype map), owl:real /
+    owl:rational, `HasKey`.
+
+    **Three strata** (`# data-stratum:`), so each scoring tier is reachable:
+    - `el`: forms rustdl certifies (measured on main d8229918, one file per form): ∃d.K for
+      a bare datatype, a facet range or a single-datatype `DataOneOf`; `DataHasValue`;
+      Domain with an atomic class; Range; sub/equivalent data properties; plus atomic
+      ⊑ / ⊓ / ∃ structure. rustdl drops (so never certifies) a mixed-datatype `DataOneOf`,
+      `DataIntersectionOf` of a type and an enumeration, `owl:real` / `owl:rational`, a
+      timezoned dateTime and a string facet: those appear in `full` only.
+    - `disj`: points and pairwise-disjoint ranges only, with lexical variants of one value,
+      so `data_case_split_risk` stays false: the flag-clear D10 tier.
+    - `full`: everything above plus ∀, cardinalities, functional and disjoint properties,
+      unions, complements, `DatatypeDefinition` (rustdl drops it: capped), class negation
+      and union, and the ABox.
+
+    **Motifs** (`# motif: <shape>/<ent|ctl>`), on a fresh property `m` and fresh classes
+    `P`, `Q`: the #589 family (an enumeration, a range, `xsd:integer`, a boolean covered by
+    pieces; a range narrowing a filler; an empty key), integer against whole decimal
+    (incl. past i64, #641), inclusive against exclusive bounds, negative assertions on every
+    member, and data counting. `ent` entails a consequence; `ctl` drops or moves one piece so
+    it does not. Both are scored by the oracle, never by the label.
+    """
+
+    profile = "data_range"
+    motif_p = 0.5
+    big_p = 0.06
+    dtdef_p = 0.05
+
+    def __init__(self, seed, index, profile=None):
+        self.seed, self.index = seed, index
+        self.rng = random.Random(f"{seed}:{index}:{self.profile}")
+        r = self.rng
+        self.stratum = r.choices(list(DATA_STRATA), list(DATA_STRATA.values()))[0]
+        self.classes = [f"C{i}" for i in range(r.randint(3, 7))]
+        self.roles = ["r0"] if r.random() < 0.5 else []
+        self.dprops = [f"d{i}" for i in range(r.randint(1, 3))]
+        full = self.stratum == "full"
+        self.inds = [f"a{i}" for i in range(r.randint(1, 3))] if full and r.random() < 0.5 else []
+        self.role_axioms, self.axioms = [], []
+        self.simple = set(self.roles)
+        # Each property keeps to one value space, sometimes two (cross-type collisions).
+        self.space = {d: r.choices(list(SPACE_W), list(SPACE_W.values()))[0]
+                      for d in self.dprops}
+        if self.stratum == "disj":
+            self._disj_plan()
+        self.motif = "none"
+        if r.random() < self.motif_p:
+            self._plant()
+        self.n_target = len(self.axioms) + r.randint(3, 10)
+        tries = 0
+        while len(self.axioms) < self.n_target and tries < 200:
+            tries += 1
+            ax = self.ax_any()
+            if ax and ax not in self.axioms:
+                self.axioms.append(ax)
+
+    # ------------------------------------------------------------ keys
+    def _disj_plan(self):
+        """`disj`: per property, a fixed set of pairwise-disjoint keys (points, and ranges
+        with no point inside), so no non-point key meets another key of its space."""
+        r = self.rng
+        self.disj_keys = {}
+        for d, sp in self.space.items():
+            if sp == "int":
+                keys = ["DatatypeRestriction(xsd:integer xsd:maxInclusive \"-3\"^^xsd:integer)",
+                        "DatatypeRestriction(xsd:integer xsd:minInclusive \"10\"^^xsd:integer)"]
+                pts = [lit("int", v) for v in ("1", "2")] + ['"1.0"^^xsd:decimal',
+                                                             '"01"^^xsd:integer']
+            elif sp == "dec":
+                keys = ["DatatypeRestriction(xsd:decimal xsd:maxExclusive \"-5.0\"^^xsd:decimal)"]
+                pts = ['"1.5"^^xsd:decimal', '"1.50"^^xsd:decimal', '"2.5"^^xsd:decimal']
+            elif sp in ("str", "lang"):
+                keys = []
+                pts = ['"a"^^xsd:string', '"a"', '"a@"^^rdf:PlainLiteral', '"b"@en',
+                       '"b@en"^^rdf:PlainLiteral']
+            else:
+                keys = []
+                pts = [lit(sp, v) for v in POOL[sp][:2]]
+            self.disj_keys[d] = (keys, pts)
+
+    def key(self, d=None, point=False):
+        """A data range on `d`'s space, allowed by the stratum."""
+        r = self.rng
+        sp = self.space[d] if d else r.choice(list(POOL))
+        if self.stratum == "disj":
+            keys, pts = self.disj_keys[d]
+            if keys and not point and r.random() < 0.4:
+                return r.choice(keys)
+            return f"DataOneOf({r.choice(pts)})"
+        opts = ["point", "enum", "type"]
+        if sp in ORDERED:
+            opts += ["facet", "facet"]
+        if self.stratum == "full" and not point:
+            opts += ["union", "compl", "inter"]
+        if point:
+            opts = ["point"]
+        k = r.choice(opts)
+        if k == "point":
+            return f"DataOneOf({self.value(sp)})"
+        if k == "enum":
+            vals = r.sample(POOL[sp], min(len(POOL[sp]), r.randint(2, 3)))
+            # A whole decimal among integers: rustdl drops a mixed-datatype DataOneOf
+            # (measured), so only `full`, where FPs are what is scored anyway.
+            if sp == "int" and self.stratum == "full" and r.random() < 0.2:
+                vals.append("1.0")      # a whole decimal among integers
+                return "DataOneOf(" + " ".join(lit("int", v) if v != "1.0" else
+                                               '"1.0"^^xsd:decimal' for v in vals) + ")"
+            return "DataOneOf(" + " ".join(lit(sp, v) for v in vals) + ")"
+        if k == "type":
+            if sp == "int" and r.random() < 0.3:
+                return "xsd:nonNegativeInteger"
+            if sp == "lang":
+                return RDF_PL
+            return DT_NAME[sp]
+        if k == "facet":
+            return self.facet(sp)
+        if k == "inter":
+            return f"DataIntersectionOf({self.key(d)} {self.key(d)})"
+        if k == "union":
+            return f"DataUnionOf({self.key(d)} {self.key(d)})"
+        return f"DataComplementOf({self.key(d)})"
+
+    def value(self, sp):
+        r = self.rng
+        if sp == "int" and r.random() < self.big_p:
+            return f'"{r.choice(BIG)}"^^xsd:decimal'
+        return lit(sp, r.choice(POOL[sp]))
+
+    def facet(self, sp, lo=None, hi=None, lo_ex=None, hi_ex=None):
+        r = self.rng
+        vals = POOL[sp]
+        if lo is None:
+            i, j = sorted(r.sample(range(len(vals)), 2)) if r.random() < 0.85 else \
+                sorted(r.sample(range(len(vals)), 2), reverse=True)  # sometimes empty
+            lo, hi = vals[i], vals[j]
+        parts = []
+        if r.random() < 0.85 or lo_ex is not None:
+            ex = r.random() < 0.4 if lo_ex is None else lo_ex
+            parts.append(f"xsd:min{'Exclusive' if ex else 'Inclusive'} {lit(sp, lo)}")
+        if r.random() < 0.85 or hi_ex is not None or not parts:
+            ex = r.random() < 0.4 if hi_ex is None else hi_ex
+            parts.append(f"xsd:max{'Exclusive' if ex else 'Inclusive'} {lit(sp, hi)}")
+        return f"DatatypeRestriction({DT_NAME[sp]} {' '.join(parts)})"
+
+    # ------------------------------------------------------------ axioms
+    def D(self):
+        return self.rng.choice(self.dprops)
+
+    def dce(self):
+        """A data class expression allowed by the stratum."""
+        r = self.rng
+        d = self.D()
+        opts = ["some", "some", "value"]
+        if self.stratum == "full":
+            opts += ["all", "card", "card"]
+        k = r.choice(opts)
+        if k == "some":
+            return f"DataSomeValuesFrom(:{d} {self.key(d)})"
+        if k == "value":
+            k2 = self.key(d, point=True)
+            return f"DataHasValue(:{d} {k2[len('DataOneOf('):-1]})"
+        if k == "all":
+            return f"DataAllValuesFrom(:{d} {self.key(d)})"
+        op = r.choice(["DataMinCardinality", "DataMaxCardinality", "DataExactCardinality"])
+        n = r.randint(1 if op == "DataMinCardinality" else 0, 3)
+        q = f" {self.key(d)}" if r.random() < 0.7 else ""
+        return f"{op}({n} :{d}{q})"
+
+    def cls(self):
+        """A class expression: atomic, a data restriction, or (full) a Boolean of them."""
+        r = self.rng
+        opts = ["atom", "atom", "data", "data"]
+        if self.roles:
+            opts.append("some_r")
+        if self.stratum == "full":
+            opts += ["not", "or"]
+        k = r.choice(opts)
+        if k == "atom":
+            return self.C()
+        if k == "data":
+            return self.dce()
+        if k == "some_r":
+            return f"ObjectSomeValuesFrom(:r0 {r.choice([self.C(), self.dce()])})"
+        if k == "not":
+            return f"ObjectComplementOf({self.C()})"
+        return f"ObjectUnionOf({self.C()} {self.dce()})"
+
+    def ax_any(self):
+        r = self.rng
+        kinds = ["sub", "sub", "sup", "sup", "equiv", "and", "domain", "range", "subprop"]
+        if self.stratum == "full":
+            kinds += ["func", "disjprop", "eqprop", "disjcls", "abox", "abox", "dtdef"]
+        elif self.stratum == "el":
+            kinds += ["eqprop"]
+        k = r.choice(kinds)
+        if k == "sub":
+            return f"SubClassOf({self.C()} {self.cls()})"
+        if k == "sup":
+            return f"SubClassOf({self.cls()} {self.C()})"
+        if k == "equiv":
+            return f"EquivalentClasses({self.C()} {self.dce()})"
+        if k == "and":
+            return f"SubClassOf(ObjectIntersectionOf({self.C()} {self.dce()}) {self.C()})"
+        if k == "domain":
+            return f"DataPropertyDomain(:{self.D()} {self.C()})"
+        if k == "range":
+            d = self.D()
+            return f"DataPropertyRange(:{d} {self.key(d)})"
+        if k in ("subprop", "eqprop", "disjprop"):
+            same = [p for p in self.dprops if p != (d := self.D()) and
+                    self.space[p] == self.space[d]]
+            if not same:
+                return None
+            op = {"subprop": "SubDataPropertyOf", "eqprop": "EquivalentDataProperties",
+                  "disjprop": "DisjointDataProperties"}[k]
+            return f"{op}(:{d} :{r.choice(same)})"
+        if k == "func":
+            return f"FunctionalDataProperty(:{self.D()})"
+        if k == "disjcls":
+            return f"DisjointClasses({self.C()} {self.C()})"
+        if k == "dtdef":
+            if r.random() > self.dtdef_p * 7:   # rustdl drops it: keep it rare
+                return None
+            d = self.D()
+            self.dt_n = getattr(self, "dt_n", 0) + 1
+            name = f":DT{self.dt_n}"
+            return (f"DatatypeDefinition({name} {self.key(d)})\n"
+                    f"SubClassOf({self.C()} DataSomeValuesFrom(:{d} {name}))")
+        if not self.inds:
+            return None
+        a = ":" + r.choice(self.inds)
+        d = self.D()
+        k2 = r.choice(["pos", "neg", "cls", "dcls"])
+        v = self.key(d, point=True)[len("DataOneOf("):-1]
+        if k2 == "pos":
+            return f"DataPropertyAssertion(:{d} {a} {v})"
+        if k2 == "neg":
+            return f"NegativeDataPropertyAssertion(:{d} {a} {v})"
+        if k2 == "cls":
+            return f"ClassAssertion({self.C()} {a})"
+        return f"ClassAssertion({self.dce()} {a})"
+
+    # ------------------------------------------------------------ motifs
+    def _plant(self):
+        """One motif on a fresh property `m` and fresh classes `P` (premise) and `Q`
+        (consequence). `ent` entails `P ⊑ Q` (or `P` unsat, or inconsistency, or `P`
+        satisfiable for the false-unsat shapes); `ctl` moves one piece so it does not."""
+        r = self.rng
+        pool = {"el": EL_MOTIFS, "disj": DISJ_MOTIFS, "full": DATA_MOTIFS}[self.stratum]
+        shape = r.choice(pool)
+        var = r.choice(["ent", "ctl"])
+        ent = var == "ent"
+        self.classes += ["P", "Q"]
+        self.motif_dprops = ["m"]   # declared, never drawn by ax_any
+        A = self.axioms.append
+        hv = lambda v: f"DataHasValue(:m {v})"
+        some = lambda k: f"DataSomeValuesFrom(:m {k})"
+        if shape == "enum_cover":
+            sp = r.choice(["int", "dec", "str", "bool", "dt", "dbl"])
+            v1, v2, v3 = (r.sample(POOL[sp], 3) if len(POOL[sp]) >= 3
+                          else [*POOL[sp], POOL[sp][0]])
+            self.space["m"] = sp
+            A(f"SubClassOf(:P {some(f'DataOneOf({lit(sp, v1)} {lit(sp, v2)})')})")
+            A(f"SubClassOf({hv(lit(sp, v1))} :Q)")
+            A(f"SubClassOf({some(f'DataOneOf({lit(sp, v2 if ent else v3)})')} :Q)")
+        elif shape == "range_cover":
+            sp = r.choice(["int", "dec", "dt"])
+            self.space["m"] = sp
+            v = POOL[sp]
+            lo, mid, hi = v[0], v[len(v) // 2], v[-1]
+            A(f"SubClassOf(:P {some(self.facet(sp, lo, hi, False, False))})")
+            A(f"SubClassOf({some(self.facet(sp, lo, mid, False, False))} :Q)")
+            # ent: the second piece starts at mid (exclusive for dense spaces, mid+1 for int);
+            # ctl: it starts one step later, leaving a gap.
+            if sp == "int":
+                nxt = v[len(v) // 2 + (1 if ent else 2)]
+                A(f"SubClassOf({some(self.facet(sp, nxt, hi, False, False))} :Q)")
+            else:
+                A(f"SubClassOf({some(self.facet(sp, mid if ent else v[len(v)//2+1], hi, True, False))} :Q)")
+        elif shape == "int_sign_cover":
+            sp = "int" if ent else "dec"     # ≤0 / ≥1 cover the integers, not the decimals
+            self.space["m"] = sp
+            t = DT_NAME[sp]
+            A(f"SubClassOf(:P {some(t)})")
+            A(f"SubClassOf({some(f'DatatypeRestriction({t} xsd:maxInclusive {lit(sp, 0 if sp == 'int' else '0.0')})')} :Q)")
+            A(f"SubClassOf({some(f'DatatypeRestriction({t} xsd:minInclusive {lit(sp, 1 if sp == 'int' else '1.0')})')} :Q)")
+        elif shape == "bool_cover":
+            self.space["m"] = "bool"
+            A(f"SubClassOf(:P {some('xsd:boolean')})")
+            A(f"SubClassOf({hv(lit('bool', 'true'))} :Q)")
+            A(f"SubClassOf({hv(lit('bool', 'false') if ent else lit('str', 'false'))} :Q)")
+        elif shape == "range_narrow":
+            self.space["m"] = "int"
+            A(f"DataPropertyRange(:m {self.facet('int', '1', '3', False, False)})")
+            A(f"SubClassOf(:P {some(self.facet('int', '-2', '1', False, False))})")
+            # ent: range ∩ filler = {1}; ctl: the consequence wants 2.
+            A(f"SubClassOf({hv(lit('int', '1' if ent else '2'))} :Q)")
+        elif shape == "empty_key":
+            sp = r.choice(["int", "dec", "dbl", "dt"])
+            self.space["m"] = sp
+            v = POOL[sp]
+            lo, hi = (v[2], v[1]) if ent else (v[1], v[2])
+            A(f"SubClassOf(:P {some(self.facet(sp, lo, hi, False, False))})")
+            A("SubClassOf(:P :Q)")
+        elif shape == "cross_type":
+            self.space["m"] = "int"
+            i, d = r.choice([("1", "1.0"), ("2", "2.0"), ("0", "0.0")])
+            A(f"SubClassOf({hv(lit('int', i))} :Q)")
+            A(f"SubClassOf(:P {hv(lit('dec', d if ent else d.replace('.0', '.5')))})")
+        elif shape == "lexical":
+            sp = r.choice(["int", "dec", "str"])
+            self.space["m"] = sp
+            a, b = {"int": ('"1"^^xsd:integer', '"01"^^xsd:integer'),
+                    "dec": ('"1.5"^^xsd:decimal', '"1.50"^^xsd:decimal'),
+                    "str": ('"a"^^xsd:string', '"a@"^^rdf:PlainLiteral')}[sp]
+            c = {"int": '"2"^^xsd:integer', "dec": '"2.5"^^xsd:decimal',
+                 "str": '"a@en"^^rdf:PlainLiteral'}[sp]
+            A(f"SubClassOf({hv(a)} :Q)")
+            A(f"SubClassOf(:P {hv(b if ent else c)})")
+        elif shape in ("dec_oneof_int", "big_dec_int"):
+            # Range integer with a decimal enumeration: whole values are integers (P sat),
+            # 1.5 is not (P unsat). big: the whole values are past i64 (#641's shape).
+            self.space["m"] = "int"
+            A("DataPropertyRange(:m xsd:integer)")
+            vals = (BIG if shape == "big_dec_int" else ("1.0", "2.0")) if ent else ("1.5",)
+            A(f"SubClassOf(:P {some('DataOneOf(' + ' '.join(lit('dec', x) for x in vals) + ')')})")
+        elif shape == "ex_in":
+            sp = r.choice(["dec", "dbl", "flt", "dt"])
+            self.space["m"] = sp
+            v = POOL[sp]
+            lo, hi = v[0], v[2]
+            inner = self.facet(sp, lo, hi, True, True)
+            outer = self.facet(sp, lo, hi, False, False)
+            # (lo,hi) ⊑ [lo,hi] holds; [lo,hi] ⊑ (lo,hi) does not.
+            sub_, sup_ = (inner, outer) if ent else (outer, inner)
+            A(f"SubClassOf(:P {some(sub_)})")
+            A(f"SubClassOf({some(sup_)} :Q)")
+        elif shape == "abox_cover":
+            sp = r.choice(["int", "str", "bool"])
+            self.space["m"] = sp
+            v1, v2 = r.sample(POOL[sp], 2)
+            if not self.inds:
+                self.inds = ["a0"]
+            a = ":" + self.inds[0]
+            A(f"ClassAssertion({some(f'DataOneOf({lit(sp, v1)} {lit(sp, v2)})')} {a})")
+            A(f"NegativeDataPropertyAssertion(:m {a} {lit(sp, v1)})")
+            other = v2 if ent else [x for x in POOL[sp] if x not in (v1, v2)][:1] or [v1]
+            other = other if isinstance(other, str) else other[0]
+            if not ent and sp == "bool":
+                A(f"NegativeDataPropertyAssertion(:m {a} {lit('str', v2)})")
+            else:
+                A(f"NegativeDataPropertyAssertion(:m {a} {lit(sp, other)})")
+        elif shape == "card_count":
+            self.space["m"] = "int"
+            n = 3 if ent else 2   # int[0,1] holds two values: ≥3 is unsat, ≥2 is not
+            A(f"SubClassOf(:P DataMinCardinality({n} :m {self.facet('int', '0', '1', False, False)}))")
+        else:
+            raise AssertionError(shape)
+        self.motif = f"{shape}/{var}"
+
+    def kinds(self):
+        pats = {"oneof": "DataOneOf(", "facet": "DatatypeRestriction(", "inter": "DataIntersectionOf(",
+                "union": "DataUnionOf(", "compl": "DataComplementOf(", "dtdef": "DatatypeDefinition(",
+                "all": "DataAllValuesFrom(", "card": "Cardinality(", "func": "FunctionalDataProperty(",
+                "range": "DataPropertyRange(", "domain": "DataPropertyDomain(",
+                "neg_assert": "NegativeDataPropertyAssertion(", "pos_assert": "DataPropertyAssertion(",
+                "big": BIG[0][:8], "dt": "xsd:dateTime", "plain": RDF_PL, "lang": '"@en'}
+        starts = {"pos_assert"}
+        return sorted(k for k, p in pats.items()
+                      if any(a.startswith(p) if k in starts else p in a for a in self.axioms))
+
+    def header(self):
+        return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile {self.profile}\n"
+                f"# data-stratum: {self.stratum}\n# motif: {self.motif}\n"
+                f"# data: {' '.join(self.kinds()) or 'none'}")
+
+    def ofn(self, axioms=None):
+        axioms = self.axioms if axioms is None else axioms
+        text = render(self.header(), self.classes, self.roles,
+                      self.dprops + getattr(self, "motif_dprops", []), self.inds, axioms)
+        decl = "".join(f"Declaration(Datatype(:DT{i}))\n" for i in range(1, getattr(self, "dt_n", 0) + 1))
+        text = text.replace("Prefix(xsd:=", "Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)\nPrefix(xsd:=", 1)
+        return text.replace("Ontology(<http://gen.rustdl/o>\n", "Ontology(<http://gen.rustdl/o>\n" + decl, 1)
+
+
+
 def make_case(seed, index, profile="default"):
     if profile == "el_guaranteed":
         return ElCase(seed, index)
@@ -1058,6 +1509,8 @@ def make_case(seed, index, profile="default"):
         return PolarityCase(seed, index)
     if profile == "universal":
         return UniversalCase(seed, index)
+    if profile == "data_range":
+        return DataCase(seed, index)
     return Case(seed, index, profile)
 
 
@@ -1439,6 +1892,50 @@ def self_test():
        {"direct", "subclass"} <= {l.split("/")[2] for l in lics if "/lic/" in l}, True)
     ok("some cases put a role below top", sum(any(a.startswith(f"SubObjectPropertyOf({TOP} :")
                                                   for a in c.axioms) for c in unis) > 50, True)
+    # data_range (#363 after #589)
+    dcs = [DataCase(20261129, i) for i in range(600)]
+    ok("data_range cases pass the legality checker", [c.index for c in dcs if check(c)], [])
+    ok("data_range is deterministic", DataCase(3, 9).ofn() == DataCase(3, 9).ofn(), True)
+    st = {s: sum(c.stratum == s for c in dcs) for s in DATA_STRATA}
+    ok("every stratum is drawn, el and full the largest",
+       min(st.values()) > 60 and st["disj"] < min(st["el"], st["full"]), True)
+    planted = {(c.stratum, c.motif) for c in dcs}
+    ok("every el motif and variant is planted in el",
+       sorted({("el", f"{m}/{v}") for m in EL_MOTIFS for v in ("ent", "ctl")} - planted), [])
+    ok("every motif and variant is planted in full",
+       sorted({("full", f"{m}/{v}") for m in DATA_MOTIFS for v in ("ent", "ctl")} - planted), [])
+    ok("every disj motif and variant is planted in disj",
+       sorted({("disj", f"{m}/{v}") for m in DISJ_MOTIFS for v in ("ent", "ctl")} - planted), [])
+    el_bad = ("DataUnionOf", "DataComplementOf", "DataAllValuesFrom", "Cardinality",
+              "FunctionalDataProperty", "DisjointDataProperties", "Assertion(",
+              "DatatypeDefinition", "ObjectUnionOf", "ObjectComplementOf", "DisjointClasses",
+              "DataIntersectionOf")
+    ok("el and disj cases draw only the forms the pure-EL gate admits",
+       [c.index for c in dcs if c.stratum != "full" and any(b in a for a in c.axioms
+                                                             for b in el_bad)], [])
+    def disj_stray(c):
+        """Ranges in a disj case that are not one of its planned pairwise-disjoint keys,
+        and enumerations of more than one literal."""
+        planned = {k for ks, _ in c.disj_keys.values() for k in ks}
+        rs = {m for a in c.axioms for m in re.findall(r"DatatypeRestriction\([^)]*\)", a)}
+        multi = [a for a in c.axioms if re.search(r"DataOneOf\([^)]* [^)]*\)", a)]
+        return sorted(rs - planned) + multi
+    ok("disj cases use only their planned disjoint keys and single-literal enumerations",
+       [c.index for c in dcs if c.stratum == "disj" and disj_stray(c)], [])
+    _d = DataCase(20261129, next(c.index for c in dcs if c.stratum == "disj"))
+    _d.axioms.append("SubClassOf(:C0 DataSomeValuesFrom(:d0 DataOneOf(\"1\"^^xsd:integer "
+                     "\"2\"^^xsd:integer)))")
+    ok("the disj check sees a stray enumeration (negative control)", bool(disj_stray(_d)), True)
+    ok("no rejected or dropped literal form: xsd:date, owl:real, timezoned dateTime",
+       [c.index for c in dcs if re.search(r"xsd:date\b|owl:real|owl:rational|:00Z\"",
+                                          c.ofn())], [])
+    ok("whole decimals past i64 appear (the #641 control)",
+       sum(BIG[0] in c.ofn() for c in dcs) > 10, True)
+    ok("a mixed integer/decimal enumeration only in full",
+       [c.index for c in dcs if c.stratum != "full" and re.search(
+           r"DataOneOf\([^)]*xsd:integer[^)]*xsd:decimal", c.ofn())], [])
+    ok("the motif property is never drawn at random",
+       [c.index for c in dcs if c.motif == "none" and ":m " in c.ofn()], [])
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

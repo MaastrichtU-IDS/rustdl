@@ -385,9 +385,12 @@ def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
     ora = oracle_for(path, text, cache, realize, Path(out_dir).parent / "augmented")
     head = text.splitlines()[:3]
     motif = next((l.split(":", 1)[1].strip() for l in head if l.startswith("# motif:")), None)
+    stratum = next((l.split(":", 1)[1].strip() for l in head
+                    if l.startswith("# data-stratum:")), None)
     polarity = next((l.split(":", 1)[1].strip() for l in head if l.startswith("# polarity:")),
                     None)
     rec = {"case": Path(path).stem, "header": text.splitlines()[0], "motif": motif,
+           "stratum": stratum,
            "polarity": polarity, "sha256": ora["sha256"],
            "oracle": {"verdict": ora["verdict"], "kinds": ora["kinds"]}, "arms": {},
            "findings": []}
@@ -418,6 +421,16 @@ def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
                 sa["failed_classes"] = bad[:5]
     elif ora["verdict"] == "peer-disagree":
         rec["sides"] = sides(ora, classes, rec["arms"])
+        hans = hermit_superset(ora)
+        if hans is not None:
+            # Declared before the data_range control (#363): Konclude under-reports data
+            # entailments (case splits, counting), so where HermiT's answer strictly
+            # contains Konclude's, rustdl is also scored against HermiT, in a separate tier.
+            # The case stays peer-disagree; every finding here is adjudicated by hand.
+            rec["hermit_superset"] = True
+            rec["hermit_findings"] = score(hans, classes, rec["arms"])
+            if sat and SAT_ARM in rec["arms"] and rec["arms"][SAT_ARM].get("json"):
+                rec["hermit_findings"] += score_sat(hans, rec["arms"][SAT_ARM])
     rec["bucket"] = bucket(rec)
     # keep the per-case record small: drop the raw JSON of clean arms
     for name, a in rec["arms"].items():
@@ -440,6 +453,27 @@ def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
     tmp.write_text(json.dumps(rec))
     tmp.replace(dest)
     return rec
+
+
+def hermit_superset(ora):
+    """HermiT's answer when it strictly contains Konclude's (every Konclude entailment is
+    HermiT's, and HermiT has more); else None. Inconsistency contains everything."""
+    k, h = ora.get("konclude") or {}, ora.get("hermit") or {}
+    if k.get("status") != "ok" or h.get("status") != "ok":
+        return None
+    if not h["consistent"]:
+        return {"consistent": False} if k["consistent"] else None
+    if not k["consistent"]:
+        return None
+    hu, hte = set(h["unsat"]), set(h["thing_equiv"])
+    if not set(k["unsat"]) <= hu or not set(k["thing_equiv"]) <= hte | hu:
+        return None
+    excl = hu | hte
+    kp, hp = orc.pairs_excluding(k, excl), orc.pairs_excluding(h, excl)
+    if not kp <= hp:
+        return None
+    return {"consistent": True, "unsat": h["unsat"], "thing_equiv": h["thing_equiv"],
+            "pairs": sorted([s, t2] for s, t2 in hp)}
 
 
 def sides(ora, classes, arms):
@@ -577,8 +611,55 @@ def cmd_report(a):
                 # individuals the realize arm actually reported and that were compared
                 "individuals_compared": sum(r.get("types_compared", 0) for r in rs),
                 "finding_cases": sum(r["bucket"] == "finding" for r in rs)}
+    def summ(r, arm="classify"):
+        return (r["arms"].get(arm) or {}).get("summary") or {}
+
+    def tiers(rs):
+        """The data_range tiers: agreed consistent classify cases, those certified
+        (`completeness_guaranteed`), and those certified with no #589 split risk."""
+        rs = [r for r in rs if r["oracle"]["verdict"] == "agree" and summ(r).get("consistent")]
+        g = [r for r in rs if summ(r).get("completeness_guaranteed")]
+        return {"scored": len(rs), "guaranteed": len(g),
+                "guaranteed_no_split_risk": sum(not summ(r).get("data_case_split_risk")
+                                                for r in g),
+                "split_risk": sum(bool(summ(r).get("data_case_split_risk")) for r in rs)}
+
+    by_stratum = {}
+    for r in recs.values():
+        if r.get("stratum"):
+            by_stratum.setdefault(r["stratum"], []).append(r)
+
+    def miss_reason(r):
+        """Why an exposed classify miss is not a finding: the first declared reason."""
+        s = summ(r)
+        for k in ("incomplete", "dropped", "data_case_split_risk", "universal_role_ordinary",
+                  "relies_on_trusted_consistency", "wedge_hierarchy_blind"):
+            if s.get(k):
+                return k
+        if (s.get("trusted_sat_refutations") or 0) > 0:
+            return "trusted_sat_refutations"
+        return "not_guaranteed_other"
+
+    miss_reasons = Counter(miss_reason(r) for r in recs.values()
+                           if any(f["tier"] == "exposed" and f["kind"].endswith("MISSED")
+                                  and f["arm"] == "classify" for f in r["findings"]))
+    # #589 / D10: a certificate must never coexist with a declared reason to doubt it.
+    cert_conflicts = sorted(
+        c for c, r in recs.items() if summ(r).get("completeness_guaranteed")
+        and (summ(r).get("data_case_split_risk") or summ(r).get("dropped")
+             or summ(r).get("incomplete")))
     rep = {
         "tag": a.tag, "n": len(recs), "buckets": dict(buckets),
+        "tiers_by_stratum": {s: tiers(rs) for s, rs in sorted(by_stratum.items())},
+        "classify_exposed_miss_reasons": dict(miss_reasons),
+        "hermit_superset": {
+            "cases": sum(bool(r.get("hermit_superset")) for r in recs.values()),
+            "finding_cases": sorted(c for c, r in recs.items() if any(
+                f["tier"] == "finding" for f in r.get("hermit_findings", []))),
+            "findings_by_kind_tier": dict(Counter(
+                f"{f['kind']}/{f['tier']}" for r in recs.values()
+                for f in r.get("hermit_findings", [])))},
+        "certificate_conflicts": cert_conflicts,
         "guaranteed": guaranteed(recs.values()),
         "guaranteed_by_motif": {m: guaranteed(rs) for m, rs in sorted(by_motif.items())},
         "denominators_by_motif": {m: denominators(rs) for m, rs in sorted(by_motif.items())},
@@ -659,6 +740,16 @@ def cmd_detect(a):
     control = load(a.out, a.control, a.first)
     mutant = load(a.out, a.mutant, a.first)
     diff = differential(control, mutant)
+    hdiff = {}
+    for case, m in mutant.items():
+        c = control.get(case)
+        if c is None or not m.get("hermit_superset"):
+            continue
+        base = {(f["kind"], f["witness"]) for f in c.get("hermit_findings", [])}
+        new = [f for f in m.get("hermit_findings", []) if (f["kind"], f["witness"]) not in base
+               and f["tier"] == "finding"]
+        if new:
+            hdiff[case] = new
     split = split_detections(mutant, diff)
     counted = sorted(set(split["finding"]) | set(split["exposed"]))
     first = {}
@@ -671,11 +762,14 @@ def cmd_detect(a):
         "detecting_cases_by_split": {k: len(v) for k, v in split.items()},
         "first_detecting_case": counted[0] if counted else None,
         "differing_cases": len(diff),
+        "hermit_superset_detecting_cases": sorted(hdiff),
         "by_kind": dict(Counter(f["kind"] for fs in diff.values() for f in fs)),
         "by_kind_tier": dict(Counter(f"{f['kind']}/{f['tier']}" for fs in diff.values()
                                      for f in fs)),
         "first_case_by_kind": first,
         "cases": {c: fs[:5] for c, fs in sorted(diff.items())[:20]},
+        # every detecting case (the 20-case `cases` sample above truncates: #638 review)
+        "all_detecting_cases": counted,
     }
     Path(a.out, a.mutant, f"detect-vs-{a.control}.json").write_text(json.dumps(rep, indent=1))
     print(json.dumps(rep, indent=1))
@@ -865,6 +959,25 @@ def self_test():
        sk(cons, {A: "inconsistent", B: "inconsistent", C: "inconsistent"}),
        [("consistency-FP", "finding", "KB")])
     ok("sat refusing an inconsistent KB is clean", sk(inc, {A: "inconsistent"}), [])
+    # hermit_superset: HermiT strictly containing Konclude is scored; anything else is not.
+    def peers(kp, hp, ku=(), hu=(), kc=True, hc=True):
+        mk = lambda c, ps, u: {"status": "ok", "consistent": c, "unsat": list(u),
+                               "thing_equiv": [], "pairs": [list(x) for x in ps]}
+        return {"konclude": mk(kc, kp, ku), "hermit": mk(hc, hp, hu)}
+    ok("HermiT ⊋ Konclude pairs is scored against HermiT",
+       hermit_superset(peers([], [(A, B)]))["pairs"], [[A, B]])
+    ok("Konclude has a pair HermiT lacks: not scored",
+       hermit_superset(peers([(A, C)], [(A, B)])), None)
+    ok("HermiT inconsistent, Konclude consistent: scored as inconsistent",
+       hermit_superset(peers([], [], hc=False)), {"consistent": False})
+    ok("Konclude inconsistent, HermiT consistent: not scored",
+       hermit_superset(peers([], [], kc=False)), None)
+    ok("Konclude unsat HermiT lacks: not scored",
+       hermit_superset(peers([], [], ku=[C])), None)
+    ok("a miss against the HermiT answer is scored like an agreed one",
+       [x["kind"] for x in score(hermit_superset(peers([], [(A, B), (A, C)])), classes,
+                                 {"classify": cj(direct_subsumptions=[[A, B]])})],
+       ["pair-MISSED"])
     print(f"run self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

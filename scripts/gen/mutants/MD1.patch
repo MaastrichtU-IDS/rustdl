@@ -1,0 +1,16 @@
+# MD1 (data_range profile): data_case_split_risk always false. The #589 signal is gone, so a cover-motif miss is certified: a guaranteed-tier finding (also the reachability proof for that tier).
+# base: d822991876e7ac3b1399da0e918fb8d4e930ef26
+diff --git a/crates/owl-dl-core/src/convert.rs b/crates/owl-dl-core/src/convert.rs
+index 5134326e..35b257d4 100644
+--- a/crates/owl-dl-core/src/convert.rs
++++ b/crates/owl-dl-core/src/convert.rs
+@@ -4564,7 +4564,8 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
+ /// that reports `dropped` voids its completeness claim on it.
+ #[must_use]
+ pub fn data_case_split_risk(out: &InternalOntology) -> bool {
+-    out.dkey_split_risk_keys > 0
++    let _ = out.dkey_split_risk_keys;
++    false
+ }
+ 
+ /// #589: the typed `DKey` buckets of one ontology, as `seed_dkey_subsumptions` built them.

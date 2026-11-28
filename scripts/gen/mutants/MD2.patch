@@ -1,0 +1,36 @@
+# MD2 (data_range profile): OrdRange::subset and FloatRange::subset ignore bound openness, so [lo,hi] ⊆ (lo,hi): false DKey ⊑ DKey edges on decimal, dateTime, double and float ranges.
+# base: d822991876e7ac3b1399da0e918fb8d4e930ef26
+diff --git a/crates/owl-dl-core/src/data_axioms.rs b/crates/owl-dl-core/src/data_axioms.rs
+index fc1b7986..02cf58f6 100644
+--- a/crates/owl-dl-core/src/data_axioms.rs
++++ b/crates/owl-dl-core/src/data_axioms.rs
+@@ -903,12 +903,12 @@ impl FloatRange {
+         let min_ok = match (self.min, other.min) {
+             (_, None) => true,
+             (None, Some(_)) => false,
+-            (Some(s), Some(o)) => s > o || (s == o && (other.min_incl || !self.min_incl)),
++            (Some(s), Some(o)) => s >= o,
+         };
+         let max_ok = match (self.max, other.max) {
+             (_, None) => true,
+             (None, Some(_)) => false,
+-            (Some(s), Some(o)) => s < o || (s == o && (other.max_incl || !self.max_incl)),
++            (Some(s), Some(o)) => s <= o,
+         };
+         min_ok && max_ok
+     }
+@@ -1063,12 +1063,12 @@ impl<T: Ord + Clone> OrdRange<T> {
+         let min_ok = match (&self.min, &other.min) {
+             (_, None) => true,
+             (None, Some(_)) => false,
+-            (Some(s), Some(o)) => *s > *o || (*s == *o && (other.min_incl || !self.min_incl)),
++            (Some(s), Some(o)) => *s >= *o,
+         };
+         let max_ok = match (&self.max, &other.max) {
+             (_, None) => true,
+             (None, Some(_)) => false,
+-            (Some(s), Some(o)) => *s < *o || (*s == *o && (other.max_incl || !self.max_incl)),
++            (Some(s), Some(o)) => *s <= *o,
+         };
+         min_ok && max_ok
+     }

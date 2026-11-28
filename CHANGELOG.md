@@ -103,10 +103,34 @@ All notable changes to rustdl are documented here. Format is based on
     - the case split over `[0, 0]`, missed; whenever a `-0` value or the `[0, 0]` range occurs, the completeness guarantee is withheld;
     - counting the zeros, so `≥2 d.{+0, -0}` reads unsat, as in HermiT.
   - **ORE:** no pool file has a `-0` value or a `[0, 0]` range (checked with a conversion counter). REACH_590
+- **An integer facet with an `xsd:decimal` literal is no longer dropped (#591).** `xsd:integer[minInclusive "2.0"^^xsd:decimal]` did not parse, so the whole range was dropped and `{2} ⊑ xsd:integer[≥ 2.0]` was missed. The integer value space is part of the decimal one, so the literal is now read as the decimal it denotes. A whole value bounds the integers at that value, with the usual ±1 for an exclusive facet. A fractional value bounds them at its ceiling (min) or floor (max), so `[≥ 2.5]` is `[≥ 3]`. HermiT and Konclude agree on all 14 canaries, including the fractional and negative ones.
+  - **Crossing facets are empty.** `[≥ 2.5, ≤ 2.7]` is `[3, 2]` after rounding, and `[≥ 3, ≤ 2]` is empty as written. Either now lowers to `∃d.⊥`, so a class demanding such a value is unsat (HermiT agrees). Before, an empty range read satisfiable with the guarantee set.
+  - **A facet literal must be an integer or a decimal.** `xsd:integer[minInclusive "2"^^xsd:string]` (or `"2.0"^^xsd:double`) had its lexical form read as the integer 2 and gave a false subsumption. Such a restriction is outside OWL 2 DL, and HermiT rejects it. The range is now dropped and counted in `dropped`, as #588 did for the other numeric types.
+  - **ORE:** none. 27 pool files carry a numeric facet, and the converted axioms are unchanged on all of them. The instrument does detect the change: on the issue probe, `tbox-stats` differs and main says no where the fix says yes.
 - **`SubDataPropertyOf` no longer gives a false subsumption by ignoring data ranges (#626).** With `SubDataPropertyOf(:d :e)`, `C ⊑ hasValue(d, 7)` and `hasValue(e, 1) ⊑ E`, the data-axiom preprocessing derived `C ⊑ E` (with `completeness_guaranteed: true`). It read `∃e.Y ⊑ E` regardless of Y. HermiT and Konclude reject the subsumption, since 7 is not 1.
   - A cardinality on the super side failed the same way: `≥2 e`, `=1 e`, `=2 e` and `≥3 e` were each read as "has some e-value", so `C ⊑ hasValue(d, 7)` gave `C ⊑ E` from `DataExactCardinality(1 e) ⊑ E`. This happened even with no real sub-property, since the hierarchy is closed reflexively.
   - **Fix:** the shortcut now fires only when Y is `DataSomeValuesFrom(e rdfs:Literal)` or `DataMinCardinality(1 e)`. Every other form is compared by the lowering. Same values, contained ranges, the same datatype, an enumeration within its datatype, and `≥2 d` against `≥2 e` are still derived.
   - **ORE:** 197 pool files use `SubDataPropertyOf`, and 191 of them parse (6 fail on IRI syntax). On those 191, the converted axioms are unchanged, and the remaining shortcut adds nothing that a build without it lacks.
+- **A wedge decide with no deadline no longer enumerates every `≤n` partition after a
+  stalled one (#580): `RUSTDL_WEDGE_PARTITION_STALL_STOP`, default ON, `=0` reverts.**
+  #569 made the partition search stop at a deadline; without one, a leaf that returned
+  `Stalled` (depth bound, step cap, a churn stop) let the enumeration go on through every
+  remaining partition. Each leaf can open a nested enumeration one depth level down, so
+  the #569 graph (`{a} ⊑ ≤100 s⁻` over a growing witness chain) never returned. Now, in a
+  decide with no deadline, the first `Stalled` leaf restores and ends its enumeration
+  with `Stalled` (never `Sat`), and every enclosing level stops on its stalled child:
+  one leaf per depth level instead of all of them (`≤3` at depth 3: 3 leaves against
+  2,954). A stalled child already rules out `Unsat`, so only a later `Sat` is given up.
+  The classify pair wedge and label oracle fall through to the main tableau on it. Query
+  consistency (`RUSTDL_QUERY_LAZY_CONSISTENCY_MS=0`) and classify's consistency fallback
+  report it as undetermined instead. A decide with a deadline is not touched. The stop
+  was not reached on any real ontology measured: at the CLI's defaults, 566 ORE files
+  (the #620 samples, 57 cut at 32 s) and 9 curated ontologies ran 39 partition
+  enumerations, 9 of them on ORE, with no leaf stalling before its deadline; on the 8
+  files that enumerate, deadline-free runs never had a stalled leaf either. What remains
+  on the #569 graph is the engine's own regrowth of the witness chain at every level,
+  quadratic in depth: 43 CPU-s at depth 16, 160 at 32, 633 at 64 (see
+  `docs/known-limitations/wedge-deadline-free-witness-regrowth.md`).
 - **A `DataOneOf` value now meets the same datatype's ranges and points (#556).** `a : ∃d.{1}` with `¬d(a, 1)` read consistent on every path, and HermiT and Konclude both say it is inconsistent. The cause: `DataOneOf` lowers to an enumeration `DKey` bucket, while a `NegativeDataPropertyAssertion`, a `DataPropertyAssertion`, `DataHasValue` and facet restrictions lower to the range bucket of the same datatype. Only disjointness was seeded across the two (#42 item 2), never subsumption, so `C ⊑ ∃d.{3}` did not give `C ⊑ ∃d.[3,3]` either.
   - Conversion now seeds `enumeration ⊑ range` when every member lies in the range, and `range ⊑ enumeration` when the range is finite and every value in it is a member. This covers integer, decimal, float, double, date and dateTime.
   - Zero is left out of the IEEE edges, because the buckets merge `-0` and `+0` and HermiT keeps them apart.

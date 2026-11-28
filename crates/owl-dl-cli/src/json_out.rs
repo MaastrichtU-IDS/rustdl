@@ -1655,6 +1655,9 @@ fn derived_fact_to_component(
 
 /// #586: where a proof's cited IR axioms came from in the source: see
 /// [`owl_dl_core::provenance`].
+/// #603: the data replay's memo, `(A, D)` → its premises (or `None`).
+type DataMemo<'a> = HashMap<(ClassId, ClassId), Option<Vec<&'a Component<RcStr>>>>;
+
 pub(crate) struct Citations<'a> {
     literal:
         HashMap<owl_dl_core::ontology::Axiom, &'a horned_owl::model::AnnotatedComponent<RcStr>>,
@@ -1668,6 +1671,14 @@ pub(crate) struct Citations<'a> {
     /// #603: the ontology the index and the memo are keyed to (axiom indices); every
     /// call must pass that same `InternalOntology`.
     internal_id: usize,
+    /// #603: the source, for the data-axiom replay (`data_axioms` derives from source
+    /// components, not from the internal axioms).
+    src: &'a SetOntology<RcStr>,
+    /// #603: the data-axiom replay, built on first use (one scan of the source).
+    data_replay: std::cell::OnceCell<owl_dl_core::data_axioms::DomainReplay<'a, RcStr>>,
+    /// #603: the data replay's answer per `(A, D)`, failures included: it is a pure
+    /// function of the pair, so a `DKey` edge cited many times is looked up once.
+    data_memo: std::cell::RefCell<DataMemo<'a>>,
 }
 
 impl<'a> Citations<'a> {
@@ -1678,6 +1689,9 @@ impl<'a> Citations<'a> {
             resolved: std::cell::RefCell::new(HashMap::new()),
             in_progress: std::cell::RefCell::new(std::collections::HashSet::new()),
             internal_id: std::ptr::from_ref(internal) as usize,
+            src,
+            data_replay: std::cell::OnceCell::new(),
+            data_memo: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -1744,21 +1758,49 @@ impl<'a> Citations<'a> {
                 i != idx && (is_literal(i) || !progress.contains(&i))
             })
         });
-        let out = premises.and_then(|ps| {
-            let mut out: Vec<&'a Component<RcStr>> = Vec::new();
-            for p in ps {
-                for c in self.sources_of(p, internal)? {
-                    if !out.contains(&c) {
-                        out.push(c);
+        let out = premises
+            .and_then(|ps| {
+                let mut out: Vec<&'a Component<RcStr>> = Vec::new();
+                for p in ps {
+                    for c in self.sources_of(p, internal)? {
+                        if !out.contains(&c) {
+                            out.push(c);
+                        }
                     }
                 }
-            }
-            Some(out)
-        });
+                Some(out)
+            })
+            .or_else(|| self.data_premises(*a, *d, internal));
         self.in_progress.borrow_mut().remove(&idx);
         if let Some(v) = &out {
             self.resolved.borrow_mut().insert(idx, v.clone());
         }
+        out
+    }
+
+    /// #603: `data_axioms`' domain inference (Pattern 3 / 4), replayed on the source:
+    /// literal components only, so nothing to resolve further. Memoised per pair.
+    fn data_premises(
+        &self,
+        a: ClassId,
+        d: ClassId,
+        internal: &InternalOntology,
+    ) -> Option<Vec<&'a Component<RcStr>>> {
+        let vocab = &internal.vocabulary;
+        // A synthetic class (outside the vocabulary) has no source IRI to match.
+        if a.index() as usize >= vocab.num_classes() || d.index() as usize >= vocab.num_classes() {
+            return None;
+        }
+        if let Some(hit) = self.data_memo.borrow().get(&(a, d)) {
+            return hit.clone();
+        }
+        let replay = self
+            .data_replay
+            .get_or_init(|| owl_dl_core::data_axioms::DomainReplay::build(self.src));
+        let out = replay
+            .premises(vocab.class_iri(a), vocab.class_iri(d))
+            .map(|cs| cs.into_iter().map(|ac| &ac.component).collect::<Vec<_>>());
+        self.data_memo.borrow_mut().insert((a, d), out.clone());
         out
     }
 }

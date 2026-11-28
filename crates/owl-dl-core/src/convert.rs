@@ -1110,6 +1110,16 @@ fn data_range_dkey<A: ForIRI>(
         let plain = vocab.intern_class(&plain_dkey_iri());
         return Some((role, pool.atomic(plain)));
     }
+    // #635 review: crossing integer facets (`[≥ 2.5, ≤ 2.7]` is `[3, 2]`, or
+    // `[≥ 3, ≤ 2]`) describe NO value. `∃d.⊥` says exactly that, so a class
+    // demanding such a value is unsat; a `DKey` for the empty range had no edges and
+    // missed it with the guarantee set.
+    if let Some(r) = crate::data_axioms::parse_integer_range(dr)
+        && r.is_empty()
+    {
+        let role = Role::named(vocab.intern_role(dp_iri));
+        return Some((role, pool.bot()));
+    }
     let iri = if let Some(r) = crate::data_axioms::parse_integer_range(dr) {
         dkey_iri(r)
     } else if let Some(r) = crate::data_axioms::parse_xsd_float_range(dr) {

@@ -3003,6 +3003,11 @@ pub(crate) fn is_pure_el(internal: &InternalOntology) -> bool {
 /// so an EL `TBox` carrying a big `ABox` is still classified completely by the
 /// saturation fast path.
 fn is_pure_el_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
+    // #590: telling the two zeros apart needs case splits the saturator does not
+    // make (`∃d.[0, 0]` is `∃d.{+0} ⊔ ∃d.{-0}`), so the guarantee is withheld.
+    if owl_dl_core::convert::has_signed_zero_split(internal) {
+        return false;
+    }
     // #108: composed-chain ranges are outside the saturator's pair-keyed fold —
     // a SET-level property the per-axiom loop below cannot see.
     if has_composed_chain_range(internal) {

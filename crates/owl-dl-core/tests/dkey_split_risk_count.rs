@@ -79,6 +79,10 @@ fn a_zero_value_is_one_value_and_the_zero_range_two() {
          xsd:minInclusive \"0.0\"^^xsd:double xsd:maxInclusive \"0.0\"^^xsd:double)))\n\
          SubClassOf(DataHasValue(:d \"0.0\"^^xsd:double) :E)";
     assert_eq!(count(range), 1);
+    // The two literal zero points are one value each, and disjoint: nothing to split.
+    let both = "SubClassOf(:C DataHasValue(:d \"0.0\"^^xsd:double))\n\
+         SubClassOf(DataHasValue(:d \"-0.0\"^^xsd:double) :E)";
+    assert_eq!(count(both), 0);
     let one = "SubClassOf(:C DataSomeValuesFrom(:d DataOneOf(\"1.0\"^^xsd:double)))\n\
          SubClassOf(DataHasValue(:d \"1.0\"^^xsd:double) :E)";
     assert_eq!(count(one), 0);

@@ -62,6 +62,27 @@ such as a cover on another property (`t_otherprop`). On the 1,920-file ORE pool 
 (`ore_ont_11949`, `ore_ont_15635`) and 1 of the 911 realize admits, so the certificates it
 costs are few.
 
+## Step 2 deferred on ORE evidence (2026-11-28)
+
+Step 2 (making these answers right) is deferred: on ORE it would rescue nothing measurable.
+
+- 133 of the 424 flagged files have both a rustdl and an oracle closure (Konclude ∪ HermiT, the
+  #588-era MISSED net). 132 of them have zero missed and zero extra rows. The one exception,
+  `ore_ont_15682`, misses 12 rows through a dropped `DataIntersectionOf`, which is signalled and
+  is not a case split (`datatype-definition-data-intersection-dropped.md`).
+- The two classify-certified files the flag costs (`ore_ont_11949`, `ore_ont_15635`) have no
+  data restriction class expression at all: only ranges, domains and asserted literals, so no
+  class-level case split is expressible there. The flag is an over-flag on them. 11949 matches
+  Konclude and HermiT; 15635's classify was already uncertified (`consistency_undetermined`).
+- Every route (EL fast path, tableau, wedge) answers "no" on the ~23 case-split probe shapes,
+  so a case-split miss would show as a miss on every surface. None of the 40 sampled misses of
+  the August MISSED net is one.
+
+The shapes are pinned as `#[ignore]`d sentinels asserting `HermiT`'s answers
+(`crates/owl-dl-reasoner/tests/dkey_case_split_sentinels.rs`, 25 tests, all failing today by
+design). One that starts passing is a finding. Plan and review:
+`~/rustdl/sweeps/bugfix/589/step2/plan.md`.
+
 **Not done (deferred):** stating the split as a told disjunction
 (`DKey(K) ⊑ DKey(K₁) ⊔ … ⊔ DKey(Kₙ)`). It answers right where it applies (hand-checked on the
 plan review's `s2_*` probes), but it does not cover the range-intersection shape, takes the

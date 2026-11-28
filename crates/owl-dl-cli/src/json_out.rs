@@ -1655,6 +1655,9 @@ fn derived_fact_to_component(
 
 /// #586: where a proof's cited IR axioms came from in the source: see
 /// [`owl_dl_core::provenance`].
+/// #603: the data replay's memo, `(A, D)` → its premises (or `None`).
+type DataMemo<'a> = HashMap<(ClassId, ClassId), Option<Vec<&'a Component<RcStr>>>>;
+
 pub(crate) struct Citations<'a> {
     literal:
         HashMap<owl_dl_core::ontology::Axiom, &'a horned_owl::model::AnnotatedComponent<RcStr>>,
@@ -1674,8 +1677,8 @@ pub(crate) struct Citations<'a> {
     /// #603: the data-axiom replay, built on first use (one scan of the source).
     data_replay: std::cell::OnceCell<owl_dl_core::data_axioms::DomainReplay<'a, RcStr>>,
     /// #603: the data replay's answer per `(A, D)`, failures included: it is a pure
-    /// function of the pair, so a DKey edge cited many times is looked up once.
-    data_memo: std::cell::RefCell<HashMap<(ClassId, ClassId), Option<Vec<&'a Component<RcStr>>>>>,
+    /// function of the pair, so a `DKey` edge cited many times is looked up once.
+    data_memo: std::cell::RefCell<DataMemo<'a>>,
 }
 
 impl<'a> Citations<'a> {

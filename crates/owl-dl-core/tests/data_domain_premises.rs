@@ -93,7 +93,7 @@ fn an_unrestricted_super_side_cites_the_chain() {
     assert!(ps.iter().any(|p| p.contains("SubDataPropertyOf")), "{ps:?}");
 }
 
-/// The manager's canary: #632's false positives (HermiT rejects each). The pass no
+/// The canary for #632's false positives (`HermiT` rejects each). The pass no
 /// longer derives `C ⊑ E` from them, and the replay finds no premises either.
 #[test]
 fn the_narrowed_pattern_4_false_positives_get_no_premises() {

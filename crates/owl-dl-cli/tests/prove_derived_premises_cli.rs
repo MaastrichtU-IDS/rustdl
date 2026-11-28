@@ -3,7 +3,7 @@
 //! corpus these were the only derived axioms step proofs cited (wine 47 of 150 sampled
 //! proofs, pizza 2 of 113). Two more kinds are replayed the same way. On ORE ontologies
 //! rich in data axioms (13,727 calls), they were the derived kinds step proofs cited,
-//! DKey seed edges apart:
+//! `DKey` seed edges apart:
 //! - the union common-subsumer `disjunction_existential` derives (`X ⊑ D₁ ⊔ … ⊔ Dₙ`,
 //!   every `Dᵢ` told-below `C`, so `X ⊑ C`): 15 proofs (SWEET, `OLiA`), plus wine's
 //!   `Fruit ⊑ EdibleThing`;

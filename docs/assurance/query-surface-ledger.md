@@ -769,6 +769,94 @@ The guaranteed tier is thin: it is 30 of the 824 scored cases rustdl calls consi
 
 **Cost:** about 4 core-h for the `8efe7762dc2b` run (three release builds, two 500-case calibrations, the 1000-case control). The `7ae4404de302` round added about 1.45 core-h (of the 1.5 granted): the MU3 build, its 500-case calibration, the control rerun and the derivation check. The other profiles' 5300 cases regenerate byte-identically.
 
+### A data-range profile: `data_range` (after #589)
+
+#589 Step 1 (#639) made every surface report `data_case_split_risk`: a data key that is not a single value meets another key of its value space with no seeded `⊑` edge, so an answer may need reasoning by cases. The older profiles drew almost no data. The `data_range` profile (`DataCase`; see `scripts/gen/README.md`) draws:
+- **value spaces:** integer, decimal (including whole values past i64), double, float, boolean, string, tagged and `rdf:PlainLiteral` literals, and timezone-free dateTime;
+- **forms:** every data-range and data-axiom form HermiT accepts;
+- **three strata:** `el` (forms rustdl certifies), `disj` (pairwise-disjoint keys, so the flag stays clear) and `full`;
+- **motifs** in half the cases: the #589 family and its controls.
+
+**Declared before the run:**
+- **D10 criterion:** a miss with `completeness_guaranteed: true`, `data_case_split_risk: false`, nothing dropped and not `incomplete` is a finding.
+- **#641 tag:** a finding of #641's shape (a `DataOneOf` of whole decimals past i64 against an integer Range: a false unsat) counts as known-#641.
+- **`hermit_superset` tier:** where HermiT's answer strictly contains Konclude's, rustdl is also scored against HermiT in a separate tier, adjudicated by hand.
+
+Measured 2026-11-28 with seed 20261129, N = 1000, generator `855b815baeb7` and pin `rustdl-control-d8229918` (main d8229918, sha256 1502a0d3d257805c). The arms were `classify`, `classify --saturation-only`, `consistent`, `realize` and `sat`, on cores 33–34, with peers capped at 60 s and rustdl at 30 s.
+- **Bodies:** 926 bodies are from `8fcd893291fd` and are byte-identical under `855b815baeb7`. The other 74 were regenerated and rerun after two generator fixes, both described below.
+
+**Legality and certification, measured one file per form before drawing.**
+- **HermiT** rejects `xsd:date` and any `owl:real` literal, and accepts everything else probed.
+- **rustdl** drops a timezoned dateTime literal or facet ("unsupported data range"; a timezone-free one is certified), a mixed-datatype `DataOneOf`, `DataIntersectionOf(type, enumeration)`, `owl:real` / `owl:rational`, string facets and `DatatypeDefinition`. These are declared drops (`dropped`), so the profile puts them in `full` only.
+
+**Calibration, with the criterion declared before any run:** each mutant must be detected within B = 500.
+
+| mutant | fault | detected | first | tier |
+|---|---|---:|---|---|
+| MD1 | `data_case_split_risk` always false | 20 of 500 | case 43 | all finding: misses promoted from exposed to certified (15 pair, 13 unsat, 1 consistency) |
+| MD2 | `OrdRange::subset` / `FloatRange::subset` ignore bound openness | 6 of 500 | case 15 | all finding (pair FPs) |
+| MD3 | `IntInterval::capacity` one too small | 15 of 500 | case 25 | all finding (sat, unsat, consistency, type FPs), plus 2 in the `hermit_superset` tier |
+| MD4 | `decimal_as_int` always `None` | 19 of 500 | case 2 | 14 finding (17 certified pair misses, 5 unsat FPs), 5 exposed; plus 1 in the `hermit_superset` tier |
+
+**`detect` was blind to promotions.** It compared (kind, witness) only, so a miss the control exposes and the mutant certifies did not count. MD1 first read 0 of 500. Inspecting case 43 (exposed in the control, a finding under MD1) showed the cause. `detect` now counts a promotion to the finding tier and not a demotion, with self-tests both ways. The earlier profiles' mutants were FP-detected, so none of their figures changes.
+
+**Control, N = 1000: 14 findings, all known-#641, and no other finding.**
+
+| bucket | cases |
+|---|---:|
+| clean | 790 |
+| exposed | 112: declared misses: `dropped` 46, `data_case_split_risk` 45, trusted-Sat refutations 2, `incomplete` 1 (classify) |
+| finding | **14, all known-#641** |
+| peer-disagree | 72 (below) |
+| peer-fail | 12: Konclude timed out on 9 and failed on 3; HermiT was ok on all |
+
+- **Known-#641, 14 cases:** each is the `big_dec_int/ent` motif, and rustdl calls P (and whatever P makes unsat) unsatisfiable in `classify`, `--saturation-only` and `sat`.
+  - Each reproduces on a serial recheck.
+  - Each finding disappears when the two values become `1.0` / `2.0` (#641's own control).
+  - Case 848's four pair FPs go with it.
+  - **This is the positive control:** the instrument finds a known false unsat.
+- **Certified tiers.** Of the 896 scored cases rustdl calls consistent, 275 are certified with no split risk:
+  - `disj`: 209 of 210;
+  - `el`: 55 of 370, because the flag hits 315 of them;
+  - `full`: 11 of 316.
+
+  `certificate_conflicts` is empty: no certificate was issued alongside the flag, a drop or a deadline. **No D10 finding.** Since no certified miss occurred, there is no classify vs `--saturation-only` difference to report on one.
+- **A divergence found here, not a finding.** Case 917 (`DisjointClasses(:C2 :C2)`) was a certified unsat miss. rustdl reads n-ary operands as a set (#538, `collapsed_operands`, by design), while both peers read a list.
+  - The generator no longer repeats an operand. A self-pairing bug, `DisjointDataProperties(:d1 :d1)`, was found and fixed the same way.
+  - The scorer exposes a miss under `collapsed_operands`.
+  - Both fixes preserve the RNG stream. The 74 changed cases (38 and 37, with case 784 in both) were regenerated and rerun on every arm and mutant.
+
+**The `hermit_superset` tier (69 cases): no findings.** Every rustdl miss there is declared: 63 pair, 19 unsat and 20 sat misses, and 2 consistency misses. MD3 and MD4 are detected in it as well (above).
+
+**Peer disagreements (72, all attributed).** Konclude misses data entailments that HermiT finds; the reverse happens only for dateTime covers.
+- **HermiT right, Konclude misses (69):**
+  - 32 are the planted `ent` consequence: covers by points, subranges, integer sign or boolean values, Range narrowing, and counting.
+  - 12 are explained by it: adding the planted consequence as an axiom makes Konclude agree with HermiT.
+  - 25 were adjudicated by hand, and every one is HermiT-right:
+    - counting in a finite set: `≤n` over n values is ⊤; `=3` or `≥3` over two values, or over one under a Range, is ⊥;
+    - an empty `DatatypeDefinition` or complement;
+    - Range narrowing;
+    - a functional clash.
+
+  rustdl misses most of these too, each under a declared reason.
+- **Konclude wrong, HermiT and rustdl right (3: cases 225, 247, 720).** These are dateTime `range_cover/ent` cases: `[2020-01-01, 2021-01-01]` split at 2020-06-01 into an inclusive and an exclusive piece.
+  - OWL 2 orders dateTimes by XSD 1.1's partial order. A timezoned instant within 14 h of the timezone-free split point is in P's range but neither ≤ nor > that point, so the cover does not hold.
+  - The generator's `ent` label is wrong for dateTime, and the docstring says so. Scoring never reads labels.
+
+**Not covered.**
+- **Signed zero, NaN and INF:** a later add-on once #640 (#590) lands.
+- **Not drawn:** `owl:real` / `owl:rational` literals (HermiT rejects them), `xsd:date`, bare `rdf:langString`, `HasKey`, and more than 3 data properties plus the motif property.
+- **Thin certified tier in `el`:** 55 of 370, because the #589 detector is coarse (role-blind). A miss in `el` is mostly exposed, and MD1 shows what it hides.
+- **Dropped forms** are scored for FPs only.
+
+**Cost:** about 2.6 core-h:
+- 5 release builds, about 1.1 core-h;
+- legality probes, the smoke batch and adjudication peer runs, about 0.4;
+- the 1000-case control, 0.94;
+- four 500-case calibrations with cached peers, about 0.1.
+
+The other profiles' 6000 bodies (every seeds.txt row) regenerate byte-identically.
+
 ## In-repo pure-EL guard (#440, and layer 2)
 
 The `el_guaranteed` net needs Konclude and HermiT, so it never ran in CI, and #435/#436 reached

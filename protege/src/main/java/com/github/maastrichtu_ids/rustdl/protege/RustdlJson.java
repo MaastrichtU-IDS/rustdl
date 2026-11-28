@@ -45,6 +45,12 @@ public final class RustdlJson {
          */
         public boolean universal_role_ordinary;
         /**
+         * #589: a data range here may need reasoning by cases over its values (a range that
+         * is not a single value meets another of its datatype), which rustdl does not do: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean data_case_split_risk;
+        /**
          * #610: consistency rests on the consistency wedge's model alone, which is not proven
          * complete; if that model is wrong the KB is inconsistent. Absent in older output, false.
          */
@@ -95,6 +101,12 @@ public final class RustdlJson {
          * negative answer or a missing entailment may be wrong. Absent in older output, false.
          */
         public boolean universal_role_ordinary;
+        /**
+         * #589: a data range here may need reasoning by cases over its values (a range that
+         * is not a single value meets another of its datatype), which rustdl does not do: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean data_case_split_risk;
         /**
          * #574 / #616: a cut instance probe hit the tableau's decision-depth limit, where a
          * larger budget does not help. Implies {@code incomplete}. Absent in older output, false.
@@ -151,6 +163,12 @@ public final class RustdlJson {
          */
         public boolean universal_role_ordinary;
         /**
+         * #589: a data range here may need reasoning by cases over its values (a range that
+         * is not a single value meets another of its datatype), which rustdl does not do: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean data_case_split_risk;
+        /**
          * #610: the KB's consistency stayed undetermined, so a positive answer may be the
          * vacuous one of an inconsistent KB (see docs/json-schema.md for this surface's
          * scope). Absent in older output, false.
@@ -173,6 +191,12 @@ public final class RustdlJson {
          * negative answer or a missing entailment may be wrong. Absent in older output, false.
          */
         public boolean universal_role_ordinary;
+        /**
+         * #589: a data range here may need reasoning by cases over its values (a range that
+         * is not a single value meets another of its datatype), which rustdl does not do: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean data_case_split_risk;
         public PropHierSide object_properties;
         public PropHierSide data_properties;
     }
@@ -185,6 +209,12 @@ public final class RustdlJson {
          * negative answer or a missing entailment may be wrong. Absent in older output, false.
          */
         public boolean universal_role_ordinary;
+        /**
+         * #589: a data range here may need reasoning by cases over its values (a range that
+         * is not a single value meets another of its datatype), which rustdl does not do: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean data_case_split_risk;
         /**
          * #610: the KB's consistency stayed undetermined, so a positive answer may be the
          * vacuous one of an inconsistent KB (see docs/json-schema.md for this surface's
@@ -203,6 +233,12 @@ public final class RustdlJson {
          * negative answer or a missing entailment may be wrong. Absent in older output, false.
          */
         public boolean universal_role_ordinary;
+        /**
+         * #589: a data range here may need reasoning by cases over its values (a range that
+         * is not a single value meets another of its datatype), which rustdl does not do: a
+         * negative answer or a missing entailment may be wrong. Absent in older output, false.
+         */
+        public boolean data_case_split_risk;
         /**
          * #610: the KB's consistency stayed undetermined, so a positive answer may be the
          * vacuous one of an inconsistent KB (see docs/json-schema.md for this surface's

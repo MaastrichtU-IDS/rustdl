@@ -138,6 +138,15 @@ pub struct InternalOntology {
     /// #543 (S+F): how many axioms the universal-role fold added (`unlowered`'s
     /// `universal_role_folds`; the zero-fold check of the no-sweep argument reads it).
     pub universal_role_folds: usize,
+    /// #589: data keys (`DKey` classes) that may need reasoning by cases. A key that
+    /// is not a single value and that meets another key of the same value space
+    /// without a seeded `⊑` edge into it: the engines treat keys as atoms, so the
+    /// value-level case split this pair can need (`∃d.{1,2}` against `hasValue(d,1)`
+    /// and `hasValue(d,2)`) is never made. Coarse in the safe direction: role- and
+    /// polarity-blind, and "meets" is assumed wherever it is not decided. Set by
+    /// `seed_dkey_subsumptions`; 0 when it did not run (a conversion cut, which voids
+    /// completeness on its own).
+    pub dkey_split_risk_keys: usize,
     /// #538: n-ary axioms whose repeated operands were collapsed while reading (their
     /// operands are a set). Kept apart from `dropped`: no content is lost under the set
     /// reading, so completeness is unaffected; a caller reading the operands as a list

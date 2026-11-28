@@ -873,6 +873,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
         note_trusted_wedge_consistency("classify", h.stats().relies_on_trusted_consistency);
         note_saturation_only("classify", *saturation_only && !h.completeness_guaranteed());
         note_universal_role(classify_universal_role(&h));
+        note_data_case_split(classify_data_case_split(&h));
         exit_if_no_verdict(h.stats().no_verdict_pairs > 0);
         return Ok(());
     }
@@ -888,6 +889,7 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
     warn_if_clauses_deferred(h.stats().wedge_clauses_deferred);
     warn_if_dropped(&dropped);
     note_universal_role(classify_universal_role(&h));
+    note_data_case_split(classify_data_case_split(&h));
     exit_if_no_verdict(h.stats().no_verdict_pairs > 0);
     Ok(())
 }
@@ -897,6 +899,13 @@ fn run_classify(args: &ClassifyArgs, after_parse: impl FnOnce() -> bool) -> Resu
 fn classify_universal_role(h: &Classification) -> bool {
     let stats = h.stats();
     stats.universal_role_ordinary && !stats.inconsistent
+}
+
+/// #589's flag on a classification, masked by a proved inconsistency (as
+/// `classify --json` reports it).
+fn classify_data_case_split(h: &Classification) -> bool {
+    let stats = h.stats();
+    stats.data_case_split_risk && !stats.inconsistent
 }
 
 /// Stack for the classify worker thread. Generous, because parsing and
@@ -1576,6 +1585,18 @@ fn note_universal_role(flagged: bool) {
     }
 }
 
+/// #589: the stderr note beside `data_case_split_risk`, on the same arms as
+/// [`note_universal_role`].
+fn note_data_case_split(flagged: bool) {
+    if flagged {
+        eprintln!(
+            "note: a data range here may need reasoning by cases (a range that is not a \
+             single value meets another of its datatype), which rustdl does not do. Positive \
+             answers are sound; a negative answer or a missing entailment may be wrong (#589)."
+        );
+    }
+}
+
 /// #540: run an expression query whose result names the probed conversion's drops
 /// (the input's and the query expression's), which the caller warns from. When the
 /// query errors there is no result, so warn from the input's own drops instead (the
@@ -1896,6 +1917,17 @@ fn fold_universal_role(verdict: owl_dl_verify::Verdict, flagged: bool) -> owl_dl
     fold_unresolved(
         verdict,
         owl_dl_verify::UnresolvedReason::UniversalRoleReadAsOrdinary,
+    )
+}
+
+/// #589: as [`fold_universal_role`], for a data range that may need a case split.
+fn fold_data_case_split(verdict: owl_dl_verify::Verdict, flagged: bool) -> owl_dl_verify::Verdict {
+    if !flagged {
+        return verdict;
+    }
+    fold_unresolved(
+        verdict,
+        owl_dl_verify::UnresolvedReason::DataKeyNeedsCaseSplit,
     )
 }
 
@@ -2366,6 +2398,9 @@ fn run() -> Result<()> {
                     .map(|u| serde_json::json!({"axiom": u.axiom, "site": u.site, "concept": u.concept}))
                     .collect::<Vec<_>>()
             };
+            // #589: one conversion for both flags (a second one cost a third more CPU on
+            // large inputs).
+            let (_, uro, dcs) = json_out::conversion_block(&onto);
             // #543: `classify_certified` / `realize_certified` say only that the fast-path
             // gate admits the ontology (its lowering is checked below). They are not
             // completeness claims: with `universal_role_ordinary` set the admitted
@@ -2377,7 +2412,8 @@ fn run() -> Result<()> {
                     "schema_version": 1,
                     "classify_certified": found.classify_certified,
                     "realize_certified": found.realize_certified,
-                    "universal_role_ordinary": json_out::conversion_block(&onto).1,
+                    "universal_role_ordinary": uro,
+                    "data_case_split_risk": dcs,
                     "universal_role_folds": owl_dl_reasoner::universal_role_folds(&onto).unwrap_or(0),
                     "classify": rows(&found.classify),
                     "realize": rows(&found.realize),
@@ -2395,7 +2431,7 @@ fn run() -> Result<()> {
                 // #449: a give-up in its sound direction, as for the fall-through
                 // deadline and the node cap; no stats exist on this path.
                 Err(owl_dl_reasoner::ReasonError::NoVerdict) if json => {
-                    let (dropped, uro) = json_out::conversion_block(&onto);
+                    let (dropped, uro, dcs) = json_out::conversion_block(&onto);
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&json_out::build_consistent_json(
@@ -2408,6 +2444,7 @@ fn run() -> Result<()> {
                             dropped,
                             owl_dl_core::set_operands::count(&onto).into(),
                             uro,
+                            dcs,
                         ))?
                     );
                     eprintln!("{NO_VERDICT_NOTE}");
@@ -2419,7 +2456,7 @@ fn run() -> Result<()> {
             // NOTE: `dropped_block` re-runs `convert_ontology` (see its doc
             // comment) — one extra conversion per invocation, negligible
             // vs. reasoning; accepted trade-off.
-            let (dropped, uro) = json_out::conversion_block(&onto);
+            let (dropped, uro, dcs) = json_out::conversion_block(&onto);
             if json {
                 println!(
                     "{}",
@@ -2434,11 +2471,13 @@ fn run() -> Result<()> {
                         owl_dl_core::set_operands::count(&onto).into(),
                         // A proved inconsistency is not hidden by the universal role.
                         uro && verdict,
+                        dcs && verdict,
                     ))?
                 );
                 note_trusted_wedge_sat(stats.relies_on_trusted_consistency);
                 // A proved inconsistency is not an answer the universal role can hide.
                 note_universal_role(uro && verdict);
+                note_data_case_split(dcs && verdict);
                 if verdict {
                     warn_if_clauses_refused(
                         stats.wedge_clauses_refused,
@@ -2464,6 +2503,7 @@ fn run() -> Result<()> {
                 );
                 warn_if_dropped(&dropped);
                 note_universal_role(uro);
+                note_data_case_split(dcs);
                 std::process::exit(3);
             }
             println!(
@@ -2484,6 +2524,7 @@ fn run() -> Result<()> {
             }
             warn_if_dropped(&dropped);
             note_universal_role(uro && verdict);
+            note_data_case_split(dcs && verdict);
         }
         Command::Disjoint {
             file,
@@ -2492,11 +2533,12 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped, _, uro) = json_out::conversion_block_for_roles(&onto);
+            let (dropped, _, uro, dcs) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let classes =
@@ -2522,6 +2564,7 @@ fn run() -> Result<()> {
                         gaps,
                         dropped,
                         uro,
+                        dcs,
                     ))?
                 );
                 exit_if_no_verdict(classes.no_verdict());
@@ -2556,11 +2599,12 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped, _, uro) = json_out::conversion_block_for_roles(&onto);
+            let (dropped, _, uro, dcs) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let same =
@@ -2571,7 +2615,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_individuals_json(
-                        &same, &different, dropped, uro,
+                        &same, &different, dropped, uro, dcs,
                     ))?
                 );
                 exit_if_no_verdict(same.no_verdict() || different.no_verdict());
@@ -2604,11 +2648,12 @@ fn run() -> Result<()> {
         } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped, _, uro) = json_out::conversion_block_for_roles(&onto);
+            let (dropped, _, uro, dcs) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped);
             // #543: role-level, so a role above top counts even where no class-level
             // answer changes.
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let obj = inferred_object_property_values(&onto, deadline)
@@ -2623,7 +2668,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_property_values_json(
-                        &obj, &data, gaps, dropped, uro,
+                        &obj, &data, gaps, dropped, uro, dcs,
                     ))?
                 );
                 exit_if_no_verdict(obj.no_verdict());
@@ -2657,11 +2702,12 @@ fn run() -> Result<()> {
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
             // #619: one conversion for the drops and the role-level flag.
-            let (dropped, _, uro) = json_out::conversion_block_for_roles(&onto);
+            let (dropped, _, uro, dcs) = json_out::conversion_block_for_roles(&onto);
             warn_if_dropped(&dropped);
             // #543: role-level surface; a folded property disjointness or a role above
             // top still counts here (see `universal_role_ordinary_for_roles`).
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let h = owl_dl_reasoner::classify_property_hierarchies(&onto)
                 .context("classify_property_hierarchies")?;
             let (obj, data, gaps) = (h.object, h.data, h.gaps.hierarchy());
@@ -2669,7 +2715,7 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_prophier_json(
-                        &obj, &data, gaps, dropped, uro,
+                        &obj, &data, gaps, dropped, uro, dcs,
                     ))?
                 );
                 return Ok(());
@@ -2686,9 +2732,10 @@ fn run() -> Result<()> {
         }
         Command::Sat { file, class_iri } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
+            let (dropped_kinds, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped_kinds);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let _cap = owl_dl_reasoner::single_query_node_cap();
             let (verdict, stats) = is_class_satisfiable_with_stats(&onto, &class_iri)
                 .context("is_class_satisfiable_with_stats")?;
@@ -2718,9 +2765,10 @@ fn run() -> Result<()> {
             saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
+            let (dropped_kinds, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped_kinds);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let (verdict, no_verdict) = if saturation_only {
                 (
                     is_subclass_of_saturation_only(&onto, &sub, &sup)
@@ -2787,9 +2835,10 @@ fn run() -> Result<()> {
             saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
+            let (dropped_kinds, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped_kinds);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let mut undetermined = false;
             let mut instance_no_verdict = false;
             let verdict = if saturation_only {
@@ -2847,9 +2896,10 @@ fn run() -> Result<()> {
             saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
-            let (dropped_kinds, uro) = json_out::conversion_block(&onto);
+            let (dropped_kinds, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped_kinds);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             // One query, like `instance`: the single-query node cap (package 2),
             // so `instance C a` and `instances C` cannot disagree on the cap.
             let _cap = owl_dl_reasoner::single_query_node_cap();
@@ -2890,6 +2940,7 @@ fn run() -> Result<()> {
             // #540: the probed conversion's drops, the query expression's included.
             warn_if_dropped(v.dropped().by_kind());
             note_universal_role(v.universal_role_ordinary());
+            note_data_case_split(v.data_case_split_risk());
             if json {
                 println!(
                     "{}",
@@ -2944,6 +2995,7 @@ fn run() -> Result<()> {
             // #540: as in `sat-expr`.
             warn_if_dropped(v.dropped().by_kind());
             note_universal_role(v.universal_role_ordinary());
+            note_data_case_split(v.data_case_split_risk());
             if json {
                 println!(
                     "{}",
@@ -2983,6 +3035,7 @@ fn run() -> Result<()> {
             // #540: as in `sat-expr`.
             warn_if_dropped(r.dropped().by_kind());
             note_universal_role(r.universal_role_ordinary());
+            note_data_case_split(r.data_case_split_risk());
             if json {
                 println!(
                     "{}",
@@ -3034,7 +3087,7 @@ fn run() -> Result<()> {
             // NOTE: one extra conversion per invocation, negligible vs. reasoning;
             // accepted trade-off. #619: it gives the role-level flag for
             // `--properties` too.
-            let (dropped, uro, uro_for_roles) = json_out::conversion_block_for_roles(&onto);
+            let (dropped, uro, uro_for_roles, dcs) = json_out::conversion_block_for_roles(&onto);
             if json {
                 if properties {
                     // stderr, so stdout stays a single JSON object.
@@ -3049,10 +3102,12 @@ fn run() -> Result<()> {
                         dropped,
                         saturation_only,
                         uro,
+                        dcs,
                     ))?
                 );
                 note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
                 note_universal_role(uro);
+                note_data_case_split(dcs);
                 // #574: the cut warning on stderr too (same guard as the text branch).
                 if r.incomplete() && !r.no_verdict() {
                     warn_probes_cut("realize", "RUSTDL_MAX_NODES", r.depth_capped(), false);
@@ -3065,6 +3120,7 @@ fn run() -> Result<()> {
             print_realization(&r);
             note_trusted_wedge_consistency("realize", r.relies_on_trusted_consistency());
             note_universal_role(uro);
+            note_data_case_split(dcs);
             note_saturation_only("realize", saturation_only);
             // #493: a likely-bug cut gets #449's note at the end, not the budget advice.
             if r.incomplete() && !r.no_verdict() {
@@ -3110,9 +3166,10 @@ fn run() -> Result<()> {
             let onto = parse_ofn(&file)?;
             // #540: the pure-EL closure is complete only for the converted
             // ontology; a dropped axiom voids the "closure is complete" claim.
-            let (dropped, uro) = json_out::conversion_block(&onto);
+            let (dropped, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let _cap = owl_dl_reasoner::single_query_node_cap();
             let (verdict, stats) = match is_subclass_of_with_stats(&onto, &sub, &sup) {
                 // #449: `explain`'s own give-up format.
@@ -3141,7 +3198,10 @@ fn run() -> Result<()> {
                 // #552 review: the consistency query's `pure_el_mode` follows the wider
                 // `saturation_fast_path_admits` gate, so `completeness_guaranteed()` (a
                 // sat/subclass predicate) and "input is pure EL" do not apply here.
-                if stats.pure_el_mode && stats.dropped_axioms == 0 && !stats.universal_role_ordinary
+                if stats.pure_el_mode
+                    && stats.dropped_axioms == 0
+                    && !stats.universal_role_ordinary
+                    && !stats.data_case_split_risk
                 {
                     " (decided by saturation on a fragment where it is complete)"
                 } else if stats.answered_by_saturation {
@@ -3157,6 +3217,10 @@ fn run() -> Result<()> {
                 // #543: complete for the ordinary reading of the universal role only.
                 " (pure EL, but owl:topObjectProperty is read as an ordinary property; \
                  closure is NOT complete for the input)"
+            } else if stats.pure_el_mode && !verdict && stats.data_case_split_risk {
+                // #589: complete for data ranges read as atoms only.
+                " (pure EL, but a data range may need reasoning by cases, which rustdl does \
+                 not do; closure is NOT complete for the input)"
             } else if stats.pure_el_mode && !verdict && stats.dropped_axioms > 0 {
                 // #540: the closure is complete for what conversion kept, not
                 // for the input; a "no" may miss an entailment of a dropped axiom.
@@ -3218,9 +3282,10 @@ fn run() -> Result<()> {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             // #619 / #543: one conversion for the dropped axioms and the universal role (a
             // superset of the byte-prefiltered flag, which a prefix cut inside the name hides).
-            let (dropped, uro) = json_out::conversion_block(&onto);
+            let (dropped, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped_explaining(&dropped, DROPPED_JUSTIFY);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let q =
                 owl_dl_reasoner::justify::parse_query(&query).map_err(|e| anyhow::anyhow!(e))?;
             if json {
@@ -3277,6 +3342,7 @@ fn run() -> Result<()> {
                         // #619: complete over the converted ontology only.
                         enumeration_complete && dropped.is_empty(),
                         uro,
+                        dcs,
                         dropped.clone(),
                     ))?
                 );
@@ -3354,9 +3420,10 @@ fn run() -> Result<()> {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             // #619 / #543: one conversion for the dropped axioms and the universal role (a
             // superset of the byte-prefiltered flag, which a prefix cut inside the name hides).
-            let (dropped, uro) = json_out::conversion_block(&onto);
+            let (dropped, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped_explaining(&dropped, DROPPED_REPAIR);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let q =
                 owl_dl_reasoner::justify::parse_query(&query).map_err(|e| anyhow::anyhow!(e))?;
             let label_map = labels.then(|| build_label_map(&onto));
@@ -3470,8 +3537,10 @@ fn run() -> Result<()> {
             let internal = owl_dl_core::convert::convert_ontology(&onto).context("convert")?;
             let dropped = internal.dropped.by_kind().clone();
             let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+            let dcs = owl_dl_core::convert::data_case_split_risk(&internal);
             warn_if_dropped_explaining(&dropped, DROPPED_PROVE);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             // A single query, like `subclass` / `explain`: the 500k query cap
             // (#402). It covers the justification fallback too (thread-local).
             let _cap = owl_dl_reasoner::single_query_node_cap();
@@ -3665,9 +3734,10 @@ fn run() -> Result<()> {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             // #619 / #543: one conversion for the dropped axioms and the universal role (a
             // superset of the byte-prefiltered flag, which a prefix cut inside the name hides).
-            let (dropped, uro) = json_out::conversion_block(&onto);
+            let (dropped, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped_explaining(&dropped, DROPPED_DIAGNOSE);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let label_map = labels.then(|| build_label_map(&onto));
 
             // Shared renderer for a justification (mirrors the `justify` handler).
@@ -3819,9 +3889,10 @@ fn run() -> Result<()> {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             // #619 / #543: one conversion for the dropped axioms and the universal role (a
             // superset of the byte-prefiltered flag, which a prefix cut inside the name hides).
-            let (dropped, uro) = json_out::conversion_block(&onto);
+            let (dropped, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped_explaining(&dropped, DROPPED_DIAGNOSE);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let label_map = labels.then(|| build_label_map(&onto));
             let report = report::build_report(&onto, file.display().to_string(), max_roots)?;
             // #462: a `NoVerdict` gets #449's note at exit instead of the node-cap warning.
@@ -4302,9 +4373,10 @@ fn run() -> Result<()> {
         }
         Command::VerifyEl { file, json } => {
             let onto = parse_ofn(&file)?;
-            let (dropped, uro) = json_out::conversion_block(&onto);
+            let (dropped, uro, dcs) = json_out::conversion_block(&onto);
             warn_if_dropped(&dropped);
             note_universal_role(uro);
+            note_data_case_split(dcs);
             let internal =
                 owl_dl_core::convert::convert_ontology(&onto).context("convert_ontology")?;
             let fragment = owl_dl_reasoner::analyze_fragment(&internal);
@@ -4323,6 +4395,7 @@ fn run() -> Result<()> {
                             vec![reason],
                             dropped,
                             uro,
+                            dcs,
                         ))?
                     );
                 } else {
@@ -4344,6 +4417,7 @@ fn run() -> Result<()> {
             };
             let verdict = fold_dropped_axioms(verdict, &dropped);
             let verdict = fold_universal_role(verdict, uro);
+            let verdict = fold_data_case_split(verdict, dcs);
             let code = verify_el_exit_code(&verdict);
             if json {
                 let (violations, unresolved, axioms_checked, domain_size) = match &verdict {
@@ -4381,6 +4455,7 @@ fn run() -> Result<()> {
                         unresolved,
                         dropped,
                         uro,
+                        dcs,
                     ))?
                 );
             } else {

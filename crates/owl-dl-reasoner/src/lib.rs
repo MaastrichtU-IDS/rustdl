@@ -7993,6 +7993,40 @@ pub fn conversion_notes<A: horned_owl::model::ForIRI>(
     Ok((internal.dropped, uro, for_roles))
 }
 
+/// #589: everything the conversion reports about what reasoning will under-approximate,
+/// from one conversion: [`conversion_notes`]' three, plus whether some data key may need
+/// reasoning by cases that no engine does
+/// ([`owl_dl_core::convert::data_case_split_risk`]).
+#[derive(Debug, Clone, Default)]
+pub struct ConversionFlags {
+    /// The axioms conversion dropped (#43).
+    pub dropped: DroppedAxioms,
+    /// #543: a universal role is used where its semantics could change an entailment.
+    pub universal_role_ordinary: bool,
+    /// #543 / #619: the role-level form of `universal_role_ordinary`.
+    pub universal_role_ordinary_for_roles: bool,
+    /// #589: a data key may need reasoning by cases.
+    pub data_case_split_risk: bool,
+}
+
+/// #589: [`ConversionFlags`] of `ontology`, from one conversion.
+///
+/// # Errors
+///
+/// As [`dropped_axioms`].
+pub fn conversion_flags<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<ConversionFlags, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    Ok(ConversionFlags {
+        universal_role_ordinary: owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal),
+        universal_role_ordinary_for_roles:
+            owl_dl_core::top_bottom_roles::universal_role_ordinary_for_roles(&internal),
+        data_case_split_risk: owl_dl_core::convert::data_case_split_risk(&internal),
+        dropped: internal.dropped,
+    })
+}
+
 /// #543, for the ROLE-level surfaces (`property-values`, materialized property
 /// assertions): `true` when [`conversion_report`]'s flag is set, or when a role sits
 /// above a top property (`top ⊑* r`). Such an `r` relates every pair of individuals,
@@ -8828,6 +8862,11 @@ pub struct QueryStats {
     /// rustdl reads it as an ordinary property, so a negative verdict may be wrong.
     /// Voids [`Self::completeness_guaranteed`], as `dropped_axioms` does. Stamped with it.
     pub universal_role_ordinary: bool,
+    /// #589: the query's conversion has a data key that may need reasoning by cases
+    /// ([`owl_dl_core::convert::data_case_split_risk`]), which no engine does, so a
+    /// negative verdict may be wrong. Voids [`Self::completeness_guaranteed`]. Stamped
+    /// with `dropped_axioms`.
+    pub data_case_split_risk: bool,
 }
 
 impl QueryStats {
@@ -8849,6 +8888,7 @@ impl QueryStats {
             && !self.incomplete
             && self.dropped_axioms == 0
             && !self.universal_role_ordinary
+            && !self.data_case_split_risk
             && !self.consistency_undetermined
             && !self.relies_on_trusted_consistency
     }
@@ -9290,10 +9330,12 @@ pub(crate) fn is_class_satisfiable_keeping(
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
     let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    let dcs = owl_dl_core::convert::data_case_split_risk(&internal);
     let (holds, mut stats, left) =
         is_class_satisfiable_keeping_inner(internal, class_iri, closure)?;
     stats.dropped_axioms = dropped;
     stats.universal_role_ordinary = uro;
+    stats.data_case_split_risk = dcs;
     Ok((holds, stats, left))
 }
 
@@ -9345,6 +9387,7 @@ fn is_class_satisfiable_keeping_inner(
                 no_verdict: false,
                 dropped_axioms: 0,
                 universal_role_ordinary: false,
+                data_case_split_risk: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -9363,6 +9406,7 @@ fn is_class_satisfiable_keeping_inner(
                 no_verdict: false,
                 dropped_axioms: 0,
                 universal_role_ordinary: false,
+                data_case_split_risk: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -9388,6 +9432,7 @@ fn is_class_satisfiable_keeping_inner(
             no_verdict: false,
             dropped_axioms: 0,
             universal_role_ordinary: false,
+            data_case_split_risk: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))
@@ -9792,9 +9837,11 @@ fn is_consistent_internal_full(
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
     let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    let dcs = owl_dl_core::convert::data_case_split_risk(&internal);
     let (consistent, mut stats) = is_consistent_internal_full_inner(internal)?;
     stats.dropped_axioms = dropped;
     stats.universal_role_ordinary = uro;
+    stats.data_case_split_risk = dcs;
     Ok((consistent, stats))
 }
 
@@ -9823,6 +9870,7 @@ fn is_consistent_internal_full_inner(
                 no_verdict: false,
                 dropped_axioms: 0,
                 universal_role_ordinary: false,
+                data_case_split_risk: false,
             },
         ));
     }
@@ -9845,6 +9893,7 @@ fn is_consistent_internal_full_inner(
                 no_verdict: false,
                 dropped_axioms: 0,
                 universal_role_ordinary: false,
+                data_case_split_risk: false,
             },
         ));
     }
@@ -9883,6 +9932,7 @@ fn is_consistent_internal_full_inner(
                 no_verdict: false,
                 dropped_axioms: 0,
                 universal_role_ordinary: false,
+                data_case_split_risk: false,
             },
         ));
     }
@@ -9904,6 +9954,7 @@ fn is_consistent_internal_full_inner(
                 no_verdict: false,
                 dropped_axioms: 0,
                 universal_role_ordinary: false,
+                data_case_split_risk: false,
             },
         ));
     }
@@ -9936,6 +9987,7 @@ fn is_consistent_internal_full_inner(
                     no_verdict: false,
                     dropped_axioms: 0,
                     universal_role_ordinary: false,
+                    data_case_split_risk: false,
                 },
             ));
         }
@@ -9963,6 +10015,7 @@ fn is_consistent_internal_full_inner(
                     no_verdict: false,
                     dropped_axioms: 0,
                     universal_role_ordinary: false,
+                    data_case_split_risk: false,
                 },
             ));
         }
@@ -9986,6 +10039,7 @@ fn is_consistent_internal_full_inner(
                     no_verdict: false,
                     dropped_axioms: 0,
                     universal_role_ordinary: false,
+                    data_case_split_risk: false,
                 },
             ));
         }
@@ -10092,6 +10146,7 @@ fn is_consistent_internal_full_inner(
             no_verdict: false,
             dropped_axioms: 0,
             universal_role_ordinary: false,
+            data_case_split_risk: false,
         },
     ))
 }
@@ -10271,6 +10326,7 @@ fn abox_components_inconsistent(
             builtin: internal.builtin.clone(),
             builtin_licenses: internal.builtin_licenses.clone(),
             universal_role_folds: internal.universal_role_folds,
+            dkey_split_risk_keys: internal.dkey_split_risk_keys,
             collapsed_operands: internal.collapsed_operands,
         };
         let started = std::time::Instant::now();
@@ -10553,10 +10609,12 @@ pub(crate) fn is_subclass_of_keeping(
     // #552: stamped once here, so no early return can leave it at 0.
     let dropped = internal.dropped.total();
     let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    let dcs = owl_dl_core::convert::data_case_split_risk(&internal);
     let (holds, mut stats, left) =
         is_subclass_of_keeping_inner(internal, sub_iri, super_iri, closure)?;
     stats.dropped_axioms = dropped;
     stats.universal_role_ordinary = uro;
+    stats.data_case_split_risk = dcs;
     Ok((holds, stats, left))
 }
 
@@ -10611,6 +10669,7 @@ fn is_subclass_of_keeping_inner(
         no_verdict: false,
         dropped_axioms: 0,
         universal_role_ordinary: false,
+        data_case_split_risk: false,
     };
     // Reflexive shortcut.
     if sub_id == super_id {
@@ -10670,6 +10729,7 @@ fn is_subclass_of_keeping_inner(
                 no_verdict: false,
                 dropped_axioms: 0,
                 universal_role_ordinary: false,
+                data_case_split_risk: false,
             },
             QueryOntology::Unprepared(Box::new(internal)),
         ));
@@ -10702,6 +10762,7 @@ fn is_subclass_of_keeping_inner(
             no_verdict: false,
             dropped_axioms: 0,
             universal_role_ordinary: false,
+            data_case_split_risk: false,
         },
         QueryOntology::Prepared(Box::new(prepared)),
     ))

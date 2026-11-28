@@ -4018,6 +4018,8 @@ fn decompose_long_chains(out: &mut InternalOntology) {
 /// the number of distinct integer ranges (small in practice — bounded
 /// by the count of distinct facet/value combinations in the ontology).
 fn seed_dkey_subsumptions(out: &mut InternalOntology) {
+    // #589: the edges this pass seeds start here; the split-risk count reads only those.
+    let seeded_from = out.axioms.len();
     // Bucket DKeys BY DATATYPE so edges are seeded WITHIN a bucket. The one
     // cross-bucket edge is integer range ⊑ decimal range
     // (`seed_int_within_decimal`, #180): the integer value space IS a subset
@@ -4501,6 +4503,368 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
             comp,
         );
     }
+    // #589: after every `⊑` edge is seeded, count the keys that may need a case split.
+    // The enumeration keys are collected for it even when `RUSTDL_DKEY_ONEOF_SEED=0`
+    // left the seeding buckets empty: with no edges at all, they need the flag most.
+    let plain = plain_key.into_iter().collect::<Vec<_>>();
+    let all_oneofs = (!oneof_seed).then(|| {
+        (
+            collect_oneof_dkeys(out, true, parse_int_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_float_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_double_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_decimal_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_date_oneof_iri),
+            collect_oneof_dkeys(out, true, parse_datetime_oneof_iri),
+        )
+    });
+    let (int_o, float_o, double_o, dec_o, date_o, dt_o) = match &all_oneofs {
+        Some((io, fo, dbo, deo, dao, dto)) => {
+            (&io[..], &fo[..], &dbo[..], &deo[..], &dao[..], &dto[..])
+        }
+        None => (
+            &int_oneof_dkeys[..],
+            &float_oneof_dkeys[..],
+            &double_oneof_dkeys[..],
+            &dec_oneof_dkeys[..],
+            &date_oneof_dkeys[..],
+            &dt_oneof_dkeys[..],
+        ),
+    };
+    out.dkey_split_risk_keys = count_dkey_split_risks(
+        out,
+        seeded_from,
+        &SplitBuckets {
+            int: &int_dkeys,
+            int_oneof: int_o,
+            dec: &dec_dkeys,
+            dec_oneof: dec_o,
+            float: &float_dkeys,
+            float_oneof: float_o,
+            double: &double_dkeys,
+            double_oneof: double_o,
+            date: &date_dkeys,
+            date_oneof: date_o,
+            dt: &dt_dkeys,
+            dt_oneof: dt_o,
+            str: &str_dkeys,
+            lang: &lang_dkeys,
+            bool: &bool_dkeys,
+            uri: &uri_dkeys,
+            plain: &plain,
+        },
+    );
+}
+
+/// #589: whether some data key of `out` may need reasoning by cases that no engine
+/// does (`InternalOntology::dkey_split_risk_keys` is non-zero): a key that is not a
+/// single value meets another key of its value space without a seeded `⊑` edge into it.
+/// The engines treat data keys as atoms, so an entailment that needs the value-level
+/// split (`∃d.{1,2}`, `hasValue(d,1) ⊑ E`, `hasValue(d,2) ⊑ E` ⟹ `∃d.{1,2} ⊑ E`) is
+/// missed, while the pure-EL gate would certify the closure complete. Every surface
+/// that reports `dropped` voids its completeness claim on it.
+#[must_use]
+pub fn data_case_split_risk(out: &InternalOntology) -> bool {
+    out.dkey_split_risk_keys > 0
+}
+
+/// #589: the typed `DKey` buckets of one ontology, as `seed_dkey_subsumptions` built them.
+struct SplitBuckets<'a> {
+    int: &'a [(ClassId, IntSet)],
+    int_oneof: &'a [(ClassId, std::collections::BTreeSet<i64>)],
+    dec: &'a [(ClassId, OrdRange<Decimal>)],
+    dec_oneof: &'a [(ClassId, std::collections::BTreeSet<Decimal>)],
+    float: &'a [(ClassId, FloatRange)],
+    float_oneof: &'a [(
+        ClassId,
+        std::collections::BTreeSet<crate::data_axioms::OrdF64>,
+    )],
+    double: &'a [(ClassId, FloatRange)],
+    double_oneof: &'a [(
+        ClassId,
+        std::collections::BTreeSet<crate::data_axioms::OrdF64>,
+    )],
+    date: &'a [(ClassId, OrdRange<DateKey>)],
+    date_oneof: &'a [(ClassId, std::collections::BTreeSet<DateKey>)],
+    dt: &'a [(ClassId, OrdRange<DateTimeKey>)],
+    dt_oneof: &'a [(ClassId, std::collections::BTreeSet<DateTimeKey>)],
+    str: &'a [(ClassId, StrSet)],
+    lang: &'a [(ClassId, LangSet)],
+    bool: &'a [(ClassId, StrSet)],
+    uri: &'a [(ClassId, StrSet)],
+    plain: &'a [ClassId],
+}
+
+/// #589: one key of a value space, as the split-risk detector sees it.
+enum SplitKey<'a> {
+    Int(&'a IntSet),
+    IntPts(&'a std::collections::BTreeSet<i64>),
+    Dec(&'a OrdRange<Decimal>),
+    DecPts(&'a std::collections::BTreeSet<Decimal>),
+    /// The range, and whether it is `xsd:float` (single precision) rather than double.
+    Float(FloatRange, bool),
+    FloatPts(&'a std::collections::BTreeSet<crate::data_axioms::OrdF64>),
+    Date(&'a OrdRange<DateKey>),
+    DatePts(&'a std::collections::BTreeSet<DateKey>),
+    Dt(&'a OrdRange<DateTimeKey>),
+    DtPts(&'a std::collections::BTreeSet<DateTimeKey>),
+    Str(&'a StrSet),
+    Lang(&'a LangSet),
+    /// `rdf:PlainLiteral`: every string and every language-tagged string.
+    Plain,
+}
+
+impl SplitKey<'_> {
+    /// One value exactly. An IEEE zero is two values (the buckets merge `-0` and `+0`),
+    /// so a zero point is not one.
+    fn is_point(&self) -> bool {
+        let nonzero = |v: f64| v.total_cmp(&0.0).is_ne() && v.total_cmp(&-0.0).is_ne();
+        match self {
+            SplitKey::Int(s) => enumerate_int_set(s, 1).is_some_and(|v| v.len() == 1),
+            SplitKey::IntPts(s) => s.len() == 1,
+            SplitKey::Dec(r) => decimal_point(r).is_some(),
+            SplitKey::DecPts(s) => s.len() == 1,
+            SplitKey::Float(r, _) => float_range_nonzero_point(r, 1).is_some(),
+            SplitKey::FloatPts(s) => s.len() == 1 && s.iter().all(|v| nonzero(v.0)),
+            SplitKey::Date(r) => ord_range_point(r, 1).is_some(),
+            SplitKey::DatePts(s) => s.len() == 1,
+            SplitKey::Dt(r) => ord_range_point(r, 1).is_some(),
+            SplitKey::DtPts(s) => s.len() == 1,
+            SplitKey::Str(StrSet::Set(s)) => s.len() == 1,
+            SplitKey::Lang(LangSet::Set(s)) => s.len() == 1,
+            SplitKey::Str(StrSet::Top) | SplitKey::Lang(LangSet::Top) | SplitKey::Plain => false,
+        }
+    }
+
+    /// No value at all: `int[5,1]`, an exclusive `(1,2)`, `decimal(1.0, 1.0]`, or float
+    /// bounds with no representable value strictly between them. Such a key needs no
+    /// split, but the engines treat it as an atom like any other, so `C ⊑ ∃d.int[5,1]`
+    /// leaves `C` satisfiable where it is not: the same certified miss, so it counts.
+    fn is_empty(&self) -> bool {
+        match self {
+            SplitKey::Int(s) => s
+                .ranges()
+                .iter()
+                .all(|r| matches!((r.min, r.max), (Some(lo), Some(hi)) if lo > hi)),
+            SplitKey::IntPts(s) => s.is_empty(),
+            SplitKey::Dec(r) => r.is_empty(),
+            SplitKey::DecPts(s) => s.is_empty(),
+            SplitKey::Float(r, single) => float_range_holds_nothing(*r, *single),
+            SplitKey::FloatPts(s) => s.is_empty(),
+            SplitKey::Date(r) => r.is_empty(),
+            SplitKey::DatePts(s) => s.is_empty(),
+            SplitKey::Dt(r) => r.is_empty(),
+            SplitKey::DtPts(s) => s.is_empty(),
+            SplitKey::Str(StrSet::Set(s)) => s.is_empty(),
+            SplitKey::Lang(LangSet::Set(s)) => s.is_empty(),
+            SplitKey::Str(StrSet::Top) | SplitKey::Lang(LangSet::Top) | SplitKey::Plain => false,
+        }
+    }
+
+    /// Whether the two keys may share a value. `true` wherever it is not decided
+    /// exactly: a wrong `true` only flags one key too many.
+    fn may_meet(&self, other: &Self) -> bool {
+        use SplitKey as K;
+        let int_hull_meets = |s: &IntSet, d: &OrdRange<Decimal>| {
+            s.ranges().iter().any(|r| {
+                let hull = OrdRange {
+                    min: r.min.and_then(int_as_decimal),
+                    min_incl: true,
+                    max: r.max.and_then(int_as_decimal),
+                    max_incl: true,
+                };
+                // An unparseable bound reads as unbounded: wider, so "meets" errs safe.
+                !hull.disjoint(d)
+            })
+        };
+        match (self, other) {
+            (K::Int(a), K::Int(b)) => !a.disjoint(b),
+            (K::Int(a), K::IntPts(p)) | (K::IntPts(p), K::Int(a)) => {
+                p.iter().any(|v| a.contains(*v))
+            }
+            (K::Int(a), K::Dec(d)) | (K::Dec(d), K::Int(a)) => int_hull_meets(a, d),
+            (K::Int(a), K::DecPts(p)) | (K::DecPts(p), K::Int(a)) => p
+                .iter()
+                .any(|v| decimal_as_int(v).is_some_and(|i| a.contains(i))),
+            (K::IntPts(a), K::IntPts(b)) => !a.is_disjoint(b),
+            (K::IntPts(a), K::Dec(d)) | (K::Dec(d), K::IntPts(a)) => a
+                .iter()
+                .any(|v| int_as_decimal(*v).is_none_or(|x| d.contains(&x))),
+            (K::IntPts(a), K::DecPts(p)) | (K::DecPts(p), K::IntPts(a)) => a
+                .iter()
+                .any(|v| int_as_decimal(*v).is_none_or(|x| p.contains(&x))),
+            (K::Dec(a), K::Dec(b)) => !a.disjoint(b),
+            (K::Dec(a), K::DecPts(p)) | (K::DecPts(p), K::Dec(a)) => {
+                p.iter().any(|v| a.contains(v))
+            }
+            (K::DecPts(a), K::DecPts(b)) => !a.is_disjoint(b),
+            (K::Float(a, _), K::Float(b, _)) => !a.disjoint(*b),
+            (K::Float(a, _), K::FloatPts(p)) | (K::FloatPts(p), K::Float(a, _)) => {
+                p.iter().any(|v| a.contains(v.0))
+            }
+            (K::FloatPts(a), K::FloatPts(b)) => !a.is_disjoint(b),
+            (K::Date(a), K::Date(b)) => !a.disjoint(b),
+            (K::Date(a), K::DatePts(p)) | (K::DatePts(p), K::Date(a)) => {
+                p.iter().any(|v| a.contains(v))
+            }
+            (K::DatePts(a), K::DatePts(b)) => !a.is_disjoint(b),
+            (K::Dt(a), K::Dt(b)) => !a.disjoint(b),
+            (K::Dt(a), K::DtPts(p)) | (K::DtPts(p), K::Dt(a)) => p.iter().any(|v| a.contains(v)),
+            (K::DtPts(a), K::DtPts(b)) => !a.is_disjoint(b),
+            (K::Str(a), K::Str(b)) => !a.disjoint(b),
+            (K::Lang(a), K::Lang(b)) => !a.disjoint(b),
+            // Undecided pairs (only the plain key here): assume they meet.
+            _ => true,
+        }
+    }
+}
+
+/// #589: an IEEE range with no representable value: crossed bounds, or exclusive bounds
+/// with nothing between them in the type's precision (`float(1.0, 1.0000001)` holds no
+/// `f32`). The bounds of an `xsd:float` range are `f32` values widened to `f64`.
+fn float_range_holds_nothing(r: FloatRange, single: bool) -> bool {
+    if r.is_empty() {
+        return true;
+    }
+    let (Some(lo), Some(hi)) = (r.min, r.max) else {
+        return false;
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let (lo, hi) = if single {
+        let (l, h) = (lo as f32, hi as f32);
+        (
+            f64::from(if r.min_incl { l } else { l.next_up() }),
+            f64::from(if r.max_incl { h } else { h.next_down() }),
+        )
+    } else {
+        (
+            if r.min_incl { lo } else { lo.next_up() },
+            if r.max_incl { hi } else { hi.next_down() },
+        )
+    };
+    lo > hi
+}
+
+/// #589: count the `DKey` classes that may need reasoning by cases. A key `K` is
+/// counted when it is not a single value and some other key `K'` of the same value
+/// space may meet it while no `K ⊑ K'` edge was seeded. "Seeded", not semantic
+/// inclusion: a true inclusion `seed_dkey_subsumptions` leaves out (#588's zero at an
+/// IEEE bound, ordered ranges finite only as points) is the same gap and must count.
+///
+/// Every miss of #589 and its plan review needs such a pair: a key covered by others
+/// (`∃d.{1,2}`, `hasValue(d,1)`, `hasValue(d,2)`), a range narrowing a filler
+/// (`Range(d, ≥0)`, `∃d.(≤1)`), a boolean or string set against its points, float
+/// neighbours. Role-blind (two keys on unrelated properties count) and polarity-blind,
+/// so it over-flags; it never changes an answer, only the certificate.
+fn count_dkey_split_risks(
+    out: &InternalOntology,
+    seeded_from: usize,
+    b: &SplitBuckets<'_>,
+) -> usize {
+    use SplitKey as K;
+    let ids: std::collections::HashSet<ClassId> = [
+        b.int.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+        b.int_oneof.iter().map(|(c, _)| *c).collect(),
+        b.dec.iter().map(|(c, _)| *c).collect(),
+        b.dec_oneof.iter().map(|(c, _)| *c).collect(),
+        b.float.iter().map(|(c, _)| *c).collect(),
+        b.float_oneof.iter().map(|(c, _)| *c).collect(),
+        b.double.iter().map(|(c, _)| *c).collect(),
+        b.double_oneof.iter().map(|(c, _)| *c).collect(),
+        b.date.iter().map(|(c, _)| *c).collect(),
+        b.date_oneof.iter().map(|(c, _)| *c).collect(),
+        b.dt.iter().map(|(c, _)| *c).collect(),
+        b.dt_oneof.iter().map(|(c, _)| *c).collect(),
+        b.str.iter().map(|(c, _)| *c).collect(),
+        b.lang.iter().map(|(c, _)| *c).collect(),
+        b.bool.iter().map(|(c, _)| *c).collect(),
+        b.uri.iter().map(|(c, _)| *c).collect(),
+        b.plain.to_vec(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    // The `DKey ⊑ DKey` edges `seed_dkey_subsumptions` emitted: only its own axioms are
+    // read (an ontology can hold millions of others; `ore_ont_5368` has 18.6 M). A
+    // hand-written edge between synthetic `DKey` IRIs is not a seeded one, so ignoring
+    // it only flags more.
+    let mut told: std::collections::HashSet<(ClassId, ClassId)> = std::collections::HashSet::new();
+    for ax in &out.axioms[seeded_from.min(out.axioms.len())..] {
+        if let Axiom::SubClassOf { sub, sup } = ax
+            && let (ConceptExpr::Atomic(a), ConceptExpr::Atomic(c)) =
+                (out.concepts.get(*sub), out.concepts.get(*sup))
+            && ids.contains(a)
+            && ids.contains(c)
+        {
+            told.insert((*a, *c));
+        }
+    }
+    let mut flagged: std::collections::HashSet<ClassId> = std::collections::HashSet::new();
+    let mut scan = |space: &[(ClassId, K<'_>)]| {
+        for (i, (ki, a)) in space.iter().enumerate() {
+            if flagged.contains(ki) {
+                continue;
+            }
+            if a.is_empty() {
+                flagged.insert(*ki);
+                continue;
+            }
+            if a.is_point() {
+                continue;
+            }
+            let hit = space.iter().enumerate().any(|(j, (kj, c))| {
+                // The meet test first: it is the cheap one, and most pairs fail it.
+                i != j && ki != kj && a.may_meet(c) && !told.contains(&(*ki, *kj))
+            });
+            if hit {
+                flagged.insert(*ki);
+            }
+        }
+    };
+    let mut numeric: Vec<(ClassId, K<'_>)> = Vec::new();
+    numeric.extend(b.int.iter().map(|(c, r)| (*c, K::Int(r))));
+    numeric.extend(b.int_oneof.iter().map(|(c, s)| (*c, K::IntPts(s))));
+    numeric.extend(b.dec.iter().map(|(c, r)| (*c, K::Dec(r))));
+    numeric.extend(b.dec_oneof.iter().map(|(c, s)| (*c, K::DecPts(s))));
+    scan(&numeric);
+    for (ranges, oneofs, single) in [
+        (b.float, b.float_oneof, true),
+        (b.double, b.double_oneof, false),
+    ] {
+        let mut space: Vec<(ClassId, K<'_>)> = ranges
+            .iter()
+            .map(|(c, r)| (*c, K::Float(*r, single)))
+            .collect();
+        space.extend(oneofs.iter().map(|(c, s)| (*c, K::FloatPts(s))));
+        scan(&space);
+    }
+    let mut date: Vec<(ClassId, K<'_>)> = b.date.iter().map(|(c, r)| (*c, K::Date(r))).collect();
+    date.extend(b.date_oneof.iter().map(|(c, s)| (*c, K::DatePts(s))));
+    scan(&date);
+    let mut dt: Vec<(ClassId, K<'_>)> = b.dt.iter().map(|(c, r)| (*c, K::Dt(r))).collect();
+    dt.extend(b.dt_oneof.iter().map(|(c, s)| (*c, K::DtPts(s))));
+    scan(&dt);
+    // Strings and language-tagged strings, with `rdf:PlainLiteral` over both. A bare
+    // `rdf:langString` (`LangSet::Top`) joins the string space too: `HermiT` and Konclude
+    // read it as holding plain strings (see the family-disjointness note above), and
+    // no `str ⊑ lang` edge is seeded, so `hasValue(d,"a")` against `∃d.rdf:langString`
+    // is a miss relative to them. Undecided `Str`/`Lang` pairs count as meeting.
+    let mut text: Vec<(ClassId, K<'_>)> = b.str.iter().map(|(c, s)| (*c, K::Str(s))).collect();
+    text.extend(b.plain.iter().map(|c| (*c, K::Plain)));
+    text.extend(
+        b.lang
+            .iter()
+            .filter(|(_, s)| matches!(s, LangSet::Top))
+            .map(|(c, s)| (*c, K::Lang(s))),
+    );
+    scan(&text);
+    let mut lang: Vec<(ClassId, K<'_>)> = b.lang.iter().map(|(c, s)| (*c, K::Lang(s))).collect();
+    lang.extend(b.plain.iter().map(|c| (*c, K::Plain)));
+    scan(&lang);
+    for bucket in [b.bool, b.uri] {
+        let space: Vec<(ClassId, K<'_>)> = bucket.iter().map(|(c, s)| (*c, K::Str(s))).collect();
+        scan(&space);
+    }
+    flagged.len()
 }
 
 /// Seed `DisjointClasses` between a RANGE bucket and an ENUMERATION bucket of the

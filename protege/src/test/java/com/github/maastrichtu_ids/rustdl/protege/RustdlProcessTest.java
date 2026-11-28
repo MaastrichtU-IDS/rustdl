@@ -386,16 +386,60 @@ public class RustdlProcessTest {
     @Test public void theUniversalRoleIsWarnedOnPerSurface() throws Exception {
         RustdlJson.RealizeJson r = RustdlProcess.parseRealize(fixture("realize_universal_role.json"));
         assertTrue(r.universal_role_ordinary);
+        assertFalse(r.data_case_split_risk);
         java.util.List<String> w = RustdlReasoner.surfaceWarnings("realize", "type", r.incomplete,
-            r.universal_role_ordinary, false, null);
+            r.universal_role_ordinary, r.data_case_split_risk, false, null);
         assertEquals(w.toString(), 1, w.size());
         assertTrue(w.get(0), w.get(0).startsWith("rustdl realize: owl:topObjectProperty"));
         RustdlJson.PropertyValuesJson pv =
             RustdlProcess.parsePropertyValues(fixture("property_values_universal_role.json"));
         assertTrue(pv.universal_role_ordinary);
         w = RustdlReasoner.surfaceWarnings("property-values", "property-values", pv.incomplete,
-            pv.universal_role_ordinary, pv.consistency_undetermined, "a positive answer");
+            pv.universal_role_ordinary, pv.data_case_split_risk, pv.consistency_undetermined,
+            "a positive answer");
         assertTrue(w.toString(), w.stream().anyMatch(x -> x.contains("universal role")));
+    }
+
+    // ---- #589: data_case_split_risk ------------------------------------------------------
+    // The data-case-split fixtures are the universal-role ones above with the two flags
+    // swapped (hand-adapted, not captured from a binary); every other fixture carries
+    // `"data_case_split_risk": false`, as current output does.
+
+    @Test public void aDataCaseSplitIsWarnedOnInClassify() throws Exception {
+        RustdlJson.ClassifyJson c =
+            RustdlProcess.parseClassify(fixture("classify_data_case_split.json"));
+        assertTrue(c.data_case_split_risk);
+        java.util.List<String> w = RustdlReasoner.classifyWarnings(c);
+        assertEquals(w.toString(), 1, w.size());
+        assertTrue(w.get(0), w.get(0).startsWith("rustdl classify: a data range here may need "
+            + "reasoning by cases"));
+        assertFalse(w.get(0), w.get(0).contains("universal role"));
+    }
+
+    @Test public void aDataCaseSplitIsWarnedOnPerSurface() throws Exception {
+        RustdlJson.RealizeJson r = RustdlProcess.parseRealize(fixture("realize_data_case_split.json"));
+        assertTrue(r.data_case_split_risk);
+        assertFalse(r.universal_role_ordinary);
+        java.util.List<String> w = RustdlReasoner.realizeWarnings(r, java.util.Collections.emptyMap());
+        assertEquals(w.toString(), 1, w.size());
+        assertTrue(w.get(0), w.get(0).startsWith("rustdl realize: a data range here"));
+        RustdlJson.PropertyValuesJson pv =
+            RustdlProcess.parsePropertyValues(fixture("property_values_data_case_split.json"));
+        assertTrue(pv.data_case_split_risk);
+        w = RustdlReasoner.surfaceWarnings("property-values", "property-values", pv.incomplete,
+            pv.universal_role_ordinary, pv.data_case_split_risk, pv.consistency_undetermined,
+            "a positive answer");
+        assertTrue(w.toString(), w.stream().anyMatch(x -> x.startsWith(
+            "rustdl property-values: a data range here may need reasoning by cases")));
+        assertFalse(w.toString(), w.stream().anyMatch(x -> x.contains("universal role")));
+    }
+
+    @Test public void currentOutputWithoutASplitAddsNoDataWarning() throws Exception {
+        // The universal-role fixture carries `"data_case_split_risk": false`: one warning.
+        RustdlJson.ClassifyJson c =
+            RustdlProcess.parseClassify(fixture("classify_universal_role.json"));
+        assertFalse(c.data_case_split_risk);
+        assertFalse(RustdlReasoner.classifyWarnings(c).toString().contains("reasoning by cases"));
     }
 
     @Test public void trustedConsistencyIsWarnedOnOnlyOverAWeakerKb() throws Exception {
@@ -416,7 +460,7 @@ public class RustdlProcessTest {
         assertEquals(w.toString(), 1, w.size());
         assertTrue(w.get(0), w.get(0).contains("could not establish that the ontology is consistent"));
         java.util.List<String> s = RustdlReasoner.surfaceWarnings("disjoint", "disjointness",
-            false, false, true, "a disjoint-property answer");
+            false, false, false, true, "a disjoint-property answer");
         assertEquals(s.toString(), 1, s.size());
         assertTrue(s.get(0), s.get(0).contains("a disjoint-property answer may be the vacuous one"));
     }
@@ -430,6 +474,7 @@ public class RustdlProcessTest {
         assertEquals(w.toString(), 1, w.size());
         assertNull(RustdlReasoner.droppedSummary(null));
         assertNull(RustdlReasoner.droppedSummary(new java.util.HashMap<>()));
-        assertTrue(RustdlReasoner.surfaceWarnings("x", "y", false, false, false, null).isEmpty());
+        assertTrue(
+            RustdlReasoner.surfaceWarnings("x", "y", false, false, false, false, null).isEmpty());
     }
 }

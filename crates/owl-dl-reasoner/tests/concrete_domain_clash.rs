@@ -430,10 +430,12 @@ fn float_oneof_datasome_is_sat() {
     ));
 }
 
-/// FP GUARD (signed-zero dedup): `≥2 p.DataOneOf(-0.0 +0.0)` must be UNSAT
-/// because -0.0 == +0.0 in IEEE-754 → capacity 1, not 2.
-/// Without OrdF64::new's signed-zero normalization this would
-/// be wrongly SAT (two distinct bit patterns → capacity 2 → no clash → FP).
+/// PINS A KNOWN DIVERGENCE FROM THE SPECIFICATION (#590, residual). By OWL 2
+/// (Structural Specification §4.2) `DataOneOf(-0.0 +0.0)` holds two distinct values,
+/// so `≥2 p.DataOneOf(-0.0 +0.0)` is satisfiable. rustdl's concrete-domain bridge
+/// counts values with `OrdF64::new`, which merges the zeros, and reads it UNSAT;
+/// `HermiT` agrees with rustdl here. Counting the zeros apart was option B, which was
+/// not chosen (`docs/known-limitations/dkey-enumeration-case-split-and-signed-zero.md`).
 #[test]
 fn float_oneof_signed_zero_dedup_unsat() {
     assert!(!sat(

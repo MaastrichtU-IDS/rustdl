@@ -189,10 +189,10 @@ fn positives_per_direction_and_bucket() {
     }
 }
 
-/// Residual: a zero AT a range bound gets no edge, because the buckets collapse
-/// `-0` and `+0`. `HermiT` and Konclude derive this one; rustdl misses it.
+/// `{+0} ⊑ hasValue(+0)`. `HermiT` and Konclude derive it. It was a #556 residual
+/// while the buckets collapsed `-0` and `+0`; #590 keeps the zeros apart (sign-exact
+/// enumeration members, a literal zero point holds one zero), so the edge is exact.
 #[test]
-#[ignore = "#556 residual: signed zero at a bound (docs/known-limitations)"]
 fn an_enumerated_zero_against_a_zero_point() {
     assert!(entails(
         &some(r#"DataOneOf("0.0"^^xsd:double)"#),

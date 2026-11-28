@@ -300,8 +300,11 @@ def score(oracle_ans, classes, arms):
         if cj is not None and cj.get("consistent"):
             add("consistency-MISSED", "pre-check", "KB", "classify")
         if kj is not None and kj.get("consistent"):
+            # #543: `universal_role_ordinary` declares that a negative answer (here
+            # "consistent") may be wrong, so a miss under it is exposed, not a finding.
             gated = (not kj.get("incomplete") and not kj.get("relies_on_trusted_consistency")
-                     and not kj.get("wedge_clauses_refused") and not kj.get("dropped"))
+                     and not kj.get("wedge_clauses_refused") and not kj.get("dropped")
+                     and not kj.get("universal_role_ordinary"))
             add("consistency-MISSED", "finding" if gated else "exposed", "KB", "consistent")
         return out
 

@@ -690,6 +690,47 @@ So `apply_max` on `r⁻` is reached on the per-query `sat` surface, and hardly a
 
 **Cost:** about 1.9 core-h in all. That covers the oracle on 1,000 augmented cases (2.3 CPU-s per case, mostly HermiT's JVM start), the rustdl arms, two mutant builds, rechecks and 26 shrinks. The first 100 control cases are counted at their wall × cores bound. A `time` around `run.py` undercounts: the pool's forkserver workers are never reaped into it. `run.py` therefore records each case's CPU from inside the worker.
 
+### A universal-role profile: `universal` (after #624)
+
+#624 (#543 part 2) states the Direct-Semantics meaning of each foldable use of `owl:topObjectProperty` as built-in axioms, which are new positive derivations. No other profile emitted a top property. The `universal` profile (`UniversalCase`, its own RNG stream; see `scripts/gen/README.md`) puts top in every position HermiT accepts as OWL 2 DL. Those positions are `∃`, `∀`, `≤0`, `≥1`, `hasValue`, Domain and Range, `Reflexive/Symmetric/Transitive`, `r ⊑ top`, `top ⊑ r`, positive and negative assertions, and `d ⊑ topDataProperty`. Half the cases have individuals with told types, for the conditional folds.
+
+Measured 2026-11-28: seed 20261128, N = 1000, generator `8efe7762dc2b`, pin `rustdl-control-ac7ff1ee` (main ac7ff1ee), arms `classify`, `classify --saturation-only`, `consistent`, `realize` and `sat`. The run used cores 33–34, with peers capped at 60 s and rustdl at 30 s.
+
+**Calibration, with the criteria declared before any run:** each mutant must be detected within B = 500.
+
+| mutant | fault | detected | first | tier |
+|---|---|---:|---|---|
+| MU1 | the licence check is gone: every atomic class counts as non-empty | 131 of 500 | case 0 | all finding (pair, unsat, consistency, type FPs) |
+| MU2 | `∀u.X` folds to ⊥ for any filler | 65 of 500 | case 1 | all finding (unsat, consistency, pair FPs) |
+
+**Control, N = 1000: 0 findings.**
+
+| bucket | cases |
+|---|---:|
+| clean | 772 |
+| exposed | 193, every miss under `universal_role_ordinary` or a trusted Sat |
+| peer-fail | 28 (Konclude: 26 crashes, exit -11, most with `top ⊑ r`; 2 timeouts; HermiT ok on all) |
+| peer-disagree | 7 (below) |
+| finding | **0** |
+
+965 of 1000 are scored. The guaranteed tier is thin: 37 of 851 agreed-consistent cases (4.3%), because `universal_role_ordinary` voids `completeness_guaranteed`. So **this profile tests for false positives**, which are scored at every tier. A miss is a finding only on those 37. All 9 classify pre-check consistency misses carry `universal_role_ordinary: true`.
+
+**Peer disagreements (7, not scored).** In each, Konclude reports more than HermiT.
+- **4 pairs and 1 Thing-equivalence** where rustdl sides with HermiT, each under `universal_role_ordinary`.
+  - Case 397 is adjudicated by hand. `top ⊑ r0` makes `r0` universal, so `∃r0.C3 ⊑ C0` gives `C3 ⊑ C0`. Konclude is right and HermiT misses it, a HermiT blind spot for entailments through a role above top.
+  - The other 4 are unadjudicated.
+- **2 consistency:**
+  - **Case 673:** rustdl says inconsistent, with HermiT. It holds `EquivalentClasses(C0 ObjectComplementOf(C0))`, which is inconsistent in every model. Konclude is wrong; this is the shape listed above.
+  - **Case 559:** rustdl says consistent, with Konclude, under `universal_role_ordinary`. Unadjudicated; rustdl declares either way.
+
+**A scorer fix found here.** `consistent --json`'s gate predated #543 and did not read `universal_role_ordinary`. The first calibration batch therefore flagged a declared miss (a non-folded `≤0 top.C`) as a finding. The gate now requires the flag to be false.
+
+**A generator fix found here.** HermiT treats top as non-simple, so the first batch (top in simple positions) was 48% invalid. The profile now draws only the forms HermiT accepts, measured one file per form. Invalid: 0 of 1000.
+
+**Not covered:** #624's folds of `Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`, `≤1`/`=1` on top, and `topDataProperty` in a class expression. HermiT rejects these as non-DL, so neither peer adjudicates them. Also not covered: data ranges (one data property at most, top-data only as a super-property) and ontologies above 9 classes and 14 axioms.
+
+**Cost:** about 4 core-h, covering three release builds, two 500-case calibrations (one before the generator fix) and the 1000-case control. The other profiles' 5300 cases regenerate byte-identically.
+
 ## In-repo pure-EL guard (#440, and layer 2)
 
 The `el_guaranteed` net needs Konclude and HermiT, so it never ran in CI, and #435/#436 reached

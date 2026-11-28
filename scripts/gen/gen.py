@@ -60,6 +60,8 @@ PROFILES = {
     "el_top": {},
     # Role polarity (#526–#528 follow-up): PolarityCase below, its own RNG stream.
     "polarity": {},
+    # The universal role (#543 part 2, #624's folds): UniversalCase below, own RNG stream.
+    "universal": {},
 }
 
 
@@ -873,6 +875,139 @@ class PolarityCase(Case):
                 f"# motif: {self.motif}\n# polarity: {kinds}")
 
 
+TOP = "owl:topObjectProperty"
+TOP_DATA = "owl:topDataProperty"
+UNIVERSAL_WEIGHTS = {"el": 3, "neg_or": 2, "forall": 2, "card": 2, "roles": 2,
+                     "domrange": 2, "nominal": 1, "bot": 1, "abox": 3, "universal": 6}
+
+
+class UniversalCase(Case):
+    """`universal` (#543 part 2, #624): the universal role in every OWL 2 DL position, so a
+    wrong fold of #624's is a scored false positive.
+
+    #624 states, as built-ins, the Direct-Semantics meaning of each foldable use of
+    `owl:topObjectProperty` (and properties above it): `∃u.X` / `≥1 u.X` with X ⊤, a nominal
+    or a class with a told instance → ⊤; `∀u.⊥`, `∀u.¬X`, `≤0 u.X` → ⊥; `Domain/Range(u, C)`
+    → `⊤ ⊑ C`. No other profile emits a top property.
+
+    **Legal positions only, as HermiT checks them** (measured on 2026-11-28, one file per
+    form): HermiT treats top as non-simple, so it rejects top in `≤1` / `=1` / `≥2`,
+    `Self`, `Functional`, `InverseFunctional`, `Irreflexive`, `Asymmetric` and
+    `DisjointObjectProperties`, and `topDataProperty` in a class expression. Those folds
+    of #624 (`Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`) act on non-DL input,
+    which the peers do not adjudicate: **not covered here**. Allowed and drawn: `∃top`,
+    `∀top`, `≤0 top`, `≥1 top`, `hasValue(top, a)`, Domain and Range of top,
+    `Reflexive/Symmetric/Transitive(top)`, `r ⊑ top`, `top ⊑ r` (which makes `r`, and every
+    role above it, non-simple: pre-drawn, then excluded from the simple positions),
+    positive and negative top assertions, `∃top.C(a)`, and `d ⊑ topDataProperty`.
+    `R()` returns top 30% of the time, but never where a simple role is required. Half the
+    cases have individuals with told types (the conditional folds' licences). The floor: a
+    case with no top use gets one appended. The `# universal:` line lists the kinds
+    present. Own RNG stream; other profiles untouched.
+    """
+
+    profile = "universal"
+    top_p = 0.3
+
+    def __init__(self, seed, index, profile=None):
+        self.seed, self.index = seed, index
+        self.rng = random.Random(f"{seed}:{index}:{self.profile}")
+        r = self.rng
+        self.classes = [f"C{i}" for i in range(r.randint(4, 9))]
+        self.roles = [f"r{i}" for i in range(r.randint(2, 4))]
+        self.dprops = [f"d{i}" for i in range(r.randint(0, 1))]
+        self.inds = [f"a{i}" for i in range(r.randint(2, 4))] if r.random() < 0.5 else []
+        self.weights = dict(UNIVERSAL_WEIGHTS)
+        if not self.inds:
+            self.weights.pop("abox", None)
+            self.weights.pop("nominal", None)
+        self.role_axioms, self.axioms = [], []
+        self.n_target = r.randint(3, 14)
+        self._draw_roles()
+        # `top ⊑ r` first: `r` (and every role above it) then has a non-simple sub-role.
+        top_subs = [x for x in self.roles if r.random() < 0.12]
+        for x in top_subs:
+            self.axioms.append(f"SubObjectPropertyOf({TOP} :{x})")
+        self.simple = simple_roles(
+            self.roles + ["__top__"],
+            self.role_axioms + [("transitive", "__top__")]
+            + [("sub", "__top__", x) for x in top_subs],
+        ) - {"__top__"}
+        self._draw_rest()
+        self._floor()
+
+    def R(self, simple=False):
+        if not simple and self.rng.random() < self.top_p:
+            return TOP
+        return super().R(simple)
+
+    def ax_universal(self):
+        r = self.rng
+        k = r.choice(["domain", "range", "char", "sub_top", "some", "some", "all", "card",
+                      "gci", "abox", "data"])
+        if k == "domain":
+            return f"ObjectPropertyDomain({TOP} {self.ce(1)})"
+        if k == "range":
+            return f"ObjectPropertyRange({TOP} {self.ce(1)})"
+        if k == "char":
+            c = r.choice(["ReflexiveObjectProperty", "SymmetricObjectProperty",
+                          "TransitiveObjectProperty"])
+            return f"{c}({TOP})"
+        if k == "sub_top":
+            return f"SubObjectPropertyOf(:{r.choice(self.roles)} {TOP})"
+        if k == "some":
+            filler = r.choice(["owl:Thing", self.C(), self.ce(1)])
+            if self.inds and r.random() < 0.25:
+                return f"SubClassOf({self.C()} ObjectHasValue({TOP} {self.I()}))"
+            return f"SubClassOf({self.C()} ObjectSomeValuesFrom({TOP} {filler}))"
+        if k == "all":
+            filler = r.choice(["owl:Nothing", f"ObjectComplementOf({self.C()})", self.C()])
+            ce = f"ObjectAllValuesFrom({TOP} {filler})"
+            return f"SubClassOf({self.C()} {ce})" if r.random() < 0.5 else f"SubClassOf({ce} {self.C()})"
+        if k == "card":
+            op, n = r.choice([("ObjectMaxCardinality", 0), ("ObjectMinCardinality", 1)])
+            ce = f"{op}({n} {TOP} {self.C()})"
+            return f"SubClassOf({self.C()} {ce})" if r.random() < 0.6 else f"SubClassOf({ce} {self.C()})"
+        if k == "gci":
+            return f"SubClassOf(ObjectSomeValuesFrom({TOP} {self.C()}) {self.C()})"
+        if k == "abox":
+            if not self.inds:
+                return None
+            a, b = self.I(), self.I()
+            kk = r.choice(["pos", "neg", "some", "some"])
+            if kk == "pos":
+                return f"ObjectPropertyAssertion({TOP} {a} {b})"
+            if kk == "neg":
+                return f"NegativeObjectPropertyAssertion({TOP} {a} {b})"
+            return f"ClassAssertion(ObjectSomeValuesFrom({TOP} {self.C()}) {a})"
+        if not self.dprops:
+            return None
+        return f"SubDataPropertyOf(:{r.choice(self.dprops)} {TOP_DATA})"
+
+    def _floor(self):
+        if not any(TOP in a or TOP_DATA in a for a in self.axioms):
+            for _ in range(20):
+                ax = self.ax_universal()
+                if ax:
+                    self.axioms.append(ax)
+                    break
+
+    def kinds(self):
+        pats = {"domain": f"ObjectPropertyDomain({TOP}", "range": f"ObjectPropertyRange({TOP}",
+                "char": f"ObjectProperty({TOP})", "sub_top": f" {TOP})",
+                "top_sub": f"SubObjectPropertyOf({TOP}",
+                "some": f"ObjectSomeValuesFrom({TOP}", "all": f"ObjectAllValuesFrom({TOP}",
+                "max0": f"ObjectMaxCardinality(0 {TOP}", "min1": f"ObjectMinCardinality(1 {TOP}",
+                "has_value": f"ObjectHasValue({TOP}",
+                "neg_assert": f"NegativeObjectPropertyAssertion({TOP}",
+                "pos_assert": f"ObjectPropertyAssertion({TOP}", "data_top": TOP_DATA}
+        return sorted(k for k, p in pats.items() if any(p in a for a in self.axioms))
+
+    def header(self):
+        return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile {self.profile}\n"
+                f"# universal: {' '.join(self.kinds()) or 'none'}")
+
+
 def make_case(seed, index, profile="default"):
     if profile == "el_guaranteed":
         return ElCase(seed, index)
@@ -880,6 +1015,8 @@ def make_case(seed, index, profile="default"):
         return ElTopCase(seed, index)
     if profile == "polarity":
         return PolarityCase(seed, index)
+    if profile == "universal":
+        return UniversalCase(seed, index)
     return Case(seed, index, profile)
 
 
@@ -1205,6 +1342,25 @@ def self_test():
     ok("the header carries the motif and the census",
        PolarityCase(13, 1).ofn().splitlines()[1:3][0].startswith("# motif: ")
        and PolarityCase(13, 1).ofn().splitlines()[2].startswith("# polarity: "), True)
+    unis = [UniversalCase(5, i) for i in range(500)]
+    ok("500 universal cases pass the checker", sum(bool(check(c)) for c in unis), 0)
+    ok("every universal case uses a top property",
+       sum(not any(TOP in a or TOP_DATA in a for a in c.axioms) for c in unis), 0)
+    ok("universal is deterministic", UniversalCase(5, 7).ofn() == UniversalCase(5, 7).ofn(), True)
+    drawn = {k for c in unis for k in c.kinds()}
+    ok("every fold kind is drawn",
+       sorted({"domain", "range", "char", "sub_top", "top_sub", "some", "all", "max0", "min1",
+               "has_value", "neg_assert", "pos_assert", "data_top"} - drawn), [])
+    ok("top never in a position HermiT rejects",
+       [a for c in unis for a in c.axioms
+        if (TOP in a and (any(f"{op}{TOP}" in a for op in (
+            "ObjectHasSelf(", "FunctionalObjectProperty(", "IrreflexiveObjectProperty(",
+            "AsymmetricObjectProperty(", "DisjointObjectProperties("))
+            or any(f"{m}{TOP}" in a for m in ("ObjectMaxCardinality(1 ", "ObjectExactCardinality(",
+                                               "ObjectMinCardinality(2 ", "ObjectMinCardinality(3 ",
+                                               "ObjectMaxCardinality(2 ", "ObjectMaxCardinality(3 "))))
+        or f"DataSomeValuesFrom({TOP_DATA}" in a], [])
+    ok("the header carries the census", "# universal: " in UniversalCase(5, 7).ofn(), True)
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

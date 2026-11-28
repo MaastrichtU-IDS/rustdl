@@ -7,6 +7,7 @@
 20261105    data_heavy   0-499     0199786c97ac   targeted secondary result for M8b
 20261106    el_guaranteed 0-999    97f692139103   #363 step 3a: strict pure EL + motifs, control and M8a
 20261115    polarity     0-999    57c988e466c5   role polarity (#526-#528 follow-up): control, K1/K2/M13/M14 on 0-499 (--realize [--sat])
+20261128    universal    0-999    8efe7762dc2b   universal role (#624 folds): control, MU1/MU2 on 0-499 (--realize --sat)
 #
 # 0199786c97ac differs from bd63a61a6921 only in ax_domrange: a non-atomic domain/range head
 # now draws only from the profile's enabled families, so el_only stays EL. On the default
@@ -22,3 +23,8 @@
 # legality checker read every role operand. The default, el_only, data_heavy, el_guaranteed and
 # el_top bodies regenerate byte-identically under it: 4300 cases (all of 20261103-20261106 and
 # el_top seed 20261107 cases 0-299) checked on 2026-11-15.
+#
+# 20261128 universal 1000: the universal-role profile (UniversalCase, its own RNG stream).
+# The default, el_only, data_heavy, el_guaranteed, el_top and polarity bodies regenerate
+# byte-identically under it: 5300 cases (20261103-20261107 and polarity 20261115) checked
+# on 2026-11-28.

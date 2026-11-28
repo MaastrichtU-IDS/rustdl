@@ -71,6 +71,23 @@ Built after #526–#528, three role-polarity bugs (an inverse role `r⁻` read a
 
 Each header gives its base. Build one with `git apply`, then `cargo build --release -p owl-dl-cli`, then revert; run it as a `detect` arm against a control built from the same base.
 
+## Universal-role fuzz (profile `universal`)
+
+Built after #624 (#543 part 2), which states the Direct-Semantics meaning of each foldable use of `owl:topObjectProperty` as built-in axioms: `∃u.X` / `≥1 u.X` with X non-empty → ⊤; `∀u.⊥`, `∀u.¬X`, `≤0 u.X` → ⊥; `Domain/Range(u, C)` → `⊤ ⊑ C`. Those are new positive derivations, and no other profile emits a top property.
+
+**The profile** (`gen.py`, `UniversalCase`, its own RNG stream):
+- **Top in every OWL 2 DL position:** `∃top`, `∀top`, `≤0 top`, `≥1 top`, `hasValue(top, a)`, Domain and Range of top, `Reflexive/Symmetric/Transitive(top)`, `r ⊑ top`, `top ⊑ r`, positive and negative top assertions, `∃top.C(a)`, and `d ⊑ topDataProperty`. `R()` returns top 30% of the time.
+- **Legality as HermiT checks it** (measured one file per form): HermiT treats top as non-simple. So top never appears where a simple role is required, and `top ⊑ r` is drawn first, then `r` and every role above it leave the simple positions too.
+- **Not covered:** #624's folds of `Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`, `≤1`/`=1` on top, and `topDataProperty` in a class expression. HermiT rejects all of these, so the peers never adjudicate them.
+- **Licences:** half the cases have 2–4 individuals with told types, for the conditional folds.
+- **A floor and a census:** every case uses a top property; `# universal:` lists the kinds present.
+
+**Scoring note:** `consistent --json`'s gate now also requires `universal_role_ordinary: false`. With it set, rustdl declares that a negative answer may be wrong, so a "consistent" on an inconsistent KB is exposed, not a finding. The first calibration batch flagged such a case (a non-folded `≤0 top.C`) as a finding before this change.
+
+**Mutants** (`mutants/MU1.patch`, `mutants/MU2.patch`), faults planted in `top_bottom_roles.rs`'s `FoldCtx`:
+- MU1: every atomic class counts as non-empty, so the licence check is gone and `∃u.C` folds to ⊤ for any `C`;
+- MU2: `∀u.X` folds to ⊥ for any filler, not only `⊥` or `¬X` with X non-empty.
+
 ## Stop rule
 
 A finding on unmutated main stops at a minimised reproducer that both peers adjudicate. It then goes to the manager as an issue draft. Nothing is fixed inside this package.

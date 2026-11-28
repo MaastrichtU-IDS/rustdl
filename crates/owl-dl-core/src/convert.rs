@@ -4889,8 +4889,15 @@ type Hull<T> = (Option<T>, Option<T>);
 /// overlaps its own, found by binary search over the keys sorted by lower bound (those
 /// starting inside the candidate's hull) and a walk back while the prefix maximum of the
 /// upper bounds still reaches it (those starting before). The exact test then decides,
-/// so the answer is the all-pairs one: 20,000 disjoint integer ranges no longer cost
-/// 20,000² comparisons (Fable review of #639).
+/// so 20,000 disjoint integer ranges no longer cost 20,000² comparisons (Fable review of
+/// #639).
+///
+/// It flags every key the all-pairs scan flags, except in two corners where the skipped
+/// partner shares no value with the key: an empty partner (not indexed, and flagged
+/// itself), and an integer key against whole decimals past `i64` (`integer[0,5]` against
+/// `{1e20, 2e20}`), which `may_meet` calls undecided while the hulls are disjoint. It
+/// never flags a key the all-pairs scan does not. Pinned on seeded random spaces against
+/// a reference all-pairs scan (`split_scan_differential`).
 fn scan_ordered<T: Ord + Clone>(
     space: SplitSpace<'_, '_>,
     hull: fn(&SplitKey<'_>) -> Option<Hull<T>>,
@@ -4964,7 +4971,8 @@ fn scan_ordered<T: Ord + Clone>(
 /// set is tested against the keys that share one of its values and against the keys that
 /// hold every value (`xsd:string`, `rdf:PlainLiteral`, bare `rdf:langString`). Main's
 /// string seeding is size-indexed for the same reason (Fable review of #639: 20,000
-/// two-string enumerations cost 8.6× without it).
+/// two-string enumerations cost 8.6× without it). Its flagged keys are exactly the
+/// all-pairs scan's (`split_scan_differential`).
 fn scan_text(
     space: SplitSpace<'_, '_>,
     told: &ToldEdges,
@@ -9246,5 +9254,315 @@ mod tests {
             3,
             "a functional data property is merge-inducing: all 3 pairs must be seeded"
         );
+    }
+}
+
+/// #589 (Fable delta review of #639): the indexed scans against a reference all-pairs
+/// scan, on seeded random value spaces, compared as flagged KEY sets (a file-level
+/// differential cannot show a key the index skipped while another key kept the file
+/// flagged).
+#[cfg(test)]
+mod split_scan_differential {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::data_axioms::OrdF64;
+    use std::collections::{BTreeSet, HashSet};
+
+    /// xorshift64*: deterministic, no dependency.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+        fn int(&mut self, lo: i64, hi: i64) -> i64 {
+            lo + i64::try_from(self.below(u64::try_from(hi - lo + 1).unwrap())).unwrap()
+        }
+        fn chance(&mut self, pct: u64) -> bool {
+            self.below(100) < pct
+        }
+    }
+
+    /// The scan #639 replaced: every candidate against every key.
+    fn all_pairs(space: SplitSpace<'_, '_>, told: &ToldEdges) -> HashSet<ClassId> {
+        let mut flagged = HashSet::new();
+        for i in split_candidates(space, &mut flagged) {
+            if (0..space.len()).any(|j| splits_against(space, told, i, j)) {
+                flagged.insert(space[i].0);
+            }
+        }
+        flagged
+    }
+
+    fn random_told(rng: &mut Rng, n: usize) -> ToldEdges {
+        let mut told = HashSet::new();
+        for i in 0..n {
+            for j in 0..n {
+                if i != j && rng.chance(15) {
+                    told.insert((cid(i), cid(j)));
+                }
+            }
+        }
+        told
+    }
+
+    fn cid(i: usize) -> ClassId {
+        ClassId::new(u32::try_from(i).unwrap())
+    }
+
+    fn overlap<T: Ord>(a: &Hull<T>, b: &Hull<T>) -> bool {
+        let le = |lo: &Option<T>, hi: &Option<T>| match (lo, hi) {
+            (Some(l), Some(h)) => l <= h,
+            _ => true,
+        };
+        le(&a.0, &b.1) && le(&b.0, &a.1)
+    }
+
+    /// Index ⊆ all-pairs, and every key all-pairs flags but the index does not has only
+    /// partners whose hulls do not overlap its own: the two documented corners (an empty
+    /// partner, which is not indexed but is flagged itself, and a whole decimal past
+    /// `i64` that the integer arm calls undecided while the hulls are disjoint). Neither
+    /// shares a value with the key.
+    fn check_ordered<T: Ord + Clone>(
+        space: SplitSpace<'_, '_>,
+        hull: fn(&SplitKey<'_>) -> Option<Hull<T>>,
+        told: &ToldEdges,
+        what: &str,
+    ) {
+        let reference = all_pairs(space, told);
+        let mut indexed = HashSet::new();
+        scan_ordered(space, hull, told, &mut indexed);
+        assert!(
+            indexed.is_subset(&reference),
+            "{what}: the index flagged extra keys"
+        );
+        for (i, (k, a)) in space.iter().enumerate() {
+            if reference.contains(k) && !indexed.contains(k) {
+                let hi = hull(a).unwrap();
+                for j in 0..space.len() {
+                    if splits_against(space, told, i, j) {
+                        let hj = hull(&space[j].1);
+                        assert!(
+                            hj.as_ref().is_none_or(|hj| !overlap(&hi, hj)),
+                            "{what}: key {i} skipped with an overlapping partner {j}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_text(space: SplitSpace<'_, '_>, told: &ToldEdges, what: &str) {
+        let reference = all_pairs(space, told);
+        let mut indexed = HashSet::new();
+        scan_text(space, told, &mut indexed);
+        assert_eq!(indexed, reference, "{what}");
+    }
+
+    fn decimal(rng: &mut Rng) -> Decimal {
+        let s = match rng.below(4) {
+            0 => format!("{}", rng.int(-12, 12)),
+            1 => format!("{}.5", rng.int(-12, 12)),
+            2 => format!("{}00000000000000000000", rng.int(1, 3)),
+            _ => format!("-{}00000000000000000000", rng.int(1, 3)),
+        };
+        parse_decimal(&s).unwrap()
+    }
+
+    fn bound<T>(rng: &mut Rng, v: T) -> Option<T> {
+        (!rng.chance(10)).then_some(v)
+    }
+
+    #[test]
+    fn the_numeric_index_misses_no_overlapping_pair() {
+        let mut rng = Rng(0x589_639);
+        for round in 0..3000 {
+            let n = usize::try_from(rng.int(2, 10)).unwrap();
+            let mut ints = Vec::new();
+            let mut int_pts = Vec::new();
+            let mut decs = Vec::new();
+            let mut dec_pts = Vec::new();
+            for _ in 0..n {
+                match rng.below(4) {
+                    0 => {
+                        let lo = rng.int(-12, 12);
+                        let hi = lo + rng.int(-2, 8);
+                        let (min, max) = (bound(&mut rng, lo), bound(&mut rng, hi));
+                        ints.push(IntSet::single(IntegerRange { min, max }));
+                    }
+                    1 => int_pts.push((0..rng.int(1, 3)).map(|_| rng.int(-12, 12)).collect()),
+                    2 => {
+                        let (a, b) = (decimal(&mut rng), decimal(&mut rng));
+                        let (lo, hi) = if a <= b || rng.chance(10) {
+                            (a, b)
+                        } else {
+                            (b, a)
+                        };
+                        decs.push(OrdRange {
+                            min: bound(&mut rng, lo),
+                            min_incl: rng.chance(50),
+                            max: bound(&mut rng, hi),
+                            max_incl: rng.chance(50),
+                        });
+                    }
+                    _ => {
+                        let set: BTreeSet<Decimal> =
+                            (0..rng.int(1, 3)).map(|_| decimal(&mut rng)).collect();
+                        dec_pts.push(set);
+                    }
+                }
+            }
+            let mut space: Vec<(ClassId, SplitKey<'_>)> = Vec::new();
+            space.extend(
+                ints.iter()
+                    .enumerate()
+                    .map(|(k, s)| (cid(k), SplitKey::Int(s))),
+            );
+            let base = space.len();
+            space.extend(
+                int_pts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, s)| (cid(base + k), SplitKey::IntPts(s))),
+            );
+            let base = space.len();
+            space.extend(
+                decs.iter()
+                    .enumerate()
+                    .map(|(k, r)| (cid(base + k), SplitKey::Dec(r))),
+            );
+            let base = space.len();
+            space.extend(
+                dec_pts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, s)| (cid(base + k), SplitKey::DecPts(s))),
+            );
+            let told = random_told(&mut rng, space.len());
+            check_ordered(
+                &space,
+                numeric_hull,
+                &told,
+                &format!("numeric round {round}"),
+            );
+        }
+    }
+
+    #[test]
+    fn the_float_index_misses_no_overlapping_pair() {
+        let mut rng = Rng(0x589_640);
+        let pool = [-2.0, -1.0, -0.0, 0.0, 0.5, 1.0, 1.000_000_1, 2.0, 3.5];
+        let pick = |rng: &mut Rng| pool[usize::try_from(rng.below(pool.len() as u64)).unwrap()];
+        for round in 0..3000 {
+            let n = usize::try_from(rng.int(2, 10)).unwrap();
+            let single = rng.chance(50);
+            let mut ranges = Vec::new();
+            let mut pts: Vec<BTreeSet<OrdF64>> = Vec::new();
+            for _ in 0..n {
+                if rng.chance(60) {
+                    let (a, b) = (pick(&mut rng), pick(&mut rng));
+                    let (lo, hi) = if a <= b || rng.chance(10) {
+                        (a, b)
+                    } else {
+                        (b, a)
+                    };
+                    ranges.push(FloatRange {
+                        min: bound(&mut rng, lo),
+                        min_incl: rng.chance(50),
+                        max: bound(&mut rng, hi),
+                        max_incl: rng.chance(50),
+                    });
+                } else {
+                    pts.push(
+                        (0..rng.int(1, 3))
+                            .map(|_| OrdF64::new(pick(&mut rng)))
+                            .collect(),
+                    );
+                }
+            }
+            let mut space: Vec<(ClassId, SplitKey<'_>)> = ranges
+                .iter()
+                .enumerate()
+                .map(|(k, r)| (cid(k), SplitKey::Float(*r, single)))
+                .collect();
+            let base = space.len();
+            space.extend(
+                pts.iter()
+                    .enumerate()
+                    .map(|(k, s)| (cid(base + k), SplitKey::FloatPts(s))),
+            );
+            let told = random_told(&mut rng, space.len());
+            check_ordered(&space, float_hull, &told, &format!("float round {round}"));
+        }
+    }
+
+    #[test]
+    fn the_text_index_misses_no_pair() {
+        let mut rng = Rng(0x589_641);
+        let words = ["a", "b", "c", "d"];
+        for round in 0..3000 {
+            let n = usize::try_from(rng.int(2, 10)).unwrap();
+            let mut strs: Vec<StrSet> = Vec::new();
+            let mut langs: Vec<LangSet> = Vec::new();
+            let mut plain = 0usize;
+            for _ in 0..n {
+                match rng.below(6) {
+                    0 => strs.push(StrSet::Top),
+                    1 => langs.push(LangSet::Top),
+                    2 => plain += 1,
+                    3 => langs.push(LangSet::Set(
+                        (0..rng.int(0, 2))
+                            .map(|_| {
+                                let w = words[usize::try_from(rng.below(4)).unwrap()];
+                                (
+                                    w.to_owned(),
+                                    if rng.chance(50) { "en" } else { "fr" }.to_owned(),
+                                )
+                            })
+                            .collect(),
+                    )),
+                    _ => strs.push(StrSet::Set(
+                        (0..rng.int(0, 3))
+                            .map(|_| words[usize::try_from(rng.below(4)).unwrap()].to_owned())
+                            .collect(),
+                    )),
+                }
+            }
+            // The string space as the detector builds it (bare `langString` joins it), and
+            // the language-tagged one.
+            let mut text: Vec<(ClassId, SplitKey<'_>)> = strs
+                .iter()
+                .enumerate()
+                .map(|(k, s)| (cid(k), SplitKey::Str(s)))
+                .collect();
+            let base = text.len();
+            text.extend((0..plain).map(|k| (cid(base + k), SplitKey::Plain)));
+            let base = text.len();
+            text.extend(
+                langs
+                    .iter()
+                    .filter(|s| matches!(s, LangSet::Top))
+                    .enumerate()
+                    .map(|(k, s)| (cid(base + k), SplitKey::Lang(s))),
+            );
+            let told = random_told(&mut rng, text.len());
+            check_text(&text, &told, &format!("text round {round}"));
+            let mut lang: Vec<(ClassId, SplitKey<'_>)> = langs
+                .iter()
+                .enumerate()
+                .map(|(k, s)| (cid(k), SplitKey::Lang(s)))
+                .collect();
+            let base = lang.len();
+            lang.extend((0..plain).map(|k| (cid(base + k), SplitKey::Plain)));
+            let told = random_told(&mut rng, lang.len());
+            check_text(&lang, &told, &format!("lang round {round}"));
+        }
     }
 }

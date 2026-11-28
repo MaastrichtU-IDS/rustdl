@@ -190,3 +190,41 @@ fn a_facet_literal_outside_the_integers_drops_the_range() {
         assert!(!dropped.is_empty(), "{what}: recorded in dropped");
     }
 }
+
+fn c_satisfiable(range: &str) -> bool {
+    let o = parse(&format!(
+        "Prefix(:=<{EX}>)\nPrefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+         Ontology(<http://ex.org/t>\n\
+         Declaration(DataProperty(:d)) Declaration(Class(:C))\n\
+         SubClassOf(:C DataSomeValuesFrom(:d DatatypeRestriction({range})))\n)\n"
+    ));
+    let sat = owl_dl_reasoner::is_class_satisfiable(&o, &format!("{EX}C")).unwrap();
+    let c = owl_dl_reasoner::classify(&o).unwrap();
+    assert_eq!(
+        sat,
+        !c.unsatisfiable_classes()
+            .contains(&format!("{EX}C").as_str()),
+        "{range}: sat and classify disagree"
+    );
+    sat
+}
+
+/// Controls for the `⊥` lowering (#635 delta review). Facets that MEET leave one
+/// integer, so the class is satisfiable; a derived type's own bounds count when they
+/// cross the facets. `HermiT` on every case (`~/rustdl/sweeps/wB/591/p2/`).
+#[test]
+fn meeting_facets_are_satisfiable_and_derived_bounds_count() {
+    for range in [
+        r#"xsd:integer xsd:minInclusive "3"^^xsd:integer xsd:maxInclusive "3"^^xsd:integer"#,
+        r#"xsd:integer xsd:minInclusive "2.5"^^xsd:decimal xsd:maxInclusive "3.0"^^xsd:decimal"#,
+        r#"xsd:nonNegativeInteger xsd:maxExclusive "0.5"^^xsd:decimal"#,
+    ] {
+        assert!(c_satisfiable(range), "{range}: satisfiable (HermiT)");
+    }
+    for range in [
+        r#"xsd:nonNegativeInteger xsd:maxInclusive "-1"^^xsd:integer"#,
+        r#"xsd:byte xsd:minInclusive "128"^^xsd:integer"#,
+    ] {
+        assert!(!c_satisfiable(range), "{range}: unsat (HermiT)");
+    }
+}

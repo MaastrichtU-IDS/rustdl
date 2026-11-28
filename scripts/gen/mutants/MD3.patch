@@ -1,0 +1,15 @@
+# MD3 (data_range profile): IntInterval::capacity is one too small, so int[0,1] holds one value: false unsat / inconsistency under data cardinality.
+# base: d822991876e7ac3b1399da0e918fb8d4e930ef26
+diff --git a/crates/owl-dl-datatypes/src/lib.rs b/crates/owl-dl-datatypes/src/lib.rs
+index 98aa86a9..f29aac25 100644
+--- a/crates/owl-dl-datatypes/src/lib.rs
++++ b/crates/owl-dl-datatypes/src/lib.rs
+@@ -494,7 +494,7 @@ impl ValueRange for IntInterval {
+             (Some(lo), Some(hi)) if lo <= hi =>
+             {
+                 #[allow(clippy::cast_sign_loss)]
+-                Some((i128::from(hi) - i128::from(lo) + 1) as u128)
++                Some((i128::from(hi) - i128::from(lo)) as u128)
+             }
+             (Some(_), Some(_)) => Some(0),
+             _ => None,

@@ -34,10 +34,10 @@ A case goes into the first bucket that applies:
 
 1. **invalid**: HermiT rejects the input as illegal (non-simple role or irregular hierarchy), or the input declares no classes. This is a generator defect, and the case is never scored.
 2. **peer-fail**: a peer timed out (60 s cap) or failed.
-3. **peer-disagree**: both peers finished but disagree on consistency, unsat classes, Thing-equivalent classes or pairs. The case is kept, never scored. The report says which peer rustdl sides with.
+3. **peer-disagree**: both peers finished but disagree on consistency, unsat classes, Thing-equivalent classes or pairs. The case is kept, never scored. The report says which peer rustdl sides with. Where HermiT's answer strictly contains Konclude's, the case is also scored against HermiT in the separate `hermit_superset` tier (declared for `data_range`; see below).
 4. **rustdl-fail**: a rustdl arm crashed or hit its 30 s cap.
 5. **finding**: an FP of any kind (never budget-exempt), a pair or unsat MISSED with `completeness_guaranteed: true`, or a gated `consistent --json` miss.
-6. **exposed**: only misses that rustdl itself declares possible (`completeness_guaranteed: false`, trusted Sat, refused clauses, a deadline).
+6. **exposed**: only misses that rustdl itself declares possible (`completeness_guaranteed: false`, trusted Sat, refused clauses, a deadline, and on `consistent --json` `universal_role_ordinary` (#543) or `data_case_split_risk` (#589)), or a miss under `collapsed_operands` (#538: a set reading where the peers read a list).
 
    A consistency miss on classify's `consistent` field is the pre-check tier: it is reported, but it does not change the bucket (a case with only that is **clean**).
 7. **clean**: none of the above.
@@ -93,6 +93,46 @@ Built after #624 (#543 part 2), which states the Direct-Semantics meaning of eac
 - MU1: every atomic class counts as non-empty, so the licence check is gone and `∃u.C` folds to ⊤ for any `C`;
 - MU2: `∀u.X` folds to ⊥ for any filler, not only `⊥` or `¬X` with X non-empty;
 - MU3: a class with no told instance is licensed by any other class's told instance, the licence taken from an unrelated class. The `unlic` motifs are what this one trips: 42 of its 49 detections in cases 0–499.
+
+## Data-range fuzz (profile `data_range`, `run.py run --realize --sat`)
+
+Built after #589 Step 1 (#639), which made every surface report `data_case_split_risk`: a data key that is not a single value meets another key of its space with no seeded `⊑` edge, so an answer may need reasoning by cases over values. The older profiles draw almost no data (integer `hasValue` 0–9 and integer ranges). Two goals:
+- **False positives** in DKey seeding, range/enumeration containment, data counting and cross-type equality, scored at every tier.
+- **The D10 shape**, declared before the run: a miss with `completeness_guaranteed: true`, `data_case_split_risk: false`, nothing dropped and not `incomplete` is a finding. The report's `certificate_conflicts` lists any certificate issued alongside the flag, a drop or a deadline. It should be empty.
+
+**The profile** (`gen.py`, `DataCase`, its own RNG stream):
+- **Value spaces:** integer (and `nonNegativeInteger`), decimal (including whole decimals past i64, #641's shape), double, float (with the adjacent pair 1.0 / 1.0000001), boolean, string, language-tagged and `rdf:PlainLiteral` literals, and timezone-free dateTime.
+  - Values are drawn from a small colliding pool, so keys meet.
+  - **Not drawn:** signed zero, NaN and INF (#640/#590); bare `rdf:langString`; `owl:real` / `owl:rational`; `xsd:date`; `HasKey`.
+- **Legality as HermiT checks it, and certification as rustdl does,** were both measured one file per form on main d8229918:
+  - HermiT rejects `xsd:date` and any `owl:real` literal.
+  - rustdl drops (and so never certifies) a timezoned dateTime, a mixed-datatype `DataOneOf`, `DataIntersectionOf` of a type and an enumeration, `owl:real` / `owl:rational`, string facets and `DatatypeDefinition`.
+- **Three strata** (`# data-stratum:`), so each tier is reachable:
+  - **`el`:** forms rustdl certifies: ∃d.K for a bare type, a facet range or a one-datatype enumeration, `hasValue`, Domain, Range, sub/equivalent data properties.
+  - **`disj`:** pairwise-disjoint keys and single points with lexical variants (`1` / `01` / `"1.0"^^decimal`, `"a"` / `"a@"^^rdf:PlainLiteral`), so the flag stays clear. This is where the certified, flag-clear tier lives.
+  - **`full`:** adds ∀, data cardinalities, Functional, disjoint properties, unions, complements, `DatatypeDefinition`, class negation and union, and the ABox.
+- **Motifs** (`# motif: <shape>/<ent|ctl>`, about half the cases) are planted on a fresh property `m` and fresh classes `P`, `Q`:
+  - the #589 family: covers by points, subranges, integer sign and boolean values; Range narrowing a filler; an empty key;
+  - integer against whole decimal, including past i64;
+  - inclusive against exclusive bounds;
+  - negative assertions on every member;
+  - counting.
+
+  `ctl` moves one piece. Both variants are scored by the oracle, never by the label. A dateTime `range_cover/ent` is **not** an entailment (the XSD 1.1 partial order; see the docstring).
+- **No repeated operand** in an n-ary axiom. rustdl reads operands as a set (#538, `collapsed_operands`), the peers as a list. The scorer also exposes, rather than scores, a miss under `collapsed_operands`. The demotion is **case-wide and conservative**: it covers every certified miss in the case, including ones unrelated to the repeated axiom, and in every profile. It shows in `classify_exposed_miss_reasons` (first among the reasons), so it is never silent.
+
+**Scoring additions** (`run.py`):
+- **The `hermit_superset` tier**, declared before the control: Konclude under-reports data entailments (covers, counting, empty ranges). Where HermiT's answer strictly contains Konclude's, rustdl is also scored against HermiT.
+  - These cases stay `peer-disagree` and are reported separately.
+  - Every finding there is adjudicated by hand before it counts.
+- **Report columns:** `tiers_by_stratum` (scored, certified, certified without split risk), `classify_exposed_miss_reasons`, `certificate_conflicts` and `hermit_superset`.
+- **`detect` counts a promotion**: a miss the control exposes but the mutant certifies (MD1). Before, it compared (kind, witness) only and missed this. It also lists every detecting case, not only the 20-case sample.
+
+**Mutants** (`mutants/MD1.patch` … `MD4.patch`, base d8229918):
+- MD1: `data_case_split_risk` always false (certifies the #589 misses);
+- MD2: `OrdRange::subset` and `FloatRange::subset` ignore bound openness (false DKey edges);
+- MD3: `IntInterval::capacity` one too small (false unsat under counting);
+- MD4: `decimal_as_int` always `None` (a whole decimal never equals an integer).
 
 ## Stop rule
 

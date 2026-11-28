@@ -730,7 +730,7 @@ Measured 2026-11-28: seed 20261128, N = 1000, generator `8efe7762dc2b` (the comm
 
 **A generator fix found here.** HermiT treats top as non-simple, so the first batch (top in simple positions) was 48% invalid. The profile now draws only the forms HermiT accepts, measured one file per form. Invalid: 0 of 1000.
 
-**Not covered:** #624's folds of `Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`, `≤1`/`=1` on top, and `topDataProperty` in a class expression. HermiT rejects these as non-DL, so neither peer adjudicates them. Also not covered: data ranges (one data property at most, top-data only as a super-property) and ontologies above 9 classes and 14 axioms.
+**Not covered:** #624's folds of `Self(u)`, `Irreflexive/Asymmetric(u)`, `Disjoint(u, s)`, `≤1`/`=1` on top, and `topDataProperty` in a class expression. HermiT rejects these as non-DL, so neither peer adjudicates them. **An oracle limitation, not coverage:** Konclude segfaults (exit -11) on 26 of the 1000 cases, 19 of them with `top ⊑ r` (a role above top). Those cases are peer-fail, never scored, so **a rustdl error on a role above top is under-sampled here**: only the `top ⊑ r` cases Konclude survived were scored. Also not covered: data ranges (one data property at most, top-data only as a super-property) and ontologies above 9 classes and 14 axioms.
 
 **Cost:** about 4 core-h, covering three release builds, two 500-case calibrations (one before the generator fix) and the 1000-case control. The other profiles' 5300 cases regenerate byte-identically.
 

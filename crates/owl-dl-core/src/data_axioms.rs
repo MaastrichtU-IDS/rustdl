@@ -1901,9 +1901,8 @@ fn parse_typed_float_oneof<A: ForIRI>(
                 // #590: a member keeps its sign. `DataOneOf` is a set of literal
                 // VALUES, where `-0` and `+0` are distinct (OWL 2 §4.2), so `{-0}`
                 // and `{+0}` are different keys; `OrdF64`'s `total_cmp` order keeps
-                // both. The concrete-domain bridge decodes through
-                // `decode_*_oneof_dkey`, which normalizes (the documented counting
-                // residual).
+                // both, and so does the concrete-domain bridge, which counts the
+                // enumeration by identity.
                 set.insert(OrdF64(v));
             }
             Some(set)

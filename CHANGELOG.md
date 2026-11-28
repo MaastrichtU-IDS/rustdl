@@ -91,17 +91,17 @@ All notable changes to rustdl are documented here. Format is based on
 - **Signed zero follows OWL 2: values by identity, facets by equality (#590).** `xsd:float` and `xsd:double` have two zeros. A literal value is read by identity, so `-0` and `+0` are distinct, while a facet is read by equality, so the range `[0, 0]` holds both (OWL 2 Structural Specification §4.2). rustdl merged the zeros everywhere, which gave five wrong answers. HermiT and the specification reject each of them, and all reported `completeness_guaranteed: true` where they were subsumptions:
   - `hasValue(d, -0.0) ⊑ hasValue(d, 0.0)`, in both directions and in the enumeration form `{-0} ⊑ {+0}`;
   - `∃d.double[0, 0] ⊑ hasValue(d, 0.0)`, since the facet range shared the `+0` point's key;
-  - `≥2 d.double[0, 0]` read unsat;
+  - `≥2 d.double[0, 0]` read unsat, and so did the same set reached by intersection (`≥2 d.[-1, 0] ⊓ ∀d.[0, 1]`, or `Range(d, [-1, 0])` with `a : ≥2 d.[0, 1]`, read inconsistent);
+  - `≥2 d.{+0, -0}`, `≥3 d.{+0, -0, 1}` and `≥2 d.({+0} ⊔ {-0})` read unsat;
   - `hasValue(d, -0.0) ⊓ ¬hasValue(d, 0.0)` read unsat, and `d(a, -0.0)` with `¬d(a, 0.0)` read inconsistent;
   - `DisjointDataProperties(d e)` with `d(a, 0.0)` and `e(a, -0.0)` read inconsistent.
 
   The fix:
   - A literal zero point keeps its own key, and the two zero points are disjoint. `DataOneOf` members keep their sign, as does the `DisjointDataProperties` value check.
-  - The facet range `[0, 0]` gets its own key, written `[-0, +0]`, and facet bounds are written with `+0`. A facet range containing 0 sits above both zero points. The concrete-domain bridge does not count the `[0, 0]` range.
+  - The facet range `[0, 0]` gets its own key, written `[-0, +0]`, and facet bounds are written with `+0`. A facet range containing 0 sits above both zero points.
+  - **Counting.** The concrete-domain bridge counts the IEEE zero point as two values, however the range is reached, and counts enumeration members by identity. HermiT agrees except on the `xsd:double` enumeration forms; the specification decides.
   - Newly derived: `{+0} ⊑ hasValue(+0)` (the #556 residual, now un-ignored), `hasValue(-0) ⊓ ∀d.{+0, 1}` unsat, and `Functional(d)` with `d(a, 0.0)`, `d(a, -0.0)` inconsistent (the specification's own example).
-  - Two residuals stay, recorded in `docs/known-limitations/dkey-enumeration-case-split-and-signed-zero.md`:
-    - the case split over `[0, 0]`, missed; whenever a `-0` value or the `[0, 0]` range occurs, the completeness guarantee is withheld;
-    - counting the zeros, so `≥2 d.{+0, -0}` reads unsat, as in HermiT.
+  - One residual stays, recorded in `docs/known-limitations/dkey-enumeration-case-split-and-signed-zero.md`: the case split over `[0, 0]` is missed. Whenever a `-0` value or the `[0, 0]` range occurs, every surface that trusts the saturator (classify, subclass, instance queries, realize) withholds its completeness guarantee.
   - **ORE:** no pool file has a `-0` value or a `[0, 0]` range (checked with a conversion counter). Of the 156 pool files with a `+0` value or a zero facet bound, 151 classify identically to main (rows, unsat, equivalence groups, `consistent`), and 5 time out in both builds.
 - **An integer facet with an `xsd:decimal` literal is no longer dropped (#591).** `xsd:integer[minInclusive "2.0"^^xsd:decimal]` did not parse, so the whole range was dropped and `{2} ⊑ xsd:integer[≥ 2.0]` was missed. The integer value space is part of the decimal one, so the literal is now read as the decimal it denotes. A whole value bounds the integers at that value, with the usual ±1 for an exclusive facet. A fractional value bounds them at its ceiling (min) or floor (max), so `[≥ 2.5]` is `[≥ 3]`. HermiT and Konclude agree on all 14 canaries, including the fractional and negative ones.
   - **Crossing facets are empty.** `[≥ 2.5, ≤ 2.7]` is `[3, 2]` after rounding, and `[≥ 3, ≤ 2]` is empty as written. Either now lowers to `∃d.⊥`, so a class demanding such a value is unsat (HermiT agrees). Before, an empty range read satisfiable with the guarantee set.

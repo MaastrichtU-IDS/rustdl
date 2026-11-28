@@ -2994,6 +2994,17 @@ fn has_composed_chain_range(internal: &InternalOntology) -> bool {
     })
 }
 
+/// SET-level rejections shared by BOTH fragment gates ([`is_pure_el_impl`] and
+/// [`saturator_complete_fragment_impl`]), which every surface that trusts the
+/// saturator (classify, realize, instance queries, per-pair) reads through:
+/// - #108: composed-chain ranges are outside the saturator's pair-keyed fold, a
+///   property the per-axiom loops cannot see;
+/// - #590: `DKey`s that tell the two IEEE zeros apart need case splits the saturator
+///   does not make (`∃d.[0, 0]` is `∃d.{+0} ⊔ ∃d.{-0}`).
+fn fragment_rejects_set_level(internal: &InternalOntology) -> bool {
+    has_composed_chain_range(internal) || owl_dl_core::convert::has_signed_zero_split(internal)
+}
+
 pub(crate) fn is_pure_el(internal: &InternalOntology) -> bool {
     is_pure_el_impl(internal, false)
 }
@@ -3003,14 +3014,7 @@ pub(crate) fn is_pure_el(internal: &InternalOntology) -> bool {
 /// so an EL `TBox` carrying a big `ABox` is still classified completely by the
 /// saturation fast path.
 fn is_pure_el_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
-    // #590: telling the two zeros apart needs case splits the saturator does not
-    // make (`∃d.[0, 0]` is `∃d.{+0} ⊔ ∃d.{-0}`), so the guarantee is withheld.
-    if owl_dl_core::convert::has_signed_zero_split(internal) {
-        return false;
-    }
-    // #108: composed-chain ranges are outside the saturator's pair-keyed fold —
-    // a SET-level property the per-axiom loop below cannot see.
-    if has_composed_chain_range(internal) {
+    if fragment_rejects_set_level(internal) {
         return false;
     }
     let bare = BareRoleDecls::analyze(internal);
@@ -3459,9 +3463,8 @@ pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
 /// assertions declare no role characteristics), so only the final per-axiom
 /// allowlist walk is `TBox`-restricted.
 fn saturator_complete_fragment_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
-    // #108: same set-level rejection as `is_pure_el_impl` — see
-    // `has_composed_chain_range`.
-    if has_composed_chain_range(internal) {
+    // The same set-level rejections as `is_pure_el_impl`.
+    if fragment_rejects_set_level(internal) {
         return false;
     }
     // The set of roles for which conversion emitted a derived `∃R.⊤ ⊑ ≤1 R`

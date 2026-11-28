@@ -1,6 +1,6 @@
 # A data enumeration is not split into its points (#556), and signed-zero residuals (#590)
 
-**Status:** open. Both are sound misses. The first can read `completeness_guaranteed: true` (the D10 shape), so it needs an issue.
+**Status:** open. §1 is a sound miss that can read `completeness_guaranteed: true` (the D10 shape), so it needs an issue. §2's remaining residual is a sound miss under a withheld guarantee.
 
 #556 seeds told `DKey ⊑ DKey` edges between the range bucket and the enumeration bucket of one datatype: `enumeration ⊑ range` and `range ⊑ enumeration`. Two shapes remain out of reach: §1, and the signed-zero cases in §2.
 
@@ -34,7 +34,7 @@ The #556 zero-at-a-bound residual (`{+0} ⊑ hasValue(+0)`) is now derived.
 What remains:
 
 - **Case split over `[0, 0]`.** `∃d.[0, 0]` is `∃d.{+0} ⊔ ∃d.{-0}`, and nothing makes that split. With `C ⊑ ∃d.double[0, 0]`, `hasValue(d, 0.0) ⊑ E` and `hasValue(d, -0.0) ⊑ E`, the entailment `C ⊑ E` is missed, and so is `∃d.[0, 0] ⊑ ∃d.{+0, -0}`. The specification says yes to both. HermiT says yes for `xsd:float` and no for `xsd:double`. Whenever a `-0` value or the `[0, 0]` range occurs, the PureEl gate withholds the completeness guarantee (`has_signed_zero_split`), so `completeness_guaranteed` reads `false`. No ORE file has one.
-- **Counting the zeros.** The concrete-domain bridge counts values with `OrdF64::new`, which merges the zeros. So `≥2 d.{+0, -0}` reads unsat, where the specification says satisfiable. **HermiT agrees with rustdl here.** Counting them apart (option B) was not chosen. The bridge does not register the `[0, 0]` range at all, so `≥2 d.[0, 0]` reads satisfiable, correctly, and `≥3 d.[0, 0]` is missed.
+- **Counting the zeros is not a residual.** The concrete-domain bridge counts the IEEE zero point as two values (`PointMultiplicity`), however the range was reached, and counts enumeration members by identity. So `≥2 d.[-1, 0] ⊓ ∀d.[0, 1]` and `≥2 d.{+0, -0}` are satisfiable, and `≥3 d.[0, 0]` is unsat. HermiT reads the `xsd:double` enumeration forms unsat, and the specification decides (§4.2).
 - `Functional(d)` with `d(a, 0.0)` and `d(a, -0.0)` is inconsistent (the specification's own example), and rustdl derives it from the disjoint zero points. HermiT reads the `xsd:double` form consistent.
 
 Pinned in `crates/owl-dl-reasoner/tests/signed_zero.rs` (`signed_zero_residuals`) and `concrete_domain_clash.rs` (`float_oneof_signed_zero_dedup_unsat`).

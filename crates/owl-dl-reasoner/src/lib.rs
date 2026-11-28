@@ -11753,13 +11753,6 @@ pub(crate) struct PreparedOntology {
 /// dateTime, boolean, anyURI, and the enumeration buckets) so that no `≤n` over
 /// one datatype counts another's values (#332); the `DenseInterval` for dense types preserves inclusivity exactly
 /// (field-for-field copy, zero normalization) — a soundness requirement.
-/// #590: a decoded IEEE `DKey` that is the degenerate facet range `[-0, +0]`.
-#[allow(clippy::type_complexity, reason = "the decoder's own tuple")]
-fn is_degenerate_zero_range(d: Option<(Option<f64>, bool, Option<f64>, bool)>) -> bool {
-    matches!(d, Some((Some(lo), true, Some(hi), true))
-        if lo.to_bits() == (-0.0f64).to_bits() && hi.to_bits() == 0.0f64.to_bits())
-}
-
 fn build_dkey_range_map(
     internal: &InternalOntology,
 ) -> std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange> {
@@ -11792,13 +11785,6 @@ fn build_dkey_range_map(
                 owl_dl_core::StrSet::Set(s) => owl_dl_datatypes::FiniteSet::Set(s),
             };
             map.insert(class_id, owl_dl_datatypes::CardRange::Uri(fs));
-        } else if is_degenerate_zero_range(owl_dl_core::decode_float_dkey(iri))
-            || is_degenerate_zero_range(owl_dl_core::decode_double_dkey(iri))
-        {
-            // #590: the facet range `[0, 0]` (encoded `[-0, +0]`) holds BOTH zeros,
-            // two values, but `OrdF64::new` would make it a point of capacity 1,
-            // and `≥2 d.double[0, 0]` read unsat. Not registered: no counting over
-            // it (a sound miss, under the withheld guarantee, `has_signed_zero_split`).
         } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_float_dkey(iri) {
             // Bridge FloatRange → DenseInterval<OrdF64>: wrap each f64 bound
             // in OrdF64. Inclusivity flags copied 1:1 — no normalization.
@@ -11868,8 +11854,8 @@ fn build_dkey_range_map(
                 owl_dl_datatypes::CardRange::IntSet(owl_dl_datatypes::FiniteSet::Set(set)),
             );
         } else if let Some(set) = owl_dl_core::decode_float_oneof_dkey(iri) {
-            // Float-oneof: OrdF64 is already normalized (signed zero).
-            // Bridge to FiniteSet<OrdF64> used by the tableau's FloatSet bucket.
+            // Float-oneof: members are sign-exact (#590), so `{+0, -0}` holds two
+            // values, counted by identity in the tableau's FloatSet bucket.
             map.insert(
                 class_id,
                 owl_dl_datatypes::CardRange::FloatSet(owl_dl_datatypes::FiniteSet::Set(set)),

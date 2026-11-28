@@ -861,25 +861,15 @@ fn parse_float_oneof_iri(
     })
 }
 
-/// Public decoder for a FLOAT-ONEOF `DKey` IRI, for the concrete-domain bridge. It
-/// NORMALIZES signed zero ([`crate::data_axioms::OrdF64::new`]): the bridge counts
-/// values, and counting `-0` and `+0` as one is the documented residual
-/// (`≥2 d.{+0, -0}` reads unsat, as in `HermiT`). Seeding uses the sign-exact
-/// decoding.
+/// Public decoder for a FLOAT-ONEOF `DKey` IRI. Members are sign-exact (#590): the
+/// concrete-domain bridge counts enumeration values by identity, so `{+0, -0}` holds
+/// two values, as OWL 2 §4.2 requires. The enumeration buckets are counted apart
+/// from the interval buckets, so the `total_cmp` order never meets an interval bound.
 #[must_use]
 pub fn decode_float_oneof_dkey(
     iri: &str,
 ) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64>> {
-    parse_float_oneof_iri(iri).map(normalize_zero_members)
-}
-
-/// Collapse `-0` into `+0` in an IEEE enumeration (see [`decode_float_oneof_dkey`]).
-fn normalize_zero_members(
-    set: std::collections::BTreeSet<crate::data_axioms::OrdF64>,
-) -> std::collections::BTreeSet<crate::data_axioms::OrdF64> {
-    set.into_iter()
-        .map(|v| crate::data_axioms::OrdF64::new(v.0))
-        .collect()
+    parse_float_oneof_iri(iri)
 }
 
 // ── DOUBLE ONEOF ───────────────────────────────────────────────────────
@@ -905,13 +895,13 @@ fn parse_double_oneof_iri(
     })
 }
 
-/// Public decoder for a DOUBLE-ONEOF `DKey` IRI; normalizes signed zero, as
+/// Public decoder for a DOUBLE-ONEOF `DKey` IRI; sign-exact, as
 /// [`decode_float_oneof_dkey`].
 #[must_use]
 pub fn decode_double_oneof_dkey(
     iri: &str,
 ) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64>> {
-    parse_double_oneof_iri(iri).map(normalize_zero_members)
+    parse_double_oneof_iri(iri)
 }
 
 // ── DECIMAL ONEOF ──────────────────────────────────────────────────────

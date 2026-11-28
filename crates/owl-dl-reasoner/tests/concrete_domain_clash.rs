@@ -430,16 +430,22 @@ fn float_oneof_datasome_is_sat() {
     ));
 }
 
-/// PINS A KNOWN DIVERGENCE FROM THE SPECIFICATION (#590, residual). By OWL 2
-/// (Structural Specification §4.2) `DataOneOf(-0.0 +0.0)` holds two distinct values,
-/// so `≥2 p.DataOneOf(-0.0 +0.0)` is satisfiable. rustdl's concrete-domain bridge
-/// counts values with `OrdF64::new`, which merges the zeros, and reads it UNSAT;
-/// `HermiT` agrees with rustdl here. Counting the zeros apart was option B, which was
-/// not chosen (`docs/known-limitations/dkey-enumeration-case-split-and-signed-zero.md`).
+/// `≥2 p.DataOneOf(-0.0 +0.0)` is SATISFIABLE (#590): the enumeration holds two
+/// distinct values (OWL 2 Structural Specification §4.2, "equal, but not identical"),
+/// and the bridge counts enumeration members by identity. It read UNSAT while
+/// `OrdF64::new` merged the zeros, a false positive. HermiT agrees for `xsd:float`
+/// and reads the `xsd:double` form unsat; the specification decides.
 #[test]
-fn float_oneof_signed_zero_dedup_unsat() {
-    assert!(!sat(
+fn float_oneof_signed_zero_pair_is_sat() {
+    assert!(sat(
         "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"-0.0\"^^xsd:float \"0.0\"^^xsd:float)))"
+    ));
+    // Three values hold three successors; four do not.
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"-0.0\"^^xsd:float \"0.0\"^^xsd:float \"1.0\"^^xsd:float)))"
+    ));
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(4 :p DataOneOf(\"-0.0\"^^xsd:float \"0.0\"^^xsd:float \"1.0\"^^xsd:float)))"
     ));
 }
 

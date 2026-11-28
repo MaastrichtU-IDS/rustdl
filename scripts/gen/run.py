@@ -28,8 +28,8 @@ MISSED kinds are split by rustdl's own guarantee:
   MISSED-exposed (otherwise): a declared limitation, reported, not a finding.
 Consistency MISSED: on classify's `consistent` field it is a pre-check tier,
 informational only; on `consistent --json` it is a finding only when `incomplete`,
-`relies_on_trusted_consistency` and `universal_role_ordinary` (#543: a declared reason a
-negative answer may be wrong) are false, `wedge_clauses_refused` is 0 and nothing was
+`relies_on_trusted_consistency`, `universal_role_ordinary` (#543) and `data_case_split_risk`
+(#589), each a declared reason a negative answer may be wrong, are false, `wedge_clauses_refused` is 0 and nothing was
 dropped. If the oracle says inconsistent, only consistency is scored.
 
 Case buckets, exclusive, in this order: invalid, peer-fail, peer-disagree,
@@ -301,11 +301,13 @@ def score(oracle_ans, classes, arms):
         if cj is not None and cj.get("consistent"):
             add("consistency-MISSED", "pre-check", "KB", "classify")
         if kj is not None and kj.get("consistent"):
-            # #543: `universal_role_ordinary` declares that a negative answer (here
-            # "consistent") may be wrong, so a miss under it is exposed, not a finding.
+            # #543 / #589: `universal_role_ordinary` and `data_case_split_risk` declare
+            # that a negative answer (here "consistent") may be wrong, so a miss under
+            # either is exposed, not a finding.
             gated = (not kj.get("incomplete") and not kj.get("relies_on_trusted_consistency")
                      and not kj.get("wedge_clauses_refused") and not kj.get("dropped")
-                     and not kj.get("universal_role_ordinary"))
+                     and not kj.get("universal_role_ordinary")
+                     and not kj.get("data_case_split_risk"))
             add("consistency-MISSED", "finding" if gated else "exposed", "KB", "consistent")
         return out
 
@@ -430,7 +432,8 @@ def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
                 "consistent", "incomplete", "completeness_guaranteed",
                 "relies_on_trusted_consistency", "wedge_clauses_refused",
                 "trusted_sat_refutations", "wedge_hierarchy_blind", "dropped",
-                "consistency_undetermined", "universal_role_ordinary")}
+                "consistency_undetermined", "universal_role_ordinary",
+                "data_case_split_risk")}
     rec["cpu_s"] = round(_cpu() - cpu0, 3)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
@@ -746,6 +749,9 @@ def self_test():
        [("consistency-MISSED", "exposed", "KB"), ("consistency-MISSED", "pre-check", "KB")])
     ok("oracle inconsistent: a declared universal role exposes it",
        kinds(inc, consistent=kj(universal_role_ordinary=True)),
+       [("consistency-MISSED", "exposed", "KB"), ("consistency-MISSED", "pre-check", "KB")])
+    ok("oracle inconsistent: a declared data case split exposes it",
+       kinds(inc, consistent=kj(data_case_split_risk=True)),
        [("consistency-MISSED", "exposed", "KB"), ("consistency-MISSED", "pre-check", "KB")])
     ok("a consistency-FP stays a finding under a declared universal role",
        kinds(cons, consistent=kj(consistent=False, universal_role_ordinary=True)),

@@ -475,12 +475,23 @@ def hermit_superset(ora):
     if not k["consistent"]:
         return None
     hu, hte = set(h["unsat"]), set(h["thing_equiv"])
-    if not set(k["unsat"]) <= hu or not set(k["thing_equiv"]) <= hte | hu:
+    ku, kte = set(k["unsat"]), set(k["thing_equiv"])
+    if not ku <= hu or not kte <= hte:
+        return None
+
+    def h_entails(s, t2):
+        """HermiT entails s ⊑ t2: listed, s unsat, or t2 ≡ ⊤."""
+        return (s, t2) in hpairs or s in hu or t2 in hte
+
+    hpairs = {tuple(x) for x in h["pairs"]}
+    # Every Konclude pair, none excluded: a Konclude-only X ⊑ D with D HermiT-unsat (and X
+    # not) is an entailment HermiT lacks, so the case is not a superset (#643 review).
+    if not all(h_entails(s, t2) for s, t2 in (tuple(x) for x in k["pairs"])):
         return None
     excl = hu | hte
     kp, hp = orc.pairs_excluding(k, excl), orc.pairs_excluding(h, excl)
-    if not kp <= hp:
-        return None
+    if ku == hu and kte == hte and kp == hp:
+        return None   # not strict: the peers agree on everything this compares
     return {"consistent": True, "unsat": h["unsat"], "thing_equiv": h["thing_equiv"],
             "pairs": sorted([s, t2] for s, t2 in hp)}
 
@@ -711,6 +722,24 @@ def differential(control, mutant):
     return out
 
 
+def hermit_differential(control, mutant):
+    """`differential` for the `hermit_superset` tier: findings new at the finding tier or
+    promoted to it (#643 review: it compared (kind, witness) only, so MD1's promotions
+    in 16 such cases read as none)."""
+    out = {}
+    for case, m in mutant.items():
+        c = control.get(case)
+        if c is None or not m.get("hermit_superset"):
+            continue
+        base_finding = {(f["kind"], f["witness"]) for f in c.get("hermit_findings", [])
+                        if f["tier"] == "finding"}
+        new = [f for f in m.get("hermit_findings", [])
+               if f["tier"] == "finding" and (f["kind"], f["witness"]) not in base_finding]
+        if new:
+            out[case] = new
+    return out
+
+
 def cmd_resides(a):
     """Recompute `sides` for the peer-disagree cases of a run (reruns classify only)."""
     out = Path(a.out) / a.tag
@@ -756,16 +785,7 @@ def cmd_detect(a):
     control = load(a.out, a.control, a.first)
     mutant = load(a.out, a.mutant, a.first)
     diff = differential(control, mutant)
-    hdiff = {}
-    for case, m in mutant.items():
-        c = control.get(case)
-        if c is None or not m.get("hermit_superset"):
-            continue
-        base = {(f["kind"], f["witness"]) for f in c.get("hermit_findings", [])}
-        new = [f for f in m.get("hermit_findings", []) if (f["kind"], f["witness"]) not in base
-               and f["tier"] == "finding"]
-        if new:
-            hdiff[case] = new
+    hdiff = hermit_differential(control, mutant)
     split = split_detections(mutant, diff)
     counted = sorted(set(split["finding"]) | set(split["exposed"]))
     first = {}
@@ -983,6 +1003,10 @@ def self_test():
        sorted(differential(_ctl, _mut)), ["x"])
     ok("detect does not count a demotion from finding to exposed",
        sorted(differential(_mut, _ctl)), [])
+    _hc = {"x": {"hermit_superset": True, "hermit_findings": _ctl["x"]["findings"]}}
+    _hm = {"x": {"hermit_superset": True, "hermit_findings": _mut["x"]["findings"]}}
+    ok("the hermit tier counts a promotion too", sorted(hermit_differential(_hc, _hm)), ["x"])
+    ok("the hermit tier does not count a demotion", sorted(hermit_differential(_hm, _hc)), [])
     ok("a certified miss under collapsed operands (#538) is exposed",
        kinds(dict(cons, unsat=[C]), classify=cj(collapsed_operands={"axioms": 1, "vacuous": 1}))
        [:1], [("unsat-MISSED", "exposed", C)])
@@ -1004,6 +1028,14 @@ def self_test():
        hermit_superset(peers([], [], kc=False)), None)
     ok("Konclude unsat HermiT lacks: not scored",
        hermit_superset(peers([], [], ku=[C])), None)
+    ok("Konclude X ⊑ D with D HermiT-unsat and X not: not scored",
+       hermit_superset(peers([(A, C)], [], hu=[C])), None)
+    ok("Konclude ⊑ pair implied by HermiT's unsat subject: scored",
+       hermit_superset(peers([(C, A)], [(A, B)], hu=[C])) is not None, True)
+    ok("identical answers are not a strict superset", hermit_superset(peers([(A, B)], [(A, B)])),
+       None)
+    _kte = peers([], [], hu=[C]); _kte["konclude"]["thing_equiv"] = [C]
+    ok("Konclude ⊤ where HermiT says unsat: not scored", hermit_superset(_kte), None)
     ok("a miss against the HermiT answer is scored like an agreed one",
        [x["kind"] for x in score(hermit_superset(peers([], [(A, B), (A, C)])), classes,
                                  {"classify": cj(direct_subsumptions=[[A, B]])})],

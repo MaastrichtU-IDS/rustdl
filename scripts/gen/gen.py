@@ -1186,7 +1186,11 @@ class DataCase(Case):
                 pts = [lit("int", v) for v in ("1", "2")] + ['"1.0"^^xsd:decimal',
                                                              '"01"^^xsd:integer']
             elif sp == "dec":
-                keys = ["DatatypeRestriction(xsd:decimal xsd:maxExclusive \"-5.0\"^^xsd:decimal)"]
+                # Bounded with no integer inside, so it meets no integer key either: the
+                # #589 detector is role-blind, and `< -5.0` met `≤ -3` across properties
+                # (case 849, #643 review).
+                keys = ["DatatypeRestriction(xsd:decimal xsd:minExclusive \"5.1\"^^xsd:decimal "
+                        "xsd:maxExclusive \"5.9\"^^xsd:decimal)"]
                 pts = ['"1.5"^^xsd:decimal', '"1.50"^^xsd:decimal', '"2.5"^^xsd:decimal']
             elif sp in ("str", "lang"):
                 keys = []
@@ -1332,8 +1336,11 @@ class DataCase(Case):
                 return None
             op = {"subprop": "SubDataPropertyOf", "eqprop": "EquivalentDataProperties",
                   "disjprop": "DisjointDataProperties"}[k]
-            # `d` is redrawn per element above, so the pick can equal it: refuse the repeat
-            # (#538: a set for rustdl, a list for the peers), keeping every other stream.
+            # `d` is redrawn per element above (a walrus in the comprehension), so the
+            # same-space filter compares against different draws and can pair properties
+            # of different spaces (legal, just less targeted), and the pick can equal `d`:
+            # refuse that repeat (#538: a set for rustdl, a list for the peers). Kept as
+            # drawn so every other case keeps its stream.
             x = r.choice(same)
             return None if x == d else f"{op}(:{d} :{x})"
         if k == "func":
@@ -1931,6 +1938,34 @@ def self_test():
         return sorted(rs - planned) + multi
     ok("disj cases use only their planned disjoint keys and single-literal enumerations",
        [c.index for c in dcs if c.stratum == "disj" and disj_stray(c)], [])
+    def numeric_overlaps(keys):
+        """Pairs of numeric facet keys (integer/decimal: one value space for #589) whose
+        intervals meet. Bounds are read from the facets; a missing bound is infinite."""
+        iv = []
+        for k in keys:
+            lo, hi, lo_in, hi_in = float("-inf"), float("inf"), False, False
+            for f, v in re.findall(r"xsd:(m\w+) \"([^\"]+)\"", k):
+                if f.startswith("min"):
+                    lo, lo_in = float(v), f == "minInclusive"
+                else:
+                    hi, hi_in = float(v), f == "maxInclusive"
+            iv.append((k, lo, hi, lo_in, hi_in))
+        out = []
+        for i, (a, alo, ahi, ali, ahi_in) in enumerate(iv):
+            for b, blo, bhi, bli, bhi_in in iv[i + 1:]:
+                lo, lo_in = max((alo, ali), (blo, bli))
+                hi, hi_in = min((ahi, ahi_in), (bhi, bhi_in))
+                if lo < hi or (lo == hi and lo_in and hi_in):
+                    out.append((a, b))
+        return out
+    ok("disj numeric keys are pairwise disjoint across properties (the flag is role-blind)",
+       [c.index for c in dcs if c.stratum == "disj" and numeric_overlaps(
+           sorted({k for ks, _ in c.disj_keys.values() for k in ks}))], [])
+    # (distinct keys: one key planned on two properties is one DKey, which meets nothing)
+    ok("the overlap check sees the old decimal key against the integer key (negative control)",
+       bool(numeric_overlaps(['DatatypeRestriction(xsd:integer xsd:maxInclusive "-3"^^xsd:integer)',
+                              'DatatypeRestriction(xsd:decimal xsd:maxExclusive "-5.0"^^xsd:decimal)'])),
+       True)
     _d = DataCase(20261129, next(c.index for c in dcs if c.stratum == "disj"))
     _d.axioms.append("SubClassOf(:C0 DataSomeValuesFrom(:d0 DataOneOf(\"1\"^^xsd:integer "
                      "\"2\"^^xsd:integer)))")

@@ -30,13 +30,19 @@ pub struct CeVerdict {
     no_verdict: bool,
     dropped: DroppedAxioms,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 }
 
 impl CeVerdict {
     /// #462: the deadline-free probe ended in `NoVerdict`, an internal limit (likely a
     /// reasoner bug, #449). [`Self::holds`] is then the sound direction ("satisfiable" /
     /// "not entailed") and [`Self::incomplete`] is set too.
-    fn from_no_verdict(holds: bool, dropped: DroppedAxioms, universal_role_ordinary: bool) -> Self {
+    fn from_no_verdict(
+        holds: bool,
+        dropped: DroppedAxioms,
+        universal_role_ordinary: bool,
+        data_case_split_risk: bool,
+    ) -> Self {
         Self {
             holds,
             incomplete: true,
@@ -46,6 +52,7 @@ impl CeVerdict {
             no_verdict: true,
             dropped,
             universal_role_ordinary,
+            data_case_split_risk,
         }
     }
 
@@ -118,6 +125,14 @@ impl CeVerdict {
     pub fn universal_role_ordinary(&self) -> bool {
         self.universal_role_ordinary
     }
+    /// #589: the probed ontology has a data key that may need reasoning by cases,
+    /// which no engine does, so a negative answer may be wrong. Voids
+    /// [`Self::completeness_guaranteed`]. See
+    /// `owl_dl_core::convert::data_case_split_risk`.
+    #[must_use]
+    pub fn data_case_split_risk(&self) -> bool {
+        self.data_case_split_risk
+    }
 }
 
 /// Result of a complex-class-expression instance query.
@@ -134,6 +149,7 @@ pub struct CeInstances {
     depth_capped: bool,
     dropped: DroppedAxioms,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 }
 
 impl CeInstances {
@@ -199,6 +215,14 @@ impl CeInstances {
     #[must_use]
     pub fn universal_role_ordinary(&self) -> bool {
         self.universal_role_ordinary
+    }
+    /// #589: the probed ontology has a data key that may need reasoning by cases,
+    /// which no engine does, so a negative answer may be wrong. Voids
+    /// [`Self::completeness_guaranteed`]. See
+    /// `owl_dl_core::convert::data_case_split_risk`.
+    #[must_use]
+    pub fn data_case_split_risk(&self) -> bool {
+        self.data_case_split_risk
     }
 }
 
@@ -348,11 +372,12 @@ pub fn class_expression_satisfiable<A: ForIRI>(
     let closure = crate::bounded_query_guard(&internal, "sat-expr")?;
     let dropped = internal.dropped.clone();
     let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    let dcs = owl_dl_core::convert::data_case_split_risk(&internal);
     let (holds, stats, left) =
         match crate::is_class_satisfiable_keeping(internal, PROBE_IRI, closure) {
             // #462: the sound direction of no verdict is "satisfiable".
             Err(ReasonError::NoVerdict) => {
-                return Ok(CeVerdict::from_no_verdict(true, dropped, uro));
+                return Ok(CeVerdict::from_no_verdict(true, dropped, uro, dcs));
             }
             r => r?,
         };
@@ -376,6 +401,7 @@ pub fn class_expression_satisfiable<A: ForIRI>(
         no_verdict: lazy.no_verdict,
         dropped,
         universal_role_ordinary: stats.universal_role_ordinary,
+        data_case_split_risk: stats.data_case_split_risk,
     })
 }
 
@@ -401,11 +427,12 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
     let closure = crate::bounded_query_guard(&internal, "subclass-expr")?;
     let dropped = internal.dropped.clone();
     let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    let dcs = owl_dl_core::convert::data_case_split_risk(&internal);
     let (holds, stats, left) =
         match crate::is_subclass_of_keeping(internal, PROBE_IRI, PROBE_IRI_2, closure) {
             // #462: the sound direction of no verdict is "not entailed".
             Err(ReasonError::NoVerdict) => {
-                return Ok(CeVerdict::from_no_verdict(false, dropped, uro));
+                return Ok(CeVerdict::from_no_verdict(false, dropped, uro, dcs));
             }
             r => r?,
         };
@@ -429,6 +456,7 @@ pub fn class_expression_entailed_subclass<A: ForIRI>(
         no_verdict: lazy.no_verdict,
         dropped,
         universal_role_ordinary: stats.universal_role_ordinary,
+        data_case_split_risk: stats.data_case_split_risk,
     })
 }
 
@@ -453,6 +481,7 @@ pub fn class_expression_instances<A: ForIRI>(
     let internal = owl_dl_core::convert::convert_ontology(&probed)?;
     let fast_path = crate::realize::realize_saturation_eligible(&internal);
     let uro = owl_dl_core::top_bottom_roles::universal_role_ordinary(&internal);
+    let dcs = owl_dl_core::convert::data_case_split_risk(&internal);
     // #369: the lazy consistency check runs inside the instance query.
     let (mut individuals, flags) =
         crate::realize::instances_of_reporting_internal(&internal, PROBE_IRI)?;
@@ -465,8 +494,9 @@ pub fn class_expression_instances<A: ForIRI>(
         completeness_guaranteed: instances_guarantee(
             fast_path,
             flags,
-            // #543: a universal role voids it as a dropped axiom does.
-            internal.dropped.is_empty() && !uro,
+            // #543: a universal role voids it as a dropped axiom does; so does a
+            // data key that may need a case split (#589).
+            internal.dropped.is_empty() && !uro && !dcs,
             crate::query_inconsistency_guard_enabled(),
         ),
         consistency_undetermined: flags.consistency_undetermined,
@@ -474,6 +504,7 @@ pub fn class_expression_instances<A: ForIRI>(
         depth_capped: flags.depth_capped,
         dropped: internal.dropped.clone(),
         universal_role_ordinary: uro,
+        data_case_split_risk: dcs,
     })
 }
 

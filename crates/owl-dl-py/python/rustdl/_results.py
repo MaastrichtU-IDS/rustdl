@@ -103,6 +103,10 @@ class ClassExpressionVerdict(_MappingDataclass):
     # #543: a universal role (in the ontology or the query) is read as an ordinary
     # property, so a negative answer may be wrong; voids `completeness_guaranteed`.
     universal_role_ordinary: bool = False
+    # #589: a data range (in the ontology or the query) may need reasoning by cases
+    # over its values, which rustdl does not do, so a negative answer may be wrong;
+    # voids `completeness_guaranteed`.
+    data_case_split_risk: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,10 @@ class ClassExpressionInstances(_MappingDataclass):
     # #543: a universal role (in the ontology or the query) is read as an ordinary
     # property, so a negative answer may be wrong; voids `completeness_guaranteed`.
     universal_role_ordinary: bool = False
+    # #589: a data range (in the ontology or the query) may need reasoning by cases
+    # over its values, which rustdl does not do, so a negative answer may be wrong;
+    # voids `completeness_guaranteed`.
+    data_case_split_risk: bool = False
 
 
 @dataclass(frozen=True)

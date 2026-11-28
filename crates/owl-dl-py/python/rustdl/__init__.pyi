@@ -56,8 +56,9 @@ class Classification:
         subsumptions): pure EL, nothing cut, no `wedge_hierarchy_blind`, no
         `wedge_abox_blind`, no `tbox_individuals_unseeded`, no
         `wedge_clauses_refused`, no `derived_same_undecided`, no
-        `consistency_undetermined` and no dropped axiom. Stronger than
-        `complete`, which only says nothing was cut."""
+        `consistency_undetermined`, no dropped axiom, no
+        `universal_role_ordinary` (#543) and no `data_case_split_risk` (#589).
+        Stronger than `complete`, which only says nothing was cut."""
         ...
     @property
     def collapsed_operands(self) -> tuple[int, int]:
@@ -95,6 +96,16 @@ class Classification:
         change the hierarchy (#543); rustdl treats it as an ordinary property, so an
         entailment may be missing. Voids `completeness_guaranteed`. `classify` emits
         `UniversalRoleWarning`."""
+        ...
+    @property
+    def data_case_split_risk(self) -> bool:
+        """True iff some data range may need reasoning by cases over its values,
+        which rustdl does not do (#589): a range that is not a single value meets
+        another range of its datatype without a seeded subsumption into it, so an
+        entailment such as `C ⊑ E` from `C ⊑ ∃d.{1,2}`, `hasValue(d,1) ⊑ E` and
+        `hasValue(d,2) ⊑ E` may be missing. Voids `completeness_guaranteed`.
+        `classify` emits `DataCaseSplitWarning`. `False` when the ontology is
+        proved inconsistent."""
         ...
     @property
     def dropped(self) -> dict[str, int]:
@@ -511,6 +522,7 @@ class ClassExpressionVerdict(Mapping[str, object]):
     no_verdict: bool
     dropped: tuple[tuple[str, int], ...]
     universal_role_ordinary: bool
+    data_case_split_risk: bool
     def to_dict(self) -> dict: ...
 
 class ClassExpressionInstances(Mapping[str, object]):
@@ -525,6 +537,7 @@ class ClassExpressionInstances(Mapping[str, object]):
     depth_capped: bool
     dropped: tuple[tuple[str, int], ...]
     universal_role_ordinary: bool
+    data_case_split_risk: bool
     def to_dict(self) -> dict: ...
 
 def class_expression_satisfiable_result(path: str, ce: str) -> ClassExpressionVerdict:
@@ -549,6 +562,7 @@ def class_expression_instances_result(path: str, ce: str) -> ClassExpressionInst
 # ── conversion diagnostics ──────────────────────────────────────────────────
 
 class UniversalRoleWarning(UserWarning): ...
+class DataCaseSplitWarning(UserWarning): ...
 
 def universal_role_ordinary(path: str, role_level: bool = False) -> bool:
     """True iff the ontology at `path` uses a universal role where rustdl's
@@ -559,6 +573,15 @@ def universal_role_ordinary(path: str, role_level: bool = False) -> bool:
     the role-level functions (property values and hierarchy, property disjointness,
     same/different individuals, the property materializers) do not list; those
     functions warn on this flag."""
+    ...
+
+def _data_case_split_risk(path: str) -> bool:
+    """True iff some data range in the ontology at `path` may need reasoning by
+    cases over its values, which rustdl does not do (#589): a range that is not a
+    single value meets another range of its datatype without a seeded subsumption
+    into it. Positive answers are sound; a negative answer or a missing entailment
+    may be wrong. Every path-taking query emits `DataCaseSplitWarning` when this
+    holds (the role-level functions too: the flag has no role-level form)."""
     ...
 
 def dropped_axioms(path: str) -> dict[str, int]:
@@ -662,6 +685,12 @@ class PreparedOntology:
         """True iff the ontology uses a universal role where rustdl's
         ordinary-property reading can miss entailments (#543); `justify` and
         `justify_all` then emit `UniversalRoleWarning`."""
+        ...
+    @property
+    def data_case_split_risk(self) -> bool:
+        """True iff some data range may need reasoning by cases over its values,
+        which rustdl does not do (#589); `justify` and `justify_all` then emit
+        `DataCaseSplitWarning`."""
         ...
     @property
     def dropped(self) -> dict[str, int]:

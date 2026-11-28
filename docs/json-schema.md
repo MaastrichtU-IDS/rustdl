@@ -56,7 +56,8 @@ A decision-depth cut in that check is plain `consistency_undetermined`.
   "direct_subsumptions": [[sub_iri, sup_iri], ...],
   "dropped": { "<axiom kind>": int },
   "collapsed_operands": { "axioms": int, "vacuous": int },
-  "universal_role_ordinary": bool }
+  "universal_role_ordinary": bool, "data_case_split_risk": bool,
+  "data_case_split_risk": bool }
 ```
 
 `incomplete` = some class pair or per-class unsat probe was cut without a verdict and took its
@@ -168,6 +169,16 @@ same meaning, is on `consistent`, `realize`, `disjoint`, `individuals`, `propert
 list), `property-hierarchy`, `sat-expr`, `subclass-expr`, `instances-expr`, `justify`,
 `prove` and `verify-el`.
 
+`data_case_split_risk` (#589, no `schema_version` bump) = some data range that is not a
+single value meets another range of its value space without a seeded `⊑` into it. rustdl
+reads data ranges as atomic keys and never reasons by cases over values, so an entailment
+that needs the split can be missed: `C ⊑ ∃d.{1,2}`, `hasValue(d,1) ⊑ E` and
+`hasValue(d,2) ⊑ E` entail `C ⊑ E`. Positive answers are sound; a negative answer or a
+missing entailment may be wrong. The detector is coarse (role- and polarity-blind), so the
+flag can be set where nothing is missed. It voids `completeness_guaranteed` (condition 12),
+is `false` when the ontology is proved inconsistent, and comes with one stderr note. It sits
+beside `universal_role_ordinary` on every command listed above, and on `unlowered`.
+
 **`incomplete: false` does NOT mean complete.** It means no class pair or per-class unsat probe was cut (other give-ups, such
 as `consistency_undetermined` or `derived_same_undecided`, have their own fields).
 There are Horn ontologies where `classify` misses a subsumption both Konclude and
@@ -240,7 +251,8 @@ classes are reported in `unsatisfiable` (they are all mutually equivalent to
   "no_verdict": bool,
   "dropped": { "<axiom kind>": int },
   "collapsed_operands": { "axioms": int, "vacuous": int },
-  "universal_role_ordinary": bool }
+  "universal_role_ordinary": bool, "data_case_split_risk": bool,
+  "data_case_split_risk": bool }
 ```
 
 `incomplete` (#182) means `consistent: true` is a give-up in its sound
@@ -286,7 +298,7 @@ depth cap), #497.
   "direct_types_unverified": bool, "direct_types_depth_capped": bool,
   "relies_on_trusted_consistency": bool,
   "no_verdict": bool, "depth_capped": bool, "saturation_only": bool,
-  "universal_role_ordinary": bool,
+  "universal_role_ordinary": bool, "data_case_split_risk": bool,
   "individuals": [ { "iri": iri, "types": [iri], "direct_types": [iri] } ],
   "dropped": { kind: count } }
 ```
@@ -518,7 +530,7 @@ edges may be missing.
   "enumeration_complete": bool, "minimal": bool, "laconic": bool,
   "relies_on_trusted_consistency": bool,
   "justifications": [ { "ofn": ofn_document } ],
-  "universal_role_ordinary": bool,
+  "universal_role_ordinary": bool, "data_case_split_risk": bool,
   "dropped": { "<axiom kind>": int } }
 ```
 
@@ -558,8 +570,8 @@ represent to its count, as on the other surfaces (empty when nothing was dropped
 search ran over the weaker ontology: a justification that needs a dropped axiom is
 missing and `"not-entailed"` may be wrong, so with a drop `enumeration_complete` is
 `false` (with or without `--all`). `minimal` is unaffected: a dropped axiom is in no justification found. The
-command also prints a stderr warning. `universal_role_ordinary` (#543) is the flag of
-`classify --json`, unmasked.
+command also prints a stderr warning. `universal_role_ordinary` (#543) and
+`data_case_split_risk` (#589) are the flags of `classify --json`, unmasked.
 
 Each `justifications[i].ofn` is a **self-contained OFN ontology document** —
 a fresh ontology holding exactly that justification's axioms (no more, no
@@ -581,14 +593,15 @@ below).
   "proof": ProofNodeJson | null,
   "justification_fallback": ofn_document | null,
   "justification_minimal": bool | null,
-  "universal_role_ordinary": bool,
+  "universal_role_ordinary": bool, "data_case_split_risk": bool,
   "dropped": { "<axiom kind>": int } }
 ```
 
 `dropped` (#619, no `schema_version` bump) maps each axiom kind conversion could not
 represent to its count (empty when nothing was dropped): a proof that needs a dropped
 axiom is missing and `"not-entailed"` may be wrong. The command also prints a stderr
-warning. `universal_role_ordinary` (#543) is the flag of `classify --json`, unmasked.
+warning. `universal_role_ordinary` (#543) and `data_case_split_risk` (#589) are the flags of
+`classify --json`, unmasked.
 
 ```json
 // ProofNodeJson

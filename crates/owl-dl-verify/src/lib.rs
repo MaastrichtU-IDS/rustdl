@@ -92,6 +92,12 @@ pub enum UnresolvedReason {
     /// property. A model of that reading need not be a model of the input, so a
     /// `Verified` would vouch for a weaker closure, as with dropped axioms.
     UniversalRoleReadAsOrdinary,
+    /// #589: some data range may need reasoning by cases that conversion's data keys
+    /// cannot express (a range that is not a single value meets another of its
+    /// datatype without a seeded `⊑`). The checked model reads keys as atoms, so it may
+    /// hold a value that lies in `{1, 2}` but is neither `1` nor `2`: not a model of
+    /// the input, so a `Verified` would vouch for a weaker closure.
+    DataKeyNeedsCaseSplit,
 }
 
 /// One axiom that a checked model fails to satisfy.

@@ -41,24 +41,39 @@ pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> 
         .unwrap_or_default()
 }
 
-/// `dropped_block` plus #543's `universal_role_ordinary`, from ONE conversion, for
-/// the commands that report both. A failed conversion reads as nothing dropped and
-/// no flag, as `dropped_block` does.
-pub(crate) fn conversion_block(onto: &SetOntology<RcStr>) -> (BTreeMap<String, u64>, bool) {
-    owl_dl_reasoner::conversion_report(onto)
-        .map(|(d, uro)| (d.by_kind().clone(), uro))
+/// `dropped_block` plus #543's `universal_role_ordinary` and #589's
+/// `data_case_split_risk`, from ONE conversion: `(dropped, universal_role_ordinary,
+/// data_case_split_risk)`, for the commands that report them. A failed conversion
+/// reads as nothing dropped and no flag, as `dropped_block` does.
+pub(crate) fn conversion_block(onto: &SetOntology<RcStr>) -> (BTreeMap<String, u64>, bool, bool) {
+    owl_dl_reasoner::conversion_flags(onto)
+        .map(|f| {
+            (
+                f.dropped.by_kind().clone(),
+                f.universal_role_ordinary,
+                f.data_case_split_risk,
+            )
+        })
         .unwrap_or_default()
 }
 
 /// #619: [`conversion_block`] with both universal-role flags, class level and role
 /// level (`owl_dl_core::top_bottom_roles::universal_role_ordinary_for_roles`), from ONE
-/// conversion, for the commands that report a role-level answer. A failed conversion
-/// reads as nothing dropped and no flag.
+/// conversion, for the commands that report a role-level answer: `(dropped,
+/// universal_role_ordinary, universal_role_ordinary_for_roles, data_case_split_risk)`.
+/// A failed conversion reads as nothing dropped and no flag.
 pub(crate) fn conversion_block_for_roles(
     onto: &SetOntology<RcStr>,
-) -> (BTreeMap<String, u64>, bool, bool) {
-    owl_dl_reasoner::conversion_notes(onto)
-        .map(|(d, uro, for_roles)| (d.by_kind().clone(), uro, for_roles))
+) -> (BTreeMap<String, u64>, bool, bool, bool) {
+    owl_dl_reasoner::conversion_flags(onto)
+        .map(|f| {
+            (
+                f.dropped.by_kind().clone(),
+                f.universal_role_ordinary,
+                f.universal_role_ordinary_for_roles,
+                f.data_case_split_risk,
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -327,6 +342,12 @@ pub(crate) struct ClassifyJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 /// `collapsed_operands` in `classify --json` and `consistent --json` (#538).
@@ -393,6 +414,12 @@ pub(crate) struct ConsistentJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 /// One entry of `VerifyElJson::violations`.
@@ -426,6 +453,12 @@ pub(crate) struct VerifyElJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 #[derive(Serialize)]
@@ -509,6 +542,12 @@ pub(crate) struct RealizeJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -552,6 +591,12 @@ pub(crate) struct DisjointJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -604,6 +649,12 @@ pub(crate) struct SatExprJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -656,6 +707,12 @@ pub(crate) struct SubclassExprJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 // `struct_excessive_bools`: each bool is a field of the published JSON schema.
@@ -698,6 +755,12 @@ pub(crate) struct InstancesExprJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 #[must_use]
@@ -705,6 +768,7 @@ pub(crate) fn build_sat_expr_json(v: &owl_dl_reasoner::CeVerdict) -> SatExprJson
     SatExprJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary: v.universal_role_ordinary(),
+        data_case_split_risk: v.data_case_split_risk(),
         incomplete: v.incomplete(),
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
@@ -719,6 +783,7 @@ pub(crate) fn build_subclass_expr_json(v: &owl_dl_reasoner::CeVerdict) -> Subcla
     SubclassExprJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary: v.universal_role_ordinary(),
+        data_case_split_risk: v.data_case_split_risk(),
         incomplete: v.incomplete(),
         completeness_guaranteed: v.completeness_guaranteed(),
         relies_on_trusted_consistency: v.relies_on_trusted_consistency(),
@@ -735,6 +800,7 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
     InstancesExprJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary: r.universal_role_ordinary(),
+        data_case_split_risk: r.data_case_split_risk(),
         incomplete: r.incomplete(),
         depth_capped: r.depth_capped(),
         completeness_guaranteed: r.completeness_guaranteed(),
@@ -808,6 +874,7 @@ pub(crate) fn build_classify_json(
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary: stats.universal_role_ordinary && !stats.inconsistent,
+        data_case_split_risk: stats.data_case_split_risk && !stats.inconsistent,
         consistent: !stats.inconsistent,
         incomplete: deadline_flags(&stats).0,
         prep_timed_out: deadline_flags(&stats).1,
@@ -852,6 +919,7 @@ pub(crate) fn parse_timed_out_classify_json() -> ClassifyJson {
     ClassifyJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary: false,
+        data_case_split_risk: false,
         consistent: true,
         incomplete: true,
         prep_timed_out: true,
@@ -913,10 +981,12 @@ pub(crate) fn build_consistent_json(
     dropped: BTreeMap<String, u64>,
     collapsed_operands: CollapsedOperandsJson,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 ) -> ConsistentJson {
     ConsistentJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary,
+        data_case_split_risk,
         consistent,
         incomplete,
         relies_on_trusted_consistency,
@@ -935,6 +1005,7 @@ pub(crate) fn build_consistent_json(
 /// plain primitives here (rather than the `Verdict` type itself) keeps this
 /// module from needing to know that type's shape or its ordering hazards.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_verify_el_json(
     verdict: &'static str,
     domain_size: usize,
@@ -943,10 +1014,12 @@ pub(crate) fn build_verify_el_json(
     unresolved: Vec<String>,
     dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 ) -> VerifyElJson {
     VerifyElJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary,
+        data_case_split_risk,
         verdict,
         domain_size,
         axioms_checked,
@@ -962,6 +1035,7 @@ pub(crate) fn build_realize_json(
     dropped: BTreeMap<String, u64>,
     saturation_only: bool,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 ) -> RealizeJson {
     let mut individuals: Vec<IndividualTypesJson> = r
         .individuals()
@@ -982,6 +1056,7 @@ pub(crate) fn build_realize_json(
     RealizeJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary,
+        data_case_split_risk,
         incomplete: r.incomplete(),
         depth_capped: r.depth_capped(),
         witness_prune_active: r.witness_prune_active(),
@@ -1030,6 +1105,12 @@ pub(crate) struct PropHierJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 fn side(c: &PropertyClassification) -> PropHierSide {
@@ -1054,10 +1135,12 @@ pub(crate) fn build_prophier_json(
     structural_gaps: Vec<String>,
     dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 ) -> PropHierJson {
     PropHierJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary,
+        data_case_split_risk,
         incomplete: false,
         object_properties: side(obj),
         data_properties: side(data),
@@ -1067,6 +1150,7 @@ pub(crate) fn build_prophier_json(
 }
 
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_disjoint_json(
     classes: &Disjointness,
     obj: Vec<(String, String)>,
@@ -1075,6 +1159,7 @@ pub(crate) fn build_disjoint_json(
     structural_gaps: Vec<String>,
     dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 ) -> DisjointJson {
     let to_arr = |v: Vec<(String, String)>| {
         let mut a: Vec<[String; 2]> = v.into_iter().map(|(x, y)| [x, y]).collect();
@@ -1090,6 +1175,7 @@ pub(crate) fn build_disjoint_json(
     DisjointJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary,
+        data_case_split_risk,
         incomplete: classes.incomplete(),
         disjoint_classes: dc,
         disjoint_object_properties: to_arr(obj),
@@ -1136,6 +1222,12 @@ pub(crate) struct IndividualsJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 #[must_use]
@@ -1144,6 +1236,7 @@ pub(crate) fn build_individuals_json(
     different: &DifferentIndividuals,
     dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 ) -> IndividualsJson {
     let mut same_groups: Vec<Vec<String>> = same
         .groups()
@@ -1169,6 +1262,7 @@ pub(crate) fn build_individuals_json(
     IndividualsJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary,
+        data_case_split_risk,
         incomplete: same.incomplete() || different.incomplete(),
         consistency_undetermined: same.consistency_undetermined()
             || different.consistency_undetermined(),
@@ -1222,6 +1316,12 @@ pub(crate) struct PropertyValuesJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
 }
 
 #[must_use]
@@ -1231,6 +1331,7 @@ pub(crate) fn build_property_values_json(
     structural_gaps: Vec<String>,
     dropped: BTreeMap<String, u64>,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
 ) -> PropertyValuesJson {
     let mut object_property_values: Vec<[String; 3]> = obj
         .triples()
@@ -1251,6 +1352,7 @@ pub(crate) fn build_property_values_json(
     PropertyValuesJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary,
+        data_case_split_risk,
         incomplete: obj.incomplete() || data.incomplete(),
         object_property_values,
         consistency_undetermined: obj.consistency_undetermined() || data.consistency_undetermined(),
@@ -1304,6 +1406,12 @@ pub(crate) struct JustifyJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
     /// #619: axioms conversion could not represent and dropped (kind → count), as on the
     /// other surfaces. The search ran over the weaker ontology: a justification that
     /// needs a dropped axiom is missing and `"not-entailed"` may be wrong, so with a drop
@@ -1344,12 +1452,14 @@ fn axioms_to_ofn_doc(axioms: &[Component<RcStr>], pm: &PrefixMapping) -> String 
 /// for `--all`, `false` when the `--max` cap was hit or a probe gave up — see
 /// the call site).
 #[must_use]
+#[allow(clippy::fn_params_excessive_bools)]
 pub(crate) fn build_justify_json(
     outcome: &JustifyOutcome<RcStr>,
     pm: &PrefixMapping,
     laconic: bool,
     enumeration_complete: bool,
     universal_role_ordinary: bool,
+    data_case_split_risk: bool,
     dropped: BTreeMap<String, u64>,
 ) -> JustifyJson {
     let justs = &outcome.justifications;
@@ -1363,6 +1473,7 @@ pub(crate) fn build_justify_json(
     JustifyJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary,
+        data_case_split_risk,
         status: match outcome.status {
             Verdict::Entailed => "entailed",
             Verdict::NotEntailed => "not-entailed",
@@ -1450,6 +1561,12 @@ pub(crate) struct ProveJson {
     /// wrong. Not a give-up; the command also prints a stderr note. See
     /// `owl_dl_core::top_bottom_roles::universal_role_ordinary`.
     pub(crate) universal_role_ordinary: bool,
+    /// #589: some data range may need reasoning by cases that rustdl does not do (a
+    /// range that is not a single value meets another of the same value space without
+    /// a seeded `⊑` into it), so a missing entailment or a negative answer may be wrong
+    /// even where the fragment is certified. Voids `completeness_guaranteed` where the
+    /// surface has one. See `owl_dl_core::convert::data_case_split_risk`.
+    pub(crate) data_case_split_risk: bool,
     /// #619: axioms conversion could not represent and dropped (kind → count), as on the
     /// other surfaces. A proof that needs a dropped axiom is missing and
     /// `"not-entailed"` may be wrong. Empty when nothing was dropped. Added without a
@@ -1954,6 +2071,7 @@ pub(crate) fn build_prove_json(
     let verdict = |entailed: bool, status: &str| ProveJson {
         schema_version: SCHEMA_VERSION,
         universal_role_ordinary: owl_dl_core::top_bottom_roles::universal_role_ordinary(internal),
+        data_case_split_risk: owl_dl_core::convert::data_case_split_risk(internal),
         dropped: internal.dropped.by_kind().clone(),
         entailed,
         status: status.to_owned(),

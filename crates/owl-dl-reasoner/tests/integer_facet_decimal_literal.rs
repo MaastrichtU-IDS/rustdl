@@ -9,7 +9,7 @@
 //! decimal facets on `xsd:integer`. The review cases (`maxExclusive 2.5`,
 //! `maxInclusive -0.5`, crossing facets, mistyped facet literals) are adjudicated by
 //! `HermiT` alone; the `i64::MIN` case follows from the semantics. The per-case
-//! "(HermiT, Konclude)" messages name the oracles of the first 14. Negative controls
+//! "(`HermiT`, Konclude)" messages name the oracles of the first 14. Negative controls
 //! come first; each is one value away from a positive twin.
 
 #![allow(clippy::unwrap_used)]

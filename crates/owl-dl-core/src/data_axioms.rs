@@ -636,7 +636,7 @@ impl IntegerRange {
         };
         Self { min, max }
     }
-    fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         matches!((self.min, self.max), (Some(a), Some(b)) if a > b)
     }
 
@@ -2397,32 +2397,75 @@ pub(crate) fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<Intege
     }
 }
 
+/// The value of a facet literal on an integer datatype, as its `(floor, ceil)` in the
+/// integers (equal for a whole value). #591: an `xsd:decimal` literal is read as the
+/// decimal it denotes, since the integer value space is part of the decimal one
+/// (OWL 2 Structural Specification §4.1, XML Schema 1.1 Part 2 §3.3.13): `"2.0"` is
+/// the integer 2, and `"2.5"` lies between 2 and 3. A literal of an integer type is
+/// read as that integer. Any other literal refuses the range (the caller drops it and
+/// records it in `dropped`): `"2"^^xsd:string` or `"2.0"^^xsd:double` is not a value
+/// of the integers' value space, so the restriction is outside OWL 2 DL (`HermiT`
+/// rejects it), and reading its lexical form as an integer gave false subsumptions
+/// (#635 review, the integer counterpart of #588's facet-literal check). A value
+/// outside `i64` also refuses the range.
+fn integer_facet_bounds<A: ForIRI>(l: &Literal<A>) -> Option<(i64, i64)> {
+    const XSD_DECIMAL: &str = "http://www.w3.org/2001/XMLSchema#decimal";
+    if let Literal::Datatype {
+        literal,
+        datatype_iri,
+    } = l
+        && datatype_iri.as_ref() == XSD_DECIMAL
+    {
+        let d = parse_decimal(literal)?;
+        // In `i128` so that `i64::MIN`, whose magnitude is not an `i64`, still reads;
+        // a bound outside `i64` refuses the range, as before.
+        let mag: i128 = if d.int.is_empty() {
+            0
+        } else {
+            d.int.parse().ok()?
+        };
+        let trunc = if d.negative { -mag } else { mag };
+        // Truncation is toward zero: below it for a negative value, above it for a
+        // positive one.
+        let (floor, ceil) = match (d.frac.is_empty(), d.negative) {
+            (true, _) => (trunc, trunc),
+            (false, true) => (trunc - 1, trunc),
+            (false, false) => (trunc, trunc + 1),
+        };
+        return Some((i64::try_from(floor).ok()?, i64::try_from(ceil).ok()?));
+    }
+    if !facet_literal_is(l, &is_integer_family_datatype) {
+        return None;
+    }
+    let v: i64 = l.literal().parse().ok()?;
+    Some((v, v))
+}
+
 fn parse_integer_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<IntegerRange> {
     let mut range = IntegerRange::unbounded();
     for fr in facets {
-        let val: i64 = fr.l.literal().parse().ok()?;
+        let (floor, ceil) = integer_facet_bounds(&fr.l)?;
+        let whole = floor == ceil;
+        let tighten_min = |range: &mut IntegerRange, v: i64| {
+            range.min = Some(range.min.map_or(v, |existing| existing.max(v)));
+        };
+        let tighten_max = |range: &mut IntegerRange, v: i64| {
+            range.max = Some(range.max.map_or(v, |existing| existing.min(v)));
+        };
         match fr.f {
-            Facet::MinInclusive => {
-                range.min = Some(range.min.map_or(val, |existing| existing.max(val)));
-            }
+            // `x ≥ v` over the integers is `x ≥ ⌈v⌉`.
+            Facet::MinInclusive => tighten_min(&mut range, ceil),
+            // `x > v` is `x ≥ v + 1` for a whole v, `x ≥ ⌈v⌉` otherwise.
             Facet::MinExclusive => {
-                // xsd:integer-semantics: exclusive ≥ val + 1
-                let inclusive = val.checked_add(1)?;
-                range.min = Some(
-                    range
-                        .min
-                        .map_or(inclusive, |existing| existing.max(inclusive)),
-                );
+                tighten_min(&mut range, if whole { ceil.checked_add(1)? } else { ceil });
             }
-            Facet::MaxInclusive => {
-                range.max = Some(range.max.map_or(val, |existing| existing.min(val)));
-            }
+            // `x ≤ v` is `x ≤ ⌊v⌋`.
+            Facet::MaxInclusive => tighten_max(&mut range, floor),
+            // `x < v` is `x ≤ v - 1` for a whole v, `x ≤ ⌊v⌋` otherwise.
             Facet::MaxExclusive => {
-                let inclusive = val.checked_sub(1)?;
-                range.max = Some(
-                    range
-                        .max
-                        .map_or(inclusive, |existing| existing.min(inclusive)),
+                tighten_max(
+                    &mut range,
+                    if whole { floor.checked_sub(1)? } else { floor },
                 );
             }
             _ => return None,

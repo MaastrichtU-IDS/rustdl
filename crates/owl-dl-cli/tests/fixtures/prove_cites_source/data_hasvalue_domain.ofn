@@ -1,0 +1,9 @@
+Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/data_hasvalue_domain>
+Declaration(Class(:Neutral)) Declaration(Class(:ChemicalState)) Declaration(Class(:Chemical))
+Declaration(DataProperty(:hasCharge))
+SubClassOf(:Neutral :ChemicalState)
+SubClassOf(:Neutral DataHasValue(:hasCharge "0"^^xsd:integer))
+DataPropertyDomain(:hasCharge :Chemical)
+)

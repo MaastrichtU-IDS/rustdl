@@ -303,6 +303,13 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::wedge_refire_bound_enabled,
             true,
         ),
+        // #580: in a deadline-free wedge decide, a `≤n` partition enumeration stops
+        // with `Stalled` at its first `Stalled` child. `=0` reverts.
+        (
+            "RUSTDL_WEDGE_PARTITION_STALL_STOP",
+            owl_dl_tableau::wedge_partition_stall_stop_enabled,
+            true,
+        ),
         (
             "RUSTDL_PROPERTY_ASYMMETRIC_DISJOINT",
             owl_dl_reasoner::property_asymmetric_disjoint_enabled,

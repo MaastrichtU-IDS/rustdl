@@ -119,7 +119,7 @@ Built after #589 Step 1 (#639), which made every surface report `data_case_split
   - counting.
 
   `ctl` moves one piece. Both variants are scored by the oracle, never by the label. A dateTime `range_cover/ent` is **not** an entailment (the XSD 1.1 partial order; see the docstring).
-- **No repeated operand** in an n-ary axiom. rustdl reads operands as a set (#538, `collapsed_operands`), the peers as a list. The scorer also exposes, rather than scores, a miss under `collapsed_operands`.
+- **No repeated operand** in an n-ary axiom. rustdl reads operands as a set (#538, `collapsed_operands`), the peers as a list. The scorer also exposes, rather than scores, a miss under `collapsed_operands`. The demotion is **case-wide and conservative**: it covers every certified miss in the case, including ones unrelated to the repeated axiom, and in every profile. It shows in `classify_exposed_miss_reasons` (first among the reasons), so it is never silent.
 
 **Scoring additions** (`run.py`):
 - **The `hermit_superset` tier**, declared before the control: Konclude under-reports data entailments (covers, counting, empty ranges). Where HermiT's answer strictly contains Konclude's, rustdl is also scored against HermiT.

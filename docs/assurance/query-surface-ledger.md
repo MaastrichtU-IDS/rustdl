@@ -782,8 +782,8 @@ The guaranteed tier is thin: it is 30 of the 824 scored cases rustdl calls consi
 - **#641 tag:** a finding of #641's shape (a `DataOneOf` of whole decimals past i64 against an integer Range: a false unsat) counts as known-#641.
 - **`hermit_superset` tier:** where HermiT's answer strictly contains Konclude's, rustdl is also scored against HermiT in a separate tier, adjudicated by hand.
 
-Measured 2026-11-28 with seed 20261129, N = 1000, generator `855b815baeb7` and pin `rustdl-control-d8229918` (main d8229918, sha256 1502a0d3d257805c). The arms were `classify`, `classify --saturation-only`, `consistent`, `realize` and `sat`, on cores 33–34, with peers capped at 60 s and rustdl at 30 s.
-- **Bodies:** 926 bodies are from `8fcd893291fd` and are byte-identical under `855b815baeb7`. The other 74 were regenerated and rerun after two generator fixes, both described below.
+Measured 2026-11-28 with seed 20261129, N = 1000, generator `e7934fea8a08` and pin `rustdl-control-d8229918` (main d8229918, sha256 1502a0d3d257805c). The arms were `classify`, `classify --saturation-only`, `consistent`, `realize` and `sat`, on cores 33–34, with peers capped at 60 s and rustdl at 30 s.
+- **Bodies:** all 1000 are byte-identical under `e7934fea8a08`. The header hashes record when each body was regenerated: `8fcd893291fd` for 886; `1c3ea009b73b` and `855b815baeb7` for 37 each (the two stream-preserving operand fixes below); and `e7934fea8a08` for 40 (the `disj` decimal key, below). Every regenerated case was rerun on every arm and mutant.
 
 **Legality and certification, measured one file per form before drawing.**
 - **HermiT** rejects `xsd:date` and any `owl:real` literal, and accepts everything else probed.
@@ -793,12 +793,12 @@ Measured 2026-11-28 with seed 20261129, N = 1000, generator `855b815baeb7` and p
 
 | mutant | fault | detected | first | tier |
 |---|---|---:|---|---|
-| MD1 | `data_case_split_risk` always false | 20 of 500 | case 43 | all finding: misses promoted from exposed to certified (15 pair, 13 unsat, 1 consistency) |
+| MD1 | `data_case_split_risk` always false | 20 of 500 | case 43 | all finding: misses promoted from exposed to certified (15 pair, 13 unsat, 1 consistency), plus 16 in the `hermit_superset` tier |
 | MD2 | `OrdRange::subset` / `FloatRange::subset` ignore bound openness | 6 of 500 | case 15 | all finding (pair FPs) |
 | MD3 | `IntInterval::capacity` one too small | 15 of 500 | case 25 | all finding (sat, unsat, consistency, type FPs), plus 2 in the `hermit_superset` tier |
 | MD4 | `decimal_as_int` always `None` | 19 of 500 | case 2 | 14 finding (17 certified pair misses, 5 unsat FPs), 5 exposed; plus 1 in the `hermit_superset` tier |
 
-**`detect` was blind to promotions.** It compared (kind, witness) only, so a miss the control exposes and the mutant certifies did not count. MD1 first read 0 of 500. Inspecting case 43 (exposed in the control, a finding under MD1) showed the cause. `detect` now counts a promotion to the finding tier and not a demotion, with self-tests both ways. The earlier profiles' mutants were FP-detected, so none of their figures changes.
+**`detect` was blind to promotions.** It compared (kind, witness) only, so a miss the control exposes and the mutant certifies did not count. MD1 first read 0 of 500. Inspecting case 43 (exposed in the control, a finding under MD1) showed the cause. `detect` now counts a promotion to the finding tier and not a demotion, in both the main and the `hermit_superset` differential (the PR review found the second still comparing (kind, witness) only), with self-tests both ways. The earlier profiles' mutants were FP-detected, so none of their figures changes.
 
 **Control, N = 1000: 14 findings, all known-#641, and no other finding.**
 
@@ -815,8 +815,8 @@ Measured 2026-11-28 with seed 20261129, N = 1000, generator `855b815baeb7` and p
   - Each finding disappears when the two values become `1.0` / `2.0` (#641's own control).
   - Case 848's four pair FPs go with it.
   - **This is the positive control:** the instrument finds a known false unsat.
-- **Certified tiers.** Of the 896 scored cases rustdl calls consistent, 275 are certified with no split risk:
-  - `disj`: 209 of 210;
+- **Certified tiers.** Of the 896 scored cases rustdl calls consistent, 276 are certified with no split risk:
+  - `disj`: 210 of 210 (209 before the PR review: its decimal key `< -5.0` met the integer key `≤ -3` across properties, since the #589 detector is role-blind; it is now `(5.1, 5.9)`, and a self-test checks the planned keys pairwise);
   - `el`: 55 of 370, because the flag hits 315 of them;
   - `full`: 11 of 316.
 
@@ -826,7 +826,8 @@ Measured 2026-11-28 with seed 20261129, N = 1000, generator `855b815baeb7` and p
   - The scorer exposes a miss under `collapsed_operands`.
   - Both fixes preserve the RNG stream. The 74 changed cases (38 and 37, with case 784 in both) were regenerated and rerun on every arm and mutant.
 
-**The `hermit_superset` tier (69 cases): no findings.** Every rustdl miss there is declared: 63 pair, 19 unsat and 20 sat misses, and 2 consistency misses. MD3 and MD4 are detected in it as well (above).
+**The `hermit_superset` tier (69 cases): no findings.** Every rustdl miss there is declared: 63 pair, 19 unsat and 20 sat misses, and one inconsistent KB (case 657, counted at both the pre-check and the exposed tier). MD1, MD3 and MD4 are detected in it as well (above).
+- **"Strictly contains" is checked on every Konclude entailment.** After the PR review, a Konclude pair counts as contained only if HermiT lists it, makes its subject unsat or its object ⊤; Konclude's ⊤-equivalences must be HermiT's; identical answers are not a superset. Recomputed over the 72 disagreements, it selects the same 69 cases.
 
 **Peer disagreements (72, all attributed).** Konclude misses data entailments that HermiT finds; the reverse happens only for dateTime covers.
 - **HermiT right, Konclude misses (69):**
@@ -849,7 +850,7 @@ Measured 2026-11-28 with seed 20261129, N = 1000, generator `855b815baeb7` and p
 - **Thin certified tier in `el`:** 55 of 370, because the #589 detector is coarse (role-blind). A miss in `el` is mostly exposed, and MD1 shows what it hides.
 - **Dropped forms** are scored for FPs only.
 
-**Cost:** about 2.6 core-h:
+**Cost:** about 2.7 core-h, including the PR review's 40-case rerun:
 - 5 release builds, about 1.1 core-h;
 - legality probes, the smoke batch and adjudication peer runs, about 0.4;
 - the 1000-case control, 0.94;

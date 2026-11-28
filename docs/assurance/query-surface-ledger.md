@@ -694,13 +694,13 @@ So `apply_max` on `r⁻` is reached on the per-query `sat` surface, and hardly a
 
 #624 (#543 part 2) states the Direct-Semantics meaning of each foldable use of `owl:topObjectProperty` as built-in axioms, which are new positive derivations. No other profile emitted a top property. The `universal` profile (`UniversalCase`, its own RNG stream; see `scripts/gen/README.md`) puts top in every position HermiT accepts as OWL 2 DL. Those positions are `∃`, `∀`, `≤0`, `≥1`, `hasValue`, Domain and Range, `Reflexive/Symmetric/Transitive`, `r ⊑ top`, `top ⊑ r`, positive and negative assertions, and `d ⊑ topDataProperty`. Half the cases have individuals with told types, for the conditional folds.
 
-Measured 2026-11-28: seed 20261128, N = 1000, generator `8efe7762dc2b`, pin `rustdl-control-ac7ff1ee` (main ac7ff1ee), arms `classify`, `classify --saturation-only`, `consistent`, `realize` and `sat`. The run used cores 33–34, with peers capped at 60 s and rustdl at 30 s.
+Measured 2026-11-28: seed 20261128, N = 1000, generator `8efe7762dc2b` (the committed `4243f93465a0` only fixes the header census and regenerates all 1000 bodies byte-identically), pin `rustdl-control-ac7ff1ee` (main ac7ff1ee), arms `classify`, `classify --saturation-only`, `consistent`, `realize` and `sat`. The run used cores 33–34, with peers capped at 60 s and rustdl at 30 s.
 
 **Calibration, with the criteria declared before any run:** each mutant must be detected within B = 500.
 
 | mutant | fault | detected | first | tier |
 |---|---|---:|---|---|
-| MU1 | the licence check is gone: every atomic class counts as non-empty | 131 of 500 | case 0 | all finding (pair, unsat, consistency, type FPs) |
+| MU1 | the licence check is gone: every atomic class counts as non-empty | 131 of 500 | case 0 | all finding (pair, unsat, consistency, type FPs); 132 differ, 1 budget-cut, plus 8 exposed type misses |
 | MU2 | `∀u.X` folds to ⊥ for any filler | 65 of 500 | case 1 | all finding (unsat, consistency, pair FPs) |
 
 **Control, N = 1000: 0 findings.**
@@ -708,20 +708,23 @@ Measured 2026-11-28: seed 20261128, N = 1000, generator `8efe7762dc2b`, pin `rus
 | bucket | cases |
 |---|---:|
 | clean | 772 |
-| exposed | 193, every miss under `universal_role_ordinary` or a trusted Sat |
+| exposed | 193: misses rustdl declares possible (`completeness_guaranteed: false`, or a `consistent --json` gate) |
 | peer-fail | 28 (Konclude: 26 crashes, exit -11, most with `top ⊑ r`; 2 timeouts; HermiT ok on all) |
 | peer-disagree | 7 (below) |
 | finding | **0** |
 
-965 of 1000 are scored. The guaranteed tier is thin: 37 of 851 agreed-consistent cases (4.3%), because `universal_role_ordinary` voids `completeness_guaranteed`. So **this profile tests for false positives**, which are scored at every tier. A miss is a finding only on those 37. All 9 classify pre-check consistency misses carry `universal_role_ordinary: true`.
+965 of 1000 are scored. **"0 findings" means: no false positive on the 965 scored cases, and no miss on the 37 with `completeness_guaranteed: true`.** The guaranteed tier is thin: 37 of the 851 scored cases rustdl calls consistent (842 that the peers call consistent, plus the 9 pre-check misses below). `completeness_guaranteed` requires the pure-EL gate, and 759 of the 814 non-guaranteed cases also have trusted-Sat refutations. So **this profile mostly tests for false positives**, which are scored at every tier.
 
-**Peer disagreements (7, not scored).** In each, Konclude reports more than HermiT.
-- **4 pairs and 1 Thing-equivalence** where rustdl sides with HermiT, each under `universal_role_ordinary`.
-  - Case 397 is adjudicated by hand. `top ⊑ r0` makes `r0` universal, so `∃r0.C3 ⊑ C0` gives `C3 ⊑ C0`. Konclude is right and HermiT misses it, a HermiT blind spot for entailments through a role above top.
-  - The other 4 are unadjudicated.
-- **2 consistency:**
-  - **Case 673:** rustdl says inconsistent, with HermiT. It holds `EquivalentClasses(C0 ObjectComplementOf(C0))`, which is inconsistent in every model. Konclude is wrong; this is the shape listed above.
-  - **Case 559:** rustdl says consistent, with Konclude, under `universal_role_ordinary`. Unadjudicated; rustdl declares either way.
+**What the new gate clause changed.** Three control cases (8, 338, 733) are exposed only because `consistent --json` now reads `universal_role_ordinary`: an inconsistent KB rustdl calls consistent with no trusted consistency, refusal or drop, but with the flag set. rustdl declares the limitation; the old gate scored it a finding. The run's per-case records did not store the flag. For the 9 classify pre-check consistency misses (cases 8, 170, 257, 338, 345, 562, 626, 733, 852) and the 7 disagreements below, I read it from a rerun of the pin, and every one carries it. `run.py` stores it from now on.
+
+**Peer disagreements (7, not scored), 4 adjudicated by hand.** HermiT misses universal-role entailments that Konclude finds, and Konclude misses two inconsistencies HermiT finds. Neither is an oracle here, and the "both agree" rule kept every case out of scoring.
+- **Pairs (4: cases 397, 690, 762, 780):** Konclude has a pair HermiT lacks; rustdl sides with HermiT, each under `universal_role_ordinary`.
+  - **Case 397, by hand:** `top ⊑ r0` makes `r0` universal, so `∃r0.C3 ⊑ C0` gives `C3 ⊑ C0`. Konclude is right; HermiT and rustdl miss it, and rustdl declares it.
+  - The other 3 are unadjudicated.
+- **Thing-equivalence (case 904, by hand):** `top ⊑ r1` makes `r1` universal, and `C0 ≡ ∃r1.{a1}` makes `C0 ≡ ⊤`. rustdl and Konclude are right; HermiT misses it.
+- **Consistency (2):**
+  - **Case 673, by hand:** `EquivalentClasses(C0 ObjectComplementOf(C0))` is inconsistent in every model. rustdl (no flag) and HermiT are right; Konclude is wrong, the shape listed above.
+  - **Case 559, by hand:** `r0 ≡ r1⁻` and `top ⊑ r1` make `r0` universal, and `C1 ≡ ∃r0.¬C1` then has no model. HermiT is right. rustdl and Konclude say consistent; rustdl under `universal_role_ordinary`, so it is declared.
 
 **A scorer fix found here.** `consistent --json`'s gate predated #543 and did not read `universal_role_ordinary`. The first calibration batch therefore flagged a declared miss (a non-folded `≤0 top.C`) as a finding. The gate now requires the flag to be false.
 

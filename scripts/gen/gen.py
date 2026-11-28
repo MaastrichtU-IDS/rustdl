@@ -1001,7 +1001,11 @@ class UniversalCase(Case):
                 "has_value": f"ObjectHasValue({TOP}",
                 "neg_assert": f"NegativeObjectPropertyAssertion({TOP}",
                 "pos_assert": f"ObjectPropertyAssertion({TOP}", "data_top": TOP_DATA}
-        return sorted(k for k, p in pats.items() if any(p in a for a in self.axioms))
+        # An assertion kind matches at the axiom's start: `ObjectPropertyAssertion(top` is
+        # a substring of `NegativeObjectPropertyAssertion(top`.
+        starts = {"neg_assert", "pos_assert"}
+        return sorted(k for k, p in pats.items()
+                      if any(a.startswith(p) if k in starts else p in a for a in self.axioms))
 
     def header(self):
         return (f"# gen {gen_hash()} seed {self.seed} case {self.index} profile {self.profile}\n"
@@ -1361,6 +1365,24 @@ def self_test():
                                                "ObjectMaxCardinality(2 ", "ObjectMaxCardinality(3 "))))
         or f"DataSomeValuesFrom({TOP_DATA}" in a], [])
     ok("the header carries the census", "# universal: " in UniversalCase(5, 7).ofn(), True)
+    # `top ⊑ r` makes `r`, its super-roles and its inverse partners non-simple (HermiT,
+    # probed 2026-11-28). Recomputed from the emitted lines, not from the case's own set.
+    simple_pos = re.compile(r"(?:Cardinality\(\d+ |ObjectHasSelf\(|FunctionalObjectProperty\(|"
+                            r"IrreflexiveObjectProperty\(|AsymmetricObjectProperty\(|"
+                            r"DisjointObjectProperties\()(?:ObjectInverseOf\()?:(r\d+)")
+    leaks = []
+    for c in unis:
+        tops = [a.split(":")[-1].rstrip(")") for a in c.axioms
+                if a.startswith(f"SubObjectPropertyOf({TOP} :")]
+        ok_simple = simple_roles(c.roles + ["__top__"],
+                                 c.role_axioms + [("transitive", "__top__")]
+                                 + [("sub", "__top__", x) for x in tops]) - {"__top__"}
+        used = {m.group(1) for a in c.axioms for m in simple_pos.finditer(a)}
+        if not used <= ok_simple:
+            leaks.append((c.index, sorted(used - ok_simple)))
+    ok("no role below top (or above such a role) in a simple position", leaks, [])
+    ok("some cases put a role below top", sum(any(a.startswith(f"SubObjectPropertyOf({TOP} :")
+                                                  for a in c.axioms) for c in unis) > 50, True)
     print(f"gen self-test: {'all ok' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

@@ -28,7 +28,8 @@ MISSED kinds are split by rustdl's own guarantee:
   MISSED-exposed (otherwise): a declared limitation, reported, not a finding.
 Consistency MISSED: on classify's `consistent` field it is a pre-check tier,
 informational only; on `consistent --json` it is a finding only when `incomplete`,
-`relies_on_trusted_consistency` are false, `wedge_clauses_refused` is 0 and nothing was
+`relies_on_trusted_consistency` and `universal_role_ordinary` (#543: a declared reason a
+negative answer may be wrong) are false, `wedge_clauses_refused` is 0 and nothing was
 dropped. If the oracle says inconsistent, only consistency is scored.
 
 Case buckets, exclusive, in this order: invalid, peer-fail, peer-disagree,
@@ -429,7 +430,7 @@ def one_case(path, binary, env, cache, out_dir, realize=False, sat=False):
                 "consistent", "incomplete", "completeness_guaranteed",
                 "relies_on_trusted_consistency", "wedge_clauses_refused",
                 "trusted_sat_refutations", "wedge_hierarchy_blind", "dropped",
-                "consistency_undetermined")}
+                "consistency_undetermined", "universal_role_ordinary")}
     rec["cpu_s"] = round(_cpu() - cpu0, 3)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
@@ -743,6 +744,12 @@ def self_test():
     ok("oracle inconsistent: gated consistent miss is exposed",
        kinds(inc, consistent=kj(relies_on_trusted_consistency=True)),
        [("consistency-MISSED", "exposed", "KB"), ("consistency-MISSED", "pre-check", "KB")])
+    ok("oracle inconsistent: a declared universal role exposes it",
+       kinds(inc, consistent=kj(universal_role_ordinary=True)),
+       [("consistency-MISSED", "exposed", "KB"), ("consistency-MISSED", "pre-check", "KB")])
+    ok("a consistency-FP stays a finding under a declared universal role",
+       kinds(cons, consistent=kj(consistent=False, universal_role_ordinary=True)),
+       [("consistency-FP", "finding", "KB")])
     ok("oracle inconsistent: refused clauses expose it",
        kinds(inc, consistent=kj(wedge_clauses_refused=2)),
        [("consistency-MISSED", "exposed", "KB"), ("consistency-MISSED", "pre-check", "KB")])
